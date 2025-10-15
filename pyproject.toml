@@ -7,7 +7,11 @@ authors = [
     { name = "Herman Brunborg", email = "herman@brunborg.com" }
 ]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "cloudpickle>=3.1.1",
+    "rich>=14.2.0",
+    "submitit>=1.5.3",
+]
 
 [build-system]
 requires = ["uv_build>=0.8.0,<0.9"]
