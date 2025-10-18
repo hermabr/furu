@@ -852,7 +852,7 @@ class Huldra(Generic[R_co]):
         wait: Optional[bool] = None,
         on_job_id: Optional[Callable[[Any], None]] = None,
         max_requeues: Optional[int] = None,
-    ):
+    ) -> R_co | None:
         """
         Ensure result exists, computing if necessary.
 
