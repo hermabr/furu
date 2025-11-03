@@ -28,10 +28,10 @@ from typing import (
     List,
     Literal,
     Optional,
+    Self,
     TypeVar,
     cast,
     overload,
-    Self
 )
 
 from typing_extensions import dataclass_transform
@@ -176,7 +176,7 @@ class HuldraComputeError(HuldraError):
         super().__init__(message)
 
     def __str__(self: Self) -> str:
-        msg = super().__str__() # ty: ignore[invalid-super-argument]
+        msg = super().__str__()  # ty: ignore[invalid-super-argument]
         if self.original_error:
             msg += f"\n\nOriginal error: {self.original_error}"
             if hasattr(self.original_error, "__traceback__"):
@@ -880,9 +880,7 @@ class Huldra(Generic[R_co]):
         # Fast path: already successful
         if StateManager.read_state(directory).get("status") == "success":
             try:
-                return (
-                    self._load_result() if (executor is None or wait) else None
-                )
+                return self._load_result() if (executor is None or wait) else None
             except Exception as e:
                 raise HuldraComputeError(
                     f"Failed to load result from {directory}",
