@@ -37,6 +37,19 @@ from typing import (
 from typing_extensions import dataclass_transform
 
 # =============================================================================
+# Load .env file
+# =============================================================================
+
+try:
+    from dotenv import load_dotenv
+
+    # Load .env file from current directory or parent directories
+    load_dotenv()
+except ImportError:
+    # python-dotenv not available, skip .env loading
+    pass
+
+# =============================================================================
 # Pretty Tracebacks
 # =============================================================================
 
@@ -730,8 +743,8 @@ class Huldra(Generic[R_co]):
     Base class for cached computations with provenance tracking.
 
     Subclasses must implement:
-    - _materialize(self) -> R_co
-    - _load_result(self) -> R_co
+    - _create(self) -> R_co
+    - _load(self) -> R_co
     - _slug(self) -> str
     """
 
@@ -748,17 +761,15 @@ class Huldra(Generic[R_co]):
         """Return the slug for this Huldra object (must be implemented by decorator)."""
         raise NotImplementedError("Slug not set - use @huldra decorator")
 
-    def _materialize(self: Self) -> R_co:
+    def _create(self: Self) -> R_co:
         """Compute and save the result (implement in subclass)."""
         raise NotImplementedError(
-            f"{self.__class__.__name__}._materialize() not implemented"
+            f"{self.__class__.__name__}._create() not implemented"
         )
 
-    def _load_result(self: Self) -> R_co:
+    def _load(self: Self) -> R_co:
         """Load the result from disk (implement in subclass)."""
-        raise NotImplementedError(
-            f"{self.__class__.__name__}._load_result() not implemented"
-        )
+        raise NotImplementedError(f"{self.__class__.__name__}._load() not implemented")
 
     def _validate(self: Self) -> bool:
         """Validate that result is complete and correct (override if needed)."""
@@ -880,7 +891,7 @@ class Huldra(Generic[R_co]):
         # Fast path: already successful
         if StateManager.read_state(directory).get("status") == "success":
             try:
-                return self._load_result() if (executor is None or wait) else None
+                return self._load() if (executor is None or wait) else None
             except Exception as e:
                 raise HuldraComputeError(
                     f"Failed to load result from {directory}",
@@ -893,7 +904,7 @@ class Huldra(Generic[R_co]):
             try:
                 status = self._run_locally()
                 if status == "success":
-                    return self._load_result()
+                    return self._load()
 
                 state = StateManager.read_state(directory)
                 raise HuldraComputeError(
@@ -989,7 +1000,7 @@ class Huldra(Generic[R_co]):
             # Success - load and return result
             if status == "success":
                 try:
-                    return self._load_result(directory)
+                    return self._load(directory)
                 except Exception as e:
                     raise HuldraComputeError(
                         f"Failed to load result from {directory}",
@@ -1037,7 +1048,7 @@ class Huldra(Generic[R_co]):
 
             if status == "success":
                 try:
-                    return self._load_result(directory)
+                    return self._load(directory)
                 except Exception as e:
                     raise HuldraComputeError(
                         f"Failed to load result from {directory}",
@@ -1160,7 +1171,7 @@ class Huldra(Generic[R_co]):
 
             try:
                 # Run computation
-                self._materialize()
+                self._create()
                 StateManager.write_state(directory, status="success")
             except Exception as e:
                 # Always show a full, colored traceback on stderr
@@ -1273,7 +1284,7 @@ class Huldra(Generic[R_co]):
 
             try:
                 # Run the computation
-                self._materialize()
+                self._create()
                 StateManager.write_state(directory, status="success")
                 return "success"
             except Exception as e:
@@ -1358,13 +1369,13 @@ def huldra(
             param1: int
             param2: str
 
-            def _materialize(self) -> pd.DataFrame:
+            def _create(self) -> pd.DataFrame:
                 # Compute result
                 df = ...
                 df.to_parquet(self.huldra_dir / "result.parquet")
                 return df
 
-            def _load_result(self, self.huldra_dir: Path) -> pd.DataFrame:
+            def _load(self, self.huldra_dir: Path) -> pd.DataFrame:
                 return pd.read_parquet(self.huldra_dir / "result.parquet")
     """
 
@@ -1493,12 +1504,12 @@ class HuldraList(Generic[_H], metaclass=_HuldraListMeta):
         class MyComputation(Huldra[str]):
             value: int
 
-            def _materialize(self) -> str:
+            def _create(self) -> str:
                 result = f"Result: {self.value}"
                 (self.huldra_dir / "result.txt").write_text(result)
                 return result
 
-            def _load_result(self) -> str:
+            def _load(self) -> str:
                 return (self.huldra_dir / "result.txt").read_text()
 
         class MyExperiments(HuldraList[MyComputation]):
