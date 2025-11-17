@@ -1,5 +1,4 @@
 import contextlib
-import dataclasses
 import datetime
 import enum
 import getpass
@@ -34,6 +33,7 @@ from typing import (
     overload,
 )
 
+import chz
 from typing_extensions import dataclass_transform
 
 # =============================================================================
@@ -232,10 +232,10 @@ class HuldraSerializer:
         if isinstance(obj, _HuldraMissing):
             raise ValueError("Cannot serialize Huldra.MISSING")
 
-        if dataclasses.is_dataclass(obj):
+        if chz.is_chz(obj):
             result = {cls.CLASS_MARKER: cls.get_classname(obj)}
-            for field in dataclasses.fields(obj):
-                result[field.name] = cls.to_dict(getattr(obj, field.name))
+            for field_name in chz.chz_fields(obj):
+                result[field_name] = cls.to_dict(getattr(obj, field_name))
             return result
 
         if isinstance(obj, pathlib.Path):
@@ -260,13 +260,15 @@ class HuldraSerializer:
                 k: cls.from_dict(v) for k, v in data.items() if k != cls.CLASS_MARKER
             }
 
-            # Convert strings back to Path for Path-typed fields
-            for field in dataclasses.fields(data_class):
-                if field.type is pathlib.Path and isinstance(
-                    kwargs.get(field.name), str
-                ):
-                    kwargs[field.name] = pathlib.Path(kwargs[field.name])
+            path_types = (Path, pathlib.Path)
 
+            if chz.is_chz(data_class):
+                for name, field in chz.chz_fields(data_class).items():
+                    if (
+                        field.final_type in path_types
+                        and isinstance(kwargs.get(name), str)
+                    ):
+                        kwargs[name] = pathlib.Path(kwargs[name])
             return data_class(**kwargs)
 
         if isinstance(data, list):
@@ -285,12 +287,13 @@ class HuldraSerializer:
             if isinstance(item, _HuldraMissing):
                 raise ValueError("Cannot hash Huldra.MISSING")
 
-            if dataclasses.is_dataclass(item):
+            if chz.is_chz(item):
+                fields = chz.chz_fields(item)
                 return {
                     "__class__": cls.get_classname(item),
                     **{
-                        f.name: canonicalize(getattr(item, f.name))
-                        for f in dataclasses.fields(item)
+                        name: canonicalize(getattr(item, name))
+                        for name in fields
                     },
                 }
 
@@ -341,18 +344,17 @@ class HuldraSerializer:
             pad = "" if not multiline else " " * indent
             next_indent = indent + (4 if multiline else 0)
 
-            if dataclasses.is_dataclass(item):
+            if chz.is_chz(item):
                 cls_path = cls.get_classname(item)
                 fields = [
-                    f"{f.name}={to_py_recursive(getattr(item, f.name), next_indent)}"
-                    for f in dataclasses.fields(item)
+                    f"{name}={to_py_recursive(getattr(item, name), next_indent)}"
+                    for name in chz.chz_fields(item)
                 ]
 
                 if multiline:
                     inner = (",\n" + " " * next_indent).join(fields)
                     return f"{cls_path}(\n{pad}    {inner}\n{pad})"
-                else:
-                    return f"{cls_path}({', '.join(fields)})"
+                return f"{cls_path}({', '.join(fields)})"
 
             if isinstance(item, enum.Enum):
                 return cls.get_classname(item)
@@ -752,10 +754,6 @@ class Huldra(Generic[R_co]):
 
     # Configuration (can be overridden in subclasses)
     version_controlled: bool = False
-
-    def __post_init__(self: Self) -> None:
-        """Called after dataclass initialization."""
-        pass
 
     def _slug(self: Self) -> str:
         """Return the slug for this Huldra object (must be implemented by decorator)."""
@@ -1347,21 +1345,21 @@ class Huldra(Generic[R_co]):
 T = TypeVar("T", bound=type)
 
 
-@dataclass_transform(field_specifiers=(dataclasses.field,), frozen_default=True)
+@dataclass_transform(field_specifiers=(chz.field,), kw_only_default=True, frozen_default=True)
 def huldra(
     _cls: T | None = None,
     *,
     slug: str | Callable[[Any], str],
     version_controlled: bool = False,
-    **dataclass_kwargs: Any,
+    **huldra_kwargs: Any,
 ) -> Callable[[T], T] | T:
     """
-    Decorator to create a Huldra dataclass.
+    Decorator to create a Huldra chz class.
 
     Args:
         slug: Unique identifier for this Huldra type (string or callable)
         version_controlled: If True, store in data/huldra/git, else data/huldra/data
-        **dataclass_kwargs: Additional arguments passed to @dataclass
+        **huldra_kwargs: Additional arguments passed to @chz.chz
 
     Example:
         @huldra(slug="my-computation", version_controlled=True)
@@ -1384,9 +1382,17 @@ def huldra(
         if not issubclass(cls, Huldra):
             raise TypeError(f"{cls.__name__} must inherit from Huldra")
 
-        # Apply dataclass decorator
-        dataclass_kwargs.setdefault("frozen", True)
-        cls = dataclasses.dataclass(cls, **dataclass_kwargs)
+        chz_kwargs: dict[str, Any] = {}
+        for key in ("version", "typecheck"):
+            if key in huldra_kwargs:
+                chz_kwargs[key] = huldra_kwargs.pop(key)
+
+        if huldra_kwargs:
+            extra = ", ".join(sorted(huldra_kwargs))
+            raise TypeError(f"Unsupported huldra options: {extra}")
+
+        # Apply chz decorator
+        cls = chz.chz(cls, **chz_kwargs)
 
         # Set slug method
         if isinstance(slug, str):

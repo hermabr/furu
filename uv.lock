@@ -12,10 +12,23 @@ wheels = [
 ]
 
 [[package]]
+name = "chz"
+version = "0.3.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f8/63/d1758a5ee3f7af14681c9d440462b978e6dc4ef7b6bf367174de6d1f413a/chz-0.3.0.tar.gz", hash = "sha256:cdb7aecee4732b7dd5df0fad9fef1dbe3d9a8c2eddc0fb41076b3f09016b2c17", size = 75694, upload-time = "2025-03-01T01:51:06.939Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f5/a4/cddff39d5df387bb1efe1b6213df1648cd1c6b75d8782fb7b23d3081467d/chz-0.3.0-py3-none-any.whl", hash = "sha256:f9761e72a3430b35e0200ed61747917f24b6975057e7b735f9555e1429bd7b9f", size = 51830, upload-time = "2025-03-01T01:51:05.234Z" },
+]
+
+[[package]]
 name = "huldra"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "chz" },
     { name = "cloudpickle" },
     { name = "python-dotenv" },
     { name = "rich" },
@@ -24,6 +37,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "chz", specifier = ">=0.3.0" },
     { name = "cloudpickle", specifier = ">=3.1.1" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "rich", specifier = ">=14.2.0" },

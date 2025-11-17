@@ -2,7 +2,7 @@
 
 NOTE: this is a very early prototype, expect breaking changes. for now this is mostly an idea
 
-huldra makes it trivial to create minimal, cacheable pipelines in Python by extending dataclasses.
+huldra makes it trivial to create minimal, cacheable pipelines in Python by extending [chz](https://github.com/openai/chz) classes.
 
 all huldra objects map from a config to artifact, using nested config objects for defining the pipelines
 
