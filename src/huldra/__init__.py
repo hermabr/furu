@@ -832,14 +832,14 @@ class Huldra[T](ABC):
         return MetadataManager.read_metadata(self.huldra_dir)
 
     @overload
-    def exists_or_create(self, executor: Any) -> T | submitit.Job[T]: ...
+    def exists_or_create(self, executor: submitit.Executor) -> T | submitit.Job[T]: ...
 
     @overload
     def exists_or_create(self, executor: None = None) -> T: ...
 
     def exists_or_create(
         self: Self,
-        executor: Any = None,
+        executor: submitit.Executor | None = None,
     ) -> T | submitit.Job[T]:
         """
         Ensure result exists, computing if necessary.
@@ -899,6 +899,10 @@ class Huldra[T](ABC):
                 ) from e
 
         # Asynchronous execution with submitit
+        (submitit_folder := self.huldra_dir / "submitit").mkdir(
+            exist_ok=True, parents=True
+        )
+        executor.folder = submitit_folder
         adapter = SubmititAdapter(executor)
 
         return self._submit_once(adapter, directory, None)  # ty: ignore[invalid-return-type] # TODO: fix typing here
