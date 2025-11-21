@@ -182,6 +182,12 @@ class HuldraError(Exception):
     pass
 
 
+class HuldraWaitTimeout(HuldraError):
+    """Raised when waiting for a result exceeds _max_wait_time_sec."""
+
+    pass
+
+
 class HuldraComputeError(HuldraError):
     """Raised when computation fails."""
 
@@ -770,6 +776,9 @@ class Huldra[T](ABC):
     # Configuration (can be overridden in subclasses)
     version_controlled: bool = False
 
+    # Maximum time to wait for result (seconds). Default: 10 minutes.
+    _max_wait_time_sec: float = 600.0
+
     def _slug(self: Self) -> str:
         """Return the slug for this Huldra object (must be implemented by decorator)."""
         raise NotImplementedError("Slug not set - use @huldra decorator")
@@ -856,6 +865,7 @@ class Huldra[T](ABC):
         Raises:
             HuldraComputeError: If computation fails with detailed error information
         """
+        start_time = time.time()
         directory = self.huldra_dir
         directory.mkdir(parents=True, exist_ok=True)
 
@@ -880,7 +890,7 @@ class Huldra[T](ABC):
         # Synchronous execution
         if executor is None:
             try:
-                status = self._run_locally()
+                status = self._run_locally(start_time=start_time)
                 if status == "success":
                     return self._load()
 
@@ -906,6 +916,14 @@ class Huldra[T](ABC):
         adapter = SubmititAdapter(executor)
 
         return self._submit_once(adapter, directory, None)  # ty: ignore[invalid-return-type] # TODO: fix typing here
+
+    def _check_timeout(self, start_time: float) -> None:
+        """Check if operation has timed out."""
+        if self._max_wait_time_sec is not None:
+            if time.time() - start_time > self._max_wait_time_sec:
+                raise HuldraWaitTimeout(
+                    f"Huldra operation timed out after {self._max_wait_time_sec} seconds."
+                )
 
     def _submit_once(
         self,
@@ -964,11 +982,13 @@ class Huldra[T](ABC):
         directory: Path,
         on_job_id: Optional[Callable[[Any], None]],
         max_requeues: int,
+        start_time: float,
     ) -> T:
         """Submit job and wait, resubmitting on preemption up to max_requeues times."""
         attempts_left = max_requeues
 
         while True:
+            self._check_timeout(start_time)
             state = StateManager.read_state(directory)
             status = state.get("status")
 
@@ -989,8 +1009,16 @@ class Huldra[T](ABC):
             ):
                 job = adapter.load_job(directory)
                 if job:
+                    # Calculate remaining time for wait
+                    remaining = None
+                    if self._max_wait_time_sec is not None:
+                        remaining = max(
+                            0.1,
+                            self._max_wait_time_sec - (time.time() - start_time),
+                        )
+
                     # We have the job handle, wait for it
-                    adapter.wait(job)
+                    adapter.wait(job, timeout=remaining)
 
                     # Check scheduler state
                     scheduler_state = adapter.get_state(job)
@@ -1013,7 +1041,9 @@ class Huldra[T](ABC):
 
             # Need to submit (or resubmit)
             try:
-                status = self._submit_and_wait_once(adapter, directory, on_job_id)
+                status = self._submit_and_wait_once(
+                    adapter, directory, on_job_id, start_time
+                )
             except Exception as e:
                 raise HuldraComputeError(
                     "Failed during submit and wait",
@@ -1049,6 +1079,7 @@ class Huldra[T](ABC):
         adapter: SubmititAdapter,
         directory: Path,
         on_job_id: Optional[Callable[[Any], None]],
+        start_time: float,
     ) -> str:
         """Submit job and wait for completion once (no retries)."""
         state = StateManager.read_state(directory)
@@ -1083,7 +1114,14 @@ class Huldra[T](ABC):
         # Wait for completion
         job = adapter.load_job(directory)
         if job:
-            adapter.wait(job)
+            # Calculate remaining time for wait
+            remaining = None
+            if self._max_wait_time_sec is not None:
+                remaining = max(
+                    0.1, self._max_wait_time_sec - (time.time() - start_time)
+                )
+
+            adapter.wait(job, timeout=remaining)
 
             # Get final state from scheduler
             scheduler_state = adapter.get_state(job)
@@ -1095,6 +1133,7 @@ class Huldra[T](ABC):
 
         # Poll until done
         while True:
+            self._check_timeout(start_time)
             state = StateManager.read_state(directory)
             status = state.get("status")
 
@@ -1202,7 +1241,7 @@ class Huldra[T](ABC):
 
         return info
 
-    def _run_locally(self: Self) -> str:
+    def _run_locally(self: Self, start_time: float) -> str:
         """Run computation locally, return final status."""
         directory = self.huldra_dir
         lock_path = directory / StateManager.COMPUTE_LOCK
@@ -1212,6 +1251,7 @@ class Huldra[T](ABC):
         if lock_fd is None:
             # Someone else is computing, wait for them
             while True:
+                self._check_timeout(start_time)
                 state = StateManager.read_state(directory)
                 status = state.get("status")
 
