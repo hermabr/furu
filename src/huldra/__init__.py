@@ -149,11 +149,12 @@ class HuldraConfig:
             return self.base_root / "git"
         return self.base_root / "data"
 
-    def get_raw_dir(self) -> Path:
+    @property
+    def raw_dir(self) -> Path:
         return self.base_root / "raw"
 
 
-CONFIG = HuldraConfig()
+HULDRA_CONFIG = HuldraConfig()
 
 
 # =============================================================================
@@ -554,7 +555,7 @@ class SubmititAdapter:
             return "preempted"
 
         if s == "CANCELLED":
-            return "preempted" if CONFIG.cancelled_is_preempted else "failed"
+            return "preempted" if HULDRA_CONFIG.cancelled_is_preempted else "failed"
 
         if "FAIL" in s or "ERROR" in s:
             return "failed"
@@ -813,7 +814,7 @@ class Huldra[T](ABC):
     @property
     def huldra_dir(self: Self) -> Path:
         """Get the directory for this Huldra object."""
-        root = CONFIG.get_root(self.version_controlled)
+        root = HULDRA_CONFIG.get_root(self.version_controlled)
         return root / self._slug() / self.hexdigest
 
     def to_dict(self: Self) -> Dict[str, Any]:
@@ -957,7 +958,7 @@ class Huldra[T](ABC):
         try:
             # Create metadata
             metadata = MetadataManager.create_metadata(
-                self, directory, ignore_diff=CONFIG.ignore_git_diff
+                self, directory, ignore_diff=HULDRA_CONFIG.ignore_git_diff
             )
             MetadataManager.write_metadata(metadata, directory)
 
@@ -1011,7 +1012,7 @@ class Huldra[T](ABC):
 
             # Already queued/running - wait for it
             if status in {"queued", "running"} and not StateManager.is_stale(
-                directory, CONFIG.stale_timeout
+                directory, HULDRA_CONFIG.stale_timeout
             ):
                 job = adapter.load_job(directory)
                 if job:
@@ -1035,12 +1036,12 @@ class Huldra[T](ABC):
                 else:
                     # No job handle, just poll
                     print("no job handle, just poll")
-                    time.sleep(CONFIG.poll_interval)
+                    time.sleep(HULDRA_CONFIG.poll_interval)
                 continue
 
             # Stale running state - break the lock
             if status == "running" and StateManager.is_stale(
-                directory, CONFIG.stale_timeout
+                directory, HULDRA_CONFIG.stale_timeout
             ):
                 with contextlib.suppress(Exception):
                     (directory / StateManager.COMPUTE_LOCK).unlink()
@@ -1099,7 +1100,7 @@ class Huldra[T](ABC):
                 try:
                     # Create metadata
                     metadata = MetadataManager.create_metadata(
-                        self, directory, ignore_diff=CONFIG.ignore_git_diff
+                        self, directory, ignore_diff=HULDRA_CONFIG.ignore_git_diff
                     )
                     MetadataManager.write_metadata(metadata, directory)
 
@@ -1147,7 +1148,7 @@ class Huldra[T](ABC):
                 return cast(str, status)
 
             print("poll until done")
-            time.sleep(CONFIG.poll_interval)
+            time.sleep(HULDRA_CONFIG.poll_interval)
 
     def _worker_entry(self: Self) -> None:
         """Entry point for worker process (called by submitit or locally)."""
@@ -1168,7 +1169,7 @@ class Huldra[T](ABC):
                     return
 
                 print("someone else is computing. waiting for them")
-                time.sleep(CONFIG.poll_interval)
+                time.sleep(HULDRA_CONFIG.poll_interval)
 
         try:
             # Collect submitit environment info
@@ -1176,7 +1177,7 @@ class Huldra[T](ABC):
 
             # Refresh metadata
             metadata = MetadataManager.create_metadata(
-                self, directory, ignore_diff=CONFIG.ignore_git_diff
+                self, directory, ignore_diff=HULDRA_CONFIG.ignore_git_diff
             )
             MetadataManager.write_metadata(metadata, directory)
 
@@ -1265,7 +1266,7 @@ class Huldra[T](ABC):
                     return cast(str, status)
 
                 if status == "running" and StateManager.is_stale(
-                    directory, CONFIG.stale_timeout
+                    directory, HULDRA_CONFIG.stale_timeout
                 ):
                     # Stale lock, break it
                     with contextlib.suppress(Exception):
@@ -1273,13 +1274,13 @@ class Huldra[T](ABC):
                     break
 
                 print("waiting for", directory)
-                time.sleep(CONFIG.poll_interval)
+                time.sleep(HULDRA_CONFIG.poll_interval)
 
         try:
             # Create metadata
             try:
                 metadata = MetadataManager.create_metadata(
-                    self, directory, ignore_diff=CONFIG.ignore_git_diff
+                    self, directory, ignore_diff=HULDRA_CONFIG.ignore_git_diff
                 )
                 MetadataManager.write_metadata(metadata, directory)
             except Exception as e:
@@ -1333,7 +1334,7 @@ class Huldra[T](ABC):
         stop_event = threading.Event()
 
         def heartbeat():
-            while not stop_event.wait(CONFIG.poll_interval / 2):
+            while not stop_event.wait(HULDRA_CONFIG.poll_interval / 2):
                 with contextlib.suppress(Exception):
                     StateManager.write_state(directory)
 
@@ -1572,7 +1573,7 @@ def get_huldra_root(version_controlled: bool = False) -> Path:
     Returns:
         Path to storage root
     """
-    return CONFIG.get_root(version_controlled)
+    return HULDRA_CONFIG.get_root(version_controlled)
 
 
 def set_huldra_root(path: Path) -> None:
@@ -1582,4 +1583,4 @@ def set_huldra_root(path: Path) -> None:
     Args:
         path: New base root directory
     """
-    CONFIG.base_root = path.expanduser().resolve()
+    HULDRA_CONFIG.base_root = path.expanduser().resolve()
