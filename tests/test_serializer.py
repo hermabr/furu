@@ -1,8 +1,8 @@
 import datetime
-import inspect
 import importlib
 import pathlib
 from pathlib import Path
+from typing import Any
 
 import chz
 import pytest
@@ -21,7 +21,7 @@ type.__setattr__(
     "__annotations__",
     {"a": int, "p": Path, "_private": int},
 )
-Foo = chz.chz(Foo)
+Foo: Any = chz.chz(Foo)
 
 
 def test_get_classname_rejects_main_module() -> None:

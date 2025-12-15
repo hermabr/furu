@@ -39,10 +39,18 @@ import chz
 import submitit
 from typing_extensions import dataclass_transform
 
-try:  # Optional dependency
-    from pydantic import BaseModel
-except Exception:  # pragma: no cover
-    BaseModel = None  # type: ignore[assignment]
+def _get_pydantic_base_model() -> type[Any] | None:
+    try:
+        module = importlib.import_module("pydantic")
+    except Exception:
+        return None
+    base_model = getattr(module, "BaseModel", None)
+    if isinstance(base_model, type):
+        return cast(type[Any], base_model)
+    return None
+
+
+BaseModel = _get_pydantic_base_model()
 
 # =============================================================================
 # Load .env file
@@ -1429,10 +1437,13 @@ def huldra(
         if materialized:
             annotations.update(materialized)
 
+        FieldType: type[Any] | None
         try:
-            from chz.data_model import Field as FieldType  # type: ignore
+            from chz.data_model import Field as _ChzField  # type: ignore
         except Exception:  # pragma: no cover
             FieldType = None
+        else:
+            FieldType = _ChzField
         if FieldType is not None:
             for name, value in cls.__dict__.items():
                 if isinstance(value, FieldType) and name not in annotations:

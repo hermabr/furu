@@ -1,7 +1,9 @@
 import json
 from pathlib import Path
+from typing import cast
 
 import huldra
+import submitit
 
 
 class _FakeJob:
@@ -52,7 +54,7 @@ class Dummy(huldra.Huldra[int]):
 
 def test_exists_or_create_with_executor_submits_job(huldra_tmp_root) -> None:
     obj = Dummy(value=11)
-    job = obj.exists_or_create(executor=_FakeExecutor())
+    job = obj.exists_or_create(executor=cast(submitit.Executor, _FakeExecutor()))
 
     assert obj.exists() is True
     assert (obj.huldra_dir / huldra.SubmititAdapter.JOB_PICKLE).exists() is True

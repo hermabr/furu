@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import huldra
 
 
@@ -10,4 +8,3 @@ def test_get_and_set_huldra_root(huldra_tmp_root, tmp_path) -> None:
 
     huldra.set_huldra_root(tmp_path)
     assert huldra.HULDRA_CONFIG.base_root == tmp_path.resolve()
-
