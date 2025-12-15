@@ -34,7 +34,7 @@ def test_metadata_roundtrip_and_get_metadata(huldra_tmp_root, monkeypatch) -> No
     with pytest.raises(FileNotFoundError):
         obj.get_metadata()
 
-    assert obj.exists_or_create() == 42
+    assert obj.load_or_create() == 42
     meta = obj.get_metadata()
     assert meta["huldra_hash"] == obj.hexdigest
     assert meta["huldra_obj"]["value"] == 42

@@ -52,14 +52,14 @@ class Dummy(huldra.Huldra[int]):
         return json.loads((self.huldra_dir / "value.json").read_text())
 
 
-def test_exists_or_create_with_executor_submits_job(huldra_tmp_root) -> None:
+def test_load_or_create_with_executor_submits_job(huldra_tmp_root) -> None:
     obj = Dummy(value=11)
-    job = obj.exists_or_create(executor=cast(submitit.Executor, _FakeExecutor()))
+    job = obj.load_or_create(executor=cast(submitit.Executor, _FakeExecutor()))
 
     assert obj.exists() is True
     assert (obj.huldra_dir / huldra.SubmititAdapter.JOB_PICKLE).exists() is True
     assert job is not None
-    assert obj.exists_or_create() == 11
+    assert obj.load_or_create() == 11
 
 
 def test_classify_scheduler_state_cancelled(huldra_tmp_root, monkeypatch) -> None:

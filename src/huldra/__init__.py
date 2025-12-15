@@ -857,17 +857,17 @@ class Huldra[T](ABC):
         return MetadataManager.read_metadata(self.huldra_dir)
 
     @overload
-    def exists_or_create(self, executor: submitit.Executor) -> T | submitit.Job[T]: ...
+    def load_or_create(self, executor: submitit.Executor) -> T | submitit.Job[T]: ...
 
     @overload
-    def exists_or_create(self, executor: None = None) -> T: ...
+    def load_or_create(self, executor: None = None) -> T: ...
 
-    def exists_or_create(
+    def load_or_create(
         self: Self,
         executor: submitit.Executor | None = None,
     ) -> T | submitit.Job[T]:
         """
-        Ensure result exists, computing if necessary.
+        Load result if it exists, computing if necessary.
 
         Args:
             executor: Optional executor for batch submission (e.g., submitit.Executor)
@@ -934,6 +934,18 @@ class Huldra[T](ABC):
         adapter = SubmititAdapter(executor)
 
         return self._submit_once(adapter, directory, None)  # ty: ignore[invalid-return-type] # TODO: fix typing here
+
+    @overload
+    def exists_or_create(self, executor: submitit.Executor) -> T | submitit.Job[T]: ...
+
+    @overload
+    def exists_or_create(self, executor: None = None) -> T: ...
+
+    def exists_or_create(
+        self: Self,
+        executor: submitit.Executor | None = None,
+    ) -> T | submitit.Job[T]:
+        return self.load_or_create(executor=executor)
 
     def _check_timeout(self, start_time: float) -> None:
         """Check if operation has timed out."""
@@ -1595,7 +1607,7 @@ class HuldraList(Generic[_H], metaclass=_HuldraListMeta):
 
         # Use the collection
         for exp in MyExperiments:
-            result = exp.exists_or_create()
+            result = exp.load_or_create()
             print(result)
     """
 

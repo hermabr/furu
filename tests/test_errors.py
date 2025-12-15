@@ -17,7 +17,7 @@ class Fails(huldra.Huldra[int]):
 def test_failed_create_raises_compute_error_and_records_state(huldra_tmp_root) -> None:
     obj = Fails()
     with pytest.raises(huldra.HuldraComputeError):
-        obj.exists_or_create()
+        obj.load_or_create()
 
     state = huldra.StateManager.read_state(obj.huldra_dir)
     assert state["status"] == "failed"
@@ -40,6 +40,5 @@ class InvalidValidate(huldra.Huldra[int]):
 
 def test_exists_returns_false_if_validate_throws(huldra_tmp_root) -> None:
     obj = InvalidValidate()
-    obj.exists_or_create()
+    obj.load_or_create()
     assert obj.exists() is False
-
