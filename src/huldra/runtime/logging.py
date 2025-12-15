@@ -13,6 +13,7 @@ _HULDRA_HOLDER_STACK: contextvars.ContextVar[tuple[Any, ...]] = contextvars.Cont
     "huldra_holder_stack", default=()
 )
 _HULDRA_LOG_LOCK = threading.Lock()
+_HULDRA_CONSOLE_LOCK = threading.Lock()
 
 
 def _holder_to_log_dir(holder: Any) -> Path:
@@ -112,6 +113,63 @@ def _console_level() -> int:
     return logging.getLevelNamesMapping().get(level, logging.INFO)
 
 
+class _HuldraRichConsoleHandler(logging.Handler):
+    def __init__(self, *, level: int) -> None:
+        super().__init__(level=level)
+        from rich.console import Console  # type: ignore
+
+        self._console = Console(stderr=True)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            from rich.text import Text  # type: ignore
+        except Exception:  # pragma: no cover
+            return
+
+        level_style = self._level_style(record.levelno)
+        timestamp = datetime.datetime.fromtimestamp(
+            record.created, tz=datetime.timezone.utc
+        ).strftime("%H%M%S")
+
+        filename = Path(record.pathname).name if record.pathname else "<unknown>"
+        location = f"{filename}:{record.lineno}"
+
+        line = Text()
+        line.append(timestamp, style="dim")
+        line.append(" ")
+        line.append(location, style=level_style)
+        line.append(" ")
+        line.append(record.getMessage())
+
+        with _HULDRA_CONSOLE_LOCK:
+            self._console.print(line)
+
+        if record.exc_info:
+            try:
+                from rich.traceback import Traceback  # type: ignore
+
+                exc_type, exc_value, tb = record.exc_info
+                if exc_type is not None and exc_value is not None and tb is not None:
+                    with _HULDRA_CONSOLE_LOCK:
+                        self._console.print(
+                            Traceback.from_exception(
+                                exc_type, exc_value, tb, show_locals=False
+                            )
+                        )
+            except Exception:
+                pass
+
+    @staticmethod
+    def _level_style(levelno: int) -> str:
+        if levelno >= logging.ERROR:
+            return "red"
+        if levelno >= logging.WARNING:
+            return "yellow"
+        if levelno >= logging.INFO:
+            return "blue"
+        return "magenta"
+
+
 def configure_logging() -> None:
     """
     Install context-aware file logging + rich console logging (idempotent).
@@ -130,23 +188,15 @@ def configure_logging() -> None:
         root.addHandler(handler)
 
     try:
-        from rich.logging import RichHandler  # type: ignore
+        import rich  # type: ignore
     except Exception:  # pragma: no cover
-        RichHandler = None  # type: ignore
+        rich = None  # type: ignore
 
-    if RichHandler is not None and not any(
-        isinstance(h, RichHandler) for h in root.handlers
+    if rich is not None and not any(
+        isinstance(h, _HuldraRichConsoleHandler) for h in root.handlers
     ):
-        console = RichHandler(
-            level=_console_level(),
-            show_time=True,
-            show_path=True,
-            rich_tracebacks=True,
-            markup=False,
-            log_time_format="%H%M%S",
-        )
+        console = _HuldraRichConsoleHandler(level=_console_level())
         console.addFilter(_HuldraConsoleFilter())
-        console.setFormatter(logging.Formatter("%(message)s"))
         root.addHandler(console)
 
 
