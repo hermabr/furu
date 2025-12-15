@@ -12,6 +12,9 @@ This project is managed with `uv` (`uv.lock` is committed).
 
 - Install dependencies: `uv sync`
 - Run a one-off command in the locked env: `uv run python -c "import huldra; print(huldra.__name__)"`
+- Lint: `uv run ruff check .`
+- Type check: `uv run ty check`
+- Run tests: `uv run pytest`
 - Build distributions (wheel/sdist): `uv build`
 
 If you don’t use `uv`, you can still use standard tooling, but keep `pyproject.toml` and `uv.lock` in sync.
