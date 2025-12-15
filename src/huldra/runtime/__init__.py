@@ -10,6 +10,7 @@ from .logging import (
     enter_holder,
     get_logger,
     log,
+    write_separator,
 )
 from .tracebacks import _print_colored_traceback
 
@@ -22,5 +23,5 @@ __all__ = [
     "get_logger",
     "load_env",
     "log",
+    "write_separator",
 ]
-

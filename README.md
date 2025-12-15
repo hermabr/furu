@@ -152,7 +152,9 @@ By default, Huldra also logs to the console using Rich in a compact, single-line
 - `HHMMSS file.py:line message` (no explicit `INFO`/`DEBUG` text)
 - `file.py:line` is colored by level (debug/info/warn/error)
 
-Huldra emits an INFO summary per call, e.g. `load_or_create <path> (missing->create|exists->load|running->wait)`.
+Huldra emits an INFO summary per call, e.g. `load_or_create <ClassName> <hash> (missing->create|running->wait|success->load)`.
+
+Each `load_or_create()` call writes a separator line (`------------------`) to the per-artifact `huldra.log` file.
 
 If you want to install the handler eagerly (optional), call:
 

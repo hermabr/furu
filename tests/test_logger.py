@@ -29,6 +29,15 @@ class Video(huldra.Huldra[int]):
         return json.loads((self.huldra_dir / "value.json").read_text())
 
 
+class SeparatorItem(huldra.Huldra[int]):
+    def _create(self) -> int:
+        (self.huldra_dir / "value.json").write_text(json.dumps(1))
+        return 1
+
+    def _load(self) -> int:
+        return json.loads((self.huldra_dir / "value.json").read_text())
+
+
 def test_log_routes_to_current_holder_dir(huldra_tmp_root) -> None:
     logging.getLogger("video").setLevel(logging.INFO)
     logging.getLogger("internet").setLevel(logging.INFO)
@@ -41,6 +50,8 @@ def test_log_routes_to_current_holder_dir(huldra_tmp_root) -> None:
     assert "video:before" in video_log
     assert "video:after" in video_log
     assert "internet:download" not in video_log
+    assert f"dep: begin {obj.content.__class__.__name__} {obj.content.hexdigest}" in video_log
+    assert f"dep: end {obj.content.__class__.__name__} {obj.content.hexdigest} (ok)" in video_log
     assert video_log.index("video:before") < video_log.index("video:after")
 
     content_log = (obj.content.huldra_dir / "huldra.log").read_text()
@@ -67,3 +78,18 @@ def test_configure_logging_rich_handler_is_idempotent(huldra_tmp_root) -> None:
 
     assert after >= before
     assert after2 == after
+
+
+def test_load_or_create_writes_separator_and_suppresses_cache_hit_logs(
+    huldra_tmp_root,
+) -> None:
+    obj = SeparatorItem()
+    obj.load_or_create()
+    obj.load_or_create()
+
+    text = (obj.huldra_dir / "huldra.log").read_text()
+    assert text.count("------------------") == 2
+    assert text.count("load_or_create ") == 2
+    assert f"load_or_create {obj.__class__.__name__} {obj.hexdigest}" in text
+    assert str(obj.huldra_dir) in text
+    assert text.count("_create: ok ") == 1
