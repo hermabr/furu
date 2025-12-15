@@ -29,3 +29,28 @@ def test_locks_are_exclusive(huldra_tmp_root, tmp_path) -> None:
     huldra.StateManager.release_lock(fd1, lock_path)
     assert lock_path.exists() is False
 
+
+def test_leases_can_be_renewed_and_reconciled(huldra_tmp_root, tmp_path) -> None:
+    directory = tmp_path / "obj"
+    directory.mkdir()
+
+    huldra.StateManager.write_state(
+        directory,
+        status="running",
+        owner_id="a",
+        **huldra.StateManager.new_lease(lease_duration_sec=0.01),
+    )
+
+    assert huldra.StateManager.renew_lease(
+        directory, owner_id="b", lease_duration_sec=0.01
+    ) is False
+    assert huldra.StateManager.renew_lease(
+        directory, owner_id="a", lease_duration_sec=0.01
+    ) is True
+
+    # Let the lease expire and reconcile.
+    import time
+
+    time.sleep(0.02)
+    assert huldra.StateManager.reconcile_expired_running(directory) is True
+    assert huldra.StateManager.read_state(directory).get("status") == "cancelled"

@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 import traceback
+import uuid
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Self, TypeVar, cast, overload
@@ -212,6 +213,7 @@ class Huldra[T](ABC):
             start_time = time.time()
             directory = self.huldra_dir
             directory.mkdir(parents=True, exist_ok=True)
+            self._reconcile_stale_running(directory)
             logger.debug(
                 "load_or_create: enter %s digest=%s dir=%s",
                 self.__class__.__name__,
@@ -357,6 +359,7 @@ class Huldra[T](ABC):
 
         while True:
             self._check_timeout(start_time)
+            self._reconcile_stale_running(directory)
             state = StateManager.read_state(directory)
             status = state.get("status")
 
@@ -377,8 +380,14 @@ class Huldra[T](ABC):
                     ) from e
 
             # Already queued/running - wait for it
-            if status in {"queued", "running"} and not StateManager.is_stale(
-                directory, HULDRA_CONFIG.stale_timeout
+            if status == "running":
+                remaining_lease = StateManager.lease_time_remaining_sec(state)
+                if remaining_lease is not None and remaining_lease <= 0:
+                    continue
+
+            if status in {"queued", "running"} and (
+                status != "queued"
+                or not StateManager.is_stale(directory, HULDRA_CONFIG.stale_timeout)
             ):
                 job = adapter.load_job(directory)
                 if job:
@@ -389,6 +398,17 @@ class Huldra[T](ABC):
                             0.1,
                             self._max_wait_time_sec - (time.time() - start_time),
                         )
+
+                    if status == "running":
+                        remaining_lease = StateManager.lease_time_remaining_sec(
+                            StateManager.read_state(directory)
+                        )
+                        if remaining_lease is not None:
+                            remaining = (
+                                min(remaining, max(0.1, remaining_lease))
+                                if remaining is not None
+                                else max(0.1, remaining_lease)
+                            )
 
                     # We have the job handle, wait for it
                     adapter.wait(job, timeout=remaining)
@@ -406,11 +426,8 @@ class Huldra[T](ABC):
                 continue
 
             # Stale running state - break the lock
-            if status == "running" and StateManager.is_stale(
-                directory, HULDRA_CONFIG.stale_timeout
-            ):
-                with contextlib.suppress(Exception):
-                    (directory / StateManager.COMPUTE_LOCK).unlink()
+            if status == "running":
+                self._reconcile_stale_running(directory)
 
             # Need to submit (or resubmit)
             try:
@@ -507,10 +524,11 @@ class Huldra[T](ABC):
         # Poll until done
         while True:
             self._check_timeout(start_time)
+            self._reconcile_stale_running(directory)
             state = StateManager.read_state(directory)
             status = state.get("status")
 
-            if status in {"success", "failed", "preempted"}:
+            if status in {"success", "failed", "preempted", "cancelled"}:
                 return cast(str, status)
 
             print("poll until done")
@@ -523,21 +541,25 @@ class Huldra[T](ABC):
             directory = self.huldra_dir
             directory.mkdir(parents=True, exist_ok=True)
 
-            # Try to acquire compute lock
             lock_path = directory / StateManager.COMPUTE_LOCK
-            lock_fd = StateManager.try_lock(lock_path)
+            lock_fd = None
+            while lock_fd is None:
+                lock_fd = StateManager.try_lock(lock_path)
+                if lock_fd is not None:
+                    break
 
-            if lock_fd is None:
-                # Someone else is computing, wait for them
-                while True:
-                    state = StateManager.read_state(directory)
-                    status = state.get("status")
+                self._reconcile_stale_running(directory)
+                state = StateManager.read_state(directory)
+                status = state.get("status")
 
-                    if status in {"success", "failed", "preempted"}:
-                        return
+                if status in {"success", "failed", "preempted"}:
+                    return
 
-                    print("someone else is computing. waiting for them")
-                    time.sleep(HULDRA_CONFIG.poll_interval)
+                if status == "cancelled":
+                    continue
+
+                print("someone else is computing. waiting for them")
+                time.sleep(HULDRA_CONFIG.poll_interval)
 
             try:
                 # Collect submitit environment info
@@ -550,10 +572,19 @@ class Huldra[T](ABC):
                 MetadataManager.write_metadata(metadata, directory)
 
                 # Update state to running
-                StateManager.write_state(directory, status="running", **env_info)
+                owner_id = uuid.uuid4().hex
+                StateManager.write_state(
+                    directory,
+                    status="running",
+                    owner_id=owner_id,
+                    **StateManager.new_lease(
+                        lease_duration_sec=HULDRA_CONFIG.lease_duration_sec
+                    ),
+                    **env_info,
+                )
 
                 # Start heartbeat
-                stop_heartbeat = self._start_heartbeat(directory)
+                stop_heartbeat = self._start_heartbeat(directory, owner_id=owner_id)
 
                 # Set up signal handlers
                 self._setup_signal_handlers(directory, stop_heartbeat)
@@ -640,18 +671,14 @@ class Huldra[T](ABC):
             # Someone else is computing, wait for them
             while True:
                 self._check_timeout(start_time)
+                self._reconcile_stale_running(directory)
                 state = StateManager.read_state(directory)
                 status = state.get("status")
 
                 if status in {"success", "failed", "preempted"}:
                     return cast(str, status), False, None
 
-                if status == "running" and StateManager.is_stale(
-                    directory, HULDRA_CONFIG.stale_timeout
-                ):
-                    # Stale lock, break it
-                    with contextlib.suppress(Exception):
-                        lock_path.unlink()
+                if status == "cancelled":
                     break
 
                 print("waiting for", directory)
@@ -672,15 +699,20 @@ class Huldra[T](ABC):
                 ) from e
 
             # Update state to running
+            owner_id = uuid.uuid4().hex
             StateManager.write_state(
                 directory,
                 status="running",
                 backend="local",
+                owner_id=owner_id,
+                **StateManager.new_lease(
+                    lease_duration_sec=HULDRA_CONFIG.lease_duration_sec
+                ),
                 **MetadataManager.collect_environment_info(),
             )
 
             # Start heartbeat
-            stop_heartbeat = self._start_heartbeat(directory)
+            stop_heartbeat = self._start_heartbeat(directory, owner_id=owner_id)
 
             # Set up preemption handler
             self._setup_signal_handlers(directory, stop_heartbeat)
@@ -722,18 +754,48 @@ class Huldra[T](ABC):
         finally:
             StateManager.release_lock(lock_fd, lock_path)
 
-    def _start_heartbeat(self: Self, directory: Path) -> Callable[[], None]:
+    def _start_heartbeat(
+        self: Self, directory: Path, *, owner_id: str
+    ) -> Callable[[], None]:
         """Start heartbeat thread, return stop function."""
         stop_event = threading.Event()
 
         def heartbeat():
-            while not stop_event.wait(HULDRA_CONFIG.poll_interval / 2):
+            while not stop_event.wait(HULDRA_CONFIG.heartbeat_interval_sec):
                 with contextlib.suppress(Exception):
-                    StateManager.write_state(directory)
+                    StateManager.renew_lease(
+                        directory,
+                        owner_id=owner_id,
+                        lease_duration_sec=HULDRA_CONFIG.lease_duration_sec,
+                    )
 
         thread = threading.Thread(target=heartbeat, daemon=True)
         thread.start()
         return stop_event.set
+
+    def _reconcile_stale_running(self: Self, directory: Path) -> None:
+        """
+        If a process died without updating state, treat stale `running` as cancelled.
+
+        This makes downstream waiters bounded: they can resubmit/retry once the lease expires.
+        """
+        state = StateManager.read_state(directory)
+        if state.get("status") != "running":
+            return
+
+        reconciled = False
+        if "lease_expires_at" in state:
+            reconciled = StateManager.reconcile_expired_running(directory)
+        else:
+            if StateManager.is_stale(directory, HULDRA_CONFIG.stale_timeout):
+                StateManager.write_state(
+                    directory, status="cancelled", reason="stale_running"
+                )
+                reconciled = True
+
+        if reconciled:
+            with contextlib.suppress(Exception):
+                (directory / StateManager.COMPUTE_LOCK).unlink()
 
     def _setup_signal_handlers(
         self, directory: Path, stop_heartbeat: Callable[[], None]
