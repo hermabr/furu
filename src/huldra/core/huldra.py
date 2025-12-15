@@ -448,7 +448,7 @@ class Huldra[T](ABC):
 
             lock_path = directory / StateManager.COMPUTE_LOCK
             lock_fd = None
-            logged_wait = False
+            next_wait_log_at = 0.0
             while lock_fd is None:
                 lock_fd = StateManager.try_lock(lock_path)
                 if lock_fd is not None:
@@ -463,18 +463,18 @@ class Huldra[T](ABC):
                 if StateManager.is_success(state):
                     return
 
-                if status in {"failed", "cancelled", "preempted"}:
+                if status in {"failed", "cancelled", "preempted", "crashed"}:
                     return
 
-                if not logged_wait:
+                now = time.time()
+                if now >= next_wait_log_at:
                     logger.info(
                         "compute: waiting for compute lock %s %s dir=%s",
                         self.__class__.__name__,
                         self.hexdigest,
                         directory,
-                        extra={"huldra_console_only": True},
                     )
-                    logged_wait = True
+                    next_wait_log_at = now + HULDRA_CONFIG.wait_log_every_sec
                 time.sleep(HULDRA_CONFIG.poll_interval)
 
             try:
@@ -599,7 +599,7 @@ class Huldra[T](ABC):
         lock_path = directory / StateManager.COMPUTE_LOCK
 
         lock_fd = None
-        logged_wait = False
+        next_wait_log_at = 0.0
         while lock_fd is None:
             lock_fd = StateManager.try_lock(lock_path)
             if lock_fd is not None:
@@ -623,15 +623,15 @@ class Huldra[T](ABC):
                 if attempt_status in {"cancelled", "preempted", "crashed"}:
                     break
 
-                if not logged_wait:
+                now = time.time()
+                if now >= next_wait_log_at:
                     logger.info(
                         "compute: waiting for compute lock %s %s dir=%s",
                         self.__class__.__name__,
                         self.hexdigest,
                         directory,
-                        extra={"huldra_console_only": True},
                     )
-                    logged_wait = True
+                    next_wait_log_at = now + HULDRA_CONFIG.wait_log_every_sec
                 time.sleep(HULDRA_CONFIG.poll_interval)
 
             # Dependency attempt is no longer running; retry lock acquisition.

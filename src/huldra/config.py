@@ -15,6 +15,7 @@ class HuldraConfig:
 
         self.base_root = _get_base_root()
         self.poll_interval = float(os.getenv("HULDRA_POLL_INTERVAL_SECS", "10"))
+        self.wait_log_every_sec = float(os.getenv("HULDRA_WAIT_LOG_EVERY_SECS", "10"))
         self.stale_timeout = float(os.getenv("HULDRA_STALE_AFTER_SECS", str(30 * 60)))
         self.lease_duration_sec = float(os.getenv("HULDRA_LEASE_SECS", "120"))
         hb = os.getenv("HULDRA_HEARTBEAT_SECS")
