@@ -40,8 +40,7 @@ class _FakeExecutor:
         return job
 
 
-@huldra.huldra(slug="test-submitit-path")
-class Dummy(huldra.Huldra[int]):
+class Dummy(huldra.Huldra[int], slug="test-submitit-path"):
     value: int = huldra.chz.field(default=7)
 
     def _create(self) -> int:

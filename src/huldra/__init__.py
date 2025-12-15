@@ -777,6 +777,9 @@ class MetadataManager:
 # =============================================================================
 
 
+@dataclass_transform(
+    field_specifiers=(chz.field,), kw_only_default=True, frozen_default=True
+)
 class Huldra[T](ABC):
     """
     Base class for cached computations with provenance tracking.
@@ -795,9 +798,73 @@ class Huldra[T](ABC):
     # Maximum time to wait for result (seconds). Default: 10 minutes.
     _max_wait_time_sec: float = 600.0
 
+    def __init_subclass__(
+        cls,
+        *,
+        slug: str | Callable[[Any], str] | None = None,
+        version_controlled: bool | None = None,
+        version: Any | None = None,
+        typecheck: Any | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init_subclass__(**kwargs)
+        if cls.__name__ == "Huldra" and cls.__module__ == __name__:
+            return
+
+        # Python 3.14+ may not populate `__annotations__` in `cls.__dict__` (PEP 649).
+        # `chz` expects annotations to exist for every `chz.field()` attribute, so we
+        # materialize them and (as a last resort) fill missing ones with `Any`.
+        try:
+            annotations = dict(getattr(cls, "__annotations__", {}) or {})
+        except Exception:
+            annotations = {}
+
+        try:
+            materialized = inspect.get_annotations(cls, eval_str=False)
+        except TypeError:  # pragma: no cover
+            materialized = inspect.get_annotations(cls)
+        except Exception:
+            materialized = {}
+
+        if materialized:
+            annotations.update(materialized)
+
+        FieldType: type[Any] | None
+        try:
+            from chz.data_model import Field as _ChzField  # type: ignore
+        except Exception:  # pragma: no cover
+            FieldType = None
+        else:
+            FieldType = _ChzField
+        if FieldType is not None:
+            for field_name, value in cls.__dict__.items():
+                if isinstance(value, FieldType) and field_name not in annotations:
+                    annotations[field_name] = Any
+
+        if annotations:
+            type.__setattr__(cls, "__annotations__", annotations)
+
+        chz_kwargs: dict[str, Any] = {}
+        if version is not None:
+            chz_kwargs["version"] = version
+        if typecheck is not None:
+            chz_kwargs["typecheck"] = typecheck
+        chz.chz(cls, **chz_kwargs)
+
+        if slug is not None:
+            if isinstance(slug, str):
+                setattr(cls, "_slug", lambda self, _s=slug: _s)
+            else:
+                setattr(cls, "_slug", slug)
+
+        if version_controlled is not None:
+            setattr(cls, "version_controlled", version_controlled)
+
     def _slug(self: Self) -> str:
-        """Return the slug for this Huldra object (must be implemented by decorator)."""
-        raise NotImplementedError("Slug not set - use @huldra decorator")
+        """Return the slug for this Huldra object."""
+        raise NotImplementedError(
+            "Slug not set - pass slug=... in the class definition or use @huldra"
+        )
 
     @abstractmethod
     def _create(self: Self) -> T:
@@ -1386,117 +1453,6 @@ class Huldra[T](ABC):
 
 
 # =============================================================================
-# Decorator
-# =============================================================================
-
-T = TypeVar("T", bound=type)
-
-
-@dataclass_transform(
-    field_specifiers=(chz.field,), kw_only_default=True, frozen_default=True
-)
-def huldra(
-    _cls: T | None = None,
-    *,
-    slug: str | Callable[[Any], str],
-    version_controlled: bool = False,
-    **huldra_kwargs: Any,
-) -> Callable[[T], T] | T:
-    """
-    Decorator to create a Huldra chz class.
-
-    Args:
-        slug: Unique identifier for this Huldra type (string or callable)
-        version_controlled: If True, store in data/huldra/git, else data/huldra/data
-        **huldra_kwargs: Additional arguments passed to @chz.chz
-
-    Example:
-        @huldra(slug="my-computation", version_controlled=True)
-        class MyComputation(Huldra[pd.DataFrame]):
-            param1: int
-            param2: str
-
-            def _create(self) -> pd.DataFrame:
-                # Compute result
-                df = ...
-                df.to_parquet(self.huldra_dir / "result.parquet")
-                return df
-
-            def _load(self, self.huldra_dir: Path) -> pd.DataFrame:
-                return pd.read_parquet(self.huldra_dir / "result.parquet")
-    """
-
-    def decorate(cls: T) -> T:
-        # Verify inheritance
-        if not issubclass(cls, Huldra):
-            raise TypeError(f"{cls.__name__} must inherit from Huldra")
-
-        # Python 3.14+ may not populate `__annotations__` in `cls.__dict__` (PEP 649).
-        # `chz` expects annotations to exist for every `chz.field()` attribute, so we
-        # materialize them and (as a last resort) fill missing ones with `Any`.
-        try:
-            annotations = dict(getattr(cls, "__annotations__", {}) or {})
-        except Exception:
-            annotations = {}
-
-        try:
-            materialized = inspect.get_annotations(cls, eval_str=False)
-        except TypeError:  # pragma: no cover
-            materialized = inspect.get_annotations(cls)
-        except Exception:
-            materialized = {}
-
-        if materialized:
-            annotations.update(materialized)
-
-        FieldType: type[Any] | None
-        try:
-            from chz.data_model import Field as _ChzField  # type: ignore
-        except Exception:  # pragma: no cover
-            FieldType = None
-        else:
-            FieldType = _ChzField
-        if FieldType is not None:
-            for name, value in cls.__dict__.items():
-                if isinstance(value, FieldType) and name not in annotations:
-                    annotations[name] = Any
-
-        if annotations:
-            type.__setattr__(cls, "__annotations__", annotations)
-
-        chz_kwargs: dict[str, Any] = {}
-        for key in ("version", "typecheck"):
-            if key in huldra_kwargs:
-                chz_kwargs[key] = huldra_kwargs.pop(key)
-
-        if huldra_kwargs:
-            extra = ", ".join(sorted(huldra_kwargs))
-            raise TypeError(f"Unsupported huldra options: {extra}")
-
-        # Apply chz decorator
-        cls = chz.chz(cls, **chz_kwargs)  # ty: ignore[invalid-assignment]
-
-        # Set slug method
-        if isinstance(slug, str):
-            setattr(cls, "_slug", lambda self, _s=slug: _s)
-        else:
-            setattr(cls, "_slug", slug)
-
-        # Set version_controlled attribute
-        setattr(cls, "version_controlled", version_controlled)
-
-        return cls
-
-    if _cls is None:
-        return decorate
-    else:
-        raise TypeError(
-            "@huldra requires explicit slug parameter: "
-            "use @huldra(slug='my-slug') or @huldra(slug='my-slug', version_controlled=True)"
-        )
-
-
-# =============================================================================
 # Typed Collections (HuldraList)
 # =============================================================================
 
@@ -1588,8 +1544,7 @@ class HuldraList(Generic[_H], metaclass=_HuldraListMeta):
     Base class for typed Huldra collections.
 
     Example:
-        @huldra(slug="my-computation")
-        class MyComputation(Huldra[str]):
+        class MyComputation(Huldra[str], slug="my-computation"):
             value: int
 
             def _create(self) -> str:

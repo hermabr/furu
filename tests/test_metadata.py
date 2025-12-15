@@ -5,8 +5,7 @@ import pytest
 import huldra
 
 
-@huldra.huldra(slug="test-metadata")
-class Dummy(huldra.Huldra[int]):
+class Dummy(huldra.Huldra[int], slug="test-metadata"):
     value: int = huldra.chz.field(default=1)
 
     def _create(self) -> int:
