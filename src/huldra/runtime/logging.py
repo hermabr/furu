@@ -101,6 +101,13 @@ class _HuldraScopeFilter(logging.Filter):
         return record.name == "huldra" or record.name.startswith("huldra.")
 
 
+class _HuldraFileFilter(logging.Filter):
+    """Filter out records intended for console only."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not bool(getattr(record, "huldra_console_only", False))
+
+
 class _HuldraConsoleFilter(logging.Filter):
     """Only show huldra namespace logs on console."""
 
@@ -182,8 +189,11 @@ def configure_logging() -> None:
     if not any(isinstance(h, _HuldraContextFileHandler) for h in root.handlers):
         handler = _HuldraContextFileHandler(level=logging.DEBUG)
         handler.addFilter(_HuldraScopeFilter())
+        handler.addFilter(_HuldraFileFilter())
         handler.setFormatter(
-            _HuldraLogFormatter("%(asctime)s [%(levelname)s] %(message)s")
+            _HuldraLogFormatter(
+                "%(asctime)s [%(levelname)s] %(name)s %(filename)s:%(lineno)d %(message)s"
+            )
         )
         root.addHandler(handler)
 
@@ -229,4 +239,22 @@ def log(message: str, *, level: str = "INFO") -> Path:
 
     configure_logging()
     get_logger().log(level_no, message)
+    return log_path
+
+
+def write_separator(line: str = "------------------") -> Path:
+    """
+    Write a raw separator line to the current holder's `huldra.log`.
+
+    This bypasses standard formatting so repeated `load_or_create()` calls are easy to spot.
+    """
+    directory = current_log_dir()
+    log_path = directory / "huldra.log"
+
+    with contextlib.suppress(Exception):
+        directory.mkdir(parents=True, exist_ok=True)
+
+    with _HULDRA_LOG_LOCK:
+        with log_path.open("a", encoding="utf-8") as fp:
+            fp.write(f"{line}\n")
     return log_path

@@ -21,8 +21,8 @@ from typing_extensions import dataclass_transform
 from ..adapters import SubmititAdapter
 from ..config import HULDRA_CONFIG
 from ..errors import HuldraComputeError, HuldraWaitTimeout, MISSING
-from ..runtime import _print_colored_traceback
-from ..runtime.logging import enter_holder, get_logger, log
+from ..runtime import _print_colored_traceback, current_holder
+from ..runtime.logging import enter_holder, get_logger, log, write_separator
 from ..serialization import HuldraSerializer
 from ..storage import MetadataManager, StateManager
 
@@ -213,80 +213,123 @@ class Huldra[T](ABC):
         Raises:
             HuldraComputeError: If computation fails with detailed error information
         """
-        with enter_holder(self):
-            logger = get_logger()
-            start_time = time.time()
-            directory = self.huldra_dir
-            directory.mkdir(parents=True, exist_ok=True)
-            self._reconcile_stale_running(directory)
-            state0 = StateManager.read_state(directory)
-            status0 = state0.get("status")
-            if status0 == "success":
-                decision = "exists->load"
-            elif status0 in {"queued", "running"}:
-                decision = f"{status0}->wait"
-            else:
-                decision = "missing->create"
-            logger.info("load_or_create %s (%s)", directory, decision)
-            logger.debug("load_or_create: enter %s dir=%s", self.__class__.__name__, directory)
+        logger = get_logger()
+        parent_holder = current_holder()
+        has_parent = parent_holder is not None and parent_holder is not self
+        if has_parent:
+            logger.debug(
+                "dep: begin %s %s dir=%s",
+                self.__class__.__name__,
+                self.hexdigest,
+                self.huldra_dir,
+            )
 
-            # Fast path: already successful
-            if StateManager.read_state(directory).get("status") == "success":
-                try:
-                    logger.debug("load_or_create: %s -> _load()", self.__class__.__name__)
-                    return self._load()
-                except Exception as e:
-                    raise HuldraComputeError(
-                        f"Failed to load result from {directory}",
-                        StateManager.get_state_path(directory),
-                        e,
-                    ) from e
+        ok = False
+        try:
+            with enter_holder(self):
+                start_time = time.time()
+                directory = self.huldra_dir
+                directory.mkdir(parents=True, exist_ok=True)
+                self._reconcile_stale_running(directory)
+                state0 = StateManager.read_state(directory)
+                status0 = state0.get("status")
+                write_separator()
+                if status0 == "success":
+                    decision = "success->load"
+                elif status0 in {"queued", "running"}:
+                    decision = f"{status0}->wait"
+                else:
+                    decision = "missing->create"
 
-            # Synchronous execution
-            if executor is None:
-                try:
-                    status, created_here, result = self._run_locally(
-                        start_time=start_time
-                    )
-                    if status == "success":
-                        if created_here:
+                logger.info(
+                    "load_or_create %s %s (%s)",
+                    self.__class__.__name__,
+                    self.hexdigest,
+                    decision,
+                    extra={"huldra_console_only": True},
+                )
+                logger.debug(
+                    "load_or_create %s %s dir=%s (%s)",
+                    self.__class__.__name__,
+                    self.hexdigest,
+                    directory,
+                    decision,
+                )
+
+                # Fast path: already successful
+                if StateManager.read_state(directory).get("status") == "success":
+                    try:
+                        result = self._load()
+                        ok = True
+                        return result
+                    except Exception as e:
+                        logger.error(
+                            "load_or_create %s %s (load failed)",
+                            self.__class__.__name__,
+                            self.hexdigest,
+                        )
+                        raise HuldraComputeError(
+                            f"Failed to load result from {directory}",
+                            StateManager.get_state_path(directory),
+                            e,
+                        ) from e
+
+                # Synchronous execution
+                if executor is None:
+                    try:
+                        status, created_here, result = self._run_locally(
+                            start_time=start_time
+                        )
+                        if status == "success":
+                            ok = True
+                            if created_here:
+                                logger.debug(
+                                    "load_or_create: %s created -> return",
+                                    self.__class__.__name__,
+                                )
+                                return cast(T, result)
                             logger.debug(
-                                "load_or_create: %s created -> return",
+                                "load_or_create: %s success -> _load()",
                                 self.__class__.__name__,
                             )
-                            return cast(T, result)
-                        logger.debug(
-                            "load_or_create: %s success -> _load()",
-                            self.__class__.__name__,
+                            return self._load()
+
+                        state = StateManager.read_state(directory)
+                        raise HuldraComputeError(
+                            f"Computation {status}: {state.get('reason', 'unknown error')}",
+                            StateManager.get_state_path(directory),
                         )
-                        return self._load()
+                    except HuldraComputeError:
+                        raise
+                    except Exception as e:
+                        raise HuldraComputeError(
+                            "Unexpected error during computation",
+                            StateManager.get_state_path(directory),
+                            e,
+                        ) from e
 
-                    state = StateManager.read_state(directory)
-                    raise HuldraComputeError(
-                        f"Computation {status}: {state.get('reason', 'unknown error')}",
-                        StateManager.get_state_path(directory),
-                    )
-                except HuldraComputeError:
-                    raise
-                except Exception as e:
-                    raise HuldraComputeError(
-                        "Unexpected error during computation",
-                        StateManager.get_state_path(directory),
-                        e,
-                    ) from e
+                # Asynchronous execution with submitit
+                (submitit_folder := self.huldra_dir / "submitit").mkdir(
+                    exist_ok=True, parents=True
+                )
+                executor.folder = submitit_folder
+                adapter = SubmititAdapter(executor)
 
-            # Asynchronous execution with submitit
-            (submitit_folder := self.huldra_dir / "submitit").mkdir(
-                exist_ok=True, parents=True
-            )
-            executor.folder = submitit_folder
-            adapter = SubmititAdapter(executor)
-
-            logger.debug(
-                "load_or_create: %s -> submitit submit_once()",
-                self.__class__.__name__,
-            )
-            return self._submit_once(adapter, directory, None)  # ty: ignore[invalid-return-type] # TODO: fix typing here
+                logger.debug(
+                    "load_or_create: %s -> submitit submit_once()",
+                    self.__class__.__name__,
+                )
+                job = self._submit_once(adapter, directory, None)
+                ok = True
+                return cast(submitit.Job[T], job)
+        finally:
+            if has_parent:
+                logger.debug(
+                    "dep: end %s %s (%s)",
+                    self.__class__.__name__,
+                    self.hexdigest,
+                    "ok" if ok else "error",
+                )
 
     def _check_timeout(self, start_time: float) -> None:
         """Check if operation has timed out."""
@@ -316,7 +359,12 @@ class Huldra[T](ABC):
 
         if lock_fd is None:
             # Someone else is submitting, wait briefly and return their job
-            logger.debug("submit: waiting for submit lock %s", directory)
+            logger.debug(
+                "submit: waiting for submit lock %s %s dir=%s",
+                self.__class__.__name__,
+                self.hexdigest,
+                directory,
+            )
             time.sleep(0.5)
             return adapter.load_job(directory)
 
@@ -563,7 +611,12 @@ class Huldra[T](ABC):
                     continue
 
                 if not logged_wait:
-                    logger.debug("compute: waiting for compute lock %s", directory)
+                    logger.debug(
+                        "compute: waiting for compute lock %s %s dir=%s",
+                        self.__class__.__name__,
+                        self.hexdigest,
+                        directory,
+                    )
                     logged_wait = True
                 time.sleep(HULDRA_CONFIG.poll_interval)
 
@@ -598,17 +651,25 @@ class Huldra[T](ABC):
                 try:
                     # Run computation
                     logger.debug(
-                        "_create: begin %s dir=%s",
+                        "_create: begin %s %s dir=%s",
                         self.__class__.__name__,
+                        self.hexdigest,
                         directory,
                     )
                     self._create()
                     logger.debug(
-                        "_create: ok %s dir=%s",
+                        "_create: ok %s %s dir=%s",
                         self.__class__.__name__,
+                        self.hexdigest,
                         directory,
                     )
                     StateManager.write_state(directory, status="success")
+                    logger.info(
+                        "_create ok %s %s",
+                        self.__class__.__name__,
+                        self.hexdigest,
+                        extra={"huldra_console_only": True},
+                    )
                 except Exception as e:
                     # Always show a full, colored traceback on stderr
                     _print_colored_traceback(e)
@@ -690,7 +751,12 @@ class Huldra[T](ABC):
                     break
 
                 if not logged_wait:
-                    logger.debug("compute: waiting for compute lock %s", directory)
+                    logger.debug(
+                        "compute: waiting for compute lock %s %s dir=%s",
+                        self.__class__.__name__,
+                        self.hexdigest,
+                        directory,
+                    )
                     logged_wait = True
                 time.sleep(HULDRA_CONFIG.poll_interval)
 
@@ -733,19 +799,25 @@ class Huldra[T](ABC):
             try:
                 # Run the computation
                 logger.debug(
-                    "_create: begin %s digest=%s dir=%s",
+                    "_create: begin %s %s dir=%s",
                     self.__class__.__name__,
                     self.hexdigest,
                     directory,
                 )
                 result = self._create()
                 logger.debug(
-                    "_create: ok %s digest=%s dir=%s",
+                    "_create: ok %s %s dir=%s",
                     self.__class__.__name__,
                     self.hexdigest,
                     directory,
                 )
                 StateManager.write_state(directory, status="success")
+                logger.info(
+                    "_create ok %s %s",
+                    self.__class__.__name__,
+                    self.hexdigest,
+                    extra={"huldra_console_only": True},
+                )
                 return "success", True, result
             except Exception as e:
                 # If it failed, always print a colored traceback

@@ -19,6 +19,7 @@ from .runtime import (
     get_logger,
     load_env,
     log,
+    write_separator,
 )
 from .serialization import HuldraSerializer
 from .storage import MetadataManager, StateManager
@@ -45,6 +46,7 @@ __all__ = [
     "get_logger",
     "load_env",
     "log",
+    "write_separator",
     "set_huldra_root",
     "submitit",
 ]
