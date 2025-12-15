@@ -1,4 +1,5 @@
 import json
+import datetime
 
 import huldra
 
@@ -37,3 +38,26 @@ def test_exists_reflects_success_state(huldra_tmp_root) -> None:
     assert obj.exists() is False
     obj.load_or_create()
     assert obj.exists() is True
+
+
+def test_load_or_create_recovers_from_expired_running_lease(huldra_tmp_root) -> None:
+    obj = Dummy()
+    directory = obj.huldra_dir
+    directory.mkdir(parents=True, exist_ok=True)
+
+    expired = (
+        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=60)
+    ).isoformat(timespec="seconds")
+    huldra.StateManager.write_state(
+        directory,
+        status="running",
+        owner_id="test-owner",
+        lease_expires_at=expired,
+        last_heartbeat_at=expired,
+        lease_duration_sec=0.05,
+    )
+    (directory / huldra.StateManager.COMPUTE_LOCK).write_text("99999\n")
+
+    result = obj.load_or_create()
+    assert result == 123
+    assert huldra.StateManager.read_state(directory).get("status") == "success"

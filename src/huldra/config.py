@@ -16,6 +16,13 @@ class HuldraConfig:
         self.base_root = _get_base_root()
         self.poll_interval = float(os.getenv("HULDRA_POLL_INTERVAL_SECS", "10"))
         self.stale_timeout = float(os.getenv("HULDRA_STALE_AFTER_SECS", str(30 * 60)))
+        self.lease_duration_sec = float(os.getenv("HULDRA_LEASE_SECS", "120"))
+        hb = os.getenv("HULDRA_HEARTBEAT_SECS")
+        self.heartbeat_interval_sec = (
+            float(hb)
+            if hb is not None
+            else max(1.0, self.lease_duration_sec / 3.0)
+        )
         self.max_requeues = int(os.getenv("HULDRA_PREEMPT_MAX", "5"))
         self.ignore_git_diff = os.getenv("HULDRA_IGNORE_DIFF", "0").lower() in {
             "1",
@@ -46,4 +53,3 @@ def get_huldra_root(*, version_controlled: bool = False) -> Path:
 
 def set_huldra_root(path: Path) -> None:
     HULDRA_CONFIG.base_root = path.resolve()
-
