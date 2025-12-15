@@ -787,7 +787,6 @@ class Huldra[T](ABC):
     Subclasses must implement:
     - _create(self) -> T
     - _load(self) -> T
-    - _slug(self) -> str
     """
 
     MISSING = MISSING
@@ -801,7 +800,6 @@ class Huldra[T](ABC):
     def __init_subclass__(
         cls,
         *,
-        slug: str | Callable[[Any], str] | None = None,
         version_controlled: bool | None = None,
         version: Any | None = None,
         typecheck: Any | None = None,
@@ -851,20 +849,22 @@ class Huldra[T](ABC):
             chz_kwargs["typecheck"] = typecheck
         chz.chz(cls, **chz_kwargs)
 
-        if slug is not None:
-            if isinstance(slug, str):
-                setattr(cls, "_slug", lambda self, _s=slug: _s)
-            else:
-                setattr(cls, "_slug", slug)
-
         if version_controlled is not None:
             setattr(cls, "version_controlled", version_controlled)
 
-    def _slug(self: Self) -> str:
-        """Return the slug for this Huldra object."""
-        raise NotImplementedError(
-            "Slug not set - pass slug=... in the class definition"
-        )
+    @classmethod
+    def _namespace(cls) -> Path:
+        module = getattr(cls, "__module__", None)
+        qualname = getattr(cls, "__qualname__", cls.__name__)
+        if not module or module == "__main__":
+            raise ValueError(
+                "Cannot derive Huldra namespace from __main__; define the class in an importable module."
+            )
+        if "<locals>" in qualname:
+            raise ValueError(
+                "Cannot derive Huldra namespace for a local class; define it at module scope."
+            )
+        return Path(*module.split("."), *qualname.split("."))
 
     @abstractmethod
     def _create(self: Self) -> T:
@@ -891,7 +891,7 @@ class Huldra[T](ABC):
     def huldra_dir(self: Self) -> Path:
         """Get the directory for this Huldra object."""
         root = HULDRA_CONFIG.get_root(self.version_controlled)
-        return root / self._slug() / self.hexdigest
+        return root / self.__class__._namespace() / self.hexdigest
 
     def to_dict(self: Self) -> Dict[str, Any]:
         """Convert to dictionary."""
@@ -1523,7 +1523,7 @@ class HuldraList(Generic[_H], metaclass=_HuldraListMeta):
     Base class for typed Huldra collections.
 
     Example:
-        class MyComputation(Huldra[str], slug="my-computation"):
+        class MyComputation(Huldra[str]):
             value: int
 
             def _create(self) -> str:
