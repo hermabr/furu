@@ -863,7 +863,7 @@ class Huldra[T](ABC):
     def _slug(self: Self) -> str:
         """Return the slug for this Huldra object."""
         raise NotImplementedError(
-            "Slug not set - pass slug=... in the class definition or use @huldra"
+            "Slug not set - pass slug=... in the class definition"
         )
 
     @abstractmethod
@@ -938,9 +938,6 @@ class Huldra[T](ABC):
 
         Args:
             executor: Optional executor for batch submission (e.g., submitit.Executor)
-            wait: Whether to wait for completion (default: True if no executor)
-            on_job_id: Callback when job ID is available
-            max_requeues: Maximum number of preemption requeues
 
         Returns:
             Result if wait=True, job handle if wait=False, or None if already exists
@@ -951,12 +948,6 @@ class Huldra[T](ABC):
         start_time = time.time()
         directory = self.huldra_dir
         directory.mkdir(parents=True, exist_ok=True)
-
-        # if wait is None:
-        #     wait = executor is None
-
-        # if max_requeues is None:
-        #     max_requeues = CONFIG.max_requeues
 
         # Fast path: already successful
         if StateManager.read_state(directory).get("status") == "success":
@@ -1001,18 +992,6 @@ class Huldra[T](ABC):
         adapter = SubmititAdapter(executor)
 
         return self._submit_once(adapter, directory, None)  # ty: ignore[invalid-return-type] # TODO: fix typing here
-
-    @overload
-    def exists_or_create(self, executor: submitit.Executor) -> T | submitit.Job[T]: ...
-
-    @overload
-    def exists_or_create(self, executor: None = None) -> T: ...
-
-    def exists_or_create(
-        self: Self,
-        executor: submitit.Executor | None = None,
-    ) -> T | submitit.Job[T]:
-        return self.load_or_create(executor=executor)
 
     def _check_timeout(self, start_time: float) -> None:
         """Check if operation has timed out."""

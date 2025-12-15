@@ -9,7 +9,7 @@ class Manifest(huldra.Huldra[list[str]], slug="test-huldra-inheritance"):
     _load_calls: int = 0
 
     def _create(self) -> list[str]:
-        self._create_calls += 1
+        object.__setattr__(self, "_create_calls", self._create_calls + 1)
         (self.huldra_dir / "items.json").write_text(json.dumps(self.items))
         return list(self.items)
 
