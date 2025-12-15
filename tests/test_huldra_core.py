@@ -3,7 +3,7 @@ import json
 import huldra
 
 
-class Dummy(huldra.Huldra[int], slug="test-huldra-core"):
+class Dummy(huldra.Huldra[int]):
     _create_calls: int = 0
     _load_calls: int = 0
 

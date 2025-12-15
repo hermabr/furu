@@ -3,7 +3,7 @@ import json
 import huldra
 
 
-class Manifest(huldra.Huldra[list[str]], slug="test-huldra-inheritance"):
+class Manifest(huldra.Huldra[list[str]]):
     items: list[str] = huldra.chz.field()
     _create_calls: int = 0
     _load_calls: int = 0

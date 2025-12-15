@@ -3,7 +3,7 @@ import json
 import huldra
 
 
-class Exp(huldra.Huldra[int], slug="test-huldra-list"):
+class Exp(huldra.Huldra[int]):
     value: int = huldra.chz.field()
 
     def _create(self) -> int:

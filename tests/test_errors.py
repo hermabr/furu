@@ -5,7 +5,7 @@ import pytest
 import huldra
 
 
-class Fails(huldra.Huldra[int], slug="test-errors"):
+class Fails(huldra.Huldra[int]):
     def _create(self) -> int:
         raise RuntimeError("boom")
 
@@ -24,7 +24,7 @@ def test_failed_create_raises_compute_error_and_records_state(huldra_tmp_root) -
     assert "traceback" in state
 
 
-class InvalidValidate(huldra.Huldra[int], slug="test-validate"):
+class InvalidValidate(huldra.Huldra[int]):
     def _create(self) -> int:
         (self.huldra_dir / "value.json").write_text(json.dumps(1))
         return 1
