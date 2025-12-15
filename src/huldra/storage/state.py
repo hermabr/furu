@@ -77,7 +77,10 @@ class StateManager:
         except Exception:
             return cls.default_state()
 
-        if not isinstance(data, dict) or data.get("schema_version") != cls.SCHEMA_VERSION:
+        if (
+            not isinstance(data, dict)
+            or data.get("schema_version") != cls.SCHEMA_VERSION
+        ):
             return cls.default_state()
 
         if "result" not in data or not isinstance(data["result"], dict):
@@ -169,7 +172,9 @@ class StateManager:
             time.sleep(0.05)
 
     @classmethod
-    def update_state(cls, directory: Path, mutator: Callable[[dict[str, Any]], None]) -> dict[str, Any]:
+    def update_state(
+        cls, directory: Path, mutator: Callable[[dict[str, Any]], None]
+    ) -> dict[str, Any]:
         lock_path = directory / cls.STATE_LOCK
         fd: Optional[int] = None
         try:
@@ -233,9 +238,23 @@ class StateManager:
         attempt_id = uuid.uuid4().hex
         now = cls._utcnow()
         expires = now + _dt.timedelta(seconds=float(lease_duration_sec))
+        prev_result_status: str | None = None
+        prev_attempt_status: str | None = None
+        prev_attempt_reason: str | None = None
 
         def mutate(state: dict[str, Any]) -> None:
-            prev = state.get("attempt") if isinstance(state.get("attempt"), dict) else None
+            nonlocal prev_result_status, prev_attempt_status, prev_attempt_reason
+            prev_result = state.get("result")
+            if isinstance(prev_result, dict):
+                prev_result_status = cast(Optional[str], prev_result.get("status"))
+
+            prev = (
+                state.get("attempt") if isinstance(state.get("attempt"), dict) else None
+            )
+            if prev is not None:
+                prev_attempt_status = cast(Optional[str], prev.get("status"))
+                prev_attempt_reason = cast(Optional[str], prev.get("reason"))
+
             number = int(prev.get("number", 0) + 1) if prev else 1
             state["attempt"] = {
                 "id": attempt_id,
@@ -253,14 +272,40 @@ class StateManager:
             state["result"] = {"status": "incomplete"}
 
         state = cls.update_state(directory, mutate)
+        if status == "running":
+            from ..runtime.logging import get_logger
+
+            logger = get_logger()
+            if prev_result_status == "failed":
+                logger.warning(
+                    "state: retrying after previous failure %s",
+                    directory,
+                )
+            elif prev_attempt_status == "crashed" and prev_attempt_reason in {
+                "pid_dead",
+                "lease_expired",
+            }:
+                logger.warning(
+                    "state: restarting after stale attempt (%s) %s",
+                    prev_attempt_reason,
+                    directory,
+                )
+
         cls.append_event(
             directory,
-            {"type": "attempt_started", "attempt_id": attempt_id, "backend": backend, "status": status},
+            {
+                "type": "attempt_started",
+                "attempt_id": attempt_id,
+                "backend": backend,
+                "status": status,
+            },
         )
         return cast(str, state["attempt"]["id"])  # type: ignore[no-any-return]
 
     @classmethod
-    def heartbeat(cls, directory: Path, *, attempt_id: str, lease_duration_sec: float) -> bool:
+    def heartbeat(
+        cls, directory: Path, *, attempt_id: str, lease_duration_sec: float
+    ) -> bool:
         ok = False
 
         def mutate(state: dict[str, Any]) -> None:
@@ -283,7 +328,9 @@ class StateManager:
         return ok
 
     @classmethod
-    def set_attempt_fields(cls, directory: Path, *, attempt_id: str, fields: dict[str, Any]) -> bool:
+    def set_attempt_fields(
+        cls, directory: Path, *, attempt_id: str, fields: dict[str, Any]
+    ) -> bool:
         ok = False
 
         def mutate(state: dict[str, Any]) -> None:
@@ -309,11 +356,19 @@ class StateManager:
             state["result"] = {"status": "success", "created_at": now}
 
         cls.update_state(directory, mutate)
-        cls.append_event(directory, {"type": "attempt_finished", "attempt_id": attempt_id, "status": "success"})
+        cls.append_event(
+            directory,
+            {"type": "attempt_finished", "attempt_id": attempt_id, "status": "success"},
+        )
 
     @classmethod
     def finish_attempt_failed(
-        cls, directory: Path, *, attempt_id: str, error: dict[str, Any], status: str = "failed"
+        cls,
+        directory: Path,
+        *,
+        attempt_id: str,
+        error: dict[str, Any],
+        status: str = "failed",
     ) -> None:
         if status not in cls.TERMINAL_STATUSES:
             status = "failed"
@@ -326,10 +381,15 @@ class StateManager:
                 attempt["ended_at"] = now
                 attempt["error"] = error
             # `failed` is treated as non-loadable; next run can decide whether to retry.
-            state["result"] = {"status": "failed" if status == "failed" else "incomplete"}
+            state["result"] = {
+                "status": "failed" if status == "failed" else "incomplete"
+            }
 
         cls.update_state(directory, mutate)
-        cls.append_event(directory, {"type": "attempt_finished", "attempt_id": attempt_id, "status": status})
+        cls.append_event(
+            directory,
+            {"type": "attempt_finished", "attempt_id": attempt_id, "status": status},
+        )
 
     @classmethod
     def _local_attempt_alive(cls, attempt: dict[str, Any]) -> Optional[bool]:
@@ -397,7 +457,13 @@ class StateManager:
                         reason = str(verdict.get("reason") or "scheduler_terminal")
                         scheduler = attempt.get("scheduler")
                         if isinstance(scheduler, dict):
-                            scheduler.update({k: v for k, v in verdict.items() if k != "terminal_status"})
+                            scheduler.update(
+                                {
+                                    k: v
+                                    for k, v in verdict.items()
+                                    if k != "terminal_status"
+                                }
+                            )
                 if terminal_status is None and cls._lease_expired(attempt):
                     terminal_status = "crashed"
                     reason = "lease_expired"
@@ -413,11 +479,17 @@ class StateManager:
             attempt["ended_at"] = now
             attempt["error"] = attempt.get("error")
             attempt["reason"] = reason
-            state["result"] = {"status": "incomplete" if terminal_status != "failed" else "failed"}
+            state["result"] = {
+                "status": "incomplete" if terminal_status != "failed" else "failed"
+            }
 
         state = cls.update_state(directory, mutate)
         attempt = state.get("attempt")
-        if isinstance(attempt, dict) and attempt.get("status") in {"crashed", "cancelled", "preempted"}:
+        if isinstance(attempt, dict) and attempt.get("status") in {
+            "crashed",
+            "cancelled",
+            "preempted",
+        }:
             with contextlib.suppress(Exception):
                 (directory / cls.COMPUTE_LOCK).unlink(missing_ok=True)
         return state

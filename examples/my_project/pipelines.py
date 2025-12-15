@@ -18,6 +18,7 @@ class TrainModel(huldra.Huldra[Path]):
         (self.huldra_dir / "metrics.json").write_text(
             json.dumps({"lr": self.lr, "steps": self.steps}, indent=2)
         )
+        assert False, "Darn!"
         ckpt = self.huldra_dir / "checkpoint.bin"
         ckpt.write_bytes(b"fake-checkpoint-bytes")
         return ckpt
@@ -51,4 +52,3 @@ class TrainTextModel(huldra.Huldra[Path]):
 
     def _load(self) -> Path:
         return self.huldra_dir / "model.txt"
-

@@ -2,6 +2,7 @@ import json
 import socket
 
 import huldra
+import pytest
 
 
 def test_state_default_and_attempt_lifecycle(huldra_tmp_root, tmp_path) -> None:
@@ -76,3 +77,72 @@ def test_reconcile_marks_dead_local_attempt_as_crashed(huldra_tmp_root, tmp_path
     state2 = huldra.StateManager.reconcile(directory)
     assert state2["attempt"]["status"] == "crashed"
     assert (directory / huldra.StateManager.COMPUTE_LOCK).exists() is False
+
+
+def test_state_warns_when_retrying_after_failure(huldra_tmp_root, tmp_path, capsys) -> None:
+    pytest.importorskip("rich")
+
+    directory = tmp_path / "obj"
+    directory.mkdir()
+
+    attempt_id = huldra.StateManager.start_attempt(
+        directory,
+        backend="local",
+        status="running",
+        lease_duration_sec=60.0,
+        owner={"pid": 99999, "host": socket.gethostname(), "user": "x"},
+        scheduler={},
+    )
+    huldra.StateManager.finish_attempt_failed(
+        directory,
+        attempt_id=attempt_id,
+        status="failed",
+        error={"type": "RuntimeError", "message": "boom"},
+    )
+    capsys.readouterr()
+
+    huldra.StateManager.start_attempt(
+        directory,
+        backend="local",
+        status="running",
+        lease_duration_sec=60.0,
+        owner={"pid": 99999, "host": socket.gethostname(), "user": "x"},
+        scheduler={},
+    )
+    err = capsys.readouterr().err
+    assert "state: retrying after previous failure" in err
+    assert "state: retrying after previous failure" in (
+        huldra.HULDRA_CONFIG.base_root / "huldra.log"
+    ).read_text()
+
+
+def test_state_warns_when_restart_after_stale_pid(huldra_tmp_root, tmp_path, capsys) -> None:
+    pytest.importorskip("rich")
+
+    directory = tmp_path / "obj"
+    directory.mkdir()
+
+    huldra.StateManager.start_attempt(
+        directory,
+        backend="local",
+        status="running",
+        lease_duration_sec=60.0,
+        owner={"pid": 99999, "host": socket.gethostname(), "user": "x"},
+        scheduler={},
+    )
+    huldra.StateManager.reconcile(directory)
+    capsys.readouterr()
+
+    huldra.StateManager.start_attempt(
+        directory,
+        backend="local",
+        status="running",
+        lease_duration_sec=60.0,
+        owner={"pid": 99999, "host": socket.gethostname(), "user": "x"},
+        scheduler={},
+    )
+    err = capsys.readouterr().err
+    assert "state: restarting after stale attempt (pid_dead)" in err
+    assert "state: restarting after stale attempt (pid_dead)" in (
+        huldra.HULDRA_CONFIG.base_root / "huldra.log"
+    ).read_text()

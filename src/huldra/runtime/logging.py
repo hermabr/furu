@@ -134,6 +134,8 @@ class _HuldraConsoleFilter(logging.Filter):
     """Only show huldra namespace logs on console."""
 
     def filter(self, record: logging.LogRecord) -> bool:
+        if bool(getattr(record, "huldra_file_only", False)):
+            return False
         return record.name == "huldra" or record.name.startswith("huldra.")
 
 
@@ -148,6 +150,11 @@ class _HuldraRichConsoleHandler(logging.Handler):
         from rich.console import Console  # type: ignore
 
         self._console = Console(stderr=True)
+
+    @staticmethod
+    def _format_location(record: logging.LogRecord) -> str:
+        filename = Path(record.pathname).name if record.pathname else "<unknown>"
+        return f"[{filename}:{record.lineno}]"
 
     @staticmethod
     def _format_message_text(record: logging.LogRecord) -> Any:
@@ -175,8 +182,7 @@ class _HuldraRichConsoleHandler(logging.Handler):
             record.created, tz=datetime.timezone.utc
         ).strftime("%H:%M:%S")
 
-        filename = Path(record.pathname).name if record.pathname else "<unknown>"
-        location = f"{filename}:{record.lineno}"
+        location = self._format_location(record)
 
         line = Text()
         line.append(timestamp, style="dim")

@@ -15,8 +15,14 @@ class Fails(huldra.Huldra[int]):
 
 def test_failed_create_raises_compute_error_and_records_state(huldra_tmp_root) -> None:
     obj = Fails()
-    with pytest.raises(huldra.HuldraComputeError):
+    with pytest.raises(RuntimeError, match="boom"):
         obj.load_or_create()
+
+    log_text = (obj.huldra_dir / "huldra.log").read_text()
+    assert "[ERROR]" in log_text
+    assert "_create failed" in log_text
+    assert "Traceback (most recent call last)" in log_text
+    assert "RuntimeError: boom" in log_text
 
     state = huldra.StateManager.read_state(obj.huldra_dir)
     assert state["result"]["status"] == "failed"

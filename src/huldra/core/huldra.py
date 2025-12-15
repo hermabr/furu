@@ -19,9 +19,10 @@ from typing_extensions import dataclass_transform
 
 from ..adapters import SubmititAdapter
 from ..config import HULDRA_CONFIG
-from ..errors import HuldraComputeError, HuldraWaitTimeout, MISSING
-from ..runtime import _print_colored_traceback, current_holder
+from ..errors import MISSING, HuldraComputeError, HuldraWaitTimeout
+from ..runtime import current_holder
 from ..runtime.logging import enter_holder, get_logger, log, write_separator
+from ..runtime.tracebacks import format_traceback
 from ..serialization import HuldraSerializer
 from ..storage import MetadataManager, StateManager
 
@@ -221,7 +222,7 @@ class Huldra[T](ABC):
         has_parent = parent_holder is not None and parent_holder is not self
         if has_parent:
             logger.debug(
-                "dep: begin %s %s dir=%s",
+                "dep: begin %s %s %s",
                 self.__class__.__name__,
                 self.hexdigest,
                 self.huldra_dir,
@@ -261,7 +262,7 @@ class Huldra[T](ABC):
                     },
                 )
                 logger.debug(
-                    "load_or_create %s %s dir=%s (%s)",
+                    "load_or_create %s %s %s (%s)",
                     self.__class__.__name__,
                     self.hexdigest,
                     directory,
@@ -311,19 +312,19 @@ class Huldra[T](ABC):
                         attempt = _as_dict(state.get("attempt"))
                         error = _as_dict(attempt.get("error"))
                         message = error.get("message")
-                        suffix = f": {message}" if isinstance(message, str) and message else ""
+                        suffix = (
+                            f": {message}"
+                            if isinstance(message, str) and message
+                            else ""
+                        )
                         raise HuldraComputeError(
                             f"Computation {status}{suffix}",
                             StateManager.get_state_path(directory),
                         )
                     except HuldraComputeError:
                         raise
-                    except Exception as e:
-                        raise HuldraComputeError(
-                            "Unexpected error during computation",
-                            StateManager.get_state_path(directory),
-                            e,
-                        ) from e
+                    except Exception:
+                        raise
 
                 # Asynchronous execution with submitit
                 (submitit_folder := self.huldra_dir / "submitit").mkdir(
@@ -382,7 +383,7 @@ class Huldra[T](ABC):
         if lock_fd is None:
             # Someone else is submitting, wait briefly and return their job
             logger.debug(
-                "submit: waiting for submit lock %s %s dir=%s",
+                "submit: waiting for submit lock %s %s %s",
                 self.__class__.__name__,
                 self.hexdigest,
                 directory,
@@ -428,6 +429,7 @@ class Huldra[T](ABC):
                     },
                 )
             else:
+
                 def mutate(state: dict[str, Any]) -> None:
                     state["result"] = {"status": "failed"}
 
@@ -470,7 +472,7 @@ class Huldra[T](ABC):
                 now = time.time()
                 if now >= next_wait_log_at:
                     logger.info(
-                        "compute: waiting for compute lock %s %s dir=%s",
+                        "compute: waiting for compute lock %s %s %s",
                         self.__class__.__name__,
                         self.hexdigest,
                         directory,
@@ -515,20 +517,22 @@ class Huldra[T](ABC):
                 try:
                     # Run computation
                     logger.debug(
-                        "_create: begin %s %s dir=%s",
+                        "_create: begin %s %s %s",
                         self.__class__.__name__,
                         self.hexdigest,
                         directory,
                     )
                     self._create()
                     logger.debug(
-                        "_create: ok %s %s dir=%s",
+                        "_create: ok %s %s %s",
                         self.__class__.__name__,
                         self.hexdigest,
                         directory,
                     )
                     StateManager.write_success_marker(directory, attempt_id=attempt_id)
-                    StateManager.finish_attempt_success(directory, attempt_id=attempt_id)
+                    StateManager.finish_attempt_success(
+                        directory, attempt_id=attempt_id
+                    )
                     logger.info(
                         "_create ok %s %s",
                         self.__class__.__name__,
@@ -536,8 +540,16 @@ class Huldra[T](ABC):
                         extra={"huldra_console_only": True},
                     )
                 except Exception as e:
-                    # Always show a full, colored traceback on stderr
-                    _print_colored_traceback(e)
+                    logger.error(
+                        "_create failed %s %s %s",
+                        self.__class__.__name__,
+                        self.hexdigest,
+                        directory,
+                        extra={"huldra_file_only": True},
+                    )
+                    logger.error(
+                        "%s", format_traceback(e), extra={"huldra_file_only": True}
+                    )
 
                     tb = "".join(
                         traceback.format_exception(type(e), e, e.__traceback__)
@@ -627,7 +639,7 @@ class Huldra[T](ABC):
                 now = time.time()
                 if now >= next_wait_log_at:
                     logger.info(
-                        "compute: waiting for compute lock %s %s dir=%s",
+                        "compute: waiting for compute lock %s %s %s",
                         self.__class__.__name__,
                         self.hexdigest,
                         directory,
@@ -670,19 +682,21 @@ class Huldra[T](ABC):
             stop_heartbeat = self._start_heartbeat(directory, attempt_id=attempt_id)
 
             # Set up preemption handler
-            self._setup_signal_handlers(directory, stop_heartbeat, attempt_id=attempt_id)
+            self._setup_signal_handlers(
+                directory, stop_heartbeat, attempt_id=attempt_id
+            )
 
             try:
                 # Run the computation
                 logger.debug(
-                    "_create: begin %s %s dir=%s",
+                    "_create: begin %s %s %s",
                     self.__class__.__name__,
                     self.hexdigest,
                     directory,
                 )
                 result = self._create()
                 logger.debug(
-                    "_create: ok %s %s dir=%s",
+                    "_create: ok %s %s %s",
                     self.__class__.__name__,
                     self.hexdigest,
                     directory,
@@ -697,8 +711,16 @@ class Huldra[T](ABC):
                 )
                 return "success", True, result
             except Exception as e:
-                # If it failed, always print a colored traceback
-                _print_colored_traceback(e)
+                logger.error(
+                    "_create failed %s %s %s",
+                    self.__class__.__name__,
+                    self.hexdigest,
+                    directory,
+                    extra={"huldra_file_only": True},
+                )
+                logger.error(
+                    "%s", format_traceback(e), extra={"huldra_file_only": True}
+                )
 
                 # Record failure (plain text in file)
                 tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
@@ -706,9 +728,13 @@ class Huldra[T](ABC):
                     directory,
                     attempt_id=attempt_id,
                     status="failed",
-                    error={"type": type(e).__name__, "message": str(e), "traceback": tb},
+                    error={
+                        "type": type(e).__name__,
+                        "message": str(e),
+                        "traceback": tb,
+                    },
                 )
-                return "failed", False, None
+                raise
             finally:
                 stop_heartbeat()
         finally:

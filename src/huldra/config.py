@@ -20,9 +20,7 @@ class HuldraConfig:
         self.lease_duration_sec = float(os.getenv("HULDRA_LEASE_SECS", "120"))
         hb = os.getenv("HULDRA_HEARTBEAT_SECS")
         self.heartbeat_interval_sec = (
-            float(hb)
-            if hb is not None
-            else max(1.0, self.lease_duration_sec / 3.0)
+            float(hb) if hb is not None else max(1.0, self.lease_duration_sec / 3.0)
         )
         self.max_requeues = int(os.getenv("HULDRA_PREEMPT_MAX", "5"))
         self.ignore_git_diff = os.getenv("HULDRA_IGNORE_DIFF", "0").lower() in {

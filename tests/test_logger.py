@@ -1,8 +1,9 @@
 import json
 import logging
 
-import huldra
 import pytest
+
+import huldra
 from huldra.runtime.logging import _HuldraRichConsoleHandler
 
 
@@ -51,8 +52,14 @@ def test_log_routes_to_current_holder_dir(huldra_tmp_root) -> None:
     assert "video:before" in video_log
     assert "video:after" in video_log
     assert "internet:download" not in video_log
-    assert f"dep: begin {obj.content.__class__.__name__} {obj.content.hexdigest}" in video_log
-    assert f"dep: end {obj.content.__class__.__name__} {obj.content.hexdigest} (ok)" in video_log
+    assert (
+        f"dep: begin {obj.content.__class__.__name__} {obj.content.hexdigest}"
+        in video_log
+    )
+    assert (
+        f"dep: end {obj.content.__class__.__name__} {obj.content.hexdigest} (ok)"
+        in video_log
+    )
     assert video_log.index("video:before") < video_log.index("video:after")
 
     content_log = (obj.content.huldra_dir / "huldra.log").read_text()
@@ -104,16 +111,31 @@ def test_rich_console_colors_only_load_or_create_token() -> None:
         level=logging.INFO,
         pathname=__file__,
         lineno=1,
-        msg="load_or_create Foo 123 dir=/tmp (success->load)",
+        msg="load_or_create Foo 123 /tmp (success->load)",
         args=(),
         exc_info=None,
     )
     record.huldra_action_color = "green"  # type: ignore[attr-defined]
 
     text = _HuldraRichConsoleHandler._format_message_text(record)
-    assert text.plain == "load_or_create Foo 123 dir=/tmp"
+    assert text.plain == "load_or_create Foo 123 /tmp"
     assert len(text.spans) == 1
     span = text.spans[0]
     assert span.start == 0
     assert span.end == len("load_or_create")
     assert str(span.style) == "green"
+
+
+def test_rich_console_wraps_location_in_brackets() -> None:
+    pytest.importorskip("rich")
+
+    record = logging.LogRecord(
+        name="huldra",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=123,
+        msg="hello",
+        args=(),
+        exc_info=None,
+    )
+    assert _HuldraRichConsoleHandler._format_location(record) == "[test_logger.py:123]"
