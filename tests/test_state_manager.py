@@ -42,7 +42,9 @@ def test_locks_are_exclusive(huldra_tmp_root, tmp_path) -> None:
     assert lock_path.exists() is False
 
 
-def test_reconcile_marks_dead_local_attempt_as_crashed(huldra_tmp_root, tmp_path) -> None:
+def test_reconcile_marks_dead_local_attempt_as_crashed(
+    huldra_tmp_root, tmp_path
+) -> None:
     directory = tmp_path / "obj"
     directory.mkdir()
 
@@ -55,12 +57,18 @@ def test_reconcile_marks_dead_local_attempt_as_crashed(huldra_tmp_root, tmp_path
         scheduler={},
     )
 
-    assert huldra.StateManager.heartbeat(
-        directory, attempt_id="wrong", lease_duration_sec=60.0
-    ) is False
-    assert huldra.StateManager.heartbeat(
-        directory, attempt_id=attempt_id, lease_duration_sec=60.0
-    ) is True
+    assert (
+        huldra.StateManager.heartbeat(
+            directory, attempt_id="wrong", lease_duration_sec=60.0
+        )
+        is False
+    )
+    assert (
+        huldra.StateManager.heartbeat(
+            directory, attempt_id=attempt_id, lease_duration_sec=60.0
+        )
+        is True
+    )
 
     # If reconcile decides the attempt is dead, it clears the compute lock.
     (directory / huldra.StateManager.COMPUTE_LOCK).write_text(
@@ -79,7 +87,9 @@ def test_reconcile_marks_dead_local_attempt_as_crashed(huldra_tmp_root, tmp_path
     assert (directory / huldra.StateManager.COMPUTE_LOCK).exists() is False
 
 
-def test_state_warns_when_retrying_after_failure(huldra_tmp_root, tmp_path, capsys) -> None:
+def test_state_warns_when_retrying_after_failure(
+    huldra_tmp_root, tmp_path, capsys
+) -> None:
     pytest.importorskip("rich")
 
     directory = tmp_path / "obj"
@@ -111,12 +121,15 @@ def test_state_warns_when_retrying_after_failure(huldra_tmp_root, tmp_path, caps
     )
     err = capsys.readouterr().err
     assert "state: retrying after previous failure" in err
-    assert "state: retrying after previous failure" in (
-        huldra.HULDRA_CONFIG.base_root / "huldra.log"
-    ).read_text()
+    assert (
+        "state: retrying after previous failure"
+        in (huldra.HULDRA_CONFIG.base_root / "huldra.log").read_text()
+    )
 
 
-def test_state_warns_when_restart_after_stale_pid(huldra_tmp_root, tmp_path, capsys) -> None:
+def test_state_warns_when_restart_after_stale_pid(
+    huldra_tmp_root, tmp_path, capsys
+) -> None:
     pytest.importorskip("rich")
 
     directory = tmp_path / "obj"
@@ -143,6 +156,7 @@ def test_state_warns_when_restart_after_stale_pid(huldra_tmp_root, tmp_path, cap
     )
     err = capsys.readouterr().err
     assert "state: restarting after stale attempt (pid_dead)" in err
-    assert "state: restarting after stale attempt (pid_dead)" in (
-        huldra.HULDRA_CONFIG.base_root / "huldra.log"
-    ).read_text()
+    assert (
+        "state: restarting after stale attempt (pid_dead)"
+        in (huldra.HULDRA_CONFIG.base_root / "huldra.log").read_text()
+    )

@@ -14,4 +14,3 @@ def _get_pydantic_base_model() -> type[Any] | None:
 
 
 BaseModel = _get_pydantic_base_model()
-

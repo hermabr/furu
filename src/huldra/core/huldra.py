@@ -262,11 +262,11 @@ class Huldra[T](ABC):
                     },
                 )
                 logger.debug(
-                    "load_or_create %s %s %s (%s)",
+                    "load_or_create %s (%s) %s %s",
                     self.__class__.__name__,
+                    decision,
                     self.hexdigest,
                     directory,
-                    decision,
                     extra={"huldra_action_color": action_color},
                 )
 

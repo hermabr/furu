@@ -17,4 +17,3 @@ def load_env() -> None:
 
 # Preserve previous behavior: attempt to load `.env` at import-time.
 load_env()
-

@@ -41,9 +41,9 @@ def test_to_dict_from_dict_roundtrip() -> None:
 def test_compute_hash_ignores_private_fields() -> None:
     a = Foo(a=1, p=Path("x/y"), _private=1)
     b = Foo(a=1, p=Path("x/y"), _private=999)
-    assert huldra.HuldraSerializer.compute_hash(a) == huldra.HuldraSerializer.compute_hash(
-        b
-    )
+    assert huldra.HuldraSerializer.compute_hash(
+        a
+    ) == huldra.HuldraSerializer.compute_hash(b)
 
 
 def test_to_python_is_evaluable() -> None:
