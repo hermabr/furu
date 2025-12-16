@@ -25,10 +25,16 @@ from ..runtime.logging import enter_holder, get_logger, log, write_separator
 from ..runtime.tracebacks import format_traceback
 from ..serialization import HuldraSerializer
 from ..storage import MetadataManager, StateManager
-
-
-def _as_dict(value: Any) -> dict[str, Any]:
-    return cast(dict[str, Any], value) if isinstance(value, dict) else {}
+from ..storage.state import (
+    _HuldraState,
+    _StateAttemptFailed,
+    _StateAttemptQueued,
+    _StateAttemptRunning,
+    _StateAttemptTerminal,
+    _StateResultAbsent,
+    _StateResultFailed,
+    _StateResultSuccess,
+)
 
 
 @dataclass_transform(
@@ -155,16 +161,12 @@ class Huldra[T](ABC):
             timespec="seconds"
         )
 
-        def mutate(state: dict[str, Any]) -> None:
-            state["result"] = {
-                "status": "absent",
-                "invalidated_at": now,
-                "reason": reason,
-            }
+        def mutate(state: _HuldraState) -> None:
+            state.result = _StateResultAbsent(status="absent")
 
         StateManager.update_state(directory, mutate)
         StateManager.append_event(
-            directory, {"type": "result_invalidated", "reason": reason}
+            directory, {"type": "result_invalidated", "reason": reason, "at": now}
         )
 
     @property
@@ -210,7 +212,7 @@ class Huldra[T](ABC):
         directory = self.huldra_dir
         state = StateManager.read_state(directory)
 
-        if not StateManager.is_success(state):
+        if not isinstance(state.result, _StateResultSuccess):
             logger.info("exists %s -> false", directory)
             return False
 
@@ -268,7 +270,7 @@ class Huldra[T](ABC):
                 adapter0 = SubmititAdapter(executor) if executor is not None else None
                 self._reconcile(directory, adapter=adapter0)
                 state0 = StateManager.read_state(directory)
-                if StateManager.is_success(state0):
+                if isinstance(state0.result, _StateResultSuccess):
                     try:
                         if not self._validate():
                             self._invalidate_cached_success(
@@ -281,16 +283,13 @@ class Huldra[T](ABC):
                             reason=f"_validate raised {type(e).__name__}: {e}",
                         )
                         state0 = StateManager.read_state(directory)
-                result0 = _as_dict(state0.get("result"))
-                attempt0 = _as_dict(state0.get("attempt"))
-                result_status0 = result0.get("status")
-                attempt_status0 = attempt0.get("status")
+                attempt0 = state0.attempt
                 write_separator()
-                if result_status0 == "success":
+                if isinstance(state0.result, _StateResultSuccess):
                     decision = "success->load"
                     action_color = "green"
-                elif attempt_status0 in {"queued", "running"}:
-                    decision = f"{attempt_status0}->wait"
+                elif isinstance(attempt0, (_StateAttemptQueued, _StateAttemptRunning)):
+                    decision = f"{attempt0.status}->wait"
                     action_color = "yellow"
                 else:
                     decision = "create"
@@ -316,7 +315,7 @@ class Huldra[T](ABC):
 
                 # Fast path: already successful
                 state_now = StateManager.read_state(directory)
-                if StateManager.is_success(state_now):
+                if isinstance(state_now.result, _StateResultSuccess):
                     try:
                         result = self._load()
                         ok = True
@@ -354,9 +353,12 @@ class Huldra[T](ABC):
                             return self._load()
 
                         state = StateManager.read_state(directory)
-                        attempt = _as_dict(state.get("attempt"))
-                        error = _as_dict(attempt.get("error"))
-                        message = error.get("message")
+                        attempt = state.attempt
+                        message = (
+                            attempt.error.message
+                            if isinstance(attempt, _StateAttemptFailed)
+                            else None
+                        )
                         suffix = (
                             f": {message}"
                             if isinstance(message, str) and message
@@ -412,11 +414,11 @@ class Huldra[T](ABC):
         logger = get_logger()
         self._reconcile(directory, adapter=adapter)
         state = StateManager.read_state(directory)
-        attempt = _as_dict(state.get("attempt"))
-        if attempt.get("backend") == "submitit" and attempt.get("status") in {
-            "queued",
-            "running",
-        }:
+        attempt = state.attempt
+        if (
+            isinstance(attempt, (_StateAttemptQueued, _StateAttemptRunning))
+            and attempt.backend == "submitit"
+        ):
             job = adapter.load_job(directory)
             if job is not None:
                 return job
@@ -443,10 +445,9 @@ class Huldra[T](ABC):
             )
             MetadataManager.write_metadata(metadata, directory)
 
-            attempt_id = StateManager.start_attempt(
+            attempt_id = StateManager.start_attempt_queued(
                 directory,
                 backend="submitit",
-                status="queued",
                 lease_duration_sec=HULDRA_CONFIG.lease_duration_sec,
                 owner=MetadataManager.collect_environment_info(),
                 scheduler={},
@@ -475,8 +476,8 @@ class Huldra[T](ABC):
                 )
             else:
 
-                def mutate(state: dict[str, Any]) -> None:
-                    state["result"] = {"status": "failed"}
+                def mutate(state: _HuldraState) -> None:
+                    state.result = _StateResultFailed(status="failed")
 
                 StateManager.update_state(directory, mutate)
             raise HuldraComputeError(
@@ -504,14 +505,13 @@ class Huldra[T](ABC):
 
                 self._reconcile(directory)
                 state = StateManager.read_state(directory)
-                attempt = _as_dict(state.get("attempt"))
-                result = _as_dict(state.get("result"))
-                status = attempt.get("status") or result.get("status")
-
-                if StateManager.is_success(state):
+                attempt = state.attempt
+                if isinstance(state.result, _StateResultSuccess):
                     return
 
-                if status in {"failed", "cancelled", "preempted", "crashed"}:
+                if isinstance(state.result, _StateResultFailed) or isinstance(
+                    attempt, (_StateAttemptFailed, _StateAttemptTerminal)
+                ):
                     return
 
                 now = time.time()
@@ -534,10 +534,9 @@ class Huldra[T](ABC):
                 )
                 MetadataManager.write_metadata(metadata, directory)
 
-                attempt_id = StateManager.start_attempt(
+                attempt_id = StateManager.start_attempt_running(
                     directory,
                     backend="submitit",
-                    status="running",
                     lease_duration_sec=HULDRA_CONFIG.lease_duration_sec,
                     owner={
                         "pid": os.getpid(),
@@ -602,7 +601,6 @@ class Huldra[T](ABC):
                     StateManager.finish_attempt_failed(
                         directory,
                         attempt_id=attempt_id,
-                        status="failed",
                         error={
                             "type": type(e).__name__,
                             "message": str(e),
@@ -668,17 +666,14 @@ class Huldra[T](ABC):
                 self._check_timeout(start_time)
                 self._reconcile(directory)
                 state = StateManager.read_state(directory)
-                attempt = _as_dict(state.get("attempt"))
-                result_state = _as_dict(state.get("result"))
-                attempt_status = attempt.get("status")
-                result_status = result_state.get("status")
+                attempt = state.attempt
 
-                if StateManager.is_success(state):
+                if isinstance(state.result, _StateResultSuccess):
                     return "success", False, None
-                if result_status == "failed":
+                if isinstance(state.result, _StateResultFailed):
                     return "failed", False, None
 
-                if attempt_status in {"cancelled", "preempted", "crashed"}:
+                if isinstance(attempt, _StateAttemptTerminal):
                     break
 
                 now = time.time()
@@ -709,10 +704,9 @@ class Huldra[T](ABC):
                     e,
                 ) from e
 
-            attempt_id = StateManager.start_attempt(
+            attempt_id = StateManager.start_attempt_running(
                 directory,
                 backend="local",
-                status="running",
                 lease_duration_sec=HULDRA_CONFIG.lease_duration_sec,
                 owner={
                     "pid": os.getpid(),
@@ -772,7 +766,6 @@ class Huldra[T](ABC):
                 StateManager.finish_attempt_failed(
                     directory,
                     attempt_id=attempt_id,
-                    status="failed",
                     error={
                         "type": type(e).__name__,
                         "message": str(e),
@@ -827,10 +820,9 @@ class Huldra[T](ABC):
 
         def handle_signal(signum: int, frame: Any) -> None:
             try:
-                StateManager.finish_attempt_failed(
+                StateManager.finish_attempt_preempted(
                     directory,
                     attempt_id=attempt_id,
-                    status="preempted",
                     error={"type": "signal", "message": f"signal:{signum}"},
                 )
             finally:

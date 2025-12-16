@@ -3,6 +3,7 @@ import socket
 
 import huldra
 import pytest
+from huldra.storage.state import _StateResultAbsent, _StateResultIncomplete
 
 
 def test_state_default_and_attempt_lifecycle(huldra_tmp_root, tmp_path) -> None:
@@ -10,23 +11,23 @@ def test_state_default_and_attempt_lifecycle(huldra_tmp_root, tmp_path) -> None:
     directory.mkdir()
 
     state0 = huldra.StateManager.read_state(directory)
-    assert state0["schema_version"] == huldra.StateManager.SCHEMA_VERSION
-    assert state0["result"]["status"] == "absent"
-    assert state0["attempt"] is None
+    assert state0.schema_version == huldra.StateManager.SCHEMA_VERSION
+    assert isinstance(state0.result, _StateResultAbsent)
+    assert state0.attempt is None
 
-    attempt_id = huldra.StateManager.start_attempt(
+    attempt_id = huldra.StateManager.start_attempt_running(
         directory,
         backend="local",
-        status="running",
         lease_duration_sec=0.05,
         owner={"pid": 99999, "host": "other-host", "user": "x"},
         scheduler={},
     )
     state1 = huldra.StateManager.read_state(directory)
-    assert state1["result"]["status"] == "incomplete"
-    assert state1["attempt"]["id"] == attempt_id
-    assert state1["attempt"]["status"] == "running"
-    assert "updated_at" in state1
+    assert isinstance(state1.result, _StateResultIncomplete)
+    assert state1.attempt is not None
+    assert state1.attempt.id == attempt_id
+    assert state1.attempt.status == "running"
+    assert state1.updated_at is not None
 
 
 def test_locks_are_exclusive(huldra_tmp_root, tmp_path) -> None:
@@ -48,10 +49,9 @@ def test_reconcile_marks_dead_local_attempt_as_crashed(
     directory = tmp_path / "obj"
     directory.mkdir()
 
-    attempt_id = huldra.StateManager.start_attempt(
+    attempt_id = huldra.StateManager.start_attempt_running(
         directory,
         backend="local",
-        status="running",
         lease_duration_sec=60.0,
         owner={"pid": 99999, "host": socket.gethostname(), "user": "x"},
         scheduler={},
@@ -83,7 +83,8 @@ def test_reconcile_marks_dead_local_attempt_as_crashed(
         + "\n"
     )
     state2 = huldra.StateManager.reconcile(directory)
-    assert state2["attempt"]["status"] == "crashed"
+    assert state2.attempt is not None
+    assert state2.attempt.status == "crashed"
     assert (directory / huldra.StateManager.COMPUTE_LOCK).exists() is False
 
 
@@ -95,10 +96,9 @@ def test_state_warns_when_retrying_after_failure(
     directory = tmp_path / "obj"
     directory.mkdir()
 
-    attempt_id = huldra.StateManager.start_attempt(
+    attempt_id = huldra.StateManager.start_attempt_running(
         directory,
         backend="local",
-        status="running",
         lease_duration_sec=60.0,
         owner={"pid": 99999, "host": socket.gethostname(), "user": "x"},
         scheduler={},
@@ -106,15 +106,13 @@ def test_state_warns_when_retrying_after_failure(
     huldra.StateManager.finish_attempt_failed(
         directory,
         attempt_id=attempt_id,
-        status="failed",
         error={"type": "RuntimeError", "message": "boom"},
     )
     capsys.readouterr()
 
-    huldra.StateManager.start_attempt(
+    huldra.StateManager.start_attempt_running(
         directory,
         backend="local",
-        status="running",
         lease_duration_sec=60.0,
         owner={"pid": 99999, "host": socket.gethostname(), "user": "x"},
         scheduler={},
@@ -135,10 +133,9 @@ def test_state_warns_when_restart_after_stale_pid(
     directory = tmp_path / "obj"
     directory.mkdir()
 
-    huldra.StateManager.start_attempt(
+    huldra.StateManager.start_attempt_running(
         directory,
         backend="local",
-        status="running",
         lease_duration_sec=60.0,
         owner={"pid": 99999, "host": socket.gethostname(), "user": "x"},
         scheduler={},
@@ -146,10 +143,9 @@ def test_state_warns_when_restart_after_stale_pid(
     huldra.StateManager.reconcile(directory)
     capsys.readouterr()
 
-    huldra.StateManager.start_attempt(
+    huldra.StateManager.start_attempt_running(
         directory,
         backend="local",
-        status="running",
         lease_duration_sec=60.0,
         owner={"pid": 99999, "host": socket.gethostname(), "user": "x"},
         scheduler={},

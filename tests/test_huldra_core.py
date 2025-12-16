@@ -2,6 +2,7 @@ import json
 import datetime
 
 import huldra
+from huldra.storage.state import _StateResultSuccess
 
 
 class Dummy(huldra.Huldra[int]):
@@ -49,21 +50,22 @@ def test_load_or_create_recovers_from_expired_running_lease(huldra_tmp_root) -> 
         datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=60)
     ).isoformat(timespec="seconds")
 
-    def mutate(state: dict) -> None:
-        state["result"] = {"status": "incomplete"}
-        state["attempt"] = {
-            "id": "a",
-            "number": 1,
-            "backend": "local",
-            "status": "running",
-            "started_at": expired,
-            "heartbeat_at": expired,
-            "lease_duration_sec": 0.05,
-            "lease_expires_at": expired,
-            "owner": {"pid": 99999, "host": "other-host", "user": "x"},
-            "scheduler": {},
-            "error": None,
-        }
+    attempt_id = huldra.StateManager.start_attempt_running(
+        directory,
+        backend="local",
+        lease_duration_sec=0.05,
+        owner={"pid": 99999, "host": "other-host", "user": "x"},
+        scheduler={},
+    )
+
+    def mutate(state) -> None:
+        attempt = state.attempt
+        assert attempt is not None
+        assert attempt.id == attempt_id
+        attempt.started_at = expired
+        attempt.heartbeat_at = expired
+        attempt.lease_duration_sec = 0.05
+        attempt.lease_expires_at = expired
 
     huldra.StateManager.update_state(directory, mutate)
     (directory / huldra.StateManager.COMPUTE_LOCK).write_text(
@@ -80,7 +82,7 @@ def test_load_or_create_recovers_from_expired_running_lease(huldra_tmp_root) -> 
 
     result = obj.load_or_create()
     assert result == 123
-    assert huldra.StateManager.read_state(directory)["result"]["status"] == "success"
+    assert isinstance(huldra.StateManager.read_state(directory).result, _StateResultSuccess)
 
 
 def test_load_or_create_waits_until_lease_expires_then_recovers(
@@ -106,26 +108,26 @@ def test_load_or_create_waits_until_lease_expires_then_recovers(
         datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=0.02)
     ).isoformat(timespec="seconds")
 
-    def mutate2(state: dict) -> None:
-        state["result"] = {"status": "incomplete"}
-        state["attempt"] = {
-            "id": "a",
-            "number": 1,
-            "backend": "local",
-            "status": "running",
-            "started_at": soon,
-            "heartbeat_at": soon,
-            "lease_duration_sec": 0.02,
-            "lease_expires_at": soon,
-            # Host mismatch forces lease-based reconciliation.
-            "owner": {"pid": 99999, "host": "other-host", "user": "x"},
-            "scheduler": {},
-            "error": None,
-        }
+    attempt_id = huldra.StateManager.start_attempt_running(
+        directory,
+        backend="local",
+        lease_duration_sec=0.02,
+        owner={"pid": 99999, "host": "other-host", "user": "x"},
+        scheduler={},
+    )
+
+    def mutate2(state) -> None:
+        attempt = state.attempt
+        assert attempt is not None
+        assert attempt.id == attempt_id
+        attempt.started_at = soon
+        attempt.heartbeat_at = soon
+        attempt.lease_duration_sec = 0.02
+        attempt.lease_expires_at = soon
 
     huldra.StateManager.update_state(directory, mutate2)
 
     result = obj.load_or_create()
     assert result == 123
     assert (directory / huldra.StateManager.COMPUTE_LOCK).exists() is False
-    assert huldra.StateManager.read_state(directory)["result"]["status"] == "success"
+    assert isinstance(huldra.StateManager.read_state(directory).result, _StateResultSuccess)

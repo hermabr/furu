@@ -6,7 +6,163 @@ import socket
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Optional, cast
+from typing import Annotated, Any, Callable, Literal, Optional
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+
+
+class _StateResultBase(BaseModel):
+    model_config = ConfigDict(extra="forbid", validate_assignment=True, strict=True)
+
+    status: str
+
+
+class _StateResultAbsent(_StateResultBase):
+    status: Literal["absent"]
+
+
+class _StateResultIncomplete(_StateResultBase):
+    status: Literal["incomplete"]
+
+
+class _StateResultSuccess(_StateResultBase):
+    status: Literal["success"]
+    created_at: str
+
+
+class _StateResultFailed(_StateResultBase):
+    status: Literal["failed"]
+
+
+_StateResult = Annotated[
+    _StateResultAbsent
+    | _StateResultIncomplete
+    | _StateResultSuccess
+    | _StateResultFailed,
+    Field(discriminator="status"),
+]
+
+
+def _coerce_result(current: _StateResult, **updates: Any) -> _StateResult:
+    data = current.model_dump(mode="json")
+    data.update(updates)
+    status = data.get("status")
+    match status:
+        case "absent":
+            return _StateResultAbsent(status="absent")
+        case "incomplete":
+            return _StateResultIncomplete(status="incomplete")
+        case "success":
+            created_at = data.get("created_at")
+            if not isinstance(created_at, str) or not created_at:
+                raise ValueError("Success result requires created_at")
+            return _StateResultSuccess(status="success", created_at=created_at)
+        case "failed":
+            return _StateResultFailed(status="failed")
+        case _:
+            raise ValueError(f"Invalid result status: {status!r}")
+
+
+class _StateOwner(BaseModel):
+    model_config = ConfigDict(extra="forbid", validate_assignment=True, strict=True)
+
+    pid: int | None = None
+    host: str | None = None
+    hostname: str | None = None
+    user: str | None = None
+    command: str | None = None
+    timestamp: str | None = None
+    python_version: str | None = None
+    executable: str | None = None
+    platform: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_host_keys(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        host = data.get("host")
+        hostname = data.get("hostname")
+        if host is None and hostname is not None:
+            data = dict(data)
+            data["host"] = hostname
+            return data
+        if hostname is None and host is not None:
+            data = dict(data)
+            data["hostname"] = host
+        return data
+
+
+class _HuldraErrorState(BaseModel):
+    model_config = ConfigDict(extra="forbid", validate_assignment=True, strict=True)
+
+    type: str = "UnknownError"
+    message: str = ""
+    traceback: str | None = None
+
+
+class _StateAttemptBase(BaseModel):
+    model_config = ConfigDict(extra="forbid", validate_assignment=True, strict=True)
+
+    id: str
+    number: int = 1
+    backend: str
+    status: str
+    started_at: str
+    heartbeat_at: str
+    lease_duration_sec: float
+    lease_expires_at: str
+    owner: _StateOwner
+    scheduler: dict[str, Any] = Field(default_factory=dict)
+
+
+class _StateAttemptQueued(_StateAttemptBase):
+    status: Literal["queued"] = "queued"
+
+
+class _StateAttemptRunning(_StateAttemptBase):
+    status: Literal["running"] = "running"
+
+
+class _StateAttemptSuccess(_StateAttemptBase):
+    status: Literal["success"] = "success"
+    ended_at: str
+    reason: None = None
+
+
+class _StateAttemptFailed(_StateAttemptBase):
+    status: Literal["failed"] = "failed"
+    ended_at: str
+    error: _HuldraErrorState
+    reason: str | None = None
+
+
+class _StateAttemptTerminal(_StateAttemptBase):
+    status: Literal["cancelled", "preempted", "crashed"]
+    ended_at: str
+    error: _HuldraErrorState | None = None
+    reason: str | None = None
+
+
+_StateAttempt = Annotated[
+    _StateAttemptQueued
+    | _StateAttemptRunning
+    | _StateAttemptSuccess
+    | _StateAttemptFailed
+    | _StateAttemptTerminal,
+    Field(discriminator="status"),
+]
+
+
+class _HuldraState(BaseModel):
+    model_config = ConfigDict(extra="forbid", validate_assignment=True, strict=True)
+
+    schema_version: int = 1
+    result: _StateResult = Field(
+        default_factory=lambda: _StateResultAbsent(status="absent")
+    )
+    attempt: _StateAttempt | None = None
+    updated_at: str | None = None
 
 
 class StateManager:
@@ -29,7 +185,6 @@ class StateManager:
     SUBMIT_LOCK = ".submit.lock"
     STATE_LOCK = ".state.lock"
 
-    RUNNING_STATUSES = {"queued", "running"}
     TERMINAL_STATUSES = {
         "success",
         "failed",
@@ -63,37 +218,38 @@ class StateManager:
         return dt.astimezone(_dt.timezone.utc)
 
     @classmethod
-    def default_state(cls) -> dict[str, Any]:
-        return {
-            "schema_version": cls.SCHEMA_VERSION,
-            "result": {"status": "absent"},
-            "attempt": None,
-        }
+    def default_state(cls) -> _HuldraState:
+        return _HuldraState(schema_version=cls.SCHEMA_VERSION)
 
     @classmethod
-    def read_state(cls, directory: Path) -> dict[str, Any]:
+    def read_state(cls, directory: Path) -> _HuldraState:
+        state_path = cls.get_state_path(directory)
         try:
-            data = json.loads(cls.get_state_path(directory).read_text())
+            text = state_path.read_text()
         except Exception:
             return cls.default_state()
 
-        if (
-            not isinstance(data, dict)
-            or data.get("schema_version") != cls.SCHEMA_VERSION
-        ):
-            return cls.default_state()
+        try:
+            data = json.loads(text)
+        except Exception as e:
+            raise ValueError(f"Invalid JSON in state file: {state_path}") from e
 
-        if "result" not in data or not isinstance(data["result"], dict):
-            data["result"] = {"status": "absent"}
-        if "attempt" not in data:
-            data["attempt"] = None
-        return data
+        if not isinstance(data, dict):
+            raise ValueError(f"Invalid state file (expected object): {state_path}")
+        if data.get("schema_version") != cls.SCHEMA_VERSION:
+            raise ValueError(
+                f"Unsupported state schema_version (expected {cls.SCHEMA_VERSION}): {state_path}"
+            )
+        try:
+            return _HuldraState.model_validate(data)
+        except ValidationError as e:
+            raise ValueError(f"Invalid state schema: {state_path}") from e
 
     @classmethod
-    def _write_state_unlocked(cls, directory: Path, state: dict[str, Any]) -> None:
+    def _write_state_unlocked(cls, directory: Path, state: _HuldraState) -> None:
         state_path = cls.get_state_path(directory)
         tmp_path = state_path.with_suffix(".tmp")
-        tmp_path.write_text(json.dumps(state, indent=2))
+        tmp_path.write_text(json.dumps(state.model_dump(mode="json"), indent=2))
         os.replace(tmp_path, state_path)
 
     @classmethod
@@ -173,17 +329,19 @@ class StateManager:
 
     @classmethod
     def update_state(
-        cls, directory: Path, mutator: Callable[[dict[str, Any]], None]
-    ) -> dict[str, Any]:
+        cls, directory: Path, mutator: Callable[[_HuldraState], None]
+    ) -> _HuldraState:
         lock_path = directory / cls.STATE_LOCK
         fd: Optional[int] = None
         try:
             fd = cls._acquire_lock_blocking(lock_path)
             state = cls.read_state(directory)
             mutator(state)
-            state["updated_at"] = cls._iso_now()
-            cls._write_state_unlocked(directory, state)
-            return state
+            state.schema_version = cls.SCHEMA_VERSION
+            state.updated_at = cls._iso_now()
+            validated = _HuldraState.model_validate(state)
+            cls._write_state_unlocked(directory, validated)
+            return validated
         finally:
             cls.release_lock(fd, lock_path)
 
@@ -213,70 +371,108 @@ class StateManager:
         return (directory / cls.SUCCESS_MARKER).is_file()
 
     @classmethod
-    def is_success(cls, state: dict[str, Any]) -> bool:
-        result = state.get("result")
-        return isinstance(result, dict) and result.get("status") == "success"
-
-    @classmethod
-    def _lease_expired(cls, attempt: dict[str, Any]) -> bool:
-        expires = cls._parse_time(attempt.get("lease_expires_at"))
+    def _lease_expired(
+        cls, attempt: _StateAttemptQueued | _StateAttemptRunning
+    ) -> bool:
+        expires = cls._parse_time(attempt.lease_expires_at)
         if expires is None:
             return True
         return cls._utcnow() >= expires
 
     @classmethod
-    def start_attempt(
+    def start_attempt_queued(
         cls,
         directory: Path,
         *,
         backend: str,
-        status: str,
         lease_duration_sec: float,
         owner: dict[str, Any],
         scheduler: dict[str, Any] | None = None,
     ) -> str:
+        return cls._start_attempt(
+            directory,
+            backend=backend,
+            lease_duration_sec=lease_duration_sec,
+            owner=owner,
+            scheduler=scheduler,
+            attempt_cls=_StateAttemptQueued,
+        )
+
+    @classmethod
+    def start_attempt_running(
+        cls,
+        directory: Path,
+        *,
+        backend: str,
+        lease_duration_sec: float,
+        owner: dict[str, Any],
+        scheduler: dict[str, Any] | None = None,
+    ) -> str:
+        return cls._start_attempt(
+            directory,
+            backend=backend,
+            lease_duration_sec=lease_duration_sec,
+            owner=owner,
+            scheduler=scheduler,
+            attempt_cls=_StateAttemptRunning,
+        )
+
+    @classmethod
+    def _start_attempt(
+        cls,
+        directory: Path,
+        *,
+        backend: str,
+        lease_duration_sec: float,
+        owner: dict[str, Any],
+        scheduler: dict[str, Any] | None,
+        attempt_cls: type[_StateAttemptQueued] | type[_StateAttemptRunning],
+    ) -> str:
         attempt_id = uuid.uuid4().hex
         now = cls._utcnow()
         expires = now + _dt.timedelta(seconds=float(lease_duration_sec))
-        prev_result_status: str | None = None
+        prev_result_failed = False
         prev_attempt_status: str | None = None
         prev_attempt_reason: str | None = None
 
-        def mutate(state: dict[str, Any]) -> None:
-            nonlocal prev_result_status, prev_attempt_status, prev_attempt_reason
-            prev_result = state.get("result")
-            if isinstance(prev_result, dict):
-                prev_result_status = cast(Optional[str], prev_result.get("status"))
-
-            prev = (
-                state.get("attempt") if isinstance(state.get("attempt"), dict) else None
-            )
+        def mutate(state: _HuldraState) -> None:
+            nonlocal prev_result_failed, prev_attempt_status, prev_attempt_reason
+            prev_result_failed = isinstance(state.result, _StateResultFailed)
+            prev = state.attempt
             if prev is not None:
-                prev_attempt_status = cast(Optional[str], prev.get("status"))
-                prev_attempt_reason = cast(Optional[str], prev.get("reason"))
+                prev_attempt_status = prev.status
+                prev_attempt_reason = getattr(prev, "reason", None)
 
-            number = int(prev.get("number", 0) + 1) if prev else 1
-            state["attempt"] = {
-                "id": attempt_id,
-                "number": number,
-                "backend": backend,
-                "status": status,
-                "started_at": now.isoformat(timespec="seconds"),
-                "heartbeat_at": now.isoformat(timespec="seconds"),
-                "lease_duration_sec": float(lease_duration_sec),
-                "lease_expires_at": expires.isoformat(timespec="seconds"),
-                "owner": owner,
-                "scheduler": scheduler or {},
-                "error": None,
-            }
-            state["result"] = {"status": "incomplete"}
+            number = (prev.number + 1) if prev is not None else 1
+
+            owner_state = _StateOwner.model_validate(owner)
+            started_at = now.isoformat(timespec="seconds")
+            heartbeat_at = started_at
+            lease_duration = float(lease_duration_sec)
+            lease_expires_at = expires.isoformat(timespec="seconds")
+            scheduler_state: dict[str, Any] = scheduler or {}
+
+            attempt_common = dict(
+                id=attempt_id,
+                number=int(number),
+                backend=backend,
+                started_at=started_at,
+                heartbeat_at=heartbeat_at,
+                lease_duration_sec=lease_duration,
+                lease_expires_at=lease_expires_at,
+                owner=owner_state,
+                scheduler=scheduler_state,
+            )
+            state.attempt = attempt_cls(**attempt_common)
+
+            state.result = _coerce_result(state.result, status="incomplete")
 
         state = cls.update_state(directory, mutate)
-        if status == "running":
+        if attempt_cls is _StateAttemptRunning:
             from ..runtime.logging import get_logger
 
             logger = get_logger()
-            if prev_result_status == "failed":
+            if prev_result_failed:
                 logger.warning(
                     "state: retrying after previous failure %s",
                     directory,
@@ -297,10 +493,15 @@ class StateManager:
                 "type": "attempt_started",
                 "attempt_id": attempt_id,
                 "backend": backend,
-                "status": status,
+                "status": state.attempt.status
+                if state.attempt is not None
+                else "unknown",
             },
         )
-        return cast(str, state["attempt"]["id"])  # type: ignore[no-any-return]
+        attempt = state.attempt
+        if attempt is None:  # pragma: no cover
+            raise RuntimeError("start_attempt did not create attempt")
+        return attempt.id
 
     @classmethod
     def heartbeat(
@@ -308,20 +509,18 @@ class StateManager:
     ) -> bool:
         ok = False
 
-        def mutate(state: dict[str, Any]) -> None:
+        def mutate(state: _HuldraState) -> None:
             nonlocal ok
-            attempt = state.get("attempt")
-            if not isinstance(attempt, dict):
+            attempt = state.attempt
+            if not isinstance(attempt, _StateAttemptRunning):
                 return
-            if attempt.get("id") != attempt_id:
-                return
-            if attempt.get("status") != "running":
+            if attempt.id != attempt_id:
                 return
             now = cls._utcnow()
             expires = now + _dt.timedelta(seconds=float(lease_duration_sec))
-            attempt["heartbeat_at"] = now.isoformat(timespec="seconds")
-            attempt["lease_duration_sec"] = float(lease_duration_sec)
-            attempt["lease_expires_at"] = expires.isoformat(timespec="seconds")
+            attempt.heartbeat_at = now.isoformat(timespec="seconds")
+            attempt.lease_duration_sec = float(lease_duration_sec)
+            attempt.lease_expires_at = expires.isoformat(timespec="seconds")
             ok = True
 
         cls.update_state(directory, mutate)
@@ -333,12 +532,17 @@ class StateManager:
     ) -> bool:
         ok = False
 
-        def mutate(state: dict[str, Any]) -> None:
+        def mutate(state: _HuldraState) -> None:
             nonlocal ok
-            attempt = state.get("attempt")
-            if not isinstance(attempt, dict) or attempt.get("id") != attempt_id:
+            attempt = state.attempt
+            if attempt is None or attempt.id != attempt_id:
                 return
-            attempt.update(fields)
+            for key, value in fields.items():
+                if key == "scheduler" and isinstance(value, dict):
+                    attempt.scheduler.update(value)
+                    continue
+                if hasattr(attempt, key):
+                    setattr(attempt, key, value)
             ok = True
 
         cls.update_state(directory, mutate)
@@ -348,12 +552,24 @@ class StateManager:
     def finish_attempt_success(cls, directory: Path, *, attempt_id: str) -> None:
         now = cls._iso_now()
 
-        def mutate(state: dict[str, Any]) -> None:
-            attempt = state.get("attempt")
-            if isinstance(attempt, dict) and attempt.get("id") == attempt_id:
-                attempt["status"] = "success"
-                attempt["ended_at"] = now
-            state["result"] = {"status": "success", "created_at": now}
+        def mutate(state: _HuldraState) -> None:
+            attempt = state.attempt
+            if attempt is not None and attempt.id == attempt_id:
+                state.attempt = _StateAttemptSuccess(
+                    id=attempt.id,
+                    number=attempt.number,
+                    backend=attempt.backend,
+                    started_at=attempt.started_at,
+                    heartbeat_at=attempt.heartbeat_at,
+                    lease_duration_sec=attempt.lease_duration_sec,
+                    lease_expires_at=attempt.lease_expires_at,
+                    owner=attempt.owner,
+                    scheduler=attempt.scheduler,
+                    ended_at=now,
+                )
+            state.result = _coerce_result(
+                state.result, status="success", created_at=now
+            )
 
         cls.update_state(directory, mutate)
         cls.append_event(
@@ -368,36 +584,84 @@ class StateManager:
         *,
         attempt_id: str,
         error: dict[str, Any],
-        status: str = "failed",
     ) -> None:
-        if status not in cls.TERMINAL_STATUSES:
-            status = "failed"
         now = cls._iso_now()
 
-        def mutate(state: dict[str, Any]) -> None:
-            attempt = state.get("attempt")
-            if isinstance(attempt, dict) and attempt.get("id") == attempt_id:
-                attempt["status"] = status
-                attempt["ended_at"] = now
-                attempt["error"] = error
-            # `failed` is treated as non-loadable; next run can decide whether to retry.
-            state["result"] = {
-                "status": "failed" if status == "failed" else "incomplete"
-            }
+        error_state = _HuldraErrorState.model_validate(error)
+
+        def mutate(state: _HuldraState) -> None:
+            attempt = state.attempt
+            if attempt is not None and attempt.id == attempt_id:
+                state.attempt = _StateAttemptFailed(
+                    id=attempt.id,
+                    number=attempt.number,
+                    backend=attempt.backend,
+                    started_at=attempt.started_at,
+                    heartbeat_at=attempt.heartbeat_at,
+                    lease_duration_sec=attempt.lease_duration_sec,
+                    lease_expires_at=attempt.lease_expires_at,
+                    owner=attempt.owner,
+                    scheduler=attempt.scheduler,
+                    ended_at=now,
+                    error=error_state,
+                )
+
+            state.result = _coerce_result(state.result, status="failed")
 
         cls.update_state(directory, mutate)
         cls.append_event(
             directory,
-            {"type": "attempt_finished", "attempt_id": attempt_id, "status": status},
+            {"type": "attempt_finished", "attempt_id": attempt_id, "status": "failed"},
         )
 
     @classmethod
-    def _local_attempt_alive(cls, attempt: dict[str, Any]) -> Optional[bool]:
-        owner = attempt.get("owner")
-        if not isinstance(owner, dict):
-            return None
-        host = owner.get("host")
-        pid = owner.get("pid")
+    def finish_attempt_preempted(
+        cls,
+        directory: Path,
+        *,
+        attempt_id: str,
+        error: dict[str, Any],
+        reason: str | None = None,
+    ) -> None:
+        now = cls._iso_now()
+        error_state = _HuldraErrorState.model_validate(error)
+
+        def mutate(state: _HuldraState) -> None:
+            attempt = state.attempt
+            if attempt is not None and attempt.id == attempt_id:
+                state.attempt = _StateAttemptTerminal(
+                    status="preempted",
+                    id=attempt.id,
+                    number=attempt.number,
+                    backend=attempt.backend,
+                    started_at=attempt.started_at,
+                    heartbeat_at=attempt.heartbeat_at,
+                    lease_duration_sec=attempt.lease_duration_sec,
+                    lease_expires_at=attempt.lease_expires_at,
+                    owner=attempt.owner,
+                    scheduler=attempt.scheduler,
+                    ended_at=now,
+                    error=error_state,
+                    reason=reason,
+                )
+            state.result = _coerce_result(state.result, status="incomplete")
+
+        cls.update_state(directory, mutate)
+        cls.append_event(
+            directory,
+            {
+                "type": "attempt_finished",
+                "attempt_id": attempt_id,
+                "status": "preempted",
+            },
+        )
+
+    @classmethod
+    def _local_attempt_alive(
+        cls, attempt: _StateAttemptQueued | _StateAttemptRunning
+    ) -> Optional[bool]:
+        host = attempt.owner.host
+        pid = attempt.owner.pid
         if host != socket.gethostname():
             return None
         if not isinstance(pid, int):
@@ -409,8 +673,8 @@ class StateManager:
         cls,
         directory: Path,
         *,
-        submitit_probe: Optional[Callable[[dict[str, Any]], dict[str, Any]]] = None,
-    ) -> dict[str, Any]:
+        submitit_probe: Optional[Callable[[_HuldraState], dict[str, Any]]] = None,
+    ) -> _HuldraState:
         """
         Reconcile a possibly-stale running/queued attempt.
 
@@ -421,21 +685,32 @@ class StateManager:
           to lease expiry.
         """
 
-        def mutate(state: dict[str, Any]) -> None:
-            attempt = state.get("attempt")
-            if not isinstance(attempt, dict):
-                return
-            if attempt.get("status") not in cls.RUNNING_STATUSES:
+        def mutate(state: _HuldraState) -> None:
+            attempt = state.attempt
+            if not isinstance(attempt, (_StateAttemptQueued, _StateAttemptRunning)):
                 return
 
             # Fast promotion if we can see a durable success marker.
             if cls.success_marker_exists(directory):
-                attempt["status"] = "success"
-                attempt["ended_at"] = cls._iso_now()
-                state["result"] = {"status": "success", "created_at": cls._iso_now()}
+                ended = cls._iso_now()
+                state.attempt = _StateAttemptSuccess(
+                    id=attempt.id,
+                    number=attempt.number,
+                    backend=attempt.backend,
+                    started_at=attempt.started_at,
+                    heartbeat_at=attempt.heartbeat_at,
+                    lease_duration_sec=attempt.lease_duration_sec,
+                    lease_expires_at=attempt.lease_expires_at,
+                    owner=attempt.owner,
+                    scheduler=attempt.scheduler,
+                    ended_at=ended,
+                )
+                state.result = _coerce_result(
+                    state.result, status="success", created_at=ended
+                )
                 return
 
-            backend = attempt.get("backend")
+            backend = attempt.backend
             now = cls._iso_now()
 
             terminal_status: str | None = None
@@ -455,15 +730,9 @@ class StateManager:
                     if verdict.get("terminal_status") in cls.TERMINAL_STATUSES:
                         terminal_status = str(verdict["terminal_status"])
                         reason = str(verdict.get("reason") or "scheduler_terminal")
-                        scheduler = attempt.get("scheduler")
-                        if isinstance(scheduler, dict):
-                            scheduler.update(
-                                {
-                                    k: v
-                                    for k, v in verdict.items()
-                                    if k != "terminal_status"
-                                }
-                            )
+                        attempt.scheduler.update(
+                            {k: v for k, v in verdict.items() if k != "terminal_status"}
+                        )
                 if terminal_status is None and cls._lease_expired(attempt):
                     terminal_status = "crashed"
                     reason = "lease_expired"
@@ -474,18 +743,82 @@ class StateManager:
 
             if terminal_status is None:
                 return
+            if terminal_status == "success":
+                terminal_status = "crashed"
+                reason = reason or "scheduler_success_no_success_marker"
 
-            attempt["status"] = terminal_status
-            attempt["ended_at"] = now
-            attempt["error"] = attempt.get("error")
-            attempt["reason"] = reason
-            state["result"] = {
-                "status": "incomplete" if terminal_status != "failed" else "failed"
-            }
+            if terminal_status == "failed":
+                state.attempt = _StateAttemptFailed(
+                    id=attempt.id,
+                    number=attempt.number,
+                    backend=attempt.backend,
+                    started_at=attempt.started_at,
+                    heartbeat_at=attempt.heartbeat_at,
+                    lease_duration_sec=attempt.lease_duration_sec,
+                    lease_expires_at=attempt.lease_expires_at,
+                    owner=attempt.owner,
+                    scheduler=attempt.scheduler,
+                    ended_at=now,
+                    error=_HuldraErrorState(
+                        type="HuldraComputeError", message=reason or ""
+                    ),
+                    reason=reason,
+                )
+            else:
+                if terminal_status == "cancelled":
+                    state.attempt = _StateAttemptTerminal(
+                        status="cancelled",
+                        id=attempt.id,
+                        number=attempt.number,
+                        backend=attempt.backend,
+                        started_at=attempt.started_at,
+                        heartbeat_at=attempt.heartbeat_at,
+                        lease_duration_sec=attempt.lease_duration_sec,
+                        lease_expires_at=attempt.lease_expires_at,
+                        owner=attempt.owner,
+                        scheduler=attempt.scheduler,
+                        ended_at=now,
+                        reason=reason,
+                    )
+                elif terminal_status == "preempted":
+                    state.attempt = _StateAttemptTerminal(
+                        status="preempted",
+                        id=attempt.id,
+                        number=attempt.number,
+                        backend=attempt.backend,
+                        started_at=attempt.started_at,
+                        heartbeat_at=attempt.heartbeat_at,
+                        lease_duration_sec=attempt.lease_duration_sec,
+                        lease_expires_at=attempt.lease_expires_at,
+                        owner=attempt.owner,
+                        scheduler=attempt.scheduler,
+                        ended_at=now,
+                        reason=reason,
+                    )
+                else:
+                    state.attempt = _StateAttemptTerminal(
+                        status="crashed",
+                        id=attempt.id,
+                        number=attempt.number,
+                        backend=attempt.backend,
+                        started_at=attempt.started_at,
+                        heartbeat_at=attempt.heartbeat_at,
+                        lease_duration_sec=attempt.lease_duration_sec,
+                        lease_expires_at=attempt.lease_expires_at,
+                        owner=attempt.owner,
+                        scheduler=attempt.scheduler,
+                        ended_at=now,
+                        reason=reason,
+                    )
+
+            state.result = _coerce_result(
+                state.result,
+                status="failed" if terminal_status == "failed" else "incomplete",
+            )
 
         state = cls.update_state(directory, mutate)
-        attempt = state.get("attempt")
-        if isinstance(attempt, dict) and attempt.get("status") in {
+        attempt = state.attempt
+        if attempt is not None and attempt.status in {
             "crashed",
             "cancelled",
             "preempted",

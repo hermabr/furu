@@ -3,6 +3,7 @@ import json
 import pytest
 
 import huldra
+from huldra.storage.state import _StateResultFailed, _StateResultSuccess
 
 
 class Fails(huldra.Huldra[int]):
@@ -25,11 +26,14 @@ def test_failed_create_raises_compute_error_and_records_state(huldra_tmp_root) -
     assert "RuntimeError: boom" in log_text
 
     state = huldra.StateManager.read_state(obj.huldra_dir)
-    assert state["result"]["status"] == "failed"
-    attempt = state["attempt"]
-    assert attempt["status"] == "failed"
-    assert "boom" in attempt["error"]["message"]
-    assert "traceback" in attempt["error"]
+    assert isinstance(state.result, _StateResultFailed)
+    attempt = state.attempt
+    assert attempt is not None
+    assert attempt.status == "failed"
+    error = getattr(attempt, "error", None)
+    assert error is not None
+    assert "boom" in error.message
+    assert error.traceback is not None
 
 
 class InvalidValidate(huldra.Huldra[int]):
@@ -67,9 +71,9 @@ def test_load_or_create_recomputes_if_validate_returns_false(huldra_tmp_root) ->
     obj = ValidateReturnsFalse()
     obj.huldra_dir.mkdir(parents=True, exist_ok=True)
 
-    def mutate(state: dict) -> None:
-        state["result"] = {"status": "success"}
-        state["attempt"] = None
+    def mutate(state) -> None:
+        state.result = _StateResultSuccess(status="success", created_at="x")
+        state.attempt = None
 
     huldra.StateManager.update_state(obj.huldra_dir, mutate)
     huldra.StateManager.write_success_marker(obj.huldra_dir, attempt_id="test")

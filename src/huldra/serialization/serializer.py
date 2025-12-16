@@ -11,7 +11,7 @@ from typing import Any
 import chz
 
 from ..errors import _HuldraMissing
-from .pydantic import BaseModel
+from pydantic import BaseModel as PydanticBaseModel
 
 
 class HuldraSerializer:
@@ -127,7 +127,7 @@ class HuldraSerializer:
             if isinstance(item, (str, int, float, bool)) or item is None:
                 return item
 
-            if BaseModel is not None and isinstance(item, BaseModel):
+            if isinstance(item, PydanticBaseModel):
                 return {
                     "__class__": cls.get_classname(item),
                     **{k: canonicalize(v) for k, v in item.model_dump().items()},

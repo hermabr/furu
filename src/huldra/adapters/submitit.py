@@ -6,6 +6,7 @@ from typing import Any, Callable, Optional, Self
 
 from ..config import HULDRA_CONFIG
 from ..storage import StateManager
+from ..storage.state import _HuldraState
 
 
 class SubmititAdapter:
@@ -94,18 +95,11 @@ class SubmititAdapter:
                 job_id = self.get_job_id(job)
                 if job_id:
 
-                    def mutate(state: dict[str, Any]) -> None:
-                        attempt = state.get("attempt")
-                        if (
-                            not isinstance(attempt, dict)
-                            or attempt.get("id") != attempt_id
-                        ):
+                    def mutate(state: _HuldraState) -> None:
+                        attempt = state.attempt
+                        if attempt is None or attempt.id != attempt_id:
                             return
-                        scheduler = attempt.get("scheduler")
-                        if not isinstance(scheduler, dict):
-                            scheduler = {}
-                            attempt["scheduler"] = scheduler
-                        scheduler["job_id"] = job_id
+                        attempt.scheduler["job_id"] = job_id
 
                     StateManager.update_state(directory, mutate)
                     if callback:
@@ -148,7 +142,7 @@ class SubmititAdapter:
 
         return None
 
-    def probe(self: Self, directory: Path, state: dict[str, Any]) -> dict[str, Any]:
+    def probe(self: Self, directory: Path, state: _HuldraState) -> dict[str, Any]:
         """
         Best-effort scheduler reconciliation.
 
