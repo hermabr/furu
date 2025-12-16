@@ -177,6 +177,8 @@ class StateManager:
 
     SCHEMA_VERSION = 1
 
+    INTERNAL_DIR = ".huldra"
+
     STATE_FILE = "state.json"
     EVENTS_FILE = "events.jsonl"
     SUCCESS_MARKER = "SUCCESS.json"
@@ -194,8 +196,24 @@ class StateManager:
     }
 
     @classmethod
+    def get_internal_dir(cls, directory: Path) -> Path:
+        return directory / cls.INTERNAL_DIR
+
+    @classmethod
     def get_state_path(cls, directory: Path) -> Path:
-        return directory / cls.STATE_FILE
+        return cls.get_internal_dir(directory) / cls.STATE_FILE
+
+    @classmethod
+    def get_events_path(cls, directory: Path) -> Path:
+        return cls.get_internal_dir(directory) / cls.EVENTS_FILE
+
+    @classmethod
+    def get_success_marker_path(cls, directory: Path) -> Path:
+        return cls.get_internal_dir(directory) / cls.SUCCESS_MARKER
+
+    @classmethod
+    def get_lock_path(cls, directory: Path, lock_name: str) -> Path:
+        return cls.get_internal_dir(directory) / lock_name
 
     @classmethod
     def _utcnow(cls) -> _dt.datetime:
@@ -248,6 +266,7 @@ class StateManager:
     @classmethod
     def _write_state_unlocked(cls, directory: Path, state: _HuldraState) -> None:
         state_path = cls.get_state_path(directory)
+        state_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = state_path.with_suffix(".tmp")
         tmp_path.write_text(json.dumps(state.model_dump(mode="json"), indent=2))
         os.replace(tmp_path, state_path)
@@ -263,6 +282,7 @@ class StateManager:
     @classmethod
     def try_lock(cls, lock_path: Path) -> Optional[int]:
         try:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
             fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o644)
             payload = {
                 "pid": os.getpid(),
@@ -331,7 +351,7 @@ class StateManager:
     def update_state(
         cls, directory: Path, mutator: Callable[[_HuldraState], None]
     ) -> _HuldraState:
-        lock_path = directory / cls.STATE_LOCK
+        lock_path = cls.get_lock_path(directory, cls.STATE_LOCK)
         fd: Optional[int] = None
         try:
             fd = cls._acquire_lock_blocking(lock_path)
@@ -347,7 +367,7 @@ class StateManager:
 
     @classmethod
     def append_event(cls, directory: Path, event: dict[str, Any]) -> None:
-        path = directory / cls.EVENTS_FILE
+        path = cls.get_events_path(directory)
         enriched = {
             "ts": cls._iso_now(),
             "pid": os.getpid(),
@@ -355,12 +375,14 @@ class StateManager:
             **event,
         }
         with contextlib.suppress(Exception):
+            path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(enriched) + "\n")
 
     @classmethod
     def write_success_marker(cls, directory: Path, *, attempt_id: str) -> None:
-        marker = directory / cls.SUCCESS_MARKER
+        marker = cls.get_success_marker_path(directory)
+        marker.parent.mkdir(parents=True, exist_ok=True)
         payload = {"attempt_id": attempt_id, "created_at": cls._iso_now()}
         tmp = marker.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, indent=2))
@@ -368,7 +390,7 @@ class StateManager:
 
     @classmethod
     def success_marker_exists(cls, directory: Path) -> bool:
-        return (directory / cls.SUCCESS_MARKER).is_file()
+        return cls.get_success_marker_path(directory).is_file()
 
     @classmethod
     def _lease_expired(
@@ -824,5 +846,5 @@ class StateManager:
             "preempted",
         }:
             with contextlib.suppress(Exception):
-                (directory / cls.COMPUTE_LOCK).unlink(missing_ok=True)
+                cls.get_lock_path(directory, cls.COMPUTE_LOCK).unlink(missing_ok=True)
         return state

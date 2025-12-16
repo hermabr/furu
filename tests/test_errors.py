@@ -19,7 +19,7 @@ def test_failed_create_raises_compute_error_and_records_state(huldra_tmp_root) -
     with pytest.raises(RuntimeError, match="boom"):
         obj.load_or_create()
 
-    log_text = (obj.huldra_dir / "huldra.log").read_text()
+    log_text = (obj.huldra_dir / ".huldra" / "huldra.log").read_text()
     assert "[ERROR]" in log_text
     assert "_create failed" in log_text
     assert "Traceback (most recent call last)" in log_text

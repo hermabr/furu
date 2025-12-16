@@ -17,9 +17,9 @@ def main() -> None:
 
     print("model output:", out)
     print("model dir:", model.huldra_dir)
-    print("model log:", model.huldra_dir / "huldra.log")
+    print("model log:", model.huldra_dir / ".huldra" / "huldra.log")
     print("dataset dir:", model.dataset.huldra_dir)
-    print("dataset log:", model.dataset.huldra_dir / "huldra.log")
+    print("dataset log:", model.dataset.huldra_dir / ".huldra" / "huldra.log")
 
 
 if __name__ == "__main__":

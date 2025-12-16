@@ -19,7 +19,7 @@ def main() -> None:
     obj = TrainTextModel()
     log.info("about to run: %s", obj.to_python(multiline=False))
     obj.load_or_create()
-    log.info("wrote logs to: %s", obj.huldra_dir / "huldra.log")
+    log.info("wrote logs to: %s", obj.huldra_dir / ".huldra" / "huldra.log")
 
 
 if __name__ == "__main__":

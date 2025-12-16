@@ -40,13 +40,15 @@ def _strip_load_or_create_decision_suffix(message: str) -> str:
 
 def _holder_to_log_dir(holder: Any) -> Path:
     if isinstance(holder, Path):
-        return holder
-    directory = getattr(holder, "huldra_dir", None)
-    if isinstance(directory, Path):
-        return directory
-    raise TypeError(
-        "holder must be a pathlib.Path or have a .huldra_dir: pathlib.Path attribute"
-    )
+        base_dir = holder
+    else:
+        directory = getattr(holder, "huldra_dir", None)
+        if not isinstance(directory, Path):
+            raise TypeError(
+                "holder must be a pathlib.Path or have a .huldra_dir: pathlib.Path attribute"
+            )
+        base_dir = directory
+    return base_dir / ".huldra"
 
 
 @contextlib.contextmanager

@@ -15,6 +15,13 @@ from ..serialization import BaseModel, HuldraSerializer
 class MetadataManager:
     """Handles metadata collection and storage."""
 
+    INTERNAL_DIR = ".huldra"
+    METADATA_FILE = "metadata.json"
+
+    @classmethod
+    def get_metadata_path(cls, directory: Path) -> Path:
+        return directory / cls.INTERNAL_DIR / cls.METADATA_FILE
+
     @staticmethod
     def safe_git_command(args: List[str]) -> str:
         """Run git command safely, return output or error message."""
@@ -120,7 +127,8 @@ class MetadataManager:
     @classmethod
     def write_metadata(cls, metadata: Dict[str, Any], directory: Path) -> None:
         """Write metadata to file."""
-        metadata_path = directory / "metadata.json"
+        metadata_path = cls.get_metadata_path(directory)
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
         metadata_path.write_text(
             json.dumps(
                 metadata,
@@ -134,7 +142,7 @@ class MetadataManager:
     @classmethod
     def read_metadata(cls, directory: Path) -> Dict[str, Any]:
         """Read metadata from file."""
-        metadata_path = directory / "metadata.json"
+        metadata_path = cls.get_metadata_path(directory)
         if not metadata_path.is_file():
             raise FileNotFoundError(f"Metadata not found: {metadata_path}")
         return json.loads(metadata_path.read_text())

@@ -33,7 +33,9 @@ def test_state_default_and_attempt_lifecycle(huldra_tmp_root, tmp_path) -> None:
 def test_locks_are_exclusive(huldra_tmp_root, tmp_path) -> None:
     directory = tmp_path / "obj"
     directory.mkdir()
-    lock_path = directory / huldra.StateManager.COMPUTE_LOCK
+    lock_path = huldra.StateManager.get_lock_path(
+        directory, huldra.StateManager.COMPUTE_LOCK
+    )
 
     fd1 = huldra.StateManager.try_lock(lock_path)
     assert fd1 is not None
@@ -71,7 +73,10 @@ def test_reconcile_marks_dead_local_attempt_as_crashed(
     )
 
     # If reconcile decides the attempt is dead, it clears the compute lock.
-    (directory / huldra.StateManager.COMPUTE_LOCK).write_text(
+    lock_path = huldra.StateManager.get_lock_path(
+        directory, huldra.StateManager.COMPUTE_LOCK
+    )
+    lock_path.write_text(
         json.dumps(
             {
                 "pid": 99999,
@@ -85,7 +90,7 @@ def test_reconcile_marks_dead_local_attempt_as_crashed(
     state2 = huldra.StateManager.reconcile(directory)
     assert state2.attempt is not None
     assert state2.attempt.status == "crashed"
-    assert (directory / huldra.StateManager.COMPUTE_LOCK).exists() is False
+    assert lock_path.exists() is False
 
 
 def test_state_warns_when_retrying_after_failure(

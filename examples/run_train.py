@@ -19,7 +19,7 @@ def main() -> None:
     artifact = obj.load_or_create()
     print("artifact:", artifact)
     print("artifact dir:", obj.huldra_dir)
-    print("log:", obj.huldra_dir / "huldra.log")
+    print("log:", obj.huldra_dir / ".huldra" / "huldra.log")
 
 
 if __name__ == "__main__":

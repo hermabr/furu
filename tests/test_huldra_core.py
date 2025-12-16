@@ -68,7 +68,10 @@ def test_load_or_create_recovers_from_expired_running_lease(huldra_tmp_root) -> 
         attempt.lease_expires_at = expired
 
     huldra.StateManager.update_state(directory, mutate)
-    (directory / huldra.StateManager.COMPUTE_LOCK).write_text(
+    lock_path = huldra.StateManager.get_lock_path(
+        directory, huldra.StateManager.COMPUTE_LOCK
+    )
+    lock_path.write_text(
         json.dumps(
             {
                 "pid": 99999,
@@ -93,7 +96,11 @@ def test_load_or_create_waits_until_lease_expires_then_recovers(
     directory.mkdir(parents=True, exist_ok=True)
 
     # Simulate another process holding the compute lock, but with a lease that will expire.
-    (directory / huldra.StateManager.COMPUTE_LOCK).write_text(
+    lock_path = huldra.StateManager.get_lock_path(
+        directory, huldra.StateManager.COMPUTE_LOCK
+    )
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text(
         json.dumps(
             {
                 "pid": 99999,
@@ -129,5 +136,5 @@ def test_load_or_create_waits_until_lease_expires_then_recovers(
 
     result = obj.load_or_create()
     assert result == 123
-    assert (directory / huldra.StateManager.COMPUTE_LOCK).exists() is False
+    assert lock_path.exists() is False
     assert isinstance(huldra.StateManager.read_state(directory).result, _StateResultSuccess)

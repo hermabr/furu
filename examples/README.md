@@ -18,4 +18,4 @@ uv run python examples/run_logging.py
 Artifacts will be written under:
 
 - `examples/.huldra/data/...`
-- logs under each artifact directory: `.../huldra.log`
+- logs under each artifact directory: `.../.huldra/huldra.log`

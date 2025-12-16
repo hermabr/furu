@@ -47,7 +47,7 @@ def test_log_routes_to_current_holder_dir(huldra_tmp_root) -> None:
     obj = Video()
     obj.load_or_create()
 
-    video_log = (obj.huldra_dir / "huldra.log").read_text()
+    video_log = (obj.huldra_dir / ".huldra" / "huldra.log").read_text()
     assert "[DEBUG]" in video_log
     assert "video:before" in video_log
     assert "video:after" in video_log
@@ -62,7 +62,7 @@ def test_log_routes_to_current_holder_dir(huldra_tmp_root) -> None:
     )
     assert video_log.index("video:before") < video_log.index("video:after")
 
-    content_log = (obj.content.huldra_dir / "huldra.log").read_text()
+    content_log = (obj.content.huldra_dir / ".huldra" / "huldra.log").read_text()
     assert "[DEBUG]" in content_log
     assert "internet:download" in content_log
     assert "video:before" not in content_log
@@ -88,16 +88,16 @@ def test_configure_logging_rich_handler_is_idempotent(huldra_tmp_root) -> None:
     assert after2 == after
 
 
-def test_load_or_create_writes_separator_and_suppresses_cache_hit_logs(
+def test_load_or_create_does_not_log_on_cache_hit(
     huldra_tmp_root,
 ) -> None:
     obj = SeparatorItem()
     obj.load_or_create()
     obj.load_or_create()
 
-    text = (obj.huldra_dir / "huldra.log").read_text()
-    assert text.count("------------------") == 2
-    assert text.count("load_or_create ") == 2
+    text = (obj.huldra_dir / ".huldra" / "huldra.log").read_text()
+    assert text.count("------------------") == 1
+    assert text.count("load_or_create ") == 1
     assert f"load_or_create {obj.__class__.__name__} {obj.hexdigest}" in text
     assert str(obj.huldra_dir) in text
     assert text.count("_create: ok ") == 1

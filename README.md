@@ -134,7 +134,7 @@ Use this for large, non-versioned inputs/outputs. If you want per-object isolati
 
 Huldra installs stdlib `logging` handlers on the *root logger*:
 
-- `current_holder.huldra_dir / "huldra.log"` while a holder is active
+- `current_holder.huldra_dir / ".huldra" / "huldra.log"` while a holder is active
 
 This means you can use regular Python logging inside your code:
 
@@ -173,15 +173,15 @@ Note: `huldra.log` files remain detailed and include timestamps + `[LEVEL]` for 
 
 Each artifact directory includes files maintained by Huldra:
 
-- `metadata.json`: config, hash, directory, environment info, and git info (when available)
-- `state.json`: status transitions (`missing/queued/running/success/failed/preempted`) and timestamps
+- `.huldra/metadata.json`: config, hash, directory, environment info, and git info (when available)
+- `.huldra/state.json`: status transitions (`missing/queued/running/success/failed/preempted`) and timestamps
 
 This is used to detect whether an object “exists” and to coordinate concurrent runs via lock files.
 
 ## Submitit integration
 
 `load_or_create(executor=...)` supports running work via `submitit`.
-Huldra stores submitit state in `<huldra_dir>/submitit/` and tracks job IDs in `state.json`.
+Huldra stores submitit job handles in `<huldra_dir>/.huldra/` and tracks job IDs in `.huldra/state.json`.
 
 ## Configuration knobs
 

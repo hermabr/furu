@@ -60,13 +60,14 @@ class SubmititAdapter:
         except Exception:  # pragma: no cover
             import pickle  # type: ignore
 
-        job_path = directory / self.JOB_PICKLE
+        job_path = StateManager.get_internal_dir(directory) / self.JOB_PICKLE
+        job_path.parent.mkdir(parents=True, exist_ok=True)
         with job_path.open("wb") as f:
             pickle.dump(job, f)
 
     def load_job(self: Self, directory: Path) -> Any:
         """Load job handle from pickle file."""
-        job_path = directory / self.JOB_PICKLE
+        job_path = StateManager.get_internal_dir(directory) / self.JOB_PICKLE
         if not job_path.is_file():
             return None
         try:

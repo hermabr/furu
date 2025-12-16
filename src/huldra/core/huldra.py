@@ -155,7 +155,7 @@ class Huldra[T](ABC):
         )
 
         with contextlib.suppress(Exception):
-            (directory / StateManager.SUCCESS_MARKER).unlink(missing_ok=True)
+            StateManager.get_success_marker_path(directory).unlink(missing_ok=True)
 
         now = datetime.datetime.now(datetime.timezone.utc).isoformat(
             timespec="seconds"
@@ -284,7 +284,6 @@ class Huldra[T](ABC):
                         )
                         state0 = StateManager.read_state(directory)
                 attempt0 = state0.attempt
-                write_separator()
                 if isinstance(state0.result, _StateResultSuccess):
                     decision = "success->load"
                     action_color = "green"
@@ -295,23 +294,28 @@ class Huldra[T](ABC):
                     decision = "create"
                     action_color = "blue"
 
-                logger.info(
-                    "load_or_create %s %s",
-                    self.__class__.__name__,
-                    self.hexdigest,
-                    extra={
-                        "huldra_console_only": True,
-                        "huldra_action_color": action_color,
-                    },
-                )
-                logger.debug(
-                    "load_or_create %s %s %s (%s)",
-                    self.__class__.__name__,
-                    self.hexdigest,
-                    directory,
-                    decision,
-                    extra={"huldra_action_color": action_color},
-                )
+                # Cache hits can be extremely noisy in pipelines; keep logs for state
+                # transitions (create/wait) and error cases, but suppress repeated
+                # "success->load" lines and the raw separator on successful loads.
+                if decision != "success->load":
+                    write_separator()
+                    logger.info(
+                        "load_or_create %s %s",
+                        self.__class__.__name__,
+                        self.hexdigest,
+                        extra={
+                            "huldra_console_only": True,
+                            "huldra_action_color": action_color,
+                        },
+                    )
+                    logger.debug(
+                        "load_or_create %s %s %s (%s)",
+                        self.__class__.__name__,
+                        self.hexdigest,
+                        directory,
+                        decision,
+                        extra={"huldra_action_color": action_color},
+                    )
 
                 # Fast path: already successful
                 state_now = StateManager.read_state(directory)
@@ -321,6 +325,9 @@ class Huldra[T](ABC):
                         ok = True
                         return result
                     except Exception as e:
+                        # Ensure there is still a clear marker in logs for unexpected
+                        # failures even when we suppressed the cache-hit header line.
+                        write_separator()
                         logger.error(
                             "load_or_create %s %s (load failed)",
                             self.__class__.__name__,
@@ -424,7 +431,7 @@ class Huldra[T](ABC):
                 return job
 
         # Try to acquire submit lock
-        lock_path = directory / StateManager.SUBMIT_LOCK
+        lock_path = StateManager.get_lock_path(directory, StateManager.SUBMIT_LOCK)
         lock_fd = StateManager.try_lock(lock_path)
 
         if lock_fd is None:
@@ -495,7 +502,7 @@ class Huldra[T](ABC):
             directory = self.huldra_dir
             directory.mkdir(parents=True, exist_ok=True)
 
-            lock_path = directory / StateManager.COMPUTE_LOCK
+            lock_path = StateManager.get_lock_path(directory, StateManager.COMPUTE_LOCK)
             lock_fd = None
             next_wait_log_at = 0.0
             while lock_fd is None:
@@ -652,7 +659,7 @@ class Huldra[T](ABC):
         """Run computation locally, returning (status, created_here, result)."""
         logger = get_logger()
         directory = self.huldra_dir
-        lock_path = directory / StateManager.COMPUTE_LOCK
+        lock_path = StateManager.get_lock_path(directory, StateManager.COMPUTE_LOCK)
 
         lock_fd = None
         next_wait_log_at = 0.0
