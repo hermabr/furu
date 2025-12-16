@@ -142,9 +142,7 @@ class Huldra[T](ABC):
         """Validate that result is complete and correct (override if needed)."""
         return True
 
-    def _invalidate_cached_success(
-        self: Self, directory: Path, *, reason: str
-    ) -> None:
+    def _invalidate_cached_success(self: Self, directory: Path, *, reason: str) -> None:
         logger = get_logger()
         logger.warning(
             "invalidate %s %s %s (%s)",
@@ -157,9 +155,7 @@ class Huldra[T](ABC):
         with contextlib.suppress(Exception):
             StateManager.get_success_marker_path(directory).unlink(missing_ok=True)
 
-        now = datetime.datetime.now(datetime.timezone.utc).isoformat(
-            timespec="seconds"
-        )
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
 
         def mutate(state: _HuldraState) -> None:
             state.result = _StateResultAbsent(status="absent")

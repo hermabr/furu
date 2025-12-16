@@ -57,9 +57,8 @@ def test_load_or_create_with_executor_submits_job(huldra_tmp_root) -> None:
 
     assert obj.exists() is True
     assert (
-        (obj.huldra_dir / ".huldra" / huldra.SubmititAdapter.JOB_PICKLE).exists()
-        is True
-    )
+        obj.huldra_dir / ".huldra" / huldra.SubmititAdapter.JOB_PICKLE
+    ).exists() is True
     assert job is not None
     assert obj.load_or_create() == 11
 

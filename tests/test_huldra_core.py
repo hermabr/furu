@@ -85,7 +85,9 @@ def test_load_or_create_recovers_from_expired_running_lease(huldra_tmp_root) -> 
 
     result = obj.load_or_create()
     assert result == 123
-    assert isinstance(huldra.StateManager.read_state(directory).result, _StateResultSuccess)
+    assert isinstance(
+        huldra.StateManager.read_state(directory).result, _StateResultSuccess
+    )
 
 
 def test_load_or_create_waits_until_lease_expires_then_recovers(
@@ -137,4 +139,6 @@ def test_load_or_create_waits_until_lease_expires_then_recovers(
     result = obj.load_or_create()
     assert result == 123
     assert lock_path.exists() is False
-    assert isinstance(huldra.StateManager.read_state(directory).result, _StateResultSuccess)
+    assert isinstance(
+        huldra.StateManager.read_state(directory).result, _StateResultSuccess
+    )
