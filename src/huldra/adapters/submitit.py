@@ -93,9 +93,13 @@ class SubmititAdapter:
             while True:
                 job_id = self.get_job_id(job)
                 if job_id:
+
                     def mutate(state: dict[str, Any]) -> None:
                         attempt = state.get("attempt")
-                        if not isinstance(attempt, dict) or attempt.get("id") != attempt_id:
+                        if (
+                            not isinstance(attempt, dict)
+                            or attempt.get("id") != attempt_id
+                        ):
                             return
                         scheduler = attempt.get("scheduler")
                         if not isinstance(scheduler, dict):

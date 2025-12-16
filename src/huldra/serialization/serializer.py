@@ -217,4 +217,3 @@ class HuldraSerializer:
         if multiline:
             result = textwrap.dedent(result).strip()
         return result
-

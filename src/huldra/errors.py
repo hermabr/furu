@@ -55,4 +55,3 @@ class HuldraComputeError(HuldraError):
                 msg += f"\n\nTraceback:\n{tb}"
         msg += f"\n\nState file: {self.state_path}"
         return msg
-

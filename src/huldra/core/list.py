@@ -1,4 +1,15 @@
-from typing import Any, Generator, Generic, Iterator, List, Literal, Optional, TypeVar, cast, overload
+from typing import (
+    Any,
+    Generator,
+    Generic,
+    Iterator,
+    List,
+    Literal,
+    Optional,
+    TypeVar,
+    cast,
+    overload,
+)
 
 from .huldra import Huldra
 
