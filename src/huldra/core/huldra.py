@@ -293,6 +293,23 @@ class Huldra[T](ABC):
                 # Cache hits can be extremely noisy in pipelines; keep logs for state
                 # transitions (create/wait) and error cases, but suppress repeated
                 # "success->load" lines and the raw separator on successful loads.
+                caller_frame = inspect.currentframe()
+                caller_info: dict[str, Any] = {}
+                if caller_frame is not None:
+                    # Walk up the stack to find the caller outside of huldra package
+                    huldra_pkg_dir = str(Path(__file__).parent.parent)
+                    frame = caller_frame.f_back
+                    while frame is not None:
+                        filename = frame.f_code.co_filename
+                        # Skip frames from within the huldra package
+                        if not filename.startswith(huldra_pkg_dir):
+                            caller_info = {
+                                "huldra_caller_file": filename,
+                                "huldra_caller_line": frame.f_lineno,
+                            }
+                            break
+                        frame = frame.f_back
+
                 logger.info(
                     "load_or_create %s %s",
                     self.__class__.__name__,
@@ -300,6 +317,7 @@ class Huldra[T](ABC):
                     extra={
                         "huldra_console_only": True,
                         "huldra_action_color": action_color,
+                        **caller_info,
                     },
                 )
                 if decision != "success->load":

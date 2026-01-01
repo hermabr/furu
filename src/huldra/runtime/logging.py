@@ -155,6 +155,12 @@ class _HuldraRichConsoleHandler(logging.Handler):
 
     @staticmethod
     def _format_location(record: logging.LogRecord) -> str:
+        # Use caller location if available (for load_or_create messages)
+        caller_file = getattr(record, "huldra_caller_file", None)
+        caller_line = getattr(record, "huldra_caller_line", None)
+        if caller_file is not None and caller_line is not None:
+            filename = Path(caller_file).name
+            return f"[{filename}:{caller_line}]"
         filename = Path(record.pathname).name if record.pathname else "<unknown>"
         return f"[{filename}:{record.lineno}]"
 
