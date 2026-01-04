@@ -16,7 +16,7 @@ lint:
 
 check: lint test
 
-build: dashboard-build
+build: test-all dashboard-build
 	uv build
 
 clean:
@@ -83,6 +83,6 @@ dashboard-serve: dashboard-build
 # All tests (project + dashboard)
 # ============================================================================
 
-test-all: test dashboard-test dashboard-test-frontend
+test-all: test dashboard-test-all
 
 
