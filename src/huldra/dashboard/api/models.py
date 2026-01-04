@@ -119,3 +119,36 @@ class ExperimentDAG(BaseModel):
     total_nodes: int
     total_edges: int
     total_experiments: int
+
+
+# Parent/Child relationship models
+
+
+class ParentExperiment(BaseModel):
+    """A parent experiment that this experiment depends on."""
+
+    field_name: str  # The field name that references this parent
+    class_name: str  # Short class name
+    full_class_name: str  # Full qualified class name
+    namespace: str | None = None  # Namespace if the experiment exists
+    huldra_hash: str | None = None  # Hash if the experiment exists
+    result_status: str | None = None  # Status if the experiment exists
+    config: dict[str, Any] | None = None  # Parent's config for identification
+
+
+class ChildExperiment(BaseModel):
+    """A child experiment that depends on this experiment."""
+
+    field_name: str  # The field name through which this experiment is referenced
+    class_name: str  # Short class name of the child
+    full_class_name: str  # Full qualified class name of the child
+    namespace: str  # Namespace of the child experiment
+    huldra_hash: str  # Hash of the child experiment
+    result_status: str  # Status of the child experiment
+
+
+class ExperimentRelationships(BaseModel):
+    """Parent and child relationships for an experiment."""
+
+    parents: list[ParentExperiment]
+    children: list[ChildExperiment]

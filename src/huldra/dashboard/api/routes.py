@@ -8,12 +8,14 @@ from ..scanner import (
     get_experiment_detail,
     get_stats,
     get_experiment_dag,
+    get_experiment_relationships,
 )
 from .models import (
     DashboardStats,
     ExperimentDAG,
     ExperimentDetail,
     ExperimentList,
+    ExperimentRelationships,
     HealthCheck,
 )
 
@@ -74,6 +76,20 @@ async def list_experiments(
     experiments = experiments[offset : offset + limit]
 
     return ExperimentList(experiments=experiments, total=total)
+
+
+@router.get(
+    "/experiments/{namespace:path}/{huldra_hash}/relationships",
+    response_model=ExperimentRelationships,
+)
+async def get_experiment_relationships_route(
+    namespace: str, huldra_hash: str
+) -> ExperimentRelationships:
+    """Get parent and child relationships for a specific experiment."""
+    relationships = get_experiment_relationships(namespace, huldra_hash)
+    if relationships is None:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    return relationships
 
 
 @router.get(

@@ -10,14 +10,17 @@ from ..config import HULDRA_CONFIG
 from ..storage import MetadataManager, StateAttempt
 from ..storage.state import StateManager, _HuldraState
 from .api.models import (
+    ChildExperiment,
     DAGEdge,
     DAGExperiment,
     DAGNode,
     DashboardStats,
     ExperimentDAG,
     ExperimentDetail,
+    ExperimentRelationships,
     ExperimentSummary,
     JsonDict,
+    ParentExperiment,
     StatusCount,
 )
 
@@ -489,3 +492,172 @@ def get_experiment_dag() -> ExperimentDAG:
         total_edges=len(edges),
         total_experiments=sum(node.total_count for node in nodes),
     )
+
+
+def _find_experiment_by_huldra_obj(
+    huldra_obj: dict[str, object],
+) -> tuple[str, str, str] | None:
+    """
+    Find an experiment that matches the given huldra_obj serialization.
+
+    Args:
+        huldra_obj: The serialized huldra object to find
+
+    Returns:
+        Tuple of (namespace, huldra_hash, result_status) if found, None otherwise
+    """
+    full_class_name = huldra_obj.get("__class__")
+    if not isinstance(full_class_name, str):
+        return None
+
+    # Convert class name to potential namespace path
+    # e.g., "my_project.pipelines.TrainModel" -> "my_project/pipelines/TrainModel"
+    namespace_path = Path(*full_class_name.split("."))
+
+    for root in _iter_roots():
+        class_dir = root / namespace_path
+        if not class_dir.exists():
+            continue
+
+        # Search through experiments of this class
+        for experiment_dir in _find_experiment_dirs(class_dir):
+            metadata = MetadataManager.read_metadata_raw(experiment_dir)
+            if not metadata:
+                continue
+
+            stored_huldra_obj = metadata.get("huldra_obj")
+            if stored_huldra_obj == huldra_obj:
+                namespace, huldra_hash = _parse_namespace_from_path(
+                    experiment_dir, root
+                )
+                state = StateManager.read_state(experiment_dir)
+                return namespace, huldra_hash, state.result.status
+
+    return None
+
+
+def get_experiment_relationships(
+    namespace: str, huldra_hash: str
+) -> ExperimentRelationships | None:
+    """
+    Get parent and child relationships for an experiment.
+
+    Args:
+        namespace: Dot-separated namespace (e.g., "my_project.pipelines.TrainModel")
+        huldra_hash: Hash identifying the specific experiment
+
+    Returns:
+        ExperimentRelationships or None if experiment not found
+    """
+    # First get the experiment's metadata
+    namespace_path = Path(*namespace.split("."))
+
+    target_metadata: JsonDict | None = None
+
+    for root in _iter_roots():
+        experiment_dir = root / namespace_path / huldra_hash
+        state_path = StateManager.get_state_path(experiment_dir)
+
+        if state_path.is_file():
+            target_metadata = MetadataManager.read_metadata_raw(experiment_dir)
+            break
+
+    if not target_metadata:
+        return None
+
+    target_huldra_obj_raw = target_metadata.get("huldra_obj")
+    if not isinstance(target_huldra_obj_raw, dict):
+        return None
+    target_huldra_obj = cast(dict[str, object], target_huldra_obj_raw)
+
+    # Extract parents from this experiment's huldra_obj
+    parents: list[ParentExperiment] = []
+    dependencies = _extract_dependencies_from_huldra_obj(target_huldra_obj)
+
+    for field_name, dep_class in dependencies:
+        parent_obj = target_huldra_obj.get(field_name)
+        if not isinstance(parent_obj, dict):
+            continue
+
+        parent_obj_dict = cast(dict[str, object], parent_obj)
+        short_class_name = dep_class.split(".")[-1]
+
+        # Try to find the actual experiment
+        found = _find_experiment_by_huldra_obj(parent_obj_dict)
+
+        # Extract config (everything except __class__)
+        config = {k: v for k, v in parent_obj_dict.items() if k != "__class__"}
+
+        if found:
+            parent_ns, parent_hash, parent_status = found
+            parents.append(
+                ParentExperiment(
+                    field_name=field_name,
+                    class_name=short_class_name,
+                    full_class_name=dep_class,
+                    namespace=parent_ns,
+                    huldra_hash=parent_hash,
+                    result_status=parent_status,
+                    config=config,
+                )
+            )
+        else:
+            parents.append(
+                ParentExperiment(
+                    field_name=field_name,
+                    class_name=short_class_name,
+                    full_class_name=dep_class,
+                    namespace=None,
+                    huldra_hash=None,
+                    result_status=None,
+                    config=config,
+                )
+            )
+
+    # Find children by scanning all experiments
+    children: list[ChildExperiment] = []
+
+    for root in _iter_roots():
+        for experiment_dir in _find_experiment_dirs(root):
+            child_namespace, child_hash = _parse_namespace_from_path(
+                experiment_dir, root
+            )
+
+            # Skip self
+            if child_namespace == namespace and child_hash == huldra_hash:
+                continue
+
+            child_metadata = MetadataManager.read_metadata_raw(experiment_dir)
+            if not child_metadata:
+                continue
+
+            child_huldra_obj = child_metadata.get("huldra_obj")
+            if not isinstance(child_huldra_obj, dict):
+                continue
+
+            child_obj_dict = cast(dict[str, object], child_huldra_obj)
+
+            # Check if this experiment depends on our target
+            for field_name, value in child_obj_dict.items():
+                if field_name == "__class__":
+                    continue
+
+                if isinstance(value, dict) and value == target_huldra_obj:
+                    # This experiment depends on our target
+                    child_class = child_obj_dict.get("__class__")
+                    if not isinstance(child_class, str):
+                        continue
+
+                    state = StateManager.read_state(experiment_dir)
+                    children.append(
+                        ChildExperiment(
+                            field_name=field_name,
+                            class_name=child_class.split(".")[-1],
+                            full_class_name=child_class,
+                            namespace=child_namespace,
+                            huldra_hash=child_hash,
+                            result_status=state.result.status,
+                        )
+                    )
+
+    return ExperimentRelationships(parents=parents, children=children)

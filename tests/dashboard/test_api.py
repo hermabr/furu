@@ -589,3 +589,200 @@ def test_dag_endpoint_with_real_dependencies(
     assert data["total_experiments"] == 5
     for node in data["nodes"]:
         assert node["success_count"] == node["total_count"]
+
+
+# =============================================================================
+# Tests for Relationships API endpoint
+# =============================================================================
+
+
+def test_relationships_endpoint_not_found(
+    client: TestClient, temp_huldra_root: Path
+) -> None:
+    """Test relationships endpoint returns 404 for nonexistent experiment."""
+    response = client.get("/api/experiments/nonexistent.namespace/abc123/relationships")
+    assert response.status_code == 404
+
+
+def test_relationships_endpoint_no_relationships(
+    client: TestClient, populated_huldra_root: Path
+) -> None:
+    """Test relationships endpoint for experiment with no parents (root experiment)."""
+    # Get the first PrepareDataset experiment (has no parents, may have children)
+    list_response = client.get(
+        "/api/experiments?namespace=dashboard.pipelines.PrepareDataset"
+    )
+    assert list_response.status_code == 200
+    experiments = list_response.json()["experiments"]
+    assert len(experiments) > 0
+    exp = experiments[0]
+
+    response = client.get(
+        f"/api/experiments/{exp['namespace']}/{exp['huldra_hash']}/relationships"
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    # PrepareDataset has no parents
+    assert data["parents"] == []
+    # It should have children (TrainModel depends on it)
+    assert "children" in data
+
+
+def test_relationships_endpoint_has_parents(
+    client: TestClient, populated_huldra_root: Path
+) -> None:
+    """Test relationships endpoint for experiment that has parents."""
+    # Get a TrainModel experiment (has PrepareDataset as parent)
+    list_response = client.get(
+        "/api/experiments?namespace=dashboard.pipelines.TrainModel"
+    )
+    assert list_response.status_code == 200
+    experiments = list_response.json()["experiments"]
+    assert len(experiments) > 0
+    exp = experiments[0]
+
+    response = client.get(
+        f"/api/experiments/{exp['namespace']}/{exp['huldra_hash']}/relationships"
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    # TrainModel has PrepareDataset as parent via "dataset" field
+    assert len(data["parents"]) == 1
+    parent = data["parents"][0]
+    assert parent["field_name"] == "dataset"
+    assert parent["class_name"] == "PrepareDataset"
+    assert parent["full_class_name"].endswith("PrepareDataset")
+    # Should have resolved the parent experiment
+    assert parent["namespace"] is not None
+    assert parent["huldra_hash"] is not None
+    assert parent["result_status"] is not None
+
+
+def test_relationships_endpoint_has_children(
+    client: TestClient, populated_huldra_root: Path
+) -> None:
+    """Test relationships endpoint for experiment that has children."""
+    # Get dataset1 (used by train1 and train2)
+    # First get it via the detail endpoint to find its hash
+    list_response = client.get(
+        "/api/experiments?namespace=dashboard.pipelines.PrepareDataset&config_filter=name%3Dmnist"
+    )
+    assert list_response.status_code == 200
+    experiments = list_response.json()["experiments"]
+    assert len(experiments) == 1
+    exp = experiments[0]
+
+    response = client.get(
+        f"/api/experiments/{exp['namespace']}/{exp['huldra_hash']}/relationships"
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    # dataset1 is used by both train1 and train2
+    assert len(data["children"]) == 2
+    for child in data["children"]:
+        assert child["class_name"] == "TrainModel"
+        assert child["field_name"] == "dataset"
+        assert child["namespace"].endswith("TrainModel")
+        assert child["huldra_hash"] is not None
+        assert child["result_status"] in ["success", "incomplete"]
+
+
+def test_relationships_endpoint_with_real_dependencies(
+    client: TestClient, populated_with_dependencies: Path
+) -> None:
+    """Test relationships endpoint with experiments created via load_or_create."""
+    # Get the TrainModel experiment
+    list_response = client.get(
+        "/api/experiments?namespace=dashboard.pipelines.TrainModel"
+    )
+    assert list_response.status_code == 200
+    experiments = list_response.json()["experiments"]
+    assert len(experiments) == 1
+    train_exp = experiments[0]
+
+    response = client.get(
+        f"/api/experiments/{train_exp['namespace']}/{train_exp['huldra_hash']}/relationships"
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    # TrainModel has 1 parent (dataset1)
+    assert len(data["parents"]) == 1
+    assert data["parents"][0]["field_name"] == "dataset"
+    assert data["parents"][0]["namespace"] is not None  # Found the experiment
+
+    # TrainModel has 1 child (EvalModel)
+    assert len(data["children"]) == 1
+    assert data["children"][0]["class_name"] == "EvalModel"
+    assert data["children"][0]["field_name"] == "model"
+
+
+def test_relationships_parent_structure(
+    client: TestClient, populated_huldra_root: Path
+) -> None:
+    """Test that parent relationships include all required fields."""
+    # Get an EvalModel experiment (has TrainModel as parent)
+    list_response = client.get(
+        "/api/experiments?namespace=dashboard.pipelines.EvalModel"
+    )
+    assert list_response.status_code == 200
+    experiments = list_response.json()["experiments"]
+    assert len(experiments) == 1
+    exp = experiments[0]
+
+    response = client.get(
+        f"/api/experiments/{exp['namespace']}/{exp['huldra_hash']}/relationships"
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    assert len(data["parents"]) == 1
+    parent = data["parents"][0]
+
+    # Check all required fields are present
+    assert "field_name" in parent
+    assert "class_name" in parent
+    assert "full_class_name" in parent
+    assert "namespace" in parent
+    assert "huldra_hash" in parent
+    assert "result_status" in parent
+    assert "config" in parent
+
+    # Parent should have config data
+    assert parent["config"] is not None
+    assert isinstance(parent["config"], dict)
+
+
+def test_relationships_child_structure(
+    client: TestClient, populated_huldra_root: Path
+) -> None:
+    """Test that child relationships include all required fields."""
+    # Get a TrainModel experiment (has EvalModel as child)
+    list_response = client.get(
+        "/api/experiments?namespace=dashboard.pipelines.TrainModel&result_status=success"
+    )
+    assert list_response.status_code == 200
+    experiments = list_response.json()["experiments"]
+    assert len(experiments) >= 1
+    exp = experiments[0]
+
+    response = client.get(
+        f"/api/experiments/{exp['namespace']}/{exp['huldra_hash']}/relationships"
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    # Find children (may have EvalModel)
+    if len(data["children"]) > 0:
+        child = data["children"][0]
+
+        # Check all required fields are present
+        assert "field_name" in child
+        assert "class_name" in child
+        assert "full_class_name" in child
+        assert "namespace" in child
+        assert "huldra_hash" in child
+        assert "result_status" in child

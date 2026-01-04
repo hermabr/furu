@@ -40,12 +40,14 @@
 ### Experiment Visualization
 
 - [ ] DAG overview of experiments
-  - [ ] Show full DAG based on existing experiments
+  - [x] Show full DAG based on existing experiments
+  - [x] Interactive: clicking a node highlights connected nodes
   - [ ] Rich information: counts per node type, subclass groupings
-  - [ ] Interactive: clicking a node highlights connected nodes
   - Show subclass relationships
-  - Show full DAG based on code
-- [ ] Experiment details view
+  - Support either DAG made from all experiments or by crawling through the actual source code
+    - [x] From experiments
+    - [ ] From source code
+- [x] Experiment details view
   - Full config with collapsible sections
   - Click to navigate to child experiments
   - View all children of an experiment
