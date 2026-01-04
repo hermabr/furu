@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from huldra.dashboard.scanner import (
+    get_experiment_dag,
     get_experiment_detail,
     get_stats,
     scan_experiments,
@@ -504,3 +505,203 @@ def test_scan_experiments_filter_experiment_without_attempt(
     # All experiments
     all_results = scan_experiments()
     assert len(all_results) == 2
+
+
+# =============================================================================
+# Tests for DAG extraction functionality
+# =============================================================================
+
+
+def test_get_experiment_dag_empty(temp_huldra_root: Path) -> None:
+    """Test DAG with no experiments."""
+    dag = get_experiment_dag()
+    assert dag.total_nodes == 0
+    assert dag.total_edges == 0
+    assert dag.total_experiments == 0
+    assert dag.nodes == []
+    assert dag.edges == []
+
+
+def test_get_experiment_dag_single_node(temp_huldra_root: Path) -> None:
+    """Test DAG with a single experiment (no dependencies)."""
+    dataset = PrepareDataset(name="mnist", version="v1")
+    create_experiment_from_huldra(
+        dataset,
+        result_status="success",
+        attempt_status="success",
+    )
+
+    dag = get_experiment_dag()
+    assert dag.total_nodes == 1
+    assert dag.total_edges == 0
+    assert dag.total_experiments == 1
+
+    # Check node properties
+    node = dag.nodes[0]
+    assert node.class_name == "PrepareDataset"
+    assert "PrepareDataset" in node.full_class_name
+    assert node.total_count == 1
+    assert node.success_count == 1
+    assert len(node.experiments) == 1
+
+
+def test_get_experiment_dag_with_dependency(temp_huldra_root: Path) -> None:
+    """Test DAG with a simple dependency chain."""
+    dataset = PrepareDataset(name="mnist", version="v1")
+    create_experiment_from_huldra(
+        dataset,
+        result_status="success",
+        attempt_status="success",
+    )
+
+    train = TrainModel(lr=0.001, steps=1000, dataset=dataset)
+    create_experiment_from_huldra(
+        train,
+        result_status="success",
+        attempt_status="success",
+    )
+
+    dag = get_experiment_dag()
+    assert dag.total_nodes == 2
+    assert dag.total_edges == 1
+    assert dag.total_experiments == 2
+
+    # Check edge direction (PrepareDataset -> TrainModel)
+    edge = dag.edges[0]
+    assert "PrepareDataset" in edge.source
+    assert "TrainModel" in edge.target
+    assert edge.field_name == "dataset"
+
+
+def test_get_experiment_dag_multiple_experiments_same_class(
+    temp_huldra_root: Path,
+) -> None:
+    """Test DAG groups multiple experiments of the same class into one node."""
+    dataset1 = PrepareDataset(name="mnist", version="v1")
+    create_experiment_from_huldra(
+        dataset1,
+        result_status="success",
+        attempt_status="success",
+    )
+
+    dataset2 = PrepareDataset(name="cifar", version="v1")
+    create_experiment_from_huldra(
+        dataset2,
+        result_status="failed",
+        attempt_status="failed",
+    )
+
+    dataset3 = PrepareDataset(name="imagenet", version="v1")
+    create_experiment_from_huldra(
+        dataset3,
+        result_status="incomplete",
+        attempt_status="running",
+    )
+
+    dag = get_experiment_dag()
+    assert dag.total_nodes == 1  # Single node for all PrepareDataset
+    assert dag.total_experiments == 3
+
+    node = dag.nodes[0]
+    assert node.class_name == "PrepareDataset"
+    assert node.total_count == 3
+    assert node.success_count == 1
+    assert node.failed_count == 1
+    assert node.running_count == 1
+    assert len(node.experiments) == 3
+
+
+def test_get_experiment_dag_populated(populated_huldra_root: Path) -> None:
+    """Test DAG with the populated fixture data."""
+    dag = get_experiment_dag()
+
+    # Fixture has: PrepareDataset (2), TrainModel (2), EvalModel (1), DataLoader (1)
+    # Classes: PrepareDataset, TrainModel, EvalModel, DataLoader = 4 nodes
+    assert dag.total_nodes == 4
+    assert dag.total_experiments == 6
+
+    # Check node counts
+    node_by_class = {n.class_name: n for n in dag.nodes}
+    assert "PrepareDataset" in node_by_class
+    assert "TrainModel" in node_by_class
+    assert "EvalModel" in node_by_class
+    assert "DataLoader" in node_by_class
+
+    # PrepareDataset has 2 experiments
+    assert node_by_class["PrepareDataset"].total_count == 2
+    # TrainModel has 2 experiments
+    assert node_by_class["TrainModel"].total_count == 2
+    # EvalModel has 1 experiment
+    assert node_by_class["EvalModel"].total_count == 1
+    # DataLoader has 1 experiment
+    assert node_by_class["DataLoader"].total_count == 1
+
+
+def test_get_experiment_dag_edges_populated(populated_huldra_root: Path) -> None:
+    """Test DAG edges with the populated fixture data."""
+    dag = get_experiment_dag()
+
+    # Expected edges:
+    # PrepareDataset -> TrainModel (via dataset field)
+    # TrainModel -> EvalModel (via model field)
+    # So at least 2 edges
+    assert dag.total_edges >= 2
+
+    # TrainModel should have an incoming edge from PrepareDataset
+    train_edge = next((e for e in dag.edges if "TrainModel" in e.target), None)
+    assert train_edge is not None
+    assert "PrepareDataset" in train_edge.source
+    assert train_edge.field_name == "dataset"
+
+    # EvalModel should have an incoming edge from TrainModel
+    eval_edge = next((e for e in dag.edges if "EvalModel" in e.target), None)
+    assert eval_edge is not None
+    assert "TrainModel" in eval_edge.source
+    assert eval_edge.field_name == "model"
+
+
+def test_get_experiment_dag_with_real_dependencies(
+    populated_with_dependencies: Path,
+) -> None:
+    """Test DAG with experiments that have real dependencies created via load_or_create."""
+    dag = get_experiment_dag()
+
+    # populated_with_dependencies creates:
+    # - 2 PrepareDataset
+    # - 1 TrainModel (depends on dataset1)
+    # - 1 EvalModel (depends on train)
+    # - 1 MultiDependencyPipeline (depends on dataset1 and dataset2)
+    assert dag.total_experiments == 5
+
+    # All should be successful since they were created via load_or_create
+    for node in dag.nodes:
+        assert node.success_count == node.total_count
+
+    # Check edges
+    # MultiDependencyPipeline has 2 incoming edges (dataset1, dataset2)
+    multi_edges = [e for e in dag.edges if "MultiDependencyPipeline" in e.target]
+    assert len(multi_edges) == 2
+    field_names = {e.field_name for e in multi_edges}
+    assert field_names == {"dataset1", "dataset2"}
+
+
+def test_get_experiment_dag_experiment_details(temp_huldra_root: Path) -> None:
+    """Test that DAG nodes contain correct experiment details."""
+    dataset = PrepareDataset(name="mnist", version="v1")
+    huldra_hash = HuldraSerializer.compute_hash(dataset)
+
+    create_experiment_from_huldra(
+        dataset,
+        result_status="success",
+        attempt_status="success",
+    )
+
+    dag = get_experiment_dag()
+    node = dag.nodes[0]
+
+    # Check experiment details
+    exp = node.experiments[0]
+    assert exp.huldra_hash == huldra_hash
+    assert exp.namespace == "dashboard.pipelines.PrepareDataset"
+    assert exp.result_status == "success"
+    assert exp.attempt_status == "success"

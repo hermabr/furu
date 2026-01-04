@@ -459,3 +459,133 @@ def test_list_experiments_filter_no_match_returns_empty(
     response = client.get("/api/experiments?config_filter=name%3Dnonexistent")
     assert response.status_code == 200
     assert response.json()["total"] == 0
+
+
+# =============================================================================
+# Tests for DAG API endpoint
+# =============================================================================
+
+
+def test_dag_endpoint_empty(client: TestClient, temp_huldra_root: Path) -> None:
+    """Test DAG endpoint with no experiments."""
+    response = client.get("/api/dag")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total_nodes"] == 0
+    assert data["total_edges"] == 0
+    assert data["total_experiments"] == 0
+    assert data["nodes"] == []
+    assert data["edges"] == []
+
+
+def test_dag_endpoint(client: TestClient, populated_huldra_root: Path) -> None:
+    """Test DAG endpoint with experiments."""
+    response = client.get("/api/dag")
+    assert response.status_code == 200
+    data = response.json()
+
+    # Fixture has 4 unique classes
+    assert data["total_nodes"] == 4
+    assert data["total_experiments"] == 6
+
+    # Check node structure
+    assert len(data["nodes"]) == 4
+    node = data["nodes"][0]
+    assert "id" in node
+    assert "class_name" in node
+    assert "full_class_name" in node
+    assert "experiments" in node
+    assert "total_count" in node
+    assert "success_count" in node
+    assert "failed_count" in node
+    assert "running_count" in node
+
+    # Check edge structure
+    assert len(data["edges"]) >= 2
+    edge = data["edges"][0]
+    assert "source" in edge
+    assert "target" in edge
+    assert "field_name" in edge
+
+
+def test_dag_endpoint_node_counts(
+    client: TestClient, populated_huldra_root: Path
+) -> None:
+    """Test that DAG nodes have correct status counts."""
+    response = client.get("/api/dag")
+    assert response.status_code == 200
+    data = response.json()
+
+    # Find the PrepareDataset node (has 2 experiments: 1 success, 1 absent)
+    prepare_node = next(
+        (n for n in data["nodes"] if n["class_name"] == "PrepareDataset"), None
+    )
+    assert prepare_node is not None
+    assert prepare_node["total_count"] == 2
+    assert prepare_node["success_count"] == 1  # dataset1
+
+    # Find the TrainModel node (has 2 experiments: 1 success, 1 running)
+    train_node = next(
+        (n for n in data["nodes"] if n["class_name"] == "TrainModel"), None
+    )
+    assert train_node is not None
+    assert train_node["total_count"] == 2
+    assert train_node["success_count"] == 1
+    assert train_node["running_count"] == 1
+
+
+def test_dag_endpoint_experiment_details(
+    client: TestClient, populated_huldra_root: Path
+) -> None:
+    """Test that DAG nodes contain experiment details."""
+    response = client.get("/api/dag")
+    assert response.status_code == 200
+    data = response.json()
+
+    # Find a node with experiments
+    node_with_experiments = next(
+        (n for n in data["nodes"] if n["total_count"] > 0), None
+    )
+    assert node_with_experiments is not None
+    assert len(node_with_experiments["experiments"]) > 0
+
+    # Check experiment structure
+    exp = node_with_experiments["experiments"][0]
+    assert "namespace" in exp
+    assert "huldra_hash" in exp
+    assert "result_status" in exp
+
+
+def test_dag_endpoint_edge_relationships(
+    client: TestClient, populated_huldra_root: Path
+) -> None:
+    """Test that DAG edges represent correct dependency relationships."""
+    response = client.get("/api/dag")
+    assert response.status_code == 200
+    data = response.json()
+
+    # Find the edge from PrepareDataset to TrainModel
+    train_edge = next((e for e in data["edges"] if "TrainModel" in e["target"]), None)
+    assert train_edge is not None
+    assert "PrepareDataset" in train_edge["source"]
+    assert train_edge["field_name"] == "dataset"
+
+    # Find the edge from TrainModel to EvalModel
+    eval_edge = next((e for e in data["edges"] if "EvalModel" in e["target"]), None)
+    assert eval_edge is not None
+    assert "TrainModel" in eval_edge["source"]
+    assert eval_edge["field_name"] == "model"
+
+
+def test_dag_endpoint_with_real_dependencies(
+    client: TestClient, populated_with_dependencies: Path
+) -> None:
+    """Test DAG endpoint with experiments created via load_or_create."""
+    response = client.get("/api/dag")
+    assert response.status_code == 200
+    data = response.json()
+
+    # All experiments should be successful
+    assert data["total_experiments"] == 5
+    for node in data["nodes"]:
+        assert node["success_count"] == node["total_count"]

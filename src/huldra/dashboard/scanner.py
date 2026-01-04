@@ -4,12 +4,17 @@ import datetime as _dt
 from collections import defaultdict
 from collections.abc import Iterator
 from pathlib import Path
+from typing import cast
 
 from ..config import HULDRA_CONFIG
 from ..storage import MetadataManager, StateAttempt
 from ..storage.state import StateManager, _HuldraState
 from .api.models import (
+    DAGEdge,
+    DAGExperiment,
+    DAGNode,
     DashboardStats,
+    ExperimentDAG,
     ExperimentDetail,
     ExperimentSummary,
     JsonDict,
@@ -331,4 +336,156 @@ def get_stats() -> DashboardStats:
         queued_count=queued,
         failed_count=failed,
         success_count=success,
+    )
+
+
+def _extract_dependencies_from_huldra_obj(
+    huldra_obj: dict[str, object],
+) -> list[tuple[str, str]]:
+    """
+    Extract dependency class names from a serialized huldra object.
+
+    Looks for nested objects with __class__ markers, which indicate Huldra dependencies.
+
+    Args:
+        huldra_obj: The serialized huldra object (from metadata.huldra_obj)
+
+    Returns:
+        List of (field_name, dependency_class_name) tuples
+    """
+    dependencies: list[tuple[str, str]] = []
+
+    for key, value in huldra_obj.items():
+        if key == "__class__":
+            continue
+        if isinstance(value, dict):
+            nested_obj = cast(dict[str, object], value)
+            dep_class_value = nested_obj.get("__class__")
+            if dep_class_value is not None:
+                # This is a nested Huldra object (dependency)
+                dependencies.append((key, str(dep_class_value)))
+
+    return dependencies
+
+
+def _get_class_hierarchy(full_class_name: str) -> str | None:
+    """
+    Try to determine the parent class from the full class name.
+
+    This is a heuristic - we look at class naming patterns.
+    In the future, this could be enhanced to read actual class hierarchies.
+    """
+    # For now, we don't have access to actual class hierarchies at runtime
+    # This would require importing the classes or storing hierarchy info in metadata
+    return None
+
+
+def get_experiment_dag() -> ExperimentDAG:
+    """
+    Build a DAG of all experiments based on their dependencies.
+
+    The DAG is organized by class types:
+    - Each node represents a class (e.g., TrainModel)
+    - Experiments of the same class are grouped into the same node
+    - Edges represent dependencies between classes (field references)
+
+    Returns:
+        ExperimentDAG with nodes and edges for visualization
+    """
+    # Collect all experiments with their metadata
+    experiments_by_class: dict[str, list[tuple[str, str, str, str | None]]] = (
+        defaultdict(list)
+    )
+    # Maps full class name -> (short name, experiments)
+    class_info: dict[str, str] = {}  # full_class_name -> short_class_name
+    # Collect all edges (deduped by class pair)
+    edge_set: set[tuple[str, str, str]] = set()  # (source_class, target_class, field)
+
+    for root in _iter_roots():
+        for experiment_dir in _find_experiment_dirs(root):
+            state = StateManager.read_state(experiment_dir)
+            namespace, huldra_hash = _parse_namespace_from_path(experiment_dir, root)
+            metadata = MetadataManager.read_metadata_raw(experiment_dir)
+
+            if not metadata:
+                continue
+
+            huldra_obj = metadata.get("huldra_obj")
+            if not isinstance(huldra_obj, dict):
+                continue
+
+            full_class_name = huldra_obj.get("__class__")
+            if not isinstance(full_class_name, str):
+                continue
+
+            # Extract short class name
+            short_class_name = full_class_name.split(".")[-1]
+            class_info[full_class_name] = short_class_name
+
+            # Get attempt status
+            attempt_status = state.attempt.status if state.attempt else None
+
+            # Store experiment info
+            experiments_by_class[full_class_name].append(
+                (namespace, huldra_hash, state.result.status, attempt_status)
+            )
+
+            # Extract dependencies and create edges
+            dependencies = _extract_dependencies_from_huldra_obj(huldra_obj)
+            for field_name, dep_class in dependencies:
+                # Edge goes from dependency (source/upstream) to this class (target/downstream)
+                edge_set.add((dep_class, full_class_name, field_name))
+                # Also make sure the dependency class is in our class_info
+                if dep_class not in class_info:
+                    class_info[dep_class] = dep_class.split(".")[-1]
+
+    # Build nodes
+    nodes: list[DAGNode] = []
+    for full_class_name, short_class_name in class_info.items():
+        experiments = experiments_by_class.get(full_class_name, [])
+
+        # Count statuses
+        success_count = sum(1 for _, _, rs, _ in experiments if rs == "success")
+        failed_count = sum(1 for _, _, rs, _ in experiments if rs == "failed")
+        running_count = sum(
+            1 for _, _, _, attempt_status in experiments if attempt_status == "running"
+        )
+
+        node = DAGNode(
+            id=full_class_name,
+            class_name=short_class_name,
+            full_class_name=full_class_name,
+            experiments=[
+                DAGExperiment(
+                    namespace=ns,
+                    huldra_hash=h,
+                    result_status=rs,
+                    attempt_status=attempt_status,
+                )
+                for ns, h, rs, attempt_status in experiments
+            ],
+            total_count=len(experiments),
+            success_count=success_count,
+            failed_count=failed_count,
+            running_count=running_count,
+            parent_class=_get_class_hierarchy(full_class_name),
+        )
+        nodes.append(node)
+
+    # Build edges
+    edges: list[DAGEdge] = [
+        DAGEdge(source=source, target=target, field_name=field)
+        for source, target, field in edge_set
+    ]
+
+    # Sort nodes by class name for consistent ordering
+    nodes.sort(key=lambda n: n.class_name)
+    edges.sort(key=lambda e: (e.source, e.target))
+
+    return ExperimentDAG(
+        nodes=nodes,
+        edges=edges,
+        total_nodes=len(nodes),
+        total_edges=len(edges),
+        total_experiments=sum(node.total_count for node in nodes),
     )

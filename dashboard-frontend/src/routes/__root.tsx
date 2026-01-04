@@ -48,6 +48,14 @@ function RootComponent() {
               Experiments
             </Link>
           </Button>
+          <Button asChild variant="ghost" size="sm">
+            <Link
+              to="/dag"
+              className="[&.active]:text-primary [&.active]:bg-accent"
+            >
+              DAG
+            </Link>
+          </Button>
         </div>
       </nav>
       <main className="flex-1 p-8">

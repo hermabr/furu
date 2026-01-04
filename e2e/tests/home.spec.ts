@@ -29,9 +29,10 @@ test.describe("Dashboard Home Page", () => {
     await expect(page.getByText("Failed", { exact: true })).toBeVisible();
 
     // The stats should reflect our generated data (10 total experiments)
-    // We can't easily check specific numbers in the UI without knowing the exact structure
-    // but we should see non-zero values for successful experiments
-    await expect(page.getByText("10")).toBeVisible({ timeout: 10000 });
+    // Use the specific test ID to avoid matching timestamps
+    await expect(page.getByTestId("stats-total-value")).toHaveText("10", {
+      timeout: 10000,
+    });
   });
 
   test("should have working navigation", async ({ page }) => {
@@ -56,7 +57,9 @@ test.describe("Dashboard Home Page", () => {
     await expect(page.getByText("Total Experiments")).toBeVisible();
 
     // Should show some content related to experiments
-    // This could be a recent activity section or experiment count
-    await expect(page.getByText("10")).toBeVisible({ timeout: 10000 });
+    // Use the specific test ID to avoid matching timestamps
+    await expect(page.getByTestId("stats-total-value")).toHaveText("10", {
+      timeout: 10000,
+    });
   });
 });

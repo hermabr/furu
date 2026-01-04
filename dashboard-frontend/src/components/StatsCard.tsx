@@ -8,6 +8,7 @@ interface StatsCardProps {
   loading?: boolean;
   variant?: "default" | "success" | "failed" | "running";
   icon?: string;
+  testId?: string;
 }
 
 const borderStyles: Record<string, string> = {
@@ -30,9 +31,10 @@ export function StatsCard({
   loading,
   variant = "default",
   icon,
+  testId,
 }: StatsCardProps) {
   return (
-    <Card className={cn("p-5", borderStyles[variant])}>
+    <Card className={cn("p-5", borderStyles[variant])} data-testid={testId}>
       <CardHeader className="p-0 pb-4">
         <div className="flex items-center justify-between">
           <span className="text-sm text-muted-foreground">{title}</span>
@@ -49,6 +51,7 @@ export function StatsCard({
             "text-3xl font-bold font-mono",
             valueStyles[variant],
           )}
+          data-testid={testId ? `${testId}-value` : undefined}
         >
           {loading ? "..." : value.toLocaleString()}
         </div>

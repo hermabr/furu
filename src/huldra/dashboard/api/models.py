@@ -69,3 +69,53 @@ class DashboardStats(BaseModel):
     queued_count: int
     failed_count: int
     success_count: int
+
+
+# DAG Models
+
+
+class DAGExperiment(BaseModel):
+    """An experiment instance within a DAG node (grouped by class)."""
+
+    namespace: str
+    huldra_hash: str
+    result_status: str
+    attempt_status: str | None = None
+
+
+class DAGNode(BaseModel):
+    """A node in the experiment DAG representing a class type.
+
+    Multiple experiments of the same class are grouped into one node.
+    """
+
+    id: str  # Unique node identifier (class name)
+    class_name: str  # Short class name (e.g., "TrainModel")
+    full_class_name: str  # Full qualified class name from __class__
+    experiments: list[DAGExperiment]  # All experiments of this class
+    # Counts by status for quick access
+    total_count: int
+    success_count: int
+    failed_count: int
+    running_count: int
+    # Parent class for subclass relationships
+    parent_class: str | None = None
+
+
+class DAGEdge(BaseModel):
+    """An edge in the experiment DAG representing a dependency."""
+
+    source: str  # Source node id (parent/upstream)
+    target: str  # Target node id (child/downstream)
+    field_name: str  # The field name that creates this dependency
+
+
+class ExperimentDAG(BaseModel):
+    """Complete DAG structure for visualization."""
+
+    nodes: list[DAGNode]
+    edges: list[DAGEdge]
+    # Summary statistics
+    total_nodes: int
+    total_edges: int
+    total_experiments: int

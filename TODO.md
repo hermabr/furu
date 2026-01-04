@@ -31,13 +31,11 @@
 
 ### Experiment Management
 
-- [ ] List and filter experiments
-  - Filter by host, runtime, date, etc.
-  - Filter by a field in the config
-- [ ] Rerun experiments from UI or via code snippet
+- [ ] Migration helper / show stale runs that are no longer valid
 - [ ] Create new experiments with different hyperparameters from the UI and get code snippet
 - [ ] Support parameter sweeps
-- [ ] Migration helper / show stale runs that are no longer valid
+- [ ] Rerun experiments from UI or via code snippet
+- [ ] Make helpers, such as auto complete and a nice helper, such as option to first add one filter and then add another filter and also change between larger than/smaller than etc. For things like filtering for users, have a dropdown if there are few enough options. The autocomplete might also be better if it is for per-config rather than general for all of them.
 
 ### Experiment Visualization
 

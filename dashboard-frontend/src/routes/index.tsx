@@ -66,6 +66,7 @@ function HomePage() {
           value={stats?.total ?? 0}
           loading={statsLoading}
           icon="📊"
+          testId="stats-total"
         />
         <StatsCard
           title="Running"
@@ -73,6 +74,7 @@ function HomePage() {
           loading={statsLoading}
           variant="running"
           icon="🔄"
+          testId="stats-running"
         />
         <StatsCard
           title="Successful"
@@ -80,6 +82,7 @@ function HomePage() {
           loading={statsLoading}
           variant="success"
           icon="✓"
+          testId="stats-success"
         />
         <StatsCard
           title="Failed"
@@ -87,6 +90,7 @@ function HomePage() {
           loading={statsLoading}
           variant="failed"
           icon="✗"
+          testId="stats-failed"
         />
       </div>
 

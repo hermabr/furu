@@ -3,9 +3,15 @@
 from fastapi import APIRouter, HTTPException, Query
 
 from .. import __version__
-from ..scanner import scan_experiments, get_experiment_detail, get_stats
+from ..scanner import (
+    scan_experiments,
+    get_experiment_detail,
+    get_stats,
+    get_experiment_dag,
+)
 from .models import (
     DashboardStats,
+    ExperimentDAG,
     ExperimentDetail,
     ExperimentList,
     HealthCheck,
@@ -85,3 +91,15 @@ async def get_experiment(namespace: str, huldra_hash: str) -> ExperimentDetail:
 async def dashboard_stats() -> DashboardStats:
     """Get aggregate statistics for the dashboard."""
     return get_stats()
+
+
+@router.get("/dag", response_model=ExperimentDAG)
+async def experiment_dag() -> ExperimentDAG:
+    """Get the experiment dependency DAG.
+
+    Returns a graph structure where:
+    - Nodes represent experiment classes (e.g., TrainModel, PrepareDataset)
+    - Multiple experiments of the same class are grouped into a single node
+    - Edges represent dependencies between classes
+    """
+    return get_experiment_dag()
