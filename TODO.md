@@ -3,6 +3,8 @@
 - an overview of the full dag
      - the full dag given the existing experiments
      - the full dag given the code
+     - include rich information, such as how many different types one node has, total count, support both wide view, where each subclass is its own object and the ones where all subclasses are grouped
+     - when pressing one node in the DAG, only highlight the nodes it is connected to
 - see all experiments and to filter
 - rerun an experiment
 - migration helper / show stale runs that are no longer valid
@@ -11,16 +13,17 @@
 - create a new experiment with other hyperparameters or a sweep
 - clean way to start a bunch of experiments
 - discover all available runs in the code (is this even possible?) could maybe also be that i provide a json file with all my experiments so that i can make something similar to a wandb dashboard but where i also show how to achieve my results
-
+- ui improvements
+- filter experiments by which host created it, how much time it took to run, when i ran it etc
 
 ## TODO
 
-- [ ] add support for building to wheel
+- [x] add support for building to wheel
 - [ ] remove all use of typing.Any
+- [ ] change typing.Optional[T] to be T | None
 - [ ] remove the custom tailwind colors
 - [ ] understand what absent status is
 - [ ] make sure the end to end tests use actual data (e.g., running some script to generate data inside data-huldra)
-- [ ] build wheels similar to python-react
 - [ ] check if i always have access to the huldra.dashboard even if i only add only `uv add huldra` and not `uv add huldra[dashboard]`
 - [ ] make the conftest tests use actual huldra code rather than manually making the json objects
   - [ ] make multiple different experiments with dependencies
@@ -37,5 +40,6 @@
 - [ ] throw/assert/raise on unexpected behavior rather than trying to manually handle it
 - [ ] support migrating, such as when adding a field
 - [ ] show which experiments are version controlled and not
-- [ ] move from hatchling to uv-build
+- [ ] move from hatchling to uv-build if possible and if better
 - [ ] decide if dashboard-frontend should be inside src or not
+- [ ] check out mlflow
