@@ -44,6 +44,45 @@ def temp_huldra_root(
     yield tmp_path
 
 
+# Module-scoped fixtures for read-only tests (much faster)
+@pytest.fixture(scope="module")
+def module_huldra_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Create a module-scoped temporary Huldra root directory."""
+    return tmp_path_factory.mktemp("huldra_root")
+
+
+@pytest.fixture(scope="module")
+def _configure_huldra_for_module(
+    module_huldra_root: Path,
+) -> Generator[Path, None, None]:
+    """Configure HULDRA_CONFIG for module-scoped tests."""
+    # Save original values
+    orig_base_root = HULDRA_CONFIG.base_root
+    orig_ignore_git_diff = HULDRA_CONFIG.ignore_git_diff
+    orig_poll_interval = HULDRA_CONFIG.poll_interval
+    orig_stale_timeout = HULDRA_CONFIG.stale_timeout
+    orig_lease_duration = HULDRA_CONFIG.lease_duration_sec
+    orig_heartbeat = HULDRA_CONFIG.heartbeat_interval_sec
+
+    # Set test values
+    HULDRA_CONFIG.base_root = module_huldra_root
+    HULDRA_CONFIG.ignore_git_diff = True
+    HULDRA_CONFIG.poll_interval = 0.01
+    HULDRA_CONFIG.stale_timeout = 0.1
+    HULDRA_CONFIG.lease_duration_sec = 0.05
+    HULDRA_CONFIG.heartbeat_interval_sec = 0.01
+
+    yield module_huldra_root
+
+    # Restore original values
+    HULDRA_CONFIG.base_root = orig_base_root
+    HULDRA_CONFIG.ignore_git_diff = orig_ignore_git_diff
+    HULDRA_CONFIG.poll_interval = orig_poll_interval
+    HULDRA_CONFIG.stale_timeout = orig_stale_timeout
+    HULDRA_CONFIG.lease_duration_sec = orig_lease_duration
+    HULDRA_CONFIG.heartbeat_interval_sec = orig_heartbeat
+
+
 def create_experiment_from_huldra(
     huldra_obj: object,
     result_status: str = "success",
@@ -138,9 +177,8 @@ def create_experiment_from_huldra(
     return directory
 
 
-@pytest.fixture
-def populated_huldra_root(temp_huldra_root: Path) -> Path:
-    """Create a temporary Huldra root with sample experiments using real Huldra objects.
+def _create_populated_experiments(root: Path) -> None:
+    """Create sample experiments in the given root directory.
 
     Creates experiments with realistic dependencies:
     - PrepareDataset (success) - base dataset
@@ -184,12 +222,25 @@ def populated_huldra_root(temp_huldra_root: Path) -> Path:
     dataset2 = PrepareDataset(name="cifar", version="v2")
     create_experiment_from_huldra(dataset2, result_status="absent", attempt_status=None)
 
-    return temp_huldra_root
+
+@pytest.fixture(scope="module")
+def populated_huldra_root(_configure_huldra_for_module: Path) -> Path:
+    """Create a module-scoped Huldra root with sample experiments.
+
+    This is much faster than creating experiments for each test since
+    the experiments are created once per module and reused.
+    """
+    root = _configure_huldra_for_module
+    _create_populated_experiments(root)
+    return root
 
 
 @pytest.fixture
 def populated_with_dependencies(temp_huldra_root: Path) -> Path:
     """Create experiments with a full dependency chain.
+
+    This fixture actually runs load_or_create() to create real experiments,
+    so it must be function-scoped.
 
     This creates a realistic DAG:
     - dataset1 (PrepareDataset)
