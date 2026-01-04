@@ -1,11 +1,11 @@
 """Filesystem scanner for discovering and parsing Huldra experiment state."""
 
-import json
 from collections import defaultdict
+from collections.abc import Iterator
 from pathlib import Path
 
 from ..config import HULDRA_CONFIG
-from ..storage import StateAttempt
+from ..storage import MetadataManager, StateAttempt
 from ..storage.state import StateManager, _HuldraState
 from .api.models import (
     DashboardStats,
@@ -14,6 +14,14 @@ from .api.models import (
     JsonDict,
     StatusCount,
 )
+
+
+def _iter_roots() -> Iterator[Path]:
+    """Iterate over all existing Huldra storage roots."""
+    for version_controlled in (False, True):
+        root = HULDRA_CONFIG.get_root(version_controlled)
+        if root.exists():
+            yield root
 
 
 def _parse_namespace_from_path(experiment_dir: Path, root: Path) -> tuple[str, str]:
@@ -86,21 +94,13 @@ def _find_experiment_dirs(root: Path) -> list[Path]:
     experiments = []
 
     # Walk the directory tree looking for .huldra directories
-    for huldra_dir in root.rglob(".huldra"):
+    for huldra_dir in root.rglob(StateManager.INTERNAL_DIR):
         if huldra_dir.is_dir():
-            state_file = huldra_dir / "state.json"
+            state_file = huldra_dir / StateManager.STATE_FILE
             if state_file.is_file():
                 experiments.append(huldra_dir.parent)
 
     return experiments
-
-
-def _read_metadata(directory: Path) -> JsonDict | None:
-    """Read metadata.json from an experiment directory."""
-    metadata_path = directory / ".huldra" / "metadata.json"
-    if not metadata_path.is_file():
-        return None
-    return json.loads(metadata_path.read_text())
 
 
 def scan_experiments(
@@ -122,10 +122,7 @@ def scan_experiments(
     """
     experiments: list[ExperimentSummary] = []
 
-    # Scan both data and git roots
-    for root in [HULDRA_CONFIG.get_root(False), HULDRA_CONFIG.get_root(True)]:
-        if not root.exists():
-            continue
+    for root in _iter_roots():
         for experiment_dir in _find_experiment_dirs(root):
             state = StateManager.read_state(experiment_dir)
             namespace, huldra_hash = _parse_namespace_from_path(experiment_dir, root)
@@ -165,14 +162,13 @@ def get_experiment_detail(namespace: str, huldra_hash: str) -> ExperimentDetail 
     # Convert namespace to path
     namespace_path = Path(*namespace.split("."))
 
-    # Try both data and git roots
-    for root in [HULDRA_CONFIG.get_root(False), HULDRA_CONFIG.get_root(True)]:
+    for root in _iter_roots():
         experiment_dir = root / namespace_path / huldra_hash
-        state_file = experiment_dir / ".huldra" / "state.json"
+        state_path = StateManager.get_state_path(experiment_dir)
 
-        if state_file.is_file():
+        if state_path.is_file():
             state = StateManager.read_state(experiment_dir)
-            metadata = _read_metadata(experiment_dir)
+            metadata = MetadataManager.read_metadata_raw(experiment_dir)
             return _state_to_detail(
                 state, namespace, huldra_hash, experiment_dir, metadata
             )
@@ -195,10 +191,7 @@ def get_stats() -> DashboardStats:
     failed = 0
     success = 0
 
-    # Scan both data and git roots
-    for root in [HULDRA_CONFIG.get_root(False), HULDRA_CONFIG.get_root(True)]:
-        if not root.exists():
-            continue
+    for root in _iter_roots():
         for experiment_dir in _find_experiment_dirs(root):
             state = StateManager.read_state(experiment_dir)
             total += 1

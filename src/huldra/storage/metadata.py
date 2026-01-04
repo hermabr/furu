@@ -223,3 +223,11 @@ class MetadataManager:
             raise FileNotFoundError(f"Metadata not found: {metadata_path}")
         data = json.loads(metadata_path.read_text())
         return HuldraMetadata.model_validate(data)
+
+    @classmethod
+    def read_metadata_raw(cls, directory: Path) -> dict[str, JsonValue] | None:
+        """Read raw metadata JSON from file, returning None if not found."""
+        metadata_path = cls.get_metadata_path(directory)
+        if not metadata_path.is_file():
+            return None
+        return json.loads(metadata_path.read_text())
