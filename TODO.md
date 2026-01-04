@@ -4,10 +4,6 @@
 
 - [x] Add support for building to wheel
 
-## AI Agent Docs
-
-- [ ] Add a file for ai agents that tells them that i never want to use typing.Optional or typing.Any in my codebase, but always actual types. Also tell it that I prefer to have happy path and crashing rather than trying to recover errors with try/catch.
-
 ## Code Quality
 
 ### Typing
