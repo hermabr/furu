@@ -10,7 +10,7 @@ function RootComponent() {
       <nav className="px-8 py-4 border-b border-slate-800 bg-slate-900 flex gap-6 items-center">
         <Link
           to="/"
-          className="font-bold text-xl text-huldra-400 no-underline flex items-center gap-2"
+          className="font-bold text-xl text-emerald-400 no-underline flex items-center gap-2"
         >
           <svg
             className="w-7 h-7"
@@ -32,14 +32,14 @@ function RootComponent() {
         <div className="flex gap-4">
           <Link
             to="/"
-            className="text-slate-400 no-underline hover:text-huldra-400 transition-colors [&.active]:text-huldra-400 [&.active]:font-medium"
+            className="text-slate-400 no-underline hover:text-emerald-400 transition-colors [&.active]:text-emerald-400 [&.active]:font-medium"
             activeOptions={{ exact: true }}
           >
             Dashboard
           </Link>
           <Link
             to="/experiments"
-            className="text-slate-400 no-underline hover:text-huldra-400 transition-colors [&.active]:text-huldra-400 [&.active]:font-medium"
+            className="text-slate-400 no-underline hover:text-emerald-400 transition-colors [&.active]:text-emerald-400 [&.active]:font-medium"
           >
             Experiments
           </Link>

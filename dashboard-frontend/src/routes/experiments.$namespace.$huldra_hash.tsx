@@ -49,7 +49,7 @@ function MetadataSection({ metadata }: { metadata: Record<string, unknown> }) {
             Python Definition
           </span>
           <pre className="bg-slate-950 rounded-lg p-4 overflow-x-auto text-sm">
-            <code className="text-huldra-300">{pythonDef}</code>
+            <code className="text-emerald-300">{pythonDef}</code>
           </pre>
         </div>
       )}
@@ -89,7 +89,7 @@ function ExperimentDetailPage() {
           </p>
           <Link
             to="/experiments"
-            className="text-huldra-400 hover:text-huldra-300"
+            className="text-emerald-400 hover:text-emerald-300"
           >
             ← Back to experiments
           </Link>
@@ -104,7 +104,7 @@ function ExperimentDetailPage() {
       <div className="mb-6 text-sm">
         <Link
           to="/experiments"
-          className="text-slate-400 hover:text-huldra-400"
+          className="text-slate-400 hover:text-emerald-400"
         >
           Experiments
         </Link>

@@ -29,10 +29,6 @@
 
 ## Dashboard Features
 
-## Typing/logic
-
-- [ ] Share types and classes, such as pydantic classes between the huldra and the dashboard, rather than defining custom packages for the dashboard api
-
 ### Experiment Management
 
 - [ ] List and filter experiments
@@ -61,8 +57,6 @@
 
 ### UI/UX
 
-- [ ] General UI improvements
-- [ ] Remove custom Tailwind colors
 - [ ] Support making graphs/charts given a result file such as a json or parquet file (decide: Python vs React)
 - [ ] Explore: discover all available runs/experiments in code (or via JSON manifest for reproducibility dashboard)
 - [ ] Show all output files of an experiment
@@ -71,6 +65,7 @@
 - [ ] Auto-refresh toggle - Periodically refresh data
 - [ ] Live log streaming - Tail logs in real-time
 - [ ] Keyboard shortcuts - Navigation with VIM (j/k, /, etc.)
+- [ ] General UI improvements
 
 ### API (Missing Endpoints)
 

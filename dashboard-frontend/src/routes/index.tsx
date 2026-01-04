@@ -34,8 +34,8 @@ function HomePage() {
             {healthLoading ? (
               <span className="text-slate-500">Checking...</span>
             ) : health?.status === "healthy" ? (
-              <span className="text-huldra-400 font-medium flex items-center gap-2">
-                <span className="w-2 h-2 bg-huldra-400 rounded-full animate-pulse"></span>
+              <span className="text-emerald-400 font-medium flex items-center gap-2">
+                <span className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse"></span>
                 Healthy
               </span>
             ) : (
@@ -107,7 +107,7 @@ function HomePage() {
           </h2>
           <Link
             to="/experiments"
-            className="text-huldra-400 hover:text-huldra-300 text-sm"
+            className="text-emerald-400 hover:text-emerald-300 text-sm"
           >
             View all →
           </Link>
@@ -140,7 +140,7 @@ function HomePage() {
                         namespace: exp.namespace,
                         huldra_hash: exp.huldra_hash,
                       }}
-                      className="text-white font-medium hover:text-huldra-400"
+                      className="text-white font-medium hover:text-emerald-400"
                     >
                       {exp.class_name}
                     </Link>

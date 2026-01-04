@@ -8,14 +8,14 @@ interface StatsCardProps {
 
 const variantStyles: Record<string, string> = {
   default: "border-slate-700",
-  success: "border-huldra-700",
+  success: "border-emerald-700",
   failed: "border-red-700",
   running: "border-blue-700",
 };
 
 const valueStyles: Record<string, string> = {
   default: "text-white",
-  success: "text-huldra-400",
+  success: "text-emerald-400",
   failed: "text-red-400",
   running: "text-blue-400",
 };
