@@ -4,6 +4,17 @@ import { useDashboardStatsApiStatsGet } from "../api/endpoints/api/api";
 import { useListExperimentsApiExperimentsGet } from "../api/endpoints/api/api";
 import { StatusBadge } from "../components/StatusBadge";
 import { StatsCard } from "../components/StatsCard";
+import { Badge } from "../components/ui/badge";
+import { Button } from "../components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "../components/ui/table";
 
 export const Route = createFileRoute("/")({
   component: HomePage,
@@ -20,33 +31,33 @@ function HomePage() {
   return (
     <div className="max-w-6xl mx-auto">
       <div className="mb-8">
-        <h1 className="text-3xl font-bold text-white mb-2">Dashboard</h1>
-        <p className="text-slate-400">
+        <h1 className="text-3xl font-bold mb-2">Dashboard</h1>
+        <p className="text-muted-foreground">
           Monitor your Huldra experiments in real-time
         </p>
       </div>
 
       {/* Health Status */}
-      <div className="bg-slate-900 border border-slate-800 rounded-lg p-4 mb-8">
-        <div className="flex items-center justify-between">
+      <Card className="mb-8">
+        <CardContent className="flex items-center justify-between p-4">
           <div className="flex items-center gap-4">
-            <span className="text-slate-400">API Status:</span>
+            <span className="text-muted-foreground">API Status:</span>
             {healthLoading ? (
-              <span className="text-slate-500">Checking...</span>
+              <Badge variant="muted">Checking...</Badge>
             ) : health?.status === "healthy" ? (
-              <span className="text-emerald-400 font-medium flex items-center gap-2">
-                <span className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse"></span>
+              <Badge variant="success" className="gap-2">
+                <span className="h-2 w-2 rounded-full bg-emerald-300 animate-pulse" />
                 Healthy
-              </span>
+              </Badge>
             ) : (
-              <span className="text-red-400 font-medium">Disconnected</span>
+              <Badge variant="destructive">Disconnected</Badge>
             )}
           </div>
-          <span className="text-slate-500 text-sm font-mono">
+          <span className="text-muted-foreground text-sm font-mono">
             v{health?.version || "..."}
           </span>
-        </div>
-      </div>
+        </CardContent>
+      </Card>
 
       {/* Stats Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
@@ -81,97 +92,90 @@ function HomePage() {
 
       {/* Status Distribution */}
       {stats && stats.by_result_status && stats.by_result_status.length > 0 && (
-        <div className="bg-slate-900 border border-slate-800 rounded-lg p-6 mb-8">
-          <h2 className="text-lg font-semibold text-white mb-4">
-            Result Status Distribution
-          </h2>
-          <div className="flex gap-4 flex-wrap">
-            {stats.by_result_status.map((item) => (
-              <div
-                key={item.status}
-                className="flex items-center gap-2 bg-slate-800 px-3 py-2 rounded-lg"
-              >
-                <StatusBadge status={item.status} type="result" />
-                <span className="text-white font-mono">{item.count}</span>
-              </div>
-            ))}
-          </div>
-        </div>
+        <Card className="mb-8">
+          <CardHeader className="pb-3">
+            <CardTitle>Result Status Distribution</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex flex-wrap gap-3">
+              {stats.by_result_status.map((item) => (
+                <div
+                  key={item.status}
+                  className="flex items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2"
+                >
+                  <StatusBadge status={item.status} type="result" />
+                  <span className="font-mono text-sm">{item.count}</span>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
       )}
 
       {/* Recent Experiments */}
-      <div className="bg-slate-900 border border-slate-800 rounded-lg overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-800 flex justify-between items-center">
-          <h2 className="text-lg font-semibold text-white">
-            Recent Experiments
-          </h2>
-          <Link
-            to="/experiments"
-            className="text-emerald-400 hover:text-emerald-300 text-sm"
-          >
-            View all →
-          </Link>
-        </div>
+      <Card className="overflow-hidden">
+        <CardHeader className="flex-row items-center justify-between space-y-0 border-b">
+          <CardTitle>Recent Experiments</CardTitle>
+          <Button asChild variant="ghost" size="sm">
+            <Link to="/experiments">View all →</Link>
+          </Button>
+        </CardHeader>
         {experimentsLoading ? (
-          <div className="p-6 text-slate-500">Loading...</div>
+          <div className="p-6 text-muted-foreground">Loading...</div>
         ) : recentExperiments?.experiments.length === 0 ? (
-          <div className="p-6 text-slate-500">No experiments yet</div>
+          <div className="p-6 text-muted-foreground">No experiments yet</div>
         ) : (
-          <table className="w-full">
-            <thead>
-              <tr className="text-left text-slate-500 text-sm border-b border-slate-800">
-                <th className="px-6 py-3 font-medium">Class</th>
-                <th className="px-6 py-3 font-medium">Namespace</th>
-                <th className="px-6 py-3 font-medium">Result</th>
-                <th className="px-6 py-3 font-medium">Attempt</th>
-                <th className="px-6 py-3 font-medium">Updated</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="pl-6">Class</TableHead>
+                <TableHead>Namespace</TableHead>
+                <TableHead>Result</TableHead>
+                <TableHead>Attempt</TableHead>
+                <TableHead>Updated</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {recentExperiments?.experiments.map((exp) => (
-                <tr
-                  key={`${exp.namespace}-${exp.huldra_hash}`}
-                  className="hover:bg-slate-800/50 transition-colors"
-                >
-                  <td className="px-6 py-4">
+                <TableRow key={`${exp.namespace}-${exp.huldra_hash}`}>
+                  <TableCell className="pl-6">
                     <Link
                       to="/experiments/$namespace/$huldra_hash"
                       params={{
                         namespace: exp.namespace,
                         huldra_hash: exp.huldra_hash,
                       }}
-                      className="text-white font-medium hover:text-emerald-400"
+                      className="font-medium hover:text-primary"
                     >
                       {exp.class_name}
                     </Link>
-                  </td>
-                  <td className="px-6 py-4 text-slate-400 font-mono text-sm">
+                  </TableCell>
+                  <TableCell className="font-mono text-sm text-muted-foreground">
                     {exp.namespace}
-                  </td>
-                  <td className="px-6 py-4">
+                  </TableCell>
+                  <TableCell>
                     <StatusBadge status={exp.result_status} type="result" />
-                  </td>
-                  <td className="px-6 py-4">
+                  </TableCell>
+                  <TableCell>
                     {exp.attempt_status ? (
                       <StatusBadge status={exp.attempt_status} type="attempt" />
                     ) : (
-                      <span className="text-slate-600">—</span>
+                      <span className="text-muted-foreground">—</span>
                     )}
-                  </td>
-                  <td className="px-6 py-4 text-slate-500 text-sm">
+                  </TableCell>
+                  <TableCell className="text-sm text-muted-foreground">
                     {exp.updated_at
                       ? new Date(exp.updated_at).toLocaleString()
                       : "—"}
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         )}
-      </div>
+      </Card>
     </div>
   );
 }
-
 
 

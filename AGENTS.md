@@ -39,6 +39,10 @@ e2e/                  # Playwright end-to-end tests
 
 ---
 
+## Frontend Notes
+
+- Use shadcn/ui for frontend components.
+
 ## Build, Test, and Lint Commands
 
 This project uses `uv` for dependency management.

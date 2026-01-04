@@ -1,4 +1,5 @@
 import { createRootRoute, Link, Outlet } from "@tanstack/react-router";
+import { Button } from "../components/ui/button";
 
 export const Route = createRootRoute({
   component: RootComponent,
@@ -6,11 +7,11 @@ export const Route = createRootRoute({
 
 function RootComponent() {
   return (
-    <div className="min-h-screen flex flex-col bg-slate-950">
-      <nav className="px-8 py-4 border-b border-slate-800 bg-slate-900 flex gap-6 items-center">
+    <div className="min-h-screen flex flex-col bg-background">
+      <nav className="px-8 py-4 border-b bg-card flex gap-6 items-center">
         <Link
           to="/"
-          className="font-bold text-xl text-emerald-400 no-underline flex items-center gap-2"
+          className="font-bold text-xl text-primary no-underline flex items-center gap-2"
         >
           <svg
             className="w-7 h-7"
@@ -29,20 +30,24 @@ function RootComponent() {
           </svg>
           Huldra
         </Link>
-        <div className="flex gap-4">
-          <Link
-            to="/"
-            className="text-slate-400 no-underline hover:text-emerald-400 transition-colors [&.active]:text-emerald-400 [&.active]:font-medium"
-            activeOptions={{ exact: true }}
-          >
-            Dashboard
-          </Link>
-          <Link
-            to="/experiments"
-            className="text-slate-400 no-underline hover:text-emerald-400 transition-colors [&.active]:text-emerald-400 [&.active]:font-medium"
-          >
-            Experiments
-          </Link>
+        <div className="flex gap-2">
+          <Button asChild variant="ghost" size="sm">
+            <Link
+              to="/"
+              activeOptions={{ exact: true }}
+              className="[&.active]:text-primary [&.active]:bg-accent"
+            >
+              Dashboard
+            </Link>
+          </Button>
+          <Button asChild variant="ghost" size="sm">
+            <Link
+              to="/experiments"
+              className="[&.active]:text-primary [&.active]:bg-accent"
+            >
+              Experiments
+            </Link>
+          </Button>
         </div>
       </nav>
       <main className="flex-1 p-8">
@@ -51,6 +56,5 @@ function RootComponent() {
     </div>
   );
 }
-
 
 

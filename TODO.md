@@ -57,6 +57,7 @@
 
 ### UI/UX
 
+- [ ] Use shadcn
 - [ ] Support making graphs/charts given a result file such as a json or parquet file (decide: Python vs React)
 - [ ] Explore: discover all available runs/experiments in code (or via JSON manifest for reproducibility dashboard)
 - [ ] Show all output files of an experiment
