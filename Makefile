@@ -9,7 +9,7 @@
 # ============================================================================
 
 test:
-	uv run pytest
+	uv run pytest tests/ --ignore=tests/dashboard
 
 lint:
 	uv run ruff check
@@ -61,7 +61,7 @@ frontend-build: frontend-generate
 
 # Testing
 dashboard-test:
-	uv run pytest tests/dashboard/ -v
+	uv run pytest tests/dashboard
 
 frontend-test:
 	cd dashboard-frontend && bun test
@@ -91,6 +91,5 @@ dashboard-serve: frontend-build
 # ============================================================================
 
 test-all: lint frontend-lint test dashboard-test-all
-
 
 
