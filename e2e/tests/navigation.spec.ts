@@ -1,39 +1,25 @@
 import { test, expect } from "@playwright/test";
 
 test.describe("Navigation", () => {
-  test("should navigate to experiments page", async ({ page }) => {
+  test("should navigate between pages", async ({ page }) => {
+    // Start at home
     await page.goto("/");
+    await expect(page.getByRole("heading", { name: "Dashboard" })).toBeVisible();
 
-    // Click on experiments link
+    // Navigate to experiments
     await page.getByRole("link", { name: "Experiments" }).click();
-
-    // Should be on experiments page
     await expect(page).toHaveURL("/experiments");
     await expect(
       page.getByRole("heading", { name: "Experiments", exact: true })
     ).toBeVisible();
-  });
 
-  test("should navigate back to dashboard", async ({ page }) => {
-    await page.goto("/experiments");
-
-    // Click on dashboard link
+    // Navigate back via Dashboard link
     await page.getByRole("link", { name: "Dashboard" }).click();
-
-    // Should be on dashboard
     await expect(page).toHaveURL("/");
-    await expect(
-      page.getByRole("heading", { name: "Dashboard" })
-    ).toBeVisible();
-  });
 
-  test("should navigate via logo", async ({ page }) => {
-    await page.goto("/experiments");
-
-    // Click on Huldra logo/link
+    // Navigate via logo
+    await page.getByRole("link", { name: "Experiments" }).click();
     await page.getByRole("link", { name: "Huldra" }).click();
-
-    // Should be on dashboard
     await expect(page).toHaveURL("/");
   });
 });

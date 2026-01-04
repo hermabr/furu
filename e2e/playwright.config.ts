@@ -10,21 +10,22 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   workers: process.env.CI ? 1 : undefined,
-  reporter: [["html"], ["list"]],
+  reporter: process.env.CI ? [["html"], ["list"]] : [["list"]],
 
   // Global timeout for each test
-  timeout: 30000,
+  timeout: 15000,
 
-  // Expect timeout
+  // Expect timeout - reduced since local server is fast
   expect: {
-    timeout: 5000,
+    timeout: 2000,
   },
 
   use: {
     baseURL: "http://localhost:8000",
-    trace: "on-first-retry",
-    screenshot: "only-on-failure",
-    video: "on-first-retry",
+    // Only capture traces/screenshots on failure in CI
+    trace: process.env.CI ? "on-first-retry" : "off",
+    screenshot: process.env.CI ? "only-on-failure" : "off",
+    video: process.env.CI ? "on-first-retry" : "off",
   },
 
   projects: [
