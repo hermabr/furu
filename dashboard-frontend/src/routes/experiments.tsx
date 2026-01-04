@@ -67,7 +67,7 @@ function ExperimentsPage() {
                 setNamespaceFilter(e.target.value);
                 setPage(0);
               }}
-              className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:border-huldra-500"
+              className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
             />
           </div>
           <div>
@@ -80,7 +80,7 @@ function ExperimentsPage() {
                 setResultFilter(e.target.value);
                 setPage(0);
               }}
-              className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-huldra-500"
+              className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
             >
               {RESULT_STATUSES.map((status) => (
                 <option key={status} value={status}>
@@ -99,7 +99,7 @@ function ExperimentsPage() {
                 setAttemptFilter(e.target.value);
                 setPage(0);
               }}
-              className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-huldra-500"
+              className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
             >
               {ATTEMPT_STATUSES.map((status) => (
                 <option key={status} value={status}>
@@ -163,7 +163,7 @@ function ExperimentsPage() {
                         namespace: exp.namespace,
                         huldra_hash: exp.huldra_hash,
                       }}
-                      className="text-white font-medium hover:text-huldra-400"
+                      className="text-white font-medium hover:text-emerald-400"
                     >
                       {exp.class_name}
                     </Link>
