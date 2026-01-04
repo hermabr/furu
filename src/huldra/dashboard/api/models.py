@@ -4,6 +4,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from ...storage import StateAttempt
+
 
 # Type alias for JSON-serializable data from Pydantic model_dump(mode="json").
 # This is the output of serializing Huldra state/metadata models to JSON format.
@@ -15,32 +17,6 @@ class HealthCheck(BaseModel):
 
     status: str
     version: str
-
-
-class ExperimentOwner(BaseModel):
-    """Owner information for an experiment attempt."""
-
-    pid: int | None = None
-    host: str | None = None
-    hostname: str | None = None
-    user: str | None = None
-    command: str | None = None
-    timestamp: str | None = None
-
-
-class ExperimentAttempt(BaseModel):
-    """Attempt information for an experiment."""
-
-    id: str
-    number: int
-    backend: str
-    status: str
-    started_at: str
-    heartbeat_at: str
-    lease_expires_at: str
-    owner: ExperimentOwner
-    ended_at: str | None = None
-    reason: str | None = None
 
 
 class ExperimentSummary(BaseModel):
@@ -62,7 +38,7 @@ class ExperimentDetail(ExperimentSummary):
     directory: str
     state: JsonDict
     metadata: JsonDict | None = None
-    attempt: ExperimentAttempt | None = None
+    attempt: StateAttempt | None = None
 
 
 class ExperimentList(BaseModel):
@@ -89,4 +65,3 @@ class DashboardStats(BaseModel):
     queued_count: int
     failed_count: int
     success_count: int
-

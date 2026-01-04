@@ -4,12 +4,20 @@ from .metadata import (
     HuldraMetadata,
     MetadataManager,
 )
-from .state import StateManager
+from .state import (
+    HuldraErrorState,
+    StateAttempt,
+    StateManager,
+    StateOwner,
+)
 
 __all__ = [
     "EnvironmentInfo",
     "GitInfo",
+    "HuldraErrorState",
     "HuldraMetadata",
     "MetadataManager",
+    "StateAttempt",
     "StateManager",
+    "StateOwner",
 ]

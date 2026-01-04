@@ -5,12 +5,11 @@ from collections import defaultdict
 from pathlib import Path
 
 from ..config import HULDRA_CONFIG
+from ..storage import StateAttempt
 from ..storage.state import StateManager, _HuldraState
 from .api.models import (
     DashboardStats,
-    ExperimentAttempt,
     ExperimentDetail,
-    ExperimentOwner,
     ExperimentSummary,
     JsonDict,
     StatusCount,
@@ -64,28 +63,7 @@ def _state_to_detail(
 ) -> ExperimentDetail:
     """Convert a Huldra state to a detailed experiment record."""
     attempt = state.attempt
-    attempt_detail = None
-    if attempt:
-        owner = ExperimentOwner(
-            pid=attempt.owner.pid,
-            host=attempt.owner.host,
-            hostname=attempt.owner.hostname,
-            user=attempt.owner.user,
-            command=attempt.owner.command,
-            timestamp=attempt.owner.timestamp,
-        )
-        attempt_detail = ExperimentAttempt(
-            id=attempt.id,
-            number=attempt.number,
-            backend=attempt.backend,
-            status=attempt.status,
-            started_at=attempt.started_at,
-            heartbeat_at=attempt.heartbeat_at,
-            lease_expires_at=attempt.lease_expires_at,
-            owner=owner,
-            ended_at=getattr(attempt, "ended_at", None),
-            reason=getattr(attempt, "reason", None),
-        )
+    attempt_detail = StateAttempt.from_internal(attempt) if attempt else None
 
     return ExperimentDetail(
         namespace=namespace,

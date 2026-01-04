@@ -6,12 +6,6 @@
 
 ## Code Quality
 
-## Testing
-
-- [ ] Make e2e tests use actual data (run scripts to generate data in `data-huldra`)
-- [ ] Make conftest tests use actual subclasses of Huldra instead of manual JSON objects to get actual realistic data that is updated
-  - [ ] Create multiple experiments with dependencies
-
 ## Storage & Data Management
 
 - [ ] Garbage collection - Have the option to delete old, failed, or orphaned artifacts

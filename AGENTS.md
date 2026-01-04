@@ -8,6 +8,7 @@
 - `object` as a type annotation - Use specific types, protocols, or generics instead
 - `dict` without specific value types - Use Pydantic models, dataclasses, or TypedDict instead of `dict[str, Any]` or `dict[str, object]`. Simple dicts like `dict[str, str]` or `dict[str, int]` should also be avoided if it is possible to know exactly what the keys and structure of the data is.
 - `try/except` for error recovery - Prefer happy path and let errors crash; only use try/except for cleanup or resource management
+- Backward compatibility shims or aliases - Do not add backward compatibility code; refactor all usages directly
 
 **ALWAYS** use `make` commands rather than running tools directly:
 - `make lint` not `uv run ruff check && uv run ty check`

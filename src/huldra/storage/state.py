@@ -101,7 +101,9 @@ def _coerce_result(current: _StateResult, **updates: str) -> _StateResult:
             raise ValueError(f"Invalid result status: {status!r}")
 
 
-class _StateOwner(BaseModel):
+class StateOwner(BaseModel):
+    """Owner information for a Huldra attempt."""
+
     model_config = ConfigDict(extra="forbid", validate_assignment=True, strict=True)
 
     pid: int | None = None
@@ -133,7 +135,9 @@ class _StateOwner(BaseModel):
         return data
 
 
-class _HuldraErrorState(BaseModel):
+class HuldraErrorState(BaseModel):
+    """Error state information for a Huldra attempt."""
+
     model_config = ConfigDict(extra="forbid", validate_assignment=True, strict=True)
 
     type: str = "UnknownError"
@@ -152,7 +156,7 @@ class _StateAttemptBase(BaseModel):
     heartbeat_at: str
     lease_duration_sec: float
     lease_expires_at: str
-    owner: _StateOwner
+    owner: StateOwner
     scheduler: SchedulerMetadata = Field(default_factory=dict)
 
 
@@ -173,14 +177,14 @@ class _StateAttemptSuccess(_StateAttemptBase):
 class _StateAttemptFailed(_StateAttemptBase):
     status: Literal["failed"] = "failed"
     ended_at: str
-    error: _HuldraErrorState
+    error: HuldraErrorState
     reason: str | None = None
 
 
 class _StateAttemptTerminal(_StateAttemptBase):
     status: Literal["cancelled", "preempted", "crashed"]
     ended_at: str
-    error: _HuldraErrorState | None = None
+    error: HuldraErrorState | None = None
     reason: str | None = None
 
 
@@ -192,6 +196,51 @@ _StateAttempt = Annotated[
     | _StateAttemptTerminal,
     Field(discriminator="status"),
 ]
+
+
+class StateAttempt(BaseModel):
+    """
+    Public read-only representation of a Huldra attempt.
+
+    This model is used for external APIs (like the dashboard) to expose
+    attempt information without coupling to internal state variants.
+    All fields that may not be present on all attempt types are optional.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    id: str
+    number: int
+    backend: str
+    status: str
+    started_at: str
+    heartbeat_at: str
+    lease_duration_sec: float
+    lease_expires_at: str
+    owner: StateOwner
+    scheduler: SchedulerMetadata = Field(default_factory=dict)
+    ended_at: str | None = None
+    error: HuldraErrorState | None = None
+    reason: str | None = None
+
+    @classmethod
+    def from_internal(cls, attempt: _StateAttempt) -> "StateAttempt":
+        """Create a StateAttempt from an internal attempt state."""
+        return cls(
+            id=attempt.id,
+            number=attempt.number,
+            backend=attempt.backend,
+            status=attempt.status,
+            started_at=attempt.started_at,
+            heartbeat_at=attempt.heartbeat_at,
+            lease_duration_sec=attempt.lease_duration_sec,
+            lease_expires_at=attempt.lease_expires_at,
+            owner=attempt.owner,
+            scheduler=attempt.scheduler,
+            ended_at=getattr(attempt, "ended_at", None),
+            error=getattr(attempt, "error", None),
+            reason=getattr(attempt, "reason", None),
+        )
 
 
 class _HuldraState(BaseModel):
@@ -511,7 +560,7 @@ class StateManager:
 
             number = (prev.number + 1) if prev is not None else 1
 
-            owner_state = _StateOwner.model_validate(owner)
+            owner_state = StateOwner.model_validate(owner)
             started_at = now.isoformat(timespec="seconds")
             heartbeat_at = started_at
             lease_duration = float(lease_duration_sec)
@@ -653,7 +702,7 @@ class StateManager:
     ) -> None:
         now = cls._iso_now()
 
-        error_state = _HuldraErrorState.model_validate(error)
+        error_state = HuldraErrorState.model_validate(error)
 
         def mutate(state: _HuldraState) -> None:
             attempt = state.attempt
@@ -690,7 +739,7 @@ class StateManager:
         reason: str | None = None,
     ) -> None:
         now = cls._iso_now()
-        error_state = _HuldraErrorState.model_validate(error)
+        error_state = HuldraErrorState.model_validate(error)
 
         def mutate(state: _HuldraState) -> None:
             attempt = state.attempt
@@ -825,7 +874,7 @@ class StateManager:
                     owner=attempt.owner,
                     scheduler=attempt.scheduler,
                     ended_at=now,
-                    error=_HuldraErrorState(
+                    error=HuldraErrorState(
                         type="HuldraComputeError", message=reason or ""
                     ),
                     reason=reason,
