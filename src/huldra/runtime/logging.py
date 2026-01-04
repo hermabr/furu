@@ -186,8 +186,6 @@ class _HuldraRichConsoleHandler(logging.Handler):
         return Text(message)
 
     def emit(self, record: logging.LogRecord) -> None:
-        from rich.text import Text  # type: ignore
-
         level_style = self._level_style(record.levelno)
         timestamp = datetime.datetime.fromtimestamp(
             record.created, tz=datetime.timezone.utc

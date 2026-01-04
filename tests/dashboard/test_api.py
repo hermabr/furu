@@ -4,6 +4,10 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from huldra.serialization import HuldraSerializer
+
+from .pipelines import PrepareDataset, TrainModel
+
 
 def test_health_check(client: TestClient) -> None:
     """Test health check endpoint."""
@@ -28,8 +32,9 @@ def test_list_experiments(client: TestClient, populated_huldra_root: Path) -> No
     response = client.get("/api/experiments")
     assert response.status_code == 200
     data = response.json()
-    assert data["total"] == 5
-    assert len(data["experiments"]) == 5
+    # 6 experiments: dataset1, dataset2, train1, train2, eval1, loader
+    assert data["total"] == 6
+    assert len(data["experiments"]) == 6
 
     # Check structure of returned experiments
     exp = data["experiments"][0]
@@ -46,7 +51,8 @@ def test_list_experiments_filter_by_result_status(
     response = client.get("/api/experiments?result_status=success")
     assert response.status_code == 200
     data = response.json()
-    assert data["total"] == 2
+    # 3 successful: dataset1, train1, loader
+    assert data["total"] == 3
     for exp in data["experiments"]:
         assert exp["result_status"] == "success"
 
@@ -66,13 +72,26 @@ def test_list_experiments_filter_by_namespace(
     client: TestClient, populated_huldra_root: Path
 ) -> None:
     """Test filtering experiments by namespace prefix."""
-    response = client.get("/api/experiments?namespace=my_project.pipelines")
+    response = client.get("/api/experiments?namespace=dashboard.pipelines")
     assert response.status_code == 200
     data = response.json()
-    # 4 experiments: TrainModel x2, EvalModel, PrepareData
-    assert data["total"] == 4
+    # All 6 experiments are in dashboard.pipelines
+    assert data["total"] == 6
     for exp in data["experiments"]:
-        assert exp["namespace"].startswith("my_project.pipelines")
+        assert exp["namespace"].startswith("dashboard.pipelines")
+
+
+def test_list_experiments_filter_by_class(
+    client: TestClient, populated_huldra_root: Path
+) -> None:
+    """Test filtering experiments by class name."""
+    response = client.get("/api/experiments?namespace=dashboard.pipelines.TrainModel")
+    assert response.status_code == 200
+    data = response.json()
+    # 2 TrainModel experiments: train1 and train2
+    assert data["total"] == 2
+    for exp in data["experiments"]:
+        assert exp["class_name"] == "TrainModel"
 
 
 def test_list_experiments_pagination(
@@ -82,27 +101,31 @@ def test_list_experiments_pagination(
     response = client.get("/api/experiments?limit=2&offset=0")
     assert response.status_code == 200
     data = response.json()
-    assert data["total"] == 5
+    assert data["total"] == 6
     assert len(data["experiments"]) == 2
 
     response = client.get("/api/experiments?limit=2&offset=2")
     assert response.status_code == 200
     data = response.json()
-    assert data["total"] == 5
+    assert data["total"] == 6
     assert len(data["experiments"]) == 2
 
 
 def test_get_experiment_detail(client: TestClient, populated_huldra_root: Path) -> None:
     """Test getting detailed experiment information."""
+    # Get the hash for a specific experiment
+    dataset1 = PrepareDataset(name="mnist", version="v1")
+    huldra_hash = HuldraSerializer.compute_hash(dataset1)
+
     response = client.get(
-        "/api/experiments/my_project.pipelines.TrainModel/abc123def456"
+        f"/api/experiments/dashboard.pipelines.PrepareDataset/{huldra_hash}"
     )
     assert response.status_code == 200
     data = response.json()
 
-    assert data["namespace"] == "my_project.pipelines.TrainModel"
-    assert data["huldra_hash"] == "abc123def456"
-    assert data["class_name"] == "TrainModel"
+    assert data["namespace"] == "dashboard.pipelines.PrepareDataset"
+    assert data["huldra_hash"] == huldra_hash
+    assert data["class_name"] == "PrepareDataset"
     assert data["result_status"] == "success"
     assert data["attempt_status"] == "success"
     assert "directory" in data
@@ -114,8 +137,13 @@ def test_get_experiment_detail_with_attempt(
     client: TestClient, populated_huldra_root: Path
 ) -> None:
     """Test that experiment detail includes attempt information."""
+    # Get the hash for the running training experiment
+    dataset1 = PrepareDataset(name="mnist", version="v1")
+    train2 = TrainModel(lr=0.0001, steps=2000, dataset=dataset1)
+    huldra_hash = HuldraSerializer.compute_hash(train2)
+
     response = client.get(
-        "/api/experiments/my_project.pipelines.TrainModel/xyz789ghi012"
+        f"/api/experiments/dashboard.pipelines.TrainModel/{huldra_hash}"
     )
     assert response.status_code == 200
     data = response.json()
@@ -153,14 +181,16 @@ def test_dashboard_stats(client: TestClient, populated_huldra_root: Path) -> Non
     assert response.status_code == 200
     data = response.json()
 
-    assert data["total"] == 5
-    assert data["success_count"] == 2
+    # 6 total: dataset1(success), train1(success), train2(running),
+    #          eval1(failed), loader(success), dataset2(absent)
+    assert data["total"] == 6
+    assert data["success_count"] == 3
     assert data["failed_count"] == 1
     assert data["running_count"] == 1
 
     # Check by_result_status
     result_statuses = {s["status"]: s["count"] for s in data["by_result_status"]}
-    assert result_statuses.get("success", 0) == 2
+    assert result_statuses.get("success", 0) == 3
     assert result_statuses.get("failed", 0) == 1
     assert result_statuses.get("incomplete", 0) == 1
     assert result_statuses.get("absent", 0) == 1
@@ -168,10 +198,35 @@ def test_dashboard_stats(client: TestClient, populated_huldra_root: Path) -> Non
 
 def test_combined_filters(client: TestClient, populated_huldra_root: Path) -> None:
     """Test combining multiple filters."""
-    response = client.get("/api/experiments?result_status=success&namespace=my_project")
+    response = client.get(
+        "/api/experiments?result_status=success&namespace=dashboard.pipelines.PrepareDataset"
+    )
     assert response.status_code == 200
     data = response.json()
-    # Only my_project.pipelines.TrainModel/abc123def456 matches both
+    # Only dataset1 matches (success + PrepareDataset namespace)
     assert data["total"] == 1
     assert data["experiments"][0]["result_status"] == "success"
-    assert data["experiments"][0]["namespace"].startswith("my_project")
+    assert data["experiments"][0]["namespace"].startswith(
+        "dashboard.pipelines.PrepareDataset"
+    )
+
+
+def test_experiments_with_dependencies(
+    client: TestClient, populated_with_dependencies: Path
+) -> None:
+    """Test that experiments with real dependencies are properly created."""
+    response = client.get("/api/experiments")
+    assert response.status_code == 200
+    data = response.json()
+
+    # Should have 5 experiments all successfully completed
+    assert data["total"] == 5
+    for exp in data["experiments"]:
+        assert exp["result_status"] == "success"
+
+    # Check we have the expected class types
+    class_names = {exp["class_name"] for exp in data["experiments"]}
+    assert "PrepareDataset" in class_names
+    assert "TrainModel" in class_names
+    assert "EvalModel" in class_names
+    assert "MultiDependencyPipeline" in class_names

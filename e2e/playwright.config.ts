@@ -34,6 +34,9 @@ export default defineConfig({
     },
   ],
 
+  /* Global setup: Generate test data before running tests */
+  globalSetup: "./global-setup.ts",
+
   /* Run the dashboard server before starting the tests */
   webServer: {
     command: "cd .. && uv run python -m huldra.dashboard serve --port 8000",
@@ -44,6 +47,3 @@ export default defineConfig({
     stderr: "pipe",
   },
 });
-
-
-

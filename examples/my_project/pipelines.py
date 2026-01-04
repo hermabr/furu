@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from pathlib import Path
 
 import huldra
@@ -13,6 +14,7 @@ class TrainModel(huldra.Huldra[Path]):
     lr: float = huldra.chz.field(default=3e-4)
     steps: int = huldra.chz.field(default=2_000)
     dataset: PrepareDataset
+    sleep_sec: float = huldra.chz.field(default=0.0)
 
     def _create(self) -> Path:
         log.info("training model lr=%s steps=%s", self.lr, self.steps)
@@ -27,7 +29,8 @@ class TrainModel(huldra.Huldra[Path]):
             )
         )
         ckpt = self.huldra_dir / "checkpoint.bin"
-        __import__("time").sleep(15)
+        if self.sleep_sec > 0:
+            time.sleep(self.sleep_sec)
         ckpt.write_bytes(b"fake-checkpoint-bytes")
         return ckpt
 

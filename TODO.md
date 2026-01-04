@@ -6,10 +6,6 @@
 
 ## Code Quality
 
-### Error Handling
-
-- [ ] Throw/assert/raise on unexpected behavior rather than manual handling. This means every time something unexpected happens it simply crashes and i never use try/catch or returning None to handle unexpected behavior.
-
 ## Testing
 
 - [ ] Make e2e tests use actual data (run scripts to generate data in `data-huldra`)
