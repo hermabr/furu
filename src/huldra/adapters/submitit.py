@@ -2,7 +2,7 @@ import contextlib
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Optional, Self
+from typing import Any, Callable, Optional
 
 from ..config import HULDRA_CONFIG
 from ..storage import StateManager
@@ -14,14 +14,14 @@ class SubmititAdapter:
 
     JOB_PICKLE = "job.pkl"
 
-    def __init__(self: Self, executor: Any):
+    def __init__(self, executor: Any):
         self.executor = executor
 
-    def submit(self: Self, fn: Callable[[], None]) -> Any:
+    def submit(self, fn: Callable[[], None]) -> Any:
         """Submit a job to the executor."""
         return self.executor.submit(fn)
 
-    def wait(self: Self, job: Any, timeout: Optional[float] = None) -> None:
+    def wait(self, job: Any, timeout: Optional[float] = None) -> None:
         """Wait for job completion."""
         with contextlib.suppress(Exception):
             if timeout:
@@ -29,21 +29,21 @@ class SubmititAdapter:
             else:
                 job.wait()
 
-    def get_job_id(self: Self, job: Any) -> Optional[str]:
+    def get_job_id(self, job: Any) -> Optional[str]:
         """Get job ID if available."""
         job_id = getattr(job, "job_id", None)
         if job_id:
             return str(job_id)
         return None
 
-    def is_done(self: Self, job: Any) -> bool:
+    def is_done(self, job: Any) -> bool:
         """Check if job is done."""
         done_fn = getattr(job, "done", None)
         if done_fn and callable(done_fn):
             return done_fn()
         return False
 
-    def get_state(self: Self, job: Any) -> Optional[str]:
+    def get_state(self, job: Any) -> Optional[str]:
         """Get job state from scheduler."""
         try:
             state_fn = getattr(job, "state", None)
@@ -53,7 +53,7 @@ class SubmititAdapter:
             pass
         return None
 
-    def pickle_job(self: Self, job: Any, directory: Path) -> None:
+    def pickle_job(self, job: Any, directory: Path) -> None:
         """Pickle job handle to file."""
         try:
             import cloudpickle as pickle  # type: ignore
@@ -65,7 +65,7 @@ class SubmititAdapter:
         with job_path.open("wb") as f:
             pickle.dump(job, f)
 
-    def load_job(self: Self, directory: Path) -> Any:
+    def load_job(self, directory: Path) -> Any:
         """Load job handle from pickle file."""
         job_path = StateManager.get_internal_dir(directory) / self.JOB_PICKLE
         if not job_path.is_file():
@@ -116,7 +116,7 @@ class SubmititAdapter:
         thread = threading.Thread(target=watcher, daemon=True)
         thread.start()
 
-    def classify_scheduler_state(self: Self, state: Optional[str]) -> Optional[str]:
+    def classify_scheduler_state(self, state: Optional[str]) -> Optional[str]:
         """Map scheduler state to Huldra status."""
         if not state:
             return None
@@ -143,7 +143,7 @@ class SubmititAdapter:
 
         return None
 
-    def probe(self: Self, directory: Path, state: _HuldraState) -> dict[str, Any]:
+    def probe(self, directory: Path, state: _HuldraState) -> dict[str, Any]:
         """
         Best-effort scheduler reconciliation.
 

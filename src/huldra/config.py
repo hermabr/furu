@@ -1,12 +1,11 @@
 import os
 from pathlib import Path
-from typing import Self
 
 
 class HuldraConfig:
     """Central configuration for Huldra behavior."""
 
-    def __init__(self: Self):
+    def __init__(self):
         def _get_base_root() -> Path:
             env = os.getenv("HULDRA_PATH")
             if env:
@@ -32,7 +31,7 @@ class HuldraConfig:
             "HULDRA_CANCELLED_IS_PREEMPTED", "false"
         ).lower() in {"1", "true", "yes"}
 
-    def get_root(self: Self, version_controlled: bool = False) -> Path:
+    def get_root(self, version_controlled: bool = False) -> Path:
         """Get root directory for storage (version_controlled determines subdirectory)."""
         if version_controlled:
             return self.base_root / "git"
