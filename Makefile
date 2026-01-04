@@ -1,7 +1,7 @@
 .PHONY: dev test lint check clean \
         dashboard-dev dashboard-dev-backend dashboard-dev-frontend \
         dashboard-build dashboard-generate dashboard-test dashboard-test-e2e \
-        dashboard-install dashboard-install-e2e
+        dashboard-install dashboard-install-e2e dashboard-lint
 
 # ============================================================================
 # Main Project Commands
@@ -34,7 +34,9 @@ clean:
 # Dashboard Commands
 # ============================================================================
 
-# TODO: check the ts code with type checker
+# Linting
+dashboard-lint:
+	cd dashboard-frontend && bun run lint
 
 # Development
 dashboard-dev:
@@ -87,6 +89,6 @@ dashboard-serve: dashboard-build
 # All tests (project + dashboard)
 # ============================================================================
 
-test-all: lint test dashboard-test-all
+test-all: lint dashboard-lint test dashboard-test-all
 
 
