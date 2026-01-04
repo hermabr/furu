@@ -1,45 +1,61 @@
-# things i really want
+# TODO
 
-- an overview of the full dag
-     - the full dag given the existing experiments
-     - the full dag given the code
-     - include rich information, such as how many different types one node has, total count, support both wide view, where each subclass is its own object and the ones where all subclasses are grouped
-     - when pressing one node in the DAG, only highlight the nodes it is connected to
-- see all experiments and to filter
-- rerun an experiment
-- migration helper / show stale runs that are no longer valid
-- see all dependencies and metadata about a particular experiment
-    - option to rerun the full experiment either from the ui or by getting a code snippet that i can run
-- create a new experiment with other hyperparameters or a sweep
-- clean way to start a bunch of experiments
-- discover all available runs in the code (is this even possible?) could maybe also be that i provide a json file with all my experiments so that i can make something similar to a wandb dashboard but where i also show how to achieve my results
-- ui improvements
-- filter experiments by which host created it, how much time it took to run, when i ran it etc
+## Completed
 
-## TODO
+- [x] Add support for building to wheel
 
-- [x] add support for building to wheel
-- [ ] remove all use of typing.Any
-- [ ] change typing.Optional[T] to be T | None
-- [ ] remove the custom tailwind colors
-- [ ] understand what absent status is
-- [ ] make sure the end to end tests use actual data (e.g., running some script to generate data inside data-huldra)
-- [ ] check if i always have access to the huldra.dashboard even if i only add only `uv add huldra` and not `uv add huldra[dashboard]`
-- [ ] make the conftest tests use actual huldra code rather than manually making the json objects
-  - [ ] make multiple different experiments with dependencies
-- [ ] make the dashboard support going into an experiment where it should show the full config including the option to toggle in and out one part and click to go into that child experiment
-- [ ] support seeing all children
-- [ ] support showing which files and add viewer for simple formats like any parquet or json/jsonl
-- [ ] see the logs of the experiments
-- [ ] support rerunning an experiment
-- [ ] support making graphs/charts. will need to decide if this needs to be from python or if we want it to be in react (might want python since this saves all the files)
-- [ ] rename hexdigest and maybe make it a private method (e.g. \_hexdigest)
-- [ ] show what is a subclass of what
-- [ ] see nice dags of everything that depends on each other (maybe also with subclasses)
-- [ ] add support for making experiments from the ui (and have it write the code to some folder in the directory before running)
-- [ ] throw/assert/raise on unexpected behavior rather than trying to manually handle it
-- [ ] support migrating, such as when adding a field
-- [ ] show which experiments are version controlled and not
-- [ ] move from hatchling to uv-build if possible and if better
-- [ ] decide if dashboard-frontend should be inside src or not
-- [ ] check out mlflow
+## Code Quality
+
+### Typing
+- [ ] Remove all use of `typing.Any`
+- [ ] Change `typing.Optional[T]` to `T | None`
+
+### API Design
+- [ ] Rename `hexdigest` to a name that makes more sense (consider making it private)
+
+### Error Handling
+
+- [ ] Throw/assert/raise on unexpected behavior rather than manual handling. This means every time something unexpected happens it simply crashes and i never use try/catch or returning None to handle unexpected behavior.
+
+## Testing
+
+- [ ] Make e2e tests use actual data (run scripts to generate data in `data-huldra`)
+- [ ] Make conftest tests use actual subclasses of Huldra instead of manual JSON objects to get actual realistic data that is updated
+  - [ ] Create multiple experiments with dependencies
+
+## Dashboard Features
+
+### Experiment Management
+- [ ] List and filter experiments
+  - Filter by host, runtime, date, etc.
+- [ ] Rerun experiments from UI or via code snippet
+- [ ] Create new experiments with different hyperparameters
+- [ ] Support parameter sweeps
+- [ ] Migration helper / show stale runs that are no longer valid
+
+### Experiment Visualization
+- [ ] DAG overview of experiments
+  - Show full DAG based on existing experiments
+  - Show full DAG based on code
+  - Rich information: counts per node type, subclass groupings
+  - Interactive: clicking a node highlights connected nodes
+  - Show subclass relationships
+- [ ] Experiment details view
+  - Full config with collapsible sections
+  - Click to navigate to child experiments
+  - View all children of an experiment
+- [ ] File viewer for artifacts (parquet, JSON, JSONL)
+- [ ] View experiment logs
+- [ ] Show which experiments are version controlled
+
+### UI/UX
+- [ ] General UI improvements
+- [ ] Remove custom Tailwind colors
+- [ ] Support making graphs/charts (decide: Python vs React)
+- [ ] Explore: discover all available runs/experiments in code (or via JSON manifest for reproducibility dashboard)
+
+## Build & Packaging
+
+- [ ] Verify dashboard access: `uv add huldra` vs `uv add huldra[dashboard]`
+- [ ] Consider moving from hatchling to uv-build
+- [ ] Decide if `dashboard-frontend` should be inside `src/`
