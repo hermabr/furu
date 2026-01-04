@@ -16,6 +16,9 @@ lint:
 
 check: lint test
 
+build: dashboard-build
+	uv build
+
 clean:
 	rm -rf .pytest_cache/
 	rm -rf dist/
