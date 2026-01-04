@@ -71,10 +71,17 @@ uv run pytest -k "test_load" -v
 |---------|-------------|
 | `make dashboard-dev` | Start dev servers (backend + frontend) |
 | `make dashboard-test` | Run dashboard backend tests |
-| `make dashboard-test-frontend` | Run frontend tests |
 | `make dashboard-test-e2e` | Run Playwright e2e tests |
 | `make dashboard-test-all` | Run all dashboard tests |
-| `make dashboard-build` | Build frontend for production |
+
+### Frontend Commands
+
+| Command | Description |
+|---------|-------------|
+| `make frontend-lint` | Run frontend TypeScript type checker |
+| `make frontend-test` | Run frontend unit tests |
+| `make frontend-build` | Build frontend for production |
+| `make frontend-generate` | Generate OpenAPI spec and TypeScript client |
 
 ---
 

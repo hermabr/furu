@@ -1,7 +1,8 @@
 .PHONY: dev test lint check clean \
         dashboard-dev dashboard-dev-backend dashboard-dev-frontend \
-        dashboard-build dashboard-generate dashboard-test dashboard-test-e2e \
-        dashboard-install dashboard-install-e2e dashboard-lint
+        dashboard-test dashboard-test-e2e \
+        dashboard-install dashboard-install-e2e \
+        frontend-lint frontend-test frontend-build frontend-generate
 
 # ============================================================================
 # Main Project Commands
@@ -16,7 +17,7 @@ lint:
 
 check: lint test
 
-build: dashboard-build test-all 
+build: frontend-build test-all 
 	uv build
 
 clean:
@@ -35,7 +36,7 @@ clean:
 # ============================================================================
 
 # Linting
-dashboard-lint:
+frontend-lint:
 	cd dashboard-frontend && bun run lint
 
 # Development
@@ -50,25 +51,25 @@ dashboard-dev-frontend:
 	cd dashboard-frontend && bun run dev
 
 # Generate OpenAPI spec and TypeScript client
-dashboard-generate:
+frontend-generate:
 	uv run python -c "from huldra.dashboard.main import app; import json; print(json.dumps(app.openapi()))" > openapi.json
 	cd dashboard-frontend && bun run generate
 
 # Build
-dashboard-build: dashboard-generate
+frontend-build: frontend-generate
 	cd dashboard-frontend && bun run build
 
 # Testing
 dashboard-test:
 	uv run pytest tests/dashboard/ -v
 
-dashboard-test-frontend:
+frontend-test:
 	cd dashboard-frontend && bun test
 
 dashboard-test-e2e:
 	cd e2e && bun run test
 
-dashboard-test-all: dashboard-test dashboard-test-frontend dashboard-test-e2e
+dashboard-test-all: dashboard-test frontend-test dashboard-test-e2e
 
 # Installation
 dashboard-install:
@@ -79,16 +80,16 @@ dashboard-install-e2e:
 	cd e2e && bun install && bunx playwright install chromium
 
 # Full setup for dashboard development
-dashboard-setup: dashboard-install dashboard-install-e2e dashboard-generate
+dashboard-setup: dashboard-install dashboard-install-e2e frontend-generate
 
 # Build and serve (production mode)
-dashboard-serve: dashboard-build
+dashboard-serve: frontend-build
 	uv run huldra-dashboard serve
 
 # ============================================================================
 # All tests (project + dashboard)
 # ============================================================================
 
-test-all: lint dashboard-lint test dashboard-test-all
+test-all: lint frontend-lint test dashboard-test-all
 
 
