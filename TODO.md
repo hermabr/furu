@@ -43,21 +43,24 @@
   - [x] Show full DAG based on existing experiments
   - [x] Interactive: clicking a node highlights connected nodes
   - [ ] Rich information: counts per node type, subclass groupings
+  - [ ] There should be a button for in each node of the DAG to see all experiments of that dag
   - Show subclass relationships
   - Support either DAG made from all experiments or by crawling through the actual source code
     - [x] From experiments
     - [ ] From source code
 - [x] Experiment details view
-  - Full config with collapsible sections
-  - Click to navigate to child experiments
-  - View all children of an experiment
+  - [ ] Full config with collapsible sections
+  - [ ] Click to navigate to child experiments
+  - [ ] View all children of an experiment
+  - [ ] Show the config in a tree view and maybe have a DAG-like view so that you can see what config variables are for what node and which nodes depend on which
 - [ ] File viewer for artifacts (parquet, JSON, JSONL)
 - [ ] View experiment logs
 - [ ] Show which experiments are version controlled
+- [ ] Support different ways of sorting the experiments, such as by subclass, by time created, by updated time, by dependencies, by runtime, by status (e.g., running before queued)
 
 ### UI/UX
 
-- [ ] Use shadcn
+- [x] Use shadcn
 - [ ] Support making graphs/charts given a result file such as a json or parquet file (decide: Python vs React)
 - [ ] Explore: discover all available runs/experiments in code (or via JSON manifest for reproducibility dashboard)
 - [ ] Show all output files of an experiment
