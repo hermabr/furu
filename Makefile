@@ -2,7 +2,8 @@
         dashboard-dev dashboard-dev-backend dashboard-dev-frontend \
         dashboard-test dashboard-test-e2e \
         dashboard-install dashboard-install-e2e \
-        frontend-lint frontend-test frontend-build frontend-generate
+        frontend-lint frontend-test frontend-build frontend-generate \
+        release release-patch release-minor release-major
 
 # ============================================================================
 # Main Project Commands
@@ -92,4 +93,38 @@ dashboard-serve: frontend-build
 
 test-all: lint frontend-lint test dashboard-test-all
 
+# ============================================================================
+# Release Commands
+# ============================================================================
 
+# Get current version from pyproject.toml
+CURRENT_VERSION := $(shell grep '^version' pyproject.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+
+# Release with a specific version: make release VERSION=1.2.3
+release: test-all
+ifndef VERSION
+	$(error VERSION is required. Usage: make release VERSION=1.2.3)
+endif
+	@echo "Current version: $(CURRENT_VERSION)"
+	@echo "New version: $(VERSION)"
+	@read -p "Continue? [y/N] " confirm && [ "$$confirm" = "y" ]
+	sed -i '' 's/^version = ".*"/version = "$(VERSION)"/' pyproject.toml
+	git add pyproject.toml
+	git commit -m "release v$(VERSION)"
+	git tag -a "v$(VERSION)" -m "Release v$(VERSION)"
+	@echo ""
+	@echo "Release v$(VERSION) created locally."
+	@echo "Run 'git push && git push --tags' to trigger the GitHub release."
+
+# Convenience targets for semver bumps
+release-patch:
+	@NEW_VERSION=$$(echo $(CURRENT_VERSION) | awk -F. '{print $$1"."$$2"."$$3+1}') && \
+	$(MAKE) release VERSION=$$NEW_VERSION
+
+release-minor:
+	@NEW_VERSION=$$(echo $(CURRENT_VERSION) | awk -F. '{print $$1"."$$2+1".0"}') && \
+	$(MAKE) release VERSION=$$NEW_VERSION
+
+release-major:
+	@NEW_VERSION=$$(echo $(CURRENT_VERSION) | awk -F. '{print $$1+1".0.0"}') && \
+	$(MAKE) release VERSION=$$NEW_VERSION

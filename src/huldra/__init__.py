@@ -4,8 +4,12 @@ Huldra: cacheable, nested pipelines as config objects.
 This package uses a src-layout. Import the package as `huldra`.
 """
 
+from importlib.metadata import version
+
 import chz
 import submitit
+
+__version__ = version("huldra")
 
 from .config import HULDRA_CONFIG, HuldraConfig, get_huldra_root, set_huldra_root
 from .adapters import SubmititAdapter
@@ -31,6 +35,7 @@ from .serialization import HuldraSerializer
 from .storage import MetadataManager, StateManager
 
 __all__ = [
+    "__version__",
     "HULDRA_CONFIG",
     "Huldra",
     "HuldraComputeError",

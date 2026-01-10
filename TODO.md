@@ -101,6 +101,7 @@
 
 - [ ] Explore if I the dashboard feature can be added in a different way, so that type checking works correctly for the main huldra package, so that the normal package cannot use packages only available in the dashboard
 - [ ] Consider moving from hatchling to uv-build
+- [ ] Add CI workflow to run tests on every push/PR
 
 ## Research & Investigation
 
