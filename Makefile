@@ -112,9 +112,9 @@ endif
 	git add pyproject.toml
 	git commit -m "release v$(VERSION)"
 	git tag -a "v$(VERSION)" -m "Release v$(VERSION)"
+	git push && git push --tags
 	@echo ""
-	@echo "Release v$(VERSION) created locally."
-	@echo "Run 'git push && git push --tags' to trigger the GitHub release."
+	@echo "Release v$(VERSION) pushed. GitHub Actions will create the release."
 
 # Convenience targets for semver bumps
 release-patch:
