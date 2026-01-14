@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict
 
+from ..config import GREN_CONFIG
 from ..serialization import BaseModel as PydanticBaseModel
 from ..serialization import GrenSerializer
 from ..serialization.serializer import JsonValue
@@ -26,7 +27,7 @@ class GitInfo(BaseModel):
 
     git_commit: str
     git_branch: str
-    git_remote: str
+    git_remote: str | None
     git_patch: str
     git_submodules: dict[str, str]
 
@@ -60,7 +61,7 @@ class GrenMetadata(BaseModel):
     # Git info
     git_commit: str
     git_branch: str
-    git_remote: str
+    git_remote: str | None
     git_patch: str
     git_submodules: dict[str, str]
 
@@ -98,9 +99,29 @@ class MetadataManager:
     @classmethod
     def collect_git_info(cls, ignore_diff: bool = False) -> GitInfo:
         """Collect git repository information."""
-        head = cls.run_git_command(["rev-parse", "HEAD"])
-        branch = cls.run_git_command(["rev-parse", "--abbrev-ref", "HEAD"])
-        remote = cls.run_git_command(["remote", "get-url", "origin"])
+        if not GREN_CONFIG.require_git:
+            try:
+                head = cls.run_git_command(["rev-parse", "HEAD"])
+                branch = cls.run_git_command(["rev-parse", "--abbrev-ref", "HEAD"])
+            except subprocess.CalledProcessError:
+                return GitInfo(
+                    git_commit="<no-git>",
+                    git_branch="<no-git>",
+                    git_remote=None,
+                    git_patch="<no-git>",
+                    git_submodules={},
+                )
+        else:
+            head = cls.run_git_command(["rev-parse", "HEAD"])
+            branch = cls.run_git_command(["rev-parse", "--abbrev-ref", "HEAD"])
+
+        if GREN_CONFIG.require_git_remote:
+            remote = cls.run_git_command(["remote", "get-url", "origin"])
+        else:
+            try:
+                remote = cls.run_git_command(["remote", "get-url", "origin"])
+            except subprocess.CalledProcessError:
+                remote = None
 
         if ignore_diff:
             patch = "<ignored-diff>"

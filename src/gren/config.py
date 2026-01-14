@@ -27,6 +27,16 @@ class GrenConfig:
             "true",
             "yes",
         }
+        self.require_git = os.getenv("GREN_REQUIRE_GIT", "1").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        self.require_git_remote = os.getenv("GREN_REQUIRE_GIT_REMOTE", "1").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
         self.cancelled_is_preempted = os.getenv(
             "GREN_CANCELLED_IS_PREEMPTED", "false"
         ).lower() in {"1", "true", "yes"}
