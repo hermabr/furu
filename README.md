@@ -9,13 +9,13 @@ Built on [chz](https://github.com/openai/chz) for declarative configs.
 ## Installation
 
 ```bash
-uv add "gren[dashboard] @ https://github.com/hermabr/gren/releases/download/v0.1.4/gren-0.1.4-py3-none-any.whl"
+uv add "gren[dashboard]"
 ```
 
 Or with pip:
 
 ```bash
-pip install "gren[dashboard] @ https://github.com/hermabr/gren/releases/download/v0.1.4/gren-0.1.4-py3-none-any.whl"
+pip install "gren[dashboard]"
 ```
 
 The `[dashboard]` extra includes the web dashboard. Omit it for the core library only.
