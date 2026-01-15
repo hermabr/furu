@@ -4,6 +4,17 @@
 
 - [x] Add support for building to wheel
 
+## General
+
+- [ ] make good nested documentation/skills for how to use huldra
+    - [ ] example pipeline and best practices, such as subclassing, bumping version etc
+    - [ ] how to use the dashboard
+    - [ ] low level design for huldra and how it works
+    - [ ] what functionality/api do you have when using huldra
+- [ ] support doing time machine to go back to the state at the time an artifact was created
+- [ ] check how to make implicit dependencies (probably this is doable with chz?)
+- [ ] add a flag which makes one item always rerun, such as HULDRA_ALWAYS_RERUN="mypkg.my_file.MyObject"
+
 ## Code Quality
 
 - [ ] Make speed benchmarks and make operations faster, such as very large objects for hashing
