@@ -45,6 +45,11 @@ class GrenConfig:
         self.cancelled_is_preempted = os.getenv(
             "GREN_CANCELLED_IS_PREEMPTED", "false"
         ).lower() in {"1", "true", "yes"}
+        self.cache_metadata = os.getenv("GREN_CACHE_METADATA", "0").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
 
     def get_root(self, version_controlled: bool = False) -> Path:
         """Get root directory for storage (version_controlled determines subdirectory)."""

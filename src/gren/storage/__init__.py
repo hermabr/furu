@@ -3,6 +3,7 @@ from .metadata import (
     GitInfo,
     GrenMetadata,
     MetadataManager,
+    clear_metadata_cache,
 )
 from .state import (
     ComputeLockContext,
@@ -23,5 +24,6 @@ __all__ = [
     "StateAttempt",
     "StateManager",
     "StateOwner",
+    "clear_metadata_cache",
     "compute_lock",
 ]

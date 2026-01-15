@@ -7,6 +7,7 @@
 ## Code Quality
 
 - [ ] Make speed benchmarks and make operations faster, such as very large objects for hashing
+- [ ] On errors, such as "you cannot run this from __main__", consider adding a comment telling it which env flag it can change (do this for all errors where we have flags and include in agents.md)
 
 ## Storage & Data Management
 

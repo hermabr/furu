@@ -19,6 +19,16 @@ from ..serialization.serializer import JsonValue
 if TYPE_CHECKING:
     from ..core.gren import Gren
 
+# Module-level cache for metadata (enabled via GREN_CACHE_METADATA=1)
+_cached_git_info: "GitInfo | None" = None
+
+
+def clear_metadata_cache() -> None:
+    """Clear the cached metadata. Useful for testing or long-running processes."""
+    global _cached_git_info
+    _cached_git_info = None
+
+
 
 class GitInfo(BaseModel):
     """Git repository information."""
@@ -99,6 +109,12 @@ class MetadataManager:
     @classmethod
     def collect_git_info(cls, ignore_diff: bool = False) -> GitInfo:
         """Collect git repository information."""
+        global _cached_git_info
+
+        # Return cached result if caching is enabled and available
+        if GREN_CONFIG.cache_metadata and _cached_git_info is not None:
+            return _cached_git_info
+
         if not GREN_CONFIG.require_git:
             try:
                 head = cls.run_git_command(["rev-parse", "HEAD"])
@@ -163,13 +179,19 @@ class MetadataManager:
             if len(parts) >= 2:
                 submodules[parts[1]] = parts[0]
 
-        return GitInfo(
+        result = GitInfo(
             git_commit=head,
             git_branch=branch,
             git_remote=remote,
             git_patch=patch,
             git_submodules=submodules,
         )
+
+        # Cache result if caching is enabled
+        if GREN_CONFIG.cache_metadata:
+            _cached_git_info = result
+
+        return result
 
     @staticmethod
     def collect_environment_info() -> EnvironmentInfo:
