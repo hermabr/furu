@@ -109,15 +109,11 @@ release: test-all
 	@echo ""
 	@echo "Release v$(CURRENT_VERSION) tag pushed. GitHub Actions will create the release."
 
-# Create release PR with a specific version: make release-pr VERSION=1.2.3 MESSAGE="Title"
-release-pr: test-all
+# Create release PR with a specific version: make release-pr VERSION=1.2.3 MESSAGE="What changed"
+release-pr:
 ifndef VERSION
-	$(error VERSION is required. Usage: make release-pr VERSION=1.2.3 MESSAGE="Title")
+	$(error VERSION is required. Usage: make release-pr VERSION=1.2.3)
 endif
-ifndef MESSAGE
-	$(error MESSAGE is required. Usage: make release-pr VERSION=1.2.3 MESSAGE="Title")
-endif
-	@if [ "$(CURRENT_BRANCH)" = "main" ]; then echo "release-pr must run from a non-main branch"; exit 1; fi
 	@echo "Current version: $(CURRENT_VERSION)"
 	@echo "New version: $(VERSION)"
 	@read -p "Continue? [y/N] " confirm && [ "$$confirm" = "y" ]
@@ -127,19 +123,19 @@ endif
 	git add pyproject.toml uv.lock
 	git commit -m "bump version to v$(VERSION)"
 	git push --set-upstream origin "release/v$(VERSION)"
-	gh pr create --title "$(MESSAGE)" --body "Release v$(VERSION)" --base main
+	gh pr create --title "Release v$(VERSION)" --body "$(or $(MESSAGE),Release v$(VERSION))" --base main
 	@echo ""
 	@echo "Release PR created for v$(VERSION)."
 
 # Convenience targets for semver bumps
 release-patch:
 	@NEW_VERSION=$$(echo $(CURRENT_VERSION) | awk -F. '{print $$1"."$$2"."$$3+1}') && \
-	$(MAKE) release-pr VERSION=$$NEW_VERSION MESSAGE="$(MESSAGE)"
+	$(MAKE) release-pr VERSION=$$NEW_VERSION
 
 release-minor:
 	@NEW_VERSION=$$(echo $(CURRENT_VERSION) | awk -F. '{print $$1"."$$2+1".0"}') && \
-	$(MAKE) release-pr VERSION=$$NEW_VERSION MESSAGE="$(MESSAGE)"
+	$(MAKE) release-pr VERSION=$$NEW_VERSION
 
 release-major:
 	@NEW_VERSION=$$(echo $(CURRENT_VERSION) | awk -F. '{print $$1+1".0.0"}') && \
-	$(MAKE) release-pr VERSION=$$NEW_VERSION MESSAGE="$(MESSAGE)"
+	$(MAKE) release-pr VERSION=$$NEW_VERSION
