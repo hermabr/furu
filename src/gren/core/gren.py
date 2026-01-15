@@ -39,6 +39,7 @@ from ..storage.state import (
     _StateResultAbsent,
     _StateResultFailed,
     _StateResultSuccess,
+    _StateResultSuccess,
     compute_lock,
 )
 
@@ -462,12 +463,12 @@ class Gren[T](ABC):
     def _log_console_start(self, action_color: str) -> None:
         """Log the start of load_or_create to console with caller info."""
         logger = get_logger()
-        caller_frame = inspect.currentframe()
+        frame = sys._getframe(1)
+
         caller_info: _CallerInfo = {}
-        if caller_frame is not None:
+        if frame is not None:
             # Walk up the stack to find the caller outside of gren package
             gren_pkg_dir = str(Path(__file__).parent.parent)
-            frame = caller_frame.f_back
             while frame is not None:
                 filename = frame.f_code.co_filename
                 # Skip frames from within the gren package
