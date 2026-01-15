@@ -23,6 +23,9 @@ jobs:
           uv sync --all-extras
           cd dashboard-frontend && bun install
 
+      - name: Install e2e dependencies
+        run: make dashboard-install-e2e
+
       - name: Generate frontend artifacts
         run: |
           make frontend-generate
