@@ -26,10 +26,8 @@ jobs:
       - name: Install e2e dependencies
         run: make dashboard-install-e2e
 
-      - name: Generate frontend artifacts
-        run: |
-          make frontend-generate
-          cd dashboard-frontend && bunx @tanstack/router-cli generate
+      - name: Build frontend artifacts
+        run: make frontend-build
 
       - name: Run tests
         run: make test-all
