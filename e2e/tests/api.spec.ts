@@ -44,6 +44,21 @@ test.describe("API Endpoints", () => {
     }
   });
 
+  test("experiments endpoint supports migrated filter", async ({ request }) => {
+    const response = await request.get(
+      "/api/experiments?result_status=migrated"
+    );
+    expect(response.ok()).toBeTruthy();
+
+    const data = await response.json();
+    expect(data.experiments).toBeDefined();
+    expect(data.total).toBe(1);
+
+    const migrated = data.experiments[0];
+    expect(migrated.result_status).toBe("migrated");
+    expect(migrated.migration_kind).toBe("alias");
+  });
+
   test("experiments endpoint supports filtering by attempt status", async ({
     request,
   }) => {
