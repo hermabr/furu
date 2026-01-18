@@ -90,6 +90,22 @@ def _state_to_summary(
     )
 
 
+def _override_summary_attempts(
+    summary: ExperimentSummary, state: _GrenState
+) -> ExperimentSummary:
+    attempt = state.attempt
+    return summary.model_copy(
+        update={
+            "attempt_status": attempt.status if attempt else None,
+            "attempt_number": attempt.number if attempt else None,
+            "started_at": attempt.started_at if attempt else None,
+            "backend": attempt.backend if attempt else None,
+            "hostname": attempt.owner.hostname if attempt else None,
+            "user": attempt.owner.user if attempt else None,
+        }
+    )
+
+
 def _state_to_detail(
     state: _GrenState,
     namespace: str,
@@ -233,17 +249,26 @@ def scan_experiments(
             namespace, gren_hash = _parse_namespace_from_path(experiment_dir, root)
             migration = MigrationManager.read_migration(experiment_dir)
             original_status: str | None = None
+            original_state: _GrenState | None = None
+            metadata_dir = experiment_dir
+            alias_active = False
 
             if migration is not None and migration.kind == "alias":
                 original_dir = MigrationManager.resolve_dir(migration, target="from")
                 original_state = StateManager.read_state(original_dir)
                 original_status = original_state.result.status
+                alias_active = (
+                    migration.overwritten_at is None
+                    and state.result.status == "migrated"
+                    and original_status == "success"
+                )
                 if view == "original":
                     state = original_state
                     namespace = migration.from_namespace
                     gren_hash = migration.from_hash
-                elif view == "resolved":
-                    state = original_state
+                    metadata_dir = original_dir
+                elif alias_active:
+                    metadata_dir = original_dir
 
             summary = _state_to_summary(
                 state,
@@ -257,8 +282,20 @@ def scan_experiments(
                 migration is not None
                 and migration.kind == "alias"
                 and view == "resolved"
+                and alias_active
+                and original_state is not None
             ):
-                continue
+                summary = _override_summary_attempts(summary, original_state)
+
+            filter_updated_at = summary.updated_at
+            if (
+                migration is not None
+                and migration.kind == "alias"
+                and view == "resolved"
+                and alias_active
+                and original_state is not None
+            ):
+                filter_updated_at = original_state.updated_at
 
             # Apply filters
             if result_status and summary.result_status != result_status:
@@ -287,7 +324,7 @@ def scan_experiments(
                     continue
 
             if updated_after_dt or updated_before_dt:
-                updated_dt = _parse_datetime(summary.updated_at)
+                updated_dt = _parse_datetime(filter_updated_at)
                 if updated_dt:
                     if updated_after_dt and updated_dt < updated_after_dt:
                         continue
@@ -299,12 +336,6 @@ def scan_experiments(
 
             # Config field filter - requires reading metadata
             if config_field and config_value is not None:
-                metadata_dir = experiment_dir
-                if migration is not None and migration.kind == "alias":
-                    if view in {"original", "resolved"}:
-                        metadata_dir = MigrationManager.resolve_dir(
-                            migration, target="from"
-                        )
                 metadata = MetadataManager.read_metadata_raw(metadata_dir)
                 if metadata:
                     gren_obj = metadata.get("gren_obj")
@@ -513,10 +544,7 @@ def get_experiment_dag() -> ExperimentDAG:
 
             migration = MigrationManager.read_migration(experiment_dir)
             if migration is not None and migration.kind == "alias":
-                original_dir = MigrationManager.resolve_dir(migration, target="from")
-                metadata = MetadataManager.read_metadata_raw(original_dir)
-                if not metadata:
-                    continue
+                continue
 
             gren_obj = metadata.get("gren_obj")
             if not isinstance(gren_obj, dict):
@@ -632,10 +660,7 @@ def _find_experiment_by_gren_obj(
 
             migration = MigrationManager.read_migration(experiment_dir)
             if migration is not None and migration.kind == "alias":
-                original_dir = MigrationManager.resolve_dir(migration, target="from")
-                metadata = MetadataManager.read_metadata_raw(original_dir)
-                if not metadata:
-                    continue
+                continue
 
             stored_gren_obj = metadata.get("gren_obj")
             if stored_gren_obj == gren_obj:
@@ -739,6 +764,10 @@ def get_experiment_relationships(
 
     for root in _iter_roots():
         for experiment_dir in _find_experiment_dirs(root):
+            migration = MigrationManager.read_migration(experiment_dir)
+            if migration is not None and migration.kind == "alias":
+                continue
+
             child_namespace, child_hash = _parse_namespace_from_path(
                 experiment_dir, root
             )

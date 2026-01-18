@@ -16,8 +16,8 @@ test.describe("Experiments Page", () => {
     await expect(page.getByPlaceholder("Filter by namespace...")).toBeVisible();
     await expect(page.getByRole("combobox").first()).toBeVisible();
 
-    // Should have 10 experiments from generate_data.py
-    await expect(page.getByText(/Showing \d+ of 10 experiments/)).toBeVisible();
+    // Should have 11 experiments from generate_data.py
+    await expect(page.getByText(/Showing \d+ of 11 experiments/)).toBeVisible();
 
     // Check that experiment cards display real class names
     const experimentClasses = ["PrepareDataset", "TrainModel", "TrainTextModel"];
@@ -58,6 +58,28 @@ test.describe("Experiments Page", () => {
 
     // Wait for filter to apply
     await expect(page.getByText(/Showing \d+ of \d+ experiments/)).toBeVisible();
+  });
+
+  test("should show migration tag in list", async ({ page }) => {
+    await page.goto("/experiments");
+    await expect(page.getByText(/Showing \d+ of \d+ experiments/)).toBeVisible();
+
+    await expect(page.locator("span", { hasText: "alias" })).toBeVisible();
+  });
+
+  test("should show migration toggle and link on detail", async ({ page }) => {
+    await page.goto("/experiments");
+    await expect(page.getByText(/Showing \d+ of \d+ experiments/)).toBeVisible();
+
+    const migrationRow = page.locator("tr", { has: page.getByText("alias") }).first();
+    await migrationRow.locator("a").first().click();
+
+    await expect(page.getByText("View original")).toBeVisible();
+    await expect(page.getByText("Original")).toBeVisible();
+    await expect(page.getByText("Aliased")).toBeVisible();
+
+    await page.getByText("Original").click();
+    await expect(page.getByText("Original status:")).toBeVisible();
   });
 
   test("should handle empty results gracefully", async ({ page }) => {

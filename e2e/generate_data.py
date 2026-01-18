@@ -26,9 +26,23 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "examples"))
 from gren.config import GREN_CONFIG
 from gren.serialization import GrenSerializer
 from gren.storage import MetadataManager, StateManager
+from gren import migrate
 
 # Import from the examples module which has proper module paths
 from my_project.pipelines import PrepareDataset, TrainModel, TrainTextModel  # type: ignore[import-not-found]
+
+
+def _create_migrated_alias() -> None:
+    dataset_old = PrepareDataset(name="mnist")
+    dataset_old.load_or_create()
+    dataset_alias = PrepareDataset(name="mnist-v2")
+    migrate(
+        dataset_old,
+        dataset_alias,
+        policy="alias",
+        origin="e2e",
+        note="migration fixture",
+    )
 
 
 def create_mock_experiment(
@@ -134,6 +148,10 @@ def generate_test_data(data_root: Path) -> None:
     dataset_mnist.load_or_create()
     print(f"  Created: {dataset_mnist.__class__.__name__} (mnist)")
 
+    # Migrated alias dataset (mnist -> mnist-v2)
+    _create_migrated_alias()
+    print("  Created: PrepareDataset alias (mnist-v2)")
+
     # Training model on toy dataset
     train_toy = TrainModel(lr=0.001, steps=1000, dataset=dataset_toy)
     train_toy.load_or_create()
@@ -183,12 +201,13 @@ def generate_test_data(data_root: Path) -> None:
     train_extra.load_or_create()
     print(f"  Created: {train_extra.__class__.__name__} (toy, lr=0.005)")
 
-    print("\nGenerated 10 experiments total")
+    print("\nGenerated 11 experiments total")
     print("  - 6 successful")
     print("  - 1 running")
     print("  - 1 failed")
     print("  - 1 queued")
     print("  - 1 absent")
+    print("  - 1 migrated")
 
 
 def main() -> None:

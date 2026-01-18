@@ -7,7 +7,7 @@ from typing import Literal
 
 from .core.gren import Gren
 from .runtime.logging import get_logger
-from .serialization import DEFAULT_GREN_VERSION
+from .serialization import DEFAULT_GREN_VERSION, GrenSerializer
 from .storage import MetadataManager, MigrationManager, MigrationRecord, StateManager
 from .storage.state import _StateResultMigrated
 
@@ -26,7 +26,14 @@ def migrate(
     if policy not in {"alias", "move", "copy"}:
         raise ValueError(f"Unsupported migration policy: {policy}")
 
-    if float(to_obj.gren_version) != DEFAULT_GREN_VERSION:
+    to_dict = GrenSerializer.to_dict(to_obj)
+    if not isinstance(to_dict, dict):
+        raise TypeError("Migration target must serialize to a dict")
+    gren_version = to_dict.get("gren_version")
+    if not isinstance(gren_version, (float, int)):
+        gren_version = DEFAULT_GREN_VERSION
+    gren_version = float(gren_version)
+    if gren_version != DEFAULT_GREN_VERSION:
         raise ValueError(
             f"Migration target must use current gren_version={DEFAULT_GREN_VERSION}"
         )
@@ -43,16 +50,23 @@ def migrate(
     from_namespace = _namespace_str(from_obj)
     to_namespace = _namespace_str(to_obj)
 
+    from_dict = GrenSerializer.to_dict(from_obj)
+    if not isinstance(from_dict, dict):
+        raise TypeError("Migration source must serialize to a dict")
+    from_version_value = from_dict.get("gren_version", DEFAULT_GREN_VERSION)
+    if not isinstance(from_version_value, (float, int)):
+        from_version_value = DEFAULT_GREN_VERSION
+
     record = MigrationRecord(
         kind="alias",
         policy=policy,
         from_namespace=from_namespace,
         from_hash=from_obj._gren_hash,
-        from_version=float(from_obj.gren_version),
+        from_version=float(from_version_value),
         from_root=from_root,
         to_namespace=to_namespace,
         to_hash=to_obj._gren_hash,
-        to_version=float(to_obj.gren_version),
+        to_version=gren_version,
         to_root=to_root,
         migrated_at=now,
         overwritten_at=None,
@@ -86,11 +100,11 @@ def migrate(
             policy=policy,
             from_namespace=from_namespace,
             from_hash=from_obj._gren_hash,
-            from_version=float(from_obj.gren_version),
+            from_version=float(from_version_value),
             from_root=from_root,
             to_namespace=to_namespace,
             to_hash=to_obj._gren_hash,
-            to_version=float(to_obj.gren_version),
+            to_version=gren_version,
             to_root=to_root,
             migrated_at=now,
             overwritten_at=None,

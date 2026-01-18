@@ -291,11 +291,11 @@ def test_list_experiments_filter_by_backend(
     client: TestClient, populated_gren_root: Path
 ) -> None:
     """Test filtering experiments by backend via API."""
-    # Filter by local backend (dataset1, train1, eval1 = 3 experiments)
+    # Filter by local backend (dataset1, train1, eval1, alias = 4 experiments)
     response = client.get("/api/experiments?backend=local")
     assert response.status_code == 200
     data = response.json()
-    assert data["total"] == 3
+    assert data["total"] == 4
     for exp in data["experiments"]:
         assert exp["backend"] == "local"
 
@@ -312,11 +312,11 @@ def test_list_experiments_filter_by_hostname(
     client: TestClient, populated_gren_root: Path
 ) -> None:
     """Test filtering experiments by hostname via API."""
-    # Filter by gpu-01 (dataset1, train1, loader = 3 experiments)
+    # Filter by gpu-01 (dataset1, train1, loader, alias = 4 experiments)
     response = client.get("/api/experiments?hostname=gpu-01")
     assert response.status_code == 200
     data = response.json()
-    assert data["total"] == 3
+    assert data["total"] == 4
     for exp in data["experiments"]:
         assert exp["hostname"] == "gpu-01"
 
@@ -333,11 +333,11 @@ def test_list_experiments_filter_by_user(
     client: TestClient, populated_gren_root: Path
 ) -> None:
     """Test filtering experiments by user via API."""
-    # Filter by alice (dataset1, train1, eval1 = 3 experiments)
+    # Filter by alice (dataset1, train1, eval1, alias = 4 experiments)
     response = client.get("/api/experiments?user=alice")
     assert response.status_code == 200
     data = response.json()
-    assert data["total"] == 3
+    assert data["total"] == 4
     for exp in data["experiments"]:
         assert exp["user"] == "alice"
 
@@ -401,11 +401,11 @@ def test_list_experiments_filter_by_config_filter(
     client: TestClient, populated_gren_root: Path
 ) -> None:
     """Test filtering experiments by config_filter via API."""
-    # Filter by config name=mnist (dataset1 only)
+    # Filter by config name=mnist (dataset1 + alias)
     response = client.get("/api/experiments?config_filter=name%3Dmnist")
     assert response.status_code == 200
     data = response.json()
-    assert data["total"] == 1
+    assert data["total"] == 2
     assert data["experiments"][0]["class_name"] == "PrepareDataset"
 
     # Filter by config name=cifar (dataset2 only)
@@ -419,17 +419,17 @@ def test_list_experiments_combined_new_filters(
     client: TestClient, populated_gren_root: Path
 ) -> None:
     """Test combining multiple new filters via API."""
-    # Combine backend=local + user=alice (dataset1, train1, eval1 = 3)
+    # Combine backend=local + user=alice (dataset1, train1, eval1, alias = 4)
     response = client.get("/api/experiments?backend=local&user=alice")
     assert response.status_code == 200
     data = response.json()
-    assert data["total"] == 3
+    assert data["total"] == 4
 
-    # Combine backend=local + hostname=gpu-01 (dataset1, train1 = 2)
+    # Combine backend=local + hostname=gpu-01 (dataset1, train1, alias = 3)
     response = client.get("/api/experiments?backend=local&hostname=gpu-01")
     assert response.status_code == 200
     data = response.json()
-    assert data["total"] == 2
+    assert data["total"] == 3
 
     # Combine backend=submitit + hostname=gpu-01 (loader = 1)
     response = client.get("/api/experiments?backend=submitit&hostname=gpu-01")
@@ -705,8 +705,12 @@ def test_relationships_endpoint_has_children(
     )
     assert list_response.status_code == 200
     experiments = list_response.json()["experiments"]
-    assert len(experiments) == 1
-    exp = experiments[0]
+    assert len(experiments) >= 1
+    exp = next(
+        experiment
+        for experiment in experiments
+        if experiment["result_status"] == "success"
+    )
 
     response = client.get(
         f"/api/experiments/{exp['namespace']}/{exp['gren_hash']}/relationships"
@@ -801,7 +805,11 @@ def test_relationships_child_structure(
     assert list_response.status_code == 200
     experiments = list_response.json()["experiments"]
     assert len(experiments) >= 1
-    exp = experiments[0]
+    exp = next(
+        experiment
+        for experiment in experiments
+        if experiment["result_status"] == "success"
+    )
 
     response = client.get(
         f"/api/experiments/{exp['namespace']}/{exp['gren_hash']}/relationships"

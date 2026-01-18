@@ -21,8 +21,8 @@ test.describe("API Endpoints", () => {
     expect(Array.isArray(data.experiments)).toBe(true);
     expect(typeof data.total).toBe("number");
 
-    // Should have 10 experiments from our generated data
-    expect(data.total).toBe(10);
+    // Should have 11 experiments from our generated data
+    expect(data.total).toBe(11);
   });
 
   test("experiments endpoint supports filtering by result status", async ({
@@ -65,7 +65,7 @@ test.describe("API Endpoints", () => {
 
     const data = await response.json();
     expect(data.experiments.length).toBeLessThanOrEqual(3);
-    expect(data.total).toBe(10); // Total count should still be 10
+    expect(data.total).toBe(11); // Total count should still be 11
 
     // Get second page
     const response2 = await request.get("/api/experiments?limit=3&offset=3");
@@ -93,7 +93,7 @@ test.describe("API Endpoints", () => {
     expect(Array.isArray(data.by_result_status)).toBe(true);
 
     // Verify counts match our generated data
-    expect(data.total).toBe(10);
+    expect(data.total).toBe(11);
     expect(data.success_count).toBe(6);
     expect(data.running_count).toBe(1);
     expect(data.failed_count).toBe(1);

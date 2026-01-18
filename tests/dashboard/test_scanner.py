@@ -214,11 +214,11 @@ def test_scan_experiments_filter_by_class(populated_gren_root: Path) -> None:
 def test_scan_experiments_filter_by_backend(populated_gren_root: Path) -> None:
     """Test filtering experiments by backend."""
     # Fixture has: dataset1(local), train1(local), train2(submitit),
-    #              eval1(local), loader(submitit), dataset2(no attempt), alias(no attempt)
+    #              eval1(local), loader(submitit), dataset2(no attempt), alias(resolves)
 
     # Filter by local backend
     local_results = scan_experiments(backend="local")
-    assert len(local_results) == 3  # dataset1, train1, eval1
+    assert len(local_results) == 4  # dataset1, train1, eval1, alias
     for exp in local_results:
         assert exp.backend == "local"
 
@@ -246,11 +246,11 @@ def test_scan_experiments_filter_by_backend_no_match(temp_gren_root: Path) -> No
 def test_scan_experiments_filter_by_hostname(populated_gren_root: Path) -> None:
     """Test filtering experiments by hostname."""
     # Fixture has: dataset1(gpu-01), train1(gpu-01), train2(gpu-02),
-    #              eval1(gpu-02), loader(gpu-01), dataset2(no attempt), alias(no attempt)
+    #              eval1(gpu-02), loader(gpu-01), dataset2(no attempt), alias(resolves)
 
     # Filter by gpu-01
     gpu01_results = scan_experiments(hostname="gpu-01")
-    assert len(gpu01_results) == 3  # dataset1, train1, loader
+    assert len(gpu01_results) == 4  # dataset1, train1, loader, alias
     for exp in gpu01_results:
         assert exp.hostname == "gpu-01"
 
@@ -278,11 +278,11 @@ def test_scan_experiments_filter_by_hostname_no_match(temp_gren_root: Path) -> N
 def test_scan_experiments_filter_by_user(populated_gren_root: Path) -> None:
     """Test filtering experiments by user."""
     # Fixture has: dataset1(alice), train1(alice), train2(bob),
-    #              eval1(alice), loader(bob), dataset2(no attempt)
+    #              eval1(alice), loader(bob), dataset2(no attempt), alias(resolves)
 
     # Filter by alice
     alice_results = scan_experiments(user="alice")
-    assert len(alice_results) == 3  # dataset1, train1, eval1
+    assert len(alice_results) == 4  # dataset1, train1, eval1, alias
     for exp in alice_results:
         assert exp.user == "alice"
 
@@ -314,7 +314,7 @@ def test_scan_experiments_filter_by_started_after(populated_gren_root: Path) -> 
 
     # Filter by started_after 2025-01-01 should exclude loader (2024) and dataset2 (no attempt)
     results = scan_experiments(started_after="2025-01-01T00:00:00+00:00")
-    assert len(results) == 4  # dataset1, train1, train2, eval1
+    assert len(results) == 5  # dataset1, train1, train2, eval1, alias
     for exp in results:
         assert exp.started_at is not None
         assert exp.started_at >= "2025-01-01T00:00:00+00:00"
@@ -454,6 +454,7 @@ def test_scan_experiments_combined_filters(populated_gren_root: Path) -> None:
     # - eval1: failed, local, gpu-02, alice, 2025-01-04
     # - loader: success, submitit, gpu-01, bob, 2024-06-01
     # - dataset2: absent, no attempt
+    # - alias: migrated (resolves to dataset1)
 
     # Combine result_status + user: success + alice = dataset1, train1
     results = scan_experiments(result_status="success", user="alice")
@@ -462,9 +463,9 @@ def test_scan_experiments_combined_filters(populated_gren_root: Path) -> None:
         assert exp.user == "alice"
         assert exp.result_status == "success"
 
-    # Combine backend + hostname: local + gpu-01 = dataset1, train1
+    # Combine backend + hostname: local + gpu-01 = dataset1, train1, alias
     results = scan_experiments(backend="local", hostname="gpu-01")
-    assert len(results) == 2
+    assert len(results) == 3
     for exp in results:
         assert exp.backend == "local"
         assert exp.hostname == "gpu-01"
