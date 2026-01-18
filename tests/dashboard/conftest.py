@@ -325,6 +325,7 @@ def _create_populated_experiments(root: Path) -> None:
         to_root="data",
         migrated_at="2025-01-05T10:00:00+00:00",
         overwritten_at=None,
+        default_values={"language": "spanish"},
         origin="tests",
         note="alias fixture",
     )

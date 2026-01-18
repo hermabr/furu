@@ -174,6 +174,37 @@ def _parse_datetime(value: str | None) -> _dt.datetime | None:
     return dt
 
 
+def _read_metadata_with_defaults(
+    directory: Path, migration: MigrationRecord | None
+) -> JsonDict | None:
+    metadata = MetadataManager.read_metadata_raw(directory)
+    if not metadata or migration is None:
+        return metadata
+    if migration.kind != "alias" or migration.overwritten_at is not None:
+        return metadata
+    if not migration.default_values:
+        return metadata
+
+    gren_obj = metadata.get("gren_obj")
+    if not isinstance(gren_obj, dict):
+        return metadata
+
+    defaults = migration.default_values
+    updates: dict[str, str | int | float | bool] = {}
+    for field, value in defaults.items():
+        if field not in gren_obj:
+            updates[field] = value
+
+    if not updates:
+        return metadata
+
+    updated_obj = dict(gren_obj)
+    updated_obj.update(updates)
+    updated_metadata = dict(metadata)
+    updated_metadata["gren_obj"] = updated_obj
+    return updated_metadata
+
+
 def _get_nested_value(data: dict, path: str) -> str | int | float | bool | None:
     """
     Get a nested value from a dict using dot notation.
@@ -336,7 +367,11 @@ def scan_experiments(
 
             # Config field filter - requires reading metadata
             if config_field and config_value is not None:
-                metadata = MetadataManager.read_metadata_raw(metadata_dir)
+                defaults_migration = migration if view == "resolved" else None
+                metadata = _read_metadata_with_defaults(
+                    metadata_dir,
+                    defaults_migration,
+                )
                 if metadata:
                     gren_obj = metadata.get("gren_obj")
                     if isinstance(gren_obj, dict):
@@ -385,8 +420,11 @@ def get_experiment_detail(
 
         if state_path.is_file():
             state = StateManager.read_state(experiment_dir)
-            metadata = MetadataManager.read_metadata_raw(experiment_dir)
             migration = MigrationManager.read_migration(experiment_dir)
+            metadata = _read_metadata_with_defaults(
+                experiment_dir,
+                migration if view == "resolved" else None,
+            )
             original_status: str | None = None
             original_namespace: str | None = None
             original_hash: str | None = None
@@ -403,6 +441,8 @@ def get_experiment_detail(
                     experiment_dir = original_dir
                     namespace = original_namespace
                     gren_hash = original_hash
+                else:
+                    metadata = _read_metadata_with_defaults(original_dir, migration)
 
             return _state_to_detail(
                 state,
@@ -704,7 +744,12 @@ def get_experiment_relationships(
                 and migration.kind == "alias"
             ):
                 experiment_dir = MigrationManager.resolve_dir(migration, target="from")
-            target_metadata = MetadataManager.read_metadata_raw(experiment_dir)
+                target_metadata = MetadataManager.read_metadata_raw(experiment_dir)
+            else:
+                target_metadata = _read_metadata_with_defaults(
+                    experiment_dir,
+                    migration if view == "resolved" else None,
+                )
             break
 
     if not target_metadata:

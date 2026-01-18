@@ -6,6 +6,7 @@
 - Add migration regression tests for rename/added-field alias cases plus recompute detach events.
 - Extend dashboard e2e fixtures/tests to cover migrated experiment tags and original/aliased navigation.
 - Warn when migrating experiments that are not in a success state.
+- Support migration default values for alias metadata (for adding fields with defaults).
 - Add `GREN_CACHE_METADATA` for time-based git info caching. Accepts `never`, `forever`, or duration like `5m`, `1h`. Default: `5m`.
 - Add `clear_metadata_cache()` to manually invalidate cached metadata.
 

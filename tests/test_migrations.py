@@ -167,11 +167,19 @@ def test_migrate_alias_with_added_field_default(gren_tmp_root) -> None:
 
     assert from_obj.load_or_create() == 5
 
-    gren.migrate(from_obj, to_obj, policy="alias", origin="tests", note="added-field")
+    gren.migrate(
+        from_obj,
+        to_obj,
+        policy="alias",
+        origin="tests",
+        note="added-field",
+        default_values={"extra": "default"},
+    )
 
     alias_record = MigrationManager.read_migration(to_obj._base_gren_dir())
     assert alias_record is not None
     assert alias_record.kind == "alias"
+    assert alias_record.default_values == {"extra": "default"}
 
     alias_state = StateManager.read_state(to_obj._base_gren_dir())
     assert isinstance(alias_state.result, _StateResultMigrated)

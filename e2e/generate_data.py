@@ -42,6 +42,7 @@ def _create_migrated_alias() -> None:
         policy="alias",
         origin="e2e",
         note="migration fixture",
+        default_values={"language": "spanish"},
     )
 
 

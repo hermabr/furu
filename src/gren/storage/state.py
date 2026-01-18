@@ -9,7 +9,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any, Callable, Literal, Mapping, TypedDict
+from typing import Annotated, Any, Callable, Literal, Mapping, TypedDict, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -22,6 +22,9 @@ SchedulerMetadata = dict[str, Any]
 
 # Type alias for probe results from submitit adapter
 ProbeResult = dict[str, Any]
+
+EventValue: TypeAlias = str | int | float | bool
+EventMapping: TypeAlias = Mapping[str, EventValue]
 
 
 class _LockInfoDict(TypedDict, total=False):
@@ -473,7 +476,7 @@ class StateManager:
             cls.release_lock(fd, lock_path)
 
     @classmethod
-    def append_event(cls, directory: Path, event: Mapping[str, str | int]) -> None:
+    def append_event(cls, directory: Path, event: EventMapping) -> None:
         path = cls.get_events_path(directory)
         enriched = {
             "ts": cls._iso_now(),

@@ -43,6 +43,14 @@ def test_scan_experiments_filter_result_status(populated_gren_root: Path) -> Non
     assert migrated[0].migration_kind == "alias"
 
 
+def test_scan_experiments_applies_migration_defaults(
+    populated_gren_root: Path,
+) -> None:
+    experiments = scan_experiments(config_filter="language=spanish")
+    assert len(experiments) == 1
+    assert experiments[0].migration_kind == "alias"
+
+
 def test_scan_experiments_filter_attempt_status(populated_gren_root: Path) -> None:
     """Test filtering by attempt status."""
     experiments = scan_experiments(attempt_status="failed")

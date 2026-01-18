@@ -408,6 +408,20 @@ def test_list_experiments_filter_by_config_filter(
     assert data["total"] == 2
     assert data["experiments"][0]["class_name"] == "PrepareDataset"
 
+    # Filter by config language=spanish (alias default)
+    response = client.get("/api/experiments?config_filter=language%3Dspanish")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 1
+    assert data["experiments"][0]["migration_kind"] == "alias"
+
+    # Filter by config name=cifar (dataset2 only)
+    response = client.get("/api/experiments?config_filter=name%3Dcifar")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 1
+    assert data["experiments"][0]["class_name"] == "PrepareDataset"
+
     # Filter by config name=cifar (dataset2 only)
     response = client.get("/api/experiments?config_filter=name%3Dcifar")
     assert response.status_code == 200

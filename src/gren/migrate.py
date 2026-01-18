@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import datetime as _dt
+import json
 import shutil
+from typing import Mapping
 from pathlib import Path
 from typing import Literal
 
@@ -22,6 +24,7 @@ def migrate(
     policy: MigrationPolicy = "alias",
     origin: str | None = None,
     note: str | None = None,
+    default_values: Mapping[str, str | int | float | bool] | None = None,
 ) -> MigrationRecord:
     if policy not in {"alias", "move", "copy"}:
         raise ValueError(f"Unsupported migration policy: {policy}")
@@ -78,6 +81,7 @@ def migrate(
         to_root=to_root,
         migrated_at=now,
         overwritten_at=None,
+        default_values=dict(default_values) if default_values is not None else None,
         origin=origin,
         note=note,
     )
@@ -92,15 +96,15 @@ def migrate(
     MetadataManager.write_metadata(metadata, to_dir)
     MigrationManager.write_migration(record, to_dir)
 
-    StateManager.append_event(
-        to_dir,
-        {
-            "type": "migrated",
-            "policy": policy,
-            "from": f"{from_namespace}:{from_obj._gren_hash}",
-            "to": f"{to_namespace}:{to_obj._gren_hash}",
-        },
-    )
+    event: dict[str, str | int] = {
+        "type": "migrated",
+        "policy": policy,
+        "from": f"{from_namespace}:{from_obj._gren_hash}",
+        "to": f"{to_namespace}:{to_obj._gren_hash}",
+    }
+    if default_values is not None:
+        event["default_values"] = json.dumps(default_values, sort_keys=True)
+    StateManager.append_event(to_dir, event)
 
     if policy != "copy":
         old_record = MigrationRecord(
@@ -116,20 +120,13 @@ def migrate(
             to_root=to_root,
             migrated_at=now,
             overwritten_at=None,
+            default_values=dict(default_values) if default_values is not None else None,
             origin=origin,
             note=note,
         )
         MigrationManager.write_migration(old_record, from_dir)
 
-    StateManager.append_event(
-        from_dir,
-        {
-            "type": "migrated",
-            "policy": policy,
-            "from": f"{from_namespace}:{from_obj._gren_hash}",
-            "to": f"{to_namespace}:{to_obj._gren_hash}",
-        },
-    )
+    StateManager.append_event(from_dir, event.copy())
 
     get_logger().info(
         "migration: %s -> %s (%s)",

@@ -29,6 +29,7 @@ class MigrationRecord(BaseModel):
     to_root: RootKind
     migrated_at: str
     overwritten_at: str | None = None
+    default_values: dict[str, str | int | float | bool] | None = None
     origin: str | None = None
     note: str | None = None
 
