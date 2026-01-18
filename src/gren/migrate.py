@@ -9,7 +9,7 @@ from .core.gren import Gren
 from .runtime.logging import get_logger
 from .serialization import DEFAULT_GREN_VERSION, GrenSerializer
 from .storage import MetadataManager, MigrationManager, MigrationRecord, StateManager
-from .storage.state import _StateResultMigrated
+from .storage.state import _StateResultMigrated, _StateResultSuccess
 
 
 MigrationPolicy = Literal["alias", "move", "copy"]
@@ -40,6 +40,14 @@ def migrate(
 
     from_dir = from_obj.gren_dir
     to_dir = to_obj.gren_dir
+
+    from_state = StateManager.read_state(from_dir)
+    if not isinstance(from_state.result, _StateResultSuccess):
+        get_logger().warning(
+            "migration source is not successful: %s (%s)",
+            from_dir,
+            from_state.result.status,
+        )
 
     to_dir.mkdir(parents=True, exist_ok=True)
 
