@@ -19,6 +19,7 @@
 - [ ] When waiting, say how long you will be waiting and how long since file was touched
 - [ ] Sometimes it gets stuck in waiting for compute lock forever
 - [ ] Rename to furu
+- [ ] Add terminal dashboard (tui)
 
 ## Code Quality
 
