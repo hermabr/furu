@@ -29,6 +29,7 @@
 - For feature requests, default to creating a new branch, making changes, committing when it makes sense, pushing the branch, and opening a pull request when the work is done.
 - You may use git actions (commit, push, PR) without asking for permission unless the user explicitly forbids it.
 - Never push to `main` or merge a pull request unless the user explicitly asks.
+- When creating a pull request, write a detailed body that explains what changed, notes new or updated API behavior, and includes usage examples when relevant.
 
 ---
 

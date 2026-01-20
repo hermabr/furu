@@ -42,14 +42,8 @@ test = [
 ]
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.hatch.build]
-artifacts = ["src/furu/dashboard/frontend/dist/**/*"]
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/furu"]
+requires = ["uv_build>=0.9.26,<0.10.0"]
+build-backend = "uv_build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
