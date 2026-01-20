@@ -230,7 +230,7 @@ def test_migrate_move_transfers_payload(furu_tmp_root) -> None:
     assert isinstance(from_state.result, _StateResultMigrated)
 
 
-def test_migrate_alias_force_recompute_detaches(furu_tmp_root, monkeypatch) -> None:
+def test_migrate_alias_always_rerun_detaches(furu_tmp_root, monkeypatch) -> None:
     from_obj = RenamedSource(value=1)
     to_obj = RenamedTarget(value=1)
 
@@ -243,7 +243,7 @@ def test_migrate_alias_force_recompute_detaches(furu_tmp_root, monkeypatch) -> N
     assert isinstance(state.result, _StateResultMigrated)
 
     qualname = f"{to_obj.__class__.__module__}.{to_obj.__class__.__qualname__}"
-    monkeypatch.setattr(furu.FURU_CONFIG, "force_recompute", {qualname})
+    monkeypatch.setattr(furu.FURU_CONFIG, "always_rerun", {qualname})
 
     assert to_obj.load_or_create() == 1
 
@@ -271,8 +271,8 @@ def test_migrate_alias_force_recompute_detaches(furu_tmp_root, monkeypatch) -> N
     ]
     assert len(alias_events) == 1
     assert len(original_events) == 1
-    assert alias_events[0].get("reason") == "force_recompute"
-    assert original_events[0].get("reason") == "force_recompute"
+    assert alias_events[0].get("reason") == "always_rerun"
+    assert original_events[0].get("reason") == "always_rerun"
 
 
 def test_migrate_alias_of_alias_is_skipped(furu_tmp_root) -> None:

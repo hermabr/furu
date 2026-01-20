@@ -34,14 +34,27 @@ def test_load_or_create_returns_create_result_without_load(furu_tmp_root) -> Non
     assert obj._load_calls == 1
 
 
-def test_force_recompute_rebuilds_cached_results(furu_tmp_root, monkeypatch) -> None:
+def test_always_rerun_rebuilds_cached_results(furu_tmp_root, monkeypatch) -> None:
     obj = Dummy()
     assert obj.load_or_create() == 123
     assert obj._create_calls == 1
     assert obj._load_calls == 0
 
     qualname = f"{obj.__class__.__module__}.{obj.__class__.__qualname__}"
-    monkeypatch.setattr(furu.FURU_CONFIG, "force_recompute", {qualname})
+    monkeypatch.setattr(furu.FURU_CONFIG, "always_rerun", {qualname})
+
+    assert obj.load_or_create() == 123
+    assert obj._create_calls == 2
+    assert obj._load_calls == 0
+
+
+def test_always_rerun_all_rebuilds_cached_results(furu_tmp_root, monkeypatch) -> None:
+    obj = Dummy()
+    assert obj.load_or_create() == 123
+    assert obj._create_calls == 1
+    assert obj._load_calls == 0
+
+    monkeypatch.setattr(furu.FURU_CONFIG, "always_rerun_all", True)
 
     assert obj.load_or_create() == 123
     assert obj._create_calls == 2

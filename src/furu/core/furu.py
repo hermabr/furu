@@ -204,11 +204,13 @@ class Furu[T](ABC):
         """Compute hash of this object's content for storage identification."""
         return FuruSerializer.compute_hash(self)
 
-    def _force_recompute(self: Self) -> bool:
-        if not FURU_CONFIG.force_recompute:
+    def _always_rerun(self: Self) -> bool:
+        if FURU_CONFIG.always_rerun_all:
+            return True
+        if not FURU_CONFIG.always_rerun:
             return False
         qualname = f"{self.__class__.__module__}.{self.__class__.__qualname__}"
-        return qualname in FURU_CONFIG.force_recompute
+        return qualname in FURU_CONFIG.always_rerun
 
     def _base_furu_dir(self: Self) -> Path:
         root = FURU_CONFIG.get_root(self.version_controlled)
@@ -333,12 +335,12 @@ class Furu[T](ABC):
                         )
                         migration = MigrationManager.read_migration(base_dir)
 
-                if alias_active and self._force_recompute():
+                if alias_active and self._always_rerun():
                     if migration is not None:
                         self._maybe_detach_alias(
                             directory=base_dir,
                             record=migration,
-                            reason="force_recompute",
+                            reason="always_rerun",
                         )
                     migration = MigrationManager.read_migration(base_dir)
                     alias_active = False
@@ -350,9 +352,9 @@ class Furu[T](ABC):
                 success_marker = StateManager.get_success_marker_path(directory)
                 if success_marker.is_file():
                     # We have a success marker. Check if we can use it.
-                    if self._force_recompute():
+                    if self._always_rerun():
                         self._invalidate_cached_success(
-                            directory, reason="force_recompute enabled"
+                            directory, reason="always_rerun enabled"
                         )
                         # Fall through to normal load
                     else:
@@ -381,9 +383,9 @@ class Furu[T](ABC):
                 needs_reconcile = True
                 if isinstance(state0.result, _StateResultSuccess):
                     # Double check logic if we fell through to here (e.g. race condition or invalidation above)
-                    if self._force_recompute():
+                    if self._always_rerun():
                         self._invalidate_cached_success(
-                            directory, reason="force_recompute enabled"
+                            directory, reason="always_rerun enabled"
                         )
                         state0 = StateManager.read_state(directory)
                     else:

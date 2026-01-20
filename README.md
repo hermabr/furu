@@ -382,6 +382,7 @@ The `/api/experiments` endpoint supports:
 | `FURU_PATH` | `./data-furu/` | Base storage directory |
 | `FURU_LOG_LEVEL` | `INFO` | Console verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `FURU_IGNORE_DIFF` | `false` | Skip embedding git diff in metadata |
+| `FURU_ALWAYS_RERUN` | `""` | Comma-separated class qualnames to always rerun (use `ALL` to bypass cache globally; cannot combine with other entries; entries must be importable) |
 | `FURU_POLL_INTERVAL_SECS` | `10` | Polling interval for queued/running jobs |
 | `FURU_WAIT_LOG_EVERY_SECS` | `10` | Interval between "waiting" log messages |
 | `FURU_STALE_AFTER_SECS` | `1800` | Consider running jobs stale after this duration |

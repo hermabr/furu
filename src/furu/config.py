@@ -1,4 +1,5 @@
 import os
+from importlib import import_module
 from pathlib import Path
 
 
@@ -37,11 +38,23 @@ class FuruConfig:
             "true",
             "yes",
         }
-        self.force_recompute = {
+        always_rerun_items = {
             item.strip()
-            for item in os.getenv("FURU_FORCE_RECOMPUTE", "").split(",")
+            for item in os.getenv("FURU_ALWAYS_RERUN", "").split(",")
             if item.strip()
         }
+        all_entries = {item for item in always_rerun_items if item.lower() == "all"}
+        if all_entries and len(always_rerun_items) > len(all_entries):
+            raise ValueError(
+                "FURU_ALWAYS_RERUN cannot combine 'ALL' with specific entries"
+            )
+        self.always_rerun_all = bool(all_entries)
+        if self.always_rerun_all:
+            always_rerun_items = {
+                item for item in always_rerun_items if item.lower() != "all"
+            }
+        self._require_namespaces_exist(always_rerun_items)
+        self.always_rerun = always_rerun_items
         self.cancelled_is_preempted = os.getenv(
             "FURU_CANCELLED_IS_PREEMPTED", "false"
         ).lower() in {"1", "true", "yes"}
@@ -81,6 +94,28 @@ class FuruConfig:
         if version_controlled:
             return self.base_root / "git"
         return self.base_root / "data"
+
+    @staticmethod
+    def _require_namespaces_exist(namespaces: set[str]) -> None:
+        if not namespaces:
+            return
+        missing_sentinel = object()
+        for namespace in namespaces:
+            module_name, _, qualname = namespace.rpartition(".")
+            if not module_name or not qualname:
+                raise ValueError(
+                    "FURU_ALWAYS_RERUN entries must be 'module.QualifiedName', "
+                    f"got {namespace!r}"
+                )
+            target: object = import_module(module_name)
+            for attr in qualname.split("."):
+                value = getattr(target, attr, missing_sentinel)
+                if value is missing_sentinel:
+                    raise ValueError(
+                        "FURU_ALWAYS_RERUN entry does not exist: "
+                        f"{namespace!r}"
+                    )
+                target = value
 
     @property
     def raw_dir(self) -> Path:

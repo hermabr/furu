@@ -13,7 +13,7 @@
     - [ ] what functionality/api do you have when using furu
 - [ ] support doing time machine to go back to the state at the time an artifact was created
 - [ ] check how to make implicit dependencies (probably this is doable with chz?)
-- [ ] add a flag which makes one item always rerun, such as FURU_ALWAYS_RERUN="mypkg.my_file.MyObject"
+- [x] add a flag which makes one item always rerun, such as FURU_ALWAYS_RERUN="mypkg.my_file.MyObject"
 - [ ] Add support for lazily computing dependencies (maybe)
 - [ ] Change the version controlled flow so that it is always saved in the current folder at the same level as the pyproject.toml if that exists and in .gitignore if that exists and if not it throws. This should happen even if the general furu directory is somewhere else. It should save it to something like furu-data/artifacts or a better similar name. It should be possible to override this with an env variable.
 - [ ] When waiting, say how long you will be waiting and how long since file was touched
@@ -48,7 +48,7 @@
 ## Execution & Compute
 
 - [ ] Dry-run mode (`FURU_DRY_RUN`) - Preview what would be computed without running
-- [x] Force recompute flag (`FURU_FORCE_RECOMPUTE`) - Recompute even if artifact exists
+- [x] Always rerun flag (`FURU_ALWAYS_RERUN`) - Recompute even if artifact exists
 - [ ] Checkpointing - Resume long-running computations from checkpoints
 - [ ] Resource tracking - Track peak memory, CPU time, GPU usage during `_create()`
 
