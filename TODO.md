@@ -20,6 +20,8 @@
 - [ ] Sometimes it gets stuck in waiting for compute lock forever
 - [ ] Rename to furu
 - [ ] Add terminal dashboard (tui)
+- [ ] Don't allow `<locals>` in `__qualname__` if not providing env flag
+- [ ] Verify that all tests including e2e and dashboard tests are using tmp directory for gren root data dir
 
 ## Code Quality
 
