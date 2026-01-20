@@ -116,8 +116,9 @@ def test_scan_experiments_sorted_by_updated_at(temp_gren_root: Path) -> None:
 
 
 def test_get_experiment_detail_found(populated_gren_root: Path) -> None:
-    """Test getting detail for an existing experiment."""
+    """Test getting experiment detail."""
     dataset1 = PrepareDataset(name="mnist", version="v1")
+    dataset2 = PrepareDataset(name="cifar", version="v2")
     gren_hash = GrenSerializer.compute_hash(dataset1)
 
     detail = get_experiment_detail("dashboard.pipelines.PrepareDataset", gren_hash)
@@ -146,6 +147,14 @@ def test_get_experiment_detail_found(populated_gren_root: Path) -> None:
     )
     assert alias_original is not None
     assert alias_original.gren_hash == gren_hash
+
+    moved = PrepareDataset(name="mnist", version="v3")
+    moved_hash = GrenSerializer.compute_hash(moved)
+    moved_original = get_experiment_detail(
+        "dashboard.pipelines.PrepareDataset", moved_hash, view="original"
+    )
+    assert moved_original is not None
+    assert moved_original.gren_hash == GrenSerializer.compute_hash(dataset2)
 
 
 def test_get_experiment_detail_not_found(populated_gren_root: Path) -> None:
