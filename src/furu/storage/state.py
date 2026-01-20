@@ -408,10 +408,7 @@ class StateManager:
     def _read_lock_info(cls, lock_path: Path) -> _LockInfoDict | None:
         if not lock_path.is_file():
             return None
-        try:
-            text = lock_path.read_text().strip()
-        except FileNotFoundError:
-            return None
+        text = lock_path.read_text().strip()
         if not text:
             return None
         lines = text.splitlines()
