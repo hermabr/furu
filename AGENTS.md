@@ -2,7 +2,7 @@
 
 ## Critical Rules
 
-**Always update `CHANGELOG.md`** for any user-visible change.
+**Always update `CHANGELOG.md`** for any user-visible API or package experience change.
 
 **DO NOT USE** the following patterns in this codebase:
 - `typing.Optional` - Use `X | None` instead
@@ -22,6 +22,12 @@
 - For logic/behavior changes: run `make test` or `make test-all` or `make dashboard-test` or `make dashboard-test-e2e`
 
 - The project was renamed from huldra to furu. If I ever refer to huldra, assume I mean furu.
+
+## Workflow
+
+- For feature requests, default to creating a new branch, making changes, committing when it makes sense, pushing the branch, and opening a pull request when the work is done.
+- You may use git actions (commit, push, PR) without asking for permission unless the user explicitly forbids it.
+- Never push to `main` or merge a pull request unless the user explicitly asks.
 
 ---
 
