@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Generate realistic test data for e2e tests.
 
-This script creates actual Gren experiments with dependencies using
-the Gren framework. It creates a realistic set of experiments with
+This script creates actual Furu experiments with dependencies using
+the Furu framework. It creates a realistic set of experiments with
 various states (success, failed, running) and dependency chains.
 
 Usage:
     python generate_data.py [--clean]
 
-The --clean flag will remove existing data-gren directory before generating.
+The --clean flag will remove existing data-furu directory before generating.
 """
 
 from __future__ import annotations
@@ -19,14 +19,14 @@ import shutil
 import sys
 from pathlib import Path
 
-# Add src and examples to path so we can import gren and the pipelines
+# Add src and examples to path so we can import furu and the pipelines
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).parent.parent / "examples"))
 
-import gren
-from gren.config import GREN_CONFIG
-from gren.serialization import GrenSerializer
-from gren.storage import (
+import furu
+from furu.config import FURU_CONFIG
+from furu.serialization import FuruSerializer
+from furu.storage import (
     MetadataManager,
     MigrationManager,
     MigrationRecord,
@@ -42,19 +42,19 @@ def _create_migrated_aliases() -> PrepareDataset:
     dataset_old.load_or_create()
 
     def find_candidate(default_values: dict[str, str]):
-        candidates = gren.find_migration_candidates(
-            namespace=gren.NamespacePair(
+        candidates = furu.find_migration_candidates(
+            namespace=furu.NamespacePair(
                 from_namespace="my_project.pipelines.PrepareDataset",
                 to_namespace="my_project.pipelines.PrepareDataset",
             ),
             default_values=default_values,
             drop_fields=["name"],
         )
-        target_hash = dataset_old._gren_hash
+        target_hash = dataset_old._furu_hash
         candidates = [
             candidate
             for candidate in candidates
-            if candidate.from_ref.gren_hash == target_hash
+            if candidate.from_ref.furu_hash == target_hash
         ]
         if not candidates:
             raise ValueError("migration: no candidates found for target class")
@@ -62,7 +62,7 @@ def _create_migrated_aliases() -> PrepareDataset:
             raise ValueError("migration: expected exactly one candidate")
         return candidates[0]
 
-    gren.apply_migration(
+    furu.apply_migration(
         find_candidate({"name": "mnist-v2"}),
         policy="alias",
         cascade=True,
@@ -70,7 +70,7 @@ def _create_migrated_aliases() -> PrepareDataset:
         note="migration fixture",
         conflict="throw",
     )
-    gren.apply_migration(
+    furu.apply_migration(
         find_candidate({"name": "mnist-v3"}),
         policy="alias",
         cascade=True,
@@ -82,17 +82,17 @@ def _create_migrated_aliases() -> PrepareDataset:
 
 
 def create_mock_experiment(
-    gren_obj: object,
+    furu_obj: object,
     result_status: str = "success",
     attempt_status: str | None = None,
 ) -> Path:
     """Create a mock experiment with specified state (without actually running _create)."""
-    directory = gren_obj.gren_dir  # type: ignore[attr-defined]
+    directory = furu_obj.furu_dir  # type: ignore[attr-defined]
     directory.mkdir(parents=True, exist_ok=True)
 
     # Create metadata using the actual metadata system
     metadata = MetadataManager.create_metadata(
-        gren_obj,  # type: ignore[arg-type]
+        furu_obj,  # type: ignore[arg-type]
         directory,
         ignore_diff=True,
     )
@@ -112,7 +112,7 @@ def create_mock_experiment(
     attempt: dict[str, str | int | float | dict[str, str | int] | None] | None = None
     if attempt_status:
         attempt = {
-            "id": f"attempt-{GrenSerializer.compute_hash(gren_obj)[:8]}",
+            "id": f"attempt-{FuruSerializer.compute_hash(furu_obj)[:8]}",
             "number": 1,
             "backend": "local",
             "status": attempt_status,
@@ -165,9 +165,9 @@ def generate_test_data(data_root: Path) -> None:
     """Generate test data for e2e tests."""
     print(f"Generating test data in {data_root}")
 
-    # Configure Gren to use our data root
-    GREN_CONFIG.base_root = data_root
-    GREN_CONFIG.ignore_git_diff = True
+    # Configure Furu to use our data root
+    FURU_CONFIG.base_root = data_root
+    FURU_CONFIG.ignore_git_diff = True
 
     # Create experiments with various states
 
@@ -188,8 +188,8 @@ def generate_test_data(data_root: Path) -> None:
     dataset_old = _create_migrated_aliases()
     print("  Created: PrepareDataset aliases (mnist-v2, mnist-v3)")
 
-    candidates = gren.find_migration_candidates(
-        namespace=gren.NamespacePair(
+    candidates = furu.find_migration_candidates(
+        namespace=furu.NamespacePair(
             from_namespace="my_project.pipelines.PrepareDataset",
             to_namespace="my_project.pipelines.PrepareDataset",
         ),
@@ -199,11 +199,11 @@ def generate_test_data(data_root: Path) -> None:
     copy_candidates = [
         candidate
         for candidate in candidates
-        if candidate.from_ref.gren_hash == dataset_old._gren_hash
+        if candidate.from_ref.furu_hash == dataset_old._furu_hash
     ]
     if not copy_candidates:
         raise ValueError("migration: no copy candidates found")
-    gren.apply_migration(
+    furu.apply_migration(
         copy_candidates[0],
         policy="copy",
         cascade=True,
@@ -212,8 +212,8 @@ def generate_test_data(data_root: Path) -> None:
         conflict="throw",
     )
 
-    move_candidates = gren.find_migration_candidates(
-        namespace=gren.NamespacePair(
+    move_candidates = furu.find_migration_candidates(
+        namespace=furu.NamespacePair(
             from_namespace="my_project.pipelines.PrepareDataset",
             to_namespace="my_project.pipelines.PrepareDataset",
         ),
@@ -223,12 +223,12 @@ def generate_test_data(data_root: Path) -> None:
     move_candidates = [
         candidate
         for candidate in move_candidates
-        if candidate.from_ref.gren_hash == dataset_old._gren_hash
+        if candidate.from_ref.furu_hash == dataset_old._furu_hash
     ]
     if not move_candidates:
         raise ValueError("migration: no move candidates found")
     move_candidate = move_candidates[0]
-    move_records = gren.apply_migration(
+    move_records = furu.apply_migration(
         move_candidate,
         policy="move",
         cascade=True,
@@ -327,7 +327,7 @@ def main() -> None:
     parser.add_argument(
         "--data-dir",
         type=Path,
-        default=Path(__file__).parent.parent / "data-gren",
+        default=Path(__file__).parent.parent / "data-furu",
         help="Directory to store generated data",
     )
     args = parser.parse_args()

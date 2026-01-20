@@ -25,7 +25,7 @@ clean:
 	rm -rf .pytest_cache/
 	rm -rf .ruff_cache/
 	rm -rf dist/
-	rm -rf src/gren/dashboard/frontend/dist/
+	rm -rf src/furu/dashboard/frontend/dist/
 	rm -rf dashboard-frontend/src/api/
 	rm -rf e2e/playwright-report/
 	rm -rf e2e/test-results/
@@ -46,14 +46,14 @@ dashboard-dev: frontend-build
 	@make -j2 dashboard-dev-backend dashboard-dev-frontend
 
 dashboard-dev-backend:
-	uv run uvicorn gren.dashboard.main:app --reload --host 0.0.0.0 --port 8000
+	uv run uvicorn furu.dashboard.main:app --reload --host 0.0.0.0 --port 8000
 
 dashboard-dev-frontend:
 	cd dashboard-frontend && bun run dev
 
 # Generate OpenAPI spec and TypeScript client
 frontend-generate:
-	uv run python -c "from gren.dashboard.main import app; import json; print(json.dumps(app.openapi()))" > openapi.json
+	uv run python -c "from furu.dashboard.main import app; import json; print(json.dumps(app.openapi()))" > openapi.json
 	cd dashboard-frontend && bun run generate
 
 # Build
@@ -85,7 +85,7 @@ dashboard-setup: dashboard-install dashboard-install-e2e frontend-generate
 
 # Build and serve (production mode)
 dashboard-serve: frontend-build
-	uv run gren-dashboard serve
+	uv run furu-dashboard serve
 
 # ============================================================================
 # All tests (project + dashboard)

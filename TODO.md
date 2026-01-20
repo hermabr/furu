@@ -6,22 +6,22 @@
 
 ## General
 
-- [ ] make good nested documentation/skills for how to use huldra
+- [ ] make good nested documentation/skills for how to use furu
     - [ ] example pipeline and best practices, such as subclassing, bumping version etc
     - [ ] how to use the dashboard
-    - [ ] low level design for huldra and how it works
-    - [ ] what functionality/api do you have when using huldra
+    - [ ] low level design for furu and how it works
+    - [ ] what functionality/api do you have when using furu
 - [ ] support doing time machine to go back to the state at the time an artifact was created
 - [ ] check how to make implicit dependencies (probably this is doable with chz?)
-- [ ] add a flag which makes one item always rerun, such as HULDRA_ALWAYS_RERUN="mypkg.my_file.MyObject"
+- [ ] add a flag which makes one item always rerun, such as FURU_ALWAYS_RERUN="mypkg.my_file.MyObject"
 - [ ] Add support for lazily computing dependencies (maybe)
-- [ ] Change the version controlled flow so that it is always saved in the current folder at the same level as the pyproject.toml if that exists and in .gitignore if that exists and if not it throws. This should happen even if the general gren directory is somewhere else. It should save it to something like gren-data/artifacts or a better similar name. It should be possible to override this with an env variable.
+- [ ] Change the version controlled flow so that it is always saved in the current folder at the same level as the pyproject.toml if that exists and in .gitignore if that exists and if not it throws. This should happen even if the general furu directory is somewhere else. It should save it to something like furu-data/artifacts or a better similar name. It should be possible to override this with an env variable.
 - [ ] When waiting, say how long you will be waiting and how long since file was touched
 - [ ] Sometimes it gets stuck in waiting for compute lock forever
 - [ ] Rename to furu
 - [ ] Add terminal dashboard (tui)
 - [ ] Don't allow `<locals>` in `__qualname__` if not providing env flag
-- [ ] Verify that all tests including e2e and dashboard tests are using tmp directory for gren root data dir
+- [ ] Verify that all tests including e2e and dashboard tests are using tmp directory for furu root data dir
 - [ ] The mask dashboard-dev should populate dummy data
 - [ ] Better and more complex filtering
 
@@ -43,12 +43,12 @@
 - [ ] Orphan detection - Find artifacts no longer referenced by code
 - [ ] Cache miss explanation - "This will recompute because field X changed"
 - [ ] Hash diff tool - Show which fields differ between two experiments
-- [ ] Have a def _dependencies(self) -> list[type[Gren]] which returns all the dependencies of the experiment that i don't want to define as fields
+- [ ] Have a def _dependencies(self) -> list[type[Furu]] which returns all the dependencies of the experiment that i don't want to define as fields
 
 ## Execution & Compute
 
-- [ ] Dry-run mode (`GREN_DRY_RUN`) - Preview what would be computed without running
-- [x] Force recompute flag (`GREN_FORCE_RECOMPUTE`) - Recompute even if artifact exists
+- [ ] Dry-run mode (`FURU_DRY_RUN`) - Preview what would be computed without running
+- [x] Force recompute flag (`FURU_FORCE_RECOMPUTE`) - Recompute even if artifact exists
 - [ ] Checkpointing - Resume long-running computations from checkpoints
 - [ ] Resource tracking - Track peak memory, CPU time, GPU usage during `_create()`
 
@@ -101,7 +101,7 @@
 - [ ] Live log streaming - Tail logs in real-time
 - [ ] Keyboard shortcuts - Navigation with VIM (j/k, /, etc.)
 - [ ] General UI improvements
-- [ ] Named experiments (either with _name in gren or rename in the web ui and update the metadata)
+- [ ] Named experiments (either with _name in furu or rename in the web ui and update the metadata)
 - [ ] Tags for experiments. Each experiment can have multiple tags
 - [ ] Nice UI/UX for selecting experiments (maybe using either something from SQL or some sort of code for selecting?)
 
@@ -122,7 +122,7 @@
 
 ## Build & Packaging
 
-- [ ] Explore if I the dashboard feature can be added in a different way, so that type checking works correctly for the main gren package, so that the normal package cannot use packages only available in the dashboard
+- [ ] Explore if I the dashboard feature can be added in a different way, so that type checking works correctly for the main furu package, so that the normal package cannot use packages only available in the dashboard
 - [ ] Consider moving from hatchling to uv-build
 - [ ] Add CI workflow to run tests on every push/PR
 

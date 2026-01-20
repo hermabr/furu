@@ -7,7 +7,7 @@ from typing import Any
 import chz
 import pytest
 
-import gren
+import furu
 
 
 class Foo:
@@ -28,35 +28,35 @@ def test_get_classname_rejects_main_module() -> None:
     MainLike = type("MainLike", (), {})
     MainLike.__module__ = "__main__"
     with pytest.raises(ValueError, match="__main__"):
-        gren.GrenSerializer.get_classname(MainLike())
+        furu.FuruSerializer.get_classname(MainLike())
 
 
 def test_to_dict_from_dict_roundtrip() -> None:
     obj = Foo(a=1, p=Path("x/y"), _private=7)
-    data = gren.GrenSerializer.to_dict(obj)
-    obj2 = gren.GrenSerializer.from_dict(data)
+    data = furu.FuruSerializer.to_dict(obj)
+    obj2 = furu.FuruSerializer.from_dict(data)
     assert obj2 == obj
 
 
 def test_compute_hash_ignores_private_fields() -> None:
     a = Foo(a=1, p=Path("x/y"), _private=1)
     b = Foo(a=1, p=Path("x/y"), _private=999)
-    assert gren.GrenSerializer.compute_hash(a) == gren.GrenSerializer.compute_hash(b)
+    assert furu.FuruSerializer.compute_hash(a) == furu.FuruSerializer.compute_hash(b)
 
 
 def test_hash_ignores_private_fields_in_config() -> None:
     obj = Foo(a=1, p=Path("x/y"), _private=7)
-    data = gren.GrenSerializer.to_dict(obj)
+    data = furu.FuruSerializer.to_dict(obj)
     assert "_private" in data
     data["_private"] = 999
-    assert gren.GrenSerializer.compute_hash(data) == gren.GrenSerializer.compute_hash(
+    assert furu.FuruSerializer.compute_hash(data) == furu.FuruSerializer.compute_hash(
         obj
     )
 
 
 def test_to_python_is_evaluable() -> None:
     obj = Foo(a=3, p=Path("a/b"))
-    code = gren.GrenSerializer.to_python(obj, multiline=False)
+    code = furu.FuruSerializer.to_python(obj, multiline=False)
 
     mod = importlib.import_module(obj.__class__.__module__)
     env = {"pathlib": pathlib, "datetime": datetime}
@@ -68,4 +68,4 @@ def test_to_python_is_evaluable() -> None:
 
 def test_missing_is_not_serializable() -> None:
     with pytest.raises(ValueError, match="MISSING"):
-        gren.GrenSerializer.to_dict(gren.MISSING)
+        furu.FuruSerializer.to_dict(furu.MISSING)

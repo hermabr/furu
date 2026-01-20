@@ -1,7 +1,7 @@
-import gren
+import furu
 
 
-class Dummy(gren.Gren[int]):
+class Dummy(furu.Furu[int]):
     def _create(self) -> int:
         return 1
 
@@ -9,7 +9,7 @@ class Dummy(gren.Gren[int]):
         return 1
 
 
-def test_raw_dir_is_scoped_to_object(gren_tmp_root) -> None:
+def test_raw_dir_is_scoped_to_object(furu_tmp_root) -> None:
     obj = Dummy()
-    assert obj.raw_dir == gren.GREN_CONFIG.raw_dir
-    assert obj.raw_dir == gren_tmp_root / "raw"
+    assert obj.raw_dir == furu.FURU_CONFIG.raw_dir
+    assert obj.raw_dir == furu_tmp_root / "raw"

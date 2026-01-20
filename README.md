@@ -1,54 +1,54 @@
-# gren
+# furu
 
-> **Note:** This is an early prototype; expect breaking changes.
+> **Note:** `v0.0.x` is alpha and may include breaking changes.
 
-A Python library for building cacheable, nested pipelines. Define computations as config objects; gren turns configs into stable on-disk artifact directories, records metadata/state, and reuses results across runs.
+A Python library for building cacheable, nested pipelines. Define computations as config objects; furu turns configs into stable on-disk artifact directories, records metadata/state, and reuses results across runs.
 
 Built on [chz](https://github.com/openai/chz) for declarative configs.
 
 ## Installation
 
 ```bash
-uv add "gren[dashboard]"
+uv add "furu[dashboard]"
 ```
 
 Or with pip:
 
 ```bash
-pip install "gren[dashboard]"
+pip install "furu[dashboard]"
 ```
 
 The `[dashboard]` extra includes the web dashboard. Omit it for the core library only.
 
 ## Quickstart
 
-1. Subclass `gren.Gren[T]`
-2. Implement `_create(self) -> T` (compute and write to `self.gren_dir`)
-3. Implement `_load(self) -> T` (load from `self.gren_dir`)
+1. Subclass `furu.Furu[T]`
+2. Implement `_create(self) -> T` (compute and write to `self.furu_dir`)
+3. Implement `_load(self) -> T` (load from `self.furu_dir`)
 4. Call `load_or_create()`
 
 ```python
 # my_project/pipelines.py
 import json
 from pathlib import Path
-import gren
+import furu
 
-class TrainModel(gren.Gren[Path]):
-    lr: float = gren.chz.field(default=1e-3)
-    steps: int = gren.chz.field(default=1000)
+class TrainModel(furu.Furu[Path]):
+    lr: float = furu.chz.field(default=1e-3)
+    steps: int = furu.chz.field(default=1000)
 
     def _create(self) -> Path:
         # Write outputs into the artifact directory
-        (self.gren_dir / "metrics.json").write_text(
+        (self.furu_dir / "metrics.json").write_text(
             json.dumps({"lr": self.lr, "steps": self.steps})
         )
-        ckpt = self.gren_dir / "checkpoint.bin"
+        ckpt = self.furu_dir / "checkpoint.bin"
         ckpt.write_bytes(b"...")
         return ckpt
 
     def _load(self) -> Path:
         # Load outputs back from disk
-        return self.gren_dir / "checkpoint.bin"
+        return self.furu_dir / "checkpoint.bin"
 ```
 
 ```python
@@ -62,13 +62,13 @@ artifact = TrainModel(lr=3e-4, steps=5000).load_or_create()
 artifact = TrainModel(lr=3e-4, steps=5000).load_or_create()
 ```
 
-> **Tip:** Define Gren classes in importable modules (not `__main__`); the artifact namespace is derived from the class's module + qualified name.
+> **Tip:** Define Furu classes in importable modules (not `__main__`); the artifact namespace is derived from the class's module + qualified name.
 
 ## Core Concepts
 
 ### How Caching Works
 
-Each `Gren` instance maps deterministically to a directory based on its config:
+Each `Furu` instance maps deterministically to a directory based on its config:
 
 ```
 <root>/<namespace>/<hash>/
@@ -84,45 +84,45 @@ When you call `load_or_create()`:
 
 ### Nested Pipelines (Dependencies)
 
-Gren objects compose via nested configs. Each dependency gets its own artifact folder:
+Furu objects compose via nested configs. Each dependency gets its own artifact folder:
 
 ```python
-import gren
+import furu
 
-class Dataset(gren.Gren[str]):
-    name: str = gren.chz.field(default="toy")
+class Dataset(furu.Furu[str]):
+    name: str = furu.chz.field(default="toy")
 
     def _create(self) -> str:
-        (self.gren_dir / "data.txt").write_text("hello\nworld\n")
+        (self.furu_dir / "data.txt").write_text("hello\nworld\n")
         return "ready"
 
     def _load(self) -> str:
-        return (self.gren_dir / "data.txt").read_text()
+        return (self.furu_dir / "data.txt").read_text()
 
 
-class TrainTextModel(gren.Gren[str]):
-    dataset: Dataset = gren.chz.field(default_factory=Dataset)
+class TrainTextModel(furu.Furu[str]):
+    dataset: Dataset = furu.chz.field(default_factory=Dataset)
 
     def _create(self) -> str:
         data = self.dataset.load_or_create()  # Triggers Dataset cache
-        (self.gren_dir / "model.txt").write_text(f"trained on:\n{data}")
+        (self.furu_dir / "model.txt").write_text(f"trained on:\n{data}")
         return "trained"
 
     def _load(self) -> str:
-        return (self.gren_dir / "model.txt").read_text()
+        return (self.furu_dir / "model.txt").read_text()
 ```
 
 ### Storage Structure
 
 ```
-$GREN_PATH/
+$FURU_PATH/
 ├── data/                         # Default storage (version_controlled=False)
 │   └── <module>/<Class>/
 │       └── <hash>/
-│           ├── .gren/
+│           ├── .furu/
 │           │   ├── metadata.json # Config, git info, environment
 │           │   ├── state.json    # Status and timestamps
-│           │   ├── gren.log    # Captured logs
+│           │   ├── furu.log    # Captured logs
 │           │   └── SUCCESS.json  # Marker file
 │           └── <your outputs>    # Files from _create()
 ├── git/                          # For version_controlled=True
@@ -132,14 +132,14 @@ $GREN_PATH/
 
 ## Features
 
-### GrenList: Managing Experiment Collections
+### FuruList: Managing Experiment Collections
 
-`GrenList` provides a collection interface for organizing related experiments:
+`FuruList` provides a collection interface for organizing related experiments:
 
 ```python
-import gren
+import furu
 
-class MyExperiments(gren.GrenList[TrainModel]):
+class MyExperiments(furu.FuruList[TrainModel]):
     baseline = TrainModel(lr=1e-3, steps=1000)
     fast_lr = TrainModel(lr=1e-2, steps=1000)
     long_run = TrainModel(lr=1e-3, steps=10000)
@@ -170,12 +170,12 @@ for name, exp in MyExperiments.items():
 Override `_validate()` to add custom cache invalidation logic:
 
 ```python
-class ModelWithValidation(gren.Gren[Path]):
+class ModelWithValidation(furu.Furu[Path]):
     checkpoint_name: str = "model.pt"
 
     def _validate(self) -> bool:
         # Return False to force re-computation
-        ckpt = self.gren_dir / self.checkpoint_name
+        ckpt = self.furu_dir / self.checkpoint_name
         return ckpt.exists() and ckpt.stat().st_size > 0
 
     def _create(self) -> Path:
@@ -196,13 +196,13 @@ if obj.exists():
 
 # Get metadata without triggering computation
 metadata = obj.get_metadata()
-print(f"Hash: {obj._gren_hash}")
-print(f"Dir: {obj.gren_dir}")
+print(f"Hash: {obj._furu_hash}")
+print(f"Dir: {obj.furu_dir}")
 ```
 
 ### Serialization
 
-Gren objects can be serialized to/from dictionaries:
+Furu objects can be serialized to/from dictionaries:
 
 ```python
 obj = TrainModel(lr=3e-4, steps=5000)
@@ -223,11 +223,11 @@ print(obj.to_python())
 For large files that shouldn't be versioned per-config, use the shared raw directory:
 
 ```python
-class LargeDataProcessor(gren.Gren[Path]):
+class LargeDataProcessor(furu.Furu[Path]):
     def _create(self) -> Path:
         # self.raw_dir is shared across all configs
         # Create a subfolder for isolation if needed
-        my_raw = self.raw_dir / self._gren_hash
+        my_raw = self.raw_dir / self._furu_hash
         my_raw.mkdir(exist_ok=True)
         
         large_file = my_raw / "huge_dataset.bin"
@@ -240,37 +240,37 @@ class LargeDataProcessor(gren.Gren[Path]):
 For artifacts that should be stored separately (e.g., checked into git):
 
 ```python
-class VersionedConfig(gren.Gren[dict], version_controlled=True):
-    # Stored under $GREN_PATH/git/ instead of $GREN_PATH/data/
+class VersionedConfig(furu.Furu[dict], version_controlled=True):
+    # Stored under $FURU_PATH/git/ instead of $FURU_PATH/data/
     ...
 ```
 
 ## Logging
 
-Gren installs stdlib `logging` handlers that capture logs to per-artifact files.
+Furu installs stdlib `logging` handlers that capture logs to per-artifact files.
 
 ```python
 import logging
-import gren
+import furu
 
 log = logging.getLogger(__name__)
 
-class MyPipeline(gren.Gren[str]):
+class MyPipeline(furu.Furu[str]):
     def _create(self) -> str:
-        log.info("Starting computation...")  # Goes to gren.log
+        log.info("Starting computation...")  # Goes to furu.log
         log.debug("Debug details...")
         return "done"
 ```
 
 ### Console Output
 
-By default, gren logs to console using Rich in a compact format:
+By default, furu logs to console using Rich in a compact format:
 
 ```
 HHMMSS file.py:line message
 ```
 
-Gren emits status messages like:
+Furu emits status messages like:
 ```
 load_or_create TrainModel abc123def (missing->create)
 load_or_create TrainModel abc123def (success->load)
@@ -279,29 +279,29 @@ load_or_create TrainModel abc123def (success->load)
 ### Explicit Setup
 
 ```python
-import gren
+import furu
 
 # Eagerly install logging handlers (optional, happens automatically)
-gren.configure_logging()
+furu.configure_logging()
 
-# Get the gren logger
-logger = gren.get_logger()
+# Get the furu logger
+logger = furu.get_logger()
 ```
 
 ## Error Handling
 
 ```python
-from gren import GrenComputeError, GrenWaitTimeout, GrenLockNotAcquired
+from furu import FuruComputeError, FuruWaitTimeout, FuruLockNotAcquired
 
 try:
     result = obj.load_or_create()
-except GrenComputeError as e:
+except FuruComputeError as e:
     print(f"Computation failed: {e}")
     print(f"State file: {e.state_path}")
     print(f"Original error: {e.original_error}")
-except GrenWaitTimeout:
+except FuruWaitTimeout:
     print("Timed out waiting for another process")
-except GrenLockNotAcquired:
+except FuruLockNotAcquired:
     print("Could not acquire lock")
 ```
 
@@ -311,7 +311,7 @@ Run computations on SLURM clusters via [submitit](https://github.com/facebookinc
 
 ```python
 import submitit
-import gren
+import furu
 
 executor = submitit.AutoExecutor(folder="submitit_logs")
 executor.update_parameters(
@@ -321,13 +321,13 @@ executor.update_parameters(
 )
 
 # Submit job and return immediately
-job = my_gren_obj.load_or_create(executor=executor)
+job = my_furu_obj.load_or_create(executor=executor)
 
-# Job ID is tracked in .gren/state.json
+# Job ID is tracked in .furu/state.json
 print(job.job_id)
 ```
 
-Gren handles preemption, requeuing, and state tracking automatically.
+Furu handles preemption, requeuing, and state tracking automatically.
 
 ## Dashboard
 
@@ -337,18 +337,18 @@ The web dashboard provides experiment browsing, filtering, and dependency visual
 
 ```bash
 # Full dashboard with React frontend
-gren-dashboard serve
+furu-dashboard serve
 
 # Or with options
-gren-dashboard serve --host 0.0.0.0 --port 8000 --reload
+furu-dashboard serve --host 0.0.0.0 --port 8000 --reload
 
 # API server only (no frontend)
-gren-dashboard api
+furu-dashboard api
 ```
 
 Or via Python:
 ```bash
-python -m gren.dashboard serve
+python -m furu.dashboard serve
 ```
 
 ### API Endpoints
@@ -379,39 +379,39 @@ The `/api/experiments` endpoint supports:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `GREN_PATH` | `./data-gren/` | Base storage directory |
-| `GREN_LOG_LEVEL` | `INFO` | Console verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
-| `GREN_IGNORE_DIFF` | `false` | Skip embedding git diff in metadata |
-| `GREN_POLL_INTERVAL_SECS` | `10` | Polling interval for queued/running jobs |
-| `GREN_WAIT_LOG_EVERY_SECS` | `10` | Interval between "waiting" log messages |
-| `GREN_STALE_AFTER_SECS` | `1800` | Consider running jobs stale after this duration |
-| `GREN_LEASE_SECS` | `120` | Compute lock lease duration |
-| `GREN_HEARTBEAT_SECS` | `lease/3` | Heartbeat interval for running jobs |
-| `GREN_PREEMPT_MAX` | `5` | Maximum submitit requeues on preemption |
-| `GREN_CANCELLED_IS_PREEMPTED` | `false` | Treat SLURM CANCELLED as preempted |
-| `GREN_RICH_UNCAUGHT_TRACEBACKS` | `true` | Use Rich for exception formatting |
+| `FURU_PATH` | `./data-furu/` | Base storage directory |
+| `FURU_LOG_LEVEL` | `INFO` | Console verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+| `FURU_IGNORE_DIFF` | `false` | Skip embedding git diff in metadata |
+| `FURU_POLL_INTERVAL_SECS` | `10` | Polling interval for queued/running jobs |
+| `FURU_WAIT_LOG_EVERY_SECS` | `10` | Interval between "waiting" log messages |
+| `FURU_STALE_AFTER_SECS` | `1800` | Consider running jobs stale after this duration |
+| `FURU_LEASE_SECS` | `120` | Compute lock lease duration |
+| `FURU_HEARTBEAT_SECS` | `lease/3` | Heartbeat interval for running jobs |
+| `FURU_PREEMPT_MAX` | `5` | Maximum submitit requeues on preemption |
+| `FURU_CANCELLED_IS_PREEMPTED` | `false` | Treat SLURM CANCELLED as preempted |
+| `FURU_RICH_UNCAUGHT_TRACEBACKS` | `true` | Use Rich for exception formatting |
 
 Local `.env` files are loaded automatically if `python-dotenv` is installed.
 
 ### Programmatic Configuration
 
 ```python
-import gren
+import furu
 from pathlib import Path
 
 # Set/get root directory
-gren.set_gren_root(Path("/my/storage"))
-root = gren.get_gren_root()
+furu.set_furu_root(Path("/my/storage"))
+root = furu.get_furu_root()
 
 # Access config directly
-gren.GREN_CONFIG.ignore_git_diff = True
-gren.GREN_CONFIG.poll_interval = 5.0
+furu.FURU_CONFIG.ignore_git_diff = True
+furu.FURU_CONFIG.poll_interval = 5.0
 ```
 
 ### Class-Level Options
 
 ```python
-class MyPipeline(gren.Gren[Path], version_controlled=True):
+class MyPipeline(furu.Furu[Path], version_controlled=True):
     _max_wait_time_sec = 3600.0  # Wait up to 1 hour (default: 600)
     ...
 ```
@@ -422,7 +422,7 @@ Each artifact records:
 
 | Category | Fields |
 |----------|--------|
-| **Config** | `gren_python_def`, `gren_obj`, `gren_hash`, `gren_path` |
+| **Config** | `furu_python_def`, `furu_obj`, `furu_hash`, `furu_path` |
 | **Git** | `git_commit`, `git_branch`, `git_remote`, `git_patch`, `git_submodules` |
 | **Environment** | `timestamp`, `command`, `python_version`, `executable`, `platform`, `hostname`, `user`, `pid` |
 
@@ -436,25 +436,25 @@ print(metadata.hostname)
 ## Public API
 
 ```python
-from gren import (
+from furu import (
     # Core
-    Gren,
-    GrenList,
-    GREN_CONFIG,
+    Furu,
+    FuruList,
+    FURU_CONFIG,
     
     # Configuration
-    get_gren_root,
-    set_gren_root,
+    get_furu_root,
+    set_furu_root,
     
     # Errors
-    GrenError,
-    GrenComputeError,
-    GrenLockNotAcquired,
-    GrenWaitTimeout,
+    FuruError,
+    FuruComputeError,
+    FuruLockNotAcquired,
+    FuruWaitTimeout,
     MISSING,
     
     # Serialization
-    GrenSerializer,
+    FuruSerializer,
     
     # Storage
     StateManager,

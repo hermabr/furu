@@ -1,4 +1,4 @@
-from gren.runtime import tracebacks
+from furu.runtime import tracebacks
 
 
 def test_rich_uncaught_tracebacks_enabled_by_default() -> None:

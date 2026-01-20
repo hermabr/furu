@@ -58,7 +58,7 @@ test.describe("API Endpoints", () => {
     expect(kinds).toContain("alias");
 
     const aliasDetailResponse = await request.get(
-      `/api/experiments/${data.experiments[0].namespace}/${data.experiments[0].gren_hash}`
+      `/api/experiments/${data.experiments[0].namespace}/${data.experiments[0].furu_hash}`
     );
     expect(aliasDetailResponse.ok()).toBeTruthy();
     const aliasDetail = await aliasDetailResponse.json();
@@ -95,8 +95,8 @@ test.describe("API Endpoints", () => {
 
     // Experiments should be different
     if (data.experiments.length > 0 && data2.experiments.length > 0) {
-      expect(data.experiments[0].gren_hash).not.toBe(
-        data2.experiments[0].gren_hash
+      expect(data.experiments[0].furu_hash).not.toBe(
+        data2.experiments[0].furu_hash
       );
     }
   });
@@ -130,17 +130,17 @@ test.describe("API Endpoints", () => {
     expect(listData.experiments.length).toBeGreaterThan(0);
 
     const experiment = listData.experiments[0];
-    const { namespace, gren_hash } = experiment;
+    const { namespace, furu_hash } = experiment;
 
     // Now fetch the detail
     const detailResponse = await request.get(
-      `/api/experiments/${namespace}/${gren_hash}`
+      `/api/experiments/${namespace}/${furu_hash}`
     );
     expect(detailResponse.ok()).toBeTruthy();
 
     const detail = await detailResponse.json();
     expect(detail.namespace).toBe(namespace);
-    expect(detail.gren_hash).toBe(gren_hash);
+    expect(detail.furu_hash).toBe(furu_hash);
     expect(detail.class_name).toBeDefined();
     expect(detail.result_status).toBe("success");
     expect(detail.state).toBeDefined();
@@ -155,7 +155,7 @@ test.describe("API Endpoints", () => {
     expect(response.status()).toBe(404);
   });
 
-  test("experiments have proper metadata from Gren", async ({ request }) => {
+  test("experiments have proper metadata from Furu", async ({ request }) => {
     const response = await request.get(
       "/api/experiments?result_status=success&limit=1"
     );
@@ -166,15 +166,15 @@ test.describe("API Endpoints", () => {
 
     // Fetch full detail to check metadata
     const detailResponse = await request.get(
-      `/api/experiments/${experiment.namespace}/${experiment.gren_hash}`
+      `/api/experiments/${experiment.namespace}/${experiment.furu_hash}`
     );
     const detail = await detailResponse.json();
 
-    // Check that metadata has expected fields from real Gren objects
+    // Check that metadata has expected fields from real Furu objects
     expect(detail.metadata).toBeDefined();
-    expect(detail.metadata.gren_python_def).toBeDefined();
-    expect(detail.metadata.gren_obj).toBeDefined();
-    expect(detail.metadata.gren_hash).toBe(experiment.gren_hash);
+    expect(detail.metadata.furu_python_def).toBeDefined();
+    expect(detail.metadata.furu_obj).toBeDefined();
+    expect(detail.metadata.furu_hash).toBe(experiment.furu_hash);
     expect(detail.metadata.git_commit).toBeDefined();
     expect(detail.metadata.hostname).toBeDefined();
     expect(detail.metadata.user).toBeDefined();

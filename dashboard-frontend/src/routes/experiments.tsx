@@ -98,7 +98,7 @@ function ExperimentsPage() {
       <div className="mb-8">
         <h1 className="text-3xl font-bold mb-2">Experiments</h1>
         <p className="text-muted-foreground">
-          Browse and filter all Gren experiments
+          Browse and filter all Furu experiments
         </p>
       </div>
 
@@ -355,13 +355,13 @@ function ExperimentsPage() {
             </TableHeader>
             <TableBody>
               {data?.experiments.map((exp) => (
-                <TableRow key={`${exp.namespace}-${exp.gren_hash}`}>
+                <TableRow key={`${exp.namespace}-${exp.furu_hash}`}>
                   <TableCell className="pl-6">
                     <Link
-                      to="/experiments/$namespace/$gren_hash"
+                      to="/experiments/$namespace/$furu_hash"
                       params={{
                         namespace: exp.namespace,
-                        gren_hash: exp.gren_hash,
+                        furu_hash: exp.furu_hash,
                       }}
                       className="font-medium hover:text-primary"
                     >
@@ -373,7 +373,7 @@ function ExperimentsPage() {
                   </TableCell>
                   <TableCell>
                     <code className="rounded bg-muted px-2 py-1 font-mono text-xs text-muted-foreground">
-                      {exp.gren_hash.slice(0, 8)}...
+                      {exp.furu_hash.slice(0, 8)}...
                     </code>
                   </TableCell>
                   <TableCell>

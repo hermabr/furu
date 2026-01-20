@@ -14,7 +14,7 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: "../src/gren/dashboard/frontend/dist",
+    outDir: "../src/furu/dashboard/frontend/dist",
     emptyOutDir: true,
   },
 });

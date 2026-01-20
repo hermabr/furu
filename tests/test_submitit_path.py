@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from typing import cast
 
-import gren
+import furu
 import submitit
 
 
@@ -40,32 +40,32 @@ class _FakeExecutor:
         return job
 
 
-class Dummy(gren.Gren[int]):
-    value: int = gren.chz.field(default=7)
+class Dummy(furu.Furu[int]):
+    value: int = furu.chz.field(default=7)
 
     def _create(self) -> int:
-        (self.gren_dir / "value.json").write_text(json.dumps(self.value))
+        (self.furu_dir / "value.json").write_text(json.dumps(self.value))
         return self.value
 
     def _load(self) -> int:
-        return json.loads((self.gren_dir / "value.json").read_text())
+        return json.loads((self.furu_dir / "value.json").read_text())
 
 
-def test_load_or_create_with_executor_submits_job(gren_tmp_root) -> None:
+def test_load_or_create_with_executor_submits_job(furu_tmp_root) -> None:
     obj = Dummy(value=11)
     job = obj.load_or_create(executor=cast(submitit.Executor, _FakeExecutor()))
 
     assert obj.exists() is True
     assert (
-        obj.gren_dir / ".gren" / gren.SubmititAdapter.JOB_PICKLE
+        obj.furu_dir / ".furu" / furu.SubmititAdapter.JOB_PICKLE
     ).exists() is True
     assert job is not None
     assert obj.load_or_create() == 11
 
 
-def test_classify_scheduler_state_cancelled(gren_tmp_root, monkeypatch) -> None:
-    adapter = gren.SubmititAdapter(executor=None)
-    monkeypatch.setattr(gren.GREN_CONFIG, "cancelled_is_preempted", True)
+def test_classify_scheduler_state_cancelled(furu_tmp_root, monkeypatch) -> None:
+    adapter = furu.SubmititAdapter(executor=None)
+    monkeypatch.setattr(furu.FURU_CONFIG, "cancelled_is_preempted", True)
     assert adapter.classify_scheduler_state("CANCELLED") == "preempted"
-    monkeypatch.setattr(gren.GREN_CONFIG, "cancelled_is_preempted", False)
+    monkeypatch.setattr(furu.FURU_CONFIG, "cancelled_is_preempted", False)
     assert adapter.classify_scheduler_state("CANCELLED") == "failed"

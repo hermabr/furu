@@ -1,7 +1,7 @@
 # Migration Workflow Design (migration.md)
 
 ## Overview
-This document defines the high-level migration workflows for Gren, including:
+This document defines the high-level migration workflows for Furu, including:
 - candidate discovery
 - strict schema validation
 - explicit defaulting and field drops
@@ -18,7 +18,7 @@ No interactive prompts are part of the core API. The workflow is:
 3) apply that migration (with cascade by default)
 
 ## Goals / Invariants
-- All fields possible to set on the target Gren object must be present.
+- All fields possible to set on the target Furu object must be present.
 - No extra fields are allowed unless explicitly dropped.
 - Defaults are only applied explicitly (never implicitly).
 - Default conflicts always throw.
@@ -37,14 +37,14 @@ JsonValue = (
 )
 MigrationValue = (
   Primitive |
-  Gren |
+  Furu |
   tuple[MigrationValue, ...] |
   dict[str, MigrationValue]
 )
 ```
 
 MigrationValue is resolved to JsonValue before hashing.
-- Gren objects are serialized via GrenSerializer.to_dict(...)["gren_obj"].
+- Furu objects are serialized via FuruSerializer.to_dict(...)["furu_obj"].
 - Tuples are normalized to JSON arrays during serialization.
 - Non-serializable objects are not allowed; convert them to dict/tuple/primitive.
 
@@ -57,12 +57,12 @@ class NamespacePair:
     to_namespace: str
 ```
 
-### GrenRef
+### FuruRef
 ```
 @dataclass(frozen=True)
-class GrenRef:
+class FuruRef:
     namespace: str
-    gren_hash: str
+    furu_hash: str
     root: Literal["data", "git"]
     directory: Path
 ```
@@ -71,8 +71,8 @@ class GrenRef:
 ```
 @dataclass(frozen=True)
 class MigrationCandidate:
-    from_ref: GrenRef
-    to_ref: GrenRef
+    from_ref: FuruRef
+    to_ref: FuruRef
     to_namespace: str
     to_config: dict[str, JsonValue]      # final serialized config used for hash
     defaults_applied: dict[str, MigrationValue]
@@ -104,7 +104,7 @@ Schema-driven candidate discovery (uninitialized target).
 def find_migration_candidates(
     *,
     namespace: str,
-    to_obj: type[Gren],
+    to_obj: type[Furu],
     default_values: Mapping[str, MigrationValue] | None = None,
     default_fields: Iterable[str] | None = None,
     drop_fields: Iterable[str] | None = None,
@@ -125,7 +125,7 @@ def find_migration_candidates(
 def find_migration_candidates(
     *,
     namespace: str | NamespacePair,
-    to_obj: type[Gren] | None = None,
+    to_obj: type[Furu] | None = None,
     default_values: Mapping[str, MigrationValue] | None = None,
     default_fields: Iterable[str] | None = None,
     drop_fields: Iterable[str] | None = None,
@@ -154,7 +154,7 @@ Instance-driven candidate discovery.
 ```
 def find_migration_candidates_initialized_target(
     *,
-    to_obj: Gren,
+    to_obj: Furu,
     from_namespace: str | None = None,
     default_fields: Iterable[str] | None = None,
     drop_fields: Iterable[str] | None = None,
@@ -216,7 +216,7 @@ Behavior:
   - `conflict="skip"` -> skip conflicting candidates and all of their dependent cascade entries, then validate the remaining candidates before writing.
   - `conflict="overwrite"` -> allow conflicting candidates, overwrite target dirs, and log `migration_overwrite` events.
 - Target dir safety check:
-  - Use `Gren.get_state()` (alias-aware) for the target dir.
+  - Use `Furu.get_state()` (alias-aware) for the target dir.
   - If target state is `success` or `running`:
     - `conflict="throw"` -> error
     - `conflict="skip"` -> warn + skip
@@ -228,7 +228,7 @@ Behavior:
 
 When building candidates or applying default overrides:
 
-1) Start from old metadata `gren_obj`.
+1) Start from old metadata `furu_obj`.
 2) Drop fields from `drop_fields`.
    - If drop target missing -> error.
 3) Defaults:
@@ -241,7 +241,7 @@ When building candidates or applying default overrides:
    - Extra fields -> error
 5) Set `__class__` to target namespace.
 6) Type-check the candidate config by reconstructing the target object and running chz type checks:
-   - `obj = GrenSerializer.from_dict(to_config)`
+   - `obj = FuruSerializer.from_dict(to_config)`
    - `validators.for_all_fields(validators.typecheck)(obj)`
 7) Compute new hash from `to_config`.
 
@@ -278,10 +278,10 @@ Warnings:
 - `migration: skipping candidate due to target status {status}`
 
 ## State Safety Check
-- Implement `Gren.get_state()` as a general alias-aware method.
+- Implement `Furu.get_state()` as a general alias-aware method.
 - Use this in `apply_migration` to check target state.
 - Alias awareness must not be hard-coded in migration functions.
-- `Gren.exists()` should be alias-aware: if a migration alias is active and the
+- `Furu.exists()` should be alias-aware: if a migration alias is active and the
   original state is successful, `exists()` returns True.
 
 ## Logging
@@ -293,7 +293,7 @@ Warnings:
   have its success marker cleared so `exists()` does not report success.
 
 ## Cascading (Default)
-- When applying migration, find dependents by scanning metadata for nested `gren_obj`.
+- When applying migration, find dependents by scanning metadata for nested `furu_obj`.
 - For each dependent:
   - Replace embedded dependency config (`__class__`, hash, config)
   - Validate strict schema for the dependent

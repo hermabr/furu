@@ -213,7 +213,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
-**/.huldra/data
+**/.furu/data
 
 dashboard-frontend/node_modules/
 dashboard-frontend/src/routeTree.gen.ts
@@ -228,4 +228,4 @@ orval.config.js
 vite.config.js
 
 /openapi.json
-data-gren/data
+data-furu/data

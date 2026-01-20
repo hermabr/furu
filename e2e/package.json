@@ -1,5 +1,5 @@
 {
-  "name": "gren-dashboard-e2e",
+  "name": "furu-dashboard-e2e",
   "private": true,
   "scripts": {
     "test": "playwright test",

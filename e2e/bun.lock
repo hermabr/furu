@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "gren-dashboard-e2e",
+      "name": "furu-dashboard-e2e",
       "devDependencies": {
         "@playwright/test": "^1.49.0",
       },

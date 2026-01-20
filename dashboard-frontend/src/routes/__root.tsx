@@ -28,7 +28,7 @@ function RootComponent() {
             <circle cx="16" cy="16" r="1.5" fill="#22c55e" />
             <circle cx="22" cy="19" r="1.5" fill="#22c55e" />
           </svg>
-          Gren
+          Furu
         </Link>
         <div className="flex gap-2">
           <Button asChild variant="ghost" size="sm">

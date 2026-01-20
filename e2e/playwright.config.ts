@@ -4,12 +4,12 @@ import * as path from "path";
 
 import { defineConfig, devices } from "@playwright/test";
 
-const e2eDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "gren-e2e-"));
-process.env.GREN_PATH = e2eDataDir;
-process.env.GREN_E2E_DATA_DIR = e2eDataDir;
+const e2eDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "furu-e2e-"));
+process.env.FURU_PATH = e2eDataDir;
+process.env.FURU_E2E_DATA_DIR = e2eDataDir;
 
 /**
- * Playwright configuration for Gren Dashboard E2E tests.
+ * Playwright configuration for Furu Dashboard E2E tests.
  * @see https://playwright.dev/docs/test-configuration
  */
 export default defineConfig({
@@ -51,7 +51,7 @@ export default defineConfig({
 
   /* Run the dashboard server before starting the tests */
   webServer: {
-    command: "cd .. && uv run python -m gren.dashboard serve --port 8000",
+    command: "cd .. && uv run python -m furu.dashboard serve --port 8000",
     url: "http://localhost:8000/api/health",
     reuseExistingServer: false,
     timeout: 30000,
@@ -59,8 +59,8 @@ export default defineConfig({
     stderr: "pipe",
     env: {
       ...process.env,
-      GREN_PATH: e2eDataDir,
-      GREN_E2E_DATA_DIR: e2eDataDir,
+      FURU_PATH: e2eDataDir,
+      FURU_E2E_DATA_DIR: e2eDataDir,
     },
   },
 });

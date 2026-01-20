@@ -1,7 +1,7 @@
 import * as fs from "fs";
 
 async function globalTeardown() {
-  const dataDir = process.env.GREN_E2E_DATA_DIR ?? process.env.GREN_PATH;
+  const dataDir = process.env.FURU_E2E_DATA_DIR ?? process.env.FURU_PATH;
 
   if (!dataDir) {
     return;

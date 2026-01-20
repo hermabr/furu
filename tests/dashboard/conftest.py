@@ -3,12 +3,12 @@
 FIXTURE SELECTION GUIDE
 =======================
 
-Use `populated_gren_root` (module-scoped, fast) when:
+Use `populated_furu_root` (module-scoped, fast) when:
 - Test only reads/queries existing experiments
 - Test doesn't need specific isolated data
 - Test can work with the shared fixture data (see _create_populated_experiments)
 
-Use `temp_gren_root` (function-scoped, slow) when:
+Use `temp_furu_root` (function-scoped, slow) when:
 - Test needs an empty directory (e.g., testing empty state)
 - Test needs to create experiments with specific attributes not in the shared fixture
 - Test mutates experiment state
@@ -27,16 +27,16 @@ from typing import Generator
 import pytest
 from fastapi.testclient import TestClient
 
-from gren.config import GREN_CONFIG
-from gren.dashboard.main import app
-from gren.serialization import GrenSerializer
-from gren.storage import (
+from furu.config import FURU_CONFIG
+from furu.dashboard.main import app
+from furu.serialization import FuruSerializer
+from furu.storage import (
     MetadataManager,
     MigrationManager,
     MigrationRecord,
     StateManager,
 )
-from gren.storage.state import _StateResultMigrated, _StateResultSuccess
+from furu.storage.state import _StateResultMigrated, _StateResultSuccess
 
 from .pipelines import (
     DataLoader,
@@ -54,65 +54,65 @@ def client() -> TestClient:
 
 
 @pytest.fixture
-def temp_gren_root(
+def temp_furu_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> Generator[Path, None, None]:
-    """Create a temporary Gren root directory and configure it.
+    """Create a temporary Furu root directory and configure it.
 
     Use this fixture when tests need isolated/empty state or must create
-    specific experiments. For read-only tests, prefer `populated_gren_root`.
+    specific experiments. For read-only tests, prefer `populated_furu_root`.
     """
-    monkeypatch.setattr(GREN_CONFIG, "base_root", tmp_path)
-    monkeypatch.setattr(GREN_CONFIG, "ignore_git_diff", True)
-    monkeypatch.setattr(GREN_CONFIG, "poll_interval", 0.01)
-    monkeypatch.setattr(GREN_CONFIG, "stale_timeout", 0.1)
-    monkeypatch.setattr(GREN_CONFIG, "lease_duration_sec", 0.05)
-    monkeypatch.setattr(GREN_CONFIG, "heartbeat_interval_sec", 0.01)
+    monkeypatch.setattr(FURU_CONFIG, "base_root", tmp_path)
+    monkeypatch.setattr(FURU_CONFIG, "ignore_git_diff", True)
+    monkeypatch.setattr(FURU_CONFIG, "poll_interval", 0.01)
+    monkeypatch.setattr(FURU_CONFIG, "stale_timeout", 0.1)
+    monkeypatch.setattr(FURU_CONFIG, "lease_duration_sec", 0.05)
+    monkeypatch.setattr(FURU_CONFIG, "heartbeat_interval_sec", 0.01)
 
     yield tmp_path
 
 
 # Module-scoped fixtures for read-only tests (much faster)
 @pytest.fixture(scope="module")
-def module_gren_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Create a module-scoped temporary Gren root directory."""
-    return tmp_path_factory.mktemp("gren_root")
+def module_furu_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Create a module-scoped temporary Furu root directory."""
+    return tmp_path_factory.mktemp("furu_root")
 
 
 @pytest.fixture(scope="module")
-def _configure_gren_for_module(
-    module_gren_root: Path,
+def _configure_furu_for_module(
+    module_furu_root: Path,
 ) -> Generator[Path, None, None]:
-    """Configure GREN_CONFIG for module-scoped tests."""
+    """Configure FURU_CONFIG for module-scoped tests."""
     # Save original values
-    orig_base_root = GREN_CONFIG.base_root
-    orig_ignore_git_diff = GREN_CONFIG.ignore_git_diff
-    orig_poll_interval = GREN_CONFIG.poll_interval
-    orig_stale_timeout = GREN_CONFIG.stale_timeout
-    orig_lease_duration = GREN_CONFIG.lease_duration_sec
-    orig_heartbeat = GREN_CONFIG.heartbeat_interval_sec
+    orig_base_root = FURU_CONFIG.base_root
+    orig_ignore_git_diff = FURU_CONFIG.ignore_git_diff
+    orig_poll_interval = FURU_CONFIG.poll_interval
+    orig_stale_timeout = FURU_CONFIG.stale_timeout
+    orig_lease_duration = FURU_CONFIG.lease_duration_sec
+    orig_heartbeat = FURU_CONFIG.heartbeat_interval_sec
 
     # Set test values
-    GREN_CONFIG.base_root = module_gren_root
-    GREN_CONFIG.ignore_git_diff = True
-    GREN_CONFIG.poll_interval = 0.01
-    GREN_CONFIG.stale_timeout = 0.1
-    GREN_CONFIG.lease_duration_sec = 0.05
-    GREN_CONFIG.heartbeat_interval_sec = 0.01
+    FURU_CONFIG.base_root = module_furu_root
+    FURU_CONFIG.ignore_git_diff = True
+    FURU_CONFIG.poll_interval = 0.01
+    FURU_CONFIG.stale_timeout = 0.1
+    FURU_CONFIG.lease_duration_sec = 0.05
+    FURU_CONFIG.heartbeat_interval_sec = 0.01
 
-    yield module_gren_root
+    yield module_furu_root
 
     # Restore original values
-    GREN_CONFIG.base_root = orig_base_root
-    GREN_CONFIG.ignore_git_diff = orig_ignore_git_diff
-    GREN_CONFIG.poll_interval = orig_poll_interval
-    GREN_CONFIG.stale_timeout = orig_stale_timeout
-    GREN_CONFIG.lease_duration_sec = orig_lease_duration
-    GREN_CONFIG.heartbeat_interval_sec = orig_heartbeat
+    FURU_CONFIG.base_root = orig_base_root
+    FURU_CONFIG.ignore_git_diff = orig_ignore_git_diff
+    FURU_CONFIG.poll_interval = orig_poll_interval
+    FURU_CONFIG.stale_timeout = orig_stale_timeout
+    FURU_CONFIG.lease_duration_sec = orig_lease_duration
+    FURU_CONFIG.heartbeat_interval_sec = orig_heartbeat
 
 
-def create_experiment_from_gren(
-    gren_obj: object,
+def create_experiment_from_furu(
+    furu_obj: object,
     result_status: str = "success",
     attempt_status: str | None = None,
     backend: str = "local",
@@ -122,13 +122,13 @@ def create_experiment_from_gren(
     updated_at: str = "2025-01-01T12:00:00+00:00",
 ) -> Path:
     """
-    Create an experiment directory from an actual Gren object.
+    Create an experiment directory from an actual Furu object.
 
-    This creates realistic metadata and state by using the actual Gren
+    This creates realistic metadata and state by using the actual Furu
     serialization and metadata systems.
 
     Args:
-        gren_obj: A Gren subclass instance
+        furu_obj: A Furu subclass instance
         result_status: One of: absent, incomplete, success, failed
         attempt_status: Optional attempt status (queued, running, success, failed, etc.)
         backend: Backend type (local, submitit)
@@ -140,13 +140,13 @@ def create_experiment_from_gren(
     Returns:
         Path to the created experiment directory
     """
-    # Get the gren_dir from the object (uses real path computation)
-    directory = gren_obj.gren_dir  # type: ignore[attr-defined]
+    # Get the furu_dir from the object (uses real path computation)
+    directory = furu_obj.furu_dir  # type: ignore[attr-defined]
     directory.mkdir(parents=True, exist_ok=True)
 
     # Create metadata using the actual metadata system
     metadata = MetadataManager.create_metadata(
-        gren_obj,  # type: ignore[arg-type]
+        furu_obj,  # type: ignore[arg-type]
         directory,
         ignore_diff=True,
     )
@@ -166,7 +166,7 @@ def create_experiment_from_gren(
     attempt: dict[str, str | int | float | dict[str, str | int] | None] | None = None
     if attempt_status:
         attempt = {
-            "id": f"attempt-{GrenSerializer.compute_hash(gren_obj)[:8]}",
+            "id": f"attempt-{FuruSerializer.compute_hash(furu_obj)[:8]}",
             "number": 1,
             "backend": backend,
             "status": attempt_status,
@@ -231,7 +231,7 @@ def _create_populated_experiments(root: Path) -> None:
     """
     # Create a base dataset (successful, local, gpu-01, alice, early 2025)
     dataset1 = PrepareDataset(name="mnist", version="v1")
-    create_experiment_from_gren(
+    create_experiment_from_furu(
         dataset1,
         result_status="success",
         attempt_status="success",
@@ -244,7 +244,7 @@ def _create_populated_experiments(root: Path) -> None:
 
     # Create a training run that depends on the dataset (successful, local, gpu-01, alice)
     train1 = TrainModel(lr=0.001, steps=1000, dataset=dataset1)
-    create_experiment_from_gren(
+    create_experiment_from_furu(
         train1,
         result_status="success",
         attempt_status="success",
@@ -257,7 +257,7 @@ def _create_populated_experiments(root: Path) -> None:
 
     # Create another training run with different params (running, submitit, gpu-02, bob)
     train2 = TrainModel(lr=0.0001, steps=2000, dataset=dataset1)
-    create_experiment_from_gren(
+    create_experiment_from_furu(
         train2,
         result_status="incomplete",
         attempt_status="running",
@@ -270,7 +270,7 @@ def _create_populated_experiments(root: Path) -> None:
 
     # Create an evaluation that depends on training (failed, local, gpu-02, alice)
     eval1 = EvalModel(model=train1, eval_split="test")
-    create_experiment_from_gren(
+    create_experiment_from_furu(
         eval1,
         result_status="failed",
         attempt_status="failed",
@@ -283,7 +283,7 @@ def _create_populated_experiments(root: Path) -> None:
 
     # Create a data loader in a different namespace (successful, submitit, gpu-01, bob, 2024)
     loader = DataLoader(source="s3", format="parquet")
-    create_experiment_from_gren(
+    create_experiment_from_furu(
         loader,
         result_status="success",
         attempt_status="success",
@@ -296,7 +296,7 @@ def _create_populated_experiments(root: Path) -> None:
 
     # Create another dataset with absent status (no attempt)
     dataset2 = PrepareDataset(name="cifar", version="v2")
-    create_experiment_from_gren(dataset2, result_status="absent", attempt_status=None)
+    create_experiment_from_furu(dataset2, result_status="absent", attempt_status=None)
 
     def set_alias_state(state) -> None:
         state.result = _StateResultMigrated(status="migrated")
@@ -304,7 +304,7 @@ def _create_populated_experiments(root: Path) -> None:
 
     # Create an alias dataset that points back to dataset1
     dataset_alias = PrepareDataset(name="mnist", version="v2")
-    alias_dir = dataset_alias.gren_dir
+    alias_dir = dataset_alias.furu_dir
     alias_dir.mkdir(parents=True, exist_ok=True)
     MetadataManager.write_metadata(
         MetadataManager.create_metadata(dataset_alias, alias_dir, ignore_diff=True),
@@ -316,10 +316,10 @@ def _create_populated_experiments(root: Path) -> None:
         kind="alias",
         policy="alias",
         from_namespace="dashboard.pipelines.PrepareDataset",
-        from_hash=GrenSerializer.compute_hash(dataset1),
+        from_hash=FuruSerializer.compute_hash(dataset1),
         from_root="data",
         to_namespace="dashboard.pipelines.PrepareDataset",
-        to_hash=GrenSerializer.compute_hash(dataset_alias),
+        to_hash=FuruSerializer.compute_hash(dataset_alias),
         to_root="data",
         migrated_at="2025-01-05T10:00:00+00:00",
         overwritten_at=None,
@@ -330,7 +330,7 @@ def _create_populated_experiments(root: Path) -> None:
     MigrationManager.write_migration(alias_record, alias_dir)
 
     dataset_alias_second = PrepareDataset(name="mnist", version="v4")
-    alias_second_dir = dataset_alias_second.gren_dir
+    alias_second_dir = dataset_alias_second.furu_dir
     alias_second_dir.mkdir(parents=True, exist_ok=True)
     MetadataManager.write_metadata(
         MetadataManager.create_metadata(
@@ -345,10 +345,10 @@ def _create_populated_experiments(root: Path) -> None:
         kind="alias",
         policy="alias",
         from_namespace="dashboard.pipelines.PrepareDataset",
-        from_hash=GrenSerializer.compute_hash(dataset1),
+        from_hash=FuruSerializer.compute_hash(dataset1),
         from_root="data",
         to_namespace="dashboard.pipelines.PrepareDataset",
-        to_hash=GrenSerializer.compute_hash(dataset_alias_second),
+        to_hash=FuruSerializer.compute_hash(dataset_alias_second),
         to_root="data",
         migrated_at="2025-01-05T12:00:00+00:00",
         overwritten_at=None,
@@ -360,7 +360,7 @@ def _create_populated_experiments(root: Path) -> None:
 
     # Add a moved dataset entry for filter tests
     moved_dataset = PrepareDataset(name="mnist", version="v3")
-    moved_dir = moved_dataset.gren_dir
+    moved_dir = moved_dataset.furu_dir
     moved_dir.mkdir(parents=True, exist_ok=True)
     MetadataManager.write_metadata(
         MetadataManager.create_metadata(moved_dataset, moved_dir, ignore_diff=True),
@@ -375,17 +375,17 @@ def _create_populated_experiments(root: Path) -> None:
         state.attempt = None
 
     StateManager.update_state(
-        dataset2._base_gren_dir(),
+        dataset2._base_furu_dir(),
         set_success,
     )
     moved_record = MigrationRecord(
         kind="moved",
         policy="move",
         from_namespace="dashboard.pipelines.PrepareDataset",
-        from_hash=GrenSerializer.compute_hash(dataset2),
+        from_hash=FuruSerializer.compute_hash(dataset2),
         from_root="data",
         to_namespace="dashboard.pipelines.PrepareDataset",
-        to_hash=GrenSerializer.compute_hash(moved_dataset),
+        to_hash=FuruSerializer.compute_hash(moved_dataset),
         to_root="data",
         migrated_at="2025-01-06T10:00:00+00:00",
         overwritten_at=None,
@@ -397,21 +397,21 @@ def _create_populated_experiments(root: Path) -> None:
 
 
 @pytest.fixture(scope="module")
-def populated_gren_root(_configure_gren_for_module: Path) -> Path:
-    """Create a module-scoped Gren root with sample experiments.
+def populated_furu_root(_configure_furu_for_module: Path) -> Path:
+    """Create a module-scoped Furu root with sample experiments.
 
     PREFER THIS FIXTURE for read-only tests. Experiments are created once per
     module and reused, which is much faster than creating them per-test.
 
     See _create_populated_experiments() for the exact data created.
     """
-    root = _configure_gren_for_module
+    root = _configure_furu_for_module
     _create_populated_experiments(root)
     return root
 
 
 @pytest.fixture
-def populated_with_dependencies(temp_gren_root: Path) -> Path:
+def populated_with_dependencies(temp_furu_root: Path) -> Path:
     """Create experiments with a full dependency chain.
 
     This fixture actually runs load_or_create() to create real experiments,
@@ -445,4 +445,4 @@ def populated_with_dependencies(temp_gren_root: Path) -> Path:
     )
     multi.load_or_create()
 
-    return temp_gren_root
+    return temp_furu_root

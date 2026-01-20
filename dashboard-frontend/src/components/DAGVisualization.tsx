@@ -86,16 +86,16 @@ function ClassNode({ data, selected }: NodeProps<Node<ClassNodeData>>) {
         <div className="space-y-1">
           {node.experiments.slice(0, 3).map((exp: DAGExperiment) => (
             <Link
-              key={exp.gren_hash}
-              to="/experiments/$namespace/$gren_hash"
+              key={exp.furu_hash}
+              to="/experiments/$namespace/$furu_hash"
               params={{
                 namespace: exp.namespace,
-                gren_hash: exp.gren_hash,
+                furu_hash: exp.furu_hash,
               }}
               className="block text-xs text-muted-foreground hover:text-primary truncate"
-              title={exp.gren_hash}
+              title={exp.furu_hash}
             >
-              {exp.gren_hash.slice(0, 8)}...
+              {exp.furu_hash.slice(0, 8)}...
             </Link>
           ))}
           {node.experiments.length > 3 && (
@@ -356,15 +356,15 @@ export function DAGVisualization({ nodes: dagNodes, edges: dagEdges }: DAGVisual
                 <div className="max-h-40 overflow-y-auto space-y-1">
                   {selectedNode.experiments.map((exp) => (
                     <Link
-                      key={exp.gren_hash}
-                      to="/experiments/$namespace/$gren_hash"
+                      key={exp.furu_hash}
+                      to="/experiments/$namespace/$furu_hash"
                       params={{
                         namespace: exp.namespace,
-                        gren_hash: exp.gren_hash,
+                        furu_hash: exp.furu_hash,
                       }}
                       className="flex items-center justify-between p-2 rounded hover:bg-muted text-sm"
                     >
-                      <code className="text-xs">{exp.gren_hash.slice(0, 12)}...</code>
+                      <code className="text-xs">{exp.furu_hash.slice(0, 12)}...</code>
                       <Badge
                         variant={
                           exp.result_status === "success"

@@ -1,7 +1,7 @@
 [project]
-name = "gren"
-version = "0.2.0"
-description = "Cacheable, nested pipelines for Python. Define computations as configs; gren handles caching, state tracking, and result reuse across runs."
+name = "furu"
+version = "0.0.1"
+description = "Cacheable, nested pipelines for Python. Define computations as configs; furu handles caching, state tracking, and result reuse across runs."
 readme = "README.md"
 authors = [
     { name = "Herman Brunborg", email = "herman@brunborg.com" }
@@ -24,7 +24,7 @@ dashboard = [
 ]
 
 [project.scripts]
-gren-dashboard = "gren.dashboard.main:cli"
+furu-dashboard = "furu.dashboard.main:cli"
 
 [dependency-groups]
 dev = [
@@ -46,10 +46,10 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
-artifacts = ["src/gren/dashboard/frontend/dist/**/*"]
+artifacts = ["src/furu/dashboard/frontend/dist/**/*"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/gren"]
+packages = ["src/furu"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

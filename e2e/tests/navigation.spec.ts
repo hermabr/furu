@@ -32,7 +32,7 @@ test.describe("Navigation", () => {
       await expect(page).toHaveURL("/experiments");
 
       // Click logo to go home
-      await page.getByRole("link", { name: "Gren" }).click();
+      await page.getByRole("link", { name: "Furu" }).click();
       await expect(page).toHaveURL("/");
     });
   });
@@ -64,7 +64,7 @@ test.describe("Navigation", () => {
 
       // Should show detail view content (not the list page)
       await expect(
-        page.getByText("Browse and filter all Gren experiments")
+        page.getByText("Browse and filter all Furu experiments")
       ).not.toBeVisible();
 
       // Should show the experiment class name in the header
@@ -100,7 +100,7 @@ test.describe("Navigation", () => {
       // Should be back on experiments list
       await expect(page).toHaveURL("/experiments");
       await expect(
-        page.getByText("Browse and filter all Gren experiments")
+        page.getByText("Browse and filter all Furu experiments")
       ).toBeVisible();
     });
   });
@@ -151,7 +151,7 @@ test.describe("Navigation", () => {
       // Should be on experiments list
       await expect(page).toHaveURL("/experiments");
       await expect(
-        page.getByText("Browse and filter all Gren experiments")
+        page.getByText("Browse and filter all Furu experiments")
       ).toBeVisible();
     });
   });
@@ -370,7 +370,7 @@ test.describe("Navigation", () => {
 
       // Should show detail page, not list
       await expect(
-        page.getByText("Browse and filter all Gren experiments")
+        page.getByText("Browse and filter all Furu experiments")
       ).not.toBeVisible();
       await expect(page.getByRole("heading", { name: "Configuration" })).toBeVisible();
     });
@@ -409,7 +409,7 @@ test.describe("Navigation", () => {
       // Should be on experiments list
       await expect(page).toHaveURL("/experiments");
       await expect(
-        page.getByText("Browse and filter all Gren experiments")
+        page.getByText("Browse and filter all Furu experiments")
       ).toBeVisible();
     });
 

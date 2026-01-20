@@ -1,6 +1,6 @@
-"""Test pipelines with realistic Gren subclasses for dashboard tests.
+"""Test pipelines with realistic Furu subclasses for dashboard tests.
 
-These classes create actual Gren experiments with proper dependencies,
+These classes create actual Furu experiments with proper dependencies,
 instead of using mock JSON data.
 """
 
@@ -9,29 +9,29 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import gren
+import furu
 
 
-class PrepareDataset(gren.Gren[Path]):
+class PrepareDataset(furu.Furu[Path]):
     """Dataset preparation pipeline."""
 
-    name: str = gren.chz.field(default="default")
-    version: str = gren.chz.field(default="v1")
+    name: str = furu.chz.field(default="default")
+    version: str = furu.chz.field(default="v1")
 
     def _create(self) -> Path:
-        path = self.gren_dir / "data.txt"
+        path = self.furu_dir / "data.txt"
         path.write_text(f"dataset: {self.name}\nversion: {self.version}\n")
         return path
 
     def _load(self) -> Path:
-        return self.gren_dir / "data.txt"
+        return self.furu_dir / "data.txt"
 
 
-class TrainModel(gren.Gren[Path]):
+class TrainModel(furu.Furu[Path]):
     """Model training pipeline with dataset dependency."""
 
-    lr: float = gren.chz.field(default=3e-4)
-    steps: int = gren.chz.field(default=1000)
+    lr: float = furu.chz.field(default=3e-4)
+    steps: int = furu.chz.field(default=1000)
     dataset: PrepareDataset
 
     def _create(self) -> Path:
@@ -39,7 +39,7 @@ class TrainModel(gren.Gren[Path]):
         dataset_path = self.dataset.load_or_create()
 
         # Write training metrics
-        metrics_path = self.gren_dir / "metrics.json"
+        metrics_path = self.furu_dir / "metrics.json"
         metrics_path.write_text(
             json.dumps(
                 {"lr": self.lr, "steps": self.steps, "dataset": str(dataset_path)}
@@ -47,19 +47,19 @@ class TrainModel(gren.Gren[Path]):
         )
 
         # Create checkpoint
-        ckpt = self.gren_dir / "checkpoint.bin"
+        ckpt = self.furu_dir / "checkpoint.bin"
         ckpt.write_bytes(b"fake-checkpoint")
         return ckpt
 
     def _load(self) -> Path:
-        return self.gren_dir / "checkpoint.bin"
+        return self.furu_dir / "checkpoint.bin"
 
 
-class EvalModel(gren.Gren[Path]):
+class EvalModel(furu.Furu[Path]):
     """Model evaluation pipeline with model dependency."""
 
     model: TrainModel
-    eval_split: str = gren.chz.field(default="test")
+    eval_split: str = furu.chz.field(default="test")
 
     def _create(self) -> Path:
         # Trigger dependency
@@ -67,18 +67,18 @@ class EvalModel(gren.Gren[Path]):
 
         # Fake evaluation results
         results = {"accuracy": 0.95, "loss": 0.05, "split": self.eval_split}
-        results_path = self.gren_dir / "results.json"
+        results_path = self.furu_dir / "results.json"
         results_path.write_text(json.dumps(results))
         return results_path
 
     def _load(self) -> Path:
-        return self.gren_dir / "results.json"
+        return self.furu_dir / "results.json"
 
 
-class FailingPipeline(gren.Gren[None]):
+class FailingPipeline(furu.Furu[None]):
     """Pipeline that always fails (for testing failed states)."""
 
-    reason: str = gren.chz.field(default="intentional failure")
+    reason: str = furu.chz.field(default="intentional failure")
 
     def _create(self) -> None:
         raise RuntimeError(self.reason)
@@ -87,27 +87,27 @@ class FailingPipeline(gren.Gren[None]):
         return None
 
 
-class DataLoader(gren.Gren[Path]):
+class DataLoader(furu.Furu[Path]):
     """Simple data loader in a different namespace."""
 
-    source: str = gren.chz.field(default="local")
-    format: str = gren.chz.field(default="csv")
+    source: str = furu.chz.field(default="local")
+    format: str = furu.chz.field(default="csv")
 
     def _create(self) -> Path:
-        path = self.gren_dir / f"data.{self.format}"
+        path = self.furu_dir / f"data.{self.format}"
         path.write_text(f"source: {self.source}\nformat: {self.format}\n")
         return path
 
     def _load(self) -> Path:
-        return self.gren_dir / f"data.{self.format}"
+        return self.furu_dir / f"data.{self.format}"
 
 
-class MultiDependencyPipeline(gren.Gren[Path]):
+class MultiDependencyPipeline(furu.Furu[Path]):
     """Pipeline with multiple dependencies."""
 
     dataset1: PrepareDataset
     dataset2: PrepareDataset
-    output_name: str = gren.chz.field(default="combined")
+    output_name: str = furu.chz.field(default="combined")
 
     def _create(self) -> Path:
         # Trigger both dependencies
@@ -115,36 +115,36 @@ class MultiDependencyPipeline(gren.Gren[Path]):
         path2 = self.dataset2.load_or_create()
 
         # Combine outputs
-        output = self.gren_dir / f"{self.output_name}.txt"
+        output = self.furu_dir / f"{self.output_name}.txt"
         output.write_text(f"combined from:\n- {path1}\n- {path2}\n")
         return output
 
     def _load(self) -> Path:
-        return self.gren_dir / f"{self.output_name}.txt"
+        return self.furu_dir / f"{self.output_name}.txt"
 
 
 # --- Inheritance pattern: abstract Data base class with concrete subclasses ---
 
 
-class Data(gren.Gren[Path]):
+class Data(furu.Furu[Path]):
     """Abstract base class for data sources."""
 
-    name: str = gren.chz.field(default="unnamed")
+    name: str = furu.chz.field(default="unnamed")
 
     def _create(self) -> Path:
         raise NotImplementedError("Subclasses must implement _create")
 
     def _load(self) -> Path:
-        return self.gren_dir / "data.json"
+        return self.furu_dir / "data.json"
 
 
 class DataA(Data):
     """Concrete data source A."""
 
-    source_url: str = gren.chz.field(default="http://example.com/a")
+    source_url: str = furu.chz.field(default="http://example.com/a")
 
     def _create(self) -> Path:
-        path = self.gren_dir / "data.json"
+        path = self.furu_dir / "data.json"
         path.write_text(
             json.dumps({"type": "A", "name": self.name, "url": self.source_url})
         )
@@ -154,21 +154,21 @@ class DataA(Data):
 class DataB(Data):
     """Concrete data source B."""
 
-    local_path: str = gren.chz.field(default="/data/b")
+    local_path: str = furu.chz.field(default="/data/b")
 
     def _create(self) -> Path:
-        path = self.gren_dir / "data.json"
+        path = self.furu_dir / "data.json"
         path.write_text(
             json.dumps({"type": "B", "name": self.name, "path": self.local_path})
         )
         return path
 
 
-class Train(gren.Gren[Path]):
+class Train(furu.Furu[Path]):
     """Training pipeline that accepts any Data subclass."""
 
     data: Data
-    epochs: int = gren.chz.field(default=10)
+    epochs: int = furu.chz.field(default=10)
 
     def _create(self) -> Path:
         # Load the data dependency (works with any Data subclass)
@@ -176,7 +176,7 @@ class Train(gren.Gren[Path]):
         data_content = json.loads(data_path.read_text())
 
         # Create training output
-        output = self.gren_dir / "model.json"
+        output = self.furu_dir / "model.json"
         output.write_text(
             json.dumps(
                 {
@@ -189,4 +189,4 @@ class Train(gren.Gren[Path]):
         return output
 
     def _load(self) -> Path:
-        return self.gren_dir / "model.json"
+        return self.furu_dir / "model.json"

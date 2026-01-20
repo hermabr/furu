@@ -1,7 +1,7 @@
 """Tests for Dashboard API routes.
 
-NOTE: For performance, use module-scoped fixtures (like `populated_gren_root`)
-instead of creating experiments in each test with `temp_gren_root`. The shared
+NOTE: For performance, use module-scoped fixtures (like `populated_furu_root`)
+instead of creating experiments in each test with `temp_furu_root`. The shared
 fixture creates experiments once and reuses them across all tests in the module.
 
 See `conftest.py:_create_populated_experiments()` for the fixture data setup.
@@ -13,7 +13,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from gren.serialization import GrenSerializer
+from furu.serialization import FuruSerializer
 
 from .pipelines import PrepareDataset, TrainModel
 
@@ -27,7 +27,7 @@ def test_health_check(client: TestClient) -> None:
     assert "version" in data
 
 
-def test_list_experiments_empty(client: TestClient, temp_gren_root: Path) -> None:
+def test_list_experiments_empty(client: TestClient, temp_furu_root: Path) -> None:
     """Test listing experiments when none exist."""
     response = client.get("/api/experiments")
     assert response.status_code == 200
@@ -36,7 +36,7 @@ def test_list_experiments_empty(client: TestClient, temp_gren_root: Path) -> Non
     assert data["total"] == 0
 
 
-def test_list_experiments(client: TestClient, populated_gren_root: Path) -> None:
+def test_list_experiments(client: TestClient, populated_furu_root: Path) -> None:
     """Test listing all experiments."""
     response = client.get("/api/experiments")
     assert response.status_code == 200
@@ -48,7 +48,7 @@ def test_list_experiments(client: TestClient, populated_gren_root: Path) -> None
     # Check structure of returned experiments
     exp = data["experiments"][0]
     assert "namespace" in exp
-    assert "gren_hash" in exp
+    assert "furu_hash" in exp
     assert "class_name" in exp
     assert "result_status" in exp
 
@@ -59,7 +59,7 @@ def test_list_experiments(client: TestClient, populated_gren_root: Path) -> None
 
 
 def test_list_experiments_filter_by_result_status(
-    client: TestClient, populated_gren_root: Path
+    client: TestClient, populated_furu_root: Path
 ) -> None:
     """Test filtering experiments by result status."""
     response = client.get("/api/experiments?result_status=success")
@@ -95,7 +95,7 @@ def test_list_experiments_filter_by_result_status(
 
 
 def test_list_experiments_filter_by_attempt_status(
-    client: TestClient, populated_gren_root: Path
+    client: TestClient, populated_furu_root: Path
 ) -> None:
     """Test filtering experiments by attempt status."""
     response = client.get("/api/experiments?attempt_status=running")
@@ -106,7 +106,7 @@ def test_list_experiments_filter_by_attempt_status(
 
 
 def test_list_experiments_filter_by_namespace(
-    client: TestClient, populated_gren_root: Path
+    client: TestClient, populated_furu_root: Path
 ) -> None:
     """Test filtering experiments by namespace prefix."""
     response = client.get("/api/experiments?namespace=dashboard.pipelines")
@@ -126,7 +126,7 @@ def test_list_experiments_filter_by_namespace(
 
 
 def test_list_experiments_filter_by_class(
-    client: TestClient, populated_gren_root: Path
+    client: TestClient, populated_furu_root: Path
 ) -> None:
     """Test filtering experiments by class name."""
     response = client.get("/api/experiments?namespace=dashboard.pipelines.TrainModel")
@@ -139,7 +139,7 @@ def test_list_experiments_filter_by_class(
 
 
 def test_list_experiments_pagination(
-    client: TestClient, populated_gren_root: Path
+    client: TestClient, populated_furu_root: Path
 ) -> None:
     """Test pagination of experiments."""
     response = client.get("/api/experiments?limit=2&offset=0")
@@ -155,20 +155,20 @@ def test_list_experiments_pagination(
     assert len(data["experiments"]) == 2
 
 
-def test_get_experiment_detail(client: TestClient, populated_gren_root: Path) -> None:
+def test_get_experiment_detail(client: TestClient, populated_furu_root: Path) -> None:
     """Test getting detailed experiment information."""
     # Get the hash for a specific experiment
     dataset1 = PrepareDataset(name="mnist", version="v1")
-    gren_hash = GrenSerializer.compute_hash(dataset1)
+    furu_hash = FuruSerializer.compute_hash(dataset1)
 
     response = client.get(
-        f"/api/experiments/dashboard.pipelines.PrepareDataset/{gren_hash}"
+        f"/api/experiments/dashboard.pipelines.PrepareDataset/{furu_hash}"
     )
     assert response.status_code == 200
     data = response.json()
 
     assert data["namespace"] == "dashboard.pipelines.PrepareDataset"
-    assert data["gren_hash"] == gren_hash
+    assert data["furu_hash"] == furu_hash
     assert data["class_name"] == "PrepareDataset"
     assert data["result_status"] == "success"
     assert data["attempt_status"] == "success"
@@ -177,7 +177,7 @@ def test_get_experiment_detail(client: TestClient, populated_gren_root: Path) ->
     assert "metadata" in data
 
     alias = PrepareDataset(name="mnist", version="v2")
-    alias_hash = GrenSerializer.compute_hash(alias)
+    alias_hash = FuruSerializer.compute_hash(alias)
     alias_response = client.get(
         f"/api/experiments/dashboard.pipelines.PrepareDataset/{alias_hash}?view=resolved"
     )
@@ -192,16 +192,16 @@ def test_get_experiment_detail(client: TestClient, populated_gren_root: Path) ->
 
 
 def test_get_experiment_detail_with_attempt(
-    client: TestClient, populated_gren_root: Path
+    client: TestClient, populated_furu_root: Path
 ) -> None:
     """Test that experiment detail includes attempt information."""
     # Get the hash for the running training experiment
     dataset1 = PrepareDataset(name="mnist", version="v1")
     train2 = TrainModel(lr=0.0001, steps=2000, dataset=dataset1)
-    gren_hash = GrenSerializer.compute_hash(train2)
+    furu_hash = FuruSerializer.compute_hash(train2)
 
     response = client.get(
-        f"/api/experiments/dashboard.pipelines.TrainModel/{gren_hash}"
+        f"/api/experiments/dashboard.pipelines.TrainModel/{furu_hash}"
     )
     assert response.status_code == 200
     data = response.json()
@@ -212,13 +212,13 @@ def test_get_experiment_detail_with_attempt(
     assert data["attempt"]["owner"]["host"] == "gpu-02"
 
     response_original = client.get(
-        f"/api/experiments/dashboard.pipelines.TrainModel/{gren_hash}?view=original"
+        f"/api/experiments/dashboard.pipelines.TrainModel/{furu_hash}?view=original"
     )
     assert response_original.status_code == 200
 
 
 def test_get_experiment_not_found(
-    client: TestClient, populated_gren_root: Path
+    client: TestClient, populated_furu_root: Path
 ) -> None:
     """Test getting a non-existent experiment."""
     response = client.get("/api/experiments/nonexistent.Namespace/fake123hash")
@@ -226,7 +226,7 @@ def test_get_experiment_not_found(
     assert response.json()["detail"] == "Experiment not found"
 
 
-def test_dashboard_stats_empty(client: TestClient, temp_gren_root: Path) -> None:
+def test_dashboard_stats_empty(client: TestClient, temp_furu_root: Path) -> None:
     """Test stats endpoint with no experiments."""
     response = client.get("/api/stats")
     assert response.status_code == 200
@@ -238,7 +238,7 @@ def test_dashboard_stats_empty(client: TestClient, temp_gren_root: Path) -> None
     assert data["success_count"] == 0
 
 
-def test_dashboard_stats(client: TestClient, populated_gren_root: Path) -> None:
+def test_dashboard_stats(client: TestClient, populated_furu_root: Path) -> None:
     """Test aggregate statistics endpoint."""
     response = client.get("/api/stats")
     assert response.status_code == 200
@@ -261,7 +261,7 @@ def test_dashboard_stats(client: TestClient, populated_gren_root: Path) -> None:
     assert result_statuses.get("migrated", 0) == 3
 
 
-def test_combined_filters(client: TestClient, populated_gren_root: Path) -> None:
+def test_combined_filters(client: TestClient, populated_furu_root: Path) -> None:
     """Test combining multiple filters."""
     response = client.get(
         "/api/experiments?result_status=success&namespace=dashboard.pipelines.PrepareDataset"
@@ -299,7 +299,7 @@ def test_experiments_with_dependencies(
 
 # =============================================================================
 # Tests for new filtering API endpoints: backend, hostname, user, date range, config
-# These tests use the shared populated_gren_root fixture which has:
+# These tests use the shared populated_furu_root fixture which has:
 # - dataset1: success, local, gpu-01, alice, 2025-01-01
 # - train1: success, local, gpu-01, alice, 2025-01-02
 # - train2: running, submitit, gpu-02, bob, 2025-01-03
@@ -310,7 +310,7 @@ def test_experiments_with_dependencies(
 
 
 def test_list_experiments_filter_by_backend(
-    client: TestClient, populated_gren_root: Path
+    client: TestClient, populated_furu_root: Path
 ) -> None:
     """Test filtering experiments by backend via API."""
     # Filter by local backend (dataset1, train1, eval1, aliases = 5 experiments)
@@ -331,7 +331,7 @@ def test_list_experiments_filter_by_backend(
 
 
 def test_list_experiments_filter_by_hostname(
-    client: TestClient, populated_gren_root: Path
+    client: TestClient, populated_furu_root: Path
 ) -> None:
     """Test filtering experiments by hostname via API."""
     # Filter by gpu-01 (dataset1, train1, loader, aliases = 5 experiments)
@@ -352,7 +352,7 @@ def test_list_experiments_filter_by_hostname(
 
 
 def test_list_experiments_filter_by_user(
-    client: TestClient, populated_gren_root: Path
+    client: TestClient, populated_furu_root: Path
 ) -> None:
     """Test filtering experiments by user via API."""
     # Filter by alice (dataset1, train1, eval1, aliases = 5 experiments)
@@ -373,7 +373,7 @@ def test_list_experiments_filter_by_user(
 
 
 def test_list_experiments_filter_by_started_after(
-    client: TestClient, populated_gren_root: Path
+    client: TestClient, populated_furu_root: Path
 ) -> None:
     """Test filtering experiments by started_after via API."""
     # Filter for experiments started after 2025-01-01 (train1, train2, eval1 = 3)
@@ -384,7 +384,7 @@ def test_list_experiments_filter_by_started_after(
 
 
 def test_list_experiments_filter_by_started_before(
-    client: TestClient, populated_gren_root: Path
+    client: TestClient, populated_furu_root: Path
 ) -> None:
     """Test filtering experiments by started_before via API."""
     # Filter for experiments started before 2025-01-01 (loader = 1)
@@ -396,7 +396,7 @@ def test_list_experiments_filter_by_started_before(
 
 
 def test_list_experiments_filter_by_updated_after(
-    client: TestClient, populated_gren_root: Path
+    client: TestClient, populated_furu_root: Path
 ) -> None:
     """Test filtering experiments by updated_after via API."""
     # Filter for experiments updated after 2025-01-03 (eval1 + moved source + moved target)
@@ -407,7 +407,7 @@ def test_list_experiments_filter_by_updated_after(
 
 
 def test_list_experiments_filter_by_updated_before(
-    client: TestClient, populated_gren_root: Path
+    client: TestClient, populated_furu_root: Path
 ) -> None:
     """Test filtering experiments by updated_before via API."""
     # Filter for experiments updated before 2025-01-01 (loader = 1)
@@ -419,7 +419,7 @@ def test_list_experiments_filter_by_updated_before(
 
 
 def test_list_experiments_filter_by_config_filter(
-    client: TestClient, populated_gren_root: Path
+    client: TestClient, populated_furu_root: Path
 ) -> None:
     """Test filtering experiments by config_filter via API."""
     # Filter by config name=mnist (dataset1 + aliases + moved)
@@ -451,7 +451,7 @@ def test_list_experiments_filter_by_config_filter(
 
 
 def test_list_experiments_combined_new_filters(
-    client: TestClient, populated_gren_root: Path
+    client: TestClient, populated_furu_root: Path
 ) -> None:
     """Test combining multiple new filters via API."""
     # Combine backend=local + user=alice (dataset1, train1, eval1, aliases = 5)
@@ -480,7 +480,7 @@ def test_list_experiments_combined_new_filters(
 
 
 def test_list_experiments_new_fields_in_response(
-    client: TestClient, populated_gren_root: Path
+    client: TestClient, populated_furu_root: Path
 ) -> None:
     """Test that new fields (backend, hostname, user) are included in response."""
     response = client.get("/api/experiments")
@@ -497,7 +497,7 @@ def test_list_experiments_new_fields_in_response(
 
 
 def test_list_experiments_filter_no_match_returns_empty(
-    client: TestClient, populated_gren_root: Path
+    client: TestClient, populated_furu_root: Path
 ) -> None:
     """Test that filters return empty list when no experiments match."""
     # Test each filter type returns empty when no match
@@ -535,7 +535,7 @@ def test_list_experiments_filter_no_match_returns_empty(
 # =============================================================================
 
 
-def test_dag_endpoint_empty(client: TestClient, temp_gren_root: Path) -> None:
+def test_dag_endpoint_empty(client: TestClient, temp_furu_root: Path) -> None:
     """Test DAG endpoint with no experiments."""
     response = client.get("/api/dag")
     assert response.status_code == 200
@@ -547,7 +547,7 @@ def test_dag_endpoint_empty(client: TestClient, temp_gren_root: Path) -> None:
     assert data["edges"] == []
 
 
-def test_dag_endpoint(client: TestClient, populated_gren_root: Path) -> None:
+def test_dag_endpoint(client: TestClient, populated_furu_root: Path) -> None:
     """Test DAG endpoint with experiments."""
     response = client.get("/api/dag")
     assert response.status_code == 200
@@ -578,7 +578,7 @@ def test_dag_endpoint(client: TestClient, populated_gren_root: Path) -> None:
 
 
 def test_dag_endpoint_node_counts(
-    client: TestClient, populated_gren_root: Path
+    client: TestClient, populated_furu_root: Path
 ) -> None:
     """Test that DAG nodes have correct status counts."""
     response = client.get("/api/dag")
@@ -604,7 +604,7 @@ def test_dag_endpoint_node_counts(
 
 
 def test_dag_endpoint_experiment_details(
-    client: TestClient, populated_gren_root: Path
+    client: TestClient, populated_furu_root: Path
 ) -> None:
     """Test that DAG nodes contain experiment details."""
     response = client.get("/api/dag")
@@ -621,12 +621,12 @@ def test_dag_endpoint_experiment_details(
     # Check experiment structure
     exp = node_with_experiments["experiments"][0]
     assert "namespace" in exp
-    assert "gren_hash" in exp
+    assert "furu_hash" in exp
     assert "result_status" in exp
 
 
 def test_dag_endpoint_edge_relationships(
-    client: TestClient, populated_gren_root: Path
+    client: TestClient, populated_furu_root: Path
 ) -> None:
     """Test that DAG edges represent correct dependency relationships."""
     response = client.get("/api/dag")
@@ -666,7 +666,7 @@ def test_dag_endpoint_with_real_dependencies(
 
 
 def test_relationships_endpoint_not_found(
-    client: TestClient, temp_gren_root: Path
+    client: TestClient, temp_furu_root: Path
 ) -> None:
     """Test relationships endpoint returns 404 for nonexistent experiment."""
     response = client.get("/api/experiments/nonexistent.namespace/abc123/relationships")
@@ -674,7 +674,7 @@ def test_relationships_endpoint_not_found(
 
 
 def test_relationships_endpoint_no_relationships(
-    client: TestClient, populated_gren_root: Path
+    client: TestClient, populated_furu_root: Path
 ) -> None:
     """Test relationships endpoint for experiment with no parents (root experiment)."""
     # Get the first PrepareDataset experiment (has no parents, may have children)
@@ -687,7 +687,7 @@ def test_relationships_endpoint_no_relationships(
     exp = experiments[0]
 
     response = client.get(
-        f"/api/experiments/{exp['namespace']}/{exp['gren_hash']}/relationships"
+        f"/api/experiments/{exp['namespace']}/{exp['furu_hash']}/relationships"
     )
     assert response.status_code == 200
     data = response.json()
@@ -699,7 +699,7 @@ def test_relationships_endpoint_no_relationships(
 
 
 def test_relationships_endpoint_has_parents(
-    client: TestClient, populated_gren_root: Path
+    client: TestClient, populated_furu_root: Path
 ) -> None:
     """Test relationships endpoint for experiment that has parents."""
     # Get a TrainModel experiment (has PrepareDataset as parent)
@@ -712,7 +712,7 @@ def test_relationships_endpoint_has_parents(
     exp = experiments[0]
 
     response = client.get(
-        f"/api/experiments/{exp['namespace']}/{exp['gren_hash']}/relationships"
+        f"/api/experiments/{exp['namespace']}/{exp['furu_hash']}/relationships"
     )
     assert response.status_code == 200
     data = response.json()
@@ -725,12 +725,12 @@ def test_relationships_endpoint_has_parents(
     assert parent["full_class_name"].endswith("PrepareDataset")
     # Should have resolved the parent experiment
     assert parent["namespace"] is not None
-    assert parent["gren_hash"] is not None
+    assert parent["furu_hash"] is not None
     assert parent["result_status"] is not None
 
 
 def test_relationships_endpoint_has_children(
-    client: TestClient, populated_gren_root: Path
+    client: TestClient, populated_furu_root: Path
 ) -> None:
     """Test relationships endpoint for experiment that has children."""
     # Get dataset1 (used by train1 and train2)
@@ -748,7 +748,7 @@ def test_relationships_endpoint_has_children(
     )
 
     response = client.get(
-        f"/api/experiments/{exp['namespace']}/{exp['gren_hash']}/relationships"
+        f"/api/experiments/{exp['namespace']}/{exp['furu_hash']}/relationships"
     )
     assert response.status_code == 200
     data = response.json()
@@ -759,7 +759,7 @@ def test_relationships_endpoint_has_children(
         assert child["class_name"] == "TrainModel"
         assert child["field_name"] == "dataset"
         assert child["namespace"].endswith("TrainModel")
-        assert child["gren_hash"] is not None
+        assert child["furu_hash"] is not None
         assert child["result_status"] in ["success", "incomplete"]
 
 
@@ -777,7 +777,7 @@ def test_relationships_endpoint_with_real_dependencies(
     train_exp = experiments[0]
 
     response = client.get(
-        f"/api/experiments/{train_exp['namespace']}/{train_exp['gren_hash']}/relationships"
+        f"/api/experiments/{train_exp['namespace']}/{train_exp['furu_hash']}/relationships"
     )
     assert response.status_code == 200
     data = response.json()
@@ -794,7 +794,7 @@ def test_relationships_endpoint_with_real_dependencies(
 
 
 def test_relationships_parent_structure(
-    client: TestClient, populated_gren_root: Path
+    client: TestClient, populated_furu_root: Path
 ) -> None:
     """Test that parent relationships include all required fields."""
     # Get an EvalModel experiment (has TrainModel as parent)
@@ -807,7 +807,7 @@ def test_relationships_parent_structure(
     exp = experiments[0]
 
     response = client.get(
-        f"/api/experiments/{exp['namespace']}/{exp['gren_hash']}/relationships"
+        f"/api/experiments/{exp['namespace']}/{exp['furu_hash']}/relationships"
     )
     assert response.status_code == 200
     data = response.json()
@@ -820,7 +820,7 @@ def test_relationships_parent_structure(
     assert "class_name" in parent
     assert "full_class_name" in parent
     assert "namespace" in parent
-    assert "gren_hash" in parent
+    assert "furu_hash" in parent
     assert "result_status" in parent
     assert "config" in parent
 
@@ -830,7 +830,7 @@ def test_relationships_parent_structure(
 
 
 def test_relationships_child_structure(
-    client: TestClient, populated_gren_root: Path
+    client: TestClient, populated_furu_root: Path
 ) -> None:
     """Test that child relationships include all required fields."""
     # Get a TrainModel experiment (has EvalModel as child)
@@ -847,7 +847,7 @@ def test_relationships_child_structure(
     )
 
     response = client.get(
-        f"/api/experiments/{exp['namespace']}/{exp['gren_hash']}/relationships"
+        f"/api/experiments/{exp['namespace']}/{exp['furu_hash']}/relationships"
     )
     assert response.status_code == 200
     data = response.json()
@@ -861,5 +861,5 @@ def test_relationships_child_structure(
         assert "class_name" in child
         assert "full_class_name" in child
         assert "namespace" in child
-        assert "gren_hash" in child
+        assert "furu_hash" in child
         assert "result_status" in child

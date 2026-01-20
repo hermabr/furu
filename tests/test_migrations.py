@@ -5,86 +5,86 @@ from typing import cast
 
 import pytest
 
-import gren
-from gren.storage import MigrationManager, StateManager
-from gren.storage.state import _StateResultMigrated, _StateResultSuccess
+import furu
+from furu.storage import MigrationManager, StateManager
+from furu.storage.state import _StateResultMigrated, _StateResultSuccess
 
 
-class MigrationDummy(gren.Gren[int]):
-    value: int = gren.chz.field(default=0)
+class MigrationDummy(furu.Furu[int]):
+    value: int = furu.chz.field(default=0)
 
     def _create(self) -> int:
-        (self.gren_dir / "value.txt").write_text(str(self.value))
+        (self.furu_dir / "value.txt").write_text(str(self.value))
         return self.value
 
     def _load(self) -> int:
-        return int((self.gren_dir / "value.txt").read_text())
+        return int((self.furu_dir / "value.txt").read_text())
 
 
-class GitDummy(gren.Gren[int], version_controlled=True):
-    value: int = gren.chz.field(default=0)
+class GitDummy(furu.Furu[int], version_controlled=True):
+    value: int = furu.chz.field(default=0)
 
     def _create(self) -> int:
-        (self.gren_dir / "value.txt").write_text(str(self.value))
+        (self.furu_dir / "value.txt").write_text(str(self.value))
         return self.value
 
     def _load(self) -> int:
-        return int((self.gren_dir / "value.txt").read_text())
+        return int((self.furu_dir / "value.txt").read_text())
 
 
-class RenamedSource(gren.Gren[int]):
-    value: int = gren.chz.field(default=0)
+class RenamedSource(furu.Furu[int]):
+    value: int = furu.chz.field(default=0)
 
     def _create(self) -> int:
-        (self.gren_dir / "value.txt").write_text(str(self.value))
+        (self.furu_dir / "value.txt").write_text(str(self.value))
         return self.value
 
     def _load(self) -> int:
-        return int((self.gren_dir / "value.txt").read_text())
+        return int((self.furu_dir / "value.txt").read_text())
 
 
-class RenamedTarget(gren.Gren[int]):
-    value: int = gren.chz.field(default=0)
+class RenamedTarget(furu.Furu[int]):
+    value: int = furu.chz.field(default=0)
 
     def _create(self) -> int:
-        (self.gren_dir / "value.txt").write_text(str(self.value))
+        (self.furu_dir / "value.txt").write_text(str(self.value))
         return self.value
 
     def _load(self) -> int:
-        return int((self.gren_dir / "value.txt").read_text())
+        return int((self.furu_dir / "value.txt").read_text())
 
 
-class AddedFieldV1(gren.Gren[int]):
-    value: int = gren.chz.field(default=0)
+class AddedFieldV1(furu.Furu[int]):
+    value: int = furu.chz.field(default=0)
 
     def _create(self) -> int:
-        (self.gren_dir / "value.txt").write_text(str(self.value))
+        (self.furu_dir / "value.txt").write_text(str(self.value))
         return self.value
 
     def _load(self) -> int:
-        return int((self.gren_dir / "value.txt").read_text())
+        return int((self.furu_dir / "value.txt").read_text())
 
 
-class AddedFieldV2(gren.Gren[int]):
-    value: int = gren.chz.field(default=0)
-    extra: str = gren.chz.field(default="default")
+class AddedFieldV2(furu.Furu[int]):
+    value: int = furu.chz.field(default=0)
+    extra: str = furu.chz.field(default="default")
 
     def _create(self) -> int:
-        (self.gren_dir / "value.txt").write_text(str(self.value))
+        (self.furu_dir / "value.txt").write_text(str(self.value))
         return self.value
 
     def _load(self) -> int:
-        return int((self.gren_dir / "value.txt").read_text())
+        return int((self.furu_dir / "value.txt").read_text())
 
 
 def _define_same_class(source: str) -> type:
-    namespace: dict[str, object] = {"gren": gren, "__name__": __name__}
+    namespace: dict[str, object] = {"furu": furu, "__name__": __name__}
     exec(textwrap.dedent(source), namespace)
     cls = namespace.get("SameClass")
     if not isinstance(cls, type):
         raise AssertionError("SameClass definition failed")
-    if not issubclass(cls, gren.Gren):
-        raise AssertionError("SameClass must be a Gren")
+    if not issubclass(cls, furu.Furu):
+        raise AssertionError("SameClass must be a Furu")
     cls.__module__ = __name__
     cls.__qualname__ = "SameClass"
     module = sys.modules[__name__]
@@ -95,15 +95,15 @@ def _define_same_class(source: str) -> type:
 def _same_class_v1() -> type:
     return _define_same_class(
         """
-        class SameClass(gren.Gren[int]):
-            name: str = gren.chz.field(default="")
+        class SameClass(furu.Furu[int]):
+            name: str = furu.chz.field(default="")
 
             def _create(self) -> int:
-                (self.gren_dir / "value.txt").write_text(self.name)
+                (self.furu_dir / "value.txt").write_text(self.name)
                 return len(self.name)
 
             def _load(self) -> int:
-                return len((self.gren_dir / "value.txt").read_text())
+                return len((self.furu_dir / "value.txt").read_text())
         """
     )
 
@@ -111,16 +111,16 @@ def _same_class_v1() -> type:
 def _same_class_v2_required() -> type:
     return _define_same_class(
         """
-        class SameClass(gren.Gren[int]):
-            name: str = gren.chz.field(default="")
-            language: str = gren.chz.field()
+        class SameClass(furu.Furu[int]):
+            name: str = furu.chz.field(default="")
+            language: str = furu.chz.field()
 
             def _create(self) -> int:
-                (self.gren_dir / "value.txt").write_text(f"{self.name}:{self.language}")
+                (self.furu_dir / "value.txt").write_text(f"{self.name}:{self.language}")
                 return len(self.name)
 
             def _load(self) -> int:
-                return len((self.gren_dir / "value.txt").read_text().split(\":\")[0])
+                return len((self.furu_dir / "value.txt").read_text().split(\":\")[0])
         """
     )
 
@@ -128,22 +128,22 @@ def _same_class_v2_required() -> type:
 def _same_class_v2_optional() -> type:
     return _define_same_class(
         """
-        class SameClass(gren.Gren[int]):
-            name: str = gren.chz.field(default="")
-            language: str = gren.chz.field(default="spanish")
+        class SameClass(furu.Furu[int]):
+            name: str = furu.chz.field(default="")
+            language: str = furu.chz.field(default="spanish")
 
             def _create(self) -> int:
-                (self.gren_dir / "value.txt").write_text(f"{self.name}:{self.language}")
+                (self.furu_dir / "value.txt").write_text(f"{self.name}:{self.language}")
                 return len(self.name)
 
             def _load(self) -> int:
-                return len((self.gren_dir / "value.txt").read_text().split(\":\")[0])
+                return len((self.furu_dir / "value.txt").read_text().split(\":\")[0])
         """
     )
 
 
-class DataBase(gren.Gren[int]):
-    value: int = gren.chz.field(default=0)
+class DataBase(furu.Furu[int]):
+    value: int = furu.chz.field(default=0)
 
     def _create(self) -> int:
         raise NotImplementedError("DataBase does not implement _create")
@@ -154,44 +154,44 @@ class DataBase(gren.Gren[int]):
 
 class DataV1(DataBase):
     def _create(self) -> int:
-        (self.gren_dir / "value.txt").write_text(str(self.value))
+        (self.furu_dir / "value.txt").write_text(str(self.value))
         return self.value
 
     def _load(self) -> int:
-        return int((self.gren_dir / "value.txt").read_text())
+        return int((self.furu_dir / "value.txt").read_text())
 
 
 class DataV2(DataBase):
-    language: str = gren.chz.field(default="english")
+    language: str = furu.chz.field(default="english")
 
     def _create(self) -> int:
-        (self.gren_dir / "value.txt").write_text(f"{self.value}:{self.language}")
+        (self.furu_dir / "value.txt").write_text(f"{self.value}:{self.language}")
         return self.value
 
     def _load(self) -> int:
-        return int((self.gren_dir / "value.txt").read_text().split(":")[0])
+        return int((self.furu_dir / "value.txt").read_text().split(":")[0])
 
 
-class ExperimentV1(gren.Gren[int]):
-    data: DataBase = gren.chz.field()
+class ExperimentV1(furu.Furu[int]):
+    data: DataBase = furu.chz.field()
 
     def _create(self) -> int:
-        (self.gren_dir / "value.txt").write_text(str(self.data.value))
+        (self.furu_dir / "value.txt").write_text(str(self.data.value))
         return self.data.value
 
     def _load(self) -> int:
-        return int((self.gren_dir / "value.txt").read_text())
+        return int((self.furu_dir / "value.txt").read_text())
 
 
-class ExperimentV2(gren.Gren[int]):
-    data: DataBase = gren.chz.field()
+class ExperimentV2(furu.Furu[int]):
+    data: DataBase = furu.chz.field()
 
     def _create(self) -> int:
-        (self.gren_dir / "value.txt").write_text(str(self.data.value))
+        (self.furu_dir / "value.txt").write_text(str(self.data.value))
         return self.data.value
 
     def _load(self) -> int:
-        return int((self.gren_dir / "value.txt").read_text())
+        return int((self.furu_dir / "value.txt").read_text())
 
 
 def _events_for(directory) -> list[dict[str, str | int]]:
@@ -201,16 +201,16 @@ def _events_for(directory) -> list[dict[str, str | int]]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
-def test_migrate_move_transfers_payload(gren_tmp_root) -> None:
+def test_migrate_move_transfers_payload(furu_tmp_root) -> None:
     from_obj = RenamedSource(value=1)
     to_obj = RenamedTarget(value=1)
 
     assert from_obj.load_or_create() == 1
 
-    gren.migrate(from_obj, to_obj, policy="move", origin="tests")
+    furu.migrate(from_obj, to_obj, policy="move", origin="tests")
 
-    from_dir = from_obj._base_gren_dir()
-    to_dir = to_obj._base_gren_dir()
+    from_dir = from_obj._base_furu_dir()
+    to_dir = to_obj._base_furu_dir()
 
     assert not (from_dir / "value.txt").exists()
     assert (to_dir / "value.txt").read_text() == "1"
@@ -230,20 +230,20 @@ def test_migrate_move_transfers_payload(gren_tmp_root) -> None:
     assert isinstance(from_state.result, _StateResultMigrated)
 
 
-def test_migrate_alias_force_recompute_detaches(gren_tmp_root, monkeypatch) -> None:
+def test_migrate_alias_force_recompute_detaches(furu_tmp_root, monkeypatch) -> None:
     from_obj = RenamedSource(value=1)
     to_obj = RenamedTarget(value=1)
 
     assert from_obj.load_or_create() == 1
 
-    gren.migrate(from_obj, to_obj, policy="alias", origin="tests")
+    furu.migrate(from_obj, to_obj, policy="alias", origin="tests")
 
-    alias_dir = to_obj._base_gren_dir()
+    alias_dir = to_obj._base_furu_dir()
     state = StateManager.read_state(alias_dir)
     assert isinstance(state.result, _StateResultMigrated)
 
     qualname = f"{to_obj.__class__.__module__}.{to_obj.__class__.__qualname__}"
-    monkeypatch.setattr(gren.GREN_CONFIG, "force_recompute", {qualname})
+    monkeypatch.setattr(furu.FURU_CONFIG, "force_recompute", {qualname})
 
     assert to_obj.load_or_create() == 1
 
@@ -255,7 +255,7 @@ def test_migrate_alias_force_recompute_detaches(gren_tmp_root, monkeypatch) -> N
     assert alias_record is not None
     assert alias_record.overwritten_at is not None
 
-    original_record = MigrationManager.read_migration(from_obj._base_gren_dir())
+    original_record = MigrationManager.read_migration(from_obj._base_furu_dir())
     assert original_record is not None
     assert original_record.overwritten_at is not None
 
@@ -266,7 +266,7 @@ def test_migrate_alias_force_recompute_detaches(gren_tmp_root, monkeypatch) -> N
     ]
     original_events = [
         event
-        for event in _events_for(from_obj._base_gren_dir())
+        for event in _events_for(from_obj._base_furu_dir())
         if event.get("type") == "migration_overwrite"
     ]
     assert len(alias_events) == 1
@@ -275,23 +275,23 @@ def test_migrate_alias_force_recompute_detaches(gren_tmp_root, monkeypatch) -> N
     assert original_events[0].get("reason") == "force_recompute"
 
 
-def test_migrate_alias_of_alias_is_skipped(gren_tmp_root) -> None:
+def test_migrate_alias_of_alias_is_skipped(furu_tmp_root) -> None:
     from_obj = RenamedSource(value=2)
     to_obj = RenamedTarget(value=2)
 
     assert from_obj.load_or_create() == 2
 
-    gren.migrate(from_obj, to_obj, policy="alias", origin="tests")
+    furu.migrate(from_obj, to_obj, policy="alias", origin="tests")
 
-    candidates = gren.find_migration_candidates(
-        namespace=gren.NamespacePair(
+    candidates = furu.find_migration_candidates(
+        namespace=furu.NamespacePair(
             from_namespace="test_migrations.RenamedSource",
             to_namespace="test_migrations.RenamedTarget",
         ),
     )
     assert len(candidates) == 1
 
-    results = gren.apply_migration(
+    results = furu.apply_migration(
         candidates[0],
         policy="alias",
         origin="tests",
@@ -299,21 +299,21 @@ def test_migrate_alias_of_alias_is_skipped(gren_tmp_root) -> None:
         conflict="skip",
     )
     assert len(results) == 1
-    assert isinstance(results[0], gren.MigrationSkip)
+    assert isinstance(results[0], furu.MigrationSkip)
 
 
-def test_migrate_alias_for_rename(gren_tmp_root) -> None:
+def test_migrate_alias_for_rename(furu_tmp_root) -> None:
     from_obj = RenamedSource(value=10)
     to_obj = RenamedTarget(value=10)
 
     assert from_obj.load_or_create() == 10
 
-    gren.migrate(from_obj, to_obj, policy="alias", origin="tests", note="rename")
+    furu.migrate(from_obj, to_obj, policy="alias", origin="tests", note="rename")
 
-    alias_state = StateManager.read_state(to_obj._base_gren_dir())
+    alias_state = StateManager.read_state(to_obj._base_furu_dir())
     assert isinstance(alias_state.result, _StateResultMigrated)
 
-    alias_record = MigrationManager.read_migration(to_obj._base_gren_dir())
+    alias_record = MigrationManager.read_migration(to_obj._base_furu_dir())
     assert alias_record is not None
     assert alias_record.kind == "alias"
     assert alias_record.from_namespace.endswith("RenamedSource")
@@ -322,14 +322,14 @@ def test_migrate_alias_for_rename(gren_tmp_root) -> None:
     assert to_obj.load_or_create() == 10
 
 
-def test_migrate_alias_with_added_field_default(gren_tmp_root) -> None:
+def test_migrate_alias_with_added_field_default(furu_tmp_root) -> None:
     from_obj = AddedFieldV1(value=5)
     to_obj = AddedFieldV2(value=5)
 
     assert from_obj.load_or_create() == 5
 
-    candidates = gren.find_migration_candidates(
-        namespace=gren.NamespacePair(
+    candidates = furu.find_migration_candidates(
+        namespace=furu.NamespacePair(
             from_namespace="test_migrations.AddedFieldV1",
             to_namespace="test_migrations.AddedFieldV2",
         ),
@@ -338,42 +338,42 @@ def test_migrate_alias_with_added_field_default(gren_tmp_root) -> None:
     assert len(candidates) == 1
 
     to_config = candidates[0].to_config
-    assert gren.GrenSerializer.compute_hash(to_config) == to_obj._gren_hash
+    assert furu.FuruSerializer.compute_hash(to_config) == to_obj._furu_hash
 
-    gren.apply_migration(
+    furu.apply_migration(
         candidates[0],
         policy="alias",
         origin="tests",
         note="added-field",
     )
 
-    alias_record = MigrationManager.read_migration(to_obj._base_gren_dir())
+    alias_record = MigrationManager.read_migration(to_obj._base_furu_dir())
     assert alias_record is not None
     assert alias_record.kind == "alias"
     assert alias_record.default_values == {"extra": "default"}
 
-    alias_state = StateManager.read_state(to_obj._base_gren_dir())
+    alias_state = StateManager.read_state(to_obj._base_furu_dir())
     assert isinstance(alias_state.result, _StateResultMigrated)
 
     assert to_obj.load_or_create() == 5
 
 
-def test_migrate_same_class_add_required_field(gren_tmp_root) -> None:
+def test_migrate_same_class_add_required_field(furu_tmp_root) -> None:
     same_class_v1 = _same_class_v1()
     from_obj = same_class_v1(name="mnist")
 
     assert from_obj.load_or_create() == 5
 
     same_class_v2 = _same_class_v2_required()
-    candidates = gren.find_migration_candidates(
+    candidates = furu.find_migration_candidates(
         namespace="test_migrations.SameClass",
-        to_obj=cast(type[gren.Gren], same_class_v2),
+        to_obj=cast(type[furu.Furu], same_class_v2),
         drop_fields=["name"],
         default_values={"name": "mnist", "language": "english"},
     )
     assert len(candidates) == 1
 
-    gren.apply_migration(
+    furu.apply_migration(
         candidates[0],
         policy="alias",
         origin="tests",
@@ -381,32 +381,32 @@ def test_migrate_same_class_add_required_field(gren_tmp_root) -> None:
     )
 
     to_obj = same_class_v2(name="mnist", language="english")
-    alias_record = MigrationManager.read_migration(to_obj._base_gren_dir())
+    alias_record = MigrationManager.read_migration(to_obj._base_furu_dir())
     assert alias_record is not None
     assert alias_record.default_values == {"name": "mnist", "language": "english"}
 
-    alias_state = StateManager.read_state(to_obj._base_gren_dir())
+    alias_state = StateManager.read_state(to_obj._base_furu_dir())
     assert isinstance(alias_state.result, _StateResultMigrated)
 
     assert to_obj.load_or_create() == 5
 
 
-def test_migrate_same_class_drop_fields_and_defaults(gren_tmp_root) -> None:
+def test_migrate_same_class_drop_fields_and_defaults(furu_tmp_root) -> None:
     same_class_v1 = _same_class_v1()
     from_obj = same_class_v1(name="dummy")
 
     assert from_obj.load_or_create() == 5
 
     same_class_v2 = _same_class_v2_optional()
-    candidates = gren.find_migration_candidates(
+    candidates = furu.find_migration_candidates(
         namespace="test_migrations.SameClass",
-        to_obj=cast(type[gren.Gren], same_class_v2),
+        to_obj=cast(type[furu.Furu], same_class_v2),
         drop_fields=["name"],
         default_values={"name": "dummy", "language": "english"},
     )
     assert len(candidates) == 1
 
-    gren.apply_migration(
+    furu.apply_migration(
         candidates[0],
         policy="alias",
         origin="tests",
@@ -414,17 +414,17 @@ def test_migrate_same_class_drop_fields_and_defaults(gren_tmp_root) -> None:
     )
 
     to_obj = same_class_v2(name="dummy", language="english")
-    alias_record = MigrationManager.read_migration(to_obj._base_gren_dir())
+    alias_record = MigrationManager.read_migration(to_obj._base_furu_dir())
     assert alias_record is not None
     assert alias_record.default_values == {"name": "dummy", "language": "english"}
 
-    alias_state = StateManager.read_state(to_obj._base_gren_dir())
+    alias_state = StateManager.read_state(to_obj._base_furu_dir())
     assert isinstance(alias_state.result, _StateResultMigrated)
 
     assert to_obj.load_or_create() == 5
 
 
-def test_migrate_default_fields_conflict(gren_tmp_root) -> None:
+def test_migrate_default_fields_conflict(furu_tmp_root) -> None:
     same_class_v1 = _same_class_v1()
     from_obj = same_class_v1(name="dummy")
 
@@ -432,15 +432,15 @@ def test_migrate_default_fields_conflict(gren_tmp_root) -> None:
 
     same_class_v2 = _same_class_v2_optional()
     with pytest.raises(ValueError, match="default_fields and default_values overlap"):
-        gren.find_migration_candidates(
+        furu.find_migration_candidates(
             namespace="test_migrations.SameClass",
-            to_obj=cast(type[gren.Gren], same_class_v2),
+            to_obj=cast(type[furu.Furu], same_class_v2),
             default_fields=["language"],
             default_values={"language": "english"},
         )
 
 
-def test_migrate_default_values_wrong_type(gren_tmp_root) -> None:
+def test_migrate_default_values_wrong_type(furu_tmp_root) -> None:
     same_class_v1 = _same_class_v1()
     from_obj = same_class_v1(name="dummy")
 
@@ -448,14 +448,14 @@ def test_migrate_default_values_wrong_type(gren_tmp_root) -> None:
 
     same_class_v2 = _same_class_v2_required()
     with pytest.raises(Exception):
-        gren.find_migration_candidates(
+        furu.find_migration_candidates(
             namespace="test_migrations.SameClass",
-            to_obj=cast(type[gren.Gren], same_class_v2),
+            to_obj=cast(type[furu.Furu], same_class_v2),
             default_values={"language": 123},
         )
 
 
-def test_migrate_drop_fields_unknown(gren_tmp_root) -> None:
+def test_migrate_drop_fields_unknown(furu_tmp_root) -> None:
     same_class_v1 = _same_class_v1()
     from_obj = same_class_v1(name="dummy")
 
@@ -463,14 +463,14 @@ def test_migrate_drop_fields_unknown(gren_tmp_root) -> None:
 
     same_class_v2 = _same_class_v2_optional()
     with pytest.raises(ValueError, match="drop_fields contains unknown fields"):
-        gren.find_migration_candidates(
+        furu.find_migration_candidates(
             namespace="test_migrations.SameClass",
-            to_obj=cast(type[gren.Gren], same_class_v2),
+            to_obj=cast(type[furu.Furu], same_class_v2),
             drop_fields=["language"],
         )
 
 
-def test_migrate_drop_fields_and_default_overlap(gren_tmp_root) -> None:
+def test_migrate_drop_fields_and_default_overlap(furu_tmp_root) -> None:
     same_class_v1 = _same_class_v1()
     from_obj = same_class_v1(name="dummy")
 
@@ -478,56 +478,56 @@ def test_migrate_drop_fields_and_default_overlap(gren_tmp_root) -> None:
 
     same_class_v2 = _same_class_v2_optional()
     with pytest.raises(ValueError, match="default_values provided for existing fields"):
-        gren.find_migration_candidates(
+        furu.find_migration_candidates(
             namespace="test_migrations.SameClass",
-            to_obj=cast(type[gren.Gren], same_class_v2),
+            to_obj=cast(type[furu.Furu], same_class_v2),
             default_values={"name": "dummy"},
         )
 
 
-def test_migrate_no_candidates_for_namespace(gren_tmp_root) -> None:
+def test_migrate_no_candidates_for_namespace(furu_tmp_root) -> None:
     same_class_v2 = _same_class_v2_required()
-    candidates = gren.find_migration_candidates(
+    candidates = furu.find_migration_candidates(
         namespace="test_migrations.MissingSource",
-        to_obj=cast(type[gren.Gren], same_class_v2),
+        to_obj=cast(type[furu.Furu], same_class_v2),
     )
     assert candidates == []
 
 
-def test_migrate_invalid_namespace_type(gren_tmp_root) -> None:
+def test_migrate_invalid_namespace_type(furu_tmp_root) -> None:
     with pytest.raises(
         ValueError, match="migration: namespace must be str or NamespacePair"
     ):
-        gren.find_migration_candidates(namespace=123)  # type: ignore[arg-type]
+        furu.find_migration_candidates(namespace=123)  # type: ignore[arg-type]
 
 
-def test_migrate_missing_to_obj_for_string_namespace(gren_tmp_root) -> None:
+def test_migrate_missing_to_obj_for_string_namespace(furu_tmp_root) -> None:
     same_class_v2 = _same_class_v2_required()
     with pytest.raises(ValueError, match="migration: to_obj must be a class"):
-        gren.find_migration_candidates(
+        furu.find_migration_candidates(
             namespace="test_migrations.SameClass",
             to_obj=cast(
-                type[gren.Gren], same_class_v2(name="dummy", language="english")
+                type[furu.Furu], same_class_v2(name="dummy", language="english")
             ),
         )
 
 
-def test_migrate_initialized_target_requires_instance(gren_tmp_root) -> None:
+def test_migrate_initialized_target_requires_instance(furu_tmp_root) -> None:
     same_class_v2 = _same_class_v2_required()
     with pytest.raises(ValueError, match="migration: to_obj must be an instance"):
-        gren.find_migration_candidates_initialized_target(  # type: ignore[arg-type, call-arg]
-            to_obj=cast(gren.Gren, same_class_v2),
+        furu.find_migration_candidates_initialized_target(  # type: ignore[arg-type, call-arg]
+            to_obj=cast(furu.Furu, same_class_v2),
         )
 
 
-def test_migrate_initialized_target_rejects_non_gren(gren_tmp_root) -> None:
+def test_migrate_initialized_target_rejects_non_furu(furu_tmp_root) -> None:
     with pytest.raises(ValueError, match="migration: to_obj must be an instance"):
-        gren.find_migration_candidates_initialized_target(  # type: ignore[arg-type, call-arg]
-            to_obj=cast(gren.Gren, object()),
+        furu.find_migration_candidates_initialized_target(  # type: ignore[arg-type, call-arg]
+            to_obj=cast(furu.Furu, object()),
         )
 
 
-def test_migrate_wrapper_rejects_invalid_defaults(gren_tmp_root) -> None:
+def test_migrate_wrapper_rejects_invalid_defaults(furu_tmp_root) -> None:
     same_class_v1 = _same_class_v1()
     same_class_v2 = _same_class_v2_required()
     from_obj = same_class_v1(name="dummy")
@@ -536,25 +536,25 @@ def test_migrate_wrapper_rejects_invalid_defaults(gren_tmp_root) -> None:
     assert from_obj.load_or_create() == 5
 
     with pytest.raises(ValueError, match="missing required fields"):
-        gren.migrate(from_obj, to_obj, default_values={"unknown": "bad"})
+        furu.migrate(from_obj, to_obj, default_values={"unknown": "bad"})
 
 
-def test_migrate_git_root_records_git(gren_tmp_root) -> None:
+def test_migrate_git_root_records_git(furu_tmp_root) -> None:
     from_obj = GitDummy(value=3)
     to_obj = GitDummy(value=3)
 
     assert from_obj.load_or_create() == 3
     assert to_obj.load_or_create() == 3
 
-    candidates = gren.find_migration_candidates(
-        namespace=gren.NamespacePair(
+    candidates = furu.find_migration_candidates(
+        namespace=furu.NamespacePair(
             from_namespace="test_migrations.GitDummy",
             to_namespace="test_migrations.GitDummy",
         ),
     )
     assert len(candidates) == 1
 
-    gren.apply_migration(
+    furu.apply_migration(
         candidates[0],
         policy="alias",
         origin="tests",
@@ -562,28 +562,28 @@ def test_migrate_git_root_records_git(gren_tmp_root) -> None:
         conflict="overwrite",
     )
 
-    record = MigrationManager.read_migration(to_obj._base_gren_dir())
+    record = MigrationManager.read_migration(to_obj._base_furu_dir())
     assert record is not None
     assert record.from_root == "git"
     assert record.to_root == "git"
 
 
-def test_migrate_conflict_skip_on_success(gren_tmp_root) -> None:
+def test_migrate_conflict_skip_on_success(furu_tmp_root) -> None:
     from_obj = RenamedSource(value=4)
     to_obj = RenamedTarget(value=4)
 
     assert from_obj.load_or_create() == 4
     assert to_obj.load_or_create() == 4
 
-    candidates = gren.find_migration_candidates(
-        namespace=gren.NamespacePair(
+    candidates = furu.find_migration_candidates(
+        namespace=furu.NamespacePair(
             from_namespace="test_migrations.RenamedSource",
             to_namespace="test_migrations.RenamedTarget",
         ),
     )
     assert len(candidates) == 1
 
-    results = gren.apply_migration(
+    results = furu.apply_migration(
         candidates[0],
         policy="alias",
         origin="tests",
@@ -591,25 +591,25 @@ def test_migrate_conflict_skip_on_success(gren_tmp_root) -> None:
         conflict="skip",
     )
     assert len(results) == 1
-    assert isinstance(results[0], gren.MigrationSkip)
+    assert isinstance(results[0], furu.MigrationSkip)
 
 
-def test_migrate_conflict_overwrite_on_success(gren_tmp_root) -> None:
+def test_migrate_conflict_overwrite_on_success(furu_tmp_root) -> None:
     from_obj = RenamedSource(value=5)
     to_obj = RenamedTarget(value=5)
 
     assert from_obj.load_or_create() == 5
     assert to_obj.load_or_create() == 5
 
-    candidates = gren.find_migration_candidates(
-        namespace=gren.NamespacePair(
+    candidates = furu.find_migration_candidates(
+        namespace=furu.NamespacePair(
             from_namespace="test_migrations.RenamedSource",
             to_namespace="test_migrations.RenamedTarget",
         ),
     )
     assert len(candidates) == 1
 
-    results = gren.apply_migration(
+    results = furu.apply_migration(
         candidates[0],
         policy="alias",
         origin="tests",
@@ -617,26 +617,26 @@ def test_migrate_conflict_overwrite_on_success(gren_tmp_root) -> None:
         conflict="overwrite",
     )
     assert len(results) == 1
-    record = MigrationManager.read_migration(to_obj._base_gren_dir())
+    record = MigrationManager.read_migration(to_obj._base_furu_dir())
     assert record is not None
     assert results[0].kind == record.kind
     assert results[0].overwritten_at is None
 
     events = [
         event
-        for event in _events_for(to_obj._base_gren_dir())
+        for event in _events_for(to_obj._base_furu_dir())
         if event.get("type") == "migration_overwrite"
     ]
     assert len(events) == 1
 
 
-def test_migrate_conflict_skip_on_running(gren_tmp_root) -> None:
+def test_migrate_conflict_skip_on_running(furu_tmp_root) -> None:
     from_obj = RenamedSource(value=6)
     to_obj = RenamedTarget(value=6)
 
     assert from_obj.load_or_create() == 6
 
-    running_state = StateManager.read_state(to_obj._base_gren_dir())
+    running_state = StateManager.read_state(to_obj._base_furu_dir())
 
     def set_running(state) -> None:
         state.result = running_state.result
@@ -653,17 +653,17 @@ def test_migrate_conflict_skip_on_running(gren_tmp_root) -> None:
             "scheduler": {},
         }
 
-    StateManager.update_state(to_obj._base_gren_dir(), set_running)
+    StateManager.update_state(to_obj._base_furu_dir(), set_running)
 
-    candidates = gren.find_migration_candidates(
-        namespace=gren.NamespacePair(
+    candidates = furu.find_migration_candidates(
+        namespace=furu.NamespacePair(
             from_namespace="test_migrations.RenamedSource",
             to_namespace="test_migrations.RenamedTarget",
         ),
     )
     assert len(candidates) == 1
 
-    results = gren.apply_migration(
+    results = furu.apply_migration(
         candidates[0],
         policy="alias",
         origin="tests",
@@ -671,23 +671,23 @@ def test_migrate_conflict_skip_on_running(gren_tmp_root) -> None:
         conflict="skip",
     )
     assert len(results) == 1
-    assert isinstance(results[0], gren.MigrationSkip)
+    assert isinstance(results[0], furu.MigrationSkip)
 
 
-class CascadeChild(gren.Gren[int]):
+class CascadeChild(furu.Furu[int]):
     parent: RenamedSource | RenamedTarget
 
     def _create(self) -> int:
-        path = self.parent.gren_dir / "value.txt"
+        path = self.parent.furu_dir / "value.txt"
         value = int(path.read_text())
-        (self.gren_dir / "value.txt").write_text(str(value))
+        (self.furu_dir / "value.txt").write_text(str(value))
         return value
 
     def _load(self) -> int:
-        return int((self.gren_dir / "value.txt").read_text())
+        return int((self.furu_dir / "value.txt").read_text())
 
 
-def test_migrate_cascade_skip_conflicts(gren_tmp_root) -> None:
+def test_migrate_cascade_skip_conflicts(furu_tmp_root) -> None:
     parent = RenamedSource(value=7)
     child = CascadeChild(parent=parent)
 
@@ -697,8 +697,8 @@ def test_migrate_cascade_skip_conflicts(gren_tmp_root) -> None:
     target_parent = RenamedTarget(value=7)
     assert target_parent.load_or_create() == 7
 
-    exp_candidates = gren.find_migration_candidates(
-        namespace=gren.NamespacePair(
+    exp_candidates = furu.find_migration_candidates(
+        namespace=furu.NamespacePair(
             from_namespace="test_migrations.CascadeChild",
             to_namespace="test_migrations.CascadeChild",
         ),
@@ -707,7 +707,7 @@ def test_migrate_cascade_skip_conflicts(gren_tmp_root) -> None:
     )
     assert len(exp_candidates) == 1
 
-    gren.apply_migration(
+    furu.apply_migration(
         exp_candidates[0],
         policy="alias",
         cascade=False,
@@ -718,15 +718,15 @@ def test_migrate_cascade_skip_conflicts(gren_tmp_root) -> None:
     target_child = CascadeChild(parent=target_parent)
     assert target_child.load_or_create() == 7
 
-    candidates = gren.find_migration_candidates(
-        namespace=gren.NamespacePair(
+    candidates = furu.find_migration_candidates(
+        namespace=furu.NamespacePair(
             from_namespace="test_migrations.RenamedSource",
             to_namespace="test_migrations.RenamedTarget",
         ),
     )
     assert len(candidates) == 1
 
-    results = gren.apply_migration(
+    results = furu.apply_migration(
         candidates[0],
         policy="alias",
         cascade=True,
@@ -735,18 +735,18 @@ def test_migrate_cascade_skip_conflicts(gren_tmp_root) -> None:
         conflict="skip",
     )
     assert len(results) == 2
-    assert all(isinstance(result, gren.MigrationSkip) for result in results)
+    assert all(isinstance(result, furu.MigrationSkip) for result in results)
 
 
-def test_migrate_cascade_updates_dependents(gren_tmp_root) -> None:
+def test_migrate_cascade_updates_dependents(furu_tmp_root) -> None:
     data_obj = DataV1(value=3)
     exp_obj = ExperimentV1(data=data_obj)
 
     assert data_obj.load_or_create() == 3
     assert exp_obj.load_or_create() == 3
 
-    data_candidates = gren.find_migration_candidates(
-        namespace=gren.NamespacePair(
+    data_candidates = furu.find_migration_candidates(
+        namespace=furu.NamespacePair(
             from_namespace="test_migrations.DataV1",
             to_namespace="test_migrations.DataV2",
         ),
@@ -755,7 +755,7 @@ def test_migrate_cascade_updates_dependents(gren_tmp_root) -> None:
     )
     assert len(data_candidates) == 1
 
-    gren.apply_migration(
+    furu.apply_migration(
         data_candidates[0],
         policy="alias",
         cascade=True,
@@ -769,12 +769,12 @@ def test_migrate_cascade_updates_dependents(gren_tmp_root) -> None:
     assert data_alias.exists() is True
     assert exp_alias.exists() is True
 
-    exp_record = MigrationManager.read_migration(exp_alias._base_gren_dir())
+    exp_record = MigrationManager.read_migration(exp_alias._base_furu_dir())
     assert exp_record is not None
     assert exp_record.kind == "alias"
 
-    exp_candidates = gren.find_migration_candidates(
-        namespace=gren.NamespacePair(
+    exp_candidates = furu.find_migration_candidates(
+        namespace=furu.NamespacePair(
             from_namespace="test_migrations.ExperimentV1",
             to_namespace="test_migrations.ExperimentV2",
         ),
@@ -784,15 +784,15 @@ def test_migrate_cascade_updates_dependents(gren_tmp_root) -> None:
     assert len(exp_candidates) == 2
 
 
-def test_migrate_cascade_after_parent_migration(gren_tmp_root) -> None:
+def test_migrate_cascade_after_parent_migration(furu_tmp_root) -> None:
     data_obj = DataV1(value=7)
     exp_obj = ExperimentV1(data=data_obj)
 
     assert data_obj.load_or_create() == 7
     assert exp_obj.load_or_create() == 7
 
-    exp_candidates = gren.find_migration_candidates(
-        namespace=gren.NamespacePair(
+    exp_candidates = furu.find_migration_candidates(
+        namespace=furu.NamespacePair(
             from_namespace="test_migrations.ExperimentV1",
             to_namespace="test_migrations.ExperimentV2",
         ),
@@ -801,8 +801,8 @@ def test_migrate_cascade_after_parent_migration(gren_tmp_root) -> None:
     )
     assert len(exp_candidates) == 1
 
-    exp_candidates_repeat = gren.find_migration_candidates(
-        namespace=gren.NamespacePair(
+    exp_candidates_repeat = furu.find_migration_candidates(
+        namespace=furu.NamespacePair(
             from_namespace="test_migrations.ExperimentV1",
             to_namespace="test_migrations.ExperimentV2",
         ),
@@ -811,7 +811,7 @@ def test_migrate_cascade_after_parent_migration(gren_tmp_root) -> None:
     )
     assert len(exp_candidates_repeat) == 1
 
-    gren.apply_migration(
+    furu.apply_migration(
         exp_candidates[0],
         policy="alias",
         cascade=False,
@@ -819,8 +819,8 @@ def test_migrate_cascade_after_parent_migration(gren_tmp_root) -> None:
         note="parent-only",
     )
 
-    data_candidates = gren.find_migration_candidates(
-        namespace=gren.NamespacePair(
+    data_candidates = furu.find_migration_candidates(
+        namespace=furu.NamespacePair(
             from_namespace="test_migrations.DataV1",
             to_namespace="test_migrations.DataV2",
         ),
@@ -829,7 +829,7 @@ def test_migrate_cascade_after_parent_migration(gren_tmp_root) -> None:
     )
     assert len(data_candidates) == 1
 
-    gren.apply_migration(
+    furu.apply_migration(
         data_candidates[0],
         policy="alias",
         cascade=True,
@@ -843,6 +843,6 @@ def test_migrate_cascade_after_parent_migration(gren_tmp_root) -> None:
     assert data_alias.exists() is True
     assert exp_alias.exists() is True
 
-    exp_record = MigrationManager.read_migration(exp_alias._base_gren_dir())
+    exp_record = MigrationManager.read_migration(exp_alias._base_furu_dir())
     assert exp_record is not None
     assert exp_record.kind == "alias"
