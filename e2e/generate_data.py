@@ -23,6 +23,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).parent.parent / "examples"))
 
+# Import from the examples module which has proper module paths
+from my_project.pipelines import (  # type: ignore[import-not-found]
+    PrepareDataset,
+    TrainModel,
+    TrainTextModel,
+)
+
 import furu
 from furu.config import FURU_CONFIG
 from furu.serialization import FuruSerializer
@@ -32,9 +39,6 @@ from furu.storage import (
     MigrationRecord,
     StateManager,
 )
-
-# Import from the examples module which has proper module paths
-from my_project.pipelines import PrepareDataset, TrainModel, TrainTextModel  # type: ignore[import-not-found]
 
 
 def _create_migrated_aliases() -> PrepareDataset:
