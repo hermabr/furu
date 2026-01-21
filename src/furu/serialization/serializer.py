@@ -6,9 +6,10 @@ import json
 import pathlib
 import textwrap
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, Sequence, cast, runtime_checkable
 
 import chz
+from chz.util import MISSING as CHZ_MISSING, MISSING_TYPE
 
 from ..errors import _FuruMissing
 from pydantic import BaseModel as PydanticBaseModel
@@ -91,13 +92,34 @@ class FuruSerializer:
     def compute_hash(cls, obj: object, verbose: bool = False) -> str:
         """Compute deterministic hash of object."""
 
+        @runtime_checkable
+        class _DependencyHashProvider(Protocol):
+            def _dependency_hashes(self) -> Sequence[str]: ...
+
+        def _has_required_fields(
+            data_class: type[object],
+            data: dict[str, JsonValue],
+        ) -> bool:
+            if not chz.is_chz(data_class):
+                return False
+            for field in chz.chz_fields(data_class).values():
+                name = field.logical_name
+                if name in data:
+                    continue
+                if field._default is not CHZ_MISSING:
+                    continue
+                if not isinstance(field._default_factory, MISSING_TYPE):
+                    continue
+                return False
+            return True
+
         def canonicalize(item: object) -> JsonValue:
             if isinstance(item, _FuruMissing):
                 raise ValueError("Cannot hash Furu.MISSING")
 
             if chz.is_chz(item):
                 fields = chz.chz_fields(item)
-                return {
+                result = {
                     "__class__": cls.get_classname(item),
                     **{
                         name: canonicalize(getattr(item, name))
@@ -105,8 +127,24 @@ class FuruSerializer:
                         if not name.startswith("_")
                     },
                 }
+                if isinstance(item, _DependencyHashProvider):
+                    dependency_hashes = list(item._dependency_hashes())
+                    if dependency_hashes:
+                        result["__dependencies__"] = dependency_hashes
+                return result
 
             if isinstance(item, dict):
+                if cls.CLASS_MARKER in item:
+                    config = cast(dict[str, JsonValue], item)
+                    module_path, _, class_name = item[cls.CLASS_MARKER].rpartition(".")
+                    module = importlib.import_module(module_path)
+                    data_class = getattr(module, class_name, None)
+                    if (
+                        data_class is not None
+                        and hasattr(data_class, "_dependency_hashes")
+                        and _has_required_fields(data_class, config)
+                    ):
+                        return canonicalize(cls.from_dict(config))
                 filtered = item
                 if cls.CLASS_MARKER in item:
                     filtered = {

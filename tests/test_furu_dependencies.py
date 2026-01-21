@@ -168,3 +168,15 @@ def test_get_dependencies_fibonacci_direct(furu_tmp_root) -> None:
 def test_dependencies_spec_rejects_non_furu_fields(furu_tmp_root) -> None:
     with pytest.raises(TypeError, match="label"):
         BadDependencyCollection().get_dependencies()
+
+
+def test_hash_includes_dependency_spec(monkeypatch) -> None:
+    collection = DependencyCollection(n_tasks=1, base_task=DependencyTask(value=0))
+    original_hash = collection._furu_hash
+
+    def alt_dependencies(self) -> DependencySpec:
+        return [DependencyTask(value=99)]
+
+    monkeypatch.setattr(DependencyCollection, "_dependencies", alt_dependencies)
+
+    assert collection._furu_hash != original_hash

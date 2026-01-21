@@ -210,6 +210,18 @@ class Furu[T](ABC):
         _collect_dependencies(self, dependencies, seen, recursive=recursive)
         return dependencies
 
+    def _dependency_hashes(self: Self) -> list[str]:
+        dependencies = _direct_dependencies(self)
+        if not dependencies:
+            return []
+
+        digests: set[str] = set()
+        for dependency in dependencies:
+            if dependency is self:
+                raise ValueError("Furu dependencies cannot include self")
+            digests.add(dependency._furu_hash)
+        return sorted(digests)
+
     def _invalidate_cached_success(self: Self, directory: Path, *, reason: str) -> None:
         logger = get_logger()
         logger.warning(
