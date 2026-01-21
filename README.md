@@ -251,8 +251,8 @@ class VersionedConfig(furu.Furu[dict], version_controlled=True):
     ...
 ```
 
-Furu ensures `furu-data/artifacts/` is listed in the project `.gitignore` when using
-the default path and raises if a `.gitignore` file is missing.
+It is typical to keep `furu-data/data/` and `furu-data/raw/` in `.gitignore` while
+committing `furu-data/artifacts/`.
 
 ## Logging
 

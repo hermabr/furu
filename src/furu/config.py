@@ -17,7 +17,6 @@ class FuruConfig:
 
         self.base_root = _get_base_root()
         self.version_controlled_root_override = self._get_version_controlled_override()
-        self._version_controlled_root: Path | None = None
         self.poll_interval = float(os.getenv("FURU_POLL_INTERVAL_SECS", "10"))
         self.wait_log_every_sec = float(os.getenv("FURU_WAIT_LOG_EVERY_SECS", "10"))
         self.stale_timeout = float(os.getenv("FURU_STALE_AFTER_SECS", str(30 * 60)))
@@ -98,9 +97,7 @@ class FuruConfig:
         if version_controlled:
             if self.version_controlled_root_override is not None:
                 return self.version_controlled_root_override
-            if self._version_controlled_root is None:
-                self._version_controlled_root = self._resolve_version_controlled_root()
-            return self._version_controlled_root
+            return self._resolve_version_controlled_root()
         return self.base_root / "data"
 
     @classmethod
@@ -113,9 +110,7 @@ class FuruConfig:
     @classmethod
     def _resolve_version_controlled_root(cls) -> Path:
         project_root = cls._find_project_root()
-        root = (project_root / cls.VERSION_CONTROLLED_SUBDIR).resolve()
-        cls._ensure_gitignore_entry(project_root, cls.VERSION_CONTROLLED_SUBDIR)
-        return root
+        return (project_root / cls.VERSION_CONTROLLED_SUBDIR).resolve()
 
     @staticmethod
     def _find_project_root(start: Path | None = None) -> Path:
@@ -126,36 +121,6 @@ class FuruConfig:
         raise ValueError(
             "Cannot locate pyproject.toml to determine version-controlled root. "
             "Set FURU_VERSION_CONTROLLED_PATH to override."
-        )
-
-    @staticmethod
-    def _ensure_gitignore_entry(project_root: Path, entry: Path) -> None:
-        gitignore_path = project_root / ".gitignore"
-        if not gitignore_path.is_file():
-            raise ValueError(
-                f"Missing .gitignore in {project_root}; create one or set "
-                "FURU_VERSION_CONTROLLED_PATH to override."
-            )
-        entry_text = entry.as_posix().rstrip("/")
-        root_entry = entry.parts[0]
-        text = gitignore_path.read_text()
-        lines = [line.strip() for line in text.splitlines()]
-        candidates = {
-            entry_text,
-            f"{entry_text}/",
-            f"/{entry_text}",
-            f"/{entry_text}/",
-            root_entry,
-            f"{root_entry}/",
-            f"/{root_entry}",
-            f"/{root_entry}/",
-        }
-        if any(line in candidates for line in lines):
-            return
-        newline = "" if not text or text.endswith("\n") else "\n"
-        gitignore_path.write_text(
-            f"{text}{newline}{entry_text}/\n",
-            encoding="utf-8",
         )
 
     @staticmethod

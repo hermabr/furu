@@ -21,6 +21,7 @@ def test_version_controlled_root_defaults_to_pyproject(tmp_path, monkeypatch) ->
     (project_root / "pyproject.toml").write_text("[project]\nname = 'demo'\n")
     gitignore = project_root / ".gitignore"
     gitignore.write_text("# ignore\n")
+    original_gitignore = gitignore.read_text()
 
     monkeypatch.chdir(project_root)
     monkeypatch.delenv("FURU_VERSION_CONTROLLED_PATH", raising=False)
@@ -28,12 +29,10 @@ def test_version_controlled_root_defaults_to_pyproject(tmp_path, monkeypatch) ->
 
     root = config.get_root(version_controlled=True)
     assert root == project_root / "furu-data" / "artifacts"
-    assert "furu-data/artifacts/" in gitignore.read_text().splitlines()
+    assert gitignore.read_text() == original_gitignore
 
 
-def test_version_controlled_root_missing_gitignore_raises(
-    tmp_path, monkeypatch
-) -> None:
+def test_version_controlled_root_missing_gitignore_ok(tmp_path, monkeypatch) -> None:
     project_root = tmp_path / "repo"
     project_root.mkdir()
     (project_root / "pyproject.toml").write_text("[project]\nname = 'demo'\n")
@@ -42,8 +41,8 @@ def test_version_controlled_root_missing_gitignore_raises(
     monkeypatch.delenv("FURU_VERSION_CONTROLLED_PATH", raising=False)
     config = FuruConfig()
 
-    with pytest.raises(ValueError, match=".gitignore"):
-        config.get_root(version_controlled=True)
+    root = config.get_root(version_controlled=True)
+    assert root == project_root / "furu-data" / "artifacts"
 
 
 def test_version_controlled_root_override(tmp_path, monkeypatch) -> None:
