@@ -114,23 +114,28 @@ class TrainTextModel(furu.Furu[str]):
 
 ### Storage Structure
 
-```
-$FURU_PATH/
-├── data/                         # Default storage (version_controlled=False)
-│   └── <module>/<Class>/
-│       └── <hash>/
-│           ├── .furu/
-│           │   ├── metadata.json # Config, git info, environment
-│           │   ├── state.json    # Status and timestamps
-│           │   ├── furu.log    # Captured logs
-│           │   └── SUCCESS.json  # Marker file
-│           └── <your outputs>    # Files from _create()
-└── raw/                          # Shared directory for large files
+By default, Furu stores data under `<project-root>/furu-data`, where `<project-root>`
+is the nearest directory containing `pyproject.toml` (falling back to the git root).
+Override with `FURU_PATH` and `FURU_VERSION_CONTROLLED_PATH` as needed. If you
+override `FURU_PATH`, `furu-data/data` and `furu-data/raw` move to that location,
+while `furu-data/artifacts` stays at the project root unless you also override
+`FURU_VERSION_CONTROLLED_PATH`.
 
+```
 <project-root>/
 ├── pyproject.toml
-├── .gitignore                    # Includes furu-data/artifacts/
+├── .git/
 └── furu-data/
+    ├── data/                     # Default storage (version_controlled=False)
+    │   └── <module>/<Class>/
+    │       └── <hash>/
+    │           ├── .furu/
+    │           │   ├── metadata.json # Config, git info, environment
+    │           │   ├── state.json    # Status and timestamps
+    │           │   ├── furu.log    # Captured logs
+    │           │   └── SUCCESS.json  # Marker file
+    │           └── <your outputs>    # Files from _create()
+    ├── raw/                      # Shared directory for large files
     └── artifacts/                # version_controlled=True (override via FURU_VERSION_CONTROLLED_PATH)
         └── <same structure>
 ```
@@ -250,6 +255,9 @@ class VersionedConfig(furu.Furu[dict], version_controlled=True):
     # Override with FURU_VERSION_CONTROLLED_PATH if needed.
     ...
 ```
+
+`<project>` is the nearest directory containing `pyproject.toml`, or the git root
+if `pyproject.toml` is missing.
 
 It is typical to keep `furu-data/data/` and `furu-data/raw/` in `.gitignore` while
 committing `furu-data/artifacts/`.
@@ -388,7 +396,7 @@ The `/api/experiments` endpoint supports:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FURU_PATH` | `./data-furu/` | Base storage directory for non-versioned artifacts |
+| `FURU_PATH` | `<project>/furu-data` | Base storage directory for non-versioned artifacts |
 | `FURU_VERSION_CONTROLLED_PATH` | `<project>/furu-data/artifacts` | Override version-controlled storage root |
 | `FURU_LOG_LEVEL` | `INFO` | Console verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `FURU_IGNORE_DIFF` | `false` | Skip embedding git diff in metadata |

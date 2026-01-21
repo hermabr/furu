@@ -229,5 +229,7 @@ vite.config.js
 
 /openapi.json
 data-furu/data
+furu-data/data
+furu-data/raw
 # Local dev: avoid committing versioned artifacts in this repo
 furu-data/artifacts/

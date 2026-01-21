@@ -6,14 +6,16 @@ from pathlib import Path
 class FuruConfig:
     """Central configuration for Furu behavior."""
 
-    VERSION_CONTROLLED_SUBDIR = Path("furu-data") / "artifacts"
+    DEFAULT_ROOT_DIR = Path("furu-data")
+    VERSION_CONTROLLED_SUBDIR = DEFAULT_ROOT_DIR / "artifacts"
 
     def __init__(self):
         def _get_base_root() -> Path:
             env = os.getenv("FURU_PATH")
             if env:
                 return Path(env).expanduser().resolve()
-            return Path("data-furu").resolve()
+            project_root = self._find_project_root(fallback_to_cwd=True)
+            return (project_root / self.DEFAULT_ROOT_DIR).resolve()
 
         self.base_root = _get_base_root()
         self.version_controlled_root_override = self._get_version_controlled_override()
@@ -113,13 +115,22 @@ class FuruConfig:
         return (project_root / cls.VERSION_CONTROLLED_SUBDIR).resolve()
 
     @staticmethod
-    def _find_project_root(start: Path | None = None) -> Path:
+    def _find_project_root(
+        start: Path | None = None, *, fallback_to_cwd: bool = False
+    ) -> Path:
         base = (start or Path.cwd()).resolve()
+        git_root: Path | None = None
         for path in (base, *base.parents):
             if (path / "pyproject.toml").is_file():
                 return path
+            if git_root is None and (path / ".git").exists():
+                git_root = path
+        if git_root is not None:
+            return git_root
+        if fallback_to_cwd:
+            return base
         raise ValueError(
-            "Cannot locate pyproject.toml to determine version-controlled root. "
+            "Cannot locate pyproject.toml or .git to determine version-controlled root. "
             "Set FURU_VERSION_CONTROLLED_PATH to override."
         )
 

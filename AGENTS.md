@@ -269,5 +269,5 @@ def test_something(client: TestClient, temp_furu_root: Path) -> None:
 ## Environment & Configuration
 
 - Local config from `.env` (gitignored); don't commit secrets
-- Storage defaults to `./data-furu/`; override with `FURU_PATH`
+- Storage defaults to `<project>/furu-data/` (pyproject.toml or git root); override with `FURU_PATH`
 - Python version: >=3.12
