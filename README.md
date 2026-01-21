@@ -125,9 +125,14 @@ $FURU_PATH/
 │           │   ├── furu.log    # Captured logs
 │           │   └── SUCCESS.json  # Marker file
 │           └── <your outputs>    # Files from _create()
-├── git/                          # For version_controlled=True
-│   └── <same structure>
 └── raw/                          # Shared directory for large files
+
+<project-root>/
+├── pyproject.toml
+├── .gitignore                    # Includes furu-data/artifacts/
+└── furu-data/
+    └── artifacts/                # version_controlled=True (override via FURU_VERSION_CONTROLLED_PATH)
+        └── <same structure>
 ```
 
 ## Features
@@ -241,9 +246,13 @@ For artifacts that should be stored separately (e.g., checked into git):
 
 ```python
 class VersionedConfig(furu.Furu[dict], version_controlled=True):
-    # Stored under $FURU_PATH/git/ instead of $FURU_PATH/data/
+    # Stored under <project>/furu-data/artifacts by default.
+    # Override with FURU_VERSION_CONTROLLED_PATH if needed.
     ...
 ```
+
+Furu ensures `furu-data/artifacts/` is listed in the project `.gitignore` when using
+the default path and raises if a `.gitignore` file is missing.
 
 ## Logging
 
@@ -379,7 +388,8 @@ The `/api/experiments` endpoint supports:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FURU_PATH` | `./data-furu/` | Base storage directory |
+| `FURU_PATH` | `./data-furu/` | Base storage directory for non-versioned artifacts |
+| `FURU_VERSION_CONTROLLED_PATH` | `<project>/furu-data/artifacts` | Override version-controlled storage root |
 | `FURU_LOG_LEVEL` | `INFO` | Console verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `FURU_IGNORE_DIFF` | `false` | Skip embedding git diff in metadata |
 | `FURU_ALWAYS_RERUN` | `""` | Comma-separated class qualnames to always rerun (use `ALL` to bypass cache globally; cannot combine with other entries; entries must be importable) |

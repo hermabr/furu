@@ -63,6 +63,12 @@ def temp_furu_root(
     specific experiments. For read-only tests, prefer `populated_furu_root`.
     """
     monkeypatch.setattr(FURU_CONFIG, "base_root", tmp_path)
+    monkeypatch.setattr(
+        FURU_CONFIG,
+        "version_controlled_root_override",
+        tmp_path / "furu-data" / "artifacts",
+    )
+    monkeypatch.setattr(FURU_CONFIG, "_version_controlled_root", None)
     monkeypatch.setattr(FURU_CONFIG, "ignore_git_diff", True)
     monkeypatch.setattr(FURU_CONFIG, "poll_interval", 0.01)
     monkeypatch.setattr(FURU_CONFIG, "stale_timeout", 0.1)
@@ -86,6 +92,8 @@ def _configure_furu_for_module(
     """Configure FURU_CONFIG for module-scoped tests."""
     # Save original values
     orig_base_root = FURU_CONFIG.base_root
+    orig_version_controlled_root_override = FURU_CONFIG.version_controlled_root_override
+    orig_version_controlled_root = FURU_CONFIG._version_controlled_root
     orig_ignore_git_diff = FURU_CONFIG.ignore_git_diff
     orig_poll_interval = FURU_CONFIG.poll_interval
     orig_stale_timeout = FURU_CONFIG.stale_timeout
@@ -94,6 +102,10 @@ def _configure_furu_for_module(
 
     # Set test values
     FURU_CONFIG.base_root = module_furu_root
+    FURU_CONFIG.version_controlled_root_override = (
+        module_furu_root / "furu-data" / "artifacts"
+    )
+    FURU_CONFIG._version_controlled_root = None
     FURU_CONFIG.ignore_git_diff = True
     FURU_CONFIG.poll_interval = 0.01
     FURU_CONFIG.stale_timeout = 0.1
@@ -104,6 +116,10 @@ def _configure_furu_for_module(
 
     # Restore original values
     FURU_CONFIG.base_root = orig_base_root
+    FURU_CONFIG.version_controlled_root_override = (
+        orig_version_controlled_root_override
+    )
+    FURU_CONFIG._version_controlled_root = orig_version_controlled_root
     FURU_CONFIG.ignore_git_diff = orig_ignore_git_diff
     FURU_CONFIG.poll_interval = orig_poll_interval
     FURU_CONFIG.stale_timeout = orig_stale_timeout

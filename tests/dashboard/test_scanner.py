@@ -18,6 +18,10 @@ from .conftest import create_experiment_from_furu
 from .pipelines import PrepareDataset, TrainModel
 
 
+class VersionedDataset(PrepareDataset, version_controlled=True):
+    """PrepareDataset variant stored in version-controlled root."""
+
+
 def test_scan_experiments_empty(temp_furu_root: Path) -> None:
     """Test scanning when no experiments exist."""
     experiments = scan_experiments()
@@ -222,19 +226,22 @@ def test_get_stats_counts(populated_furu_root: Path) -> None:
 
 
 def test_scan_experiments_version_controlled(temp_furu_root: Path) -> None:
-    """Test that scanner finds experiments in git/ and data/ subdirectories."""
+    """Test that scanner finds experiments in both roots."""
     # Create an unversioned experiment
     unversioned = PrepareDataset(name="unversioned", version="v1")
     create_experiment_from_furu(unversioned, result_status="success")
 
-    # Create a versioned experiment by manually placing it in git/ directory
-    # Note: We can't easily create version_controlled experiments with actual Furu
-    # since it requires the class to be defined with version_controlled=True
-    # So we'll just verify unversioned experiments are found
+    versioned = VersionedDataset(name="versioned", version="v1")
+    create_experiment_from_furu(versioned, result_status="success")
+
     experiments = scan_experiments()
-    assert len(experiments) >= 1
+    assert len(experiments) >= 2
     namespaces = {exp.namespace for exp in experiments}
     assert "dashboard.pipelines.PrepareDataset" in namespaces
+    expected_versioned = (
+        f"{VersionedDataset.__module__}.{VersionedDataset.__qualname__}"
+    )
+    assert expected_versioned in namespaces
 
 
 def test_experiment_summary_class_name(temp_furu_root: Path) -> None:

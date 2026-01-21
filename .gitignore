@@ -229,3 +229,4 @@ vite.config.js
 
 /openapi.json
 data-furu/data
+furu-data/artifacts/
