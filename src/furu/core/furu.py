@@ -949,6 +949,17 @@ class Furu[T](ABC):
                             },
                         )
                         self._add_exception_breadcrumbs(e, directory)
+                        if stage != "_create":
+                            message = (
+                                "Failed to create metadata"
+                                if stage == "metadata"
+                                else "Failed to set up signal handlers"
+                            )
+                            raise FuruComputeError(
+                                message,
+                                StateManager.get_state_path(directory),
+                                e,
+                            ) from e
                         raise
             except FuruLockNotAcquired:
                 # Experiment already completed (success or failed), nothing to do
@@ -1092,6 +1103,17 @@ class Furu[T](ABC):
                         },
                     )
                     self._add_exception_breadcrumbs(e, directory)
+                    if stage != "_create":
+                        message = (
+                            "Failed to create metadata"
+                            if stage == "metadata"
+                            else "Failed to set up signal handlers"
+                        )
+                        raise FuruComputeError(
+                            message,
+                            StateManager.get_state_path(directory),
+                            e,
+                        ) from e
                     raise
         except FuruLockNotAcquired:
             # Lock couldn't be acquired because experiment already completed

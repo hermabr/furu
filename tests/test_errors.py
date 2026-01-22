@@ -119,8 +119,9 @@ def test_metadata_failure_marks_attempt_failed(furu_tmp_root, monkeypatch) -> No
         raise RuntimeError("metadata boom")
 
     monkeypatch.setattr(furu.MetadataManager, "create_metadata", boom)
-    with pytest.raises(RuntimeError, match="metadata boom"):
+    with pytest.raises(furu.FuruComputeError, match="Failed to create metadata") as exc:
         obj.load_or_create()
+    assert isinstance(exc.value.original_error, RuntimeError)
 
     state = furu.StateManager.read_state(obj.furu_dir)
     assert isinstance(state.result, _StateResultFailed)

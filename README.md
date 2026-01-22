@@ -317,6 +317,17 @@ except FuruLockNotAcquired:
     print("Could not acquire lock")
 ```
 
+By default, failed artifacts are retried on the next `load_or_create()` call. Set
+`FURU_RETRY_FAILED=0` or pass `retry_failed=False` to keep failures sticky.
+
+`FURU_MAX_WAIT_SECS` overrides the per-class `_max_wait_time_sec` (default 600s)
+timeout used when waiting for compute locks before raising `FuruWaitTimeout`.
+
+Failures during metadata collection or signal handler setup (before `_create()`
+runs) raise `FuruComputeError` with the original exception attached. These
+failures still mark the attempt as failed and record details in `state.json`
+and `furu.log`.
+
 ## Submitit Integration
 
 Run computations on SLURM clusters via [submitit](https://github.com/facebookincubator/submitit):
@@ -396,7 +407,9 @@ The `/api/experiments` endpoint supports:
 | `FURU_LOG_LEVEL` | `INFO` | Console verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `FURU_IGNORE_DIFF` | `false` | Skip embedding git diff in metadata |
 | `FURU_ALWAYS_RERUN` | `""` | Comma-separated class qualnames to always rerun (use `ALL` to bypass cache globally; cannot combine with other entries; entries must be importable) |
+| `FURU_RETRY_FAILED` | `true` | Retry failed artifacts by default (set to `0` to keep failures sticky) |
 | `FURU_POLL_INTERVAL_SECS` | `10` | Polling interval for queued/running jobs |
+| `FURU_MAX_WAIT_SECS` | unset | Override wait timeout (falls back to `_max_wait_time_sec`, default 600s) |
 | `FURU_WAIT_LOG_EVERY_SECS` | `10` | Interval between "waiting" log messages |
 | `FURU_STALE_AFTER_SECS` | `1800` | Consider running jobs stale after this duration |
 | `FURU_LEASE_SECS` | `120` | Compute lock lease duration |
