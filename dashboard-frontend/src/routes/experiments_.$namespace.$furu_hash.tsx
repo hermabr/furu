@@ -763,6 +763,28 @@ function ExperimentDetailPage() {
                 </span>
               </div>
             ) : null}
+            {experiment.attempt.error ? (
+              <div className="mt-4 border-t pt-4">
+                <span className="block text-sm text-muted-foreground">Error</span>
+                <div className="mt-2 rounded-lg border border-destructive/30 bg-destructive/10 p-3">
+                  <div className="font-mono text-sm text-destructive">
+                    {experiment.attempt.error.type}: {experiment.attempt.error.message}
+                  </div>
+                  {experiment.attempt.error.traceback ? (
+                    <details className="mt-3">
+                      <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
+                        View traceback
+                      </summary>
+                      <pre className="mt-2 max-h-96 overflow-auto rounded bg-muted p-3 text-xs">
+                        <code className="text-muted-foreground">
+                          {experiment.attempt.error.traceback}
+                        </code>
+                      </pre>
+                    </details>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
           </CardContent>
         </Card>
       )}

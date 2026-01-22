@@ -303,6 +303,67 @@ def test_compute_lock_raises_on_success_state(furu_tmp_root, tmp_path) -> None:
             pass
 
 
+def test_compute_lock_raises_on_failed_state(furu_tmp_root, tmp_path) -> None:
+    """Test that compute_lock raises FuruLockNotAcquired when failed is sticky."""
+    directory = tmp_path / "obj"
+    directory.mkdir()
+
+    attempt_id = furu.StateManager.start_attempt_running(
+        directory,
+        backend="local",
+        lease_duration_sec=60.0,
+        owner={"pid": 12345, "host": "test-host", "user": "test-user"},
+    )
+    furu.StateManager.finish_attempt_failed(
+        directory,
+        attempt_id=attempt_id,
+        error={"type": "RuntimeError", "message": "boom"},
+    )
+
+    with pytest.raises(FuruLockNotAcquired, match="already failed"):
+        with compute_lock(
+            directory,
+            backend="local",
+            lease_duration_sec=60.0,
+            heartbeat_interval_sec=10.0,
+            owner={"pid": 12345, "host": "test-host", "user": "test-user"},
+        ):
+            pass
+
+
+def test_compute_lock_allows_failed_state_with_override(
+    furu_tmp_root, tmp_path
+) -> None:
+    """Test that compute_lock allows retry when allow_failed is set."""
+    directory = tmp_path / "obj"
+    directory.mkdir()
+
+    attempt_id = furu.StateManager.start_attempt_running(
+        directory,
+        backend="local",
+        lease_duration_sec=60.0,
+        owner={"pid": 12345, "host": "test-host", "user": "test-user"},
+    )
+    furu.StateManager.finish_attempt_failed(
+        directory,
+        attempt_id=attempt_id,
+        error={"type": "RuntimeError", "message": "boom"},
+    )
+
+    with compute_lock(
+        directory,
+        backend="local",
+        lease_duration_sec=60.0,
+        heartbeat_interval_sec=10.0,
+        owner={"pid": 12345, "host": "test-host", "user": "test-user"},
+        allow_failed=True,
+    ) as ctx:
+        state = furu.StateManager.read_state(directory)
+        assert state.attempt is not None
+        assert state.attempt.id == ctx.attempt_id
+        assert isinstance(state.result, _StateResultIncomplete)
+
+
 def test_compute_lock_timeout(furu_tmp_root, tmp_path) -> None:
     """Test that compute_lock raises FuruWaitTimeout when max_wait_time_sec is exceeded."""
     directory = tmp_path / "obj"
@@ -325,7 +386,7 @@ def test_compute_lock_timeout(furu_tmp_root, tmp_path) -> None:
 
     try:
         # Try to acquire with a very short timeout
-        with pytest.raises(FuruWaitTimeout, match="Timed out"):
+        with pytest.raises(FuruWaitTimeout, match="Timed out") as exc:
             with compute_lock(
                 directory,
                 backend="local",
@@ -336,6 +397,9 @@ def test_compute_lock_timeout(furu_tmp_root, tmp_path) -> None:
                 poll_interval_sec=0.05,
             ):
                 pass
+        message = str(exc.value)
+        assert "Directory:" in message
+        assert "FURU_MAX_WAIT_SECS" in message
     finally:
         furu.StateManager.release_lock(lock_fd, lock_path)
 

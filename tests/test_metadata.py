@@ -1,9 +1,10 @@
 import json
+import subprocess
 
 import pytest
 
 import furu
-from furu.storage.metadata import GitInfo
+from furu.storage.metadata import GitInfo, clear_metadata_cache
 
 
 class Dummy(furu.Furu[int]):
@@ -44,3 +45,38 @@ def test_metadata_roundtrip_and_get_metadata(furu_tmp_root, monkeypatch) -> None
 def test_metadata_read_raises_when_missing(furu_tmp_root, tmp_path) -> None:
     with pytest.raises(FileNotFoundError):
         furu.MetadataManager.read_metadata(tmp_path / "missing")
+
+
+def test_collect_git_info_requires_git(monkeypatch) -> None:
+    clear_metadata_cache()
+
+    def boom(_args):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(furu.MetadataManager, "run_git_command", boom)
+    monkeypatch.setattr(furu.FURU_CONFIG, "require_git", True)
+
+    with pytest.raises(RuntimeError, match="FURU_REQUIRE_GIT=0"):
+        furu.MetadataManager.collect_git_info(ignore_diff=True)
+
+
+def test_collect_git_info_requires_git_remote(monkeypatch) -> None:
+    clear_metadata_cache()
+
+    def run_git_command(args):
+        if args == ["rev-parse", "HEAD"]:
+            return "abc123"
+        if args == ["rev-parse", "--abbrev-ref", "HEAD"]:
+            return "main"
+        if args == ["remote", "get-url", "origin"]:
+            raise subprocess.CalledProcessError(1, ["git", *args])
+        if args == ["submodule", "status"]:
+            return ""
+        return ""
+
+    monkeypatch.setattr(furu.MetadataManager, "run_git_command", run_git_command)
+    monkeypatch.setattr(furu.FURU_CONFIG, "require_git", True)
+    monkeypatch.setattr(furu.FURU_CONFIG, "require_git_remote", True)
+
+    with pytest.raises(RuntimeError, match="FURU_REQUIRE_GIT_REMOTE=0"):
+        furu.MetadataManager.collect_git_info(ignore_diff=True)

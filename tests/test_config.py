@@ -136,3 +136,21 @@ def test_always_rerun_missing_namespace_raises(monkeypatch) -> None:
     monkeypatch.setenv("FURU_ALWAYS_RERUN", "furu.Nope")
     with pytest.raises(ValueError, match="FURU_ALWAYS_RERUN entry does not exist"):
         FuruConfig()
+
+
+def test_retry_failed_from_env(monkeypatch) -> None:
+    monkeypatch.setenv("FURU_RETRY_FAILED", "true")
+    config = FuruConfig()
+    assert config.retry_failed is True
+
+
+def test_retry_failed_defaults_true(monkeypatch) -> None:
+    monkeypatch.delenv("FURU_RETRY_FAILED", raising=False)
+    config = FuruConfig()
+    assert config.retry_failed is True
+
+
+def test_max_wait_secs_from_env(monkeypatch) -> None:
+    monkeypatch.setenv("FURU_MAX_WAIT_SECS", "123.5")
+    config = FuruConfig()
+    assert config.max_wait_time_sec == 123.5

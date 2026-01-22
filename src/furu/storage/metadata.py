@@ -124,7 +124,7 @@ class MetadataManager:
             try:
                 head = cls.run_git_command(["rev-parse", "HEAD"])
                 branch = cls.run_git_command(["rev-parse", "--abbrev-ref", "HEAD"])
-            except subprocess.CalledProcessError:
+            except (subprocess.CalledProcessError, FileNotFoundError):
                 return GitInfo(
                     git_commit="<no-git>",
                     git_branch="<no-git>",
@@ -133,15 +133,27 @@ class MetadataManager:
                     git_submodules={},
                 )
         else:
-            head = cls.run_git_command(["rev-parse", "HEAD"])
-            branch = cls.run_git_command(["rev-parse", "--abbrev-ref", "HEAD"])
+            try:
+                head = cls.run_git_command(["rev-parse", "HEAD"])
+                branch = cls.run_git_command(["rev-parse", "--abbrev-ref", "HEAD"])
+            except (subprocess.CalledProcessError, FileNotFoundError) as e:
+                raise RuntimeError(
+                    "Failed to read git commit/branch for provenance. "
+                    "If this is expected, set FURU_REQUIRE_GIT=0."
+                ) from e
 
         if FURU_CONFIG.require_git_remote:
-            remote = cls.run_git_command(["remote", "get-url", "origin"])
+            try:
+                remote = cls.run_git_command(["remote", "get-url", "origin"])
+            except (subprocess.CalledProcessError, FileNotFoundError) as e:
+                raise RuntimeError(
+                    "Git remote 'origin' is required for provenance but was not found. "
+                    "Set FURU_REQUIRE_GIT_REMOTE=0 to allow missing origin."
+                ) from e
         else:
             try:
                 remote = cls.run_git_command(["remote", "get-url", "origin"])
-            except subprocess.CalledProcessError:
+            except (subprocess.CalledProcessError, FileNotFoundError):
                 remote = None
 
         if ignore_diff:

@@ -22,12 +22,19 @@ class FuruConfig:
         self.poll_interval = float(os.getenv("FURU_POLL_INTERVAL_SECS", "10"))
         self.wait_log_every_sec = float(os.getenv("FURU_WAIT_LOG_EVERY_SECS", "10"))
         self.stale_timeout = float(os.getenv("FURU_STALE_AFTER_SECS", str(30 * 60)))
+        max_wait_env = os.getenv("FURU_MAX_WAIT_SECS")
+        self.max_wait_time_sec = float(max_wait_env) if max_wait_env else None
         self.lease_duration_sec = float(os.getenv("FURU_LEASE_SECS", "120"))
         hb = os.getenv("FURU_HEARTBEAT_SECS")
         self.heartbeat_interval_sec = (
             float(hb) if hb is not None else max(1.0, self.lease_duration_sec / 3.0)
         )
         self.max_requeues = int(os.getenv("FURU_PREEMPT_MAX", "5"))
+        self.retry_failed = os.getenv("FURU_RETRY_FAILED", "1").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
         self.ignore_git_diff = os.getenv("FURU_IGNORE_DIFF", "0").lower() in {
             "1",
             "true",
@@ -151,8 +158,7 @@ class FuruConfig:
                 value = getattr(target, attr, missing_sentinel)
                 if value is missing_sentinel:
                     raise ValueError(
-                        "FURU_ALWAYS_RERUN entry does not exist: "
-                        f"{namespace!r}"
+                        f"FURU_ALWAYS_RERUN entry does not exist: {namespace!r}"
                     )
                 target = value
 

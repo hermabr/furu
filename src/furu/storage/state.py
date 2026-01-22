@@ -977,6 +977,7 @@ def compute_lock(
     poll_interval_sec: float = 10.0,
     wait_log_every_sec: float = 10.0,
     reconcile_fn: Callable[[Path], None] | None = None,
+    allow_failed: bool = False,
 ) -> Generator[ComputeLockContext, None, None]:
     """
     Context manager that atomically acquires lock + records attempt + starts heartbeat.
@@ -1000,6 +1001,7 @@ def compute_lock(
         poll_interval_sec: Interval between lock acquisition attempts
         wait_log_every_sec: Interval between "waiting for lock" log messages
         reconcile_fn: Optional function to call to reconcile stale attempts
+        allow_failed: Allow recomputation even if state is failed
 
     Yields:
         ComputeLockContext with attempt_id and stop_heartbeat callable
@@ -1008,6 +1010,7 @@ def compute_lock(
         FuruLockNotAcquired: If lock cannot be acquired (after waiting)
         FuruWaitTimeout: If max_wait_time_sec is exceeded
     """
+
     def _format_wait_duration(seconds: float) -> str:
         if seconds < 60.0:
             return f"{seconds:.1f}s"
@@ -1019,6 +1022,21 @@ def compute_lock(
             return f"{hours:.1f}h"
         days = hours / 24.0
         return f"{days:.1f}d"
+
+    def _format_owner(attempt: _StateAttempt) -> str:
+        owner = attempt.owner
+        parts: list[str] = []
+        if attempt.id:
+            parts.append(f"attempt {attempt.id}")
+        if owner.host:
+            parts.append(f"host {owner.host}")
+        if owner.pid is not None:
+            parts.append(f"pid {owner.pid}")
+        if owner.user:
+            parts.append(f"user {owner.user}")
+        if not parts:
+            return "owner unknown"
+        return ", ".join(parts)
 
     def _describe_wait(attempt: _StateAttempt, waited_sec: float) -> str:
         label = "last heartbeat"
@@ -1034,7 +1052,7 @@ def compute_lock(
         return (
             "waited "
             f"{_format_wait_duration(waited_sec)}, {label} {timestamp_info}, "
-            f"status {attempt.status}, backend {attempt.backend}"
+            f"status {attempt.status}, backend {attempt.backend}, {_format_owner(attempt)}"
         )
 
     lock_path = StateManager.get_lock_path(directory, StateManager.COMPUTE_LOCK)
@@ -1054,8 +1072,26 @@ def compute_lock(
         if max_wait_time_sec is not None:
             elapsed = time.time() - start_time
             if elapsed > max_wait_time_sec:
+                state = StateManager.read_state(directory)
+                attempt = state.attempt
+                attempt_info = "no active attempt"
+                if isinstance(attempt, (_StateAttemptQueued, _StateAttemptRunning)):
+                    attempt_info = _describe_wait(attempt, elapsed)
+                message = (
+                    f"Timed out waiting for compute lock after {elapsed:.1f}s."
+                    f"\nDirectory: {directory}"
+                    f"\nLock file: {lock_path}"
+                    f"\nDetails: {attempt_info}"
+                )
                 raise FuruWaitTimeout(
-                    f"Timed out waiting for compute lock after {elapsed:.1f}s"
+                    message,
+                    hints=[
+                        "Increase max wait: set FURU_MAX_WAIT_SECS (or override Furu._max_wait_time_sec).",
+                        "Change poll cadence: set FURU_POLL_INTERVAL_SECS.",
+                        "Change wait logging cadence: set FURU_WAIT_LOG_EVERY_SECS.",
+                        "If locks look stale too quickly/slowly: tune FURU_LEASE_SECS and FURU_HEARTBEAT_SECS.",
+                        "For more logs: set FURU_LOG_LEVEL=DEBUG.",
+                    ],
                 )
 
         lock_fd = StateManager.try_lock(lock_path)
@@ -1066,9 +1102,11 @@ def compute_lock(
                 raise FuruLockNotAcquired(
                     "Cannot acquire lock: experiment already succeeded"
                 )
-            if isinstance(state.result, _StateResultFailed):
+            if isinstance(state.result, _StateResultFailed) and not allow_failed:
                 StateManager.release_lock(lock_fd, lock_path)
-                raise FuruLockNotAcquired("Cannot acquire lock: experiment already failed")
+                raise FuruLockNotAcquired(
+                    "Cannot acquire lock: experiment already failed"
+                )
             attempt = state.attempt
             if (
                 isinstance(attempt, (_StateAttemptQueued, _StateAttemptRunning))
@@ -1083,7 +1121,7 @@ def compute_lock(
                     raise FuruLockNotAcquired(
                         "Cannot acquire lock: experiment already succeeded"
                     )
-                if isinstance(state.result, _StateResultFailed):
+                if isinstance(state.result, _StateResultFailed) and not allow_failed:
                     raise FuruLockNotAcquired(
                         "Cannot acquire lock: experiment already failed"
                     )
@@ -1117,7 +1155,7 @@ def compute_lock(
             raise FuruLockNotAcquired(
                 "Cannot acquire lock: experiment already succeeded"
             )
-        if isinstance(state.result, _StateResultFailed):
+        if isinstance(state.result, _StateResultFailed) and not allow_failed:
             raise FuruLockNotAcquired("Cannot acquire lock: experiment already failed")
 
         # If no active attempt but lock exists, it's orphaned - clean it up

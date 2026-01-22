@@ -1,9 +1,14 @@
 import json
+from typing import ClassVar
 
 import pytest
 
 import furu
-from furu.storage.state import _StateResultFailed, _StateResultSuccess
+from furu.storage.state import (
+    _StateAttemptFailed,
+    _StateResultFailed,
+    _StateResultSuccess,
+)
 
 
 class Fails(furu.Furu[int]):
@@ -12,6 +17,31 @@ class Fails(furu.Furu[int]):
 
     def _load(self) -> int:
         return json.loads((self.furu_dir / "never.json").read_text())
+
+
+class Flaky(furu.Furu[int]):
+    _create_calls: ClassVar[int] = 0
+
+    def _create(self) -> int:
+        type(self)._create_calls += 1
+        if type(self)._create_calls == 1:
+            raise RuntimeError("boom")
+        value = 7
+        (self.furu_dir / "value.json").write_text(json.dumps(value))
+        return value
+
+    def _load(self) -> int:
+        return json.loads((self.furu_dir / "value.json").read_text())
+
+
+class MetadataFails(furu.Furu[int]):
+    def _create(self) -> int:
+        value = 5
+        (self.furu_dir / "value.json").write_text(json.dumps(value))
+        return value
+
+    def _load(self) -> int:
+        return json.loads((self.furu_dir / "value.json").read_text())
 
 
 def test_failed_create_raises_compute_error_and_records_state(furu_tmp_root) -> None:
@@ -34,6 +64,73 @@ def test_failed_create_raises_compute_error_and_records_state(furu_tmp_root) -> 
     assert error is not None
     assert "boom" in error.message
     assert error.traceback is not None
+
+
+def test_failed_state_raises_compute_error_with_recorded_traceback(
+    furu_tmp_root,
+) -> None:
+    obj = Fails()
+    with pytest.raises(RuntimeError, match="boom"):
+        obj.load_or_create()
+
+    with pytest.raises(furu.FuruComputeError) as exc:
+        obj.load_or_create(retry_failed=False)
+
+    assert exc.value.recorded_traceback is not None
+    assert "RuntimeError: boom" in exc.value.recorded_traceback
+    message = str(exc.value)
+    assert "Recorded traceback" in message
+    assert "FURU_RETRY_FAILED" in message
+
+
+def test_retry_failed_allows_recompute(furu_tmp_root) -> None:
+    Flaky._create_calls = 0
+    obj = Flaky()
+
+    with pytest.raises(RuntimeError, match="boom"):
+        obj.load_or_create()
+
+    result = obj.load_or_create(retry_failed=True)
+    assert result == 7
+    assert Flaky._create_calls == 2
+
+    state = furu.StateManager.read_state(obj.furu_dir)
+    assert isinstance(state.result, _StateResultSuccess)
+
+
+def test_retry_failed_from_config(furu_tmp_root, monkeypatch) -> None:
+    Flaky._create_calls = 0
+    obj = Flaky()
+
+    monkeypatch.setattr(furu.FURU_CONFIG, "retry_failed", False)
+    with pytest.raises(RuntimeError, match="boom"):
+        obj.load_or_create()
+
+    monkeypatch.setattr(furu.FURU_CONFIG, "retry_failed", True)
+    result = obj.load_or_create()
+    assert result == 7
+    assert Flaky._create_calls == 2
+
+
+def test_metadata_failure_marks_attempt_failed(furu_tmp_root, monkeypatch) -> None:
+    obj = MetadataFails()
+
+    def boom(*_args, **_kwargs) -> None:
+        raise RuntimeError("metadata boom")
+
+    monkeypatch.setattr(furu.MetadataManager, "create_metadata", boom)
+    with pytest.raises(furu.FuruComputeError, match="Failed to create metadata") as exc:
+        obj.load_or_create()
+    assert isinstance(exc.value.original_error, RuntimeError)
+
+    state = furu.StateManager.read_state(obj.furu_dir)
+    assert isinstance(state.result, _StateResultFailed)
+    attempt = state.attempt
+    assert attempt is not None
+    assert attempt.status == "failed"
+    assert isinstance(attempt, _StateAttemptFailed)
+    assert attempt.error.message == "metadata boom"
+    assert attempt.error.traceback is not None
 
 
 class InvalidValidate(furu.Furu[int]):

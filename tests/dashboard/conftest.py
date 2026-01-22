@@ -71,8 +71,10 @@ def temp_furu_root(
     monkeypatch.setattr(FURU_CONFIG, "ignore_git_diff", True)
     monkeypatch.setattr(FURU_CONFIG, "poll_interval", 0.01)
     monkeypatch.setattr(FURU_CONFIG, "stale_timeout", 0.1)
+    monkeypatch.setattr(FURU_CONFIG, "max_wait_time_sec", None)
     monkeypatch.setattr(FURU_CONFIG, "lease_duration_sec", 0.05)
     monkeypatch.setattr(FURU_CONFIG, "heartbeat_interval_sec", 0.01)
+    monkeypatch.setattr(FURU_CONFIG, "retry_failed", True)
 
     yield tmp_path
 
@@ -95,8 +97,10 @@ def _configure_furu_for_module(
     orig_ignore_git_diff = FURU_CONFIG.ignore_git_diff
     orig_poll_interval = FURU_CONFIG.poll_interval
     orig_stale_timeout = FURU_CONFIG.stale_timeout
+    orig_max_wait = FURU_CONFIG.max_wait_time_sec
     orig_lease_duration = FURU_CONFIG.lease_duration_sec
     orig_heartbeat = FURU_CONFIG.heartbeat_interval_sec
+    orig_retry_failed = FURU_CONFIG.retry_failed
 
     # Set test values
     FURU_CONFIG.base_root = module_furu_root
@@ -106,21 +110,23 @@ def _configure_furu_for_module(
     FURU_CONFIG.ignore_git_diff = True
     FURU_CONFIG.poll_interval = 0.01
     FURU_CONFIG.stale_timeout = 0.1
+    FURU_CONFIG.max_wait_time_sec = None
     FURU_CONFIG.lease_duration_sec = 0.05
     FURU_CONFIG.heartbeat_interval_sec = 0.01
+    FURU_CONFIG.retry_failed = True
 
     yield module_furu_root
 
     # Restore original values
     FURU_CONFIG.base_root = orig_base_root
-    FURU_CONFIG.version_controlled_root_override = (
-        orig_version_controlled_root_override
-    )
+    FURU_CONFIG.version_controlled_root_override = orig_version_controlled_root_override
     FURU_CONFIG.ignore_git_diff = orig_ignore_git_diff
     FURU_CONFIG.poll_interval = orig_poll_interval
     FURU_CONFIG.stale_timeout = orig_stale_timeout
+    FURU_CONFIG.max_wait_time_sec = orig_max_wait
     FURU_CONFIG.lease_duration_sec = orig_lease_duration
     FURU_CONFIG.heartbeat_interval_sec = orig_heartbeat
+    FURU_CONFIG.retry_failed = orig_retry_failed
 
 
 def create_experiment_from_furu(

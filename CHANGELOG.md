@@ -5,6 +5,10 @@
 - Add dependency discovery via `_dependencies()` and `_get_dependencies()` with recursive traversal and de-duplication, plus `DependencySpec`/`DependencyChzSpec` typing helpers.
 - Include direct dependencies in `Furu` hashing to invalidate caches when implicit dependencies change.
 - Record migration events with separate namespace/hash fields instead of composite IDs.
+- Default to retry failed artifacts (use `FURU_RETRY_FAILED=0` or `retry_failed=False` to keep failures sticky) while enriching compute errors with recorded tracebacks and hints.
+- Add detailed compute lock timeout diagnostics with env var overrides and owner context.
+- Surface attempt error messages and tracebacks in the dashboard detail view.
+- Wrap metadata/signal handler setup failures in `FuruComputeError` for consistent error handling.
 
 ## v0.0.2
 

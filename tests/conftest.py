@@ -24,7 +24,9 @@ def furu_tmp_root(tmp_path, monkeypatch):
     monkeypatch.setattr(furu.FURU_CONFIG, "ignore_git_diff", True)
     monkeypatch.setattr(furu.FURU_CONFIG, "poll_interval", 0.01)
     monkeypatch.setattr(furu.FURU_CONFIG, "stale_timeout", 0.1)
+    monkeypatch.setattr(furu.FURU_CONFIG, "max_wait_time_sec", None)
     monkeypatch.setattr(furu.FURU_CONFIG, "lease_duration_sec", 0.05)
     monkeypatch.setattr(furu.FURU_CONFIG, "heartbeat_interval_sec", 0.01)
     monkeypatch.setattr(furu.FURU_CONFIG, "cancelled_is_preempted", True)
+    monkeypatch.setattr(furu.FURU_CONFIG, "retry_failed", True)
     return tmp_path

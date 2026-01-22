@@ -58,7 +58,6 @@ from ..storage import (
 from ..storage.state import (
     _FuruState,
     _OwnerDict,
-    _StateAttemptFailed,
     _StateAttemptQueued,
     _StateAttemptRunning,
     _StateResultAbsent,
@@ -315,20 +314,33 @@ class Furu[T](ABC):
         return MigrationManager.read_migration(self._base_furu_dir())
 
     @overload
-    def load_or_create(self, executor: submitit.Executor) -> T | submitit.Job[T]: ...
+    def load_or_create(
+        self,
+        executor: submitit.Executor,
+        *,
+        retry_failed: bool | None = None,
+    ) -> T | submitit.Job[T]: ...
 
     @overload
-    def load_or_create(self, executor: None = None) -> T: ...
+    def load_or_create(
+        self,
+        executor: None = None,
+        *,
+        retry_failed: bool | None = None,
+    ) -> T: ...
 
     def load_or_create(
         self: Self,
         executor: submitit.Executor | None = None,
+        *,
+        retry_failed: bool | None = None,
     ) -> T | submitit.Job[T]:
         """
         Load result if it exists, computing if necessary.
 
         Args:
             executor: Optional executor for batch submission (e.g., submitit.Executor)
+            retry_failed: Whether to retry failed results (default uses FURU_RETRY_FAILED)
 
         Returns:
             Result if wait=True, job handle if wait=False, or None if already exists
@@ -339,6 +351,9 @@ class Furu[T](ABC):
         logger = get_logger()
         parent_holder = current_holder()
         has_parent = parent_holder is not None and parent_holder is not self
+        retry_failed_effective = (
+            retry_failed if retry_failed is not None else FURU_CONFIG.retry_failed
+        )
         if has_parent:
             logger.debug(
                 "dep: begin %s %s %s",
@@ -419,6 +434,16 @@ class Furu[T](ABC):
                             # Fall through
 
                 state0 = StateManager.read_state(directory)
+
+                if (
+                    isinstance(state0.result, _StateResultFailed)
+                    and not retry_failed_effective
+                ):
+                    raise self._build_failed_state_error(
+                        directory,
+                        state0,
+                        message="Computation previously failed",
+                    )
 
                 needs_reconcile = True
                 if isinstance(state0.result, _StateResultSuccess):
@@ -502,7 +527,8 @@ class Furu[T](ABC):
                 # Synchronous execution
                 if executor is None:
                     status, created_here, result = self._run_locally(
-                        start_time=start_time
+                        start_time=start_time,
+                        allow_failed=retry_failed_effective,
                     )
                     if status == "success":
                         ok = True
@@ -518,19 +544,10 @@ class Furu[T](ABC):
                         )
                         return self._load()
 
-                    state = StateManager.read_state(directory)
-                    attempt = state.attempt
-                    message = (
-                        attempt.error.message
-                        if isinstance(attempt, _StateAttemptFailed)
-                        else None
-                    )
-                    suffix = (
-                        f": {message}" if isinstance(message, str) and message else ""
-                    )
-                    raise FuruComputeError(
-                        f"Computation {status}{suffix}",
-                        StateManager.get_state_path(directory),
+                    raise self._build_failed_state_error(
+                        directory,
+                        None,
+                        message="Computation previously failed",
                     )
 
                 # Asynchronous execution with submitit
@@ -544,7 +561,12 @@ class Furu[T](ABC):
                     "load_or_create: %s -> submitit submit_once()",
                     self.__class__.__name__,
                 )
-                job = self._submit_once(adapter, directory, None)
+                job = self._submit_once(
+                    adapter,
+                    directory,
+                    None,
+                    allow_failed=retry_failed_effective,
+                )
                 ok = True
                 return cast(submitit.Job[T], job)
         finally:
@@ -587,12 +609,56 @@ class Furu[T](ABC):
             },
         )
 
+    def _add_exception_breadcrumbs(self, exc: BaseException, directory: Path) -> None:
+        if not hasattr(exc, "add_note"):
+            return
+        state_path = StateManager.get_state_path(directory)
+        log_path = StateManager.get_internal_dir(directory) / "furu.log"
+        note = (
+            f"Furu directory: {directory}\n"
+            f"State file: {state_path}\n"
+            f"Log file: {log_path}"
+        )
+        exc.add_note(note)
+
+    @staticmethod
+    def _failed_state_hints() -> list[str]:
+        return [
+            "To retry this failed artifact: set FURU_RETRY_FAILED=1 or call load_or_create(retry_failed=True).",
+            "To inspect details: open the state file and furu.log shown above.",
+        ]
+
+    def _build_failed_state_error(
+        self,
+        directory: Path,
+        state: _FuruState | None,
+        *,
+        message: str,
+    ) -> FuruComputeError:
+        current_state = state or StateManager.read_state(directory)
+        attempt = current_state.attempt
+        error = getattr(attempt, "error", None) if attempt is not None else None
+        return FuruComputeError(
+            message,
+            StateManager.get_state_path(directory),
+            recorded_error_type=getattr(error, "type", None),
+            recorded_error_message=getattr(error, "message", None),
+            recorded_traceback=getattr(error, "traceback", None),
+            hints=self._failed_state_hints(),
+        )
+
+    def _effective_max_wait_time_sec(self) -> float | None:
+        if FURU_CONFIG.max_wait_time_sec is not None:
+            return FURU_CONFIG.max_wait_time_sec
+        return self._max_wait_time_sec
+
     def _check_timeout(self, start_time: float) -> None:
         """Check if operation has timed out."""
-        if self._max_wait_time_sec is not None:
-            if time.time() - start_time > self._max_wait_time_sec:
+        max_wait_time = self._effective_max_wait_time_sec()
+        if max_wait_time is not None:
+            if time.time() - start_time > max_wait_time:
                 raise FuruWaitTimeout(
-                    f"Furu operation timed out after {self._max_wait_time_sec} seconds."
+                    f"Furu operation timed out after {max_wait_time} seconds."
                 )
 
     def _is_migrated_state(self, directory: Path) -> bool:
@@ -667,6 +733,8 @@ class Furu[T](ABC):
         adapter: SubmititAdapter,
         directory: Path,
         on_job_id: Callable[[str], None] | None,
+        *,
+        allow_failed: bool,
     ) -> SubmititJob | None:
         """Submit job once without waiting (fire-and-forget mode)."""
         logger = get_logger()
@@ -735,7 +803,7 @@ class Furu[T](ABC):
                 scheduler={},
             )
 
-            job = adapter.submit(lambda: self._worker_entry())
+            job = adapter.submit(lambda: self._worker_entry(allow_failed=allow_failed))
 
             # Save job handle and watch for job ID
             adapter.pickle_job(job, directory)
@@ -771,7 +839,7 @@ class Furu[T](ABC):
         finally:
             StateManager.release_lock(lock_fd, lock_path)
 
-    def _worker_entry(self: Self) -> None:
+    def _worker_entry(self: Self, *, allow_failed: bool | None = None) -> None:
         """Entry point for worker process (called by submitit or locally)."""
         with enter_holder(self):
             logger = get_logger()
@@ -779,6 +847,9 @@ class Furu[T](ABC):
             directory.mkdir(parents=True, exist_ok=True)
 
             env_info = self._collect_submitit_env()
+            allow_failed_effective = (
+                allow_failed if allow_failed is not None else FURU_CONFIG.retry_failed
+            )
 
             try:
                 with compute_lock(
@@ -800,19 +871,23 @@ class Furu[T](ABC):
                     poll_interval_sec=FURU_CONFIG.poll_interval,
                     wait_log_every_sec=FURU_CONFIG.wait_log_every_sec,
                     reconcile_fn=lambda d: self._reconcile(d),
+                    allow_failed=allow_failed_effective,
                 ) as ctx:
-                    # Refresh metadata (now safe - attempt is already recorded)
-                    metadata = MetadataManager.create_metadata(
-                        self, directory, ignore_diff=FURU_CONFIG.ignore_git_diff
-                    )
-                    MetadataManager.write_metadata(metadata, directory)
-
-                    # Set up signal handlers
-                    self._setup_signal_handlers(
-                        directory, ctx.stop_heartbeat, attempt_id=ctx.attempt_id
-                    )
-
+                    stage = "metadata"
                     try:
+                        # Refresh metadata (now safe - attempt is already recorded)
+                        metadata = MetadataManager.create_metadata(
+                            self, directory, ignore_diff=FURU_CONFIG.ignore_git_diff
+                        )
+                        MetadataManager.write_metadata(metadata, directory)
+
+                        # Set up signal handlers
+                        stage = "signal handler setup"
+                        self._setup_signal_handlers(
+                            directory, ctx.stop_heartbeat, attempt_id=ctx.attempt_id
+                        )
+
+                        stage = "_create"
                         # Run computation
                         logger.debug(
                             "_create: begin %s %s %s",
@@ -840,13 +915,23 @@ class Furu[T](ABC):
                             extra={"furu_console_only": True},
                         )
                     except Exception as e:
-                        logger.error(
-                            "_create failed %s %s %s",
-                            self.__class__.__name__,
-                            self._furu_hash,
-                            directory,
-                            extra={"furu_file_only": True},
-                        )
+                        if stage == "_create":
+                            logger.error(
+                                "_create failed %s %s %s",
+                                self.__class__.__name__,
+                                self._furu_hash,
+                                directory,
+                                extra={"furu_file_only": True},
+                            )
+                        else:
+                            logger.error(
+                                "attempt failed (%s) %s %s %s",
+                                stage,
+                                self.__class__.__name__,
+                                self._furu_hash,
+                                directory,
+                                extra={"furu_file_only": True},
+                            )
                         logger.error(
                             "%s", format_traceback(e), extra={"furu_file_only": True}
                         )
@@ -863,6 +948,18 @@ class Furu[T](ABC):
                                 "traceback": tb,
                             },
                         )
+                        self._add_exception_breadcrumbs(e, directory)
+                        if stage != "_create":
+                            message = (
+                                "Failed to create metadata"
+                                if stage == "metadata"
+                                else "Failed to set up signal handlers"
+                            )
+                            raise FuruComputeError(
+                                message,
+                                StateManager.get_state_path(directory),
+                                e,
+                            ) from e
                         raise
             except FuruLockNotAcquired:
                 # Experiment already completed (success or failed), nothing to do
@@ -892,16 +989,22 @@ class Furu[T](ABC):
 
         return info
 
-    def _run_locally(self: Self, start_time: float) -> tuple[str, bool, T | None]:
+    def _run_locally(
+        self: Self,
+        start_time: float,
+        *,
+        allow_failed: bool,
+    ) -> tuple[str, bool, T | None]:
         """Run computation locally, returning (status, created_here, result)."""
         logger = get_logger()
         directory = self._base_furu_dir()
 
         # Calculate remaining time for the lock wait
         max_wait: float | None = None
-        if self._max_wait_time_sec is not None:
+        max_wait_time = self._effective_max_wait_time_sec()
+        if max_wait_time is not None:
             elapsed = time.time() - start_time
-            max_wait = max(0.0, self._max_wait_time_sec - elapsed)
+            max_wait = max(0.0, max_wait_time - elapsed)
 
         try:
             with compute_lock(
@@ -920,26 +1023,23 @@ class Furu[T](ABC):
                 poll_interval_sec=FURU_CONFIG.poll_interval,
                 wait_log_every_sec=FURU_CONFIG.wait_log_every_sec,
                 reconcile_fn=lambda d: self._reconcile(d),
+                allow_failed=allow_failed,
             ) as ctx:
-                # Create metadata (now safe - attempt is already recorded)
+                stage = "metadata"
                 try:
+                    # Create metadata (now safe - attempt is already recorded)
                     metadata = MetadataManager.create_metadata(
                         self, directory, ignore_diff=FURU_CONFIG.ignore_git_diff
                     )
                     MetadataManager.write_metadata(metadata, directory)
-                except Exception as e:
-                    raise FuruComputeError(
-                        "Failed to create metadata",
-                        StateManager.get_state_path(directory),
-                        e,
-                    ) from e
 
-                # Set up preemption handler
-                self._setup_signal_handlers(
-                    directory, ctx.stop_heartbeat, attempt_id=ctx.attempt_id
-                )
+                    # Set up preemption handler
+                    stage = "signal handler setup"
+                    self._setup_signal_handlers(
+                        directory, ctx.stop_heartbeat, attempt_id=ctx.attempt_id
+                    )
 
-                try:
+                    stage = "_create"
                     # Run the computation
                     logger.debug(
                         "_create: begin %s %s %s",
@@ -968,13 +1068,23 @@ class Furu[T](ABC):
                     )
                     return "success", True, result
                 except Exception as e:
-                    logger.error(
-                        "_create failed %s %s %s",
-                        self.__class__.__name__,
-                        self._furu_hash,
-                        directory,
-                        extra={"furu_file_only": True},
-                    )
+                    if stage == "_create":
+                        logger.error(
+                            "_create failed %s %s %s",
+                            self.__class__.__name__,
+                            self._furu_hash,
+                            directory,
+                            extra={"furu_file_only": True},
+                        )
+                    else:
+                        logger.error(
+                            "attempt failed (%s) %s %s %s",
+                            stage,
+                            self.__class__.__name__,
+                            self._furu_hash,
+                            directory,
+                            extra={"furu_file_only": True},
+                        )
                     logger.error(
                         "%s", format_traceback(e), extra={"furu_file_only": True}
                     )
@@ -992,6 +1102,18 @@ class Furu[T](ABC):
                             "traceback": tb,
                         },
                     )
+                    self._add_exception_breadcrumbs(e, directory)
+                    if stage != "_create":
+                        message = (
+                            "Failed to create metadata"
+                            if stage == "metadata"
+                            else "Failed to set up signal handlers"
+                        )
+                        raise FuruComputeError(
+                            message,
+                            StateManager.get_state_path(directory),
+                            e,
+                        ) from e
                     raise
         except FuruLockNotAcquired:
             # Lock couldn't be acquired because experiment already completed
