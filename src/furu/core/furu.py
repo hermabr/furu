@@ -653,8 +653,10 @@ class Furu[T](ABC):
         event: dict[str, str | int] = {
             "type": "migration_overwrite",
             "policy": record.policy,
-            "from": f"{record.from_namespace}:{record.from_hash}",
-            "to": f"{record.to_namespace}:{record.to_hash}",
+            "from_namespace": record.from_namespace,
+            "from_hash": record.from_hash,
+            "to_namespace": record.to_namespace,
+            "to_hash": record.to_hash,
             "reason": reason,
         }
         StateManager.append_event(directory, event.copy())

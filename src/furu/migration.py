@@ -507,8 +507,10 @@ def _apply_single_migration(
     event: dict[str, str | int] = {
         "type": "migrated",
         "policy": policy,
-        "from": f"{candidate.from_ref.namespace}:{candidate.from_ref.furu_hash}",
-        "to": f"{candidate.to_ref.namespace}:{candidate.to_ref.furu_hash}",
+        "from_namespace": candidate.from_ref.namespace,
+        "from_hash": candidate.from_ref.furu_hash,
+        "to_namespace": candidate.to_ref.namespace,
+        "to_hash": candidate.to_ref.furu_hash,
     }
     if default_values is not None:
         event["default_values"] = json.dumps(default_values, sort_keys=True)
@@ -519,8 +521,10 @@ def _apply_single_migration(
         overwrite_event = {
             "type": "migration_overwrite",
             "policy": policy,
-            "from": f"{candidate.from_ref.namespace}:{candidate.from_ref.furu_hash}",
-            "to": f"{candidate.to_ref.namespace}:{candidate.to_ref.furu_hash}",
+            "from_namespace": candidate.from_ref.namespace,
+            "from_hash": candidate.from_ref.furu_hash,
+            "to_namespace": candidate.to_ref.namespace,
+            "to_hash": candidate.to_ref.furu_hash,
             "reason": "force_overwrite",
         }
         StateManager.append_event(to_dir, overwrite_event)

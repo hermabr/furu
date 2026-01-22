@@ -23,6 +23,7 @@
 - For logic/behavior changes: run `make test` or `make test-all` or `make dashboard-test` or `make dashboard-test-e2e`
 
 - The project was renamed from huldra to furu. If I ever refer to huldra, assume I mean furu.
+- `furu_hash` is globally unique; do not build composite IDs (e.g., namespace + `furu_hash`).
 
 ## Workflow
 
