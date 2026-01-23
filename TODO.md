@@ -13,6 +13,10 @@
 - [x] make dashboard-dev should populate dummy data
 - [ ] Better and more complex filtering, maybe inspired by wandb etc
 - [ ] Flag for allowing running in either debug mode or running __main__. Probably it should redirect the output to a temp directory
+- [ ] Option to add a _name or _names property which returns pretty names for my experiments. Maybe i want something similar to collections and tags too
+- [ ] In general, if you first run _create i don't want to unnecessarily call _load again inside a .get. Also if there are other similar obvious places to make it faster, use those
+    - I probably still want to reload in .get when i call it from another object, rather than caching it in memory in case the next task wants to reload it
+- [ ] consider moving from time.time() to time.perf_counter() for measuring elapsed time
 
 ## Code Quality
 
@@ -34,9 +38,9 @@
 - [ ] Orphan detection - Find artifacts no longer referenced by code
 - [ ] Cache miss explanation - "This will recompute because field X changed"
 - [ ] Hash diff tool - Show which fields differ between two experiments
-- [ ] check how to make implicit dependencies (probably this is doable with chz?)
-    - [ ] Add support for lazily computing dependencies (maybe)
-    - [ ] Have a def _dependencies(self) -> list[type[Furu]] which returns all the dependencies of the experiment that i don't want to define as fields
+- [x] check how to make implicit dependencies (probably this is doable with chz?)
+    - [x] Add support for lazily computing dependencies (maybe)
+    - [x] Have a def _dependencies(self) -> list[type[Furu]] which returns all the dependencies of the experiment that i don't want to define as fields
 
 ## Execution & Compute
 
@@ -44,6 +48,39 @@
 - [ ] Resource tracking - Track peak memory, CPU time, GPU usage during `_create()`
 - [ ] Checkpointing - Resume long-running computations from checkpoints
 - [ ] Record how long it took to compute an artifact and show in the dashboard
+- [ ] Add either .load or .load_or_throw which loads an artifact if it exists and otherwise throws an error
+- [ ] support a .debug or .debug_run or .run_debug which will load all dependencies from where they usually get loaded, but that makes all new artifacts in some tmp directory (or env variable)
+- [ ] Executor. Checklist:
+    - [ ] I don't want backwards compatibility with any preserving of the old load_or_create, such as a _get_interactive method
+    - [ ] Rather than having it return "cpu" as default spec, it should return "default" which you then provide to the executor in the `run` method
+    - [ ] Remove the getattr if possible
+    - [ ] Warn if calling .get on a node that is not in the dependencies
+    - [ ] Don't call the new executor api a new package (currntly in 1.2 it says new package)
+    - [ ] spec should be SlurmSpec | None, where None means default, rather than having a string
+        - [ ] it might be fine to keep it as-is since we can verify this while building the executor. in that case, enforce this strictly that spec dict has all the keys
+        - [ ] i should still support giving it some type safe thing
+    - [ ] move the if self.exsits() and then load to very early (and maybe also speed it up even more after benchmarking, such as checking if .success file exists)
+    - [ ] handle something was running but then later it crashes
+    - [ ] decide if there is a better name than force for .get that is more descriptive than force
+    - [ ] rename window_size and "dfs"/"bfs" to something better
+    - [ ] support batching for slurm job submissions (both for the per-job and for the mass-parallel)
+    - [ ] in the per-job submissions, the slurm logs should be inside the <furu-hash>/.furu/submitit folder
+    - [ ] decide if i even want the per-job submission (i probably do)
+    - [ ] move from the current file system to sqlite (maybe)?
+    - [ ] decide if i need "obj": { ...FuruSerializer dict... } inside the mass-parallel jobs
+    - [ ] currently int he file system, it makes a runs/<run-id> folder where it puts the jobs. say i later submit a different run with some shared dependencies, how are the pending/currently running runs handled? does it periodically check if the runs are completed?
+    - [ ] support one executor inheriting an alive worker in the mass-parallel world so that each executor doesn't need to spin up a new worker if one already exists and if the original executor no longer needs it
+    - [ ] have periodic check in on running jobs in the mass-parallel world both by checking in the file system if they are .success and by sometimes (less often) querying slurm
+    - [ ] decide on the rule for selecting which workers to spawn
+        - [ ] based on which workers don't exist at all
+        - [ ] based on estimated time to complete each
+        - [ ] based on which are higher up in the tree
+        - [ ] based on randomness
+        - [ ] based on size of backlog
+        - [ ] based on some rank over the specs that the user defines themselves
+        - [ ] based on root node priority?
+    - [ ] put the todos within a single spec in some ranked order (if stable, do something like namespace priority, class name priority)
+        - [ ] maybe also the root node priority as the first entry?
 
 ### Submitit
 
@@ -85,6 +122,7 @@
 - [ ] View experiment logs
 - [ ] Show which experiments are version controlled
 - [ ] Support different ways of sorting the experiments, such as by subclass, by time created, by updated time, by dependencies, by runtime, by status (e.g., running before queued)
+- [ ] Build static overview which produces a zip with with information about all experiments, but not the large files. This will allow us to call one function on the remote machine, download a zip and then open the dashboard locally to get a full overview of current state of experiments
 
 ### UI/UX
 
