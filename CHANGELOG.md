@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.0.4
 
 - Add stable `Furu.furu_hash` accessor for artifact identity.
 - Package dashboard frontend assets and report package version in dashboard metadata and health responses.
