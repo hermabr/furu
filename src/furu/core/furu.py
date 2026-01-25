@@ -9,6 +9,7 @@ import threading
 import time
 import traceback
 from abc import ABC, abstractmethod
+from functools import cached_property
 from pathlib import Path
 from types import FrameType
 from typing import (
@@ -267,7 +268,7 @@ class Furu[T](ABC):
         """Return the stable content hash for this Furu object."""
         return self._furu_hash
 
-    @property
+    @cached_property
     def _furu_hash(self: Self) -> str:
         """Compute hash of this object's content for storage identification."""
         return FuruSerializer.compute_hash(self)
