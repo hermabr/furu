@@ -25,7 +25,7 @@ class _FuruListMeta(type):
             if not isinstance(obj, Furu):
                 raise TypeError(f"{obj!r} is not a Furu instance")
 
-            digest = obj._furu_hash
+            digest = obj.furu_hash
             if digest not in seen:
                 seen.add(digest)
                 items.append(cast(_H, obj))

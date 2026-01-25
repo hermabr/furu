@@ -22,17 +22,16 @@ from typing import (
     Protocol,
     Self,
     Sequence,
-    TypedDict,
     TypeAlias,
+    TypedDict,
     TypeVar,
     cast,
 )
 
 import chz
 import submitit
-from typing_extensions import dataclass_transform
-
 from chz.field import Field as ChzField
+from typing_extensions import dataclass_transform
 
 from ..adapters import SubmititAdapter
 from ..adapters.submitit import SubmititJob
@@ -266,6 +265,13 @@ class Furu[T](ABC):
     @property
     def furu_hash(self: Self) -> str:
         """Return the stable content hash for this Furu object."""
+        deps_token = id(type(self)._dependencies)
+        cache = getattr(self, "__dict__", None)
+        if isinstance(cache, dict):
+            cached_token = cache.get("_furu_hash_dependency_token")
+            if cached_token is not None and cached_token != deps_token:
+                cache.pop("_furu_hash", None)
+            cache["_furu_hash_dependency_token"] = deps_token
         return self._furu_hash
 
     @cached_property
@@ -383,72 +389,109 @@ class Furu[T](ABC):
         Raises:
             FuruComputeError: If computation fails with detailed error information
         """
-        from furu.execution.context import EXEC_CONTEXT
         from furu.errors import (
             FuruExecutionError,
             FuruMissingArtifact,
             FuruSpecMismatch,
         )
+        from furu.execution.context import EXEC_CONTEXT
 
         ctx = EXEC_CONTEXT.get()
         if ctx.mode == "executor":
-            directory = self._base_furu_dir()
-            if force:
-                if (
-                    ctx.current_node_hash is None
-                    or self._furu_hash != ctx.current_node_hash
-                ):
-                    raise FuruExecutionError(
-                        "force=True not allowed: only the current node may compute in executor mode. "
-                        f"current_node_hash={ctx.current_node_hash!r} "
-                        f"obj={self.__class__.__name__}({self._furu_hash})",
-                        hints=[
-                            "Declare this object as a dependency instead of calling dep.get(force=True).",
-                            "Inside executor mode, use get(force=True) only on the node being executed.",
-                        ],
+            logger = get_logger()
+            parent_holder = current_holder()
+            has_parent = parent_holder is not None and parent_holder is not self
+            needs_holder = parent_holder is None or has_parent
+            caller_info: _CallerInfo = {}
+            if has_parent:
+                caller_info = self._get_caller_info()
+
+            def _executor_get() -> T:
+                directory = self._base_furu_dir()
+                if force:
+                    if (
+                        ctx.current_node_hash is None
+                        or self._furu_hash != ctx.current_node_hash
+                    ):
+                        raise FuruExecutionError(
+                            "force=True not allowed: only the current node may compute in executor mode. "
+                            f"current_node_hash={ctx.current_node_hash!r} "
+                            f"obj={self.__class__.__name__}({self._furu_hash})",
+                            hints=[
+                                "Declare this object as a dependency instead of calling dep.get(force=True).",
+                                "Inside executor mode, use get(force=True) only on the node being executed.",
+                            ],
+                        )
+                    self._prepare_executor_rerun(directory)
+
+                exists_ok = self._exists_quiet()
+                if exists_ok and not (force and self._always_rerun()):
+                    return self._load()
+
+                if force and not exists_ok:
+                    state = self.get_state(directory)
+                    if isinstance(state.result, _StateResultSuccess):
+                        self._invalidate_cached_success(
+                            directory, reason="_validate returned false (executor)"
+                        )
+
+                if not force:
+                    raise FuruMissingArtifact(
+                        "Missing artifact "
+                        f"{self.__class__.__name__}({self._furu_hash}) in executor mode. "
+                        f"Requested by {ctx.current_node_hash}. Declare it as a dependency."
                     )
-                self._prepare_executor_rerun(directory)
 
-            exists_ok = self._exists_quiet()
-            if exists_ok and not (force and self._always_rerun()):
-                return self._load()
-
-            if force and not exists_ok:
-                state = self.get_state(directory)
-                if isinstance(state.result, _StateResultSuccess):
-                    self._invalidate_cached_success(
-                        directory, reason="_validate returned false (executor)"
+                required = self._executor_spec_key()
+                if ctx.spec_key is None or required != ctx.spec_key:
+                    raise FuruSpecMismatch(
+                        "force=True not allowed: "
+                        f"required={required!r} != worker={ctx.spec_key!r} (v1 exact match)"
                     )
 
-            if not force:
-                raise FuruMissingArtifact(
-                    "Missing artifact "
-                    f"{self.__class__.__name__}({self._furu_hash}) in executor mode. "
-                    f"Requested by {ctx.current_node_hash}. Declare it as a dependency."
+                status, created_here, result = self._run_locally(
+                    start_time=time.time(),
+                    allow_failed=FURU_CONFIG.retry_failed,
+                    executor_mode=True,
+                )
+                if status == "success":
+                    if created_here:
+                        return cast(T, result)
+                    return self._load()
+
+                raise self._build_failed_state_error(
+                    self._base_furu_dir(),
+                    None,
+                    message="Computation previously failed",
                 )
 
-            required = self._executor_spec_key()
-            if ctx.spec_key is None or required != ctx.spec_key:
-                raise FuruSpecMismatch(
-                    "force=True not allowed: "
-                    f"required={required!r} != worker={ctx.spec_key!r} (v1 exact match)"
+            if has_parent:
+                logger.debug(
+                    "dep: begin %s %s %s",
+                    self.__class__.__name__,
+                    self._furu_hash,
+                    self._base_furu_dir(),
+                    extra=caller_info,
                 )
 
-            status, created_here, result = self._run_locally(
-                start_time=time.time(),
-                allow_failed=FURU_CONFIG.retry_failed,
-                executor_mode=True,
-            )
-            if status == "success":
-                if created_here:
-                    return cast(T, result)
-                return self._load()
-
-            raise self._build_failed_state_error(
-                self._base_furu_dir(),
-                None,
-                message="Computation previously failed",
-            )
+            ok = False
+            try:
+                if needs_holder:
+                    with enter_holder(self):
+                        result = _executor_get()
+                else:
+                    result = _executor_get()
+                ok = True
+                return result
+            finally:
+                if has_parent:
+                    logger.debug(
+                        "dep: end %s %s (%s)",
+                        self.__class__.__name__,
+                        self._furu_hash,
+                        "ok" if ok else "error",
+                        extra=caller_info,
+                    )
 
         return self._get_impl_interactive(force=force)
 
@@ -456,6 +499,7 @@ class Furu[T](ABC):
         logger = get_logger()
         parent_holder = current_holder()
         has_parent = parent_holder is not None and parent_holder is not self
+        caller_info = self._get_caller_info()
         retry_failed_effective = FURU_CONFIG.retry_failed
         if has_parent:
             logger.debug(
@@ -463,6 +507,7 @@ class Furu[T](ABC):
                 self.__class__.__name__,
                 self._furu_hash,
                 self._base_furu_dir(),
+                extra=caller_info,
             )
 
         ok = False
@@ -583,7 +628,10 @@ class Furu[T](ABC):
                 # Cache hits can be extremely noisy in pipelines; keep logs for state
                 # transitions (create/wait) and error cases, but suppress repeated
                 # "success->load" lines and the raw separator on successful loads.
-                self._log_console_start(action_color=action_color)
+                self._log_console_start(
+                    action_color=action_color,
+                    caller_info=caller_info,
+                )
 
                 if decision != "success->load":
                     write_separator()
@@ -593,7 +641,10 @@ class Furu[T](ABC):
                         self._furu_hash,
                         directory,
                         decision,
-                        extra={"furu_action_color": action_color},
+                        extra={
+                            "furu_action_color": action_color,
+                            **caller_info,
+                        },
                     )
 
                 # Fast path: already successful
@@ -649,13 +700,12 @@ class Furu[T](ABC):
                     self.__class__.__name__,
                     self._furu_hash,
                     "ok" if ok else "error",
+                    extra=caller_info,
                 )
 
-    def _log_console_start(self, action_color: str) -> None:
-        """Log the start of get to console with caller info."""
-        logger = get_logger()
+    @staticmethod
+    def _get_caller_info() -> _CallerInfo:
         frame = sys._getframe(1)
-
         caller_info: _CallerInfo = {}
         if frame is not None:
             # Walk up the stack to find the caller outside of furu package
@@ -670,6 +720,15 @@ class Furu[T](ABC):
                     }
                     break
                 frame = frame.f_back
+        return caller_info
+
+    def _log_console_start(
+        self, action_color: str, caller_info: _CallerInfo | None = None
+    ) -> None:
+        """Log the start of get to console with caller info."""
+        logger = get_logger()
+        if caller_info is None:
+            caller_info = self._get_caller_info()
 
         logger.info(
             "get %s %s",
@@ -1505,7 +1564,7 @@ def _sorted_dependency_set(
 
 def _dependency_sort_key(value: DependencyScanValue) -> tuple[int, str]:
     if isinstance(value, Furu):
-        return (0, value._furu_hash)
+        return (0, cast(str, value._furu_hash))
     return (1, f"{type(value).__name__}:{value!r}")
 
 

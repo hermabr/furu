@@ -1,9 +1,11 @@
 import json
 import logging
+from pathlib import Path
 
 import pytest
 
 import furu
+from furu.execution import run_local
 from furu.runtime.logging import _FuruRichConsoleHandler
 
 
@@ -38,6 +40,37 @@ class SeparatorItem(furu.Furu[int]):
 
     def _load(self) -> int:
         return json.loads((self.furu_dir / "value.json").read_text())
+
+
+class LocalExecItem(furu.Furu[int]):
+    value: int
+
+    @property
+    def _data_path(self) -> Path:
+        return self.furu_dir / "value.txt"
+
+    def _create(self) -> int:
+        self._data_path.write_text(str(self.value))
+        return self.value
+
+    def _load(self) -> int:
+        return int(self._data_path.read_text())
+
+
+class LocalExecParent(furu.Furu[int]):
+    child: LocalExecItem
+
+    @property
+    def _data_path(self) -> Path:
+        return self.furu_dir / "parent.txt"
+
+    def _create(self) -> int:
+        result = self.child.get()
+        self._data_path.write_text(str(result))
+        return result
+
+    def _load(self) -> int:
+        return int(self._data_path.read_text())
 
 
 def test_log_routes_to_current_holder_dir(furu_tmp_root) -> None:
@@ -101,6 +134,27 @@ def test_get_does_not_log_on_cache_hit(
     assert f"get {obj.__class__.__name__} {obj.furu_hash}" in text
     assert str(obj.furu_dir) in text
     assert text.count("_create: ok ") == 1
+
+
+def test_run_local_logs_to_holder_dir(furu_tmp_root) -> None:
+    obj = LocalExecItem(value=1)
+    run_local([obj], max_workers=1)
+
+    log_path = obj.furu_dir / ".furu" / "furu.log"
+    assert log_path.exists()
+    text = log_path.read_text()
+    assert "_create: begin" in text
+    assert "_create: ok" in text
+
+
+def test_run_local_logs_dependency_access(furu_tmp_root) -> None:
+    child = LocalExecItem(value=1)
+    parent = LocalExecParent(child=child)
+    run_local([parent], max_workers=1)
+
+    text = (parent.furu_dir / ".furu" / "furu.log").read_text()
+    assert f"dep: begin {child.__class__.__name__} {child.furu_hash}" in text
+    assert f"dep: end {child.__class__.__name__} {child.furu_hash} (ok)" in text
 
 
 def test_rich_console_colors_only_get_token() -> None:

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Route local executor run logs to each artifact's `.furu/furu.log`.
+- Include caller locations for get/dependency logs (including `furu.log` call sites).
+- Refresh cached `furu_hash` values when dependency specs change.
+
 ## v0.0.4
 
 - Add stable `Furu.furu_hash` accessor for artifact identity.

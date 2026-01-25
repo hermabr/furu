@@ -6,6 +6,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from ..config import FURU_CONFIG
 from ..core import Furu
 from ..errors import FuruComputeError, FuruError
+from ..runtime.logging import enter_holder
 from ..storage.state import StateManager
 from .context import EXEC_CONTEXT, ExecContext
 from .plan import PlanNode, build_plan, ready_todo
@@ -42,7 +43,8 @@ def _run_node(node: PlanNode) -> None:
         )
     )
     try:
-        node.obj.get(force=True)
+        with enter_holder(node.obj):
+            node.obj.get(force=True)
     finally:
         EXEC_CONTEXT.reset(token)
 

@@ -4,6 +4,7 @@ import datetime
 import logging
 import os
 import threading
+import sys
 from pathlib import Path
 from typing import Generator, Protocol
 
@@ -101,6 +102,16 @@ class _FuruLogFormatter(logging.Formatter):
     ) -> str:
         dt = datetime.datetime.fromtimestamp(record.created, tz=datetime.timezone.utc)
         return dt.isoformat(timespec="seconds")
+
+    def format(self, record: logging.LogRecord) -> str:
+        caller_file = getattr(record, "furu_caller_file", None)
+        caller_line = getattr(record, "furu_caller_line", None)
+        if isinstance(caller_file, str) and isinstance(caller_line, int):
+            location = f"{Path(caller_file).name}:{caller_line}"
+        else:
+            location = f"{record.filename}:{record.lineno}"
+        record.furu_location = location  # type: ignore[attr-defined]
+        return super().format(record)
 
 
 class _FuruContextFileHandler(logging.Handler):
@@ -241,7 +252,7 @@ def configure_logging() -> None:
         handler.addFilter(_FuruFileFilter())
         handler.setFormatter(
             _FuruLogFormatter(
-                "%(asctime)s [%(levelname)s] %(name)s %(filename)s:%(lineno)d %(message)s"
+                "%(asctime)s [%(levelname)s] %(name)s %(furu_location)s %(message)s"
             )
         )
         root.addHandler(handler)
@@ -280,7 +291,20 @@ def log(message: str, *, level: str = "INFO") -> Path:
         raise ValueError(f"Unknown log level: {level!r}")
 
     configure_logging()
-    get_logger().log(level_no, message)
+    caller_info: dict[str, object] = {}
+    frame = sys._getframe(1)
+    if frame is not None:
+        furu_pkg_dir = str(Path(__file__).parent.parent)
+        while frame is not None:
+            filename = frame.f_code.co_filename
+            if not filename.startswith(furu_pkg_dir):
+                caller_info = {
+                    "furu_caller_file": filename,
+                    "furu_caller_line": frame.f_lineno,
+                }
+                break
+            frame = frame.f_back
+    get_logger().log(level_no, message, extra=caller_info)
     return log_path
 
 
