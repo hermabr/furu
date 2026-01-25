@@ -5,6 +5,7 @@
 - Route local executor run logs to each artifact's `.furu/furu.log`.
 - Include caller locations for get/dependency logs (including `furu.log` call sites).
 - Create each artifact `.furu` directory once during computation setup to avoid repeated mkdirs.
+- Skip `state.json` rewrites for no-op state updates (including heartbeat mismatches).
 
 ## v0.0.4
 

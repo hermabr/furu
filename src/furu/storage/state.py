@@ -489,19 +489,23 @@ class StateManager:
 
     @classmethod
     def update_state(
-        cls, directory: Path, mutator: Callable[[_FuruState], None]
+        cls, directory: Path, mutator: Callable[[_FuruState], bool | None]
     ) -> _FuruState:
         lock_path = cls.get_lock_path(directory, cls.STATE_LOCK)
         fd: int | None = None
         try:
             fd = cls._acquire_lock_blocking(lock_path)
+            state_path = cls.get_state_path(directory)
+            force_write = not state_path.is_file()
             state = cls.read_state(directory)
-            mutator(state)
-            state.schema_version = cls.SCHEMA_VERSION
-            state.updated_at = cls._iso_now()
-            validated = _FuruState.model_validate(state)
-            cls._write_state_unlocked(directory, validated)
-            return validated
+            changed = mutator(state)
+            if force_write or changed is not False:
+                state.schema_version = cls.SCHEMA_VERSION
+                state.updated_at = cls._iso_now()
+                validated = _FuruState.model_validate(state)
+                cls._write_state_unlocked(directory, validated)
+                return validated
+            return state
         finally:
             cls.release_lock(fd, lock_path)
 
@@ -668,19 +672,20 @@ class StateManager:
     ) -> bool:
         ok = False
 
-        def mutate(state: _FuruState) -> None:
+        def mutate(state: _FuruState) -> bool:
             nonlocal ok
             attempt = state.attempt
             if not isinstance(attempt, _StateAttemptRunning):
-                return
+                return False
             if attempt.id != attempt_id:
-                return
+                return False
             now = cls._utcnow()
             expires = now + _dt.timedelta(seconds=float(lease_duration_sec))
             attempt.heartbeat_at = now.isoformat(timespec="seconds")
             attempt.lease_duration_sec = float(lease_duration_sec)
             attempt.lease_expires_at = expires.isoformat(timespec="seconds")
             ok = True
+            return True
 
         cls.update_state(directory, mutate)
         return ok
@@ -691,18 +696,26 @@ class StateManager:
     ) -> bool:
         ok = False
 
-        def mutate(state: _FuruState) -> None:
+        def mutate(state: _FuruState) -> bool:
             nonlocal ok
             attempt = state.attempt
             if attempt is None or attempt.id != attempt_id:
-                return
+                return False
+            changed = False
             for key, value in fields.items():
                 if key == "scheduler" and isinstance(value, dict):
-                    attempt.scheduler.update(value)
+                    for scheduler_key, scheduler_value in value.items():
+                        if attempt.scheduler.get(scheduler_key) != scheduler_value:
+                            attempt.scheduler[scheduler_key] = scheduler_value
+                            changed = True
                     continue
                 if hasattr(attempt, key):
-                    setattr(attempt, key, value)
-            ok = True
+                    current_value = getattr(attempt, key)
+                    if current_value != value:
+                        setattr(attempt, key, value)
+                        changed = True
+            ok = changed
+            return changed
 
         cls.update_state(directory, mutate)
         return ok
@@ -844,10 +857,10 @@ class StateManager:
           to lease expiry.
         """
 
-        def mutate(state: _FuruState) -> None:
+        def mutate(state: _FuruState) -> bool:
             attempt = state.attempt
             if not isinstance(attempt, (_StateAttemptQueued, _StateAttemptRunning)):
-                return
+                return False
 
             # Fast promotion if we can see a durable success marker.
             if cls.success_marker_exists(directory):
@@ -867,7 +880,7 @@ class StateManager:
                 state.result = _coerce_result(
                     state.result, status="success", created_at=ended
                 )
-                return
+                return True
 
             backend = attempt.backend
             now = cls._iso_now()
@@ -901,7 +914,7 @@ class StateManager:
                     reason = "lease_expired"
 
             if terminal_status is None:
-                return
+                return False
             if terminal_status == "success":
                 terminal_status = "crashed"
                 reason = reason or "scheduler_success_no_success_marker"
@@ -972,6 +985,7 @@ class StateManager:
                 state.result,
                 status="failed" if terminal_status == "failed" else "incomplete",
             )
+            return True
 
         state = cls.update_state(directory, mutate)
         attempt = state.attempt

@@ -19,7 +19,10 @@ def test_furu_mkdir_calls_new_vs_existing(furu_tmp_root, monkeypatch) -> None:
     all_calls: list[Path] = []
     furu_calls: list[Path] = []
     original = Path.mkdir
-    furu_base = Path(furu.__file__).resolve().parent
+    furu_file = furu.__file__
+    if furu_file is None:  # pragma: no cover - import should always have __file__
+        raise RuntimeError("furu.__file__ was None")
+    furu_base = Path(furu_file).resolve().parent
 
     def wrapped(
         self: Path,

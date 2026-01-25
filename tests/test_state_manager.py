@@ -8,6 +8,7 @@ import furu
 import pytest
 from furu.errors import FuruLockNotAcquired, FuruWaitTimeout
 from furu.storage.state import (
+    _FuruState,
     _StateResultAbsent,
     _StateResultIncomplete,
     _StateResultSuccess,
@@ -127,6 +128,77 @@ def test_reconcile_marks_dead_local_attempt_as_crashed(furu_tmp_root, tmp_path) 
     assert state2.attempt is not None
     assert state2.attempt.status == "crashed"
     assert lock_path.exists() is False
+
+
+def test_update_state_skips_write_on_noop_mutator(
+    furu_tmp_root, tmp_path, monkeypatch
+) -> None:
+    directory = tmp_path / "obj"
+    furu.StateManager.ensure_internal_dir(directory)
+    furu.StateManager.start_attempt_running(
+        directory,
+        backend="local",
+        lease_duration_sec=60.0,
+        owner={"pid": 99999, "host": socket.gethostname(), "user": "x"},
+        scheduler={},
+    )
+    before = furu.StateManager.read_state(directory)
+    write_calls: list[Path] = []
+
+    original = furu.StateManager._write_state_unlocked
+
+    def wrapped(directory: Path, state: _FuruState) -> None:
+        write_calls.append(directory)
+        return original(directory, state)
+
+    monkeypatch.setattr(
+        furu.StateManager,
+        "_write_state_unlocked",
+        staticmethod(wrapped),
+    )
+
+    def mutate(state: _FuruState) -> bool:
+        _ = state
+        return False
+
+    furu.StateManager.update_state(directory, mutate)
+    after = furu.StateManager.read_state(directory)
+
+    assert write_calls == []
+    assert after.updated_at == before.updated_at
+
+
+def test_update_state_forces_write_when_missing_state(
+    furu_tmp_root, tmp_path, monkeypatch
+) -> None:
+    directory = tmp_path / "obj"
+    furu.StateManager.ensure_internal_dir(directory)
+    state_path = furu.StateManager.get_state_path(directory)
+    assert state_path.exists() is False
+    write_calls: list[Path] = []
+
+    original = furu.StateManager._write_state_unlocked
+
+    def wrapped(directory: Path, state: _FuruState) -> None:
+        write_calls.append(directory)
+        return original(directory, state)
+
+    monkeypatch.setattr(
+        furu.StateManager,
+        "_write_state_unlocked",
+        staticmethod(wrapped),
+    )
+
+    def mutate(state: _FuruState) -> bool:
+        _ = state
+        return False
+
+    furu.StateManager.update_state(directory, mutate)
+    state = furu.StateManager.read_state(directory)
+
+    assert write_calls == [directory]
+    assert state_path.exists() is True
+    assert state.updated_at is not None
 
 
 def test_state_warns_when_retrying_after_failure(
