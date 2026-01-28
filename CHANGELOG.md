@@ -2,17 +2,14 @@
 
 ## Unreleased
 
-- Use `SUCCESS.json` markers for `exists()`/planner cache checks and alias resolution to avoid `state.json` reads.
-- Move attempt heartbeats to compute-lock mtimes and remove `heartbeat_at` from state and dashboard APIs (breaking).
-- Route local executor run logs to each artifact's `.furu/furu.log`.
-- Include caller locations for get/dependency logs (including `furu.log` call sites).
-- Create each artifact `.furu` directory once during computation setup to avoid repeated mkdirs.
-- Skip `state.json` rewrites for no-op state updates (including heartbeat mismatches).
-- Use non-hidden lock filenames inside `.furu` (`compute.lock`, `submit.lock`, `state.lock`).
-- Document all environment variables in the README.
-- Consolidate git metadata env config into `FURU_RECORD_GIT` and `FURU_ALLOW_NO_GIT_ORIGIN`.
-- Stop auto-loading `.env` (call `furu.load_env()` if needed).
-- Cache `Furu.furu_hash` and `Furu.furu_dir` on instance access.
+- Speed up state/plan checks with SUCCESS markers,
+  cached `furu_hash`/`furu_dir`, and fewer writes/mkdirs.
+- Switch lock files to visible names and use compute-lock
+  mtimes for heartbeats (breaking: drop `heartbeat_at`).
+- Route per-artifact logs to `.furu/furu.log` and add
+  caller locations for get/dependency logs.
+- Update git provenance config (`FURU_RECORD_GIT`,
+  `FURU_ALLOW_NO_GIT_ORIGIN`) and `.env` docs.
 
 ## v0.0.4
 
