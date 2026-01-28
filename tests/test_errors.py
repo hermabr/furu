@@ -170,7 +170,7 @@ class ValidateReturnsFalse(furu.Furu[int]):
 
 def test_get_recomputes_if_validate_returns_false(furu_tmp_root) -> None:
     obj = ValidateReturnsFalse()
-    obj.furu_dir.mkdir(parents=True, exist_ok=True)
+    furu.StateManager.ensure_internal_dir(obj.furu_dir)
 
     def mutate(state) -> None:
         state.result = _StateResultSuccess(status="success", created_at="x")

@@ -456,6 +456,7 @@ def _apply_single_migration(
         shutil.rmtree(to_dir)
 
     to_dir.mkdir(parents=True, exist_ok=True)
+    StateManager.ensure_internal_dir(to_dir)
     now = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
 
     if policy in {"move", "copy"}:
@@ -557,8 +558,6 @@ def _copy_state(from_dir: Path, to_dir: Path, *, clear_source: bool) -> None:
     src_internal = from_dir / StateManager.INTERNAL_DIR
     if not src_internal.exists():
         return
-    dst_internal = to_dir / StateManager.INTERNAL_DIR
-    dst_internal.mkdir(parents=True, exist_ok=True)
     state_path = StateManager.get_state_path(from_dir)
     if state_path.is_file():
         shutil.copy2(state_path, StateManager.get_state_path(to_dir))

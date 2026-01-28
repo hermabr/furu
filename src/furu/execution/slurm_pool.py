@@ -299,7 +299,7 @@ def _missing_spec_keys(
         if node.spec_key in specs:
             continue
         missing.setdefault(node.spec_key, []).append(
-            f"{node.obj.__class__.__name__}({node.obj._furu_hash})"
+            f"{node.obj.__class__.__name__}({node.obj.furu_hash})"
         )
     return missing
 
@@ -777,7 +777,7 @@ def run_slurm_pool(
             failed = [node for node in plan.nodes.values() if node.status == "FAILED"]
             if failed:
                 names = ", ".join(
-                    f"{node.obj.__class__.__name__}({node.obj._furu_hash})"
+                    f"{node.obj.__class__.__name__}({node.obj.furu_hash})"
                     for node in failed
                 )
                 raise RuntimeError(
@@ -834,8 +834,8 @@ def run_slurm_pool(
         finished_indices = [
             index
             for index in active_indices
-            if plan.nodes.get(roots[index]._furu_hash) is not None
-            and plan.nodes[roots[index]._furu_hash].status == "DONE"
+            if plan.nodes.get(roots[index].furu_hash) is not None
+            and plan.nodes[roots[index].furu_hash].status == "DONE"
         ]
         for index in finished_indices:
             active_indices.remove(index)
@@ -859,7 +859,7 @@ def run_slurm_pool(
             todo_nodes = [node for node in plan.nodes.values() if node.status == "TODO"]
             if todo_nodes:
                 sample = ", ".join(
-                    f"{node.obj.__class__.__name__}({node.obj._furu_hash})"
+                    f"{node.obj.__class__.__name__}({node.obj.furu_hash})"
                     for node in todo_nodes[:3]
                 )
                 raise RuntimeError(

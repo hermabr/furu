@@ -19,7 +19,7 @@ from ..serialization.serializer import JsonValue
 if TYPE_CHECKING:
     from ..core.furu import Furu
 
-# Module-level cache for metadata (controlled via FURU_CACHE_METADATA)
+# Module-level cache for metadata (controlled via FURU_RECORD_GIT=cached)
 _cached_git_info: "GitInfo | None" = None
 _cached_git_info_time: float = 0.0
 
@@ -113,6 +113,16 @@ class MetadataManager:
         global _cached_git_info, _cached_git_info_time
         import time
 
+        record_git = FURU_CONFIG.record_git
+        if record_git == "ignore":
+            return GitInfo(
+                git_commit="<ignored>",
+                git_branch="<ignored>",
+                git_remote=None,
+                git_patch="<ignored>",
+                git_submodules={},
+            )
+
         ttl = FURU_CONFIG.cache_metadata_ttl_sec
         # Return cached result if caching is enabled and not expired
         if ttl is not None and _cached_git_info is not None:
@@ -120,41 +130,28 @@ class MetadataManager:
             if age < ttl:
                 return _cached_git_info
 
-        if not FURU_CONFIG.require_git:
-            try:
-                head = cls.run_git_command(["rev-parse", "HEAD"])
-                branch = cls.run_git_command(["rev-parse", "--abbrev-ref", "HEAD"])
-            except (subprocess.CalledProcessError, FileNotFoundError):
-                return GitInfo(
-                    git_commit="<no-git>",
-                    git_branch="<no-git>",
-                    git_remote=None,
-                    git_patch="<no-git>",
-                    git_submodules={},
-                )
-        else:
-            try:
-                head = cls.run_git_command(["rev-parse", "HEAD"])
-                branch = cls.run_git_command(["rev-parse", "--abbrev-ref", "HEAD"])
-            except (subprocess.CalledProcessError, FileNotFoundError) as e:
-                raise RuntimeError(
-                    "Failed to read git commit/branch for provenance. "
-                    "If this is expected, set FURU_REQUIRE_GIT=0."
-                ) from e
+        try:
+            head = cls.run_git_command(["rev-parse", "HEAD"])
+            branch = cls.run_git_command(["rev-parse", "--abbrev-ref", "HEAD"])
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            raise RuntimeError(
+                "Failed to read git commit/branch for provenance. "
+                "If this is expected, set FURU_RECORD_GIT=ignore."
+            ) from e
 
-        if FURU_CONFIG.require_git_remote:
+        if FURU_CONFIG.allow_no_git_origin:
+            try:
+                remote = cls.run_git_command(["remote", "get-url", "origin"])
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                remote = None
+        else:
             try:
                 remote = cls.run_git_command(["remote", "get-url", "origin"])
             except (subprocess.CalledProcessError, FileNotFoundError) as e:
                 raise RuntimeError(
                     "Git remote 'origin' is required for provenance but was not found. "
-                    "Set FURU_REQUIRE_GIT_REMOTE=0 to allow missing origin."
+                    "Set FURU_ALLOW_NO_GIT_ORIGIN=1 to allow missing origin."
                 ) from e
-        else:
-            try:
-                remote = cls.run_git_command(["remote", "get-url", "origin"])
-            except (subprocess.CalledProcessError, FileNotFoundError):
-                remote = None
 
         if ignore_diff:
             patch = "<ignored-diff>"
@@ -187,7 +184,7 @@ class MetadataManager:
             if len(patch) > 50_000:
                 raise ValueError(
                     f"Git diff too large ({len(patch):,} bytes). "
-                    "Use ignore_diff=True or FURU_IGNORE_DIFF=1"
+                    "Set FURU_RECORD_GIT=ignore to skip git metadata."
                 )
 
         submodules: dict[str, str] = {}
@@ -265,7 +262,6 @@ class MetadataManager:
     def write_metadata(cls, metadata: FuruMetadata, directory: Path) -> None:
         """Write metadata to file."""
         metadata_path = cls.get_metadata_path(directory)
-        metadata_path.parent.mkdir(parents=True, exist_ok=True)
         metadata_path.write_text(
             json.dumps(
                 metadata.model_dump(mode="json"),

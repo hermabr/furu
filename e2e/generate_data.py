@@ -54,7 +54,7 @@ def _create_migrated_aliases() -> PrepareDataset:
             default_values=default_values,
             drop_fields=["name"],
         )
-        target_hash = dataset_old._furu_hash
+        target_hash = dataset_old.furu_hash
         candidates = [
             candidate
             for candidate in candidates
@@ -92,7 +92,7 @@ def create_mock_experiment(
 ) -> Path:
     """Create a mock experiment with specified state (without actually running _create)."""
     directory = furu_obj.furu_dir  # type: ignore[attr-defined]
-    directory.mkdir(parents=True, exist_ok=True)
+    StateManager.ensure_internal_dir(directory)
 
     # Create metadata using the actual metadata system
     metadata = MetadataManager.create_metadata(
@@ -121,7 +121,6 @@ def create_mock_experiment(
             "backend": "local",
             "status": attempt_status,
             "started_at": "2025-01-01T11:00:00+00:00",
-            "heartbeat_at": "2025-01-01T11:30:00+00:00",
             "lease_duration_sec": 120.0,
             "lease_expires_at": "2025-01-01T13:00:00+00:00",
             "owner": {
@@ -147,7 +146,6 @@ def create_mock_experiment(
     }
 
     state_path = StateManager.get_state_path(directory)
-    state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(json.dumps(state, indent=2))
 
     # Write success marker if successful
@@ -171,7 +169,7 @@ def generate_test_data(data_root: Path) -> None:
 
     # Configure Furu to use our data root
     FURU_CONFIG.base_root = data_root
-    FURU_CONFIG.ignore_git_diff = True
+    FURU_CONFIG.record_git = "ignore"
 
     # Create experiments with various states
 
@@ -203,7 +201,7 @@ def generate_test_data(data_root: Path) -> None:
     copy_candidates = [
         candidate
         for candidate in candidates
-        if candidate.from_ref.furu_hash == dataset_old._furu_hash
+        if candidate.from_ref.furu_hash == dataset_old.furu_hash
     ]
     if not copy_candidates:
         raise ValueError("migration: no copy candidates found")
@@ -227,7 +225,7 @@ def generate_test_data(data_root: Path) -> None:
     move_candidates = [
         candidate
         for candidate in move_candidates
-        if candidate.from_ref.furu_hash == dataset_old._furu_hash
+        if candidate.from_ref.furu_hash == dataset_old.furu_hash
     ]
     if not move_candidates:
         raise ValueError("migration: no move candidates found")

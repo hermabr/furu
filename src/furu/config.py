@@ -1,6 +1,10 @@
 import os
 from importlib import import_module
 from pathlib import Path
+from typing import Literal, cast
+
+
+RecordGitMode = Literal["ignore", "cached", "uncached"]
 
 
 class FuruConfig:
@@ -41,21 +45,14 @@ class FuruConfig:
             "true",
             "yes",
         }
-        self.ignore_git_diff = os.getenv("FURU_IGNORE_DIFF", "0").lower() in {
-            "1",
-            "true",
-            "yes",
-        }
-        self.require_git = os.getenv("FURU_REQUIRE_GIT", "1").lower() in {
-            "1",
-            "true",
-            "yes",
-        }
-        self.require_git_remote = os.getenv("FURU_REQUIRE_GIT_REMOTE", "1").lower() in {
-            "1",
-            "true",
-            "yes",
-        }
+        self.record_git = self._parse_record_git(os.getenv("FURU_RECORD_GIT", "cached"))
+        self.allow_no_git_origin = self._parse_bool(
+            os.getenv("FURU_ALLOW_NO_GIT_ORIGIN", "0")
+        )
+        if self.allow_no_git_origin and self.record_git == "ignore":
+            raise ValueError(
+                "FURU_ALLOW_NO_GIT_ORIGIN cannot be enabled when FURU_RECORD_GIT=ignore"
+            )
         always_rerun_items = {
             item.strip()
             for item in os.getenv("FURU_ALWAYS_RERUN", "").split(",")
@@ -77,35 +74,25 @@ class FuruConfig:
             "FURU_CANCELLED_IS_PREEMPTED", "false"
         ).lower() in {"1", "true", "yes"}
 
-        # Parse FURU_CACHE_METADATA: "never", "forever", or duration like "5m", "1h"
-        # Default: "5m" (5 minutes) - balances performance with freshness
-        self.cache_metadata_ttl_sec: float | None = self._parse_cache_duration(
-            os.getenv("FURU_CACHE_METADATA", "5m")
-        )
-
     @staticmethod
-    def _parse_cache_duration(value: str) -> float | None:
-        """Parse cache duration string into seconds. Returns None for 'never', float('inf') for 'forever'."""
-        value = value.strip().lower()
-        if value in {"never", "0", "false", "no"}:
-            return None  # No caching
-        if value in {"forever", "inf", "true", "yes", "1"}:
-            return float("inf")  # Cache forever
+    def _parse_bool(value: str) -> bool:
+        return value.strip().lower() in {"1", "true", "yes"}
 
-        # Parse duration like "5m", "1h", "30s"
-        import re
-
-        match = re.match(r"^(\d+(?:\.\d+)?)\s*([smh]?)$", value)
-        if not match:
+    @classmethod
+    def _parse_record_git(cls, value: str) -> RecordGitMode:
+        normalized = value.strip().lower()
+        allowed = {"ignore", "cached", "uncached"}
+        if normalized not in allowed:
             raise ValueError(
-                f"Invalid FURU_CACHE_METADATA value: {value!r}. "
-                "Use 'never', 'forever', or duration like '5m', '1h', '30s'"
+                "FURU_RECORD_GIT must be one of 'ignore', 'cached', or 'uncached'"
             )
+        return cast(RecordGitMode, normalized)
 
-        num = float(match.group(1))
-        unit = match.group(2) or "s"
-        multipliers = {"s": 1, "m": 60, "h": 3600}
-        return num * multipliers[unit]
+    @property
+    def cache_metadata_ttl_sec(self) -> float | None:
+        if self.record_git == "cached":
+            return float("inf")
+        return None
 
     def get_root(self, version_controlled: bool = False) -> Path:
         """Get root directory for storage (version_controlled uses its own root)."""

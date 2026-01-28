@@ -179,7 +179,10 @@ def test_hash_includes_dependency_spec(monkeypatch) -> None:
 
     monkeypatch.setattr(DependencyCollection, "_dependencies", alt_dependencies)
 
-    assert collection.furu_hash != original_hash
+    assert collection.furu_hash == original_hash
+
+    refreshed = DependencyCollection(n_tasks=1, base_task=DependencyTask(value=0))
+    assert refreshed.furu_hash != original_hash
 
 
 def test_hash_ignores_nested_dependencies() -> None:

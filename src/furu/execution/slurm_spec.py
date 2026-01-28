@@ -19,7 +19,7 @@ class SlurmSpec:
 
 
 class _SpecNode(Protocol):
-    _furu_hash: str
+    furu_hash: str
 
     def _executor_spec_key(self) -> str: ...
 
@@ -32,7 +32,7 @@ def resolve_slurm_spec(specs: Mapping[str, SlurmSpec], node: _SpecNode) -> Slurm
     if spec_key not in specs:
         raise KeyError(
             "Missing slurm spec for key "
-            f"'{spec_key}' for node {node.__class__.__name__} ({node._furu_hash})."
+            f"'{spec_key}' for node {node.__class__.__name__} ({node.furu_hash})."
         )
 
     return specs[spec_key]

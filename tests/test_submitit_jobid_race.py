@@ -25,7 +25,7 @@ class DummyTask(furu.Furu[int]):
 def test_job_id_watcher_updates_new_attempt(furu_tmp_root) -> None:
     obj = DummyTask()
     directory = obj._base_furu_dir()
-    directory.mkdir(parents=True, exist_ok=True)
+    furu.StateManager.ensure_internal_dir(directory)
 
     adapter = SubmititAdapter(executor=None)
     job = FakeJob()

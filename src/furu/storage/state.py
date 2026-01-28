@@ -9,12 +9,11 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any, Callable, Literal, Mapping, TypedDict, TypeAlias
+from typing import Annotated, Any, Callable, Literal, Mapping, TypeAlias, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from ..errors import FuruLockNotAcquired, FuruWaitTimeout
-
 
 # Type alias for scheduler-specific metadata. Different schedulers (SLURM, LSF, PBS, local)
 # return different fields, so this must remain dynamic.
@@ -167,7 +166,6 @@ class _StateAttemptBase(BaseModel):
     number: int = 1
     backend: str
     started_at: str
-    heartbeat_at: str
     lease_duration_sec: float
     lease_expires_at: str
     owner: StateOwner
@@ -228,7 +226,6 @@ class StateAttempt(BaseModel):
     backend: str
     status: str
     started_at: str
-    heartbeat_at: str
     lease_duration_sec: float
     lease_expires_at: str
     owner: StateOwner
@@ -246,7 +243,6 @@ class StateAttempt(BaseModel):
             backend=attempt.backend,
             status=attempt.status,
             started_at=attempt.started_at,
-            heartbeat_at=attempt.heartbeat_at,
             lease_duration_sec=attempt.lease_duration_sec,
             lease_expires_at=attempt.lease_expires_at,
             owner=attempt.owner,
@@ -286,9 +282,9 @@ class StateManager:
     EVENTS_FILE = "events.jsonl"
     SUCCESS_MARKER = "SUCCESS.json"
 
-    COMPUTE_LOCK = ".compute.lock"
-    SUBMIT_LOCK = ".submit.lock"
-    STATE_LOCK = ".state.lock"
+    COMPUTE_LOCK = "compute.lock"
+    SUBMIT_LOCK = "submit.lock"
+    STATE_LOCK = "state.lock"
 
     TERMINAL_STATUSES = {
         "success",
@@ -301,6 +297,12 @@ class StateManager:
     @classmethod
     def get_internal_dir(cls, directory: Path) -> Path:
         return directory / cls.INTERNAL_DIR
+
+    @classmethod
+    def ensure_internal_dir(cls, directory: Path) -> Path:
+        internal_dir = cls.get_internal_dir(directory)
+        internal_dir.mkdir(parents=True, exist_ok=True)
+        return internal_dir
 
     @classmethod
     def get_state_path(cls, directory: Path) -> Path:
@@ -366,7 +368,6 @@ class StateManager:
     @classmethod
     def _write_state_unlocked(cls, directory: Path, state: _FuruState) -> None:
         state_path = cls.get_state_path(directory)
-        state_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = state_path.with_suffix(".tmp")
         tmp_path.write_text(json.dumps(state.model_dump(mode="json"), indent=2))
         os.replace(tmp_path, state_path)
@@ -385,7 +386,6 @@ class StateManager:
     @classmethod
     def try_lock(cls, lock_path: Path) -> int | None:
         try:
-            lock_path.parent.mkdir(parents=True, exist_ok=True)
             fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o644)
             payload = {
                 "pid": os.getpid(),
@@ -485,19 +485,23 @@ class StateManager:
 
     @classmethod
     def update_state(
-        cls, directory: Path, mutator: Callable[[_FuruState], None]
+        cls, directory: Path, mutator: Callable[[_FuruState], bool | None]
     ) -> _FuruState:
         lock_path = cls.get_lock_path(directory, cls.STATE_LOCK)
         fd: int | None = None
         try:
             fd = cls._acquire_lock_blocking(lock_path)
+            state_path = cls.get_state_path(directory)
+            force_write = not state_path.is_file()
             state = cls.read_state(directory)
-            mutator(state)
-            state.schema_version = cls.SCHEMA_VERSION
-            state.updated_at = cls._iso_now()
-            validated = _FuruState.model_validate(state)
-            cls._write_state_unlocked(directory, validated)
-            return validated
+            changed = mutator(state)
+            if force_write or changed is not False:
+                state.schema_version = cls.SCHEMA_VERSION
+                state.updated_at = cls._iso_now()
+                validated = _FuruState.model_validate(state)
+                cls._write_state_unlocked(directory, validated)
+                return validated
+            return state
         finally:
             cls.release_lock(fd, lock_path)
 
@@ -510,14 +514,12 @@ class StateManager:
             "host": socket.gethostname(),
             **event,
         }
-        path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(enriched) + "\n")
 
     @classmethod
     def write_success_marker(cls, directory: Path, *, attempt_id: str) -> None:
         marker = cls.get_success_marker_path(directory)
-        marker.parent.mkdir(parents=True, exist_ok=True)
         payload = {"attempt_id": attempt_id, "created_at": cls._iso_now()}
         tmp = marker.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, indent=2))
@@ -535,6 +537,26 @@ class StateManager:
         if expires is None:
             return True
         return cls._utcnow() >= expires
+
+    @classmethod
+    def last_heartbeat_mtime(cls, directory: Path) -> float | None:
+        lock_path = cls.get_lock_path(directory, cls.COMPUTE_LOCK)
+        try:
+            return lock_path.stat().st_mtime
+        except FileNotFoundError:
+            return None
+
+    @classmethod
+    def _running_heartbeat_reason(
+        cls, directory: Path, attempt: _StateAttemptRunning
+    ) -> str | None:
+        last_heartbeat = cls.last_heartbeat_mtime(directory)
+        if last_heartbeat is None:
+            return "missing_heartbeat"
+        expires_at = last_heartbeat + float(attempt.lease_duration_sec)
+        if time.time() >= expires_at:
+            return "lease_expired"
+        return None
 
     @classmethod
     def start_attempt_queued(
@@ -604,7 +626,6 @@ class StateManager:
 
             owner_state = StateOwner.model_validate(owner)
             started_at = now.isoformat(timespec="seconds")
-            heartbeat_at = started_at
             lease_duration = float(lease_duration_sec)
             lease_expires_at = expires.isoformat(timespec="seconds")
             scheduler_state: SchedulerMetadata = scheduler or {}
@@ -614,7 +635,6 @@ class StateManager:
                 number=int(number),
                 backend=backend,
                 started_at=started_at,
-                heartbeat_at=heartbeat_at,
                 lease_duration_sec=lease_duration,
                 lease_expires_at=lease_expires_at,
                 owner=owner_state,
@@ -661,49 +681,9 @@ class StateManager:
         return attempt.id
 
     @classmethod
-    def heartbeat(
-        cls, directory: Path, *, attempt_id: str, lease_duration_sec: float
-    ) -> bool:
-        ok = False
-
-        def mutate(state: _FuruState) -> None:
-            nonlocal ok
-            attempt = state.attempt
-            if not isinstance(attempt, _StateAttemptRunning):
-                return
-            if attempt.id != attempt_id:
-                return
-            now = cls._utcnow()
-            expires = now + _dt.timedelta(seconds=float(lease_duration_sec))
-            attempt.heartbeat_at = now.isoformat(timespec="seconds")
-            attempt.lease_duration_sec = float(lease_duration_sec)
-            attempt.lease_expires_at = expires.isoformat(timespec="seconds")
-            ok = True
-
-        cls.update_state(directory, mutate)
-        return ok
-
-    @classmethod
-    def set_attempt_fields(
-        cls, directory: Path, *, attempt_id: str, fields: SchedulerMetadata
-    ) -> bool:
-        ok = False
-
-        def mutate(state: _FuruState) -> None:
-            nonlocal ok
-            attempt = state.attempt
-            if attempt is None or attempt.id != attempt_id:
-                return
-            for key, value in fields.items():
-                if key == "scheduler" and isinstance(value, dict):
-                    attempt.scheduler.update(value)
-                    continue
-                if hasattr(attempt, key):
-                    setattr(attempt, key, value)
-            ok = True
-
-        cls.update_state(directory, mutate)
-        return ok
+    def heartbeat(cls, directory: Path) -> None:
+        lock_path = cls.get_lock_path(directory, cls.COMPUTE_LOCK)
+        os.utime(lock_path)
 
     @classmethod
     def finish_attempt_success(cls, directory: Path, *, attempt_id: str) -> None:
@@ -717,7 +697,6 @@ class StateManager:
                     number=attempt.number,
                     backend=attempt.backend,
                     started_at=attempt.started_at,
-                    heartbeat_at=attempt.heartbeat_at,
                     lease_duration_sec=attempt.lease_duration_sec,
                     lease_expires_at=attempt.lease_expires_at,
                     owner=attempt.owner,
@@ -754,7 +733,6 @@ class StateManager:
                     number=attempt.number,
                     backend=attempt.backend,
                     started_at=attempt.started_at,
-                    heartbeat_at=attempt.heartbeat_at,
                     lease_duration_sec=attempt.lease_duration_sec,
                     lease_expires_at=attempt.lease_expires_at,
                     owner=attempt.owner,
@@ -792,7 +770,6 @@ class StateManager:
                     number=attempt.number,
                     backend=attempt.backend,
                     started_at=attempt.started_at,
-                    heartbeat_at=attempt.heartbeat_at,
                     lease_duration_sec=attempt.lease_duration_sec,
                     lease_expires_at=attempt.lease_expires_at,
                     owner=attempt.owner,
@@ -842,10 +819,10 @@ class StateManager:
           to lease expiry.
         """
 
-        def mutate(state: _FuruState) -> None:
+        def mutate(state: _FuruState) -> bool:
             attempt = state.attempt
             if not isinstance(attempt, (_StateAttemptQueued, _StateAttemptRunning)):
-                return
+                return False
 
             # Fast promotion if we can see a durable success marker.
             if cls.success_marker_exists(directory):
@@ -855,7 +832,6 @@ class StateManager:
                     number=attempt.number,
                     backend=attempt.backend,
                     started_at=attempt.started_at,
-                    heartbeat_at=attempt.heartbeat_at,
                     lease_duration_sec=attempt.lease_duration_sec,
                     lease_expires_at=attempt.lease_expires_at,
                     owner=attempt.owner,
@@ -865,7 +841,7 @@ class StateManager:
                 state.result = _coerce_result(
                     state.result, status="success", created_at=ended
                 )
-                return
+                return True
 
             backend = attempt.backend
             now = cls._iso_now()
@@ -878,6 +854,10 @@ class StateManager:
                 if alive is False:
                     terminal_status = "crashed"
                     reason = "pid_dead"
+                elif isinstance(attempt, _StateAttemptRunning):
+                    reason = cls._running_heartbeat_reason(directory, attempt)
+                    if reason is not None:
+                        terminal_status = "crashed"
                 elif cls._lease_expired(attempt):
                     terminal_status = "crashed"
                     reason = "lease_expired"
@@ -890,16 +870,25 @@ class StateManager:
                         attempt.scheduler.update(
                             {k: v for k, v in verdict.items() if k != "terminal_status"}
                         )
-                if terminal_status is None and cls._lease_expired(attempt):
-                    terminal_status = "crashed"
-                    reason = "lease_expired"
+                if terminal_status is None:
+                    if isinstance(attempt, _StateAttemptRunning):
+                        reason = cls._running_heartbeat_reason(directory, attempt)
+                        if reason is not None:
+                            terminal_status = "crashed"
+                    elif cls._lease_expired(attempt):
+                        terminal_status = "crashed"
+                        reason = "lease_expired"
             else:
-                if cls._lease_expired(attempt):
+                if isinstance(attempt, _StateAttemptRunning):
+                    reason = cls._running_heartbeat_reason(directory, attempt)
+                    if reason is not None:
+                        terminal_status = "crashed"
+                elif cls._lease_expired(attempt):
                     terminal_status = "crashed"
                     reason = "lease_expired"
 
             if terminal_status is None:
-                return
+                return False
             if terminal_status == "success":
                 terminal_status = "crashed"
                 reason = reason or "scheduler_success_no_success_marker"
@@ -910,7 +899,6 @@ class StateManager:
                     number=attempt.number,
                     backend=attempt.backend,
                     started_at=attempt.started_at,
-                    heartbeat_at=attempt.heartbeat_at,
                     lease_duration_sec=attempt.lease_duration_sec,
                     lease_expires_at=attempt.lease_expires_at,
                     owner=attempt.owner,
@@ -927,7 +915,6 @@ class StateManager:
                         number=attempt.number,
                         backend=attempt.backend,
                         started_at=attempt.started_at,
-                        heartbeat_at=attempt.heartbeat_at,
                         lease_duration_sec=attempt.lease_duration_sec,
                         lease_expires_at=attempt.lease_expires_at,
                         owner=attempt.owner,
@@ -942,7 +929,6 @@ class StateManager:
                         number=attempt.number,
                         backend=attempt.backend,
                         started_at=attempt.started_at,
-                        heartbeat_at=attempt.heartbeat_at,
                         lease_duration_sec=attempt.lease_duration_sec,
                         lease_expires_at=attempt.lease_expires_at,
                         owner=attempt.owner,
@@ -957,7 +943,6 @@ class StateManager:
                         number=attempt.number,
                         backend=attempt.backend,
                         started_at=attempt.started_at,
-                        heartbeat_at=attempt.heartbeat_at,
                         lease_duration_sec=attempt.lease_duration_sec,
                         lease_expires_at=attempt.lease_expires_at,
                         owner=attempt.owner,
@@ -970,6 +955,7 @@ class StateManager:
                 state.result,
                 status="failed" if terminal_status == "failed" else "incomplete",
             )
+            return True
 
         state = cls.update_state(directory, mutate)
         attempt = state.attempt
@@ -1067,16 +1053,28 @@ def compute_lock(
         return ", ".join(parts)
 
     def _describe_wait(attempt: _StateAttempt, waited_sec: float) -> str:
-        label = "last heartbeat"
-        timestamp = attempt.heartbeat_at
         if attempt.status == "queued":
             label = "queued at"
             timestamp = attempt.started_at
-        parsed = StateManager._parse_time(timestamp)
-        timestamp_info = timestamp
-        if parsed is not None:
-            age = (StateManager._utcnow() - parsed).total_seconds()
-            timestamp_info = f"{timestamp} ({_format_wait_duration(age)} ago)"
+            parsed = StateManager._parse_time(timestamp)
+            timestamp_info = timestamp
+            if parsed is not None:
+                age = (StateManager._utcnow() - parsed).total_seconds()
+                timestamp_info = f"{timestamp} ({_format_wait_duration(age)} ago)"
+        else:
+            label = "last heartbeat"
+            last_heartbeat = StateManager.last_heartbeat_mtime(directory)
+            if last_heartbeat is None:
+                timestamp_info = "missing"
+            else:
+                heartbeat_dt = _dt.datetime.fromtimestamp(
+                    last_heartbeat, tz=_dt.timezone.utc
+                )
+                age = time.time() - last_heartbeat
+                timestamp_info = (
+                    f"{heartbeat_dt.isoformat(timespec='seconds')} "
+                    f"({_format_wait_duration(age)} ago)"
+                )
         return (
             "waited "
             f"{_format_wait_duration(waited_sec)}, {label} {timestamp_info}, "
@@ -1228,11 +1226,7 @@ def compute_lock(
         # Start heartbeat IMMEDIATELY
         def heartbeat() -> None:
             while not stop_event.wait(heartbeat_interval_sec):
-                StateManager.heartbeat(
-                    directory,
-                    attempt_id=attempt_id,  # type: ignore[arg-type]
-                    lease_duration_sec=lease_duration_sec,
-                )
+                StateManager.heartbeat(directory)
 
         thread = threading.Thread(target=heartbeat, daemon=True)
         thread.start()

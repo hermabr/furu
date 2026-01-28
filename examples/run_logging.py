@@ -11,7 +11,7 @@ from my_project.pipelines import TrainTextModel
 def main() -> None:
     examples_root = Path(__file__).resolve().parent
     furu.set_furu_root(examples_root / ".furu")
-    furu.FURU_CONFIG.ignore_git_diff = True
+    furu.FURU_CONFIG.record_git = "ignore"
 
     logging.basicConfig(level=logging.INFO)
     log = logging.getLogger(__name__)

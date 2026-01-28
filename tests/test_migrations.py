@@ -646,13 +646,13 @@ def test_migrate_conflict_skip_on_running(furu_tmp_root) -> None:
             "backend": "local",
             "status": "running",
             "started_at": "2025-01-01T00:00:00+00:00",
-            "heartbeat_at": "2025-01-01T00:10:00+00:00",
             "lease_duration_sec": 120.0,
             "lease_expires_at": "2025-01-01T00:12:00+00:00",
             "owner": {"pid": 1, "host": "local", "user": "tester"},
             "scheduler": {},
         }
 
+    StateManager.ensure_internal_dir(to_obj._base_furu_dir())
     StateManager.update_state(to_obj._base_furu_dir(), set_running)
 
     candidates = furu.find_migration_candidates(

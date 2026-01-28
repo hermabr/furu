@@ -6,6 +6,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from ..config import FURU_CONFIG
 from ..core import Furu
 from ..errors import FuruComputeError, FuruError
+from ..runtime.logging import enter_holder
 from ..storage.state import StateManager
 from .context import EXEC_CONTEXT, ExecContext
 from .plan import PlanNode, build_plan, ready_todo
@@ -38,11 +39,12 @@ def _run_node(node: PlanNode) -> None:
             mode="executor",
             spec_key=node.spec_key,
             backend="local",
-            current_node_hash=node.obj._furu_hash,
+            current_node_hash=node.obj.furu_hash,
         )
     )
     try:
-        node.obj.get(force=True)
+        with enter_holder(node.obj):
+            node.obj.get(force=True)
     finally:
         EXEC_CONTEXT.reset(token)
 
@@ -97,7 +99,7 @@ def run_local(
                         )
                         compute_error = FuruComputeError(
                             "local executor failed for "
-                            f"{node.obj.__class__.__name__}({node.obj._furu_hash})",
+                            f"{node.obj.__class__.__name__}({node.obj.furu_hash})",
                             state_path,
                             original_error=exc,
                         )
@@ -124,7 +126,7 @@ def run_local(
                 ]
                 if failed:
                     names = ", ".join(
-                        f"{node.obj.__class__.__name__}({node.obj._furu_hash})"
+                        f"{node.obj.__class__.__name__}({node.obj.furu_hash})"
                         for node in failed
                     )
                     raise RuntimeError(
@@ -146,8 +148,8 @@ def run_local(
             finished_indices = [
                 index
                 for index in active_indices
-                if plan.nodes.get(roots[index]._furu_hash) is not None
-                and plan.nodes[roots[index]._furu_hash].status == "DONE"
+                if plan.nodes.get(roots[index].furu_hash) is not None
+                and plan.nodes[roots[index].furu_hash].status == "DONE"
             ]
             for index in finished_indices:
                 active_indices.remove(index)
@@ -174,7 +176,7 @@ def run_local(
                 ]
                 if todo_nodes:
                     sample = ", ".join(
-                        f"{node.obj.__class__.__name__}({node.obj._furu_hash})"
+                        f"{node.obj.__class__.__name__}({node.obj.furu_hash})"
                         for node in todo_nodes[:3]
                     )
                     raise RuntimeError(

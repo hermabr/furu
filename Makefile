@@ -49,9 +49,9 @@ dashboard-dev-backend:
 	@bash -c 'set -euo pipefail; \
 		data_dir="$${FURU_DASHBOARD_DEV_DATA_DIR:-$$(mktemp -d -t furu-dashboard-dev)}"; \
 		echo "Seeding dashboard dev data in $$data_dir"; \
-		FURU_PATH="$$data_dir" FURU_IGNORE_DIFF=1 FURU_REQUIRE_GIT_REMOTE=0 uv run python e2e/generate_data.py --data-dir "$$data_dir"; \
+		FURU_PATH="$$data_dir" FURU_RECORD_GIT=ignore uv run python e2e/generate_data.py --data-dir "$$data_dir"; \
 		echo "Starting dashboard API with FURU_PATH=$$data_dir"; \
-		FURU_PATH="$$data_dir" FURU_IGNORE_DIFF=1 FURU_REQUIRE_GIT_REMOTE=0 uv run uvicorn furu.dashboard.main:app --reload --host 0.0.0.0 --port 8000'
+		FURU_PATH="$$data_dir" FURU_RECORD_GIT=ignore uv run uvicorn furu.dashboard.main:app --reload --host 0.0.0.0 --port 8000'
 
 dashboard-dev-frontend:
 	cd dashboard-frontend && bun run dev

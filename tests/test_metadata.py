@@ -54,9 +54,10 @@ def test_collect_git_info_requires_git(monkeypatch) -> None:
         raise FileNotFoundError("git")
 
     monkeypatch.setattr(furu.MetadataManager, "run_git_command", boom)
-    monkeypatch.setattr(furu.FURU_CONFIG, "require_git", True)
+    monkeypatch.setattr(furu.FURU_CONFIG, "record_git", "uncached")
+    monkeypatch.setattr(furu.FURU_CONFIG, "allow_no_git_origin", False)
 
-    with pytest.raises(RuntimeError, match="FURU_REQUIRE_GIT=0"):
+    with pytest.raises(RuntimeError, match="FURU_RECORD_GIT=ignore"):
         furu.MetadataManager.collect_git_info(ignore_diff=True)
 
 
@@ -75,8 +76,44 @@ def test_collect_git_info_requires_git_remote(monkeypatch) -> None:
         return ""
 
     monkeypatch.setattr(furu.MetadataManager, "run_git_command", run_git_command)
-    monkeypatch.setattr(furu.FURU_CONFIG, "require_git", True)
-    monkeypatch.setattr(furu.FURU_CONFIG, "require_git_remote", True)
+    monkeypatch.setattr(furu.FURU_CONFIG, "record_git", "uncached")
+    monkeypatch.setattr(furu.FURU_CONFIG, "allow_no_git_origin", False)
 
-    with pytest.raises(RuntimeError, match="FURU_REQUIRE_GIT_REMOTE=0"):
+    with pytest.raises(RuntimeError, match="FURU_ALLOW_NO_GIT_ORIGIN=1"):
         furu.MetadataManager.collect_git_info(ignore_diff=True)
+
+
+def test_collect_git_info_allows_missing_git_remote(monkeypatch) -> None:
+    clear_metadata_cache()
+
+    def run_git_command(args):
+        if args == ["rev-parse", "HEAD"]:
+            return "abc123"
+        if args == ["rev-parse", "--abbrev-ref", "HEAD"]:
+            return "main"
+        if args == ["remote", "get-url", "origin"]:
+            raise subprocess.CalledProcessError(1, ["git", *args])
+        if args == ["submodule", "status"]:
+            return ""
+        return ""
+
+    monkeypatch.setattr(furu.MetadataManager, "run_git_command", run_git_command)
+    monkeypatch.setattr(furu.FURU_CONFIG, "record_git", "uncached")
+    monkeypatch.setattr(furu.FURU_CONFIG, "allow_no_git_origin", True)
+
+    git_info = furu.MetadataManager.collect_git_info(ignore_diff=True)
+    assert git_info.git_remote is None
+
+
+def test_collect_git_info_ignore_skips_git(monkeypatch) -> None:
+    clear_metadata_cache()
+
+    def boom(_args):
+        raise AssertionError("git should not be called")
+
+    monkeypatch.setattr(furu.MetadataManager, "run_git_command", boom)
+    monkeypatch.setattr(furu.FURU_CONFIG, "record_git", "ignore")
+    monkeypatch.setattr(furu.FURU_CONFIG, "allow_no_git_origin", False)
+
+    git_info = furu.MetadataManager.collect_git_info(ignore_diff=True)
+    assert git_info.git_commit == "<ignored>"

@@ -13,7 +13,7 @@ def main() -> None:
     except Exception:
         examples_root = Path(".").resolve().parent
     furu.set_furu_root(examples_root / ".furu")
-    # furu.FURU_CONFIG.ignore_git_diff = True
+    # furu.FURU_CONFIG.record_git = "ignore"
 
     obj = TrainModel(lr=3e-4, steps=2_000, dataset=PrepareDataset(name="mydata"))
     artifact = obj.get()

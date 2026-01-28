@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Speed up state/plan checks with SUCCESS markers,
+  cached `furu_hash`/`furu_dir`, and fewer writes/mkdirs.
+- Switch lock files to visible names and use compute-lock
+  mtimes for heartbeats (breaking: drop `heartbeat_at`).
+- Route per-artifact logs to `.furu/furu.log` and add
+  caller locations for get/dependency logs.
+- Update git provenance config (`FURU_RECORD_GIT`,
+  `FURU_ALLOW_NO_GIT_ORIGIN`) and `.env` docs.
+
 ## v0.0.4
 
 - Add stable `Furu.furu_hash` accessor for artifact identity.

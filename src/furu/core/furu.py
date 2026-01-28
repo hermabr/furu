@@ -22,17 +22,16 @@ from typing import (
     Protocol,
     Self,
     Sequence,
-    TypedDict,
     TypeAlias,
+    TypedDict,
     TypeVar,
     cast,
 )
 
 import chz
 import submitit
-from typing_extensions import dataclass_transform
-
 from chz.field import Field as ChzField
+from typing_extensions import dataclass_transform
 
 from ..adapters import SubmititAdapter
 from ..adapters.submitit import SubmititJob
@@ -64,7 +63,6 @@ from ..storage.state import (
     _StateAttemptRunning,
     _StateResultAbsent,
     _StateResultFailed,
-    _StateResultMigrated,
     _StateResultSuccess,
     compute_lock,
 )
@@ -208,7 +206,7 @@ class Furu[T](ABC):
 
     def _get_dependencies(self: Self, *, recursive: bool = True) -> list["Furu"]:
         """Collect Furu dependencies from fields and `_dependencies()`."""
-        seen = {self._furu_hash}
+        seen = {self.furu_hash}
         dependencies: list[Furu] = []
         _collect_dependencies(self, dependencies, seen, recursive=recursive)
         return dependencies
@@ -222,7 +220,7 @@ class Furu[T](ABC):
         for dependency in dependencies:
             if dependency is self:
                 raise ValueError("Furu dependencies cannot include self")
-            digests.add(dependency._furu_hash)
+            digests.add(dependency.furu_hash)
         return sorted(digests)
 
     def _invalidate_cached_success(self: Self, directory: Path, *, reason: str) -> None:
@@ -230,7 +228,7 @@ class Furu[T](ABC):
         logger.warning(
             "invalidate %s %s %s (%s)",
             self.__class__.__name__,
-            self._furu_hash,
+            self.furu_hash,
             directory,
             reason,
         )
@@ -263,14 +261,9 @@ class Furu[T](ABC):
         if isinstance(state.result, _StateResultSuccess):
             self._invalidate_cached_success(directory, reason="always_rerun enabled")
 
-    @property
+    @cached_property
     def furu_hash(self: Self) -> str:
         """Return the stable content hash for this Furu object."""
-        return self._furu_hash
-
-    @cached_property
-    def _furu_hash(self: Self) -> str:
-        """Compute hash of this object's content for storage identification."""
         return FuruSerializer.compute_hash(self)
 
     def _always_rerun(self: Self) -> bool:
@@ -283,15 +276,17 @@ class Furu[T](ABC):
 
     def _base_furu_dir(self: Self) -> Path:
         root = FURU_CONFIG.get_root(self.version_controlled)
-        return root / self.__class__._namespace() / self._furu_hash
+        return root / self.__class__._namespace() / self.furu_hash
 
-    @property
+    @cached_property
     def furu_dir(self: Self) -> Path:
         """Get the directory for this Furu object."""
         directory = self._base_furu_dir()
         migration = self._alias_record(directory)
-        if migration is not None and self._alias_is_active(directory, migration):
-            return MigrationManager.resolve_dir(migration, target="from")
+        if migration is not None:
+            target_dir = self._alias_target_dir(directory, migration)
+            if target_dir is not None:
+                return target_dir
         return directory
 
     @property
@@ -322,9 +317,8 @@ class Furu[T](ABC):
 
     def _exists_quiet(self: Self) -> bool:
         directory = self._base_furu_dir()
-        state = self.get_state(directory)
-
-        if not isinstance(state.result, _StateResultSuccess):
+        success_dir = self._success_marker_dir(directory)
+        if success_dir is None:
             return False
         try:
             return self._validate()
@@ -333,7 +327,7 @@ class Furu[T](ABC):
             logger.warning(
                 "exists %s -> false (validate invalid for %s: %s)",
                 directory,
-                f"{self.__class__.__name__}({self._furu_hash})",
+                f"{self.__class__.__name__}({self.furu_hash})",
                 exc,
             )
             return False
@@ -342,7 +336,7 @@ class Furu[T](ABC):
             logger.exception(
                 "exists %s -> false (validate crashed for %s: %s)",
                 directory,
-                f"{self.__class__.__name__}({self._furu_hash})",
+                f"{self.__class__.__name__}({self.furu_hash})",
                 exc,
             )
             return False
@@ -351,9 +345,8 @@ class Furu[T](ABC):
         """Check if result exists and is valid."""
         logger = get_logger()
         directory = self._base_furu_dir()
-        state = self.get_state(directory)
-
-        if not isinstance(state.result, _StateResultSuccess):
+        success_dir = self._success_marker_dir(directory)
+        if success_dir is None:
             logger.info("exists %s -> false", directory)
             return False
 
@@ -383,72 +376,110 @@ class Furu[T](ABC):
         Raises:
             FuruComputeError: If computation fails with detailed error information
         """
-        from furu.execution.context import EXEC_CONTEXT
         from furu.errors import (
             FuruExecutionError,
             FuruMissingArtifact,
             FuruSpecMismatch,
         )
+        from furu.execution.context import EXEC_CONTEXT
 
         ctx = EXEC_CONTEXT.get()
         if ctx.mode == "executor":
-            directory = self._base_furu_dir()
-            if force:
-                if (
-                    ctx.current_node_hash is None
-                    or self._furu_hash != ctx.current_node_hash
-                ):
-                    raise FuruExecutionError(
-                        "force=True not allowed: only the current node may compute in executor mode. "
-                        f"current_node_hash={ctx.current_node_hash!r} "
-                        f"obj={self.__class__.__name__}({self._furu_hash})",
-                        hints=[
-                            "Declare this object as a dependency instead of calling dep.get(force=True).",
-                            "Inside executor mode, use get(force=True) only on the node being executed.",
-                        ],
+            logger = get_logger()
+            parent_holder = current_holder()
+            has_parent = parent_holder is not None and parent_holder is not self
+            needs_holder = parent_holder is None or has_parent
+            caller_info: _CallerInfo = {}
+            if has_parent:
+                caller_info = self._get_caller_info()
+
+            def _executor_get() -> T:
+                directory = self._base_furu_dir()
+                if force:
+                    if (
+                        ctx.current_node_hash is None
+                        or self.furu_hash != ctx.current_node_hash
+                    ):
+                        raise FuruExecutionError(
+                            "force=True not allowed: only the current node may compute in executor mode. "
+                            f"current_node_hash={ctx.current_node_hash!r} "
+                            f"obj={self.__class__.__name__}({self.furu_hash})",
+                            hints=[
+                                "Declare this object as a dependency instead of calling dep.get(force=True).",
+                                "Inside executor mode, use get(force=True) only on the node being executed.",
+                            ],
+                        )
+                    self._prepare_executor_rerun(directory)
+
+                exists_ok = self._exists_quiet()
+                if exists_ok and not (force and self._always_rerun()):
+                    return self._load()
+
+                if force and not exists_ok:
+                    state = self.get_state(directory)
+                    if isinstance(state.result, _StateResultSuccess):
+                        self._invalidate_cached_success(
+                            directory, reason="_validate returned false (executor)"
+                        )
+
+                if not force:
+                    raise FuruMissingArtifact(
+                        "Missing artifact "
+                        f"{self.__class__.__name__}({self.furu_hash}) in executor mode. "
+                        f"Requested by {ctx.current_node_hash}. Declare it as a dependency."
                     )
-                self._prepare_executor_rerun(directory)
 
-            exists_ok = self._exists_quiet()
-            if exists_ok and not (force and self._always_rerun()):
-                return self._load()
-
-            if force and not exists_ok:
-                state = self.get_state(directory)
-                if isinstance(state.result, _StateResultSuccess):
-                    self._invalidate_cached_success(
-                        directory, reason="_validate returned false (executor)"
+                required = self._executor_spec_key()
+                if ctx.spec_key is None or required != ctx.spec_key:
+                    raise FuruSpecMismatch(
+                        "force=True not allowed: "
+                        f"required={required!r} != worker={ctx.spec_key!r} (v1 exact match)"
                     )
 
-            if not force:
-                raise FuruMissingArtifact(
-                    "Missing artifact "
-                    f"{self.__class__.__name__}({self._furu_hash}) in executor mode. "
-                    f"Requested by {ctx.current_node_hash}. Declare it as a dependency."
+                StateManager.ensure_internal_dir(directory)
+                status, created_here, result = self._run_locally(
+                    start_time=time.time(),
+                    allow_failed=FURU_CONFIG.retry_failed,
+                    executor_mode=True,
+                )
+                if status == "success":
+                    if created_here:
+                        return cast(T, result)
+                    return self._load()
+
+                raise self._build_failed_state_error(
+                    self._base_furu_dir(),
+                    None,
+                    message="Computation previously failed",
                 )
 
-            required = self._executor_spec_key()
-            if ctx.spec_key is None or required != ctx.spec_key:
-                raise FuruSpecMismatch(
-                    "force=True not allowed: "
-                    f"required={required!r} != worker={ctx.spec_key!r} (v1 exact match)"
+            if has_parent:
+                logger.debug(
+                    "dep: begin %s %s %s",
+                    self.__class__.__name__,
+                    self.furu_hash,
+                    self._base_furu_dir(),
+                    extra=caller_info,
                 )
 
-            status, created_here, result = self._run_locally(
-                start_time=time.time(),
-                allow_failed=FURU_CONFIG.retry_failed,
-                executor_mode=True,
-            )
-            if status == "success":
-                if created_here:
-                    return cast(T, result)
-                return self._load()
-
-            raise self._build_failed_state_error(
-                self._base_furu_dir(),
-                None,
-                message="Computation previously failed",
-            )
+            ok = False
+            try:
+                if needs_holder:
+                    with enter_holder(self):
+                        result = _executor_get()
+                else:
+                    result = _executor_get()
+                ok = True
+                return result
+            finally:
+                if has_parent:
+                    logger.debug(
+                        "dep: end %s %s (%s)",
+                        self.__class__.__name__,
+                        self.furu_hash,
+                        "ok" if ok else "error",
+                        extra=caller_info,
+                    )
 
         return self._get_impl_interactive(force=force)
 
@@ -456,13 +487,15 @@ class Furu[T](ABC):
         logger = get_logger()
         parent_holder = current_holder()
         has_parent = parent_holder is not None and parent_holder is not self
+        caller_info = self._get_caller_info()
         retry_failed_effective = FURU_CONFIG.retry_failed
         if has_parent:
             logger.debug(
                 "dep: begin %s %s %s",
                 self.__class__.__name__,
-                self._furu_hash,
+                self.furu_hash,
                 self._base_furu_dir(),
+                extra=caller_info,
             )
 
         ok = False
@@ -470,19 +503,21 @@ class Furu[T](ABC):
             with enter_holder(self):
                 start_time = time.time()
                 base_dir = self._base_furu_dir()
-                base_dir.mkdir(parents=True, exist_ok=True)
                 directory = base_dir
                 migration = self._alias_record(base_dir)
                 alias_active = False
+                base_marker = StateManager.success_marker_exists(base_dir)
 
                 if (
                     migration is not None
                     and migration.kind == "alias"
                     and migration.overwritten_at is None
+                    and not base_marker
                 ):
-                    target_dir = MigrationManager.resolve_dir(migration, target="from")
-                    target_state = StateManager.read_state(target_dir)
-                    if isinstance(target_state.result, _StateResultSuccess):
+                    target_dir = self._alias_target_dir(
+                        base_dir, migration, base_marker=base_marker
+                    )
+                    if target_dir is not None:
                         alias_active = True
                         directory = target_dir
                     else:
@@ -583,17 +618,25 @@ class Furu[T](ABC):
                 # Cache hits can be extremely noisy in pipelines; keep logs for state
                 # transitions (create/wait) and error cases, but suppress repeated
                 # "success->load" lines and the raw separator on successful loads.
-                self._log_console_start(action_color=action_color)
+                self._log_console_start(
+                    action_color=action_color,
+                    caller_info=caller_info,
+                )
 
                 if decision != "success->load":
+                    if decision == "create":
+                        StateManager.ensure_internal_dir(directory)
                     write_separator()
                     logger.debug(
                         "get %s %s %s (%s)",
                         self.__class__.__name__,
-                        self._furu_hash,
+                        self.furu_hash,
                         directory,
                         decision,
-                        extra={"furu_action_color": action_color},
+                        extra={
+                            "furu_action_color": action_color,
+                            **caller_info,
+                        },
                     )
 
                 # Fast path: already successful
@@ -610,7 +653,7 @@ class Furu[T](ABC):
                         logger.error(
                             "get %s %s (load failed)",
                             self.__class__.__name__,
-                            self._furu_hash,
+                            self.furu_hash,
                         )
                         raise FuruComputeError(
                             f"Failed to load result from {directory}",
@@ -647,15 +690,14 @@ class Furu[T](ABC):
                 logger.debug(
                     "dep: end %s %s (%s)",
                     self.__class__.__name__,
-                    self._furu_hash,
+                    self.furu_hash,
                     "ok" if ok else "error",
+                    extra=caller_info,
                 )
 
-    def _log_console_start(self, action_color: str) -> None:
-        """Log the start of get to console with caller info."""
-        logger = get_logger()
+    @staticmethod
+    def _get_caller_info() -> _CallerInfo:
         frame = sys._getframe(1)
-
         caller_info: _CallerInfo = {}
         if frame is not None:
             # Walk up the stack to find the caller outside of furu package
@@ -670,11 +712,20 @@ class Furu[T](ABC):
                     }
                     break
                 frame = frame.f_back
+        return caller_info
+
+    def _log_console_start(
+        self, action_color: str, caller_info: _CallerInfo | None = None
+    ) -> None:
+        """Log the start of get to console with caller info."""
+        logger = get_logger()
+        if caller_info is None:
+            caller_info = self._get_caller_info()
 
         logger.info(
             "get %s %s",
             self.__class__.__name__,
-            self._furu_hash,
+            self.furu_hash,
             extra={
                 "furu_console_only": True,
                 "furu_action_color": action_color,
@@ -745,9 +796,11 @@ class Furu[T](ABC):
         """Return the alias-aware state for this Furu directory."""
         base_dir = directory or self._base_furu_dir()
         record = self._alias_record(base_dir)
-        if record is None or not self._alias_is_active(base_dir, record):
+        if record is None:
             return StateManager.read_state(base_dir)
-        target_dir = MigrationManager.resolve_dir(record, target="from")
+        target_dir = self._alias_target_dir(base_dir, record)
+        if target_dir is None:
+            return StateManager.read_state(base_dir)
         return StateManager.read_state(target_dir)
 
     def _alias_record(self, directory: Path) -> MigrationRecord | None:
@@ -756,15 +809,36 @@ class Furu[T](ABC):
             return None
         return record
 
-    def _alias_is_active(self, directory: Path, record: MigrationRecord) -> bool:
+    def _alias_target_dir(
+        self,
+        directory: Path,
+        record: MigrationRecord,
+        *,
+        base_marker: bool | None = None,
+    ) -> Path | None:
         if record.overwritten_at is not None:
-            return False
-        state = StateManager.read_state(directory)
-        if not isinstance(state.result, _StateResultMigrated):
-            return False
+            return None
+        if base_marker is None:
+            base_marker = StateManager.success_marker_exists(directory)
+        if base_marker:
+            return None
         target = MigrationManager.resolve_dir(record, target="from")
-        target_state = StateManager.read_state(target)
-        return isinstance(target_state.result, _StateResultSuccess)
+        if StateManager.success_marker_exists(target):
+            return target
+        return None
+
+    def _success_marker_dir(self, directory: Path) -> Path | None:
+        base_marker = StateManager.success_marker_exists(directory)
+        record = self._alias_record(directory)
+        if record is None:
+            return directory if base_marker else None
+        target_dir = self._alias_target_dir(directory, record, base_marker=base_marker)
+        if target_dir is not None:
+            return target_dir
+        return directory if base_marker else None
+
+    def _alias_is_active(self, directory: Path, record: MigrationRecord) -> bool:
+        return self._alias_target_dir(directory, record) is not None
 
     def _maybe_detach_alias(
         self: Self,
@@ -805,6 +879,7 @@ class Furu[T](ABC):
     ) -> SubmititJob | None:
         """Submit job once without waiting (fire-and-forget mode)."""
         logger = get_logger()
+        StateManager.ensure_internal_dir(directory)
         self._reconcile(directory, adapter=adapter)
         state = StateManager.read_state(directory)
         attempt = state.attempt
@@ -825,7 +900,7 @@ class Furu[T](ABC):
             logger.debug(
                 "submit: waiting for submit lock %s %s %s",
                 self.__class__.__name__,
-                self._furu_hash,
+                self.furu_hash,
                 directory,
             )
             time.sleep(0.5)
@@ -834,9 +909,7 @@ class Furu[T](ABC):
         attempt_id: str | None = None
         try:
             # Create metadata
-            metadata = MetadataManager.create_metadata(
-                self, directory, ignore_diff=FURU_CONFIG.ignore_git_diff
-            )
+            metadata = MetadataManager.create_metadata(self, directory)
             MetadataManager.write_metadata(metadata, directory)
 
             env_info = MetadataManager.collect_environment_info()
@@ -920,12 +993,12 @@ class Furu[T](ABC):
                     mode="executor",
                     spec_key=self._executor_spec_key(),
                     backend="submitit",
-                    current_node_hash=self._furu_hash,
+                    current_node_hash=self.furu_hash,
                 )
             )
             try:
                 directory = self._base_furu_dir()
-                directory.mkdir(parents=True, exist_ok=True)
+                StateManager.ensure_internal_dir(directory)
                 always_rerun = self._always_rerun()
                 needs_success_invalidation = False
                 if not always_rerun:
@@ -980,11 +1053,7 @@ class Furu[T](ABC):
                         stage = "metadata"
                         try:
                             # Refresh metadata (now safe - attempt is already recorded)
-                            metadata = MetadataManager.create_metadata(
-                                self,
-                                directory,
-                                ignore_diff=FURU_CONFIG.ignore_git_diff,
-                            )
+                            metadata = MetadataManager.create_metadata(self, directory)
                             MetadataManager.write_metadata(metadata, directory)
 
                             # Set up signal handlers
@@ -1000,14 +1069,14 @@ class Furu[T](ABC):
                             logger.debug(
                                 "_create: begin %s %s %s",
                                 self.__class__.__name__,
-                                self._furu_hash,
+                                self.furu_hash,
                                 directory,
                             )
                             self._create()
                             logger.debug(
                                 "_create: ok %s %s %s",
                                 self.__class__.__name__,
-                                self._furu_hash,
+                                self.furu_hash,
                                 directory,
                             )
                             StateManager.write_success_marker(
@@ -1019,7 +1088,7 @@ class Furu[T](ABC):
                             logger.info(
                                 "_create ok %s %s",
                                 self.__class__.__name__,
-                                self._furu_hash,
+                                self.furu_hash,
                                 extra={"furu_console_only": True},
                             )
                         except Exception as e:
@@ -1027,7 +1096,7 @@ class Furu[T](ABC):
                                 logger.error(
                                     "_create failed %s %s %s",
                                     self.__class__.__name__,
-                                    self._furu_hash,
+                                    self.furu_hash,
                                     directory,
                                     extra={"furu_file_only": True},
                                 )
@@ -1036,7 +1105,7 @@ class Furu[T](ABC):
                                     "attempt failed (%s) %s %s %s",
                                     stage,
                                     self.__class__.__name__,
-                                    self._furu_hash,
+                                    self.furu_hash,
                                     directory,
                                     extra={"furu_file_only": True},
                                 )
@@ -1083,7 +1152,7 @@ class Furu[T](ABC):
                             f"backend {attempt.backend}"
                         )
                     hints = [
-                        f"Furu hash: {self._furu_hash}",
+                        f"Furu hash: {self.furu_hash}",
                         f"Directory: {directory}",
                         f"State file: {state_path}",
                         f"Attempt: {attempt_info}",
@@ -1170,9 +1239,7 @@ class Furu[T](ABC):
                 stage = "metadata"
                 try:
                     # Create metadata (now safe - attempt is already recorded)
-                    metadata = MetadataManager.create_metadata(
-                        self, directory, ignore_diff=FURU_CONFIG.ignore_git_diff
-                    )
+                    metadata = MetadataManager.create_metadata(self, directory)
                     MetadataManager.write_metadata(metadata, directory)
 
                     # Set up preemption handler
@@ -1186,7 +1253,7 @@ class Furu[T](ABC):
                     logger.debug(
                         "_create: begin %s %s %s",
                         self.__class__.__name__,
-                        self._furu_hash,
+                        self.furu_hash,
                         directory,
                     )
                     token = None
@@ -1198,7 +1265,7 @@ class Furu[T](ABC):
                                 mode="executor",
                                 spec_key=self._executor_spec_key(),
                                 backend="local",
-                                current_node_hash=self._furu_hash,
+                                current_node_hash=self.furu_hash,
                             )
                         )
                     try:
@@ -1209,7 +1276,7 @@ class Furu[T](ABC):
                     logger.debug(
                         "_create: ok %s %s %s",
                         self.__class__.__name__,
-                        self._furu_hash,
+                        self.furu_hash,
                         directory,
                     )
                     StateManager.write_success_marker(
@@ -1221,7 +1288,7 @@ class Furu[T](ABC):
                     logger.info(
                         "_create ok %s %s",
                         self.__class__.__name__,
-                        self._furu_hash,
+                        self.furu_hash,
                         extra={"furu_console_only": True},
                     )
                     return "success", True, result
@@ -1230,7 +1297,7 @@ class Furu[T](ABC):
                         logger.error(
                             "_create failed %s %s %s",
                             self.__class__.__name__,
-                            self._furu_hash,
+                            self.furu_hash,
                             directory,
                             extra={"furu_file_only": True},
                         )
@@ -1239,7 +1306,7 @@ class Furu[T](ABC):
                             "attempt failed (%s) %s %s %s",
                             stage,
                             self.__class__.__name__,
-                            self._furu_hash,
+                            self.furu_hash,
                             directory,
                             extra={"furu_file_only": True},
                         )
@@ -1351,7 +1418,7 @@ def _collect_dependencies(
     recursive: bool,
 ) -> None:
     for dependency in _direct_dependencies(obj):
-        digest = dependency._furu_hash
+        digest = dependency.furu_hash
         if digest in seen:
             continue
         seen.add(digest)
@@ -1505,7 +1572,7 @@ def _sorted_dependency_set(
 
 def _dependency_sort_key(value: DependencyScanValue) -> tuple[int, str]:
     if isinstance(value, Furu):
-        return (0, value._furu_hash)
+        return (0, cast(str, value.furu_hash))
     return (1, f"{type(value).__name__}:{value!r}")
 
 

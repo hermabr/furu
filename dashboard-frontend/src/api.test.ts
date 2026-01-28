@@ -116,7 +116,6 @@ const mockData = {
         backend: "local",
         status: "success",
         started_at: "2025-01-02T11:00:00+00:00",
-        heartbeat_at: "2025-01-02T11:30:00+00:00",
         lease_duration_sec: 7200,
         lease_expires_at: "2025-01-02T13:00:00+00:00",
         owner: {
@@ -309,6 +308,5 @@ describe("Schema type inference", () => {
     expect(Array.isArray(stats.by_result_status)).toBe(true);
   });
 });
-
 
 

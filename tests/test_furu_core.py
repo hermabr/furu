@@ -1,5 +1,7 @@
 import json
 import datetime
+import os
+import time
 
 import furu
 from furu.storage.state import _StateResultSuccess
@@ -20,13 +22,12 @@ class Dummy(furu.Furu[int]):
         return json.loads((self.furu_dir / "value.json").read_text())
 
 
-def test_furu_hash_property_matches_private(furu_tmp_root) -> None:
+def test_furu_hash_is_stable(furu_tmp_root) -> None:
     obj = Dummy()
     first = obj.furu_hash
     second = obj.furu_hash
 
-    assert first == obj._furu_hash
-    assert second == obj._furu_hash
+    assert first == second
 
 
 def test_get_returns_create_result_without_load(furu_tmp_root) -> None:
@@ -80,10 +81,10 @@ def test_exists_reflects_success_state(furu_tmp_root) -> None:
 def test_get_recovers_from_expired_running_lease(furu_tmp_root) -> None:
     obj = Dummy()
     directory = obj._base_furu_dir()
-    directory.mkdir(parents=True, exist_ok=True)
+    furu.StateManager.ensure_internal_dir(directory)
 
     expired = (
-        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=60)
+        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=3600)
     ).isoformat(timespec="seconds")
 
     attempt_id = furu.StateManager.start_attempt_running(
@@ -99,7 +100,6 @@ def test_get_recovers_from_expired_running_lease(furu_tmp_root) -> None:
         assert attempt is not None
         assert attempt.id == attempt_id
         attempt.started_at = expired
-        attempt.heartbeat_at = expired
         attempt.lease_duration_sec = 0.05
         attempt.lease_expires_at = expired
 
@@ -118,6 +118,8 @@ def test_get_recovers_from_expired_running_lease(furu_tmp_root) -> None:
         )
         + "\n"
     )
+    expired_ts = datetime.datetime.fromisoformat(expired).timestamp()
+    os.utime(lock_path, (expired_ts, expired_ts))
 
     result = obj.get()
     assert result == 123
@@ -131,13 +133,12 @@ def test_get_waits_until_lease_expires_then_recovers(
 ) -> None:
     obj = Dummy()
     directory = obj._base_furu_dir()
-    directory.mkdir(parents=True, exist_ok=True)
+    furu.StateManager.ensure_internal_dir(directory)
 
     # Simulate another process holding the compute lock, but with a lease that will expire.
     lock_path = furu.StateManager.get_lock_path(
         directory, furu.StateManager.COMPUTE_LOCK
     )
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path.write_text(
         json.dumps(
             {
@@ -149,28 +150,15 @@ def test_get_waits_until_lease_expires_then_recovers(
         )
         + "\n"
     )
-    soon = (
-        datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=0.02)
-    ).isoformat(timespec="seconds")
-
-    attempt_id = furu.StateManager.start_attempt_running(
+    furu.StateManager.start_attempt_running(
         directory,
         backend="local",
         lease_duration_sec=0.02,
         owner={"pid": 99999, "host": "other-host", "user": "x"},
         scheduler={},
     )
-
-    def mutate2(state) -> None:
-        attempt = state.attempt
-        assert attempt is not None
-        assert attempt.id == attempt_id
-        attempt.started_at = soon
-        attempt.heartbeat_at = soon
-        attempt.lease_duration_sec = 0.02
-        attempt.lease_expires_at = soon
-
-    furu.StateManager.update_state(directory, mutate2)
+    stale_time = time.time() - 3600.0
+    os.utime(lock_path, (stale_time, stale_time))
 
     result = obj.get()
     assert result == 123

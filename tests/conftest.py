@@ -21,7 +21,8 @@ def furu_tmp_root(tmp_path, monkeypatch):
         "version_controlled_root_override",
         tmp_path / "furu-data" / "artifacts",
     )
-    monkeypatch.setattr(furu.FURU_CONFIG, "ignore_git_diff", True)
+    monkeypatch.setattr(furu.FURU_CONFIG, "record_git", "ignore")
+    monkeypatch.setattr(furu.FURU_CONFIG, "allow_no_git_origin", False)
     monkeypatch.setattr(furu.FURU_CONFIG, "poll_interval", 0.01)
     monkeypatch.setattr(furu.FURU_CONFIG, "stale_timeout", 0.1)
     monkeypatch.setattr(furu.FURU_CONFIG, "max_wait_time_sec", None)

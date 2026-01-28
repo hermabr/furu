@@ -738,14 +738,6 @@ function ExperimentDetailPage() {
               </div>
               <div>
                 <span className="text-muted-foreground block">
-                  Last Heartbeat
-                </span>
-                <span>
-                  {new Date(experiment.attempt.heartbeat_at).toLocaleString()}
-                </span>
-              </div>
-              <div>
-                <span className="text-muted-foreground block">
                   Lease Expires
                 </span>
                 <span>

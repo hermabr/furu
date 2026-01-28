@@ -4,7 +4,11 @@ import pytest
 
 import furu
 from furu.adapters import SubmititAdapter
-from furu.execution.slurm_dag import _job_id_for_in_progress, _wait_for_job_id, submit_slurm_dag
+from furu.execution.slurm_dag import (
+    _job_id_for_in_progress,
+    _wait_for_job_id,
+    submit_slurm_dag,
+)
 from furu.execution.slurm_spec import SlurmSpec, SlurmSpecExtraValue
 from furu.execution.submitit_factory import make_executor_for_spec
 from furu.storage.state import FuruErrorState, _StateAttemptFailed
@@ -114,6 +118,7 @@ def test_submit_slurm_dag_wires_dependencies(furu_tmp_root, monkeypatch) -> None
     job_ids = {"leaf": "job-leaf", "root": "job-root"}
 
     def fake_submit_once(self, adapter, directory, on_job_id, *, allow_failed):
+        furu.StateManager.ensure_internal_dir(directory)
         furu.StateManager.start_attempt_queued(
             directory,
             backend="submitit",
@@ -143,6 +148,7 @@ def test_submit_slurm_dag_uses_in_progress_job_ids(furu_tmp_root, monkeypatch) -
     root = DagTask(name="root", deps=[dep])
 
     directory = dep._base_furu_dir()
+    furu.StateManager.ensure_internal_dir(directory)
     furu.StateManager.start_attempt_queued(
         directory,
         backend="submitit",
@@ -167,6 +173,7 @@ def test_submit_slurm_dag_uses_in_progress_job_ids(furu_tmp_root, monkeypatch) -
         return executor
 
     def fake_submit_once(self, adapter, directory, on_job_id, *, allow_failed):
+        furu.StateManager.ensure_internal_dir(directory)
         furu.StateManager.start_attempt_queued(
             directory,
             backend="submitit",
@@ -214,6 +221,7 @@ def test_submit_slurm_dag_in_progress_requires_submitit_backend(
     dep = DagTask(name="dep")
     root = DagTask(name="root", deps=[dep])
     directory = dep._base_furu_dir()
+    furu.StateManager.ensure_internal_dir(directory)
 
     furu.StateManager.start_attempt_running(
         directory,
@@ -267,6 +275,7 @@ def test_submit_slurm_dag_merges_additional_parameters(
     job_ids = {"leaf": "job-leaf", "root": "job-root"}
 
     def fake_submit_once(self, adapter, directory, on_job_id, *, allow_failed):
+        furu.StateManager.ensure_internal_dir(directory)
         furu.StateManager.start_attempt_queued(
             directory,
             backend="submitit",
@@ -292,7 +301,7 @@ def test_submit_slurm_dag_merges_additional_parameters(
 def test_wait_for_job_id_updates_after_attempt_switch(furu_tmp_root) -> None:
     obj = DagTask(name="root")
     directory = obj._base_furu_dir()
-    directory.mkdir(parents=True, exist_ok=True)
+    furu.StateManager.ensure_internal_dir(directory)
 
     furu.StateManager.start_attempt_queued(
         directory,
@@ -344,7 +353,7 @@ def test_wait_for_job_id_updates_after_attempt_switch(furu_tmp_root) -> None:
 def test_wait_for_job_id_returns_on_terminal_attempt(furu_tmp_root) -> None:
     obj = DagTask(name="root")
     directory = obj._base_furu_dir()
-    directory.mkdir(parents=True, exist_ok=True)
+    furu.StateManager.ensure_internal_dir(directory)
 
     furu.StateManager.start_attempt_queued(
         directory,
@@ -363,7 +372,6 @@ def test_wait_for_job_id_returns_on_terminal_attempt(furu_tmp_root) -> None:
             number=attempt.number,
             backend=attempt.backend,
             started_at=attempt.started_at,
-            heartbeat_at=attempt.heartbeat_at,
             lease_duration_sec=attempt.lease_duration_sec,
             lease_expires_at=attempt.lease_expires_at,
             owner=attempt.owner,
@@ -398,7 +406,7 @@ def test_job_id_for_in_progress_fails_fast_on_terminal_failed_dependency(
 ) -> None:
     obj = DagTask(name="dep")
     directory = obj._base_furu_dir()
-    directory.mkdir(parents=True, exist_ok=True)
+    furu.StateManager.ensure_internal_dir(directory)
 
     furu.StateManager.start_attempt_queued(
         directory,
@@ -427,7 +435,6 @@ def test_job_id_for_in_progress_fails_fast_on_terminal_failed_dependency(
                     number=attempt.number,
                     backend=attempt.backend,
                     started_at=attempt.started_at,
-                    heartbeat_at=attempt.heartbeat_at,
                     lease_duration_sec=attempt.lease_duration_sec,
                     lease_expires_at=attempt.lease_expires_at,
                     owner=attempt.owner,

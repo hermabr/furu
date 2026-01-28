@@ -152,6 +152,19 @@ def test_retry_failed_defaults_true(monkeypatch) -> None:
     assert config.retry_failed is True
 
 
+def test_record_git_invalid_value_raises(monkeypatch) -> None:
+    monkeypatch.setenv("FURU_RECORD_GIT", "nope")
+    with pytest.raises(ValueError, match="FURU_RECORD_GIT must be one of"):
+        FuruConfig()
+
+
+def test_allow_no_git_origin_requires_recording(monkeypatch) -> None:
+    monkeypatch.setenv("FURU_RECORD_GIT", "ignore")
+    monkeypatch.setenv("FURU_ALLOW_NO_GIT_ORIGIN", "true")
+    with pytest.raises(ValueError, match="FURU_ALLOW_NO_GIT_ORIGIN"):
+        FuruConfig()
+
+
 def test_max_wait_secs_from_env(monkeypatch) -> None:
     monkeypatch.setenv("FURU_MAX_WAIT_SECS", "123.5")
     config = FuruConfig()

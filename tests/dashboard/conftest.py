@@ -68,7 +68,8 @@ def temp_furu_root(
         "version_controlled_root_override",
         tmp_path / "furu-data" / "artifacts",
     )
-    monkeypatch.setattr(FURU_CONFIG, "ignore_git_diff", True)
+    monkeypatch.setattr(FURU_CONFIG, "record_git", "ignore")
+    monkeypatch.setattr(FURU_CONFIG, "allow_no_git_origin", False)
     monkeypatch.setattr(FURU_CONFIG, "poll_interval", 0.01)
     monkeypatch.setattr(FURU_CONFIG, "stale_timeout", 0.1)
     monkeypatch.setattr(FURU_CONFIG, "max_wait_time_sec", None)
@@ -94,7 +95,8 @@ def _configure_furu_for_module(
     # Save original values
     orig_base_root = FURU_CONFIG.base_root
     orig_version_controlled_root_override = FURU_CONFIG.version_controlled_root_override
-    orig_ignore_git_diff = FURU_CONFIG.ignore_git_diff
+    orig_record_git = FURU_CONFIG.record_git
+    orig_allow_no_git_origin = FURU_CONFIG.allow_no_git_origin
     orig_poll_interval = FURU_CONFIG.poll_interval
     orig_stale_timeout = FURU_CONFIG.stale_timeout
     orig_max_wait = FURU_CONFIG.max_wait_time_sec
@@ -107,7 +109,8 @@ def _configure_furu_for_module(
     FURU_CONFIG.version_controlled_root_override = (
         module_furu_root / "furu-data" / "artifacts"
     )
-    FURU_CONFIG.ignore_git_diff = True
+    FURU_CONFIG.record_git = "ignore"
+    FURU_CONFIG.allow_no_git_origin = False
     FURU_CONFIG.poll_interval = 0.01
     FURU_CONFIG.stale_timeout = 0.1
     FURU_CONFIG.max_wait_time_sec = None
@@ -120,7 +123,8 @@ def _configure_furu_for_module(
     # Restore original values
     FURU_CONFIG.base_root = orig_base_root
     FURU_CONFIG.version_controlled_root_override = orig_version_controlled_root_override
-    FURU_CONFIG.ignore_git_diff = orig_ignore_git_diff
+    FURU_CONFIG.record_git = orig_record_git
+    FURU_CONFIG.allow_no_git_origin = orig_allow_no_git_origin
     FURU_CONFIG.poll_interval = orig_poll_interval
     FURU_CONFIG.stale_timeout = orig_stale_timeout
     FURU_CONFIG.max_wait_time_sec = orig_max_wait
@@ -160,7 +164,7 @@ def create_experiment_from_furu(
     """
     # Get the furu_dir from the object (uses real path computation)
     directory = furu_obj.furu_dir  # type: ignore[attr-defined]
-    directory.mkdir(parents=True, exist_ok=True)
+    StateManager.ensure_internal_dir(directory)
 
     # Create metadata using the actual metadata system
     metadata = MetadataManager.create_metadata(
@@ -189,7 +193,6 @@ def create_experiment_from_furu(
             "backend": backend,
             "status": attempt_status,
             "started_at": started_at,
-            "heartbeat_at": started_at,
             "lease_duration_sec": 120.0,
             "lease_expires_at": "2025-01-01T13:00:00+00:00",
             "owner": {
@@ -216,7 +219,6 @@ def create_experiment_from_furu(
     }
 
     state_path = StateManager.get_state_path(directory)
-    state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(json.dumps(state, indent=2))
 
     # Write success marker if successful
@@ -323,7 +325,7 @@ def _create_populated_experiments(root: Path) -> None:
     # Create an alias dataset that points back to dataset1
     dataset_alias = PrepareDataset(name="mnist", version="v2")
     alias_dir = dataset_alias.furu_dir
-    alias_dir.mkdir(parents=True, exist_ok=True)
+    StateManager.ensure_internal_dir(alias_dir)
     MetadataManager.write_metadata(
         MetadataManager.create_metadata(dataset_alias, alias_dir, ignore_diff=True),
         alias_dir,
@@ -349,7 +351,7 @@ def _create_populated_experiments(root: Path) -> None:
 
     dataset_alias_second = PrepareDataset(name="mnist", version="v4")
     alias_second_dir = dataset_alias_second.furu_dir
-    alias_second_dir.mkdir(parents=True, exist_ok=True)
+    StateManager.ensure_internal_dir(alias_second_dir)
     MetadataManager.write_metadata(
         MetadataManager.create_metadata(
             dataset_alias_second,
@@ -379,7 +381,7 @@ def _create_populated_experiments(root: Path) -> None:
     # Add a moved dataset entry for filter tests
     moved_dataset = PrepareDataset(name="mnist", version="v3")
     moved_dir = moved_dataset.furu_dir
-    moved_dir.mkdir(parents=True, exist_ok=True)
+    StateManager.ensure_internal_dir(moved_dir)
     MetadataManager.write_metadata(
         MetadataManager.create_metadata(moved_dataset, moved_dir, ignore_diff=True),
         moved_dir,

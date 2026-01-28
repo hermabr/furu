@@ -44,10 +44,19 @@
 
 ## Execution & Compute
 
+- [ ] Performance
+    - [x] One option for recording git: FURU_RECORD_GIT="ignore|cached|uncached" (cached is default).
+        - [x] Include git-remote opt-out with FURU_ALLOW_NO_GIT_ORIGIN.
+    - [ ] Only make the furu_dir once
+    - [ ] Decide everywhere I might want to use cached_property/cache
+    - [ ] Make actual benchmarking tests
+        - [ ] For general performance and what takes the most time
+        - [ ] For how many writes/reads from disk i do per artifact i create
+        - [ ] For how inefficient the executors are, both w.r.t. slurm and local executor
+    - [ ] don't reload after create finishes in .get, but use the value you return in ._create
 - [x] Always rerun flag (`FURU_ALWAYS_RERUN`) - Recompute even if artifact exists
 - [ ] Resource tracking - Track peak memory, CPU time, GPU usage during `_create()`
-- [ ] Checkpointing - Resume long-running computations from checkpoints
-- [ ] Record how long it took to compute an artifact and show in the dashboard
+- [?] Record how long it took to compute an artifact and show in the dashboard
 - [ ] Add either .load or .load_or_throw which loads an artifact if it exists and otherwise throws an error
 - [ ] support a .debug or .debug_run or .run_debug which will load all dependencies from where they usually get loaded, but that makes all new artifacts in some tmp directory (or env variable)
 - [ ] Executor. Checklist:
@@ -84,6 +93,9 @@
         - [ ] maybe also the root node priority as the first entry?
     - [ ] for local, rather than having number of parallel jobs, have resources required by each job, for instance only one gpu job, but can have multiple cpu jobs in parallel
     - [ ] dashboard for experiment runner
+    - [ ] the executor runner should also write out when it starts running a task
+- [ ] compute lock heartbeat - check in on the queued items on occasion
+- [ ] make the behavior for queuing better, where it checks if the processes that has queued it/the job is still alive
 
 ### Submitit
 

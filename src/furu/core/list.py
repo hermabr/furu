@@ -25,10 +25,11 @@ class _FuruListMeta(type):
             if not isinstance(obj, Furu):
                 raise TypeError(f"{obj!r} is not a Furu instance")
 
-            digest = obj._furu_hash
+            furu_obj = cast(Furu, obj)
+            digest = furu_obj.furu_hash
             if digest not in seen:
                 seen.add(digest)
-                items.append(cast(_H, obj))
+                items.append(cast(_H, furu_obj))
 
         for name, value in cls.__dict__.items():
             if name.startswith("_") or callable(value):

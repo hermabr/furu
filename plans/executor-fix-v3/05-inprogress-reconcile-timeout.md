@@ -2,7 +2,7 @@
 
 ## Reported issues (high-priority + major)
 - If any dependency is IN_PROGRESS, schedulers just sleep (local + pool); no reconcile/timeout => dead worker can hang run forever.
-- Planner stale detection may treat missing heartbeat_at/started_at as stale immediately (age=None ⇒ stale).
+- Planner stale detection may treat missing heartbeat/started_at as stale immediately (age=None ⇒ stale).
   This breaks legacy IN_PROGRESS states without timestamps after upgrade.
 
 ## Desired behavior
@@ -10,7 +10,7 @@
   - run reconciliation (`StateManager.reconcile(...)` or equivalent)
   - if still blocked, enforce a stale timeout (configurable; ideally uses `FURU_CONFIG.stale_timeout`)
 - Missing timestamps must not be interpreted as immediately stale:
-  - If heartbeat_at/started_at missing, treat as "unknown staleness"
+- If heartbeat/started_at missing, treat as "unknown staleness"
   - Prefer fallback to stable fields if present (e.g., state.updated_at) or skip stale eviction for one cycle and warn.
 
 ## Implementation steps

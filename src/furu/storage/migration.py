@@ -52,7 +52,6 @@ class MigrationManager:
     @classmethod
     def write_migration(cls, record: MigrationRecord, directory: Path) -> None:
         path = cls.get_migration_path(directory)
-        path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(record.model_dump(mode="json"), indent=2))
         tmp.replace(path)

@@ -1,5 +1,6 @@
 import json
-from datetime import timedelta
+import os
+import time
 
 import furu
 from furu.execution.plan import (
@@ -42,7 +43,7 @@ def test_build_plan_classifies_statuses(furu_tmp_root) -> None:
 
     in_progress = Task(name="in-progress")
     directory = in_progress._base_furu_dir()
-    directory.mkdir(parents=True, exist_ok=True)
+    furu.StateManager.ensure_internal_dir(directory)
     furu.StateManager.start_attempt_queued(
         directory,
         backend="local",
@@ -78,7 +79,7 @@ def test_build_plan_prunes_completed_subgraphs(furu_tmp_root) -> None:
 def test_build_plan_treats_validation_error_as_missing(furu_tmp_root, caplog) -> None:
     task = InvalidValidateTask(name="bad")
     directory = task._base_furu_dir()
-    directory.mkdir(parents=True, exist_ok=True)
+    furu.StateManager.ensure_internal_dir(directory)
     attempt_id = furu.StateManager.start_attempt_running(
         directory,
         backend="local",
@@ -87,6 +88,7 @@ def test_build_plan_treats_validation_error_as_missing(furu_tmp_root, caplog) ->
         scheduler={},
     )
     furu.StateManager.finish_attempt_success(directory, attempt_id=attempt_id)
+    furu.StateManager.write_success_marker(directory, attempt_id=attempt_id)
 
     caplog.set_level("WARNING")
     plan = build_plan([task])
@@ -98,7 +100,7 @@ def test_build_plan_treats_validation_error_as_missing(furu_tmp_root, caplog) ->
 def test_build_plan_logs_unexpected_validate_error(furu_tmp_root, caplog) -> None:
     task = ExplodingValidateTask(name="boom")
     directory = task._base_furu_dir()
-    directory.mkdir(parents=True, exist_ok=True)
+    furu.StateManager.ensure_internal_dir(directory)
     attempt_id = furu.StateManager.start_attempt_running(
         directory,
         backend="local",
@@ -107,6 +109,7 @@ def test_build_plan_logs_unexpected_validate_error(furu_tmp_root, caplog) -> Non
         scheduler={},
     )
     furu.StateManager.finish_attempt_success(directory, attempt_id=attempt_id)
+    furu.StateManager.write_success_marker(directory, attempt_id=attempt_id)
 
     caplog.set_level("ERROR")
     plan = build_plan([task])
@@ -129,7 +132,7 @@ def test_build_plan_marks_failed_attempts(furu_tmp_root, monkeypatch) -> None:
     monkeypatch.setattr(furu.FURU_CONFIG, "retry_failed", False)
     failed = Task(name="failed")
     directory = failed._base_furu_dir()
-    directory.mkdir(parents=True, exist_ok=True)
+    furu.StateManager.ensure_internal_dir(directory)
     attempt_id = furu.StateManager.start_attempt_running(
         directory,
         backend="local",
@@ -160,7 +163,7 @@ def test_build_plan_does_not_log_exists(furu_tmp_root, caplog) -> None:
 def test_reconcile_in_progress_skips_fresh_attempts(furu_tmp_root) -> None:
     task = Task(name="in-progress")
     directory = task._base_furu_dir()
-    directory.mkdir(parents=True, exist_ok=True)
+    furu.StateManager.ensure_internal_dir(directory)
     furu.StateManager.start_attempt_running(
         directory,
         backend="local",
@@ -168,6 +171,10 @@ def test_reconcile_in_progress_skips_fresh_attempts(furu_tmp_root) -> None:
         owner={"pid": 99999, "host": "other-host", "user": "x"},
         scheduler={},
     )
+    lock_path = furu.StateManager.get_lock_path(
+        directory, furu.StateManager.COMPUTE_LOCK
+    )
+    lock_path.write_text("lock")
 
     plan = build_plan([task])
 
@@ -183,8 +190,8 @@ def test_reconcile_in_progress_missing_timestamps_not_immediately_stale(
     monkeypatch.setattr(furu.FURU_CONFIG, "retry_failed", True)
     task = Task(name="missing-timestamps")
     directory = task._base_furu_dir()
-    directory.mkdir(parents=True, exist_ok=True)
-    furu.StateManager.start_attempt_running(
+    furu.StateManager.ensure_internal_dir(directory)
+    furu.StateManager.start_attempt_queued(
         directory,
         backend="local",
         lease_duration_sec=60.0,
@@ -196,7 +203,6 @@ def test_reconcile_in_progress_missing_timestamps_not_immediately_stale(
         attempt = state.attempt
         assert attempt is not None
         attempt.started_at = ""
-        attempt.heartbeat_at = ""
 
     furu.StateManager.update_state(directory, mutate)
     plan = build_plan([task])
@@ -204,16 +210,16 @@ def test_reconcile_in_progress_missing_timestamps_not_immediately_stale(
     assert reconcile_in_progress(plan, stale_timeout_sec=5.0) is False
     state = furu.StateManager.read_state(directory)
     assert state.attempt is not None
-    assert state.attempt.status == "running"
+    assert state.attempt.status == "queued"
 
 
-def test_reconcile_in_progress_stale_attempt_preempted(
+def test_reconcile_in_progress_stale_heartbeat_marks_crashed(
     furu_tmp_root, monkeypatch
 ) -> None:
     monkeypatch.setattr(furu.FURU_CONFIG, "retry_failed", True)
     task = Task(name="stale-attempt")
     directory = task._base_furu_dir()
-    directory.mkdir(parents=True, exist_ok=True)
+    furu.StateManager.ensure_internal_dir(directory)
     furu.StateManager.start_attempt_running(
         directory,
         backend="local",
@@ -221,19 +227,16 @@ def test_reconcile_in_progress_stale_attempt_preempted(
         owner={"pid": 99999, "host": "other-host", "user": "x"},
         scheduler={},
     )
-
-    def mutate(state) -> None:
-        attempt = state.attempt
-        assert attempt is not None
-        stale_time = (furu.StateManager._utcnow() - timedelta(seconds=120)).isoformat(
-            timespec="seconds"
-        )
-        attempt.heartbeat_at = stale_time
-
-    furu.StateManager.update_state(directory, mutate)
+    lock_path = furu.StateManager.get_lock_path(
+        directory, furu.StateManager.COMPUTE_LOCK
+    )
+    lock_path.write_text("lock")
+    stale_time = time.time() - 120.0
+    os.utime(lock_path, (stale_time, stale_time))
     plan = build_plan([task])
 
-    assert reconcile_in_progress(plan, stale_timeout_sec=1.0) is True
+    assert reconcile_in_progress(plan, stale_timeout_sec=1.0) is False
     state = furu.StateManager.read_state(directory)
     assert state.attempt is not None
-    assert state.attempt.status == "preempted"
+    assert state.attempt.status == "crashed"
+    assert getattr(state.attempt, "reason", None) == "lease_expired"
