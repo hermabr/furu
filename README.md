@@ -458,7 +458,8 @@ The `/api/experiments` endpoint supports:
 | `FURU_CANCELLED_IS_PREEMPTED` | `false` | Treat SLURM CANCELLED as preempted |
 | `SLURM_JOB_ID` | unset | Read-only; set by Slurm to record job id and enable submitit context |
 
-Local `.env` files are loaded automatically if `python-dotenv` is installed.
+Local `.env` files are not loaded automatically. Call `furu.load_env()` when you
+want to load `.env` values (requires `python-dotenv`).
 
 ### Test and CI Environment Variables
 

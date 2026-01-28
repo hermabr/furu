@@ -11,6 +11,8 @@
 - Use non-hidden lock filenames inside `.furu` (`compute.lock`, `submit.lock`, `state.lock`).
 - Document all environment variables in the README.
 - Consolidate git metadata env config into `FURU_RECORD_GIT` and `FURU_ALLOW_NO_GIT_ORIGIN`.
+- Stop auto-loading `.env` (call `furu.load_env()` if needed).
+- Cache `Furu.furu_hash` and `Furu.furu_dir` on instance access.
 
 ## v0.0.4
 
