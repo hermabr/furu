@@ -484,6 +484,22 @@ furu.FURU_CONFIG.record_git = "uncached"
 furu.FURU_CONFIG.poll_interval = 5.0
 ```
 
+### Testing with pytest
+
+Use the built-in pytest fixture to isolate Furu storage in tests:
+
+```python
+# conftest.py
+pytest_plugins = ["furu.testing"]
+```
+
+```python
+def test_pipeline(furu_tmp_root):
+    obj = TrainModel(lr=1e-3, steps=100)
+    result = obj.get()
+    assert (furu_tmp_root / "data").exists()
+```
+
 ### Class-Level Options
 
 ```python
