@@ -79,11 +79,15 @@ def test_furu_tmp_root_fixture(furu_tmp_root: Path) -> None:
     assert furu.get_furu_root() == furu_tmp_root / "data"
 
 
-def test_override_results_skips_dependency_chain(furu_tmp_root: Path) -> None:
+@pytest.mark.parametrize("use_hash_key", [False, True])
+def test_override_results_skips_dependency_chain(
+    furu_tmp_root: Path, use_hash_key: bool
+) -> None:
     dependency = _DependencyStub()
     parent = _ParentPipeline(dependency=dependency)
+    key = dependency.furu_hash if use_hash_key else dependency
 
-    with override_results({dependency: "stubbed"}):
+    with override_results({key: "stubbed"}):
         assert dependency.exists() is True
         assert parent.get() == "parent:stubbed"
 

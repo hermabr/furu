@@ -553,6 +553,16 @@ def test_override_dependency(furu_tmp_root):
         assert model.get() == "trained:stub"
 ```
 
+You can also key overrides by furu_hash strings (for example, when you already
+have hashes from metadata and don't want to instantiate the dependency):
+
+```python
+def test_override_by_hash(furu_tmp_root):
+    known_hash = "<furu_hash for Normalize()>"
+    with override_results({known_hash: "stub"}):
+        assert TrainModel().get() == "trained:stub"
+```
+
 ### Class-Level Options
 
 ```python

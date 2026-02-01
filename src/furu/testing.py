@@ -2,12 +2,15 @@ from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from .config import FURU_CONFIG, RecordGitMode
 from .core import Furu
 from .runtime.overrides import OverrideValue, override_furu_hashes
+
+OverrideKey = Furu | str
 
 
 @dataclass(frozen=True)
@@ -88,13 +91,27 @@ def furu_test_env(base_root: Path) -> Generator[Path, None, None]:
 
 @contextmanager
 def override_results(
-    overrides: Mapping[Furu, OverrideValue],
+    overrides: Mapping[OverrideKey, OverrideValue],
 ) -> Generator[None, None, None]:
     """Override specific Furu results within the context.
 
     Overrides are keyed by furu_hash, so identical configs share a stub.
+    Keys may be a Furu instance or a furu_hash string.
     """
-    hash_overrides = {obj.furu_hash: value for obj, value in overrides.items()}
+    hash_overrides: dict[str, OverrideValue] = {}
+    for key, value in overrides.items():
+        hash_key: str
+        if isinstance(key, Furu):
+            hash_key = cast(str, key.furu_hash)
+        elif isinstance(key, str):
+            if not key:
+                raise ValueError("override furu_hash must be non-empty")
+            hash_key = key
+        else:
+            raise TypeError(
+                "override_results keys must be Furu instances or furu_hash strings"
+            )
+        hash_overrides[hash_key] = value
     with override_furu_hashes(hash_overrides):
         yield
 
