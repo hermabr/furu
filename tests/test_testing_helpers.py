@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 import furu
-from furu.testing import furu_test_env, override_results
+from furu.testing import furu_test_env, override_results, override_results_for
 
 
 class _DependencyStub(furu.Furu[str]):
@@ -22,6 +22,16 @@ class _ParentPipeline(furu.Furu[str]):
 
     def _load(self) -> str:
         return "parent:loaded"
+
+
+class _GrandparentPipeline(furu.Furu[str]):
+    parent: _ParentPipeline = furu.chz.field(default_factory=_ParentPipeline)
+
+    def _create(self) -> str:
+        return f"grand:{self.parent.get()}"
+
+    def _load(self) -> str:
+        return "grand:loaded"
 
 
 def test_furu_test_env_sets_and_restores_config(tmp_path: Path) -> None:
@@ -93,3 +103,10 @@ def test_override_results_skips_dependency_chain(
 
     with pytest.raises(RuntimeError, match="dependency should be overridden"):
         dependency.get()
+
+
+def test_override_results_for_nested_path(furu_tmp_root: Path) -> None:
+    grandparent = _GrandparentPipeline()
+
+    with override_results_for(grandparent, {"parent.dependency": "stubbed"}):
+        assert grandparent.get() == "grand:parent:stubbed"

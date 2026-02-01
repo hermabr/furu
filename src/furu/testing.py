@@ -1,4 +1,4 @@
-from collections.abc import Generator, Mapping
+from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +11,7 @@ from .core import Furu
 from .runtime.overrides import OverrideValue, override_furu_hashes
 
 OverrideKey = Furu | str
+_PATH_MISSING = object()
 
 
 @dataclass(frozen=True)
@@ -114,6 +115,104 @@ def override_results(
         hash_overrides[hash_key] = value
     with override_furu_hashes(hash_overrides):
         yield
+
+
+@contextmanager
+def override_results_for(
+    root: Furu,
+    overrides: Mapping[str, OverrideValue],
+) -> Generator[None, None, None]:
+    """Override results by dotted field path relative to a root Furu object."""
+    hash_overrides: dict[str, OverrideValue] = {}
+    for path, value in overrides.items():
+        target = _resolve_override_path(root, path)
+        hash_overrides[cast(str, target.furu_hash)] = value
+    with override_furu_hashes(hash_overrides):
+        yield
+
+
+def _resolve_override_path(root: Furu, path: str) -> Furu:
+    if not path:
+        raise ValueError("override path must be non-empty")
+    current = root
+    for segment in path.split("."):
+        if not segment:
+            raise ValueError(f"override path has empty segment: {path!r}")
+        current = _resolve_path_segment(current, segment, path)
+    if not isinstance(current, Furu):
+        raise TypeError(
+            f"override path {path!r} must resolve to a Furu instance; got {type(current).__name__}"
+        )
+    return current
+
+
+def _resolve_path_segment(current: object, segment: str, path: str) -> object:
+    name, keys = _parse_path_segment(segment, path)
+    if name:
+        value = getattr(current, name, _PATH_MISSING)
+        if value is _PATH_MISSING:
+            raise AttributeError(f"override path {path!r} has no attribute {name!r}")
+        current = value
+    for key in keys:
+        index = _coerce_path_key(key)
+        if isinstance(index, int):
+            if not _is_indexable_sequence(current):
+                raise TypeError(
+                    f"override path {path!r} index {index} requires a sequence"
+                )
+            sequence = cast(Sequence[OverrideValue], current)
+            current = sequence[index]
+        else:
+            if not isinstance(current, Mapping):
+                raise TypeError(
+                    f"override path {path!r} key {index!r} requires a mapping"
+                )
+            mapping = cast(Mapping[str | int, OverrideValue], current)
+            current = mapping[index]
+    return current
+
+
+def _parse_path_segment(segment: str, path: str) -> tuple[str, list[str]]:
+    name_chars: list[str] = []
+    keys: list[str] = []
+    index = 0
+    length = len(segment)
+    while index < length and segment[index] != "[":
+        name_chars.append(segment[index])
+        index += 1
+    name = "".join(name_chars)
+    while index < length:
+        if segment[index] != "[":
+            raise ValueError(f"override path {path!r} has invalid segment {segment!r}")
+        close = segment.find("]", index + 1)
+        if close == -1:
+            raise ValueError(f"override path {path!r} has unterminated index")
+        token = segment[index + 1 : close].strip()
+        if not token:
+            raise ValueError(f"override path {path!r} has empty index")
+        keys.append(token)
+        index = close + 1
+    if not name:
+        raise ValueError(f"override path {path!r} has empty segment")
+    return name, keys
+
+
+def _coerce_path_key(token: str) -> str | int:
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in ("'", '"'):
+        return token[1:-1]
+    if token.startswith("-"):
+        if token[1:].isdigit():
+            return int(token)
+        return token
+    if token.isdigit():
+        return int(token)
+    return token
+
+
+def _is_indexable_sequence(value: object) -> bool:
+    if isinstance(value, (str, bytes, bytearray)):
+        return False
+    return isinstance(value, Sequence)
 
 
 @pytest.fixture()
