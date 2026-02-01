@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 import furu
-from furu.testing import furu_test_env, override_results
+from furu.testing import furu_test_env, override_results, override_results_for
 
 
 class _DependencyStub(furu.Furu[str]):
@@ -107,25 +107,28 @@ def test_override_results_skips_dependency_chain(
 ) -> None:
     dependency = _DependencyStub()
     parent = _ParentPipeline(dependency=dependency)
-    key = dependency.furu_hash if use_hash_key else dependency
-
-    with override_results({key: "stubbed"}):
-        assert dependency.exists() is True
-        assert parent.get() == "parent:stubbed"
+    if use_hash_key:
+        with override_results({dependency.furu_hash: "stubbed"}):
+            assert dependency.exists() is True
+            assert parent.get() == "parent:stubbed"
+    else:
+        with override_results({dependency: "stubbed"}):
+            assert dependency.exists() is True
+            assert parent.get() == "parent:stubbed"
 
     with pytest.raises(RuntimeError, match="dependency should be overridden"):
         dependency.get()
 
 
-def test_override_results_nested_path(furu_tmp_root: Path) -> None:
+def test_override_results_for_nested_path(furu_tmp_root: Path) -> None:
     grandparent = _GrandparentPipeline()
 
-    with override_results({"parent.dependency": "stubbed"}, root=grandparent):
+    with override_results_for(grandparent, {"parent.dependency": "stubbed"}):
         assert grandparent.get() == "grand:parent:stubbed"
 
 
-def test_override_results_list_index(furu_tmp_root: Path) -> None:
+def test_override_results_for_list_index(furu_tmp_root: Path) -> None:
     root = _ListParentPipeline()
 
-    with override_results({"deps.0": "stubbed"}, root=root):
+    with override_results_for(root, {"deps.0": "stubbed"}):
         assert root.get() == "list:stubbed"

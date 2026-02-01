@@ -558,9 +558,12 @@ by dotted path from the root object (chz-style paths, e.g. `deps.0` for lists an
 `deps.key` for mappings):
 
 ```python
+from furu.testing import override_results_for
+
+
 def test_override_by_path(furu_tmp_root):
     model = TrainModel()
-    with override_results({"normalizer": "stub"}, root=model):
+    with override_results_for(model, {"normalizer": "stub"}):
         assert model.get() == "trained:stub"
 ```
 
