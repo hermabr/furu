@@ -34,6 +34,18 @@ class _GrandparentPipeline(furu.Furu[str]):
         return "grand:loaded"
 
 
+class _ListParentPipeline(furu.Furu[str]):
+    deps: list[_DependencyStub] = furu.chz.field(
+        default_factory=lambda: [_DependencyStub()],
+    )
+
+    def _create(self) -> str:
+        return f"list:{self.deps[0].get()}"
+
+    def _load(self) -> str:
+        return "list:loaded"
+
+
 def test_furu_test_env_sets_and_restores_config(tmp_path: Path) -> None:
     original_base_root = furu.FURU_CONFIG.base_root
     original_version_root = furu.FURU_CONFIG.version_controlled_root_override
@@ -110,3 +122,10 @@ def test_override_results_for_nested_path(furu_tmp_root: Path) -> None:
 
     with override_results_for(grandparent, {"parent.dependency": "stubbed"}):
         assert grandparent.get() == "grand:parent:stubbed"
+
+
+def test_override_results_for_list_index(furu_tmp_root: Path) -> None:
+    root = _ListParentPipeline()
+
+    with override_results_for(root, {"deps.0": "stubbed"}):
+        assert root.get() == "list:stubbed"

@@ -554,7 +554,8 @@ def test_override_dependency(furu_tmp_root):
 ```
 
 If you want to override without instantiating the dependency directly, target it
-by dotted path from the root object:
+by dotted path from the root object (chz-style paths, e.g. `deps.0` for lists and
+`deps.key` for mappings):
 
 ```python
 from furu.testing import override_results_for

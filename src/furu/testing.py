@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
+import chz
 import pytest
 
 from .config import FURU_CONFIG, RecordGitMode
@@ -122,7 +123,11 @@ def override_results_for(
     root: Furu,
     overrides: Mapping[str, OverrideValue],
 ) -> Generator[None, None, None]:
-    """Override results by dotted field path relative to a root Furu object."""
+    """Override results by dotted field path relative to a root Furu object.
+
+    Paths follow chz traversal: use numeric segments for list indices and
+    key segments for mappings (e.g. "deps.0" or "deps.key").
+    """
     hash_overrides: dict[str, OverrideValue] = {}
     for path, value in overrides.items():
         target = _resolve_override_path(root, path)
@@ -134,7 +139,7 @@ def override_results_for(
 def _resolve_override_path(root: Furu, path: str) -> Furu:
     if not path:
         raise ValueError("override path must be non-empty")
-    current = root
+    current: object = root
     for segment in path.split("."):
         if not segment:
             raise ValueError(f"override path has empty segment: {path!r}")
@@ -147,66 +152,52 @@ def _resolve_override_path(root: Furu, path: str) -> Furu:
 
 
 def _resolve_path_segment(current: object, segment: str, path: str) -> object:
-    name, keys = _parse_path_segment(segment, path)
-    if name:
-        value = getattr(current, name, _PATH_MISSING)
+    if chz.is_chz(current):
+        value = getattr(current, segment, _PATH_MISSING)
         if value is _PATH_MISSING:
-            raise AttributeError(f"override path {path!r} has no attribute {name!r}")
-        current = value
-    for key in keys:
-        index = _coerce_path_key(key)
-        if isinstance(index, int):
-            if not _is_indexable_sequence(current):
-                raise TypeError(
-                    f"override path {path!r} index {index} requires a sequence"
-                )
-            sequence = cast(Sequence[OverrideValue], current)
-            current = sequence[index]
-        else:
-            if not isinstance(current, Mapping):
-                raise TypeError(
-                    f"override path {path!r} key {index!r} requires a mapping"
-                )
-            mapping = cast(Mapping[str | int, OverrideValue], current)
-            current = mapping[index]
-    return current
+            raise AttributeError(f"override path {path!r} has no attribute {segment!r}")
+        return value
+    if isinstance(current, Mapping):
+        mapping = cast(Mapping[object, OverrideValue], current)
+        return _resolve_mapping_segment(mapping, segment, path)
+    if _is_indexable_sequence(current):
+        sequence = cast(Sequence[OverrideValue], current)
+        return _resolve_sequence_segment(sequence, segment, path)
+    raise TypeError(
+        f"override path {path!r} cannot traverse into {type(current).__name__}"
+    )
 
 
-def _parse_path_segment(segment: str, path: str) -> tuple[str, list[str]]:
-    name_chars: list[str] = []
-    keys: list[str] = []
-    index = 0
-    length = len(segment)
-    while index < length and segment[index] != "[":
-        name_chars.append(segment[index])
-        index += 1
-    name = "".join(name_chars)
-    while index < length:
-        if segment[index] != "[":
-            raise ValueError(f"override path {path!r} has invalid segment {segment!r}")
-        close = segment.find("]", index + 1)
-        if close == -1:
-            raise ValueError(f"override path {path!r} has unterminated index")
-        token = segment[index + 1 : close].strip()
-        if not token:
-            raise ValueError(f"override path {path!r} has empty index")
-        keys.append(token)
-        index = close + 1
-    if not name:
-        raise ValueError(f"override path {path!r} has empty segment")
-    return name, keys
+def _resolve_mapping_segment(
+    mapping: Mapping[object, OverrideValue],
+    segment: str,
+    path: str,
+) -> OverrideValue:
+    if segment in mapping:
+        return mapping[segment]
+    index = _parse_index_segment(segment)
+    if index is not None and index in mapping:
+        return mapping[index]
+    raise KeyError(f"override path {path!r} has no key {segment!r}")
 
 
-def _coerce_path_key(token: str) -> str | int:
-    if len(token) >= 2 and token[0] == token[-1] and token[0] in ("'", '"'):
-        return token[1:-1]
-    if token.startswith("-"):
-        if token[1:].isdigit():
-            return int(token)
-        return token
-    if token.isdigit():
-        return int(token)
-    return token
+def _resolve_sequence_segment(
+    sequence: Sequence[OverrideValue],
+    segment: str,
+    path: str,
+) -> OverrideValue:
+    index = _parse_index_segment(segment)
+    if index is None:
+        raise TypeError(f"override path {path!r} index {segment!r} is not an integer")
+    if index < 0:
+        raise ValueError(f"override path {path!r} index must be non-negative")
+    return sequence[index]
+
+
+def _parse_index_segment(segment: str) -> int | None:
+    if not segment.isdigit():
+        return None
+    return int(segment)
 
 
 def _is_indexable_sequence(value: object) -> bool:
