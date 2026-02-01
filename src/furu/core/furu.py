@@ -46,6 +46,7 @@ from ..errors import (
 from ..runtime import current_holder
 from ..runtime.logging import enter_holder, get_logger, log, write_separator
 from ..runtime.tracebacks import format_traceback
+from ..runtime.overrides import has_override, lookup_override
 from ..serialization import FuruSerializer
 from ..serialization.serializer import JsonValue
 from ..storage import (
@@ -316,6 +317,8 @@ class Furu[T](ABC):
         return log(message, level=level)
 
     def _exists_quiet(self: Self) -> bool:
+        if has_override(self.furu_hash):
+            return True
         directory = self._base_furu_dir()
         success_dir = self._success_marker_dir(directory)
         if success_dir is None:
@@ -345,6 +348,9 @@ class Furu[T](ABC):
         """Check if result exists and is valid."""
         logger = get_logger()
         directory = self._base_furu_dir()
+        if has_override(self.furu_hash):
+            logger.info("exists %s -> true (override)", directory)
+            return True
         success_dir = self._success_marker_dir(directory)
         if success_dir is None:
             logger.info("exists %s -> false", directory)
@@ -376,6 +382,9 @@ class Furu[T](ABC):
         Raises:
             FuruComputeError: If computation fails with detailed error information
         """
+        has_override_value, override_value = lookup_override(self.furu_hash)
+        if has_override_value:
+            return cast(T, override_value)
         from furu.errors import (
             FuruExecutionError,
             FuruMissingArtifact,

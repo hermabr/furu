@@ -484,6 +484,89 @@ furu.FURU_CONFIG.record_git = "uncached"
 furu.FURU_CONFIG.poll_interval = 5.0
 ```
 
+### Testing with pytest
+
+Use the built-in pytest fixture to isolate Furu storage in tests (each test gets
+its own temp root, so identical configs in separate tests will not collide):
+
+```python
+# conftest.py
+pytest_plugins = ["furu.testing"]
+```
+
+```python
+# test_pipeline.py
+import json
+from pathlib import Path
+
+import furu
+
+
+class TrainModel(furu.Furu[Path]):
+    lr: float = furu.chz.field(default=1e-3)
+
+    def _create(self) -> Path:
+        path = self.furu_dir / "metrics.json"
+        path.write_text(json.dumps({"lr": self.lr}))
+        return path
+
+    def _load(self) -> Path:
+        return self.furu_dir / "metrics.json"
+
+
+def test_create_and_reload(furu_tmp_root):
+    obj = TrainModel(lr=1e-3)
+    first = obj.get()
+    second = obj.get()
+    assert first.read_text() == second.read_text()
+    assert (furu_tmp_root / "data").exists()
+```
+
+Override specific dependencies when you want to skip deeper chains:
+
+```python
+from furu.testing import override_results
+
+
+class Normalize(furu.Furu[str]):
+    def _create(self) -> str:
+        return "normalized"
+
+    def _load(self) -> str:
+        return "normalized"
+
+
+class TrainModel(furu.Furu[str]):
+    normalizer: Normalize = furu.chz.field(default_factory=Normalize)
+
+    def _create(self) -> str:
+        return f"trained:{self.normalizer.get()}"
+
+    def _load(self) -> str:
+        return "trained"
+
+
+def test_override_dependency(furu_tmp_root):
+    normalizer = Normalize()
+    model = TrainModel(normalizer=normalizer)
+    with override_results({normalizer: "stub"}):
+        assert model.get() == "trained:stub"
+```
+
+If you want to override without instantiating the dependency directly, target it
+by dotted path from the root object (chz-style paths, e.g. `deps.0` for lists and
+`deps.key` for mappings):
+
+```python
+from furu.testing import override_results_for
+
+
+def test_override_by_path(furu_tmp_root):
+    model = TrainModel()
+    with override_results_for(model, {"normalizer": "stub"}):
+        assert model.get() == "trained:stub"
+```
+
 ### Class-Level Options
 
 ```python
