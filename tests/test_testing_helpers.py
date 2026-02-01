@@ -21,7 +21,7 @@ class _ParentPipeline(furu.Furu[str]):
         return f"parent:{self.dependency.get()}"
 
     def _load(self) -> str:
-        return "parent:loaded"
+        return f"parent:{self.dependency.get()}"
 
 
 class _GrandparentPipeline(furu.Furu[str]):
@@ -31,7 +31,7 @@ class _GrandparentPipeline(furu.Furu[str]):
         return f"grand:{self.parent.get()}"
 
     def _load(self) -> str:
-        return "grand:loaded"
+        return f"grand:{self.parent.get()}"
 
 
 class _ListParentPipeline(furu.Furu[str]):
@@ -43,7 +43,7 @@ class _ListParentPipeline(furu.Furu[str]):
         return f"list:{self.deps[0].get()}"
 
     def _load(self) -> str:
-        return "list:loaded"
+        return f"list:{self.deps[0].get()}"
 
 
 def test_furu_test_env_sets_and_restores_config(tmp_path: Path) -> None:
