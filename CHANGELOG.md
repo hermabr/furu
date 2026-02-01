@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Record the furu package version in experiment metadata.
+
 ## v0.0.6
 
 - Clarify missing git origin guidance with the option to disable git metadata via `FURU_RECORD_GIT=ignore`.
