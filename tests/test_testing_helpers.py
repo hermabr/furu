@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 import furu
-from furu.testing import furu_test_env, override_results, override_results_for
+from furu.testing import furu_test_env, override_results
 
 
 class _DependencyStub(furu.Furu[str]):
@@ -117,15 +117,15 @@ def test_override_results_skips_dependency_chain(
         dependency.get()
 
 
-def test_override_results_for_nested_path(furu_tmp_root: Path) -> None:
+def test_override_results_nested_path(furu_tmp_root: Path) -> None:
     grandparent = _GrandparentPipeline()
 
-    with override_results_for(grandparent, {"parent.dependency": "stubbed"}):
+    with override_results({"parent.dependency": "stubbed"}, root=grandparent):
         assert grandparent.get() == "grand:parent:stubbed"
 
 
-def test_override_results_for_list_index(furu_tmp_root: Path) -> None:
+def test_override_results_list_index(furu_tmp_root: Path) -> None:
     root = _ListParentPipeline()
 
-    with override_results_for(root, {"deps.0": "stubbed"}):
+    with override_results({"deps.0": "stubbed"}, root=root):
         assert root.get() == "list:stubbed"

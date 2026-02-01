@@ -94,11 +94,15 @@ def furu_test_env(base_root: Path) -> Generator[Path, None, None]:
 @contextmanager
 def override_results(
     overrides: Mapping[OverrideKey, OverrideValue],
+    *,
+    root: Furu | None = None,
 ) -> Generator[None, None, None]:
     """Override specific Furu results within the context.
 
     Overrides are keyed by furu_hash, so identical configs share a stub.
-    Keys may be a Furu instance or a furu_hash string.
+    Keys may be a Furu instance or a furu_hash string. If `root` is provided,
+    string keys are treated as dotted paths relative to that root (chz-style
+    traversal, e.g. "deps.0" or "deps.key").
     """
     hash_overrides: dict[str, OverrideValue] = {}
     for key, value in overrides.items():
@@ -107,31 +111,19 @@ def override_results(
             hash_key = cast(str, key.furu_hash)
         elif isinstance(key, str):
             if not key:
-                raise ValueError("override furu_hash must be non-empty")
-            hash_key = key
+                raise ValueError("override key must be non-empty")
+            if root is not None:
+                target = _resolve_override_path(root, key)
+                hash_key = cast(str, target.furu_hash)
+            else:
+                if "." in key:
+                    raise ValueError(
+                        "override key looks like a path; pass root= to resolve it"
+                    )
+                hash_key = key
         else:
-            raise TypeError(
-                "override_results keys must be Furu instances or furu_hash strings"
-            )
+            raise TypeError("override_results keys must be Furu instances or strings")
         hash_overrides[hash_key] = value
-    with override_furu_hashes(hash_overrides):
-        yield
-
-
-@contextmanager
-def override_results_for(
-    root: Furu,
-    overrides: Mapping[str, OverrideValue],
-) -> Generator[None, None, None]:
-    """Override results by dotted field path relative to a root Furu object.
-
-    Paths follow chz traversal: use numeric segments for list indices and
-    key segments for mappings (e.g. "deps.0" or "deps.key").
-    """
-    hash_overrides: dict[str, OverrideValue] = {}
-    for path, value in overrides.items():
-        target = _resolve_override_path(root, path)
-        hash_overrides[cast(str, target.furu_hash)] = value
     with override_furu_hashes(hash_overrides):
         yield
 
