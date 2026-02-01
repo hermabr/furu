@@ -1,5 +1,6 @@
 import datetime
 import getpass
+import importlib.metadata
 import json
 import os
 import platform
@@ -50,6 +51,7 @@ class EnvironmentInfo(BaseModel):
 
     timestamp: str
     command: str
+    furu_version: str | None = None
     python_version: str
     executable: str
     platform: str
@@ -79,6 +81,7 @@ class FuruMetadata(BaseModel):
     # Environment info
     timestamp: str
     command: str
+    furu_version: str | None = None
     python_version: str
     executable: str
     platform: str
@@ -217,6 +220,7 @@ class MetadataManager:
                 timespec="microseconds"
             ),
             command=" ".join(sys.argv) if sys.argv else "<unknown>",
+            furu_version=importlib.metadata.version("furu"),
             python_version=sys.version,
             executable=sys.executable,
             platform=platform.platform(),
@@ -251,6 +255,7 @@ class MetadataManager:
             git_submodules=git_info.git_submodules,
             timestamp=env_info.timestamp,
             command=env_info.command,
+            furu_version=env_info.furu_version,
             python_version=env_info.python_version,
             executable=env_info.executable,
             platform=env_info.platform,
