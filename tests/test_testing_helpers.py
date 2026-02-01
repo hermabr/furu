@@ -18,20 +18,24 @@ class _ParentPipeline(furu.Furu[str]):
     dependency: _DependencyStub = furu.chz.field(default_factory=_DependencyStub)
 
     def _create(self) -> str:
-        return f"parent:{self.dependency.get()}"
+        value = f"parent:{self.dependency.get()}"
+        (self.furu_dir / "result.txt").write_text(value)
+        return value
 
     def _load(self) -> str:
-        return f"parent:{self.dependency.get()}"
+        return (self.furu_dir / "result.txt").read_text()
 
 
 class _GrandparentPipeline(furu.Furu[str]):
     parent: _ParentPipeline = furu.chz.field(default_factory=_ParentPipeline)
 
     def _create(self) -> str:
-        return f"grand:{self.parent.get()}"
+        value = f"grand:{self.parent.get()}"
+        (self.furu_dir / "result.txt").write_text(value)
+        return value
 
     def _load(self) -> str:
-        return f"grand:{self.parent.get()}"
+        return (self.furu_dir / "result.txt").read_text()
 
 
 class _ListParentPipeline(furu.Furu[str]):
@@ -40,10 +44,12 @@ class _ListParentPipeline(furu.Furu[str]):
     )
 
     def _create(self) -> str:
-        return f"list:{self.deps[0].get()}"
+        value = f"list:{self.deps[0].get()}"
+        (self.furu_dir / "result.txt").write_text(value)
+        return value
 
     def _load(self) -> str:
-        return f"list:{self.deps[0].get()}"
+        return (self.furu_dir / "result.txt").read_text()
 
 
 def test_furu_test_env_sets_and_restores_config(tmp_path: Path) -> None:
