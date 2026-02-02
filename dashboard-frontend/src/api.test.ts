@@ -36,6 +36,22 @@ const mockData = {
       to_namespace: "my_project.pipelines.TrainModel",
       to_hash: "abc123def456",
       original_result_status: "success",
+      original_namespace: "my_project.pipelines.TrainModel",
+      original_hash: "orig123",
+      schema_key: ["lr", "steps", "dataset"],
+      current_schema_key: ["lr", "steps", "dataset"],
+      is_stale: false,
+      is_alias: false,
+      aliases: [
+        {
+          namespace: "my_project.pipelines.TrainModel",
+          furu_hash: "alias456",
+          migrated_at: "2025-01-03T00:00:00+00:00",
+          overwritten_at: null,
+          origin: "tests",
+          note: "alias test",
+        },
+      ],
     },
     experimentList: {
       experiments: [
@@ -59,6 +75,22 @@ const mockData = {
           to_namespace: "my_project.pipelines.TrainModel",
           to_hash: "abc123def456",
           original_result_status: "success",
+          original_namespace: "my_project.pipelines.TrainModel",
+          original_hash: "orig123",
+          schema_key: ["lr", "steps", "dataset"],
+          current_schema_key: ["lr", "steps", "dataset"],
+          is_stale: false,
+          is_alias: false,
+          aliases: [
+            {
+              namespace: "my_project.pipelines.TrainModel",
+              furu_hash: "alias456",
+              migrated_at: "2025-01-03T00:00:00+00:00",
+              overwritten_at: null,
+              origin: "tests",
+              note: "alias test",
+            },
+          ],
         },
         {
           namespace: "my_project.pipelines.TrainModel",
@@ -80,6 +112,13 @@ const mockData = {
           to_namespace: "my_project.pipelines.TrainModel",
           to_hash: "def789ghi012",
           original_result_status: "success",
+          original_namespace: "my_project.pipelines.TrainModel",
+          original_hash: "orig456",
+          schema_key: ["lr", "steps", "dataset"],
+          current_schema_key: ["lr", "steps", "dataset"],
+          is_stale: false,
+          is_alias: false,
+          aliases: null,
         },
       ],
       total: 2,
@@ -138,8 +177,20 @@ const mockData = {
       original_result_status: "success",
       original_namespace: "my_project.pipelines.TrainModel",
       original_hash: "orig456",
-      alias_namespaces: ["my_project.pipelines.TrainModel"],
-      alias_hashes: ["alias456"],
+      schema_key: ["lr", "steps", "dataset"],
+      current_schema_key: ["lr", "steps", "dataset"],
+      is_stale: false,
+      is_alias: false,
+      aliases: [
+        {
+          namespace: "my_project.pipelines.TrainModel",
+          furu_hash: "alias456",
+          migrated_at: "2025-01-03T00:00:00+00:00",
+          overwritten_at: null,
+          origin: "tests",
+          note: "alias test",
+        },
+      ],
     },
 
   stats: {
@@ -308,5 +359,4 @@ describe("Schema type inference", () => {
     expect(Array.isArray(stats.by_result_status)).toBe(true);
   });
 });
-
 

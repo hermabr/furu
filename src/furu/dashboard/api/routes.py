@@ -57,6 +57,9 @@ async def list_experiments(
     migration_policy: str | None = Query(
         None, description="Filter by migration policy"
     ),
+    schema: str = Query(
+        "current", description="Filter by schema status (current, stale, any)"
+    ),
     view: str = Query("resolved", description="View mode: resolved or original"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of results"),
     offset: int = Query(0, ge=0, description="Offset for pagination"),
@@ -76,6 +79,7 @@ async def list_experiments(
         config_filter=config_filter,
         migration_kind=migration_kind,
         migration_policy=migration_policy,
+        schema=schema,
         view=view,
     )
 

@@ -40,6 +40,7 @@ def test_metadata_roundtrip_and_get_metadata(furu_tmp_root, monkeypatch) -> None
     meta = obj.get_metadata()
     assert meta.furu_hash == obj.furu_hash
     assert meta.furu_obj["value"] == 42
+    assert meta.schema_key == ("value",)
     assert meta.git_commit == "<test>"
     assert meta.furu_version == importlib.metadata.version("furu")
 

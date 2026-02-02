@@ -36,7 +36,7 @@ from furu.storage import (
     MigrationRecord,
     StateManager,
 )
-from furu.storage.state import _StateResultMigrated, _StateResultSuccess
+from furu.storage.state import _StateResultMigrated
 
 from .pipelines import (
     DataLoader,
@@ -246,8 +246,8 @@ def _create_populated_experiments(root: Path) -> None:
     - TrainModel with different params (running, submitit, gpu-02, bob, 2025-01-03)
     - EvalModel that depends on TrainModel (failed, local, gpu-02, alice, 2025-01-04)
     - DataLoader in different namespace (success, submitit, gpu-01, bob, 2024-06-01)
-    - PrepareDataset with different params (absent, no attempt)
-    - PrepareDataset alias (migrated alias pointing to dataset1)
+    - PrepareDataset with different params (absent, stale schema)
+    - PrepareDataset aliases (migrated aliases pointing to dataset1)
     """
     # Create a base dataset (successful, local, gpu-01, alice, early 2025)
     dataset1 = PrepareDataset(name="mnist", version="v1")
@@ -316,7 +316,13 @@ def _create_populated_experiments(root: Path) -> None:
 
     # Create another dataset with absent status (no attempt)
     dataset2 = PrepareDataset(name="cifar", version="v2")
-    create_experiment_from_furu(dataset2, result_status="absent", attempt_status=None)
+    dataset2_dir = create_experiment_from_furu(
+        dataset2, result_status="absent", attempt_status=None
+    )
+    dataset2_metadata_path = MetadataManager.get_metadata_path(dataset2_dir)
+    dataset2_metadata = json.loads(dataset2_metadata_path.read_text())
+    dataset2_metadata["schema_key"] = ["name"]
+    dataset2_metadata_path.write_text(json.dumps(dataset2_metadata, indent=2))
 
     def set_alias_state(state) -> None:
         state.result = _StateResultMigrated(status="migrated")
@@ -377,43 +383,6 @@ def _create_populated_experiments(root: Path) -> None:
         note="alias fixture 2",
     )
     MigrationManager.write_migration(alias_second_record, alias_second_dir)
-
-    # Add a moved dataset entry for filter tests
-    moved_dataset = PrepareDataset(name="mnist", version="v3")
-    moved_dir = moved_dataset.furu_dir
-    StateManager.ensure_internal_dir(moved_dir)
-    MetadataManager.write_metadata(
-        MetadataManager.create_metadata(moved_dataset, moved_dir, ignore_diff=True),
-        moved_dir,
-    )
-    StateManager.update_state(moved_dir, set_alias_state)
-
-    def set_success(state) -> None:
-        state.result = _StateResultSuccess(
-            status="success", created_at="2025-01-06T10:00:00+00:00"
-        )
-        state.attempt = None
-
-    StateManager.update_state(
-        dataset2._base_furu_dir(),
-        set_success,
-    )
-    moved_record = MigrationRecord(
-        kind="moved",
-        policy="move",
-        from_namespace="dashboard.pipelines.PrepareDataset",
-        from_hash=FuruSerializer.compute_hash(dataset2),
-        from_root="data",
-        to_namespace="dashboard.pipelines.PrepareDataset",
-        to_hash=FuruSerializer.compute_hash(moved_dataset),
-        to_root="data",
-        migrated_at="2025-01-06T10:00:00+00:00",
-        overwritten_at=None,
-        default_values=None,
-        origin="tests",
-        note="move fixture",
-    )
-    MigrationManager.write_migration(moved_record, moved_dir)
 
 
 @pytest.fixture(scope="module")

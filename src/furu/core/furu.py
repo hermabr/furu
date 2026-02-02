@@ -18,6 +18,8 @@ from typing import (
     Callable,
     ClassVar,
     Hashable,
+    Iterable,
+    Literal,
     Mapping,
     Protocol,
     Self,
@@ -47,8 +49,19 @@ from ..runtime import current_holder
 from ..runtime.logging import enter_holder, get_logger, log, write_separator
 from ..runtime.tracebacks import format_traceback
 from ..runtime.overrides import has_override, lookup_override
+from ..schema import schema_key_from_cls
 from ..serialization import FuruSerializer
 from ..serialization.serializer import JsonValue
+from ..aliases import collect_aliases
+from ..migration import (
+    FuruRef,
+    MigrationReport,
+    current as _current_refs,
+    migrate as _migrate,
+    migrate_one as _migrate_one,
+    resolve_original_ref,
+    stale as _stale_refs,
+)
 from ..storage import (
     FuruMetadata,
     MetadataManager,
@@ -312,6 +325,84 @@ class Furu[T](ABC):
         """Convert to Python code."""
         return FuruSerializer.to_python(self, multiline=multiline)
 
+    @classmethod
+    def schema_key(cls) -> tuple[str, ...]:
+        return schema_key_from_cls(cls)
+
+    @classmethod
+    def migrate(
+        cls,
+        *,
+        from_schema: Iterable[str] | None = None,
+        from_drop: Iterable[str] | None = None,
+        from_add: Iterable[str] | None = None,
+        from_hash: str | None = None,
+        from_furu_obj: dict[str, JsonValue] | None = None,
+        from_namespace: str | None = None,
+        default_field: Iterable[str] | None = None,
+        set_field: Mapping[str, JsonValue] | None = None,
+        drop_field: Iterable[str] | None = None,
+        rename_field: Mapping[str, str] | None = None,
+        include_alias_sources: bool = False,
+        conflict: Literal["throw", "skip"] = "throw",
+        origin: str | None = None,
+        note: str | None = None,
+    ) -> MigrationReport:
+        return _migrate(
+            cls,
+            from_schema=from_schema,
+            from_drop=from_drop,
+            from_add=from_add,
+            from_hash=from_hash,
+            from_furu_obj=from_furu_obj,
+            from_namespace=from_namespace,
+            default_field=default_field,
+            set_field=set_field,
+            drop_field=drop_field,
+            rename_field=rename_field,
+            include_alias_sources=include_alias_sources,
+            conflict=conflict,
+            origin=origin,
+            note=note,
+        )
+
+    @classmethod
+    def migrate_one(
+        cls,
+        *,
+        from_hash: str,
+        from_namespace: str | None = None,
+        default_field: Iterable[str] | None = None,
+        set_field: Mapping[str, JsonValue] | None = None,
+        drop_field: Iterable[str] | None = None,
+        rename_field: Mapping[str, str] | None = None,
+        include_alias_sources: bool = False,
+        conflict: Literal["throw", "skip"] = "throw",
+        origin: str | None = None,
+        note: str | None = None,
+    ) -> MigrationRecord | None:
+        return _migrate_one(
+            cls,
+            from_hash=from_hash,
+            from_namespace=from_namespace,
+            default_field=default_field,
+            set_field=set_field,
+            drop_field=drop_field,
+            rename_field=rename_field,
+            include_alias_sources=include_alias_sources,
+            conflict=conflict,
+            origin=origin,
+            note=note,
+        )
+
+    @classmethod
+    def stale(cls, *, namespace: str | None = None) -> list[FuruRef]:
+        return _stale_refs(cls, namespace=namespace)
+
+    @classmethod
+    def current(cls, *, namespace: str | None = None) -> list[FuruRef]:
+        return _current_refs(cls, namespace=namespace)
+
     def log(self: Self, message: str, *, level: str = "INFO") -> Path:
         """Log a message to the current holder's `furu.log`."""
         return log(message, level=level)
@@ -368,6 +459,39 @@ class Furu[T](ABC):
     def get_migration_record(self: Self) -> MigrationRecord | None:
         """Get migration record for this object."""
         return MigrationManager.read_migration(self._base_furu_dir())
+
+    def is_alias(self: Self) -> bool:
+        record = self._alias_record(self._base_furu_dir())
+        return record is not None
+
+    def original(self: Self) -> FuruRef:
+        base_dir = self._base_furu_dir()
+        ref = FuruRef(
+            namespace=".".join(self.__class__._namespace().parts),
+            furu_hash=self.furu_hash,
+            root=MigrationManager.root_kind_for_dir(base_dir),
+            directory=base_dir,
+        )
+        return resolve_original_ref(ref)
+
+    def aliases(self: Self, *, include_inactive: bool = True) -> list[FuruRef]:
+        original_ref = self.original()
+        alias_index = collect_aliases(include_inactive=include_inactive)
+        records = alias_index.get(
+            (original_ref.namespace, original_ref.furu_hash, original_ref.root),
+            [],
+        )
+        refs = [
+            FuruRef(
+                namespace=record.to_namespace,
+                furu_hash=record.to_hash,
+                root=record.to_root,
+                directory=MigrationManager.resolve_dir(record, target="to"),
+            )
+            for record in records
+        ]
+        refs.sort(key=lambda item: item.furu_hash)
+        return refs
 
     def get(self: Self, *, force: bool = False) -> T:
         """

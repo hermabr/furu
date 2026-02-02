@@ -10,9 +10,10 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from ..config import FURU_CONFIG
+from ..schema import schema_key_from_furu_obj
 from ..serialization import BaseModel as PydanticBaseModel
 from ..serialization import FuruSerializer
 from ..serialization.serializer import JsonValue
@@ -68,6 +69,7 @@ class FuruMetadata(BaseModel):
     # Furu-specific fields
     furu_python_def: str
     furu_obj: JsonValue  # Serialized Furu object from FuruSerializer.to_dict()
+    schema_key: tuple[str, ...]
     furu_hash: str
     furu_path: str
 
@@ -88,6 +90,13 @@ class FuruMetadata(BaseModel):
     hostname: str
     user: str
     pid: int
+
+    @field_validator("schema_key", mode="before")
+    @classmethod
+    def _coerce_schema_key(cls, value: object) -> object:
+        if isinstance(value, list):
+            return tuple(value)
+        return value
 
 
 class MetadataManager:
@@ -242,10 +251,12 @@ class MetadataManager:
             raise TypeError(
                 f"Expected FuruSerializer.to_dict to return dict, got {type(serialized_obj)}"
             )
+        schema_key = schema_key_from_furu_obj(serialized_obj)
 
         return FuruMetadata(
             furu_python_def=FuruSerializer.to_python(furu_obj, multiline=False),
             furu_obj=serialized_obj,
+            schema_key=schema_key,
             furu_hash=FuruSerializer.compute_hash(furu_obj),
             furu_path=str(directory.resolve()),
             git_commit=git_info.git_commit,

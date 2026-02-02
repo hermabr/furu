@@ -31,25 +31,33 @@ def test_scan_experiments_empty(temp_furu_root: Path) -> None:
 def test_scan_experiments_finds_all(populated_furu_root: Path) -> None:
     """Test that scanner finds all experiments."""
     experiments = scan_experiments()
-    # 9 experiments: dataset1, dataset2, train1, train2, eval1, loader, alias, alias2, moved
-    assert len(experiments) == 9
+    # 7 experiments (current schema): dataset1, train1, train2, eval1, loader, alias, alias2
+    assert len(experiments) == 7
+
+
+def test_scan_experiments_schema_filter(populated_furu_root: Path) -> None:
+    current = scan_experiments()
+    assert len(current) == 7
+
+    any_schema = scan_experiments(schema="any")
+    assert len(any_schema) == 8
+
+    stale = scan_experiments(schema="stale")
+    assert len(stale) == 1
+    assert stale[0].is_stale is True
 
 
 def test_scan_experiments_filter_result_status(populated_furu_root: Path) -> None:
     """Test filtering by result status."""
     experiments = scan_experiments(result_status="success")
-    # 4 successful: dataset1, train1, loader, dataset2 (moved source)
-    assert len(experiments) == 4
+    # 3 successful: dataset1, train1, loader
+    assert len(experiments) == 3
     for exp in experiments:
         assert exp.result_status == "success"
 
     migrated = scan_experiments(result_status="migrated")
-    assert len(migrated) == 3
-    assert {exp.migration_kind for exp in migrated} == {"alias", "moved"}
-
-    moved = scan_experiments(result_status="migrated", migration_kind="moved")
-    assert len(moved) == 1
-    assert moved[0].migration_kind == "moved"
+    assert len(migrated) == 2
+    assert {exp.migration_kind for exp in migrated} == {"alias"}
 
     alias_policy = scan_experiments(
         result_status="migrated",
@@ -57,14 +65,6 @@ def test_scan_experiments_filter_result_status(populated_furu_root: Path) -> Non
     )
     assert len(alias_policy) == 2
     assert all(exp.migration_policy == "alias" for exp in alias_policy)
-
-
-def test_scan_experiments_applies_migration_defaults(
-    populated_furu_root: Path,
-) -> None:
-    experiments = scan_experiments(config_filter="language=spanish")
-    assert len(experiments) == 1
-    assert experiments[0].migration_kind == "alias"
 
 
 def test_scan_experiments_filter_attempt_status(populated_furu_root: Path) -> None:
@@ -80,13 +80,13 @@ def test_scan_experiments_filter_attempt_status(populated_furu_root: Path) -> No
 def test_scan_experiments_filter_namespace(populated_furu_root: Path) -> None:
     """Test filtering by namespace prefix."""
     experiments = scan_experiments(namespace_prefix="dashboard.pipelines")
-    # All 9 experiments are in dashboard.pipelines
-    assert len(experiments) == 9
+    # All 7 current-schema experiments are in dashboard.pipelines
+    assert len(experiments) == 7
     for exp in experiments:
         assert exp.namespace.startswith("dashboard.pipelines")
 
     original = scan_experiments(namespace_prefix="dashboard.pipelines", view="original")
-    assert len(original) == 7
+    assert len(original) == 5
 
 
 def test_scan_experiments_sorted_by_updated_at(temp_furu_root: Path) -> None:
@@ -123,7 +123,6 @@ def test_scan_experiments_sorted_by_updated_at(temp_furu_root: Path) -> None:
 def test_get_experiment_detail_found(populated_furu_root: Path) -> None:
     """Test getting experiment detail."""
     dataset1 = PrepareDataset(name="mnist", version="v1")
-    dataset2 = PrepareDataset(name="cifar", version="v2")
     furu_hash = FuruSerializer.compute_hash(dataset1)
 
     detail = get_experiment_detail("dashboard.pipelines.PrepareDataset", furu_hash)
@@ -142,10 +141,11 @@ def test_get_experiment_detail_found(populated_furu_root: Path) -> None:
     assert alias_detail is not None
     assert alias_detail.migration_kind == "alias"
     assert alias_detail.original_result_status == "success"
-    assert alias_detail.alias_hashes is None
+    assert alias_detail.is_alias is True
+    assert alias_detail.aliases is None
 
-    assert detail.alias_hashes is not None
-    assert len(detail.alias_hashes) == 2
+    assert detail.aliases is not None
+    assert len(detail.aliases) == 2
 
     alias_dir = alias._base_furu_dir()
     alias_record = MigrationManager.read_migration(alias_dir)
@@ -158,8 +158,9 @@ def test_get_experiment_detail_found(populated_furu_root: Path) -> None:
         "dashboard.pipelines.PrepareDataset", furu_hash, view="resolved"
     )
     assert alias_filtered is not None
-    assert alias_filtered.alias_hashes is not None
-    assert len(alias_filtered.alias_hashes) == 1
+    assert alias_filtered.aliases is not None
+    assert len(alias_filtered.aliases) == 2
+    assert any(alias.overwritten_at is not None for alias in alias_filtered.aliases)
 
     MigrationManager.write_migration(alias_record, alias_dir)
 
@@ -168,14 +169,6 @@ def test_get_experiment_detail_found(populated_furu_root: Path) -> None:
     )
     assert alias_original is not None
     assert alias_original.furu_hash == furu_hash
-
-    moved = PrepareDataset(name="mnist", version="v3")
-    moved_hash = FuruSerializer.compute_hash(moved)
-    moved_original = get_experiment_detail(
-        "dashboard.pipelines.PrepareDataset", moved_hash, view="original"
-    )
-    assert moved_original is not None
-    assert moved_original.furu_hash == FuruSerializer.compute_hash(dataset2)
 
 
 def test_get_experiment_detail_not_found(populated_furu_root: Path) -> None:
@@ -208,21 +201,21 @@ def test_get_stats_empty(temp_furu_root: Path) -> None:
 def test_get_stats_counts(populated_furu_root: Path) -> None:
     """Test that stats correctly count experiments."""
     stats = get_stats()
-    # 9 total: dataset1(success), train1(success), train2(running),
-    #          eval1(failed), loader(success), dataset2(success moved source),
-    #          alias(migrated), alias2(migrated), moved(migrated)
-    assert stats.total == 9
-    assert stats.success_count == 4
+    # 8 total: dataset1(success), train1(success), train2(running),
+    #          eval1(failed), loader(success), dataset2(absent stale),
+    #          alias(migrated), alias2(migrated)
+    assert stats.total == 8
+    assert stats.success_count == 3
     assert stats.failed_count == 1
     assert stats.running_count == 1
 
     # Check by_result_status
     result_map = {s.status: s.count for s in stats.by_result_status}
-    assert result_map["success"] == 4
+    assert result_map["success"] == 3
     assert result_map["failed"] == 1
     assert result_map["incomplete"] == 1
-    assert result_map.get("absent", 0) == 0
-    assert result_map["migrated"] == 3
+    assert result_map.get("absent", 0) == 1
+    assert result_map["migrated"] == 2
 
 
 def test_scan_experiments_version_controlled(temp_furu_root: Path) -> None:
@@ -409,9 +402,9 @@ def test_scan_experiments_filter_by_updated_after(populated_furu_root: Path) -> 
     # Fixture has: loader(updated 2024-06-01), dataset1(2025-01-01), train1(2025-01-02),
     #              train2(2025-01-03), eval1(2025-01-04), dataset2(no attempt with default date)
 
-    # Filter by updated_after 2025-01-02 should get train1, train2, eval1, aliases
+    # Filter by updated_after 2025-01-02 should get train1, train2, eval1
     results = scan_experiments(updated_after="2025-01-02T00:00:00+00:00")
-    assert len(results) == 5  # train1, train2, eval1, aliases
+    assert len(results) == 3  # train1, train2, eval1
     for exp in results:
         assert exp.updated_at is not None
         assert exp.updated_at >= "2025-01-02T00:00:00+00:00"
@@ -510,10 +503,9 @@ def test_scan_experiments_combined_filters(populated_furu_root: Path) -> None:
     # - train2: running, submitit, gpu-02, bob, 2025-01-03
     # - eval1: failed, local, gpu-02, alice, 2025-01-04
     # - loader: success, submitit, gpu-01, bob, 2024-06-01
-    # - dataset2: success (moved source)
+    # - dataset2: absent (stale schema)
     # - alias: migrated (resolves to dataset1)
     # - alias2: migrated (resolves to dataset1)
-    # - moved: migrated (points to dataset2)
 
     # Combine result_status + user: success + alice = dataset1, train1
     results = scan_experiments(result_status="success", user="alice")
@@ -701,10 +693,10 @@ def test_get_experiment_dag_populated(populated_furu_root: Path) -> None:
     """Test DAG with the populated fixture data."""
     dag = get_experiment_dag()
 
-    # Fixture has: PrepareDataset (3), TrainModel (2), EvalModel (1), DataLoader (1)
+    # Fixture has: PrepareDataset (2), TrainModel (2), EvalModel (1), DataLoader (1)
     # Classes: PrepareDataset, TrainModel, EvalModel, DataLoader = 4 nodes
     assert dag.total_nodes == 4
-    assert dag.total_experiments == 7
+    assert dag.total_experiments == 6
 
     # Check node counts
     node_by_class = {n.class_name: n for n in dag.nodes}
@@ -713,8 +705,8 @@ def test_get_experiment_dag_populated(populated_furu_root: Path) -> None:
     assert "EvalModel" in node_by_class
     assert "DataLoader" in node_by_class
 
-    # PrepareDataset has 3 experiments
-    assert node_by_class["PrepareDataset"].total_count == 3
+    # PrepareDataset has 2 experiments
+    assert node_by_class["PrepareDataset"].total_count == 2
     # TrainModel has 2 experiments
     assert node_by_class["TrainModel"].total_count == 2
     # EvalModel has 1 experiment

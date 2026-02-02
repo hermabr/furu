@@ -19,6 +19,17 @@ class HealthCheck(BaseModel):
     version: str
 
 
+class AliasInfo(BaseModel):
+    """Alias reference information for an experiment."""
+
+    namespace: str
+    furu_hash: str
+    migrated_at: str | None = None
+    overwritten_at: str | None = None
+    origin: str | None = None
+    note: str | None = None
+
+
 class ExperimentSummary(BaseModel):
     """Summary of an experiment for list views."""
 
@@ -46,6 +57,13 @@ class ExperimentSummary(BaseModel):
     to_namespace: str | None = None
     to_hash: str | None = None
     original_result_status: str | None = None
+    original_namespace: str | None = None
+    original_hash: str | None = None
+    schema_key: list[str] | None = None
+    current_schema_key: list[str] | None = None
+    is_stale: bool | None = None
+    is_alias: bool | None = None
+    aliases: list[AliasInfo] | None = None
 
 
 class ExperimentDetail(ExperimentSummary):
@@ -55,10 +73,6 @@ class ExperimentDetail(ExperimentSummary):
     state: JsonDict
     metadata: JsonDict | None = None
     attempt: StateAttempt | None = None
-    original_namespace: str | None = None
-    original_hash: str | None = None
-    alias_namespaces: list[str] | None = None
-    alias_hashes: list[str] | None = None
 
 
 class ExperimentList(BaseModel):

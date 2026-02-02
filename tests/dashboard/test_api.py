@@ -41,9 +41,9 @@ def test_list_experiments(client: TestClient, populated_furu_root: Path) -> None
     response = client.get("/api/experiments")
     assert response.status_code == 200
     data = response.json()
-    # 9 experiments: dataset1, dataset2, train1, train2, eval1, loader, alias, alias2, moved
-    assert data["total"] == 9
-    assert len(data["experiments"]) == 9
+    # 7 experiments (current schema): dataset1, train1, train2, eval1, loader, alias, alias2
+    assert data["total"] == 7
+    assert len(data["experiments"]) == 7
 
     # Check structure of returned experiments
     exp = data["experiments"][0]
@@ -55,7 +55,23 @@ def test_list_experiments(client: TestClient, populated_furu_root: Path) -> None
     response_original = client.get("/api/experiments?view=original")
     assert response_original.status_code == 200
     original_data = response_original.json()
-    assert original_data["total"] == 7
+    assert original_data["total"] == 5
+
+
+def test_list_experiments_schema_filter(
+    client: TestClient, populated_furu_root: Path
+) -> None:
+    response_current = client.get("/api/experiments")
+    assert response_current.status_code == 200
+    assert response_current.json()["total"] == 7
+
+    response_stale = client.get("/api/experiments?schema=stale")
+    assert response_stale.status_code == 200
+    assert response_stale.json()["total"] == 1
+
+    response_any = client.get("/api/experiments?schema=any")
+    assert response_any.status_code == 200
+    assert response_any.json()["total"] == 8
 
 
 def test_list_experiments_filter_by_result_status(
@@ -65,25 +81,18 @@ def test_list_experiments_filter_by_result_status(
     response = client.get("/api/experiments?result_status=success")
     assert response.status_code == 200
     data = response.json()
-    # 4 successful: dataset1, train1, loader, dataset2 (moved source marked success)
-    assert data["total"] == 4
+    # 3 successful: dataset1, train1, loader
+    assert data["total"] == 3
     for exp in data["experiments"]:
         assert exp["result_status"] == "success"
 
     migrated = client.get("/api/experiments?result_status=migrated")
     assert migrated.status_code == 200
     migrated_data = migrated.json()
-    assert migrated_data["total"] == 3
+    assert migrated_data["total"] == 2
     assert {exp["migration_kind"] for exp in migrated_data["experiments"]} == {
         "alias",
-        "moved",
     }
-
-    moved = client.get("/api/experiments?result_status=migrated&migration_kind=moved")
-    assert moved.status_code == 200
-    moved_data = moved.json()
-    assert moved_data["total"] == 1
-    assert moved_data["experiments"][0]["migration_kind"] == "moved"
 
     alias_policy = client.get(
         "/api/experiments?result_status=migrated&migration_policy=alias"
@@ -112,8 +121,8 @@ def test_list_experiments_filter_by_namespace(
     response = client.get("/api/experiments?namespace=dashboard.pipelines")
     assert response.status_code == 200
     data = response.json()
-    # All 9 experiments are in dashboard.pipelines
-    assert data["total"] == 9
+    # All 7 current-schema experiments are in dashboard.pipelines
+    assert data["total"] == 7
     for exp in data["experiments"]:
         assert exp["namespace"].startswith("dashboard.pipelines")
 
@@ -122,7 +131,7 @@ def test_list_experiments_filter_by_namespace(
     )
     assert original_view.status_code == 200
     data = original_view.json()
-    assert data["total"] == 7
+    assert data["total"] == 5
 
 
 def test_list_experiments_filter_by_class(
@@ -145,13 +154,13 @@ def test_list_experiments_pagination(
     response = client.get("/api/experiments?limit=2&offset=0")
     assert response.status_code == 200
     data = response.json()
-    assert data["total"] == 9
+    assert data["total"] == 7
     assert len(data["experiments"]) == 2
 
     response = client.get("/api/experiments?limit=2&offset=2")
     assert response.status_code == 200
     data = response.json()
-    assert data["total"] == 9
+    assert data["total"] == 7
     assert len(data["experiments"]) == 2
 
 
@@ -185,10 +194,11 @@ def test_get_experiment_detail(client: TestClient, populated_furu_root: Path) ->
     alias_data = alias_response.json()
     assert alias_data["migration_kind"] == "alias"
     assert alias_data["original_result_status"] == "success"
-    assert alias_data["alias_hashes"] is None
+    assert alias_data["is_alias"] is True
+    assert alias_data["aliases"] is None
 
-    assert data["alias_hashes"] is not None
-    assert len(data["alias_hashes"]) == 2
+    assert data["aliases"] is not None
+    assert len(data["aliases"]) == 2
 
 
 def test_get_experiment_detail_with_attempt(
@@ -244,21 +254,21 @@ def test_dashboard_stats(client: TestClient, populated_furu_root: Path) -> None:
     assert response.status_code == 200
     data = response.json()
 
-    # 9 total: dataset1(success), train1(success), train2(running),
-    #          eval1(failed), loader(success), dataset2(success moved source),
-    #          alias(migrated), alias2(migrated), moved(migrated)
-    assert data["total"] == 9
-    assert data["success_count"] == 4
+    # 8 total: dataset1(success), train1(success), train2(running),
+    #          eval1(failed), loader(success), dataset2(absent stale),
+    #          alias(migrated), alias2(migrated)
+    assert data["total"] == 8
+    assert data["success_count"] == 3
     assert data["failed_count"] == 1
     assert data["running_count"] == 1
 
     # Check by_result_status
     result_statuses = {s["status"]: s["count"] for s in data["by_result_status"]}
-    assert result_statuses.get("success", 0) == 4
+    assert result_statuses.get("success", 0) == 3
     assert result_statuses.get("failed", 0) == 1
     assert result_statuses.get("incomplete", 0) == 1
-    assert result_statuses.get("absent", 0) == 0
-    assert result_statuses.get("migrated", 0) == 3
+    assert result_statuses.get("absent", 0) == 1
+    assert result_statuses.get("migrated", 0) == 2
 
 
 def test_combined_filters(client: TestClient, populated_furu_root: Path) -> None:
@@ -268,8 +278,8 @@ def test_combined_filters(client: TestClient, populated_furu_root: Path) -> None
     )
     assert response.status_code == 200
     data = response.json()
-    # dataset1 + dataset2 (moved source marked success) match
-    assert data["total"] == 2
+    # dataset1 matches
+    assert data["total"] == 1
     assert data["experiments"][0]["result_status"] == "success"
     assert data["experiments"][0]["namespace"].startswith(
         "dashboard.pipelines.PrepareDataset"
@@ -305,7 +315,7 @@ def test_experiments_with_dependencies(
 # - train2: running, submitit, gpu-02, bob, 2025-01-03
 # - eval1: failed, local, gpu-02, alice, 2025-01-04
 # - loader: success, submitit, gpu-01, bob, 2024-06-01
-# - dataset2: success (moved source)
+# - dataset2: absent (stale schema)
 # =============================================================================
 
 
@@ -399,11 +409,11 @@ def test_list_experiments_filter_by_updated_after(
     client: TestClient, populated_furu_root: Path
 ) -> None:
     """Test filtering experiments by updated_after via API."""
-    # Filter for experiments updated after 2025-01-03 (eval1 + moved source + moved target)
+    # Filter for experiments updated after 2025-01-03 (eval1)
     response = client.get("/api/experiments?updated_after=2025-01-03T12:00:00%2B00:00")
     assert response.status_code == 200
     data = response.json()
-    assert data["total"] == 3
+    assert data["total"] == 1
 
 
 def test_list_experiments_filter_by_updated_before(
@@ -422,32 +432,19 @@ def test_list_experiments_filter_by_config_filter(
     client: TestClient, populated_furu_root: Path
 ) -> None:
     """Test filtering experiments by config_filter via API."""
-    # Filter by config name=mnist (dataset1 + aliases + moved)
+    # Filter by config name=mnist (dataset1 + aliases)
     response = client.get("/api/experiments?config_filter=name%3Dmnist")
     assert response.status_code == 200
     data = response.json()
-    assert data["total"] == 4
+    assert data["total"] == 3
     assert data["experiments"][0]["class_name"] == "PrepareDataset"
 
-    # Filter by config language=spanish (alias default)
-    response = client.get("/api/experiments?config_filter=language%3Dspanish")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["total"] == 1
-    assert data["experiments"][0]["migration_kind"] == "alias"
-
-    # Filter by config name=cifar (dataset2 only)
-    response = client.get("/api/experiments?config_filter=name%3Dcifar")
+    # Filter by config name=cifar (stale schema)
+    response = client.get("/api/experiments?config_filter=name%3Dcifar&schema=any")
     assert response.status_code == 200
     data = response.json()
     assert data["total"] == 1
     assert data["experiments"][0]["class_name"] == "PrepareDataset"
-
-    # Filter by config name=cifar (dataset2 only)
-    response = client.get("/api/experiments?config_filter=name%3Dcifar")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["total"] == 1
 
 
 def test_list_experiments_combined_new_filters(
@@ -482,13 +479,17 @@ def test_list_experiments_combined_new_filters(
 def test_list_experiments_new_fields_in_response(
     client: TestClient, populated_furu_root: Path
 ) -> None:
-    """Test that new fields (backend, hostname, user) are included in response."""
+    """Test that new fields are included in response."""
     response = client.get("/api/experiments")
     assert response.status_code == 200
     data = response.json()
 
     # Check structure of returned experiments - all with attempts should have new fields
     for exp in data["experiments"]:
+        assert "schema_key" in exp
+        assert "current_schema_key" in exp
+        assert "is_stale" in exp
+        assert "is_alias" in exp
         # Experiments with attempts should have these fields
         if exp["attempt_status"] is not None:
             assert "backend" in exp
@@ -555,7 +556,7 @@ def test_dag_endpoint(client: TestClient, populated_furu_root: Path) -> None:
 
     # Fixture has 4 unique classes
     assert data["total_nodes"] == 4
-    assert data["total_experiments"] == 7
+    assert data["total_experiments"] == 6
 
     # Check node structure
     assert len(data["nodes"]) == 4
@@ -585,13 +586,13 @@ def test_dag_endpoint_node_counts(
     assert response.status_code == 200
     data = response.json()
 
-    # Find the PrepareDataset node (has 3 experiments: 2 success, 1 migrated)
+    # Find the PrepareDataset node (has 2 experiments: 1 success, 1 absent)
     prepare_node = next(
         (n for n in data["nodes"] if n["class_name"] == "PrepareDataset"), None
     )
     assert prepare_node is not None
-    assert prepare_node["total_count"] == 3
-    assert prepare_node["success_count"] == 2
+    assert prepare_node["total_count"] == 2
+    assert prepare_node["success_count"] == 1
 
     # Find the TrainModel node (has 2 experiments: 1 success, 1 running)
     train_node = next(

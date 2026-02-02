@@ -36,15 +36,7 @@ from .runtime import (
     log,
     write_separator,
 )
-from .migrate import migrate
-from .migration import (
-    NamespacePair,
-    MigrationCandidate,
-    MigrationSkip,
-    apply_migration,
-    find_migration_candidates,
-    find_migration_candidates_initialized_target,
-)
+from .migration import FuruRef, MigrationReport, MigrationSkip
 from .serialization import FuruSerializer
 from .storage import MetadataManager, StateManager
 
@@ -67,13 +59,9 @@ __all__ = [
     "DependencyChzSpec",
     "DependencySpec",
     "MISSING",
-    "migrate",
-    "NamespacePair",
-    "MigrationCandidate",
+    "FuruRef",
+    "MigrationReport",
     "MigrationSkip",
-    "apply_migration",
-    "find_migration_candidates",
-    "find_migration_candidates_initialized_target",
     "MetadataManager",
     "StateManager",
     "SubmititAdapter",

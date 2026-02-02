@@ -30,59 +30,31 @@ from my_project.pipelines import (  # type: ignore[import-not-found]
     TrainTextModel,
 )
 
-import furu
 from furu.config import FURU_CONFIG
 from furu.serialization import FuruSerializer
-from furu.storage import (
-    MetadataManager,
-    MigrationManager,
-    MigrationRecord,
-    StateManager,
-)
+from furu.storage import MetadataManager, StateManager
 
 
-def _create_migrated_aliases() -> PrepareDataset:
-    dataset_old = PrepareDataset(name="mnist")
-    dataset_old.get()
-
-    def find_candidate(default_values: dict[str, str]):
-        candidates = furu.find_migration_candidates(
-            namespace=furu.NamespacePair(
-                from_namespace="my_project.pipelines.PrepareDataset",
-                to_namespace="my_project.pipelines.PrepareDataset",
-            ),
-            default_values=default_values,
-            drop_fields=["name"],
-        )
-        target_hash = dataset_old.furu_hash
-        candidates = [
-            candidate
-            for candidate in candidates
-            if candidate.from_ref.furu_hash == target_hash
-        ]
-        if not candidates:
-            raise ValueError("migration: no candidates found for target class")
-        if len(candidates) != 1:
-            raise ValueError("migration: expected exactly one candidate")
-        return candidates[0]
-
-    furu.apply_migration(
-        find_candidate({"name": "mnist-v2"}),
-        policy="alias",
-        cascade=True,
+def _create_migrated_aliases(
+    dataset_mnist: PrepareDataset,
+    dataset_toy: PrepareDataset,
+) -> None:
+    PrepareDataset.migrate_one(
+        from_hash=dataset_mnist.furu_hash,
+        from_namespace="my_project.pipelines.PrepareDataset",
+        drop_field=("name",),
+        set_field={"name": "mnist-v2"},
         origin="e2e",
         note="migration fixture",
-        conflict="throw",
     )
-    furu.apply_migration(
-        find_candidate({"name": "mnist-v3"}),
-        policy="alias",
-        cascade=True,
+    PrepareDataset.migrate_one(
+        from_hash=dataset_toy.furu_hash,
+        from_namespace="my_project.pipelines.PrepareDataset",
+        drop_field=("name",),
+        set_field={"name": "toy-v2"},
         origin="e2e",
         note="migration fixture 2",
-        conflict="throw",
     )
-    return dataset_old
 
 
 def create_mock_experiment(
@@ -187,79 +159,8 @@ def generate_test_data(data_root: Path) -> None:
     print(f"  Created: {dataset_mnist.__class__.__name__} (mnist)")
 
     # Migrated alias dataset (mnist -> mnist-v2)
-    dataset_old = _create_migrated_aliases()
-    print("  Created: PrepareDataset aliases (mnist-v2, mnist-v3)")
-
-    candidates = furu.find_migration_candidates(
-        namespace=furu.NamespacePair(
-            from_namespace="my_project.pipelines.PrepareDataset",
-            to_namespace="my_project.pipelines.PrepareDataset",
-        ),
-        default_values={"name": "mnist-copy"},
-        drop_fields=["name"],
-    )
-    copy_candidates = [
-        candidate
-        for candidate in candidates
-        if candidate.from_ref.furu_hash == dataset_old.furu_hash
-    ]
-    if not copy_candidates:
-        raise ValueError("migration: no copy candidates found")
-    furu.apply_migration(
-        copy_candidates[0],
-        policy="copy",
-        cascade=True,
-        origin="e2e",
-        note="migration copy fixture",
-        conflict="throw",
-    )
-
-    move_candidates = furu.find_migration_candidates(
-        namespace=furu.NamespacePair(
-            from_namespace="my_project.pipelines.PrepareDataset",
-            to_namespace="my_project.pipelines.PrepareDataset",
-        ),
-        default_values={"name": "mnist-move"},
-        drop_fields=["name"],
-    )
-    move_candidates = [
-        candidate
-        for candidate in move_candidates
-        if candidate.from_ref.furu_hash == dataset_old.furu_hash
-    ]
-    if not move_candidates:
-        raise ValueError("migration: no move candidates found")
-    move_candidate = move_candidates[0]
-    move_records = furu.apply_migration(
-        move_candidate,
-        policy="move",
-        cascade=True,
-        origin="e2e",
-        note="migration move fixture",
-        conflict="throw",
-    )
-    move_dir = move_candidate.to_ref.directory
-    original_dir = move_candidate.from_ref.directory
-    if move_records:
-        primary_record = move_records[0]
-        if isinstance(primary_record, MigrationRecord):
-            original_record = MigrationRecord(
-                kind="migrated",
-                policy=primary_record.policy,
-                from_namespace=primary_record.from_namespace,
-                from_hash=primary_record.from_hash,
-                from_root=primary_record.from_root,
-                to_namespace=primary_record.to_namespace,
-                to_hash=primary_record.to_hash,
-                to_root=primary_record.to_root,
-                migrated_at=primary_record.migrated_at,
-                overwritten_at=primary_record.overwritten_at,
-                default_values=primary_record.default_values,
-                origin=primary_record.origin,
-                note=primary_record.note,
-            )
-            MigrationManager.write_migration(primary_record, move_dir)
-            MigrationManager.write_migration(original_record, original_dir)
+    _create_migrated_aliases(dataset_mnist, dataset_toy)
+    print("  Created: PrepareDataset aliases (mnist-v2, toy-v2)")
 
     # Training model on toy dataset
     train_toy = TrainModel(lr=0.001, steps=1000, dataset=dataset_toy)
@@ -310,8 +211,8 @@ def generate_test_data(data_root: Path) -> None:
     train_extra.get()
     print(f"  Created: {train_extra.__class__.__name__} (toy, lr=0.005)")
 
-    print("\nGenerated 14 experiments total")
-    print("  - 8 successful")
+    print("\nGenerated 12 experiments total")
+    print("  - 6 successful")
     print("  - 1 running")
     print("  - 1 failed")
     print("  - 1 queued")
