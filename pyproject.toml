@@ -6,7 +6,7 @@ readme = "README.md"
 authors = [
     { name = "Herman Brunborg", email = "herman@brunborg.com" }
 ]
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = [
     "chz>=0.4.0",
     "cloudpickle>=3.1.1",
