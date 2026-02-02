@@ -17,6 +17,8 @@
 - [ ] In general, if you first run _create i don't want to unnecessarily call _load again inside a .get. Also if there are other similar obvious places to make it faster, use those
     - I probably still want to reload in .get when i call it from another object, rather than caching it in memory in case the next task wants to reload it
 - [ ] consider moving from time.time() to time.perf_counter() for measuring elapsed time
+- [ ] Make a good system for versioning objects, maybe also make this work with the migration so that you can migrate from one version of an furu object to a newer version using migrations
+- [ ] Better filtering in the dashboard/code
 
 ## Code Quality
 
