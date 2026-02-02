@@ -513,7 +513,12 @@ def _apply_transforms(
 
 def _default_value_for_field(target_class: _FuruClass, name: str) -> JsonValue:
     fields = chz.chz_fields(target_class)
-    field = fields[name]
+    fields_by_logical = {field.logical_name: field for field in fields.values()}
+    field = fields_by_logical.get(name)
+    if field is None:
+        raise ValueError(
+            f"migration: default_field missing defaults for fields: {_format_fields([name])}"
+        )
     if field._default is not CHZ_MISSING:
         return field._default
     if not isinstance(field._default_factory, MISSING_TYPE):
