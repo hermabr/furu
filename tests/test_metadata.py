@@ -42,7 +42,7 @@ def test_metadata_roundtrip_and_get_metadata(furu_tmp_root, monkeypatch) -> None
     assert meta.furu_obj["value"] == 42
     assert meta.schema_key == ("value",)
     assert meta.git_commit == "<test>"
-    assert meta.furu_version == importlib.metadata.version("furu")
+    assert meta.furu_package_version == importlib.metadata.version("furu")
 
 
 def test_metadata_read_raises_when_missing(furu_tmp_root, tmp_path) -> None:
