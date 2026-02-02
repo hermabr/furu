@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.0.7
 
 - Record `furu_package_version` in experiment metadata.
 - Store `schema_key` in metadata and expose schema/staleness in the dashboard API.
