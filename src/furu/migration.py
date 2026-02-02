@@ -194,20 +194,18 @@ def migrate(
                 continue
             raise ValueError(reason)
 
-        if target_ref.directory.exists():
-            reason = "migration: target already exists"
-            if conflict == "skip":
-                skips.append(MigrationSkip(source=source.ref, reason=reason))
-                continue
-            raise ValueError(reason)
-
         record = _write_alias(
             target_obj=obj,
             original_ref=original_ref,
             target_ref=target_ref,
+            source_ref=source.ref,
+            skips=skips,
+            conflict=conflict,
             origin=origin,
             note=note,
         )
+        if record is None:
+            continue
         records.append(record)
         seen_alias_schema.add((alias_key, target_schema_key))
 
@@ -358,10 +356,9 @@ def _source_from_hash(
     if not isinstance(furu_obj, dict):
         raise TypeError("migration: metadata furu_obj must be a dict")
     migration = MigrationManager.read_migration(ref.directory)
-    if (
-        migration is not None
-        and migration.kind == "alias"
-        and not include_alias_sources
+    if not _alias_source_allowed(
+        migration,
+        include_alias_sources=include_alias_sources,
     ):
         raise ValueError(
             "migration: source is an alias; set include_alias_sources=True"
@@ -401,10 +398,9 @@ def _iter_namespace_metadata(
             if metadata is None:
                 continue
             migration = MigrationManager.read_migration(entry)
-            if (
-                migration is not None
-                and migration.kind == "alias"
-                and not include_alias_sources
+            if not _alias_source_allowed(
+                migration,
+                include_alias_sources=include_alias_sources,
             ):
                 continue
             root_kind: RootKind = "git" if version_controlled else "data"
@@ -415,6 +411,18 @@ def _iter_namespace_metadata(
                 directory=entry,
             )
             yield ref, metadata
+
+
+def _alias_source_allowed(
+    migration: MigrationRecord | None,
+    *,
+    include_alias_sources: bool,
+) -> bool:
+    if migration is None:
+        return True
+    if migration.kind != "alias":
+        return True
+    return include_alias_sources
 
 
 def _find_ref_by_hash(namespace: str, furu_hash: str) -> FuruRef:
@@ -529,10 +537,20 @@ def _write_alias(
     target_obj: JsonValue,
     original_ref: FuruRef,
     target_ref: FuruRef,
+    source_ref: FuruRef,
+    skips: list[MigrationSkip],
+    conflict: MigrationConflict,
     origin: str | None,
     note: str | None,
-) -> MigrationRecord:
-    target_ref.directory.mkdir(parents=True, exist_ok=False)
+) -> MigrationRecord | None:
+    try:
+        target_ref.directory.mkdir(parents=True, exist_ok=False)
+    except FileExistsError:
+        reason = "migration: target already exists"
+        if conflict == "skip":
+            skips.append(MigrationSkip(source=source_ref, reason=reason))
+            return None
+        raise ValueError(reason) from None
     StateManager.ensure_internal_dir(target_ref.directory)
     _write_migrated_state(target_ref.directory)
 
@@ -607,7 +625,7 @@ def _refs_by_schema(
         include_alias_sources=True,
     ):
         current_key = schema_key_from_metadata_raw(metadata)
-        if (current_key == schema_key) is match:
+        if (current_key == schema_key) == match:
             refs.append(ref)
     refs.sort(key=lambda item: item.furu_hash)
     return refs
