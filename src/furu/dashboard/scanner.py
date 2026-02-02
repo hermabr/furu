@@ -1,15 +1,24 @@
 """Filesystem scanner for discovering and parsing Furu experiment state."""
 
 import datetime as _dt
+import importlib
+import sys
 from collections import defaultdict
-from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
 
-from ..config import FURU_CONFIG
+from ..aliases import (
+    AliasKey,
+    alias_key,
+    collect_aliases,
+    find_experiment_dirs,
+    iter_roots,
+)
+from ..schema import schema_key_from_cls, schema_key_from_metadata_raw
 from ..storage import MetadataManager, MigrationManager, MigrationRecord, StateAttempt
 from ..storage.state import StateManager, _FuruState
 from .api.models import (
+    AliasInfo,
     ChildExperiment,
     DAGEdge,
     DAGExperiment,
@@ -25,14 +34,6 @@ from .api.models import (
 )
 
 
-def _iter_roots() -> Iterator[Path]:
-    """Iterate over all existing Furu storage roots."""
-    for version_controlled in (False, True):
-        root = FURU_CONFIG.get_root(version_controlled)
-        if root.exists():
-            yield root
-
-
 def _parse_namespace_from_path(experiment_dir: Path, root: Path) -> tuple[str, str]:
     """
     Parse namespace and furu_hash from experiment directory path.
@@ -46,34 +47,6 @@ def _parse_namespace_from_path(experiment_dir: Path, root: Path) -> tuple[str, s
     furu_hash = parts[-1]
     namespace = ".".join(parts[:-1])
     return namespace, furu_hash
-
-
-def _alias_key(migration: MigrationRecord) -> tuple[str, str, str]:
-    return (migration.from_namespace, migration.from_hash, migration.from_root)
-
-
-def _collect_aliases() -> dict[tuple[str, str, str], list[MigrationRecord]]:
-    aliases: dict[tuple[str, str, str], list[MigrationRecord]] = defaultdict(list)
-    for root in _iter_roots():
-        for experiment_dir in _find_experiment_dirs(root):
-            migration = MigrationManager.read_migration(experiment_dir)
-            if migration is None or migration.kind != "alias":
-                continue
-            if migration.overwritten_at is not None:
-                continue
-            aliases[_alias_key(migration)].append(migration)
-    return aliases
-
-
-def _alias_reference(
-    aliases: dict[tuple[str, str, str], list[MigrationRecord]],
-) -> dict[str, dict[str, list[str]]]:
-    ref: dict[str, dict[str, list[str]]] = {}
-    for key, records in aliases.items():
-        from_namespace, from_hash, _from_root = key
-        namespace_map = ref.setdefault(from_namespace, {})
-        namespace_map[from_hash] = [record.to_hash for record in records]
-    return ref
 
 
 def _get_class_name(namespace: str) -> str:
@@ -114,6 +87,12 @@ def _state_to_summary(
     original_status: str | None = None,
     original_namespace: str | None = None,
     original_hash: str | None = None,
+    schema_key: tuple[str, ...] | None = None,
+    current_schema_key: tuple[str, ...] | None = None,
+    *,
+    is_stale: bool | None = None,
+    is_alias: bool | None = None,
+    aliases: list[AliasInfo] | None = None,
 ) -> ExperimentSummary:
     """Convert a Furu state to an experiment summary."""
     attempt = state.attempt
@@ -141,21 +120,16 @@ def _state_to_summary(
         to_namespace=migration.to_namespace if migration else None,
         to_hash=migration.to_hash if migration else None,
         original_result_status=original_status,
+        original_namespace=original_namespace,
+        original_hash=original_hash,
+        schema_key=list(schema_key) if schema_key is not None else None,
+        current_schema_key=list(current_schema_key)
+        if current_schema_key is not None
+        else None,
+        is_stale=is_stale,
+        is_alias=is_alias,
+        aliases=aliases,
     )
-
-
-def _find_experiment_dirs(root: Path) -> list[Path]:
-    """Find all directories containing .furu/state.json files."""
-    experiments = []
-
-    # Walk the directory tree looking for .furu directories
-    for furu_dir in root.rglob(StateManager.INTERNAL_DIR):
-        if furu_dir.is_dir():
-            state_file = furu_dir / StateManager.STATE_FILE
-            if state_file.is_file():
-                experiments.append(furu_dir.parent)
-
-    return experiments
 
 
 def _parse_datetime(value: str | None) -> _dt.datetime | None:
@@ -168,35 +142,61 @@ def _parse_datetime(value: str | None) -> _dt.datetime | None:
     return dt
 
 
-def _read_metadata_with_defaults(
-    directory: Path, migration: MigrationRecord | None
-) -> JsonDict | None:
-    metadata = MetadataManager.read_metadata_raw(directory)
-    if not metadata or migration is None:
-        return metadata
-    if migration.kind != "alias" or migration.overwritten_at is not None:
-        return metadata
-    if not migration.default_values:
-        return metadata
+def _current_schema_key(
+    namespace: str,
+    cache: dict[str, tuple[str, ...] | None],
+) -> tuple[str, ...] | None:
+    if namespace in cache:
+        return cache[namespace]
+    module_path, _, class_name = namespace.rpartition(".")
+    if not module_path:
+        cache[namespace] = None
+        return None
+    module = sys.modules.get(module_path)
+    if module is None:
+        if not _module_on_path(module_path):
+            cache[namespace] = None
+            return None
+        module = importlib.import_module(module_path)
+    obj = getattr(module, class_name, None)
+    if obj is None:
+        cache[namespace] = None
+        return None
+    key = schema_key_from_cls(obj)
+    cache[namespace] = key
+    return key
 
-    furu_obj = metadata.get("furu_obj")
-    if not isinstance(furu_obj, dict):
-        return metadata
 
-    defaults = migration.default_values
-    updates: dict[str, str | int | float | bool] = {}
-    for field, value in defaults.items():
-        if field not in furu_obj:
-            updates[field] = value
+def _module_on_path(module_path: str) -> bool:
+    root_name = module_path.split(".", maxsplit=1)[0]
+    for entry in sys.path:
+        if not entry:
+            continue
+        base = Path(entry)
+        if (base / root_name).is_dir() or (base / f"{root_name}.py").is_file():
+            return True
+    return False
 
-    if not updates:
-        return metadata
 
-    updated_obj = dict(furu_obj)
-    updated_obj.update(updates)
-    updated_metadata = dict(metadata)
-    updated_metadata["furu_obj"] = updated_obj
-    return updated_metadata
+def _alias_infos(
+    aliases: dict[AliasKey, list[MigrationRecord]],
+    original_key: AliasKey,
+) -> list[AliasInfo] | None:
+    records = aliases.get(original_key)
+    if not records:
+        return None
+    ordered = sorted(records, key=lambda record: record.migrated_at)
+    return [
+        AliasInfo(
+            namespace=record.to_namespace,
+            furu_hash=record.to_hash,
+            migrated_at=record.migrated_at,
+            overwritten_at=record.overwritten_at,
+            origin=record.origin,
+            note=record.note,
+        )
+        for record in ordered
+    ]
 
 
 def _get_nested_value(data: dict, path: str) -> str | int | float | bool | None:
@@ -234,6 +234,7 @@ def scan_experiments(
     config_filter: str | None = None,
     migration_kind: str | None = None,
     migration_policy: str | None = None,
+    schema: str = "current",
     view: str = "resolved",
 ) -> list[ExperimentSummary]:
     """
@@ -251,13 +252,19 @@ def scan_experiments(
         updated_after: Filter experiments updated after this ISO datetime
         updated_before: Filter experiments updated before this ISO datetime
         config_filter: Filter by config field in format "field.path=value"
+        schema: Filter by schema status (current, stale, any)
         view: "resolved" uses alias metadata; "original" uses original metadata/state.
 
     Returns:
         List of experiment summaries, sorted by updated_at (newest first)
     """
     experiments: list[ExperimentSummary] = []
-    seen_original: set[tuple[str, str, str]] = set()
+    seen_original: set[AliasKey] = set()
+    alias_index = collect_aliases(include_inactive=True)
+    schema_cache: dict[str, tuple[str, ...] | None] = {}
+
+    if schema not in {"current", "stale", "any"}:
+        raise ValueError("schema must be one of: current, stale, any")
 
     # Parse datetime filters
     started_after_dt = _parse_datetime(started_after)
@@ -271,8 +278,8 @@ def scan_experiments(
     if config_filter and "=" in config_filter:
         config_field, config_value = config_filter.split("=", 1)
 
-    for root in _iter_roots():
-        for experiment_dir in _find_experiment_dirs(root):
+    for root in iter_roots():
+        for experiment_dir in find_experiment_dirs(root):
             state = StateManager.read_state(experiment_dir)
             namespace, furu_hash = _parse_namespace_from_path(experiment_dir, root)
             migration = MigrationManager.read_migration(experiment_dir)
@@ -280,6 +287,9 @@ def scan_experiments(
             original_state: _FuruState | None = None
             metadata_dir = experiment_dir
             alias_active = False
+            is_alias_view = False
+            original_namespace: str | None = None
+            original_hash: str | None = None
 
             if migration is not None and migration.kind == "alias":
                 original_dir = MigrationManager.resolve_dir(migration, target="from")
@@ -290,11 +300,7 @@ def scan_experiments(
                     and state.result.status == "migrated"
                     and original_status == "success"
                 )
-                original_key = (
-                    migration.from_namespace,
-                    migration.from_hash,
-                    migration.from_root,
-                )
+                original_key = alias_key(migration)
                 if view == "original":
                     if original_key in seen_original:
                         continue
@@ -303,8 +309,10 @@ def scan_experiments(
                     namespace = migration.from_namespace
                     furu_hash = migration.from_hash
                     metadata_dir = original_dir
-                elif alias_active:
-                    metadata_dir = original_dir
+                else:
+                    is_alias_view = True
+                    original_namespace = migration.from_namespace
+                    original_hash = migration.from_hash
             elif view == "original":
                 original_key = (
                     namespace,
@@ -315,14 +323,34 @@ def scan_experiments(
                     continue
                 seen_original.add(original_key)
 
+            metadata = MetadataManager.read_metadata_raw(metadata_dir)
+            if metadata is None:
+                continue
+            schema_key = schema_key_from_metadata_raw(metadata)
+            current_schema_key = _current_schema_key(namespace, schema_cache)
+            if current_schema_key is None:
+                is_stale = None
+            else:
+                is_stale = schema_key != current_schema_key
+
+            aliases = None
+            if not is_alias_view:
+                root_kind = MigrationManager.root_kind_for_dir(metadata_dir)
+                aliases = _alias_infos(alias_index, (namespace, furu_hash, root_kind))
+
             summary = _state_to_summary(
                 state,
                 namespace,
                 furu_hash,
                 migration=migration,
                 original_status=original_status,
-                original_namespace=migration.from_namespace if migration else None,
-                original_hash=migration.from_hash if migration else None,
+                original_namespace=original_namespace,
+                original_hash=original_hash,
+                schema_key=schema_key,
+                current_schema_key=current_schema_key,
+                is_stale=is_stale,
+                is_alias=is_alias_view,
+                aliases=aliases,
             )
 
             if (
@@ -361,6 +389,10 @@ def scan_experiments(
                 continue
             if migration_policy and summary.migration_policy != migration_policy:
                 continue
+            if schema == "current" and summary.is_stale is True:
+                continue
+            if schema == "stale" and summary.is_stale is not True:
+                continue
 
             # Date filters
             if started_after_dt or started_before_dt:
@@ -387,18 +419,10 @@ def scan_experiments(
 
             # Config field filter - requires reading metadata
             if config_field and config_value is not None:
-                defaults_migration = migration if view == "resolved" else None
-                metadata = _read_metadata_with_defaults(
-                    metadata_dir,
-                    defaults_migration,
-                )
-                if metadata:
-                    furu_obj = metadata.get("furu_obj")
-                    if isinstance(furu_obj, dict):
-                        actual_value = _get_nested_value(furu_obj, config_field)
-                        if str(actual_value) != config_value:
-                            continue
-                    else:
+                furu_obj = metadata.get("furu_obj")
+                if isinstance(furu_obj, dict):
+                    actual_value = _get_nested_value(furu_obj, config_field)
+                    if str(actual_value) != config_value:
                         continue
                 else:
                     continue
@@ -431,11 +455,11 @@ def get_experiment_detail(
     Returns:
         Experiment detail or None if not found
     """
-    # Convert namespace to path
     namespace_path = Path(*namespace.split("."))
-    alias_reference = _alias_reference(_collect_aliases())
+    alias_index = collect_aliases(include_inactive=True)
+    schema_cache: dict[str, tuple[str, ...] | None] = {}
 
-    for root in _iter_roots():
+    for root in iter_roots():
         experiment_dir = root / namespace_path / furu_hash
         state_path = StateManager.get_state_path(experiment_dir)
 
@@ -444,28 +468,26 @@ def get_experiment_detail(
 
         state = StateManager.read_state(experiment_dir)
         migration = MigrationManager.read_migration(experiment_dir)
-        metadata = _read_metadata_with_defaults(
-            experiment_dir,
-            migration if view == "resolved" else None,
-        )
+        metadata_dir = experiment_dir
         original_status: str | None = None
         original_namespace: str | None = None
         original_hash: str | None = None
+        is_alias_view = False
 
         if migration is not None and migration.kind == "alias":
             original_dir = MigrationManager.resolve_dir(migration, target="from")
             original_state = StateManager.read_state(original_dir)
             original_status = original_state.result.status
-            original_namespace = migration.from_namespace
-            original_hash = migration.from_hash
             if view == "original":
                 state = original_state
-                metadata = MetadataManager.read_metadata_raw(original_dir)
+                metadata_dir = original_dir
                 experiment_dir = original_dir
-                namespace = original_namespace
-                furu_hash = original_hash
+                namespace = migration.from_namespace
+                furu_hash = migration.from_hash
             else:
-                metadata = _read_metadata_with_defaults(original_dir, migration)
+                is_alias_view = True
+                original_namespace = migration.from_namespace
+                original_hash = migration.from_hash
         elif migration is not None and migration.kind in {
             "moved",
             "copied",
@@ -474,29 +496,31 @@ def get_experiment_detail(
             if view == "original":
                 original_dir = MigrationManager.resolve_dir(migration, target="from")
                 state = StateManager.read_state(original_dir)
-                metadata = MetadataManager.read_metadata_raw(original_dir)
+                metadata_dir = original_dir
                 experiment_dir = original_dir
                 namespace = migration.from_namespace
                 furu_hash = migration.from_hash
                 original_namespace = migration.from_namespace
                 original_hash = migration.from_hash
 
-        attempt = state.attempt
-        if view == "original" and migration is not None and migration.kind == "alias":
-            alias_source_namespace = migration.from_namespace
-            alias_source_hash = migration.from_hash
-        else:
-            alias_source_namespace = namespace
-            alias_source_hash = furu_hash
+        metadata = MetadataManager.read_metadata_raw(metadata_dir)
+        schema_key: tuple[str, ...] | None = None
+        current_schema_key: tuple[str, ...] | None = None
+        is_stale: bool | None = None
+        if metadata is not None:
+            schema_key = schema_key_from_metadata_raw(metadata)
+            current_schema_key = _current_schema_key(namespace, schema_cache)
+            if current_schema_key is None:
+                is_stale = None
+            else:
+                is_stale = schema_key != current_schema_key
 
-        alias_keys = alias_reference.get(alias_source_namespace, {}).get(
-            alias_source_hash,
-            [],
-        )
-        alias_namespaces = (
-            [alias_source_namespace] * len(alias_keys) if alias_keys else None
-        )
-        alias_hashes = alias_keys if alias_keys else None
+        aliases = None
+        if not is_alias_view:
+            root_kind = MigrationManager.root_kind_for_dir(metadata_dir)
+            aliases = _alias_infos(alias_index, (namespace, furu_hash, root_kind))
+
+        attempt = state.attempt
         return ExperimentDetail(
             namespace=namespace,
             furu_hash=furu_hash,
@@ -526,8 +550,13 @@ def get_experiment_detail(
             original_result_status=original_status,
             original_namespace=original_namespace,
             original_hash=original_hash,
-            alias_namespaces=alias_namespaces,
-            alias_hashes=alias_hashes,
+            schema_key=list(schema_key) if schema_key is not None else None,
+            current_schema_key=list(current_schema_key)
+            if current_schema_key is not None
+            else None,
+            is_stale=is_stale,
+            is_alias=is_alias_view,
+            aliases=aliases,
         )
 
     return None
@@ -548,8 +577,8 @@ def get_stats() -> DashboardStats:
     failed = 0
     success = 0
 
-    for root in _iter_roots():
-        for experiment_dir in _find_experiment_dirs(root):
+    for root in iter_roots():
+        for experiment_dir in find_experiment_dirs(root):
             state = StateManager.read_state(experiment_dir)
             total += 1
 
@@ -647,8 +676,8 @@ def get_experiment_dag() -> ExperimentDAG:
     # Collect all edges (deduped by class pair)
     edge_set: set[tuple[str, str, str]] = set()  # (source_class, target_class, field)
 
-    for root in _iter_roots():
-        for experiment_dir in _find_experiment_dirs(root):
+    for root in iter_roots():
+        for experiment_dir in find_experiment_dirs(root):
             state = StateManager.read_state(experiment_dir)
             namespace, furu_hash = _parse_namespace_from_path(experiment_dir, root)
             metadata = MetadataManager.read_metadata_raw(experiment_dir)
@@ -761,13 +790,13 @@ def _find_experiment_by_furu_obj(
     # e.g., "my_project.pipelines.TrainModel" -> "my_project/pipelines/TrainModel"
     namespace_path = Path(*full_class_name.split("."))
 
-    for root in _iter_roots():
+    for root in iter_roots():
         class_dir = root / namespace_path
         if not class_dir.exists():
             continue
 
         # Search through experiments of this class
-        for experiment_dir in _find_experiment_dirs(class_dir):
+        for experiment_dir in find_experiment_dirs(class_dir):
             metadata = MetadataManager.read_metadata_raw(experiment_dir)
             if not metadata:
                 continue
@@ -806,7 +835,7 @@ def get_experiment_relationships(
 
     target_metadata: JsonDict | None = None
 
-    for root in _iter_roots():
+    for root in iter_roots():
         experiment_dir = root / namespace_path / furu_hash
         state_path = StateManager.get_state_path(experiment_dir)
 
@@ -820,10 +849,7 @@ def get_experiment_relationships(
                 experiment_dir = MigrationManager.resolve_dir(migration, target="from")
                 target_metadata = MetadataManager.read_metadata_raw(experiment_dir)
             else:
-                target_metadata = _read_metadata_with_defaults(
-                    experiment_dir,
-                    migration if view == "resolved" else None,
-                )
+                target_metadata = MetadataManager.read_metadata_raw(experiment_dir)
             break
 
     if not target_metadata:
@@ -881,8 +907,8 @@ def get_experiment_relationships(
     # Find children by scanning all experiments
     children: list[ChildExperiment] = []
 
-    for root in _iter_roots():
-        for experiment_dir in _find_experiment_dirs(root):
+    for root in iter_roots():
+        for experiment_dir in find_experiment_dirs(root):
             migration = MigrationManager.read_migration(experiment_dir)
             if migration is not None and migration.kind == "alias":
                 continue

@@ -37,6 +37,7 @@ const ATTEMPT_STATUSES = [
   "preempted",
 ] as const;
 const BACKENDS = ["", "local", "submitit"] as const;
+const SCHEMA_FILTERS = ["current", "stale", "any"] as const;
 
 function ExperimentsPage() {
   const [resultFilter, setResultFilter] = useState("");
@@ -45,6 +46,9 @@ function ExperimentsPage() {
   const [backendFilter, setBackendFilter] = useState("");
   const [hostnameFilter, setHostnameFilter] = useState("");
   const [userFilter, setUserFilter] = useState("");
+  const [schemaFilter, setSchemaFilter] = useState<
+    (typeof SCHEMA_FILTERS)[number]
+  >("current");
   const [startedAfter, setStartedAfter] = useState("");
   const [startedBefore, setStartedBefore] = useState("");
   const [configFilter, setConfigFilter] = useState("");
@@ -59,6 +63,7 @@ function ExperimentsPage() {
     backend: backendFilter || undefined,
     hostname: hostnameFilter || undefined,
     user: userFilter || undefined,
+    schema: schemaFilter,
     started_after: startedAfter || undefined,
     started_before: startedBefore || undefined,
     config_filter: configFilter || undefined,
@@ -76,6 +81,7 @@ function ExperimentsPage() {
     setBackendFilter("");
     setHostnameFilter("");
     setUserFilter("");
+    setSchemaFilter("current");
     setStartedAfter("");
     setStartedBefore("");
     setConfigFilter("");
@@ -89,6 +95,7 @@ function ExperimentsPage() {
     backendFilter ||
     hostnameFilter ||
     userFilter ||
+    schemaFilter !== "current" ||
     startedAfter ||
     startedBefore ||
     configFilter;
@@ -254,6 +261,35 @@ function ExperimentsPage() {
                   setPage(0);
                 }}
               />
+            </div>
+
+            {/* Schema filter */}
+            <div>
+              <label
+                htmlFor="schema-filter"
+                className="mb-1 block text-sm text-muted-foreground"
+              >
+                Schema
+              </label>
+              <select
+                id="schema-filter"
+                value={schemaFilter}
+                onChange={(e) => {
+                  setSchemaFilter(e.target.value as (typeof SCHEMA_FILTERS)[number]);
+                  setPage(0);
+                }}
+                className="h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              >
+                {SCHEMA_FILTERS.map((schema) => (
+                  <option key={schema} value={schema}>
+                    {schema === "current"
+                      ? "Current"
+                      : schema === "stale"
+                        ? "Stale"
+                        : "Any"}
+                  </option>
+                ))}
+              </select>
             </div>
 
             {/* Started after filter */}

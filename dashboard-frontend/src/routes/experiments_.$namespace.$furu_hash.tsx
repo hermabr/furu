@@ -494,14 +494,15 @@ function ExperimentDetailPage() {
   ]);
 
   const aliasLinks = useMemo(() => {
-    if (!experiment?.alias_namespaces || !experiment?.alias_hashes) {
+    if (!experiment?.aliases || experiment.aliases.length === 0) {
       return [];
     }
-    return experiment.alias_namespaces.map((aliasNamespace, index) => ({
-      namespace: aliasNamespace,
-      furu_hash: experiment.alias_hashes?.[index] ?? "",
+    return experiment.aliases.map((alias) => ({
+      namespace: alias.namespace,
+      furu_hash: alias.furu_hash,
+      overwritten_at: alias.overwritten_at ?? null,
     }));
-  }, [experiment?.alias_namespaces, experiment?.alias_hashes]);
+  }, [experiment?.aliases]);
 
   if (isLoading) {
     return (
@@ -631,22 +632,22 @@ function ExperimentDetailPage() {
                 Aliases: {aliasLinks.length}
               </div>
               <div className="flex flex-wrap gap-2">
-                {aliasLinks.map((aliasLink) => (
-                  <Button
-                    key={aliasLink.furu_hash}
-                    asChild
-                    size="sm"
-                    variant="ghost"
+              {aliasLinks.map((aliasLink) => (
+                <Button
+                  key={aliasLink.furu_hash}
+                  asChild
+                  size="sm"
+                  variant="ghost"
+                >
+                  <Link
+                    to="/experiments/$namespace/$furu_hash"
+                    params={aliasLink}
+                    aria-label="View alias"
                   >
-                    <Link
-                      to="/experiments/$namespace/$furu_hash"
-                      params={aliasLink}
-                      aria-label="View alias"
-                    >
-                      View alias
-                    </Link>
-                  </Button>
-                ))}
+                    {aliasLink.overwritten_at ? "View alias (inactive)" : "View alias"}
+                  </Link>
+                </Button>
+              ))}
               </div>
             </div>
           )}
