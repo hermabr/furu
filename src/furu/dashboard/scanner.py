@@ -2,6 +2,7 @@
 
 import datetime as _dt
 import importlib
+import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import cast
@@ -142,21 +143,40 @@ def _parse_datetime(value: str | None) -> _dt.datetime | None:
 
 def _current_schema_key(
     namespace: str,
-    cache: dict[str, tuple[str, ...]],
-) -> tuple[str, ...]:
-    cached = cache.get(namespace)
-    if cached is not None:
-        return cached
+    cache: dict[str, tuple[str, ...] | None],
+) -> tuple[str, ...] | None:
+    if namespace in cache:
+        return cache[namespace]
     module_path, _, class_name = namespace.rpartition(".")
     if not module_path:
-        raise ValueError(f"Invalid namespace: {namespace}")
-    module = importlib.import_module(module_path)
+        cache[namespace] = None
+        return None
+    module = sys.modules.get(module_path)
+    if module is None:
+        if not _module_on_path(module_path):
+            cache[namespace] = None
+            return None
+        module = importlib.import_module(module_path)
+        cache[namespace] = None
+        return None
     obj = getattr(module, class_name, None)
     if obj is None:
-        raise ValueError(f"Unable to resolve class for namespace: {namespace}")
+        cache[namespace] = None
+        return None
     key = schema_key_from_cls(obj)
     cache[namespace] = key
     return key
+
+
+def _module_on_path(module_path: str) -> bool:
+    root_name = module_path.split(".", maxsplit=1)[0]
+    for entry in sys.path:
+        if not entry:
+            continue
+        base = Path(entry)
+        if (base / root_name).is_dir() or (base / f"{root_name}.py").is_file():
+            return True
+    return False
 
 
 def _alias_infos(
@@ -242,7 +262,7 @@ def scan_experiments(
     experiments: list[ExperimentSummary] = []
     seen_original: set[AliasKey] = set()
     alias_index = collect_aliases(include_inactive=True)
-    schema_cache: dict[str, tuple[str, ...]] = {}
+    schema_cache: dict[str, tuple[str, ...] | None] = {}
 
     if schema not in {"current", "stale", "any"}:
         raise ValueError("schema must be one of: current, stale, any")
@@ -309,7 +329,10 @@ def scan_experiments(
                 continue
             schema_key = schema_key_from_metadata_raw(metadata)
             current_schema_key = _current_schema_key(namespace, schema_cache)
-            is_stale = schema_key != current_schema_key
+            if current_schema_key is None:
+                is_stale = None
+            else:
+                is_stale = schema_key != current_schema_key
 
             aliases = None
             if not is_alias_view:
@@ -435,7 +458,7 @@ def get_experiment_detail(
     """
     namespace_path = Path(*namespace.split("."))
     alias_index = collect_aliases(include_inactive=True)
-    schema_cache: dict[str, tuple[str, ...]] = {}
+    schema_cache: dict[str, tuple[str, ...] | None] = {}
 
     for root in iter_roots():
         experiment_dir = root / namespace_path / furu_hash
@@ -488,7 +511,10 @@ def get_experiment_detail(
         if metadata is not None:
             schema_key = schema_key_from_metadata_raw(metadata)
             current_schema_key = _current_schema_key(namespace, schema_cache)
-            is_stale = schema_key != current_schema_key
+            if current_schema_key is None:
+                is_stale = None
+            else:
+                is_stale = schema_key != current_schema_key
 
         aliases = None
         if not is_alias_view:
