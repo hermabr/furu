@@ -107,18 +107,32 @@ def migrate(
     if from_schema is not None:
         from_schema_key = _normalize_schema(from_schema)
         sources = _sources_from_schema(
-            namespace, from_schema_key, include_alias_sources
+            namespace,
+            from_schema_key,
+            include_alias_sources=include_alias_sources,
         )
     elif from_hash is not None:
-        sources = [_source_from_hash(namespace, from_hash, include_alias_sources)]
+        sources = [
+            _source_from_hash(
+                namespace,
+                from_hash,
+                include_alias_sources=include_alias_sources,
+            )
+        ]
     elif from_furu_obj is not None:
         sources = [
-            _source_from_furu_obj(namespace, from_furu_obj, include_alias_sources)
+            _source_from_furu_obj(
+                namespace,
+                from_furu_obj,
+                include_alias_sources=include_alias_sources,
+            )
         ]
     else:
         from_schema_key = _schema_from_drop_add(cls, from_drop, from_add)
         sources = _sources_from_schema(
-            namespace, from_schema_key, include_alias_sources
+            namespace,
+            from_schema_key,
+            include_alias_sources=include_alias_sources,
         )
 
     if not sources:
@@ -312,10 +326,14 @@ def _normalize_schema(values: Iterable[str]) -> tuple[str, ...]:
 def _sources_from_schema(
     namespace: str,
     schema_key: tuple[str, ...],
+    *,
     include_alias_sources: bool,
 ) -> list[_Source]:
     sources: list[_Source] = []
-    for ref, metadata in _iter_namespace_metadata(namespace, include_alias_sources):
+    for ref, metadata in _iter_namespace_metadata(
+        namespace,
+        include_alias_sources=include_alias_sources,
+    ):
         if schema_key_from_metadata_raw(metadata) != schema_key:
             continue
         furu_obj = metadata.get("furu_obj")
@@ -329,6 +347,7 @@ def _sources_from_schema(
 def _source_from_hash(
     namespace: str,
     furu_hash: str,
+    *,
     include_alias_sources: bool,
 ) -> _Source:
     ref = _find_ref_by_hash(namespace, furu_hash)
@@ -353,14 +372,21 @@ def _source_from_hash(
 def _source_from_furu_obj(
     namespace: str,
     furu_obj: dict[str, JsonValue],
+    *,
     include_alias_sources: bool,
 ) -> _Source:
     furu_hash = FuruSerializer.compute_hash(furu_obj)
-    return _source_from_hash(namespace, furu_hash, include_alias_sources)
+    return _source_from_hash(
+        namespace,
+        furu_hash,
+        include_alias_sources=include_alias_sources,
+    )
 
 
 def _iter_namespace_metadata(
-    namespace: str, include_alias_sources: bool
+    namespace: str,
+    *,
+    include_alias_sources: bool,
 ) -> Iterable[tuple[FuruRef, dict[str, JsonValue]]]:
     namespace_path = Path(*namespace.split("."))
     for version_controlled in (False, True):
@@ -577,7 +603,8 @@ def _refs_by_schema(
 ) -> list[FuruRef]:
     refs: list[FuruRef] = []
     for ref, metadata in _iter_namespace_metadata(
-        namespace, include_alias_sources=True
+        namespace,
+        include_alias_sources=True,
     ):
         current_key = schema_key_from_metadata_raw(metadata)
         if (current_key == schema_key) is match:
