@@ -155,6 +155,19 @@ def test_migrate_rename_and_drop(furu_tmp_root) -> None:
     assert alias_obj.get() == 7
 
 
+def test_set_field_requires_missing_field(furu_tmp_root) -> None:
+    source = SourceV1(value=4)
+    assert source.get() == 4
+
+    with pytest.raises(ValueError, match="set_field already set"):
+        SourceV2.migrate(
+            from_schema=SourceV1.schema_key(),
+            from_namespace="test_migrations.SourceV1",
+            set_field={"value": 5},
+            origin="tests",
+        )
+
+
 def test_migrate_from_drop_sets_required_field(furu_tmp_root) -> None:
     same_v1 = _same_class_v1()
     source = cast(type, same_v1)(name="mnist")

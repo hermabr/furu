@@ -265,10 +265,14 @@ function ExperimentsPage() {
 
             {/* Schema filter */}
             <div>
-              <label className="mb-1 block text-sm text-muted-foreground">
+              <label
+                htmlFor="schema-filter"
+                className="mb-1 block text-sm text-muted-foreground"
+              >
                 Schema
               </label>
               <select
+                id="schema-filter"
                 value={schemaFilter}
                 onChange={(e) => {
                   setSchemaFilter(e.target.value as (typeof SCHEMA_FILTERS)[number]);

@@ -1,5 +1,7 @@
 """API route definitions for the Furu Dashboard."""
 
+from typing import Literal
+
 from fastapi import APIRouter, HTTPException, Query
 
 from .. import __version__
@@ -20,6 +22,8 @@ from .models import (
 )
 
 router = APIRouter(prefix="/api", tags=["api"])
+
+SchemaFilter = Literal["current", "stale", "any"]
 
 
 @router.get("/health", response_model=HealthCheck)
@@ -57,7 +61,7 @@ async def list_experiments(
     migration_policy: str | None = Query(
         None, description="Filter by migration policy"
     ),
-    schema: str = Query(
+    schema: SchemaFilter = Query(
         "current", description="Filter by schema status (current, stale, any)"
     ),
     view: str = Query("resolved", description="View mode: resolved or original"),

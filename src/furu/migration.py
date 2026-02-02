@@ -78,6 +78,13 @@ def migrate(
     origin: str | None = None,
     note: str | None = None,
 ) -> MigrationReport:
+    """
+    Migrate stored objects to the current schema via alias-only records.
+
+    Notes:
+        set_field only adds fields that are not already present. To replace a
+        field, drop it first and then set it.
+    """
     selector_count = sum(
         1
         for value in (
@@ -508,7 +515,7 @@ def _write_alias(
     )
     MetadataManager.write_metadata(metadata, target_ref.directory)
 
-    now = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+    now = _dt.datetime.now(_dt.UTC).isoformat(timespec="seconds")
     record = MigrationRecord(
         kind="alias",
         policy="alias",

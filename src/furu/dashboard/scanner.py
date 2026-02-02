@@ -89,6 +89,7 @@ def _state_to_summary(
     original_hash: str | None = None,
     schema_key: tuple[str, ...] | None = None,
     current_schema_key: tuple[str, ...] | None = None,
+    *,
     is_stale: bool | None = None,
     is_alias: bool | None = None,
     aliases: list[AliasInfo] | None = None,
@@ -157,8 +158,6 @@ def _current_schema_key(
             cache[namespace] = None
             return None
         module = importlib.import_module(module_path)
-        cache[namespace] = None
-        return None
     obj = getattr(module, class_name, None)
     if obj is None:
         cache[namespace] = None
@@ -390,9 +389,9 @@ def scan_experiments(
                 continue
             if migration_policy and summary.migration_policy != migration_policy:
                 continue
-            if schema == "current" and summary.is_stale:
+            if schema == "current" and summary.is_stale is True:
                 continue
-            if schema == "stale" and not summary.is_stale:
+            if schema == "stale" and summary.is_stale is not True:
                 continue
 
             # Date filters

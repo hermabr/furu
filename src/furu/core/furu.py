@@ -26,7 +26,6 @@ from typing import (
     Sequence,
     TypeAlias,
     TypedDict,
-    TypeVar,
     cast,
 )
 
@@ -52,7 +51,7 @@ from ..runtime.overrides import has_override, lookup_override
 from ..schema import schema_key_from_cls
 from ..serialization import FuruSerializer
 from ..serialization.serializer import JsonValue
-from ..aliases import collect_aliases
+from ..aliases import AliasKey, collect_aliases
 from ..migration import (
     FuruRef,
     MigrationReport,
@@ -327,6 +326,12 @@ class Furu[T](ABC):
 
     @classmethod
     def schema_key(cls) -> tuple[str, ...]:
+        """
+        Return the stable schema key for this class.
+
+        Returns:
+            tuple[str, ...]: Sorted field names for the class schema.
+        """
         return schema_key_from_cls(cls)
 
     @classmethod
@@ -348,6 +353,13 @@ class Furu[T](ABC):
         origin: str | None = None,
         note: str | None = None,
     ) -> MigrationReport:
+        """
+        Create alias-only migrations for stored objects matching the selector.
+
+        Notes:
+            set_field only adds fields that are not already present. To replace
+            a field, drop it first and then set it.
+        """
         return _migrate(
             cls,
             from_schema=from_schema,
@@ -404,7 +416,16 @@ class Furu[T](ABC):
         return _current_refs(cls, namespace=namespace)
 
     def log(self: Self, message: str, *, level: str = "INFO") -> Path:
-        """Log a message to the current holder's `furu.log`."""
+        """
+        Log a message to the current holder's `furu.log`.
+
+        Parameters:
+            message (str): The message to log.
+            level (str): Logging level name (e.g., "INFO", "ERROR").
+
+        Returns:
+            Path: Path to the log file where the message was written.
+        """
         return log(message, level=level)
 
     def _exists_quiet(self: Self) -> bool:
@@ -474,9 +495,15 @@ class Furu[T](ABC):
         )
         return resolve_original_ref(ref)
 
-    def aliases(self: Self, *, include_inactive: bool = True) -> list[FuruRef]:
+    def aliases(
+        self: Self,
+        *,
+        include_inactive: bool = True,
+        alias_index: dict[AliasKey, list[MigrationRecord]] | None = None,
+    ) -> list[FuruRef]:
         original_ref = self.original()
-        alias_index = collect_aliases(include_inactive=include_inactive)
+        if alias_index is None:
+            alias_index = collect_aliases(include_inactive=include_inactive)
         records = alias_index.get(
             (original_ref.namespace, original_ref.furu_hash, original_ref.root),
             [],
@@ -1717,6 +1744,3 @@ def _dependency_type_error(
         f"{path} must be a Furu instance or a collection of Furu instances; "
         f"got {type(value).__name__}"
     )
-
-
-_H = TypeVar("_H", bound=Furu, covariant=True)
