@@ -39,6 +39,15 @@ def _create_migrated_aliases(
     dataset_mnist: PrepareDataset,
     dataset_toy: PrepareDataset,
 ) -> None:
+    """
+    Create migrated alias records for two dataset pipelines.
+    
+    This records migrated aliases named "mnist-v2" and "toy-v2" for the provided dataset instances so they are available under those new names in test data.
+    
+    Parameters:
+    	dataset_mnist (PrepareDataset): Source PrepareDataset instance to migrate to the "mnist-v2" alias.
+    	dataset_toy (PrepareDataset): Source PrepareDataset instance to migrate to the "toy-v2" alias.
+    """
     PrepareDataset.migrate_one(
         from_hash=dataset_mnist.furu_hash,
         from_namespace="my_project.pipelines.PrepareDataset",
@@ -62,7 +71,21 @@ def create_mock_experiment(
     result_status: str = "success",
     attempt_status: str | None = None,
 ) -> Path:
-    """Create a mock experiment with specified state (without actually running _create)."""
+    """
+    Create or update on-disk metadata and state files to simulate an experiment run without executing the experiment.
+    
+    Parameters:
+        furu_obj (object): Furu pipeline object whose furu_dir will be used as the experiment directory.
+        result_status (str): Desired result state written to the experiment state. One of:
+            - "absent": marks the result as absent
+            - "incomplete": marks the result as incomplete
+            - "success": marks the result as successful (writes a success marker)
+            - "failed": marks the result as failed
+        attempt_status (str | None): If provided, creates an attempt record with this status (e.g., "running", "success", "failed", "queued", "crashed", "cancelled", "preempted"). When the status indicates completion ("success", "failed", "crashed", "cancelled", "preempted"), an ended_at timestamp is included; when "failed", an error object is added.
+    
+    Returns:
+        Path: The experiment directory path used to write metadata and state files.
+    """
     directory = furu_obj.furu_dir  # type: ignore[attr-defined]
     StateManager.ensure_internal_dir(directory)
 
@@ -136,7 +159,16 @@ def create_mock_experiment(
 
 
 def generate_test_data(data_root: Path) -> None:
-    """Generate test data for e2e tests."""
+    """
+    Generate realistic end-to-end test data and experiment records under the specified root.
+    
+    Configures Furu to use data_root, creates several real experiments (datasets and model trainings),
+    and writes a variety of mock experiment states (running, failed, queued, absent, and migrated aliases)
+    to populate a comprehensive test dataset.
+    
+    Parameters:
+        data_root (Path): Target root directory where test data and experiment state will be created.
+    """
     print(f"Generating test data in {data_root}")
 
     # Configure Furu to use our data root

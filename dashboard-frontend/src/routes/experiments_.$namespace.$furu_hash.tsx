@@ -451,6 +451,15 @@ export const Route = createFileRoute("/experiments_/$namespace/$furu_hash")({
   component: ExperimentDetailPage,
 });
 
+/**
+ * Render the detail page for a single experiment, showing its header, status, configuration,
+ * relationships (parents and children), current attempt details, metadata, directory, and raw state.
+ *
+ * The page exposes controls for viewing migrated experiments (aliased vs original) and links to
+ * aliases or the original experiment when available.
+ *
+ * @returns The rendered Experiment detail page as a JSX element.
+ */
 function ExperimentDetailPage() {
   const { namespace, furu_hash } = Route.useParams();
   const [viewMode, setViewMode] = useState("resolved");

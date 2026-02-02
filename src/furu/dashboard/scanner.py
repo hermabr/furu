@@ -50,7 +50,15 @@ def _parse_namespace_from_path(experiment_dir: Path, root: Path) -> tuple[str, s
 
 
 def _get_class_name(namespace: str) -> str:
-    """Extract class name from namespace (last component)."""
+    """
+    Extracts the class name component from a dot-separated namespace.
+    
+    Parameters:
+        namespace (str): Dot-separated namespace (e.g., "pkg.module.ClassName").
+    
+    Returns:
+        str: The last dot-separated component of `namespace` (the class name).
+    """
     parts = namespace.split(".")
     return parts[-1] if parts else namespace
 
@@ -93,7 +101,26 @@ def _state_to_summary(
     is_alias: bool | None = None,
     aliases: list[AliasInfo] | None = None,
 ) -> ExperimentSummary:
-    """Convert a Furu state to an experiment summary."""
+    """
+    Builds an ExperimentSummary from an internal Furu state and related migration/metadata.
+    
+    Parameters:
+        state (_FuruState): Internal persisted state for the experiment.
+        namespace (str): Dot-separated namespace identifying the experiment class and module.
+        furu_hash (str): Unique hash identifier for this experiment instance.
+        migration (MigrationRecord | None): Migration record if the experiment was migrated or aliased.
+        original_status (str | None): Result status from the original experiment when presenting an alias/original view.
+        original_namespace (str | None): Original namespace when this summary represents an alias view.
+        original_hash (str | None): Original furu_hash when this summary represents an alias view.
+        schema_key (tuple[str, ...] | None): Schema key recorded with the experiment metadata.
+        current_schema_key (tuple[str, ...] | None): Resolved current schema key for the namespace (may be None if unresolved).
+        is_stale (bool | None): Whether the stored schema_key differs from current_schema_key.
+        is_alias (bool | None): Whether this experiment is an alias of another experiment.
+        aliases (list[AliasInfo] | None): List of alias records associated with this experiment (when not in alias view).
+    
+    Returns:
+        ExperimentSummary: Summary object populated with result and attempt fields from state, migration details, schema/alias indicators, and any provided original/alias metadata.
+    """
     attempt = state.attempt
     return ExperimentSummary(
         namespace=namespace,
@@ -132,7 +159,18 @@ def _state_to_summary(
 
 
 def _parse_datetime(value: str | None) -> _dt.datetime | None:
-    """Parse ISO datetime string to datetime object."""
+    """
+    Parse an ISO 8601 datetime string into a timezone-aware datetime.
+    
+    If `value` is None or empty, returns None. If the parsed datetime lacks timezone information,
+    the function sets its tzinfo to UTC.
+    
+    Parameters:
+        value (str | None): ISO 8601 datetime string or None.
+    
+    Returns:
+        datetime | None: The parsed timezone-aware datetime, or None if `value` is falsy.
+    """
     if not value:
         return None
     dt = _dt.datetime.fromisoformat(value)
@@ -145,6 +183,23 @@ def _current_schema_key(
     namespace: str,
     cache: dict[str, tuple[str, ...] | None],
 ) -> tuple[str, ...] | None:
+    """
+    Resolve the current schema key for a class identified by its dotted namespace.
+    
+    Looks up and returns the schema key tuple for the class named by `namespace` (e.g. "pkg.module.Class")
+    if the module is importable and the class exists; otherwise returns `None`. The function records the
+    result in `cache[namespace]` to avoid repeated resolution attempts and will store `None` for
+    unresolvable namespaces.
+    
+    Parameters:
+        namespace (str): Dotted full name of the class to resolve (module path + class name).
+        cache (dict[str, tuple[str, ...] | None]): Mutable mapping used to memoize resolved schema keys;
+            this function will set cache[namespace] to the resolved tuple or to `None`.
+    
+    Returns:
+        tuple[str, ...] | None: The schema key tuple for the class if found, or `None` if the module or
+        class cannot be resolved.
+    """
     if namespace in cache:
         return cache[namespace]
     module_path, _, class_name = namespace.rpartition(".")
@@ -169,6 +224,12 @@ def _current_schema_key(
 
 
 def _module_on_path(module_path: str) -> bool:
+    """
+    Checks whether the given module path's top-level name exists on the Python path.
+    
+    Returns:
+        True if a module file or package directory matching the module path's root name is present on sys.path, False otherwise.
+    """
     root_name = module_path.split(".", maxsplit=1)[0]
     for entry in sys.path:
         if not entry:
@@ -183,6 +244,16 @@ def _alias_infos(
     aliases: dict[AliasKey, list[MigrationRecord]],
     original_key: AliasKey,
 ) -> list[AliasInfo] | None:
+    """
+    Convert alias migration records for a given original alias key into a chronological list of AliasInfo objects.
+    
+    Parameters:
+        aliases (dict[AliasKey, list[MigrationRecord]]): Mapping from alias keys to their migration records.
+        original_key (AliasKey): The alias key whose migration history should be converted.
+    
+    Returns:
+        list[AliasInfo] | None: Chronologically ordered AliasInfo objects for the given original_key, or `None` if there are no records.
+    """
     records = aliases.get(original_key)
     if not records:
         return None
@@ -202,9 +273,16 @@ def _alias_infos(
 
 def _get_nested_value(data: dict, path: str) -> str | int | float | bool | None:
     """
-    Get a nested value from a dict using dot notation.
-
-    Example: _get_nested_value({"a": {"b": 1}}, "a.b") -> 1
+    Retrieve a nested primitive value from a dictionary using a dot-separated key path.
+    
+    Traverses the dictionary following keys from `path` (e.g. "a.b.c") and returns the terminal value only if it is a primitive (`str`, `int`, `float`, or `bool`); returns `None` if any key is missing, an intermediate value is not a dict, or the terminal value is not a primitive.
+    
+    Parameters:
+        data (dict): The dictionary to traverse.
+        path (str): Dot-separated key path indicating the nested location (e.g. "parent.child.key").
+    
+    Returns:
+        str | int | float | bool | None: The primitive value found at `path`, or `None` if not present or not a primitive.
     """
     keys = path.split(".")
     current = data
@@ -446,15 +524,15 @@ def get_experiment_detail(
     view: str = "resolved",
 ) -> ExperimentDetail | None:
     """
-    Get detailed information about a specific experiment.
-
-    Args:
-        namespace: Dot-separated namespace (e.g., "my_project.pipelines.TrainModel")
-        furu_hash: Hash identifying the specific experiment
-        view: "resolved" uses alias metadata; "original" uses original metadata/state.
-
+    Return detailed information about a specific experiment identified by namespace and furu_hash.
+    
+    Parameters:
+        namespace (str): Dot-separated experiment namespace (e.g., "my_project.pipelines.TrainModel").
+        furu_hash (str): Hash identifying the specific experiment.
+        view (str): Either "resolved" to show the resolved/alias-aware metadata and state, or "original" to show the original metadata/state prior to any alias/migration.
+    
     Returns:
-        Experiment detail or None if not found
+        ExperimentDetail | None: An ExperimentDetail populated from on-disk state and metadata, or `None` if the experiment is not found.
     """
     namespace_path = Path(*namespace.split("."))
     alias_index = collect_aliases(include_inactive=True)
@@ -565,10 +643,10 @@ def get_experiment_detail(
 
 def get_stats() -> DashboardStats:
     """
-    Get aggregate statistics for the dashboard.
-
+    Aggregate counts and status breakdowns across all experiments for dashboard display.
+    
     Returns:
-        Dashboard statistics including counts by status
+        DashboardStats: total number of experiments; lists of StatusCount entries keyed by result and attempt status; and scalar counts for running, queued, failed, and successful experiments.
     """
     result_counts: dict[str, int] = defaultdict(int)
     attempt_counts: dict[str, int] = defaultdict(int)
@@ -658,15 +736,17 @@ def _get_class_hierarchy(full_class_name: str) -> str | None:
 
 def get_experiment_dag() -> ExperimentDAG:
     """
-    Build a DAG of all experiments based on their dependencies.
-
-    The DAG is organized by class types:
-    - Each node represents a class (e.g., TrainModel)
-    - Experiments of the same class are grouped into the same node
-    - Edges represent dependencies between classes (field references)
-
+    Constructs a directed acyclic graph of experiments grouped by their class types.
+    
+    Each node represents a class and aggregates experiments of that class (including counts and per-experiment statuses). Edges represent dependency relationships between classes derived from field references in serialized experiment objects.
+    
     Returns:
-        ExperimentDAG with nodes and edges for visualization
+        ExperimentDAG: A structure containing:
+            - nodes: list of DAGNode entries (id, class_name, full_class_name, experiments, total_count, success_count, failed_count, running_count, parent_class)
+            - edges: list of DAGEdge entries (source full class name, target full class name, field_name)
+            - total_nodes: total number of class nodes
+            - total_edges: total number of edges
+            - total_experiments: total number of experiments across all nodes
     """
     # Collect all experiments with their metadata
     experiments_by_class: dict[str, list[tuple[str, str, str, str | None]]] = (
@@ -775,13 +855,13 @@ def _find_experiment_by_furu_obj(
     furu_obj: dict[str, object],
 ) -> tuple[str, str, str] | None:
     """
-    Find an experiment that matches the given furu_obj serialization.
-
-    Args:
-        furu_obj: The serialized furu object to find
-
+    Locate an experiment whose stored serialized Furu object exactly matches the provided `furu_obj`.
+    
+    Parameters:
+        furu_obj (dict[str, object]): Serialized Furu object (expected to include a "__class__" key) to match against stored experiment metadata.
+    
     Returns:
-        Tuple of (namespace, furu_hash, result_status) if found, None otherwise
+        tuple[str, str, str] | None: A tuple of (`namespace`, `furu_hash`, `result_status`) when a matching experiment is found, or `None` if no match exists.
     """
     full_class_name = furu_obj.get("__class__")
     if not isinstance(full_class_name, str):
@@ -822,14 +902,15 @@ def get_experiment_relationships(
     view: str = "resolved",
 ) -> ExperimentRelationships | None:
     """
-    Get parent and child relationships for an experiment.
-
-    Args:
-        namespace: Dot-separated namespace (e.g., "my_project.pipelines.TrainModel")
-        furu_hash: Hash identifying the specific experiment
-
+    Return the parent and child experiment relationships for a given experiment.
+    
+    Parameters:
+        namespace (str): Dot-separated namespace of the experiment (e.g., "my_project.pipelines.TrainModel").
+        furu_hash (str): Hash identifying the specific experiment.
+        view (str): If "original" and the experiment is an alias, resolve relationships from the original experiment's metadata; otherwise use the resolved metadata.
+    
     Returns:
-        ExperimentRelationships or None if experiment not found
+        ExperimentRelationships | None: An object containing lists of parent and child experiments, or None if the target experiment or its metadata is not found.
     """
     # First get the experiment's metadata
     namespace_path = Path(*namespace.split("."))

@@ -13,10 +13,22 @@ class SourceV1(furu.Furu[int]):
     value: int = furu.chz.field(default=0)
 
     def _create(self) -> int:
+        """
+        Create the on-disk representation of the object by storing its integer value in value.txt.
+        
+        Returns:
+            int: The stored value.
+        """
         (self.furu_dir / "value.txt").write_text(str(self.value))
         return self.value
 
     def _load(self) -> int:
+        """
+        Load the integer value stored in value.txt inside the instance's furu directory.
+        
+        Returns:
+            The integer parsed from the file contents.
+        """
         return int((self.furu_dir / "value.txt").read_text())
 
 
@@ -25,10 +37,22 @@ class SourceV2(furu.Furu[int]):
     extra: str = furu.chz.field(default="default")
 
     def _create(self) -> int:
+        """
+        Create the on-disk representation of the object by storing its integer value in value.txt.
+        
+        Returns:
+            int: The stored value.
+        """
         (self.furu_dir / "value.txt").write_text(str(self.value))
         return self.value
 
     def _load(self) -> int:
+        """
+        Load the integer value stored in value.txt inside the instance's furu directory.
+        
+        Returns:
+            The integer parsed from the file contents.
+        """
         return int((self.furu_dir / "value.txt").read_text())
 
 
@@ -38,10 +62,22 @@ class SourceV3(furu.Furu[int]):
     flag: bool = furu.chz.field(default=True)
 
     def _create(self) -> int:
+        """
+        Create the on-disk representation of the object by storing its integer value in value.txt.
+        
+        Returns:
+            int: The stored value.
+        """
         (self.furu_dir / "value.txt").write_text(str(self.value))
         return self.value
 
     def _load(self) -> int:
+        """
+        Load the integer value stored in value.txt inside the instance's furu directory.
+        
+        Returns:
+            The integer parsed from the file contents.
+        """
         return int((self.furu_dir / "value.txt").read_text())
 
 
@@ -50,10 +86,22 @@ class RenameSource(furu.Furu[int]):
     obsolete: str = furu.chz.field(default="old")
 
     def _create(self) -> int:
+        """
+        Create the on-disk representation of the object by storing its integer value in value.txt.
+        
+        Returns:
+            int: The stored value.
+        """
         (self.furu_dir / "value.txt").write_text(str(self.value))
         return self.value
 
     def _load(self) -> int:
+        """
+        Load the integer value stored in value.txt inside the instance's furu directory.
+        
+        Returns:
+            The integer parsed from the file contents.
+        """
         return int((self.furu_dir / "value.txt").read_text())
 
 
@@ -61,14 +109,41 @@ class RenameTarget(furu.Furu[int]):
     count: int = furu.chz.field()
 
     def _create(self) -> int:
+        """
+        Persist the object's count and return it.
+        
+        Returns:
+            int: The stored `count` value.
+        """
         (self.furu_dir / "value.txt").write_text(str(self.count))
         return self.count
 
     def _load(self) -> int:
+        """
+        Load the integer value stored in value.txt inside the instance's furu directory.
+        
+        Returns:
+            The integer parsed from the file contents.
+        """
         return int((self.furu_dir / "value.txt").read_text())
 
 
 def _define_same_class(source: str) -> type[furu.Furu[int]]:
+    """
+    Create a Furu[int] subclass named `SameClass` from the given source code and register it on the current module.
+    
+    Parameters:
+        source (str): Python source code that, when executed, must define a class named `SameClass`. The class must inherit from `furu.Furu`.
+    
+    Returns:
+        type[furu.Furu[int]]: The imported `SameClass` type.
+    
+    Raises:
+        AssertionError: If `SameClass` is not defined in the source or if it does not inherit from `furu.Furu`.
+    
+    Notes:
+        The created class will have its `__module__` and `__qualname__` set to the current module and will be attached to the module as `SameClass`.
+    """
     namespace = {"furu": furu, "__name__": __name__}
     exec(textwrap.dedent(source), namespace)
     cls = namespace.get("SameClass")
@@ -84,6 +159,14 @@ def _define_same_class(source: str) -> type[furu.Furu[int]]:
 
 
 def _same_class_v1() -> type[furu.Furu[int]]:
+    """
+    Create a Furu subclass named SameClass with a `name` field whose numeric value is the length of the stored name.
+    
+    The returned class defines a `name: str` field, writes that name to value.txt on creation, and loads its integer value as the length of the stored name.
+    
+    Returns:
+        type[furu.Furu[int]]: The dynamically created SameClass subclass.
+    """
     return _define_same_class(
         """
         class SameClass(furu.Furu[int]):
@@ -100,6 +183,14 @@ def _same_class_v1() -> type[furu.Furu[int]]:
 
 
 def _same_class_v2_required() -> type[furu.Furu[int]]:
+    """
+    Create and return a dynamically defined Furu subclass named SameClass.
+    
+    SameClass has two fields: `name` (defaults to empty string) and `language` (required). Instances store the pair "name:language" in value.txt on creation and report their value as the length of `name` when created or loaded.
+    
+    Returns:
+        type[furu.Furu[int]]: The generated SameClass type (a subclass of furu.Furu[int]).
+    """
     return _define_same_class(
         """
         class SameClass(furu.Furu[int]):
@@ -156,6 +247,11 @@ def test_migrate_rename_and_drop(furu_tmp_root) -> None:
 
 
 def test_migrate_from_drop_sets_required_field(furu_tmp_root) -> None:
+    """
+    Verify that migrating from a schema which drops a required field can supply that field via `set_field`.
+    
+    Creates an instance of the v1 class, migrates the v2 class using `from_drop` to drop the `language` field while providing `language="fr"` via `set_field`, asserts a single migration record was produced, and verifies an alias instance with the supplied required field yields the same persisted value.
+    """
     same_v1 = _same_class_v1()
     source = cast(type, same_v1)(name="mnist")
     assert source.get() == 5
@@ -203,6 +299,11 @@ def test_alias_uniqueness_guard(furu_tmp_root) -> None:
 
 
 def test_alias_chain_flattens_original(furu_tmp_root) -> None:
+    """
+    Verify that creating chained aliases preserves the original source reference when alias chains are flattened.
+    
+    Creates a SourceV1 instance, migrates its schema to SourceV2 and instantiates an alias (alias_v2), then migrates SourceV3 from alias_v2's hash including alias sources and instantiates alias_v3. Asserts that the migration record for alias_v3 attributes its `from_hash` to the original SourceV1 instance, that alias_v2.original() resolves to the original SourceV1, and that the original source's aliases include alias_v2.
+    """
     source = SourceV1(value=2)
     assert source.get() == 2
 
@@ -234,6 +335,11 @@ def test_alias_chain_flattens_original(furu_tmp_root) -> None:
 
 
 def test_current_and_stale_refs(furu_tmp_root) -> None:
+    """
+    Verify that SourceV1.current() and SourceV1.stale() classify object references based on metadata schema references.
+    
+    Creates two SourceV1 instances, updates the metadata of one to simulate a stale schema reference, and asserts that the fresh object's furu_hash appears in the set returned by current() and the modified object's furu_hash appears in the set returned by stale().
+    """
     current_obj = SourceV1(value=10)
     stale_obj = SourceV1(value=11)
     current_obj.get()

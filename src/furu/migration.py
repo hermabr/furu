@@ -27,7 +27,13 @@ class _FuruClass(Protocol):
     version_controlled: bool
 
     @classmethod
-    def _namespace(cls) -> Path: ...
+    def _namespace(cls) -> Path: """
+Get the filesystem path that serves as the namespace directory for the given class.
+
+Returns:
+    Path: The directory path used to store artifacts for the class's namespace.
+"""
+...
 
 
 MigrationConflict = Literal["throw", "skip"]
@@ -78,6 +84,32 @@ def migrate(
     origin: str | None = None,
     note: str | None = None,
 ) -> MigrationReport:
+    """
+    Migrate one or more stored artifacts into the schema represented by `cls`, creating alias migration records for each successful migration.
+    
+    Parameters:
+        cls (_FuruClass): Target class whose schema key will be used for migrated objects.
+        from_schema (Iterable[str] | None): Select sources whose schema key matches this collection of field names.
+        from_drop (Iterable[str] | None): Fields to remove from the source schema when selecting sources (used with `from_add`).
+        from_add (Iterable[str] | None): Fields to add to the source schema when selecting sources (used with `from_drop`).
+        from_hash (str | None): Select a single source by its furu hash.
+        from_furu_obj (dict[str, JsonValue] | None): Select a single source defined by the given serialized object (its hash is computed).
+        from_namespace (str | None): Override the namespace to search for sources; defaults to the namespace of `cls`.
+        default_field (Iterable[str] | None): Fields to ensure are present on the migrated object by applying default values when missing.
+        set_field (Mapping[str, JsonValue] | None): Explicit field values to set on the migrated object; errors if a target field is already present.
+        drop_field (Iterable[str] | None): Fields to remove from each source during migration.
+        rename_field (Mapping[str, str] | None): Map of source field name -> target field name to rename fields during migration.
+        include_alias_sources (bool): If True, allow alias entries to be considered as migration sources.
+        conflict (MigrationConflict): Policy when encountering existing targets or alias/schema conflicts; `"throw"` raises, `"skip"` records a skip.
+        origin (str | None): Optional origin identifier to record on created migration entries.
+        note (str | None): Optional free-text note to record on created migration entries.
+    
+    Returns:
+        MigrationReport: Contains `records` for successfully created MigrationRecord entries and `skips` for sources that were skipped with reasons.
+    
+    Raises:
+        ValueError: If source selection is missing or ambiguous, or if a conflict is encountered and `conflict` is `"throw"`.
+    """
     selector_count = sum(
         1
         for value in (
@@ -207,6 +239,25 @@ def migrate_one(
     origin: str | None = None,
     note: str | None = None,
 ) -> MigrationRecord | None:
+    """
+    Migrate a single Furu object, selected by its hash, to the schema of the given class and return the resulting migration record if any.
+    
+    Parameters:
+        cls (_FuruClass): Target class whose schema and namespace determine the migration target.
+        from_hash (str): Hash of the source Furu object to migrate.
+        from_namespace (str | None): Override namespace to locate the source; if None the namespace is derived from cls.
+        default_field (Iterable[str] | None): Field names for which to apply default values when missing in the source.
+        set_field (Mapping[str, JsonValue] | None): Field values to set on the migrated object; keys are field names and values must be JSON-serializable primitives/structures.
+        drop_field (Iterable[str] | None): Field names to remove from the source before migration.
+        rename_field (Mapping[str, str] | None): Mapping of source field name -> target field name to rename fields during migration.
+        include_alias_sources (bool): If True, allow alias records to be considered as valid migration sources.
+        conflict (MigrationConflict): Behavior when encountering alias/schema conflicts; "throw" to raise, "skip" to skip conflicted sources.
+        origin (str | None): Optional origin identifier to record with the migration.
+        note (str | None): Optional human-readable note to record with the migration.
+    
+    Returns:
+        MigrationRecord | None: The first MigrationRecord produced for the migrated object, or `None` if no migration record was created.
+    """
     report = migrate(
         cls,
         from_hash=from_hash,
@@ -230,6 +281,15 @@ def current(
     *,
     namespace: str | None = None,
 ) -> list[FuruRef]:
+    """
+    Return FuruRefs whose stored schema matches the current schema of the given Furu class.
+    
+    Parameters:
+        namespace (str | None): Optional namespace to search; when omitted the class's namespace is used.
+    
+    Returns:
+        list[FuruRef]: Targets whose metadata schema key equals the class's current schema key.
+    """
     target_schema = schema_key_from_cls(cast(type, cls))
     return _refs_by_schema(namespace or _namespace_str(cls), target_schema, match=True)
 
@@ -239,11 +299,32 @@ def stale(
     *,
     namespace: str | None = None,
 ) -> list[FuruRef]:
+    """
+    Return FuruRefs in a namespace whose metadata schema key does not match the class's current schema.
+    
+    Parameters:
+        namespace (str | None): Namespace to search; if None, use the class's namespace.
+    
+    Returns:
+        list[FuruRef]: FuruRef objects for targets whose schema key is different from the class's current schema.
+    """
     target_schema = schema_key_from_cls(cast(type, cls))
     return _refs_by_schema(namespace or _namespace_str(cls), target_schema, match=False)
 
 
 def resolve_original_ref(ref: FuruRef) -> FuruRef:
+    """
+    Resolve an alias chain for a FuruRef to its ultimate non-alias reference.
+    
+    Parameters:
+        ref (FuruRef): Starting reference which may point to an alias.
+    
+    Returns:
+        FuruRef: The resolved reference that is not an alias.
+    
+    Raises:
+        ValueError: If an alias loop is detected while following alias chains.
+    """
     current = ref
     seen: set[tuple[str, str, RootKind]] = set()
     while True:
@@ -268,6 +349,20 @@ def _schema_from_drop_add(
     from_drop: Iterable[str] | None,
     from_add: Iterable[str] | None,
 ) -> tuple[str, ...]:
+    """
+    Compute the resulting schema key after applying drop and add operations to the class's current schema.
+    
+    Parameters:
+        cls: The target class whose current schema will be modified.
+        from_drop: Iterable of field names to remove from the current schema; if None, no fields are removed.
+        from_add: Iterable of field names to add to the current schema; if None, no fields are added.
+    
+    Returns:
+        tuple[str, ...]: Sorted tuple of resulting field names forming the new schema key.
+    
+    Raises:
+        ValueError: If any field in `from_drop` does not exist in the current schema, or if any field in `from_add` already exists in the current schema.
+    """
     current = set(schema_key_from_cls(cast(type, cls)))
 
     if from_drop is not None:
@@ -292,6 +387,19 @@ def _schema_from_drop_add(
 
 
 def _normalize_schema(values: Iterable[str]) -> tuple[str, ...]:
+    """
+    Validate and normalize a collection of schema field names.
+    
+    Parameters:
+        values (Iterable[str]): Iterable of candidate field names.
+    
+    Returns:
+        tuple[str, ...]: Sorted tuple of unique field names.
+    
+    Raises:
+        TypeError: If any value in `values` is not a string.
+        ValueError: If any field name starts with an underscore.
+    """
     keys: set[str] = set()
     for value in values:
         if not isinstance(value, str):
@@ -307,6 +415,22 @@ def _sources_from_schema(
     schema_key: tuple[str, ...],
     include_alias_sources: bool,
 ) -> list[_Source]:
+    """
+    Collect all sources in a namespace whose stored schema key equals the given schema_key.
+    
+    Iterates namespace metadata (optionally including alias entries) and builds a list of _Source objects for entries whose metadata schema key matches the provided tuple.
+    
+    Parameters:
+        namespace (str): Namespace to search.
+        schema_key (tuple[str, ...]): Target schema key to match.
+        include_alias_sources (bool): If True, include alias records when scanning metadata.
+    
+    Returns:
+        list[_Source]: _Source entries for each matching metadata record.
+    
+    Raises:
+        TypeError: If a matching metadata entry's "furu_obj" is not a dict.
+    """
     sources: list[_Source] = []
     for ref, metadata in _iter_namespace_metadata(namespace, include_alias_sources):
         if schema_key_from_metadata_raw(metadata) != schema_key:
@@ -324,6 +448,24 @@ def _source_from_hash(
     furu_hash: str,
     include_alias_sources: bool,
 ) -> _Source:
+    """
+    Load a migration source identified by namespace and furu hash.
+    
+    Reads the stored metadata for the given namespace and hash, validates that the stored `furu_obj` is a mapping, and returns an _Source containing the reference, the object, and any migration record. If the stored item is an alias and `include_alias_sources` is False, the function raises an error.
+    
+    Parameters:
+        namespace (str): Namespace to search.
+        furu_hash (str): Hash of the furu artifact to locate.
+        include_alias_sources (bool): If True, accept alias records as valid sources; if False, raise when the found record is an alias.
+    
+    Returns:
+        _Source: A source record with `ref`, `furu_obj` (dict), and optional `migration`.
+    
+    Raises:
+        FileNotFoundError: If metadata for the found reference is missing.
+        TypeError: If the metadata's `furu_obj` is not a dict.
+        ValueError: If the found migration is an alias while `include_alias_sources` is False.
+    """
     ref = _find_ref_by_hash(namespace, furu_hash)
     metadata = MetadataManager.read_metadata_raw(ref.directory)
     if metadata is None:
@@ -348,6 +490,17 @@ def _source_from_furu_obj(
     furu_obj: dict[str, JsonValue],
     include_alias_sources: bool,
 ) -> _Source:
+    """
+    Create a migration source entry for a given in-memory Furu object by computing its content hash and locating the corresponding stored artifact.
+    
+    Parameters:
+        namespace (str): Namespace in which to look up the stored artifact.
+        furu_obj (dict[str, JsonValue]): The serialized object to compute the hash from.
+        include_alias_sources (bool): If True, consider alias migration records as valid lookup targets; if False, ignore alias records.
+    
+    Returns:
+        _Source: A _Source containing the located FuruRef, the original `furu_obj`, and any associated MigrationRecord (if present).
+    """
     furu_hash = FuruSerializer.compute_hash(furu_obj)
     return _source_from_hash(namespace, furu_hash, include_alias_sources)
 
@@ -355,6 +508,18 @@ def _source_from_furu_obj(
 def _iter_namespace_metadata(
     namespace: str, include_alias_sources: bool
 ) -> Iterable[tuple[FuruRef, dict[str, JsonValue]]]:
+    """
+    Iterate metadata entries for a namespace across both non-versioned and versioned roots.
+    
+    Yields pairs of (FuruRef, metadata) for each metadata directory found under the namespace. When an entry corresponds to an alias migration and `include_alias_sources` is False, that entry is skipped.
+    
+    Parameters:
+        namespace (str): Dot-separated class namespace (e.g., "package.module.Class") to search.
+        include_alias_sources (bool): If True, include entries whose migration record is an alias; if False, skip alias sources.
+    
+    Returns:
+        Iterable[tuple[FuruRef, dict[str, JsonValue]]]: An iterator of tuples where the first element is the reference to the metadata directory and the second element is the raw metadata mapping.
+    """
     namespace_path = Path(*namespace.split("."))
     for version_controlled in (False, True):
         root = FURU_CONFIG.get_root(version_controlled=version_controlled)
@@ -385,6 +550,20 @@ def _iter_namespace_metadata(
 
 
 def _find_ref_by_hash(namespace: str, furu_hash: str) -> FuruRef:
+    """
+    Locate the FuruRef for a given namespace and furu object hash across configured roots.
+    
+    Parameters:
+        namespace (str): Dot-separated namespace (e.g., "pkg.module") to search.
+        furu_hash (str): The furu object hash to locate.
+    
+    Returns:
+        FuruRef: The single matching reference; its `root` indicates whether it was found in the version-controlled ("git") or non-version-controlled ("data") root.
+    
+    Raises:
+        FileNotFoundError: If no matching reference is found.
+        ValueError: If more than one matching reference is found.
+    """
     namespace_path = Path(*namespace.split("."))
     matches: list[FuruRef] = []
     for version_controlled in (False, True):
@@ -422,6 +601,25 @@ def _apply_transforms(
     set_field: Mapping[str, JsonValue],
     target_class: _FuruClass,
 ) -> dict[str, JsonValue]:
+    """
+    Apply a set of migration transformations to a source object's fields and produce the transformed field mapping.
+    
+    Parameters:
+        source_obj (dict[str, JsonValue]): Source serialized object (metadata), typically containing fields and a "__class__" entry which will be ignored.
+        target_fields (tuple[str, ...]): Ordered field names that define the target schema; used to validate rename/default/set/drop operations.
+        rename_field (Mapping[str, str]): Mapping of source field name -> target field name to rename; each source must exist, each target must not already exist in the source, and each target must be present in target_fields.
+        drop_field (Iterable[str]): Iterable of field names to remove from the source; each must exist in the source.
+        default_field (Iterable[str]): Iterable of field names that must be present in the resulting object; if missing, a default value from target_class is inserted.
+        set_field (Mapping[str, JsonValue]): Mapping of field name -> value to set on the resulting object; each name must be in target_fields and must not already be present in the source. Values are serialized before insertion.
+        target_class (_FuruClass): The destination class used to resolve default values for fields.
+    
+    Returns:
+        dict[str, JsonValue]: The transformed field mapping (excluding any "__class__" key).
+    
+    Raises:
+        ValueError: If any transform is invalid (missing source field for rename/drop, rename target exists or not in schema, default/set field not in schema, or set targets already present).
+        TypeError: If a value provided for `set_field` or a default cannot be serialized to a JSON-compatible form.
+    """
     fields = {k: v for k, v in source_obj.items() if k != "__class__"}
     target_field_set = set(target_fields)
 
@@ -471,6 +669,21 @@ def _apply_transforms(
 
 
 def _default_value_for_field(target_class: _FuruClass, name: str) -> JsonValue:
+    """
+    Return the default serializable value for a named field on the target class.
+    
+    Retrieves the field definition from the class and returns the field's default value if one is defined; if no direct default is present, invokes and returns the field's default factory result. Raises a ValueError when the field has neither a default nor a default factory.
+    
+    Parameters:
+        target_class (_FuruClass): Class whose field definition is queried.
+        name (str): Name of the field to obtain a default for.
+    
+    Returns:
+        JsonValue: The field's default value (or the result of its default factory).
+    
+    Raises:
+        ValueError: If the field has neither a default nor a default factory.
+    """
     fields = chz.chz_fields(target_class)
     field = fields[name]
     if field._default is not CHZ_MISSING:
@@ -483,6 +696,18 @@ def _default_value_for_field(target_class: _FuruClass, name: str) -> JsonValue:
 
 
 def _serialize_value(value: JsonValue) -> JsonValue:
+    """
+    Convert a value into a JSON-serializable primitive form.
+    
+    Parameters:
+        value (JsonValue): The value to serialize.
+    
+    Returns:
+        JsonValue: The serialized primitive (`str`, `int`, `float`, `bool`, `list`, `dict`) or `None`.
+    
+    Raises:
+        TypeError: If the value cannot be represented as one of the allowed primitive types.
+    """
     result = FuruSerializer.to_dict(value)
     if result is None:
         return result
@@ -499,6 +724,19 @@ def _write_alias(
     origin: str | None,
     note: str | None,
 ) -> MigrationRecord:
+    """
+    Create the target directory for an alias, write migrated state and metadata, and record the alias migration.
+    
+    Parameters:
+        target_obj (JsonValue): Serialized object to store in the target metadata.
+        original_ref (FuruRef): Reference to the original source being aliased.
+        target_ref (FuruRef): Reference for the new alias target; its directory will be created.
+        origin (str | None): Optional origin identifier to include in the migration record.
+        note (str | None): Optional free-form note to include in the migration record.
+    
+    Returns:
+        MigrationRecord: A migration record of kind "alias" describing the created alias relationship.
+    """
     target_ref.directory.mkdir(parents=True, exist_ok=False)
     StateManager.ensure_internal_dir(target_ref.directory)
     _write_migrated_state(target_ref.directory)
@@ -529,6 +767,12 @@ def _write_alias(
 
 
 def _write_migrated_state(directory: Path) -> None:
+    """
+    Mark the artifact at the given directory as migrated in the state store.
+    
+    Parameters:
+        directory (Path): Path to the artifact's directory whose migration state will be updated.
+    """
     def mutate(state) -> None:
         state.result = _StateResultMigrated(status="migrated")
         state.attempt = None
@@ -537,6 +781,15 @@ def _write_migrated_state(directory: Path) -> None:
 
 
 def _ensure_original_success(original_ref: FuruRef) -> None:
+    """
+    Ensure the original artifact referenced by `original_ref` has a success marker.
+    
+    Parameters:
+        original_ref (FuruRef): Reference to the original artifact whose success state will be checked.
+    
+    Raises:
+        ValueError: If the original artifact does not have a success marker.
+    """
     if not StateManager.success_marker_exists(original_ref.directory):
         raise ValueError("migration: original artifact is not successful")
 
@@ -547,6 +800,22 @@ def _alias_schema_conflict(
     alias_key: tuple[str, str, RootKind],
     target_schema_key: tuple[str, ...],
 ) -> bool:
+    """
+    Check whether any alias for a given alias key points to a different schema than the target schema.
+    
+    Parameters:
+        alias_index (dict[tuple[str, str, RootKind], list[MigrationRecord]]):
+            Mapping from alias keys (namespace, furu_hash, root) to migration records that created those aliases.
+        alias_schema_cache (dict[Path, tuple[str, ...]]):
+            Cache mapping alias directories to their schema key tuples; populated when metadata is read.
+        alias_key (tuple[str, str, RootKind]):
+            The alias key to look up in alias_index.
+        target_schema_key (tuple[str, ...]):
+            The schema key tuple that the target should have.
+    
+    Returns:
+        bool: `True` if any alias referenced by `alias_key` has the same schema as `target_schema_key`, `False` otherwise.
+    """
     records = alias_index.get(alias_key, [])
     for record in records:
         alias_dir = MigrationManager.resolve_dir(record, target="to")
@@ -568,6 +837,19 @@ def _refs_by_schema(
     *,
     match: bool,
 ) -> list[FuruRef]:
+    """
+    Collects FuruRef entries in a namespace filtered by whether each entry's metadata schema key matches the given schema_key.
+    
+    Filters metadata for the provided namespace (including alias sources) and returns the matching references sorted by their furu_hash.
+    
+    Parameters:
+        namespace (str): Namespace to search.
+        schema_key (tuple[str, ...]): Target schema key as a tuple of field names.
+        match (bool): If True, include refs whose metadata schema equals `schema_key`; if False, include refs whose schema does not equal `schema_key`.
+    
+    Returns:
+        list[FuruRef]: FuruRef objects matching the filter, sorted by `furu_hash`.
+    """
     refs: list[FuruRef] = []
     for ref, metadata in _iter_namespace_metadata(
         namespace, include_alias_sources=True
@@ -580,10 +862,29 @@ def _refs_by_schema(
 
 
 def _namespace_str(cls: _FuruClass) -> str:
+    """
+    Return a dot-separated namespace string for a Furu class.
+    
+    Parameters:
+        cls (_FuruClass): Class providing a Path-like namespace via its `_namespace()` classmethod.
+    
+    Returns:
+        namespace_str (str): The namespace joined with dots (e.g., "package.subpackage.object").
+    """
     return ".".join(cls._namespace().parts)
 
 
 def _target_ref(cls: _FuruClass, furu_hash: str) -> FuruRef:
+    """
+    Create a FuruRef for the given class namespace and furu object hash.
+    
+    Parameters:
+        cls (_FuruClass): Class providing the namespace and version_controlled flag.
+        furu_hash (str): Content hash identifying the furu object.
+    
+    Returns:
+        FuruRef: Reference with the resolved namespace, the provided hash, the root kind ("git" if the class is version-controlled, otherwise "data"), and the filesystem directory where the object is stored.
+    """
     root = FURU_CONFIG.get_root(version_controlled=cls.version_controlled)
     namespace = _namespace_str(cls)
     directory = root / Path(*namespace.split(".")) / furu_hash
@@ -597,4 +898,13 @@ def _target_ref(cls: _FuruClass, furu_hash: str) -> FuruRef:
 
 
 def _format_fields(fields: Iterable[str]) -> str:
+    """
+    Format an iterable of field names as a sorted, comma-separated string.
+    
+    Parameters:
+        fields (Iterable[str]): Field names to format.
+    
+    Returns:
+        A single string containing the provided field names sorted alphabetically and joined by ", ".
+    """
     return ", ".join(sorted(fields))

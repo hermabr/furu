@@ -20,6 +20,17 @@ class Dummy(furu.Furu[int]):
 
 
 def test_metadata_roundtrip_and_get_metadata(furu_tmp_root, monkeypatch) -> None:
+    """
+    Verify that a Dummy instance raises when metadata is missing, and after materialization returns correct metadata.
+    
+    This test patches git collection to a synthetic GitInfo, asserts that calling get_metadata() before the object is created raises FileNotFoundError, then materializes the object with get() and verifies that:
+    - the returned value is 42,
+    - metadata.furu_hash matches the object's furu_hash,
+    - metadata.furu_obj contains the stored value 42,
+    - metadata.schema_key equals ("value",),
+    - metadata.git_commit equals "<test>",
+    - metadata.furu_version equals the installed `furu` package version.
+    """
     monkeypatch.setattr(
         furu.MetadataManager,
         "collect_git_info",

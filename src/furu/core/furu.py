@@ -322,11 +322,28 @@ class Furu[T](ABC):
         return FuruSerializer.from_dict(data)
 
     def to_python(self: Self, multiline: bool = True) -> str:
-        """Convert to Python code."""
+        """
+        Serialize this Furu object to Python source code.
+        
+        Parameters:
+        	multiline (bool): If True, produce a multi-line, human-readable representation; if False, produce a compact single-line representation.
+        
+        Returns:
+        	python_code (str): Python source code that reconstructs the object.
+        """
         return FuruSerializer.to_python(self, multiline=multiline)
 
     @classmethod
     def schema_key(cls) -> tuple[str, ...]:
+        """
+        Compute the stable schema key for the given class's serialization schema.
+        
+        Parameters:
+            cls (type): The class whose schema key will be derived.
+        
+        Returns:
+            schema_key (tuple[str, ...]): Tuple of strings representing the stable schema key for the class.
+        """
         return schema_key_from_cls(cls)
 
     @classmethod
@@ -348,6 +365,28 @@ class Furu[T](ABC):
         origin: str | None = None,
         note: str | None = None,
     ) -> MigrationReport:
+        """
+        Perform a schema-aware migration of existing stored instances of this Furu subclass.
+        
+        Parameters:
+            from_schema (Iterable[str] | None): Names of schema fields to treat as the source schema for migration selection.
+            from_drop (Iterable[str] | None): Field names to drop from source schema when matching migration candidates.
+            from_add (Iterable[str] | None): Field names to add to source schema when matching migration candidates.
+            from_hash (str | None): Specific source furu hash to migrate from.
+            from_furu_obj (dict[str, JsonValue] | None): A single source object provided as a dict to migrate into this class's schema.
+            from_namespace (str | None): Namespace filter for candidate sources (limits which stored objects are considered).
+            default_field (Iterable[str] | None): Field names to populate with default values when performing the migration.
+            set_field (Mapping[str, JsonValue] | None): Mapping of field names to values to set on migrated objects.
+            drop_field (Iterable[str] | None): Field names to remove from migrated objects.
+            rename_field (Mapping[str, str] | None): Mapping of old field names to new field names for renaming during migration.
+            include_alias_sources (bool): If true, include alias-origin objects as migration sources.
+            conflict (Literal["throw","skip"]): How to handle conflicting migrations: `"throw"` to raise on conflict, `"skip"` to ignore.
+            origin (str | None): Optional string describing the origin of this migration (stored with migration records).
+            note (str | None): Optional human-readable note to attach to migration records.
+        
+        Returns:
+            MigrationReport: A report summarizing which objects were migrated, skipped, or failed and any side effects performed.
+        """
         return _migrate(
             cls,
             from_schema=from_schema,
@@ -381,6 +420,24 @@ class Furu[T](ABC):
         origin: str | None = None,
         note: str | None = None,
     ) -> MigrationRecord | None:
+        """
+        Attempt a single migration from a specific previous Furu version to this class's schema.
+        
+        Parameters:
+            from_hash (str): Hash of the source Furu to migrate from.
+            from_namespace (str | None): Optional namespace to restrict the source; defaults to None.
+            default_field (Iterable[str] | None): Field names to fill with default values when missing in the source.
+            set_field (Mapping[str, JsonValue] | None): Field values to set on the migrated object.
+            drop_field (Iterable[str] | None): Field names to drop from the migrated result.
+            rename_field (Mapping[str, str] | None): Mapping of old field names to new field names.
+            include_alias_sources (bool): If True, consider alias records as possible migration sources.
+            conflict (Literal["throw", "skip"]): Conflict resolution strategy; "throw" to raise on conflict, "skip" to ignore conflicting sources.
+            origin (str | None): Optional origin identifier to record in the migration metadata.
+            note (str | None): Optional human-readable note to record with the migration.
+        
+        Returns:
+            MigrationRecord | None: A MigrationRecord describing the performed migration if one was applied, or None if no applicable source was found or migration was skipped.
+        """
         return _migrate_one(
             cls,
             from_hash=from_hash,
@@ -397,14 +454,40 @@ class Furu[T](ABC):
 
     @classmethod
     def stale(cls, *, namespace: str | None = None) -> list[FuruRef]:
+        """
+        List stale references for this Furu class.
+        
+        Parameters:
+            namespace (str | None): If provided, restrict results to the given namespace.
+        
+        Returns:
+            stale_refs (list[FuruRef]): A list of FuruRef objects representing stale references for this class.
+        """
         return _stale_refs(cls, namespace=namespace)
 
     @classmethod
     def current(cls, *, namespace: str | None = None) -> list[FuruRef]:
+        """
+        List current Furu references for the class, optionally filtered by namespace.
+        
+        Parameters:
+            namespace (str | None): Namespace to restrict the search. If `None`, the class's default namespace is used.
+        
+        Returns:
+            list[FuruRef]: Current (non-stale) references for this Furu class.
+        """
         return _current_refs(cls, namespace=namespace)
 
     def log(self: Self, message: str, *, level: str = "INFO") -> Path:
-        """Log a message to the current holder's `furu.log`."""
+        """
+        Log a message to this Furu object's log file.
+        
+        Parameters:
+            level (str): Logging level name (e.g., "INFO", "ERROR").
+        
+        Returns:
+            Path: Path to the log file where the message was written.
+        """
         return log(message, level=level)
 
     def _exists_quiet(self: Self) -> bool:
@@ -457,14 +540,31 @@ class Furu[T](ABC):
         return MetadataManager.read_metadata(directory)
 
     def get_migration_record(self: Self) -> MigrationRecord | None:
-        """Get migration record for this object."""
+        """
+        Return the migration record associated with this Furu instance, if any.
+        
+        Returns:
+            MigrationRecord | None: The migration record for this object's base directory, or `None` if no record exists.
+        """
         return MigrationManager.read_migration(self._base_furu_dir())
 
     def is_alias(self: Self) -> bool:
+        """
+        Check whether this Furu's base directory has an alias migration record.
+        
+        Returns:
+            True if an alias migration record exists for the object's base directory, False otherwise.
+        """
         record = self._alias_record(self._base_furu_dir())
         return record is not None
 
     def original(self: Self) -> FuruRef:
+        """
+        Get a FuruRef pointing to the original (non-aliased) storage directory for this Furu.
+        
+        Returns:
+            FuruRef: Reference to the original Furu, containing namespace, furu_hash, root kind, and the canonical directory for the object.
+        """
         base_dir = self._base_furu_dir()
         ref = FuruRef(
             namespace=".".join(self.__class__._namespace().parts),
@@ -475,6 +575,15 @@ class Furu[T](ABC):
         return resolve_original_ref(ref)
 
     def aliases(self: Self, *, include_inactive: bool = True) -> list[FuruRef]:
+        """
+        Collect alias references that point to this object's original Furu.
+        
+        Parameters:
+        	include_inactive (bool): If True, include aliases that are inactive/overwritten; if False, include only currently active aliases.
+        
+        Returns:
+        	list[FuruRef]: Alias targets for this Furu's original, sorted by `furu_hash`.
+        """
         original_ref = self.original()
         alias_index = collect_aliases(include_inactive=include_inactive)
         records = alias_index.get(

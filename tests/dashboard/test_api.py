@@ -37,7 +37,14 @@ def test_list_experiments_empty(client: TestClient, temp_furu_root: Path) -> Non
 
 
 def test_list_experiments(client: TestClient, populated_furu_root: Path) -> None:
-    """Test listing all experiments."""
+    """
+    Verify the experiments listing and the "original" view return expected totals and structure.
+    
+    Sends requests to the experiments endpoints and asserts:
+    - the default list endpoint reports a total of 7 experiments and returns 7 items,
+    - each returned experiment includes the keys `namespace`, `furu_hash`, `class_name`, and `result_status`,
+    - the `view=original` endpoint reports a total of 5 experiments.
+    """
     response = client.get("/api/experiments")
     assert response.status_code == 200
     data = response.json()
@@ -61,6 +68,11 @@ def test_list_experiments(client: TestClient, populated_furu_root: Path) -> None
 def test_list_experiments_schema_filter(
     client: TestClient, populated_furu_root: Path
 ) -> None:
+    """
+    Verify that the /api/experiments endpoint filters experiments by the `schema` query parameter.
+    
+    Checks that the default/current view, `schema=stale`, and `schema=any` each return HTTP 200 and the expected total counts (current: 7, stale: 1, any: 8).
+    """
     response_current = client.get("/api/experiments")
     assert response_current.status_code == 200
     assert response_current.json()["total"] == 7
@@ -77,7 +89,14 @@ def test_list_experiments_schema_filter(
 def test_list_experiments_filter_by_result_status(
     client: TestClient, populated_furu_root: Path
 ) -> None:
-    """Test filtering experiments by result status."""
+    """
+    Verify the experiments listing endpoint filters by `result_status` and `migration_policy`.
+    
+    Sends requests to `/api/experiments` with:
+    - `result_status=success`: expects only experiments where `result_status` is `"success"`.
+    - `result_status=migrated`: expects only migrated experiments whose `migration_kind` is `"alias"`.
+    - `result_status=migrated&migration_policy=alias`: expects only migrated experiments whose `migration_policy` is `"alias"`.
+    """
     response = client.get("/api/experiments?result_status=success")
     assert response.status_code == 200
     data = response.json()
@@ -419,7 +438,11 @@ def test_list_experiments_filter_by_updated_after(
 def test_list_experiments_filter_by_updated_before(
     client: TestClient, populated_furu_root: Path
 ) -> None:
-    """Test filtering experiments by updated_before via API."""
+    """
+    Verifies the experiments API filters results to those updated before a given timestamp.
+    
+    Sends a GET request with the `updated_before` query parameter and asserts the response contains only experiments whose `updated_at` is earlier than the provided timestamp.
+    """
     # Filter for experiments updated before 2025-01-01 (loader = 1)
     response = client.get("/api/experiments?updated_before=2025-01-01T00:00:00%2B00:00")
     assert response.status_code == 200

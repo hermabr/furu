@@ -94,6 +94,16 @@ class FuruMetadata(BaseModel):
     @field_validator("schema_key", mode="before")
     @classmethod
     def _coerce_schema_key(cls, value: object) -> object:
+        """
+        Coerce a provided schema_key into a tuple when it's given as a list.
+        
+        Parameters:
+            cls: The class on which the validator runs.
+            value (object): The incoming value for `schema_key`; may be a list or already a tuple.
+        
+        Returns:
+            object: A tuple converted from `value` if `value` is a list, otherwise the original `value`.
+        """
         if isinstance(value, list):
             return tuple(value)
         return value
@@ -242,7 +252,20 @@ class MetadataManager:
     def create_metadata(
         cls, furu_obj: "Furu", directory: Path, ignore_diff: bool = False
     ) -> FuruMetadata:
-        """Create complete metadata for a Furu object."""
+        """
+        Create a FuruMetadata object containing serialized Furu data, git provenance, and environment information.
+        
+        Parameters:
+            furu_obj (Furu): The Furu object to serialize and include in the metadata.
+            directory (Path): Filesystem directory containing the Furu object; stored as the resolved path.
+            ignore_diff (bool): If True, omit detailed git diff contents from the metadata.
+        
+        Returns:
+            FuruMetadata: A validated metadata model with fields for the serialized Furu object, a schema key derived from that serialized object, a content hash, filesystem path, git commit/branch/remote/patch/submodules, and environment details (timestamp, command, versions, executable, platform, hostname, user, pid).
+        
+        Raises:
+            TypeError: If serialization of `furu_obj` does not produce a dict.
+        """
         git_info = cls.collect_git_info(ignore_diff)
         env_info = cls.collect_environment_info()
 

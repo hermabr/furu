@@ -64,7 +64,19 @@ async def list_experiments(
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of results"),
     offset: int = Query(0, ge=0, description="Offset for pagination"),
 ) -> ExperimentList:
-    """List all experiments with optional filtering."""
+    """
+    List experiments applying optional filters and pagination.
+    
+    Parameters:
+        config_filter (str | None): Filter by a configuration field using the format "field.path=value".
+        schema (str): Filter by schema status; one of "current", "stale", or "any".
+        view (str): Response view mode; "resolved" returns resolved/merged experiment data, "original" returns raw stored data.
+        limit (int): Maximum number of experiments to include in the response.
+        offset (int): Number of matching experiments to skip before applying `limit`.
+    
+    Returns:
+        ExperimentList: An object containing `experiments` (the page of experiments after pagination) and `total` (the total number of experiments matching the filters before pagination).
+    """
     experiments = scan_experiments(
         result_status=result_status,
         attempt_status=attempt_status,

@@ -237,17 +237,10 @@ def create_experiment_from_furu(
 
 
 def _create_populated_experiments(root: Path) -> None:
-    """Create sample experiments in the given root directory.
-
-    Creates experiments with realistic dependencies and varied attributes
-    for comprehensive filter testing:
-    - PrepareDataset (success, local, gpu-01, alice, 2025-01-01)
-    - TrainModel with dependency on PrepareDataset (success, local, gpu-01, alice, 2025-01-02)
-    - TrainModel with different params (running, submitit, gpu-02, bob, 2025-01-03)
-    - EvalModel that depends on TrainModel (failed, local, gpu-02, alice, 2025-01-04)
-    - DataLoader in different namespace (success, submitit, gpu-01, bob, 2024-06-01)
-    - PrepareDataset with different params (absent, stale schema)
-    - PrepareDataset aliases (migrated aliases pointing to dataset1)
+    """
+    Seed the given root directory with a set of realistic, interdependent experiment records for dashboard/filter tests.
+    
+    Creates on-disk experiment metadata and state (including success, running, failed, and absent states), builds dependency relationships between experiments (PrepareDataset -> TrainModel -> EvalModel), adds experiments in a different namespace, creates one dataset with an absent/stale schema, and writes two migrated "alias" migration records pointing back to the first dataset. The function mutates the filesystem under `root` and returns None.
     """
     # Create a base dataset (successful, local, gpu-01, alice, early 2025)
     dataset1 = PrepareDataset(name="mnist", version="v1")
@@ -325,6 +318,12 @@ def _create_populated_experiments(root: Path) -> None:
     dataset2_metadata_path.write_text(json.dumps(dataset2_metadata, indent=2))
 
     def set_alias_state(state) -> None:
+        """
+        Mark the provided experiment state as migrated and clear any active attempt.
+        
+        Parameters:
+            state: The experiment state object to modify; its `result` will be set to a migrated result and its `attempt` cleared.
+        """
         state.result = _StateResultMigrated(status="migrated")
         state.attempt = None
 
@@ -387,12 +386,13 @@ def _create_populated_experiments(root: Path) -> None:
 
 @pytest.fixture(scope="module")
 def populated_furu_root(_configure_furu_for_module: Path) -> Path:
-    """Create a module-scoped Furu root with sample experiments.
-
-    PREFER THIS FIXTURE for read-only tests. Experiments are created once per
-    module and reused, which is much faster than creating them per-test.
-
-    See _create_populated_experiments() for the exact data created.
+    """
+    Creates a module-scoped Furu root populated with sample experiments.
+    
+    Experiments are created once for the test module and reused across tests to speed up read-only test runs. See _create_populated_experiments() for the exact fixtures seeded.
+    
+    Returns:
+        Path: Path to the configured Furu root directory containing the sample experiments.
     """
     root = _configure_furu_for_module
     _create_populated_experiments(root)

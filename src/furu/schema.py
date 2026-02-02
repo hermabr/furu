@@ -6,6 +6,18 @@ from .serialization.serializer import JsonValue
 
 
 def schema_key_from_furu_obj(furu_obj: dict[str, JsonValue]) -> tuple[str, ...]:
+    """
+    Derives a schema key tuple from a furu object by collecting its public property names.
+    
+    Parameters:
+        furu_obj (dict[str, JsonValue]): Mapping representing a furu object.
+    
+    Returns:
+        tuple[str, ...]: Sorted tuple of unique keys from furu_obj that do not start with "_".
+    
+    Raises:
+        TypeError: If furu_obj is not a dict or any key is not a string.
+    """
     if not isinstance(furu_obj, dict):
         raise TypeError(f"schema_key requires dict furu_obj, got {type(furu_obj)}")
     keys: set[str] = set()
@@ -19,6 +31,19 @@ def schema_key_from_furu_obj(furu_obj: dict[str, JsonValue]) -> tuple[str, ...]:
 
 
 def schema_key_from_metadata_raw(metadata: dict[str, JsonValue]) -> tuple[str, ...]:
+    """
+    Extracts a schema key tuple from raw metadata.
+    
+    Parameters:
+        metadata (dict[str, JsonValue]): Mapping that must contain a "schema_key" entry whose value is a list or tuple of strings.
+    
+    Returns:
+        tuple[str, ...]: The sequence of schema key strings in the same order as provided in metadata.
+    
+    Raises:
+        ValueError: If "schema_key" is missing from metadata.
+        TypeError: If "schema_key" is not a list or tuple, or if any item in it is not a string.
+    """
     raw = metadata.get("schema_key")
     if raw is None:
         raise ValueError("metadata missing schema_key")
@@ -37,6 +62,15 @@ def schema_key_from_metadata_raw(metadata: dict[str, JsonValue]) -> tuple[str, .
 
 
 def schema_key_from_cls(cls: type) -> tuple[str, ...]:
+    """
+    Derives a schema key from a class by extracting its public field logical names.
+    
+    Parameters:
+        cls (type): Class whose declared fields will be inspected.
+    
+    Returns:
+        tuple[str, ...]: Sorted tuple of unique logical names for the class's fields whose `logical_name` does not start with an underscore.
+    """
     fields = chz.chz_fields(cls)
     keys = {
         field.logical_name

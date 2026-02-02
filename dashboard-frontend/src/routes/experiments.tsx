@@ -39,6 +39,15 @@ const ATTEMPT_STATUSES = [
 const BACKENDS = ["", "local", "submitit"] as const;
 const SCHEMA_FILTERS = ["current", "stale", "any"] as const;
 
+/**
+ * Render the Experiments dashboard with filter controls, results listing, and pagination.
+ *
+ * The page exposes filters for namespace, result/attempt status, backend, hostname, user, schema,
+ * start time range, and config; it displays matching experiments in a table with status badges,
+ * migration and attempt indicators, and navigation controls when multiple pages exist.
+ *
+ * @returns The React element for the Experiments page including filter UI, results table, and pagination.
+ */
 function ExperimentsPage() {
   const [resultFilter, setResultFilter] = useState("");
   const [attemptFilter, setAttemptFilter] = useState("");
