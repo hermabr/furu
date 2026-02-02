@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Record the furu package version in experiment metadata.
+- Rename metadata field `furu_version` to `furu_package_version` for clarity.
 - Store `schema_key` in metadata and expose schema/staleness in the dashboard API.
 - Replace migration APIs with schema-keyed, alias-only migration helpers and alias relationship accessors.
 
