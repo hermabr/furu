@@ -18,6 +18,9 @@
     - I probably still want to reload in .get when i call it from another object, rather than caching it in memory in case the next task wants to reload it
 - [ ] consider moving from time.time() to time.perf_counter() for measuring elapsed time
 - [ ] Make a good system for versioning objects, maybe also make this work with the migration so that you can migrate from one version of an furu object to a newer version using migrations
+- [ ] Add option to migrate everything that can be auto migrated where there already exist default values
+- [ ] For migrations: Decide if its okay with two aliases from same base object with same schema
+- [ ] Rename `furu_version` to something more reasonable, such as `furu_package_version`
 - [ ] Better filtering in the dashboard/code
 
 ## Code Quality
