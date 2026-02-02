@@ -17,6 +17,7 @@ from typing import (
     Any,
     Callable,
     ClassVar,
+    Generic,
     Hashable,
     Iterable,
     Literal,
@@ -25,6 +26,7 @@ from typing import (
     Self,
     Sequence,
     TypeAlias,
+    TypeVar,
     TypedDict,
     cast,
 )
@@ -81,6 +83,9 @@ from ..storage.state import (
 )
 
 
+T = TypeVar("T")
+
+
 class _SubmititEnvInfo(TypedDict, total=False):
     """Environment info collected for submitit jobs."""
 
@@ -103,7 +108,7 @@ class _CallerInfo(TypedDict, total=False):
 @dataclass_transform(
     field_specifiers=(chz.field,), kw_only_default=True, frozen_default=True
 )
-class Furu[T](ABC):
+class Furu(ABC, Generic[T]):
     """
     Base class for cached computations with provenance tracking.
 

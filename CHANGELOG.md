@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Restore Python 3.11 compatibility by using `TypeVar`/`Generic` for `Furu`.
+
 ## v0.0.7
 
 - Record `furu_package_version` in experiment metadata.
