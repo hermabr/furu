@@ -22,6 +22,13 @@
 - [ ] For migrations: Decide if its okay with two aliases from same base object with same schema
 - [x] Rename `furu_version` to something more reasonable, such as `furu_package_version`
 - [ ] Better filtering in the dashboard/code
+- [ ] Add the high-level goals of furu
+    - [ ] Keep everything in python, no bash, no yaml etc
+    - [ ] Make everything reproducible without needing to think about it
+    - [ ] Cache everything
+        - [ ] Easily recompute things when you change them
+    - [ ] Make it easy to reason about your code and to swap out elements
+        - [ ] Allow model to easily use different datasets to train
 
 ## Code Quality
 
