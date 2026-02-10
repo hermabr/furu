@@ -3,6 +3,7 @@ import json
 import pytest
 
 import furu
+from furu import furu_dep
 from furu.adapters import SubmititAdapter
 from furu.execution.slurm_dag import (
     _job_id_for_in_progress,
@@ -32,7 +33,8 @@ class DagTask(furu.Furu[int]):
     name: str = furu.chz.field()
     deps: list[furu.Furu[int]] = furu.chz.field(default_factory=list)
 
-    def _dependencies(self) -> furu.DependencySpec:
+    @furu_dep
+    def dag_dependencies(self) -> furu.DependencySpec:
         return self.deps
 
     def _create(self) -> int:

@@ -4,7 +4,7 @@ import chz
 import pytest
 
 import furu
-from furu import DependencyChzSpec, DependencySpec
+from furu import DependencyChzSpec, DependencySpec, furu_dep
 
 
 class DependencyTask(furu.Furu[int]):
@@ -27,7 +27,8 @@ class DependencyCollection(furu.Furu[int]):
     n_tasks: int
     base_task: DependencyTask
 
-    def _dependencies(self) -> DependencySpec:
+    @furu_dep
+    def dynamic_dependencies(self) -> DependencySpec:
         return DependencyGroup(
             tasks=[DependencyTask(value=i) for i in range(self.n_tasks)]
         )
@@ -44,7 +45,8 @@ class DependencyCollection(furu.Furu[int]):
 class DependencyLayerTwo(furu.Furu[int]):
     leaf: DependencyTask
 
-    def _dependencies(self) -> DependencySpec:
+    @furu_dep
+    def extra_dependencies(self) -> DependencySpec:
         return [DependencyTask(value=2)]
 
     def _create(self) -> int:
@@ -59,7 +61,8 @@ class DependencyLayerTwo(furu.Furu[int]):
 class DependencyLayerOne(furu.Furu[int]):
     layer_two: DependencyLayerTwo
 
-    def _dependencies(self) -> DependencySpec:
+    @furu_dep
+    def extra_dependencies(self) -> DependencySpec:
         return [DependencyTask(value=3)]
 
     def _create(self) -> int:
@@ -72,7 +75,8 @@ class DependencyLayerOne(furu.Furu[int]):
 
 
 class DuplicateDependencyHolder(furu.Furu[int]):
-    def _dependencies(self) -> DependencySpec:
+    @furu_dep
+    def duplicate_dependencies(self) -> DependencySpec:
         return [DependencyTask(value=1), DependencyTask(value=1)]
 
     def _create(self) -> int:
@@ -84,6 +88,20 @@ class DuplicateDependencyHolder(furu.Furu[int]):
         return json.loads((self.furu_dir / "duplicate.json").read_text())
 
 
+class AliasDecoratorHolder(furu.Furu[int]):
+    @furu_dep
+    def alias_dependencies(self) -> DependencySpec:
+        return [DependencyTask(value=7)]
+
+    def _create(self) -> int:
+        value = 7
+        (self.furu_dir / "alias.json").write_text(json.dumps(value))
+        return value
+
+    def _load(self) -> int:
+        return json.loads((self.furu_dir / "alias.json").read_text())
+
+
 @chz.chz
 class BadDependencySpec(DependencyChzSpec):
     tasks: list[DependencyTask]
@@ -91,7 +109,8 @@ class BadDependencySpec(DependencyChzSpec):
 
 
 class BadDependencyCollection(furu.Furu[int]):
-    def _dependencies(self) -> DependencySpec:
+    @furu_dep
+    def bad_dependencies(self) -> DependencySpec:
         return BadDependencySpec(tasks=[DependencyTask(value=1)], label="bad")
 
     def _create(self) -> int:
@@ -106,7 +125,8 @@ class BadDependencyCollection(furu.Furu[int]):
 class Fibonacci(furu.Furu[int]):
     n: int
 
-    def _dependencies(self) -> DependencySpec:
+    @furu_dep
+    def recurrence_dependencies(self) -> DependencySpec:
         if self.n <= 1:
             return []
         return [Fibonacci(n=self.n - 1), Fibonacci(n=self.n - 2)]
@@ -136,6 +156,13 @@ def test_dependencies_deduplicates_repeated_dependencies(furu_tmp_root) -> None:
 
     values = [dep.value for dep in deps if isinstance(dep, DependencyTask)]
     assert values == [1]
+
+
+def test_furu_dep_marks_dependency(furu_tmp_root) -> None:
+    deps = AliasDecoratorHolder()._get_dependencies(recursive=False)
+
+    values = [dep.value for dep in deps if isinstance(dep, DependencyTask)]
+    assert values == [7]
 
 
 def test_dependencies_two_layers_with_dependencies(furu_tmp_root) -> None:
@@ -174,10 +201,11 @@ def test_hash_includes_dependency_spec(monkeypatch) -> None:
     collection = DependencyCollection(n_tasks=1, base_task=DependencyTask(value=0))
     original_hash = collection.furu_hash
 
-    def alt_dependencies(self) -> DependencySpec:
+    @furu_dep
+    def alt_dependencies(_) -> DependencySpec:
         return [DependencyTask(value=99)]
 
-    monkeypatch.setattr(DependencyCollection, "_dependencies", alt_dependencies)
+    monkeypatch.setattr(DependencyCollection, "dynamic_dependencies", alt_dependencies)
 
     assert collection.furu_hash == original_hash
 
@@ -200,9 +228,14 @@ def test_hash_ignores_duplicate_dependencies(monkeypatch) -> None:
     holder = DuplicateDependencyHolder()
     original_hash = holder.furu_hash
 
-    def unique_dependencies(self) -> DependencySpec:
+    @furu_dep
+    def unique_dependencies(_) -> DependencySpec:
         return [DependencyTask(value=1)]
 
-    monkeypatch.setattr(DuplicateDependencyHolder, "_dependencies", unique_dependencies)
+    monkeypatch.setattr(
+        DuplicateDependencyHolder,
+        "duplicate_dependencies",
+        unique_dependencies,
+    )
 
     assert holder.furu_hash == original_hash
