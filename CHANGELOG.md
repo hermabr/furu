@@ -4,6 +4,7 @@
 
 - Restore Python 3.11 compatibility by using `TypeVar`/`Generic` for `Furu`.
 - Replace the `_dependencies()` hook with `@furu_dep` methods (imported from `furu`) for declaring extra dependencies used by dependency discovery and hashing.
+- Add support for plain Python dataclasses in `FuruSerializer` hashing and dict round-trips.
 
 ## v0.0.7
 
