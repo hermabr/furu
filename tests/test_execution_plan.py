@@ -3,6 +3,7 @@ import os
 import time
 
 import furu
+from furu import furu_dep
 from furu.execution.plan import (
     build_plan,
     ready_todo,
@@ -15,7 +16,8 @@ class Task(furu.Furu[int]):
     name: str = furu.chz.field()
     deps: list[furu.Furu[int]] = furu.chz.field(default_factory=list)
 
-    def _dependencies(self) -> furu.DependencySpec:
+    @furu_dep
+    def task_dependencies(self) -> furu.DependencySpec:
         return self.deps
 
     def _create(self) -> int:

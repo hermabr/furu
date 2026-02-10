@@ -53,6 +53,9 @@
 - [x] check how to make implicit dependencies (probably this is doable with chz?)
     - [x] Add support for lazily computing dependencies (maybe)
     - [x] Have a def _dependencies(self) -> list[type[Furu]] which returns all the dependencies of the experiment that i don't want to define as fields
+- [x] Define dependencies with a @furu_dep rather than with def _dependencies
+- [ ] Check all the dependencies of an experiment both immediately and right before making an object if using an executor
+    - [ ] Decide if this should be using a @furu_dep and @furu_lazy_dep or if it should always be done
 
 ## Execution & Compute
 

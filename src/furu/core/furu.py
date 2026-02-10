@@ -215,15 +215,11 @@ class Furu(ABC, Generic[T]):
         """
         return True
 
-    def _dependencies(self: Self) -> "DependencySpec | None":
-        """Return extra dependencies not captured by fields."""
-        return None
-
     def _executor_spec_key(self: Self) -> str:
         return "default"
 
     def _get_dependencies(self: Self, *, recursive: bool = True) -> list["Furu"]:
-        """Collect Furu dependencies from fields and `_dependencies()`."""
+        """Collect Furu dependencies from fields and dependency methods."""
         seen = {self.furu_hash}
         dependencies: list[Furu] = []
         _collect_dependencies(self, dependencies, seen, recursive=recursive)
@@ -1565,6 +1561,7 @@ DependencyCollection: TypeAlias = DependencySequence | DependencySet | Dependenc
 DependencyValue: TypeAlias = Furu | DependencyCollection
 DependencySpec: TypeAlias = DependencyValue | DependencyChzSpec
 DependencyLeaf: TypeAlias = str | int | float | bool | None | Path | bytes
+DependencyMethod: TypeAlias = Callable[..., "DependencySpec | None"]
 DependencyScanValue: TypeAlias = (
     DependencyLeaf
     | Furu
@@ -1573,6 +1570,30 @@ DependencyScanValue: TypeAlias = (
     | AbstractSet["DependencyScanValue"]
     | DependencyChzSpec
 )
+
+
+_DEPENDENCY_METHOD_MARKER = "__furu_dependency__"
+
+
+def furu_dep(method: DependencyMethod) -> DependencyMethod:
+    """Mark a method as returning extra Furu dependencies."""
+    setattr(method, _DEPENDENCY_METHOD_MARKER, True)
+    return method
+
+
+def _dependency_method_names(obj: Furu) -> list[str]:
+    names: dict[str, None] = {}
+    for cls in reversed(type(obj).__mro__):
+        for name, candidate in cls.__dict__.items():
+            member = candidate
+            if isinstance(member, (staticmethod, classmethod)):
+                member = member.__func__
+            if callable(member) and getattr(member, _DEPENDENCY_METHOD_MARKER, False):
+                names[name] = None
+                continue
+            if name in names:
+                del names[name]
+    return list(names)
 
 
 def _collect_dependencies(
@@ -1602,9 +1623,14 @@ def _direct_dependencies(obj: Furu) -> list[Furu]:
     for field in chz.chz_fields(obj).values():
         value = cast(DependencyScanValue, getattr(obj, field.logical_name))
         dependencies.extend(_collect_dependencies_from_value(value))
-    extra = obj._dependencies()
-    if extra is not None:
-        dependencies.extend(_collect_dependencies_from_spec(extra, path="dependencies"))
+    for method_name in _dependency_method_names(obj):
+        method = cast(Callable[[], DependencySpec | None], getattr(obj, method_name))
+        extra = method()
+        if extra is None:
+            continue
+        dependencies.extend(
+            _collect_dependencies_from_spec(extra, path=f"{method_name}()")
+        )
     return dependencies
 
 

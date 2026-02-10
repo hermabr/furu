@@ -6,6 +6,7 @@ from typing import ClassVar
 import pytest
 
 import furu
+from furu import furu_dep
 from furu.execution.local import run_local
 from furu.execution.plan import DependencyPlan, PlanNode
 
@@ -28,7 +29,8 @@ class LeafTask(furu.Furu[int]):
 class SumTask(furu.Furu[int]):
     deps: list[furu.Furu[int]] = furu.chz.field(default_factory=list)
 
-    def _dependencies(self) -> furu.DependencySpec:
+    @furu_dep
+    def task_dependencies(self) -> furu.DependencySpec:
         return self.deps
 
     def _create(self) -> int:
