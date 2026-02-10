@@ -1,4 +1,5 @@
 import datetime
+import dataclasses
 import enum
 import hashlib
 import importlib
@@ -42,6 +43,12 @@ class FuruSerializer:
         if isinstance(obj, _FuruMissing):
             raise ValueError("Cannot serialize Furu.MISSING")
 
+        if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+            result = {cls.CLASS_MARKER: cls.get_classname(obj)}
+            for field in dataclasses.fields(obj):
+                result[field.name] = cls.to_dict(getattr(obj, field.name))
+            return result
+
         if chz.is_chz(obj):
             result = {cls.CLASS_MARKER: cls.get_classname(obj)}
             for field_name in chz.chz_fields(obj):
@@ -78,6 +85,12 @@ class FuruSerializer:
                         kwargs.get(name), str
                     ):
                         kwargs[name] = pathlib.Path(kwargs[name])
+            elif dataclasses.is_dataclass(data_class):
+                for field in dataclasses.fields(data_class):
+                    if field.type in path_types and isinstance(
+                        kwargs.get(field.name), str
+                    ):
+                        kwargs[field.name] = pathlib.Path(kwargs[field.name])
             return data_class(**kwargs)
 
         if isinstance(data, list):
@@ -132,6 +145,16 @@ class FuruSerializer:
                     if dependency_hashes:
                         result["__dependencies__"] = dependency_hashes
                 return result
+
+            if dataclasses.is_dataclass(item) and not isinstance(item, type):
+                return {
+                    "__class__": cls.get_classname(item),
+                    **{
+                        field.name: canonicalize(getattr(item, field.name))
+                        for field in dataclasses.fields(item)
+                        if not field.name.startswith("_")
+                    },
+                }
 
             if isinstance(item, dict):
                 if cls.CLASS_MARKER in item:

@@ -1,6 +1,7 @@
 import datetime
 import importlib
 import pathlib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,54 @@ type.__setattr__(
     {"a": int, "p": Path, "_private": int},
 )
 Foo: Any = chz.chz(Foo)
+
+
+@dataclass(frozen=True)
+class FrozenDataclass:
+    a: int
+    p: Path
+    _private: int = 0
+
+
+@dataclass
+class MutableDataclass:
+    a: int
+    p: Path
+    _private: int = 0
+
+
+@dataclass(frozen=True)
+class NestedInnerDataclass:
+    value: int
+    _private: int = 0
+
+
+@dataclass(frozen=True)
+class NestedOuterDataclass:
+    inner: NestedInnerDataclass
+    p: Path
+
+
+class HashValueFuru(furu.Furu[int]):
+    value: int = chz.field()
+
+    def _create(self) -> int:
+        return self.value
+
+    def _load(self) -> int:
+        return self.value
+
+
+@dataclass(frozen=True)
+class DataclassWithFuru:
+    dep: HashValueFuru
+    _private: int = 0
+
+
+@dataclass(frozen=True)
+class NestedDataclassWithFuru:
+    inner: DataclassWithFuru
+    label: str
 
 
 def test_get_classname_rejects_main_module() -> None:
@@ -69,3 +118,71 @@ def test_to_python_is_evaluable() -> None:
 def test_missing_is_not_serializable() -> None:
     with pytest.raises(ValueError, match="MISSING"):
         furu.FuruSerializer.to_dict(furu.MISSING)
+
+
+def test_to_dict_from_dict_roundtrip_plain_dataclass() -> None:
+    obj = FrozenDataclass(a=1, p=Path("x/y"), _private=7)
+    data = furu.FuruSerializer.to_dict(obj)
+    obj2 = furu.FuruSerializer.from_dict(data)
+    assert obj2 == obj
+
+
+def test_compute_hash_supports_plain_dataclass() -> None:
+    a = FrozenDataclass(a=1, p=Path("x/y"), _private=1)
+    b = FrozenDataclass(a=1, p=Path("x/y"), _private=999)
+    assert furu.FuruSerializer.compute_hash(a) == furu.FuruSerializer.compute_hash(b)
+
+
+def test_compute_hash_supports_mutable_plain_dataclass() -> None:
+    a = MutableDataclass(a=1, p=Path("x/y"), _private=1)
+    b = MutableDataclass(a=1, p=Path("x/y"), _private=999)
+    assert furu.FuruSerializer.compute_hash(a) == furu.FuruSerializer.compute_hash(b)
+
+
+def test_to_dict_from_dict_roundtrip_nested_plain_dataclass() -> None:
+    obj = NestedOuterDataclass(
+        inner=NestedInnerDataclass(value=1, _private=7),
+        p=Path("x/y"),
+    )
+    data = furu.FuruSerializer.to_dict(obj)
+    obj2 = furu.FuruSerializer.from_dict(data)
+    assert obj2 == obj
+
+
+def test_compute_hash_supports_nested_plain_dataclass() -> None:
+    a = NestedOuterDataclass(
+        inner=NestedInnerDataclass(value=1, _private=1), p=Path("x/y")
+    )
+    b = NestedOuterDataclass(
+        inner=NestedInnerDataclass(value=1, _private=999),
+        p=Path("x/y"),
+    )
+    c = NestedOuterDataclass(
+        inner=NestedInnerDataclass(value=2, _private=1), p=Path("x/y")
+    )
+
+    assert furu.FuruSerializer.compute_hash(a) == furu.FuruSerializer.compute_hash(b)
+    assert furu.FuruSerializer.compute_hash(a) != furu.FuruSerializer.compute_hash(c)
+
+
+def test_compute_hash_supports_nested_dataclass_with_furu() -> None:
+    a = NestedDataclassWithFuru(
+        inner=DataclassWithFuru(dep=HashValueFuru(value=1), _private=1),
+        label="run",
+    )
+    b = NestedDataclassWithFuru(
+        inner=DataclassWithFuru(dep=HashValueFuru(value=1), _private=999),
+        label="run",
+    )
+    c = NestedDataclassWithFuru(
+        inner=DataclassWithFuru(dep=HashValueFuru(value=2), _private=1),
+        label="run",
+    )
+
+    assert furu.FuruSerializer.compute_hash(a) == furu.FuruSerializer.compute_hash(b)
+    assert furu.FuruSerializer.compute_hash(a) != furu.FuruSerializer.compute_hash(c)
+
+    data = furu.FuruSerializer.to_dict(a)
+    obj2 = furu.FuruSerializer.from_dict(data)
+    assert obj2 == a
+    assert isinstance(obj2.inner.dep, HashValueFuru)
