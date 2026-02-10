@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Rename migration reference field `FuruRef.directory` to `FuruRef.furu_dir`.
+
 ## v0.0.8
 
 - Restore Python 3.11 compatibility by using `TypeVar`/`Generic` for `Furu`.
