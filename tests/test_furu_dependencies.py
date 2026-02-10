@@ -202,7 +202,7 @@ def test_hash_includes_dependency_spec(monkeypatch) -> None:
     original_hash = collection.furu_hash
 
     @furu_dep
-    def alt_dependencies(self) -> DependencySpec:
+    def alt_dependencies(_) -> DependencySpec:
         return [DependencyTask(value=99)]
 
     monkeypatch.setattr(DependencyCollection, "dynamic_dependencies", alt_dependencies)
@@ -229,7 +229,7 @@ def test_hash_ignores_duplicate_dependencies(monkeypatch) -> None:
     original_hash = holder.furu_hash
 
     @furu_dep
-    def unique_dependencies(self) -> DependencySpec:
+    def unique_dependencies(_) -> DependencySpec:
         return [DependencyTask(value=1)]
 
     monkeypatch.setattr(

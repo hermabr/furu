@@ -1591,8 +1591,7 @@ def _dependency_method_names(obj: Furu) -> list[str]:
             if callable(member) and getattr(member, _DEPENDENCY_METHOD_MARKER, False):
                 names[name] = None
                 continue
-            if name in names:
-                del names[name]
+            names.pop(name, None)
     return list(names)
 
 
