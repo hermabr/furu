@@ -38,7 +38,7 @@ class FuruRef:
     namespace: str
     furu_hash: str
     root: RootKind
-    directory: Path
+    furu_dir: Path
 
 
 @dataclass(frozen=True)
@@ -266,7 +266,7 @@ def resolve_original_ref(ref: FuruRef) -> FuruRef:
     current = ref
     seen: set[tuple[str, str, RootKind]] = set()
     while True:
-        record = MigrationManager.read_migration(current.directory)
+        record = MigrationManager.read_migration(current.furu_dir)
         if record is None or record.kind != "alias":
             return current
         key = (record.from_namespace, record.from_hash, record.from_root)
@@ -278,7 +278,7 @@ def resolve_original_ref(ref: FuruRef) -> FuruRef:
             namespace=record.from_namespace,
             furu_hash=record.from_hash,
             root=record.from_root,
-            directory=directory,
+            furu_dir=directory,
         )
 
 
@@ -337,7 +337,7 @@ def _sources_from_schema(
         furu_obj = metadata.get("furu_obj")
         if not isinstance(furu_obj, dict):
             raise TypeError("migration: metadata furu_obj must be a dict")
-        migration = MigrationManager.read_migration(ref.directory)
+        migration = MigrationManager.read_migration(ref.furu_dir)
         sources.append(_Source(ref=ref, furu_obj=furu_obj, migration=migration))
     return sources
 
@@ -349,13 +349,13 @@ def _source_from_hash(
     include_alias_sources: bool,
 ) -> _Source:
     ref = _find_ref_by_hash(namespace, furu_hash)
-    metadata = MetadataManager.read_metadata_raw(ref.directory)
+    metadata = MetadataManager.read_metadata_raw(ref.furu_dir)
     if metadata is None:
-        raise FileNotFoundError(f"migration: metadata not found for {ref.directory}")
+        raise FileNotFoundError(f"migration: metadata not found for {ref.furu_dir}")
     furu_obj = metadata.get("furu_obj")
     if not isinstance(furu_obj, dict):
         raise TypeError("migration: metadata furu_obj must be a dict")
-    migration = MigrationManager.read_migration(ref.directory)
+    migration = MigrationManager.read_migration(ref.furu_dir)
     if not _alias_source_allowed(
         migration,
         include_alias_sources=include_alias_sources,
@@ -408,7 +408,7 @@ def _iter_namespace_metadata(
                 namespace=namespace,
                 furu_hash=entry.name,
                 root=root_kind,
-                directory=entry,
+                furu_dir=entry,
             )
             yield ref, metadata
 
@@ -439,7 +439,7 @@ def _find_ref_by_hash(namespace: str, furu_hash: str) -> FuruRef:
                 namespace=namespace,
                 furu_hash=furu_hash,
                 root=root_kind,
-                directory=directory,
+                furu_dir=directory,
             )
         )
     if not matches:
@@ -549,20 +549,20 @@ def _write_alias(
     note: str | None,
 ) -> MigrationRecord | None:
     try:
-        target_ref.directory.mkdir(parents=True, exist_ok=False)
+        target_ref.furu_dir.mkdir(parents=True, exist_ok=False)
     except FileExistsError:
         reason = "migration: target already exists"
         if conflict == "skip":
             skips.append(MigrationSkip(source=source_ref, reason=reason))
             return None
         raise ValueError(reason) from None
-    StateManager.ensure_internal_dir(target_ref.directory)
-    _write_migrated_state(target_ref.directory)
+    StateManager.ensure_internal_dir(target_ref.furu_dir)
+    _write_migrated_state(target_ref.furu_dir)
 
     metadata = MetadataManager.create_metadata(
-        target_obj, target_ref.directory, ignore_diff=True
+        target_obj, target_ref.furu_dir, ignore_diff=True
     )
-    MetadataManager.write_metadata(metadata, target_ref.directory)
+    MetadataManager.write_metadata(metadata, target_ref.furu_dir)
 
     now = _dt.datetime.now(_dt.UTC).isoformat(timespec="seconds")
     record = MigrationRecord(
@@ -580,7 +580,7 @@ def _write_alias(
         origin=origin,
         note=note,
     )
-    MigrationManager.write_migration(record, target_ref.directory)
+    MigrationManager.write_migration(record, target_ref.furu_dir)
     return record
 
 
@@ -593,7 +593,7 @@ def _write_migrated_state(directory: Path) -> None:
 
 
 def _ensure_original_success(original_ref: FuruRef) -> None:
-    if not StateManager.success_marker_exists(original_ref.directory):
+    if not StateManager.success_marker_exists(original_ref.furu_dir):
         raise ValueError("migration: original artifact is not successful")
 
 
@@ -649,7 +649,7 @@ def _target_ref(cls: _FuruClass, furu_hash: str) -> FuruRef:
         namespace=namespace,
         furu_hash=furu_hash,
         root=root_kind,
-        directory=directory,
+        furu_dir=directory,
     )
 
 

@@ -492,7 +492,7 @@ class Furu(ABC, Generic[T]):
             namespace=".".join(self.__class__._namespace().parts),
             furu_hash=self.furu_hash,
             root=MigrationManager.root_kind_for_dir(base_dir),
-            directory=base_dir,
+            furu_dir=base_dir,
         )
         return resolve_original_ref(ref)
 
@@ -514,7 +514,7 @@ class Furu(ABC, Generic[T]):
                 namespace=record.to_namespace,
                 furu_hash=record.to_hash,
                 root=record.to_root,
-                directory=MigrationManager.resolve_dir(record, target="to"),
+                furu_dir=MigrationManager.resolve_dir(record, target="to"),
             )
             for record in records
         ]
