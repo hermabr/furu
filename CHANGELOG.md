@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.0.8
 
 - Restore Python 3.11 compatibility by using `TypeVar`/`Generic` for `Furu`.
 - Replace the `_dependencies()` hook with `@furu_dep` methods (imported from `furu`) for declaring extra dependencies used by dependency discovery and hashing.
