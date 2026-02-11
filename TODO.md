@@ -32,6 +32,9 @@
 - [ ] make nice method for finding all experiments or all successful experiments
 - [ ] easy to load an object from a fururef
 - [ ] throw error if i call .from_dict and it does not work
+- [ ] rename window size to something better and more reasonable for the executors
+- [ ] Don't fail if a dependency is failed, but rather resubmit it for submit slurm dag
+    - [ ] Warn/throw/require flag if trying to submit more than 100 jobs
 
 ## Code Quality
 

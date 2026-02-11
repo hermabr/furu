@@ -7,7 +7,8 @@
 - Route `run_slurm_pool` worker stdout/stderr to each worker queue directory (`queue/running/<spec>/<worker-id>/stdout.log` and `stderr.log`) while preserving existing `slurm_additional_parameters`.
 - Fix `furu.execution` exports to expose `resolve_executor_spec`.
 - Add `examples/run_local_executor_benchmark.py` to benchmark local executor planning latency and end-to-end runtime on a nested 10k-node DAG.
-- Add in-memory executor scheduling caches with periodic plan refresh (`plan_refresh_interval_sec`) for `run_local` and `run_slurm_pool`, sticky `DONE` snapshot semantics per run, and separate slurm-pool worker health polling cadence (`worker_health_check_interval_sec`).
+- Rework `run_local` to build scheduler state once per run and maintain in-memory buckets (`READY`, `BLOCKED`, `IN_PROGRESS_SELF`, `IN_PROGRESS_EXTERNAL`, `FAILED`, `COMPLETED`) with dependency-pending sets, pre-dispatch state rechecks, and configurable external/underutilized/full reconcile polling (`external_poll_interval_sec`, `underutilized_reconcile_interval_sec`, `plan_refresh_interval_sec`).
+- Keep sticky `DONE` snapshot semantics per executor run and separate slurm-pool worker health polling cadence (`worker_health_check_interval_sec`).
 
 ## v0.0.8
 
