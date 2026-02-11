@@ -123,6 +123,7 @@ run_local(
     [TrainModel(lr=3e-4, steps=5000), TrainModel(lr=1e-3, steps=2000)],
     max_workers=8,
     window_size="bfs",
+    plan_refresh_interval_sec=60.0,
 )
 ```
 
@@ -149,8 +150,14 @@ run_slurm_pool(
     [TrainModel(use_gpu=True), TrainModel(use_gpu=False)],
     max_workers_total=50,
     window_size="bfs",
+    plan_refresh_interval_sec=60.0,
+    worker_health_check_interval_sec=15.0,
 )
 ```
+
+Both executors keep run-local scheduler state in memory and periodically refresh
+from storage. Nodes observed as `DONE` are treated as done for the remainder of
+that executor run (snapshot semantics).
 
 Submitit logs are stored under `<FURU_PATH>/submitit` by default. Override with
 `FURU_SUBMITIT_PATH` when you want a different logs root. In `run_slurm_pool`,

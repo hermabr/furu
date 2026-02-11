@@ -749,6 +749,39 @@ def _requeue_stale_running(
     return moved
 
 
+@dataclass(frozen=True)
+class _InProgressOwnership:
+    self_hashes: set[str]
+    external_hashes: set[str]
+
+
+def _in_progress_ownership(
+    plan: DependencyPlan,
+    *,
+    queued_hashes: set[str],
+) -> _InProgressOwnership:
+    self_hashes = {
+        digest
+        for digest in queued_hashes
+        if digest in plan.nodes and plan.nodes[digest].status == "IN_PROGRESS"
+    }
+    external_hashes = {
+        digest
+        for digest, node in plan.nodes.items()
+        if node.status == "IN_PROGRESS" and digest not in self_hashes
+    }
+    return _InProgressOwnership(
+        self_hashes=self_hashes,
+        external_hashes=external_hashes,
+    )
+
+
+def _next_refresh_deadline(now: float, interval_sec: float) -> float:
+    if interval_sec <= 0:
+        return now
+    return now + interval_sec
+
+
 def run_slurm_pool(
     roots: list[Furu],
     *,
@@ -756,6 +789,8 @@ def run_slurm_pool(
     window_size: str | int = "bfs",
     idle_timeout_sec: float = 60.0,
     poll_interval_sec: float = 2.0,
+    plan_refresh_interval_sec: float = 60.0,
+    worker_health_check_interval_sec: float = 15.0,
     stale_running_sec: float = 900.0,
     heartbeat_grace_sec: float = 30.0,
     submitit_root: Path | None = None,
@@ -763,6 +798,10 @@ def run_slurm_pool(
 ) -> SlurmPoolRun:
     if max_workers_total < 1:
         raise ValueError("max_workers_total must be >= 1")
+    if plan_refresh_interval_sec < 0:
+        raise ValueError("plan_refresh_interval_sec must be >= 0")
+    if worker_health_check_interval_sec < 0:
+        raise ValueError("worker_health_check_interval_sec must be >= 0")
 
     run_dir = _run_dir(run_root)
     run_id = run_dir.name
@@ -775,27 +814,66 @@ def run_slurm_pool(
     jobs_by_spec: dict[str, list[SubmititJob]] = {}
     specs_by_key: dict[str, SlurmSpec] = {}
     job_adapter = SubmititAdapter(executor=None)
-
-    plan = build_plan([roots[index] for index in active_indices])
+    plan: DependencyPlan | None = None
+    plan_signature: tuple[int, ...] = tuple()
+    done_hashes_cache: set[str] = _done_hashes(run_dir)
+    queued_hashes: set[str] = set()
+    next_plan_refresh_at = 0.0
+    next_worker_health_check_at = 0.0
 
     while True:
         active_roots = [roots[index] for index in active_indices]
-        plan = build_plan(active_roots, completed_hashes=_done_hashes(run_dir))
+        active_signature = tuple(active_indices)
+
+        latest_done_hashes = _done_hashes(run_dir)
+        new_done_hashes = latest_done_hashes - done_hashes_cache
+        if new_done_hashes:
+            done_hashes_cache.update(new_done_hashes)
+            queued_hashes.difference_update(new_done_hashes)
+            if plan is not None:
+                for digest in new_done_hashes:
+                    node = plan.nodes.get(digest)
+                    if node is not None:
+                        node.status = "DONE"
+
+        now = time.time()
+        needs_plan_refresh = (
+            plan is None
+            or plan_signature != active_signature
+            or now >= next_plan_refresh_at
+        )
+        if needs_plan_refresh:
+            plan = build_plan(active_roots, completed_hashes=done_hashes_cache)
+            plan_signature = active_signature
+            done_hashes_cache.update(
+                digest for digest, node in plan.nodes.items() if node.status == "DONE"
+            )
+            queued_hashes.intersection_update(plan.nodes)
+            next_plan_refresh_at = _next_refresh_deadline(
+                now,
+                plan_refresh_interval_sec,
+            )
+        if plan is None:
+            raise RuntimeError("internal error: slurm pool plan not initialized")
 
         failed_entries = _scan_failed_tasks(run_dir)
         if failed_entries:
-            _handle_failed_tasks(
+            requeued_failed = _handle_failed_tasks(
                 run_dir,
                 failed_entries,
                 retry_failed=FURU_CONFIG.retry_failed,
                 max_compute_retries=FURU_CONFIG.max_compute_retries,
             )
-        _requeue_stale_running(
+            if requeued_failed > 0:
+                next_plan_refresh_at = 0.0
+        requeued_running = _requeue_stale_running(
             run_dir,
             stale_sec=stale_running_sec,
             heartbeat_grace_sec=heartbeat_grace_sec,
             max_compute_retries=FURU_CONFIG.max_compute_retries,
         )
+        if requeued_running > 0:
+            next_plan_refresh_at = 0.0
 
         if not FURU_CONFIG.retry_failed:
             failed = [node for node in plan.nodes.values() if node.status == "FAILED"]
@@ -819,12 +897,19 @@ def run_slurm_pool(
             node = plan.nodes[digest]
             specs_by_key[node.executor_key] = node.executor
             jobs_by_spec.setdefault(node.executor_key, [])
-            _enqueue_task(run_dir, digest, node.executor_key, node.obj)
+            if _enqueue_task(run_dir, digest, node.executor_key, node.obj):
+                queued_hashes.add(digest)
 
-        for spec_key, jobs in list(jobs_by_spec.items()):
-            jobs_by_spec[spec_key] = [
-                job for job in jobs if not job_adapter.is_done(job)
-            ]
+        now = time.time()
+        if now >= next_worker_health_check_at:
+            for spec_key, jobs in list(jobs_by_spec.items()):
+                jobs_by_spec[spec_key] = [
+                    job for job in jobs if not job_adapter.is_done(job)
+                ]
+            next_worker_health_check_at = _next_refresh_deadline(
+                now,
+                worker_health_check_interval_sec,
+            )
 
         total_workers = sum(len(jobs) for jobs in jobs_by_spec.values())
         known_spec_keys = sorted({*specs_by_key, *jobs_by_spec})
@@ -838,6 +923,10 @@ def run_slurm_pool(
             spec_key = max(backlog_by_spec, key=lambda key: backlog_by_spec[key])
             if backlog_by_spec[spec_key] <= 0:
                 break
+            latest_spec_backlog = _backlog(run_dir, spec_key)
+            backlog_by_spec[spec_key] = latest_spec_backlog
+            if latest_spec_backlog <= 0:
+                continue
             spec = specs_by_key.get(spec_key)
             if spec is None:
                 raise RuntimeError(
@@ -866,7 +955,7 @@ def run_slurm_pool(
             )
             jobs_by_spec[spec_key].append(job)
             total_workers += 1
-            backlog_by_spec[spec_key] -= 1
+            backlog_by_spec[spec_key] = max(0, latest_spec_backlog - 1)
 
         finished_indices = [
             index
@@ -881,6 +970,8 @@ def run_slurm_pool(
             active_indices.append(next_index)
             next_index += 1
 
+        ownership = _in_progress_ownership(plan, queued_hashes=queued_hashes)
+
         if not active_indices and next_index >= len(roots):
             return SlurmPoolRun(
                 run_dir=run_dir,
@@ -891,7 +982,7 @@ def run_slurm_pool(
             not ready
             and total_workers == 0
             and not any(count > 0 for count in backlog_by_spec.values())
-            and not any(node.status == "IN_PROGRESS" for node in plan.nodes.values())
+            and not (ownership.self_hashes or ownership.external_hashes)
         ):
             todo_nodes = [node for node in plan.nodes.values() if node.status == "TODO"]
             if todo_nodes:
@@ -904,12 +995,13 @@ def run_slurm_pool(
                     f"remaining TODO nodes: {sample}"
                 )
 
-        if any(node.status == "IN_PROGRESS" for node in plan.nodes.values()):
+        if ownership.self_hashes or ownership.external_hashes:
             stale_detected = reconcile_or_timeout_in_progress(
                 plan,
                 stale_timeout_sec=FURU_CONFIG.stale_timeout,
             )
             if stale_detected:
+                next_plan_refresh_at = 0.0
                 continue
 
         time.sleep(poll_interval_sec)

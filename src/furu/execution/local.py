@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from dataclasses import dataclass
 
 from ..config import FURU_CONFIG
 from ..core import Furu
@@ -9,7 +10,7 @@ from ..errors import FuruComputeError, FuruError
 from ..runtime.logging import enter_holder
 from ..storage.state import StateManager
 from .context import EXEC_CONTEXT, ExecContext
-from .plan import PlanNode, build_plan, ready_todo
+from .plan import DependencyPlan, PlanNode, build_plan, ready_todo
 from .plan_utils import reconcile_or_timeout_in_progress
 
 
@@ -49,17 +50,49 @@ def _run_node(node: PlanNode) -> None:
         EXEC_CONTEXT.reset(token)
 
 
+@dataclass(frozen=True)
+class _InProgressOwnership:
+    self_hashes: set[str]
+    external_hashes: set[str]
+
+
+def _in_progress_ownership(
+    plan: "DependencyPlan",
+    *,
+    inflight_hashes: set[str],
+) -> _InProgressOwnership:
+    self_hashes = {digest for digest in inflight_hashes if digest in plan.nodes}
+    external_hashes = {
+        digest
+        for digest, node in plan.nodes.items()
+        if node.status == "IN_PROGRESS" and digest not in self_hashes
+    }
+    return _InProgressOwnership(
+        self_hashes=self_hashes,
+        external_hashes=external_hashes,
+    )
+
+
+def _next_refresh_deadline(now: float, interval_sec: float) -> float:
+    if interval_sec <= 0:
+        return now
+    return now + interval_sec
+
+
 def run_local(
     roots: list[Furu],
     *,
     max_workers: int = 8,
     window_size: str | int = "bfs",
     poll_interval_sec: float = 0.25,
+    plan_refresh_interval_sec: float = 60.0,
 ) -> None:
     if not roots:
         return
     if max_workers < 1:
         raise ValueError("max_workers must be >= 1")
+    if plan_refresh_interval_sec < 0:
+        raise ValueError("plan_refresh_interval_sec must be >= 0")
 
     window = _normalize_window_size(window_size, len(roots))
     active_indices = list(range(min(window, len(roots))))
@@ -67,11 +100,36 @@ def run_local(
     inflight: dict[str, Future[None]] = {}
     completed_hashes: set[str] = set()
     retry_attempts: dict[str, int] = {}
+    plan: DependencyPlan | None = None
+    plan_signature: tuple[int, ...] = tuple()
+    next_plan_refresh_at = 0.0
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         while True:
             active_roots = [roots[index] for index in active_indices]
-            plan = build_plan(active_roots, completed_hashes=completed_hashes)
+            active_signature = tuple(active_indices)
+            now = time.time()
+            needs_plan_refresh = (
+                plan is None
+                or plan_signature != active_signature
+                or now >= next_plan_refresh_at
+            )
+            if needs_plan_refresh:
+                plan = build_plan(active_roots, completed_hashes=completed_hashes)
+                plan_signature = active_signature
+                completed_hashes.update(
+                    digest
+                    for digest, node in plan.nodes.items()
+                    if node.status == "DONE"
+                )
+                next_plan_refresh_at = _next_refresh_deadline(
+                    now,
+                    plan_refresh_interval_sec,
+                )
+            if plan is None:
+                raise RuntimeError(
+                    "internal error: local executor plan not initialized"
+                )
 
             ready = [digest for digest in ready_todo(plan) if digest not in inflight]
             available = max_workers - len(inflight)
@@ -116,6 +174,9 @@ def run_local(
                         raise compute_error from wrapped_exc
                     raise compute_error
                 completed_hashes.add(digest)
+                node = plan.nodes.get(digest)
+                if node is not None:
+                    node.status = "DONE"
                 retry_attempts.pop(digest, None)
 
             if not FURU_CONFIG.retry_failed:
@@ -162,12 +223,17 @@ def run_local(
                 return
 
             if not inflight and not ready:
-                if any(node.status == "IN_PROGRESS" for node in plan.nodes.values()):
+                ownership = _in_progress_ownership(
+                    plan,
+                    inflight_hashes=set(inflight),
+                )
+                if ownership.self_hashes or ownership.external_hashes:
                     stale_detected = reconcile_or_timeout_in_progress(
                         plan,
                         stale_timeout_sec=FURU_CONFIG.stale_timeout,
                     )
                     if stale_detected:
+                        next_plan_refresh_at = 0.0
                         continue
                     time.sleep(poll_interval_sec)
                     continue
