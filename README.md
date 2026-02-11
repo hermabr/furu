@@ -127,35 +127,43 @@ run_local(
 ```
 
 ```python
+import furu
 from furu.execution import SlurmSpec, submit_slurm_dag
 
-specs = {
-    "default": SlurmSpec(partition="cpu", cpus=8, mem_gb=32, time_min=120),
-    "gpu": SlurmSpec(partition="gpu", gpus=1, cpus=8, mem_gb=64, time_min=720),
-}
 
-submit_slurm_dag([TrainModel(lr=3e-4, steps=5000)], specs=specs)
+class TrainModel(furu.Furu[str]):
+    use_gpu: bool = furu.chz.field(default=False)
+
+    def _executor(self) -> SlurmSpec:
+        if self.use_gpu:
+            return SlurmSpec(partition="gpu", gpus=1, cpus=8, mem_gb=64, time_min=720)
+        return SlurmSpec(partition="cpu", cpus=8, mem_gb=32, time_min=120)
+
+submit_slurm_dag([TrainModel(use_gpu=True)])
 ```
 
 ```python
 from furu.execution import run_slurm_pool
 
 run_slurm_pool(
-    [TrainModel(lr=3e-4, steps=5000)],
-    specs=specs,
+    [TrainModel(use_gpu=True), TrainModel(use_gpu=False)],
     max_workers_total=50,
     window_size="bfs",
 )
 ```
 
 Submitit logs are stored under `<FURU_PATH>/submitit` by default. Override with
-`FURU_SUBMITIT_PATH` when you want a different logs root.
+`FURU_SUBMITIT_PATH` when you want a different logs root. In `run_slurm_pool`,
+worker stdout/stderr are written to each worker queue directory under
+`<run_dir>/queue/running/<spec_key>/<worker_id>/stdout.log|stderr.log`.
 
 ### Breaking Changes and Executor Semantics
 
 - `load_or_create()` is removed; use `get()` exclusively.
 - `get()` no longer accepts per-call `retry_failed` overrides. Configure retries via
   `FURU_RETRY_FAILED` or `FURU_CONFIG.retry_failed`.
+- Slurm executor selection is now `Furu._executor() -> SlurmSpec`; remove
+  `_executor_spec_key()` and do not pass `specs=` to `run_slurm_pool` or `submit_slurm_dag`.
 - Executor runs (`run_local`, `run_slurm_pool`, `submit_slurm_dag`) fail fast if a
   dependency is FAILED while `retry_failed` is disabled; with retries enabled, failed
   compute nodes are retried (bounded by `FURU_MAX_COMPUTE_RETRIES` retries).

@@ -3,6 +3,9 @@
 ## Unreleased
 
 - Rename migration reference field `FuruRef.directory` to `FuruRef.furu_dir`.
+- Replace `_executor_spec_key()` with `_executor() -> SlurmSpec`; `run_slurm_pool()` and `submit_slurm_dag()` now derive Slurm resources directly from each node and no longer accept a `specs` mapping.
+- Route `run_slurm_pool` worker stdout/stderr to each worker queue directory (`queue/running/<spec>/<worker-id>/stdout.log` and `stderr.log`) while preserving existing `slurm_additional_parameters`.
+- Fix `furu.execution` exports to expose `resolve_executor_spec`.
 
 ## v0.0.8
 

@@ -6,6 +6,10 @@ import pytest
 
 import furu
 from furu.execution.context import EXEC_CONTEXT, ExecContext
+from furu.execution.slurm_spec import SlurmSpec, slurm_spec_key
+
+
+DEFAULT_EXECUTOR_KEY = slurm_spec_key(SlurmSpec())
 
 
 class BasicTask(furu.Furu[int]):
@@ -23,8 +27,8 @@ class BasicTask(furu.Furu[int]):
 
 
 class GpuTask(BasicTask):
-    def _executor_spec_key(self) -> str:
-        return "gpu"
+    def _executor(self) -> SlurmSpec:
+        return SlurmSpec(partition="gpu", gpus=1, cpus=8, mem_gb=64, time_min=720)
 
 
 class AnotherTask(BasicTask):
@@ -59,7 +63,7 @@ def _set_executor_context(
 
 def test_executor_get_requires_artifact(furu_tmp_root) -> None:
     obj = BasicTask()
-    token = _set_executor_context("default")
+    token = _set_executor_context(DEFAULT_EXECUTOR_KEY)
     try:
         with pytest.raises(furu.FuruMissingArtifact):
             obj.get()
@@ -71,7 +75,7 @@ def test_executor_get_loads_existing_artifact(furu_tmp_root) -> None:
     obj = BasicTask()
     obj.get()
 
-    token = _set_executor_context("default")
+    token = _set_executor_context(DEFAULT_EXECUTOR_KEY)
     try:
         assert obj.get() == 1
     finally:
@@ -83,7 +87,7 @@ def test_executor_get_loads_existing_artifact(furu_tmp_root) -> None:
 
 def test_executor_force_requires_matching_spec(furu_tmp_root) -> None:
     obj = GpuTask()
-    token = _set_executor_context("default", current_node_hash=obj.furu_hash)
+    token = _set_executor_context(DEFAULT_EXECUTOR_KEY, current_node_hash=obj.furu_hash)
     try:
         with pytest.raises(furu.FuruSpecMismatch):
             obj.get(force=True)
@@ -93,7 +97,7 @@ def test_executor_force_requires_matching_spec(furu_tmp_root) -> None:
 
 def test_executor_force_allows_matching_spec(furu_tmp_root) -> None:
     obj = BasicTask()
-    token = _set_executor_context("default", current_node_hash=obj.furu_hash)
+    token = _set_executor_context(DEFAULT_EXECUTOR_KEY, current_node_hash=obj.furu_hash)
     try:
         assert obj.get(force=True) == 1
     finally:
@@ -110,7 +114,7 @@ def test_executor_force_always_rerun_recomputes(furu_tmp_root, monkeypatch) -> N
     monkeypatch.setattr(furu.FURU_CONFIG, "always_rerun_all", False)
     monkeypatch.setattr(furu.FURU_CONFIG, "always_rerun", {qualname})
 
-    token = _set_executor_context("default", current_node_hash=obj.furu_hash)
+    token = _set_executor_context(DEFAULT_EXECUTOR_KEY, current_node_hash=obj.furu_hash)
     try:
         assert obj.get(force=True) == 1
     finally:
@@ -140,7 +144,7 @@ def test_executor_force_invalidates_on_failed_validate(furu_tmp_root) -> None:
     obj.get()
     (obj.furu_dir / "value.json").unlink()
 
-    token = _set_executor_context("default", current_node_hash=obj.furu_hash)
+    token = _set_executor_context(DEFAULT_EXECUTOR_KEY, current_node_hash=obj.furu_hash)
     try:
         assert obj.get(force=True) == 1
     finally:
@@ -153,7 +157,9 @@ def test_executor_force_disallows_non_current_node(furu_tmp_root) -> None:
     root = BasicTask()
     dep = AnotherTask()
 
-    token = _set_executor_context("default", current_node_hash=root.furu_hash)
+    token = _set_executor_context(
+        DEFAULT_EXECUTOR_KEY, current_node_hash=root.furu_hash
+    )
     try:
         with pytest.raises(furu.FuruExecutionError):
             dep.get(force=True)

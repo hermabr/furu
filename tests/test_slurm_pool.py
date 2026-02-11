@@ -15,11 +15,18 @@ from furu.execution.slurm_pool import (
     _mark_failed,
     _requeue_stale_running,
     _scan_failed_tasks,
+    _spec_with_pool_worker_logs,
     _ensure_queue_layout,
     pool_worker_main,
     run_slurm_pool,
 )
-from furu.execution.slurm_spec import SlurmSpec
+from furu.execution.slurm_spec import SlurmSpec, slurm_spec_key
+
+
+DEFAULT_SPEC = SlurmSpec()
+DEFAULT_SPEC_KEY = slurm_spec_key(DEFAULT_SPEC)
+GPU_SPEC = SlurmSpec(partition="gpu", gpus=1, cpus=8, mem_gb=64, time_min=720)
+GPU_SPEC_KEY = slurm_spec_key(GPU_SPEC)
 
 
 class InlineJob:
@@ -81,13 +88,55 @@ class FlakyPoolTask(furu.Furu[int]):
 
 
 class GpuPoolTask(PoolTask):
-    def _executor_spec_key(self) -> str:
-        return "gpu"
+    def _executor(self) -> SlurmSpec:
+        return GPU_SPEC
+
+
+class QosPoolTask(PoolTask):
+    def _executor(self) -> SlurmSpec:
+        return SlurmSpec(
+            partition="cpu",
+            cpus=2,
+            mem_gb=4,
+            time_min=10,
+            extra={"slurm_additional_parameters": {"qos": "high"}},
+        )
+
+
+def test_spec_with_pool_worker_logs_merges_additional_parameters(tmp_path) -> None:
+    base_spec = SlurmSpec(
+        partition="cpu",
+        extra={"slurm_additional_parameters": {"qos": "high"}},
+    )
+
+    worker_dir = tmp_path / "queue" / "running" / DEFAULT_SPEC_KEY / "worker-1"
+    worker_spec = _spec_with_pool_worker_logs(base_spec, worker_dir)
+
+    assert worker_spec.extra is not None
+    additional = worker_spec.extra.get("slurm_additional_parameters")
+    assert isinstance(additional, dict)
+    assert additional["qos"] == "high"
+    assert additional["output"] == str(worker_dir / "stdout.log")
+    assert additional["error"] == str(worker_dir / "stderr.log")
+
+
+def test_spec_with_pool_worker_logs_requires_mapping_additional_parameters(
+    tmp_path,
+) -> None:
+    bad_spec = SlurmSpec(
+        partition="cpu",
+        extra={"slurm_additional_parameters": "bad"},
+    )
+
+    with pytest.raises(TypeError, match="mapping"):
+        _spec_with_pool_worker_logs(
+            bad_spec,
+            tmp_path / "queue" / "running" / DEFAULT_SPEC_KEY / "worker-1",
+        )
 
 
 def test_run_slurm_pool_executes_tasks(furu_tmp_root, tmp_path, monkeypatch) -> None:
     root = PoolTask(value=3)
-    specs = {"default": SlurmSpec(partition="cpu", cpus=2, mem_gb=4, time_min=10)}
 
     def fake_make_executor(
         spec_key: str,
@@ -106,7 +155,6 @@ def test_run_slurm_pool_executes_tasks(furu_tmp_root, tmp_path, monkeypatch) -> 
 
     run = run_slurm_pool(
         [root],
-        specs=specs,
         max_workers_total=1,
         window_size="dfs",
         idle_timeout_sec=0.01,
@@ -119,12 +167,70 @@ def test_run_slurm_pool_executes_tasks(furu_tmp_root, tmp_path, monkeypatch) -> 
     assert (run.run_dir / "queue" / "done" / f"{root.furu_hash}.json").exists()
 
 
+def test_run_slurm_pool_routes_worker_logs_to_worker_dir(
+    furu_tmp_root, tmp_path, monkeypatch
+) -> None:
+    root = QosPoolTask(value=4)
+    seen_specs: list[SlurmSpec] = []
+    seen_spec_keys: list[str] = []
+
+    def fake_make_executor(
+        spec_key: str,
+        spec: SlurmSpec,
+        *,
+        kind: str,
+        submitit_root,
+        run_id: str | None = None,
+    ):
+        seen_spec_keys.append(spec_key)
+        seen_specs.append(spec)
+        return InlineExecutor()
+
+    monkeypatch.setattr(
+        "furu.execution.slurm_pool.make_executor_for_spec",
+        fake_make_executor,
+    )
+
+    run = run_slurm_pool(
+        [root],
+        max_workers_total=1,
+        window_size="dfs",
+        idle_timeout_sec=0.01,
+        poll_interval_sec=0.01,
+        submitit_root=None,
+        run_root=tmp_path,
+    )
+
+    assert root.exists()
+    assert seen_specs
+    assert seen_spec_keys
+    worker_spec = seen_specs[0]
+    assert worker_spec.extra is not None
+    additional = worker_spec.extra.get("slurm_additional_parameters")
+    assert isinstance(additional, dict)
+    assert additional["qos"] == "high"
+
+    output = additional.get("output")
+    error = additional.get("error")
+    assert isinstance(output, str)
+    assert isinstance(error, str)
+
+    output_path = Path(output)
+    error_path = Path(error)
+    assert output_path.name == "stdout.log"
+    assert error_path.name == "stderr.log"
+    assert output_path.parent == error_path.parent
+    assert (
+        output_path.parent.parent
+        == run.run_dir / "queue" / "running" / seen_spec_keys[0]
+    )
+
+
 def test_run_slurm_pool_retries_failed_when_enabled(
     furu_tmp_root, tmp_path, monkeypatch
 ) -> None:
     FlakyPoolTask._create_calls = 0
     root = FlakyPoolTask()
-    specs = {"default": SlurmSpec(partition="cpu", cpus=2, mem_gb=4, time_min=10)}
 
     with pytest.raises(RuntimeError, match="boom"):
         root.get()
@@ -148,7 +254,6 @@ def test_run_slurm_pool_retries_failed_when_enabled(
 
     run_slurm_pool(
         [root],
-        specs=specs,
         max_workers_total=1,
         window_size="dfs",
         idle_timeout_sec=0.01,
@@ -166,7 +271,6 @@ def test_run_slurm_pool_fails_fast_on_failed_state_when_retry_disabled(
 ) -> None:
     FlakyPoolTask._create_calls = 0
     root = FlakyPoolTask()
-    specs = {"default": SlurmSpec(partition="cpu", cpus=2, mem_gb=4, time_min=10)}
 
     with pytest.raises(RuntimeError, match="boom"):
         root.get()
@@ -180,7 +284,6 @@ def test_run_slurm_pool_fails_fast_on_failed_state_when_retry_disabled(
     with pytest.raises(RuntimeError, match="failed dependencies"):
         run_slurm_pool(
             [root],
-            specs=specs,
             max_workers_total=1,
             window_size="dfs",
             idle_timeout_sec=0.01,
@@ -191,22 +294,24 @@ def test_run_slurm_pool_fails_fast_on_failed_state_when_retry_disabled(
 
 
 def test_pool_worker_detects_spec_mismatch(tmp_path) -> None:
-    specs = {"default": SlurmSpec(partition="cpu", cpus=2, mem_gb=4, time_min=10)}
+    specs = {DEFAULT_SPEC_KEY: DEFAULT_SPEC}
     _ensure_queue_layout(tmp_path, specs)
 
     task = GpuPoolTask(value=1)
     payload = {
         "hash": task.furu_hash,
-        "spec_key": "default",
+        "spec_key": DEFAULT_SPEC_KEY,
         "obj": task.to_dict(),
     }
-    todo_path = tmp_path / "queue" / "todo" / "default" / f"{task.furu_hash}.json"
+    todo_path = (
+        tmp_path / "queue" / "todo" / DEFAULT_SPEC_KEY / f"{task.furu_hash}.json"
+    )
     todo_path.write_text(json.dumps(payload, indent=2))
 
     with pytest.raises(RuntimeError):
         pool_worker_main(
             tmp_path,
-            "default",
+            DEFAULT_SPEC_KEY,
             idle_timeout_sec=0.01,
             poll_interval_sec=0.01,
         )
@@ -218,17 +323,17 @@ def test_pool_worker_detects_spec_mismatch(tmp_path) -> None:
 
 
 def test_pool_worker_marks_invalid_json_payload_as_protocol(tmp_path) -> None:
-    specs = {"default": SlurmSpec(partition="cpu", cpus=2, mem_gb=4, time_min=10)}
+    specs = {DEFAULT_SPEC_KEY: DEFAULT_SPEC}
     _ensure_queue_layout(tmp_path, specs)
 
-    bad_path = tmp_path / "queue" / "todo" / "default" / "bad.json"
+    bad_path = tmp_path / "queue" / "todo" / DEFAULT_SPEC_KEY / "bad.json"
     bad_path.parent.mkdir(parents=True, exist_ok=True)
     bad_path.write_text("{not-json")
 
     with pytest.raises(json.JSONDecodeError):
         pool_worker_main(
             tmp_path,
-            "default",
+            DEFAULT_SPEC_KEY,
             idle_timeout_sec=0.01,
             poll_interval_sec=0.01,
         )
@@ -249,21 +354,23 @@ def test_pool_worker_marks_failed_when_state_failed(
 
     monkeypatch.setattr(furu.FURU_CONFIG, "retry_failed", False)
 
-    specs = {"default": SlurmSpec(partition="cpu", cpus=2, mem_gb=4, time_min=10)}
+    specs = {DEFAULT_SPEC_KEY: DEFAULT_SPEC}
     _ensure_queue_layout(tmp_path, specs)
 
     payload = {
         "hash": task.furu_hash,
-        "spec_key": "default",
+        "spec_key": DEFAULT_SPEC_KEY,
         "obj": task.to_dict(),
     }
-    todo_path = tmp_path / "queue" / "todo" / "default" / f"{task.furu_hash}.json"
+    todo_path = (
+        tmp_path / "queue" / "todo" / DEFAULT_SPEC_KEY / f"{task.furu_hash}.json"
+    )
     todo_path.write_text(json.dumps(payload, indent=2))
 
     with pytest.raises(furu.FuruComputeError, match="already failed"):
         pool_worker_main(
             tmp_path,
-            "default",
+            DEFAULT_SPEC_KEY,
             idle_timeout_sec=0.01,
             poll_interval_sec=0.01,
         )
@@ -276,33 +383,53 @@ def test_pool_worker_marks_failed_when_state_failed(
     assert payload["failure_kind"] == "compute"
 
 
-def test_run_slurm_pool_missing_spec_key_raises(furu_tmp_root, tmp_path) -> None:
+def test_run_slurm_pool_uses_task_executor_spec(
+    furu_tmp_root, tmp_path, monkeypatch
+) -> None:
     task = GpuPoolTask(value=1)
-    specs = {"default": SlurmSpec(partition="cpu", cpus=2, mem_gb=4, time_min=10)}
+    seen_spec_keys: list[str] = []
 
-    with pytest.raises(KeyError, match="gpu"):
-        run_slurm_pool(
-            [task],
-            specs=specs,
-            max_workers_total=1,
-            window_size="dfs",
-            idle_timeout_sec=0.01,
-            poll_interval_sec=0.01,
-            submitit_root=None,
-            run_root=tmp_path,
-        )
+    def fake_make_executor(
+        spec_key: str,
+        spec: SlurmSpec,
+        *,
+        kind: str,
+        submitit_root,
+        run_id: str | None = None,
+    ):
+        seen_spec_keys.append(spec_key)
+        return InlineExecutor()
+
+    monkeypatch.setattr(
+        "furu.execution.slurm_pool.make_executor_for_spec",
+        fake_make_executor,
+    )
+
+    run_slurm_pool(
+        [task],
+        max_workers_total=1,
+        window_size="dfs",
+        idle_timeout_sec=0.01,
+        poll_interval_sec=0.01,
+        submitit_root=None,
+        run_root=tmp_path,
+    )
+
+    assert task.exists()
+    assert seen_spec_keys
+    assert seen_spec_keys[0] == GPU_SPEC_KEY
 
 
 def test_run_slurm_pool_fails_on_failed_queue(tmp_path, monkeypatch) -> None:
     root = PoolTask(value=1)
-    specs = {"default": SlurmSpec(partition="cpu", cpus=2, mem_gb=4, time_min=10)}
+    specs = {DEFAULT_SPEC_KEY: DEFAULT_SPEC}
 
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     _ensure_queue_layout(run_dir, specs)
     failed_payload = {
         "hash": root.furu_hash,
-        "spec_key": "default",
+        "spec_key": DEFAULT_SPEC_KEY,
         "obj": root.to_dict(),
         "error": "boom",
         "failure_kind": "protocol",
@@ -319,7 +446,6 @@ def test_run_slurm_pool_fails_on_failed_queue(tmp_path, monkeypatch) -> None:
     with pytest.raises(RuntimeError, match="Protocol failure"):
         run_slurm_pool(
             [root],
-            specs=specs,
             max_workers_total=1,
             window_size="dfs",
             idle_timeout_sec=0.01,
@@ -333,7 +459,7 @@ def test_run_slurm_pool_requeues_stale_running(
     furu_tmp_root, tmp_path, monkeypatch
 ) -> None:
     root = PoolTask(value=1)
-    specs = {"default": SlurmSpec(partition="cpu", cpus=2, mem_gb=4, time_min=10)}
+    specs = {DEFAULT_SPEC_KEY: DEFAULT_SPEC}
 
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -342,14 +468,14 @@ def test_run_slurm_pool_requeues_stale_running(
         run_dir
         / "queue"
         / "running"
-        / "default"
+        / DEFAULT_SPEC_KEY
         / "worker-1"
         / f"{root.furu_hash}.json"
     )
     running_path.parent.mkdir(parents=True, exist_ok=True)
     running_payload = {
         "hash": root.furu_hash,
-        "spec_key": "default",
+        "spec_key": DEFAULT_SPEC_KEY,
         "obj": root.to_dict(),
         "attempt": 1,
     }
@@ -369,7 +495,8 @@ def test_run_slurm_pool_requeues_stale_running(
                 root.furu_hash: PlanNode(
                     obj=root,
                     status="DONE",
-                    spec_key="default",
+                    executor=DEFAULT_SPEC,
+                    executor_key=DEFAULT_SPEC_KEY,
                     deps_all=set(),
                     deps_pending=set(),
                     dependents=set(),
@@ -386,7 +513,6 @@ def test_run_slurm_pool_requeues_stale_running(
 
     run_slurm_pool(
         [root],
-        specs=specs,
         max_workers_total=1,
         window_size="dfs",
         idle_timeout_sec=0.01,
@@ -396,19 +522,19 @@ def test_run_slurm_pool_requeues_stale_running(
         run_root=tmp_path,
     )
 
-    todo_path = run_dir / "queue" / "todo" / "default" / f"{root.furu_hash}.json"
+    todo_path = run_dir / "queue" / "todo" / DEFAULT_SPEC_KEY / f"{root.furu_hash}.json"
     assert todo_path.exists()
     assert not running_path.exists()
 
 
 def test_handle_failed_tasks_clears_stale_metadata(tmp_path) -> None:
     root = PoolTask(value=3)
-    specs = {"default": SlurmSpec(partition="cpu", cpus=2, mem_gb=4, time_min=10)}
+    specs = {DEFAULT_SPEC_KEY: DEFAULT_SPEC}
     _ensure_queue_layout(tmp_path, specs)
 
     failed_payload = {
         "hash": root.furu_hash,
-        "spec_key": "default",
+        "spec_key": DEFAULT_SPEC_KEY,
         "obj": root.to_dict(),
         "error": "boom",
         "failure_kind": "compute",
@@ -431,11 +557,13 @@ def test_handle_failed_tasks_clears_stale_metadata(tmp_path) -> None:
     assert requeued == 1
     assert not failed_path.exists()
 
-    todo_path = tmp_path / "queue" / "todo" / "default" / f"{root.furu_hash}.json"
+    todo_path = (
+        tmp_path / "queue" / "todo" / DEFAULT_SPEC_KEY / f"{root.furu_hash}.json"
+    )
     payload = json.loads(todo_path.read_text())
     assert payload["attempt"] == 2
     assert payload["hash"] == root.furu_hash
-    assert payload["spec_key"] == "default"
+    assert payload["spec_key"] == DEFAULT_SPEC_KEY
     assert payload["obj"] == root.to_dict()
     assert "error" not in payload
     assert "failure_kind" not in payload
@@ -446,12 +574,12 @@ def test_handle_failed_tasks_clears_stale_metadata(tmp_path) -> None:
 
 def test_handle_failed_tasks_requeues_on_max_retry(tmp_path) -> None:
     root = PoolTask(value=3)
-    specs = {"default": SlurmSpec(partition="cpu", cpus=2, mem_gb=4, time_min=10)}
+    specs = {DEFAULT_SPEC_KEY: DEFAULT_SPEC}
     _ensure_queue_layout(tmp_path, specs)
 
     failed_payload = {
         "hash": root.furu_hash,
-        "spec_key": "default",
+        "spec_key": DEFAULT_SPEC_KEY,
         "obj": root.to_dict(),
         "error": "boom",
         "failure_kind": "compute",
@@ -472,19 +600,21 @@ def test_handle_failed_tasks_requeues_on_max_retry(tmp_path) -> None:
     )
 
     assert requeued == 1
-    todo_path = tmp_path / "queue" / "todo" / "default" / f"{root.furu_hash}.json"
+    todo_path = (
+        tmp_path / "queue" / "todo" / DEFAULT_SPEC_KEY / f"{root.furu_hash}.json"
+    )
     payload = json.loads(todo_path.read_text())
     assert payload["attempt"] == 4
 
 
 def test_handle_failed_tasks_stops_after_retries_exhausted(tmp_path) -> None:
     root = PoolTask(value=3)
-    specs = {"default": SlurmSpec(partition="cpu", cpus=2, mem_gb=4, time_min=10)}
+    specs = {DEFAULT_SPEC_KEY: DEFAULT_SPEC}
     _ensure_queue_layout(tmp_path, specs)
 
     failed_payload = {
         "hash": root.furu_hash,
-        "spec_key": "default",
+        "spec_key": DEFAULT_SPEC_KEY,
         "obj": root.to_dict(),
         "error": "boom",
         "failure_kind": "compute",
@@ -509,15 +639,17 @@ def test_handle_failed_tasks_stops_after_retries_exhausted(tmp_path) -> None:
 
 def test_claim_task_updates_mtime_for_heartbeat_grace(tmp_path) -> None:
     root = PoolTask(value=1)
-    specs = {"default": SlurmSpec(partition="cpu", cpus=2, mem_gb=4, time_min=10)}
+    specs = {DEFAULT_SPEC_KEY: DEFAULT_SPEC}
     _ensure_queue_layout(tmp_path, specs)
 
-    todo_path = tmp_path / "queue" / "todo" / "default" / f"{root.furu_hash}.json"
+    todo_path = (
+        tmp_path / "queue" / "todo" / DEFAULT_SPEC_KEY / f"{root.furu_hash}.json"
+    )
     todo_path.write_text(
         json.dumps(
             {
                 "hash": root.furu_hash,
-                "spec_key": "default",
+                "spec_key": DEFAULT_SPEC_KEY,
                 "obj": root.to_dict(),
                 "attempt": 1,
             },
@@ -527,7 +659,7 @@ def test_claim_task_updates_mtime_for_heartbeat_grace(tmp_path) -> None:
     old_time = time.time() - 10_000
     os.utime(todo_path, (old_time, old_time))
 
-    task_path = _claim_task(tmp_path, "default", "worker-1")
+    task_path = _claim_task(tmp_path, DEFAULT_SPEC_KEY, "worker-1")
 
     assert task_path is not None
     assert task_path.exists()
@@ -545,16 +677,16 @@ def test_claim_task_updates_mtime_for_heartbeat_grace(tmp_path) -> None:
 
 
 def test_claim_task_ignores_temp_files(tmp_path) -> None:
-    specs = {"default": SlurmSpec(partition="cpu", cpus=2, mem_gb=4, time_min=10)}
+    specs = {DEFAULT_SPEC_KEY: DEFAULT_SPEC}
     _ensure_queue_layout(tmp_path, specs)
 
-    todo_dir = tmp_path / "queue" / "todo" / "default"
+    todo_dir = tmp_path / "queue" / "todo" / DEFAULT_SPEC_KEY
     # Simulate an in-progress atomic write (or leftover tmp file) which should
     # never be claimed as a task.
     tmp_file = todo_dir / "deadbeef.json.tmp-123"
     tmp_file.write_text("{}")
 
-    task_path = _claim_task(tmp_path, "default", "worker-1")
+    task_path = _claim_task(tmp_path, DEFAULT_SPEC_KEY, "worker-1")
 
     assert task_path is None
     assert tmp_file.exists()
@@ -562,21 +694,21 @@ def test_claim_task_ignores_temp_files(tmp_path) -> None:
 
 def test_requeue_stale_running_respects_heartbeat(tmp_path) -> None:
     root = PoolTask(value=1)
-    specs = {"default": SlurmSpec(partition="cpu", cpus=2, mem_gb=4, time_min=10)}
+    specs = {DEFAULT_SPEC_KEY: DEFAULT_SPEC}
     _ensure_queue_layout(tmp_path, specs)
 
     running_path = (
         tmp_path
         / "queue"
         / "running"
-        / "default"
+        / DEFAULT_SPEC_KEY
         / "worker-1"
         / f"{root.furu_hash}.json"
     )
     running_path.parent.mkdir(parents=True, exist_ok=True)
     running_payload = {
         "hash": root.furu_hash,
-        "spec_key": "default",
+        "spec_key": DEFAULT_SPEC_KEY,
         "obj": root.to_dict(),
     }
     running_path.write_text(json.dumps(running_payload, indent=2))
@@ -594,26 +726,28 @@ def test_requeue_stale_running_respects_heartbeat(tmp_path) -> None:
 
     assert moved == 0
     assert running_path.exists()
-    assert not (tmp_path / "queue" / "todo" / "default" / running_path.name).exists()
+    assert not (
+        tmp_path / "queue" / "todo" / DEFAULT_SPEC_KEY / running_path.name
+    ).exists()
 
 
 def test_requeue_stale_running_invalid_claimed_at_does_not_crash(tmp_path) -> None:
     root = PoolTask(value=1)
-    specs = {"default": SlurmSpec(partition="cpu", cpus=2, mem_gb=4, time_min=10)}
+    specs = {DEFAULT_SPEC_KEY: DEFAULT_SPEC}
     _ensure_queue_layout(tmp_path, specs)
 
     running_path = (
         tmp_path
         / "queue"
         / "running"
-        / "default"
+        / DEFAULT_SPEC_KEY
         / "worker-1"
         / f"{root.furu_hash}.json"
     )
     running_path.parent.mkdir(parents=True, exist_ok=True)
     running_payload = {
         "hash": root.furu_hash,
-        "spec_key": "default",
+        "spec_key": DEFAULT_SPEC_KEY,
         "obj": root.to_dict(),
         "attempt": 1,
         "claimed_at": "not-a-timestamp",
@@ -630,28 +764,30 @@ def test_requeue_stale_running_invalid_claimed_at_does_not_crash(tmp_path) -> No
     )
 
     assert moved == 1
-    todo_path = tmp_path / "queue" / "todo" / "default" / f"{root.furu_hash}.json"
+    todo_path = (
+        tmp_path / "queue" / "todo" / DEFAULT_SPEC_KEY / f"{root.furu_hash}.json"
+    )
     assert todo_path.exists()
     assert not running_path.exists()
 
 
 def test_requeue_stale_running_missing_heartbeat_grace(tmp_path) -> None:
     root = PoolTask(value=1)
-    specs = {"default": SlurmSpec(partition="cpu", cpus=2, mem_gb=4, time_min=10)}
+    specs = {DEFAULT_SPEC_KEY: DEFAULT_SPEC}
     _ensure_queue_layout(tmp_path, specs)
 
     running_path = (
         tmp_path
         / "queue"
         / "running"
-        / "default"
+        / DEFAULT_SPEC_KEY
         / "worker-1"
         / f"{root.furu_hash}.json"
     )
     running_path.parent.mkdir(parents=True, exist_ok=True)
     running_payload = {
         "hash": root.furu_hash,
-        "spec_key": "default",
+        "spec_key": DEFAULT_SPEC_KEY,
         "obj": root.to_dict(),
     }
     running_path.write_text(json.dumps(running_payload, indent=2))
@@ -671,21 +807,21 @@ def test_requeue_stale_running_missing_heartbeat_grace(tmp_path) -> None:
 
 def test_requeue_stale_running_missing_heartbeat_requeues_once(tmp_path) -> None:
     root = PoolTask(value=1)
-    specs = {"default": SlurmSpec(partition="cpu", cpus=2, mem_gb=4, time_min=10)}
+    specs = {DEFAULT_SPEC_KEY: DEFAULT_SPEC}
     _ensure_queue_layout(tmp_path, specs)
 
     running_path = (
         tmp_path
         / "queue"
         / "running"
-        / "default"
+        / DEFAULT_SPEC_KEY
         / "worker-1"
         / f"{root.furu_hash}.json"
     )
     running_path.parent.mkdir(parents=True, exist_ok=True)
     running_payload = {
         "hash": root.furu_hash,
-        "spec_key": "default",
+        "spec_key": DEFAULT_SPEC_KEY,
         "obj": root.to_dict(),
     }
     running_path.write_text(json.dumps(running_payload, indent=2))
@@ -699,7 +835,7 @@ def test_requeue_stale_running_missing_heartbeat_requeues_once(tmp_path) -> None
         max_compute_retries=3,
     )
 
-    todo_path = tmp_path / "queue" / "todo" / "default" / running_path.name
+    todo_path = tmp_path / "queue" / "todo" / DEFAULT_SPEC_KEY / running_path.name
     payload = json.loads(todo_path.read_text())
 
     assert moved == 1
@@ -710,21 +846,21 @@ def test_requeue_stale_running_missing_heartbeat_requeues_once(tmp_path) -> None
 
 def test_requeue_stale_running_missing_heartbeat_exhausts(tmp_path) -> None:
     root = PoolTask(value=1)
-    specs = {"default": SlurmSpec(partition="cpu", cpus=2, mem_gb=4, time_min=10)}
+    specs = {DEFAULT_SPEC_KEY: DEFAULT_SPEC}
     _ensure_queue_layout(tmp_path, specs)
 
     running_path = (
         tmp_path
         / "queue"
         / "running"
-        / "default"
+        / DEFAULT_SPEC_KEY
         / "worker-1"
         / f"{root.furu_hash}.json"
     )
     running_path.parent.mkdir(parents=True, exist_ok=True)
     running_payload = {
         "hash": root.furu_hash,
-        "spec_key": "default",
+        "spec_key": DEFAULT_SPEC_KEY,
         "obj": root.to_dict(),
         "missing_heartbeat_requeues": 1,
     }
@@ -750,21 +886,21 @@ def test_requeue_stale_running_missing_heartbeat_exhausts(tmp_path) -> None:
 
 def test_requeue_stale_running_bounds_attempts(tmp_path) -> None:
     root = PoolTask(value=1)
-    specs = {"default": SlurmSpec(partition="cpu", cpus=2, mem_gb=4, time_min=10)}
+    specs = {DEFAULT_SPEC_KEY: DEFAULT_SPEC}
     _ensure_queue_layout(tmp_path, specs)
 
     running_path = (
         tmp_path
         / "queue"
         / "running"
-        / "default"
+        / DEFAULT_SPEC_KEY
         / "worker-1"
         / f"{root.furu_hash}.json"
     )
     running_path.parent.mkdir(parents=True, exist_ok=True)
     running_payload = {
         "hash": root.furu_hash,
-        "spec_key": "default",
+        "spec_key": DEFAULT_SPEC_KEY,
         "obj": root.to_dict(),
         "attempt": 1,
     }
@@ -781,7 +917,7 @@ def test_requeue_stale_running_bounds_attempts(tmp_path) -> None:
         max_compute_retries=1,
     )
 
-    todo_path = tmp_path / "queue" / "todo" / "default" / running_path.name
+    todo_path = tmp_path / "queue" / "todo" / DEFAULT_SPEC_KEY / running_path.name
     payload = json.loads(todo_path.read_text())
 
     assert moved == 1
@@ -806,10 +942,10 @@ def test_requeue_stale_running_bounds_attempts(tmp_path) -> None:
 
 
 def test_mark_done_handles_missing_task_path(tmp_path) -> None:
-    specs = {"default": SlurmSpec(partition="cpu", cpus=2, mem_gb=4, time_min=10)}
+    specs = {DEFAULT_SPEC_KEY: DEFAULT_SPEC}
     _ensure_queue_layout(tmp_path, specs)
     missing_path = (
-        tmp_path / "queue" / "running" / "default" / "worker-1" / "missing.json"
+        tmp_path / "queue" / "running" / DEFAULT_SPEC_KEY / "worker-1" / "missing.json"
     )
     missing_path.parent.mkdir(parents=True, exist_ok=True)
     hb_path = missing_path.with_suffix(".hb")
@@ -822,9 +958,11 @@ def test_mark_done_handles_missing_task_path(tmp_path) -> None:
 
 
 def test_mark_failed_handles_invalid_payload(tmp_path) -> None:
-    specs = {"default": SlurmSpec(partition="cpu", cpus=2, mem_gb=4, time_min=10)}
+    specs = {DEFAULT_SPEC_KEY: DEFAULT_SPEC}
     _ensure_queue_layout(tmp_path, specs)
-    task_path = tmp_path / "queue" / "running" / "default" / "worker-1" / "bad.json"
+    task_path = (
+        tmp_path / "queue" / "running" / DEFAULT_SPEC_KEY / "worker-1" / "bad.json"
+    )
     task_path.parent.mkdir(parents=True, exist_ok=True)
     task_path.write_text("{not-json")
     hb_path = task_path.with_suffix(".hb")
@@ -852,7 +990,8 @@ def test_run_slurm_pool_detects_no_progress(
             root.furu_hash: PlanNode(
                 obj=root,
                 status="TODO",
-                spec_key="default",
+                executor=DEFAULT_SPEC,
+                executor_key=DEFAULT_SPEC_KEY,
                 deps_all={blocked.furu_hash},
                 deps_pending={blocked.furu_hash},
                 dependents=set(),
@@ -860,7 +999,8 @@ def test_run_slurm_pool_detects_no_progress(
             blocked.furu_hash: PlanNode(
                 obj=blocked,
                 status="TODO",
-                spec_key="default",
+                executor=DEFAULT_SPEC,
+                executor_key=DEFAULT_SPEC_KEY,
                 deps_all={root.furu_hash},
                 deps_pending={root.furu_hash},
                 dependents=set(),
@@ -873,12 +1013,9 @@ def test_run_slurm_pool_detects_no_progress(
 
     monkeypatch.setattr("furu.execution.slurm_pool.build_plan", fake_build_plan)
 
-    specs = {"default": SlurmSpec(partition="cpu", cpus=2, mem_gb=4, time_min=10)}
-
     with pytest.raises(RuntimeError, match="no progress"):
         run_slurm_pool(
             [root],
-            specs=specs,
             max_workers_total=1,
             window_size="dfs",
             idle_timeout_sec=0.01,
@@ -912,12 +1049,9 @@ def test_run_slurm_pool_stale_in_progress_raises(
     monkeypatch.setattr(furu.FURU_CONFIG, "retry_failed", False)
     monkeypatch.setattr(furu.FURU_CONFIG, "stale_timeout", 0.01)
 
-    specs = {"default": SlurmSpec(partition="cpu", cpus=2, mem_gb=4, time_min=10)}
-
     with pytest.raises(RuntimeError, match="Stale IN_PROGRESS dependencies detected"):
         run_slurm_pool(
             [root],
-            specs=specs,
             max_workers_total=1,
             window_size="dfs",
             idle_timeout_sec=0.01,

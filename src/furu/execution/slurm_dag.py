@@ -14,7 +14,7 @@ from ..core import Furu
 from ..errors import FuruExecutionError
 from ..storage.state import StateManager, _FuruState, _StateResultFailed
 from .plan import DependencyPlan, build_plan, topo_order_todo
-from .slurm_spec import SlurmSpec, SlurmSpecExtraValue
+from .slurm_spec import SlurmSpecExtraValue
 from .submitit_factory import make_executor_for_spec
 
 
@@ -181,12 +181,8 @@ def _make_run_id() -> str:
 def submit_slurm_dag(
     roots: list[Furu],
     *,
-    specs: dict[str, SlurmSpec],
     submitit_root: Path | None = None,
 ) -> SlurmDagSubmission:
-    if "default" not in specs:
-        raise KeyError("Missing slurm spec for key 'default'.")
-
     run_id = _make_run_id()
     plan = build_plan(roots)
     failed = [node for node in plan.nodes.values() if node.status == "FAILED"]
@@ -212,14 +208,8 @@ def submit_slurm_dag(
             elif dep_node.status == "TODO":
                 dep_job_ids.append(job_id_by_hash[dep_hash])
 
-        spec_key = node.spec_key
-        if spec_key not in specs:
-            raise KeyError(
-                "Missing slurm spec for key "
-                f"'{spec_key}' for node {node.obj.__class__.__name__} ({digest})."
-            )
-
-        spec = specs[spec_key]
+        spec_key = node.executor_key
+        spec = node.executor
         executor = make_executor_for_spec(
             spec_key,
             spec,

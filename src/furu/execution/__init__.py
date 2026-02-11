@@ -4,13 +4,12 @@ from .local import run_local
 from .paths import submitit_logs_dir, submitit_root_dir
 from .slurm_dag import SlurmDagSubmission, submit_slurm_dag
 from .slurm_pool import SlurmPoolRun, run_slurm_pool
-from .slurm_spec import SlurmSpec, SlurmSpecValue, resolve_slurm_spec
+from .slurm_spec import SlurmSpec, SlurmSpecValue
 from .submitit_factory import make_executor_for_spec
 
 __all__ = [
     "SlurmSpec",
     "SlurmSpecValue",
-    "resolve_slurm_spec",
     "SlurmDagSubmission",
     "submit_slurm_dag",
     "make_executor_for_spec",

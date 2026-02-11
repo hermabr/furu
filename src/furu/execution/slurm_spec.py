@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import hashlib
+import json
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Mapping, Protocol
+from typing import Protocol, TypeAlias, cast
 
 
 SlurmSpecValue = str | int | float | bool
 SlurmSpecExtraValue = SlurmSpecValue | Mapping[str, "SlurmSpecExtraValue"]
+SlurmSpecPayloadValue: TypeAlias = (
+    SlurmSpecValue | None | dict[str, "SlurmSpecPayloadValue"]
+)
 
 
 @dataclass(frozen=True)
@@ -18,21 +24,53 @@ class SlurmSpec:
     extra: Mapping[str, SlurmSpecExtraValue] | None = None
 
 
-class _SpecNode(Protocol):
+class _ExecutorNode(Protocol):
     furu_hash: str
 
-    def _executor_spec_key(self) -> str: ...
+    def _executor(self) -> SlurmSpec: ...
 
 
-def resolve_slurm_spec(specs: Mapping[str, SlurmSpec], node: _SpecNode) -> SlurmSpec:
-    if "default" not in specs:
-        raise KeyError("Missing slurm spec for key 'default'.")
+def resolve_executor_spec(node: _ExecutorNode) -> SlurmSpec:
+    spec = node._executor()
+    if isinstance(spec, SlurmSpec):
+        return spec
+    raise TypeError(
+        "Furu._executor() must return SlurmSpec for "
+        f"{node.__class__.__name__} ({node.furu_hash}), got {type(spec).__name__}."
+    )
 
-    spec_key = node._executor_spec_key()
-    if spec_key not in specs:
-        raise KeyError(
-            "Missing slurm spec for key "
-            f"'{spec_key}' for node {node.__class__.__name__} ({node.furu_hash})."
-        )
 
-    return specs[spec_key]
+def _normalize_extra(value: SlurmSpecExtraValue) -> SlurmSpecPayloadValue:
+    if isinstance(value, Mapping):
+        mapping_value = cast(Mapping[str, SlurmSpecExtraValue], value)
+        normalized: dict[str, SlurmSpecPayloadValue] = {}
+        for key in sorted(mapping_value):
+            normalized[key] = _normalize_extra(mapping_value[key])
+        return normalized
+    return value
+
+
+def slurm_spec_key(spec: SlurmSpec) -> str:
+    payload: dict[str, SlurmSpecPayloadValue] = {
+        "partition": spec.partition,
+        "gpus": spec.gpus,
+        "cpus": spec.cpus,
+        "mem_gb": spec.mem_gb,
+        "time_min": spec.time_min,
+        "extra": _normalize_extra(spec.extra) if spec.extra is not None else {},
+    }
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    digest = hashlib.sha1(encoded.encode("utf-8")).hexdigest()[:12]
+
+    partition = spec.partition or "default"
+    safe_partition = "".join(
+        char if char.isalnum() or char in {"-", "_"} else "-"
+        for char in partition.lower()
+    )
+    safe_partition = safe_partition.strip("-") or "default"
+    return f"{safe_partition}-{digest}"

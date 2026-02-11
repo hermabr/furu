@@ -25,6 +25,7 @@ from typing import (
     Protocol,
     Self,
     Sequence,
+    TYPE_CHECKING,
     TypeAlias,
     TypeVar,
     TypedDict,
@@ -81,6 +82,9 @@ from ..storage.state import (
     _StateResultSuccess,
     compute_lock,
 )
+
+if TYPE_CHECKING:
+    from furu.execution.slurm_spec import SlurmSpec
 
 
 T = TypeVar("T")
@@ -215,8 +219,15 @@ class Furu(ABC, Generic[T]):
         """
         return True
 
-    def _executor_spec_key(self: Self) -> str:
-        return "default"
+    def _executor(self: Self) -> "SlurmSpec":
+        from furu.execution.slurm_spec import SlurmSpec
+
+        return SlurmSpec()
+
+    def _executor_key(self: Self) -> str:
+        from furu.execution.slurm_spec import resolve_executor_spec, slurm_spec_key
+
+        return slurm_spec_key(resolve_executor_spec(self))
 
     def _get_dependencies(self: Self, *, recursive: bool = True) -> list["Furu"]:
         """Collect Furu dependencies from fields and dependency methods."""
@@ -526,7 +537,7 @@ class Furu(ABC, Generic[T]):
         Load result if it exists, computing if necessary.
 
         Args:
-            force: Allow computation inside executor contexts if the spec matches.
+            force: Allow computation inside executor contexts when worker and task executors match.
 
         Returns:
             Loaded or computed result.
@@ -590,11 +601,11 @@ class Furu(ABC, Generic[T]):
                         f"Requested by {ctx.current_node_hash}. Declare it as a dependency."
                     )
 
-                required = self._executor_spec_key()
+                required = self._executor_key()
                 if ctx.spec_key is None or required != ctx.spec_key:
                     raise FuruSpecMismatch(
                         "force=True not allowed: "
-                        f"required={required!r} != worker={ctx.spec_key!r} (v1 exact match)"
+                        f"required={required!r} != worker={ctx.spec_key!r}"
                     )
 
                 StateManager.ensure_internal_dir(directory)
@@ -1152,7 +1163,7 @@ class Furu(ABC, Generic[T]):
             exec_token = EXEC_CONTEXT.set(
                 ExecContext(
                     mode="executor",
-                    spec_key=self._executor_spec_key(),
+                    spec_key=self._executor_key(),
                     backend="submitit",
                     current_node_hash=self.furu_hash,
                 )
@@ -1424,7 +1435,7 @@ class Furu(ABC, Generic[T]):
                         token = EXEC_CONTEXT.set(
                             ExecContext(
                                 mode="executor",
-                                spec_key=self._executor_spec_key(),
+                                spec_key=self._executor_key(),
                                 backend="local",
                                 current_node_hash=self.furu_hash,
                             )

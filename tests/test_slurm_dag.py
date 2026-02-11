@@ -45,9 +45,15 @@ class DagTask(furu.Furu[int]):
         return json.loads((self.furu_dir / "value.json").read_text())
 
 
-class GpuTask(DagTask):
-    def _executor_spec_key(self) -> str:
-        return "gpu"
+class ExtraSpecTask(DagTask):
+    def _executor(self) -> SlurmSpec:
+        return SlurmSpec(
+            partition="cpu",
+            cpus=2,
+            mem_gb=4,
+            time_min=10,
+            extra={"slurm_additional_parameters": {"qos": "high"}},
+        )
 
 
 def test_make_executor_for_spec_sets_parameters(tmp_path, monkeypatch) -> None:
@@ -102,7 +108,6 @@ def test_submit_slurm_dag_wires_dependencies(furu_tmp_root, monkeypatch) -> None
     leaf = DagTask(name="leaf")
     root = DagTask(name="root", deps=[leaf])
 
-    specs = {"default": SlurmSpec(partition="cpu", cpus=2, mem_gb=4, time_min=10)}
     executors: list[FakeExecutor] = []
 
     def fake_make_executor(
@@ -135,7 +140,7 @@ def test_submit_slurm_dag_wires_dependencies(furu_tmp_root, monkeypatch) -> None
     )
     monkeypatch.setattr(DagTask, "_submit_once", fake_submit_once)
 
-    submission = submit_slurm_dag([root], specs=specs, submitit_root=None)
+    submission = submit_slurm_dag([root], submitit_root=None)
 
     assert submission.job_id_by_hash[leaf.furu_hash] == "job-leaf"
     assert submission.job_id_by_hash[root.furu_hash] == "job-root"
@@ -159,7 +164,6 @@ def test_submit_slurm_dag_uses_in_progress_job_ids(furu_tmp_root, monkeypatch) -
         scheduler={"job_id": "job-dep"},
     )
 
-    specs = {"default": SlurmSpec(partition="cpu", cpus=2, mem_gb=4, time_min=10)}
     executors: list[FakeExecutor] = []
 
     def fake_make_executor(
@@ -190,31 +194,12 @@ def test_submit_slurm_dag_uses_in_progress_job_ids(furu_tmp_root, monkeypatch) -
     )
     monkeypatch.setattr(DagTask, "_submit_once", fake_submit_once)
 
-    submission = submit_slurm_dag([root], specs=specs, submitit_root=None)
+    submission = submit_slurm_dag([root], submitit_root=None)
 
     assert submission.job_id_by_hash[root.furu_hash] == "job-root"
     assert executors[0].parameters["slurm_additional_parameters"] == {
         "dependency": "afterok:job-dep"
     }
-
-
-def test_submit_slurm_dag_requires_default_spec(furu_tmp_root) -> None:
-    with pytest.raises(KeyError):
-        submit_slurm_dag([DagTask(name="root")], specs={}, submitit_root=None)
-
-
-def test_submit_slurm_dag_missing_spec_key_raises(furu_tmp_root, monkeypatch) -> None:
-    root = GpuTask(name="root")
-    specs = {"default": SlurmSpec(partition="cpu", cpus=2, mem_gb=4, time_min=10)}
-
-    monkeypatch.setattr(
-        "furu.execution.slurm_dag.make_executor_for_spec",
-        lambda *args, **kwargs: FakeExecutor("x"),
-    )
-    monkeypatch.setattr(GpuTask, "_submit_once", lambda *args, **kwargs: FakeJob("job"))
-
-    with pytest.raises(KeyError):
-        submit_slurm_dag([root], specs=specs, submitit_root=None)
 
 
 def test_submit_slurm_dag_in_progress_requires_submitit_backend(
@@ -233,8 +218,6 @@ def test_submit_slurm_dag_in_progress_requires_submitit_backend(
         scheduler={},
     )
 
-    specs = {"default": SlurmSpec(partition="cpu", cpus=2, mem_gb=4, time_min=10)}
-
     monkeypatch.setattr(
         "furu.execution.slurm_dag.make_executor_for_spec",
         lambda *args, **kwargs: FakeExecutor("x"),
@@ -242,24 +225,14 @@ def test_submit_slurm_dag_in_progress_requires_submitit_backend(
     monkeypatch.setattr(DagTask, "_submit_once", lambda *args, **kwargs: FakeJob("x"))
 
     with pytest.raises(furu.FuruExecutionError, match="non-submitit"):
-        submit_slurm_dag([root], specs=specs, submitit_root=None)
+        submit_slurm_dag([root], submitit_root=None)
 
 
-def test_submit_slurm_dag_merges_additional_parameters(
-    furu_tmp_root, monkeypatch
-) -> None:
-    leaf = DagTask(name="leaf")
-    root = DagTask(name="root", deps=[leaf])
+@pytest.mark.usefixtures("furu_tmp_root")
+def test_submit_slurm_dag_merges_additional_parameters(monkeypatch) -> None:
+    leaf = ExtraSpecTask(name="leaf")
+    root = ExtraSpecTask(name="root", deps=[leaf])
 
-    specs = {
-        "default": SlurmSpec(
-            partition="cpu",
-            cpus=2,
-            mem_gb=4,
-            time_min=10,
-            extra={"slurm_additional_parameters": {"qos": "high"}},
-        )
-    }
     executors: list[FakeExecutor] = []
 
     def fake_make_executor(
@@ -290,9 +263,9 @@ def test_submit_slurm_dag_merges_additional_parameters(
     monkeypatch.setattr(
         "furu.execution.slurm_dag.make_executor_for_spec", fake_make_executor
     )
-    monkeypatch.setattr(DagTask, "_submit_once", fake_submit_once)
+    monkeypatch.setattr(ExtraSpecTask, "_submit_once", fake_submit_once)
 
-    submit_slurm_dag([root], specs=specs, submitit_root=None)
+    submit_slurm_dag([root], submitit_root=None)
 
     assert executors[1].parameters["slurm_additional_parameters"] == {
         "qos": "high",
