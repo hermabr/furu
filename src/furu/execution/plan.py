@@ -18,6 +18,7 @@ from ..storage.state import (
     _FuruState,
     _StateResultFailed,
 )
+from .slurm_spec import SlurmSpec, resolve_executor_spec, slurm_spec_key
 
 Status = Literal["DONE", "IN_PROGRESS", "TODO", "FAILED"]
 
@@ -28,7 +29,8 @@ _MISSING_TIMESTAMP_SEEN: dict[str, float] = {}
 class PlanNode:
     obj: Furu
     status: Status
-    spec_key: str
+    executor: SlurmSpec
+    executor_key: str
     deps_all: set[str]
     deps_pending: set[str]
     dependents: set[str]
@@ -162,10 +164,12 @@ def build_plan(
         seen.add(digest)
 
         status = _classify(obj, completed_hashes, cache)
+        executor = resolve_executor_spec(obj)
         node = PlanNode(
             obj=obj,
             status=status,
-            spec_key=obj._executor_spec_key(),
+            executor=executor,
+            executor_key=slurm_spec_key(executor),
             deps_all=set(),
             deps_pending=set(),
             dependents=set(),

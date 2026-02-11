@@ -9,6 +9,11 @@ import furu
 from furu import furu_dep
 from furu.execution.local import run_local
 from furu.execution.plan import DependencyPlan, PlanNode
+from furu.execution.slurm_spec import SlurmSpec, slurm_spec_key
+
+
+DEFAULT_EXECUTOR = SlurmSpec()
+DEFAULT_EXECUTOR_KEY = slurm_spec_key(DEFAULT_EXECUTOR)
 
 
 class LeafTask(furu.Furu[int]):
@@ -188,7 +193,8 @@ def test_run_local_detects_no_progress(furu_tmp_root, monkeypatch) -> None:
             root.furu_hash: PlanNode(
                 obj=root,
                 status="TODO",
-                spec_key="default",
+                executor=DEFAULT_EXECUTOR,
+                executor_key=DEFAULT_EXECUTOR_KEY,
                 deps_all={blocked.furu_hash},
                 deps_pending={blocked.furu_hash},
                 dependents=set(),
@@ -196,7 +202,8 @@ def test_run_local_detects_no_progress(furu_tmp_root, monkeypatch) -> None:
             blocked.furu_hash: PlanNode(
                 obj=blocked,
                 status="TODO",
-                spec_key="default",
+                executor=DEFAULT_EXECUTOR,
+                executor_key=DEFAULT_EXECUTOR_KEY,
                 deps_all={root.furu_hash},
                 deps_pending={root.furu_hash},
                 dependents=set(),

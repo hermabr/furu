@@ -37,7 +37,7 @@ def _run_node(node: PlanNode) -> None:
     token = EXEC_CONTEXT.set(
         ExecContext(
             mode="executor",
-            spec_key=node.spec_key,
+            spec_key=node.executor_key,
             backend="local",
             current_node_hash=node.obj.furu_hash,
         )

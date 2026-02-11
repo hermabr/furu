@@ -23,7 +23,12 @@ from ..storage.state import _FuruState, _StateResultFailed, _StateResultSuccess
 from .paths import submitit_root_dir
 from .plan import DependencyPlan, build_plan, ready_todo
 from .plan_utils import reconcile_or_timeout_in_progress
-from .slurm_spec import SlurmSpec
+from .slurm_spec import (
+    SlurmSpec,
+    SlurmSpecExtraValue,
+    resolve_executor_spec,
+    slurm_spec_key,
+)
 from .submitit_factory import make_executor_for_spec
 
 
@@ -99,6 +104,38 @@ def _run_dir(run_root: Path | None) -> Path:
     run_dir = base / f"{stamp}-{token}"
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir
+
+
+def _spec_with_pool_worker_logs(spec: SlurmSpec, worker_dir: Path) -> SlurmSpec:
+    merged_extra: dict[str, SlurmSpecExtraValue] = {}
+    if spec.extra is not None:
+        merged_extra.update(spec.extra)
+
+    raw_additional = merged_extra.get("slurm_additional_parameters")
+    additional_params: dict[str, SlurmSpecExtraValue]
+    if raw_additional is None:
+        additional_params = {}
+    else:
+        if not isinstance(raw_additional, Mapping):
+            raise TypeError(
+                "slurm_additional_parameters must be a mapping when provided."
+            )
+        additional_params = dict(
+            cast(Mapping[str, SlurmSpecExtraValue], raw_additional)
+        )
+
+    additional_params["output"] = str(worker_dir / "stdout.log")
+    additional_params["error"] = str(worker_dir / "stderr.log")
+    merged_extra["slurm_additional_parameters"] = additional_params
+
+    return SlurmSpec(
+        partition=spec.partition,
+        gpus=spec.gpus,
+        cpus=spec.cpus,
+        mem_gb=spec.mem_gb,
+        time_min=spec.time_min,
+        extra=merged_extra,
+    )
 
 
 def _queue_root(run_dir: Path) -> Path:
@@ -289,21 +326,6 @@ def _done_hashes(run_dir: Path) -> set[str]:
     return {path.stem for path in done_dir.iterdir() if path.is_file()}
 
 
-def _missing_spec_keys(
-    plan: DependencyPlan, specs: dict[str, SlurmSpec]
-) -> dict[str, list[str]]:
-    missing: dict[str, list[str]] = {}
-    for node in plan.nodes.values():
-        if node.status != "TODO":
-            continue
-        if node.spec_key in specs:
-            continue
-        missing.setdefault(node.spec_key, []).append(
-            f"{node.obj.__class__.__name__}({node.obj.furu_hash})"
-        )
-    return missing
-
-
 def _task_filename(digest: str) -> str:
     return f"{digest}.json"
 
@@ -322,12 +344,16 @@ def _atomic_write_json(path: Path, payload: Mapping[str, JsonValue]) -> None:
     tmp_path.replace(path)
 
 
-def _ensure_queue_layout(run_dir: Path, specs: dict[str, SlurmSpec]) -> None:
+def _ensure_queue_layout(
+    run_dir: Path, specs: Mapping[str, SlurmSpec] | None = None
+) -> None:
     queue_root = _queue_root(run_dir)
     (queue_root / "todo").mkdir(parents=True, exist_ok=True)
     (queue_root / "running").mkdir(parents=True, exist_ok=True)
     _done_dir(run_dir).mkdir(parents=True, exist_ok=True)
     _failed_dir(run_dir).mkdir(parents=True, exist_ok=True)
+    if specs is None:
+        return
     for spec_key in specs:
         _todo_dir(run_dir, spec_key).mkdir(parents=True, exist_ok=True)
         _running_dir(run_dir, spec_key).mkdir(parents=True, exist_ok=True)
@@ -479,8 +505,9 @@ def pool_worker_main(
     spec_key: str,
     idle_timeout_sec: float,
     poll_interval_sec: float,
+    worker_id: str | None = None,
 ) -> None:
-    worker_id = f"{socket.gethostname()}-{os.getpid()}"
+    worker_id = worker_id or f"{socket.gethostname()}-{os.getpid()}"
     last_task_time = time.time()
 
     while True:
@@ -526,10 +553,9 @@ def pool_worker_main(
             message = f"Invalid task payload: expected Furu, got {type(obj).__name__}"
             _mark_failed(run_dir, task_path, message, failure_kind="protocol")
             raise RuntimeError(message)
-        if obj._executor_spec_key() != spec_key:
-            message = (
-                f"Spec mismatch: task {obj._executor_spec_key()} on worker {spec_key}"
-            )
+        task_spec_key = slurm_spec_key(resolve_executor_spec(obj))
+        if task_spec_key != spec_key:
+            message = f"Spec mismatch: task {task_spec_key} on worker {spec_key}"
             _mark_failed(run_dir, task_path, message, failure_kind="protocol")
             raise RuntimeError(message)
 
@@ -726,7 +752,6 @@ def _requeue_stale_running(
 def run_slurm_pool(
     roots: list[Furu],
     *,
-    specs: dict[str, SlurmSpec],
     max_workers_total: int = 50,
     window_size: str | int = "bfs",
     idle_timeout_sec: float = 60.0,
@@ -736,20 +761,19 @@ def run_slurm_pool(
     submitit_root: Path | None = None,
     run_root: Path | None = None,
 ) -> SlurmPoolRun:
-    if "default" not in specs:
-        raise KeyError("Missing slurm spec for key 'default'.")
     if max_workers_total < 1:
         raise ValueError("max_workers_total must be >= 1")
 
     run_dir = _run_dir(run_root)
     run_id = run_dir.name
     submitit_root_effective = submitit_root_dir(submitit_root)
-    _ensure_queue_layout(run_dir, specs)
+    _ensure_queue_layout(run_dir)
 
     window = _normalize_window_size(window_size, len(roots))
     active_indices = list(range(min(window, len(roots))))
     next_index = len(active_indices)
-    jobs_by_spec: dict[str, list[SubmititJob]] = {spec_key: [] for spec_key in specs}
+    jobs_by_spec: dict[str, list[SubmititJob]] = {}
+    specs_by_key: dict[str, SlurmSpec] = {}
     job_adapter = SubmititAdapter(executor=None)
 
     plan = build_plan([roots[index] for index in active_indices])
@@ -784,26 +808,29 @@ def run_slurm_pool(
                     f"Cannot run slurm pool with failed dependencies: {names}"
                 )
 
-        missing_specs = _missing_spec_keys(plan, specs)
-        if missing_specs:
-            details = "; ".join(
-                f"{key} (e.g., {', '.join(nodes[:2])})"
-                for key, nodes in sorted(missing_specs.items())
-            )
-            raise KeyError(f"Missing slurm spec for keys: {details}")
+        for node in plan.nodes.values():
+            if node.status != "TODO":
+                continue
+            specs_by_key[node.executor_key] = node.executor
+            jobs_by_spec.setdefault(node.executor_key, [])
 
         ready = ready_todo(plan)
         for digest in ready:
             node = plan.nodes[digest]
-            _enqueue_task(run_dir, digest, node.spec_key, node.obj)
+            specs_by_key[node.executor_key] = node.executor
+            jobs_by_spec.setdefault(node.executor_key, [])
+            _enqueue_task(run_dir, digest, node.executor_key, node.obj)
 
-        for spec_key, jobs in jobs_by_spec.items():
+        for spec_key, jobs in list(jobs_by_spec.items()):
             jobs_by_spec[spec_key] = [
                 job for job in jobs if not job_adapter.is_done(job)
             ]
 
         total_workers = sum(len(jobs) for jobs in jobs_by_spec.values())
-        backlog_by_spec = {spec_key: _backlog(run_dir, spec_key) for spec_key in specs}
+        known_spec_keys = sorted({*specs_by_key, *jobs_by_spec})
+        backlog_by_spec = {
+            spec_key: _backlog(run_dir, spec_key) for spec_key in known_spec_keys
+        }
 
         while total_workers < max_workers_total and any(
             count > 0 for count in backlog_by_spec.values()
@@ -811,9 +838,18 @@ def run_slurm_pool(
             spec_key = max(backlog_by_spec, key=lambda key: backlog_by_spec[key])
             if backlog_by_spec[spec_key] <= 0:
                 break
+            spec = specs_by_key.get(spec_key)
+            if spec is None:
+                raise RuntimeError(
+                    f"Missing executor spec for queued tasks: spec_key={spec_key!r}."
+                )
+            worker_id = f"worker-{uuid.uuid4().hex[:12]}"
+            worker_dir = _running_dir(run_dir, spec_key) / worker_id
+            worker_dir.mkdir(parents=True, exist_ok=True)
+            worker_spec = _spec_with_pool_worker_logs(spec, worker_dir)
             executor = make_executor_for_spec(
                 spec_key,
-                specs[spec_key],
+                worker_spec,
                 kind="workers",
                 submitit_root=submitit_root_effective,
                 run_id=run_id,
@@ -825,6 +861,7 @@ def run_slurm_pool(
                     spec_key,
                     idle_timeout_sec=idle_timeout_sec,
                     poll_interval_sec=poll_interval_sec,
+                    worker_id=worker_id,
                 )
             )
             jobs_by_spec[spec_key].append(job)
