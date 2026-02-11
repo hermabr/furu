@@ -229,7 +229,7 @@ def test_submit_slurm_dag_in_progress_requires_submitit_backend(
 
 
 def test_submit_slurm_dag_merges_additional_parameters(
-    furu_tmp_root, monkeypatch
+    _furu_tmp_root, monkeypatch
 ) -> None:
     leaf = ExtraSpecTask(name="leaf")
     root = ExtraSpecTask(name="root", deps=[leaf])
