@@ -116,7 +116,7 @@ def override_results(
     for key, value in overrides.items():
         hash_key: str
         if isinstance(key, Furu):
-            hash_key = cast(str, key.furu_hash)
+            hash_key = key.furu_hash
         elif isinstance(key, str):
             if not key:
                 raise ValueError("override furu_hash must be non-empty")
@@ -150,7 +150,7 @@ def override_results_for(
     hash_overrides: dict[str, OverrideValue] = {}
     for path, value in overrides.items():
         target = _resolve_override_path(root, path)
-        hash_overrides[cast(str, target.furu_hash)] = value
+        hash_overrides[target.furu_hash] = value
     with override_furu_hashes(hash_overrides):
         yield
 

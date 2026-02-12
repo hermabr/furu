@@ -75,7 +75,7 @@ class FuruComputeError(FuruError):
         self.recorded_traceback = recorded_traceback
 
     def __str__(self) -> str:
-        msg = super().__str__()  # ty: ignore[invalid-super-argument]
+        msg = super().__str__()
         internal_dir = self.state_path.parent
         furu_dir = internal_dir.parent
 
@@ -117,7 +117,7 @@ class FuruMigrationRequired(FuruError):
         super().__init__(message)
 
     def __str__(self) -> str:
-        msg = super().__str__()  # ty: ignore[invalid-super-argument]
+        msg = super().__str__()
         if self.state_path is not None:
             msg += f"\n\nState file: {self.state_path}"
         return msg

@@ -442,7 +442,7 @@ class StateManager:
             return None
         data = json.loads(lines[0])
         if isinstance(data, dict):
-            return data  # type: ignore[return-value]
+            return data
         return None
 
     @classmethod
