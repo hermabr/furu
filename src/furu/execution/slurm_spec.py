@@ -4,6 +4,7 @@ import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Protocol, TypeAlias, cast
 
 
@@ -22,6 +23,22 @@ class SlurmSpec:
     mem_gb: int = 16
     time_min: int = 60
     extra: Mapping[str, SlurmSpecExtraValue] | None = None
+
+    @cached_property
+    def _payload(self) -> dict[str, SlurmSpecPayloadValue]:
+        return _slurm_spec_payload(self)
+
+    @cached_property
+    def _spec_key(self) -> str:
+        return _build_slurm_spec_key(self)
+
+    def __eq__(self, other) -> bool:
+        if not isinstance(other, SlurmSpec):
+            return False
+        return self._payload == other._payload
+
+    def __hash__(self) -> int:
+        return hash(self._spec_key)
 
 
 SlurmExecutorChoice: TypeAlias = SlurmSpec | Sequence[SlurmSpec]
@@ -73,8 +90,8 @@ def _normalize_extra(value: SlurmSpecExtraValue) -> SlurmSpecPayloadValue:
     return value
 
 
-def slurm_spec_key(spec: SlurmSpec) -> str:
-    payload: dict[str, SlurmSpecPayloadValue] = {
+def _slurm_spec_payload(spec: SlurmSpec) -> dict[str, SlurmSpecPayloadValue]:
+    return {
         "partition": spec.partition,
         "gpus": spec.gpus,
         "cpus": spec.cpus,
@@ -82,6 +99,10 @@ def slurm_spec_key(spec: SlurmSpec) -> str:
         "time_min": spec.time_min,
         "extra": _normalize_extra(spec.extra) if spec.extra is not None else {},
     }
+
+
+def _build_slurm_spec_key(spec: SlurmSpec) -> str:
+    payload = _slurm_spec_payload(spec)
     encoded = json.dumps(
         payload,
         sort_keys=True,
@@ -97,3 +118,7 @@ def slurm_spec_key(spec: SlurmSpec) -> str:
     )
     safe_partition = safe_partition.strip("-") or "default"
     return f"{safe_partition}-{digest}"
+
+
+def slurm_spec_key(spec: SlurmSpec) -> str:
+    return spec._spec_key
