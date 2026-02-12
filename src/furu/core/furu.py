@@ -59,11 +59,11 @@ from ..aliases import AliasKey, collect_aliases
 from ..migration import (
     FuruRef,
     MigrationReport,
-    current as _current_refs,
+    current as _current_schema_refs,
     migrate as _migrate,
     migrate_one as _migrate_one,
     resolve_original_ref,
-    stale as _stale_refs,
+    stale as _stale_schema_refs,
 )
 from ..storage import (
     FuruMetadata,
@@ -501,12 +501,35 @@ class Furu(ABC, Generic[T]):
         )
 
     @classmethod
-    def stale(cls, *, namespace: str | None = None) -> list[FuruRef]:
-        return _stale_refs(cls, namespace=namespace)
+    def all_stale_refs(cls, *, namespace: str | None = None) -> list[FuruRef]:
+        return _stale_schema_refs(cls, namespace=namespace)
 
     @classmethod
-    def current(cls, *, namespace: str | None = None) -> list[FuruRef]:
-        return _current_refs(cls, namespace=namespace)
+    def _current_refs(cls, *, namespace: str | None = None) -> list[FuruRef]:
+        return _current_schema_refs(cls, namespace=namespace)
+
+    @classmethod
+    def _object_from_ref(cls: type[Self], ref: FuruRef) -> Self:
+        metadata = MetadataManager.read_metadata(ref.furu_dir)
+        obj = cls.from_dict(metadata.furu_obj)
+        if not isinstance(obj, cls):
+            raise TypeError(
+                "current object class does not match requested class: "
+                f"expected {cls.__module__}.{cls.__qualname__}, "
+                f"got {obj.__class__.__module__}.{obj.__class__.__qualname__}"
+            )
+        return obj
+
+    @classmethod
+    def all_current(cls: type[Self], *, namespace: str | None = None) -> list[Self]:
+        refs = cls._current_refs(namespace=namespace)
+        return [cls._object_from_ref(ref) for ref in refs]
+
+    @classmethod
+    def all_successful(cls: type[Self], *, namespace: str | None = None) -> list[Self]:
+        refs = cls._current_refs(namespace=namespace)
+        objects = [cls._object_from_ref(ref) for ref in refs]
+        return [obj for obj in objects if obj._exists_quiet()]
 
     def log(self: Self, message: str, *, level: str = "INFO") -> Path:
         """
