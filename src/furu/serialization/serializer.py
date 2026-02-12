@@ -157,9 +157,11 @@ class FuruSerializer:
                 }
 
             if isinstance(item, dict):
-                if cls.CLASS_MARKER in item:
-                    config = cast(dict[str, JsonValue], item)
-                    module_path, _, class_name = item[cls.CLASS_MARKER].rpartition(".")
+                mapping_item = cast(dict[str, JsonValue], item)
+                class_marker = mapping_item.get(cls.CLASS_MARKER)
+                if isinstance(class_marker, str):
+                    config = mapping_item
+                    module_path, _, class_name = class_marker.rpartition(".")
                     module = importlib.import_module(module_path)
                     data_class = getattr(module, class_name, None)
                     if (
@@ -168,11 +170,11 @@ class FuruSerializer:
                         and _has_required_fields(data_class, config)
                     ):
                         return canonicalize(cls.from_dict(config))
-                filtered = item
-                if cls.CLASS_MARKER in item:
+                filtered = mapping_item
+                if class_marker is not None:
                     filtered = {
                         k: v
-                        for k, v in item.items()
+                        for k, v in mapping_item.items()
                         if not (isinstance(k, str) and k.startswith("_"))
                         or k == cls.CLASS_MARKER
                     }

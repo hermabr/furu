@@ -47,7 +47,7 @@ def _print_colored_traceback(exc: BaseException) -> None:
 
 
 def _install_rich_uncaught_exceptions() -> None:
-    from rich.traceback import install as _rich_install  # type: ignore
+    from rich.traceback import install as _rich_install
 
     _rich_install(show_locals=False)
 

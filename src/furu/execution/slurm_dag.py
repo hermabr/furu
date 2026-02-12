@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import cast
 
 from ..adapters import SubmititAdapter
 from ..adapters.submitit import SubmititJob
@@ -227,10 +228,12 @@ def submit_slurm_dag(
                         raise TypeError(
                             "slurm_additional_parameters must be a mapping when provided."
                         )
-                    slurm_params = {
-                        **dict(extra_params),
-                        "dependency": dependency,
-                    }
+                    mapped_params = cast(
+                        Mapping[str, SlurmSpecExtraValue],
+                        extra_params,
+                    )
+                    for key, value in mapped_params.items():
+                        slurm_params[key] = value
             executor.update_parameters(slurm_additional_parameters=slurm_params)
 
         adapter = SubmititAdapter(executor)

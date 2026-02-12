@@ -110,7 +110,7 @@ class _FuruLogFormatter(logging.Formatter):
             location = f"{Path(caller_file).name}:{caller_line}"
         else:
             location = f"{record.filename}:{record.lineno}"
-        record.furu_location = location  # type: ignore[attr-defined]
+        record.furu_location = location
         return super().format(record)
 
 
@@ -169,7 +169,7 @@ def _console_level() -> int:
 class _FuruRichConsoleHandler(logging.Handler):
     def __init__(self, *, level: int) -> None:
         super().__init__(level=level)
-        from rich.console import Console  # type: ignore
+        from rich.console import Console
 
         self._console = Console(stderr=True)
 
@@ -216,7 +216,7 @@ class _FuruRichConsoleHandler(logging.Handler):
             self._console.print(line)
 
         if record.exc_info:
-            from rich.traceback import Traceback  # type: ignore
+            from rich.traceback import Traceback
 
             exc_type, exc_value, tb = record.exc_info
             if exc_type is not None and exc_value is not None and tb is not None:

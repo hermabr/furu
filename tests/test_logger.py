@@ -169,7 +169,7 @@ def test_rich_console_colors_only_get_token() -> None:
         args=(),
         exc_info=None,
     )
-    record.furu_action_color = "green"  # type: ignore[attr-defined]
+    record.furu_action_color = "green"
 
     text = _FuruRichConsoleHandler._format_message_text(record)
     assert text.plain == "get Foo 123 /tmp"

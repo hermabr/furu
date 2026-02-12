@@ -1143,7 +1143,7 @@ class Furu(ABC, Generic[T]):
             if attempt_id is not None:
                 StateManager.finish_attempt_failed(
                     directory,
-                    attempt_id=attempt_id,  # type: ignore[arg-type]
+                    attempt_id=attempt_id,
                     error={
                         "type": type(e).__name__,
                         "message": f"Failed to submit: {e}",
@@ -1798,7 +1798,7 @@ def _sorted_dependency_set(
 
 def _dependency_sort_key(value: DependencyScanValue) -> tuple[int, str]:
     if isinstance(value, Furu):
-        return (0, cast(str, value.furu_hash))
+        return (0, value.furu_hash)
     return (1, f"{type(value).__name__}:{value!r}")
 
 
