@@ -71,7 +71,16 @@ class FuruSerializer:
         """Reconstruct object from dictionary."""
         if isinstance(data, dict) and cls.CLASS_MARKER in data:
             module_path, _, class_name = data[cls.CLASS_MARKER].rpartition(".")
-            data_class = getattr(importlib.import_module(module_path), class_name)
+            try:
+                data_class = getattr(importlib.import_module(module_path), class_name)
+            except Exception:
+                if strict:
+                    raise
+                return {
+                    k: cls.from_dict(v, strict=strict)
+                    for k, v in data.items()
+                    if k != cls.CLASS_MARKER
+                }
 
             kwargs = {
                 k: cls.from_dict(v, strict=strict)
