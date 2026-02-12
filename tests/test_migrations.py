@@ -6,7 +6,7 @@ from typing import cast
 import pytest
 
 import furu
-from furu.storage import MetadataManager, MigrationManager
+from furu.storage import MetadataManager, MigrationManager, StateManager
 
 
 class SourceV1(furu.Furu[int]):
@@ -246,7 +246,7 @@ def test_alias_chain_flattens_original(furu_tmp_root) -> None:
     assert any(ref.furu_hash == alias_v2.furu_hash for ref in aliases)
 
 
-def test_current_and_stale_refs(furu_tmp_root) -> None:
+def test_all_current_and_all_stale_refs(furu_tmp_root) -> None:
     current_obj = SourceV1(value=10)
     stale_obj = SourceV1(value=11)
     current_obj.get()
@@ -257,7 +257,24 @@ def test_current_and_stale_refs(furu_tmp_root) -> None:
     data["schema_key"] = ["value", "missing"]
     metadata_path.write_text(json.dumps(data, indent=2))
 
-    current_refs = {ref.furu_hash for ref in SourceV1.current()}
-    stale_refs = {ref.furu_hash for ref in SourceV1.stale()}
-    assert current_obj.furu_hash in current_refs
+    current_hashes = {obj.furu_hash for obj in SourceV1.all_current()}
+    stale_refs = {ref.furu_hash for ref in SourceV1.all_stale_refs()}
+    assert current_obj.furu_hash in current_hashes
     assert stale_obj.furu_hash in stale_refs
+
+
+def test_all_successful_filters_non_successful_current_objects(furu_tmp_root) -> None:
+    successful_obj = SourceV1(value=20)
+    non_successful_obj = SourceV1(value=21)
+    successful_obj.get()
+    non_successful_obj.get()
+
+    StateManager.get_success_marker_path(non_successful_obj._base_furu_dir()).unlink()
+
+    current_hashes = {obj.furu_hash for obj in SourceV1.all_current()}
+    successful_hashes = {obj.furu_hash for obj in SourceV1.all_successful()}
+
+    assert successful_obj.furu_hash in current_hashes
+    assert non_successful_obj.furu_hash in current_hashes
+    assert successful_obj.furu_hash in successful_hashes
+    assert non_successful_obj.furu_hash not in successful_hashes
