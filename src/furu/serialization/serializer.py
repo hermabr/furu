@@ -68,7 +68,13 @@ class FuruSerializer:
 
     @classmethod
     def from_dict(cls, data: JsonValue, *, strict: bool = True) -> JsonValue:
-        """Reconstruct object from dictionary."""
+        """Reconstruct object from dictionary.
+
+        Args:
+            data: Serialized payload.
+            strict: Raise on reconstruction mismatch when True; return dict fallback
+                when False.
+        """
         if isinstance(data, dict) and cls.CLASS_MARKER in data:
             module_path, _, class_name = data[cls.CLASS_MARKER].rpartition(".")
             try:
