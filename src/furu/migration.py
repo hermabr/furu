@@ -6,7 +6,17 @@ import types
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol, TypeVar, Union, cast, get_args, get_origin
+from typing import (
+    Any,
+    Literal,
+    Protocol,
+    TypeAlias,
+    TypeVar,
+    Union,
+    cast,
+    get_args,
+    get_origin,
+)
 
 import chz
 from chz.util import MISSING as CHZ_MISSING, MISSING_TYPE
@@ -44,6 +54,7 @@ class _FuruObject(Protocol):
 MigrationConflict = Literal["throw", "skip"]
 SourceObj = TypeVar("SourceObj")
 TargetObj = TypeVar("TargetObj", bound=_FuruObject)
+TypeAnnotation: TypeAlias = Any
 
 
 @dataclass(frozen=True)
@@ -418,7 +429,15 @@ def _coerce_furu_object_types(target_obj: _FuruObject) -> _FuruObject:
     return cast(_FuruObject, chz.replace(target_obj, **updates))
 
 
-def _coerce_value_for_type(value: JsonValue, expected_type: JsonValue) -> JsonValue:
+def _coerce_value_for_type(
+    value: JsonValue,
+    expected_type: TypeAnnotation,
+) -> JsonValue:
+    """Coerce mappings toward a target type annotation when possible.
+
+    `expected_type` may be a concrete runtime type, a `typing.Union`/`X | Y`,
+    or another typing annotation provided by field metadata.
+    """
     if is_subtype_instance(value, expected_type):
         return value
 
@@ -447,8 +466,8 @@ def _coerce_value_for_type(value: JsonValue, expected_type: JsonValue) -> JsonVa
 def _coerce_union_value(
     value: JsonValue,
     *,
-    union_types: tuple[JsonValue, ...],
-    expected_type: JsonValue,
+    union_types: tuple[TypeAnnotation, ...],
+    expected_type: TypeAnnotation,
 ) -> JsonValue:
     if not isinstance(value, Mapping):
         return value
@@ -462,7 +481,7 @@ def _coerce_union_value(
     else:
         return value
 
-    candidates: list[tuple[JsonValue, JsonValue]] = []
+    candidates: list[tuple[TypeAnnotation, JsonValue]] = []
     for union_type in union_types:
         if class_marker is not None and not _union_type_matches_class_marker(
             union_type,
@@ -501,7 +520,7 @@ def _coerce_union_value(
 
 def _coerce_mapping_to_dataclass(
     value: Mapping[str, JsonValue],
-    expected_type: type,
+    expected_type: type[Any],
 ) -> JsonValue:
     if not _mapping_class_marker_matches(value, expected_type):
         return cast(JsonValue, value)
@@ -525,7 +544,7 @@ def _coerce_mapping_to_dataclass(
 
 def _coerce_mapping_to_chz(
     value: Mapping[str, JsonValue],
-    expected_type: type,
+    expected_type: type[Any],
 ) -> JsonValue:
     if not _mapping_class_marker_matches(value, expected_type):
         return cast(JsonValue, value)
@@ -547,7 +566,7 @@ def _coerce_mapping_to_chz(
 
 def _mapping_class_marker_matches(
     value: Mapping[str, JsonValue],
-    expected_type: type,
+    expected_type: type[Any],
 ) -> bool:
     marker_value = value.get(FuruSerializer.CLASS_MARKER)
     if marker_value is None:
@@ -566,7 +585,7 @@ def _mapping_has_exact_keys(
 
 
 def _union_type_matches_class_marker(
-    union_type: JsonValue,
+    union_type: TypeAnnotation,
     class_marker: str,
 ) -> bool:
     if not isinstance(union_type, type):
@@ -574,7 +593,7 @@ def _union_type_matches_class_marker(
     return _class_marker_for_type(union_type) == class_marker
 
 
-def _class_marker_for_type(expected_type: type) -> str:
+def _class_marker_for_type(expected_type: type[Any]) -> str:
     return f"{expected_type.__module__}.{expected_type.__qualname__}"
 
 

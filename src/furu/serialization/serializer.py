@@ -116,7 +116,14 @@ class FuruSerializer:
             else:
                 try:
                     module = importlib.import_module(module_path)
-                except ImportError:
+                except ModuleNotFoundError as exc:
+                    missing_name = exc.name
+                    if missing_name is None:
+                        raise
+                    if module_path != missing_name and not module_path.startswith(
+                        f"{missing_name}."
+                    ):
+                        raise
                     module = None
                 data_class = (
                     getattr(module, class_name, None) if module is not None else None
