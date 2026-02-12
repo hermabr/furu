@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Make `all_current()` resilient to deserialization incompatibilities caused by schema/nested field changes, and include those refs in `all_stale_refs()` so stale artifacts are visible instead of crashing discovery.
+- Make `all_current()` resilient to deserialization incompatibilities caused by schema/nested field changes, and include those refs in `all_stale_refs()` so stale artifacts are visible instead of crashing discovery. ([#52](https://github.com/hermabr/furu/pull/52))
 
 ## v0.0.10
 
