@@ -3,6 +3,7 @@ import dataclasses
 import enum
 import hashlib
 import importlib
+import importlib.util
 import json
 import pathlib
 import textwrap
@@ -114,17 +115,12 @@ class FuruSerializer:
                 module = importlib.import_module(module_path)
                 data_class = getattr(module, class_name)
             else:
-                try:
-                    module = importlib.import_module(module_path)
-                except ModuleNotFoundError as exc:
-                    missing_name = exc.name
-                    if missing_name is None:
-                        raise
-                    if module_path != missing_name and not module_path.startswith(
-                        f"{missing_name}."
-                    ):
-                        raise
-                    module = None
+                module_spec = importlib.util.find_spec(module_path)
+                module = (
+                    importlib.import_module(module_path)
+                    if module_spec is not None
+                    else None
+                )
                 data_class = (
                     getattr(module, class_name, None) if module is not None else None
                 )
