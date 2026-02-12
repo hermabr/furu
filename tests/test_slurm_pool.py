@@ -1,6 +1,7 @@
 import json
 import importlib
 import os
+import socket
 import sys
 import time
 from pathlib import Path
@@ -541,6 +542,8 @@ def test_run_slurm_pool_records_slurm_spec_metadata(
     furu_tmp_root, tmp_path, monkeypatch
 ) -> None:
     task = GpuPoolTask(value=11)
+    monkeypatch.setenv("SLURMD_NODENAME", "gpu-node-01")
+    monkeypatch.setenv("SLURM_NODELIST", "gpu-node-[01-02]")
 
     monkeypatch.setattr(
         "furu.execution.slurm_pool.make_executor_for_spec",
@@ -569,6 +572,9 @@ def test_run_slurm_pool_records_slurm_spec_metadata(
     assert spec.get("mem_gb") == 64
     assert spec.get("time_min") == 720
     assert spec.get("extra") == {}
+    assert attempt.scheduler.get("host") == socket.gethostname()
+    assert attempt.scheduler.get("slurm_nodename") == "gpu-node-01"
+    assert attempt.scheduler.get("slurm_nodelist") == "gpu-node-[01-02]"
 
 
 def test_run_slurm_pool_allows_any_task_executor_spec(

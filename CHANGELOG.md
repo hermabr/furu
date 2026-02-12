@@ -6,6 +6,7 @@
 - Replace `_executor_spec_key()` with `_executor() -> SlurmSpec`; `run_slurm_pool()` and `submit_slurm_dag()` now derive Slurm resources directly from each node and no longer accept a `specs` mapping.
 - Allow `_executor()` to return multiple `SlurmSpec` choices; `submit_slurm_dag` uses the first choice while `run_slurm_pool` workers can claim tasks from any listed spec.
 - Persist executor selection details in attempt scheduler metadata by recording both `slurm_spec_key` and full `slurm_spec` fields for submitit DAG submissions and slurm-pool worker runs.
+- Record worker host/node placement in `attempt.scheduler` (`host`, `slurm_nodename`, `slurm_nodelist`) so low-priority queues can be traced to the actual machine allocation.
 - Route `run_slurm_pool` worker stdout/stderr to each worker queue directory (`queue/running/<spec>/<worker-id>/stdout.log` and `stderr.log`) while preserving existing `slurm_additional_parameters`.
 - Fix `furu.execution` exports to expose `resolve_executor_spec`.
 - Add `examples/run_local_executor_benchmark.py` to benchmark local executor planning latency and end-to-end runtime on a nested 10k-node DAG.

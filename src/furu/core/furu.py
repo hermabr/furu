@@ -101,6 +101,8 @@ class _SubmititEnvInfo(TypedDict, total=False):
 
     backend: str
     slurm_job_id: str | None
+    slurm_nodename: str | None
+    slurm_nodelist: str | None
     pid: int
     host: str
     user: str
@@ -1290,6 +1292,9 @@ class Furu(ABC, Generic[T]):
                 scheduler: SchedulerMetadata = {
                     "backend": env_info.get("backend"),
                     "job_id": env_info.get("slurm_job_id"),
+                    "host": env_info.get("host"),
+                    "slurm_nodename": env_info.get("slurm_nodename"),
+                    "slurm_nodelist": env_info.get("slurm_nodelist"),
                     "slurm_spec_key": slurm_scheduler["slurm_spec_key"],
                     "slurm_spec": slurm_scheduler["slurm_spec"],
                 }
@@ -1453,10 +1458,14 @@ class Furu(ABC, Generic[T]):
     def _collect_submitit_env(self: Self) -> _SubmititEnvInfo:
         """Collect submitit/slurm environment information."""
         slurm_id = os.getenv("SLURM_JOB_ID")
+        slurm_nodename = os.getenv("SLURMD_NODENAME")
+        slurm_nodelist = os.getenv("SLURM_NODELIST") or os.getenv("SLURM_JOB_NODELIST")
 
         info: _SubmititEnvInfo = {
             "backend": "slurm" if slurm_id else "local",
             "slurm_job_id": slurm_id,
+            "slurm_nodename": slurm_nodename,
+            "slurm_nodelist": slurm_nodelist,
             "pid": os.getpid(),
             "host": socket.gethostname(),
             "user": getpass.getuser(),
