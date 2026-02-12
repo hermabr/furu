@@ -1,19 +1,11 @@
 # Changelog
 
-## Unreleased
+## v0.0.9
 
-- Rename migration reference field `FuruRef.directory` to `FuruRef.furu_dir`.
-- Replace `_executor_spec_key()` with `_executor() -> SlurmSpec`; `run_slurm_pool()` and `submit_slurm_dag()` now derive Slurm resources directly from each node and no longer accept a `specs` mapping.
-- Allow `_executor()` to return multiple `SlurmSpec` choices; `submit_slurm_dag` uses the first choice while `run_slurm_pool` workers can claim tasks from any listed spec.
-- Persist executor selection details in attempt scheduler metadata by recording both `slurm_spec_key` and full `slurm_spec` fields for submitit DAG submissions and slurm-pool worker runs.
-- Record worker host/node placement in `attempt.scheduler` (`host`, `slurm_nodename`, `slurm_nodelist`) so low-priority queues can be traced to the actual machine allocation.
-- Route `run_slurm_pool` worker stdout/stderr to each worker queue directory (`queue/running/<spec>/<worker-id>/stdout.log` and `stderr.log`) while preserving existing `slurm_additional_parameters`.
-- Fix `furu.execution` exports to expose `resolve_executor_spec`.
-- Add `examples/run_local_executor_benchmark.py` to benchmark local executor planning latency and end-to-end runtime on a nested 10k-node DAG.
-- Rework `run_local` to build scheduler state once per run and maintain in-memory buckets (`READY`, `BLOCKED`, `IN_PROGRESS_SELF`, `IN_PROGRESS_EXTERNAL`, `FAILED`, `COMPLETED`) with dependency-pending sets, pre-dispatch state rechecks, and configurable external/underutilized/full reconcile polling (`external_poll_interval_sec`, `underutilized_reconcile_interval_sec`, `plan_refresh_interval_sec`).
-- Keep sticky `DONE` snapshot semantics per executor run and separate slurm-pool worker health polling cadence (`worker_health_check_interval_sec`).
-- Extend `run_slurm_pool(max_workers_total=...)` to accept `int` or `Mapping[SlurmSpec | Literal["total"], int]`, enforce per-spec limits in worker spawning, derive default total from the sum of per-spec limits when `"total"` is absent, and fail fast when active plan specs are missing from mapping mode limits.
-- Add independent slurm-pool queue scan and ready-refresh cadences (`done_scan_interval_sec`, `failed_scan_interval_sec`, `stale_scan_interval_sec`, `ready_refresh_interval_sec`) so controller filesystem scans can be throttled without changing worker polling.
+- Rename migration reference field `FuruRef.directory` to `FuruRef.furu_dir`, and update Slurm executor selection to `_executor()`-declared specs (including multi-spec nodes), dropping `specs` mapping inputs from `run_slurm_pool()`/`submit_slurm_dag()` and exporting `resolve_executor_spec` from `furu.execution`.
+- Improve executor observability by recording selected Slurm spec and worker host/node placement in `attempt.scheduler`, and by routing slurm-pool worker stdout/stderr to per-worker queue logs.
+- Rework local and slurm-pool scheduling loops to build run state once, keep sticky `DONE` snapshots per run, and expose independent reconcile/scan/health polling cadences.
+- Extend `run_slurm_pool(max_workers_total=...)` to support integer totals or per-spec limits with enforced per-spec caps, inferred totals, and fail-fast validation for missing active-spec limits; add `examples/run_local_executor_benchmark.py` for nested 10k-node DAG benchmarking.
 
 ## v0.0.8
 
