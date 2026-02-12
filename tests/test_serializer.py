@@ -232,6 +232,18 @@ def test_from_dict_returns_dict_for_incompatible_dataclass_in_non_strict_mode() 
     assert restored == {"first": 7}
 
 
+def test_from_dict_rejects_unknown_class() -> None:
+    payload = {"__class__": "test_serializer.DoesNotExist", "value": 1}
+    with pytest.raises(AttributeError):
+        furu.FuruSerializer.from_dict(payload)
+
+
+def test_from_dict_returns_dict_for_unknown_class_in_non_strict_mode() -> None:
+    payload = {"__class__": "test_serializer.DoesNotExist", "value": 1}
+    restored = furu.FuruSerializer.from_dict(payload, strict=False)
+    assert restored == {"value": 1}
+
+
 def test_from_dict_loads_nested_objects_if_possible() -> None:
     outer_marker = furu.FuruSerializer.get_classname(
         OuterWithNestedDataclass(inner=RequiresTwoFields(1, 2))
