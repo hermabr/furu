@@ -32,6 +32,20 @@
 - Never push to `main` or merge a pull request unless the user explicitly asks.
 - When creating a pull request, write a detailed body that explains what changed, notes new or updated API behavior, and includes usage examples when relevant.
 
+### Changelog PR References
+
+- For each user-visible `CHANGELOG.md` entry under `## Unreleased`, append a PR reference in this format: `([#<number>](https://github.com/hermabr/furu/pull/<number>))`.
+- GitHub cannot create a PR with zero commits between base and head. Do not attempt a "no-commit" PR flow.
+- To include the PR link in the first real changelog commit while keeping multiple meaningful commits, use this bootstrap-cleanup flow:
+  1. Create a feature branch.
+  2. Create an empty bootstrap commit: `git commit --allow-empty -m "chore: bootstrap PR"`.
+  3. Push branch and open a draft PR to get the PR number.
+  4. Make the real code changes and changelog updates including the PR link, in as many real commits as needed.
+  5. Remove the bootstrap commit from branch history.
+  6. Push rewritten history with `git push --force-with-lease`.
+- Use `--force-with-lease` (never plain `--force`) for this cleanup.
+- Prefer doing this history rewrite once, before requesting final review, to avoid invalidating review context repeatedly.
+
 ---
 
 ## Project Structure
