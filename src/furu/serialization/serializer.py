@@ -67,18 +67,25 @@ class FuruSerializer:
         return obj
 
     @classmethod
-    def from_dict(cls, data: JsonValue) -> JsonValue:
+    def from_dict(cls, data: JsonValue, *, strict: bool = True) -> JsonValue:
         """Reconstruct object from dictionary."""
         if isinstance(data, dict) and cls.CLASS_MARKER in data:
             module_path, _, class_name = data[cls.CLASS_MARKER].rpartition(".")
             data_class = getattr(importlib.import_module(module_path), class_name)
 
             kwargs = {
-                k: cls.from_dict(v) for k, v in data.items() if k != cls.CLASS_MARKER
+                k: cls.from_dict(v, strict=strict)
+                for k, v in data.items()
+                if k != cls.CLASS_MARKER
             }
 
             path_types = (Path, pathlib.Path)
             fallback = kwargs
+
+            def _strict_or_fallback() -> JsonValue:
+                if strict:
+                    raise TypeError(f"cannot reconstruct {data_class}")
+                return fallback
 
             if chz.is_chz(data_class):
                 init_kwargs = dict(kwargs)
@@ -87,7 +94,7 @@ class FuruSerializer:
                         if field._default is CHZ_MISSING and isinstance(
                             field._default_factory, MISSING_TYPE
                         ):
-                            return fallback
+                            return _strict_or_fallback()
                         continue
 
                     if field.final_type in path_types and isinstance(
@@ -109,7 +116,7 @@ class FuruSerializer:
                         field.default is dataclasses.MISSING
                         and field.default_factory is dataclasses.MISSING
                     ):
-                        return fallback
+                        return _strict_or_fallback()
 
                 for field in dataclass_fields:
                     if not field.init:
@@ -124,13 +131,15 @@ class FuruSerializer:
             try:
                 return data_class(**init_kwargs)
             except TypeError:
+                if strict:
+                    raise
                 return fallback
 
         if isinstance(data, list):
-            return [cls.from_dict(v) for v in data]
+            return [cls.from_dict(v, strict=strict) for v in data]
 
         if isinstance(data, dict):
-            return {k: cls.from_dict(v) for k, v in data.items()}
+            return {k: cls.from_dict(v, strict=strict) for k, v in data.items()}
 
         return data
 

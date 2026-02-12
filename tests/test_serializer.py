@@ -217,9 +217,18 @@ def test_from_dict_ignores_non_init_dataclass_fields() -> None:
     assert restored.derived == 10
 
 
-def test_from_dict_returns_dict_for_incompatible_dataclass() -> None:
+def test_from_dict_rejects_incompatible_dataclass() -> None:
     bad_marker = furu.FuruSerializer.get_classname(RequiresTwoFields(1, 2))
-    restored = furu.FuruSerializer.from_dict({"__class__": bad_marker, "first": 7})
+    with pytest.raises(TypeError):
+        furu.FuruSerializer.from_dict({"__class__": bad_marker, "first": 7})
+
+
+def test_from_dict_returns_dict_for_incompatible_dataclass_in_non_strict_mode() -> None:
+    bad_marker = furu.FuruSerializer.get_classname(RequiresTwoFields(1, 2))
+    restored = furu.FuruSerializer.from_dict(
+        {"__class__": bad_marker, "first": 7},
+        strict=False,
+    )
     assert restored == {"first": 7}
 
 
@@ -235,6 +244,6 @@ def test_from_dict_loads_nested_objects_if_possible() -> None:
             "first": 5,
         },
     }
-    restored = furu.FuruSerializer.from_dict(payload)
+    restored = furu.FuruSerializer.from_dict(payload, strict=False)
     assert isinstance(restored, OuterWithNestedDataclass)
     assert restored.inner == {"first": 5}

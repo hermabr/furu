@@ -75,7 +75,7 @@ class FuruRef:
 
     def _load_ref_object(self) -> JsonValue:
         metadata = MetadataManager.read_metadata(self.furu_dir)
-        return FuruSerializer.from_dict(metadata.furu_obj)
+        return FuruSerializer.from_dict(metadata.furu_obj, strict=False)
 
     def _migrate_to_target(
         self,
