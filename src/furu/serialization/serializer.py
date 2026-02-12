@@ -1,5 +1,6 @@
 import datetime
 import dataclasses
+import contextlib
 import enum
 import hashlib
 import importlib
@@ -77,16 +78,21 @@ class FuruSerializer:
         """
         if isinstance(data, dict) and cls.CLASS_MARKER in data:
             module_path, _, class_name = data[cls.CLASS_MARKER].rpartition(".")
-            try:
+            if strict:
                 data_class = getattr(importlib.import_module(module_path), class_name)
-            except Exception:
-                if strict:
-                    raise
-                return {
-                    k: cls.from_dict(v, strict=strict)
-                    for k, v in data.items()
-                    if k != cls.CLASS_MARKER
-                }
+            else:
+                data_class = None
+                with contextlib.suppress(Exception):
+                    data_class = getattr(
+                        importlib.import_module(module_path), class_name
+                    )
+
+                if data_class is None:
+                    return {
+                        k: cls.from_dict(v, strict=strict)
+                        for k, v in data.items()
+                        if k != cls.CLASS_MARKER
+                    }
 
             kwargs = {
                 k: cls.from_dict(v, strict=strict)
