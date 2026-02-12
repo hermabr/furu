@@ -3,6 +3,7 @@
 
 - Replace `Furu.current()`/`Furu.successful()`/`Furu.stale()` with `Furu.all_current()`/`Furu.all_successful()`/`Furu.all_stale_refs()`, with current/successful APIs returning hydrated objects and stale results remaining ref-based for migration workflows.
 - Add `Furu.load_existing()` for load-only access to cached artifacts, raising `FuruMissingArtifact` when artifacts are missing or invalid.
+- Add `FuruRef.migrate(transform, dry_run=False, strict_types=True)` to migrate one reference via a callback that returns the target object, with optional validation-only dry runs and strict runtime field type enforcement ([#50](https://github.com/hermabr/furu/pull/50)).
 
 ## v0.0.9
 

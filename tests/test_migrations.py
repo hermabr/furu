@@ -278,3 +278,111 @@ def test_all_successful_filters_non_successful_current_objects(furu_tmp_root) ->
     assert non_successful_obj.furu_hash in current_hashes
     assert successful_obj.furu_hash in successful_hashes
     assert non_successful_obj.furu_hash not in successful_hashes
+
+
+def test_ref_migrate_returns_target_and_writes_alias(furu_tmp_root) -> None:
+    source = SourceV1(value=30)
+    assert source.get() == 30
+
+    refs = SourceV2.all_stale_refs(namespace="test_migrations.SourceV1")
+    assert len(refs) == 1
+
+    def to_v2(old: SourceV1) -> SourceV2:
+        return SourceV2(value=old.value, extra="migrated")
+
+    target = refs[0].migrate(to_v2, origin="tests")
+    assert isinstance(target, SourceV2)
+    assert target.get() == 30
+
+    record = MigrationManager.read_migration(target._base_furu_dir())
+    assert record is not None
+    assert record.kind == "alias"
+    assert record.from_hash == source.furu_hash
+
+
+def test_ref_migrate_dry_run_validates_without_writing(furu_tmp_root) -> None:
+    source = SourceV1(value=31)
+    assert source.get() == 31
+
+    refs = SourceV2.all_stale_refs(namespace="test_migrations.SourceV1")
+    assert len(refs) == 1
+
+    def to_v2(old: SourceV1) -> SourceV2:
+        return SourceV2(value=old.value, extra="preview")
+
+    target = refs[0].migrate(to_v2, dry_run=True, origin="tests")
+    assert isinstance(target, SourceV2)
+    assert not target._base_furu_dir().exists()
+
+
+def test_ref_migrate_strict_types_rejects_invalid_target(furu_tmp_root) -> None:
+    source = SourceV1(value=32)
+    assert source.get() == 32
+
+    refs = SourceV2.all_stale_refs(namespace="test_migrations.SourceV1")
+    assert len(refs) == 1
+
+    def to_v2_invalid(old: SourceV1) -> SourceV2:
+        return SourceV2(value=old.value, extra=cast(str, 123))
+
+    with pytest.raises(TypeError, match="strict_types check failed"):
+        refs[0].migrate(to_v2_invalid, strict_types=True, origin="tests")
+
+
+def test_ref_migrate_strict_types_false_allows_invalid_target(furu_tmp_root) -> None:
+    source = SourceV1(value=33)
+    assert source.get() == 33
+
+    refs = SourceV2.all_stale_refs(namespace="test_migrations.SourceV1")
+    assert len(refs) == 1
+
+    def to_v2_invalid(old: SourceV1) -> SourceV2:
+        return SourceV2(value=old.value, extra=cast(str, 123))
+
+    target = refs[0].migrate(to_v2_invalid, strict_types=False, origin="tests")
+    assert cast(int, target.extra) == 123
+    assert target.get() == 33
+
+
+def test_ref_migrate_transform_must_return_furu_object(furu_tmp_root) -> None:
+    source = SourceV1(value=34)
+    assert source.get() == 34
+
+    refs = SourceV2.all_stale_refs(namespace="test_migrations.SourceV1")
+    assert len(refs) == 1
+
+    def to_invalid(old: SourceV1) -> SourceV2:
+        return cast(SourceV2, "not-a-furu")
+
+    with pytest.raises(TypeError, match="transform must return a Furu object"):
+        refs[0].migrate(to_invalid, origin="tests")
+
+
+def test_ref_migrate_conflict_throws(furu_tmp_root) -> None:
+    source = SourceV1(value=35)
+    assert source.get() == 35
+
+    refs = SourceV2.all_stale_refs(namespace="test_migrations.SourceV1")
+    assert len(refs) == 1
+
+    def to_v2(old: SourceV1) -> SourceV2:
+        return SourceV2(value=old.value, extra="default")
+
+    refs[0].migrate(to_v2, origin="tests")
+    with pytest.raises(ValueError, match="alias schema already exists"):
+        refs[0].migrate(to_v2, origin="tests")
+
+
+def test_ref_migrate_requires_successful_original(furu_tmp_root) -> None:
+    source = SourceV1(value=36)
+    assert source.get() == 36
+    StateManager.get_success_marker_path(source._base_furu_dir()).unlink()
+
+    refs = SourceV2.all_stale_refs(namespace="test_migrations.SourceV1")
+    assert len(refs) == 1
+
+    def to_v2(old: SourceV1) -> SourceV2:
+        return SourceV2(value=old.value, extra="default")
+
+    with pytest.raises(ValueError, match="original artifact is not successful"):
+        refs[0].migrate(to_v2, origin="tests")
