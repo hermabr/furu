@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Treat refs that match `schema_key` but fail hydration as stale, so `Furu.all_current()`/`Furu.all_successful()` skip unloadable entries and `Furu.all_stale_refs()` surfaces them for migration. ([#53](https://github.com/hermabr/furu/pull/53))
+
 ## v0.0.10
 
 - Replace `Furu.current()`/`Furu.successful()`/`Furu.stale()` with `Furu.all_current()`/`Furu.all_successful()`/`Furu.all_stale_refs()`, with current/successful APIs returning hydrated objects and stale results remaining ref-based for migration workflows.

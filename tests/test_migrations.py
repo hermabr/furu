@@ -71,6 +71,14 @@ class RenameTarget(furu.Furu[int]):
 def _define_same_class(source: str) -> type[furu.Furu[int]]:
     namespace = {"furu": furu, "__name__": __name__}
     exec(textwrap.dedent(source), namespace)
+    module = sys.modules[__name__]
+    for name, value in namespace.items():
+        if not isinstance(value, type):
+            continue
+        if value.__module__ != __name__:
+            continue
+        setattr(module, name, value)
+
     cls = namespace.get("SameClass")
     if not isinstance(cls, type):
         raise AssertionError("SameClass definition failed")
@@ -78,7 +86,6 @@ def _define_same_class(source: str) -> type[furu.Furu[int]]:
         raise AssertionError("SameClass must be a Furu")
     cls.__module__ = __name__
     cls.__qualname__ = "SameClass"
-    module = sys.modules[__name__]
     setattr(module, "SameClass", cls)
     return cls
 
@@ -112,6 +119,98 @@ def _same_class_v2_required() -> type[furu.Furu[int]]:
 
             def _load(self) -> int:
                 return len((self.furu_dir / "value.txt").read_text().split(\":\")[0])
+        """
+    )
+
+
+def _same_class_nested_config_v1() -> type[furu.Furu[int]]:
+    return _define_same_class(
+        """
+        from dataclasses import dataclass, field
+
+
+        @dataclass(frozen=True)
+        class NestedOptimizer:
+            learning_rate: float = 1e-3
+
+
+        @dataclass(frozen=True)
+        class NestedTrainingConfig:
+            optimizer: NestedOptimizer = field(default_factory=NestedOptimizer)
+
+
+        class SameClass(furu.Furu[int]):
+            training: NestedTrainingConfig = furu.chz.field(
+                default_factory=NestedTrainingConfig
+            )
+
+            def _create(self) -> int:
+                (self.furu_dir / "value.txt").write_text("1")
+                return 1
+
+            def _load(self) -> int:
+                return int((self.furu_dir / "value.txt").read_text())
+        """
+    )
+
+
+def _same_class_nested_config_v2() -> type[furu.Furu[int]]:
+    return _define_same_class(
+        """
+        from dataclasses import dataclass
+
+
+        @dataclass(frozen=True)
+        class NestedOptimizer:
+            weight_decay: float
+
+
+        @dataclass(frozen=True)
+        class NestedTrainingConfig:
+            optimizer: NestedOptimizer
+
+
+        class SameClass(furu.Furu[int]):
+            training: NestedTrainingConfig
+
+            def _create(self) -> int:
+                (self.furu_dir / "value.txt").write_text("1")
+                return 1
+
+            def _load(self) -> int:
+                return int((self.furu_dir / "value.txt").read_text())
+        """
+    )
+
+
+def _same_class_nested_config_with_added_nested_field() -> type[furu.Furu[int]]:
+    return _define_same_class(
+        """
+        from dataclasses import dataclass, field
+
+
+        @dataclass(frozen=True)
+        class NestedOptimizer:
+            learning_rate: float = 1e-3
+
+
+        @dataclass(frozen=True)
+        class NestedTrainingConfig:
+            optimizer: NestedOptimizer = field(default_factory=NestedOptimizer)
+            weight_decay: float = 1e-4
+
+
+        class SameClass(furu.Furu[int]):
+            training: NestedTrainingConfig = furu.chz.field(
+                default_factory=NestedTrainingConfig
+            )
+
+            def _create(self) -> int:
+                (self.furu_dir / "value.txt").write_text("1")
+                return 1
+
+            def _load(self) -> int:
+                return int((self.furu_dir / "value.txt").read_text())
         """
     )
 
@@ -261,6 +360,34 @@ def test_all_current_and_all_stale_refs(furu_tmp_root) -> None:
     stale_refs = {ref.furu_hash for ref in SourceV1.all_stale_refs()}
     assert current_obj.furu_hash in current_hashes
     assert stale_obj.furu_hash in stale_refs
+
+
+def test_all_current_treats_nested_hydration_mismatch_as_stale(furu_tmp_root) -> None:
+    same_v1 = _same_class_nested_config_v1()
+    source = same_v1()
+    assert source.get() == 1
+
+    same_v2 = _same_class_nested_config_v2()
+    current_hashes = {obj.furu_hash for obj in same_v2.all_current()}
+    successful_hashes = {obj.furu_hash for obj in same_v2.all_successful()}
+    stale_hashes = {ref.furu_hash for ref in same_v2.all_stale_refs()}
+
+    assert source.furu_hash not in current_hashes
+    assert source.furu_hash not in successful_hashes
+    assert source.furu_hash in stale_hashes
+
+
+def test_all_current_treats_nested_hash_mismatch_as_stale(furu_tmp_root) -> None:
+    nested_v1 = _same_class_nested_config_v1()
+    source = nested_v1()
+    assert source.get() == 1
+
+    nested_v2 = _same_class_nested_config_with_added_nested_field()
+    current_hashes = {obj.furu_hash for obj in nested_v2.all_current()}
+    stale_hashes = {ref.furu_hash for ref in nested_v2.all_stale_refs()}
+
+    assert source.furu_hash not in current_hashes
+    assert source.furu_hash in stale_hashes
 
 
 def test_all_successful_filters_non_successful_current_objects(furu_tmp_root) -> None:
