@@ -44,6 +44,7 @@ from ..errors import (
     MISSING,
     FuruComputeError,
     FuruLockNotAcquired,
+    FuruMissingArtifact,
     FuruSpecMismatch,
     FuruValidationError,
     FuruWaitTimeout,
@@ -587,6 +588,20 @@ class Furu(ABC, Generic[T]):
         ok = self._validate()
         logger.info("exists %s -> %s", directory, "true" if ok else "false")
         return ok
+
+    def load_existing(self: Self) -> T:
+        """Load an existing result and raise if the artifact is missing."""
+        has_override_value, override_value = lookup_override(self.furu_hash)
+        if has_override_value:
+            return cast(T, override_value)
+
+        if not self.exists():
+            raise FuruMissingArtifact(
+                "Missing or invalid artifact "
+                f"{self.__class__.__name__}({self.furu_hash}); "
+                "run get() to compute it."
+            )
+        return self._load()
 
     def get_metadata(self: Self) -> "FuruMetadata":
         """Get metadata for this object."""
