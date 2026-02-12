@@ -1,11 +1,10 @@
 import json
 import importlib
-import importlib.util
 import os
 import sys
 import time
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar, cast
 
 import pytest
 
@@ -126,32 +125,10 @@ class QosPoolTask(PoolTask):
         )
 
 
-def _ensure_pkg_resources_runtime_shim(tmp_path: Path, monkeypatch) -> None:
-    if importlib.util.find_spec("pkg_resources") is not None:
-        return
-
-    shim_dir = tmp_path / "pkg_resources_shim"
-    shim_dir.mkdir(parents=True, exist_ok=True)
-    (shim_dir / "pkg_resources.py").write_text(
-        """from __future__ import annotations
-
-
-def iter_entry_points(group: str):
-    return []
-"""
-    )
-
-    current_pythonpath = os.environ.get("PYTHONPATH")
-    if current_pythonpath:
-        monkeypatch.setenv(
-            "PYTHONPATH",
-            f"{shim_dir}{os.pathsep}{current_pythonpath}",
-        )
-        return
-    monkeypatch.setenv("PYTHONPATH", str(shim_dir))
-
-
-def _load_submitit_task_module(tmp_path: Path, monkeypatch):
+def _load_submitit_task_module(
+    tmp_path: Path,
+    monkeypatch,
+) -> type[furu.Furu[int]]:
     module_dir = tmp_path / "submitit_test_module"
     module_dir.mkdir(parents=True, exist_ok=True)
     module_name = "submitit_pool_task"
@@ -259,17 +236,16 @@ def test_run_slurm_pool_executes_tasks(furu_tmp_root, tmp_path, monkeypatch) -> 
 def test_run_slurm_pool_executes_with_submitit_local_backend(
     furu_tmp_root, tmp_path, monkeypatch
 ) -> None:
-    _ensure_pkg_resources_runtime_shim(tmp_path, monkeypatch)
     monkeypatch.setenv("FURU_PATH", str(furu_tmp_root))
 
     import submitit
 
     submitit_task_cls = _load_submitit_task_module(tmp_path, monkeypatch)
-    root = submitit_task_cls(value=7)
+    root = cast(Any, submitit_task_cls)(value=7)
     original_auto_executor = submitit.AutoExecutor
 
     class LocalAutoExecutor:
-        def __new__(cls, folder: str):
+        def __new__(cls, folder: str) -> object:
             return original_auto_executor(folder=folder, cluster="local")
 
     monkeypatch.setattr(submitit, "AutoExecutor", LocalAutoExecutor)
@@ -1314,7 +1290,7 @@ def test_run_slurm_pool_throttles_queue_scans(
         done_scan_calls += 1
         return set()
 
-    def counted_failed_scan(_run_dir: Path):
+    def counted_failed_scan(_run_dir: Path) -> list[object]:
         nonlocal failed_scan_calls
         failed_scan_calls += 1
         return []

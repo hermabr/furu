@@ -232,7 +232,6 @@ def submit_slurm_dag(
                         Mapping[str, SlurmSpecExtraValue],
                         extra_params,
                     )
-                    slurm_params = {"dependency": dependency}
                     for key, value in mapped_params.items():
                         slurm_params[key] = value
             executor.update_parameters(slurm_additional_parameters=slurm_params)
