@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Make `all_current()` resilient to deserialization incompatibilities caused by schema/nested field changes, and include those refs in `all_stale_refs()` so stale artifacts are visible instead of crashing discovery.
+
 ## v0.0.10
 
 - Replace `Furu.current()`/`Furu.successful()`/`Furu.stale()` with `Furu.all_current()`/`Furu.all_successful()`/`Furu.all_stale_refs()`, with current/successful APIs returning hydrated objects and stale results remaining ref-based for migration workflows.

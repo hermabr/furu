@@ -45,6 +45,31 @@ class SourceV3(furu.Furu[int]):
         return int((self.furu_dir / "value.txt").read_text())
 
 
+class NestedOptimizerConfig(furu.Furu[str]):
+    learning_rate: float
+
+    def _create(self) -> str:
+        (self.furu_dir / "value.txt").write_text(str(self.learning_rate))
+        return str(self.learning_rate)
+
+    def _load(self) -> str:
+        return (self.furu_dir / "value.txt").read_text()
+
+
+class NestedTrainingConfig(furu.Furu[str]):
+    optimizer: NestedOptimizerConfig
+    inner_loop_batch_size: int = furu.chz.field(default=64)
+
+    def _create(self) -> str:
+        (self.furu_dir / "value.txt").write_text(
+            f"{self.optimizer.furu_hash}:{self.inner_loop_batch_size}"
+        )
+        return self.optimizer.furu_hash
+
+    def _load(self) -> str:
+        return (self.furu_dir / "value.txt").read_text().split(":")[0]
+
+
 class RenameSource(furu.Furu[int]):
     value: int = furu.chz.field(default=0)
     obsolete: str = furu.chz.field(default="old")
@@ -278,6 +303,25 @@ def test_all_successful_filters_non_successful_current_objects(furu_tmp_root) ->
     assert non_successful_obj.furu_hash in current_hashes
     assert successful_obj.furu_hash in successful_hashes
     assert non_successful_obj.furu_hash not in successful_hashes
+
+
+def test_all_current_skips_hydration_incompatible_nested_furu_objects(
+    furu_tmp_root,
+) -> None:
+    nested = NestedOptimizerConfig(learning_rate=1e-3)
+    current_obj = NestedTrainingConfig(optimizer=nested, inner_loop_batch_size=64)
+    current_obj.get()
+
+    metadata_path = MetadataManager.get_metadata_path(current_obj._base_furu_dir())
+    data = json.loads(metadata_path.read_text())
+    data["furu_obj"]["optimizer"].pop("learning_rate")
+    metadata_path.write_text(json.dumps(data, indent=2))
+
+    current_hashes = {obj.furu_hash for obj in NestedTrainingConfig.all_current()}
+    stale_refs = {ref.furu_hash for ref in NestedTrainingConfig.all_stale_refs()}
+
+    assert current_obj.furu_hash not in current_hashes
+    assert current_obj.furu_hash in stale_refs
 
 
 def test_ref_migrate_returns_target_and_writes_alias(furu_tmp_root) -> None:

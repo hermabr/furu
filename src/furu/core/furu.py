@@ -503,7 +503,17 @@ class Furu(ABC, Generic[T]):
 
     @classmethod
     def all_stale_refs(cls, *, namespace: str | None = None) -> list[FuruRef]:
-        return _stale_schema_refs(cls, namespace=namespace)
+        stale_refs = {
+            (ref.namespace, ref.furu_hash, ref.root): ref
+            for ref in _stale_schema_refs(cls, namespace=namespace)
+        }
+
+        for ref in cls._current_refs(namespace=namespace):
+            if cls._try_load_ref(ref) is not None:
+                continue
+            stale_refs[(ref.namespace, ref.furu_hash, ref.root)] = ref
+
+        return sorted(stale_refs.values(), key=lambda item: item.furu_hash)
 
     @classmethod
     def _current_refs(cls, *, namespace: str | None = None) -> list[FuruRef]:
@@ -522,14 +532,33 @@ class Furu(ABC, Generic[T]):
         return obj
 
     @classmethod
+    def _try_load_ref(cls: type[Self], ref: FuruRef) -> Self | None:
+        try:
+            return cls._object_from_ref(ref)
+        except Exception as exc:
+            logger = get_logger()
+            logger.warning(
+                "furu: failed to hydrate current object %s(%s) as %s for discovery: %s",
+                cls.__name__,
+                ref.furu_dir,
+                cls._namespace(),
+                exc,
+            )
+            return None
+
+    @classmethod
     def all_current(cls: type[Self], *, namespace: str | None = None) -> list[Self]:
         refs = cls._current_refs(namespace=namespace)
-        return [cls._object_from_ref(ref) for ref in refs]
+        objects: list[Self] = []
+        for ref in refs:
+            obj = cls._try_load_ref(ref)
+            if obj is not None:
+                objects.append(obj)
+        return objects
 
     @classmethod
     def all_successful(cls: type[Self], *, namespace: str | None = None) -> list[Self]:
-        refs = cls._current_refs(namespace=namespace)
-        objects = [cls._object_from_ref(ref) for ref in refs]
+        objects = cls.all_current(namespace=namespace)
         return [obj for obj in objects if obj._exists_quiet()]
 
     def log(self: Self, message: str, *, level: str = "INFO") -> Path:
