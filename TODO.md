@@ -41,6 +41,7 @@
 - [ ] make furu_dep and furu_lazy_dep/furu_dynamic_dep, where furu_lazy_dep is for dependencies that are only known at runtime and not at build time
 - [x] make tests/test_slurm_pool.py faster
 - [ ] submit slurm workers as using batch for array job
+- [x] add a load method that crashes if the object doesn't exist or change .get
 
 ## Code Quality
 

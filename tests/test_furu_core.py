@@ -3,6 +3,8 @@ import datetime
 import os
 import time
 
+import pytest
+
 import furu
 from furu.execution.slurm_spec import SlurmSpec, slurm_spec_key
 from furu.storage.state import _StateResultSuccess
@@ -77,6 +79,24 @@ def test_exists_reflects_success_state(furu_tmp_root) -> None:
     assert obj.exists() is False
     obj.get()
     assert obj.exists() is True
+
+
+def test_load_existing_raises_when_missing(furu_tmp_root) -> None:
+    obj = Dummy()
+
+    with pytest.raises(furu.FuruMissingArtifact, match="Missing or invalid artifact"):
+        obj.load_existing()
+
+
+def test_load_existing_loads_cached_result(furu_tmp_root) -> None:
+    obj = Dummy()
+    assert obj.get() == 123
+    assert obj._create_calls == 1
+    assert obj._load_calls == 0
+
+    assert obj.load_existing() == 123
+    assert obj._create_calls == 1
+    assert obj._load_calls == 1
 
 
 def test_get_recovers_from_expired_running_lease(furu_tmp_root) -> None:
