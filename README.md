@@ -143,7 +143,7 @@ submit_slurm_dag([TrainModel(use_gpu=True)])
 ```
 
 ```python
-from furu.execution import run_slurm_pool
+from furu.execution import SlurmSpec, run_slurm_pool
 
 run_slurm_pool(
     [TrainModel(use_gpu=True), TrainModel(use_gpu=False)],
@@ -156,11 +156,26 @@ run_slurm_pool(
     stale_scan_interval_sec=10.0,
     ready_refresh_interval_sec=2.0,
 )
+
+run_slurm_pool(
+    [TrainModel(use_gpu=True), TrainModel(use_gpu=False)],
+    max_workers_total={
+        SlurmSpec(partition="gpu", gpus=1, cpus=8, mem_gb=64, time_min=720): 4,
+        SlurmSpec(partition="cpu", cpus=8, mem_gb=32, time_min=120): 12,
+        "total": 14,
+    },
+)
 ```
 
 `_executor()` can return a single `SlurmSpec` or an ordered sequence of specs.
 `submit_slurm_dag` and `run_local` use the first spec. `run_slurm_pool` workers can
 claim tasks using any listed spec key, so you can offer fallback queues.
+
+`run_slurm_pool(max_workers_total=...)` accepts either an integer or a mapping
+of `SlurmSpec | Literal["total"]` to integer limits. In mapping mode, every
+executor spec key seen in the active plan must have a per-spec limit entry.
+`"total"` is optional; when omitted, the total cap defaults to the sum of all
+per-spec limits. Extra mapping keys that do not appear in the plan are allowed.
 
 `run_local` keeps an in-memory scheduler state with explicit buckets (`READY`,
 `BLOCKED`, `IN_PROGRESS_SELF`, `IN_PROGRESS_EXTERNAL`, `FAILED`, `COMPLETED`)

@@ -4,6 +4,7 @@ import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Protocol, TypeAlias, cast
 
 
@@ -22,6 +23,13 @@ class SlurmSpec:
     mem_gb: int = 16
     time_min: int = 60
     extra: Mapping[str, SlurmSpecExtraValue] | None = None
+
+    @cached_property
+    def _spec_key(self) -> str:
+        return _build_slurm_spec_key(self)
+
+    def __hash__(self) -> int:
+        return hash(self._spec_key)
 
 
 SlurmExecutorChoice: TypeAlias = SlurmSpec | Sequence[SlurmSpec]
@@ -73,7 +81,7 @@ def _normalize_extra(value: SlurmSpecExtraValue) -> SlurmSpecPayloadValue:
     return value
 
 
-def slurm_spec_key(spec: SlurmSpec) -> str:
+def _build_slurm_spec_key(spec: SlurmSpec) -> str:
     payload: dict[str, SlurmSpecPayloadValue] = {
         "partition": spec.partition,
         "gpus": spec.gpus,
@@ -97,3 +105,7 @@ def slurm_spec_key(spec: SlurmSpec) -> str:
     )
     safe_partition = safe_partition.strip("-") or "default"
     return f"{safe_partition}-{digest}"
+
+
+def slurm_spec_key(spec: SlurmSpec) -> str:
+    return spec._spec_key

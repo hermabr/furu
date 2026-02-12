@@ -4,7 +4,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar, Literal, cast
 
 import pytest
 
@@ -132,6 +132,17 @@ class QosPoolTask(PoolTask):
 class MultiExecutorPoolTask(PoolTask):
     def _executor(self) -> SlurmSpec | tuple[SlurmSpec, ...]:
         return (LOW_PRIORITY_POOL_SPEC, HIGH_PRIORITY_POOL_SPEC)
+
+
+class QosLimitPoolTask(PoolTask):
+    def _executor(self) -> SlurmSpec:
+        return SlurmSpec(
+            partition="cpu",
+            cpus=2,
+            mem_gb=4,
+            time_min=10,
+            extra={"slurm_additional_parameters": {"qos": "burst"}},
+        )
 
 
 def _load_submitit_task_module(
@@ -561,6 +572,205 @@ def test_run_slurm_pool_allows_any_task_executor_spec(
     assert task.exists()
     assert seen_spec_keys
     assert seen_spec_keys[0] == HIGH_PRIORITY_POOL_SPEC_KEY
+
+
+def test_run_slurm_pool_mapping_enforces_total_worker_limit(
+    furu_tmp_root, tmp_path, monkeypatch
+) -> None:
+    cpu_task = PoolTask(value=1)
+    gpu_task = GpuPoolTask(value=2)
+    seen_spec_keys: list[str] = []
+
+    def fake_make_executor(
+        spec_key: str,
+        spec: SlurmSpec,
+        *,
+        kind: str,
+        submitit_root,
+        run_id: str | None = None,
+    ):
+        seen_spec_keys.append(spec_key)
+        return NoopExecutor()
+
+    def stop_sleep(_seconds: float) -> None:
+        raise RuntimeError("stop loop")
+
+    monkeypatch.setattr(
+        "furu.execution.slurm_pool.make_executor_for_spec",
+        fake_make_executor,
+    )
+    monkeypatch.setattr("furu.execution.slurm_pool.time.sleep", stop_sleep)
+
+    limits: dict[SlurmSpec | Literal["total"], int] = {
+        DEFAULT_SPEC: 2,
+        GPU_SPEC: 2,
+        "total": 1,
+    }
+
+    with pytest.raises(RuntimeError, match="stop loop"):
+        run_slurm_pool(
+            [cpu_task, gpu_task],
+            max_workers_total=limits,
+            window_size="bfs",
+            idle_timeout_sec=0.01,
+            poll_interval_sec=0.01,
+            worker_health_check_interval_sec=60.0,
+            submitit_root=None,
+            run_root=tmp_path,
+        )
+
+    assert len(seen_spec_keys) == 1
+
+
+def test_run_slurm_pool_mapping_uses_sum_total_when_not_provided(
+    furu_tmp_root, tmp_path, monkeypatch
+) -> None:
+    cpu_task = PoolTask(value=1)
+    gpu_task = GpuPoolTask(value=2)
+    seen_spec_keys: list[str] = []
+
+    def fake_make_executor(
+        spec_key: str,
+        spec: SlurmSpec,
+        *,
+        kind: str,
+        submitit_root,
+        run_id: str | None = None,
+    ):
+        seen_spec_keys.append(spec_key)
+        return NoopExecutor()
+
+    def stop_sleep(_seconds: float) -> None:
+        raise RuntimeError("stop loop")
+
+    monkeypatch.setattr(
+        "furu.execution.slurm_pool.make_executor_for_spec",
+        fake_make_executor,
+    )
+    monkeypatch.setattr("furu.execution.slurm_pool.time.sleep", stop_sleep)
+
+    limits: dict[SlurmSpec | Literal["total"], int] = {
+        DEFAULT_SPEC: 1,
+        GPU_SPEC: 1,
+    }
+
+    with pytest.raises(RuntimeError, match="stop loop"):
+        run_slurm_pool(
+            [cpu_task, gpu_task],
+            max_workers_total=limits,
+            window_size="bfs",
+            idle_timeout_sec=0.01,
+            poll_interval_sec=0.01,
+            worker_health_check_interval_sec=60.0,
+            submitit_root=None,
+            run_root=tmp_path,
+        )
+
+    assert len(seen_spec_keys) == 2
+    assert set(seen_spec_keys) == {DEFAULT_SPEC_KEY, GPU_SPEC_KEY}
+
+
+def test_run_slurm_pool_mapping_requires_all_plan_executor_specs(
+    furu_tmp_root, tmp_path
+) -> None:
+    task = MultiExecutorPoolTask(value=9)
+    limits: dict[SlurmSpec | Literal["total"], int] = {
+        LOW_PRIORITY_POOL_SPEC: 1,
+    }
+
+    with pytest.raises(ValueError, match=HIGH_PRIORITY_POOL_SPEC_KEY):
+        run_slurm_pool(
+            [task],
+            max_workers_total=limits,
+            window_size="dfs",
+            idle_timeout_sec=0.01,
+            poll_interval_sec=0.01,
+            submitit_root=None,
+            run_root=tmp_path,
+        )
+
+
+def test_run_slurm_pool_mapping_allows_unused_spec_limits(
+    furu_tmp_root, tmp_path, monkeypatch
+) -> None:
+    root = PoolTask(value=3)
+
+    def fake_make_executor(
+        spec_key: str,
+        spec: SlurmSpec,
+        *,
+        kind: str,
+        submitit_root,
+        run_id: str | None = None,
+    ):
+        return InlineExecutor()
+
+    monkeypatch.setattr(
+        "furu.execution.slurm_pool.make_executor_for_spec",
+        fake_make_executor,
+    )
+
+    limits: dict[SlurmSpec | Literal["total"], int] = {
+        DEFAULT_SPEC: 1,
+        GPU_SPEC: 1,
+        LOW_PRIORITY_POOL_SPEC: 1,
+    }
+
+    run_slurm_pool(
+        [root],
+        max_workers_total=limits,
+        window_size="dfs",
+        idle_timeout_sec=0.01,
+        poll_interval_sec=0.01,
+        submitit_root=None,
+        run_root=tmp_path,
+    )
+
+    assert root.exists()
+
+
+def test_run_slurm_pool_mapping_accepts_spec_keys_with_nested_extra(
+    furu_tmp_root, tmp_path, monkeypatch
+) -> None:
+    root = QosLimitPoolTask(value=5)
+
+    def fake_make_executor(
+        spec_key: str,
+        spec: SlurmSpec,
+        *,
+        kind: str,
+        submitit_root,
+        run_id: str | None = None,
+    ):
+        return InlineExecutor()
+
+    monkeypatch.setattr(
+        "furu.execution.slurm_pool.make_executor_for_spec",
+        fake_make_executor,
+    )
+
+    qos_spec = SlurmSpec(
+        partition="cpu",
+        cpus=2,
+        mem_gb=4,
+        time_min=10,
+        extra={"slurm_additional_parameters": {"qos": "burst"}},
+    )
+    limits: dict[SlurmSpec | Literal["total"], int] = {
+        qos_spec: 1,
+    }
+
+    run_slurm_pool(
+        [root],
+        max_workers_total=limits,
+        window_size="dfs",
+        idle_timeout_sec=0.01,
+        poll_interval_sec=0.01,
+        submitit_root=None,
+        run_root=tmp_path,
+    )
+
+    assert root.exists()
 
 
 def test_run_slurm_pool_fails_on_failed_queue(tmp_path, monkeypatch) -> None:

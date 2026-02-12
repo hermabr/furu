@@ -34,6 +34,8 @@ from .submitit_factory import make_executor_for_spec
 
 FailureKind = Literal["compute", "protocol"]
 PoolFailurePhase = Literal["payload", "worker"]
+WorkerLimitKey = SlurmSpec | Literal["total"]
+WorkerLimitConfig = int | Mapping[WorkerLimitKey, int]
 MISSING_HEARTBEAT_REQUEUE_LIMIT = 1
 
 
@@ -58,6 +60,12 @@ class SlurmPoolRun:
     run_dir: Path
     submitit_root: Path
     plan: DependencyPlan
+
+
+@dataclass(frozen=True)
+class _WorkerLimits:
+    total_limit: int
+    per_spec_limits: Mapping[str, int] | None
 
 
 def classify_pool_exception(
@@ -95,6 +103,75 @@ def _normalize_window_size(window_size: str | int, root_count: int) -> int:
     if window_size < 1:
         raise ValueError("window_size must be >= 1")
     return min(window_size, root_count)
+
+
+def _normalize_worker_limits(max_workers_total: WorkerLimitConfig) -> _WorkerLimits:
+    if isinstance(max_workers_total, bool):
+        raise TypeError(
+            'max_workers_total must be an int or a mapping of SlurmSpec|"total" to int'
+        )
+    if isinstance(max_workers_total, int):
+        if max_workers_total < 1:
+            raise ValueError("max_workers_total must be >= 1")
+        return _WorkerLimits(total_limit=max_workers_total, per_spec_limits=None)
+    if not isinstance(max_workers_total, Mapping):
+        raise TypeError(
+            'max_workers_total must be an int or a mapping of SlurmSpec|"total" to int'
+        )
+
+    per_spec_limits: dict[str, int] = {}
+    total_limit: int | None = None
+    for raw_key, raw_limit in max_workers_total.items():
+        if isinstance(raw_limit, bool) or not isinstance(raw_limit, int):
+            raise TypeError("max_workers_total mapping values must be integers >= 1")
+        if raw_limit < 1:
+            raise ValueError("max_workers_total mapping values must be >= 1")
+
+        if raw_key == "total":
+            total_limit = raw_limit
+            continue
+        if not isinstance(raw_key, SlurmSpec):
+            raise TypeError(
+                "max_workers_total mapping keys must be SlurmSpec or 'total'"
+            )
+        per_spec_limits[slurm_spec_key(raw_key)] = raw_limit
+
+    if not per_spec_limits:
+        raise ValueError(
+            "max_workers_total mapping must include at least one SlurmSpec key"
+        )
+
+    resolved_total_limit = total_limit
+    if resolved_total_limit is None:
+        resolved_total_limit = sum(per_spec_limits.values())
+
+    return _WorkerLimits(
+        total_limit=resolved_total_limit,
+        per_spec_limits=per_spec_limits,
+    )
+
+
+def _validate_worker_limits_for_plan(
+    plan: DependencyPlan,
+    *,
+    per_spec_limits: Mapping[str, int] | None,
+) -> None:
+    if per_spec_limits is None:
+        return
+
+    missing_keys: set[str] = set()
+    for node in plan.nodes.values():
+        if node.status == "DONE":
+            continue
+        for executor_key in node.executor_keys:
+            if executor_key not in per_spec_limits:
+                missing_keys.add(executor_key)
+
+    if missing_keys:
+        missing = ", ".join(sorted(missing_keys))
+        raise ValueError(
+            f"max_workers_total mapping is missing executor spec limits for: {missing}"
+        )
 
 
 def _run_dir(run_root: Path | None) -> Path:
@@ -946,7 +1023,7 @@ def _refresh_ready_batch(
 def run_slurm_pool(
     roots: list[Furu],
     *,
-    max_workers_total: int = 50,
+    max_workers_total: WorkerLimitConfig = 50,
     window_size: str | int = "bfs",
     idle_timeout_sec: float = 60.0,
     poll_interval_sec: float = 2.0,
@@ -961,8 +1038,7 @@ def run_slurm_pool(
     submitit_root: Path | None = None,
     run_root: Path | None = None,
 ) -> SlurmPoolRun:
-    if max_workers_total < 1:
-        raise ValueError("max_workers_total must be >= 1")
+    worker_limits = _normalize_worker_limits(max_workers_total)
     if plan_refresh_interval_sec < 0:
         raise ValueError("plan_refresh_interval_sec must be >= 0")
     if worker_health_check_interval_sec < 0:
@@ -1051,6 +1127,11 @@ def run_slurm_pool(
             )
         if plan is None:
             raise RuntimeError("internal error: slurm pool plan not initialized")
+
+        _validate_worker_limits_for_plan(
+            plan,
+            per_spec_limits=worker_limits.per_spec_limits,
+        )
 
         now = time.time()
         if failed_scan_interval <= 0 or now >= next_failed_scan_at:
@@ -1155,19 +1236,34 @@ def run_slurm_pool(
 
         total_workers = sum(len(jobs) for jobs in jobs_by_spec.values())
         known_spec_keys = sorted({*specs_by_key, *jobs_by_spec})
+        workers_by_spec = {
+            spec_key: len(jobs_by_spec.get(spec_key, []))
+            for spec_key in known_spec_keys
+        }
         backlog_by_spec = {
             spec_key: _backlog(run_dir, spec_key) for spec_key in known_spec_keys
         }
 
-        while total_workers < max_workers_total and any(
-            count > 0 for count in backlog_by_spec.values()
-        ):
-            spec_key = max(backlog_by_spec, key=lambda key: backlog_by_spec[key])
-            if backlog_by_spec[spec_key] <= 0:
+        def has_spec_capacity(spec_key: str) -> bool:
+            if worker_limits.per_spec_limits is None:
+                return True
+            limit = worker_limits.per_spec_limits.get(spec_key)
+            if limit is None:
+                return False
+            return workers_by_spec.get(spec_key, 0) < limit
+
+        while total_workers < worker_limits.total_limit:
+            candidate_spec_keys = [
+                spec_key
+                for spec_key, count in backlog_by_spec.items()
+                if count > 0 and has_spec_capacity(spec_key)
+            ]
+            if not candidate_spec_keys:
                 break
+            spec_key = max(candidate_spec_keys, key=lambda key: backlog_by_spec[key])
             latest_spec_backlog = _backlog(run_dir, spec_key)
             backlog_by_spec[spec_key] = latest_spec_backlog
-            if latest_spec_backlog <= 0:
+            if latest_spec_backlog <= 0 or not has_spec_capacity(spec_key):
                 continue
             spec = specs_by_key.get(spec_key)
             if spec is None:
@@ -1197,6 +1293,7 @@ def run_slurm_pool(
             )
             jobs_by_spec[spec_key].append(job)
             total_workers += 1
+            workers_by_spec[spec_key] = workers_by_spec.get(spec_key, 0) + 1
             backlog_by_spec[spec_key] = max(0, latest_spec_backlog - 1)
 
         finished_indices = [
