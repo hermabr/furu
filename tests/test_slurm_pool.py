@@ -10,18 +10,17 @@ import furu
 from furu.execution.plan import DependencyPlan, PlanNode
 from furu.execution.slurm_pool import (
     _claim_task,
+    _ensure_queue_layout,
     _handle_failed_tasks,
     _mark_done,
     _mark_failed,
     _requeue_stale_running,
     _scan_failed_tasks,
     _spec_with_pool_worker_logs,
-    _ensure_queue_layout,
     pool_worker_main,
     run_slurm_pool,
 )
 from furu.execution.slurm_spec import SlurmSpec, slurm_spec_key
-
 
 DEFAULT_SPEC = SlurmSpec()
 DEFAULT_SPEC_KEY = slurm_spec_key(DEFAULT_SPEC)
@@ -124,6 +123,11 @@ class QosPoolTask(PoolTask):
         )
 
 
+# def _require_submitit_local_runtime() -> None:
+#     pytest.importorskip("submitit")
+#     pytest.importorskip("pkg_resources")
+
+
 def test_spec_with_pool_worker_logs_merges_additional_parameters(tmp_path) -> None:
     base_spec = SlurmSpec(
         partition="cpu",
@@ -179,6 +183,36 @@ def test_run_slurm_pool_executes_tasks(furu_tmp_root, tmp_path, monkeypatch) -> 
         max_workers_total=1,
         window_size="dfs",
         idle_timeout_sec=0.01,
+        poll_interval_sec=0.01,
+        submitit_root=None,
+        run_root=tmp_path,
+    )
+
+    assert root.exists()
+    assert (run.run_dir / "queue" / "done" / f"{root.furu_hash}.json").exists()
+
+
+def test_run_slurm_pool_executes_with_submitit_local_backend(
+    furu_tmp_root, tmp_path, monkeypatch
+) -> None:
+    # _require_submitit_local_runtime()
+
+    import submitit
+
+    root = PoolTask(value=7)
+    original_auto_executor = submitit.AutoExecutor
+
+    class LocalAutoExecutor:
+        def __new__(cls, folder: str):
+            return original_auto_executor(folder=folder, cluster="local")
+
+    monkeypatch.setattr(submitit, "AutoExecutor", LocalAutoExecutor)
+
+    run = run_slurm_pool(
+        [root],
+        max_workers_total=1,
+        window_size="dfs",
+        idle_timeout_sec=0.05,
         poll_interval_sec=0.01,
         submitit_root=None,
         run_root=tmp_path,
@@ -1177,3 +1211,93 @@ def test_run_slurm_pool_throttles_worker_health_checks(
 
     assert executor.submitted == 1
     assert job.done_calls <= 1
+
+
+def test_run_slurm_pool_throttles_queue_scans(
+    furu_tmp_root, tmp_path, monkeypatch
+) -> None:
+    root = PoolTask(value=1)
+    plan = DependencyPlan(
+        roots=[root],
+        nodes={
+            root.furu_hash: PlanNode(
+                obj=root,
+                status="IN_PROGRESS",
+                executor=DEFAULT_SPEC,
+                executor_key=DEFAULT_SPEC_KEY,
+                deps_all=set(),
+                deps_pending=set(),
+                dependents=set(),
+            )
+        },
+    )
+
+    sleep_calls = 0
+    done_scan_calls = 0
+    failed_scan_calls = 0
+    stale_scan_calls = 0
+
+    def stop_sleep(_seconds: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls >= 3:
+            raise RuntimeError("stop loop")
+
+    def counted_done_hashes(_run_dir: Path) -> set[str]:
+        nonlocal done_scan_calls
+        done_scan_calls += 1
+        return set()
+
+    def counted_failed_scan(_run_dir: Path):
+        nonlocal failed_scan_calls
+        failed_scan_calls += 1
+        return []
+
+    def counted_stale_scan(
+        _run_dir: Path,
+        *,
+        stale_sec: float,
+        heartbeat_grace_sec: float,
+        max_compute_retries: int,
+    ) -> int:
+        nonlocal stale_scan_calls
+        stale_scan_calls += 1
+        return 0
+
+    monkeypatch.setattr("furu.execution.slurm_pool.build_plan", lambda *a, **k: plan)
+    monkeypatch.setattr("furu.execution.slurm_pool._done_hashes", counted_done_hashes)
+    monkeypatch.setattr(
+        "furu.execution.slurm_pool._scan_failed_tasks",
+        counted_failed_scan,
+    )
+    monkeypatch.setattr(
+        "furu.execution.slurm_pool._requeue_stale_running",
+        counted_stale_scan,
+    )
+    monkeypatch.setattr(
+        "furu.execution.slurm_pool.make_executor_for_spec",
+        lambda *args, **kwargs: NoopExecutor(),
+    )
+    monkeypatch.setattr(
+        "furu.execution.slurm_pool.reconcile_or_timeout_in_progress",
+        lambda plan, *, stale_timeout_sec: False,
+    )
+    monkeypatch.setattr("furu.execution.slurm_pool.time.sleep", stop_sleep)
+
+    with pytest.raises(RuntimeError, match="stop loop"):
+        run_slurm_pool(
+            [root],
+            max_workers_total=1,
+            window_size="dfs",
+            idle_timeout_sec=0.01,
+            poll_interval_sec=0.01,
+            done_scan_interval_sec=60.0,
+            failed_scan_interval_sec=60.0,
+            stale_scan_interval_sec=60.0,
+            submitit_root=None,
+            run_root=tmp_path,
+        )
+
+    assert done_scan_calls <= 2
+    assert failed_scan_calls <= 1
+    assert stale_scan_calls <= 1

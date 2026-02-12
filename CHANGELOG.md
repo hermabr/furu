@@ -9,6 +9,7 @@
 - Add `examples/run_local_executor_benchmark.py` to benchmark local executor planning latency and end-to-end runtime on a nested 10k-node DAG.
 - Rework `run_local` to build scheduler state once per run and maintain in-memory buckets (`READY`, `BLOCKED`, `IN_PROGRESS_SELF`, `IN_PROGRESS_EXTERNAL`, `FAILED`, `COMPLETED`) with dependency-pending sets, pre-dispatch state rechecks, and configurable external/underutilized/full reconcile polling (`external_poll_interval_sec`, `underutilized_reconcile_interval_sec`, `plan_refresh_interval_sec`).
 - Keep sticky `DONE` snapshot semantics per executor run and separate slurm-pool worker health polling cadence (`worker_health_check_interval_sec`).
+- Add independent slurm-pool queue scan and ready-refresh cadences (`done_scan_interval_sec`, `failed_scan_interval_sec`, `stale_scan_interval_sec`, `ready_refresh_interval_sec`) so controller filesystem scans can be throttled without changing worker polling.
 
 ## v0.0.8
 
