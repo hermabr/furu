@@ -503,7 +503,21 @@ class Furu(ABC, Generic[T]):
 
     @classmethod
     def all_stale_refs(cls, *, namespace: str | None = None) -> list[FuruRef]:
-        return _stale_schema_refs(cls, namespace=namespace)
+        stale_refs = _stale_schema_refs(cls, namespace=namespace)
+        _, hydrate_stale_refs = cls._hydrated_current_refs(namespace=namespace)
+        if not hydrate_stale_refs:
+            return stale_refs
+
+        merged = list(stale_refs)
+        seen = {(ref.namespace, ref.furu_hash, ref.root) for ref in merged}
+        for ref in hydrate_stale_refs:
+            key = (ref.namespace, ref.furu_hash, ref.root)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(ref)
+        merged.sort(key=lambda item: item.furu_hash)
+        return merged
 
     @classmethod
     def _current_refs(cls, *, namespace: str | None = None) -> list[FuruRef]:
@@ -522,14 +536,43 @@ class Furu(ABC, Generic[T]):
         return obj
 
     @classmethod
-    def all_current(cls: type[Self], *, namespace: str | None = None) -> list[Self]:
+    def _object_from_ref_or_none(cls: type[Self], ref: FuruRef) -> Self | None:
+        try:
+            return cls._object_from_ref(ref)
+        except Exception as exc:
+            logger = get_logger()
+            logger.warning(
+                "schema current but hydrate failed for %s(%s); "
+                "treating ref as stale: %s",
+                cls.__name__,
+                ref.furu_hash,
+                exc,
+            )
+            return None
+
+    @classmethod
+    def _hydrated_current_refs(
+        cls: type[Self], *, namespace: str | None = None
+    ) -> tuple[list[Self], list[FuruRef]]:
         refs = cls._current_refs(namespace=namespace)
-        return [cls._object_from_ref(ref) for ref in refs]
+        current_objects: list[Self] = []
+        stale_refs: list[FuruRef] = []
+        for ref in refs:
+            obj = cls._object_from_ref_or_none(ref)
+            if obj is None:
+                stale_refs.append(ref)
+                continue
+            current_objects.append(obj)
+        return current_objects, stale_refs
+
+    @classmethod
+    def all_current(cls: type[Self], *, namespace: str | None = None) -> list[Self]:
+        objects, _ = cls._hydrated_current_refs(namespace=namespace)
+        return objects
 
     @classmethod
     def all_successful(cls: type[Self], *, namespace: str | None = None) -> list[Self]:
-        refs = cls._current_refs(namespace=namespace)
-        objects = [cls._object_from_ref(ref) for ref in refs]
+        objects, _ = cls._hydrated_current_refs(namespace=namespace)
         return [obj for obj in objects if obj._exists_quiet()]
 
     def log(self: Self, message: str, *, level: str = "INFO") -> Path:
