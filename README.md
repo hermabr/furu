@@ -149,8 +149,22 @@ run_slurm_pool(
     [TrainModel(use_gpu=True), TrainModel(use_gpu=False)],
     max_workers_total=50,
     window_size="bfs",
+    plan_refresh_interval_sec=60.0,
+    worker_health_check_interval_sec=15.0,
 )
 ```
+
+`run_local` keeps an in-memory scheduler state with explicit buckets (`READY`,
+`BLOCKED`, `IN_PROGRESS_SELF`, `IN_PROGRESS_EXTERNAL`, `FAILED`, `COMPLETED`)
+and dispatches from `READY` without rebuilding the full dependency plan each loop.
+It polls external in-progress nodes (`external_poll_interval_sec`, default `5.0`),
+runs underutilized reconciles when below capacity
+(`underutilized_reconcile_interval_sec`, default `15.0`), and runs a broader
+periodic reconcile (`plan_refresh_interval_sec`, default `60.0`). Nodes observed
+as `DONE` stay done for the remainder of that executor run (snapshot semantics).
+
+`run_slurm_pool` keeps run-local scheduler state in memory and periodically
+refreshes from storage.
 
 Submitit logs are stored under `<FURU_PATH>/submitit` by default. Override with
 `FURU_SUBMITIT_PATH` when you want a different logs root. In `run_slurm_pool`,

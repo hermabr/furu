@@ -61,6 +61,27 @@ class NoopExecutor:
         return NoopJob()
 
 
+class CountingJob:
+    job_id = "counting"
+
+    def __init__(self) -> None:
+        self.done_calls = 0
+
+    def done(self) -> bool:
+        self.done_calls += 1
+        return False
+
+
+class CountingExecutor:
+    def __init__(self, job: CountingJob) -> None:
+        self._job = job
+        self.submitted = 0
+
+    def submit(self, fn):
+        self.submitted += 1
+        return self._job
+
+
 class PoolTask(furu.Furu[int]):
     value: int = furu.chz.field()
 
@@ -1059,3 +1080,100 @@ def test_run_slurm_pool_stale_in_progress_raises(
             submitit_root=None,
             run_root=tmp_path,
         )
+
+
+def test_run_slurm_pool_throttles_plan_refresh(
+    furu_tmp_root, tmp_path, monkeypatch
+) -> None:
+    root = PoolTask(value=1)
+    build_calls = 0
+
+    plan = DependencyPlan(
+        roots=[root],
+        nodes={
+            root.furu_hash: PlanNode(
+                obj=root,
+                status="IN_PROGRESS",
+                executor=DEFAULT_SPEC,
+                executor_key=DEFAULT_SPEC_KEY,
+                deps_all=set(),
+                deps_pending=set(),
+                dependents=set(),
+            )
+        },
+    )
+
+    def counted_build_plan(roots, *, completed_hashes=None):
+        nonlocal build_calls
+        build_calls += 1
+        return plan
+
+    sleep_calls = 0
+
+    def stop_sleep(_seconds: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls >= 3:
+            raise RuntimeError("stop loop")
+
+    monkeypatch.setattr("furu.execution.slurm_pool.build_plan", counted_build_plan)
+    monkeypatch.setattr(
+        "furu.execution.slurm_pool.make_executor_for_spec",
+        lambda *args, **kwargs: NoopExecutor(),
+    )
+    monkeypatch.setattr(
+        "furu.execution.slurm_pool.reconcile_or_timeout_in_progress",
+        lambda plan, *, stale_timeout_sec: False,
+    )
+    monkeypatch.setattr("furu.execution.slurm_pool.time.sleep", stop_sleep)
+
+    with pytest.raises(RuntimeError, match="stop loop"):
+        run_slurm_pool(
+            [root],
+            max_workers_total=1,
+            window_size="dfs",
+            idle_timeout_sec=0.01,
+            poll_interval_sec=0.01,
+            plan_refresh_interval_sec=60.0,
+            submitit_root=None,
+            run_root=tmp_path,
+        )
+
+    assert build_calls <= 2
+
+
+def test_run_slurm_pool_throttles_worker_health_checks(
+    furu_tmp_root, tmp_path, monkeypatch
+) -> None:
+    root = PoolTask(value=1)
+    job = CountingJob()
+    executor = CountingExecutor(job)
+
+    sleep_calls = 0
+
+    def stop_sleep(_seconds: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls >= 3:
+            raise RuntimeError("stop loop")
+
+    monkeypatch.setattr(
+        "furu.execution.slurm_pool.make_executor_for_spec",
+        lambda *args, **kwargs: executor,
+    )
+    monkeypatch.setattr("furu.execution.slurm_pool.time.sleep", stop_sleep)
+
+    with pytest.raises(RuntimeError, match="stop loop"):
+        run_slurm_pool(
+            [root],
+            max_workers_total=1,
+            window_size="dfs",
+            idle_timeout_sec=0.01,
+            poll_interval_sec=0.01,
+            worker_health_check_interval_sec=60.0,
+            submitit_root=None,
+            run_root=tmp_path,
+        )
+
+    assert executor.submitted == 1
+    assert job.done_calls <= 1

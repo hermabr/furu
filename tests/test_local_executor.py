@@ -8,7 +8,7 @@ import pytest
 import furu
 from furu import furu_dep
 from furu.execution.local import run_local
-from furu.execution.plan import DependencyPlan, PlanNode
+from furu.execution.plan import DependencyPlan, PlanNode, build_plan as build_plan_impl
 from furu.execution.slurm_spec import SlurmSpec, slurm_spec_key
 
 
@@ -84,6 +84,22 @@ class FlakyNTimesTask(furu.Furu[int]):
 
     def _load(self) -> int:
         return json.loads((self.furu_dir / "value.json").read_text())
+
+
+class SleepTask(LeafTask):
+    delay_sec: float = furu.chz.field(default=0.05)
+
+    def _create(self) -> int:
+        time.sleep(self.delay_sec)
+        return super()._create()
+
+
+class CountingValidateTask(LeafTask):
+    _validate_calls: ClassVar[int] = 0
+
+    def _validate(self) -> bool:
+        type(self)._validate_calls += 1
+        return (self.furu_dir / "value.json").is_file()
 
 
 def test_run_local_executes_dependencies(furu_tmp_root) -> None:
@@ -244,3 +260,46 @@ def test_run_local_reconciles_stale_in_progress(furu_tmp_root, monkeypatch) -> N
     run_local([task], max_workers=1, window_size="dfs", poll_interval_sec=0.01)
 
     assert task._create_calls == 1
+
+
+def test_run_local_throttles_plan_refresh(furu_tmp_root, monkeypatch) -> None:
+    task = SleepTask(value=5, delay_sec=0.08)
+    build_calls = 0
+
+    def counted_build_plan(roots, *, completed_hashes=None):
+        nonlocal build_calls
+        build_calls += 1
+        return build_plan_impl(roots, completed_hashes=completed_hashes)
+
+    monkeypatch.setattr("furu.execution.local.build_plan", counted_build_plan)
+
+    run_local(
+        [task],
+        max_workers=1,
+        window_size="dfs",
+        poll_interval_sec=0.01,
+        plan_refresh_interval_sec=60.0,
+    )
+
+    assert task.get() == 5
+    assert build_calls <= 2
+
+
+def test_run_local_done_nodes_are_sticky_with_cached_plan(furu_tmp_root) -> None:
+    done_dep = CountingValidateTask(value=3)
+    done_dep.get()
+    CountingValidateTask._validate_calls = 0
+
+    slow_dep = SleepTask(value=4, delay_sec=0.08)
+    root = SumTask(deps=[done_dep, slow_dep])
+
+    run_local(
+        [root],
+        max_workers=1,
+        window_size="dfs",
+        poll_interval_sec=0.01,
+        plan_refresh_interval_sec=60.0,
+    )
+
+    assert root.get() == 7
+    assert CountingValidateTask._validate_calls <= 2
