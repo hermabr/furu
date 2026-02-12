@@ -36,12 +36,13 @@
 - [ ] Don't fail if a dependency is failed, but rather resubmit it for submit slurm dag
     - [ ] Warn/throw/require flag if trying to submit more than 100 jobs
 - [ ] Merge stuff from local worker and slurm pool together
-- [ ] better discovery of all existing (successful) experiments for a config
+- [x] better discovery of all existing (successful) experiments for a config
     - [ ] allow finding subclasses/parents too
 - [ ] make furu_dep and furu_lazy_dep/furu_dynamic_dep, where furu_lazy_dep is for dependencies that are only known at runtime and not at build time
 - [x] make tests/test_slurm_pool.py faster
 - [ ] submit slurm workers as using batch for array job
 - [x] add a load method that crashes if the object doesn't exist or change .get
+- [ ] ensure import furu is fast
 
 ## Code Quality
 
