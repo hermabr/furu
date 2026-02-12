@@ -1,7 +1,7 @@
 import json
 import sys
 import textwrap
-from typing import Protocol, cast
+from typing import Protocol, cast, get_args
 
 import pytest
 
@@ -313,6 +313,143 @@ def _same_class_nested_person_without_name() -> type[furu.Furu[int]]:
     )
 
 
+def _same_class_nested_conf_age_only() -> type[furu.Furu[int]]:
+    return _define_same_class(
+        """
+        from dataclasses import dataclass
+
+
+        @dataclass(frozen=True)
+        class Conf:
+            age: int
+
+
+        class SameClass(furu.Furu[int]):
+            conf: Conf
+
+            def _create(self) -> int:
+                (self.furu_dir / "value.txt").write_text(str(self.conf.age))
+                return self.conf.age
+
+            def _load(self) -> int:
+                return int((self.furu_dir / "value.txt").read_text())
+        """
+    )
+
+
+def _same_class_nested_conf_required_name() -> type[furu.Furu[int]]:
+    return _define_same_class(
+        """
+        from dataclasses import dataclass
+
+
+        @dataclass(frozen=True)
+        class Conf:
+            age: int
+            name: str
+
+
+        class SameClass(furu.Furu[int]):
+            conf: Conf
+
+            def _create(self) -> int:
+                (self.furu_dir / "value.txt").write_text(str(self.conf.age))
+                return self.conf.age
+
+            def _load(self) -> int:
+                return int((self.furu_dir / "value.txt").read_text())
+        """
+    )
+
+
+def _same_class_nested_conf_default_name() -> type[furu.Furu[int]]:
+    return _define_same_class(
+        """
+        from dataclasses import dataclass
+
+
+        @dataclass(frozen=True)
+        class Conf:
+            age: int
+            name: str = ""
+
+
+        class SameClass(furu.Furu[int]):
+            conf: Conf
+
+            def _create(self) -> int:
+                (self.furu_dir / "value.txt").write_text(str(self.conf.age))
+                return self.conf.age
+
+            def _load(self) -> int:
+                return int((self.furu_dir / "value.txt").read_text())
+        """
+    )
+
+
+def _same_class_nested_conf_union_same_shape() -> type[furu.Furu[int]]:
+    return _define_same_class(
+        """
+        from dataclasses import dataclass
+
+
+        @dataclass(frozen=True)
+        class Conf:
+            age: int
+            name: str
+
+
+        @dataclass(frozen=True)
+        class Conf2:
+            age: int
+            name: str
+
+
+        class SameClass(furu.Furu[int]):
+            conf: Conf | Conf2
+
+            def _create(self) -> int:
+                (self.furu_dir / "value.txt").write_text(str(self.conf.age))
+                return self.conf.age
+
+            def _load(self) -> int:
+                return int((self.furu_dir / "value.txt").read_text())
+        """
+    )
+
+
+def _same_class_nested_conf_union_distinct_shape() -> type[furu.Furu[int]]:
+    return _define_same_class(
+        """
+        from dataclasses import dataclass
+
+
+        @dataclass(frozen=True)
+        class Conf:
+            age: int
+            name: str
+
+
+        @dataclass(frozen=True)
+        class Conf2:
+            age: int
+            name: str
+            nickname: str
+
+
+        class SameClass(furu.Furu[int]):
+            conf: Conf | Conf2
+
+            def _create(self) -> int:
+                (self.furu_dir / "value.txt").write_text(str(self.conf.age))
+                return self.conf.age
+
+            def _load(self) -> int:
+                return int((self.furu_dir / "value.txt").read_text())
+        """
+    )
+
+
 def test_migrate_by_schema_with_defaults(furu_tmp_root) -> None:
     source = SourceV1(value=5)
     assert source.get() == 5
@@ -612,6 +749,252 @@ def test_ref_migrate_nested_dataclass_adds_field_with_transform(furu_tmp_root) -
     assert record is not None
     assert record.kind == "alias"
     assert record.from_hash == source.furu_hash
+
+
+def test_ref_migrate_nested_dataclass_adds_field_with_replace_dict(
+    furu_tmp_root,
+) -> None:
+    old_version = _same_class_nested_conf_age_only()
+    old_conf_type = cast(type, old_version.__annotations__["conf"])
+
+    source = cast(type, old_version)(conf=old_conf_type(age=35))
+    assert source.get() == 35
+
+    new_version = _same_class_nested_conf_required_name()
+    new_conf_type = cast(type, new_version.__annotations__["conf"])
+    stale_refs = new_version.all_stale_refs(namespace="test_migrations.SameClass")
+    assert len(stale_refs) == 1
+    stale_ref = stale_refs[0]
+
+    from chz import replace
+
+    class _ConfLike(Protocol):
+        age: int
+
+    class _ConfWithName(Protocol):
+        age: int
+        name: str
+
+    class _ContainerLike(Protocol):
+        conf: _ConfLike
+
+    class _ContainerWithName(Protocol):
+        conf: _ConfWithName
+
+    def to_v2(old: _ContainerLike) -> furu.Furu[int]:
+        old_furu = cast(furu.Furu[int], old)
+        return replace(
+            old_furu,
+            conf={"age": old.conf.age, "name": "default"},
+        )
+
+    target = stale_ref.migrate(to_v2, dry_run=True, origin="tests")
+    target_cast = cast(_ContainerWithName, target)
+    assert isinstance(target, new_version)
+    assert isinstance(target_cast.conf, new_conf_type)
+    assert target_cast.conf.age == 35
+    assert target_cast.conf.name == "default"
+    assert not target._base_furu_dir().exists()
+
+
+def test_ref_migrate_nested_dataclass_replace_dict_rejects_extra_fields(
+    furu_tmp_root,
+) -> None:
+    old_version = _same_class_nested_conf_age_only()
+    old_conf_type = cast(type, old_version.__annotations__["conf"])
+
+    source = cast(type, old_version)(conf=old_conf_type(age=36))
+    assert source.get() == 36
+
+    new_version = _same_class_nested_conf_required_name()
+    stale_refs = new_version.all_stale_refs(namespace="test_migrations.SameClass")
+    assert len(stale_refs) == 1
+
+    from chz import replace
+
+    class _ConfLike(Protocol):
+        age: int
+
+    class _ContainerLike(Protocol):
+        conf: _ConfLike
+
+    def to_v2(old: _ContainerLike) -> furu.Furu[int]:
+        old_furu = cast(furu.Furu[int], old)
+        return replace(
+            old_furu,
+            conf={"age": old.conf.age, "name": "default", "extra": "nope"},
+        )
+
+    with pytest.raises(TypeError, match="strict_types check failed for field 'conf'"):
+        stale_refs[0].migrate(to_v2, dry_run=True, origin="tests")
+
+
+def test_ref_migrate_nested_dataclass_replace_dict_requires_defaulted_fields(
+    furu_tmp_root,
+) -> None:
+    old_version = _same_class_nested_conf_age_only()
+    old_conf_type = cast(type, old_version.__annotations__["conf"])
+
+    source = cast(type, old_version)(conf=old_conf_type(age=37))
+    assert source.get() == 37
+
+    new_version = _same_class_nested_conf_default_name()
+    stale_refs = new_version.all_stale_refs(namespace="test_migrations.SameClass")
+    assert len(stale_refs) == 1
+
+    from chz import replace
+
+    class _ConfLike(Protocol):
+        age: int
+
+    class _ContainerLike(Protocol):
+        conf: _ConfLike
+
+    def to_v2(old: _ContainerLike) -> furu.Furu[int]:
+        old_furu = cast(furu.Furu[int], old)
+        return replace(
+            old_furu,
+            conf={"age": old.conf.age},
+        )
+
+    with pytest.raises(TypeError, match="strict_types check failed for field 'conf'"):
+        stale_refs[0].migrate(to_v2, dry_run=True, origin="tests")
+
+
+def test_ref_migrate_nested_union_replace_dict_selects_only_valid_branch(
+    furu_tmp_root,
+) -> None:
+    old_version = _same_class_nested_conf_age_only()
+    old_conf_type = cast(type, old_version.__annotations__["conf"])
+
+    source = cast(type, old_version)(conf=old_conf_type(age=38))
+    assert source.get() == 38
+
+    new_version = _same_class_nested_conf_union_distinct_shape()
+    union_types = cast(tuple[type, ...], get_args(new_version.__annotations__["conf"]))
+    assert len(union_types) == 2
+    conf_type, conf2_type = union_types
+
+    stale_refs = new_version.all_stale_refs(namespace="test_migrations.SameClass")
+    assert len(stale_refs) == 1
+
+    from chz import replace
+
+    class _ConfLike(Protocol):
+        age: int
+
+    class _ContainerLike(Protocol):
+        conf: _ConfLike
+
+    class _ConfWithNickname(Protocol):
+        age: int
+        name: str
+        nickname: str
+
+    class _ContainerWithNickname(Protocol):
+        conf: _ConfWithNickname
+
+    def to_v2(old: _ContainerLike) -> furu.Furu[int]:
+        old_furu = cast(furu.Furu[int], old)
+        return replace(
+            old_furu,
+            conf={
+                "age": old.conf.age,
+                "name": "default",
+                "nickname": "hero",
+            },
+        )
+
+    target = stale_refs[0].migrate(to_v2, dry_run=True, origin="tests")
+    target_cast = cast(_ContainerWithNickname, target)
+    assert isinstance(target, new_version)
+    assert isinstance(target_cast.conf, conf2_type)
+    assert not isinstance(target_cast.conf, conf_type)
+    assert target_cast.conf.nickname == "hero"
+
+
+def test_ref_migrate_nested_union_replace_dict_ambiguous_requires_class_marker(
+    furu_tmp_root,
+) -> None:
+    old_version = _same_class_nested_conf_age_only()
+    old_conf_type = cast(type, old_version.__annotations__["conf"])
+
+    source = cast(type, old_version)(conf=old_conf_type(age=39))
+    assert source.get() == 39
+
+    new_version = _same_class_nested_conf_union_same_shape()
+    stale_refs = new_version.all_stale_refs(namespace="test_migrations.SameClass")
+    assert len(stale_refs) == 1
+
+    from chz import replace
+
+    class _ConfLike(Protocol):
+        age: int
+
+    class _ContainerLike(Protocol):
+        conf: _ConfLike
+
+    def to_v2(old: _ContainerLike) -> furu.Furu[int]:
+        old_furu = cast(furu.Furu[int], old)
+        return replace(
+            old_furu,
+            conf={"age": old.conf.age, "name": "default"},
+        )
+
+    with pytest.raises(TypeError, match="ambiguous union match"):
+        stale_refs[0].migrate(to_v2, dry_run=True, origin="tests")
+
+
+def test_ref_migrate_nested_union_replace_dict_class_marker_disambiguates(
+    furu_tmp_root,
+) -> None:
+    old_version = _same_class_nested_conf_age_only()
+    old_conf_type = cast(type, old_version.__annotations__["conf"])
+
+    source = cast(type, old_version)(conf=old_conf_type(age=40))
+    assert source.get() == 40
+
+    new_version = _same_class_nested_conf_union_same_shape()
+    union_types = cast(tuple[type, ...], get_args(new_version.__annotations__["conf"]))
+    assert len(union_types) == 2
+    conf_type, conf2_type = union_types
+    conf2_marker = f"{conf2_type.__module__}.{conf2_type.__qualname__}"
+
+    stale_refs = new_version.all_stale_refs(namespace="test_migrations.SameClass")
+    assert len(stale_refs) == 1
+
+    from chz import replace
+
+    class _ConfLike(Protocol):
+        age: int
+
+    class _ContainerLike(Protocol):
+        conf: _ConfLike
+
+    class _ConfWithName(Protocol):
+        age: int
+        name: str
+
+    class _ContainerWithName(Protocol):
+        conf: _ConfWithName
+
+    def to_v2(old: _ContainerLike) -> furu.Furu[int]:
+        old_furu = cast(furu.Furu[int], old)
+        return replace(
+            old_furu,
+            conf={
+                "__class__": conf2_marker,
+                "age": old.conf.age,
+                "name": "default",
+            },
+        )
+
+    target = stale_refs[0].migrate(to_v2, dry_run=True, origin="tests")
+    target_cast = cast(_ContainerWithName, target)
+    assert isinstance(target, new_version)
+    assert isinstance(target_cast.conf, conf2_type)
+    assert not isinstance(target_cast.conf, conf_type)
+    assert target_cast.conf.name == "default"
 
 
 def test_ref_migrate_nested_dataclass_removes_field_with_transform(
