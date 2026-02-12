@@ -10,6 +10,9 @@ from furu.execution.slurm_spec import SlurmSpec, slurm_spec_key
 
 
 DEFAULT_EXECUTOR_KEY = slurm_spec_key(SlurmSpec())
+GPU_EXECUTOR_KEY = slurm_spec_key(
+    SlurmSpec(partition="gpu", gpus=1, cpus=8, mem_gb=64, time_min=720)
+)
 
 
 class BasicTask(furu.Furu[int]):
@@ -29,6 +32,14 @@ class BasicTask(furu.Furu[int]):
 class GpuTask(BasicTask):
     def _executor(self) -> SlurmSpec:
         return SlurmSpec(partition="gpu", gpus=1, cpus=8, mem_gb=64, time_min=720)
+
+
+class MultiSpecTask(BasicTask):
+    def _executor(self) -> SlurmSpec | tuple[SlurmSpec, ...]:
+        return (
+            SlurmSpec(),
+            SlurmSpec(partition="gpu", gpus=1, cpus=8, mem_gb=64, time_min=720),
+        )
 
 
 class AnotherTask(BasicTask):
@@ -98,6 +109,17 @@ def test_executor_force_requires_matching_spec(furu_tmp_root) -> None:
 def test_executor_force_allows_matching_spec(furu_tmp_root) -> None:
     obj = BasicTask()
     token = _set_executor_context(DEFAULT_EXECUTOR_KEY, current_node_hash=obj.furu_hash)
+    try:
+        assert obj.get(force=True) == 1
+    finally:
+        EXEC_CONTEXT.reset(token)
+
+    assert obj._create_calls == 1
+
+
+def test_executor_force_allows_secondary_executor_choice(furu_tmp_root) -> None:
+    obj = MultiSpecTask()
+    token = _set_executor_context(GPU_EXECUTOR_KEY, current_node_hash=obj.furu_hash)
     try:
         assert obj.get(force=True) == 1
     finally:

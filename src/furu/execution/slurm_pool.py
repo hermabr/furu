@@ -26,7 +26,7 @@ from .plan_utils import reconcile_or_timeout_in_progress
 from .slurm_spec import (
     SlurmSpec,
     SlurmSpecExtraValue,
-    resolve_executor_spec,
+    resolve_executor_specs,
     slurm_spec_key,
 )
 from .submitit_factory import make_executor_for_spec
@@ -40,6 +40,7 @@ MISSING_HEARTBEAT_REQUEUE_LIMIT = 1
 class _TaskPayload(TypedDict, total=False):
     hash: str
     spec_key: str
+    executor_keys: list[str]
     obj: JsonValue
     error: str
     traceback: str
@@ -256,6 +257,12 @@ def _requeue_failed_task(
         updated_payload.pop(stale_field, None)
     updated_payload["attempt"] = next_attempt
     updated_payload["spec_key"] = spec_key
+    updated_payload["executor_keys"] = list(
+        _executor_keys_from_payload(
+            updated_payload,
+            fallback_spec_key=spec_key,
+        )
+    )
     updated_payload["obj"] = obj_payload
     task_path = _todo_dir(run_dir, spec_key) / entry.path.name
     task_path.parent.mkdir(parents=True, exist_ok=True)
@@ -359,29 +366,74 @@ def _ensure_queue_layout(
         _running_dir(run_dir, spec_key).mkdir(parents=True, exist_ok=True)
 
 
-def _task_known(run_dir: Path, spec_key: str, digest: str) -> bool:
+def _executor_keys_from_payload(
+    payload: Mapping[str, JsonValue],
+    *,
+    fallback_spec_key: str | None = None,
+) -> tuple[str, ...]:
+    keys: list[str] = []
+    raw_keys = payload.get("executor_keys")
+    if isinstance(raw_keys, list):
+        for key in raw_keys:
+            if not isinstance(key, str):
+                continue
+            if not key:
+                continue
+            if key in keys:
+                continue
+            keys.append(key)
+    if keys:
+        return tuple(keys)
+
+    raw_spec_key = payload.get("spec_key")
+    if isinstance(raw_spec_key, str) and raw_spec_key:
+        return (raw_spec_key,)
+    if fallback_spec_key is not None:
+        return (fallback_spec_key,)
+    return tuple()
+
+
+def _task_known(run_dir: Path, digest: str) -> bool:
     filename = _task_filename(digest)
-    todo_path = _todo_dir(run_dir, spec_key) / filename
-    if todo_path.exists():
-        return True
+    todo_root = _queue_root(run_dir) / "todo"
+    if todo_root.exists():
+        for path in todo_root.glob(f"*/{filename}"):
+            if path.exists():
+                return True
     if (_done_dir(run_dir) / filename).exists():
         return True
     if (_failed_dir(run_dir) / filename).exists():
         return True
-    running_root = _running_dir(run_dir, spec_key)
+    running_root = _queue_root(run_dir) / "running"
     if running_root.exists():
-        for path in running_root.glob(f"*/{filename}"):
+        for path in running_root.glob(f"*/*/{filename}"):
             if path.exists():
                 return True
     return False
 
 
-def _enqueue_task(run_dir: Path, node_hash: str, spec_key: str, obj: Furu) -> bool:
-    if _task_known(run_dir, spec_key, node_hash):
+def _enqueue_task(
+    run_dir: Path,
+    node_hash: str,
+    spec_key: str,
+    executor_keys: tuple[str, ...],
+    obj: Furu,
+) -> bool:
+    if _task_known(run_dir, node_hash):
         return False
+
+    normalized_executor_keys: list[str] = []
+    for key in executor_keys:
+        if key in normalized_executor_keys:
+            continue
+        normalized_executor_keys.append(key)
+    if spec_key not in normalized_executor_keys:
+        normalized_executor_keys.insert(0, spec_key)
+
     payload: _TaskPayload = {
         "hash": node_hash,
         "spec_key": spec_key,
+        "executor_keys": normalized_executor_keys,
         "obj": obj.to_dict(),
         "attempt": 1,
     }
@@ -390,15 +442,33 @@ def _enqueue_task(run_dir: Path, node_hash: str, spec_key: str, obj: Furu) -> bo
     return True
 
 
-def _claim_task(run_dir: Path, spec_key: str, worker_id: str) -> Path | None:
-    todo_root = _todo_dir(run_dir, spec_key)
+def _claim_task(run_dir: Path, worker_spec_key: str, worker_id: str) -> Path | None:
+    todo_root = _queue_root(run_dir) / "todo"
     if not todo_root.exists():
         return None
-    running_root = _running_dir(run_dir, spec_key) / worker_id
+    running_root = _running_dir(run_dir, worker_spec_key) / worker_id
     running_root.mkdir(parents=True, exist_ok=True)
 
-    for path in sorted(todo_root.glob("*.json")):
+    for path in sorted(todo_root.glob("*/*.json")):
         if not path.is_file():
+            continue
+        fallback_spec_key = path.parent.name
+        should_claim = False
+        try:
+            raw = json.loads(path.read_text())
+        except json.JSONDecodeError:
+            should_claim = True
+        else:
+            if isinstance(raw, dict):
+                payload = cast(_TaskPayload, raw)
+                task_executor_keys = _executor_keys_from_payload(
+                    payload,
+                    fallback_spec_key=fallback_spec_key,
+                )
+                should_claim = worker_spec_key in task_executor_keys
+            else:
+                should_claim = True
+        if not should_claim:
             continue
         target = running_root / path.name
         try:
@@ -419,6 +489,14 @@ def _claim_task(run_dir: Path, spec_key: str, worker_id: str) -> Path | None:
                     timespec="seconds"
                 )
                 payload["worker_id"] = worker_id
+                if not isinstance(payload.get("spec_key"), str):
+                    payload["spec_key"] = fallback_spec_key
+                payload["executor_keys"] = list(
+                    _executor_keys_from_payload(
+                        payload,
+                        fallback_spec_key=fallback_spec_key,
+                    )
+                )
                 tmp = target.with_suffix(f".tmp-{uuid.uuid4().hex}")
                 tmp.write_text(json.dumps(payload, indent=2))
                 tmp.replace(target)
@@ -553,9 +631,17 @@ def pool_worker_main(
             message = f"Invalid task payload: expected Furu, got {type(obj).__name__}"
             _mark_failed(run_dir, task_path, message, failure_kind="protocol")
             raise RuntimeError(message)
-        task_spec_key = slurm_spec_key(resolve_executor_spec(obj))
-        if task_spec_key != spec_key:
-            message = f"Spec mismatch: task {task_spec_key} on worker {spec_key}"
+        task_executor_keys: list[str] = []
+        for task_spec in resolve_executor_specs(obj):
+            key = slurm_spec_key(task_spec)
+            if key in task_executor_keys:
+                continue
+            task_executor_keys.append(key)
+        if spec_key not in task_executor_keys:
+            message = (
+                "Spec mismatch: task allows "
+                f"{tuple(task_executor_keys)!r} on worker {spec_key}"
+            )
             _mark_failed(run_dir, task_path, message, failure_kind="protocol")
             raise RuntimeError(message)
 
@@ -570,7 +656,10 @@ def pool_worker_main(
         heartbeat_thread.start()
 
         try:
-            obj._worker_entry(allow_failed=FURU_CONFIG.retry_failed)
+            obj._worker_entry(
+                allow_failed=FURU_CONFIG.retry_failed,
+                worker_spec_key=spec_key,
+            )
         except Exception as exc:
             heartbeat_stop.set()
             heartbeat_thread.join()
@@ -604,10 +693,31 @@ def pool_worker_main(
 
 
 def _backlog(run_dir: Path, spec_key: str) -> int:
-    todo_dir = _todo_dir(run_dir, spec_key)
-    if not todo_dir.exists():
+    todo_root = _queue_root(run_dir) / "todo"
+    if not todo_root.exists():
         return 0
-    return sum(1 for path in todo_dir.glob("*.json") if path.is_file())
+
+    backlog = 0
+    for path in todo_root.glob("*/*.json"):
+        if not path.is_file():
+            continue
+        fallback_spec_key = path.parent.name
+        try:
+            raw_payload = json.loads(path.read_text())
+        except json.JSONDecodeError:
+            backlog += 1
+            continue
+        if not isinstance(raw_payload, dict):
+            backlog += 1
+            continue
+        payload = cast(_TaskPayload, raw_payload)
+        executor_keys = _executor_keys_from_payload(
+            payload,
+            fallback_spec_key=fallback_spec_key,
+        )
+        if spec_key in executor_keys:
+            backlog += 1
+    return backlog
 
 
 def _requeue_stale_running(
@@ -670,7 +780,13 @@ def _requeue_stale_running(
             if requeues_count < MISSING_HEARTBEAT_REQUEUE_LIMIT:
                 if len(path.parents) < 3:
                     continue
-                spec_key = path.parent.parent.name
+                fallback_spec_key = path.parent.parent.name
+                raw_spec_key = payload.get("spec_key")
+                spec_key = (
+                    raw_spec_key
+                    if isinstance(raw_spec_key, str) and raw_spec_key
+                    else fallback_spec_key
+                )
                 target = _todo_dir(run_dir, spec_key) / path.name
                 if target.exists():
                     logger = get_logger()
@@ -683,6 +799,13 @@ def _requeue_stale_running(
                     hb_path.unlink(missing_ok=True)
                     continue
                 updated_payload = dict(payload)
+                updated_payload["spec_key"] = spec_key
+                updated_payload["executor_keys"] = list(
+                    _executor_keys_from_payload(
+                        payload,
+                        fallback_spec_key=spec_key,
+                    )
+                )
                 updated_payload["missing_heartbeat_requeues"] = requeues_count + 1
                 updated_payload.pop("claimed_at", None)
                 updated_payload.pop("worker_id", None)
@@ -723,7 +846,13 @@ def _requeue_stale_running(
             )
             _mark_failed(run_dir, path, message, failure_kind="protocol")
             raise RuntimeError(message)
-        spec_key = path.parent.parent.name
+        fallback_spec_key = path.parent.parent.name
+        raw_spec_key = payload.get("spec_key")
+        spec_key = (
+            raw_spec_key
+            if isinstance(raw_spec_key, str) and raw_spec_key
+            else fallback_spec_key
+        )
         target = _todo_dir(run_dir, spec_key) / path.name
         if target.exists():
             logger = get_logger()
@@ -738,6 +867,13 @@ def _requeue_stale_running(
         requeues = payload.get("stale_heartbeat_requeues")
         requeues_count = requeues if isinstance(requeues, int) else 0
         updated_payload = dict(payload)
+        updated_payload["spec_key"] = spec_key
+        updated_payload["executor_keys"] = list(
+            _executor_keys_from_payload(
+                payload,
+                fallback_spec_key=spec_key,
+            )
+        )
         updated_payload["attempt"] = attempt + 1
         updated_payload["stale_heartbeat_requeues"] = requeues_count + 1
         updated_payload.pop("claimed_at", None)
@@ -889,15 +1025,31 @@ def run_slurm_pool(
         for node in plan.nodes.values():
             if node.status != "TODO":
                 continue
-            specs_by_key[node.executor_key] = node.executor
-            jobs_by_spec.setdefault(node.executor_key, [])
+            for executor_key, executor_spec in zip(
+                node.executor_keys,
+                node.executors,
+                strict=True,
+            ):
+                specs_by_key[executor_key] = executor_spec
+                jobs_by_spec.setdefault(executor_key, [])
 
         ready = ready_todo(plan)
         for digest in ready:
             node = plan.nodes[digest]
-            specs_by_key[node.executor_key] = node.executor
-            jobs_by_spec.setdefault(node.executor_key, [])
-            if _enqueue_task(run_dir, digest, node.executor_key, node.obj):
+            for executor_key, executor_spec in zip(
+                node.executor_keys,
+                node.executors,
+                strict=True,
+            ):
+                specs_by_key[executor_key] = executor_spec
+                jobs_by_spec.setdefault(executor_key, [])
+            if _enqueue_task(
+                run_dir,
+                digest,
+                node.executor_key,
+                node.executor_keys,
+                node.obj,
+            ):
                 queued_hashes.add(digest)
 
         now = time.time()

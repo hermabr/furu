@@ -154,6 +154,10 @@ run_slurm_pool(
 )
 ```
 
+`_executor()` can return a single `SlurmSpec` or an ordered sequence of specs.
+`submit_slurm_dag` and `run_local` use the first spec. `run_slurm_pool` workers can
+claim tasks using any listed spec key, so you can offer fallback queues.
+
 `run_local` keeps an in-memory scheduler state with explicit buckets (`READY`,
 `BLOCKED`, `IN_PROGRESS_SELF`, `IN_PROGRESS_EXTERNAL`, `FAILED`, `COMPLETED`)
 and dispatches from `READY` without rebuilding the full dependency plan each loop.
@@ -176,7 +180,7 @@ worker stdout/stderr are written to each worker queue directory under
 - `load_or_create()` is removed; use `get()` exclusively.
 - `get()` no longer accepts per-call `retry_failed` overrides. Configure retries via
   `FURU_RETRY_FAILED` or `FURU_CONFIG.retry_failed`.
-- Slurm executor selection is now `Furu._executor() -> SlurmSpec`; remove
+- Slurm executor selection is now `Furu._executor() -> SlurmSpec | Sequence[SlurmSpec]`; remove
   `_executor_spec_key()` and do not pass `specs=` to `run_slurm_pool` or `submit_slurm_dag`.
 - Executor runs (`run_local`, `run_slurm_pool`, `submit_slurm_dag`) fail fast if a
   dependency is FAILED while `retry_failed` is disabled; with retries enabled, failed
