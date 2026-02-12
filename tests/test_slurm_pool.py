@@ -1,6 +1,7 @@
 import json
 import importlib
 import os
+import socket
 import sys
 import time
 from pathlib import Path
@@ -535,6 +536,45 @@ def test_run_slurm_pool_uses_task_executor_spec(
     assert task.exists()
     assert seen_spec_keys
     assert seen_spec_keys[0] == GPU_SPEC_KEY
+
+
+def test_run_slurm_pool_records_slurm_spec_metadata(
+    furu_tmp_root, tmp_path, monkeypatch
+) -> None:
+    task = GpuPoolTask(value=11)
+    monkeypatch.setenv("SLURMD_NODENAME", "gpu-node-01")
+    monkeypatch.setenv("SLURM_NODELIST", "gpu-node-[01-02]")
+
+    monkeypatch.setattr(
+        "furu.execution.slurm_pool.make_executor_for_spec",
+        lambda *args, **kwargs: InlineExecutor(),
+    )
+
+    run_slurm_pool(
+        [task],
+        max_workers_total=1,
+        window_size="dfs",
+        idle_timeout_sec=0.01,
+        poll_interval_sec=0.01,
+        submitit_root=None,
+        run_root=tmp_path,
+    )
+
+    state = furu.StateManager.read_state(task._base_furu_dir())
+    attempt = state.attempt
+    assert attempt is not None
+    assert attempt.scheduler.get("slurm_spec_key") == GPU_SPEC_KEY
+    spec = attempt.scheduler.get("slurm_spec")
+    assert isinstance(spec, dict)
+    assert spec.get("partition") == "gpu"
+    assert spec.get("gpus") == 1
+    assert spec.get("cpus") == 8
+    assert spec.get("mem_gb") == 64
+    assert spec.get("time_min") == 720
+    assert spec.get("extra") == {}
+    assert attempt.scheduler.get("host") == socket.gethostname()
+    assert attempt.scheduler.get("slurm_nodename") == "gpu-node-01"
+    assert attempt.scheduler.get("slurm_nodelist") == "gpu-node-[01-02]"
 
 
 def test_run_slurm_pool_allows_any_task_executor_spec(

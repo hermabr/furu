@@ -37,10 +37,10 @@
     - [ ] Warn/throw/require flag if trying to submit more than 100 jobs
 - [ ] Merge stuff from local worker and slurm pool together
 - [ ] better discovery of all existing (successful) experiments for a config
-    - allow finding subclasses/parents too
+    - [ ] allow finding subclasses/parents too
 - [ ] make furu_dep and furu_lazy_dep/furu_dynamic_dep, where furu_lazy_dep is for dependencies that are only known at runtime and not at build time
-- [ ] make tests/test_slurm_pool.py faster
-- [ ] submit slurm workers as using batch
+- [x] make tests/test_slurm_pool.py faster
+- [ ] submit slurm workers as using batch for array job
 
 ## Code Quality
 
