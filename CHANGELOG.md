@@ -2,8 +2,8 @@
 
 ## Unreleased
 
-- Ignore non-init dataclass fields during `FuruSerializer.from_dict()` reconstruction so nested schema-migration paths no longer fail with unexpected keyword arguments on stale artifacts.
-- Fall back to dict payloads when serialized class reconstruction fails, so incompatible objects deserialize as dictionaries while compatible structures still hydrate into concrete classes.
+- Ignore non-init dataclass fields during `FuruSerializer.from_dict()` reconstruction so nested schema-migration paths no longer fail with unexpected keyword arguments on stale artifacts. ([#55](https://github.com/hermabr/furu/pull/55))
+- Fall back to dict payloads when serialized class reconstruction fails, so incompatible objects deserialize as dictionaries while compatible structures still hydrate into concrete classes. ([#55](https://github.com/hermabr/furu/pull/55))
 
 ## v0.0.11
 
