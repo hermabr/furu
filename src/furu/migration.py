@@ -333,7 +333,12 @@ def current(
     namespace: str | None = None,
 ) -> list[FuruRef]:
     target_schema = schema_key_from_cls(cast(type, cls))
-    return _refs_by_schema(namespace or _namespace_str(cls), target_schema, match=True)
+    return _refs_by_schema_compatibility(
+        namespace or _namespace_str(cls),
+        target_schema,
+        cls=cls,
+        match=True,
+    )
 
 
 def stale(
@@ -342,7 +347,12 @@ def stale(
     namespace: str | None = None,
 ) -> list[FuruRef]:
     target_schema = schema_key_from_cls(cast(type, cls))
-    return _refs_by_schema(namespace or _namespace_str(cls), target_schema, match=False)
+    return _refs_by_schema_compatibility(
+        namespace or _namespace_str(cls),
+        target_schema,
+        cls=cls,
+        match=False,
+    )
 
 
 def resolve_original_ref(ref: FuruRef) -> FuruRef:
@@ -727,19 +737,59 @@ def _alias_schema_conflict(
     return False
 
 
-def _refs_by_schema(
+def _ref_matches_current_code(
+    ref: FuruRef,
+    metadata: dict[str, JsonValue],
+    *,
+    cls: _FuruClass,
+    target_schema: tuple[str, ...],
+) -> bool:
+    # 1) shallow schema_key must match
+    if schema_key_from_metadata_raw(metadata) != target_schema:
+        return False
+
+    furu_obj = metadata.get("furu_obj")
+    if not isinstance(furu_obj, dict):
+        return False
+
+    # 2) must deserialize
+    try:
+        obj = FuruSerializer.from_dict(furu_obj)
+    except Exception:
+        return False
+
+    # must hydrate to the expected class (namespace mismatch => stale)
+    if not isinstance(obj, cast(type, cls)):
+        return False
+
+    # 3) must re-hash to the directory hash
+    try:
+        current_hash = FuruSerializer.compute_hash(obj)
+    except Exception:
+        return False
+
+    return current_hash == ref.furu_hash
+
+
+def _refs_by_schema_compatibility(
     namespace: str,
     schema_key: tuple[str, ...],
     *,
     match: bool,
+    cls: _FuruClass,
 ) -> list[FuruRef]:
     refs: list[FuruRef] = []
     for ref, metadata in _iter_namespace_metadata(
         namespace,
         include_alias_sources=True,
     ):
-        current_key = schema_key_from_metadata_raw(metadata)
-        if (current_key == schema_key) == match:
+        is_current = _ref_matches_current_code(
+            ref,
+            metadata,
+            cls=cls,
+            target_schema=schema_key,
+        )
+        if is_current == match:
             refs.append(ref)
     refs.sort(key=lambda item: item.furu_hash)
     return refs

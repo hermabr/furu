@@ -14,7 +14,9 @@ from ..aliases import (
     find_experiment_dirs,
     iter_roots,
 )
+from ..migration import FuruRef, _FuruClass, _ref_matches_current_code
 from ..schema import schema_key_from_cls, schema_key_from_metadata_raw
+from ..serialization.serializer import JsonValue
 from ..storage import MetadataManager, MigrationManager, MigrationRecord, StateAttempt
 from ..storage.state import StateManager, _FuruState
 from .api.models import (
@@ -167,6 +169,55 @@ def _current_schema_key(
     return key
 
 
+def _current_namespace_class(
+    namespace: str,
+    cache: dict[str, type | None],
+) -> type | None:
+    if namespace in cache:
+        return cache[namespace]
+    module_path, _, class_name = namespace.rpartition(".")
+    if not module_path:
+        cache[namespace] = None
+        return None
+    module = sys.modules.get(module_path)
+    if module is None:
+        if not _module_on_path(module_path):
+            cache[namespace] = None
+            return None
+        module = importlib.import_module(module_path)
+    obj = getattr(module, class_name, None)
+    cache[namespace] = obj if isinstance(obj, type) else None
+    return cache[namespace]
+
+
+def _is_ref_stale(
+    namespace: str,
+    furu_hash: str,
+    metadata: dict[str, JsonValue],
+    furu_dir: Path,
+    current_schema_key: tuple[str, ...] | None,
+    class_cache: dict[str, type | None],
+) -> bool | None:
+    if current_schema_key is None:
+        return None
+    cls = _current_namespace_class(namespace, class_cache)
+    if cls is None:
+        return None
+    root_kind = MigrationManager.root_kind_for_dir(furu_dir)
+    ref = FuruRef(
+        namespace=namespace,
+        furu_hash=furu_hash,
+        root=root_kind,
+        furu_dir=furu_dir,
+    )
+    return not _ref_matches_current_code(
+        ref,
+        metadata,
+        cls=cast(_FuruClass, cls),
+        target_schema=current_schema_key,
+    )
+
+
 def _module_on_path(module_path: str) -> bool:
     root_name = module_path.split(".", maxsplit=1)[0]
     for entry in sys.path:
@@ -262,6 +313,7 @@ def scan_experiments(
     seen_original: set[AliasKey] = set()
     alias_index = collect_aliases(include_inactive=True)
     schema_cache: dict[str, tuple[str, ...] | None] = {}
+    class_cache: dict[str, type | None] = {}
 
     if schema not in {"current", "stale", "any"}:
         raise ValueError("schema must be one of: current, stale, any")
@@ -328,10 +380,14 @@ def scan_experiments(
                 continue
             schema_key = schema_key_from_metadata_raw(metadata)
             current_schema_key = _current_schema_key(namespace, schema_cache)
-            if current_schema_key is None:
-                is_stale = None
-            else:
-                is_stale = schema_key != current_schema_key
+            is_stale = _is_ref_stale(
+                namespace=namespace,
+                furu_hash=furu_hash,
+                metadata=metadata,
+                furu_dir=metadata_dir,
+                current_schema_key=current_schema_key,
+                class_cache=class_cache,
+            )
 
             aliases = None
             if not is_alias_view:
@@ -458,6 +514,7 @@ def get_experiment_detail(
     namespace_path = Path(*namespace.split("."))
     alias_index = collect_aliases(include_inactive=True)
     schema_cache: dict[str, tuple[str, ...] | None] = {}
+    class_cache: dict[str, type | None] = {}
 
     for root in iter_roots():
         experiment_dir = root / namespace_path / furu_hash
@@ -510,10 +567,14 @@ def get_experiment_detail(
         if metadata is not None:
             schema_key = schema_key_from_metadata_raw(metadata)
             current_schema_key = _current_schema_key(namespace, schema_cache)
-            if current_schema_key is None:
-                is_stale = None
-            else:
-                is_stale = schema_key != current_schema_key
+            is_stale = _is_ref_stale(
+                namespace=namespace,
+                furu_hash=furu_hash,
+                metadata=metadata,
+                furu_dir=metadata_dir,
+                current_schema_key=current_schema_key,
+                class_cache=class_cache,
+            )
 
         aliases = None
         if not is_alias_view:

@@ -183,6 +183,38 @@ def _same_class_nested_config_v2() -> type[furu.Furu[int]]:
     )
 
 
+def _same_class_nested_config_with_added_nested_field() -> type[furu.Furu[int]]:
+    return _define_same_class(
+        """
+        from dataclasses import dataclass, field
+
+
+        @dataclass(frozen=True)
+        class NestedOptimizer:
+            learning_rate: float = 1e-3
+
+
+        @dataclass(frozen=True)
+        class NestedTrainingConfig:
+            optimizer: NestedOptimizer = field(default_factory=NestedOptimizer)
+            weight_decay: float = 1e-4
+
+
+        class SameClass(furu.Furu[int]):
+            training: NestedTrainingConfig = furu.chz.field(
+                default_factory=NestedTrainingConfig
+            )
+
+            def _create(self) -> int:
+                (self.furu_dir / "value.txt").write_text("1")
+                return 1
+
+            def _load(self) -> int:
+                return int((self.furu_dir / "value.txt").read_text())
+        """
+    )
+
+
 def test_migrate_by_schema_with_defaults(furu_tmp_root) -> None:
     source = SourceV1(value=5)
     assert source.get() == 5
@@ -342,6 +374,19 @@ def test_all_current_treats_nested_hydration_mismatch_as_stale(furu_tmp_root) ->
 
     assert source.furu_hash not in current_hashes
     assert source.furu_hash not in successful_hashes
+    assert source.furu_hash in stale_hashes
+
+
+def test_all_current_treats_nested_hash_mismatch_as_stale(furu_tmp_root) -> None:
+    nested_v1 = _same_class_nested_config_v1()
+    source = nested_v1()
+    assert source.get() == 1
+
+    nested_v2 = _same_class_nested_config_with_added_nested_field()
+    current_hashes = {obj.furu_hash for obj in nested_v2.all_current()}
+    stale_hashes = {ref.furu_hash for ref in nested_v2.all_stale_refs()}
+
+    assert source.furu_hash not in current_hashes
     assert source.furu_hash in stale_hashes
 
 
