@@ -44,6 +44,7 @@ from ..errors import (
     MISSING,
     FuruComputeError,
     FuruLockNotAcquired,
+    FuruSpecMismatch,
     FuruValidationError,
     FuruWaitTimeout,
 )
@@ -84,7 +85,7 @@ from ..storage.state import (
 )
 
 if TYPE_CHECKING:
-    from furu.execution.slurm_spec import SlurmSpec
+    from furu.execution.slurm_spec import SlurmExecutorChoice
 
 
 T = TypeVar("T")
@@ -219,15 +220,26 @@ class Furu(ABC, Generic[T]):
         """
         return True
 
-    def _executor(self: Self) -> "SlurmSpec":
+    def _executor(self: Self) -> "SlurmExecutorChoice":
         from furu.execution.slurm_spec import SlurmSpec
 
         return SlurmSpec()
 
-    def _executor_key(self: Self) -> str:
-        from furu.execution.slurm_spec import resolve_executor_spec, slurm_spec_key
+    def _executor_keys(self: Self) -> tuple[str, ...]:
+        from furu.execution.slurm_spec import resolve_executor_specs, slurm_spec_key
 
-        return slurm_spec_key(resolve_executor_spec(self))
+        keys: list[str] = []
+        seen: set[str] = set()
+        for spec in resolve_executor_specs(self):
+            key = slurm_spec_key(spec)
+            if key in seen:
+                continue
+            seen.add(key)
+            keys.append(key)
+        return tuple(keys)
+
+    def _executor_key(self: Self) -> str:
+        return self._executor_keys()[0]
 
     def _get_dependencies(self: Self, *, recursive: bool = True) -> list["Furu"]:
         """Collect Furu dependencies from fields and dependency methods."""
@@ -601,11 +613,11 @@ class Furu(ABC, Generic[T]):
                         f"Requested by {ctx.current_node_hash}. Declare it as a dependency."
                     )
 
-                required = self._executor_key()
-                if ctx.spec_key is None or required != ctx.spec_key:
+                required = self._executor_keys()
+                if ctx.spec_key is None or ctx.spec_key not in required:
                     raise FuruSpecMismatch(
                         "force=True not allowed: "
-                        f"required={required!r} != worker={ctx.spec_key!r}"
+                        f"required one of {required!r} != worker={ctx.spec_key!r}"
                     )
 
                 StateManager.ensure_internal_dir(directory)
@@ -1151,7 +1163,12 @@ class Furu(ABC, Generic[T]):
         finally:
             StateManager.release_lock(lock_fd, lock_path)
 
-    def _worker_entry(self: Self, *, allow_failed: bool | None = None) -> None:
+    def _worker_entry(
+        self: Self,
+        *,
+        allow_failed: bool | None = None,
+        worker_spec_key: str | None = None,
+    ) -> None:
         """Entry point for worker process (called by submitit or locally)."""
         with enter_holder(self):
             logger = get_logger()
@@ -1160,10 +1177,18 @@ class Furu(ABC, Generic[T]):
             # (e.g., from within `_validate()` or metadata hooks).
             from furu.execution.context import EXEC_CONTEXT, ExecContext
 
+            executor_keys = self._executor_keys()
+            effective_worker_spec_key = worker_spec_key or executor_keys[0]
+            if effective_worker_spec_key not in executor_keys:
+                raise FuruSpecMismatch(
+                    "worker spec key does not match node executor choices: "
+                    f"worker={effective_worker_spec_key!r} allowed={executor_keys!r}"
+                )
+
             exec_token = EXEC_CONTEXT.set(
                 ExecContext(
                     mode="executor",
-                    spec_key=self._executor_key(),
+                    spec_key=effective_worker_spec_key,
                     backend="submitit",
                     current_node_hash=self.furu_hash,
                 )

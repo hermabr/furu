@@ -18,7 +18,7 @@ from ..storage.state import (
     _FuruState,
     _StateResultFailed,
 )
-from .slurm_spec import SlurmSpec, resolve_executor_spec, slurm_spec_key
+from .slurm_spec import SlurmSpec, resolve_executor_specs, slurm_spec_key
 
 Status = Literal["DONE", "IN_PROGRESS", "TODO", "FAILED"]
 
@@ -34,6 +34,16 @@ class PlanNode:
     deps_all: set[str]
     deps_pending: set[str]
     dependents: set[str]
+    executors: tuple[SlurmSpec, ...] = ()
+    executor_keys: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.executors:
+            self.executors = (self.executor,)
+        if not self.executor_keys:
+            self.executor_keys = (self.executor_key,)
+        if len(self.executors) != len(self.executor_keys):
+            raise ValueError("executor spec and key counts must match")
 
 
 @dataclass
@@ -164,12 +174,30 @@ def build_plan(
         seen.add(digest)
 
         status = _classify(obj, completed_hashes, cache)
-        executor = resolve_executor_spec(obj)
+        executor_specs_raw = resolve_executor_specs(obj)
+        deduped_specs: list[SlurmSpec] = []
+        deduped_keys: list[str] = []
+        seen_keys: set[str] = set()
+        for spec in executor_specs_raw:
+            key = slurm_spec_key(spec)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            deduped_specs.append(spec)
+            deduped_keys.append(key)
+        if not deduped_specs:
+            raise RuntimeError(
+                "internal error: resolve_executor_specs returned no usable specs"
+            )
+        executor = deduped_specs[0]
+        executor_key = deduped_keys[0]
         node = PlanNode(
             obj=obj,
             status=status,
             executor=executor,
-            executor_key=slurm_spec_key(executor),
+            executor_key=executor_key,
+            executors=tuple(deduped_specs),
+            executor_keys=tuple(deduped_keys),
             deps_all=set(),
             deps_pending=set(),
             dependents=set(),

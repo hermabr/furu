@@ -28,6 +28,10 @@ DEFAULT_SPEC = SlurmSpec()
 DEFAULT_SPEC_KEY = slurm_spec_key(DEFAULT_SPEC)
 GPU_SPEC = SlurmSpec(partition="gpu", gpus=1, cpus=8, mem_gb=64, time_min=720)
 GPU_SPEC_KEY = slurm_spec_key(GPU_SPEC)
+LOW_PRIORITY_POOL_SPEC = SlurmSpec(partition="z-low", cpus=2, mem_gb=4, time_min=10)
+HIGH_PRIORITY_POOL_SPEC = SlurmSpec(partition="a-high", cpus=4, mem_gb=8, time_min=10)
+LOW_PRIORITY_POOL_SPEC_KEY = slurm_spec_key(LOW_PRIORITY_POOL_SPEC)
+HIGH_PRIORITY_POOL_SPEC_KEY = slurm_spec_key(HIGH_PRIORITY_POOL_SPEC)
 
 
 class InlineJob:
@@ -123,6 +127,11 @@ class QosPoolTask(PoolTask):
             time_min=10,
             extra={"slurm_additional_parameters": {"qos": "high"}},
         )
+
+
+class MultiExecutorPoolTask(PoolTask):
+    def _executor(self) -> SlurmSpec | tuple[SlurmSpec, ...]:
+        return (LOW_PRIORITY_POOL_SPEC, HIGH_PRIORITY_POOL_SPEC)
 
 
 def _load_submitit_task_module(
@@ -515,6 +524,43 @@ def test_run_slurm_pool_uses_task_executor_spec(
     assert task.exists()
     assert seen_spec_keys
     assert seen_spec_keys[0] == GPU_SPEC_KEY
+
+
+def test_run_slurm_pool_allows_any_task_executor_spec(
+    furu_tmp_root, tmp_path, monkeypatch
+) -> None:
+    task = MultiExecutorPoolTask(value=9)
+    seen_spec_keys: list[str] = []
+
+    def fake_make_executor(
+        spec_key: str,
+        spec: SlurmSpec,
+        *,
+        kind: str,
+        submitit_root,
+        run_id: str | None = None,
+    ):
+        seen_spec_keys.append(spec_key)
+        return InlineExecutor()
+
+    monkeypatch.setattr(
+        "furu.execution.slurm_pool.make_executor_for_spec",
+        fake_make_executor,
+    )
+
+    run_slurm_pool(
+        [task],
+        max_workers_total=1,
+        window_size="dfs",
+        idle_timeout_sec=0.01,
+        poll_interval_sec=0.01,
+        submitit_root=None,
+        run_root=tmp_path,
+    )
+
+    assert task.exists()
+    assert seen_spec_keys
+    assert seen_spec_keys[0] == HIGH_PRIORITY_POOL_SPEC_KEY
 
 
 def test_run_slurm_pool_fails_on_failed_queue(tmp_path, monkeypatch) -> None:

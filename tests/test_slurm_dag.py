@@ -10,7 +10,7 @@ from furu.execution.slurm_dag import (
     _wait_for_job_id,
     submit_slurm_dag,
 )
-from furu.execution.slurm_spec import SlurmSpec, SlurmSpecExtraValue
+from furu.execution.slurm_spec import SlurmSpec, SlurmSpecExtraValue, slurm_spec_key
 from furu.execution.submitit_factory import make_executor_for_spec
 from furu.storage.state import FuruErrorState, _StateAttemptFailed
 
@@ -54,6 +54,16 @@ class ExtraSpecTask(DagTask):
             time_min=10,
             extra={"slurm_additional_parameters": {"qos": "high"}},
         )
+
+
+LOW_PRIORITY_SPEC = SlurmSpec(partition="z-low", cpus=2, mem_gb=4, time_min=10)
+HIGH_PRIORITY_SPEC = SlurmSpec(partition="a-high", cpus=4, mem_gb=8, time_min=10)
+LOW_PRIORITY_SPEC_KEY = slurm_spec_key(LOW_PRIORITY_SPEC)
+
+
+class MultiExecutorDagTask(DagTask):
+    def _executor(self) -> SlurmSpec | tuple[SlurmSpec, ...]:
+        return (LOW_PRIORITY_SPEC, HIGH_PRIORITY_SPEC)
 
 
 def test_make_executor_for_spec_sets_parameters(tmp_path, monkeypatch) -> None:
@@ -271,6 +281,47 @@ def test_submit_slurm_dag_merges_additional_parameters(monkeypatch) -> None:
         "qos": "high",
         "dependency": "afterok:job-leaf",
     }
+
+
+def test_submit_slurm_dag_uses_first_executor_choice(
+    furu_tmp_root, monkeypatch
+) -> None:
+    root = MultiExecutorDagTask(name="root")
+
+    seen_spec_keys: list[str] = []
+
+    def fake_make_executor(
+        spec_key: str,
+        spec: SlurmSpec,
+        *,
+        kind: str,
+        submitit_root,
+        run_id: str | None = None,
+    ):
+        seen_spec_keys.append(spec_key)
+        return FakeExecutor(folder=f"{kind}:{spec_key}")
+
+    def fake_submit_once(self, adapter, directory, on_job_id, *, allow_failed):
+        furu.StateManager.ensure_internal_dir(directory)
+        furu.StateManager.start_attempt_queued(
+            directory,
+            backend="submitit",
+            lease_duration_sec=furu.FURU_CONFIG.lease_duration_sec,
+            owner={"pid": 99999, "host": "other-host", "user": "x"},
+            scheduler={"job_id": "job-root"},
+        )
+        return FakeJob("job-root")
+
+    monkeypatch.setattr(
+        "furu.execution.slurm_dag.make_executor_for_spec",
+        fake_make_executor,
+    )
+    monkeypatch.setattr(MultiExecutorDagTask, "_submit_once", fake_submit_once)
+
+    submission = submit_slurm_dag([root], submitit_root=None)
+
+    assert submission.job_id_by_hash[root.furu_hash] == "job-root"
+    assert seen_spec_keys == [LOW_PRIORITY_SPEC_KEY]
 
 
 def test_wait_for_job_id_updates_after_attempt_switch(furu_tmp_root) -> None:

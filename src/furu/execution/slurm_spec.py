@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol, TypeAlias, cast
 
@@ -24,20 +24,43 @@ class SlurmSpec:
     extra: Mapping[str, SlurmSpecExtraValue] | None = None
 
 
+SlurmExecutorChoice: TypeAlias = SlurmSpec | Sequence[SlurmSpec]
+
+
 class _ExecutorNode(Protocol):
     furu_hash: str
 
-    def _executor(self) -> SlurmSpec: ...
+    def _executor(self) -> SlurmExecutorChoice: ...
+
+
+def resolve_executor_specs(node: _ExecutorNode) -> tuple[SlurmSpec, ...]:
+    specs = node._executor()
+    if isinstance(specs, SlurmSpec):
+        return (specs,)
+    if isinstance(specs, Sequence):
+        resolved_specs: list[SlurmSpec] = []
+        for index, spec in enumerate(specs):
+            if not isinstance(spec, SlurmSpec):
+                raise TypeError(
+                    "Furu._executor() sequence entries must be SlurmSpec for "
+                    f"{node.__class__.__name__} ({node.furu_hash}), "
+                    f"got {type(spec).__name__} at index {index}."
+                )
+            resolved_specs.append(spec)
+        if resolved_specs:
+            return tuple(resolved_specs)
+        raise TypeError(
+            "Furu._executor() must return SlurmSpec or a non-empty sequence of "
+            f"SlurmSpec for {node.__class__.__name__} ({node.furu_hash})."
+        )
+    raise TypeError(
+        "Furu._executor() must return SlurmSpec or a sequence of SlurmSpec for "
+        f"{node.__class__.__name__} ({node.furu_hash}), got {type(specs).__name__}."
+    )
 
 
 def resolve_executor_spec(node: _ExecutorNode) -> SlurmSpec:
-    spec = node._executor()
-    if isinstance(spec, SlurmSpec):
-        return spec
-    raise TypeError(
-        "Furu._executor() must return SlurmSpec for "
-        f"{node.__class__.__name__} ({node.furu_hash}), got {type(spec).__name__}."
-    )
+    return resolve_executor_specs(node)[0]
 
 
 def _normalize_extra(value: SlurmSpecExtraValue) -> SlurmSpecPayloadValue:
