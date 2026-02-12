@@ -60,19 +60,68 @@ class FuruRef:
         origin: str | None = None,
         note: str | None = None,
     ) -> TargetObj:
-        source_obj = cast(SourceObj, _load_ref_object(self))
+        source_obj = cast(SourceObj, self._load_ref_object())
         target_obj = transform(source_obj)
         validated_target = _assert_furu_object(target_obj)
         if strict_types:
             _validate_furu_object_types(validated_target)
-        _migrate_ref_to_target(
-            source_ref=self,
+        self._migrate_to_target(
             target_obj=validated_target,
             dry_run=dry_run,
             origin=origin,
             note=note,
         )
         return cast(TargetObj, validated_target)
+
+    def _load_ref_object(self) -> JsonValue:
+        metadata = MetadataManager.read_metadata(self.furu_dir)
+        return FuruSerializer.from_dict(metadata.furu_obj)
+
+    def _migrate_to_target(
+        self,
+        *,
+        target_obj: _FuruObject,
+        dry_run: bool,
+        origin: str | None,
+        note: str | None,
+    ) -> None:
+        original_ref = resolve_original_ref(self)
+        _ensure_original_success(original_ref)
+
+        alias_index = collect_aliases(include_inactive=True)
+        alias_schema_cache: dict[Path, tuple[str, ...]] = {}
+
+        target_hash = FuruSerializer.compute_hash(target_obj)
+        target_ref = _target_ref(cast(_FuruClass, target_obj.__class__), target_hash)
+        target_obj_dict = FuruSerializer.to_dict(target_obj)
+        if not isinstance(target_obj_dict, dict):
+            raise TypeError("migration: target object must serialize to a dict")
+        target_schema_key = schema_key_from_furu_obj(target_obj_dict)
+
+        alias_key = (original_ref.namespace, original_ref.furu_hash, original_ref.root)
+        if _alias_schema_conflict(
+            alias_index,
+            alias_schema_cache,
+            alias_key,
+            target_schema_key,
+        ):
+            raise ValueError("migration: alias schema already exists for original")
+
+        if dry_run:
+            if target_ref.furu_dir.exists():
+                raise ValueError("migration: target already exists")
+            return
+
+        _write_alias(
+            target_obj=cast(JsonValue, target_obj),
+            original_ref=original_ref,
+            target_ref=target_ref,
+            source_ref=self,
+            skips=[],
+            conflict="throw",
+            origin=origin,
+            note=note,
+        )
 
 
 @dataclass(frozen=True)
@@ -316,11 +365,6 @@ def resolve_original_ref(ref: FuruRef) -> FuruRef:
         )
 
 
-def _load_ref_object(ref: FuruRef) -> JsonValue:
-    metadata = MetadataManager.read_metadata(ref.furu_dir)
-    return FuruSerializer.from_dict(metadata.furu_obj)
-
-
 def _assert_furu_object(value: JsonValue) -> _FuruObject:
     if not chz.is_chz(value):
         raise TypeError("migration: transform must return a Furu object")
@@ -345,53 +389,6 @@ def _validate_furu_object_types(target_obj: _FuruObject) -> None:
             f"{field.logical_name!r}: expected {type_repr(expected)}, "
             f"got {type_repr(type(value))}"
         )
-
-
-def _migrate_ref_to_target(
-    *,
-    source_ref: FuruRef,
-    target_obj: _FuruObject,
-    dry_run: bool,
-    origin: str | None,
-    note: str | None,
-) -> None:
-    original_ref = resolve_original_ref(source_ref)
-    _ensure_original_success(original_ref)
-
-    alias_index = collect_aliases(include_inactive=True)
-    alias_schema_cache: dict[Path, tuple[str, ...]] = {}
-
-    target_hash = FuruSerializer.compute_hash(target_obj)
-    target_ref = _target_ref(cast(_FuruClass, target_obj.__class__), target_hash)
-    target_obj_dict = FuruSerializer.to_dict(target_obj)
-    if not isinstance(target_obj_dict, dict):
-        raise TypeError("migration: target object must serialize to a dict")
-    target_schema_key = schema_key_from_furu_obj(target_obj_dict)
-
-    alias_key = (original_ref.namespace, original_ref.furu_hash, original_ref.root)
-    if _alias_schema_conflict(
-        alias_index,
-        alias_schema_cache,
-        alias_key,
-        target_schema_key,
-    ):
-        raise ValueError("migration: alias schema already exists for original")
-
-    if dry_run:
-        if target_ref.furu_dir.exists():
-            raise ValueError("migration: target already exists")
-        return
-
-    _write_alias(
-        target_obj=cast(JsonValue, target_obj),
-        original_ref=original_ref,
-        target_ref=target_ref,
-        source_ref=source_ref,
-        skips=[],
-        conflict="throw",
-        origin=origin,
-        note=note,
-    )
 
 
 def _schema_from_drop_add(
