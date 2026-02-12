@@ -1,8 +1,10 @@
 import json
+import importlib
 import os
+import sys
 import time
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar, cast
 
 import pytest
 
@@ -10,18 +12,17 @@ import furu
 from furu.execution.plan import DependencyPlan, PlanNode
 from furu.execution.slurm_pool import (
     _claim_task,
+    _ensure_queue_layout,
     _handle_failed_tasks,
     _mark_done,
     _mark_failed,
     _requeue_stale_running,
     _scan_failed_tasks,
     _spec_with_pool_worker_logs,
-    _ensure_queue_layout,
     pool_worker_main,
     run_slurm_pool,
 )
 from furu.execution.slurm_spec import SlurmSpec, slurm_spec_key
-
 
 DEFAULT_SPEC = SlurmSpec()
 DEFAULT_SPEC_KEY = slurm_spec_key(DEFAULT_SPEC)
@@ -124,6 +125,50 @@ class QosPoolTask(PoolTask):
         )
 
 
+def _load_submitit_task_module(
+    tmp_path: Path,
+    monkeypatch,
+) -> type[furu.Furu[int]]:
+    module_dir = tmp_path / "submitit_test_module"
+    module_dir.mkdir(parents=True, exist_ok=True)
+    module_name = "submitit_pool_task"
+    module_path = module_dir / f"{module_name}.py"
+    module_path.write_text(
+        """from __future__ import annotations
+
+import json
+
+import furu
+
+
+class SubmititPoolTask(furu.Furu[int]):
+    value: int = furu.chz.field()
+
+    def _create(self) -> int:
+        (self.furu_dir / \"value.json\").write_text(json.dumps(self.value))
+        return self.value
+
+    def _load(self) -> int:
+        return json.loads((self.furu_dir / \"value.json\").read_text())
+"""
+    )
+
+    current_pythonpath = os.environ.get("PYTHONPATH")
+    if current_pythonpath:
+        monkeypatch.setenv(
+            "PYTHONPATH",
+            f"{module_dir}{os.pathsep}{current_pythonpath}",
+        )
+    else:
+        monkeypatch.setenv("PYTHONPATH", str(module_dir))
+
+    if str(module_dir) not in sys.path:
+        sys.path.insert(0, str(module_dir))
+    importlib.invalidate_caches()
+    module = importlib.import_module(module_name)
+    return module.SubmititPoolTask
+
+
 def test_spec_with_pool_worker_logs_merges_additional_parameters(tmp_path) -> None:
     base_spec = SlurmSpec(
         partition="cpu",
@@ -179,6 +224,37 @@ def test_run_slurm_pool_executes_tasks(furu_tmp_root, tmp_path, monkeypatch) -> 
         max_workers_total=1,
         window_size="dfs",
         idle_timeout_sec=0.01,
+        poll_interval_sec=0.01,
+        submitit_root=None,
+        run_root=tmp_path,
+    )
+
+    assert root.exists()
+    assert (run.run_dir / "queue" / "done" / f"{root.furu_hash}.json").exists()
+
+
+def test_run_slurm_pool_executes_with_submitit_local_backend(
+    furu_tmp_root, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("FURU_PATH", str(furu_tmp_root))
+
+    import submitit
+
+    submitit_task_cls = _load_submitit_task_module(tmp_path, monkeypatch)
+    root = cast(Any, submitit_task_cls)(value=7)
+    original_auto_executor = submitit.AutoExecutor
+
+    class LocalAutoExecutor:
+        def __new__(cls, folder: str) -> object:
+            return original_auto_executor(folder=folder, cluster="local")
+
+    monkeypatch.setattr(submitit, "AutoExecutor", LocalAutoExecutor)
+
+    run = run_slurm_pool(
+        [root],
+        max_workers_total=1,
+        window_size="dfs",
+        idle_timeout_sec=0.05,
         poll_interval_sec=0.01,
         submitit_root=None,
         run_root=tmp_path,
@@ -1177,3 +1253,93 @@ def test_run_slurm_pool_throttles_worker_health_checks(
 
     assert executor.submitted == 1
     assert job.done_calls <= 1
+
+
+def test_run_slurm_pool_throttles_queue_scans(
+    furu_tmp_root, tmp_path, monkeypatch
+) -> None:
+    root = PoolTask(value=1)
+    plan = DependencyPlan(
+        roots=[root],
+        nodes={
+            root.furu_hash: PlanNode(
+                obj=root,
+                status="IN_PROGRESS",
+                executor=DEFAULT_SPEC,
+                executor_key=DEFAULT_SPEC_KEY,
+                deps_all=set(),
+                deps_pending=set(),
+                dependents=set(),
+            )
+        },
+    )
+
+    sleep_calls = 0
+    done_scan_calls = 0
+    failed_scan_calls = 0
+    stale_scan_calls = 0
+
+    def stop_sleep(_seconds: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls >= 3:
+            raise RuntimeError("stop loop")
+
+    def counted_done_hashes(_run_dir: Path) -> set[str]:
+        nonlocal done_scan_calls
+        done_scan_calls += 1
+        return set()
+
+    def counted_failed_scan(_run_dir: Path) -> list[object]:
+        nonlocal failed_scan_calls
+        failed_scan_calls += 1
+        return []
+
+    def counted_stale_scan(
+        _run_dir: Path,
+        *,
+        stale_sec: float,
+        heartbeat_grace_sec: float,
+        max_compute_retries: int,
+    ) -> int:
+        nonlocal stale_scan_calls
+        stale_scan_calls += 1
+        return 0
+
+    monkeypatch.setattr("furu.execution.slurm_pool.build_plan", lambda *a, **k: plan)
+    monkeypatch.setattr("furu.execution.slurm_pool._done_hashes", counted_done_hashes)
+    monkeypatch.setattr(
+        "furu.execution.slurm_pool._scan_failed_tasks",
+        counted_failed_scan,
+    )
+    monkeypatch.setattr(
+        "furu.execution.slurm_pool._requeue_stale_running",
+        counted_stale_scan,
+    )
+    monkeypatch.setattr(
+        "furu.execution.slurm_pool.make_executor_for_spec",
+        lambda *args, **kwargs: NoopExecutor(),
+    )
+    monkeypatch.setattr(
+        "furu.execution.slurm_pool.reconcile_or_timeout_in_progress",
+        lambda plan, *, stale_timeout_sec: False,
+    )
+    monkeypatch.setattr("furu.execution.slurm_pool.time.sleep", stop_sleep)
+
+    with pytest.raises(RuntimeError, match="stop loop"):
+        run_slurm_pool(
+            [root],
+            max_workers_total=1,
+            window_size="dfs",
+            idle_timeout_sec=0.01,
+            poll_interval_sec=0.01,
+            done_scan_interval_sec=60.0,
+            failed_scan_interval_sec=60.0,
+            stale_scan_interval_sec=60.0,
+            submitit_root=None,
+            run_root=tmp_path,
+        )
+
+    assert done_scan_calls <= 2
+    assert failed_scan_calls <= 1
+    assert stale_scan_calls <= 1

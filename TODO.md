@@ -35,6 +35,9 @@
 - [ ] rename window size to something better and more reasonable for the executors
 - [ ] Don't fail if a dependency is failed, but rather resubmit it for submit slurm dag
     - [ ] Warn/throw/require flag if trying to submit more than 100 jobs
+- [ ] Merge stuff from local worker and slurm pool together
+- [ ] better discovery of all existing (successful) experiments for a config
+    - allow finding subclasses/parents too
 
 ## Code Quality
 

@@ -3,7 +3,7 @@ import importlib
 import pathlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import chz
 import pytest
@@ -11,18 +11,18 @@ import pytest
 import furu
 
 
-class Foo:
+class _FooBase:
     a: int = chz.field()
     p: Path = chz.field()
     _private: int = chz.field(default=0)
 
 
 type.__setattr__(
-    Foo,
+    _FooBase,
     "__annotations__",
     {"a": int, "p": Path, "_private": int},
 )
-Foo: Any = chz.chz(Foo)
+Foo = cast(Any, chz.chz(_FooBase))
 
 
 @dataclass(frozen=True)

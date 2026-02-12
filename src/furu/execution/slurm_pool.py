@@ -782,6 +782,31 @@ def _next_refresh_deadline(now: float, interval_sec: float) -> float:
     return now + interval_sec
 
 
+def _resolve_interval(
+    *,
+    interval_sec: float | None,
+    fallback_sec: float,
+    name: str,
+) -> float:
+    effective = fallback_sec if interval_sec is None else interval_sec
+    if effective < 0:
+        raise ValueError(f"{name} must be >= 0")
+    return effective
+
+
+def _refresh_ready_batch(
+    plan: DependencyPlan,
+    *,
+    queued_hashes: set[str],
+    done_hashes: set[str],
+) -> list[str]:
+    return [
+        digest
+        for digest in ready_todo(plan)
+        if digest not in queued_hashes and digest not in done_hashes
+    ]
+
+
 def run_slurm_pool(
     roots: list[Furu],
     *,
@@ -791,6 +816,10 @@ def run_slurm_pool(
     poll_interval_sec: float = 2.0,
     plan_refresh_interval_sec: float = 60.0,
     worker_health_check_interval_sec: float = 15.0,
+    done_scan_interval_sec: float | None = None,
+    failed_scan_interval_sec: float | None = None,
+    stale_scan_interval_sec: float | None = None,
+    ready_refresh_interval_sec: float | None = None,
     stale_running_sec: float = 900.0,
     heartbeat_grace_sec: float = 30.0,
     submitit_root: Path | None = None,
@@ -802,6 +831,27 @@ def run_slurm_pool(
         raise ValueError("plan_refresh_interval_sec must be >= 0")
     if worker_health_check_interval_sec < 0:
         raise ValueError("worker_health_check_interval_sec must be >= 0")
+
+    done_scan_interval = _resolve_interval(
+        interval_sec=done_scan_interval_sec,
+        fallback_sec=poll_interval_sec,
+        name="done_scan_interval_sec",
+    )
+    failed_scan_interval = _resolve_interval(
+        interval_sec=failed_scan_interval_sec,
+        fallback_sec=poll_interval_sec,
+        name="failed_scan_interval_sec",
+    )
+    stale_scan_interval = _resolve_interval(
+        interval_sec=stale_scan_interval_sec,
+        fallback_sec=poll_interval_sec,
+        name="stale_scan_interval_sec",
+    )
+    ready_refresh_interval = _resolve_interval(
+        interval_sec=ready_refresh_interval_sec,
+        fallback_sec=poll_interval_sec,
+        name="ready_refresh_interval_sec",
+    )
 
     run_dir = _run_dir(run_root)
     run_id = run_dir.name
@@ -820,23 +870,32 @@ def run_slurm_pool(
     queued_hashes: set[str] = set()
     next_plan_refresh_at = 0.0
     next_worker_health_check_at = 0.0
+    next_done_scan_at = 0.0
+    next_failed_scan_at = 0.0
+    next_stale_scan_at = 0.0
+    next_ready_refresh_at = 0.0
+    ready_dirty = True
 
     while True:
         active_roots = [roots[index] for index in active_indices]
         active_signature = tuple(active_indices)
 
-        latest_done_hashes = _done_hashes(run_dir)
-        new_done_hashes = latest_done_hashes - done_hashes_cache
-        if new_done_hashes:
-            done_hashes_cache.update(new_done_hashes)
-            queued_hashes.difference_update(new_done_hashes)
-            if plan is not None:
-                for digest in new_done_hashes:
-                    node = plan.nodes.get(digest)
-                    if node is not None:
-                        node.status = "DONE"
-
         now = time.time()
+        if done_scan_interval <= 0 or now >= next_done_scan_at:
+            latest_done_hashes = _done_hashes(run_dir)
+            new_done_hashes = latest_done_hashes - done_hashes_cache
+            if new_done_hashes:
+                done_hashes_cache.update(new_done_hashes)
+                queued_hashes.difference_update(new_done_hashes)
+                ready_dirty = True
+                if plan is not None:
+                    for digest in new_done_hashes:
+                        node = plan.nodes.get(digest)
+                        if node is not None:
+                            node.status = "DONE"
+            if done_scan_interval > 0:
+                next_done_scan_at = _next_refresh_deadline(now, done_scan_interval)
+
         needs_plan_refresh = (
             plan is None
             or plan_signature != active_signature
@@ -849,6 +908,7 @@ def run_slurm_pool(
                 digest for digest, node in plan.nodes.items() if node.status == "DONE"
             )
             queued_hashes.intersection_update(plan.nodes)
+            ready_dirty = True
             next_plan_refresh_at = _next_refresh_deadline(
                 now,
                 plan_refresh_interval_sec,
@@ -856,24 +916,35 @@ def run_slurm_pool(
         if plan is None:
             raise RuntimeError("internal error: slurm pool plan not initialized")
 
-        failed_entries = _scan_failed_tasks(run_dir)
-        if failed_entries:
-            requeued_failed = _handle_failed_tasks(
+        now = time.time()
+        if failed_scan_interval <= 0 or now >= next_failed_scan_at:
+            failed_entries = _scan_failed_tasks(run_dir)
+            if failed_entries:
+                requeued_failed = _handle_failed_tasks(
+                    run_dir,
+                    failed_entries,
+                    retry_failed=FURU_CONFIG.retry_failed,
+                    max_compute_retries=FURU_CONFIG.max_compute_retries,
+                )
+                if requeued_failed > 0:
+                    ready_dirty = True
+                    next_plan_refresh_at = 0.0
+            if failed_scan_interval > 0:
+                next_failed_scan_at = _next_refresh_deadline(now, failed_scan_interval)
+
+        now = time.time()
+        if stale_scan_interval <= 0 or now >= next_stale_scan_at:
+            requeued_running = _requeue_stale_running(
                 run_dir,
-                failed_entries,
-                retry_failed=FURU_CONFIG.retry_failed,
+                stale_sec=stale_running_sec,
+                heartbeat_grace_sec=heartbeat_grace_sec,
                 max_compute_retries=FURU_CONFIG.max_compute_retries,
             )
-            if requeued_failed > 0:
+            if requeued_running > 0:
+                ready_dirty = True
                 next_plan_refresh_at = 0.0
-        requeued_running = _requeue_stale_running(
-            run_dir,
-            stale_sec=stale_running_sec,
-            heartbeat_grace_sec=heartbeat_grace_sec,
-            max_compute_retries=FURU_CONFIG.max_compute_retries,
-        )
-        if requeued_running > 0:
-            next_plan_refresh_at = 0.0
+            if stale_scan_interval > 0:
+                next_stale_scan_at = _next_refresh_deadline(now, stale_scan_interval)
 
         if not FURU_CONFIG.retry_failed:
             failed = [node for node in plan.nodes.values() if node.status == "FAILED"]
@@ -892,13 +963,32 @@ def run_slurm_pool(
             specs_by_key[node.executor_key] = node.executor
             jobs_by_spec.setdefault(node.executor_key, [])
 
-        ready = ready_todo(plan)
+        ready: list[str] = []
+        now = time.time()
+        if ready_dirty and (
+            ready_refresh_interval <= 0 or now >= next_ready_refresh_at
+        ):
+            ready = _refresh_ready_batch(
+                plan,
+                queued_hashes=queued_hashes,
+                done_hashes=done_hashes_cache,
+            )
+            ready_dirty = False
+            if ready_refresh_interval > 0:
+                next_ready_refresh_at = _next_refresh_deadline(
+                    now, ready_refresh_interval
+                )
+
         for digest in ready:
-            node = plan.nodes[digest]
+            node = plan.nodes.get(digest)
+            if node is None:
+                continue
             specs_by_key[node.executor_key] = node.executor
             jobs_by_spec.setdefault(node.executor_key, [])
             if _enqueue_task(run_dir, digest, node.executor_key, node.obj):
                 queued_hashes.add(digest)
+                continue
+            ready_dirty = True
 
         now = time.time()
         if now >= next_worker_health_check_at:
@@ -972,6 +1062,20 @@ def run_slurm_pool(
 
         ownership = _in_progress_ownership(plan, queued_hashes=queued_hashes)
 
+        ready_for_stall = ready
+        if not ready_for_stall and ready_dirty:
+            ready_for_stall = _refresh_ready_batch(
+                plan,
+                queued_hashes=queued_hashes,
+                done_hashes=done_hashes_cache,
+            )
+            ready_dirty = False
+            now = time.time()
+            if ready_refresh_interval > 0:
+                next_ready_refresh_at = _next_refresh_deadline(
+                    now, ready_refresh_interval
+                )
+
         if not active_indices and next_index >= len(roots):
             return SlurmPoolRun(
                 run_dir=run_dir,
@@ -979,7 +1083,7 @@ def run_slurm_pool(
                 plan=plan,
             )
         if (
-            not ready
+            not ready_for_stall
             and total_workers == 0
             and not any(count > 0 for count in backlog_by_spec.values())
             and not (ownership.self_hashes or ownership.external_hashes)
@@ -1002,6 +1106,40 @@ def run_slurm_pool(
             )
             if stale_detected:
                 next_plan_refresh_at = 0.0
+                ready_dirty = True
                 continue
 
-        time.sleep(poll_interval_sec)
+        now = time.time()
+        sleep_duration = poll_interval_sec
+        if done_scan_interval > 0:
+            sleep_duration = min(
+                sleep_duration,
+                max(0.0, next_done_scan_at - now),
+            )
+        if failed_scan_interval > 0:
+            sleep_duration = min(
+                sleep_duration,
+                max(0.0, next_failed_scan_at - now),
+            )
+        if stale_scan_interval > 0:
+            sleep_duration = min(
+                sleep_duration,
+                max(0.0, next_stale_scan_at - now),
+            )
+        if ready_refresh_interval > 0 and ready_dirty:
+            sleep_duration = min(
+                sleep_duration,
+                max(0.0, next_ready_refresh_at - now),
+            )
+        if worker_health_check_interval_sec > 0:
+            sleep_duration = min(
+                sleep_duration,
+                max(0.0, next_worker_health_check_at - now),
+            )
+        if plan_refresh_interval_sec > 0:
+            sleep_duration = min(
+                sleep_duration,
+                max(0.0, next_plan_refresh_at - now),
+            )
+
+        time.sleep(sleep_duration)

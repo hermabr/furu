@@ -151,6 +151,10 @@ run_slurm_pool(
     window_size="bfs",
     plan_refresh_interval_sec=60.0,
     worker_health_check_interval_sec=15.0,
+    done_scan_interval_sec=2.0,
+    failed_scan_interval_sec=2.0,
+    stale_scan_interval_sec=10.0,
+    ready_refresh_interval_sec=2.0,
 )
 ```
 
@@ -164,7 +168,10 @@ periodic reconcile (`plan_refresh_interval_sec`, default `60.0`). Nodes observed
 as `DONE` stay done for the remainder of that executor run (snapshot semantics).
 
 `run_slurm_pool` keeps run-local scheduler state in memory and periodically
-refreshes from storage.
+refreshes from storage. Queue scans can be tuned independently with
+`done_scan_interval_sec`, `failed_scan_interval_sec`, `stale_scan_interval_sec`,
+and `ready_refresh_interval_sec` (all default to `poll_interval_sec` when
+unspecified).
 
 Submitit logs are stored under `<FURU_PATH>/submitit` by default. Override with
 `FURU_SUBMITIT_PATH` when you want a different logs root. In `run_slurm_pool`,
