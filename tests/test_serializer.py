@@ -1,7 +1,7 @@
 import datetime
 import importlib
 import pathlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
@@ -49,6 +49,26 @@ class NestedInnerDataclass:
 class NestedOuterDataclass:
     inner: NestedInnerDataclass
     p: Path
+
+
+@dataclass(frozen=True)
+class DataclassWithNonInitField:
+    value: int
+    derived: int = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "derived", self.value * 2)
+
+
+@dataclass(frozen=True)
+class RequiresTwoFields:
+    first: int
+    second: int
+
+
+@dataclass(frozen=True)
+class OuterWithNestedDataclass:
+    inner: RequiresTwoFields
 
 
 class HashValueFuru(furu.Furu[int]):
@@ -186,3 +206,35 @@ def test_compute_hash_supports_nested_dataclass_with_furu() -> None:
     obj2 = furu.FuruSerializer.from_dict(data)
     assert obj2 == a
     assert isinstance(obj2.inner.dep, HashValueFuru)
+
+
+def test_from_dict_ignores_non_init_dataclass_fields() -> None:
+    obj = DataclassWithNonInitField(value=5)
+    data = furu.FuruSerializer.to_dict(obj)
+    data["derived"] = 999
+    restored = furu.FuruSerializer.from_dict(data)
+    assert restored == obj
+    assert restored.derived == 10
+
+
+def test_from_dict_returns_dict_for_incompatible_dataclass() -> None:
+    bad_marker = furu.FuruSerializer.get_classname(RequiresTwoFields(1, 2))
+    restored = furu.FuruSerializer.from_dict({"__class__": bad_marker, "first": 7})
+    assert restored == {"first": 7}
+
+
+def test_from_dict_loads_nested_objects_if_possible() -> None:
+    outer_marker = furu.FuruSerializer.get_classname(
+        OuterWithNestedDataclass(inner=RequiresTwoFields(1, 2))
+    )
+    inner_marker = furu.FuruSerializer.get_classname(RequiresTwoFields(1, 2))
+    payload = {
+        "__class__": outer_marker,
+        "inner": {
+            "__class__": inner_marker,
+            "first": 5,
+        },
+    }
+    restored = furu.FuruSerializer.from_dict(payload)
+    assert isinstance(restored, OuterWithNestedDataclass)
+    assert restored.inner == {"first": 5}

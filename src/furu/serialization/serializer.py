@@ -78,20 +78,53 @@ class FuruSerializer:
             }
 
             path_types = (Path, pathlib.Path)
+            fallback = kwargs
 
             if chz.is_chz(data_class):
+                init_kwargs = dict(kwargs)
                 for name, field in chz.chz_fields(data_class).items():
+                    if name not in kwargs:
+                        if field._default is CHZ_MISSING and isinstance(
+                            field._default_factory, MISSING_TYPE
+                        ):
+                            return fallback
+                        continue
+
                     if field.final_type in path_types and isinstance(
-                        kwargs.get(name), str
+                        init_kwargs.get(name), str
                     ):
-                        kwargs[name] = pathlib.Path(kwargs[name])
+                        init_kwargs[name] = pathlib.Path(init_kwargs[name])
             elif dataclasses.is_dataclass(data_class):
-                for field in dataclasses.fields(data_class):
-                    if field.type in path_types and isinstance(
-                        kwargs.get(field.name), str
+                dataclass_fields = dataclasses.fields(data_class)
+                init_kwargs = {
+                    field.name: kwargs[field.name]
+                    for field in dataclass_fields
+                    if field.init and field.name in kwargs
+                }
+
+                for field in dataclass_fields:
+                    if not field.init:
+                        continue
+                    if field.name not in init_kwargs and (
+                        field.default is dataclasses.MISSING
+                        and field.default_factory is dataclasses.MISSING
                     ):
-                        kwargs[field.name] = pathlib.Path(kwargs[field.name])
-            return data_class(**kwargs)
+                        return fallback
+
+                for field in dataclass_fields:
+                    if not field.init:
+                        continue
+
+                    field_value = init_kwargs.get(field.name)
+                    if isinstance(field_value, str) and field.type in path_types:
+                        init_kwargs[field.name] = pathlib.Path(field_value)
+            else:
+                init_kwargs = kwargs
+
+            try:
+                return data_class(**init_kwargs)
+            except TypeError:
+                return fallback
 
         if isinstance(data, list):
             return [cls.from_dict(v) for v in data]

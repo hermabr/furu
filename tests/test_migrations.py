@@ -1,7 +1,7 @@
 import json
 import sys
 import textwrap
-from typing import cast
+from typing import Protocol, cast
 
 import pytest
 
@@ -208,6 +208,104 @@ def _same_class_nested_config_with_added_nested_field() -> type[furu.Furu[int]]:
             def _create(self) -> int:
                 (self.furu_dir / "value.txt").write_text("1")
                 return 1
+
+            def _load(self) -> int:
+                return int((self.furu_dir / "value.txt").read_text())
+        """
+    )
+
+
+def _same_class_nested_person_v1() -> type[furu.Furu[int]]:
+    return _define_same_class(
+        """
+        from dataclasses import dataclass
+
+
+        @dataclass(frozen=True)
+        class Person:
+            age: int = 0
+
+
+        class SameClass(furu.Furu[int]):
+            person: Person = furu.chz.field(default_factory=Person)
+
+            def _create(self) -> int:
+                (self.furu_dir / "value.txt").write_text(str(self.person.age))
+                return self.person.age
+
+            def _load(self) -> int:
+                return int((self.furu_dir / "value.txt").read_text())
+        """
+    )
+
+
+def _same_class_nested_person_v2() -> type[furu.Furu[int]]:
+    return _define_same_class(
+        """
+        from dataclasses import dataclass
+
+
+        @dataclass(frozen=True)
+        class Person:
+            age: int = 0
+            name: str = ""
+
+
+        class SameClass(furu.Furu[int]):
+            person: Person = furu.chz.field(default_factory=Person)
+
+            def _create(self) -> int:
+                (self.furu_dir / "value.txt").write_text(str(self.person.age))
+                return self.person.age
+
+            def _load(self) -> int:
+                return int((self.furu_dir / "value.txt").read_text())
+        """
+    )
+
+
+def _same_class_nested_person_with_name() -> type[furu.Furu[int]]:
+    return _define_same_class(
+        """
+        from dataclasses import dataclass
+
+
+        @dataclass(frozen=True)
+        class LegacyPerson:
+            age: int = 0
+            name: str = ""
+
+
+        class SameClass(furu.Furu[int]):
+            person: LegacyPerson = furu.chz.field(default_factory=LegacyPerson)
+
+            def _create(self) -> int:
+                (self.furu_dir / "value.txt").write_text(str(self.person.age))
+                return self.person.age
+
+            def _load(self) -> int:
+                return int((self.furu_dir / "value.txt").read_text())
+        """
+    )
+
+
+def _same_class_nested_person_without_name() -> type[furu.Furu[int]]:
+    return _define_same_class(
+        """
+        from dataclasses import dataclass
+
+
+        @dataclass(frozen=True)
+        class ModernPerson:
+            age: int = 0
+
+
+        class SameClass(furu.Furu[int]):
+            person: ModernPerson = furu.chz.field(default_factory=ModernPerson)
+
+            def _create(self) -> int:
+                (self.furu_dir / "value.txt").write_text(str(self.person.age))
+                return self.person.age
 
             def _load(self) -> int:
                 return int((self.furu_dir / "value.txt").read_text())
@@ -469,6 +567,101 @@ def test_ref_migrate_strict_types_false_allows_invalid_target(furu_tmp_root) -> 
     target = refs[0].migrate(to_v2_invalid, strict_types=False, origin="tests")
     assert cast(int, target.extra) == 123
     assert target.get() == 33
+
+
+def test_ref_migrate_nested_dataclass_adds_field_with_transform(furu_tmp_root) -> None:
+    old_version = _same_class_nested_person_v1()
+    old_person_type = cast(type, old_version.__annotations__["person"])
+
+    source = cast(type, old_version)(person=old_person_type(age=34))
+    assert source.get() == 34
+
+    new_version = _same_class_nested_person_v2()
+    new_person_type = cast(type, new_version.__annotations__["person"])
+    stale_refs = new_version.all_stale_refs(namespace="test_migrations.SameClass")
+    assert len(stale_refs) == 1
+    stale_ref = stale_refs[0]
+    assert stale_ref.furu_hash == source.furu_hash
+
+    class _PersonLike(Protocol):
+        age: int
+
+    class _PersonWithName(Protocol):
+        age: int
+        name: str
+
+    class _ContainerLike(Protocol):
+        person: _PersonLike
+
+    class _MigratedContainerLike(Protocol):
+        person: _PersonWithName
+
+    def to_v2(old: _ContainerLike) -> furu.Furu[int]:
+        return cast(type, new_version)(
+            person=new_person_type(age=old.person.age, name="default")
+        )
+
+    target = stale_ref.migrate(to_v2, origin="tests")
+    target_cast = cast(_MigratedContainerLike, target)
+    assert isinstance(target, new_version)
+    assert target_cast.person.age == 34
+    assert target_cast.person.name == "default"
+    assert target.get() == 34
+
+    record = MigrationManager.read_migration(target._base_furu_dir())
+    assert record is not None
+    assert record.kind == "alias"
+    assert record.from_hash == source.furu_hash
+
+
+def test_ref_migrate_nested_dataclass_removes_field_with_transform(
+    furu_tmp_root,
+) -> None:
+    old_version = _same_class_nested_person_with_name()
+    old_person_type = cast(type, old_version.__annotations__["person"])
+
+    source = cast(type, old_version)(person=old_person_type(age=44, name="legacy"))
+    assert source.get() == 44
+
+    new_version = _same_class_nested_person_without_name()
+    metadata_path = MetadataManager.get_metadata_path(source._base_furu_dir())
+    metadata = json.loads(metadata_path.read_text())
+    metadata["schema_key"] = ["person", "legacy_name"]
+    metadata_path.write_text(json.dumps(metadata, indent=2))
+
+    new_person_type = cast(type, new_version.__annotations__["person"])
+    stale_refs = new_version.all_stale_refs(namespace="test_migrations.SameClass")
+    assert len(stale_refs) == 1
+    stale_ref = stale_refs[0]
+    assert stale_ref.furu_hash == source.furu_hash
+
+    class _PersonLike(Protocol):
+        age: int
+        name: str
+
+    class _PersonWithoutName(Protocol):
+        age: int
+
+    class _ContainerWithName(Protocol):
+        person: _PersonLike
+
+    class _ContainerWithoutName(Protocol):
+        person: _PersonWithoutName
+
+    def to_v1(old: _ContainerWithName) -> furu.Furu[int]:
+        return cast(type, new_version)(person=new_person_type(age=old.person.age))
+
+    target = stale_ref.migrate(to_v1, origin="tests")
+    target_cast = cast(_ContainerWithoutName, target)
+    assert isinstance(target, new_version)
+    assert target_cast.person.age == 44
+    assert not hasattr(target_cast.person, "name")
+    assert target.get() == 44
+
+    record = MigrationManager.read_migration(target._base_furu_dir())
+    assert record is not None
+    assert record.kind == "alias"
+    assert record.from_hash == source.furu_hash
 
 
 def test_ref_migrate_transform_must_return_furu_object(furu_tmp_root) -> None:

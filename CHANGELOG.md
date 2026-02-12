@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Ignore non-init dataclass fields during `FuruSerializer.from_dict()` reconstruction so nested schema-migration paths no longer fail with unexpected keyword arguments on stale artifacts.
+- Fall back to dict payloads when serialized class reconstruction fails, so incompatible objects deserialize as dictionaries while compatible structures still hydrate into concrete classes.
+
 ## v0.0.11
 
 - Treat refs that match `schema_key` but fail hydration as stale, so `Furu.all_current()`/`Furu.all_successful()` skip unloadable entries and `Furu.all_stale_refs()` surfaces them for migration. ([#53](https://github.com/hermabr/furu/pull/53))
