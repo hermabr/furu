@@ -230,6 +230,7 @@ def test_from_dict_returns_dict_for_incompatible_dataclass_in_non_strict_mode() 
         strict=False,
     )
     assert restored == {"first": 7}
+    assert restored.first == 7
 
 
 def test_from_dict_rejects_unknown_class() -> None:
@@ -242,6 +243,7 @@ def test_from_dict_returns_dict_for_unknown_class_in_non_strict_mode() -> None:
     payload = {"__class__": "test_serializer.DoesNotExist", "value": 1}
     restored = furu.FuruSerializer.from_dict(payload, strict=False)
     assert restored == {"value": 1}
+    assert restored.value == 1
 
 
 def test_from_dict_loads_nested_objects_if_possible() -> None:
@@ -259,3 +261,27 @@ def test_from_dict_loads_nested_objects_if_possible() -> None:
     restored = furu.FuruSerializer.from_dict(payload, strict=False)
     assert isinstance(restored, OuterWithNestedDataclass)
     assert restored.inner == {"first": 5}
+    assert restored.inner.first == 5
+
+
+def test_from_dict_loads_nested_unknown_objects_with_attribute_access() -> None:
+    outer_marker = furu.FuruSerializer.get_classname(
+        OuterWithNestedDataclass(inner=RequiresTwoFields(1, 2))
+    )
+    restored = furu.FuruSerializer.from_dict(
+        {
+            "__class__": outer_marker,
+            "inner": {
+                "first": 5,
+                "second": 6,
+                "child": {
+                    "__class__": "test_serializer.DoesNotExist",
+                    "age": 8,
+                },
+            },
+        },
+        strict=False,
+    )
+    assert restored.inner.first == 5
+    assert restored.inner.child == {"age": 8}
+    assert restored.inner.child.age == 8

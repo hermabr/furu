@@ -26,6 +26,38 @@ class FuruSerializer:
 
     CLASS_MARKER = "__class__"
 
+    class _AttrDict(dict[str, JsonValue]):
+        """Dictionary wrapper with attribute-style field access."""
+
+        def __getattr__(self, name: str) -> JsonValue:
+            try:
+                return self[name]
+            except KeyError as exc:
+                raise AttributeError(name) from exc
+
+        def __setattr__(self, name: str, value: JsonValue) -> None:
+            self[name] = value
+
+        def __delattr__(self, name: str) -> None:
+            try:
+                del self[name]
+            except KeyError as exc:
+                raise AttributeError(name) from exc
+
+    @staticmethod
+    def _as_attr_dict(values: dict[str, JsonValue]) -> "FuruSerializer._AttrDict":
+        return FuruSerializer._AttrDict(
+            {key: FuruSerializer._to_attr_value(value) for key, value in values.items()}
+        )
+
+    @staticmethod
+    def _to_attr_value(value: JsonValue) -> JsonValue:
+        if isinstance(value, dict):
+            return FuruSerializer._as_attr_dict(value)
+        if isinstance(value, list):
+            return [FuruSerializer._to_attr_value(item) for item in value]
+        return value
+
     @staticmethod
     def get_classname(obj: object) -> str:
         """Get fully qualified class name."""
@@ -75,6 +107,7 @@ class FuruSerializer:
             strict: Raise on reconstruction mismatch when True; return dict fallback
                 when False.
         """
+
         if isinstance(data, dict) and cls.CLASS_MARKER in data:
             module_path, _, class_name = data[cls.CLASS_MARKER].rpartition(".")
             if strict:
@@ -89,12 +122,15 @@ class FuruSerializer:
                     getattr(module, class_name, None) if module is not None else None
                 )
 
-                if data_class is None:
-                    return {
+            if data_class is None:
+                values = {
+                    **{
                         k: cls.from_dict(v, strict=strict)
                         for k, v in data.items()
                         if k != cls.CLASS_MARKER
-                    }
+                    },
+                }
+                return cls._as_attr_dict(values)
 
             kwargs = {
                 k: cls.from_dict(v, strict=strict)
@@ -103,7 +139,7 @@ class FuruSerializer:
             }
 
             path_types = (Path, pathlib.Path)
-            fallback = kwargs
+            fallback = cls._as_attr_dict(kwargs)
 
             def _strict_or_fallback() -> JsonValue:
                 if strict:
@@ -162,7 +198,10 @@ class FuruSerializer:
             return [cls.from_dict(v, strict=strict) for v in data]
 
         if isinstance(data, dict):
-            return {k: cls.from_dict(v, strict=strict) for k, v in data.items()}
+            values = {k: cls.from_dict(v, strict=strict) for k, v in data.items()}
+            if strict:
+                return values
+            return cls._as_attr_dict(values)
 
         return data
 
