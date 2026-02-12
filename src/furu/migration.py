@@ -333,7 +333,12 @@ def current(
     namespace: str | None = None,
 ) -> list[FuruRef]:
     target_schema = schema_key_from_cls(cast(type, cls))
-    return _refs_by_schema(namespace or _namespace_str(cls), target_schema, match=True)
+    return _refs_by_schema_compatibility(
+        namespace or _namespace_str(cls),
+        target_schema,
+        cls=cls,
+        match=True,
+    )
 
 
 def stale(
@@ -342,7 +347,12 @@ def stale(
     namespace: str | None = None,
 ) -> list[FuruRef]:
     target_schema = schema_key_from_cls(cast(type, cls))
-    return _refs_by_schema(namespace or _namespace_str(cls), target_schema, match=False)
+    return _refs_by_schema_compatibility(
+        namespace or _namespace_str(cls),
+        target_schema,
+        cls=cls,
+        match=False,
+    )
 
 
 def resolve_original_ref(ref: FuruRef) -> FuruRef:
@@ -562,6 +572,20 @@ def _find_ref_by_hash(namespace: str, furu_hash: str) -> FuruRef:
     return matches[0]
 
 
+def current_with_objects(
+    cls: _FuruClass,
+    *,
+    namespace: str | None = None,
+) -> list[tuple[FuruRef, _FuruObject]]:
+    target_schema = schema_key_from_cls(cast(type, cls))
+    return _refs_by_schema_compatibility_with_objects(
+        namespace or _namespace_str(cls),
+        target_schema,
+        cls=cls,
+        match=True,
+    )
+
+
 def _apply_transforms(
     source_obj: dict[str, JsonValue],
     *,
@@ -727,10 +751,49 @@ def _alias_schema_conflict(
     return False
 
 
-def _refs_by_schema(
+def _ref_matches_current_code(
+    ref: FuruRef,
+    metadata: dict[str, JsonValue],
+    *,
+    cls: _FuruClass,
+    target_schema: tuple[str, ...],
+) -> _FuruObject | None:
+    # 1) schema key must match
+    if schema_key_from_metadata_raw(metadata) != target_schema:
+        return None
+
+    furu_obj = metadata.get("furu_obj")
+    if not isinstance(furu_obj, dict):
+        return None
+
+    target_class = cast(type, cls)
+
+    # 2) object must deserialize and match target class
+    try:
+        obj = FuruSerializer.from_dict(furu_obj)
+    except Exception:
+        return None
+
+    if not isinstance(obj, target_class):
+        return None
+
+    # 3) hash must still match the directory hash
+    try:
+        current_hash = FuruSerializer.compute_hash(obj)
+    except Exception:
+        return None
+
+    if current_hash != ref.furu_hash:
+        return None
+
+    return cast(_FuruObject, obj)
+
+
+def _refs_by_schema_compatibility(
     namespace: str,
     schema_key: tuple[str, ...],
     *,
+    cls: _FuruClass,
     match: bool,
 ) -> list[FuruRef]:
     refs: list[FuruRef] = []
@@ -738,10 +801,33 @@ def _refs_by_schema(
         namespace,
         include_alias_sources=True,
     ):
-        current_key = schema_key_from_metadata_raw(metadata)
-        if (current_key == schema_key) == match:
+        obj = _ref_matches_current_code(
+            ref, metadata, cls=cls, target_schema=schema_key
+        )
+        if (obj is not None) == match:
             refs.append(ref)
     refs.sort(key=lambda item: item.furu_hash)
+    return refs
+
+
+def _refs_by_schema_compatibility_with_objects(
+    namespace: str,
+    schema_key: tuple[str, ...],
+    *,
+    cls: _FuruClass,
+    match: bool,
+) -> list[tuple[FuruRef, _FuruObject]]:
+    refs: list[tuple[FuruRef, _FuruObject]] = []
+    for ref, metadata in _iter_namespace_metadata(
+        namespace,
+        include_alias_sources=True,
+    ):
+        obj = _ref_matches_current_code(
+            ref, metadata, cls=cls, target_schema=schema_key
+        )
+        if (obj is not None) == match and obj is not None:
+            refs.append((ref, obj))
+    refs.sort(key=lambda item: item[0].furu_hash)
     return refs
 
 

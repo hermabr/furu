@@ -1,11 +1,13 @@
 import json
 import sys
 import textwrap
+import types
 from typing import cast
 
 import pytest
 
 import furu
+from furu.migration import current as migration_current, stale as migration_stale
 from furu.storage import MetadataManager, MigrationManager, StateManager
 
 
@@ -45,31 +47,6 @@ class SourceV3(furu.Furu[int]):
         return int((self.furu_dir / "value.txt").read_text())
 
 
-class NestedOptimizerConfig(furu.Furu[str]):
-    learning_rate: float
-
-    def _create(self) -> str:
-        (self.furu_dir / "value.txt").write_text(str(self.learning_rate))
-        return str(self.learning_rate)
-
-    def _load(self) -> str:
-        return (self.furu_dir / "value.txt").read_text()
-
-
-class NestedTrainingConfig(furu.Furu[str]):
-    optimizer: NestedOptimizerConfig
-    inner_loop_batch_size: int = furu.chz.field(default=64)
-
-    def _create(self) -> str:
-        (self.furu_dir / "value.txt").write_text(
-            f"{self.optimizer.furu_hash}:{self.inner_loop_batch_size}"
-        )
-        return self.optimizer.furu_hash
-
-    def _load(self) -> str:
-        return (self.furu_dir / "value.txt").read_text().split(":")[0]
-
-
 class RenameSource(furu.Furu[int]):
     value: int = furu.chz.field(default=0)
     obsolete: str = furu.chz.field(default="old")
@@ -93,9 +70,64 @@ class RenameTarget(furu.Furu[int]):
         return int((self.furu_dir / "value.txt").read_text())
 
 
+def _same_class_name_mismatch() -> tuple[type[furu.Furu[int]], type[furu.Furu[int]]]:
+    module_name = "test_migrations._class_mismatch_legacy"
+    legacy_module = types.ModuleType(module_name)
+    sys.modules[module_name] = legacy_module
+
+    legacy_namespace: dict[str, object] = {
+        "furu": furu,
+        "__name__": module_name,
+        "__file__": __file__,
+    }
+    exec_source = textwrap.dedent(
+        """
+        class SameClass(furu.Furu[int]):
+            name: str = furu.chz.field(default="")
+
+            def _create(self) -> int:
+                (self.furu_dir / "value.txt").write_text(self.name)
+                return len(self.name)
+
+            def _load(self) -> int:
+                return len((self.furu_dir / "value.txt").read_text())
+        """
+    )
+    exec(
+        exec_source,
+        legacy_namespace,
+    )
+
+    legacy_class = cast(type[furu.Furu[int]], legacy_namespace["SameClass"])
+    setattr(legacy_module, "SameClass", legacy_class)
+
+    current_namespace: dict[str, object] = {
+        "furu": furu,
+        "__name__": module_name,
+        "__file__": __file__,
+    }
+    exec(
+        exec_source,
+        current_namespace,
+    )
+    current_class = cast(type[furu.Furu[int]], current_namespace["SameClass"])
+    current_class.__module__ = module_name
+    current_class.__qualname__ = "SameClass"
+    current_class.__name__ = "SameClass"
+    return legacy_class, current_class
+
+
 def _define_same_class(source: str) -> type[furu.Furu[int]]:
     namespace = {"furu": furu, "__name__": __name__}
     exec(textwrap.dedent(source), namespace)
+    module = sys.modules[__name__]
+    for name, value in namespace.items():
+        if not isinstance(value, type):
+            continue
+        if value.__module__ != __name__:
+            continue
+        setattr(module, name, value)
+
     cls = namespace.get("SameClass")
     if not isinstance(cls, type):
         raise AssertionError("SameClass definition failed")
@@ -103,7 +135,6 @@ def _define_same_class(source: str) -> type[furu.Furu[int]]:
         raise AssertionError("SameClass must be a Furu")
     cls.__module__ = __name__
     cls.__qualname__ = "SameClass"
-    module = sys.modules[__name__]
     setattr(module, "SameClass", cls)
     return cls
 
@@ -137,6 +168,66 @@ def _same_class_v2_required() -> type[furu.Furu[int]]:
 
             def _load(self) -> int:
                 return len((self.furu_dir / "value.txt").read_text().split(\":\")[0])
+        """
+    )
+
+
+def _same_class_nested_config_v1() -> type[furu.Furu[int]]:
+    return _define_same_class(
+        """
+        from dataclasses import dataclass, field
+
+
+        @dataclass(frozen=True)
+        class NestedOptimizer:
+            learning_rate: float = 1e-3
+
+
+        @dataclass(frozen=True)
+        class NestedTrainingConfig:
+            optimizer: NestedOptimizer = field(default_factory=NestedOptimizer)
+
+
+        class SameClass(furu.Furu[int]):
+            training: NestedTrainingConfig = furu.chz.field(
+                default_factory=NestedTrainingConfig
+            )
+
+            def _create(self) -> int:
+                (self.furu_dir / "value.txt").write_text("1")
+                return 1
+
+            def _load(self) -> int:
+                return int((self.furu_dir / "value.txt").read_text())
+        """
+    )
+
+
+def _same_class_nested_config_v2() -> type[furu.Furu[int]]:
+    return _define_same_class(
+        """
+        from dataclasses import dataclass
+
+
+        @dataclass(frozen=True)
+        class NestedOptimizer:
+            weight_decay: float
+
+
+        @dataclass(frozen=True)
+        class NestedTrainingConfig:
+            optimizer: NestedOptimizer
+
+
+        class SameClass(furu.Furu[int]):
+            training: NestedTrainingConfig
+
+            def _create(self) -> int:
+                (self.furu_dir / "value.txt").write_text("1")
+                return 1
+
+            def _load(self) -> int:
+                return int((self.furu_dir / "value.txt").read_text())
         """
     )
 
@@ -288,6 +379,63 @@ def test_all_current_and_all_stale_refs(furu_tmp_root) -> None:
     assert stale_obj.furu_hash in stale_refs
 
 
+def test_all_current_treats_nested_hydration_mismatch_as_stale(furu_tmp_root) -> None:
+    same_v1 = _same_class_nested_config_v1()
+    source = same_v1()
+    assert source.get() == 1
+
+    same_v2 = _same_class_nested_config_v2()
+    current_hashes = {obj.furu_hash for obj in same_v2.all_current()}
+    successful_hashes = {obj.furu_hash for obj in same_v2.all_successful()}
+    stale_hashes = {ref.furu_hash for ref in same_v2.all_stale_refs()}
+
+    assert source.furu_hash not in current_hashes
+    assert source.furu_hash not in successful_hashes
+    assert source.furu_hash in stale_hashes
+
+
+def test_migration_current_checks_nested_hydration_compatibility(furu_tmp_root) -> None:
+    same_v1 = _same_class_nested_config_v1()
+    source = same_v1()
+    assert source.get() == 1
+
+    same_v2 = _same_class_nested_config_v2()
+    current_refs = {ref.furu_hash for ref in migration_current(same_v2)}
+    stale_refs = {ref.furu_hash for ref in migration_stale(same_v2)}
+
+    assert source.furu_hash not in current_refs
+    assert source.furu_hash in stale_refs
+
+
+def test_migration_current_checks_class_mismatch_as_stale(furu_tmp_root) -> None:
+    legacy_cls, current_cls = _same_class_name_mismatch()
+    legacy_obj = legacy_cls()
+    assert legacy_obj.get() == 0
+
+    current_refs = {ref.furu_hash for ref in migration_current(current_cls)}
+    stale_refs = {ref.furu_hash for ref in migration_stale(current_cls)}
+
+    assert legacy_obj.furu_hash not in current_refs
+    assert legacy_obj.furu_hash in stale_refs
+
+
+def test_migration_current_checks_hash_mismatch_as_stale(furu_tmp_root) -> None:
+    source = SourceV1(value=40)
+    assert source.get() == 40
+
+    metadata_path = MetadataManager.get_metadata_path(source._base_furu_dir())
+    data = json.loads(metadata_path.read_text())
+    if isinstance(data["furu_obj"], dict):
+        data["furu_obj"]["value"] = 41
+    metadata_path.write_text(json.dumps(data, indent=2))
+
+    current_refs = {ref.furu_hash for ref in migration_current(SourceV1)}
+    stale_refs = {ref.furu_hash for ref in migration_stale(SourceV1)}
+
+    assert source.furu_hash not in current_refs
+    assert source.furu_hash in stale_refs
+
+
 def test_all_successful_filters_non_successful_current_objects(furu_tmp_root) -> None:
     successful_obj = SourceV1(value=20)
     non_successful_obj = SourceV1(value=21)
@@ -303,25 +451,6 @@ def test_all_successful_filters_non_successful_current_objects(furu_tmp_root) ->
     assert non_successful_obj.furu_hash in current_hashes
     assert successful_obj.furu_hash in successful_hashes
     assert non_successful_obj.furu_hash not in successful_hashes
-
-
-def test_all_current_skips_hydration_incompatible_nested_furu_objects(
-    furu_tmp_root,
-) -> None:
-    nested = NestedOptimizerConfig(learning_rate=1e-3)
-    current_obj = NestedTrainingConfig(optimizer=nested, inner_loop_batch_size=64)
-    current_obj.get()
-
-    metadata_path = MetadataManager.get_metadata_path(current_obj._base_furu_dir())
-    data = json.loads(metadata_path.read_text())
-    data["furu_obj"]["optimizer"].pop("learning_rate")
-    metadata_path.write_text(json.dumps(data, indent=2))
-
-    current_hashes = {obj.furu_hash for obj in NestedTrainingConfig.all_current()}
-    stale_refs = {ref.furu_hash for ref in NestedTrainingConfig.all_stale_refs()}
-
-    assert current_obj.furu_hash not in current_hashes
-    assert current_obj.furu_hash in stale_refs
 
 
 def test_ref_migrate_returns_target_and_writes_alias(furu_tmp_root) -> None:

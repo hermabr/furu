@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-- Make `all_current()` resilient to deserialization incompatibilities caused by schema/nested field changes, and include those refs in `all_stale_refs()` so stale artifacts are visible instead of crashing discovery. ([#52](https://github.com/hermabr/furu/pull/52))
+- Treat refs that match `schema_key` but fail hydration as stale, so `Furu.all_current()`/`Furu.all_successful()` skip unloadable entries and `Furu.all_stale_refs()` surfaces them for migration. ([#52](https://github.com/hermabr/furu/pull/52))
+- Make `migration.current()`/`migration.stale()` perform full compatibility checks (schema key, deserializability, class match, and hash match) so schema-compatible but incompatible refs are not treated as current. ([#53](https://github.com/hermabr/furu/pull/53))
 
 ## v0.0.10
 
