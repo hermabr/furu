@@ -1,5 +1,8 @@
 import json
+import importlib
+import importlib.util
 import os
+import sys
 import time
 from pathlib import Path
 from typing import ClassVar
@@ -123,9 +126,70 @@ class QosPoolTask(PoolTask):
         )
 
 
-# def _require_submitit_local_runtime() -> None:
-#     pytest.importorskip("submitit")
-#     pytest.importorskip("pkg_resources")
+def _ensure_pkg_resources_runtime_shim(tmp_path: Path, monkeypatch) -> None:
+    if importlib.util.find_spec("pkg_resources") is not None:
+        return
+
+    shim_dir = tmp_path / "pkg_resources_shim"
+    shim_dir.mkdir(parents=True, exist_ok=True)
+    (shim_dir / "pkg_resources.py").write_text(
+        """from __future__ import annotations
+
+
+def iter_entry_points(group: str):
+    return []
+"""
+    )
+
+    current_pythonpath = os.environ.get("PYTHONPATH")
+    if current_pythonpath:
+        monkeypatch.setenv(
+            "PYTHONPATH",
+            f"{shim_dir}{os.pathsep}{current_pythonpath}",
+        )
+        return
+    monkeypatch.setenv("PYTHONPATH", str(shim_dir))
+
+
+def _load_submitit_task_module(tmp_path: Path, monkeypatch):
+    module_dir = tmp_path / "submitit_test_module"
+    module_dir.mkdir(parents=True, exist_ok=True)
+    module_name = "submitit_pool_task"
+    module_path = module_dir / f"{module_name}.py"
+    module_path.write_text(
+        """from __future__ import annotations
+
+import json
+
+import furu
+
+
+class SubmititPoolTask(furu.Furu[int]):
+    value: int = furu.chz.field()
+
+    def _create(self) -> int:
+        (self.furu_dir / \"value.json\").write_text(json.dumps(self.value))
+        return self.value
+
+    def _load(self) -> int:
+        return json.loads((self.furu_dir / \"value.json\").read_text())
+"""
+    )
+
+    current_pythonpath = os.environ.get("PYTHONPATH")
+    if current_pythonpath:
+        monkeypatch.setenv(
+            "PYTHONPATH",
+            f"{module_dir}{os.pathsep}{current_pythonpath}",
+        )
+    else:
+        monkeypatch.setenv("PYTHONPATH", str(module_dir))
+
+    if str(module_dir) not in sys.path:
+        sys.path.insert(0, str(module_dir))
+    importlib.invalidate_caches()
+    module = importlib.import_module(module_name)
+    return module.SubmititPoolTask
 
 
 def test_spec_with_pool_worker_logs_merges_additional_parameters(tmp_path) -> None:
@@ -195,11 +259,13 @@ def test_run_slurm_pool_executes_tasks(furu_tmp_root, tmp_path, monkeypatch) -> 
 def test_run_slurm_pool_executes_with_submitit_local_backend(
     furu_tmp_root, tmp_path, monkeypatch
 ) -> None:
-    # _require_submitit_local_runtime()
+    _ensure_pkg_resources_runtime_shim(tmp_path, monkeypatch)
+    monkeypatch.setenv("FURU_PATH", str(furu_tmp_root))
 
     import submitit
 
-    root = PoolTask(value=7)
+    submitit_task_cls = _load_submitit_task_module(tmp_path, monkeypatch)
+    root = submitit_task_cls(value=7)
     original_auto_executor = submitit.AutoExecutor
 
     class LocalAutoExecutor:
