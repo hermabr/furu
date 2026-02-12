@@ -1125,13 +1125,12 @@ def run_slurm_pool(
                 now,
                 plan_refresh_interval_sec,
             )
+            _validate_worker_limits_for_plan(
+                plan,
+                per_spec_limits=worker_limits.per_spec_limits,
+            )
         if plan is None:
             raise RuntimeError("internal error: slurm pool plan not initialized")
-
-        _validate_worker_limits_for_plan(
-            plan,
-            per_spec_limits=worker_limits.per_spec_limits,
-        )
 
         now = time.time()
         if failed_scan_interval <= 0 or now >= next_failed_scan_at:
