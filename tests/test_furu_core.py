@@ -4,6 +4,7 @@ import os
 import time
 
 import furu
+from furu.execution.slurm_spec import SlurmSpec, slurm_spec_key
 from furu.storage.state import _StateResultSuccess
 
 
@@ -166,3 +167,41 @@ def test_get_waits_until_lease_expires_then_recovers(
     assert isinstance(
         furu.StateManager.read_state(directory).result, _StateResultSuccess
     )
+
+
+def test_submit_once_records_slurm_spec_metadata(furu_tmp_root) -> None:
+    class StubJob:
+        job_id = "job-stub"
+
+        def done(self) -> bool:
+            return True
+
+    class StubExecutor:
+        def submit(self, fn):
+            _ = fn
+            return StubJob()
+
+    obj = Dummy()
+    directory = obj._base_furu_dir()
+    adapter = furu.SubmititAdapter(executor=StubExecutor())
+
+    obj._submit_once(
+        adapter,
+        directory=directory,
+        on_job_id=None,
+        allow_failed=furu.FURU_CONFIG.retry_failed,
+    )
+
+    state = furu.StateManager.read_state(directory)
+    attempt = state.attempt
+    assert attempt is not None
+    assert attempt.status == "queued"
+    assert attempt.scheduler.get("slurm_spec_key") == slurm_spec_key(SlurmSpec())
+    spec = attempt.scheduler.get("slurm_spec")
+    assert isinstance(spec, dict)
+    assert spec.get("partition") is None
+    assert spec.get("gpus") == 0
+    assert spec.get("cpus") == 4
+    assert spec.get("mem_gb") == 16
+    assert spec.get("time_min") == 60
+    assert spec.get("extra") == {}

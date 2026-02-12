@@ -74,6 +74,7 @@ from ..storage import (
     StateOwner,
 )
 from ..storage.state import (
+    SchedulerMetadata,
     _FuruState,
     _OwnerDict,
     _StateAttemptQueued,
@@ -85,7 +86,11 @@ from ..storage.state import (
 )
 
 if TYPE_CHECKING:
-    from furu.execution.slurm_spec import SlurmExecutorChoice
+    from furu.execution.slurm_spec import (
+        SlurmExecutorChoice,
+        SlurmSpec,
+        SlurmSpecExtraValue,
+    )
 
 
 T = TypeVar("T")
@@ -108,6 +113,25 @@ class _CallerInfo(TypedDict, total=False):
 
     furu_caller_file: str
     furu_caller_line: int
+
+
+SlurmSpecSnapshotValue: TypeAlias = (
+    str | int | float | bool | None | dict[str, "SlurmSpecSnapshotValue"]
+)
+
+
+class _SlurmSpecSnapshot(TypedDict):
+    partition: str | None
+    gpus: int
+    cpus: int
+    mem_gb: int
+    time_min: int
+    extra: dict[str, SlurmSpecSnapshotValue]
+
+
+class _SlurmSchedulerMetadata(TypedDict):
+    slurm_spec_key: str
+    slurm_spec: _SlurmSpecSnapshot
 
 
 @dataclass_transform(
@@ -240,6 +264,49 @@ class Furu(ABC, Generic[T]):
 
     def _executor_key(self: Self) -> str:
         return self._executor_keys()[0]
+
+    @staticmethod
+    def _normalize_slurm_spec_extra(
+        value: "SlurmSpecExtraValue",
+    ) -> SlurmSpecSnapshotValue:
+        if isinstance(value, Mapping):
+            mapping_value = cast("Mapping[str, SlurmSpecExtraValue]", value)
+            normalized: dict[str, SlurmSpecSnapshotValue] = {}
+            for key in sorted(mapping_value):
+                normalized[key] = Furu._normalize_slurm_spec_extra(mapping_value[key])
+            return normalized
+        return value
+
+    def _slurm_scheduler_metadata(self: Self, spec_key: str) -> _SlurmSchedulerMetadata:
+        from furu.execution.slurm_spec import resolve_executor_specs, slurm_spec_key
+
+        selected_spec: SlurmSpec | None = None
+        for spec in resolve_executor_specs(self):
+            if slurm_spec_key(spec) == spec_key:
+                selected_spec = spec
+                break
+        if selected_spec is None:
+            raise FuruSpecMismatch(
+                "Executor spec key does not match node executor choices: "
+                f"{spec_key!r} for {self.__class__.__name__}({self.furu_hash})"
+            )
+
+        extra: dict[str, SlurmSpecSnapshotValue] = {}
+        if selected_spec.extra is not None:
+            for key in sorted(selected_spec.extra):
+                extra[key] = self._normalize_slurm_spec_extra(selected_spec.extra[key])
+
+        return {
+            "slurm_spec_key": spec_key,
+            "slurm_spec": {
+                "partition": selected_spec.partition,
+                "gpus": selected_spec.gpus,
+                "cpus": selected_spec.cpus,
+                "mem_gb": selected_spec.mem_gb,
+                "time_min": selected_spec.time_min,
+                "extra": extra,
+            },
+        }
 
     def _get_dependencies(self: Self, *, recursive: bool = True) -> list["Furu"]:
         """Collect Furu dependencies from fields and dependency methods."""
@@ -1119,12 +1186,17 @@ class Furu(ABC, Generic[T]):
                 "executable": owner_state.executable,
                 "platform": owner_state.platform,
             }
+            slurm_scheduler = self._slurm_scheduler_metadata(self._executor_key())
+            scheduler: SchedulerMetadata = {
+                "slurm_spec_key": slurm_scheduler["slurm_spec_key"],
+                "slurm_spec": slurm_scheduler["slurm_spec"],
+            }
             attempt_id = StateManager.start_attempt_queued(
                 directory,
                 backend="submitit",
                 lease_duration_sec=FURU_CONFIG.lease_duration_sec,
                 owner=owner_payload,
-                scheduler={},
+                scheduler=scheduler,
             )
 
             job = adapter.submit(lambda: self._worker_entry(allow_failed=allow_failed))
@@ -1212,6 +1284,15 @@ class Furu(ABC, Generic[T]):
                     else FURU_CONFIG.retry_failed
                 )
                 allow_success = always_rerun or needs_success_invalidation
+                slurm_scheduler = self._slurm_scheduler_metadata(
+                    effective_worker_spec_key
+                )
+                scheduler: SchedulerMetadata = {
+                    "backend": env_info.get("backend"),
+                    "job_id": env_info.get("slurm_job_id"),
+                    "slurm_spec_key": slurm_scheduler["slurm_spec_key"],
+                    "slurm_spec": slurm_scheduler["slurm_spec"],
+                }
 
                 try:
                     with compute_lock(
@@ -1225,10 +1306,7 @@ class Furu(ABC, Generic[T]):
                             "user": getpass.getuser(),
                             "command": " ".join(sys.argv) if sys.argv else "<unknown>",
                         },
-                        scheduler={
-                            "backend": env_info.get("backend"),
-                            "job_id": env_info.get("slurm_job_id"),
-                        },
+                        scheduler=scheduler,
                         max_wait_time_sec=None,  # Workers wait indefinitely
                         poll_interval_sec=FURU_CONFIG.poll_interval,
                         wait_log_every_sec=FURU_CONFIG.wait_log_every_sec,
