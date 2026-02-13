@@ -89,7 +89,7 @@ def _signature_mismatch_error(
 ) -> TypeError | None:
     try:
         signature = inspect.signature(data_class)
-    except (TypeError, ValueError):
+    except Exception:
         return None
 
     parameters = signature.parameters

@@ -1,11 +1,12 @@
 import json
 import sys
 import textwrap
-from typing import Literal, Protocol, cast, get_args
+from typing import Protocol, cast, get_args
 
 import pytest
 
 import furu
+from furu.migration import TransformSkip
 from furu.storage import MetadataManager, MigrationManager, StateManager
 
 
@@ -791,8 +792,19 @@ def test_ref_migrate_dry_run_validates_without_writing(furu_tmp_root) -> None:
     assert not target._base_furu_dir().exists()
 
 
+@pytest.mark.parametrize(
+    ("dry_run", "strict_types"),
+    [
+        (False, True),
+        (True, True),
+        (False, False),
+        (True, False),
+    ],
+)
 def test_ref_migrate_transform_skip_returns_skipped_without_writing(
     furu_tmp_root,
+    dry_run: bool,
+    strict_types: bool,
 ) -> None:
     source = SourceV1(value=131)
     assert source.get() == 131
@@ -800,11 +812,16 @@ def test_ref_migrate_transform_skip_returns_skipped_without_writing(
     refs = SourceV2.all_stale_refs(namespace="test_migrations.SourceV1")
     assert len(refs) == 1
 
-    def skip_transform(old: SourceV1) -> SourceV2 | Literal["skip"]:
+    def skip_transform(old: SourceV1) -> SourceV2 | TransformSkip:
         _ = old
         return furu.MIGRATION_SKIP
 
-    result = refs[0].migrate(skip_transform, origin="tests")
+    result = refs[0].migrate(
+        skip_transform,
+        dry_run=dry_run,
+        strict_types=strict_types,
+        origin="tests",
+    )
     assert result == furu.MIGRATION_SKIPPED
 
     target_namespace_dir = source._base_furu_dir().parent.parent / "SourceV2"
@@ -821,11 +838,26 @@ def test_ref_migrate_transform_skip_requires_successful_original(
     refs = SourceV2.all_stale_refs(namespace="test_migrations.SourceV1")
     assert len(refs) == 1
 
-    def skip_transform(old: SourceV1) -> SourceV2 | Literal["skip"]:
+    def skip_transform(old: SourceV1) -> SourceV2 | TransformSkip:
         _ = old
         return furu.MIGRATION_SKIP
 
     with pytest.raises(ValueError, match="original artifact is not successful"):
+        refs[0].migrate(skip_transform, origin="tests")
+
+
+def test_ref_migrate_transform_raw_skip_string_is_invalid(furu_tmp_root) -> None:
+    source = SourceV1(value=133)
+    assert source.get() == 133
+
+    refs = SourceV2.all_stale_refs(namespace="test_migrations.SourceV1")
+    assert len(refs) == 1
+
+    def skip_transform(old: SourceV1) -> SourceV2 | str:
+        _ = old
+        return "skip"
+
+    with pytest.raises(TypeError, match="transform must return a Furu object"):
         refs[0].migrate(skip_transform, origin="tests")
 
 

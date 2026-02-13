@@ -62,10 +62,17 @@ TargetObj = TypeVar("TargetObj", bound=_FuruObject)
 # Runtime type expression from annotations (e.g. concrete classes, unions,
 # deferred/forward-referenced strings, and other typing constructs).
 RuntimeTypeAnnotation: TypeAlias = Any
-TransformSkip: TypeAlias = Literal["skip"]
+
+
+@dataclass(frozen=True)
+class _MigrationSkipToken:
+    pass
+
+
+TransformSkip: TypeAlias = _MigrationSkipToken
 MigrationSkipped: TypeAlias = Literal["skipped"]
 
-MIGRATION_SKIP: Final[TransformSkip] = "skip"
+MIGRATION_SKIP: Final[TransformSkip] = _MigrationSkipToken()
 MIGRATION_SKIPPED: Final[MigrationSkipped] = "skipped"
 
 
@@ -120,7 +127,7 @@ class FuruRef:
     ) -> TargetObj | MigrationSkipped:
         source_obj = cast(SourceObj, self._load_ref_object())
         transformed = transform(source_obj)
-        if isinstance(transformed, str) and transformed == MIGRATION_SKIP:
+        if transformed is MIGRATION_SKIP:
             original_ref = resolve_original_ref(self)
             _ensure_original_success(original_ref)
             return MIGRATION_SKIPPED

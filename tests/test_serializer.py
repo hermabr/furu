@@ -391,13 +391,27 @@ def test_from_dict_non_strict_falls_back_when_positional_only_passed_by_keyword(
     assert restored == {"first": 7}
 
 
+def test_from_dict_strict_rejects_when_positional_only_passed_by_keyword() -> None:
+    marker = furu.FuruSerializer.get_classname(RequiresPositionalOnlyArgWithKwargs(1))
+    with pytest.raises(
+        TypeError,
+        match="positional-only arguments passed as keyword arguments",
+    ):
+        furu.FuruSerializer.from_dict(
+            {
+                "__class__": marker,
+                "first": 7,
+            }
+        )
+
+
 def test_from_dict_non_strict_falls_back_when_signature_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     marker = furu.FuruSerializer.get_classname(RequiresTwoArgs(1, 2))
 
     def no_signature(_obj: object):
-        raise ValueError("no signature")
+        raise RuntimeError("no signature")
 
     monkeypatch.setattr(serializer_module.inspect, "signature", no_signature)
 
