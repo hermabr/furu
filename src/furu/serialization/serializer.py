@@ -8,7 +8,7 @@ import json
 import pathlib
 import textwrap
 from pathlib import Path
-from typing import Any, Protocol, Sequence, cast, runtime_checkable
+from typing import Any, Protocol, Sequence, cast, get_type_hints, runtime_checkable
 
 import chz
 from chz.util import MISSING as CHZ_MISSING, MISSING_TYPE
@@ -180,6 +180,7 @@ class FuruSerializer:
                         init_kwargs[name] = pathlib.Path(init_kwargs[name])
             elif dataclasses.is_dataclass(data_class):
                 dataclass_fields = dataclasses.fields(data_class)
+                dataclass_type_hints = get_type_hints(data_class)
                 field_names = {field.name for field in dataclass_fields}
                 unexpected_field_names = set(kwargs) - field_names
                 if unexpected_field_names:
@@ -205,7 +206,8 @@ class FuruSerializer:
                         continue
 
                     field_value = init_kwargs.get(field.name)
-                    if isinstance(field_value, str) and field.type in path_types:
+                    field_type = dataclass_type_hints.get(field.name, field.type)
+                    if isinstance(field_value, str) and field_type in path_types:
                         init_kwargs[field.name] = pathlib.Path(field_value)
             else:
                 init_kwargs = kwargs

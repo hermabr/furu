@@ -71,6 +71,11 @@ class OuterWithNestedDataclass:
     inner: RequiresTwoFields
 
 
+@dataclass(frozen=True)
+class DataclassWithStringPathAnnotation:
+    p: "Path"
+
+
 class RequiresTwoArgs:
     def __init__(self, first: int, second: int) -> None:
         self.first = first
@@ -230,6 +235,14 @@ def test_from_dict_ignores_non_init_dataclass_fields() -> None:
     restored = furu.FuruSerializer.from_dict(data)
     assert restored == obj
     assert restored.derived == 10
+
+
+def test_from_dict_resolves_string_path_annotation() -> None:
+    obj = DataclassWithStringPathAnnotation(p=Path("x/y"))
+    data = furu.FuruSerializer.to_dict(obj)
+    restored = furu.FuruSerializer.from_dict(data)
+    assert restored == obj
+    assert isinstance(restored.p, Path)
 
 
 def test_from_dict_rejects_incompatible_dataclass() -> None:
