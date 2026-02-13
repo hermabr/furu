@@ -82,6 +82,12 @@ class RequiresTwoArgs:
         self.second = second
 
 
+class RequiresKeywordOnlyArg:
+    def __init__(self, first: int, *, second: int) -> None:
+        self.first = first
+        self.second = second
+
+
 @dataclass(frozen=True)
 class DataclassWithTypeErrorInPostInit:
     value: int
@@ -302,6 +308,32 @@ def test_from_dict_non_strict_still_falls_back_on_signature_mismatch() -> None:
     )
     assert restored == {"first": 7}
     assert restored.first == 7
+
+
+def test_from_dict_non_strict_falls_back_on_custom_unexpected_keyword() -> None:
+    marker = furu.FuruSerializer.get_classname(RequiresTwoArgs(1, 2))
+    restored = furu.FuruSerializer.from_dict(
+        {
+            "__class__": marker,
+            "first": 7,
+            "second": 8,
+            "extra": 9,
+        },
+        strict=False,
+    )
+    assert restored == {"first": 7, "second": 8, "extra": 9}
+
+
+def test_from_dict_non_strict_falls_back_on_missing_keyword_only_arg() -> None:
+    marker = furu.FuruSerializer.get_classname(RequiresKeywordOnlyArg(1, second=2))
+    restored = furu.FuruSerializer.from_dict(
+        {
+            "__class__": marker,
+            "first": 7,
+        },
+        strict=False,
+    )
+    assert restored == {"first": 7}
 
 
 def test_from_dict_non_strict_reraises_non_schema_type_errors() -> None:

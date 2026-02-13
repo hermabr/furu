@@ -9,6 +9,7 @@
 - Limit relaxed deserialization class-import fallback to missing-module cases, so non-module import-time failures now surface instead of being silently swallowed. ([#55](https://github.com/hermabr/furu/pull/55))
 - Preserve unknown dataclass fields by downgrading to relaxed fallback dicts (instead of silently dropping keys), and only swallow constructor `TypeError`s in relaxed mode when they indicate signature/schema mismatches. ([#55](https://github.com/hermabr/furu/pull/55))
 - Resolve dataclass forward-reference path annotations during deserialization so string path payloads are reconstructed as `pathlib.Path` even when annotations are deferred/quoted. ([#55](https://github.com/hermabr/furu/pull/55))
+- Validate constructor kwargs for non-dataclass/chz payloads with `inspect.signature()` before instantiation so relaxed mode falls back predictably on schema mismatches (missing/unexpected args) without relying on broad runtime `TypeError` handling. ([#55](https://github.com/hermabr/furu/pull/55))
 
 ## v0.0.11
 

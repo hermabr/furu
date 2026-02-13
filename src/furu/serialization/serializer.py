@@ -4,6 +4,7 @@ import enum
 import hashlib
 import importlib
 import importlib.util
+import inspect
 import json
 import pathlib
 import textwrap
@@ -35,6 +36,66 @@ def _is_schema_mismatch_type_error(error: TypeError) -> bool:
     return any(
         snippet in str(error) for snippet in _SCHEMA_MISMATCH_TYPE_ERROR_SNIPPETS
     )
+
+
+def _signature_mismatch_error(
+    data_class: type[object],
+    init_kwargs: dict[str, JsonValue],
+) -> TypeError | None:
+    try:
+        signature = inspect.signature(data_class)
+    except (TypeError, ValueError):
+        return None
+
+    parameters = signature.parameters
+    keyword_parameter_names = {
+        name
+        for name, parameter in parameters.items()
+        if parameter.kind
+        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    }
+    has_var_keyword = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+
+    class_name = data_class.__name__
+
+    if not has_var_keyword:
+        unexpected_names = sorted(set(init_kwargs) - keyword_parameter_names)
+        if unexpected_names:
+            return TypeError(
+                f"{class_name}() got an unexpected keyword argument "
+                f"{unexpected_names[0]!r}"
+            )
+
+    missing_positional_names = [
+        name
+        for name, parameter in parameters.items()
+        if parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+        and parameter.default is inspect.Parameter.empty
+        and name not in init_kwargs
+    ]
+    if missing_positional_names:
+        return TypeError(
+            f"{class_name}() missing 1 required positional argument: "
+            f"{missing_positional_names[0]!r}"
+        )
+
+    missing_keyword_only_names = [
+        name
+        for name, parameter in parameters.items()
+        if parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        and parameter.default is inspect.Parameter.empty
+        and name not in init_kwargs
+    ]
+    if missing_keyword_only_names:
+        return TypeError(
+            f"{class_name}() missing 1 required keyword-only argument: "
+            f"{missing_keyword_only_names[0]!r}"
+        )
+
+    return None
 
 
 class FuruSerializer:
@@ -165,8 +226,13 @@ class FuruSerializer:
                 return fallback
 
             if chz.is_chz(data_class):
+                chz_fields = chz.chz_fields(data_class)
+                unexpected_field_names = set(kwargs) - set(chz_fields)
+                if unexpected_field_names:
+                    return _strict_or_fallback()
+
                 init_kwargs = dict(kwargs)
-                for name, field in chz.chz_fields(data_class).items():
+                for name, field in chz_fields.items():
                     if name not in kwargs:
                         if field._default is CHZ_MISSING and isinstance(
                             field._default_factory, MISSING_TYPE
@@ -211,15 +277,18 @@ class FuruSerializer:
                         init_kwargs[field.name] = pathlib.Path(field_value)
             else:
                 init_kwargs = kwargs
+                mismatch_error = _signature_mismatch_error(
+                    cast(type[object], data_class),
+                    init_kwargs,
+                )
+                if mismatch_error is not None:
+                    if strict:
+                        raise mismatch_error
+                    if _is_schema_mismatch_type_error(mismatch_error):
+                        return fallback
+                    raise mismatch_error
 
-            try:
-                return data_class(**init_kwargs)
-            except TypeError as exc:
-                if strict:
-                    raise
-                if not _is_schema_mismatch_type_error(exc):
-                    raise
-                return fallback
+            return data_class(**init_kwargs)
 
         if isinstance(data, list):
             return [cls.from_dict(v, strict=strict) for v in data]
