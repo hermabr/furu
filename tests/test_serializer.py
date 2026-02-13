@@ -411,7 +411,7 @@ def test_from_dict_non_strict_falls_back_when_signature_unavailable(
     marker = furu.FuruSerializer.get_classname(RequiresTwoArgs(1, 2))
 
     def no_signature(_obj: object):
-        raise RuntimeError("no signature")
+        raise ValueError("no signature")
 
     monkeypatch.setattr(serializer_module.inspect, "signature", no_signature)
 
