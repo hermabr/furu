@@ -71,6 +71,21 @@ class OuterWithNestedDataclass:
     inner: RequiresTwoFields
 
 
+class RequiresTwoArgs:
+    def __init__(self, first: int, second: int) -> None:
+        self.first = first
+        self.second = second
+
+
+@dataclass(frozen=True)
+class DataclassWithTypeErrorInPostInit:
+    value: int
+
+    def __post_init__(self) -> None:
+        if self.value < 0:
+            raise TypeError("post-init type error")
+
+
 class HashValueFuru(furu.Furu[int]):
     value: int = chz.field()
 
@@ -223,6 +238,19 @@ def test_from_dict_rejects_incompatible_dataclass() -> None:
         furu.FuruSerializer.from_dict({"__class__": bad_marker, "first": 7})
 
 
+def test_from_dict_rejects_unexpected_dataclass_fields_in_strict_mode() -> None:
+    marker = furu.FuruSerializer.get_classname(RequiresTwoFields(1, 2))
+    with pytest.raises(TypeError):
+        furu.FuruSerializer.from_dict(
+            {
+                "__class__": marker,
+                "first": 7,
+                "second": 8,
+                "extra": 9,
+            }
+        )
+
+
 def test_from_dict_returns_dict_for_incompatible_dataclass_in_non_strict_mode() -> None:
     bad_marker = furu.FuruSerializer.get_classname(RequiresTwoFields(1, 2))
     restored = furu.FuruSerializer.from_dict(
@@ -231,6 +259,48 @@ def test_from_dict_returns_dict_for_incompatible_dataclass_in_non_strict_mode() 
     )
     assert restored == {"first": 7}
     assert restored.first == 7
+
+
+def test_from_dict_returns_dict_for_unexpected_dataclass_fields_in_non_strict_mode() -> (
+    None
+):
+    marker = furu.FuruSerializer.get_classname(RequiresTwoFields(1, 2))
+    restored = furu.FuruSerializer.from_dict(
+        {
+            "__class__": marker,
+            "first": 7,
+            "second": 8,
+            "extra": 9,
+        },
+        strict=False,
+    )
+    assert restored == {"first": 7, "second": 8, "extra": 9}
+    assert restored.extra == 9
+
+
+def test_from_dict_non_strict_still_falls_back_on_signature_mismatch() -> None:
+    marker = furu.FuruSerializer.get_classname(RequiresTwoArgs(1, 2))
+    restored = furu.FuruSerializer.from_dict(
+        {
+            "__class__": marker,
+            "first": 7,
+        },
+        strict=False,
+    )
+    assert restored == {"first": 7}
+    assert restored.first == 7
+
+
+def test_from_dict_non_strict_reraises_non_schema_type_errors() -> None:
+    marker = furu.FuruSerializer.get_classname(DataclassWithTypeErrorInPostInit(1))
+    with pytest.raises(TypeError, match="post-init type error"):
+        furu.FuruSerializer.from_dict(
+            {
+                "__class__": marker,
+                "value": -1,
+            },
+            strict=False,
+        )
 
 
 def test_from_dict_rejects_unknown_class() -> None:

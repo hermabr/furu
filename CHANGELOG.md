@@ -7,6 +7,7 @@
 - Return fallback payloads as attribute-accessible dictionaries in relaxed mode so nested field access like `obj.age` works even when full reconstruction is unavailable. ([#55](https://github.com/hermabr/furu/pull/55))
 - Coerce dict-valued nested fields to declared dataclass/chz types during `FuruRef.migrate(..., strict_types=True)` with exact-key validation (no extra/missing fields), union-branch probing across all members, and explicit `__class__` disambiguation when multiple union members match. ([#55](https://github.com/hermabr/furu/pull/55))
 - Limit relaxed deserialization class-import fallback to missing-module cases, so non-module import-time failures now surface instead of being silently swallowed. ([#55](https://github.com/hermabr/furu/pull/55))
+- Preserve unknown dataclass fields by downgrading to relaxed fallback dicts (instead of silently dropping keys), and only swallow constructor `TypeError`s in relaxed mode when they indicate signature/schema mismatches. ([#55](https://github.com/hermabr/furu/pull/55))
 
 ## v0.0.11
 

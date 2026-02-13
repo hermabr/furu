@@ -21,6 +21,21 @@ from pydantic import BaseModel as PydanticBaseModel
 # library handles arbitrary user-defined objects that we cannot know at compile time.
 JsonValue = Any
 
+_SCHEMA_MISMATCH_TYPE_ERROR_SNIPPETS = (
+    "required positional argument",
+    "required keyword-only argument",
+    "got an unexpected keyword argument",
+    "takes no arguments",
+    "positional argument but",
+    "positional arguments but",
+)
+
+
+def _is_schema_mismatch_type_error(error: TypeError) -> bool:
+    return any(
+        snippet in str(error) for snippet in _SCHEMA_MISMATCH_TYPE_ERROR_SNIPPETS
+    )
+
 
 class FuruSerializer:
     """Handles serialization, deserialization, and hashing of Furu objects."""
@@ -165,6 +180,11 @@ class FuruSerializer:
                         init_kwargs[name] = pathlib.Path(init_kwargs[name])
             elif dataclasses.is_dataclass(data_class):
                 dataclass_fields = dataclasses.fields(data_class)
+                field_names = {field.name for field in dataclass_fields}
+                unexpected_field_names = set(kwargs) - field_names
+                if unexpected_field_names:
+                    return _strict_or_fallback()
+
                 init_kwargs = {
                     field.name: kwargs[field.name]
                     for field in dataclass_fields
@@ -192,8 +212,10 @@ class FuruSerializer:
 
             try:
                 return data_class(**init_kwargs)
-            except TypeError:
+            except TypeError as exc:
                 if strict:
+                    raise
+                if not _is_schema_mismatch_type_error(exc):
                     raise
                 return fallback
 
