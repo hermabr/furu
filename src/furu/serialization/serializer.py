@@ -116,7 +116,11 @@ def _signature_mismatch_error(
     missing_positional_names = [
         name
         for name, parameter in parameters.items()
-        if parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+        if parameter.kind
+        in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        )
         and parameter.default is inspect.Parameter.empty
         and name not in init_kwargs
     ]

@@ -98,6 +98,11 @@ class RequiresKeywordOnlyArg:
         self.second = second
 
 
+class RequiresPositionalOnlyArg:
+    def __init__(self, first: int, /) -> None:
+        self.first = first
+
+
 @dataclass(frozen=True)
 class DataclassWithTypeErrorInPostInit:
     value: int
@@ -352,6 +357,17 @@ def test_from_dict_non_strict_falls_back_on_missing_keyword_only_arg() -> None:
         strict=False,
     )
     assert restored == {"first": 7}
+
+
+def test_from_dict_non_strict_falls_back_on_missing_positional_only_arg() -> None:
+    marker = furu.FuruSerializer.get_classname(RequiresPositionalOnlyArg(1))
+    restored = furu.FuruSerializer.from_dict(
+        {
+            "__class__": marker,
+        },
+        strict=False,
+    )
+    assert restored == {}
 
 
 def test_from_dict_non_strict_reraises_non_schema_type_errors() -> None:

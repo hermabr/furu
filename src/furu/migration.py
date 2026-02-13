@@ -18,6 +18,7 @@ from typing import (
     get_args,
     get_origin,
     get_type_hints,
+    overload,
 )
 
 import chz
@@ -60,6 +61,8 @@ TargetObj = TypeVar("TargetObj", bound=_FuruObject)
 # Runtime type expression from annotations (e.g. concrete classes, unions,
 # deferred/forward-referenced strings, and other typing constructs).
 RuntimeTypeAnnotation: TypeAlias = Any
+TransformSkip: TypeAlias = Literal["skip"]
+MigrationSkipped: TypeAlias = Literal["skipped"]
 
 
 @dataclass(frozen=True)
@@ -69,6 +72,7 @@ class FuruRef:
     root: RootKind
     furu_dir: Path
 
+    @overload
     def migrate(
         self,
         transform: Callable[[SourceObj], TargetObj],
@@ -77,10 +81,47 @@ class FuruRef:
         strict_types: bool = True,
         origin: str | None = None,
         note: str | None = None,
-    ) -> TargetObj:
+    ) -> TargetObj: ...
+
+    @overload
+    def migrate(
+        self,
+        transform: Callable[[SourceObj], TransformSkip],
+        *,
+        dry_run: bool = False,
+        strict_types: bool = True,
+        origin: str | None = None,
+        note: str | None = None,
+    ) -> MigrationSkipped: ...
+
+    @overload
+    def migrate(
+        self,
+        transform: Callable[[SourceObj], TargetObj | TransformSkip],
+        *,
+        dry_run: bool = False,
+        strict_types: bool = True,
+        origin: str | None = None,
+        note: str | None = None,
+    ) -> TargetObj | MigrationSkipped: ...
+
+    def migrate(
+        self,
+        transform: Callable[[SourceObj], TargetObj | TransformSkip],
+        *,
+        dry_run: bool = False,
+        strict_types: bool = True,
+        origin: str | None = None,
+        note: str | None = None,
+    ) -> TargetObj | MigrationSkipped:
         source_obj = cast(SourceObj, self._load_ref_object())
-        target_obj = transform(source_obj)
-        validated_target = _assert_furu_object(target_obj)
+        transformed = transform(source_obj)
+        if isinstance(transformed, str) and transformed == "skip":
+            original_ref = resolve_original_ref(self)
+            _ensure_original_success(original_ref)
+            return "skipped"
+
+        validated_target = _assert_furu_object(transformed)
         if strict_types:
             validated_target = _coerce_furu_object_types(validated_target)
             _validate_furu_object_types(validated_target)
