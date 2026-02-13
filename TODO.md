@@ -44,6 +44,7 @@
 - [x] add a load method that crashes if the object doesn't exist or change .get
 - [ ] ensure import furu is fast
 - [ ] when checking for stale in the migrations/all_current, it checks if it is stale twice. we probably don't need that
+- [ ] maybe i should store the full original metadata in the migration.json file?
 
 ## Code Quality
 
