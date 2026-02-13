@@ -8,8 +8,9 @@ import inspect
 import json
 import pathlib
 import textwrap
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Protocol, Sequence, cast, get_type_hints, runtime_checkable
+from typing import Any, Protocol, cast, get_type_hints, runtime_checkable
 
 import chz
 from chz.util import MISSING as CHZ_MISSING, MISSING_TYPE
@@ -31,11 +32,54 @@ _SCHEMA_MISMATCH_TYPE_ERROR_SNIPPETS = (
     "positional arguments but",
 )
 
+_PATH_ANNOTATION_STRINGS = {
+    "Path",
+    "pathlib.Path",
+}
+
 
 def _is_schema_mismatch_type_error(error: TypeError) -> bool:
     return any(
         snippet in str(error) for snippet in _SCHEMA_MISMATCH_TYPE_ERROR_SNIPPETS
     )
+
+
+def _module_path_exists(module_path: str) -> bool:
+    if not module_path:
+        return False
+
+    module_parts = module_path.split(".")
+    prefix_parts: list[str] = []
+    for index, module_part in enumerate(module_parts):
+        prefix_parts.append(module_part)
+        prefix = ".".join(prefix_parts)
+        module_spec = importlib.util.find_spec(prefix)
+        if module_spec is None:
+            return False
+        if (
+            index < len(module_parts) - 1
+            and module_spec.submodule_search_locations is None
+        ):
+            return False
+
+    return True
+
+
+def _resolved_type_hints(data_class: type[object]) -> dict[str, object]:
+    annotations = dict(inspect.get_annotations(data_class, eval_str=False))
+    try:
+        annotations.update(get_type_hints(data_class))
+    except NameError:
+        pass
+    return annotations
+
+
+def _is_path_annotation(annotation: object) -> bool:
+    if annotation in (Path, pathlib.Path):
+        return True
+    if isinstance(annotation, str):
+        return annotation.replace(" ", "") in _PATH_ANNOTATION_STRINGS
+    return False
 
 
 def _signature_mismatch_error(
@@ -105,6 +149,11 @@ class FuruSerializer:
 
     class _AttrDict(dict[str, JsonValue]):
         """Dictionary wrapper with attribute-style field access."""
+
+        def __getattribute__(self, name: str) -> JsonValue:
+            if not name.startswith("__") and name in self:
+                return self[name]
+            return super().__getattribute__(name)
 
         def __getattr__(self, name: str) -> JsonValue:
             try:
@@ -191,10 +240,9 @@ class FuruSerializer:
                 module = importlib.import_module(module_path)
                 data_class = getattr(module, class_name)
             else:
-                module_spec = importlib.util.find_spec(module_path)
                 module = (
                     importlib.import_module(module_path)
-                    if module_spec is not None
+                    if _module_path_exists(module_path)
                     else None
                 )
                 data_class = (
@@ -217,7 +265,6 @@ class FuruSerializer:
                 if k != cls.CLASS_MARKER
             }
 
-            path_types = (Path, pathlib.Path)
             fallback = cls._as_attr_dict(kwargs)
 
             def _strict_or_fallback() -> JsonValue:
@@ -240,13 +287,15 @@ class FuruSerializer:
                             return _strict_or_fallback()
                         continue
 
-                    if field.final_type in path_types and isinstance(
+                    if _is_path_annotation(field.final_type) and isinstance(
                         init_kwargs.get(name), str
                     ):
                         init_kwargs[name] = pathlib.Path(init_kwargs[name])
             elif dataclasses.is_dataclass(data_class):
                 dataclass_fields = dataclasses.fields(data_class)
-                dataclass_type_hints = get_type_hints(data_class)
+                dataclass_type_hints = _resolved_type_hints(
+                    cast(type[object], data_class),
+                )
                 field_names = {field.name for field in dataclass_fields}
                 unexpected_field_names = set(kwargs) - field_names
                 if unexpected_field_names:
@@ -273,7 +322,7 @@ class FuruSerializer:
 
                     field_value = init_kwargs.get(field.name)
                     field_type = dataclass_type_hints.get(field.name, field.type)
-                    if isinstance(field_value, str) and field_type in path_types:
+                    if isinstance(field_value, str) and _is_path_annotation(field_type):
                         init_kwargs[field.name] = pathlib.Path(field_value)
             else:
                 init_kwargs = kwargs

@@ -3,12 +3,16 @@ import importlib
 import pathlib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import chz
 import pytest
 
 import furu
+
+if TYPE_CHECKING:
+
+    class NotDefinedType: ...
 
 
 class _FooBase:
@@ -74,6 +78,12 @@ class OuterWithNestedDataclass:
 @dataclass(frozen=True)
 class DataclassWithStringPathAnnotation:
     p: "Path"
+
+
+@dataclass(frozen=True)
+class DataclassWithUnresolvedTypeHint:
+    p: "Path"
+    missing: "NotDefinedType"
 
 
 class RequiresTwoArgs:
@@ -251,6 +261,14 @@ def test_from_dict_resolves_string_path_annotation() -> None:
     assert isinstance(restored.p, Path)
 
 
+def test_from_dict_handles_unresolved_type_hints() -> None:
+    obj = DataclassWithUnresolvedTypeHint(p=Path("x/y"), missing=cast(Any, 1))
+    data = furu.FuruSerializer.to_dict(obj)
+    restored = furu.FuruSerializer.from_dict(data)
+    assert restored == obj
+    assert isinstance(restored.p, Path)
+
+
 def test_from_dict_rejects_incompatible_dataclass() -> None:
     bad_marker = furu.FuruSerializer.get_classname(RequiresTwoFields(1, 2))
     with pytest.raises(TypeError):
@@ -348,6 +366,15 @@ def test_from_dict_non_strict_reraises_non_schema_type_errors() -> None:
         )
 
 
+def test_from_dict_returns_dict_for_missing_parent_module_path_in_non_strict_mode() -> (
+    None
+):
+    payload = {"__class__": "no.such.module.Class", "value": 1}
+    restored = furu.FuruSerializer.from_dict(payload, strict=False)
+    assert restored == {"value": 1}
+    assert restored.value == 1
+
+
 def test_from_dict_rejects_unknown_class() -> None:
     payload = {"__class__": "test_serializer.DoesNotExist", "value": 1}
     with pytest.raises(AttributeError):
@@ -359,6 +386,17 @@ def test_from_dict_returns_dict_for_unknown_class_in_non_strict_mode() -> None:
     restored = furu.FuruSerializer.from_dict(payload, strict=False)
     assert restored == {"value": 1}
     assert restored.value == 1
+
+
+def test_from_dict_attr_access_prefers_payload_keys_over_dict_methods() -> None:
+    payload = {
+        "__class__": "test_serializer.DoesNotExist",
+        "items": "value",
+        "keys": "name",
+    }
+    restored = furu.FuruSerializer.from_dict(payload, strict=False)
+    assert restored.items == "value"
+    assert restored.keys == "name"
 
 
 def test_from_dict_loads_nested_objects_if_possible() -> None:

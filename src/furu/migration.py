@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as _dt
+import inspect
 import types
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ from typing import (
     cast,
     get_args,
     get_origin,
+    get_type_hints,
 )
 
 import chz
@@ -528,15 +530,22 @@ def _coerce_mapping_to_dataclass(
     dataclass_fields = [
         field for field in dataclasses.fields(expected_type) if field.init
     ]
+    dataclass_type_hints = dict(inspect.get_annotations(expected_type, eval_str=False))
+    try:
+        dataclass_type_hints.update(get_type_hints(expected_type))
+    except NameError:
+        pass
+
     expected_keys = {field.name for field in dataclass_fields}
     if not _mapping_has_exact_keys(value, expected_keys):
         return cast(JsonValue, value)
 
     init_kwargs: dict[str, JsonValue] = {}
     for field in dataclass_fields:
+        field_type = dataclass_type_hints.get(field.name, field.type)
         field_value = value[field.name]
-        coerced = _coerce_value_for_type(field_value, field.type)
-        if not is_subtype_instance(coerced, field.type):
+        coerced = _coerce_value_for_type(field_value, field_type)
+        if not is_subtype_instance(coerced, field_type):
             return cast(JsonValue, value)
         init_kwargs[field.name] = coerced
     return expected_type(**init_kwargs)

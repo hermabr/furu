@@ -450,6 +450,39 @@ def _same_class_nested_conf_union_distinct_shape() -> type[furu.Furu[int]]:
     )
 
 
+def _same_class_nested_conf_union_future_annotations() -> type[furu.Furu[int]]:
+    return _define_same_class(
+        """
+        from __future__ import annotations
+
+        from dataclasses import dataclass
+
+
+        @dataclass(frozen=True)
+        class FutureConf2:
+            age: str
+            name: str
+
+
+        @dataclass(frozen=True)
+        class FutureConf3:
+            age: int
+            name: str
+
+
+        class SameClass(furu.Furu[int]):
+            conf: FutureConf2 | FutureConf3
+
+            def _create(self) -> int:
+                (self.furu_dir / "value.txt").write_text(str(self.conf.age))
+                return self.conf.age
+
+            def _load(self) -> int:
+                return int((self.furu_dir / "value.txt").read_text())
+        """
+    )
+
+
 def test_migrate_by_schema_with_defaults(furu_tmp_root) -> None:
     source = SourceV1(value=5)
     assert source.get() == 5
@@ -911,6 +944,57 @@ def test_ref_migrate_nested_union_replace_dict_selects_only_valid_branch(
     assert isinstance(target_cast.conf, conf2_type)
     assert not isinstance(target_cast.conf, conf_type)
     assert target_cast.conf.nickname == "hero"
+
+
+def test_ref_migrate_nested_union_replace_dict_with_future_annotations(
+    furu_tmp_root,
+) -> None:
+    old_version = _same_class_nested_conf_age_only()
+    old_conf_type = cast(type, old_version.__annotations__["conf"])
+
+    source = cast(type, old_version)(conf=old_conf_type(age=41))
+    assert source.get() == 41
+
+    metadata_path = MetadataManager.get_metadata_path(source._base_furu_dir())
+    metadata = json.loads(metadata_path.read_text())
+    metadata["schema_key"] = ["conf", "legacy"]
+    metadata_path.write_text(json.dumps(metadata, indent=2))
+
+    new_version = _same_class_nested_conf_union_future_annotations()
+    stale_refs = new_version.all_stale_refs(namespace="test_migrations.SameClass")
+    assert len(stale_refs) == 1
+
+    from chz import replace
+
+    class _ConfLike(Protocol):
+        age: int
+
+    class _ContainerLike(Protocol):
+        conf: _ConfLike
+
+    class _ConfWithName(Protocol):
+        age: int
+        name: str
+
+    class _ContainerWithName(Protocol):
+        conf: _ConfWithName
+
+    def to_v2(old: _ContainerLike) -> furu.Furu[int]:
+        old_furu = cast(furu.Furu[int], old)
+        return replace(
+            old_furu,
+            conf={
+                "age": old.conf.age,
+                "name": "default",
+            },
+        )
+
+    target = stale_refs[0].migrate(to_v2, dry_run=True, origin="tests")
+    target_cast = cast(_ContainerWithName, target)
+    assert isinstance(target, new_version)
+    assert type(target_cast.conf).__name__ == "FutureConf3"
+    assert target_cast.conf.age == 41
+    assert target_cast.conf.name == "default"
 
 
 def test_ref_migrate_nested_union_replace_dict_ambiguous_requires_class_marker(

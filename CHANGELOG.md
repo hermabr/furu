@@ -10,6 +10,8 @@
 - Preserve unknown dataclass fields by downgrading to relaxed fallback dicts (instead of silently dropping keys), and only swallow constructor `TypeError`s in relaxed mode when they indicate signature/schema mismatches. ([#55](https://github.com/hermabr/furu/pull/55))
 - Resolve dataclass forward-reference path annotations during deserialization so string path payloads are reconstructed as `pathlib.Path` even when annotations are deferred/quoted. ([#55](https://github.com/hermabr/furu/pull/55))
 - Validate constructor kwargs for non-dataclass/chz payloads with `inspect.signature()` before instantiation so relaxed mode falls back predictably on schema mismatches (missing/unexpected args) without relying on broad runtime `TypeError` handling. ([#55](https://github.com/hermabr/furu/pull/55))
+- Harden relaxed deserialization fallback by avoiding `find_spec()` crashes for missing parent modules, tolerating unresolved type hints during dataclass reconstruction, and prioritizing payload keys over dict methods for attribute-style fallback access. ([#55](https://github.com/hermabr/furu/pull/55))
+- Resolve dataclass field types via annotations during strict migration coercion so union/dataclass checks keep working when field annotations are deferred (`from __future__ import annotations`). ([#55](https://github.com/hermabr/furu/pull/55))
 
 ## v0.0.11
 
