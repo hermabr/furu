@@ -1,10 +1,24 @@
 from __future__ import annotations
 
+import dataclasses
 import datetime as _dt
+import inspect
+import types
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol, TypeVar, cast
+from typing import (
+    Any,
+    Literal,
+    Protocol,
+    TypeAlias,
+    TypeVar,
+    Union,
+    cast,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 import chz
 from chz.util import MISSING as CHZ_MISSING, MISSING_TYPE
@@ -43,6 +57,10 @@ MigrationConflict = Literal["throw", "skip"]
 SourceObj = TypeVar("SourceObj")
 TargetObj = TypeVar("TargetObj", bound=_FuruObject)
 
+# Runtime type expression from annotations (e.g. concrete classes, unions,
+# deferred/forward-referenced strings, and other typing constructs).
+RuntimeTypeAnnotation: TypeAlias = Any
+
 
 @dataclass(frozen=True)
 class FuruRef:
@@ -64,6 +82,7 @@ class FuruRef:
         target_obj = transform(source_obj)
         validated_target = _assert_furu_object(target_obj)
         if strict_types:
+            validated_target = _coerce_furu_object_types(validated_target)
             _validate_furu_object_types(validated_target)
         self._migrate_to_target(
             target_obj=validated_target,
@@ -75,7 +94,7 @@ class FuruRef:
 
     def _load_ref_object(self) -> JsonValue:
         metadata = MetadataManager.read_metadata(self.furu_dir)
-        return FuruSerializer.from_dict(metadata.furu_obj)
+        return FuruSerializer.from_dict(metadata.furu_obj, strict=False)
 
     def _migrate_to_target(
         self,
@@ -399,6 +418,195 @@ def _validate_furu_object_types(target_obj: _FuruObject) -> None:
             f"{field.logical_name!r}: expected {type_repr(expected)}, "
             f"got {type_repr(type(value))}"
         )
+
+
+def _coerce_furu_object_types(target_obj: _FuruObject) -> _FuruObject:
+    updates: dict[str, JsonValue] = {}
+    for field in chz.chz_fields(target_obj).values():
+        name = field.logical_name
+        value = getattr(target_obj, name)
+        coerced = _coerce_value_for_type(value, field.final_type)
+        if coerced is value:
+            continue
+        updates[name] = coerced
+    if not updates:
+        return target_obj
+    return cast(_FuruObject, chz.replace(target_obj, **updates))
+
+
+def _coerce_value_for_type(
+    value: JsonValue,
+    expected_type: RuntimeTypeAnnotation,
+) -> JsonValue:
+    """Coerce mappings toward a target type annotation when possible.
+
+    `expected_type` may be a concrete runtime type, a `typing.Union`/`X | Y`,
+    or another typing annotation provided by field metadata.
+    """
+    if is_subtype_instance(value, expected_type):
+        return value
+
+    union_origin = get_origin(expected_type)
+    if union_origin in (types.UnionType, Union):
+        return _coerce_union_value(
+            value,
+            union_types=get_args(expected_type),
+            expected_type=expected_type,
+        )
+
+    if not isinstance(expected_type, type):
+        return value
+    if not isinstance(value, Mapping):
+        return value
+
+    if dataclasses.is_dataclass(expected_type):
+        return _coerce_mapping_to_dataclass(value, expected_type)
+
+    if chz.is_chz(expected_type):
+        return _coerce_mapping_to_chz(value, expected_type)
+
+    return value
+
+
+def _coerce_union_value(
+    value: JsonValue,
+    *,
+    union_types: tuple[RuntimeTypeAnnotation, ...],
+    expected_type: RuntimeTypeAnnotation,
+) -> JsonValue:
+    if not isinstance(value, Mapping):
+        return value
+
+    class_marker_value = value.get(FuruSerializer.CLASS_MARKER)
+    class_marker: str | None
+    if class_marker_value is None:
+        class_marker = None
+    elif isinstance(class_marker_value, str):
+        class_marker = class_marker_value
+    else:
+        return value
+
+    candidates: list[tuple[RuntimeTypeAnnotation, JsonValue]] = []
+    for union_type in union_types:
+        if class_marker is not None and not _union_type_matches_class_marker(
+            union_type,
+            class_marker,
+        ):
+            continue
+        coerced = _coerce_value_for_type(value, union_type)
+        if not is_subtype_instance(coerced, union_type):
+            continue
+        candidates.append((union_type, coerced))
+
+    if class_marker is not None:
+        if not candidates:
+            raise TypeError(
+                "migration: class marker does not match a valid union branch: "
+                f"{class_marker!r} for {type_repr(expected_type)}"
+            )
+        if len(candidates) > 1:
+            raise TypeError(
+                "migration: class marker is ambiguous across union branches: "
+                f"{class_marker!r} for {type_repr(expected_type)}"
+            )
+        return candidates[0][1]
+
+    if not candidates:
+        return value
+    if len(candidates) == 1:
+        return candidates[0][1]
+
+    candidate_types = ", ".join(type_repr(union_type) for union_type, _ in candidates)
+    raise TypeError(
+        "migration: ambiguous union match for dict payload; "
+        f"add '{FuruSerializer.CLASS_MARKER}' to disambiguate among: {candidate_types}"
+    )
+
+
+def _coerce_mapping_to_dataclass(
+    value: Mapping[str, JsonValue],
+    expected_type: type[Any],
+) -> JsonValue:
+    if not _mapping_class_marker_matches(value, expected_type):
+        return cast(JsonValue, value)
+
+    dataclass_fields = [
+        field for field in dataclasses.fields(expected_type) if field.init
+    ]
+    dataclass_type_hints = dict(inspect.get_annotations(expected_type, eval_str=False))
+    try:
+        dataclass_type_hints.update(get_type_hints(expected_type))
+    except NameError:
+        pass
+
+    expected_keys = {field.name for field in dataclass_fields}
+    if not _mapping_has_exact_keys(value, expected_keys):
+        return cast(JsonValue, value)
+
+    init_kwargs: dict[str, JsonValue] = {}
+    for field in dataclass_fields:
+        field_type = dataclass_type_hints.get(field.name, field.type)
+        field_value = value[field.name]
+        coerced = _coerce_value_for_type(field_value, field_type)
+        if not is_subtype_instance(coerced, field_type):
+            return cast(JsonValue, value)
+        init_kwargs[field.name] = coerced
+    return expected_type(**init_kwargs)
+
+
+def _coerce_mapping_to_chz(
+    value: Mapping[str, JsonValue],
+    expected_type: type[Any],
+) -> JsonValue:
+    if not _mapping_class_marker_matches(value, expected_type):
+        return cast(JsonValue, value)
+
+    fields = chz.chz_fields(expected_type)
+    expected_keys = set(fields)
+    if not _mapping_has_exact_keys(value, expected_keys):
+        return cast(JsonValue, value)
+
+    init_kwargs: dict[str, JsonValue] = {}
+    for name, field in fields.items():
+        field_value = value[name]
+        coerced = _coerce_value_for_type(field_value, field.final_type)
+        if not is_subtype_instance(coerced, field.final_type):
+            return cast(JsonValue, value)
+        init_kwargs[name] = coerced
+    return expected_type(**init_kwargs)
+
+
+def _mapping_class_marker_matches(
+    value: Mapping[str, JsonValue],
+    expected_type: type[Any],
+) -> bool:
+    marker_value = value.get(FuruSerializer.CLASS_MARKER)
+    if marker_value is None:
+        return True
+    if not isinstance(marker_value, str):
+        return False
+    return marker_value == _class_marker_for_type(expected_type)
+
+
+def _mapping_has_exact_keys(
+    value: Mapping[str, JsonValue],
+    expected_keys: set[str],
+) -> bool:
+    keys = {key for key in value if key != FuruSerializer.CLASS_MARKER}
+    return keys == expected_keys
+
+
+def _union_type_matches_class_marker(
+    union_type: RuntimeTypeAnnotation,
+    class_marker: str,
+) -> bool:
+    if not isinstance(union_type, type):
+        return False
+    return _class_marker_for_type(union_type) == class_marker
+
+
+def _class_marker_for_type(expected_type: type[Any]) -> str:
+    return f"{expected_type.__module__}.{expected_type.__qualname__}"
 
 
 def _schema_from_drop_add(

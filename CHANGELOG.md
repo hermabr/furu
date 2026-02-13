@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Make `FuruSerializer.from_dict()` strict by default and fall back only when requested (`strict=False`), while still allowing stale-ref migration to opt into relaxed loading (`strict=False`). ([#55](https://github.com/hermabr/furu/pull/55))
+- Ignore non-init dataclass fields during lazy fallback reconstruction so nested schema-migration paths no longer fail with unexpected keyword arguments on stale artifacts. ([#55](https://github.com/hermabr/furu/pull/55))
+- Return fallback payloads as attribute-accessible dictionaries in relaxed mode so nested field access like `obj.age` works even when full reconstruction is unavailable. ([#55](https://github.com/hermabr/furu/pull/55))
+- Coerce dict-valued nested fields to declared dataclass/chz types during `FuruRef.migrate(..., strict_types=True)` with exact-key validation (no extra/missing fields), union-branch probing across all members, and explicit `__class__` disambiguation when multiple union members match. ([#55](https://github.com/hermabr/furu/pull/55))
+- Limit relaxed deserialization class-import fallback to missing-module cases, so non-module import-time failures now surface instead of being silently swallowed. ([#55](https://github.com/hermabr/furu/pull/55))
+- Preserve unknown dataclass fields by downgrading to relaxed fallback dicts (instead of silently dropping keys), and only swallow constructor `TypeError`s in relaxed mode when they indicate signature/schema mismatches. ([#55](https://github.com/hermabr/furu/pull/55))
+- Resolve dataclass forward-reference path annotations during deserialization so string path payloads are reconstructed as `pathlib.Path` even when annotations are deferred/quoted. ([#55](https://github.com/hermabr/furu/pull/55))
+- Validate constructor kwargs for non-dataclass/chz payloads with `inspect.signature()` before instantiation so relaxed mode falls back predictably on schema mismatches (missing/unexpected args) without relying on broad runtime `TypeError` handling. ([#55](https://github.com/hermabr/furu/pull/55))
+- Harden relaxed deserialization fallback by avoiding `find_spec()` crashes for missing parent modules, tolerating unresolved type hints during dataclass reconstruction, and prioritizing payload keys over dict methods for attribute-style fallback access. ([#55](https://github.com/hermabr/furu/pull/55))
+- Resolve dataclass field types via annotations during strict migration coercion so union/dataclass checks keep working when field annotations are deferred (`from __future__ import annotations`). ([#55](https://github.com/hermabr/furu/pull/55))
+- Validate serialized `__class__` markers before deserialization: strict mode now raises a clear `TypeError` for non-string markers, while relaxed mode safely falls back to attribute-accessible dict payloads. ([#55](https://github.com/hermabr/furu/pull/55))
+
 ## v0.0.11
 
 - Treat refs that match `schema_key` but fail hydration as stale, so `Furu.all_current()`/`Furu.all_successful()` skip unloadable entries and `Furu.all_stale_refs()` surfaces them for migration. ([#53](https://github.com/hermabr/furu/pull/53))

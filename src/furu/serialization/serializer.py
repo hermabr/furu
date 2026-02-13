@@ -3,11 +3,14 @@ import dataclasses
 import enum
 import hashlib
 import importlib
+import importlib.util
+import inspect
 import json
 import pathlib
 import textwrap
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Protocol, Sequence, cast, runtime_checkable
+from typing import Any, Protocol, cast, get_type_hints, runtime_checkable
 
 import chz
 from chz.util import MISSING as CHZ_MISSING, MISSING_TYPE
@@ -20,11 +23,166 @@ from pydantic import BaseModel as PydanticBaseModel
 # library handles arbitrary user-defined objects that we cannot know at compile time.
 JsonValue = Any
 
+_SCHEMA_MISMATCH_TYPE_ERROR_SNIPPETS = (
+    "required positional argument",
+    "required keyword-only argument",
+    "got an unexpected keyword argument",
+    "takes no arguments",
+    "positional argument but",
+    "positional arguments but",
+)
+
+_PATH_ANNOTATION_STRINGS = {
+    "Path",
+    "pathlib.Path",
+}
+
+
+def _is_schema_mismatch_type_error(error: TypeError) -> bool:
+    return any(
+        snippet in str(error) for snippet in _SCHEMA_MISMATCH_TYPE_ERROR_SNIPPETS
+    )
+
+
+def _module_path_exists(module_path: str) -> bool:
+    if not module_path:
+        return False
+
+    module_parts = module_path.split(".")
+    prefix_parts: list[str] = []
+    for index, module_part in enumerate(module_parts):
+        prefix_parts.append(module_part)
+        prefix = ".".join(prefix_parts)
+        module_spec = importlib.util.find_spec(prefix)
+        if module_spec is None:
+            return False
+        if (
+            index < len(module_parts) - 1
+            and module_spec.submodule_search_locations is None
+        ):
+            return False
+
+    return True
+
+
+def _resolved_type_hints(data_class: type[object]) -> dict[str, object]:
+    annotations = dict(inspect.get_annotations(data_class, eval_str=False))
+    try:
+        annotations.update(get_type_hints(data_class))
+    except NameError:
+        pass
+    return annotations
+
+
+def _is_path_annotation(annotation: object) -> bool:
+    if annotation in (Path, pathlib.Path):
+        return True
+    if isinstance(annotation, str):
+        return annotation.replace(" ", "") in _PATH_ANNOTATION_STRINGS
+    return False
+
+
+def _signature_mismatch_error(
+    data_class: type[object],
+    init_kwargs: dict[str, JsonValue],
+) -> TypeError | None:
+    try:
+        signature = inspect.signature(data_class)
+    except (TypeError, ValueError):
+        return None
+
+    parameters = signature.parameters
+    keyword_parameter_names = {
+        name
+        for name, parameter in parameters.items()
+        if parameter.kind
+        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    }
+    has_var_keyword = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+
+    class_name = data_class.__name__
+
+    if not has_var_keyword:
+        unexpected_names = sorted(set(init_kwargs) - keyword_parameter_names)
+        if unexpected_names:
+            return TypeError(
+                f"{class_name}() got an unexpected keyword argument "
+                f"{unexpected_names[0]!r}"
+            )
+
+    missing_positional_names = [
+        name
+        for name, parameter in parameters.items()
+        if parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+        and parameter.default is inspect.Parameter.empty
+        and name not in init_kwargs
+    ]
+    if missing_positional_names:
+        return TypeError(
+            f"{class_name}() missing 1 required positional argument: "
+            f"{missing_positional_names[0]!r}"
+        )
+
+    missing_keyword_only_names = [
+        name
+        for name, parameter in parameters.items()
+        if parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        and parameter.default is inspect.Parameter.empty
+        and name not in init_kwargs
+    ]
+    if missing_keyword_only_names:
+        return TypeError(
+            f"{class_name}() missing 1 required keyword-only argument: "
+            f"{missing_keyword_only_names[0]!r}"
+        )
+
+    return None
+
 
 class FuruSerializer:
     """Handles serialization, deserialization, and hashing of Furu objects."""
 
     CLASS_MARKER = "__class__"
+
+    class _AttrDict(dict[str, JsonValue]):
+        """Dictionary wrapper with attribute-style field access."""
+
+        def __getattribute__(self, name: str) -> JsonValue:
+            if not name.startswith("__") and name in self:
+                return self[name]
+            return super().__getattribute__(name)
+
+        def __getattr__(self, name: str) -> JsonValue:
+            try:
+                return self[name]
+            except KeyError as exc:
+                raise AttributeError(name) from exc
+
+        def __setattr__(self, name: str, value: JsonValue) -> None:
+            self[name] = value
+
+        def __delattr__(self, name: str) -> None:
+            try:
+                del self[name]
+            except KeyError as exc:
+                raise AttributeError(name) from exc
+
+    @staticmethod
+    def _as_attr_dict(values: dict[str, JsonValue]) -> "FuruSerializer._AttrDict":
+        return FuruSerializer._AttrDict(
+            {key: FuruSerializer._to_attr_value(value) for key, value in values.items()}
+        )
+
+    @staticmethod
+    def _to_attr_value(value: JsonValue) -> JsonValue:
+        if isinstance(value, dict):
+            return FuruSerializer._as_attr_dict(value)
+        if isinstance(value, list):
+            return [FuruSerializer._to_attr_value(item) for item in value]
+        return value
 
     @staticmethod
     def get_classname(obj: object) -> str:
@@ -67,37 +225,143 @@ class FuruSerializer:
         return obj
 
     @classmethod
-    def from_dict(cls, data: JsonValue) -> JsonValue:
-        """Reconstruct object from dictionary."""
+    def from_dict(cls, data: JsonValue, *, strict: bool = True) -> JsonValue:
+        """Reconstruct object from dictionary.
+
+        Args:
+            data: Serialized payload.
+            strict: Raise on reconstruction mismatch when True; return dict fallback
+                when False.
+        """
+
         if isinstance(data, dict) and cls.CLASS_MARKER in data:
-            module_path, _, class_name = data[cls.CLASS_MARKER].rpartition(".")
-            data_class = getattr(importlib.import_module(module_path), class_name)
+            class_marker = data[cls.CLASS_MARKER]
+            if not isinstance(class_marker, str):
+                if strict:
+                    raise TypeError(
+                        f"serialized '{cls.CLASS_MARKER}' marker must be a string"
+                    )
+                values = {
+                    **{
+                        k: cls.from_dict(v, strict=strict)
+                        for k, v in data.items()
+                        if k != cls.CLASS_MARKER
+                    },
+                }
+                return cls._as_attr_dict(values)
+
+            module_path, _, class_name = class_marker.rpartition(".")
+            if strict:
+                module = importlib.import_module(module_path)
+                data_class = getattr(module, class_name)
+            else:
+                module = (
+                    importlib.import_module(module_path)
+                    if _module_path_exists(module_path)
+                    else None
+                )
+                data_class = (
+                    getattr(module, class_name, None) if module is not None else None
+                )
+
+            if data_class is None:
+                values = {
+                    **{
+                        k: cls.from_dict(v, strict=strict)
+                        for k, v in data.items()
+                        if k != cls.CLASS_MARKER
+                    },
+                }
+                return cls._as_attr_dict(values)
 
             kwargs = {
-                k: cls.from_dict(v) for k, v in data.items() if k != cls.CLASS_MARKER
+                k: cls.from_dict(v, strict=strict)
+                for k, v in data.items()
+                if k != cls.CLASS_MARKER
             }
 
-            path_types = (Path, pathlib.Path)
+            fallback = cls._as_attr_dict(kwargs)
+
+            def _strict_or_fallback() -> JsonValue:
+                if strict:
+                    raise TypeError(f"cannot reconstruct {data_class}")
+                return fallback
 
             if chz.is_chz(data_class):
-                for name, field in chz.chz_fields(data_class).items():
-                    if field.final_type in path_types and isinstance(
-                        kwargs.get(name), str
+                chz_fields = chz.chz_fields(data_class)
+                unexpected_field_names = set(kwargs) - set(chz_fields)
+                if unexpected_field_names:
+                    return _strict_or_fallback()
+
+                init_kwargs = dict(kwargs)
+                for name, field in chz_fields.items():
+                    if name not in kwargs:
+                        if field._default is CHZ_MISSING and isinstance(
+                            field._default_factory, MISSING_TYPE
+                        ):
+                            return _strict_or_fallback()
+                        continue
+
+                    if _is_path_annotation(field.final_type) and isinstance(
+                        init_kwargs.get(name), str
                     ):
-                        kwargs[name] = pathlib.Path(kwargs[name])
+                        init_kwargs[name] = pathlib.Path(init_kwargs[name])
             elif dataclasses.is_dataclass(data_class):
-                for field in dataclasses.fields(data_class):
-                    if field.type in path_types and isinstance(
-                        kwargs.get(field.name), str
+                dataclass_fields = dataclasses.fields(data_class)
+                dataclass_type_hints = _resolved_type_hints(
+                    cast(type[object], data_class),
+                )
+                field_names = {field.name for field in dataclass_fields}
+                unexpected_field_names = set(kwargs) - field_names
+                if unexpected_field_names:
+                    return _strict_or_fallback()
+
+                init_kwargs = {
+                    field.name: kwargs[field.name]
+                    for field in dataclass_fields
+                    if field.init and field.name in kwargs
+                }
+
+                for field in dataclass_fields:
+                    if not field.init:
+                        continue
+                    if field.name not in init_kwargs and (
+                        field.default is dataclasses.MISSING
+                        and field.default_factory is dataclasses.MISSING
                     ):
-                        kwargs[field.name] = pathlib.Path(kwargs[field.name])
-            return data_class(**kwargs)
+                        return _strict_or_fallback()
+
+                for field in dataclass_fields:
+                    if not field.init:
+                        continue
+
+                    field_value = init_kwargs.get(field.name)
+                    field_type = dataclass_type_hints.get(field.name, field.type)
+                    if isinstance(field_value, str) and _is_path_annotation(field_type):
+                        init_kwargs[field.name] = pathlib.Path(field_value)
+            else:
+                init_kwargs = kwargs
+                mismatch_error = _signature_mismatch_error(
+                    cast(type[object], data_class),
+                    init_kwargs,
+                )
+                if mismatch_error is not None:
+                    if strict:
+                        raise mismatch_error
+                    if _is_schema_mismatch_type_error(mismatch_error):
+                        return fallback
+                    raise mismatch_error
+
+            return data_class(**init_kwargs)
 
         if isinstance(data, list):
-            return [cls.from_dict(v) for v in data]
+            return [cls.from_dict(v, strict=strict) for v in data]
 
         if isinstance(data, dict):
-            return {k: cls.from_dict(v) for k, v in data.items()}
+            values = {k: cls.from_dict(v, strict=strict) for k, v in data.items()}
+            if strict:
+                return values
+            return cls._as_attr_dict(values)
 
         return data
 
