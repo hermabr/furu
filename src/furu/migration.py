@@ -56,7 +56,10 @@ class _FuruObject(Protocol):
 MigrationConflict = Literal["throw", "skip"]
 SourceObj = TypeVar("SourceObj")
 TargetObj = TypeVar("TargetObj", bound=_FuruObject)
-TypeAnnotation: TypeAlias = Any
+
+# Runtime type expression from annotations (e.g. concrete classes, unions,
+# deferred/forward-referenced strings, and other typing constructs).
+RuntimeTypeAnnotation: TypeAlias = Any
 
 
 @dataclass(frozen=True)
@@ -433,7 +436,7 @@ def _coerce_furu_object_types(target_obj: _FuruObject) -> _FuruObject:
 
 def _coerce_value_for_type(
     value: JsonValue,
-    expected_type: TypeAnnotation,
+    expected_type: RuntimeTypeAnnotation,
 ) -> JsonValue:
     """Coerce mappings toward a target type annotation when possible.
 
@@ -468,8 +471,8 @@ def _coerce_value_for_type(
 def _coerce_union_value(
     value: JsonValue,
     *,
-    union_types: tuple[TypeAnnotation, ...],
-    expected_type: TypeAnnotation,
+    union_types: tuple[RuntimeTypeAnnotation, ...],
+    expected_type: RuntimeTypeAnnotation,
 ) -> JsonValue:
     if not isinstance(value, Mapping):
         return value
@@ -483,7 +486,7 @@ def _coerce_union_value(
     else:
         return value
 
-    candidates: list[tuple[TypeAnnotation, JsonValue]] = []
+    candidates: list[tuple[RuntimeTypeAnnotation, JsonValue]] = []
     for union_type in union_types:
         if class_marker is not None and not _union_type_matches_class_marker(
             union_type,
@@ -594,7 +597,7 @@ def _mapping_has_exact_keys(
 
 
 def _union_type_matches_class_marker(
-    union_type: TypeAnnotation,
+    union_type: RuntimeTypeAnnotation,
     class_marker: str,
 ) -> bool:
     if not isinstance(union_type, type):

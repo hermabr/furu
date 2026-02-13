@@ -375,6 +375,23 @@ def test_from_dict_returns_dict_for_missing_parent_module_path_in_non_strict_mod
     assert restored.value == 1
 
 
+def test_from_dict_rejects_non_string_class_marker_in_strict_mode() -> None:
+    payload = {"__class__": 123, "value": 1}
+    with pytest.raises(TypeError, match="marker must be a string"):
+        furu.FuruSerializer.from_dict(payload)
+
+
+def test_from_dict_falls_back_for_non_string_class_marker_in_non_strict_mode() -> None:
+    payload = {
+        "__class__": {"kind": "invalid"},
+        "value": 1,
+        "nested": {"x": 2},
+    }
+    restored = furu.FuruSerializer.from_dict(payload, strict=False)
+    assert restored.value == 1
+    assert restored.nested.x == 2
+
+
 def test_from_dict_rejects_unknown_class() -> None:
     payload = {"__class__": "test_serializer.DoesNotExist", "value": 1}
     with pytest.raises(AttributeError):

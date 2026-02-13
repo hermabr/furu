@@ -235,7 +235,22 @@ class FuruSerializer:
         """
 
         if isinstance(data, dict) and cls.CLASS_MARKER in data:
-            module_path, _, class_name = data[cls.CLASS_MARKER].rpartition(".")
+            class_marker = data[cls.CLASS_MARKER]
+            if not isinstance(class_marker, str):
+                if strict:
+                    raise TypeError(
+                        f"serialized '{cls.CLASS_MARKER}' marker must be a string"
+                    )
+                values = {
+                    **{
+                        k: cls.from_dict(v, strict=strict)
+                        for k, v in data.items()
+                        if k != cls.CLASS_MARKER
+                    },
+                }
+                return cls._as_attr_dict(values)
+
+            module_path, _, class_name = class_marker.rpartition(".")
             if strict:
                 module = importlib.import_module(module_path)
                 data_class = getattr(module, class_name)
