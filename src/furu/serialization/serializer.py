@@ -27,6 +27,7 @@ _SCHEMA_MISMATCH_TYPE_ERROR_SNIPPETS = (
     "required positional argument",
     "required keyword-only argument",
     "got an unexpected keyword argument",
+    "positional-only arguments passed as keyword arguments",
     "takes no arguments",
     "positional argument but",
     "positional arguments but",
@@ -69,7 +70,7 @@ def _resolved_type_hints(data_class: type[object]) -> dict[str, object]:
     annotations = dict(inspect.get_annotations(data_class, eval_str=False))
     try:
         annotations.update(get_type_hints(data_class))
-    except NameError:
+    except (AttributeError, NameError, TypeError):
         pass
     return annotations
 
@@ -92,6 +93,11 @@ def _signature_mismatch_error(
         return None
 
     parameters = signature.parameters
+    positional_only_names = {
+        name
+        for name, parameter in parameters.items()
+        if parameter.kind is inspect.Parameter.POSITIONAL_ONLY
+    }
     keyword_parameter_names = {
         name
         for name, parameter in parameters.items()
@@ -105,6 +111,16 @@ def _signature_mismatch_error(
 
     class_name = data_class.__name__
 
+    positional_only_keyword_names = sorted(set(init_kwargs) & positional_only_names)
+    if positional_only_keyword_names:
+        positional_only_names_text = ", ".join(
+            repr(name) for name in positional_only_keyword_names
+        )
+        return TypeError(
+            f"{class_name}() got positional-only arguments passed as keyword "
+            f"arguments: {positional_only_names_text}"
+        )
+
     if not has_var_keyword:
         unexpected_names = sorted(set(init_kwargs) - keyword_parameter_names)
         if unexpected_names:
@@ -116,13 +132,14 @@ def _signature_mismatch_error(
     missing_positional_names = [
         name
         for name, parameter in parameters.items()
-        if parameter.kind
-        in (
-            inspect.Parameter.POSITIONAL_ONLY,
-            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        if parameter.default is inspect.Parameter.empty
+        and (
+            parameter.kind is inspect.Parameter.POSITIONAL_ONLY
+            or (
+                parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+                and name not in init_kwargs
+            )
         )
-        and parameter.default is inspect.Parameter.empty
-        and name not in init_kwargs
     ]
     if missing_positional_names:
         return TypeError(
@@ -355,6 +372,15 @@ class FuruSerializer:
                     if _is_schema_mismatch_type_error(mismatch_error):
                         return fallback
                     raise mismatch_error
+
+                try:
+                    return data_class(**init_kwargs)
+                except TypeError as exc:
+                    if strict:
+                        raise
+                    if _is_schema_mismatch_type_error(exc):
+                        return fallback
+                    raise
 
             return data_class(**init_kwargs)
 

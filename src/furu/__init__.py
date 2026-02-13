@@ -42,7 +42,13 @@ from .runtime import (
     log,
     write_separator,
 )
-from .migration import FuruRef, MigrationReport, MigrationSkip
+from .migration import (
+    FuruRef,
+    MigrationReport,
+    MigrationSkip,
+    MIGRATION_SKIP,
+    MIGRATION_SKIPPED,
+)
 from .serialization import FuruSerializer
 from .storage import MetadataManager, StateManager
 
@@ -69,6 +75,8 @@ __all__ = [
     "FuruRef",
     "MigrationReport",
     "MigrationSkip",
+    "MIGRATION_SKIP",
+    "MIGRATION_SKIPPED",
     "MetadataManager",
     "StateManager",
     "SubmititAdapter",
