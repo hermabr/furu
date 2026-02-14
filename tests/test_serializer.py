@@ -131,6 +131,12 @@ class ClassWithSchemaLikeTypeError:
         raise TypeError("got an unexpected keyword argument in domain validation")
 
 
+class ClassWithKwargsSchemaMismatchTypeError:
+    def __init__(self, **kwargs: Any) -> None:
+        _ = kwargs
+        raise TypeError("got an unexpected keyword argument 'value'")
+
+
 class HashValueFuru(furu.Furu[int]):
     value: int = chz.field()
 
@@ -479,6 +485,22 @@ def test_from_dict_non_strict_reraises_schema_like_domain_type_errors() -> None:
         )
 
 
+def test_from_dict_non_strict_falls_back_on_schema_like_kwargs_type_error() -> None:
+    marker = (
+        f"{ClassWithKwargsSchemaMismatchTypeError.__module__}."
+        f"{ClassWithKwargsSchemaMismatchTypeError.__qualname__}"
+    )
+    restored = furu.FuruSerializer.from_dict(
+        {
+            "__class__": marker,
+            "value": 1,
+        },
+        strict=False,
+    )
+    assert restored == {"value": 1}
+    assert restored.value == 1
+
+
 def test_from_dict_returns_dict_for_missing_parent_module_path_in_non_strict_mode() -> (
     None
 ):
@@ -493,6 +515,24 @@ def test_from_dict_returns_dict_when_module_probe_raises_in_non_strict_mode(
 ) -> None:
     def raising_find_spec(_name: str):
         raise ValueError("module spec unavailable")
+
+    monkeypatch.setattr(
+        serializer_module.importlib.util,
+        "find_spec",
+        raising_find_spec,
+    )
+
+    payload = {"__class__": "no.such.module.Class", "value": 1}
+    restored = furu.FuruSerializer.from_dict(payload, strict=False)
+    assert restored == {"value": 1}
+    assert restored.value == 1
+
+
+def test_from_dict_returns_dict_when_module_probe_importerror_in_non_strict_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raising_find_spec(_name: str):
+        raise ImportError("module probe import error")
 
     monkeypatch.setattr(
         serializer_module.importlib.util,

@@ -19,7 +19,7 @@
 - Fix relaxed deserialization for dataclasses so constructor schema mismatches (including required `InitVar` parameters) fall back to attribute-accessible dict payloads in `strict=False` mode. ([#57](https://github.com/hermabr/furu/pull/57))
 - Treat `importlib.util.find_spec()` probe failures as non-importable in relaxed deserialization, so dynamic/spec-less module states now degrade to fallback payloads instead of raising. ([#57](https://github.com/hermabr/furu/pull/57))
 - Accept `TransformSkip()` token instances in `FuruRef.migrate()` skip transforms, in addition to the `furu.MIGRATION_SKIP` singleton. ([#57](https://github.com/hermabr/furu/pull/57))
-- Avoid swallowing domain `TypeError`s during relaxed deserialization when constructor signatures are inspectable, so only true schema mismatches fall back to attribute-accessible dict payloads. ([#57](https://github.com/hermabr/furu/pull/57))
+- Avoid swallowing domain `TypeError`s during relaxed deserialization for fixed-signature constructors, while still treating schema-like `TypeError`s from `**kwargs`-validating constructors as reconstruction mismatches that fall back to attribute-accessible dict payloads. ([#57](https://github.com/hermabr/furu/pull/57))
 - Handle nested dataclass constructor signature mismatches during strict migration coercion (including required `InitVar` arguments) by leaving payloads uncoerced so strict field-type validation fails deterministically. ([#57](https://github.com/hermabr/furu/pull/57))
 
 ## v0.0.11

@@ -89,11 +89,11 @@ def _is_path_annotation(annotation: object) -> bool:
 def _signature_mismatch_error(
     data_class: type[object],
     init_kwargs: dict[str, JsonValue],
-) -> tuple[TypeError | None, bool]:
+) -> tuple[TypeError | None, bool, bool]:
     try:
         signature = inspect.signature(data_class)
     except (TypeError, ValueError):
-        return None, False
+        return None, False, False
 
     parameters = signature.parameters
     positional_only_names = {
@@ -119,18 +119,26 @@ def _signature_mismatch_error(
         positional_only_names_text = ", ".join(
             repr(name) for name in positional_only_keyword_names
         )
-        return TypeError(
-            f"{class_name}() got positional-only arguments passed as keyword "
-            f"arguments: {positional_only_names_text}"
-        ), True
+        return (
+            TypeError(
+                f"{class_name}() got positional-only arguments passed as keyword "
+                f"arguments: {positional_only_names_text}"
+            ),
+            True,
+            has_var_keyword,
+        )
 
     if not has_var_keyword:
         unexpected_names = sorted(set(init_kwargs) - keyword_parameter_names)
         if unexpected_names:
-            return TypeError(
-                f"{class_name}() got an unexpected keyword argument "
-                f"{unexpected_names[0]!r}"
-            ), True
+            return (
+                TypeError(
+                    f"{class_name}() got an unexpected keyword argument "
+                    f"{unexpected_names[0]!r}"
+                ),
+                True,
+                has_var_keyword,
+            )
 
     missing_positional_names = [
         name
@@ -145,10 +153,14 @@ def _signature_mismatch_error(
         )
     ]
     if missing_positional_names:
-        return TypeError(
-            f"{class_name}() missing 1 required positional argument: "
-            f"{missing_positional_names[0]!r}"
-        ), True
+        return (
+            TypeError(
+                f"{class_name}() missing 1 required positional argument: "
+                f"{missing_positional_names[0]!r}"
+            ),
+            True,
+            has_var_keyword,
+        )
 
     missing_keyword_only_names = [
         name
@@ -158,12 +170,16 @@ def _signature_mismatch_error(
         and name not in init_kwargs
     ]
     if missing_keyword_only_names:
-        return TypeError(
-            f"{class_name}() missing 1 required keyword-only argument: "
-            f"{missing_keyword_only_names[0]!r}"
-        ), True
+        return (
+            TypeError(
+                f"{class_name}() missing 1 required keyword-only argument: "
+                f"{missing_keyword_only_names[0]!r}"
+            ),
+            True,
+            has_var_keyword,
+        )
 
-    return None, True
+    return None, True, has_var_keyword
 
 
 class FuruSerializer:
@@ -366,9 +382,11 @@ class FuruSerializer:
             else:
                 init_kwargs = kwargs
 
-            mismatch_error, signature_available = _signature_mismatch_error(
-                cast(type[object], data_class),
-                init_kwargs,
+            mismatch_error, signature_available, has_var_keyword = (
+                _signature_mismatch_error(
+                    cast(type[object], data_class),
+                    init_kwargs,
+                )
             )
             if mismatch_error is not None:
                 if strict:
@@ -380,7 +398,9 @@ class FuruSerializer:
             except TypeError as exc:
                 if strict:
                     raise
-                if not signature_available and _is_schema_mismatch_type_error(exc):
+                if _is_schema_mismatch_type_error(exc) and (
+                    not signature_available or has_var_keyword
+                ):
                     return fallback
                 raise
 

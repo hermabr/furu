@@ -1430,6 +1430,45 @@ def test_ref_migrate_nested_union_replace_dict_rejects_non_string_class_marker(
         stale_refs[0].migrate(to_v2, dry_run=True, origin="tests")
 
 
+def test_ref_migrate_nested_union_replace_dict_rejects_unknown_string_class_marker(
+    furu_tmp_root,
+) -> None:
+    old_version = _same_class_nested_conf_age_only()
+    old_conf_type = cast(type, old_version.__annotations__["conf"])
+
+    source = cast(type, old_version)(conf=old_conf_type(age=239))
+    assert source.get() == 239
+
+    new_version = _same_class_nested_conf_union_same_shape()
+    stale_refs = new_version.all_stale_refs(namespace="test_migrations.SameClass")
+    assert len(stale_refs) == 1
+
+    from chz import replace
+
+    class _ConfLike(Protocol):
+        age: int
+
+    class _ContainerLike(Protocol):
+        conf: _ConfLike
+
+    def to_v2(old: _ContainerLike) -> furu.Furu[int]:
+        old_furu = cast(furu.Furu[int], old)
+        return replace(
+            old_furu,
+            conf={
+                "__class__": "test_migrations.DoesNotExistConf",
+                "age": old.conf.age,
+                "name": "default",
+            },
+        )
+
+    with pytest.raises(
+        TypeError,
+        match="class marker does not match a valid union branch",
+    ):
+        stale_refs[0].migrate(to_v2, dry_run=True, origin="tests")
+
+
 def test_ref_migrate_nested_union_replace_dict_class_marker_disambiguates(
     furu_tmp_root,
 ) -> None:
