@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import (
     Any,
+    Final,
     Literal,
     Protocol,
     TypeAlias,
@@ -18,6 +19,7 @@ from typing import (
     get_args,
     get_origin,
     get_type_hints,
+    overload,
 )
 
 import chz
@@ -63,12 +65,25 @@ RuntimeTypeAnnotation: TypeAlias = Any
 
 
 @dataclass(frozen=True)
+class _MigrationSkipToken:
+    pass
+
+
+TransformSkip: TypeAlias = _MigrationSkipToken
+MigrationSkipped: TypeAlias = Literal["skipped"]
+
+MIGRATION_SKIP: Final[TransformSkip] = _MigrationSkipToken()
+MIGRATION_SKIPPED: Final[MigrationSkipped] = "skipped"
+
+
+@dataclass(frozen=True)
 class FuruRef:
     namespace: str
     furu_hash: str
     root: RootKind
     furu_dir: Path
 
+    @overload
     def migrate(
         self,
         transform: Callable[[SourceObj], TargetObj],
@@ -77,10 +92,47 @@ class FuruRef:
         strict_types: bool = True,
         origin: str | None = None,
         note: str | None = None,
-    ) -> TargetObj:
+    ) -> TargetObj: ...
+
+    @overload
+    def migrate(
+        self,
+        transform: Callable[[SourceObj], TransformSkip],
+        *,
+        dry_run: bool = False,
+        strict_types: bool = True,
+        origin: str | None = None,
+        note: str | None = None,
+    ) -> MigrationSkipped: ...
+
+    @overload
+    def migrate(
+        self,
+        transform: Callable[[SourceObj], TargetObj | TransformSkip],
+        *,
+        dry_run: bool = False,
+        strict_types: bool = True,
+        origin: str | None = None,
+        note: str | None = None,
+    ) -> TargetObj | MigrationSkipped: ...
+
+    def migrate(
+        self,
+        transform: Callable[[SourceObj], TargetObj | TransformSkip],
+        *,
+        dry_run: bool = False,
+        strict_types: bool = True,
+        origin: str | None = None,
+        note: str | None = None,
+    ) -> TargetObj | MigrationSkipped:
         source_obj = cast(SourceObj, self._load_ref_object())
-        target_obj = transform(source_obj)
-        validated_target = _assert_furu_object(target_obj)
+        transformed = transform(source_obj)
+        if transformed is MIGRATION_SKIP:
+            original_ref = resolve_original_ref(self)
+            _ensure_original_success(original_ref)
+            return MIGRATION_SKIPPED
+
+        validated_target = _assert_furu_object(transformed)
         if strict_types:
             validated_target = _coerce_furu_object_types(validated_target)
             _validate_furu_object_types(validated_target)
@@ -536,15 +588,27 @@ def _coerce_mapping_to_dataclass(
     dataclass_type_hints = dict(inspect.get_annotations(expected_type, eval_str=False))
     try:
         dataclass_type_hints.update(get_type_hints(expected_type))
-    except NameError:
+    except (AttributeError, NameError, TypeError):
         pass
 
+    provided_keys = _mapping_field_keys(value)
     expected_keys = {field.name for field in dataclass_fields}
-    if not _mapping_has_exact_keys(value, expected_keys):
+    required_keys = {
+        field.name
+        for field in dataclass_fields
+        if field.default is dataclasses.MISSING
+        and field.default_factory is dataclasses.MISSING
+    }
+
+    if not _mapping_keys_are_supported(provided_keys, expected_keys):
+        return cast(JsonValue, value)
+    if not _mapping_has_required_keys(provided_keys, required_keys):
         return cast(JsonValue, value)
 
     init_kwargs: dict[str, JsonValue] = {}
     for field in dataclass_fields:
+        if field.name not in provided_keys:
+            continue
         field_type = dataclass_type_hints.get(field.name, field.type)
         field_value = value[field.name]
         coerced = _coerce_value_for_type(field_value, field_type)
@@ -562,12 +626,24 @@ def _coerce_mapping_to_chz(
         return cast(JsonValue, value)
 
     fields = chz.chz_fields(expected_type)
+    provided_keys = _mapping_field_keys(value)
     expected_keys = set(fields)
-    if not _mapping_has_exact_keys(value, expected_keys):
+    required_keys = {
+        name
+        for name, field in fields.items()
+        if field._default is CHZ_MISSING
+        and isinstance(field._default_factory, MISSING_TYPE)
+    }
+
+    if not _mapping_keys_are_supported(provided_keys, expected_keys):
+        return cast(JsonValue, value)
+    if not _mapping_has_required_keys(provided_keys, required_keys):
         return cast(JsonValue, value)
 
     init_kwargs: dict[str, JsonValue] = {}
     for name, field in fields.items():
+        if name not in provided_keys:
+            continue
         field_value = value[name]
         coerced = _coerce_value_for_type(field_value, field.final_type)
         if not is_subtype_instance(coerced, field.final_type):
@@ -588,12 +664,16 @@ def _mapping_class_marker_matches(
     return marker_value == _class_marker_for_type(expected_type)
 
 
-def _mapping_has_exact_keys(
-    value: Mapping[str, JsonValue],
-    expected_keys: set[str],
-) -> bool:
-    keys = {key for key in value if key != FuruSerializer.CLASS_MARKER}
-    return keys == expected_keys
+def _mapping_field_keys(value: Mapping[str, JsonValue]) -> set[str]:
+    return {key for key in value if key != FuruSerializer.CLASS_MARKER}
+
+
+def _mapping_keys_are_supported(keys: set[str], expected_keys: set[str]) -> bool:
+    return keys <= expected_keys
+
+
+def _mapping_has_required_keys(keys: set[str], required_keys: set[str]) -> bool:
+    return required_keys <= keys
 
 
 def _union_type_matches_class_marker(

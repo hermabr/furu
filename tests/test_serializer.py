@@ -9,6 +9,7 @@ import chz
 import pytest
 
 import furu
+from furu.serialization import serializer as serializer_module
 
 if TYPE_CHECKING:
 
@@ -96,6 +97,17 @@ class RequiresKeywordOnlyArg:
     def __init__(self, first: int, *, second: int) -> None:
         self.first = first
         self.second = second
+
+
+class RequiresPositionalOnlyArg:
+    def __init__(self, first: int, /) -> None:
+        self.first = first
+
+
+class RequiresPositionalOnlyArgWithKwargs:
+    def __init__(self, first: int, /, **kwargs: Any) -> None:
+        self.first = first
+        self.kwargs = kwargs
 
 
 @dataclass(frozen=True)
@@ -344,6 +356,65 @@ def test_from_dict_non_strict_falls_back_on_custom_unexpected_keyword() -> None:
 
 def test_from_dict_non_strict_falls_back_on_missing_keyword_only_arg() -> None:
     marker = furu.FuruSerializer.get_classname(RequiresKeywordOnlyArg(1, second=2))
+    restored = furu.FuruSerializer.from_dict(
+        {
+            "__class__": marker,
+            "first": 7,
+        },
+        strict=False,
+    )
+    assert restored == {"first": 7}
+
+
+def test_from_dict_non_strict_falls_back_on_missing_positional_only_arg() -> None:
+    marker = furu.FuruSerializer.get_classname(RequiresPositionalOnlyArg(1))
+    restored = furu.FuruSerializer.from_dict(
+        {
+            "__class__": marker,
+        },
+        strict=False,
+    )
+    assert restored == {}
+
+
+def test_from_dict_non_strict_falls_back_when_positional_only_passed_by_keyword() -> (
+    None
+):
+    marker = furu.FuruSerializer.get_classname(RequiresPositionalOnlyArgWithKwargs(1))
+    restored = furu.FuruSerializer.from_dict(
+        {
+            "__class__": marker,
+            "first": 7,
+        },
+        strict=False,
+    )
+    assert restored == {"first": 7}
+
+
+def test_from_dict_strict_rejects_when_positional_only_passed_by_keyword() -> None:
+    marker = furu.FuruSerializer.get_classname(RequiresPositionalOnlyArgWithKwargs(1))
+    with pytest.raises(
+        TypeError,
+        match="positional-only arguments passed as keyword arguments",
+    ):
+        furu.FuruSerializer.from_dict(
+            {
+                "__class__": marker,
+                "first": 7,
+            }
+        )
+
+
+def test_from_dict_non_strict_falls_back_when_signature_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker = furu.FuruSerializer.get_classname(RequiresTwoArgs(1, 2))
+
+    def no_signature(_obj: object):
+        raise ValueError("no signature")
+
+    monkeypatch.setattr(serializer_module.inspect, "signature", no_signature)
+
     restored = furu.FuruSerializer.from_dict(
         {
             "__class__": marker,

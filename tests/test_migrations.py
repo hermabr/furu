@@ -6,6 +6,7 @@ from typing import Protocol, cast, get_args
 import pytest
 
 import furu
+from furu.migration import TransformSkip
 from furu.storage import MetadataManager, MigrationManager, StateManager
 
 
@@ -475,6 +476,31 @@ def _same_class_nested_conf_chz_required_name() -> type[furu.Furu[int]]:
     )
 
 
+def _same_class_nested_conf_chz_default_name() -> type[furu.Furu[int]]:
+    return _define_same_class(
+        """
+        import chz
+
+
+        @chz.chz
+        class Conf:
+            age: int
+            name: str = chz.field(default="")
+
+
+        class SameClass(furu.Furu[int]):
+            conf: Conf
+
+            def _create(self) -> int:
+                (self.furu_dir / "value.txt").write_text(str(self.conf.age))
+                return self.conf.age
+
+            def _load(self) -> int:
+                return int((self.furu_dir / "value.txt").read_text())
+        """
+    )
+
+
 def _same_class_nested_conf_union_chz_distinct_type() -> type[furu.Furu[int]]:
     return _define_same_class(
         """
@@ -766,6 +792,75 @@ def test_ref_migrate_dry_run_validates_without_writing(furu_tmp_root) -> None:
     assert not target._base_furu_dir().exists()
 
 
+@pytest.mark.parametrize(
+    ("dry_run", "strict_types"),
+    [
+        (False, True),
+        (True, True),
+        (False, False),
+        (True, False),
+    ],
+)
+def test_ref_migrate_transform_skip_returns_skipped_without_writing(
+    furu_tmp_root,
+    dry_run: bool,
+    strict_types: bool,
+) -> None:
+    source = SourceV1(value=131)
+    assert source.get() == 131
+
+    refs = SourceV2.all_stale_refs(namespace="test_migrations.SourceV1")
+    assert len(refs) == 1
+
+    def skip_transform(old: SourceV1) -> SourceV2 | TransformSkip:
+        _ = old
+        return furu.MIGRATION_SKIP
+
+    result = refs[0].migrate(
+        skip_transform,
+        dry_run=dry_run,
+        strict_types=strict_types,
+        origin="tests",
+    )
+    assert result == furu.MIGRATION_SKIPPED
+
+    target_namespace_dir = source._base_furu_dir().parent.parent / "SourceV2"
+    assert not target_namespace_dir.exists()
+
+
+def test_ref_migrate_transform_skip_requires_successful_original(
+    furu_tmp_root,
+) -> None:
+    source = SourceV1(value=132)
+    assert source.get() == 132
+    StateManager.get_success_marker_path(source._base_furu_dir()).unlink()
+
+    refs = SourceV2.all_stale_refs(namespace="test_migrations.SourceV1")
+    assert len(refs) == 1
+
+    def skip_transform(old: SourceV1) -> SourceV2 | TransformSkip:
+        _ = old
+        return furu.MIGRATION_SKIP
+
+    with pytest.raises(ValueError, match="original artifact is not successful"):
+        refs[0].migrate(skip_transform, origin="tests")
+
+
+def test_ref_migrate_transform_raw_skip_string_is_invalid(furu_tmp_root) -> None:
+    source = SourceV1(value=133)
+    assert source.get() == 133
+
+    refs = SourceV2.all_stale_refs(namespace="test_migrations.SourceV1")
+    assert len(refs) == 1
+
+    def skip_transform(old: SourceV1) -> SourceV2 | str:
+        _ = old
+        return "skip"
+
+    with pytest.raises(TypeError, match="transform must return a Furu object"):
+        refs[0].migrate(skip_transform, origin="tests")
+
+
 def test_ref_migrate_strict_types_rejects_invalid_target(furu_tmp_root) -> None:
     source = SourceV1(value=32)
     assert source.get() == 32
@@ -950,7 +1045,7 @@ def test_ref_migrate_nested_chz_replace_dict_rejects_extra_fields(
         stale_refs[0].migrate(to_v2, dry_run=True, origin="tests")
 
 
-def test_ref_migrate_nested_dataclass_replace_dict_requires_defaulted_fields(
+def test_ref_migrate_nested_dataclass_replace_dict_uses_defaulted_fields(
     furu_tmp_root,
 ) -> None:
     old_version = _same_class_nested_conf_age_only()
@@ -960,6 +1055,7 @@ def test_ref_migrate_nested_dataclass_replace_dict_requires_defaulted_fields(
     assert source.get() == 37
 
     new_version = _same_class_nested_conf_default_name()
+    new_conf_type = cast(type, new_version.__annotations__["conf"])
     stale_refs = new_version.all_stale_refs(namespace="test_migrations.SameClass")
     assert len(stale_refs) == 1
 
@@ -971,6 +1067,13 @@ def test_ref_migrate_nested_dataclass_replace_dict_requires_defaulted_fields(
     class _ContainerLike(Protocol):
         conf: _ConfLike
 
+    class _ConfWithName(Protocol):
+        age: int
+        name: str
+
+    class _ContainerWithName(Protocol):
+        conf: _ConfWithName
+
     def to_v2(old: _ContainerLike) -> furu.Furu[int]:
         old_furu = cast(furu.Furu[int], old)
         return replace(
@@ -978,8 +1081,54 @@ def test_ref_migrate_nested_dataclass_replace_dict_requires_defaulted_fields(
             conf={"age": old.conf.age},
         )
 
-    with pytest.raises(TypeError, match="strict_types check failed for field 'conf'"):
-        stale_refs[0].migrate(to_v2, dry_run=True, origin="tests")
+    target = stale_refs[0].migrate(to_v2, dry_run=True, origin="tests")
+    target_cast = cast(_ContainerWithName, target)
+    assert isinstance(target, new_version)
+    assert isinstance(target_cast.conf, new_conf_type)
+    assert target_cast.conf.age == 37
+    assert target_cast.conf.name == ""
+
+
+def test_ref_migrate_nested_chz_replace_dict_uses_defaulted_fields(
+    furu_tmp_root,
+) -> None:
+    old_version = _same_class_nested_conf_age_only()
+    old_conf_type = cast(type, old_version.__annotations__["conf"])
+
+    source = cast(type, old_version)(conf=old_conf_type(age=137))
+    assert source.get() == 137
+
+    new_version = _same_class_nested_conf_chz_default_name()
+    stale_refs = new_version.all_stale_refs(namespace="test_migrations.SameClass")
+    assert len(stale_refs) == 1
+
+    from chz import replace
+
+    class _ConfLike(Protocol):
+        age: int
+
+    class _ContainerLike(Protocol):
+        conf: _ConfLike
+
+    class _ConfWithName(Protocol):
+        age: int
+        name: str
+
+    class _ContainerWithName(Protocol):
+        conf: _ConfWithName
+
+    def to_v2(old: _ContainerLike) -> furu.Furu[int]:
+        old_furu = cast(furu.Furu[int], old)
+        return replace(
+            old_furu,
+            conf={"age": old.conf.age},
+        )
+
+    target = stale_refs[0].migrate(to_v2, dry_run=True, origin="tests")
+    target_cast = cast(_ContainerWithName, target)
+    assert isinstance(target, new_version)
+    assert target_cast.conf.age == 137
+    assert target_cast.conf.name == ""
 
 
 def test_ref_migrate_nested_union_replace_dict_selects_only_valid_branch(
@@ -1165,6 +1314,42 @@ def test_ref_migrate_nested_union_replace_dict_ambiguous_requires_class_marker(
         )
 
     with pytest.raises(TypeError, match="ambiguous union match"):
+        stale_refs[0].migrate(to_v2, dry_run=True, origin="tests")
+
+
+def test_ref_migrate_nested_union_replace_dict_rejects_non_string_class_marker(
+    furu_tmp_root,
+) -> None:
+    old_version = _same_class_nested_conf_age_only()
+    old_conf_type = cast(type, old_version.__annotations__["conf"])
+
+    source = cast(type, old_version)(conf=old_conf_type(age=139))
+    assert source.get() == 139
+
+    new_version = _same_class_nested_conf_union_same_shape()
+    stale_refs = new_version.all_stale_refs(namespace="test_migrations.SameClass")
+    assert len(stale_refs) == 1
+
+    from chz import replace
+
+    class _ConfLike(Protocol):
+        age: int
+
+    class _ContainerLike(Protocol):
+        conf: _ConfLike
+
+    def to_v2(old: _ContainerLike) -> furu.Furu[int]:
+        old_furu = cast(furu.Furu[int], old)
+        return replace(
+            old_furu,
+            conf={
+                "__class__": {"bad": "marker"},
+                "age": old.conf.age,
+                "name": "default",
+            },
+        )
+
+    with pytest.raises(TypeError, match="strict_types check failed for field 'conf'"):
         stale_refs[0].migrate(to_v2, dry_run=True, origin="tests")
 
 
