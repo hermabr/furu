@@ -615,6 +615,10 @@ def _coerce_mapping_to_dataclass(
         if not is_subtype_instance(coerced, field_type):
             return cast(JsonValue, value)
         init_kwargs[field.name] = coerced
+
+    if not _constructor_accepts_kwargs(expected_type, init_kwargs):
+        return cast(JsonValue, value)
+
     return expected_type(**init_kwargs)
 
 
@@ -674,6 +678,22 @@ def _mapping_keys_are_supported(keys: set[str], expected_keys: set[str]) -> bool
 
 def _mapping_has_required_keys(keys: set[str], required_keys: set[str]) -> bool:
     return required_keys <= keys
+
+
+def _constructor_accepts_kwargs(
+    expected_type: type[Any],
+    init_kwargs: Mapping[str, JsonValue],
+) -> bool:
+    try:
+        signature = inspect.signature(expected_type)
+    except (TypeError, ValueError):
+        return True
+
+    try:
+        signature.bind(**init_kwargs)
+    except TypeError:
+        return False
+    return True
 
 
 def _union_type_matches_class_marker(

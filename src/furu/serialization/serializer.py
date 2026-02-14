@@ -89,11 +89,11 @@ def _is_path_annotation(annotation: object) -> bool:
 def _signature_mismatch_error(
     data_class: type[object],
     init_kwargs: dict[str, JsonValue],
-) -> TypeError | None:
+) -> tuple[TypeError | None, bool]:
     try:
         signature = inspect.signature(data_class)
     except (TypeError, ValueError):
-        return None
+        return None, False
 
     parameters = signature.parameters
     positional_only_names = {
@@ -122,7 +122,7 @@ def _signature_mismatch_error(
         return TypeError(
             f"{class_name}() got positional-only arguments passed as keyword "
             f"arguments: {positional_only_names_text}"
-        )
+        ), True
 
     if not has_var_keyword:
         unexpected_names = sorted(set(init_kwargs) - keyword_parameter_names)
@@ -130,7 +130,7 @@ def _signature_mismatch_error(
             return TypeError(
                 f"{class_name}() got an unexpected keyword argument "
                 f"{unexpected_names[0]!r}"
-            )
+            ), True
 
     missing_positional_names = [
         name
@@ -148,7 +148,7 @@ def _signature_mismatch_error(
         return TypeError(
             f"{class_name}() missing 1 required positional argument: "
             f"{missing_positional_names[0]!r}"
-        )
+        ), True
 
     missing_keyword_only_names = [
         name
@@ -161,9 +161,9 @@ def _signature_mismatch_error(
         return TypeError(
             f"{class_name}() missing 1 required keyword-only argument: "
             f"{missing_keyword_only_names[0]!r}"
-        )
+        ), True
 
-    return None
+    return None, True
 
 
 class FuruSerializer:
@@ -365,23 +365,22 @@ class FuruSerializer:
                         init_kwargs[field.name] = pathlib.Path(field_value)
             else:
                 init_kwargs = kwargs
-                mismatch_error = _signature_mismatch_error(
-                    cast(type[object], data_class),
-                    init_kwargs,
-                )
-                if mismatch_error is not None:
-                    if strict:
-                        raise mismatch_error
-                    if _is_schema_mismatch_type_error(mismatch_error):
-                        return fallback
+
+            mismatch_error, signature_available = _signature_mismatch_error(
+                cast(type[object], data_class),
+                init_kwargs,
+            )
+            if mismatch_error is not None:
+                if strict:
                     raise mismatch_error
+                return fallback
 
             try:
                 return data_class(**init_kwargs)
             except TypeError as exc:
                 if strict:
                     raise
-                if _is_schema_mismatch_type_error(exc):
+                if not signature_available and _is_schema_mismatch_type_error(exc):
                     return fallback
                 raise
 

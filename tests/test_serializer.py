@@ -125,6 +125,12 @@ class DataclassWithTypeErrorInPostInit:
             raise TypeError("post-init type error")
 
 
+class ClassWithSchemaLikeTypeError:
+    def __init__(self, value: int) -> None:
+        _ = value
+        raise TypeError("got an unexpected keyword argument in domain validation")
+
+
 class HashValueFuru(furu.Furu[int]):
     value: int = chz.field()
 
@@ -453,6 +459,21 @@ def test_from_dict_non_strict_reraises_non_schema_type_errors() -> None:
             {
                 "__class__": marker,
                 "value": -1,
+            },
+            strict=False,
+        )
+
+
+def test_from_dict_non_strict_reraises_schema_like_domain_type_errors() -> None:
+    marker = (
+        f"{ClassWithSchemaLikeTypeError.__module__}."
+        f"{ClassWithSchemaLikeTypeError.__qualname__}"
+    )
+    with pytest.raises(TypeError, match="domain validation"):
+        furu.FuruSerializer.from_dict(
+            {
+                "__class__": marker,
+                "value": 1,
             },
             strict=False,
         )
