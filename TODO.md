@@ -45,6 +45,7 @@
 - [ ] ensure import furu is fast
 - [ ] when checking for stale in the migrations/all_current, it checks if it is stale twice. we probably don't need that
 - [ ] maybe i should store the full original metadata in the migration.json file?
+- [ ] make a better filtering system https://chatgpt.com/share/698fc92c-5a2c-800c-82e4-b0310ca055d2
 
 ## Code Quality
 
