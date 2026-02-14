@@ -16,6 +16,9 @@
 - Allow `FuruRef.migrate()` transforms to return `furu.MIGRATION_SKIP` for intentional per-ref no-op migrations; the call returns `furu.MIGRATION_SKIPPED`, still verifies original-artifact success, and then exits without strict-type checks or alias writes. ([#56](https://github.com/hermabr/furu/pull/56))
 - Improve relaxed deserialization fallback for custom classes by handling positional-only constructor mismatches (including positional-only-as-keyword cases) and by falling back on schema-like constructor errors when signature introspection is unavailable. ([#56](https://github.com/hermabr/furu/pull/56))
 - Relax strict migration coercion for nested dataclass/chz dict payloads so omitted fields with defaults are accepted while extra unknown fields are still rejected. ([#56](https://github.com/hermabr/furu/pull/56))
+- Fix relaxed deserialization for dataclasses so constructor schema mismatches (including required `InitVar` parameters) fall back to attribute-accessible dict payloads in `strict=False` mode. ([#57](https://github.com/hermabr/furu/pull/57))
+- Treat `importlib.util.find_spec()` probe failures as non-importable in relaxed deserialization, so dynamic/spec-less module states now degrade to fallback payloads instead of raising. ([#57](https://github.com/hermabr/furu/pull/57))
+- Accept `TransformSkip()` token instances in `FuruRef.migrate()` skip transforms, in addition to the `furu.MIGRATION_SKIP` singleton. ([#57](https://github.com/hermabr/furu/pull/57))
 
 ## v0.0.11
 

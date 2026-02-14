@@ -828,6 +828,26 @@ def test_ref_migrate_transform_skip_returns_skipped_without_writing(
     assert not target_namespace_dir.exists()
 
 
+def test_ref_migrate_transform_skip_instance_returns_skipped_without_writing(
+    furu_tmp_root,
+) -> None:
+    source = SourceV1(value=231)
+    assert source.get() == 231
+
+    refs = SourceV2.all_stale_refs(namespace="test_migrations.SourceV1")
+    assert len(refs) == 1
+
+    def skip_transform(old: SourceV1) -> SourceV2 | TransformSkip:
+        _ = old
+        return TransformSkip()
+
+    result = refs[0].migrate(skip_transform, origin="tests")
+    assert result == furu.MIGRATION_SKIPPED
+
+    target_namespace_dir = source._base_furu_dir().parent.parent / "SourceV2"
+    assert not target_namespace_dir.exists()
+
+
 def test_ref_migrate_transform_skip_requires_successful_original(
     furu_tmp_root,
 ) -> None:

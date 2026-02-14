@@ -54,7 +54,10 @@ def _module_path_exists(module_path: str) -> bool:
     for index, module_part in enumerate(module_parts):
         prefix_parts.append(module_part)
         prefix = ".".join(prefix_parts)
-        module_spec = importlib.util.find_spec(prefix)
+        try:
+            module_spec = importlib.util.find_spec(prefix)
+        except (ImportError, ValueError):
+            return False
         if module_spec is None:
             return False
         if (
@@ -373,16 +376,14 @@ class FuruSerializer:
                         return fallback
                     raise mismatch_error
 
-                try:
-                    return data_class(**init_kwargs)
-                except TypeError as exc:
-                    if strict:
-                        raise
-                    if _is_schema_mismatch_type_error(exc):
-                        return fallback
+            try:
+                return data_class(**init_kwargs)
+            except TypeError as exc:
+                if strict:
                     raise
-
-            return data_class(**init_kwargs)
+                if _is_schema_mismatch_type_error(exc):
+                    return fallback
+                raise
 
         if isinstance(data, list):
             return [cls.from_dict(v, strict=strict) for v in data]

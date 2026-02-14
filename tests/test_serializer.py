@@ -1,7 +1,7 @@
 import datetime
 import importlib
 import pathlib
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -63,6 +63,12 @@ class DataclassWithNonInitField:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "derived", self.value * 2)
+
+
+@dataclass(frozen=True)
+class DataclassWithRequiredInitVar:
+    value: int
+    extra: InitVar[int]
 
 
 @dataclass(frozen=True)
@@ -310,6 +316,21 @@ def test_from_dict_returns_dict_for_incompatible_dataclass_in_non_strict_mode() 
     assert restored.first == 7
 
 
+def test_from_dict_returns_dict_for_initvar_dataclass_mismatch_in_non_strict_mode() -> (
+    None
+):
+    marker = furu.FuruSerializer.get_classname(DataclassWithRequiredInitVar(1, 2))
+    restored = furu.FuruSerializer.from_dict(
+        {
+            "__class__": marker,
+            "value": 7,
+        },
+        strict=False,
+    )
+    assert restored == {"value": 7}
+    assert restored.value == 7
+
+
 def test_from_dict_returns_dict_for_unexpected_dataclass_fields_in_non_strict_mode() -> (
     None
 ):
@@ -440,6 +461,24 @@ def test_from_dict_non_strict_reraises_non_schema_type_errors() -> None:
 def test_from_dict_returns_dict_for_missing_parent_module_path_in_non_strict_mode() -> (
     None
 ):
+    payload = {"__class__": "no.such.module.Class", "value": 1}
+    restored = furu.FuruSerializer.from_dict(payload, strict=False)
+    assert restored == {"value": 1}
+    assert restored.value == 1
+
+
+def test_from_dict_returns_dict_when_module_probe_raises_in_non_strict_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raising_find_spec(_name: str):
+        raise ValueError("module spec unavailable")
+
+    monkeypatch.setattr(
+        serializer_module.importlib.util,
+        "find_spec",
+        raising_find_spec,
+    )
+
     payload = {"__class__": "no.such.module.Class", "value": 1}
     restored = furu.FuruSerializer.from_dict(payload, strict=False)
     assert restored == {"value": 1}

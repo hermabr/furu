@@ -127,7 +127,7 @@ class FuruRef:
     ) -> TargetObj | MigrationSkipped:
         source_obj = cast(SourceObj, self._load_ref_object())
         transformed = transform(source_obj)
-        if transformed is MIGRATION_SKIP:
+        if isinstance(transformed, _MigrationSkipToken):
             original_ref = resolve_original_ref(self)
             _ensure_original_success(original_ref)
             return MIGRATION_SKIPPED
