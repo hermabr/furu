@@ -100,7 +100,7 @@ Regex rules:
 
 ## Checklist
 - [ ] Add `src/furu/query/ast.py` with discriminated union nodes exactly as above
-- [ ] Add `src/furu/query/paths.py` implementing `get_path(doc, path) -> value|PATH_MISSING`
+- [x] Add `src/furu/query/paths.py` implementing `get_path(doc, path) -> value|PATH_MISSING`
 - [ ] Add `src/furu/query/types.py`:
   - robust `resolve_type("a.b.C") -> type|None` (import longest module prefix, getattr chain)
   - handle enum-style strings like `"mod.Enum:VALUE"` by stripping `:VALUE` for type resolution
@@ -120,6 +120,7 @@ Regex rules:
 | Date | Summary |
 |---|---|
 | 2026-02-14 | (start) |
+| 2026-02-15 | Added `src/furu/query/paths.py` with dot-path resolution through dicts and list/tuple indices, returning `PATH_MISSING` sentinel on misses. |
 
 ## Plan Changes (append-only)
 
