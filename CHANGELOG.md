@@ -6,6 +6,7 @@
 - Add a Python query DSL under `furu.query` with `Q` field refs, composable boolean operators, and `TRUE`/`FALSE` helpers that compile to query AST nodes.
 - Integrate query AST filtering into dashboard scanner `scan_experiments(...)` by adding a new `query` parameter and compiling existing non-date filters (including typed `config_filter` values) into the same query evaluator path.
 - Add dashboard `POST /api/experiments/search` with JSON query AST input, server-side query-size validation, and pagination-compatible results matching `GET /api/experiments`.
+- Add dashboard frontend advanced JSON query controls on the experiments page, including apply/clear actions, parse/server error feedback, and POST `/api/experiments/search` pagination support.
 
 ## v0.0.12
 

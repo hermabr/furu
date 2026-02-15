@@ -23,20 +23,21 @@ Behavior:
 - If advanced query is present -> use POST endpoint and ignore legacy query params (or AND them—pick one).
 
 ## Checklist
-- [ ] Run `make frontend-generate` (ensures TS client types exist)
-- [ ] Add `advancedQueryJson` state in experiments page
-- [ ] Add textarea + Apply/Clear controls
-- [ ] Add POST call to `/api/experiments/search`:
+- [x] Run `make frontend-generate` (ensures TS client types exist)
+- [x] Add `advancedQueryJson` state in experiments page
+- [x] Add textarea + Apply/Clear controls
+- [x] Add POST call to `/api/experiments/search`:
   - prefer using generated hook once available
   - fallback: `fetch("/api/experiments/search", { method:"POST", body: JSON.stringify(...) })`
-- [ ] Keep pagination working (limit/offset)
-- [ ] Run `make frontend-lint` (and optionally `make frontend-test`)
+- [x] Keep pagination working (limit/offset)
+- [x] Run `make frontend-lint` (and optionally `make frontend-test`)
 
 ## Progress Log (append-only)
 
 | Date | Summary |
 |---|---|
 | 2026-02-14 | (start) |
+| 2026-02-15 | Ran `make frontend-generate`, added advanced JSON AST query state + apply/clear UI to experiments page, wired POST `/api/experiments/search` via generated mutation hook with parse/server error handling, and preserved pagination for advanced mode. |
 
 ## Plan Changes (append-only)
 
