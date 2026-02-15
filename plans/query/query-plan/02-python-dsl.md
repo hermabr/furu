@@ -61,11 +61,11 @@ Files:
 - `q = Q.config.data.related_to(DummyData)`
 
 ## Checklist
-- [ ] Implement `FieldRef` + `Q` root in `src/furu/query/dsl.py`
-- [ ] Ensure composition operators produce AST nodes from 01 (and flatten)
-- [ ] Add `furu.query` exports:
-  - [ ] `Q`
-  - [ ] `TRUE` / `FALSE` convenience (optional)
+- [x] Implement `FieldRef` + `Q` root in `src/furu/query/dsl.py`
+- [x] Ensure composition operators produce AST nodes from 01 (and flatten)
+- [x] Add `furu.query` exports:
+  - [x] `Q`
+  - [x] `TRUE` / `FALSE` convenience (optional)
 - [ ] (Optional) Re-export `Q` from `furu/__init__.py` for convenience:
   - [ ] add to `__all__`
 
@@ -74,6 +74,7 @@ Files:
 | Date | Summary |
 |---|---|
 | 2026-02-14 | (start) |
+| 2026-02-15 | Added `src/furu/query/dsl.py` with `FieldRef` path construction (`attr` + index access), AST-producing comparison/method operators, boolean composition with flattening, type-query helpers, and `Q`/`TRUE`/`FALSE` exports via `furu.query`. |
 
 ## Plan Changes (append-only)
 

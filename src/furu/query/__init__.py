@@ -26,6 +26,7 @@ from .ast import (
     TypeIsNode,
 )
 from .eval import matches
+from .dsl import FALSE, TRUE, Q, FieldRef, QueryExpr
 from .validate import validate_query
 
 __all__ = [
@@ -54,6 +55,11 @@ __all__ = [
     "StartswithNode",
     "TrueNode",
     "TypeIsNode",
+    "FieldRef",
+    "QueryExpr",
+    "Q",
+    "TRUE",
+    "FALSE",
     "matches",
     "validate_query",
 ]
