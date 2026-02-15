@@ -99,7 +99,7 @@ Regex rules:
 - compile with `re` flags parsed from `flags`
 
 ## Checklist
-- [ ] Add `src/furu/query/ast.py` with discriminated union nodes exactly as above
+- [x] Add `src/furu/query/ast.py` with discriminated union nodes exactly as above
 - [x] Add `src/furu/query/paths.py` implementing `get_path(doc, path) -> value|PATH_MISSING`
 - [ ] Add `src/furu/query/types.py`:
   - robust `resolve_type("a.b.C") -> type|None` (import longest module prefix, getattr chain)
@@ -121,6 +121,7 @@ Regex rules:
 |---|---|
 | 2026-02-14 | (start) |
 | 2026-02-15 | Added `src/furu/query/paths.py` with dot-path resolution through dicts and list/tuple indices, returning `PATH_MISSING` sentinel on misses. |
+| 2026-02-15 | Added `src/furu/query/ast.py` with discriminated union `Query` models for all v1 node types, plus scalar alias and exports. |
 
 ## Plan Changes (append-only)
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add initial query AST schema package (`furu.query.ast`) with discriminated node models for filter expressions and scalar support, laying groundwork for dashboard query filtering and future Python DSL integration.
+
 ## v0.0.12
 
 - Make `FuruSerializer.from_dict()` strict by default (`strict=False` enables relaxed loading), and tighten class-marker/import validation so strict mode surfaces invalid payloads clearly. ([#55](https://github.com/hermabr/furu/pull/55))
