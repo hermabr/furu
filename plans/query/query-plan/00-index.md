@@ -20,8 +20,8 @@
 6. Tests + docs (06)
 
 ## Global milestone checklist
-- [ ] M0: Add `src/furu/query/` package with AST + evaluator + type ops
-- [ ] M1: Add Python DSL `Q` and export it cleanly
+- [x] M0: Add `src/furu/query/` package with AST + evaluator + type ops
+- [x] M1: Add Python DSL `Q` and export it cleanly
 - [ ] M2: Integrate query into `scan_experiments` while preserving old filters
 - [ ] M3: Add `POST /api/experiments/search` (dashboard)
 - [ ] M4: Add minimal dashboard UI support to submit an AST query
@@ -33,6 +33,8 @@
 | Date | Area | Summary |
 |---|---|---|
 | 2026-02-14 | — | (start) |
+| 2026-02-15 | Completed query-core milestone tasks: path resolver + AST + evaluator/type helpers in `src/furu/query/` were added. | core scaffolding |
+| 2026-02-15 | Completed query DSL milestone M1: added `src/furu/query/dsl.py`, exported `Q`, `TRUE`, and `FALSE` from `furu.query`, with AST composition support. | query usability |
 
 ## Plan Changes (append-only)
 

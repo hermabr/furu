@@ -61,11 +61,11 @@ Files:
 - `q = Q.config.data.related_to(DummyData)`
 
 ## Checklist
-- [ ] Implement `FieldRef` + `Q` root in `src/furu/query/dsl.py`
-- [ ] Ensure composition operators produce AST nodes from 01 (and flatten)
-- [ ] Add `furu.query` exports:
-  - [ ] `Q`
-  - [ ] `TRUE` / `FALSE` convenience (optional)
+- [x] Implement `FieldRef` + `Q` root in `src/furu/query/dsl.py`
+- [x] Ensure composition operators produce AST nodes from 01 (and flatten)
+- [x] Add `furu.query` exports:
+  - [x] `Q`
+  - [x] `TRUE` / `FALSE` convenience
 - [ ] (Optional) Re-export `Q` from `furu/__init__.py` for convenience:
   - [ ] add to `__all__`
 
@@ -74,9 +74,11 @@ Files:
 | Date | Summary |
 |---|---|
 | 2026-02-14 | (start) |
+| 2026-02-15 | Added `src/furu/query/dsl.py` with root `Q`, `FieldRef`, AST-producing operators/methods, `TRUE`/`FALSE` constants, and query composition via boolean operators. |
 
 ## Plan Changes (append-only)
 
 | Date | Change | Why |
 |---|---|---|
 | 2026-02-14 | — | initial |
+| 2026-02-15 | Completed query DSL milestone M1: implemented Python builder API and query-expression conveniences | required transition from AST-only usage to ergonomic composition |

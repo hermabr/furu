@@ -17,6 +17,7 @@ from .models import (
     ExperimentDAG,
     ExperimentDetail,
     ExperimentList,
+    ExperimentSearchRequest,
     ExperimentRelationships,
     HealthCheck,
 )
@@ -90,6 +91,24 @@ async def list_experiments(
     # Apply pagination
     total = len(experiments)
     experiments = experiments[offset : offset + limit]
+
+    return ExperimentList(experiments=experiments, total=total)
+
+
+@router.post("/experiments/search", response_model=ExperimentList)
+async def search_experiments(request: ExperimentSearchRequest) -> ExperimentList:
+    """Search experiments using a structured query AST."""
+    try:
+        experiments = scan_experiments(
+            query=request.query,
+            schema=request.schema_filter,
+            view=request.view,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    total = len(experiments)
+    experiments = experiments[request.offset : request.offset + request.limit]
 
     return ExperimentList(experiments=experiments, total=total)
 

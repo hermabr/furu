@@ -1,10 +1,12 @@
 """Pydantic models for the Dashboard API."""
 
 from typing import Any
+from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ...storage import StateAttempt
+from ...query import Query
 
 
 # Type alias for JSON-serializable data from Pydantic model_dump(mode="json").
@@ -80,6 +82,18 @@ class ExperimentList(BaseModel):
 
     experiments: list[ExperimentSummary]
     total: int
+
+
+class ExperimentSearchRequest(BaseModel):
+    """Request body for advanced experiment search."""
+
+    query: Query
+    schema_filter: Literal["current", "stale", "any"] = Field(
+        default="current", validation_alias="schema", serialization_alias="schema"
+    )
+    view: Literal["resolved", "original"] = "resolved"
+    limit: int = 100
+    offset: int = 0
 
 
 class StatusCount(BaseModel):

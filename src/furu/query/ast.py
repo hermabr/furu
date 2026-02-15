@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Literal, TypeAlias, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -12,6 +12,24 @@ Scalar: TypeAlias = str | int | float | bool | None
 
 class _QueryNode(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+    def __and__(self, other: object) -> Query:
+        if not isinstance(other, _QueryNode):
+            return NotImplemented
+        return _merge_and(self, other)
+
+    def __or__(self, other: object) -> Query:
+        if not isinstance(other, _QueryNode):
+            return NotImplemented
+        return _merge_or(self, other)
+
+    def __invert__(self) -> Query:
+        return NotQuery(arg=cast("Query", self), op="not")
+
+    def __bool__(self) -> bool:
+        raise TypeError(
+            "query expressions are not truthy; use match helpers instead of boolean checks"
+        )
 
 
 class TrueQuery(_QueryNode):
@@ -175,6 +193,38 @@ Query: TypeAlias = Annotated[
     | RelatedToQuery,
     Field(discriminator="op"),
 ]
+
+
+def _as_query(node: _QueryNode) -> Query:
+    return cast("Query", node)
+
+
+def _merge_and(left: _QueryNode, right: _QueryNode) -> Query:
+    if isinstance(left, AndQuery):
+        args: list[Query] = list(left.args)
+    else:
+        args = [_as_query(left)]
+
+    if isinstance(right, AndQuery):
+        args.extend(right.args)
+    else:
+        args.append(_as_query(right))
+
+    return AndQuery(op="and", args=args)
+
+
+def _merge_or(left: _QueryNode, right: _QueryNode) -> Query:
+    if isinstance(left, OrQuery):
+        args: list[Query] = list(left.args)
+    else:
+        args = [_as_query(left)]
+
+    if isinstance(right, OrQuery):
+        args.extend(right.args)
+    else:
+        args.append(_as_query(right))
+
+    return OrQuery(op="or", args=args)
 
 
 __all__ = [

@@ -17,6 +17,7 @@ from ..aliases import (
 from ..migration import FuruRef, _FuruClass, _ref_matches_current_code
 from ..schema import schema_key_from_cls, schema_key_from_metadata_raw
 from ..serialization.serializer import JsonValue
+from ..query import FieldRef, Q, Query, matches, validate_query
 from ..storage import MetadataManager, MigrationManager, MigrationRecord, StateAttempt
 from ..storage.state import StateManager, _FuruState
 from .api.models import (
@@ -144,6 +145,87 @@ def _parse_datetime(value: str | None) -> _dt.datetime | None:
     return dt
 
 
+def _parse_query_scalar(value: str) -> str | int | float | bool | None:
+    lowered = value.lower()
+
+    if lowered in {"true", "false"}:
+        return lowered == "true"
+
+    if lowered in {"null", "none"}:
+        return None
+
+    try:
+        return int(value)
+    except ValueError:
+        try:
+            return float(value)
+        except ValueError:
+            return value
+
+
+def _config_field_ref(config_field: str) -> FieldRef:
+    ref: FieldRef = Q.config
+    for part in config_field.split("."):
+        if part.isdigit():
+            ref = ref[int(part)]
+        else:
+            ref = ref[part]
+    return ref
+
+
+def compile_legacy_filters_to_query(
+    *,
+    result_status: str | None,
+    attempt_status: str | None,
+    namespace_prefix: str | None,
+    backend: str | None,
+    hostname: str | None,
+    user: str | None,
+    migration_kind: str | None,
+    migration_policy: str | None,
+    schema: str,
+    config_field: str | None,
+    config_value: str | None,
+) -> Query | None:
+    legacy_filters: Query | None = None
+
+    def combine(filter_query: Query | None) -> None:
+        nonlocal legacy_filters
+        if filter_query is None:
+            return
+        if legacy_filters is None:
+            legacy_filters = filter_query
+        else:
+            legacy_filters = legacy_filters & filter_query
+
+    if result_status:
+        combine(Q.exp.result_status == result_status)
+    if attempt_status:
+        combine(Q.exp.attempt_status == attempt_status)
+    if namespace_prefix:
+        combine(Q.exp.namespace.startswith(namespace_prefix))
+    if backend:
+        combine(Q.exp.backend == backend)
+    if hostname:
+        combine(Q.exp.hostname == hostname)
+    if user:
+        combine(Q.exp.user == user)
+    if migration_kind:
+        combine(Q.exp.migration_kind == migration_kind)
+    if migration_policy:
+        combine(Q.exp.migration_policy == migration_policy)
+
+    if schema == "current":
+        combine(~(Q.exp.is_stale == 1))
+    elif schema == "stale":
+        combine(Q.exp.is_stale == 1)
+
+    if config_field and config_value is not None:
+        combine(_config_field_ref(config_field) == _parse_query_scalar(config_value))
+
+    return legacy_filters
+
+
 def _current_schema_key(
     namespace: str,
     cache: dict[str, tuple[str, ...] | None],
@@ -250,26 +332,6 @@ def _alias_infos(
     ]
 
 
-def _get_nested_value(data: dict, path: str) -> str | int | float | bool | None:
-    """
-    Get a nested value from a dict using dot notation.
-
-    Example: _get_nested_value({"a": {"b": 1}}, "a.b") -> 1
-    """
-    keys = path.split(".")
-    current = data
-    for key in keys:
-        if not isinstance(current, dict):
-            return None
-        if key not in current:
-            return None
-        current = current[key]
-    # Only return primitive values that can be compared as strings
-    if isinstance(current, (str, int, float, bool)):
-        return current
-    return None
-
-
 def scan_experiments(
     *,
     result_status: str | None = None,
@@ -283,6 +345,7 @@ def scan_experiments(
     updated_after: str | None = None,
     updated_before: str | None = None,
     config_filter: str | None = None,
+    query: Query | None = None,
     migration_kind: str | None = None,
     migration_policy: str | None = None,
     schema: str = "current",
@@ -329,6 +392,29 @@ def scan_experiments(
     config_value: str | None = None
     if config_filter and "=" in config_filter:
         config_field, config_value = config_filter.split("=", 1)
+
+    legacy_query = compile_legacy_filters_to_query(
+        result_status=result_status,
+        attempt_status=attempt_status,
+        namespace_prefix=namespace_prefix,
+        backend=backend,
+        hostname=hostname,
+        user=user,
+        migration_kind=migration_kind,
+        migration_policy=migration_policy,
+        schema=schema,
+        config_field=config_field,
+        config_value=config_value,
+    )
+
+    query_filters = query
+    if query_filters is None:
+        query_filters = legacy_query
+    elif legacy_query is not None:
+        query_filters = query_filters & legacy_query
+
+    if query_filters is not None:
+        validate_query(query_filters)
 
     for root in iter_roots():
         for experiment_dir in find_experiment_dirs(root):
@@ -428,27 +514,16 @@ def scan_experiments(
             ):
                 filter_updated_at = original_state.updated_at
 
-            # Apply filters
-            if result_status and summary.result_status != result_status:
-                continue
-            if attempt_status and summary.attempt_status != attempt_status:
-                continue
-            if namespace_prefix and not summary.namespace.startswith(namespace_prefix):
-                continue
-            if backend and summary.backend != backend:
-                continue
-            if hostname and summary.hostname != hostname:
-                continue
-            if user and summary.user != user:
-                continue
-            if migration_kind and summary.migration_kind != migration_kind:
-                continue
-            if migration_policy and summary.migration_policy != migration_policy:
-                continue
-            if schema == "current" and summary.is_stale is True:
-                continue
-            if schema == "stale" and summary.is_stale is not True:
-                continue
+            # Apply legacy and query filters through unified query AST.
+            if query_filters is not None:
+                query_document = {
+                    "exp": summary.model_dump(mode="json"),
+                    "config": metadata.get("furu_obj"),
+                    "meta": metadata,
+                    "state": state.model_dump(mode="json"),
+                }
+                if not matches(query_document, query_filters):
+                    continue
 
             # Date filters
             if started_after_dt or started_before_dt:
@@ -471,16 +546,6 @@ def scan_experiments(
                         continue
                 elif updated_after_dt or updated_before_dt:
                     # No updated_at but we're filtering by it - exclude
-                    continue
-
-            # Config field filter - requires reading metadata
-            if config_field and config_value is not None:
-                furu_obj = metadata.get("furu_obj")
-                if isinstance(furu_obj, dict):
-                    actual_value = _get_nested_value(furu_obj, config_field)
-                    if str(actual_value) != config_value:
-                        continue
-                else:
                     continue
 
             experiments.append(summary)

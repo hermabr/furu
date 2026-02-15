@@ -101,18 +101,18 @@ Regex rules:
 ## Checklist
 - [x] Add `src/furu/query/ast.py` with discriminated union nodes exactly as above
 - [x] Add `src/furu/query/paths.py` implementing `get_path(doc, path) -> value|PATH_MISSING`
-- [ ] Add `src/furu/query/types.py`:
+- [x] Add `src/furu/query/types.py`:
   - robust `resolve_type("a.b.C") -> type|None` (import longest module prefix, getattr chain)
   - handle enum-style strings like `"mod.Enum:VALUE"` by stripping `:VALUE` for type resolution
   - cache resolutions
-- [ ] Add `src/furu/query/eval.py` implementing `matches(doc, query)`
-- [ ] Add `src/furu/query/__init__.py` exporting:
+- [x] Add `src/furu/query/eval.py` implementing `matches(doc, query)`
+- [x] Add `src/furu/query/__init__.py` exporting:
   - `Query` type
   - node classes (optional)
   - `matches`
-- [ ] Add small internal limits (API hardening):
-  - [ ] max node count (e.g. 200)
-  - [ ] max depth (e.g. 30)
+- [x] Add small internal limits (API hardening):
+  - max node count (e.g. 200)
+  - max depth (e.g. 30)
   - implement as a helper `validate_query(query)` used by API route
 
 ## Progress Log (append-only)
@@ -122,9 +122,11 @@ Regex rules:
 | 2026-02-14 | (start) |
 | 2026-02-15 | Added `src/furu/query/paths.py` with dot-path resolution through dicts and list/tuple indices, returning `PATH_MISSING` sentinel on misses. |
 | 2026-02-15 | Added `src/furu/query/ast.py` with discriminated union `Query` models for all v1 node types, plus scalar alias and exports. |
+| 2026-02-15 | Completed query core evaluator stack: added `src/furu/query/types.py`, `src/furu/query/eval.py`, `src/furu/query/__init__.py`, and `validate_query` limits for depth/node cap checks. |
 
 ## Plan Changes (append-only)
 
 | Date | Change | Why |
 |---|---|---|
 | 2026-02-14 | — | initial |
+| 2026-02-15 | Query core implementation completed for milestone M0 | required baseline before DSL, scanner, API, and frontend integration |

@@ -14,6 +14,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from furu.serialization import FuruSerializer
+from furu.query import Q
 
 from .pipelines import PrepareDataset, TrainModel
 
@@ -447,6 +448,19 @@ def test_list_experiments_filter_by_config_filter(
     assert data["experiments"][0]["class_name"] == "PrepareDataset"
 
 
+def test_list_experiments_filter_by_nested_config_filter(
+    client: TestClient, populated_furu_root: Path
+) -> None:
+    """Test filtering experiments by nested config path via API."""
+    response = client.get(
+        "/api/experiments?config_filter=dataset.name%3Dmnist&schema=any",
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 2
+    assert all(exp["class_name"] == "TrainModel" for exp in data["experiments"])
+
+
 def test_list_experiments_combined_new_filters(
     client: TestClient, populated_furu_root: Path
 ) -> None:
@@ -529,6 +543,92 @@ def test_list_experiments_filter_no_match_returns_empty(
     response = client.get("/api/experiments?config_filter=name%3Dnonexistent")
     assert response.status_code == 200
     assert response.json()["total"] == 0
+
+
+# =============================================================================
+# Tests for query-based POST search endpoint
+# =============================================================================
+
+
+def test_search_experiments_post_result_status_filter(
+    client: TestClient, populated_furu_root: Path
+) -> None:
+    """Test searching experiments using a result status query AST."""
+    response = client.post(
+        "/api/experiments/search",
+        json={"query": (Q.exp.result_status == "success").model_dump()},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 3
+    assert len(data["experiments"]) == 3
+    for exp in data["experiments"]:
+        assert exp["result_status"] == "success"
+
+
+def test_search_experiments_post_nested_config_filter(
+    client: TestClient, populated_furu_root: Path
+) -> None:
+    """Test searching by nested config field using a query AST."""
+    response = client.post(
+        "/api/experiments/search",
+        json={"query": (Q.config.dataset.name == "mnist").model_dump()},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 2
+    assert all(exp["class_name"] == "TrainModel" for exp in data["experiments"])
+
+
+def test_search_experiments_post_type_filter(
+    client: TestClient, populated_furu_root: Path
+) -> None:
+    """Test searching experiments using a type filter AST."""
+    response = client.post(
+        "/api/experiments/search",
+        json={"query": (Q.config["__class__"].type_is(TrainModel)).model_dump()},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 2
+    for exp in data["experiments"]:
+        assert exp["class_name"] == "TrainModel"
+
+
+def test_search_experiments_post_rejects_invalid_query_payload(
+    client: TestClient,
+) -> None:
+    """Test that invalid query payloads return HTTP 400."""
+    query_too_many_nodes = {
+        "op": "or",
+        "args": [{"op": "eq", "path": "exp.result_status", "value": "success"}] * 201,
+    }
+    response = client.post(
+        "/api/experiments/search",
+        json={"query": query_too_many_nodes},
+    )
+    assert response.status_code == 400
+    assert "max allowed is" in response.json()["detail"]
+
+
+def test_search_experiments_post_rejects_too_deep_query_payload(
+    client: TestClient,
+) -> None:
+    """Test that deeply nested query payloads are rejected."""
+    query: dict[str, object] = {
+        "op": "eq",
+        "path": "exp.result_status",
+        "value": "success",
+    }
+    for _ in range(35):
+        query = {"op": "not", "arg": query}
+
+    response = client.post(
+        "/api/experiments/search",
+        json={"query": query},
+    )
+    assert response.status_code == 400
+    assert "max allowed is" in response.json()["detail"]
 
 
 # =============================================================================

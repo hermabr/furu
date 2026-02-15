@@ -5,12 +5,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from furu.dashboard.scanner import (
     get_experiment_dag,
     get_experiment_detail,
     get_stats,
     scan_experiments,
 )
+from furu.query import Q
 from furu.serialization import FuruSerializer
 from furu.storage import MigrationManager
 
@@ -397,6 +400,46 @@ def test_scan_experiments_filter_by_started_range(populated_furu_root: Path) -> 
     assert "2025-01-03T10:00:00+00:00" in started_dates
 
 
+def test_scan_experiments_query_filter_result_status(
+    populated_furu_root: Path,
+) -> None:
+    """Test query filtering by result status."""
+    results = scan_experiments(query=(Q.exp.result_status == "success"))
+    assert len(results) == 3
+
+
+def test_scan_experiments_query_filter_nested_config(
+    populated_furu_root: Path,
+) -> None:
+    """Test query filtering by nested config field."""
+    results = scan_experiments(query=(Q.config.dataset.name == "mnist"))
+    assert len(results) == 2
+
+
+def test_scan_experiments_query_combined_with_legacy_filters(
+    populated_furu_root: Path,
+) -> None:
+    """Test query filters are combined with legacy filters."""
+    results = scan_experiments(
+        result_status="success",
+        query=Q.config.dataset.name == "mnist",
+    )
+    assert len(results) == 1
+    assert results[0].class_name == "TrainModel"
+
+
+def test_scan_experiments_rejects_too_deep_query_filter(
+    temp_furu_root: Path,
+) -> None:
+    """Test deep query ASTs are rejected by scanner validation."""
+    query = Q.exp.result_status == "success"
+    for _ in range(35):
+        query = ~query
+
+    with pytest.raises(ValueError, match="query depth"):
+        scan_experiments(query=query)
+
+
 def test_scan_experiments_filter_by_updated_after(populated_furu_root: Path) -> None:
     """Test filtering experiments updated after a specific time."""
     # Fixture has: loader(updated 2024-06-01), dataset1(2025-01-01), train1(2025-01-02),
@@ -493,6 +536,25 @@ def test_scan_experiments_filter_by_nested_config_field(temp_furu_root: Path) ->
     # Filter by steps
     results = scan_experiments(config_filter="steps=500")
     assert len(results) == 1
+
+
+def test_scan_experiments_filter_by_nested_config_field_dot_notation(
+    temp_furu_root: Path,
+) -> None:
+    """Test legacy config_filter dotted field paths evaluate nested values."""
+    dataset = PrepareDataset(name="mnist", version="v1")
+    create_experiment_from_furu(
+        dataset, result_status="success", attempt_status="success"
+    )
+
+    train = TrainModel(lr=0.001, steps=1234, dataset=dataset)
+    create_experiment_from_furu(
+        train, result_status="success", attempt_status="success"
+    )
+
+    results = scan_experiments(config_filter="dataset.name=mnist")
+    assert len(results) == 1
+    assert results[0].class_name == "TrainModel"
 
 
 def test_scan_experiments_combined_filters(populated_furu_root: Path) -> None:
