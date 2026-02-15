@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.0.12
 
 - Make `FuruSerializer.from_dict()` strict by default and fall back only when requested (`strict=False`), while still allowing stale-ref migration to opt into relaxed loading (`strict=False`). ([#55](https://github.com/hermabr/furu/pull/55))
 - Ignore non-init dataclass fields during lazy fallback reconstruction so nested schema-migration paths no longer fail with unexpected keyword arguments on stale artifacts. ([#55](https://github.com/hermabr/furu/pull/55))
