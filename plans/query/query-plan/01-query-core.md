@@ -99,7 +99,7 @@ Regex rules:
 - compile with `re` flags parsed from `flags`
 
 ## Checklist
-- [ ] Add `src/furu/query/ast.py` with discriminated union nodes exactly as above
+- [x] Add `src/furu/query/ast.py` with discriminated union nodes exactly as above
 - [ ] Add `src/furu/query/paths.py` implementing `get_path(doc, path) -> value|PATH_MISSING`
 - [ ] Add `src/furu/query/types.py`:
   - robust `resolve_type("a.b.C") -> type|None` (import longest module prefix, getattr chain)
@@ -120,6 +120,7 @@ Regex rules:
 | Date | Summary |
 |---|---|
 | 2026-02-14 | (start) |
+| 2026-02-15 | Added `src/furu/query/ast.py` with frozen/forbid Pydantic node models and a discriminated `Query` union by `op`. |
 
 ## Plan Changes (append-only)
 
