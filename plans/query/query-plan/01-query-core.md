@@ -110,7 +110,7 @@ Regex rules:
   - `Query` type
   - node classes (optional)
   - `matches`
-- [ ] Add small internal limits (API hardening):
+- [x] Add small internal limits (API hardening):
   - [x] max node count (e.g. 200)
   - [x] max depth (e.g. 30)
   - [x] implement as a helper `validate_query(query)` used by API route

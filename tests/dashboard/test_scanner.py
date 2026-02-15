@@ -17,7 +17,7 @@ from furu.serialization import FuruSerializer
 from furu.storage import MigrationManager
 
 from .conftest import create_experiment_from_furu
-from .pipelines import PrepareDataset, TrainModel
+from .pipelines import Data, DataA, DataB, PrepareDataset, Train, TrainModel
 
 
 class VersionedDataset(PrepareDataset, version_controlled=True):
@@ -566,6 +566,37 @@ def test_scan_experiments_query_and_legacy_filter(populated_furu_root: Path) -> 
     )
     assert len(results) == 2
     assert {exp.user for exp in results} == {"alice"}
+
+
+def test_scan_experiments_query_nested_config_filter(populated_furu_root: Path) -> None:
+    """Test query filtering on nested config paths."""
+    results = scan_experiments(query=(Q.config.dataset.name == "mnist").to_ast())
+    assert len(results) == 2
+    assert {exp.class_name for exp in results} == {"TrainModel"}
+
+
+def test_scan_experiments_query_type_filter(temp_furu_root: Path) -> None:
+    """Test query type filtering with is_a over serialized class markers."""
+    train_a = Train(data=DataA(name="source-a"), epochs=5)
+    create_experiment_from_furu(
+        train_a,
+        result_status="success",
+        attempt_status="success",
+    )
+
+    train_b = Train(data=DataB(name="source-b"), epochs=5)
+    create_experiment_from_furu(
+        train_b,
+        result_status="success",
+        attempt_status="success",
+    )
+
+    data_results = scan_experiments(query=Q.config.data.is_a(Data).to_ast())
+    assert len(data_results) == 2
+
+    data_a_results = scan_experiments(query=Q.config.data.type_is(DataA).to_ast())
+    assert len(data_a_results) == 1
+    assert data_a_results[0].furu_hash == train_a.furu_hash
 
 
 def test_compile_legacy_filters_to_query_config_value_parsing() -> None:

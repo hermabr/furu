@@ -49,6 +49,7 @@ from .migration import (
     MIGRATION_SKIP,
     MIGRATION_SKIPPED,
 )
+from .query import Q
 from .serialization import FuruSerializer
 from .storage import MetadataManager, StateManager
 
@@ -78,6 +79,7 @@ __all__ = [
     "MIGRATION_SKIP",
     "MIGRATION_SKIPPED",
     "MetadataManager",
+    "Q",
     "StateManager",
     "SubmititAdapter",
     "chz",

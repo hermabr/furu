@@ -20,7 +20,7 @@ def _normalize_type_name(type_name: str) -> str:
 
 def _resolve_module_prefix(type_name: str) -> tuple[str, list[str]] | None:
     parts = type_name.split(".")
-    for index in range(len(parts), 0, -1):
+    for index in range(len(parts) - 1, 0, -1):
         module_name = ".".join(parts[:index])
         if module_name == "":
             continue

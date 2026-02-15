@@ -44,17 +44,18 @@ Add new files under `tests/` (NOT under `tests/dashboard/` so they run in defaul
   - Notes on type filters relying on importability (until we add MRO indexing)
 
 ## Checklist
-- [ ] Add core query tests under `tests/`
-- [ ] Add dashboard scanner tests for `query=...`
-- [ ] Add dashboard API tests for POST search
-- [ ] Update README/docs with examples
-- [ ] Ensure `make lint`, `make test`, `make dashboard-test` all green
+- [x] Add core query tests under `tests/`
+- [x] Add dashboard scanner tests for `query=...`
+- [x] Add dashboard API tests for POST search
+- [x] Update README/docs with examples
+- [x] Ensure `make lint`, `make test`, `make dashboard-test` all green
 
 ## Progress Log (append-only)
 
 | Date | Summary |
 |---|---|
 | 2026-02-14 | (start) |
+| 2026-02-15 | Added core `test_query_paths.py` and `test_query_eval.py` coverage for path traversal, scalar comparisons, range/inclusion predicates, exists/missing, string predicates, and type-relationship ops; expanded scanner query tests for nested config + type filters; documented Python `Q` + dashboard JSON AST usage in README; and re-ran `make lint`, `make test`, and `make dashboard-test` successfully. |
 
 ## Plan Changes (append-only)
 

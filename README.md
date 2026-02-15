@@ -480,6 +480,47 @@ The `/api/experiments` endpoint supports:
 - `started_after`, `started_before`: ISO datetime filters
 - `config_filter`: Filter by config field (e.g., `lr=0.001`)
 
+### Advanced Query AST (Python + Dashboard)
+
+Use `furu.query.Q` to build composable filters in Python and pass them to
+`scan_experiments(query=...)`:
+
+```python
+from furu.dashboard.scanner import scan_experiments
+from furu.query import Q
+
+query = (
+    (Q.exp.result_status == "success")
+    & Q.config.dataset.name.in_("mnist", "cifar10")
+    & Q.config.lr.between(1e-4, 1e-2, inclusive="both")
+)
+
+results = scan_experiments(query=query.to_ast(), schema="current", view="resolved")
+```
+
+The dashboard also supports posting the same JSON AST to
+`POST /api/experiments/search`:
+
+```json
+{
+  "query": {
+    "op": "and",
+    "args": [
+      {"op": "eq", "path": "exp.result_status", "value": "success"},
+      {"op": "eq", "path": "config.dataset.name", "value": "mnist"}
+    ]
+  },
+  "schema": "current",
+  "view": "resolved",
+  "limit": 20,
+  "offset": 0
+}
+```
+
+Type filters (`type_is`, `is_a`, `related_to`) rely on importable class names in
+serialized `__class__` markers. If a class cannot be imported in the API
+process, type relationships evaluate as non-matches.
+
 ## Configuration Reference
 
 ### Environment Variables

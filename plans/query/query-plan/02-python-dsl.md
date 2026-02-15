@@ -66,8 +66,8 @@ Files:
 - [x] Add `furu.query` exports:
   - [x] `Q`
   - [x] `TRUE` / `FALSE` convenience (optional)
-- [ ] (Optional) Re-export `Q` from `furu/__init__.py` for convenience:
-  - [ ] add to `__all__`
+- [x] (Optional) Re-export `Q` from `furu/__init__.py` for convenience:
+  - [x] add to `__all__`
 
 ## Progress Log (append-only)
 
@@ -75,6 +75,7 @@ Files:
 |---|---|
 | 2026-02-14 | (start) |
 | 2026-02-15 | Added `src/furu/query/dsl.py` with `FieldRef` path construction (`attr` + index access), AST-producing comparison/method operators, boolean composition with flattening, type-query helpers, and `Q`/`TRUE`/`FALSE` exports via `furu.query`. |
+| 2026-02-15 | Re-exported `Q` from top-level `furu` package (`src/furu/__init__.py`) and added it to `__all__` for convenience imports. |
 
 ## Plan Changes (append-only)
 
