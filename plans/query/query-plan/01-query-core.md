@@ -106,7 +106,7 @@ Regex rules:
   - handle enum-style strings like `"mod.Enum:VALUE"` by stripping `:VALUE` for type resolution
   - cache resolutions
 - [x] Add `src/furu/query/eval.py` implementing `matches(doc, query)`
-- [ ] Add `src/furu/query/__init__.py` exporting:
+- [x] Add `src/furu/query/__init__.py` exporting:
   - `Query` type
   - node classes (optional)
   - `matches`
@@ -124,6 +124,7 @@ Regex rules:
 | 2026-02-15 | Added `src/furu/query/paths.py` with `PATH_MISSING` sentinel and dot-path traversal across dict keys plus list indices. |
 | 2026-02-15 | Added `src/furu/query/types.py` with cached `resolve_type(...)`, enum-style `:VALUE` stripping, longest module-prefix lookup, and getattr-chain type resolution. |
 | 2026-02-15 | Added `src/furu/query/eval.py` implementing `matches(doc, query)` with boolean composition, path-aware operators, numeric string coercion, string predicates, regex, and type relationship ops over `__class__`. |
+| 2026-02-15 | Added `src/furu/query/__init__.py` to export `Query`, query AST node classes, `Scalar`, and `matches` as the public query-core entrypoint. |
 
 ## Plan Changes (append-only)
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add a public `furu.query` package entrypoint that exports the v1 query AST node types, `Query`, and `matches(...)`.
+
 ## v0.0.12
 
 - Make `FuruSerializer.from_dict()` strict by default (`strict=False` enables relaxed loading), and tighten class-marker/import validation so strict mode surfaces invalid payloads clearly. ([#55](https://github.com/hermabr/furu/pull/55))
