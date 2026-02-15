@@ -4,6 +4,7 @@
 
 - Add a public `furu.query` package entrypoint that exports the v1 query AST node types, `Query`, and `matches(...)`.
 - Add a Python query DSL under `furu.query` with `Q` field refs, composable boolean operators, and `TRUE`/`FALSE` helpers that compile to query AST nodes.
+- Integrate query AST filtering into dashboard scanner `scan_experiments(...)` by adding a new `query` parameter and compiling existing non-date filters (including typed `config_filter` values) into the same query evaluator path.
 
 ## v0.0.12
 

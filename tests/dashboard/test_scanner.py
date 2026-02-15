@@ -6,11 +6,13 @@ import json
 from pathlib import Path
 
 from furu.dashboard.scanner import (
+    compile_legacy_filters_to_query,
     get_experiment_dag,
     get_experiment_detail,
     get_stats,
     scan_experiments,
 )
+from furu.query import Q
 from furu.serialization import FuruSerializer
 from furu.storage import MigrationManager
 
@@ -547,6 +549,46 @@ def test_scan_experiments_combined_filters_no_match(temp_furu_root: Path) -> Non
     # No experiment matches both conditions
     results = scan_experiments(backend="submitit", user="alice")
     assert len(results) == 0
+
+
+def test_scan_experiments_query_filter(populated_furu_root: Path) -> None:
+    """Test filtering with query AST directly."""
+    results = scan_experiments(query=(Q.exp.result_status == "success").to_ast())
+    assert len(results) == 3
+    assert {exp.result_status for exp in results} == {"success"}
+
+
+def test_scan_experiments_query_and_legacy_filter(populated_furu_root: Path) -> None:
+    """Test query AST is ANDed with legacy query params."""
+    results = scan_experiments(
+        result_status="success",
+        query=(Q.exp.user == "alice").to_ast(),
+    )
+    assert len(results) == 2
+    assert {exp.user for exp in results} == {"alice"}
+
+
+def test_compile_legacy_filters_to_query_config_value_parsing() -> None:
+    """Test config_filter values compile to typed query scalars."""
+    query_true = compile_legacy_filters_to_query(config_filter="flag=true")
+    assert query_true is not None
+    assert query_true.model_dump(mode="json") == {
+        "op": "and",
+        "args": [
+            {"op": "ne", "path": "exp.is_stale", "value": True},
+            {"op": "eq", "path": "config.flag", "value": True},
+        ],
+    }
+
+    query_float = compile_legacy_filters_to_query(
+        config_filter="lr=0.001", schema="any"
+    )
+    assert query_float is not None
+    assert query_float.model_dump(mode="json") == {
+        "op": "eq",
+        "path": "config.lr",
+        "value": 0.001,
+    }
 
 
 def test_scan_experiments_filter_experiment_without_attempt(

@@ -57,17 +57,18 @@ Config filter:
   - else -> string
 
 ## Checklist
-- [ ] Add `query` parameter to `scan_experiments`
-- [ ] Build `doc` and evaluate `matches(doc, query)`
-- [ ] Implement `compile_legacy_filters_to_query(...) -> Query | None`
-- [ ] Ensure legacy filters remain equivalent (tests must stay green)
-- [ ] Remove/stop using `_get_nested_value` for filtering (keep only if used elsewhere)
+- [x] Add `query` parameter to `scan_experiments`
+- [x] Build `doc` and evaluate `matches(doc, query)`
+- [x] Implement `compile_legacy_filters_to_query(...) -> Query | None`
+- [x] Ensure legacy filters remain equivalent (tests must stay green)
+- [x] Remove/stop using `_get_nested_value` for filtering (keep only if used elsewhere)
 
 ## Progress Log (append-only)
 
 | Date | Summary |
 |---|---|
 | 2026-02-14 | (start) |
+| 2026-02-15 | Added `query` support to `scan_experiments`, compiled legacy non-date filters into query AST with typed `config_filter` parsing, evaluated per-experiment docs through `matches(...)`, and removed `_get_nested_value` from filtering path. |
 
 ## Plan Changes (append-only)
 

@@ -2,6 +2,7 @@
 
 import datetime as _dt
 import importlib
+import re
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -15,6 +16,16 @@ from ..aliases import (
     iter_roots,
 )
 from ..migration import FuruRef, _FuruClass, _ref_matches_current_code
+from ..query.ast import (
+    AndNode,
+    EqNode,
+    NeNode,
+    Query as QueryAst,
+    Scalar,
+    StartswithNode,
+)
+from ..query.eval import matches
+from ..query.paths import JsonValue as QueryJsonValue
 from ..schema import schema_key_from_cls, schema_key_from_metadata_raw
 from ..serialization.serializer import JsonValue
 from ..storage import MetadataManager, MigrationManager, MigrationRecord, StateAttempt
@@ -250,24 +261,99 @@ def _alias_infos(
     ]
 
 
-def _get_nested_value(data: dict, path: str) -> str | int | float | bool | None:
-    """
-    Get a nested value from a dict using dot notation.
+_INT_PATTERN = re.compile(r"^[+-]?\d+$")
+_FLOAT_PATTERN = re.compile(
+    r"^[+-]?(?:\d+\.\d*|\d*\.\d+|\d+[eE][+-]?\d+|\d+\.\d*[eE][+-]?\d+|\d*\.\d+[eE][+-]?\d+)$"
+)
 
-    Example: _get_nested_value({"a": {"b": 1}}, "a.b") -> 1
-    """
-    keys = path.split(".")
-    current = data
-    for key in keys:
-        if not isinstance(current, dict):
-            return None
-        if key not in current:
-            return None
-        current = current[key]
-    # Only return primitive values that can be compared as strings
-    if isinstance(current, (str, int, float, bool)):
-        return current
-    return None
+
+def _parse_config_filter_value(value: str) -> Scalar:
+    lowered = value.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    if lowered in {"null", "none"}:
+        return None
+    if _INT_PATTERN.fullmatch(value) is not None:
+        return int(value)
+    if _FLOAT_PATTERN.fullmatch(value) is not None:
+        return float(value)
+    return value
+
+
+def _and_queries(left: QueryAst | None, right: QueryAst | None) -> QueryAst | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+
+    args: list[QueryAst] = []
+    if isinstance(left, AndNode):
+        args.extend(left.args)
+    else:
+        args.append(left)
+    if isinstance(right, AndNode):
+        args.extend(right.args)
+    else:
+        args.append(right)
+    return AndNode(args=args)
+
+
+def compile_legacy_filters_to_query(
+    *,
+    result_status: str | None = None,
+    attempt_status: str | None = None,
+    namespace_prefix: str | None = None,
+    backend: str | None = None,
+    hostname: str | None = None,
+    user: str | None = None,
+    config_filter: str | None = None,
+    migration_kind: str | None = None,
+    migration_policy: str | None = None,
+    schema: str = "current",
+) -> QueryAst | None:
+    nodes: list[QueryAst] = []
+
+    if result_status is not None:
+        nodes.append(EqNode(path="exp.result_status", value=result_status))
+    if attempt_status is not None:
+        nodes.append(EqNode(path="exp.attempt_status", value=attempt_status))
+    if namespace_prefix is not None:
+        nodes.append(
+            StartswithNode(
+                path="exp.namespace", prefix=namespace_prefix, case_sensitive=True
+            )
+        )
+    if backend is not None:
+        nodes.append(EqNode(path="exp.backend", value=backend))
+    if hostname is not None:
+        nodes.append(EqNode(path="exp.hostname", value=hostname))
+    if user is not None:
+        nodes.append(EqNode(path="exp.user", value=user))
+    if migration_kind is not None:
+        nodes.append(EqNode(path="exp.migration_kind", value=migration_kind))
+    if migration_policy is not None:
+        nodes.append(EqNode(path="exp.migration_policy", value=migration_policy))
+    if schema == "current":
+        nodes.append(NeNode(path="exp.is_stale", value=True))
+    elif schema == "stale":
+        nodes.append(EqNode(path="exp.is_stale", value=True))
+
+    if config_filter and "=" in config_filter:
+        config_field, config_value = config_filter.split("=", 1)
+        nodes.append(
+            EqNode(
+                path=f"config.{config_field}",
+                value=_parse_config_filter_value(config_value),
+            )
+        )
+
+    if not nodes:
+        return None
+    if len(nodes) == 1:
+        return nodes[0]
+    return AndNode(args=nodes)
 
 
 def scan_experiments(
@@ -287,6 +373,7 @@ def scan_experiments(
     migration_policy: str | None = None,
     schema: str = "current",
     view: str = "resolved",
+    query: QueryAst | None = None,
 ) -> list[ExperimentSummary]:
     """
     Scan the filesystem for Furu experiments.
@@ -305,6 +392,7 @@ def scan_experiments(
         config_filter: Filter by config field in format "field.path=value"
         schema: Filter by schema status (current, stale, any)
         view: "resolved" uses alias metadata; "original" uses original metadata/state.
+        query: Optional query AST to evaluate against experiment docs.
 
     Returns:
         List of experiment summaries, sorted by updated_at (newest first)
@@ -324,11 +412,19 @@ def scan_experiments(
     updated_after_dt = _parse_datetime(updated_after)
     updated_before_dt = _parse_datetime(updated_before)
 
-    # Parse config filter (format: "field.path=value")
-    config_field: str | None = None
-    config_value: str | None = None
-    if config_filter and "=" in config_filter:
-        config_field, config_value = config_filter.split("=", 1)
+    legacy_query = compile_legacy_filters_to_query(
+        result_status=result_status,
+        attempt_status=attempt_status,
+        namespace_prefix=namespace_prefix,
+        backend=backend,
+        hostname=hostname,
+        user=user,
+        config_filter=config_filter,
+        migration_kind=migration_kind,
+        migration_policy=migration_policy,
+        schema=schema,
+    )
+    effective_query = _and_queries(legacy_query, query)
 
     for root in iter_roots():
         for experiment_dir in find_experiment_dirs(root):
@@ -428,27 +524,15 @@ def scan_experiments(
             ):
                 filter_updated_at = original_state.updated_at
 
-            # Apply filters
-            if result_status and summary.result_status != result_status:
-                continue
-            if attempt_status and summary.attempt_status != attempt_status:
-                continue
-            if namespace_prefix and not summary.namespace.startswith(namespace_prefix):
-                continue
-            if backend and summary.backend != backend:
-                continue
-            if hostname and summary.hostname != hostname:
-                continue
-            if user and summary.user != user:
-                continue
-            if migration_kind and summary.migration_kind != migration_kind:
-                continue
-            if migration_policy and summary.migration_policy != migration_policy:
-                continue
-            if schema == "current" and summary.is_stale is True:
-                continue
-            if schema == "stale" and summary.is_stale is not True:
-                continue
+            if effective_query is not None:
+                doc: dict[str, QueryJsonValue] = {
+                    "exp": cast(QueryJsonValue, summary.model_dump(mode="json")),
+                    "config": cast(QueryJsonValue, metadata.get("furu_obj")),
+                    "meta": cast(QueryJsonValue, metadata),
+                    "state": cast(QueryJsonValue, state.model_dump(mode="json")),
+                }
+                if not matches(doc, effective_query):
+                    continue
 
             # Date filters
             if started_after_dt or started_before_dt:
@@ -471,16 +555,6 @@ def scan_experiments(
                         continue
                 elif updated_after_dt or updated_before_dt:
                     # No updated_at but we're filtering by it - exclude
-                    continue
-
-            # Config field filter - requires reading metadata
-            if config_field and config_value is not None:
-                furu_obj = metadata.get("furu_obj")
-                if isinstance(furu_obj, dict):
-                    actual_value = _get_nested_value(furu_obj, config_field)
-                    if str(actual_value) != config_value:
-                        continue
-                else:
                     continue
 
             experiments.append(summary)
