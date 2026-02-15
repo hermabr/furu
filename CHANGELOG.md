@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-- Add initial query AST schema package (`furu.query.ast`) with discriminated node models for filter expressions and scalar support, laying groundwork for dashboard query filtering and future Python DSL integration.
-- Add a Python query DSL (`furu.query.Q`) that builds v1 filter AST nodes with ergonomic field paths (`Q.config.lr.between(...)`, `.contains`, composition with `&`, `|`, `~`) and convenience `TRUE`/`FALSE` constants.
-- Add `POST /api/experiments/search` validation behavior for malformed or over-complex AST payloads, and rename `ExperimentSearchRequest`'s internal schema field to an alias-based `schema_filter` while preserving the external `schema` JSON key.
+- Add initial query AST schema package (`furu.query.ast`) with discriminated node models for filter expressions and scalar support, laying groundwork for dashboard query filtering and future Python DSL integration. ([#60](https://github.com/hermabr/furu/pull/60))
+- Add a Python query DSL (`furu.query.Q`) that builds v1 filter AST nodes with ergonomic field paths (`Q.config.lr.between(...)`, `.contains`, composition with `&`, `|`, `~`) and convenience `TRUE`/`FALSE` constants. ([#60](https://github.com/hermabr/furu/pull/60))
+- Add `POST /api/experiments/search` validation behavior for malformed or over-complex AST payloads, and rename `ExperimentSearchRequest`'s internal schema field to an alias-based `schema_filter` while preserving the external `schema` JSON key. ([#60](https://github.com/hermabr/furu/pull/60))
 
 ## v0.0.12
 
