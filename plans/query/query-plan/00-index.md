@@ -23,7 +23,7 @@
 - [x] M0: Add `src/furu/query/` package with AST + evaluator + type ops
 - [x] M1: Add Python DSL `Q` and export it cleanly
 - [x] M2: Integrate query into `scan_experiments` while preserving old filters
-- [ ] M3: Add `POST /api/experiments/search` (dashboard)
+- [x] M3: Add `POST /api/experiments/search` (dashboard)
 - [ ] M4: Add minimal dashboard UI support to submit an AST query
 - [ ] M5: Add test coverage for query eval, DSL, scanner, API
 - [ ] M6: Add docs/examples for Python + dashboard usage
@@ -36,6 +36,7 @@
 | 2026-02-15 | Query core | Completed v1 query core package (`ast`, `paths`, `types`, `eval`) plus public exports and query-size validation helper. |
 | 2026-02-15 | Python DSL | Added `src/furu/query/dsl.py` with `Q` root, `FieldRef` operators/methods, and flattened boolean composition, then exported `Q`/`TRUE`/`FALSE` from `furu.query`. |
 | 2026-02-15 | Scanner integration | Added query-aware scanner filtering by compiling legacy non-date filters to AST, evaluating composed query docs in `scan_experiments`, and removing legacy nested-config filter traversal helper. |
+| 2026-02-15 | API endpoint | Added `POST /api/experiments/search` request model + route with query hard-limit validation and pagination, and added dashboard API tests for AST result-status, nested config, and type filters. |
 
 ## Plan Changes (append-only)
 

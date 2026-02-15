@@ -4,6 +4,7 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query
 
+from ...query import validate_query
 from .. import __version__
 from ..scanner import (
     scan_experiments,
@@ -18,6 +19,7 @@ from .models import (
     ExperimentDetail,
     ExperimentList,
     ExperimentRelationships,
+    ExperimentSearchRequest,
     HealthCheck,
 )
 
@@ -90,6 +92,26 @@ async def list_experiments(
     # Apply pagination
     total = len(experiments)
     experiments = experiments[offset : offset + limit]
+
+    return ExperimentList(experiments=experiments, total=total)
+
+
+@router.post("/experiments/search", response_model=ExperimentList)
+async def search_experiments(request: ExperimentSearchRequest) -> ExperimentList:
+    """Search experiments using a JSON query AST payload."""
+    try:
+        validate_query(request.query)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    experiments = scan_experiments(
+        schema=request.schema_,
+        view=request.view,
+        query=request.query,
+    )
+
+    total = len(experiments)
+    experiments = experiments[request.offset : request.offset + request.limit]
 
     return ExperimentList(experiments=experiments, total=total)
 

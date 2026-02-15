@@ -286,6 +286,62 @@ def test_combined_filters(client: TestClient, populated_furu_root: Path) -> None
     )
 
 
+def test_search_experiments_filter_by_result_status_ast(
+    client: TestClient, populated_furu_root: Path
+) -> None:
+    """Test POST search filters by result status using query AST."""
+    response = client.post(
+        "/api/experiments/search",
+        json={
+            "query": {
+                "op": "eq",
+                "path": "exp.result_status",
+                "value": "success",
+            },
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 3
+    assert {exp["result_status"] for exp in data["experiments"]} == {"success"}
+
+
+def test_search_experiments_filter_by_nested_config_ast(
+    client: TestClient, populated_furu_root: Path
+) -> None:
+    """Test POST search filters by nested config path using query AST."""
+    response = client.post(
+        "/api/experiments/search",
+        json={
+            "query": {"op": "eq", "path": "config.dataset.name", "value": "mnist"},
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 2
+    assert {exp["class_name"] for exp in data["experiments"]} == {"TrainModel"}
+
+
+def test_search_experiments_filter_by_type_ast(
+    client: TestClient, populated_furu_root: Path
+) -> None:
+    """Test POST search filters by serialized type marker using query AST."""
+    response = client.post(
+        "/api/experiments/search",
+        json={
+            "query": {
+                "op": "type_is",
+                "path": "config.dataset",
+                "type": "dashboard.pipelines.PrepareDataset",
+            },
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 2
+    assert {exp["class_name"] for exp in data["experiments"]} == {"TrainModel"}
+
+
 def test_experiments_with_dependencies(
     client: TestClient, populated_with_dependencies: Path
 ) -> None:

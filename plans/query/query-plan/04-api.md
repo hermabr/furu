@@ -33,19 +33,20 @@ Response:
 Keep `GET /api/experiments` unchanged.
 
 ## Checklist
-- [ ] Add request model `ExperimentSearchRequest` to `api/models.py`
-- [ ] Add `POST /api/experiments/search` route in `api/routes.py`
-- [ ] Wire it to call `scan_experiments(query=req.query, schema=req.schema, view=req.view, ...)`
-- [ ] Add API tests in `tests/dashboard/test_api.py` for POST endpoint:
-  - filter by result_status via AST
-  - filter by nested config field via AST
-  - type filter via AST
+- [x] Add request model `ExperimentSearchRequest` to `api/models.py`
+- [x] Add `POST /api/experiments/search` route in `api/routes.py`
+- [x] Wire it to call `scan_experiments(query=req.query, schema=req.schema, view=req.view, ...)`
+- [x] Add API tests in `tests/dashboard/test_api.py` for POST endpoint:
+  - [x] filter by result_status via AST
+  - [x] filter by nested config field via AST
+  - [x] type filter via AST
 
 ## Progress Log (append-only)
 
 | Date | Summary |
 |---|---|
 | 2026-02-14 | (start) |
+| 2026-02-15 | Added `ExperimentSearchRequest`, implemented `POST /api/experiments/search` with `validate_query(...)` limits + pagination passthrough, and covered AST result-status/nested-config/type filters in dashboard API tests. |
 
 ## Plan Changes (append-only)
 
