@@ -105,7 +105,7 @@ Regex rules:
   - robust `resolve_type("a.b.C") -> type|None` (import longest module prefix, getattr chain)
   - handle enum-style strings like `"mod.Enum:VALUE"` by stripping `:VALUE` for type resolution
   - cache resolutions
-- [ ] Add `src/furu/query/eval.py` implementing `matches(doc, query)`
+- [x] Add `src/furu/query/eval.py` implementing `matches(doc, query)`
 - [ ] Add `src/furu/query/__init__.py` exporting:
   - `Query` type
   - node classes (optional)
@@ -123,6 +123,7 @@ Regex rules:
 | 2026-02-15 | Added `src/furu/query/ast.py` with frozen/forbid Pydantic node models and a discriminated `Query` union by `op`. |
 | 2026-02-15 | Added `src/furu/query/paths.py` with `PATH_MISSING` sentinel and dot-path traversal across dict keys plus list indices. |
 | 2026-02-15 | Added `src/furu/query/types.py` with cached `resolve_type(...)`, enum-style `:VALUE` stripping, longest module-prefix lookup, and getattr-chain type resolution. |
+| 2026-02-15 | Added `src/furu/query/eval.py` implementing `matches(doc, query)` with boolean composition, path-aware operators, numeric string coercion, string predicates, regex, and type relationship ops over `__class__`. |
 
 ## Plan Changes (append-only)
 
