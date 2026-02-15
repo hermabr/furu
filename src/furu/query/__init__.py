@@ -26,6 +26,7 @@ from .ast import (
     TypeIsNode,
 )
 from .eval import matches
+from .validate import validate_query
 
 __all__ = [
     "AndNode",
@@ -54,4 +55,5 @@ __all__ = [
     "TrueNode",
     "TypeIsNode",
     "matches",
+    "validate_query",
 ]

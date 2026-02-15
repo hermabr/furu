@@ -111,9 +111,9 @@ Regex rules:
   - node classes (optional)
   - `matches`
 - [ ] Add small internal limits (API hardening):
-  - [ ] max node count (e.g. 200)
-  - [ ] max depth (e.g. 30)
-  - implement as a helper `validate_query(query)` used by API route
+  - [x] max node count (e.g. 200)
+  - [x] max depth (e.g. 30)
+  - [x] implement as a helper `validate_query(query)` used by API route
 
 ## Progress Log (append-only)
 
@@ -125,6 +125,7 @@ Regex rules:
 | 2026-02-15 | Added `src/furu/query/types.py` with cached `resolve_type(...)`, enum-style `:VALUE` stripping, longest module-prefix lookup, and getattr-chain type resolution. |
 | 2026-02-15 | Added `src/furu/query/eval.py` implementing `matches(doc, query)` with boolean composition, path-aware operators, numeric string coercion, string predicates, regex, and type relationship ops over `__class__`. |
 | 2026-02-15 | Added `src/furu/query/__init__.py` to export `Query`, query AST node classes, `Scalar`, and `matches` as the public query-core entrypoint. |
+| 2026-02-15 | Added `src/furu/query/validate.py` with `validate_query(query)` hard limits (max node count/depth), exported it from `furu.query`, and added unit tests for accepted/rejected query shapes. |
 
 ## Plan Changes (append-only)
 
