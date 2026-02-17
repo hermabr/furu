@@ -2,12 +2,13 @@
 
 ## Unreleased
 
-- Add a public `furu.query` package entrypoint that exports the v1 query AST node types, `Query`, and `matches(...)`.
-- Add a Python query DSL under `furu.query` with `Q` field refs, composable boolean operators, and `TRUE`/`FALSE` helpers that compile to query AST nodes, plus top-level `furu.Q` re-export convenience.
-- Integrate query AST filtering into dashboard scanner `scan_experiments(...)` by adding a new `query` parameter and compiling existing non-date filters (including typed `config_filter` values) into the same query evaluator path.
-- Add dashboard `POST /api/experiments/search` with JSON query AST input, server-side query-size validation, and pagination-compatible results matching `GET /api/experiments`.
-- Add dashboard frontend advanced JSON query controls on the experiments page, including apply/clear actions, parse/server error feedback, and POST `/api/experiments/search` pagination support.
-- Add query path/evaluator test coverage plus README examples for Python `Q` filters and dashboard JSON AST search payloads, and fix `is_a`/`related_to` type resolution for standard `module.Class` names.
+- Add a public `furu.query` package entrypoint that exports the v1 query AST node types, `Query`, and `matches(...)`. ([#61](https://github.com/hermabr/furu/pull/61))
+- Add a Python query DSL under `furu.query` with `Q` field refs, composable boolean operators, and `TRUE`/`FALSE` helpers that compile to query AST nodes, plus top-level `furu.Q` re-export convenience. ([#61](https://github.com/hermabr/furu/pull/61))
+- Integrate query AST filtering into dashboard scanner `scan_experiments(...)` by adding a new `query` parameter and compiling existing non-date filters (including typed `config_filter` values) into the same query evaluator path. ([#61](https://github.com/hermabr/furu/pull/61))
+- Add dashboard `POST /api/experiments/search` with JSON query AST input, server-side query-size validation, and pagination-compatible results matching `GET /api/experiments`. ([#61](https://github.com/hermabr/furu/pull/61))
+- Add dashboard frontend advanced JSON query controls on the experiments page, including apply/clear actions, parse/server error feedback, and POST `/api/experiments/search` pagination support. ([#61](https://github.com/hermabr/furu/pull/61))
+- Add query path/evaluator test coverage plus README examples for Python `Q` filters and dashboard JSON AST search payloads, and fix `is_a`/`related_to` type resolution for standard `module.Class` names. ([#61](https://github.com/hermabr/furu/pull/61))
+- Tighten query validation and scanner behavior by enforcing explicit invalid-regex errors, restoring tuple path traversal, validating scanner-level query size limits, and accepting Python DSL expressions directly in `scan_experiments(query=...)`. ([#61](https://github.com/hermabr/furu/pull/61))
 
 ## v0.0.12
 

@@ -342,6 +342,77 @@ def test_search_experiments_filter_by_type_ast(
     assert {exp["class_name"] for exp in data["experiments"]} == {"TrainModel"}
 
 
+def test_search_experiments_rejects_invalid_regex_query(
+    client: TestClient,
+    populated_furu_root: Path,
+) -> None:
+    """Test POST search returns explicit 422 for invalid regex queries."""
+    response = client.post(
+        "/api/experiments/search",
+        json={
+            "query": {
+                "op": "regex",
+                "path": "exp.namespace",
+                "pattern": "(",
+                "flags": "",
+            },
+        },
+    )
+    assert response.status_code == 422
+    assert "invalid regex pattern" in response.json()["detail"]
+
+
+def test_search_experiments_rejects_too_deep_query_payload(
+    client: TestClient,
+    populated_furu_root: Path,
+) -> None:
+    """Test POST search rejects query payloads deeper than max depth."""
+    query = {
+        "op": "eq",
+        "path": "exp.result_status",
+        "value": "success",
+    }
+    for _ in range(40):
+        query = {
+            "op": "not",
+            "arg": query,
+        }
+
+    response = client.post(
+        "/api/experiments/search",
+        json={"query": query},
+    )
+
+    assert response.status_code == 422
+    assert "max depth" in response.json()["detail"]
+
+
+def test_search_experiments_rejects_oversized_query_payload(
+    client: TestClient,
+    populated_furu_root: Path,
+) -> None:
+    """Test POST search rejects query payloads beyond max node count."""
+    response = client.post(
+        "/api/experiments/search",
+        json={
+            "query": {
+                "op": "and",
+                "args": [
+                    {
+                        "op": "eq",
+                        "path": "exp.result_status",
+                        "value": "success",
+                    }
+                    for _ in range(201)
+                ],
+            },
+        },
+    )
+
+    assert response.status_code == 422
+    assert "max node count" in response.json()["detail"]
+
+
 def test_experiments_with_dependencies(
     client: TestClient, populated_with_dependencies: Path
 ) -> None:

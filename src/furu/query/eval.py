@@ -31,6 +31,7 @@ from .ast import (
     TypeIsNode,
 )
 from .paths import PATH_MISSING, JsonValue, get_path
+from .regex import compile_regex
 from .types import resolve_type
 
 _NUMBER_TYPES = (int, float)
@@ -141,20 +142,6 @@ def _between(
         return actual > coerced_low and actual < coerced_high
 
     return False
-
-
-def _parse_regex_flags(flags: str) -> int:
-    parsed = 0
-    for flag in flags:
-        if flag == "i":
-            parsed |= re.IGNORECASE
-        elif flag == "m":
-            parsed |= re.MULTILINE
-        elif flag == "s":
-            parsed |= re.DOTALL
-        elif flag == "x":
-            parsed |= re.VERBOSE
-    return parsed
 
 
 def _extract_candidate_type_name(actual: JsonValue) -> str | None:
@@ -273,8 +260,11 @@ def matches(doc: dict[str, JsonValue], query: Query) -> bool:
     if isinstance(query, RegexNode):
         if not isinstance(actual, str):
             return False
-        flags = _parse_regex_flags(query.flags)
-        pattern = re.compile(query.pattern, flags)
+        pattern = compile_regex(
+            pattern=query.pattern,
+            flags=query.flags,
+            path=query.path,
+        )
         return pattern.search(actual) is not None
 
     return False

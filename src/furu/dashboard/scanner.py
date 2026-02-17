@@ -24,8 +24,10 @@ from ..query.ast import (
     Scalar,
     StartswithNode,
 )
+from ..query.dsl import QueryExpr
 from ..query.eval import matches
 from ..query.paths import JsonValue as QueryJsonValue
+from ..query.validate import validate_query
 from ..schema import schema_key_from_cls, schema_key_from_metadata_raw
 from ..serialization.serializer import JsonValue
 from ..storage import MetadataManager, MigrationManager, MigrationRecord, StateAttempt
@@ -300,6 +302,14 @@ def _and_queries(left: QueryAst | None, right: QueryAst | None) -> QueryAst | No
     return AndNode(args=args)
 
 
+def _normalize_query(query: QueryAst | QueryExpr | None) -> QueryAst | None:
+    if query is None:
+        return None
+    if isinstance(query, QueryExpr):
+        return query.to_ast()
+    return query
+
+
 def compile_legacy_filters_to_query(
     *,
     result_status: str | None = None,
@@ -373,7 +383,7 @@ def scan_experiments(
     migration_policy: str | None = None,
     schema: str = "current",
     view: str = "resolved",
-    query: QueryAst | None = None,
+    query: QueryAst | QueryExpr | None = None,
 ) -> list[ExperimentSummary]:
     """
     Scan the filesystem for Furu experiments.
@@ -392,7 +402,7 @@ def scan_experiments(
         config_filter: Filter by config field in format "field.path=value"
         schema: Filter by schema status (current, stale, any)
         view: "resolved" uses alias metadata; "original" uses original metadata/state.
-        query: Optional query AST to evaluate against experiment docs.
+        query: Optional query AST or DSL expression to evaluate against docs.
 
     Returns:
         List of experiment summaries, sorted by updated_at (newest first)
@@ -424,7 +434,9 @@ def scan_experiments(
         migration_policy=migration_policy,
         schema=schema,
     )
-    effective_query = _and_queries(legacy_query, query)
+    effective_query = _and_queries(legacy_query, _normalize_query(query))
+    if effective_query is not None:
+        validate_query(effective_query)
 
     for root in iter_roots():
         for experiment_dir in find_experiment_dirs(root):

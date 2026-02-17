@@ -101,14 +101,13 @@ async def search_experiments(request: ExperimentSearchRequest) -> ExperimentList
     """Search experiments using a JSON query AST payload."""
     try:
         validate_query(request.query)
+        experiments = scan_experiments(
+            schema=request.schema_,
+            view=request.view,
+            query=request.query,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    experiments = scan_experiments(
-        schema=request.schema_,
-        view=request.view,
-        query=request.query,
-    )
 
     total = len(experiments)
     experiments = experiments[request.offset : request.offset + request.limit]

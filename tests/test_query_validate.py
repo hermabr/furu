@@ -1,6 +1,6 @@
 import pytest
 
-from furu.query import AndNode, EqNode, NotNode, validate_query
+from furu.query import AndNode, EqNode, NotNode, RegexNode, validate_query
 
 
 def test_validate_query_accepts_small_tree() -> None:
@@ -31,3 +31,17 @@ def test_validate_query_rejects_depth_limit() -> None:
 
     with pytest.raises(ValueError, match="max depth"):
         validate_query(query, max_node_count=10, max_depth=3)
+
+
+def test_validate_query_rejects_invalid_regex_pattern() -> None:
+    query = RegexNode(path="exp.namespace", pattern="(", flags="")
+
+    with pytest.raises(ValueError, match="invalid regex pattern"):
+        validate_query(query)
+
+
+def test_validate_query_rejects_unsupported_regex_flags() -> None:
+    query = RegexNode(path="exp.namespace", pattern="^dashboard", flags="iz")
+
+    with pytest.raises(ValueError, match="unsupported regex flag"):
+        validate_query(query)

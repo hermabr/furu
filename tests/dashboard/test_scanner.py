@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from furu.dashboard.scanner import (
     compile_legacy_filters_to_query,
     get_experiment_dag,
@@ -552,8 +554,8 @@ def test_scan_experiments_combined_filters_no_match(temp_furu_root: Path) -> Non
 
 
 def test_scan_experiments_query_filter(populated_furu_root: Path) -> None:
-    """Test filtering with query AST directly."""
-    results = scan_experiments(query=(Q.exp.result_status == "success").to_ast())
+    """Test filtering with query DSL expression directly."""
+    results = scan_experiments(query=(Q.exp.result_status == "success"))
     assert len(results) == 3
     assert {exp.result_status for exp in results} == {"success"}
 
@@ -597,6 +599,24 @@ def test_scan_experiments_query_type_filter(temp_furu_root: Path) -> None:
     data_a_results = scan_experiments(query=Q.config.data.type_is(DataA).to_ast())
     assert len(data_a_results) == 1
     assert data_a_results[0].furu_hash == train_a.furu_hash
+
+
+def test_scan_experiments_rejects_too_deep_query_filter(
+    populated_furu_root: Path,
+) -> None:
+    """Test deep query ASTs are rejected by scanner validation."""
+    query = Q.exp.result_status == "success"
+    for _ in range(40):
+        query = ~query
+
+    with pytest.raises(ValueError, match="max depth"):
+        scan_experiments(query=query)
+
+
+def test_scan_experiments_rejects_invalid_regex_query(temp_furu_root: Path) -> None:
+    """Test invalid regex filters fail with explicit validation errors."""
+    with pytest.raises(ValueError, match="invalid regex pattern"):
+        scan_experiments(query=Q.exp.namespace.regex("(", flags=""))
 
 
 def test_compile_legacy_filters_to_query_config_value_parsing() -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from .ast import AndNode, NotNode, OrNode, Query
+from .ast import AndNode, NotNode, OrNode, Query, RegexNode
+from .regex import compile_regex
 
 _MAX_QUERY_NODES = 200
 _MAX_QUERY_DEPTH = 30
@@ -30,6 +31,13 @@ def validate_query(
             raise ValueError(f"query exceeds max node count ({max_node_count})")
         if depth > max_depth:
             raise ValueError(f"query exceeds max depth ({max_depth})")
+
+        if isinstance(current, RegexNode):
+            compile_regex(
+                pattern=current.pattern,
+                flags=current.flags,
+                path=current.path,
+            )
 
         for child in _child_nodes(current):
             stack.append((child, depth + 1))

@@ -1,3 +1,5 @@
+import pytest
+
 from furu.query import (
     BetweenNode,
     ContainsNode,
@@ -13,6 +15,7 @@ from furu.query import (
     MissingNode,
     NeNode,
     NinNode,
+    RegexNode,
     RelatedToNode,
     StartswithNode,
     TypeIsNode,
@@ -154,3 +157,23 @@ def test_matches_type_relationship_nodes() -> None:
     )
     assert matches(doc, IsANode(path="config.obj", type=child_type_name)) is True
     assert matches(doc, RelatedToNode(path="config.obj", type=base_type_name)) is True
+
+
+def test_matches_type_relationship_nodes_with_unknown_type_returns_false() -> None:
+    doc = {
+        "config": {
+            "obj": {
+                "__class__": "doesnotexist.module.Unknown",
+            }
+        }
+    }
+
+    assert matches(doc, IsANode(path="config.obj", type="builtins.int")) is False
+    assert matches(doc, RelatedToNode(path="config.obj", type="builtins.int")) is False
+
+
+def test_matches_regex_node_raises_for_invalid_pattern() -> None:
+    doc = {"exp": {"namespace": "dashboard.pipelines.TrainModel"}}
+
+    with pytest.raises(ValueError, match="invalid regex pattern"):
+        matches(doc, RegexNode(path="exp.namespace", pattern="(", flags=""))

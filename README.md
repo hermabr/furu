@@ -495,7 +495,7 @@ query = (
     & Q.config.lr.between(1e-4, 1e-2, inclusive="both")
 )
 
-results = scan_experiments(query=query.to_ast(), schema="current", view="resolved")
+results = scan_experiments(query=query, schema="current", view="resolved")
 ```
 
 The dashboard also supports posting the same JSON AST to

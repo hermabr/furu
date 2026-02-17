@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import importlib
-import importlib.util
 from functools import cache
+from types import ModuleType
 
 
 class _Missing:
@@ -18,18 +18,22 @@ def _normalize_type_name(type_name: str) -> str:
     return type_name
 
 
-def _resolve_module_prefix(type_name: str) -> tuple[str, list[str]] | None:
+def _import_module(module_name: str) -> ModuleType | None:
+    try:
+        return importlib.import_module(module_name)
+    except (ImportError, ModuleNotFoundError):
+        return None
+
+
+def _resolve_module_prefixes(type_name: str) -> list[tuple[str, list[str]]]:
+    prefixes: list[tuple[str, list[str]]] = []
     parts = type_name.split(".")
     for index in range(len(parts) - 1, 0, -1):
         module_name = ".".join(parts[:index])
         if module_name == "":
             continue
-        module_spec = importlib.util.find_spec(module_name)
-        if module_spec is None:
-            continue
-        attrs = parts[index:]
-        return module_name, attrs
-    return None
+        prefixes.append((module_name, parts[index:]))
+    return prefixes
 
 
 @cache
@@ -38,17 +42,18 @@ def resolve_type(type_name: str) -> type | None:
     if normalized_type_name == "":
         return None
 
-    module_prefix = _resolve_module_prefix(normalized_type_name)
-    if module_prefix is None:
-        return None
+    module_prefixes = _resolve_module_prefixes(normalized_type_name)
+    for module_name, attrs in module_prefixes:
+        value = _import_module(module_name)
+        if value is None:
+            continue
 
-    module_name, attrs = module_prefix
-    value = importlib.import_module(module_name)
-    for attr in attrs:
-        value = getattr(value, attr, _MISSING)
-        if value is _MISSING:
-            return None
+        for attr in attrs:
+            value = getattr(value, attr, _MISSING)
+            if value is _MISSING:
+                break
+        else:
+            if isinstance(value, type):
+                return value
 
-    if isinstance(value, type):
-        return value
     return None
