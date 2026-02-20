@@ -1,6 +1,15 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useState } from "react";
-import { useListExperimentsApiExperimentsGet } from "../api/endpoints/api/api";
+import { useEffect, useState } from "react";
+import {
+  useListExperimentsApiExperimentsGet,
+  useSearchExperimentsApiExperimentsSearchPost,
+} from "../api/endpoints/api/api";
+import type {
+  ExperimentList,
+  ExperimentSearchRequestQuery,
+  ExperimentSearchRequestSchema,
+  ExperimentSearchRequestView,
+} from "../api/models";
 import { StatusBadge } from "../components/StatusBadge";
 import { EmptyState } from "../components/EmptyState";
 import { Button } from "../components/ui/button";
@@ -52,25 +61,86 @@ function ExperimentsPage() {
   const [startedAfter, setStartedAfter] = useState("");
   const [startedBefore, setStartedBefore] = useState("");
   const [configFilter, setConfigFilter] = useState("");
+  const [advancedQueryJson, setAdvancedQueryJson] = useState("");
+  const [appliedAdvancedQuery, setAppliedAdvancedQuery] =
+    useState<ExperimentSearchRequestQuery | null>(null);
+  const [advancedParseError, setAdvancedParseError] = useState<string | null>(
+    null,
+  );
+  const [advancedServerError, setAdvancedServerError] = useState<string | null>(
+    null,
+  );
+  const [advancedData, setAdvancedData] = useState<ExperimentList | null>(null);
   const [viewMode, setViewMode] = useState("resolved");
   const [page, setPage] = useState(0);
   const limit = 20;
+  const isAdvancedMode = appliedAdvancedQuery !== null;
 
-  const { data, isLoading, error } = useListExperimentsApiExperimentsGet({
-    result_status: resultFilter || undefined,
-    attempt_status: attemptFilter || undefined,
-    namespace: namespaceFilter || undefined,
-    backend: backendFilter || undefined,
-    hostname: hostnameFilter || undefined,
-    user: userFilter || undefined,
-    schema: schemaFilter,
-    started_after: startedAfter || undefined,
-    started_before: startedBefore || undefined,
-    config_filter: configFilter || undefined,
-    view: viewMode,
+  const {
+    data: legacyData,
+    isLoading: isLegacyLoading,
+    error: legacyError,
+  } = useListExperimentsApiExperimentsGet(
+    {
+      result_status: resultFilter || undefined,
+      attempt_status: attemptFilter || undefined,
+      namespace: namespaceFilter || undefined,
+      backend: backendFilter || undefined,
+      hostname: hostnameFilter || undefined,
+      user: userFilter || undefined,
+      schema: schemaFilter,
+      started_after: startedAfter || undefined,
+      started_before: startedBefore || undefined,
+      config_filter: configFilter || undefined,
+      view: viewMode,
+      limit,
+      offset: page * limit,
+    },
+    { query: { enabled: !isAdvancedMode } },
+  );
+
+  const searchMutation = useSearchExperimentsApiExperimentsSearchPost();
+  const { mutateAsync: searchExperiments, isPending: isSearchPending } =
+    searchMutation;
+
+  useEffect(() => {
+    if (!isAdvancedMode || appliedAdvancedQuery === null) {
+      setAdvancedData(null);
+      return;
+    }
+
+    setAdvancedServerError(null);
+    searchExperiments({
+        data: {
+          query: appliedAdvancedQuery,
+          schema: schemaFilter as ExperimentSearchRequestSchema,
+          view: viewMode as ExperimentSearchRequestView,
+          limit,
+          offset: page * limit,
+        },
+      })
+      .then((result) => {
+        setAdvancedData(result);
+      })
+      .catch((error: unknown) => {
+        setAdvancedData(null);
+        setAdvancedServerError(getErrorMessage(error));
+      });
+  }, [
+    appliedAdvancedQuery,
+    isAdvancedMode,
     limit,
-    offset: page * limit,
-  });
+    page,
+    schemaFilter,
+    searchExperiments,
+    viewMode,
+  ]);
+
+  const data = isAdvancedMode ? advancedData : legacyData;
+  const isLoading = isAdvancedMode ? isSearchPending : isLegacyLoading;
+  const hasError = isAdvancedMode
+    ? advancedServerError !== null
+    : legacyError !== null;
 
   const totalPages = data ? Math.ceil(data.total / limit) : 0;
 
@@ -85,6 +155,39 @@ function ExperimentsPage() {
     setStartedAfter("");
     setStartedBefore("");
     setConfigFilter("");
+    setAdvancedQueryJson("");
+    setAppliedAdvancedQuery(null);
+    setAdvancedParseError(null);
+    setAdvancedServerError(null);
+    setPage(0);
+  };
+
+  const applyAdvancedQuery = () => {
+    const raw = advancedQueryJson.trim();
+    if (raw.length === 0) {
+      setAppliedAdvancedQuery(null);
+      setAdvancedParseError(null);
+      setAdvancedServerError(null);
+      setPage(0);
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as ExperimentSearchRequestQuery;
+      setAppliedAdvancedQuery(parsed);
+      setAdvancedParseError(null);
+      setAdvancedServerError(null);
+      setPage(0);
+    } catch (error: unknown) {
+      setAdvancedParseError(getErrorMessage(error));
+    }
+  };
+
+  const clearAdvancedQuery = () => {
+    setAdvancedQueryJson("");
+    setAppliedAdvancedQuery(null);
+    setAdvancedParseError(null);
+    setAdvancedServerError(null);
     setPage(0);
   };
 
@@ -98,7 +201,8 @@ function ExperimentsPage() {
     schemaFilter !== "current" ||
     startedAfter ||
     startedBefore ||
-    configFilter;
+    configFilter ||
+    advancedQueryJson;
 
   return (
     <div className="max-w-7xl mx-auto">
@@ -337,6 +441,42 @@ function ExperimentsPage() {
                 }}
               />
             </div>
+
+            <div className="xl:col-span-4">
+              <label className="mb-1 block text-sm text-muted-foreground">
+                Advanced Query (JSON AST)
+              </label>
+              <textarea
+                value={advancedQueryJson}
+                onChange={(e) => setAdvancedQueryJson(e.target.value)}
+                rows={5}
+                placeholder='{"op":"eq","path":"exp.result_status","value":"success"}'
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+              />
+              <div className="mt-2 flex items-center gap-2">
+                <Button variant="secondary" size="sm" onClick={applyAdvancedQuery}>
+                  Apply advanced query
+                </Button>
+                <Button variant="ghost" size="sm" onClick={clearAdvancedQuery}>
+                  Clear advanced query
+                </Button>
+                {isAdvancedMode && (
+                  <span className="text-xs text-muted-foreground">
+                    Using POST /api/experiments/search
+                  </span>
+                )}
+              </div>
+              {advancedParseError && (
+                <p className="mt-2 text-sm text-destructive">
+                  Invalid JSON query: {advancedParseError}
+                </p>
+              )}
+              {advancedServerError && (
+                <p className="mt-2 text-sm text-destructive">
+                  Search failed: {advancedServerError}
+                </p>
+              )}
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -359,7 +499,7 @@ function ExperimentsPage() {
             Loading experiments...
           </CardContent>
         </Card>
-      ) : error ? (
+      ) : hasError ? (
         <Card>
           <CardContent className="p-8 text-center text-destructive">
             Error loading experiments. Is the API running?
@@ -477,4 +617,11 @@ function ExperimentsPage() {
       )}
     </div>
   );
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return "Unknown error";
 }

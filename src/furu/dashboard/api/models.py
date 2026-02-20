@@ -1,9 +1,10 @@
 """Pydantic models for the Dashboard API."""
 
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
+from ...query.ast import Query as QueryAst
 from ...storage import StateAttempt
 
 
@@ -80,6 +81,21 @@ class ExperimentList(BaseModel):
 
     experiments: list[ExperimentSummary]
     total: int
+
+
+class ExperimentSearchRequest(BaseModel):
+    """Request payload for advanced experiment search."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    query: QueryAst
+    schema_: Literal["current", "stale", "any"] = Field(
+        default="current",
+        alias="schema",
+    )
+    view: Literal["resolved", "original"] = "resolved"
+    limit: int = Field(default=100, ge=1, le=1000)
+    offset: int = Field(default=0, ge=0)
 
 
 class StatusCount(BaseModel):

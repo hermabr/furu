@@ -1,0 +1,47 @@
+# plans/query/query-plan/00-index.md — v1 index, tracking, and implementation order
+
+> This file is the **single tracker** for query/filtering v1 implementation.
+> Each feature has a dedicated subplan with its own checklist + progress log.
+
+## Quick navigation
+- 01-query-core.md — AST schema + path resolver + evaluator + type ops
+- 02-python-dsl.md — `Q` DSL that compiles to AST
+- 03-scanner-integration.md — integrate query into `scan_experiments` + compile legacy filters
+- 04-api.md — POST search endpoint + models
+- 05-dashboard-frontend.md — minimal advanced filter support
+- 06-tests-and-docs.md — tests + docs + examples
+
+## Recommended implementation order
+1. Query core (AST + eval) (01)
+2. Python DSL (02)
+3. Scanner integration (03)
+4. API endpoint (04)
+5. Frontend wiring (05)
+6. Tests + docs (06)
+
+## Global milestone checklist
+- [x] M0: Add `src/furu/query/` package with AST + evaluator + type ops
+- [x] M1: Add Python DSL `Q` and export it cleanly
+- [x] M2: Integrate query into `scan_experiments` while preserving old filters
+- [x] M3: Add `POST /api/experiments/search` (dashboard)
+- [x] M4: Add minimal dashboard UI support to submit an AST query
+- [x] M5: Add test coverage for query eval, DSL, scanner, API
+- [x] M6: Add docs/examples for Python + dashboard usage
+
+## Progress Log (append-only)
+
+| Date | Area | Summary |
+|---|---|---|
+| 2026-02-14 | — | (start) |
+| 2026-02-15 | Query core | Completed v1 query core package (`ast`, `paths`, `types`, `eval`) plus public exports and query-size validation helper. |
+| 2026-02-15 | Python DSL | Added `src/furu/query/dsl.py` with `Q` root, `FieldRef` operators/methods, and flattened boolean composition, then exported `Q`/`TRUE`/`FALSE` from `furu.query`. |
+| 2026-02-15 | Scanner integration | Added query-aware scanner filtering by compiling legacy non-date filters to AST, evaluating composed query docs in `scan_experiments`, and removing legacy nested-config filter traversal helper. |
+| 2026-02-15 | API endpoint | Added `POST /api/experiments/search` request model + route with query hard-limit validation and pagination, and added dashboard API tests for AST result-status, nested config, and type filters. |
+| 2026-02-15 | Dashboard frontend | Generated frontend API client for search models/endpoints, then added advanced JSON AST query controls to the experiments page with apply/clear behavior, POST search execution, parse/server error display, and pagination-compatible fetching. |
+| 2026-02-15 | Tests + docs | Added core query path/eval tests, expanded scanner query coverage for nested + type filters, documented Python/JSON AST query usage in README, and validated all required make targets. |
+
+## Plan Changes (append-only)
+
+| Date | Change | Why |
+|---|---|---|
+| 2026-02-14 | — | initial |
