@@ -1,0 +1,35 @@
+- [ ] high-level skeleton
+    - [x] doing `class MyCls(Furu[int])` should make it a frozen dataclass with named args
+    - [ ] furu_hash
+    - [ ] schema
+    - [ ] furu config
+    - [ ] state
+- [ ] file/compute locking
+    - [ ] auto make/delete the lock file
+    - [ ] don't allow others to run if file is locked
+    - [ ] heartbeat and waiting
+- [ ] metadata
+    - [ ] basic metadata
+    - [ ] load from metadata
+    - [ ] record the git diff
+    - [ ] support time traveling to a previous experiment
+- [ ] error handling
+    - [ ] capture errors
+    - [ ] make the errors informative
+    - [ ] use rich tracebacks
+- [ ] logging
+    - [ ] log when loading or creating object
+    - [ ] record log in furu_dir
+- [ ] querying/filtering
+- [ ] migration
+- [ ] executor
+    - [ ] local
+    - [ ] slurm workers
+    - [ ] slurm dag
+    - [ ] time traveling executor (maybe i need git worktrees for this?)
+    - [ ] dependencies
+- [ ] furu list
+- [ ] dashboard
+- [ ] mytest-wrapper
+- [ ] for the future
+    - [ ] have method for making the raw data so that we have some sort of tracking
