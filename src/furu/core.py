@@ -1,11 +1,22 @@
 import enum
 import hashlib
 import json
+import types
+import typing
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, fields, is_dataclass
 from functools import cache, cached_property
 from pathlib import Path
-from typing import TYPE_CHECKING, Generic, TypeVar, assert_never
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Generic,
+    TypeVar,
+    assert_never,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 from pydantic import BaseModel as PydanticBaseModel
 from pydantic import JsonValue
@@ -25,10 +36,12 @@ else:
 T = TypeVar("T")
 
 CLASSMARKER = "|class"
+ORIGINMARKER = "|origin"
+ARGSMARKER = "|args"
 
 
 class Furu(_FuruDataclassTransform, Generic[T], ABC):
-    def __init_subclass__(cls, **kwargs: object) -> None:
+    def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
         if cls is Furu:
             return
@@ -58,7 +71,7 @@ class Furu(_FuruDataclassTransform, Generic[T], ABC):
                         return {
                             k: canonicalize(v)
                             for k, v in item.items()  # TODO: make sure i don't need to sort these since i json dump with sort_keys=True
-                            if k == CLASSMARKER or (not k.startswith("_"))
+                            if not k.startswith("_")
                         }
                     else:
                         return {k: canonicalize(v) for k, v in sorted(item.items())}
@@ -69,25 +82,89 @@ class Furu(_FuruDataclassTransform, Generic[T], ABC):
 
         canonical_obj = canonicalize(_to_dict(self))
 
-        json_str = json.dumps(canonical_obj, sort_keys=True, separators=(",", ":"))
+        return _hash_dict_deterministically(canonical_obj)
 
-        return hashlib.blake2s(
-            json_str.encode(),
-            digest_size=10,  # TODO: make this digest size configurable and include a script for estimating likelihood of crashing. right now, i think there is a 1e-08 chance of a collision with 155M items with the same schema and namespace
-        ).hexdigest()
+    @cached_property
+    def furu_schema(self) -> JsonValue:
+        seen = set()
+
+        def _schema_dataclass(tp: type) -> JsonValue:
+            if tp in seen:
+                return {CLASSMARKER: _type_fqn(tp)}
+            seen.add(tp)
+
+            hints = get_type_hints(tp, include_extras=True)
+            return {
+                CLASSMARKER: _type_fqn(tp),
+                "fields": {
+                    f.name: _schema_type(hints.get(f.name, f.type))
+                    for f in sorted(fields(tp), key=lambda f: f.name)
+                    if not f.name.startswith("_")
+                },
+            }
+
+        def _schema_type(tp: Any) -> JsonValue:
+            origin = get_origin(tp)
+
+            if (isinstance(tp, type) and is_dataclass(tp)) or (
+                is_dataclass(origin) and (tp := origin)
+            ):
+                return _schema_dataclass(tp)
+
+            if origin in (typing.Union, types.UnionType):
+                return sorted(
+                    [_schema_type(a) for a in get_args(tp)], key=_stable_json_dump
+                )
+            elif origin is not None:
+                assert (args := get_args(tp))  # TODO: maybe i need to remove this?
+                return {
+                    ORIGINMARKER: _type_fqn(origin),
+                    ARGSMARKER: sorted(
+                        [_schema_type(a) for a in args], key=_stable_json_dump
+                    ),
+                }
+
+            if tp in [str, float, int, bool]:
+                return _type_fqn(tp)
+            elif isinstance(tp, str):
+                return tp
+            elif tp in [list, tuple, dict]:
+                assert get_args(tp) == ()
+                return _type_fqn(tp)
+            elif isinstance(tp, typing.TypeVar):
+                return repr(tp)
+            elif isinstance(tp, enum.EnumType):
+                return _type_fqn(tp)
+            assert False, f"TODO: unexpected type value {tp=}"
+
+        seen = set()
+
+        return _schema_type(type(self))
 
     @cached_property
     def furu_schema_hash(self) -> str:
-        print([x.type for x in fields(self)])
-        return ""
+        return _hash_dict_deterministically(self.furu_schema)
+
+
+def _stable_json_dump(x: JsonValue) -> str:
+    return json.dumps(x, sort_keys=True, separators=(",", ":"))
+
+
+def _hash_dict_deterministically(obj: JsonValue) -> str:
+    json_str = _stable_json_dump(obj)
+
+    return hashlib.blake2s(
+        json_str.encode(),
+        digest_size=10,  # TODO: make this digest size configurable and include a script for estimating likelihood of crashing. right now, i think there is a 1e-08 chance of a collision with 155M items with the same schema and namespace
+    ).hexdigest()
 
 
 def _type_fqn(tp: type) -> str:
     mod = tp.__module__
     qualname = tp.__qualname__
-    if mod == "__main__":
+    if mod == "__main__":  # TODO: allow overwriting
         raise ValueError("Cannot serialize objects from __main__ module")
-    elif "<locals>" in mod:
+    elif "<locals>" in mod:  # TODO: allow overwriting
         raise ValueError("TODO: msg")
     elif "." in qualname:
         raise ValueError("TODO: msg")
@@ -98,9 +175,10 @@ def _type_fqn(tp: type) -> str:
     return f"{mod}.{qualname}"
 
 
-@cache
-def _to_dict(obj: object) -> JsonValue:
-    def assert_correct_dict_key(x: object) -> str:
+# TODO: should i cache this?
+def _to_dict(obj: Any) -> JsonValue:
+
+    def assert_correct_dict_key(x: Any) -> str:
         if not isinstance(x, str):
             raise ValueError("TODO")
         if x == CLASSMARKER:
