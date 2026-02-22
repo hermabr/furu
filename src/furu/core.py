@@ -35,15 +35,14 @@ class Furu[T](_FuruDataclassTransform, ABC):
         if "__dataclass_params__" not in cls.__dict__:
             dataclass(frozen=True, kw_only=True)(cls)
 
-    def get(self) -> T:
+    def cached_or_create(self) -> T:
+        raise NotImplementedError("TODO")
+
+    def load_if_exists(self) -> T:
         raise NotImplementedError("TODO")
 
     @abstractmethod
-    def _create(self) -> T:
-        raise NotImplementedError("TODO")
-
-    @abstractmethod
-    def _load(self) -> T:
+    def _build(self) -> T:
         raise NotImplementedError("TODO")
 
     @cached_property
