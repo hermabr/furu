@@ -11,10 +11,11 @@ from typing import (
 
 from pydantic import JsonValue
 
-from furu.constants import CLASSMARKER
+from furu.constants import ARGSMARKER, CLASSMARKER, ORIGINMARKER
+from furu.utils import _stable_json_dump, fully_qualified_name
 
 
-def _schema_dataclass(tp: type, seen: set[type]) -> JsonValue:
+def schema_dataclass(tp: type, seen: set[type]) -> JsonValue:
     if tp in seen:
         return {CLASSMARKER: fully_qualified_name(tp)}
     seen.add(tp)
@@ -23,28 +24,32 @@ def _schema_dataclass(tp: type, seen: set[type]) -> JsonValue:
     return {
         CLASSMARKER: fully_qualified_name(tp),
         "fields": {
-            f.name: _schema_type(hints.get(f.name, f.type))
+            f.name: schema_type(hints.get(f.name, f.type), seen)
             for f in sorted(fields(tp), key=lambda f: f.name)
             if not f.name.startswith("_")
         },
     }
 
 
-def _schema_type(tp: Any, seen: set[type]) -> JsonValue:
+def schema_type(tp: Any, seen: set[type]) -> JsonValue:
     origin = get_origin(tp)
 
     if (isinstance(tp, type) and is_dataclass(tp)) or (
         is_dataclass(origin) and (tp := origin)
     ):
-        return _schema_dataclass(tp)
+        return schema_dataclass(tp, seen)
 
     if origin in (typing.Union, types.UnionType):
-        return sorted([_schema_type(a) for a in get_args(tp)], key=_stable_json_dump)
+        return sorted(
+            [schema_type(a, seen) for a in get_args(tp)], key=_stable_json_dump
+        )
     elif origin is not None:
         assert (args := get_args(tp))  # TODO: maybe i need to remove this?
         return {
             ORIGINMARKER: fully_qualified_name(origin),
-            ARGSMARKER: sorted([_schema_type(a) for a in args], key=_stable_json_dump),
+            ARGSMARKER: sorted(
+                [schema_type(a, seen) for a in args], key=_stable_json_dump
+            ),
         }
 
     if tp in [str, float, int, bool]:

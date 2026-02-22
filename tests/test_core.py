@@ -7,7 +7,7 @@ from typing import Generic, Literal, TypeVar
 import pytest
 
 from furu import Furu
-from furu.core import to_json
+from furu.serialize import to_json
 
 T = TypeVar("T")
 
@@ -15,10 +15,7 @@ T = TypeVar("T")
 class Node(Furu[int]):
     name: str
 
-    def _create(self):
-        pass
-
-    def _load(self):
+    def _build(self):
         pass
 
 
@@ -31,10 +28,7 @@ class NodePair(Furu[int]):
     node2: WeightedNode
     name: str | int
 
-    def _create(self):
-        pass
-
-    def _load(self):
+    def _build(self):
         pass
 
 
@@ -49,10 +43,7 @@ class A(Furu, Generic[T]):
     w: list[int | float]
     fruit: Fruit = Fruit("banana")
 
-    def _create(self):
-        pass
-
-    def _load(self):
+    def _build(self):
         pass
 
 
@@ -61,10 +52,7 @@ class B(Furu, Generic[T]):
     y: dict[Literal["ney", "hey"] | bool, int]
     t: tuple[int | str, float]
 
-    def _create(self):
-        pass
-
-    def _load(self):
+    def _build(self):
         pass
 
     @classmethod
@@ -274,14 +262,16 @@ def test_furu_schema(make, expected):
     assert make().furu_schema == expected
 
 
-def test_furu_to_dict():
+def test_to_json():
     node_pair = NodePair(
         name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
     )
-    {
+    expected = {
         "|class": "test_core.NodePair",
         "node1": {"|class": "test_core.Node", "name": "y"},
         "node2": {"|class": "test_core.WeightedNode", "name": "z", "weight": 1},
         "name": "x",
     }
-    print(to_json(node_pair))
+    assert to_json(node_pair) == expected
+    assert to_json(node_pair) == node_pair.to_json()
+    assert node_pair.to_json() == expected

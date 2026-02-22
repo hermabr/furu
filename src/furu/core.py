@@ -1,19 +1,17 @@
-import enum
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, fields, is_dataclass
-from functools import cache, cached_property
-from pathlib import Path
+from dataclasses import dataclass
+from functools import cached_property
 from typing import (
     TYPE_CHECKING,
     Any,
+    Self,
 )
 
-from pydantic import BaseModel as PydanticBaseModel
 from pydantic import JsonValue
 
-from furu.constants import CLASSMARKER
-from furu.schema import _schema_type
-from furu.utils import _hash_dict_deterministically, fully_qualified_name
+from furu.schema import schema_type as _schema_type
+from furu.serialize import to_json as _to_json
+from furu.utils import _hash_dict_deterministically
 
 if TYPE_CHECKING:
     from typing_extensions import dataclass_transform
@@ -47,7 +45,13 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     @cached_property
     def furu_hash(self) -> str:
-        return _hash_dict_deterministically(to_json(self))
+        return _hash_dict_deterministically(self.to_json())
+
+    def to_json(self) -> JsonValue:
+        return _to_json(self)
+
+    def from_json(self) -> Self:
+        raise NotImplementedError("TODO")
 
     @cached_property
     def furu_schema(self) -> JsonValue:
@@ -56,43 +60,3 @@ class Furu[T](_FuruDataclassTransform, ABC):
     @cached_property
     def furu_schema_hash(self) -> str:
         return _hash_dict_deterministically(self.furu_schema)
-
-
-@cache
-def to_json(
-    obj: Any,
-) -> JsonValue:
-    # TODO: when writing this to metadata, make sure to escape strings etc
-
-    def assert_correct_dict_key(x: Any) -> str:
-        if not isinstance(x, str):
-            raise ValueError("TODO")
-        if x == CLASSMARKER:
-            raise ValueError("TODO: write error msg")
-        return x
-
-    match obj:
-        case int() | str() | float() | bool():
-            return obj
-        case Path():
-            return str(obj)
-        case list() | tuple():
-            return [to_json(x) for x in obj]
-        case set() | frozenset():
-            return sorted([to_json(x) for x in obj])  # TODO: will this work?
-        case dict():
-            return {assert_correct_dict_key(k): to_json(v) for k, v in obj.items()}
-        case x if is_dataclass(x):
-            return {
-                CLASSMARKER: fully_qualified_name(type(x)),
-                **{f.name: to_json(getattr(x, f.name)) for f in fields(x)},
-            }
-        case PydanticBaseModel():
-            return {
-                CLASSMARKER: fully_qualified_name(type(obj)),
-                **{k: to_json(v) for k, v in obj.model_dump().items()},
-            }
-        case enum.Enum():
-            raise NotImplementedError("TODO")  #  return {"__enum__": _type_fqn(obj)}
-        case _:
-            raise ValueError("unexpected item", obj)  # TODO: explain the error more
