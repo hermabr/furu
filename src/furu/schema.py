@@ -24,7 +24,7 @@ def schema_dataclass(tp: type, seen: set[type]) -> JsonValue:
     return {
         CLASSMARKER: fully_qualified_name(tp),
         "fields": {
-            f.name: schema_type(hints.get(f.name, f.type), seen)
+            f.name: schema_type(hints[f.name], seen)
             for f in sorted(fields(tp), key=lambda f: f.name)
             if not f.name.startswith("_")
         },
