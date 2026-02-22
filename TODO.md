@@ -1,9 +1,10 @@
-- [ ] high-level skeleton
-    - [x] doing `class MyCls(Furu[int])` should make it a frozen dataclass with named args
-    - [ ] furu_hash
-    - [ ] schema
-    - [ ] furu config
-    - [ ] state
+- [x] doing `class MyCls(Furu[int])` should make it a frozen dataclass with named args
+- [x] furu_hash
+    - [ ] add support for adding/hooking in custom items. this means you can define manually how i should walk an object like pydantic, if i didn't already have support for it
+- [x] schema
+    - [ ] add support for adding/hooking in custom items. this means you can define manually how i should walk an object like pydantic, if i didn't already have support for it
+- [ ] furu config
+- [ ] state
 - [ ] manual serializer for saving objects
     - [ ] start with cloudpickle for dev
     - [ ] roll my own, where it auto saves using a pytree-like strategy and allows users to register handlers
@@ -12,7 +13,6 @@
     - [ ] auto make/delete the lock file
     - [ ] don't allow others to run if file is locked
     - [ ] heartbeat and waiting
-- [ ] use a pytree-like approach for walking the config
 - [ ] metadata
     - [ ] basic metadata
     - [ ] load from metadata
