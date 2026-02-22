@@ -38,3 +38,7 @@
 - [ ] mytest-wrapper
 - [ ] for the future
     - [ ] have method for making the raw data so that we have some sort of tracking
+    - [ ] decide if i have too many cached_properties
+    - [ ] decide what should be property vs method
+    - [ ] make sure the public api has very good names
+        - [ ] good names for everything and clear flow of features

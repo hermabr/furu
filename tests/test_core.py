@@ -2,6 +2,7 @@ import types
 from dataclasses import FrozenInstanceError, is_dataclass
 from enum import Enum
 from functools import partial
+from pathlib import Path
 from typing import Generic, Literal, TypeVar
 
 import pytest
@@ -127,7 +128,7 @@ def test_furu_hash_and_dir():
     assert (
         NodePair(
             name="y", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
-        ).furu_schema_hash
+        ).schema_hash
         == "50a9b8624ed259ec38df"
     )
 
@@ -151,31 +152,31 @@ def test_furu_hash_and_dir():
     assert (
         B(
             a=A(x=1, z="123", w=[6, 7]), y={"hey": 123, True: 1}, t=("123", 12)
-        ).furu_schema_hash
+        ).schema_hash
         != B_priv(
             a=A(x=1, z="123", w=[6, 7]),
             y={"hey": 123, True: 1},
             t=("123", 12),
             _h=1,
-        ).furu_schema_hash
+        ).schema_hash
     )
 
-    def qualname_alias(cls: type, *, qualname: str) -> type:
-        alias = type(qualname, (cls,), {"__module__": cls.__module__})
-        alias.__qualname__ = qualname
-        return alias
+    def qualname_alias[T](cls: T, *, ret_typ: type) -> T:
+        alias = type(ret_typ.__qualname__, (cls,), {"__module__": cls.__module__})  # ty: ignore[invalid-base]
+        alias.__qualname__ = ret_typ.__qualname__
+        return alias  # ty: ignore[invalid-return-type]
 
-    B_priv_as_B = qualname_alias(B_priv, qualname="B")
+    B_priv_as_B = qualname_alias(B_priv, ret_typ=B)
     assert (
         B(
             a=A(x=1, z="123", w=[6, 7]), y={"ney": 123, True: 1}, t=("123", 12)
-        ).furu_schema_hash
+        ).schema_hash
         == B_priv_as_B(
             a=A(x=1, z="123", w=[6, 7]),
-            y={"123": 123, True: 1},
+            y={"hey": 123, "ney": 1},
             t=("123", 12),
             _h=1,
-        ).furu_schema_hash
+        ).schema_hash
     )
 
 
@@ -257,9 +258,8 @@ def expected_schema_for_B_like(cls_name: str) -> dict:
         ),
     ],
 )
-def test_furu_schema(make, expected):
-    print(make().furu_schema)
-    assert make().furu_schema == expected
+def test_furu_schema(make: type[Furu], expected):
+    assert make().schema == expected
 
 
 def test_to_json():
@@ -275,3 +275,15 @@ def test_to_json():
     assert to_json(node_pair) == expected
     assert to_json(node_pair) == node_pair.to_json()
     assert node_pair.to_json() == expected
+
+
+def test_furu_dir():
+    node_pair = NodePair(
+        name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
+    )
+    assert node_pair.furu_dir == Path(
+        "furu-data/data/test_core/NodePair/50a9b8624ed259ec38df/997d6e006e7621cff809"
+    )
+    assert node_pair.furu_dir == Path(
+        f"furu-data/data/test_core/NodePair/{node_pair.schema_hash}/{node_pair.furu_hash}"
+    )

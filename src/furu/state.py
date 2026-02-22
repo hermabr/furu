@@ -1,10 +1,10 @@
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class State(BaseModel):
-    pass
+    model_config = ConfigDict(extra="forbid", validate_assignment=True, strict=True)
 
 
 class SuccessState(State):
@@ -13,3 +13,7 @@ class SuccessState(State):
 
 class FailedState(State):
     status: Literal["failed"] = "failed"
+
+
+class RunningState(State):
+    status: Literal["running"] = "running"

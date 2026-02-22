@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from functools import cached_property
+from functools import cache, cached_property
+from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -9,9 +10,10 @@ from typing import (
 
 from pydantic import JsonValue
 
+from furu.config import config
 from furu.schema import schema_type as _schema_type
 from furu.serialize import to_json as _to_json
-from furu.utils import _hash_dict_deterministically
+from furu.utils import _hash_dict_deterministically, fully_qualified_name
 
 if TYPE_CHECKING:
     from typing_extensions import dataclass_transform
@@ -43,20 +45,33 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def _build(self) -> T:
         raise NotImplementedError("TODO")
 
-    @cached_property
-    def furu_hash(self) -> str:
-        return _hash_dict_deterministically(self.to_json())
-
+    @cache
     def to_json(self) -> JsonValue:
         return _to_json(self)
+
+    @cached_property
+    def furu_hash(
+        self,
+    ) -> str:  # TODO: rename this? i prefer not overriding __hash__ to make it explicit that furu hash is different
+        return _hash_dict_deterministically(self.to_json())
 
     def from_json(self) -> Self:
         raise NotImplementedError("TODO")
 
     @cached_property
-    def furu_schema(self) -> JsonValue:
+    def schema(self) -> JsonValue:
         return _schema_type(type(self), set())
 
     @cached_property
-    def furu_schema_hash(self) -> str:
-        return _hash_dict_deterministically(self.furu_schema)
+    def schema_hash(self) -> str:
+        return _hash_dict_deterministically(self.schema)
+
+    @cached_property
+    def furu_dir(self) -> Path:
+        return (
+            config.base_directory
+            / "data"
+            / Path(*fully_qualified_name(type(self)).split("."))
+            / self.schema_hash
+            / self.furu_hash
+        )
