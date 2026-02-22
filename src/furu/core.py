@@ -42,14 +42,13 @@ class Furu[T](_FuruDataclassTransform, ABC):
         raise NotImplementedError("TODO")
 
     @abstractmethod
-    def _build(self) -> T:
+    def _create(self) -> T:
         raise NotImplementedError("TODO")
 
     @cache
     def to_json(
         self,
-    ) -> JsonValue:  # TODO: is there a better name since only the fields are converted to json, not results etc
-        # TODO: decide if this should have the furu_ namespace
+    ) -> JsonValue:
         return _to_json(self)
 
     @classmethod
@@ -57,9 +56,9 @@ class Furu[T](_FuruDataclassTransform, ABC):
         raise NotImplementedError("TODO")
 
     @cached_property
-    def artifact_hash(  # TODO: rename since its confusing that both schema and furu_hash define the dir
+    def artifact_hash(  # TODO: should this be __hash__?
         self,
-    ) -> str:  # TODO: rename this? i prefer not overriding __hash__ to make it explicit that furu hash is different
+    ) -> str:
         return _hash_dict_deterministically(self.to_json())
 
     @cached_property
@@ -73,7 +72,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
         return _hash_dict_deterministically(self.schema)
 
     @cached_property
-    def data_dir(self) -> Path:  # TODO: rename to something like data_dir instead?
+    def data_dir(self) -> Path:
         return (
             config.base_directory
             / "data"
