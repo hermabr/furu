@@ -108,27 +108,27 @@ def test_frozen_dataclass_inheritance():
             obj.a = 3  # ty: ignore[invalid-assignment]
 
 
-def test_furu_hash_and_dir():
+def test_hashes_and_data_dir():
     assert (
         NodePair(
             name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
-        ).furu_hash
+        ).artifact_hash
         == "997d6e006e7621cff809"
     )
 
     assert (
         NodePair(
             name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
-        ).furu_hash
+        ).artifact_hash
         != NodePair(
             name="z", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
-        ).furu_hash
+        ).artifact_hash
     )
 
     assert (
         NodePair(
             name="y", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
-        ).furu_schema_hash
+        ).schema_hash
         == "50a9b8624ed259ec38df"
     )
 
@@ -152,13 +152,13 @@ def test_furu_hash_and_dir():
     assert (
         B(
             a=A(x=1, z="123", w=[6, 7]), y={"hey": 123, True: 1}, t=("123", 12)
-        ).furu_schema_hash
+        ).schema_hash
         != B_priv(
             a=A(x=1, z="123", w=[6, 7]),
             y={"hey": 123, True: 1},
             t=("123", 12),
             _h=1,
-        ).furu_schema_hash
+        ).schema_hash
     )
 
     def qualname_alias[T](cls: T, *, ret_typ: type) -> T:
@@ -170,13 +170,13 @@ def test_furu_hash_and_dir():
     assert (
         B(
             a=A(x=1, z="123", w=[6, 7]), y={"ney": 123, True: 1}, t=("123", 12)
-        ).furu_schema_hash
+        ).schema_hash
         == B_priv_as_B(
             a=A(x=1, z="123", w=[6, 7]),
             y={"hey": 123, "ney": 1},
             t=("123", 12),
             _h=1,
-        ).furu_schema_hash
+        ).schema_hash
     )
 
 
@@ -258,8 +258,8 @@ def expected_schema_for_B_like(cls_name: str) -> dict:
         ),
     ],
 )
-def test_furu_schema(make: type[Furu], expected):
-    assert make().furu_schema == expected
+def test_schema(make: type[Furu], expected):
+    assert make().schema == expected
 
 
 def test_to_json():
@@ -277,13 +277,13 @@ def test_to_json():
     assert node_pair.to_json() == expected
 
 
-def test_furu_dir():
+def test_data_dir():
     node_pair = NodePair(
         name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
     )
-    assert node_pair.furu_dir == Path(
+    assert node_pair.data_dir == Path(
         "furu-data/data/test_core/NodePair/50a9b8624ed259ec38df/997d6e006e7621cff809"
     )
-    assert node_pair.furu_dir == Path(
-        f"furu-data/data/test_core/NodePair/{node_pair.furu_schema_hash}/{node_pair.furu_hash}"
+    assert node_pair.data_dir == Path(
+        f"furu-data/data/test_core/NodePair/{node_pair.schema_hash}/{node_pair.artifact_hash}"
     )

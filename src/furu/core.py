@@ -35,10 +35,10 @@ class Furu[T](_FuruDataclassTransform, ABC):
         if "__dataclass_params__" not in cls.__dict__:
             dataclass(frozen=True, kw_only=True)(cls)
 
-    def cached_or_create(self) -> T:
+    def load_or_create(self) -> T:
         raise NotImplementedError("TODO")
 
-    def load_if_exists(self) -> T:
+    def try_load(self) -> T:
         raise NotImplementedError("TODO")
 
     @abstractmethod
@@ -52,31 +52,36 @@ class Furu[T](_FuruDataclassTransform, ABC):
         # TODO: decide if this should have the furu_ namespace
         return _to_json(self)
 
-    @cached_property
-    def furu_hash(  # TODO: rename since its confusing that both schema and furu_hash define the dir
-        self,
-    ) -> str:  # TODO: rename this? i prefer not overriding __hash__ to make it explicit that furu hash is different
-        return _hash_dict_deterministically(self.to_json())
-
+    @classmethod
     def from_json(self) -> Self:
         raise NotImplementedError("TODO")
 
     @cached_property
-    def furu_schema(
+    def artifact_hash(  # TODO: rename since its confusing that both schema and furu_hash define the dir
         self,
-    ) -> JsonValue:  # TODO: decide if this should be named furu_schema or simply schema
+    ) -> str:  # TODO: rename this? i prefer not overriding __hash__ to make it explicit that furu hash is different
+        return _hash_dict_deterministically(self.to_json())
+
+    @cached_property
+    def schema(
+        self,
+    ) -> JsonValue:
         return _schema_type(type(self), set())
 
     @cached_property
-    def furu_schema_hash(self) -> str:
-        return _hash_dict_deterministically(self.furu_schema)
+    def schema_hash(self) -> str:
+        return _hash_dict_deterministically(self.schema)
 
     @cached_property
-    def furu_dir(self) -> Path:  # TODO: rename to something like data_dir instead?
+    def data_dir(self) -> Path:  # TODO: rename to something like data_dir instead?
         return (
             config.base_directory
             / "data"
             / Path(*fully_qualified_name(type(self)).split("."))
-            / self.furu_schema_hash
-            / self.furu_hash
+            / self.schema_hash
+            / self.artifact_hash
         )
+
+    @cached_property
+    def _internal_furu_dir(self) -> Path:
+        return self.data_dir / ".furu"
