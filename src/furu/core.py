@@ -10,9 +10,6 @@ from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Any,
-    Generic,
-    TypeVar,
-    assert_never,
     get_args,
     get_origin,
     get_type_hints,
@@ -33,14 +30,12 @@ else:
         pass
 
 
-T = TypeVar("T")
-
 CLASSMARKER = "|class"
 ORIGINMARKER = "|origin"
 ARGSMARKER = "|args"
 
 
-class Furu(_FuruDataclassTransform, Generic[T], ABC):
+class Furu[T](_FuruDataclassTransform, ABC):
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
         if cls is Furu:
@@ -61,28 +56,7 @@ class Furu(_FuruDataclassTransform, Generic[T], ABC):
 
     @cached_property
     def furu_hash(self) -> str:
-        def canonicalize(item: JsonValue) -> JsonValue:
-            # TODO: write tests where i try to construct two different objects that are canonicalized the same way
-            match item:
-                case list():
-                    return sorted(canonicalize(x) for x in item)
-                case dict():
-                    if CLASSMARKER in item:
-                        return {
-                            k: canonicalize(v)
-                            for k, v in item.items()  # TODO: make sure i don't need to sort these since i json dump with sort_keys=True
-                            if not k.startswith("_")
-                        }
-                    else:
-                        return {k: canonicalize(v) for k, v in sorted(item.items())}
-                case str() | bool() | int() | float() | None:
-                    return item
-                case x:
-                    assert_never(x)
-
-        canonical_obj = canonicalize(_to_dict(self))
-
-        return _hash_dict_deterministically(canonical_obj)
+        return _hash_dict_deterministically(to_json(self))
 
     @cached_property
     def furu_schema(self) -> JsonValue:
@@ -176,7 +150,13 @@ def _type_fqn(tp: type) -> str:
 
 
 # TODO: should i cache this?
-def _to_dict(obj: Any) -> JsonValue:
+
+
+@cache
+def to_json(
+    obj: Any,
+) -> JsonValue:
+    # TODO: when writing this to metadata, make sure to escape strings etc
 
     def assert_correct_dict_key(x: Any) -> str:
         if not isinstance(x, str):
@@ -190,21 +170,23 @@ def _to_dict(obj: Any) -> JsonValue:
             return obj
         case Path():
             return str(obj)
-        case list() | tuple() | set() | frozenset():
-            return [_to_dict(x) for x in obj]
+        case list() | tuple():
+            return [to_json(x) for x in obj]
+        case set() | frozenset():
+            return sorted([to_json(x) for x in obj])  # TODO: will this work?
         case dict():
-            return {assert_correct_dict_key(k): _to_dict(v) for k, v in obj.items()}
+            return {assert_correct_dict_key(k): to_json(v) for k, v in obj.items()}
         case x if is_dataclass(x):
             return {
                 CLASSMARKER: _type_fqn(type(x)),
-                **{f.name: _to_dict(getattr(x, f.name)) for f in fields(x)},
+                **{f.name: to_json(getattr(x, f.name)) for f in fields(x)},
             }
         case PydanticBaseModel():
             return {
                 CLASSMARKER: _type_fqn(type(obj)),
-                **{k: _to_dict(v) for k, v in obj.model_dump().items()},
+                **{k: to_json(v) for k, v in obj.model_dump().items()},
             }
         case enum.Enum():
             raise NotImplementedError("TODO")  #  return {"__enum__": _type_fqn(obj)}
         case _:
-            raise ValueError("unexpected item", obj)
+            raise ValueError("unexpected item", obj)  # TODO: explain the error more

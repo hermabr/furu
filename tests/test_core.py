@@ -7,6 +7,7 @@ from typing import Generic, Literal, TypeVar
 import pytest
 
 from furu import Furu
+from furu.core import to_json
 
 T = TypeVar("T")
 
@@ -271,3 +272,16 @@ def expected_schema_for_B_like(cls_name: str) -> dict:
 def test_furu_schema(make, expected):
     print(make().furu_schema)
     assert make().furu_schema == expected
+
+
+def test_furu_to_dict():
+    node_pair = NodePair(
+        name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
+    )
+    {
+        "|class": "test_core.NodePair",
+        "node1": {"|class": "test_core.Node", "name": "y"},
+        "node2": {"|class": "test_core.WeightedNode", "name": "z", "weight": 1},
+        "name": "x",
+    }
+    print(to_json(node_pair))
