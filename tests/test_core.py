@@ -16,7 +16,7 @@ T = TypeVar("T")
 class Node(Furu[int]):
     name: str
 
-    def _build(self):
+    def _create(self):
         pass
 
 
@@ -29,7 +29,7 @@ class NodePair(Furu[int]):
     node2: WeightedNode
     name: str | int
 
-    def _build(self):
+    def _create(self):
         pass
 
 
@@ -44,7 +44,7 @@ class A(Furu, Generic[T]):
     w: list[int | float]
     fruit: Fruit = Fruit("banana")
 
-    def _build(self):
+    def _create(self):
         pass
 
 
@@ -53,7 +53,7 @@ class B(Furu, Generic[T]):
     y: dict[Literal["ney", "hey"] | bool, int]
     t: tuple[int | str, float]
 
-    def _build(self):
+    def _create(self):
         pass
 
     @classmethod

@@ -1,6 +1,6 @@
 # furu
 
-> **Note:** `v0.0.x` is alpha and may include breaking changes.
+> **Note:** `v0.0.x` is alpha and may (will) include breaking changes.
 
 ## Installation
 

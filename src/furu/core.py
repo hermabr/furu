@@ -1,3 +1,5 @@
+import os
+import pickle
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import cache, cached_property
@@ -36,10 +38,41 @@ class Furu[T](_FuruDataclassTransform, ABC):
             dataclass(frozen=True, kw_only=True)(cls)
 
     def load_or_create(self) -> T:
-        raise NotImplementedError("TODO")
+        if self._result_path.exists():
+            # TODO: validation that its up to date and valid
+            with open(self._result_path, "rb") as f:
+                return pickle.load(f)
+
+        # TODO: initialize the state
+        # TODO: wrap this in a try/catch
+        self._internal_furu_dir.mkdir(exist_ok=True, parents=True)
+        result = self._create()
+
+        if (
+            tmp_result_path := self._result_path.with_suffix(".tmp.pkl")
+        ).exists():  # clean up old tmp path
+            tmp_result_path.unlink()
+
+        with open(tmp_result_path, "wb") as f:
+            # TODO: maybe it would be more correct to dump to a _tmp file and then rename?
+            pickle.dump(result, f)
+            # TODO: do i need f.flush and os.fsync?
+        os.replace(tmp_result_path, self._result_path)
+
+        return result
 
     def try_load(self) -> T:
-        raise NotImplementedError("TODO")
+        if self._result_path.exists():
+            # TODO: validation that its up to date and valid
+            with open(self._result_path, "rb") as f:
+                return pickle.load(f)
+        raise NotImplementedError(
+            "TODO: decide if i should throw or return error value"
+        )
+
+    @property
+    def _result_path(self) -> Path:
+        return self.data_dir / "result.pkl"
 
     @abstractmethod
     def _create(self) -> T:
