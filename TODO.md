@@ -4,10 +4,15 @@
     - [ ] schema
     - [ ] furu config
     - [ ] state
+- [ ] manual serializer for saving objects
+    - [ ] start with cloudpickle for dev
+    - [ ] roll my own, where it auto saves using a pytree-like strategy and allows users to register handlers
+- [ ] trace code at runtime to find all functions and save/hash their ast
 - [ ] file/compute locking
     - [ ] auto make/delete the lock file
     - [ ] don't allow others to run if file is locked
     - [ ] heartbeat and waiting
+- [ ] use a pytree-like approach for walking the config
 - [ ] metadata
     - [ ] basic metadata
     - [ ] load from metadata

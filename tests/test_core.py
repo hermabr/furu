@@ -1,15 +1,12 @@
 import types
-from ast import excepthandler
-from copy import deepcopy
-from dataclasses import FrozenInstanceError, dataclass, is_dataclass
+from dataclasses import FrozenInstanceError, is_dataclass
 from enum import Enum
 from functools import partial
-from typing import Generic, Literal, TypeVar, get_args, get_origin
+from typing import Generic, Literal, TypeVar
 
 import pytest
 
 from furu import Furu
-from furu.core import CLASSMARKER
 
 T = TypeVar("T")
 
@@ -167,7 +164,10 @@ def test_furu_hash_and_dir():
             a=A(x=1, z="123", w=[6, 7]), y={"hey": 123, True: 1}, t=("123", 12)
         ).furu_schema_hash
         != B_priv(
-            a=A(x=1, z="123", w=[6, 7]), y={"hey": 123, True: 1}, t=("123", 12), _h=1
+            a=A(x=1, z="123", w=[6, 7]),
+            y={"hey": 123, True: 1},
+            t=("123", 12),
+            _h=1,
         ).furu_schema_hash
     )
 
@@ -182,7 +182,10 @@ def test_furu_hash_and_dir():
             a=A(x=1, z="123", w=[6, 7]), y={"ney": 123, True: 1}, t=("123", 12)
         ).furu_schema_hash
         == B_priv_as_B(
-            a=A(x=1, z="123", w=[6, 7]), y={"123": 123, True: 1}, t=("123", 12), _h=1
+            a=A(x=1, z="123", w=[6, 7]),
+            y={"123": 123, True: 1},
+            t=("123", 12),
+            _h=1,
         ).furu_schema_hash
     )
 
