@@ -3,6 +3,7 @@ import os
 import secrets
 import shutil
 import tempfile
+import types
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -22,7 +23,7 @@ class _FuruPytestState:  # TODO: maybe make this auto snapshot the config
 _STATE_KEY = pytest.StashKey[_FuruPytestState]()
 
 
-def _is_furu_pytest_mode_enabled():
+def _is_furu_pytest_mode_enabled() -> bool:
     return os.environ.get("FURU_PYTEST_MODE", "on").strip().lower() != "off"
 
 
@@ -64,7 +65,7 @@ def pytest_unconfigure(config: pytest.Config) -> None:
 def _furu_per_test_base_directory(
     request: pytest.FixtureRequest,
     pytestconfig: pytest.Config,
-):
+) -> types.GeneratorType:
     if not _is_furu_pytest_mode_enabled():
         yield
         return
