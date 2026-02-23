@@ -3,8 +3,7 @@ import os
 import secrets
 import shutil
 import tempfile
-import types
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import datetime
 from pathlib import Path
 
@@ -57,15 +56,20 @@ def pytest_unconfigure(config: pytest.Config) -> None:
     furu_config.directories = state.original_directories
 
     if os.environ.get("FURU_PYTEST_KEEP", "clean").strip().lower() != "keep":
-        # TODO: how do we make sure we delete everything?
-        shutil.rmtree(state.run_directories.data)
+        for field in fields(state.run_directories):
+            path = getattr(state.run_directories, field.name)
+            if not isinstance(path, Path):
+                raise TypeError(
+                    f"Expected Path for run directory '{field.name}', got {type(path).__name__}"
+                )
+            shutil.rmtree(path, ignore_errors=True)
 
 
 @pytest.fixture(autouse=True)
 def _furu_per_test_base_directory(
     request: pytest.FixtureRequest,
     pytestconfig: pytest.Config,
-) -> types.GeneratorType:
+):
     if not _is_furu_pytest_mode_enabled():
         yield
         return
