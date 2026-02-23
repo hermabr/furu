@@ -43,7 +43,6 @@ class Furu[T](_FuruDataclassTransform, ABC):
                 return pickle.load(f)
 
         # TODO: initialize the state
-        # TODO: wrap this in a try/catch
         # TODO: add file locking and keepalive in a different process
         self._internal_furu_dir.mkdir(exist_ok=True, parents=True)
 
