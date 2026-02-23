@@ -8,7 +8,7 @@ from collections.abc import Callable
 from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, overload
+from typing import Literal
 
 from flufl.lock import Lock, NotLockedError, TimeOutError
 
@@ -49,25 +49,28 @@ def _run_compute_fn_and_save[T](
 
 
 def run_safely[T](
-    data_dir: Path,
-    lease_config: LeaseConfig,
+    # data_dir: Path,
     compute_fn: Callable[[], T],
+    *,
+    lockfile_path: Path,
+    result_path: Path,
+    lease_config: LeaseConfig,
     recheck_compute_finished_every_s: float = 0.5,
     # TODO: add a n-retries option
 ) -> ErrorStates | Success:
     # TODO: make the directory for the data and the <data-dir>/.furu
     # TODO: if the gil is busy for more than lease_config.lifetime_s we will lose the lock. move to zig or use multiprocessing. the reason we are not already using multiprocessing is that it is more painful to return the result from the self._create call when we use multiprocessing
-    lock = Lock(
-        str(data_dir / "compute-lock"), lifetime=lease_config.lifetime_s
-    )  # TODO: use the correct compute lock path: <data-dir>/.furu/compute.lock
+    lock = Lock(str(lockfile_path), lifetime=lease_config.lifetime_s)
 
     stop_heartbeat = threading.Event()
     lost = threading.Event()
 
     try:
-        lock.lock(timeout=0)  # TODO:
+        lock.lock(timeout=0)  # TODO:make sure timeout 0 makes sense
     except TimeOutError:
-        raise NotImplementedError("TODO: check if the old lease is expired")
+        raise NotImplementedError(
+            "TODO: wait for the object to finish and return/read a copy for some time, die if you wait for too long and check if the old lease is expired (should be automatic)"
+        )
 
     def heartbeat() -> None:
         while not stop_heartbeat.wait(lease_config.refresh_every_s):
@@ -81,9 +84,8 @@ def run_safely[T](
     heartbeat_thread = threading.Thread(target=heartbeat, daemon=True)
     heartbeat_thread.start()
 
-    result_path = data_dir / "result.pkl"  # TODO: compute this correctly
-    tmp_result_path = (
-        data_dir / f"result.{os.getpid()}.{time.time_ns()}.pkl.tmp"
+    tmp_result_path = result_path.with_suffix(
+        f"{os.getpid()}.{time.time_ns()}.pkl.tmp"
     )  # TODO: compute this correctly
 
     outcome: Future[T] = Future()
@@ -94,7 +96,7 @@ def run_safely[T](
             "compute_fn": compute_fn,
             "outcome": outcome,
         },
-        name=f"task:{data_dir.name}",
+        name=f"task:{result_path.parent.name}",
         daemon=True,
     )
     worker_thread.start()
