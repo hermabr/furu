@@ -106,6 +106,8 @@ def run_with_lease_and_pickle_result[T](
     finally:
         stop_lease_heartbeat.set()
 
+        # TODO: this doesn't actually kill the heartbeat thread
+
         if staged_result_path.exists():
             raise NotImplementedError("TODO: i don't think this can ever happen?")
 
