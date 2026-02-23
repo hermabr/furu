@@ -108,8 +108,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
     @cached_property
     def data_dir(self) -> Path:
         return (
-            config.base_directory
-            / "data"
+            config.directories.data
             / Path(*fully_qualified_name(type(self)).split("."))
             / self.schema_hash
             / self.artifact_hash

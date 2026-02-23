@@ -8,6 +8,7 @@ from typing import Generic, Literal, TypeVar
 import pytest
 
 from furu import Furu
+from furu.config import config
 from furu.serialize import to_json
 
 T = TypeVar("T")
@@ -281,9 +282,17 @@ def test_data_dir():
     node_pair = NodePair(
         name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
     )
-    assert node_pair.data_dir == Path(
-        "furu-data/data/test_core/NodePair/50a9b8624ed259ec38df/997d6e006e7621cff809"
+    assert node_pair.data_dir == (
+        config.directories.data
+        / "test_core"
+        / "NodePair"
+        / "50a9b8624ed259ec38df"
+        / "997d6e006e7621cff809"
     )
     assert node_pair.data_dir == Path(
-        f"furu-data/data/test_core/NodePair/{node_pair.schema_hash}/{node_pair.artifact_hash}"
+        config.directories.data
+        / "test_core"
+        / "NodePair"
+        / node_pair.schema_hash
+        / node_pair.artifact_hash
     )
