@@ -62,6 +62,9 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
         return result
 
+    def exists(self) -> bool:
+        return self._result_path.exists()
+
     def try_load(self) -> T:
         if self._result_path.exists():
             # TODO: validation that its up to date and valid

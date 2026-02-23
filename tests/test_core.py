@@ -1,5 +1,5 @@
 import types
-from dataclasses import FrozenInstanceError, is_dataclass
+from dataclasses import FrozenInstanceError, is_dataclass, replace
 from enum import Enum
 from functools import partial
 from pathlib import Path
@@ -14,24 +14,40 @@ from furu.serialize import to_json
 T = TypeVar("T")
 
 
-class Node(Furu[int]):
+class Node(Furu[str]):
     name: str
 
-    def _create(self):
-        pass
+    def _create(self) -> str:
+        return f"Node({self.name})"
 
 
 class WeightedNode(Node):
     weight: float
 
+    def _create(self) -> str:
+        return f"WNode({self.name}:{self.weight})"
 
-class NodePair(Furu[int]):
+
+class NodePair(Furu[dict]):
     node1: Node
     node2: WeightedNode
     name: str | int
 
-    def _create(self):
-        pass
+    def _create(self) -> dict:
+        return {
+            "node1": self.node1.load_or_create(),
+            "node2": self.node2.load_or_create(),
+            "name": self.name,
+        }
+
+
+class RandomObj(Furu[float]):
+    id: int
+
+    def _create(self) -> float:
+        import random
+
+        return random.random()
 
 
 class Fruit(Enum):
@@ -296,3 +312,28 @@ def test_data_dir():
         / node_pair.schema_hash
         / node_pair.artifact_hash
     )
+
+
+def test_create_object_and_exists():
+    node_pair = NodePair(
+        name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
+    )
+    assert not node_pair.exists()
+    for i in range(3):
+        assert node_pair.load_or_create() == {
+            "node1": "Node(y)",
+            "node2": "WNode(z:1)",
+            "name": "x",
+        }
+    assert node_pair.exists()
+    assert not replace(node_pair, name="y").exists()
+
+
+def test_creating_and_loading_random_result_furu_obj():
+    n_ids = 5
+    results = {
+        obj_id: [RandomObj(id=obj_id).load_or_create() for _ in range(3)]
+        for obj_id in range(n_ids)
+    }
+    assert all(len(set(values)) == 1 for values in results.values())
+    assert len({values[0] for values in results.values()}) == n_ids
