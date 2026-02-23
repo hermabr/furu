@@ -3,12 +3,8 @@
     - [ ] add support for adding/hooking in custom items. this means you can define manually how i should walk an object like pydantic, if i didn't already have support for it
 - [x] schema
     - [ ] add support for adding/hooking in custom items. this means you can define manually how i should walk an object like pydantic, if i didn't already have support for it
-- [ ] furu config
+- [x] furu config
 - [ ] state
-- [ ] manual serializer for saving objects
-    - [ ] start with cloudpickle for dev
-    - [ ] roll my own, where it auto saves using a pytree-like strategy and allows users to register handlers
-- [ ] trace code at runtime to find all functions and save/hash their ast
 - [ ] file/compute locking
     - [ ] auto make/delete the lock file
     - [ ] don't allow others to run if file is locked
@@ -18,6 +14,10 @@
     - [ ] load from metadata
     - [ ] record the git diff
     - [ ] support time traveling to a previous experiment
+- [ ] manual serializer for saving objects
+    - [ ] start with cloudpickle for dev
+    - [ ] roll my own, where it auto saves using a pytree-like strategy and allows users to register handlers
+- [ ] trace code at runtime to find all functions and save/hash their ast
 - [ ] error handling
     - [ ] capture errors
     - [ ] make the errors informative
@@ -25,7 +25,6 @@
 - [ ] logging
     - [ ] log when loading or creating object
     - [ ] record log in furu_dir
-- [ ] querying/filtering
 - [ ] migration
 - [ ] executor
     - [ ] local
@@ -34,6 +33,9 @@
     - [ ] time traveling executor (maybe i need git worktrees for this?)
     - [ ] dependencies
 - [ ] furu list
+    - [ ] decide if i need this
+    - [ ] check if i'm able to send the name to this
+- [ ] querying/filtering
 - [ ] dashboard
 - [ ] mytest-wrapper
 - [ ] for the future
