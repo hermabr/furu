@@ -1,5 +1,4 @@
 # TODO: this is the first iteration of this file, but it has multiple errors and footguns, such as the gil being busy for more than LeaseConfig.lifetime_s or the heartbeat thread losing the lock but not notifying/killing the worker. i will either move this to zig or rewrite it at some point
-
 import os
 import pickle
 import threading
@@ -7,35 +6,32 @@ import time
 from collections.abc import Callable
 from concurrent.futures import Future
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
 from flufl.lock import Lock, NotLockedError, TimeOutError
 
+from furu.utils import Ok
 
-@dataclass(frozen=True, slots=True, kw_only=True)
-class Success[T]:
-    result: T
-
-
-type ErrorStates = Literal["lost-lock", "worker-failed", "missing-tmp"]
+type LeaseErrorStates = Literal["lost-lock", "worker-failed", "missing-tmp"]
 
 
 @dataclass(frozen=True, slots=True)
 class LeaseConfig:
-    lifetime_s: int = 120
-    refresh_every_s: int = 15
+    lease_ttl_s: int = 120
+    review_interval_s: int = 15
 
 
-def _run_compute_fn_and_save[T](
+def _compute_and_stage_pickle_result[T](
     *,
-    tmp_path: Path,
+    staged_result_path: Path,
     compute_fn: Callable[[], T],
-    outcome: Future[T],
+    worker_result: Future[T],
 ):
     try:
         result = compute_fn()
-        with tmp_path.open("wb") as f:
+        with staged_result_path.open("wb") as f:
             pickle.dump(
                 result,
                 f,
@@ -43,58 +39,59 @@ def _run_compute_fn_and_save[T](
             f.flush()  # TODO: Do i need this and the os.fsync?
             os.fsync(f.fileno())
     except BaseException as e:
-        outcome.set_exception(e)
+        worker_result.set_exception(e)
     else:
-        outcome.set_result(result)
+        worker_result.set_result(result)
 
 
-def run_safely[T](
+def run_with_lease_and_pickle_result[T](
     # data_dir: Path,
     compute_fn: Callable[[], T],
     *,
-    lockfile_path: Path,
+    lock_path: Path,
     result_path: Path,
-    lease_config: LeaseConfig,
-    recheck_compute_finished_every_s: float = 0.5,
+    lease_config: LeaseConfig = LeaseConfig(),
+    poll_interval_s: float = 0.5,
     # TODO: add a n-retries option
-) -> ErrorStates | Success:
+) -> Ok | LeaseErrorStates:
     # TODO: make the directory for the data and the <data-dir>/.furu
     # TODO: if the gil is busy for more than lease_config.lifetime_s we will lose the lock. move to zig or use multiprocessing. the reason we are not already using multiprocessing is that it is more painful to return the result from the self._create call when we use multiprocessing
-    lock = Lock(str(lockfile_path), lifetime=lease_config.lifetime_s)
+    file_lock = Lock(str(lock_path), lifetime=lease_config.lease_ttl_s)
 
-    stop_heartbeat = threading.Event()
-    lost = threading.Event()
+    stop_lease_heartbeat = threading.Event()
+    lease_lost = threading.Event()
 
     try:
-        lock.lock(timeout=0)  # TODO:make sure timeout 0 makes sense
+        file_lock.lock(timeout=0)  # TODO:make sure timeout 0 makes sense
     except TimeOutError:
         raise NotImplementedError(
             "TODO: wait for the object to finish and return/read a copy for some time, die if you wait for too long and check if the old lease is expired (should be automatic)"
         )
 
-    def heartbeat() -> None:
-        while not stop_heartbeat.wait(lease_config.refresh_every_s):
+    def review_lease_loop() -> None:
+        while not stop_lease_heartbeat.wait(lease_config.review_interval_s):
             try:
-                lock.refresh()
+                file_lock.refresh()
             except NotLockedError:
-                lost.set()
-                stop_heartbeat.set()
+                lease_lost.set()
+                stop_lease_heartbeat.set()
                 return  # TODO: How do i fail/throw correctly here?
 
-    heartbeat_thread = threading.Thread(target=heartbeat, daemon=True)
-    heartbeat_thread.start()
+    lease_heartbeat_thread = threading.Thread(target=review_lease_loop, daemon=True)
+    lease_heartbeat_thread.start()
 
-    tmp_result_path = result_path.with_suffix(
-        f"{os.getpid()}.{time.time_ns()}.pkl.tmp"
+    now = datetime.now()
+    staged_result_path = result_path.with_suffix(
+        f".{os.getpid()}-{now:%y%m%d_%H-%M-%S}.pkl.tmp"
     )  # TODO: compute this correctly
 
-    outcome: Future[T] = Future()
+    worker_result: Future[T] = Future()
     worker_thread = threading.Thread(
-        target=_run_compute_fn_and_save,
+        target=_compute_and_stage_pickle_result,
         kwargs={
-            "tmp_path": tmp_result_path,
+            "staged_result_path": staged_result_path,
             "compute_fn": compute_fn,
-            "outcome": outcome,
+            "worker_result": worker_result,
         },
         name=f"task:{result_path.parent.name}",
         daemon=True,
@@ -102,42 +99,42 @@ def run_safely[T](
     worker_thread.start()
 
     try:
-        while not outcome.done():
-            if lost.is_set():
+        while not worker_result.done():
+            if lease_lost.is_set():
                 worker_thread.join()  # This is sad since we don't actually kill the thread, but simply wait for it to finish
-                tmp_result_path.unlink(missing_ok=True)
+                staged_result_path.unlink(missing_ok=True)
                 return "lost-lock"
-            time.sleep(recheck_compute_finished_every_s)
+            time.sleep(poll_interval_s)
 
         try:
-            result = outcome.result()
+            result = worker_result.result()
         except BaseException as e:
-            tmp_result_path.unlink(missing_ok=True)
+            staged_result_path.unlink(missing_ok=True)
             if isinstance(e, Exception):
                 return "worker-failed"
             raise e
 
-        if not tmp_result_path.exists():
+        if not staged_result_path.exists():
             return "missing-tmp"
-        elif lost.is_set():
-            tmp_result_path.unlink()
+        elif lease_lost.is_set():
+            staged_result_path.unlink()
             return "lost-lock"
 
         try:
-            lock.refresh()
+            file_lock.refresh()
         except NotLockedError:
-            tmp_result_path.unlink()
+            staged_result_path.unlink()
             return "lost-lock"
 
-        os.replace(tmp_result_path, result_path)
+        os.replace(staged_result_path, result_path)
 
-        return Success(result=result)
+        return Ok(result=result)
 
     finally:
-        stop_heartbeat.set()
-        heartbeat_thread.join()  # TODO: this doesn't actually kill the heartbeat thread
+        stop_lease_heartbeat.set()
+        lease_heartbeat_thread.join()  # TODO: this doesn't actually kill the heartbeat thread
 
-        if tmp_result_path.exists():
+        if staged_result_path.exists():
             raise NotImplementedError("TODO: i don't think this can ever happen?")
 
-        lock.unlock(unconditionally=True)
+        file_lock.unlock(unconditionally=True)
