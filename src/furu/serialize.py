@@ -5,10 +5,9 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel as PydanticBaseModel
-from pydantic import JsonValue
 
 from furu.constants import CLASSMARKER
-from furu.utils import fully_qualified_name
+from furu.utils import JsonValue, fully_qualified_name
 
 
 @cache

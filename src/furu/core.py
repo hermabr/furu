@@ -10,12 +10,10 @@ from typing import (
     Self,
 )
 
-from pydantic import JsonValue
-
 from furu.config import config
 from furu.schema import schema_type as _schema_type
 from furu.serialize import to_json as _to_json
-from furu.utils import _hash_dict_deterministically, fully_qualified_name
+from furu.utils import JsonValue, _hash_dict_deterministically, fully_qualified_name
 
 if TYPE_CHECKING:
     from typing_extensions import dataclass_transform

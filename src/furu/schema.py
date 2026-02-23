@@ -9,10 +9,8 @@ from typing import (
     get_type_hints,
 )
 
-from pydantic import JsonValue
-
 from furu.constants import ARGSMARKER, CLASSMARKER, ORIGINMARKER
-from furu.utils import _stable_json_dump, fully_qualified_name
+from furu.utils import JsonValue, _stable_json_dump, fully_qualified_name
 
 
 def schema_dataclass(tp: type, seen: set[type]) -> JsonValue:
