@@ -1,4 +1,6 @@
 import pickle
+import secrets
+import traceback
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
@@ -44,6 +46,8 @@ class Furu[T](_FuruDataclassTransform, ABC):
             with open(self._result_path, "rb") as f:
                 return pickle.load(f)
 
+        # TODO: have the logs be per-run with a run id
+
         # TODO: initialize the state
         # TODO: add file locking and keepalive in a different process
         self._internal_furu_dir.mkdir(
@@ -61,7 +65,21 @@ class Furu[T](_FuruDataclassTransform, ABC):
             )
             self._metadata_path.write_text(metadata.model_dump_json(indent=2))
 
-            result = self._create()
+            try:
+                result = self._create()
+            except Exception as e:
+                print("i should capture and handle error here")
+                print("error", e)
+                print("finished printing them")
+                with (
+                    (
+                        self._internal_furu_dir
+                        / f"error-{datetime.now():%y%m%d_%H-%M-%S}-{secrets.token_hex(4)}.log"  # TODO: make this part of the regular error
+                    ).open("a", encoding="utf-8") as f
+                ):
+                    f.write("\n--- Exception ---\n")
+                    traceback.print_exc(file=f)
+                raise e
 
             completed_metadata = CompletedMetadata(
                 artifact=metadata.artifact,

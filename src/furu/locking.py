@@ -12,7 +12,7 @@ from flufl.lock import Lock, NotLockedError, TimeOutError
 
 from furu.utils import Ok
 
-type LeaseErrorStates = Literal["lost-lock", "worker-failed", "missing-tmp"]
+type LeaseErrorStates = Literal["lost-lock", "missing-tmp"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,8 +83,7 @@ def run_with_lease_and_pickle_result[T](
             )
         except BaseException as e:
             staged_result_path.unlink(missing_ok=True)
-            if isinstance(e, Exception):
-                return "worker-failed"
+            # TODO: maybe handle BaseException and Exception differently?
             raise e
 
         if not staged_result_path.exists():

@@ -17,15 +17,16 @@
     - [ ] load from metadata
     - [ ] think deeply about and add most relevant metadata, such as computer used to run it etc
     - [ ] support time traveling to a previous experiment
+- [x] pytest plugin
 - [ ] save and load results
     - [x] start with pickle
     - [ ] saves using a pytree-like strategy, with most things in json and some things in custom files
         - [ ] allows users to register handlers
-- [ ] trace code at runtime to find all functions and save/hash their ast
 - [ ] error handling
     - [ ] capture errors
     - [ ] make the errors informative
     - [ ] use rich tracebacks
+- [ ] trace code at runtime to find all functions and save/hash their ast
 - [ ] logging
     - [ ] log when loading or creating object
     - [ ] record log in furu_dir
@@ -41,7 +42,7 @@
     - [ ] check if i'm able to send the name to this
 - [ ] querying/filtering
 - [ ] dashboard
-- [ ] mytest-wrapper
+- [ ] make docs
 - [ ] for the future
     - [ ] have method for making the raw data so that we have some sort of tracking
     - [ ] decide if i have too many cached_properties
