@@ -70,14 +70,19 @@ class Furu[T](_FuruDataclassTransform, ABC):
             except BaseException as exc:
                 pre_exception_frames = traceback.extract_stack()[:-1]
                 exception_frames = traceback.extract_tb(exc.__traceback__)
+                rich_traceback = traceback.TracebackException.from_exception(
+                    exc, capture_locals=True
+                )
                 traceback_text = "".join(
                     [
                         "Traceback (most recent call last):\n",
                         *traceback.format_list(pre_exception_frames + exception_frames),
                         *traceback.format_exception_only(type(exc), exc),
+                        "\n=== Debug Details (with locals) ===\n",
+                        *rich_traceback.format(chain=True),
                     ]
                 )
-                with (
+                with (  # TODO: log this to the regular error file
                     (
                         self._internal_furu_dir
                         / f"error-{datetime.now():%y%m%d_%H-%M-%S}-{secrets.token_hex(4)}.log"  # TODO: make this part of the regular error
