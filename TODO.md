@@ -4,7 +4,6 @@
 - [x] schema
     - [ ] add support for adding/hooking in custom items. this means you can define manually how i should walk an object like pydantic, if i didn't already have support for it
 - [x] furu config
-- [ ] state
 - [x] file/compute locking
     - [x] auto make/delete the lock file
     - [x] don't allow others to run if file is locked
@@ -12,14 +11,16 @@
     - [ ] allow other processes to wait for the worker before they resume their own work
     - [ ] don't use threading.Thread for heartbeat (gil)
     - [ ] move to zig
-- [ ] metadata
-    - [ ] basic metadata
+- [x] metadata
+    - [x] basic metadata
+    - [ ] record git info
     - [ ] load from metadata
-    - [ ] record the git diff
+    - [ ] think deeply about and add most relevant metadata, such as computer used to run it etc
     - [ ] support time traveling to a previous experiment
-- [ ] manual serializer for saving objects
-    - [ ] start with cloudpickle for dev
-    - [ ] roll my own, where it auto saves using a pytree-like strategy and allows users to register handlers
+- [ ] save and load results
+    - [x] start with pickle
+    - [ ] saves using a pytree-like strategy, with most things in json and some things in custom files
+        - [ ] allows users to register handlers
 - [ ] trace code at runtime to find all functions and save/hash their ast
 - [ ] error handling
     - [ ] capture errors

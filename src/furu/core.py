@@ -13,7 +13,7 @@ from typing import (
 
 from furu.config import config
 from furu.locking import run_with_lease_and_pickle_result
-from furu.metadata import CompletedMetadata, Metadata
+from furu.metadata import CompletedMetadata, RunningMetadata
 from furu.schema import schema_type as _schema_type
 from furu.serialize import to_json as _to_json
 from furu.utils import JsonValue, Ok, _hash_dict_deterministically, fully_qualified_name
@@ -51,7 +51,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
         )  # TODO: decide if i should make the directory here or inside the cached property itself
 
         def create_wrapper() -> T:  # TODO: better name
-            metadata = Metadata(
+            metadata = RunningMetadata(
                 artifact=self.to_json(),
                 artifact_hash=self.artifact_hash,
                 schema_=self.schema,

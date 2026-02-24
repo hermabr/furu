@@ -14,7 +14,7 @@ class GitData(BaseModel):
     # submodules: dict # TODO: add this
 
 
-class Metadata(BaseModel):
+class _Metadata(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
         validate_assignment=True,
@@ -27,8 +27,11 @@ class Metadata(BaseModel):
     schema_: JsonValue
     schema_hash: str
     data_path: Path
-    started_at: datetime
     # git: GitData | None
+
+
+class RunningMetadata(_Metadata):
+    started_at: datetime
     # command: list[str] # TODO: find/decide what the most elegant approach is here
     # hostname: str
     # user: str
@@ -40,7 +43,7 @@ class Metadata(BaseModel):
     # executor info, such as local, local executor, slurm dag or slurm worker
 
 
-class CompletedMetadata(Metadata):
+class CompletedMetadata(RunningMetadata):
     # traced_function_hashes: list[
     #     dict[str, str]
     # ]  # TODO: this probably means i don't really need to record the package versions? in particular since git data would have uv.lock and pyproject.toml already
