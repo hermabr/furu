@@ -81,10 +81,10 @@ def run_with_lease_and_pickle_result[T](
             result = _compute_and_stage_pickle_result(
                 staged_result_path=staged_result_path, compute_fn=compute_fn
             )
-        except BaseException as e:
+        except BaseException:
             staged_result_path.unlink(missing_ok=True)
             # TODO: maybe handle BaseException and Exception differently?
-            raise e
+            raise
 
         if not staged_result_path.exists():
             return "missing-tmp"

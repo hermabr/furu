@@ -67,10 +67,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
             try:
                 result = self._create()
-            except Exception as e:
-                print("i should capture and handle error here")
-                print("error", e)
-                print("finished printing them")
+            except BaseException as exc:
                 with (
                     (
                         self._internal_furu_dir
@@ -78,8 +75,13 @@ class Furu[T](_FuruDataclassTransform, ABC):
                     ).open("a", encoding="utf-8") as f
                 ):
                     f.write("\n--- Exception ---\n")
-                    traceback.print_exc(file=f)
-                raise e
+                    tb = traceback.TracebackException.from_exception(
+                        exc, capture_locals=True
+                    )
+                    f.writelines(tb.format(chain=True))
+                    f.write("\n--- Catch Stack ---\n")
+                    f.writelines(traceback.format_stack())
+                raise
 
             completed_metadata = CompletedMetadata(
                 artifact=metadata.artifact,
