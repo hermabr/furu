@@ -2,17 +2,10 @@ import hashlib
 import json
 from dataclasses import dataclass
 from enum import Enum
-from typing import TypeAlias, Union
 
-JsonValue: TypeAlias = Union[
-    list["JsonValue"],
-    dict[str, "JsonValue"],
-    str,
-    bool,
-    int,
-    float,
-    None,
-]
+type JsonValue = (
+    list[JsonValue] | dict[str, JsonValue] | str | bool | int | float | None
+)
 
 
 def fully_qualified_name(tp: type) -> str:

@@ -24,7 +24,7 @@ class Metadata(BaseModel):
     # python_def: str
     artifact: JsonValue
     artifact_hash: str
-    schema: JsonValue
+    schema_: JsonValue
     schema_hash: str
     data_path: Path
     started_at: datetime
