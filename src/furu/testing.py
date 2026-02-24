@@ -26,6 +26,10 @@ def _is_furu_pytest_mode_enabled() -> bool:
     return os.environ.get("FURU_PYTEST_MODE", "on").strip().lower() != "off"
 
 
+def _keep_furu_data() -> bool:
+    return os.environ.get("FURU_PYTEST_KEEP", "clean").strip().lower() == "keep"
+
+
 def pytest_configure(config: pytest.Config) -> None:
     if not _is_furu_pytest_mode_enabled():
         return
@@ -55,7 +59,7 @@ def pytest_unconfigure(config: pytest.Config) -> None:
 
     furu_config.directories = state.original_directories
 
-    if os.environ.get("FURU_PYTEST_KEEP", "clean").strip().lower() != "keep":
+    if not _keep_furu_data():
         for field in fields(state.run_directories):
             path = getattr(state.run_directories, field.name)
             if not isinstance(path, Path):
@@ -63,6 +67,8 @@ def pytest_unconfigure(config: pytest.Config) -> None:
                     f"Expected Path for run directory '{field.name}', got {type(path).__name__}"
                 )
             shutil.rmtree(path, ignore_errors=True)
+    else:
+        print(f"kept furu data at {state.run_directories.data}")
 
 
 @pytest.fixture(autouse=True)

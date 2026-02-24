@@ -5,10 +5,13 @@
     - [ ] add support for adding/hooking in custom items. this means you can define manually how i should walk an object like pydantic, if i didn't already have support for it
 - [x] furu config
 - [ ] state
-- [ ] file/compute locking
-    - [ ] auto make/delete the lock file
-    - [ ] don't allow others to run if file is locked
-    - [ ] heartbeat and waiting
+- [x] file/compute locking
+    - [x] auto make/delete the lock file
+    - [x] don't allow others to run if file is locked
+    - [x] heartbeat and waiting
+    - [ ] allow other processes to wait for the worker before they resume their own work
+    - [ ] don't use threading.Thread for heartbeat (gil)
+    - [ ] move to zig
 - [ ] metadata
     - [ ] basic metadata
     - [ ] load from metadata
