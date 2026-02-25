@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Any,
+    Literal,
     Self,
     assert_never,
 )
@@ -68,7 +69,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
             try:
                 result = self._create()
             except BaseException as exc:
-                with (  # TODO: log this to the regular error file
+                with (  # TODO: log this to the regular log file
                     (
                         self._internal_furu_dir
                         / f"error-{datetime.now():%y%m%d_%H-%M-%S}-{secrets.token_hex(4)}.log"  # TODO: make this part of the regular error
@@ -121,7 +122,18 @@ class Furu[T](_FuruDataclassTransform, ABC):
             case x:
                 assert_never(x)
 
-    def exists(self) -> bool:
+    def status(
+        self,
+    ) -> Literal[
+        "completed", "missing", "running", "failed"
+    ]:  # TODO: add queued/waiting state?
+        if self.is_completed():
+            return "completed"
+        raise NotImplementedError("TODO")
+
+    def is_completed(
+        self,
+    ) -> bool:  # TODO: maybe this should check the is self.status is completed? (in that case status cant check if self.is_completed)
         return self._result_path.exists()
 
     def try_load(self) -> T:

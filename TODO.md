@@ -23,8 +23,8 @@
     - [ ] saves using a pytree-like strategy, with most things in json and some things in custom files
         - [ ] allows users to register handlers
 - [ ] error handling
-    - [ ] capture errors
-    - [ ] make the errors informative
+    - [x] capture errors
+    - [x] make the errors informative
     - [ ] use rich tracebacks
 - [ ] trace code at runtime to find all functions and save/hash their ast
 - [ ] logging

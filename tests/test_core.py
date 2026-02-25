@@ -318,15 +318,15 @@ def test_create_object_and_exists():
     node_pair = NodePair(
         name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
     )
-    assert not node_pair.exists()
+    assert not node_pair.is_completed()
     for i in range(3):
         assert node_pair.load_or_create() == {
             "node1": "Node(y)",
             "node2": "WNode(z:1)",
             "name": "x",
         }
-    assert node_pair.exists()
-    assert not replace(node_pair, name="y").exists()
+    assert node_pair.is_completed()
+    assert not replace(node_pair, name="y").is_completed()
 
 
 def test_creating_and_loading_random_result_furu_obj():
