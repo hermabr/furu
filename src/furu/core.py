@@ -62,7 +62,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
                 schema_=self.schema,
                 schema_hash=self.schema_hash,
                 data_path=self.data_dir.resolve(),
-                started_at=datetime.now(),
+                started_at=datetime.now(),  # TODO: make this timezone aware?
             )
             self._metadata_path.write_text(metadata.model_dump_json(indent=2))
 
@@ -154,13 +154,13 @@ class Furu[T](_FuruDataclassTransform, ABC):
         raise NotImplementedError("TODO")
 
     @cache
-    def to_json(
+    def to_json(  # TODO: make sure this doesn't prevent garbage collection
         self,
     ) -> JsonValue:
         return _to_json(self)
 
     @classmethod
-    def from_json(self) -> Self:
+    def from_json(cls) -> Self:
         raise NotImplementedError("TODO")
 
     @cached_property

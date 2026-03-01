@@ -21,10 +21,11 @@ class SlowProbe(Furu[int]):
         return 42
 
 
-def _worker(data_dir: str, start_evt, out_q):
-    # spawn-safe: set config in child explicitly
+def _worker(
+    data_dir: str, start_evt, out_q
+) -> None:  # TODO: do i need to explicitly set the env variables here?
     config.directories = _FuruDirectories(data=Path(data_dir))
-    obj = SlowProbe(key=1)  # same artifact in both processes
+    obj = SlowProbe(key=1)
     out_q.put(("ready", os.getpid()))
     start_evt.wait()
     try:
@@ -48,7 +49,10 @@ def test_two_processes_competing_for_same_furu_object(tmp_path):
     for p in procs:
         p.start()
     # wait until both are ready, then release simultaneously
-    ready = [out_q.get(timeout=0.25), out_q.get(timeout=0.25)]
+    ready = [
+        out_q.get(timeout=0.25),
+        out_q.get(timeout=0.25),
+    ]  # timeout 0.25 will capture large regressions and should be strict enough
     assert all(tag == "ready" for tag, *_ in ready)
     start_evt.set()
     results = [out_q.get(timeout=0.25), out_q.get(timeout=0.25)]

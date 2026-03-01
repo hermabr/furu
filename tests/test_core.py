@@ -55,13 +55,13 @@ class Fruit(Enum):
     banana = "banana"
 
 
-class A(Furu, Generic[T]):
+class A[T](Furu):
     x: int | str | list
     z: T
     w: list[int | float]
     fruit: Fruit = Fruit("banana")
 
-    def _create(self):
+    def _create(self) -> None:
         pass
 
 
@@ -319,7 +319,7 @@ def test_create_object_and_exists():
         name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
     )
     assert not node_pair.is_completed()
-    for i in range(3):
+    for _i in range(3):
         assert node_pair.load_or_create() == {
             "node1": "Node(y)",
             "node2": "WNode(z:1)",

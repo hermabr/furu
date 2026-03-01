@@ -1,6 +1,5 @@
 import enum
 from dataclasses import fields, is_dataclass
-from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -10,8 +9,7 @@ from furu.constants import CLASSMARKER
 from furu.utils import JsonValue, fully_qualified_name
 
 
-@cache
-def to_json(
+def to_json(  # TODO: consider caching this (but if i'm going to, I need to figure out how to cache lists and other unhashable objects)
     obj: Any,
 ) -> JsonValue:
     # TODO: when writing this to metadata, make sure to escape strings etc

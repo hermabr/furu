@@ -3,6 +3,7 @@ import os
 import secrets
 import shutil
 import tempfile
+from collections.abc import Iterator
 from dataclasses import dataclass, fields
 from datetime import datetime
 from pathlib import Path
@@ -75,7 +76,7 @@ def pytest_unconfigure(config: pytest.Config) -> None:
 def _furu_per_test_base_directory(
     request: pytest.FixtureRequest,
     pytestconfig: pytest.Config,
-):
+) -> Iterator[None]:
     if not _is_furu_pytest_mode_enabled():
         yield
         return

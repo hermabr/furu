@@ -19,4 +19,4 @@ def test_subtract_positive():
 
 def test_subtract_negative():
     with pytest.raises(AssertionError):
-        assert SubtractPositive(a=-5, b=3).load_or_create()
+        SubtractPositive(a=-5, b=3).load_or_create()

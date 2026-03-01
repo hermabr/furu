@@ -31,7 +31,7 @@ class _Metadata(BaseModel):
 
 
 class RunningMetadata(_Metadata):
-    started_at: datetime
+    started_at: datetime  # TODO: consider making this timezone aware
     # command: list[str] # TODO: find/decide what the most elegant approach is here
     # hostname: str
     # user: str

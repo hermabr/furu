@@ -32,10 +32,10 @@ def schema_dataclass(tp: type, seen: set[type]) -> JsonValue:
 def schema_type(tp: Any, seen: set[type]) -> JsonValue:
     origin = get_origin(tp)
 
-    if (isinstance(tp, type) and is_dataclass(tp)) or (
-        is_dataclass(origin) and (tp := origin)
-    ):
+    if isinstance(tp, type) and is_dataclass(tp):
         return schema_dataclass(tp, seen)
+    if origin is not None and is_dataclass(origin):
+        return schema_dataclass(origin, seen)
 
     if origin in (typing.Union, types.UnionType):
         return sorted(

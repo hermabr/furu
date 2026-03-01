@@ -44,9 +44,11 @@ def run_with_lease_and_pickle_result[T](
     *,
     lock_path: Path,
     result_path: Path,
-    lease_config: LeaseConfig = LeaseConfig(),
+    lease_config: LeaseConfig | None = None,
     # TODO: add a n-retries option
 ) -> Ok | LeaseErrorStates:
+    if lease_config is None:
+        lease_config = LeaseConfig()
     # TODO: make the directory for the data and the <data-dir>/.furu
     # TODO: if the gil is busy for more than lease_config.lifetime_s we will lose the lock. move to zig or use multiprocessing. the reason we are not already using multiprocessing is that it is more painful to return the result from the self._create call when we use multiprocessing
     stop_lease_heartbeat = threading.Event()
@@ -61,10 +63,10 @@ def run_with_lease_and_pickle_result[T](
 
         try:
             file_lock.lock(timeout=0)  # TODO:make sure timeout 0 makes sense
-        except TimeOutError:
+        except TimeOutError as e:
             raise NotImplementedError(
                 "TODO: wait for the object to finish and return/read a copy for some time, die if you wait for too long and check if the old lease is expired (should be automatic)"
-            )
+            ) from e
 
         def review_lease_loop() -> None:
             while not stop_lease_heartbeat.wait(lease_config.review_interval_s):
@@ -111,4 +113,4 @@ def run_with_lease_and_pickle_result[T](
         if staged_result_path.exists():
             raise NotImplementedError("TODO: i don't think this can ever happen?")
 
-        file_lock.unlock()
+        file_lock.unlock()  # TODO: this can technically fail if we didn't aquire the lock. won't fix this since this logic will be moved to zig
