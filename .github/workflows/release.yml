@@ -64,6 +64,7 @@ jobs:
           uv sync --all-extras
 
       - name: Run tests
+        if: steps.tag.outputs.should_release == 'true'
         run: |
           uv run pytest
 
