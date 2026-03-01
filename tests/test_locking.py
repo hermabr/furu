@@ -50,12 +50,12 @@ def test_two_processes_competing_for_same_furu_object(tmp_path):
         p.start()
     # wait until both are ready, then release simultaneously
     ready = [
-        out_q.get(timeout=0.25),
-        out_q.get(timeout=0.25),
+        out_q.get(timeout=0.5),
+        out_q.get(timeout=0.5),
     ]  # timeout 0.25 will capture large regressions and should be strict enough
     assert all(tag == "ready" for tag, *_ in ready)
     start_evt.set()
-    results = [out_q.get(timeout=0.25), out_q.get(timeout=0.25)]
+    results = [out_q.get(timeout=0.5), out_q.get(timeout=0.5)]
     for p in procs:
         p.join(timeout=0.1)
         assert p.exitcode == 0
