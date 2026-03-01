@@ -22,6 +22,8 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
         return x
 
     match obj:
+        case None:
+            return None
         case int() | str() | float() | bool():
             return obj
         case Path():

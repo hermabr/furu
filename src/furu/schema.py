@@ -50,7 +50,7 @@ def schema_type(tp: Any, seen: set[type]) -> JsonValue:
             ),
         }
 
-    if tp in [str, float, int, bool]:
+    if tp in [str, float, int, bool, types.NoneType]:
         return fully_qualified_name(tp)
     elif isinstance(tp, str):
         return tp

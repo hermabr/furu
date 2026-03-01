@@ -115,8 +115,6 @@ class Furu[T](_FuruDataclassTransform, ABC):
                 return result
             case "lost-lock":
                 raise NotImplementedError("TODO: Handle this")
-            case "worker-failed":
-                raise NotImplementedError("TODO: Handle this")
             case "missing-tmp":
                 raise NotImplementedError("TODO: Handle this")
             case x:

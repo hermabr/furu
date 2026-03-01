@@ -68,6 +68,7 @@ class B(Furu, Generic[T]):
     a: A[T] | int
     y: dict[Literal["ney", "hey"] | bool, int]
     t: tuple[int | str, float]
+    maybe_val: int | None = None
 
     def _create(self):
         pass
@@ -214,6 +215,7 @@ def expected_schema_for_B_like(cls_name: str) -> dict:
                     },
                 },
             ],
+            "maybe_val": ["builtins.NoneType", "builtins.int"],
             "t": {
                 "|origin": "builtins.tuple",
                 "|args": ["builtins.float", ["builtins.int", "builtins.str"]],
@@ -290,6 +292,25 @@ def test_to_json():
     assert to_json(node_pair) == expected
     assert to_json(node_pair) == node_pair.to_json()
     assert node_pair.to_json() == expected
+
+
+def test_to_json_with_none_field():
+    obj = B(
+        a=A(x=1, z="123", w=[6, 7]),
+        y={"hey": 123, "ney": 1},
+        t=("123", 12),
+        maybe_val=None,
+    )
+
+    expected = {
+        "|class": "test_core.B",
+        "a": {"|class": "test_core.A", "x": 1, "z": "123", "w": [6, 7]},
+        "y": {"hey": 123, "ney": 1},
+        "t": ["123", 12],
+        "maybe_val": None,
+    }
+
+    assert to_json(obj) == expected
 
 
 def test_data_dir():
