@@ -1,9 +1,9 @@
 # Changelog
 
-## Unchanged
+## v0.0.13
 
-- Rewrite from scratch
-- Still missing basic functionality such as logging and executors
+- MVP rewrite from scratch
+- missing basic functionality such as logging and executors
 
 ## v0.0.12
 
