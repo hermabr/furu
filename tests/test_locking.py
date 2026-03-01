@@ -5,6 +5,8 @@ import time
 from multiprocessing import get_context
 from pathlib import Path
 
+from flufl.lock import NotLockedError
+
 from furu import Furu
 from furu.config import _FuruDirectories, config
 
@@ -31,7 +33,7 @@ def _worker(
     try:
         value = obj.load_or_create()
         out_q.put(("ok", os.getpid(), value))
-    except Exception as e:
+    except NotLockedError as e:
         out_q.put(("err", os.getpid(), type(e).__name__))
 
 

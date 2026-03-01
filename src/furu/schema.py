@@ -55,7 +55,8 @@ def schema_type(tp: Any, seen: set[type]) -> JsonValue:
     elif isinstance(tp, str):
         return tp
     elif tp in [list, tuple, dict]:
-        assert get_args(tp) == ()
+        if get_args(tp) != ():
+            raise ValueError(f"Expected bare {tp.__name__}, got parameterized type")
         return fully_qualified_name(tp)
     elif isinstance(tp, typing.TypeVar):
         return repr(tp)

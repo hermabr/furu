@@ -1,4 +1,5 @@
 import types
+from collections.abc import Callable
 from dataclasses import FrozenInstanceError, is_dataclass, replace
 from enum import Enum
 from functools import partial
@@ -45,6 +46,7 @@ class RandomObj(Furu[float]):
     id: int
 
     def _create(self) -> float:
+        # Intentionally non-deterministic to test that load_or_create caches results
         import random
 
         return random.random()
@@ -275,7 +277,7 @@ def expected_schema_for_B_like(cls_name: str) -> dict:
         ),
     ],
 )
-def test_schema(make: type[Furu], expected):
+def test_schema(make: Callable[[], Furu], expected):
     assert make().schema == expected
 
 
