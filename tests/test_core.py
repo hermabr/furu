@@ -210,7 +210,7 @@ def expected_schema_for_B_like(cls_name: str) -> dict:
                             "|args": [["builtins.float", "builtins.int"]],
                         },
                         "x": ["builtins.int", "builtins.list", "builtins.str"],
-                        "z": "~T",
+                        "z": "T",
                     },
                 },
             ],
