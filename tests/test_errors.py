@@ -1,3 +1,5 @@
+import pytest
+
 from furu import Furu
 
 
@@ -16,4 +18,5 @@ def test_subtract_positive():
 
 
 def test_subtract_negative():
-    assert SubtractPositive(a=-5, b=3).load_or_create()
+    with pytest.raises(AssertionError):
+        assert SubtractPositive(a=-5, b=3).load_or_create()
