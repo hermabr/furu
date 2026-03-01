@@ -43,7 +43,7 @@ def bump_version(version: str, bump: str) -> str:
     raise RuntimeError(f"Invalid bump type: {bump}")
 
 
-def update_pyproject_version(new_version: str) -> None:
+def render_pyproject_with_version(new_version: str) -> str:
     text = read_text(PYPROJECT_PATH)
     new_text, count = re.subn(
         r'(^version\s*=\s*")([^"]+)(")',
@@ -54,10 +54,10 @@ def update_pyproject_version(new_version: str) -> None:
     )
     if count != 1:
         raise RuntimeError(f"Failed to update version in {PYPROJECT_PATH}")
-    PYPROJECT_PATH.write_text(new_text, encoding="utf-8")
+    return new_text
 
 
-def update_changelog(new_version: str) -> None:
+def render_changelog_for_release(new_version: str) -> str:
     lines = read_text(CHANGELOG_PATH).splitlines()
 
     if len(lines) < 3:
@@ -71,7 +71,7 @@ def update_changelog(new_version: str) -> None:
         )
 
     lines[2] = f"## v{new_version}"
-    CHANGELOG_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return "\n".join(lines) + "\n"
 
 
 def confirm(current_version: str, new_version: str, *, yes: bool) -> None:
@@ -115,7 +115,7 @@ def create_release_pr(new_version: str) -> None:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("bump", choices=["patch", "minor", "major"])
+    parser.add_argument("bump", choices=["major", "minor", "patch"])
     parser.add_argument("-y", "--yes", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -125,12 +125,23 @@ def main():
 
     confirm(current_version, new_version, yes=args.yes)
 
+    original_pyproject_text = read_text(PYPROJECT_PATH)
+    original_changelog_text = read_text(CHANGELOG_PATH)
+
+    new_pyproject_text = render_pyproject_with_version(new_version)
+    new_changelog_text = render_changelog_for_release(new_version)
+
     if args.dry_run:
         return
 
-    update_pyproject_version(new_version)
-    update_changelog(new_version)
-    create_release_pr(new_version)
+    try:
+        PYPROJECT_PATH.write_text(new_pyproject_text, encoding="utf-8")
+        CHANGELOG_PATH.write_text(new_changelog_text, encoding="utf-8")
+        create_release_pr(new_version)
+    except Exception:
+        PYPROJECT_PATH.write_text(original_pyproject_text, encoding="utf-8")
+        CHANGELOG_PATH.write_text(original_changelog_text, encoding="utf-8")
+        raise
 
 
 if __name__ == "__main__":

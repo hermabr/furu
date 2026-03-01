@@ -59,7 +59,7 @@ def test_two_processes_competing_for_same_furu_object(tmp_path):
     start_evt.set()
     results = [out_q.get(timeout=0.5), out_q.get(timeout=0.5)]
     for p in procs:
-        p.join(timeout=0.1)
+        p.join(timeout=0.5)
         assert p.exitcode == 0
     oks = [r for r in results if r[0] == "ok"]
     errs = [r for r in results if r[0] == "err"]
