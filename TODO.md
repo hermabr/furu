@@ -1,0 +1,53 @@
+- [x] doing `class MyCls(Furu[int])` should make it a frozen dataclass with named args
+- [x] furu_hash
+    - [ ] add support for adding/hooking in custom items. this means you can define manually how i should walk an object like pydantic, if i didn't already have support for it
+- [x] schema
+    - [ ] add support for adding/hooking in custom items. this means you can define manually how i should walk an object like pydantic, if i didn't already have support for it
+- [x] furu config
+- [x] file/compute locking
+    - [x] auto make/delete the lock file
+    - [x] don't allow others to run if file is locked
+    - [x] heartbeat and waiting
+    - [ ] allow other processes to wait for the worker before they resume their own work
+    - [ ] don't use threading.Thread for heartbeat (gil)
+    - [ ] move to zig
+- [x] metadata
+    - [x] basic metadata
+    - [ ] record git info
+    - [ ] load from metadata
+    - [ ] think deeply about and add most relevant metadata, such as computer used to run it etc
+    - [ ] support time traveling to a previous experiment
+- [x] pytest plugin
+- [ ] save and load results
+    - [x] start with pickle
+    - [ ] saves using a pytree-like strategy, with most things in json and some things in custom files
+        - [ ] allows users to register handlers
+- [ ] error handling
+    - [x] capture errors
+    - [x] make the errors informative
+    - [ ] use rich tracebacks
+- [ ] trace code at runtime to find all functions and save/hash their ast
+- [ ] logging
+    - [ ] log when loading or creating object
+    - [ ] record log in furu_dir
+    - [ ] support multiple processes, such as torch run with 8 tasks
+    - [ ] have a file like events.log or rename the old logs if i start new runs to make debug easier
+- [ ] migration
+- [ ] executor
+    - [ ] local
+    - [ ] slurm workers
+    - [ ] slurm dag
+    - [ ] time traveling executor (maybe i need git worktrees for this?)
+    - [ ] dependencies
+- [ ] furu list
+    - [ ] decide if i need this
+    - [ ] check if i'm able to send the name to this
+- [ ] querying/filtering
+- [ ] dashboard
+- [ ] make docs
+- [ ] for the future
+    - [ ] have method for making the raw data so that we have some sort of tracking
+    - [ ] decide if i have too many cached_properties
+    - [ ] decide what should be property vs method
+    - [ ] make sure the public api has very good names
+        - [ ] good names for everything and clear flow of features
