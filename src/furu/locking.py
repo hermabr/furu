@@ -1,4 +1,5 @@
 # TODO: this is the first iteration of this file, but it has multiple errors and footguns, such as the gil being busy for more than LeaseConfig.lifetime_s or the heartbeat thread losing the lock but not notifying/killing the worker. i will either move this to zig or rewrite it at some point
+# TODO: handle cases where a user submits a 8 task torch job
 import os
 import pickle
 import threading

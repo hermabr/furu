@@ -136,7 +136,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
     ) -> bool:  # TODO: maybe this should check the is self.status is completed? (in that case status cant check if self.is_completed)
         return self._result_path.exists()
 
-    def try_load(self) -> T:
+    def try_load(self) -> T:  # TODO: make a better name for this
         if self._result_path.exists():
             # TODO: validation that its up to date and valid
             with open(self._result_path, "rb") as f:
