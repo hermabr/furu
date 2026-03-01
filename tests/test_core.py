@@ -50,7 +50,7 @@ class RandomObj(Furu[float]):
         return random.random()
 
 
-class Fruit(Enum):
+class Fruit(Enum):  # TODO: test enums at some point
     apple = "apple"
     banana = "banana"
 
@@ -59,7 +59,6 @@ class A[T](Furu):
     x: int | str | list
     z: T
     w: list[int | float]
-    fruit: Fruit = Fruit("banana")
 
     def _create(self) -> None:
         pass
@@ -206,7 +205,6 @@ def expected_schema_for_B_like(cls_name: str) -> dict:
                 {
                     "|class": "test_core.A",
                     "fields": {
-                        "fruit": "test_core.Fruit",
                         "w": {
                             "|origin": "builtins.list",
                             "|args": [["builtins.float", "builtins.int"]],

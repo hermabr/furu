@@ -17,7 +17,7 @@ def fully_qualified_name(tp: type) -> str:
         raise ValueError("TODO: msg")
     elif "." in qualname:
         raise ValueError("TODO: msg")
-    elif issubclass(tp, Enum):
+    elif isinstance(tp, type) and issubclass(tp, Enum) or isinstance(tp, Enum):
         raise ValueError(
             "TODO: support this in the future"
         )  # return f"{mod}.{qualname}.{obj.name}"
