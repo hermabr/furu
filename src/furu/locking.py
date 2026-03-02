@@ -64,6 +64,7 @@ def run_with_lease_and_pickle_result[T](
         try:
             file_lock.lock(timeout=0)  # TODO:make sure timeout 0 makes sense
         except TimeOutError as e:
+            print(f"failed to lock {file_lock} at path {str(lock_path)}")
             raise NotImplementedError(
                 "TODO: wait for the object to finish and return/read a copy for some time, die if you wait for too long and check if the old lease is expired (should be automatic)"
             ) from e
