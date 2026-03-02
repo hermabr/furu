@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.0.14
+
+- Add support for Ellipsis
+
 ## v0.0.13
 
 - MVP rewrite from scratch
