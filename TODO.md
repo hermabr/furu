@@ -2,7 +2,9 @@
 - [x] furu_hash
     - [ ] add support for adding/hooking in custom items. this means you can define manually how i should walk an object like pydantic, if i didn't already have support for it
 - [x] schema
+    - [ ] compute basic schema and schema hash
     - [ ] add support for adding/hooking in custom items. this means you can define manually how i should walk an object like pydantic, if i didn't already have support for it
+    - [ ] record current schema for each object so that i know if schema was changed from last time code was used
 - [x] furu config
 - [x] file/compute locking
     - [x] auto make/delete the lock file
@@ -39,10 +41,15 @@
     - [ ] slurm dag
     - [ ] time traveling executor (maybe i need git worktrees for this?)
     - [ ] dependencies
+         - [ ] eager dependencies you define with something like @furu.dependency
+         - [ ] lazy dependencies that you can register while running the _create fn, such as if you have a variable number of chunks you need to download
 - [ ] furu list
     - [ ] decide if i need this
     - [ ] check if i'm able to send the name to this
+- [ ] decide/think about if it is possible to inject information into a class, such as if i have unknown sentences and then i want to also add their translations such as for leap
+- [ ] add post_init for validation
 - [ ] querying/filtering
+- [ ] sync support, so that it is easy to say i want these experiments or these objects from one host to a different one
 - [ ] dashboard
 - [ ] make docs
 - [ ] for the future
