@@ -105,6 +105,13 @@ class B_priv(B):
     _h: int
 
 
+class VariadicTuple(Furu[None]):
+    t: tuple[int, ...]
+
+    def _create(self):
+        pass
+
+
 def test_frozen_dataclass_inheritance():
     for cls in [Node, WeightedNode]:
         if cls == Node:
@@ -313,6 +320,18 @@ def test_to_json_with_none_field():
     }
 
     assert to_json(obj) == expected
+
+
+def test_schema_with_ellipsis_type_arg():
+    assert VariadicTuple(t=(1, 2, 3)).schema == {
+        "|class": "test_core.VariadicTuple",
+        "fields": {
+            "t": {
+                "|origin": "builtins.tuple",
+                "|args": ["builtins.ellipsis", "builtins.int"],
+            }
+        },
+    }
 
 
 def test_data_dir():

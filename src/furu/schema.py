@@ -32,6 +32,9 @@ def schema_dataclass(tp: type, seen: set[type]) -> JsonValue:
 def schema_type(tp: Any, seen: set[type]) -> JsonValue:
     origin = get_origin(tp)
 
+    if tp is Ellipsis:
+        return fully_qualified_name(types.EllipsisType)
+
     if isinstance(tp, type) and is_dataclass(tp):
         return schema_dataclass(tp, seen)
     if origin is not None and is_dataclass(origin):
