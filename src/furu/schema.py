@@ -65,4 +65,6 @@ def schema_type(tp: Any, seen: set[type]) -> JsonValue:
         return repr(tp)
     elif isinstance(tp, enum.EnumType):
         return fully_qualified_name(tp)
+    elif isinstance(tp, type):
+        return fully_qualified_name(tp)
     assert False, f"TODO: unexpected type value {tp=}"

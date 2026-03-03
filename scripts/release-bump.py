@@ -4,7 +4,6 @@ import subprocess
 from pathlib import Path
 
 PYPROJECT_PATH = Path("pyproject.toml")
-CHANGELOG_PATH = Path("CHANGELOG.md")
 
 
 def run(cmd: list[str]) -> None:
@@ -57,23 +56,6 @@ def render_pyproject_with_version(new_version: str) -> str:
     return new_text
 
 
-def render_changelog_for_release(new_version: str) -> str:
-    lines = read_text(CHANGELOG_PATH).splitlines()
-
-    if len(lines) < 3:
-        raise RuntimeError(
-            f"{CHANGELOG_PATH} must have at least 3 lines, found {len(lines)}"
-        )
-
-    if lines[2] != "## Unreleased":
-        raise RuntimeError(
-            f"{CHANGELOG_PATH} line 3 must be '## Unreleased', but found {lines[2]!r}"
-        )
-
-    lines[2] = f"## v{new_version}"
-    return "\n".join(lines) + "\n"
-
-
 def confirm(current_version: str, new_version: str, *, yes: bool) -> None:
     print(f"Current version: {current_version}")
     print(f"New version: {new_version}")
@@ -92,7 +74,7 @@ def create_release_pr(new_version: str) -> None:
 
     run(["git", "checkout", "-b", branch_name])
     run(["uv", "sync"])
-    run(["git", "add", "pyproject.toml", "uv.lock", "CHANGELOG.md"])
+    run(["git", "add", "pyproject.toml", "uv.lock"])
     run(["git", "commit", "-m", f"bump version to v{new_version}"])
     run(["git", "push", "--set-upstream", "origin", branch_name])
     run(
@@ -126,21 +108,17 @@ def main():
     confirm(current_version, new_version, yes=args.yes)
 
     original_pyproject_text = read_text(PYPROJECT_PATH)
-    original_changelog_text = read_text(CHANGELOG_PATH)
 
     new_pyproject_text = render_pyproject_with_version(new_version)
-    new_changelog_text = render_changelog_for_release(new_version)
 
     if args.dry_run:
         return
 
     try:
         PYPROJECT_PATH.write_text(new_pyproject_text, encoding="utf-8")
-        CHANGELOG_PATH.write_text(new_changelog_text, encoding="utf-8")
         create_release_pr(new_version)
     except Exception:
         PYPROJECT_PATH.write_text(original_pyproject_text, encoding="utf-8")
-        CHANGELOG_PATH.write_text(original_changelog_text, encoding="utf-8")
         raise
 
 

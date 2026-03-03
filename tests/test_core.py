@@ -11,6 +11,7 @@ import pytest
 from furu import Furu
 from furu.config import config
 from furu.serialize import to_json
+from furu.utils import fully_qualified_name
 
 T = TypeVar("T")
 
@@ -110,6 +111,13 @@ class VariadicTuple(Furu[None]):
 
     def _create(self):
         pass
+
+
+class UsesPath(Furu[str]):
+    path: Path
+
+    def _create(self) -> str:
+        return str(self.path)
 
 
 def test_frozen_dataclass_inheritance():
@@ -281,6 +289,14 @@ def expected_schema_for_B_like(cls_name: str) -> dict:
                 },
             },
             id="NodePair",
+        ),
+        pytest.param(
+            lambda: UsesPath(path=Path("/tmp/out")),
+            {
+                "|class": "test_core.UsesPath",
+                "fields": {"path": fully_qualified_name(Path)},
+            },
+            id="UsesPath",
         ),
     ],
 )
