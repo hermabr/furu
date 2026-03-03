@@ -43,6 +43,7 @@
     - [ ] dependencies
          - [ ] eager dependencies you define with something like @furu.dependency
          - [ ] lazy dependencies that you can register while running the _create fn, such as if you have a variable number of chunks you need to download
+            - [ ] capture any time a .load_or_create is called inside a method and add them to the lazy dependencies
 - [ ] furu list
     - [ ] decide if i need this
     - [ ] check if i'm able to send the name to this
