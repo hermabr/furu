@@ -120,6 +120,13 @@ class UsesPath(Furu[str]):
         return str(self.path)
 
 
+class UsesClassValue(Furu[None]):
+    node_cls: type[Node]
+
+    def _create(self) -> None:
+        return None
+
+
 def test_frozen_dataclass_inheritance():
     for cls in [Node, WeightedNode]:
         if cls == Node:
@@ -147,7 +154,7 @@ def test_hashes_and_data_dir():
         NodePair(
             name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
         ).artifact_hash
-        == "997d6e006e7621cff809"
+        == "c4ff0c2ad0f653af7ce2"
     )
 
     assert (
@@ -309,10 +316,21 @@ def test_to_json():
         name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
     )
     expected = {
+        "|kind": "instance",
         "|class": "test_core.NodePair",
-        "node1": {"|class": "test_core.Node", "name": "y"},
-        "node2": {"|class": "test_core.WeightedNode", "name": "z", "weight": 1},
-        "name": "x",
+        "fields": {
+            "node1": {
+                "|kind": "instance",
+                "|class": "test_core.Node",
+                "fields": {"name": "y"},
+            },
+            "node2": {
+                "|kind": "instance",
+                "|class": "test_core.WeightedNode",
+                "fields": {"name": "z", "weight": 1},
+            },
+            "name": "x",
+        },
     }
     assert to_json(node_pair) == expected
     assert to_json(node_pair) == node_pair.to_json()
@@ -328,14 +346,33 @@ def test_to_json_with_none_field():
     )
 
     expected = {
+        "|kind": "instance",
         "|class": "test_core.B",
-        "a": {"|class": "test_core.A", "x": 1, "z": "123", "w": [6, 7]},
-        "y": {"hey": 123, "ney": 1},
-        "t": ["123", 12],
-        "maybe_val": None,
+        "fields": {
+            "a": {
+                "|kind": "instance",
+                "|class": "test_core.A",
+                "fields": {"x": 1, "z": "123", "w": [6, 7]},
+            },
+            "y": {"hey": 123, "ney": 1},
+            "t": ["123", 12],
+            "maybe_val": None,
+        },
     }
 
     assert to_json(obj) == expected
+
+
+def test_to_json_with_class_field_value():
+    obj = UsesClassValue(node_cls=Node)
+
+    assert to_json(Node) == {"|kind": "type_ref", "|class": "test_core.Node"}
+    assert obj.to_json() == {
+        "|kind": "instance",
+        "|class": "test_core.UsesClassValue",
+        "fields": {"node_cls": {"|kind": "type_ref", "|class": "test_core.Node"}},
+    }
+    assert isinstance(obj.artifact_hash, str)
 
 
 def test_schema_with_ellipsis_type_arg():
@@ -359,7 +396,7 @@ def test_data_dir():
         / "test_core"
         / "NodePair"
         / "50a9b8624ed259ec38df"
-        / "997d6e006e7621cff809"
+        / "c4ff0c2ad0f653af7ce2"
     )
     assert node_pair.data_dir == Path(
         config.directories.data
