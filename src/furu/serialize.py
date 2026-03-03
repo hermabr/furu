@@ -5,7 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel as PydanticBaseModel
 
-from furu.constants import CLASSMARKER
+from furu.constants import CLASSMARKER, KINDMARKER
 from furu.utils import JsonValue, fully_qualified_name
 
 
@@ -17,7 +17,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
     def assert_correct_dict_key(x: Any) -> str:
         if not isinstance(x, str):
             raise ValueError("TODO")
-        if x == CLASSMARKER:
+        if x in [CLASSMARKER, KINDMARKER]:
             raise ValueError("TODO: write error msg")
         return x
 
@@ -34,15 +34,22 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
             return sorted([to_json(x) for x in obj], key=repr)
         case dict():
             return {assert_correct_dict_key(k): to_json(v) for k, v in obj.items()}
+        case type():
+            return {
+                KINDMARKER: "type_ref",
+                CLASSMARKER: fully_qualified_name(obj),
+            }
         case x if is_dataclass(x):
             return {
+                KINDMARKER: "instance",
                 CLASSMARKER: fully_qualified_name(type(x)),
-                **{f.name: to_json(getattr(x, f.name)) for f in fields(x)},
+                "fields": {f.name: to_json(getattr(x, f.name)) for f in fields(x)},
             }
         case PydanticBaseModel():
             return {
+                KINDMARKER: "instance",
                 CLASSMARKER: fully_qualified_name(type(obj)),
-                **{k: to_json(v) for k, v in obj.model_dump().items()},
+                "fields": {k: to_json(v) for k, v in obj.model_dump().items()},
             }
         case enum.Enum():
             raise NotImplementedError("TODO")  #  return {"__enum__": _type_fqn(obj)}
