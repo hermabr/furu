@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from flufl.lock import Lock, NotLockedError, TimeOutError
+from furu.flufl import NotLockedError, TimeOutError, lock
 
 from furu.utils import Ok
 
@@ -59,59 +59,57 @@ def run_with_lease_and_pickle_result[T](
     )  # TODO: compute this correctly
 
     try:
-        file_lock = Lock(str(lock_path), lifetime=lease_config.lease_ttl_s)
+        with lock(
+            lock_path,
+            lifetime_s=lease_config.lease_ttl_s,
+            timeout_s=0,
+        ) as refresh_lock:
 
-        try:
-            file_lock.lock(timeout=0)  # TODO:make sure timeout 0 makes sense
-        except TimeOutError as e:
-            print(f"failed to lock {file_lock} at path {str(lock_path)}")
-            raise NotImplementedError(
-                "TODO: wait for the object to finish and return/read a copy for some time, die if you wait for too long and check if the old lease is expired (should be automatic)"
-            ) from e
+            def review_lease_loop() -> None:
+                while not stop_lease_heartbeat.wait(lease_config.review_interval_s):
+                    try:
+                        refresh_lock()
+                    except NotLockedError:
+                        lease_lost.set()
+                        stop_lease_heartbeat.set()
+                        return  # TODO: How do i fail/throw correctly here?
 
-        def review_lease_loop() -> None:
-            while not stop_lease_heartbeat.wait(lease_config.review_interval_s):
-                try:
-                    file_lock.refresh()
-                except NotLockedError:
-                    lease_lost.set()
-                    stop_lease_heartbeat.set()
-                    return  # TODO: How do i fail/throw correctly here?
-
-        lease_heartbeat_thread = threading.Thread(target=review_lease_loop, daemon=True)
-        lease_heartbeat_thread.start()
-
-        try:
-            result = _compute_and_stage_pickle_result(
-                staged_result_path=staged_result_path, compute_fn=compute_fn
+            lease_heartbeat_thread = threading.Thread(
+                target=review_lease_loop, daemon=True
             )
-        except BaseException:
-            staged_result_path.unlink(missing_ok=True)
-            # TODO: maybe handle BaseException and Exception differently?
-            raise
+            lease_heartbeat_thread.start()
 
-        if not staged_result_path.exists():
-            return "missing-tmp"
-        elif lease_lost.is_set():
-            staged_result_path.unlink()
-            return "lost-lock"
+            try:
+                result = _compute_and_stage_pickle_result(
+                    staged_result_path=staged_result_path, compute_fn=compute_fn
+                )
+            except BaseException:
+                staged_result_path.unlink(missing_ok=True)
+                # TODO: maybe handle BaseException and Exception differently?
+                raise
 
-        try:
-            file_lock.refresh()
-        except NotLockedError:
-            staged_result_path.unlink()
-            return "lost-lock"
+            if not staged_result_path.exists():
+                return "missing-tmp"
+            elif lease_lost.is_set():
+                staged_result_path.unlink()
+                return "lost-lock"
 
-        os.replace(staged_result_path, result_path)
+            try:
+                refresh_lock()
+            except NotLockedError:
+                staged_result_path.unlink()
+                return "lost-lock"
 
-        return Ok(result=result)
+            os.replace(staged_result_path, result_path)
 
-    finally:
-        stop_lease_heartbeat.set()
+            return Ok(result=result)
+    except TimeOutError as e:
+        print(f"failed to lock at path {str(lock_path)}")
+        raise NotLockedError("failed to acquire compute lock") from e
 
-        # TODO: this doesn't actually kill the heartbeat thread
-
-        if staged_result_path.exists():
-            raise NotImplementedError("TODO: i don't think this can ever happen?")
-
-        file_lock.unlock()  # TODO: this can technically fail if we didn't aquire the lock. won't fix this since this logic will be moved to zig
+    # TODO: I used to ahve this finally block, but i no longer have that
+    # finally:
+    #     stop_lease_heartbeat.set()
+    #     # TODO: this doesn't actually kill the heartbeat thread
+    #     if staged_result_path.exists():
+    #         raise NotImplementedError("TODO: i don't think this can ever happen?")
