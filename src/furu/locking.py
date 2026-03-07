@@ -1,142 +1,192 @@
-# TODO: this is the first iteration of this file, but it has multiple errors and footguns, such as the gil being busy for more than LeaseConfig.lifetime_s or the heartbeat thread losing the lock but not notifying/killing the worker. i will either move this to zig or rewrite it at some point
-# TODO: handle cases where a user submits a 8 task torch job
-import multiprocessing as mp
+import errno
 import os
-from inspect import FrameInfo
-
-import pickle
-import threading
+import socket
 import time
-from collections.abc import Callable
-from dataclasses import dataclass
-from datetime import datetime
-from multiprocessing import Process
+import uuid
+from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import Literal
-import signal
+from typing import Callable, Iterator
 
-from flufl.lock import AlreadyLockedError, Lock, NotLockedError, TimeOutError
-
-from furu.utils import Ok
-
-type LeaseErrorStates = Literal["lost-lock", "missing-tmp"]
+CLOCK_SLOP_S = 10  # NFS systems can be slow, so we add a 10 second safety margin TODO: assume this is included in the 120 second lease time?
 
 
-@dataclass(frozen=True, slots=True)
-class LeaseConfig:
-    lease_ttl_s: int = 120
-    review_interval_s: int = 15
+class NotLockedError(RuntimeError):
+    pass
 
 
-def _compute_and_stage_pickle_result[T](
-    *,
-    staged_result_path: Path,
-    compute_fn: Callable[[], T],
-) -> T:
-    result = compute_fn()
-    with staged_result_path.open("wb") as f:
-        pickle.dump(
-            result,
-            f,
-        )
-        f.flush()  # TODO: Do i need this and the os.fsync?
-        os.fsync(f.fileno())
-    return result
+class TimeOutError(TimeoutError):
+    pass
 
 
-def run_with_lease_and_pickle_result[T](
-    # data_dir: Path,
-    compute_fn: Callable[[], T],
-    *,
-    lock_path: Path,
-    result_path: Path,
-    lease_config: LeaseConfig | None = None,
-    # TODO: add a n-retries option
-) -> Ok | LeaseErrorStates:
-    if lease_config is None:
-        lease_config = LeaseConfig()
-    # TODO: make the directory for the data and the <data-dir>/.furu
-    # TODO: if the gil is busy for more than lease_config.lifetime_s we will lose the lock. move to zig or use multiprocessing. the reason we are not already using multiprocessing is that it is more painful to return the result from the self._create call when we use multiprocessing
-    # stop_lease_heartbeat = threading.Event()
-    # lease_lost = threading.Event()
-    now = datetime.now()
-    staged_result_path = result_path.with_suffix(
-        f".{os.getpid()}-{now:%y%m%d_%H-%M-%S}.pkl.tmp"
-    )  # TODO: compute this correctly
+def _touch_future(path: Path, *, lifetime_s: float) -> None:
+    expiry = time.time() + lifetime_s
+    os.utime(path, times=(expiry, expiry))
 
+
+def _is_missing_or_stale(exc: OSError) -> bool:
+    return exc.errno in (errno.ENOENT, errno.ESTALE)
+
+
+def _try_touch_future(path: Path, *, lifetime_s: float) -> bool:
     try:
-        file_lock = Lock(str(lock_path), lifetime=lease_config.lease_ttl_s)
+        _touch_future(path, lifetime_s=lifetime_s)
+    except OSError as exc:
+        if _is_missing_or_stale(exc):
+            return False
+        raise
+    return True
 
-        try:
-            file_lock.lock(timeout=0)
-        except TimeOutError as e:
-            print(f"failed to lock {file_lock} at path {str(lock_path)}")
-            raise NotImplementedError(
-                "TODO: wait for the object to finish and return/read a copy for some time, die if you wait for too long and check if the old lease is expired (should be automatic)"
-            ) from e
 
-        if result_path.exists():
-            raise NotImplementedError(
-                "TODO: result exists, but got lock. maybe just read the cached value"
-            )
-        
-    
+def _safe_read_path(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        if _is_missing_or_stale(exc):
+            return None
+        raise
 
-        def review_lease_loop() -> None:
-            def lease_loop_handler(signum: signal.Signals, frame: FrameInfo | None) -> None:
-            
-            while True:
-                try:
-                    file_lock.refresh()
-                    time.sleep(lease_config.review_interval_s)
-                except NotLockedError:
-                    raise NotImplementedError("TODO: handle this")
-                    # lease_lost.set()
-                    # stop_lease_heartbeat.set()
-                    # return  # TODO: How do i fail/throw correctly here?
 
-        # lease_heartbeat_thread = threading.Thread(target=review_lease_loop, daemon=True)
-        # lease_heartbeat_thread.start()
-        ctx = mp.get_context("spawn")
-        lease_heartbeat_process = ctx.Process(target=review_lease_loop, daemon=True)
-        lease_heartbeat_process.start()
+def _safe_stat(path: Path) -> os.stat_result | None:
+    try:
+        return path.stat()
+    except OSError as exc:
+        if _is_missing_or_stale(exc):
+            return None
+        raise
 
-        try:
-            result = _compute_and_stage_pickle_result(
-                staged_result_path=staged_result_path, compute_fn=compute_fn
-            )
-        except BaseException:
-            staged_result_path.unlink(missing_ok=True)
-            # TODO: maybe handle BaseException and Exception differently?
+
+def _safe_unlink_if_exists(path: Path) -> None:
+    try:
+        path.unlink()
+    except OSError as exc:
+        if not _is_missing_or_stale(exc):
             raise
 
-        if not staged_result_path.exists():
-            return "missing-tmp"
-        elif lease_lost.is_set():
-            staged_result_path.unlink()
-            return "lost-lock"
+
+def _safe_read_breakable_claim_path(lock_path: Path) -> Path | None:
+    claim_path_str = _safe_read_path(lock_path)
+    if claim_path_str is None:
+        return None
+
+    claim_path = Path(claim_path_str)
+    if not claim_path.is_absolute():
+        claim_path = lock_path.parent / claim_path
+
+    if not (
+        claim_path.parent == lock_path.parent
+        and claim_path.name.startswith(f"{lock_path.name}.")
+        and claim_path.name.endswith(".claim")
+    ):
+        return None
+
+    if _safe_read_path(claim_path) != str(claim_path):
+        return None
+
+    return claim_path
+
+
+def _assert_is_owner(*, lock_path: Path, owner_claim_path: Path) -> None:
+    lock_stat = _safe_stat(lock_path)
+    owner_stat = _safe_stat(owner_claim_path)
+    same_owner = (
+        lock_stat is not None
+        and owner_stat is not None
+        and os.path.samestat(lock_stat, owner_stat)
+    )
+    if not same_owner:
+        raise NotLockedError(f"lock {lock_path} is owned by another process")
+
+
+def _try_acquire_lock(*, lock_path: Path, owner_claim_path: Path) -> bool:
+    try:
+        os.link(owner_claim_path, lock_path)
+    except FileExistsError:
+        return False
+    except OSError as exc:
+        if _is_missing_or_stale(exc):
+            return False
+        raise
+
+    lock_stat = _safe_stat(lock_path)
+    if lock_stat is None or lock_stat.st_nlink != 2:
+        _safe_unlink_if_exists(lock_path)
+        return False
+
+    return True
+
+
+def _break_stale_lock(*, lock_path: Path, lifetime_s: float) -> None:
+    lock_stat = _safe_stat(lock_path)
+    if lock_stat is None or lock_stat.st_mtime + CLOCK_SLOP_S > time.time():
+        return
+
+    owner_claim_path = _safe_read_breakable_claim_path(lock_path)
+    if owner_claim_path is None:
+        return
+
+    with suppress(PermissionError):
+        if not _try_touch_future(lock_path, lifetime_s=lifetime_s):
+            return
+
+    _safe_unlink_if_exists(lock_path)
+    _safe_unlink_if_exists(owner_claim_path)
+
+
+def _release_lock(*, lock_path: Path, owner_claim_path: Path) -> None:
+    _assert_is_owner(lock_path=lock_path, owner_claim_path=owner_claim_path)
+    try:
+        lock_path.unlink()
+    except OSError as exc:
+        if exc.errno == errno.ENOENT:
+            raise NotLockedError(f"lock {lock_path} does not exist") from exc
+        if exc.errno != errno.ESTALE:
+            raise
+    _safe_unlink_if_exists(owner_claim_path)
+
+
+@contextmanager
+def lock(
+    lock_path: Path,
+    *,
+    lifetime_s: float,
+    timeout_s: float,
+    poll_interval_s: float = 0.05,
+) -> Iterator[Callable[[], None]]:
+    owner_claim_path = lock_path.with_name(
+        f"{lock_path.name}.{socket.getfqdn()}.{os.getpid()}.{uuid.uuid4().hex}.claim"
+    )
+    deadline = time.monotonic() + timeout_s
+
+    fd = os.open(owner_claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(str(owner_claim_path))
+        f.flush()
+        os.fsync(f.fileno())
+
+    _touch_future(owner_claim_path, lifetime_s=lifetime_s)
+
+    try:
+        while True:  # TODO: do i want/need this while loop?
+            if _try_acquire_lock(
+                lock_path=lock_path, owner_claim_path=owner_claim_path
+            ):
+                _touch_future(owner_claim_path, lifetime_s=lifetime_s)
+                break
+
+            _break_stale_lock(lock_path=lock_path, lifetime_s=lifetime_s)
+
+            if timeout_s <= 0 or time.monotonic() >= deadline:
+                raise TimeOutError(f"timed out acquiring lock at {lock_path}")
+            time.sleep(poll_interval_s)  # TODO: do i want a poll interval here?
+
+        def refresh() -> None:
+            _assert_is_owner(lock_path=lock_path, owner_claim_path=owner_claim_path)
+            if not _try_touch_future(owner_claim_path, lifetime_s=lifetime_s):
+                raise NotLockedError(f"claim {owner_claim_path} does not exist")
 
         try:
-            file_lock.refresh()
-        except NotLockedError:
-            staged_result_path.unlink()
-            return "lost-lock"
-
-        os.replace(staged_result_path, result_path)
-
-        return Ok(result=result)
-
+            yield refresh
+        finally:
+            _release_lock(lock_path=lock_path, owner_claim_path=owner_claim_path)
     finally:
-        stop_lease_heartbeat.set()
-
-        # TODO: this doesn't actually kill the heartbeat thread
-
-        if staged_result_path.exists():
-            raise NotImplementedError("TODO: i don't think this can ever happen?")
-
-        try:
-            file_lock.unlock(
-                unconditionally=True
-            )  # TODO: this can technically fail if we didn't aquire the lock. won't fix this since this logic will be moved to zig
-        except NotLockedError:  # Didn't need to unlock
-            pass  # TODO: should we log that we weren't able to lock?
+        _safe_unlink_if_exists(owner_claim_path)

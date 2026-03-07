@@ -15,7 +15,8 @@ from typing import (
 )
 
 from furu.config import config
-from furu.locking import run_with_lease_and_pickle_result
+
+# from furu.locking import run_with_lease_and_pickle_result
 from furu.metadata import CompletedMetadata, RunningMetadata
 from furu.schema import schema_type as _schema_type
 from furu.serialize import to_json as _to_json
