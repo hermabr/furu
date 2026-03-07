@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pytest
 
 import furu.locking as locking_module
-from furu.locking import NotLockedError, TimeOutError, lock
+from furu.locking import LockLostError, NotLockedError, TimeOutError, lock
 
 TEST_CLOCK_SLOP_S = 0.02
 SHORT_SLEEP_S = 0.05
@@ -88,11 +88,49 @@ class _RaiseOnNlinkStat:
 def test_refresh_extends_expiration(tmp_path: Path) -> None:
     lock_path = tmp_path / "test.lck"
 
-    with lock(lock_path, lifetime_s=SHORT_LIFETIME_S, timeout_s=0) as refresh:
+    with lock(lock_path, lifetime_s=SHORT_LIFETIME_S, timeout_s=0) as has_lock:
         expiration_before = lock_path.stat().st_mtime
-        time.sleep(0.01)
-        refresh()
+        assert has_lock()
+        deadline = time.monotonic() + SHORT_LIFETIME_S * 4
+        while time.monotonic() < deadline:
+            if lock_path.stat().st_mtime > expiration_before:
+                break
+            time.sleep(SHORT_SLEEP_S / 4)
+
         assert lock_path.stat().st_mtime > expiration_before
+
+
+def test_lock_uses_default_arguments(tmp_path: Path) -> None:
+    lock_path = tmp_path / "test.lck"
+
+    with lock(lock_path) as has_lock:
+        assert has_lock()
+
+
+def _drop_current_lock(lock_path: Path) -> None:
+    owner_claim_path = Path(lock_path.read_text(encoding="utf-8").strip())
+    lock_path.unlink()
+    owner_claim_path.unlink()
+
+
+def test_ensure_raises_lock_lost_error_when_lock_is_lost(tmp_path: Path) -> None:
+    lock_path = tmp_path / "test.lck"
+
+    with pytest.raises(LockLostError, match="lost lock"):
+        with lock(lock_path, lifetime_s=SHORT_LIFETIME_S, timeout_s=0) as lock_state:
+            _drop_current_lock(lock_path)
+            lock_state.ensure()
+
+
+def test_exit_raises_lock_lost_error_when_lock_is_lost_mid_block(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "test.lck"
+
+    with pytest.raises(LockLostError, match="lost lock"):
+        with lock(lock_path, lifetime_s=SHORT_LIFETIME_S, timeout_s=0):
+            _drop_current_lock(lock_path)
+            time.sleep(SHORT_LIFETIME_S)
 
 
 def test_timeout_when_lock_is_held(tmp_path: Path) -> None:
