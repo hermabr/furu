@@ -11,17 +11,16 @@ from pathlib import Path
 from typing import Iterator
 
 CLOCK_SLOP_S = 10  # NFS systems can be slow, so we add a 10 second safety margin TODO: assume this is included in the 120 second lease time?
-DEFAULT_LIFETIME_S = 120.0 # TODO: make sure the default values are reasonable
-DEFAULT_TIMEOUT_S = 120.0
-DEFAULT_POLL_INTERVAL_S = 0.05
-MIN_HEARTBEAT_INTERVAL_S = 0.01
+DEFAULT_LIFETIME_S = 120.0
+DEFAULT_HEARTBEAT_INTERVAL_S = 15.0
+HEARTBEAT_SHUTDOWN_GRACE_S = 0.01
 
 
-class NotLockedError(RuntimeError):
+class LockAcquireError(RuntimeError):
     pass
 
 
-class TimeOutError(TimeoutError): # TODO: rename this since its not really timeout error, but simply that we failed to acquire the lock
+class NotLockedError(RuntimeError):
     pass
 
 
@@ -94,7 +93,6 @@ def _safe_read_breakable_claim_path(lock_path: Path) -> Path | None:
         return None
 
     return claim_path
-
 
 
 def _is_owner(*, lock_path: Path, owner_claim_path: Path) -> bool:
@@ -224,25 +222,22 @@ class _LockHandle:
                 )
 
 
-def _heartbeat_interval_s(*, lifetime_s: float) -> float:
-    return max(lifetime_s / 3, MIN_HEARTBEAT_INTERVAL_S)
-
-
 def _heartbeat_loop(
     *,
     lock_path: Path,
     owner_claim_path: Path,
     lifetime_s: float,
+    heartbeat_interval_s: float,
     stop_event: ProcessEvent,
     parent_pid: int,
     failure_tx: Connection,
 ) -> None:
-    interval_s = _heartbeat_interval_s(lifetime_s=lifetime_s)
+    next_heartbeat_at = time.monotonic() + heartbeat_interval_s
     try:
         while True:
             if os.getppid() != parent_pid:
                 return
-            if stop_event.wait(interval_s):
+            if stop_event.wait(max(next_heartbeat_at - time.monotonic(), 0.0)):
                 return
             if os.getppid() != parent_pid:
                 return
@@ -252,6 +247,7 @@ def _heartbeat_loop(
             if not _try_touch_future(owner_claim_path, lifetime_s=lifetime_s):
                 failure_tx.send(LockLostError(f"lost lock at {lock_path}"))
                 return
+            next_heartbeat_at = time.monotonic() + heartbeat_interval_s
     except BaseException as exc:
         with suppress(BrokenPipeError, EOFError, OSError):
             failure_tx.send(exc)
@@ -264,13 +260,11 @@ def lock(
     lock_path: Path,
     *,
     lifetime_s: float = DEFAULT_LIFETIME_S,
-    timeout_s: float = DEFAULT_TIMEOUT_S,
-    poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
+    heartbeat_interval_s: float = DEFAULT_HEARTBEAT_INTERVAL_S,
 ) -> Iterator[_LockHandle]:
     owner_claim_path = lock_path.with_name(
         f"{lock_path.name}.{socket.getfqdn()}.{os.getpid()}.{uuid.uuid4().hex}.claim"
     )
-    deadline = time.monotonic() + timeout_s
 
     fd = os.open(owner_claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -285,11 +279,10 @@ def lock(
             lock_path=lock_path, owner_claim_path=owner_claim_path
         ):
             _break_stale_lock(lock_path=lock_path, lifetime_s=lifetime_s)
-
             if not _try_acquire_lock(
                 lock_path=lock_path, owner_claim_path=owner_claim_path
             ):
-                raise TimeOutError(f"could not acquire lock at {lock_path}") # TODO: change the timeout error
+                raise LockAcquireError(f"could not acquire lock at {lock_path}")
 
         _touch_future(owner_claim_path, lifetime_s=lifetime_s)
 
@@ -301,6 +294,7 @@ def lock(
                 "lock_path": lock_path,
                 "owner_claim_path": owner_claim_path,
                 "lifetime_s": lifetime_s,
+                "heartbeat_interval_s": heartbeat_interval_s,
                 "stop_event": stop_event,
                 "parent_pid": os.getpid(),
                 "failure_tx": failure_tx,
@@ -326,10 +320,10 @@ def lock(
             raise
         finally:
             stop_event.set()
-            heartbeat.join(timeout=_heartbeat_interval_s(lifetime_s=lifetime_s) * 2)
+            heartbeat.join(timeout=HEARTBEAT_SHUTDOWN_GRACE_S)
             if heartbeat.is_alive():
                 heartbeat.terminate()
-                heartbeat.join()
+                heartbeat.join(timeout=HEARTBEAT_SHUTDOWN_GRACE_S)
             failure = lock_handle.failure()
             failure_rx.close()
             try:

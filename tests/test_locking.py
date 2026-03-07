@@ -10,12 +10,12 @@ from unittest.mock import patch
 import pytest
 
 import furu.locking as locking_module
-from furu.locking import LockLostError, NotLockedError, TimeOutError, lock
+from furu.locking import LockAcquireError, LockLostError, NotLockedError, lock
 
 TEST_CLOCK_SLOP_S = 0.02
 SHORT_SLEEP_S = 0.05
 SHORT_LIFETIME_S = 0.05
-SHORT_TIMEOUT_S = 0.05
+SHORT_HEARTBEAT_INTERVAL_S = 0.02
 
 
 @pytest.fixture(autouse=True)
@@ -29,10 +29,15 @@ def _child_hold_lock(
     *,
     sleep_s: float = SHORT_SLEEP_S,
     lifetime_s: float = SHORT_LIFETIME_S,
+    heartbeat_interval_s: float = SHORT_HEARTBEAT_INTERVAL_S,
     keep: bool = False,
 ) -> None:
     with suppress(NotLockedError):
-        with lock(lock_path, lifetime_s=lifetime_s, timeout_s=0):
+        with lock(
+            lock_path,
+            lifetime_s=lifetime_s,
+            heartbeat_interval_s=heartbeat_interval_s,
+        ):
             queue.put(True)
             time.sleep(sleep_s)
             queue.put(True)
@@ -43,7 +48,11 @@ def _child_hold_lock(
 def _child_acquire_then_exit(
     lock_path: Path, owner_path: str, *, lifetime_s: float = SHORT_LIFETIME_S
 ) -> None:
-    with lock(lock_path, lifetime_s=lifetime_s, timeout_s=0):
+    with lock(
+        lock_path,
+        lifetime_s=lifetime_s,
+        heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+    ):
         owner = Path(lock_path).read_text(encoding="utf-8").strip()
         Path(owner_path).write_text(owner, encoding="utf-8")
         os._exit(0)
@@ -88,7 +97,11 @@ class _RaiseOnNlinkStat:
 def test_refresh_extends_expiration(tmp_path: Path) -> None:
     lock_path = tmp_path / "test.lck"
 
-    with lock(lock_path, lifetime_s=SHORT_LIFETIME_S, timeout_s=0) as has_lock:
+    with lock(
+        lock_path,
+        lifetime_s=SHORT_LIFETIME_S,
+        heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+    ) as has_lock:
         expiration_before = lock_path.stat().st_mtime
         assert has_lock()
         deadline = time.monotonic() + SHORT_LIFETIME_S * 4
@@ -117,7 +130,11 @@ def test_ensure_raises_lock_lost_error_when_lock_is_lost(tmp_path: Path) -> None
     lock_path = tmp_path / "test.lck"
 
     with pytest.raises(LockLostError, match="lost lock"):
-        with lock(lock_path, lifetime_s=SHORT_LIFETIME_S, timeout_s=0) as lock_state:
+        with lock(
+            lock_path,
+            lifetime_s=SHORT_LIFETIME_S,
+            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+        ) as lock_state:
             _drop_current_lock(lock_path)
             lock_state.ensure()
 
@@ -128,32 +145,36 @@ def test_exit_raises_lock_lost_error_when_lock_is_lost_mid_block(
     lock_path = tmp_path / "test.lck"
 
     with pytest.raises(LockLostError, match="lost lock"):
-        with lock(lock_path, lifetime_s=SHORT_LIFETIME_S, timeout_s=0):
+        with lock(
+            lock_path,
+            lifetime_s=SHORT_LIFETIME_S,
+            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+        ):
             _drop_current_lock(lock_path)
             time.sleep(SHORT_LIFETIME_S)
 
 
 def test_timeout_when_lock_is_held(tmp_path: Path) -> None:
     lock_path = tmp_path / "test.lck"
-    queue: Queue = Queue()
-    proc = Process(
+    holder_queue: Queue = Queue()
+    holder = Process(
         target=_child_hold_lock,
-        args=(lock_path, queue),
+        args=(lock_path, holder_queue),
         kwargs={"sleep_s": SHORT_SLEEP_S * 4, "lifetime_s": SHORT_LIFETIME_S * 4},
     )
-    proc.start()
+    holder.start()
 
     try:
-        queue.get(timeout=0.5)
-        with pytest.raises(TimeOutError):
+        holder_queue.get(timeout=0.5)
+        with pytest.raises(LockAcquireError):
             with lock(
                 lock_path,
                 lifetime_s=SHORT_LIFETIME_S,
-                timeout_s=SHORT_TIMEOUT_S / 2,
+                heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
             ):
                 pass
     finally:
-        proc.join(timeout=0.5)
+        holder.join(timeout=0.5)
 
 
 def test_break_stale_lock(tmp_path: Path) -> None:
@@ -173,7 +194,11 @@ def test_break_stale_lock(tmp_path: Path) -> None:
         os.utime(lock_path, (stale, stale))
         first_owner = lock_path.read_text(encoding="utf-8").strip()
 
-        with lock(lock_path, lifetime_s=SHORT_LIFETIME_S, timeout_s=0.5):
+        with lock(
+            lock_path,
+            lifetime_s=SHORT_LIFETIME_S,
+            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+        ):
             second_owner = lock_path.read_text(encoding="utf-8").strip()
             assert second_owner != first_owner
     finally:
@@ -187,8 +212,12 @@ def test_preserves_unrelated_existing_file(tmp_path: Path) -> None:
     past = time.time() - locking_module.CLOCK_SLOP_S - SHORT_SLEEP_S
     os.utime(lock_path, (past, past))
 
-    with pytest.raises(TimeOutError):
-        with lock(lock_path, lifetime_s=SHORT_LIFETIME_S, timeout_s=SHORT_TIMEOUT_S):
+    with pytest.raises(LockAcquireError):
+        with lock(
+            lock_path,
+            lifetime_s=SHORT_LIFETIME_S,
+            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+        ):
             pass
 
     assert lock_path.read_text(encoding="utf-8") == "save me"
@@ -197,16 +226,19 @@ def test_preserves_unrelated_existing_file(tmp_path: Path) -> None:
 def test_does_not_break_lock_within_clock_slop(tmp_path: Path) -> None:
     lock_path = tmp_path / "test.lck"
 
-    with lock(lock_path, lifetime_s=SHORT_LIFETIME_S * 4, timeout_s=0):
-        almost_stale = time.time() - locking_module.CLOCK_SLOP_S + SHORT_TIMEOUT_S / 2
+    with lock(
+        lock_path,
+        lifetime_s=SHORT_LIFETIME_S * 4,
+        heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+    ):
+        almost_stale = time.time() - locking_module.CLOCK_SLOP_S + SHORT_SLEEP_S / 2
         os.utime(lock_path, (almost_stale, almost_stale))
 
-        with pytest.raises(TimeOutError):
+        with pytest.raises(LockAcquireError):
             with lock(
                 lock_path,
                 lifetime_s=SHORT_LIFETIME_S,
-                timeout_s=SHORT_TIMEOUT_S / 4,
-                poll_interval_s=SHORT_TIMEOUT_S / 10,
+                heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
             ):
                 pass
 
@@ -234,7 +266,11 @@ def test_break_stale_lock_ignores_permission_error_touch(tmp_path: Path) -> None
         stale = time.time() - locking_module.CLOCK_SLOP_S - SHORT_SLEEP_S
         os.utime(lock_path, (stale, stale))
         with patch("os.utime", side_effect=flaky_utime):
-            with lock(lock_path, lifetime_s=SHORT_LIFETIME_S, timeout_s=0.5):
+            with lock(
+                lock_path,
+                lifetime_s=SHORT_LIFETIME_S,
+                heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+            ):
                 assert lock_path.exists()
     finally:
         queue.put(True)
@@ -254,7 +290,11 @@ def test_lock_retries_once_after_benign_link_error(tmp_path: Path) -> None:
         return original_link(src, dst, *args, **kwargs)
 
     with patch("os.link", side_effect=flaky_link):
-        with lock(lock_path, lifetime_s=SHORT_LIFETIME_S, timeout_s=0.5):
+        with lock(
+            lock_path,
+            lifetime_s=SHORT_LIFETIME_S,
+            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+        ):
             assert lock_path.exists()
 
     assert call_count == 2
@@ -265,7 +305,11 @@ def test_lock_raises_unexpected_link_error(tmp_path: Path) -> None:
 
     with patch("os.link", side_effect=OSError(errno.EINVAL, "bad link")):
         with pytest.raises(OSError, match="bad link"):
-            with lock(lock_path, lifetime_s=SHORT_LIFETIME_S, timeout_s=0.5):
+            with lock(
+                lock_path,
+                lifetime_s=SHORT_LIFETIME_S,
+                heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+            ):
                 pass
 
 
@@ -282,7 +326,11 @@ def test_release_ignores_estale_unlink_error(tmp_path: Path) -> None:
         return original_unlink(path, *args, **kwargs)
 
     with patch("os.unlink", side_effect=flaky_unlink):
-        with lock(lock_path, lifetime_s=SHORT_LIFETIME_S, timeout_s=0):
+        with lock(
+            lock_path,
+            lifetime_s=SHORT_LIFETIME_S,
+            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+        ):
             assert lock_path.exists()
 
     assert call_count >= 2
@@ -299,7 +347,11 @@ def test_release_raises_unexpected_unlink_error(tmp_path: Path) -> None:
 
     with patch("os.unlink", side_effect=bad_unlink):
         with pytest.raises(OSError, match="bad unlink"):
-            with lock(lock_path, lifetime_s=SHORT_LIFETIME_S, timeout_s=0):
+            with lock(
+                lock_path,
+                lifetime_s=SHORT_LIFETIME_S,
+                heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+            ):
                 pass
 
 
@@ -313,7 +365,11 @@ def test_stale_check_raises_unexpected_stat_error(tmp_path: Path) -> None:
         queue.get(timeout=0.5)
         with patch("os.stat", side_effect=_RaiseOnMtimeStat()):
             with pytest.raises(OSError, match="st_mtime failure"):
-                with lock(lock_path, lifetime_s=SHORT_LIFETIME_S, timeout_s=0.5):
+                with lock(
+                    lock_path,
+                    lifetime_s=SHORT_LIFETIME_S,
+                    heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+                ):
                     pass
     finally:
         proc.join(timeout=0.5)
@@ -324,7 +380,11 @@ def test_linkcount_check_raises_unexpected_stat_error(tmp_path: Path) -> None:
 
     with patch("os.stat", side_effect=_RaiseOnNlinkStat()):
         with pytest.raises(OSError, match="st_nlink failure"):
-            with lock(lock_path, lifetime_s=SHORT_LIFETIME_S, timeout_s=0.5):
+            with lock(
+                lock_path,
+                lifetime_s=SHORT_LIFETIME_S,
+                heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+            ):
                 pass
 
 
@@ -352,7 +412,11 @@ def test_break_stale_lock_raises_if_winner_claim_unlink_fails(tmp_path: Path) ->
         os.utime(lock_path, (stale, stale))
         with patch("os.unlink", side_effect=flaky_unlink):
             with pytest.raises(OSError, match="bad claim unlink"):
-                with lock(lock_path, lifetime_s=SHORT_LIFETIME_S, timeout_s=0.5):
+                with lock(
+                    lock_path,
+                    lifetime_s=SHORT_LIFETIME_S,
+                    heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+                ):
                     pass
     finally:
         queue.put(True)
@@ -377,16 +441,22 @@ def test_process_exit_without_cleanup_allows_reclaim_after_expiry(
         first_owner = owner_path.read_text(encoding="utf-8").strip()
         assert lock_path.exists()
 
-        with pytest.raises(TimeOutError):
+        with pytest.raises(LockAcquireError):
             with lock(
-                lock_path, lifetime_s=SHORT_LIFETIME_S, timeout_s=SHORT_TIMEOUT_S
+                lock_path,
+                lifetime_s=SHORT_LIFETIME_S,
+                heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
             ):
                 pass
 
         stale = time.time() - locking_module.CLOCK_SLOP_S - SHORT_SLEEP_S
         os.utime(lock_path, (stale, stale))
 
-        with lock(lock_path, lifetime_s=SHORT_LIFETIME_S, timeout_s=0.5):
+        with lock(
+            lock_path,
+            lifetime_s=SHORT_LIFETIME_S,
+            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+        ):
             second_owner = lock_path.read_text(encoding="utf-8").strip()
             assert second_owner != first_owner
     finally:
@@ -401,8 +471,12 @@ def test_does_not_break_corrupt_claim_file(tmp_path: Path) -> None:
     past = time.time() - locking_module.CLOCK_SLOP_S - SHORT_SLEEP_S
     os.utime(lock_path, (past, past))
 
-    with pytest.raises(TimeOutError):
-        with lock(lock_path, lifetime_s=SHORT_LIFETIME_S, timeout_s=SHORT_TIMEOUT_S):
+    with pytest.raises(LockAcquireError):
+        with lock(
+            lock_path,
+            lifetime_s=SHORT_LIFETIME_S,
+            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+        ):
             pass
 
     assert lock_path.exists()
