@@ -88,11 +88,16 @@ class _RaiseOnNlinkStat:
 def test_refresh_extends_expiration(tmp_path: Path) -> None:
     lock_path = tmp_path / "test.lck"
 
-    with lock(lock_path, lifetime_s=SHORT_LIFETIME_S, timeout_s=0) as refresh:
-        expiration_before = lock_path.stat().st_mtime
-        time.sleep(0.01)
-        refresh()
-        assert lock_path.stat().st_mtime > expiration_before
+    with lock(lock_path, lifetime_s=SHORT_LIFETIME_S, timeout_s=0):
+        owner_claim_path = Path(lock_path.read_text(encoding="utf-8").strip())
+        expiration_before = owner_claim_path.stat().st_mtime
+        deadline = time.time() + 0.5
+        while time.time() < deadline:
+            if owner_claim_path.stat().st_mtime > expiration_before:
+                break
+            time.sleep(0.005)
+
+        assert owner_claim_path.stat().st_mtime > expiration_before
 
 
 def test_timeout_when_lock_is_held(tmp_path: Path) -> None:
