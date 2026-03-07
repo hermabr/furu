@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-import furu.locking_manager as flufl_module
+import furu.locking_manager as locking_manager_module
 from furu.locking_manager import NotLockedError, TimeOutError, lock
 
 
@@ -21,7 +21,7 @@ SHORT_TIMEOUT_S = 0.05
 
 @pytest.fixture(autouse=True)
 def _small_clock_slop(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(flufl_module, "CLOCK_SLOP_S", TEST_CLOCK_SLOP_S)
+    monkeypatch.setattr(locking_manager_module, "CLOCK_SLOP_S", TEST_CLOCK_SLOP_S)
 
 
 def _child_hold_lock(
@@ -132,7 +132,7 @@ def test_break_stale_lock(tmp_path: Path) -> None:
     try:
         queue.get(timeout=0.5)
         queue.get(timeout=0.5)
-        stale = time.time() - flufl_module.CLOCK_SLOP_S - SHORT_SLEEP_S
+        stale = time.time() - locking_manager_module.CLOCK_SLOP_S - SHORT_SLEEP_S
         os.utime(lock_path, (stale, stale))
         first_owner = lock_path.read_text(encoding="utf-8").strip()
 
@@ -147,7 +147,7 @@ def test_break_stale_lock(tmp_path: Path) -> None:
 def test_preserves_unrelated_existing_file(tmp_path: Path) -> None:
     lock_path = tmp_path / "test.lck"
     lock_path.write_text("save me", encoding="utf-8")
-    past = time.time() - flufl_module.CLOCK_SLOP_S - SHORT_SLEEP_S
+    past = time.time() - locking_manager_module.CLOCK_SLOP_S - SHORT_SLEEP_S
     os.utime(lock_path, (past, past))
 
     with pytest.raises(TimeOutError):
@@ -161,7 +161,7 @@ def test_does_not_break_lock_within_clock_slop(tmp_path: Path) -> None:
     lock_path = tmp_path / "test.lck"
 
     with lock(lock_path, lifetime_s=SHORT_LIFETIME_S * 4, timeout_s=0):
-        almost_stale = time.time() - flufl_module.CLOCK_SLOP_S + SHORT_TIMEOUT_S / 2
+        almost_stale = time.time() - locking_manager_module.CLOCK_SLOP_S + SHORT_TIMEOUT_S / 2
         os.utime(lock_path, (almost_stale, almost_stale))
 
         with pytest.raises(TimeOutError):
@@ -194,7 +194,7 @@ def test_break_stale_lock_ignores_permission_error_touch(tmp_path: Path) -> None
     try:
         queue.get(timeout=0.5)
         queue.get(timeout=0.5)
-        stale = time.time() - flufl_module.CLOCK_SLOP_S - SHORT_SLEEP_S
+        stale = time.time() - locking_manager_module.CLOCK_SLOP_S - SHORT_SLEEP_S
         os.utime(lock_path, (stale, stale))
         with patch("os.utime", side_effect=flaky_utime):
             with lock(lock_path, lifetime_s=SHORT_LIFETIME_S, timeout_s=0.5):
@@ -313,7 +313,7 @@ def test_break_stale_lock_raises_if_winner_claim_unlink_fails(tmp_path: Path) ->
     try:
         queue.get(timeout=0.5)
         queue.get(timeout=0.5)
-        stale = time.time() - flufl_module.CLOCK_SLOP_S - SHORT_SLEEP_S
+        stale = time.time() - locking_manager_module.CLOCK_SLOP_S - SHORT_SLEEP_S
         os.utime(lock_path, (stale, stale))
         with patch("os.unlink", side_effect=flaky_unlink):
             with pytest.raises(OSError, match="bad claim unlink"):
@@ -348,7 +348,7 @@ def test_process_exit_without_cleanup_allows_reclaim_after_expiry(
             ):
                 pass
 
-        stale = time.time() - flufl_module.CLOCK_SLOP_S - SHORT_SLEEP_S
+        stale = time.time() - locking_manager_module.CLOCK_SLOP_S - SHORT_SLEEP_S
         os.utime(lock_path, (stale, stale))
 
         with lock(lock_path, lifetime_s=SHORT_LIFETIME_S, timeout_s=0.5):
@@ -363,7 +363,7 @@ def test_does_not_break_corrupt_claim_file(tmp_path: Path) -> None:
     claim_path = tmp_path / "test.lck.example.invalid.claim"
     claim_path.write_text("corrupt", encoding="utf-8")
     os.link(claim_path, lock_path)
-    past = time.time() - flufl_module.CLOCK_SLOP_S - SHORT_SLEEP_S
+    past = time.time() - locking_manager_module.CLOCK_SLOP_S - SHORT_SLEEP_S
     os.utime(lock_path, (past, past))
 
     with pytest.raises(TimeOutError):
