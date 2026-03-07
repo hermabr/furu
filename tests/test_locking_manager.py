@@ -9,8 +9,8 @@ from unittest.mock import patch
 
 import pytest
 
-import furu.flufl as flufl_module
-from furu.flufl import NotLockedError, TimeOutError, lock
+import furu.locking_manager as flufl_module
+from furu.locking_manager import NotLockedError, TimeOutError, lock
 
 
 TEST_CLOCK_SLOP_S = 0.02

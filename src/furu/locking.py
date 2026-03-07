@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from furu.flufl import NotLockedError, TimeOutError, lock
+from furu.locking_manager import NotLockedError, TimeOutError, lock
 
 from furu.utils import Ok
 

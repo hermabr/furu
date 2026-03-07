@@ -5,7 +5,7 @@ import time
 from multiprocessing import get_context
 from pathlib import Path
 
-from furu.flufl import NotLockedError
+from furu.locking_manager import NotLockedError
 
 from furu import Furu
 from furu.config import _FuruDirectories, config
