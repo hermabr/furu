@@ -155,7 +155,6 @@ def lock(
     owner_claim_path = lock_path.with_name(
         f"{lock_path.name}.{socket.getfqdn()}.{os.getpid()}.{uuid.uuid4().hex}.claim"
     )
-    deadline = time.monotonic() + timeout_s
 
     fd = os.open(owner_claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -166,18 +165,19 @@ def lock(
     _touch_future(owner_claim_path, lifetime_s=lifetime_s)
 
     try:
-        while True:  # TODO: do i want/need this while loop?
-            if _try_acquire_lock(
-                lock_path=lock_path, owner_claim_path=owner_claim_path
-            ):
-                _touch_future(owner_claim_path, lifetime_s=lifetime_s)
-                break
+        del timeout_s, poll_interval_s
 
+        if not _try_acquire_lock(
+            lock_path=lock_path, owner_claim_path=owner_claim_path
+        ):
             _break_stale_lock(lock_path=lock_path, lifetime_s=lifetime_s)
 
-            if timeout_s <= 0 or time.monotonic() >= deadline:
-                raise TimeOutError(f"timed out acquiring lock at {lock_path}")
-            time.sleep(poll_interval_s)  # TODO: do i want a poll interval here?
+            if not _try_acquire_lock(
+                lock_path=lock_path, owner_claim_path=owner_claim_path
+            ):
+                raise TimeOutError(f"could not acquire lock at {lock_path}")
+
+        _touch_future(owner_claim_path, lifetime_s=lifetime_s)
 
         def refresh() -> None:
             _assert_is_owner(lock_path=lock_path, owner_claim_path=owner_claim_path)

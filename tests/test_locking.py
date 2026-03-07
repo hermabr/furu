@@ -203,7 +203,7 @@ def test_break_stale_lock_ignores_permission_error_touch(tmp_path: Path) -> None
         proc.join(timeout=0.5)
 
 
-def test_lock_retries_benign_link_errors(tmp_path: Path) -> None:
+def test_lock_retries_once_after_benign_link_error(tmp_path: Path) -> None:
     lock_path = tmp_path / "test.lck"
     original_link = os.link
     call_count = 0
@@ -213,15 +213,13 @@ def test_lock_retries_benign_link_errors(tmp_path: Path) -> None:
         call_count += 1
         if call_count == 1:
             raise OSError(errno.ENOENT, "simulated benign race")
-        if call_count == 2:
-            raise OSError(errno.ESTALE, "simulated benign race")
         return original_link(src, dst, *args, **kwargs)
 
     with patch("os.link", side_effect=flaky_link):
         with lock(lock_path, lifetime_s=SHORT_LIFETIME_S, timeout_s=0.5):
             assert lock_path.exists()
 
-    assert call_count == 3
+    assert call_count == 2
 
 
 def test_lock_raises_unexpected_link_error(tmp_path: Path) -> None:
