@@ -183,7 +183,7 @@ def lock(
     _touch_future(owner_claim_path, lifetime_s=lifetime_s)
 
     try:
-        while True:
+        while True:  # TODO: do i want/need this while loop?
             if _try_acquire_lock(
                 lock_path=lock_path, owner_claim_path=owner_claim_path
             ):
@@ -194,27 +194,18 @@ def lock(
 
             if timeout_s <= 0 or time.monotonic() >= deadline:
                 raise TimeOutError(f"timed out acquiring lock at {lock_path}")
-            time.sleep(poll_interval_s)
+            time.sleep(poll_interval_s)  # TODO: do i want a poll interval here?
 
         def refresh() -> None:
-            def _refresh_lock(
-                *, lock_path: Path, owner_claim_path: Path, lifetime_s: float
-            ) -> None:
-                _assert_is_owner(lock_path=lock_path, owner_claim_path=owner_claim_path)
-                try:
-                    _touch_future(owner_claim_path, lifetime_s=lifetime_s)
-                except OSError as exc:
-                    if exc.errno in (errno.ENOENT, errno.ESTALE):
-                        raise NotLockedError(
-                            f"claim {owner_claim_path} does not exist"
-                        ) from exc
-                    raise
-
-            _refresh_lock(
-                lock_path=lock_path,
-                owner_claim_path=owner_claim_path,
-                lifetime_s=lifetime_s,
-            )
+            _assert_is_owner(lock_path=lock_path, owner_claim_path=owner_claim_path)
+            try:
+                _touch_future(owner_claim_path, lifetime_s=lifetime_s)
+            except OSError as exc:
+                if exc.errno in (errno.ENOENT, errno.ESTALE):
+                    raise NotLockedError(
+                        f"claim {owner_claim_path} does not exist"
+                    ) from exc
+                raise
 
         try:
             yield refresh
