@@ -1,5 +1,7 @@
 import errno
+import multiprocessing
 import os
+import signal
 import time
 from contextlib import suppress
 from multiprocessing import Process, Queue
@@ -56,6 +58,39 @@ def _child_acquire_then_exit(
         owner = Path(lock_path).read_text(encoding="utf-8").strip()
         Path(owner_path).write_text(owner, encoding="utf-8")
         os._exit(0)
+
+
+def _child_hold_lock_and_report_heartbeat(
+    lock_path: Path,
+    pid_queue: Queue,
+    release_queue: Queue,
+    *,
+    lifetime_s: float = SHORT_LIFETIME_S,
+    heartbeat_interval_s: float = SHORT_HEARTBEAT_INTERVAL_S,
+) -> None:
+    with suppress(NotLockedError, LockLostError):
+        with lock(
+            lock_path,
+            lifetime_s=lifetime_s,
+            heartbeat_interval_s=heartbeat_interval_s,
+        ):
+            heartbeat_children = multiprocessing.active_children()
+            assert len(heartbeat_children) == 1
+            pid_queue.put((os.getpid(), heartbeat_children[0].pid))
+            release_queue.get()
+
+
+def _child_exit_immediately() -> None:
+    return
+
+
+def _dead_pid() -> int:
+    proc = Process(target=_child_exit_immediately)
+    proc.start()
+    proc.join(timeout=0.5)
+    assert proc.exitcode == 0
+    assert proc.pid is not None
+    return proc.pid
 
 
 class _FakeMtimeStat:
@@ -126,7 +161,7 @@ def _drop_current_lock(lock_path: Path) -> None:
     owner_claim_path.unlink()
 
 
-def test_ensure_raises_lock_lost_error_when_lock_is_lost(tmp_path: Path) -> None:
+def test_has_lock_returns_false_when_lock_is_lost(tmp_path: Path) -> None:
     lock_path = tmp_path / "test.lck"
 
     with pytest.raises(LockLostError, match="lost lock"):
@@ -134,9 +169,9 @@ def test_ensure_raises_lock_lost_error_when_lock_is_lost(tmp_path: Path) -> None
             lock_path,
             lifetime_s=SHORT_LIFETIME_S,
             heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
-        ) as lock_state:
+        ) as has_lock:
             _drop_current_lock(lock_path)
-            lock_state.ensure()
+            assert not has_lock()
 
 
 def test_exit_raises_lock_lost_error_when_lock_is_lost_mid_block(
@@ -152,6 +187,51 @@ def test_exit_raises_lock_lost_error_when_lock_is_lost_mid_block(
         ):
             _drop_current_lock(lock_path)
             time.sleep(SHORT_LIFETIME_S)
+
+
+def test_heartbeat_signal_does_not_release_live_parent_lock(tmp_path: Path) -> None:
+    lock_path = tmp_path / "test.lck"
+    pid_queue: Queue = Queue()
+    release_queue: Queue = Queue()
+    proc = Process(
+        target=_child_hold_lock_and_report_heartbeat,
+        args=(lock_path, pid_queue, release_queue),
+    )
+    proc.start()
+
+    try:
+        _, heartbeat_pid = pid_queue.get(timeout=0.5)
+        os.kill(heartbeat_pid, signal.SIGTERM)
+        time.sleep(SHORT_SLEEP_S)
+
+        with pytest.raises(LockAcquireError):
+            with lock(
+                lock_path,
+                lifetime_s=SHORT_LIFETIME_S,
+                heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+            ):
+                pass
+    finally:
+        release_queue.put(True)
+        proc.join(timeout=0.5)
+
+
+def test_try_release_if_parent_dead_releases_lock(tmp_path: Path) -> None:
+    lock_path = tmp_path / "test.lck"
+    owner_claim_path = tmp_path / "test.lck.owner.claim"
+    owner_claim_path.write_text(str(owner_claim_path), encoding="utf-8")
+    locking_module._touch_future(owner_claim_path, lifetime_s=SHORT_LIFETIME_S)
+    assert locking_module._try_acquire_lock(
+        lock_path=lock_path, owner_claim_path=owner_claim_path
+    )
+
+    assert locking_module._try_release_if_parent_dead(
+        lock_path=lock_path,
+        owner_claim_path=owner_claim_path,
+        parent_pid=_dead_pid(),
+    )
+    assert not lock_path.exists()
+    assert not owner_claim_path.exists()
 
 
 def test_timeout_when_lock_is_held(tmp_path: Path) -> None:

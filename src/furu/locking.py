@@ -1,6 +1,7 @@
 import errno
 import multiprocessing
 import os
+import signal
 import socket
 import time
 import uuid
@@ -8,12 +9,13 @@ from contextlib import contextmanager, suppress
 from multiprocessing.connection import Connection
 from multiprocessing.synchronize import Event as ProcessEvent
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 CLOCK_SLOP_S = 10  # NFS systems can be slow, so we add a 10 second safety margin TODO: assume this is included in the 120 second lease time?
 DEFAULT_LIFETIME_S = 120.0
 DEFAULT_HEARTBEAT_INTERVAL_S = 15.0
 HEARTBEAT_SHUTDOWN_GRACE_S = 0.01
+CHILD_SIGNAL_POLL_INTERVAL_S = 0.1
 
 
 class LockAcquireError(RuntimeError):
@@ -154,72 +156,28 @@ def _release_lock(*, lock_path: Path, owner_claim_path: Path) -> None:
     _safe_unlink_if_exists(owner_claim_path)
 
 
-class _LockHandle:
-    def __init__(
-        self,
-        *,
-        lock_path: Path,
-        owner_claim_path: Path,
-        heartbeat: multiprocessing.Process,
-        stop_event: ProcessEvent,
-        failure_rx: Connection,
-    ):
-        self._lock_path = lock_path
-        self._owner_claim_path = owner_claim_path
-        self._heartbeat = heartbeat
-        self._stop_event = stop_event
-        self._failure_rx = failure_rx
-        self._failure: BaseException | None = None
+def _parent_is_alive(*, parent_pid: int) -> bool:
+    if os.getppid() == parent_pid:
+        return True
 
-    def __call__(self) -> bool:
-        return self.held()
+    try:
+        os.kill(parent_pid, 0)
+    except OSError as exc:
+        return exc.errno != errno.ESRCH
+    return True
 
-    def held(self) -> bool:
-        owned = _is_owner(
-            lock_path=self._lock_path, owner_claim_path=self._owner_claim_path
-        )
-        if not owned:
-            self._record_failure(self._new_lock_lost_error())
-        return owned
 
-    def ensure(self) -> None:
-        failure = self.failure()
-        if failure is not None:
-            raise failure
-        if not _is_owner(
-            lock_path=self._lock_path, owner_claim_path=self._owner_claim_path
-        ):
-            raise self._record_failure(self._new_lock_lost_error())
+def _try_release_if_parent_dead(
+    *, lock_path: Path, owner_claim_path: Path, parent_pid: int
+) -> bool:
+    if _parent_is_alive(parent_pid=parent_pid):
+        return False
 
-    def failure(self) -> BaseException | None:
-        self._poll_failure()
-        return self._failure
-
-    def _new_lock_lost_error(self) -> LockLostError:
-        return LockLostError(f"lost lock at {self._lock_path}")
-
-    def _record_failure(self, failure: BaseException) -> BaseException:
-        if self._failure is None:
-            self._failure = failure
-        return self._failure
-
-    def _poll_failure(self) -> None:
-        if self._failure is None:
-            with suppress(EOFError, OSError):
-                while self._failure_rx.poll():
-                    self._record_failure(self._failure_rx.recv())
-        if (
-            self._failure is None
-            and not self._stop_event.is_set()
-            and not self._heartbeat.is_alive()
-        ):
-            exitcode = self._heartbeat.exitcode
-            if exitcode not in (None, 0):
-                self._record_failure(
-                    RuntimeError(
-                        f"heartbeat process exited unexpectedly for {self._lock_path}"
-                    )
-                )
+    with suppress(NotLockedError, OSError):
+        _release_lock(lock_path=lock_path, owner_claim_path=owner_claim_path)
+    with suppress(OSError):
+        _safe_unlink_if_exists(owner_claim_path)
+    return True
 
 
 def _heartbeat_loop(
@@ -232,15 +190,37 @@ def _heartbeat_loop(
     parent_pid: int,
     failure_tx: Connection,
 ) -> None:
+    shutdown_requested = False
+
+    def handle_shutdown_signal(_signum: int, _frame: object | None) -> None:
+        nonlocal shutdown_requested
+        if _try_release_if_parent_dead(
+            lock_path=lock_path,
+            owner_claim_path=owner_claim_path,
+            parent_pid=parent_pid,
+        ):
+            raise SystemExit(0)
+        shutdown_requested = True
+
+    signal.signal(signal.SIGINT, handle_shutdown_signal)
+    signal.signal(signal.SIGTERM, handle_shutdown_signal)
     next_heartbeat_at = time.monotonic() + heartbeat_interval_s
     try:
         while True:
-            if os.getppid() != parent_pid:
+            if shutdown_requested and _try_release_if_parent_dead(
+                lock_path=lock_path,
+                owner_claim_path=owner_claim_path,
+                parent_pid=parent_pid,
+            ):
                 return
-            if stop_event.wait(max(next_heartbeat_at - time.monotonic(), 0.0)):
+            timeout_s = min(
+                max(next_heartbeat_at - time.monotonic(), 0.0),
+                CHILD_SIGNAL_POLL_INTERVAL_S,
+            )
+            if stop_event.wait(timeout_s):
                 return
-            if os.getppid() != parent_pid:
-                return
+            if time.monotonic() < next_heartbeat_at:
+                continue
             if not _is_owner(lock_path=lock_path, owner_claim_path=owner_claim_path):
                 failure_tx.send(LockLostError(f"lost lock at {lock_path}"))
                 return
@@ -261,7 +241,7 @@ def lock(
     *,
     lifetime_s: float = DEFAULT_LIFETIME_S,
     heartbeat_interval_s: float = DEFAULT_HEARTBEAT_INTERVAL_S,
-) -> Iterator[_LockHandle]:
+) -> Iterator[Callable[[], bool]]:
     owner_claim_path = lock_path.with_name(
         f"{lock_path.name}.{socket.getfqdn()}.{os.getpid()}.{uuid.uuid4().hex}.claim"
     )
@@ -304,17 +284,44 @@ def lock(
         )
         heartbeat.start()
         failure_tx.close()
-        lock_handle = _LockHandle(
-            lock_path=lock_path,
-            owner_claim_path=owner_claim_path,
-            heartbeat=heartbeat,
-            stop_event=stop_event,
-            failure_rx=failure_rx,
-        )
         body_error: BaseException | None = None
+        failure: BaseException | None = None
+
+        def new_lock_lost_error() -> LockLostError:
+            return LockLostError(f"lost lock at {lock_path}")
+
+        def record_failure(exc: BaseException) -> BaseException:
+            nonlocal failure
+            if failure is None:
+                failure = exc
+            return failure
+
+        def poll_failure() -> BaseException | None:
+            nonlocal failure
+            if failure is None:
+                with suppress(EOFError, OSError):
+                    while failure_rx.poll():
+                        record_failure(failure_rx.recv())
+            if failure is None and not stop_event.is_set() and not heartbeat.is_alive():
+                exitcode = heartbeat.exitcode
+                if exitcode not in (None, 0):
+                    record_failure(
+                        RuntimeError(
+                            f"heartbeat process exited unexpectedly for {lock_path}"
+                        )
+                    )
+            return failure
+
+        def has_lock() -> bool:
+            if poll_failure() is not None:
+                return False
+            owned = _is_owner(lock_path=lock_path, owner_claim_path=owner_claim_path)
+            if not owned:
+                record_failure(new_lock_lost_error())
+            return owned
 
         try:
-            yield lock_handle
+            yield has_lock
         except BaseException as exc:
             body_error = exc
             raise
@@ -324,16 +331,13 @@ def lock(
             if heartbeat.is_alive():
                 heartbeat.terminate()
                 heartbeat.join(timeout=HEARTBEAT_SHUTDOWN_GRACE_S)
-            failure = lock_handle.failure()
+            poll_failure()
             failure_rx.close()
             try:
                 _release_lock(lock_path=lock_path, owner_claim_path=owner_claim_path)
             except NotLockedError:
-                failure = lock_handle._record_failure(
-                    lock_handle._new_lock_lost_error()
-                )
-            if body_error is None:
-                if failure is not None:
-                    raise failure
+                record_failure(new_lock_lost_error())
+            if body_error is None and failure is not None:
+                raise failure
     finally:
         _safe_unlink_if_exists(owner_claim_path)
