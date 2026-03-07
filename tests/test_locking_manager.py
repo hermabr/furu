@@ -12,7 +12,6 @@ import pytest
 import furu.locking_manager as locking_manager_module
 from furu.locking_manager import NotLockedError, TimeOutError, lock
 
-
 TEST_CLOCK_SLOP_S = 0.02
 SHORT_SLEEP_S = 0.05
 SHORT_LIFETIME_S = 0.05
@@ -25,7 +24,7 @@ def _small_clock_slop(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _child_hold_lock(
-    lock_path: str,
+    lock_path: Path,
     queue: Queue,
     *,
     sleep_s: float = SHORT_SLEEP_S,
@@ -42,7 +41,7 @@ def _child_hold_lock(
 
 
 def _child_acquire_then_exit(
-    lock_path: str, owner_path: str, *, lifetime_s: float = SHORT_LIFETIME_S
+    lock_path: Path, owner_path: str, *, lifetime_s: float = SHORT_LIFETIME_S
 ) -> None:
     with lock(lock_path, lifetime_s=lifetime_s, timeout_s=0):
         owner = Path(lock_path).read_text(encoding="utf-8").strip()
@@ -101,7 +100,7 @@ def test_timeout_when_lock_is_held(tmp_path: Path) -> None:
     queue: Queue = Queue()
     proc = Process(
         target=_child_hold_lock,
-        args=(str(lock_path), queue),
+        args=(lock_path, queue),
         kwargs={"sleep_s": SHORT_SLEEP_S * 4, "lifetime_s": SHORT_LIFETIME_S * 4},
     )
     proc.start()
@@ -124,7 +123,7 @@ def test_break_stale_lock(tmp_path: Path) -> None:
     queue: Queue = Queue()
     proc = Process(
         target=_child_hold_lock,
-        args=(str(lock_path), queue),
+        args=(lock_path, queue),
         kwargs={"sleep_s": SHORT_SLEEP_S, "lifetime_s": SHORT_LIFETIME_S, "keep": True},
     )
     proc.start()
@@ -161,7 +160,9 @@ def test_does_not_break_lock_within_clock_slop(tmp_path: Path) -> None:
     lock_path = tmp_path / "test.lck"
 
     with lock(lock_path, lifetime_s=SHORT_LIFETIME_S * 4, timeout_s=0):
-        almost_stale = time.time() - locking_manager_module.CLOCK_SLOP_S + SHORT_TIMEOUT_S / 2
+        almost_stale = (
+            time.time() - locking_manager_module.CLOCK_SLOP_S + SHORT_TIMEOUT_S / 2
+        )
         os.utime(lock_path, (almost_stale, almost_stale))
 
         with pytest.raises(TimeOutError):
@@ -179,7 +180,7 @@ def test_break_stale_lock_ignores_permission_error_touch(tmp_path: Path) -> None
     queue: Queue = Queue()
     proc = Process(
         target=_child_hold_lock,
-        args=(str(lock_path), queue),
+        args=(lock_path, queue),
         kwargs={"sleep_s": SHORT_SLEEP_S, "lifetime_s": SHORT_LIFETIME_S, "keep": True},
     )
     proc.start()
@@ -271,7 +272,7 @@ def test_release_raises_unexpected_unlink_error(tmp_path: Path) -> None:
 def test_stale_check_raises_unexpected_stat_error(tmp_path: Path) -> None:
     lock_path = tmp_path / "test.lck"
     queue: Queue = Queue()
-    proc = Process(target=_child_hold_lock, args=(str(lock_path), queue))
+    proc = Process(target=_child_hold_lock, args=(lock_path, queue))
     proc.start()
 
     try:
@@ -298,7 +299,7 @@ def test_break_stale_lock_raises_if_winner_claim_unlink_fails(tmp_path: Path) ->
     queue: Queue = Queue()
     proc = Process(
         target=_child_hold_lock,
-        args=(str(lock_path), queue),
+        args=(lock_path, queue),
         kwargs={"sleep_s": SHORT_SLEEP_S, "lifetime_s": SHORT_LIFETIME_S, "keep": True},
     )
     proc.start()
@@ -331,7 +332,7 @@ def test_process_exit_without_cleanup_allows_reclaim_after_expiry(
     owner_path = tmp_path / "owner.txt"
     proc = Process(
         target=_child_acquire_then_exit,
-        args=(str(lock_path), str(owner_path)),
+        args=(lock_path, str(owner_path)),
         kwargs={"lifetime_s": SHORT_LIFETIME_S},
     )
     proc.start()
