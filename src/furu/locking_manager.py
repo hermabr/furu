@@ -5,19 +5,20 @@ import signal
 import socket
 import time
 import uuid
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager, nullcontext, suppress
 from enum import StrEnum
 from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
 from pathlib import Path
 from typing import Iterator
 
+from furu.signal_manager import handle_termination_signals
+
 CLOCK_SLOP_S = 10
 DEFAULT_HEARTBEAT_INTERVAL_S = 15
 
 
-class _HeartbeatMessage(StrEnum): # TODO: should this be literal/do i need this at all?
-    STOP = "stop"
+class _HeartbeatMessage(StrEnum):  # TODO: should this be literal/do i need this at all?
     LOST_LOCK = "lost-lock"
 
 
@@ -183,9 +184,7 @@ def _heartbeat_loop(
 ) -> None:
     try:
         while True:
-            if conn.poll(interval_s):
-                if conn.recv() == _HeartbeatMessage.STOP:
-                    return
+            time.sleep(interval_s)
 
             if os.getppid() != parent_pid:
                 return
@@ -210,10 +209,10 @@ def _start_heartbeat(
 ) -> tuple[BaseProcess, Connection]:
     ctx = mp.get_context("spawn")
     effective_interval_s = min(heartbeat_interval_s, max(lifetime_s / 3, 0.01))
-    parent_conn, child_conn = ctx.Pipe(duplex=True)
+    child_conn, parent_conn = ctx.Pipe(duplex=False)
     process = ctx.Process(
         target=_heartbeat_loop,
-        kwargs={ # TODO: make this a dataclass?
+        kwargs={  # TODO: make this a dataclass?
             "lock_path": lock_path,
             "owner_claim_path": owner_claim_path,
             "lifetime_s": lifetime_s,
@@ -249,9 +248,6 @@ def _stop_heartbeat(
 ) -> NotLockedError | None:
     error: NotLockedError | None = None
 
-    with suppress(BrokenPipeError, EOFError, OSError):
-        conn.send(_HeartbeatMessage.STOP)
-
     process.join(timeout=timeout_s)
     if process.is_alive():
         process.terminate()
@@ -279,6 +275,7 @@ def lock(
     timeout_s: float,
     poll_interval_s: float = 0.05,
     heartbeat_interval_s: float = DEFAULT_HEARTBEAT_INTERVAL_S,
+    handle_signals: bool = True,
 ) -> Iterator[None]:
     owner_claim_path = lock_path.with_name(
         f"{lock_path.name}.{socket.getfqdn()}.{os.getpid()}.{uuid.uuid4().hex}.claim"
@@ -297,52 +294,57 @@ def lock(
     heartbeat_conn: Connection | None = None
     body_failed = True
 
+    lock_context = handle_termination_signals() if handle_signals else nullcontext()
+
     try:
-        while True:  # TODO: do i want/need this while loop?
-            if _try_acquire_lock(
-                lock_path=lock_path, owner_claim_path=owner_claim_path
-            ):
-                _touch_future(owner_claim_path, lifetime_s=lifetime_s)
-                break
+        with lock_context:
+            while True:  # TODO: do i want/need this while loop?
+                if _try_acquire_lock(
+                    lock_path=lock_path, owner_claim_path=owner_claim_path
+                ):
+                    _touch_future(owner_claim_path, lifetime_s=lifetime_s)
+                    break
 
-            _break_stale_lock(lock_path=lock_path, lifetime_s=lifetime_s)
+                _break_stale_lock(lock_path=lock_path, lifetime_s=lifetime_s)
 
-            if timeout_s <= 0 or time.monotonic() >= deadline:
-                raise TimeOutError(f"timed out acquiring lock at {lock_path}")
-            time.sleep(poll_interval_s)  # TODO: do i want a poll interval here?
+                if timeout_s <= 0 or time.monotonic() >= deadline:
+                    raise TimeOutError(f"timed out acquiring lock at {lock_path}")
+                time.sleep(poll_interval_s)  # TODO: do i want a poll interval here?
 
-        heartbeat_process, heartbeat_conn = _start_heartbeat(
-            lock_path=lock_path,
-            owner_claim_path=owner_claim_path,
-            lifetime_s=lifetime_s,
-            heartbeat_interval_s=heartbeat_interval_s,
-        )
+            heartbeat_process, heartbeat_conn = _start_heartbeat(
+                lock_path=lock_path,
+                owner_claim_path=owner_claim_path,
+                lifetime_s=lifetime_s,
+                heartbeat_interval_s=heartbeat_interval_s,
+            )
 
-        try:
-            yield
-            body_failed = False
-        finally:
-            heartbeat_error: NotLockedError | None = None
-            if heartbeat_process is not None and heartbeat_conn is not None:
-                heartbeat_error = _stop_heartbeat(
-                    process=heartbeat_process,
-                    conn=heartbeat_conn,
-                    timeout_s=max(poll_interval_s, 0.05),
-                )
-                heartbeat_process = None
-                heartbeat_conn = None
-
-            release_error: Exception | None = None
             try:
-                _release_lock(lock_path=lock_path, owner_claim_path=owner_claim_path)
-            except Exception as exc:
-                release_error = exc
+                yield
+                body_failed = False
+            finally:
+                heartbeat_error: NotLockedError | None = None
+                if heartbeat_process is not None and heartbeat_conn is not None:
+                    heartbeat_error = _stop_heartbeat(
+                        process=heartbeat_process,
+                        conn=heartbeat_conn,
+                        timeout_s=max(poll_interval_s, 0.05),
+                    )
+                    heartbeat_process = None
+                    heartbeat_conn = None
 
-            if not body_failed:
-                if heartbeat_error is not None:
-                    raise heartbeat_error
-                if release_error is not None:
-                    raise release_error
+                release_error: Exception | None = None
+                try:
+                    _release_lock(
+                        lock_path=lock_path, owner_claim_path=owner_claim_path
+                    )
+                except Exception as exc:
+                    release_error = exc
+
+                if not body_failed:
+                    if heartbeat_error is not None:
+                        raise heartbeat_error
+                    if release_error is not None:
+                        raise release_error
     finally:
         if heartbeat_process is not None and heartbeat_conn is not None:
             _stop_heartbeat(

@@ -19,6 +19,7 @@ from furu.locking_manager import NotLockedError, TimeOutError, lock
 from furu.metadata import CompletedMetadata, RunningMetadata
 from furu.schema import schema_type as _schema_type
 from furu.serialize import to_json as _to_json
+from furu.signal_manager import handle_termination_signals
 from furu.utils import JsonValue, _hash_dict_deterministically, fully_qualified_name
 
 if TYPE_CHECKING:
@@ -109,34 +110,36 @@ class Furu[T](_FuruDataclassTransform, ABC):
                 self._internal_furu_dir / "compute.lock",
                 lifetime_s=120,
                 timeout_s=0,
+                handle_signals=False,
             ):
-                if self._result_path.exists():
-                    with open(self._result_path, "rb") as f:
-                        return pickle.load(f)
+                with handle_termination_signals():
+                    if self._result_path.exists():
+                        with open(self._result_path, "rb") as f:
+                            return pickle.load(f)
 
-                now = datetime.now()
-                staged_result_path = self._result_path.with_suffix(
-                    f".{os.getpid()}-{now:%y%m%d_%H-%M-%S}.pkl.tmp"
-                )
+                    now = datetime.now()
+                    staged_result_path = self._result_path.with_suffix(
+                        f".{os.getpid()}-{now:%y%m%d_%H-%M-%S}.pkl.tmp"
+                    )
 
-                try:
-                    result = create_wrapper()
-                    with staged_result_path.open("wb") as f:
-                        pickle.dump(result, f)
-                        f.flush()
-                        os.fsync(f.fileno())
+                    try:
+                        result = create_wrapper()
+                        with staged_result_path.open("wb") as f:
+                            pickle.dump(result, f)
+                            f.flush()
+                            os.fsync(f.fileno())
 
-                    if not staged_result_path.exists():
-                        raise NotLockedError(
-                            f"staged result disappeared at {staged_result_path}"
-                        )
+                        if not staged_result_path.exists():
+                            raise NotLockedError(
+                                f"staged result disappeared at {staged_result_path}"
+                            )
 
-                    os.replace(staged_result_path, self._result_path)
-                    return result
-                except BaseException:
-                    staged_result_path.unlink(missing_ok=True)
-                    raise
-        except TimeOutError as exc: # TODO: the timeout error should tell you how long it is since last touch or something like that
+                        os.replace(staged_result_path, self._result_path)
+                        return result
+                    except BaseException:
+                        staged_result_path.unlink(missing_ok=True)
+                        raise
+        except TimeOutError as exc:  # TODO: the timeout error should tell you how long it is since last touch or something like that
             raise NotLockedError("failed to acquire compute lock") from exc
 
     def status(

@@ -1,5 +1,6 @@
 import errno
 import os
+import signal
 import time
 from contextlib import suppress
 from multiprocessing import Process, Queue
@@ -11,6 +12,7 @@ import pytest
 
 import furu.locking_manager as locking_manager_module
 from furu.locking_manager import NotLockedError, TimeOutError, lock
+from furu.signal_manager import handle_termination_signals
 
 TEST_CLOCK_SLOP_S = 0.02
 SHORT_SLEEP_S = 0.05
@@ -47,6 +49,29 @@ def _child_acquire_then_exit(
         owner = Path(lock_path).read_text(encoding="utf-8").strip()
         Path(owner_path).write_text(owner, encoding="utf-8")
         os._exit(0)
+
+
+def _child_hold_lock_until_signal(
+    lock_path: Path, queue: Queue, *, lifetime_s: float = SHORT_LIFETIME_S * 4
+) -> None:
+    with lock(lock_path, lifetime_s=lifetime_s, timeout_s=0):
+        queue.put(lock_path.read_text(encoding="utf-8").strip())
+        time.sleep(30)
+
+
+def _child_cleanup_under_lock(lock_path: Path, marker_path: Path, queue: Queue) -> None:
+    with lock(
+        lock_path,
+        lifetime_s=SHORT_LIFETIME_S * 4,
+        timeout_s=0,
+        handle_signals=False,
+    ):
+        try:
+            with handle_termination_signals():
+                queue.put(True)
+                time.sleep(30)
+        finally:
+            marker_path.write_text(str(lock_path.exists()), encoding="utf-8")
 
 
 class _FakeMtimeStat:
@@ -360,6 +385,53 @@ def test_process_exit_without_cleanup_allows_reclaim_after_expiry(
         with lock(lock_path, lifetime_s=SHORT_LIFETIME_S, timeout_s=0.5):
             second_owner = lock_path.read_text(encoding="utf-8").strip()
             assert second_owner != first_owner
+    finally:
+        proc.join(timeout=0.5)
+
+
+def test_sigterm_releases_lock_without_waiting_for_expiry(tmp_path: Path) -> None:
+    lock_path = tmp_path / "test.lck"
+    queue: Queue = Queue()
+    proc = Process(target=_child_hold_lock_until_signal, args=(lock_path, queue))
+    proc.start()
+
+    try:
+        first_owner = queue.get(timeout=0.5)
+        assert lock_path.exists()
+        assert proc.pid is not None
+
+        os.kill(proc.pid, signal.SIGTERM)
+        proc.join(timeout=0.5)
+        assert proc.exitcode == 128 + signal.SIGTERM
+
+        with lock(lock_path, lifetime_s=SHORT_LIFETIME_S, timeout_s=SHORT_TIMEOUT_S):
+            second_owner = lock_path.read_text(encoding="utf-8").strip()
+            assert second_owner != first_owner
+    finally:
+        proc.join(timeout=0.5)
+
+
+def test_nested_signal_cleanup_holds_lock_until_outer_cleanup_finishes(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "test.lck"
+    marker_path = tmp_path / "lock_during_cleanup.txt"
+    queue: Queue = Queue()
+    proc = Process(
+        target=_child_cleanup_under_lock, args=(lock_path, marker_path, queue)
+    )
+    proc.start()
+
+    try:
+        queue.get(timeout=0.5)
+        assert proc.pid is not None
+
+        os.kill(proc.pid, signal.SIGTERM)
+        proc.join(timeout=0.5)
+
+        assert proc.exitcode == 128 + signal.SIGTERM
+        assert marker_path.read_text(encoding="utf-8") == "True"
+        assert not lock_path.exists()
     finally:
         proc.join(timeout=0.5)
 
