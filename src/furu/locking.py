@@ -6,7 +6,6 @@ import socket
 import time
 import uuid
 from contextlib import contextmanager, suppress
-from multiprocessing.connection import Connection
 from multiprocessing.synchronize import Event as ProcessEvent
 from pathlib import Path
 from typing import Callable, Iterator
@@ -188,7 +187,6 @@ def _heartbeat_loop(
     heartbeat_interval_s: float,
     stop_event: ProcessEvent,
     parent_pid: int,
-    failure_tx: Connection,
 ) -> None:
     shutdown_requested = False
 
@@ -205,34 +203,26 @@ def _heartbeat_loop(
     signal.signal(signal.SIGINT, handle_shutdown_signal)
     signal.signal(signal.SIGTERM, handle_shutdown_signal)
     next_heartbeat_at = time.monotonic() + heartbeat_interval_s
-    try:
-        while True:
-            if shutdown_requested and _try_release_if_parent_dead(
-                lock_path=lock_path,
-                owner_claim_path=owner_claim_path,
-                parent_pid=parent_pid,
-            ):
-                return
-            timeout_s = min(
-                max(next_heartbeat_at - time.monotonic(), 0.0),
-                CHILD_SIGNAL_POLL_INTERVAL_S,
-            )
-            if stop_event.wait(timeout_s):
-                return
-            if time.monotonic() < next_heartbeat_at:
-                continue
-            if not _is_owner(lock_path=lock_path, owner_claim_path=owner_claim_path):
-                failure_tx.send(LockLostError(f"lost lock at {lock_path}"))
-                return
-            if not _try_touch_future(owner_claim_path, lifetime_s=lifetime_s):
-                failure_tx.send(LockLostError(f"lost lock at {lock_path}"))
-                return
-            next_heartbeat_at = time.monotonic() + heartbeat_interval_s
-    except BaseException as exc:
-        with suppress(BrokenPipeError, EOFError, OSError):
-            failure_tx.send(exc)
-    finally:
-        failure_tx.close()
+    while True:
+        if shutdown_requested and _try_release_if_parent_dead(
+            lock_path=lock_path,
+            owner_claim_path=owner_claim_path,
+            parent_pid=parent_pid,
+        ):
+            return
+        timeout_s = min(
+            max(next_heartbeat_at - time.monotonic(), 0.0),
+            CHILD_SIGNAL_POLL_INTERVAL_S,
+        )
+        if stop_event.wait(timeout_s):
+            return  # TODO: should i mark/log this in any way?
+        if time.monotonic() < next_heartbeat_at:
+            continue
+        if not _is_owner(lock_path=lock_path, owner_claim_path=owner_claim_path):
+            return  # TODO: should i mark/log this in any way?
+        if not _try_touch_future(owner_claim_path, lifetime_s=lifetime_s):
+            return  # TODO: should i mark/log this in any way?
+        next_heartbeat_at = time.monotonic() + heartbeat_interval_s
 
 
 @contextmanager
@@ -267,7 +257,6 @@ def lock(
         _touch_future(owner_claim_path, lifetime_s=lifetime_s)
 
         stop_event = multiprocessing.Event()
-        failure_rx, failure_tx = multiprocessing.Pipe(duplex=False)
         heartbeat = multiprocessing.Process(
             target=_heartbeat_loop,
             kwargs={
@@ -277,48 +266,15 @@ def lock(
                 "heartbeat_interval_s": heartbeat_interval_s,
                 "stop_event": stop_event,
                 "parent_pid": os.getpid(),
-                "failure_tx": failure_tx,
             },
             name=f"lock-heartbeat:{lock_path.name}",
             daemon=True,
         )
         heartbeat.start()
-        failure_tx.close()
         body_error: BaseException | None = None
-        failure: BaseException | None = None
-
-        def new_lock_lost_error() -> LockLostError:
-            return LockLostError(f"lost lock at {lock_path}")
-
-        def record_failure(exc: BaseException) -> BaseException:
-            nonlocal failure
-            if failure is None:
-                failure = exc
-            return failure
-
-        def poll_failure() -> BaseException | None:
-            nonlocal failure
-            if failure is None:
-                with suppress(EOFError, OSError):
-                    while failure_rx.poll():
-                        record_failure(failure_rx.recv())
-            if failure is None and not stop_event.is_set() and not heartbeat.is_alive():
-                exitcode = heartbeat.exitcode
-                if exitcode not in (None, 0):
-                    record_failure(
-                        RuntimeError(
-                            f"heartbeat process exited unexpectedly for {lock_path}"
-                        )
-                    )
-            return failure
 
         def has_lock() -> bool:
-            if poll_failure() is not None:
-                return False
-            owned = _is_owner(lock_path=lock_path, owner_claim_path=owner_claim_path)
-            if not owned:
-                record_failure(new_lock_lost_error())
-            return owned
+            return _is_owner(lock_path=lock_path, owner_claim_path=owner_claim_path)
 
         try:
             yield has_lock
@@ -331,13 +287,10 @@ def lock(
             if heartbeat.is_alive():
                 heartbeat.terminate()
                 heartbeat.join(timeout=HEARTBEAT_SHUTDOWN_GRACE_S)
-            poll_failure()
-            failure_rx.close()
             try:
                 _release_lock(lock_path=lock_path, owner_claim_path=owner_claim_path)
             except NotLockedError:
-                record_failure(new_lock_lost_error())
-            if body_error is None and failure is not None:
-                raise failure
+                if body_error is None:
+                    raise LockLostError(f"lost lock at {lock_path}")
     finally:
         _safe_unlink_if_exists(owner_claim_path)
