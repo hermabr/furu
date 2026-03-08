@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
@@ -31,7 +31,7 @@ class _Metadata(BaseModel):
 
 
 class RunningMetadata(_Metadata):
-    started_at: datetime  # TODO: consider making this timezone aware
+    started_at: datetime
     # command: list[str] # TODO: find/decide what the most elegant approach is here
     # hostname: str
     # user: str
@@ -41,6 +41,17 @@ class RunningMetadata(_Metadata):
     # TODO: include some hardware information and machine info, such as os/version
     # python_version: str
     # executor info, such as local, local executor, slurm dag or slurm worker
+
+    def to_complete(self) -> "CompletedMetadata":
+        return CompletedMetadata(
+            artifact=self.artifact,
+            artifact_hash=self.artifact_hash,
+            schema_=self.schema_,
+            schema_hash=self.schema_hash,
+            data_path=self.data_path,
+            started_at=self.started_at,
+            completed_at=datetime.now(timezone.utc),
+        )
 
 
 class CompletedMetadata(RunningMetadata):

@@ -1,6 +1,5 @@
 import hashlib
 import json
-from dataclasses import dataclass
 from enum import Enum
 
 type JsonValue = (
@@ -35,8 +34,3 @@ def _hash_dict_deterministically(obj: JsonValue) -> str:
         json_str.encode(),
         digest_size=10,  # TODO: make this digest size configurable and include a script for estimating likelihood of crashing. right now, i think there is a 1e-08 chance of a collision with 155M items with the same schema and namespace
     ).hexdigest()
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class Ok[T]:
-    result: T
