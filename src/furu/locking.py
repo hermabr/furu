@@ -311,7 +311,6 @@ def lock(
             daemon=True,
         )
         heartbeat.start()
-        _touch_future(owner_claim_path, lifetime_s=lifetime_s + CLOCK_SLOP_S)
         body_error: BaseException | None = None
 
         def has_lock() -> bool:
