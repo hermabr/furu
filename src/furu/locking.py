@@ -245,6 +245,12 @@ def _heartbeat_loop(
 
     signal.signal(signal.SIGINT, handle_shutdown_signal)
     signal.signal(signal.SIGTERM, handle_shutdown_signal)
+
+    if not _is_owner(lock_path=lock_path, owner_claim_path=owner_claim_path):
+        return
+    if not _try_touch_future(owner_claim_path, lifetime_s=lifetime_s):
+        return
+
     next_heartbeat_at = time.monotonic() + heartbeat_interval_s
     while True:
         if not _parent_is_alive(parent_pid=parent_pid):
