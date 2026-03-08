@@ -22,10 +22,12 @@ from furu.locking import (
 
 # TODO: make this not using vibes, but by actually thinking through the tests
 
+TEST_TIMING_SCALE = 4.0 if os.environ.get("GITHUB_ACTIONS") == "true" else 1.0
 TEST_CLOCK_SLOP_S = 0.02
-SHORT_SLEEP_S = 0.05
-SHORT_LIFETIME_S = 0.05
-SHORT_HEARTBEAT_INTERVAL_S = 0.02
+SHORT_SLEEP_S = 0.05 * TEST_TIMING_SCALE
+SHORT_LIFETIME_S = 0.05 * TEST_TIMING_SCALE
+SHORT_HEARTBEAT_INTERVAL_S = 0.02 * TEST_TIMING_SCALE
+PROCESS_TIMEOUT_S = 0.5 * TEST_TIMING_SCALE
 
 
 @pytest.fixture(autouse=True)
@@ -95,7 +97,7 @@ def _child_exit_immediately() -> None:
 def _dead_pid() -> int:
     proc = Process(target=_child_exit_immediately)
     proc.start()
-    proc.join(timeout=0.5)
+    proc.join(timeout=PROCESS_TIMEOUT_S)
     assert proc.exitcode == 0
     assert proc.pid is not None
     return proc.pid
@@ -209,7 +211,7 @@ def test_heartbeat_signal_does_not_release_live_parent_lock(tmp_path: Path) -> N
     proc.start()
 
     try:
-        _, heartbeat_pid = pid_queue.get(timeout=0.5)
+        _, heartbeat_pid = pid_queue.get(timeout=PROCESS_TIMEOUT_S)
         os.kill(heartbeat_pid, signal.SIGTERM)
         time.sleep(SHORT_SLEEP_S)
 
@@ -222,7 +224,7 @@ def test_heartbeat_signal_does_not_release_live_parent_lock(tmp_path: Path) -> N
                 pass
     finally:
         release_queue.put(True)
-        proc.join(timeout=0.5)
+        proc.join(timeout=PROCESS_TIMEOUT_S)
 
 
 def test_try_release_if_parent_dead_releases_lock(tmp_path: Path) -> None:
@@ -254,7 +256,7 @@ def test_timeout_when_lock_is_held(tmp_path: Path) -> None:
     holder.start()
 
     try:
-        holder_queue.get(timeout=0.5)
+        holder_queue.get(timeout=PROCESS_TIMEOUT_S)
         with pytest.raises(LockAcquireError):
             with lock(
                 lock_path,
@@ -263,7 +265,7 @@ def test_timeout_when_lock_is_held(tmp_path: Path) -> None:
             ):
                 pass
     finally:
-        holder.join(timeout=0.5)
+        holder.join(timeout=PROCESS_TIMEOUT_S)
 
 
 def test_break_stale_lock(tmp_path: Path) -> None:
@@ -277,8 +279,8 @@ def test_break_stale_lock(tmp_path: Path) -> None:
     proc.start()
 
     try:
-        queue.get(timeout=0.5)
-        queue.get(timeout=0.5)
+        queue.get(timeout=PROCESS_TIMEOUT_S)
+        queue.get(timeout=PROCESS_TIMEOUT_S)
         stale = time.time() - locking_module.CLOCK_SLOP_S - SHORT_SLEEP_S
         os.utime(lock_path, (stale, stale))
         first_owner = lock_path.read_text(encoding="utf-8").strip()
@@ -292,7 +294,7 @@ def test_break_stale_lock(tmp_path: Path) -> None:
             assert second_owner != first_owner
     finally:
         queue.put(True)
-        proc.join(timeout=0.5)
+        proc.join(timeout=PROCESS_TIMEOUT_S)
 
 
 def test_lock_raises_if_stale_break_would_remove_reacquired_lock(
@@ -399,8 +401,8 @@ def test_break_stale_lock_ignores_permission_error_touch(tmp_path: Path) -> None
         return original_utime(path, *args, **kwargs)
 
     try:
-        queue.get(timeout=0.5)
-        queue.get(timeout=0.5)
+        queue.get(timeout=PROCESS_TIMEOUT_S)
+        queue.get(timeout=PROCESS_TIMEOUT_S)
         stale = time.time() - locking_module.CLOCK_SLOP_S - SHORT_SLEEP_S
         os.utime(lock_path, (stale, stale))
         with patch("os.utime", side_effect=flaky_utime):
@@ -412,7 +414,7 @@ def test_break_stale_lock_ignores_permission_error_touch(tmp_path: Path) -> None
                 assert lock_path.exists()
     finally:
         queue.put(True)
-        proc.join(timeout=0.5)
+        proc.join(timeout=PROCESS_TIMEOUT_S)
 
 
 def test_lock_retries_once_after_benign_link_error(tmp_path: Path) -> None:
@@ -500,7 +502,7 @@ def test_stale_check_raises_unexpected_stat_error(tmp_path: Path) -> None:
     proc.start()
 
     try:
-        queue.get(timeout=0.5)
+        queue.get(timeout=PROCESS_TIMEOUT_S)
         with patch("os.stat", side_effect=_RaiseOnMtimeStat()):
             with pytest.raises(OSError, match="st_mtime failure"):
                 with lock(
@@ -510,7 +512,7 @@ def test_stale_check_raises_unexpected_stat_error(tmp_path: Path) -> None:
                 ):
                     pass
     finally:
-        proc.join(timeout=0.5)
+        proc.join(timeout=PROCESS_TIMEOUT_S)
 
 
 def test_linkcount_check_raises_unexpected_stat_error(tmp_path: Path) -> None:
@@ -544,8 +546,8 @@ def test_break_stale_lock_raises_if_winner_claim_unlink_fails(tmp_path: Path) ->
         return original_unlink(path, *args, **kwargs)
 
     try:
-        queue.get(timeout=0.5)
-        queue.get(timeout=0.5)
+        queue.get(timeout=PROCESS_TIMEOUT_S)
+        queue.get(timeout=PROCESS_TIMEOUT_S)
         stale = time.time() - locking_module.CLOCK_SLOP_S - SHORT_SLEEP_S
         os.utime(lock_path, (stale, stale))
         with patch("os.unlink", side_effect=flaky_unlink):
@@ -558,7 +560,7 @@ def test_break_stale_lock_raises_if_winner_claim_unlink_fails(tmp_path: Path) ->
                     pass
     finally:
         queue.put(True)
-        proc.join(timeout=0.5)
+        proc.join(timeout=PROCESS_TIMEOUT_S)
 
 
 def test_process_exit_without_cleanup_allows_reclaim_after_expiry(
@@ -574,7 +576,7 @@ def test_process_exit_without_cleanup_allows_reclaim_after_expiry(
     proc.start()
 
     try:
-        proc.join(timeout=0.5)
+        proc.join(timeout=PROCESS_TIMEOUT_S)
         assert proc.exitcode == 0
         first_owner = owner_path.read_text(encoding="utf-8").strip()
         assert lock_path.exists()
@@ -598,7 +600,7 @@ def test_process_exit_without_cleanup_allows_reclaim_after_expiry(
             second_owner = lock_path.read_text(encoding="utf-8").strip()
             assert second_owner != first_owner
     finally:
-        proc.join(timeout=0.5)
+        proc.join(timeout=PROCESS_TIMEOUT_S)
 
 
 def test_does_not_break_corrupt_claim_file(tmp_path: Path) -> None:
