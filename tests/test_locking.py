@@ -145,15 +145,16 @@ def test_refresh_extends_expiration(tmp_path: Path) -> None:
         lifetime_s=SHORT_LIFETIME_S,
         heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
     ) as has_lock:
-        expiration_before = lock_path.stat().st_mtime
         assert has_lock()
-        deadline = time.monotonic() + SHORT_LIFETIME_S * 4
-        while time.monotonic() < deadline:
-            if lock_path.stat().st_mtime > expiration_before:
-                break
-            time.sleep(SHORT_SLEEP_S / 4)
+        time.sleep(SHORT_LIFETIME_S * 4)
 
-        assert lock_path.stat().st_mtime > expiration_before
+        with pytest.raises(LockAcquireError):
+            with lock(
+                lock_path,
+                lifetime_s=SHORT_LIFETIME_S,
+                heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+            ):
+                pass
 
 
 def test_lock_uses_default_arguments(tmp_path: Path) -> None:
