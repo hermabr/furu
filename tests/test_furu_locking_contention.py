@@ -5,10 +5,9 @@ import time
 from multiprocessing import get_context
 from pathlib import Path
 
-from flufl.lock import NotLockedError
-
 from furu import Furu
 from furu.config import _FuruDirectories, config
+from furu.locking import LockAcquireError
 
 
 class SlowProbe(Furu[int]):
@@ -33,7 +32,7 @@ def _worker(
     try:
         value = obj.load_or_create()
         out_q.put(("ok", os.getpid(), value))
-    except NotLockedError as e:
+    except LockAcquireError as e:
         out_q.put(("err", os.getpid(), type(e).__name__))
 
 
@@ -66,18 +65,11 @@ def test_two_processes_competing_for_same_furu_object(tmp_path):
     # current behavior: one winner, one loser
     assert len(oks) == 1
     assert len(errs) == 1
-    assert errs[0][2] == "NotLockedError"
+    assert errs[0][2] == "LockAcquireError"
     # proves _create ran once
     assert len(list(marker_dir.glob("*.marker"))) == 1
     # and winner persisted result
-    result_path = (
-        data_dir
-        / "test_locking"
-        / "SlowProbe"
-        / SlowProbe(key=1).schema_hash
-        / SlowProbe(key=1).artifact_hash
-        / "result.pkl"
-    )
-    assert result_path.exists()
-    with result_path.open("rb") as f:
+    result_paths = list(data_dir.glob("**/result.pkl"))
+    assert len(result_paths) == 1
+    with result_paths[0].open("rb") as f:
         assert pickle.load(f) == 42
