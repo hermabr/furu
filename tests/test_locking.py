@@ -453,7 +453,7 @@ def test_lock_raises_unexpected_link_error(tmp_path: Path) -> None:
                 pass
 
 
-def test_release_ignores_estale_unlink_error(tmp_path: Path) -> None:
+def test_release_raises_lock_lost_for_estale_unlink_error(tmp_path: Path) -> None:
     lock_path = tmp_path / "test.lck"
     original_unlink = os.unlink
     call_count = 0
@@ -466,14 +466,15 @@ def test_release_ignores_estale_unlink_error(tmp_path: Path) -> None:
         return original_unlink(path, *args, **kwargs)
 
     with patch("os.unlink", side_effect=flaky_unlink):
-        with lock(
-            lock_path,
-            lifetime_s=SHORT_LIFETIME_S,
-            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
-        ):
-            assert lock_path.exists()
+        with pytest.raises(LockLostError, match="lost lock"):
+            with lock(
+                lock_path,
+                lifetime_s=SHORT_LIFETIME_S,
+                heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+            ):
+                assert lock_path.exists()
 
-    assert call_count >= 2
+    assert call_count >= 1
 
 
 def test_release_raises_unexpected_unlink_error(tmp_path: Path) -> None:

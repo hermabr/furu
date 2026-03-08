@@ -4,7 +4,7 @@ import secrets
 import traceback
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import cache, cached_property
 from pathlib import Path
 from typing import (
@@ -12,11 +12,10 @@ from typing import (
     Any,
     Literal,
     Self,
-    assert_never,
 )
 
 from furu.config import config
-from furu.locking import lock
+from furu.locking import LockLostError, lock
 
 # from furu.locking import run_with_lease_and_pickle_result
 from furu.metadata import RunningMetadata
@@ -62,7 +61,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
                     schema_=self.schema,
                     schema_hash=self.schema_hash,
                     data_path=self.data_dir.resolve(),
-                    started_at=datetime.now(),  # TODO: make this timezone aware?
+                    started_at=datetime.now(timezone.utc),
                 )
                 self._metadata_path.write_text(metadata.model_dump_json(indent=2))
 
@@ -71,8 +70,9 @@ class Furu[T](_FuruDataclassTransform, ABC):
                 completed_metadata = metadata.to_complete()
 
                 if not has_lock():
-                    raise NotImplementedError(
-                        "TODO: lost result before writing final result"
+                    raise LockLostError(
+                        f"lost lock at {self._internal_furu_dir / 'compute.lock'} "
+                        "before writing final result"
                     )
 
                 tmp_result_path = self._result_path.with_suffix(".tmp.pkl")
@@ -85,8 +85,9 @@ class Furu[T](_FuruDataclassTransform, ABC):
                     os.fsync(f.fileno())
 
                 if not has_lock():
-                    raise NotImplementedError(
-                        "TODO: wrote the temp result, but someone else has the lock.."
+                    raise LockLostError(
+                        f"lost lock at {self._internal_furu_dir / 'compute.lock'} "
+                        "after writing temporary result"
                     )
 
                 tmp_result_path.rename(self._result_path)
@@ -118,8 +119,6 @@ class Furu[T](_FuruDataclassTransform, ABC):
                     ).format(chain=True)
                 )
             raise
-
-        assert_never()
 
     def status(
         self,

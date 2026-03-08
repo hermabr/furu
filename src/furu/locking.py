@@ -198,10 +198,9 @@ def _release_lock(*, lock_path: Path, owner_claim_path: Path) -> None:
     try:
         lock_path.unlink()
     except OSError as exc:
-        if exc.errno == errno.ENOENT:
+        if exc.errno in (errno.ENOENT, errno.ESTALE):
             raise NotLockedError(f"lock {lock_path} does not exist") from exc
-        if exc.errno != errno.ESTALE:
-            raise
+        raise
     _safe_unlink_if_exists(owner_claim_path)
 
 
@@ -239,9 +238,13 @@ def _heartbeat_loop(
     parent_pid: int,
 ) -> None:
     def handle_shutdown_signal(_signum: int, _frame: object | None) -> None:
-        _try_touch_future(owner_claim_path, lifetime_s=lifetime_s + CLOCK_SLOP_S)
-        if not _parent_is_alive(parent_pid=parent_pid):
+        if _try_release_if_parent_dead(
+            lock_path=lock_path,
+            owner_claim_path=owner_claim_path,
+            parent_pid=parent_pid,
+        ):
             raise SystemExit(0)
+        _try_touch_future(owner_claim_path, lifetime_s=lifetime_s + CLOCK_SLOP_S)
 
     signal.signal(signal.SIGINT, handle_shutdown_signal)
     signal.signal(signal.SIGTERM, handle_shutdown_signal)
@@ -253,7 +256,11 @@ def _heartbeat_loop(
 
     next_heartbeat_at = time.monotonic() + heartbeat_interval_s
     while True:
-        if not _parent_is_alive(parent_pid=parent_pid):
+        if _try_release_if_parent_dead(
+            lock_path=lock_path,
+            owner_claim_path=owner_claim_path,
+            parent_pid=parent_pid,
+        ):
             return
         timeout_s = min(
             max(next_heartbeat_at - time.monotonic(), 0.0),

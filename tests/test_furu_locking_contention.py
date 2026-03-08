@@ -7,7 +7,7 @@ from pathlib import Path
 
 from furu import Furu
 from furu.config import _FuruDirectories, config
-from furu.locking import LockAcquireError
+from furu.locking import LockAcquireError, LockLostError
 
 
 class SlowProbe(Furu[int]):
@@ -151,7 +151,7 @@ def test_lock_is_taken_over_mid_create(tmp_path):
     proc.join(timeout=0.5)
     assert proc.exitcode == 0
     assert result[0] == "err"
-    assert result[2] == "NotImplementedError"
-    assert result[3] == "TODO: lost result before writing final result"
+    assert result[2] == LockLostError.__name__
+    assert result[3].endswith("before writing final result")
     assert list(data_dir.glob("**/result.pkl")) == []
     assert len(list(data_dir.glob("**/error-*.log"))) == 1
