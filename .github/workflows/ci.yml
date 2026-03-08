@@ -7,7 +7,6 @@ jobs:
   test:
     name: Test (Python ${{ matrix.label }})
     runs-on: ubuntu-latest
-    continue-on-error: ${{ matrix.experimental || false }}
     strategy:
       fail-fast: false
       matrix:
@@ -21,7 +20,6 @@ jobs:
             python-version: "3.x"
             freethreaded: true
             check-latest: true
-            experimental: true
     steps:
       - uses: actions/checkout@v4
 
