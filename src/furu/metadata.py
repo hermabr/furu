@@ -42,6 +42,17 @@ class RunningMetadata(_Metadata):
     # python_version: str
     # executor info, such as local, local executor, slurm dag or slurm worker
 
+    def to_complete(self) -> "CompletedMetadata":
+        return CompletedMetadata(
+            artifact=self.artifact,
+            artifact_hash=self.artifact_hash,
+            schema_=self.schema_,
+            schema_hash=self.schema_hash,
+            data_path=self.data_path,
+            started_at=self.started_at,
+            completed_at=datetime.now(),
+        )
+
 
 class CompletedMetadata(RunningMetadata):
     # traced_function_hashes: list[
