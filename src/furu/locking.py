@@ -238,27 +238,16 @@ def _heartbeat_loop(
     stop_event: ProcessEvent,
     parent_pid: int,
 ) -> None:
-    shutdown_requested = False
-
     def handle_shutdown_signal(_signum: int, _frame: object | None) -> None:
-        nonlocal shutdown_requested
-        if _try_release_if_parent_dead(
-            lock_path=lock_path,
-            owner_claim_path=owner_claim_path,
-            parent_pid=parent_pid,
-        ):
+        _try_touch_future(owner_claim_path, lifetime_s=lifetime_s + CLOCK_SLOP_S)
+        if not _parent_is_alive(parent_pid=parent_pid):
             raise SystemExit(0)
-        shutdown_requested = True
 
     signal.signal(signal.SIGINT, handle_shutdown_signal)
     signal.signal(signal.SIGTERM, handle_shutdown_signal)
     next_heartbeat_at = time.monotonic() + heartbeat_interval_s
     while True:
-        if shutdown_requested and _try_release_if_parent_dead(
-            lock_path=lock_path,
-            owner_claim_path=owner_claim_path,
-            parent_pid=parent_pid,
-        ):
+        if not _parent_is_alive(parent_pid=parent_pid):
             return
         timeout_s = min(
             max(next_heartbeat_at - time.monotonic(), 0.0),
@@ -306,8 +295,9 @@ def lock(
 
         _touch_future(owner_claim_path, lifetime_s=lifetime_s)
 
-        stop_event = multiprocessing.Event()
-        heartbeat = multiprocessing.Process(
+        multiprocessing_context = multiprocessing.get_context("spawn")
+        stop_event = multiprocessing_context.Event()
+        heartbeat = multiprocessing_context.Process(
             target=_heartbeat_loop,
             kwargs={
                 "lock_path": lock_path,
@@ -321,6 +311,7 @@ def lock(
             daemon=True,
         )
         heartbeat.start()
+        _touch_future(owner_claim_path, lifetime_s=lifetime_s + CLOCK_SLOP_S)
         body_error: BaseException | None = None
 
         def has_lock() -> bool:
