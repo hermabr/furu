@@ -19,10 +19,10 @@ from furu.config import config
 from furu.locking import lock
 
 # from furu.locking import run_with_lease_and_pickle_result
-from furu.metadata import CompletedMetadata, RunningMetadata
+from furu.metadata import RunningMetadata
 from furu.schema import schema_type as _schema_type
 from furu.serialize import to_json as _to_json
-from furu.utils import JsonValue, Ok, _hash_dict_deterministically, fully_qualified_name
+from furu.utils import JsonValue, _hash_dict_deterministically, fully_qualified_name
 
 if TYPE_CHECKING:
     from typing_extensions import dataclass_transform
