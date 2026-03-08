@@ -10,11 +10,14 @@ from multiprocessing.synchronize import Event as ProcessEvent
 from pathlib import Path
 from typing import Callable, Iterator
 
+# TODO: move these to the general config rather than having these be hard coded here, so that the user can override them. also consider if we can remove some of these/simplify
 CLOCK_SLOP_S = 10  # NFS systems can be slow, so we add a 10 second safety margin TODO: assume this is included in the 120 second lease time?
 DEFAULT_LIFETIME_S = 120.0
 DEFAULT_HEARTBEAT_INTERVAL_S = 15.0
 HEARTBEAT_SHUTDOWN_GRACE_S = 0.01
 CHILD_SIGNAL_POLL_INTERVAL_S = 0.1
+
+# TODO: currently, we don't handle SIGTERM/SIGINT in the parent. we need to add this (but this needs to be integrated with the general furu handling of SIGINT/SIGTERM)
 
 
 class LockAcquireError(RuntimeError):
@@ -26,6 +29,10 @@ class NotLockedError(RuntimeError):
 
 
 class LockLostError(RuntimeError):
+    pass
+
+
+class StaleLockRaceError(LockAcquireError):
     pass
 
 
@@ -72,6 +79,34 @@ def _safe_unlink_if_exists(path: Path) -> None:
     except OSError as exc:
         if not _is_missing_or_stale(exc):
             raise
+
+
+def _safe_rmdir_if_exists(path: Path) -> None:
+    try:
+        path.rmdir()
+    except OSError as exc:
+        if not _is_missing_or_stale(exc) and exc.errno != errno.ENOTEMPTY:
+            raise
+
+
+def _try_acquire_stale_break_dir(*, lock_path: Path, lifetime_s: float) -> Path | None:
+    break_dir = lock_path.with_name(f"{lock_path.name}.break")
+    for _ in range(2):
+        try:
+            break_dir.mkdir()
+        except FileExistsError:
+            break_stat = _safe_stat(break_dir)
+            if (
+                break_stat is None
+                or break_stat.st_mtime + lifetime_s + CLOCK_SLOP_S > time.time()
+            ):
+                return None
+            _safe_rmdir_if_exists(break_dir)
+            if _safe_stat(break_dir) is not None:
+                return None
+            continue
+        return break_dir
+    return None
 
 
 def _safe_read_breakable_claim_path(lock_path: Path) -> Path | None:
@@ -133,12 +168,27 @@ def _break_stale_lock(*, lock_path: Path, lifetime_s: float) -> None:
     if owner_claim_path is None:
         return
 
-    with suppress(PermissionError):
-        if not _try_touch_future(lock_path, lifetime_s=lifetime_s):
+    break_dir = _try_acquire_stale_break_dir(lock_path=lock_path, lifetime_s=lifetime_s)
+    if break_dir is None:
+        return
+
+    try:
+        current_lock_stat = _safe_stat(lock_path)
+        if current_lock_stat is None:
             return
 
-    _safe_unlink_if_exists(lock_path)
-    _safe_unlink_if_exists(owner_claim_path)
+        if not _is_owner(lock_path=lock_path, owner_claim_path=owner_claim_path):
+            raise StaleLockRaceError(
+                f"lock {lock_path} changed owners while breaking a stale lock"
+            )
+
+        if current_lock_stat.st_mtime + CLOCK_SLOP_S > time.time():
+            return
+
+        _safe_unlink_if_exists(lock_path)
+        _safe_unlink_if_exists(owner_claim_path)
+    finally:
+        _safe_rmdir_if_exists(break_dir)
 
 
 def _release_lock(*, lock_path: Path, owner_claim_path: Path) -> None:

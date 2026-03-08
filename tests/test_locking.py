@@ -12,7 +12,15 @@ from unittest.mock import patch
 import pytest
 
 import furu.locking as locking_module
-from furu.locking import LockAcquireError, LockLostError, NotLockedError, lock
+from furu.locking import (
+    LockAcquireError,
+    LockLostError,
+    NotLockedError,
+    StaleLockRaceError,
+    lock,
+)
+
+# TODO: make this not using vibes, but by actually thinking through the tests
 
 TEST_CLOCK_SLOP_S = 0.02
 SHORT_SLEEP_S = 0.05
@@ -284,6 +292,55 @@ def test_break_stale_lock(tmp_path: Path) -> None:
     finally:
         queue.put(True)
         proc.join(timeout=0.5)
+
+
+def test_lock_raises_if_stale_break_would_remove_reacquired_lock(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "test.lck"
+    first_owner_claim_path = tmp_path / "test.lck.first.claim"
+    second_owner_claim_path = tmp_path / "test.lck.second.claim"
+
+    first_owner_claim_path.write_text(str(first_owner_claim_path), encoding="utf-8")
+    locking_module._touch_future(first_owner_claim_path, lifetime_s=SHORT_LIFETIME_S)
+    assert locking_module._try_acquire_lock(
+        lock_path=lock_path, owner_claim_path=first_owner_claim_path
+    )
+
+    stale = time.time() - locking_module.CLOCK_SLOP_S - SHORT_SLEEP_S
+    os.utime(lock_path, (stale, stale))
+
+    original_try_acquire_stale_break_dir = locking_module._try_acquire_stale_break_dir
+
+    def reacquire_before_break(*, lock_path: Path, lifetime_s: float) -> Path | None:
+        _drop_current_lock(lock_path)
+        second_owner_claim_path.write_text(
+            str(second_owner_claim_path), encoding="utf-8"
+        )
+        locking_module._touch_future(second_owner_claim_path, lifetime_s=lifetime_s)
+        assert locking_module._try_acquire_lock(
+            lock_path=lock_path, owner_claim_path=second_owner_claim_path
+        )
+        return original_try_acquire_stale_break_dir(
+            lock_path=lock_path, lifetime_s=lifetime_s
+        )
+
+    with patch.object(
+        locking_module,
+        "_try_acquire_stale_break_dir",
+        side_effect=reacquire_before_break,
+    ):
+        with pytest.raises(StaleLockRaceError, match="changed owners"):
+            with lock(
+                lock_path,
+                lifetime_s=SHORT_LIFETIME_S,
+                heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+            ):
+                pass
+
+    assert locking_module._is_owner(
+        lock_path=lock_path, owner_claim_path=second_owner_claim_path
+    )
 
 
 def test_preserves_unrelated_existing_file(tmp_path: Path) -> None:
