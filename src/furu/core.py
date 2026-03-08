@@ -71,7 +71,9 @@ class Furu[T](_FuruDataclassTransform, ABC):
                 completed_metadata = metadata.to_complete()
 
                 if not has_lock():
-                    raise NotImplementedError("TODO: ready to write final result")
+                    raise NotImplementedError(
+                        "TODO: lost result before writing final result"
+                    )
 
                 tmp_result_path = self._result_path.with_suffix(".tmp.pkl")
                 with tmp_result_path.open("wb") as f:

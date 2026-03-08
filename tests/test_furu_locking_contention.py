@@ -22,6 +22,20 @@ class SlowProbe(Furu[int]):
         return 42
 
 
+class MidRunTakeoverProbe(Furu[int]):
+    key: int
+    entered_path: str
+    release_path: str
+
+    def _create(self) -> int:
+        Path(self.entered_path).touch()
+        deadline = time.monotonic() + 1.0
+        while not Path(self.release_path).exists():
+            assert time.monotonic() < deadline
+            time.sleep(0.005)
+        return 42
+
+
 def _worker(
     data_dir: str, start_evt, out_q
 ) -> None:  # TODO: do i need to explicitly set the env variables here?
@@ -34,6 +48,35 @@ def _worker(
         out_q.put(("ok", os.getpid(), value))
     except LockAcquireError as e:
         out_q.put(("err", os.getpid(), type(e).__name__))
+
+
+def _takeover_worker(
+    data_dir: str, entered_path: str, release_path: str, out_q
+) -> None:
+    config.directories = _FuruDirectories(data=Path(data_dir))
+    obj = MidRunTakeoverProbe(
+        key=1,
+        entered_path=entered_path,
+        release_path=release_path,
+    )
+    try:
+        value = obj.load_or_create()
+        out_q.put(("ok", os.getpid(), value))
+    except BaseException as e:
+        out_q.put(("err", os.getpid(), type(e).__name__, str(e)))
+
+
+def _steal_lock(lock_path: str, out_q) -> None:
+    lock = Path(lock_path)
+    claim_path = lock.with_name(f"{lock.name}.stolen.{os.getpid()}.claim")
+    fd = os.open(claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(str(claim_path))
+        f.flush()
+        os.fsync(f.fileno())
+    lock.unlink()
+    os.link(claim_path, lock)
+    out_q.put(("stolen", os.getpid()))
 
 
 def test_two_processes_competing_for_same_furu_object(tmp_path):
@@ -73,3 +116,42 @@ def test_two_processes_competing_for_same_furu_object(tmp_path):
     assert len(result_paths) == 1
     with result_paths[0].open("rb") as f:
         assert pickle.load(f) == 42
+
+
+def test_lock_is_taken_over_mid_create(tmp_path):
+    data_dir = tmp_path / "data"
+    entered_path = tmp_path / "entered"
+    release_path = tmp_path / "release"
+    ctx = get_context("spawn")
+    out_q = ctx.Queue()
+    proc = ctx.Process(
+        target=_takeover_worker,
+        args=(str(data_dir), str(entered_path), str(release_path), out_q),
+    )
+    proc.start()
+
+    deadline = time.monotonic() + 0.5
+    while not entered_path.exists():
+        assert time.monotonic() < deadline
+        time.sleep(0.005)
+
+    lock_paths = list(data_dir.glob("**/compute.lock"))
+    assert len(lock_paths) == 1
+
+    steal_q = ctx.Queue()
+    stealer = ctx.Process(target=_steal_lock, args=(str(lock_paths[0]), steal_q))
+    stealer.start()
+    assert steal_q.get(timeout=0.5)[0] == "stolen"
+    stealer.join(timeout=0.5)
+    assert stealer.exitcode == 0
+
+    release_path.touch()
+
+    result = out_q.get(timeout=0.5)
+    proc.join(timeout=0.5)
+    assert proc.exitcode == 0
+    assert result[0] == "err"
+    assert result[2] == "NotImplementedError"
+    assert result[3] == "TODO: lost result before writing final result"
+    assert list(data_dir.glob("**/result.pkl")) == []
+    assert len(list(data_dir.glob("**/error-*.log"))) == 1
