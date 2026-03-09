@@ -37,7 +37,7 @@ def pytest_configure(config: pytest.Config) -> None:
 
     run_base_directory = (
         Path(tempfile.gettempdir())
-        / f"furu-data-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(4)}"
+        / f"furu-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(4)}"
     )
     # run_base_directory.mkdir(parents=True, exist_ok=True)
 
