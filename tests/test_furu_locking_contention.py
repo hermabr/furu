@@ -10,6 +10,13 @@ from furu.config import _FuruDirectories, config
 from furu.locking import LockAcquireError, LockLostError
 
 
+TEST_TIMING_SCALE = 4.0 if os.environ.get("GITHUB_ACTIONS") == "true" else 1.0
+OVERLAP_SLEEP_S = 0.01 * TEST_TIMING_SCALE
+POLL_INTERVAL_S = 0.005 * TEST_TIMING_SCALE
+PROCESS_TIMEOUT_S = 0.5 * TEST_TIMING_SCALE
+MID_CREATE_TIMEOUT_S = 1.0 * TEST_TIMING_SCALE
+
+
 class SlowProbe(Furu[int]):
     key: int
 
@@ -17,7 +24,7 @@ class SlowProbe(Furu[int]):
         marker_dir = Path(os.environ["FURU_TEST_MARKER_DIR"])
         marker_dir.mkdir(parents=True, exist_ok=True)
         (marker_dir / f"{os.getpid()}.marker").write_text("created")
-        time.sleep(0.01)  # force overlap window
+        time.sleep(OVERLAP_SLEEP_S)  # force overlap window
         # TODO: make teh sleep times even less if possible
         return 42
 
@@ -29,10 +36,10 @@ class MidRunTakeoverProbe(Furu[int]):
 
     def _create(self) -> int:
         Path(self.entered_path).touch()
-        deadline = time.monotonic() + 1.0
+        deadline = time.monotonic() + MID_CREATE_TIMEOUT_S
         while not Path(self.release_path).exists():
             assert time.monotonic() < deadline
-            time.sleep(0.005)
+            time.sleep(POLL_INTERVAL_S)
         return 42
 
 
@@ -94,14 +101,17 @@ def test_two_processes_competing_for_same_furu_object(tmp_path):
         p.start()
     # wait until both are ready, then release simultaneously
     ready = [
-        out_q.get(timeout=0.5),
-        out_q.get(timeout=0.5),
+        out_q.get(timeout=PROCESS_TIMEOUT_S),
+        out_q.get(timeout=PROCESS_TIMEOUT_S),
     ]  # timeout 0.25 will capture large regressions and should be strict enough
     assert all(tag == "ready" for tag, *_ in ready)
     start_evt.set()
-    results = [out_q.get(timeout=0.5), out_q.get(timeout=0.5)]
+    results = [
+        out_q.get(timeout=PROCESS_TIMEOUT_S),
+        out_q.get(timeout=PROCESS_TIMEOUT_S),
+    ]
     for p in procs:
-        p.join(timeout=0.5)
+        p.join(timeout=PROCESS_TIMEOUT_S)
         assert p.exitcode == 0
     oks = [r for r in results if r[0] == "ok"]
     errs = [r for r in results if r[0] == "err"]
@@ -130,10 +140,10 @@ def test_lock_is_taken_over_mid_create(tmp_path):
     )
     proc.start()
 
-    deadline = time.monotonic() + 0.5
+    deadline = time.monotonic() + PROCESS_TIMEOUT_S
     while not entered_path.exists():
         assert time.monotonic() < deadline
-        time.sleep(0.005)
+        time.sleep(POLL_INTERVAL_S)
 
     lock_paths = list(data_dir.glob("**/compute.lock"))
     assert len(lock_paths) == 1
@@ -141,14 +151,14 @@ def test_lock_is_taken_over_mid_create(tmp_path):
     steal_q = ctx.Queue()
     stealer = ctx.Process(target=_steal_lock, args=(str(lock_paths[0]), steal_q))
     stealer.start()
-    assert steal_q.get(timeout=0.5)[0] == "stolen"
-    stealer.join(timeout=0.5)
+    assert steal_q.get(timeout=PROCESS_TIMEOUT_S)[0] == "stolen"
+    stealer.join(timeout=PROCESS_TIMEOUT_S)
     assert stealer.exitcode == 0
 
     release_path.touch()
 
-    result = out_q.get(timeout=0.5)
-    proc.join(timeout=0.5)
+    result = out_q.get(timeout=PROCESS_TIMEOUT_S)
+    proc.join(timeout=PROCESS_TIMEOUT_S)
     assert proc.exitcode == 0
     assert result[0] == "err"
     assert result[2] == LockLostError.__name__
