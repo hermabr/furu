@@ -90,6 +90,7 @@ def create_release_pr(new_version: str) -> None:
             "main",
         ]
     )
+    run(["gh", "pr", "view", "--web"])
 
     print()
     print(f"Release PR created for v{new_version}.")
