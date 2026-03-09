@@ -115,9 +115,6 @@ def _safe_read_breakable_claim_path(lock_path: Path) -> Path | None:
         return None
 
     claim_path = Path(claim_path_str)
-    if not claim_path.is_absolute():
-        claim_path = lock_path.parent / claim_path
-
     if not (
         claim_path.parent == lock_path.parent
         and claim_path.name.startswith(f"{lock_path.name}.")
@@ -284,6 +281,7 @@ def lock(
     lifetime_s: float = DEFAULT_LIFETIME_S,
     heartbeat_interval_s: float = DEFAULT_HEARTBEAT_INTERVAL_S,
 ) -> Iterator[Callable[[], bool]]:
+    lock_path = lock_path.resolve()
     owner_claim_path = lock_path.with_name(
         f"{lock_path.name}.{socket.getfqdn()}.{os.getpid()}.{uuid.uuid4().hex}.claim"
     )

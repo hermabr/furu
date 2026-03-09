@@ -1,0 +1,2 @@
+- Use `uv run ruff check` and `uv run ty check` for type checking
+- Furu is currently in alpha with zero users, so backwards compatibility does not matter at all.

@@ -49,6 +49,7 @@
     - [ ] check if i'm able to send the name to this
 - [ ] decide/think about if it is possible to inject information into a class, such as if i have unknown sentences and then i want to also add their translations such as for leap
 - [ ] add post_init for validation
+- [ ] storage: do the same behavior as for executor, where you override def _storage_path(self): Path("furu/data") for a furu object
 - [ ] querying/filtering
 - [ ] sync support, so that it is easy to say i want these experiments or these objects from one host to a different one
 - [ ] dashboard
