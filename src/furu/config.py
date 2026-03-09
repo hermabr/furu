@@ -11,7 +11,7 @@ class _FuruDirectories:
     @classmethod
     def default(cls) -> Self:
         # TODO: make sure this location is deterministic/more predictable, such as by finding the next .git or pyproject.toml or furu directory
-        base_dir = Path("furu-data")
+        base_dir = Path("furu")
         data_dir = base_dir / "data"
         return cls(data=data_dir)
 
@@ -20,9 +20,6 @@ class _FuruDirectories:
 class _FuruConfig:
     debug_mode: bool = False
     directories: _FuruDirectories = field(default_factory=_FuruDirectories.default)
-    # base_directory: Path = Path(
-    #     "furu-data"
-    # )  # TODO: allow this to be multiple different paths too
 
 
 config = _FuruConfig()
