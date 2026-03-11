@@ -29,6 +29,11 @@
     - [x] make the errors informative
     - [ ] use rich tracebacks
 - [ ] trace code at runtime to find all functions and save/hash their ast
+     - [ ] sandbox the code
+     - [ ] detect changes in local files
+     - [ ] detect library versions (only of libraries we import?)
+     - [ ] detect all functions we call
+     - [ ] do not allow _create to depend on/be affected by sys.argv
 - [ ] logging
     - [ ] log when loading or creating object
     - [ ] record log in furu_dir
@@ -51,6 +56,7 @@
 - [ ] add post_init for validation
 - [ ] storage: do the same behavior as for executor, where you override def _storage_path(self): Path("furu/data") for a furu object
 - [ ] querying/filtering
+- [ ] don't allow users to call _create directly (maybe i need a context variable + __init_subclass__?)
 - [ ] sync support, so that it is easy to say i want these experiments or these objects from one host to a different one
 - [ ] dashboard
 - [ ] make docs
