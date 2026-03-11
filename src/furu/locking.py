@@ -2,13 +2,13 @@ import errno
 import multiprocessing
 import os
 import signal
-import socket
 import time
-import uuid
 from contextlib import contextmanager, suppress
 from multiprocessing.synchronize import Event as ProcessEvent
 from pathlib import Path
 from typing import Callable, Iterator
+
+from furu.utils import _nfs_safe_unique_name
 
 # TODO: move these to the general config rather than having these be hard coded here, so that the user can override them. also consider if we can remove some of these/simplify
 CLOCK_SLOP_S = 10  # NFS systems can be slow, so we add a 10 second safety margin TODO: assume this is included in the 120 second lease time?
@@ -282,9 +282,7 @@ def lock(
     heartbeat_interval_s: float = DEFAULT_HEARTBEAT_INTERVAL_S,
 ) -> Iterator[Callable[[], bool]]:
     lock_path = lock_path.resolve()
-    owner_claim_path = lock_path.with_name(
-        f"{lock_path.name}.{socket.getfqdn()}.{os.getpid()}.{uuid.uuid4().hex}.claim"
-    )
+    owner_claim_path = _nfs_safe_unique_name(lock_path, name="claim")
 
     fd = os.open(owner_claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     with os.fdopen(fd, "w", encoding="utf-8") as f:

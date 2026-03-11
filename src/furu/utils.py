@@ -1,6 +1,10 @@
 import hashlib
 import json
+import os
+import socket
+import uuid
 from enum import Enum
+from pathlib import Path
 
 type JsonValue = (
     list[JsonValue] | dict[str, JsonValue] | str | bool | int | float | None
@@ -34,3 +38,10 @@ def _hash_dict_deterministically(obj: JsonValue) -> str:
         json_str.encode(),
         digest_size=10,  # TODO: make this digest size configurable and include a script for estimating likelihood of crashing. right now, i think there is a 1e-08 chance of a collision with 155M items with the same schema and namespace
     ).hexdigest()
+
+
+def _nfs_safe_unique_name(path: Path, *, name: str | None = None) -> Path:
+    stem = f"{path.name}.{socket.getfqdn()}.{os.getpid()}.{uuid.uuid4().hex}"
+    if name is not None:
+        stem = f"{stem}.{name}"
+    return path.with_name(stem)
