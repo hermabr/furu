@@ -1,6 +1,7 @@
 import os
 import pickle
 import secrets
+import shutil
 import traceback
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -21,7 +22,12 @@ from furu.locking import LockLostError, lock
 from furu.metadata import RunningMetadata
 from furu.schema import schema_type as _schema_type
 from furu.serialize import to_json as _to_json
-from furu.utils import JsonValue, _hash_dict_deterministically, fully_qualified_name
+from furu.utils import (
+    JsonValue,
+    _hash_dict_deterministically,
+    _nfs_safe_unique_name,
+    fully_qualified_name,
+)
 
 if TYPE_CHECKING:
     from typing_extensions import dataclass_transform
@@ -142,6 +148,36 @@ class Furu[T](_FuruDataclassTransform, ABC):
         raise NotImplementedError(
             "TODO: decide if i should throw or return error value"
         )
+
+    def delete(self, *, mode: Literal["prompt", "force"] = "prompt") -> bool:
+        if not self.data_dir.exists():
+            return False
+
+        self._internal_furu_dir.mkdir(exist_ok=True, parents=True)
+
+        tombstone_path: Path | None = None
+        try:
+            with lock(self._internal_furu_dir / "compute.lock"):
+                if not self.data_dir.exists():
+                    return False
+
+                if mode == "prompt" and (
+                    input(f"Do you want to delete {self.data_dir}? [y/N] ")
+                    .strip()
+                    .lower()
+                    != "y"
+                ):
+                    return False
+
+                tombstone_path = _nfs_safe_unique_name(self.data_dir, name="deleting")
+                self.data_dir.rename(tombstone_path)
+        except LockLostError:
+            if tombstone_path is None:
+                raise
+
+        assert tombstone_path is not None
+        shutil.rmtree(tombstone_path)
+        return True
 
     @property
     def _result_path(self) -> Path:
