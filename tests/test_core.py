@@ -5,6 +5,7 @@ from enum import Enum
 from functools import partial
 from pathlib import Path
 from typing import Generic, Literal, TypeVar
+from unittest.mock import patch
 
 import pytest
 
@@ -430,3 +431,26 @@ def test_creating_and_loading_random_result_furu_obj():
     }
     assert all(len(set(values)) == 1 for values in results.values())
     assert len({values[0] for values in results.values()}) == n_ids
+
+
+def test_delete_force() -> None:
+    node = Node(name="x")
+
+    assert node.load_or_create() == "Node(x)"
+    assert node.data_dir.exists()
+    assert node.delete(mode="force")
+    assert not node.data_dir.exists()
+    assert node.load_or_create() == "Node(x)"
+
+
+def test_delete_prompt_cancel() -> None:
+    node = Node(name="x")
+
+    assert node.load_or_create() == "Node(x)"
+    with patch("builtins.input", return_value="n"):
+        assert not node.delete()
+    assert node.data_dir.exists()
+
+
+def test_delete_returns_false_when_missing() -> None:
+    assert not Node(name="x").delete(mode="force")
