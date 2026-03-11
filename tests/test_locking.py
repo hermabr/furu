@@ -155,6 +155,7 @@ def test_refresh_extends_expiration(tmp_path: Path) -> None:
                 lock_path,
                 lifetime_s=SHORT_LIFETIME_S,
                 heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+                acquire_timeout_s=0.0,
             ):
                 pass
 
@@ -220,6 +221,7 @@ def test_heartbeat_signal_does_not_release_live_parent_lock(tmp_path: Path) -> N
                 lock_path,
                 lifetime_s=SHORT_LIFETIME_S,
                 heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+                acquire_timeout_s=0.0,
             ):
                 pass
     finally:
@@ -257,6 +259,7 @@ def test_timeout_when_lock_is_held(tmp_path: Path) -> None:
 
     try:
         holder_queue.get(timeout=PROCESS_TIMEOUT_S)
+        started_at = time.monotonic()
         with pytest.raises(LockAcquireError):
             with lock(
                 lock_path,
@@ -264,6 +267,31 @@ def test_timeout_when_lock_is_held(tmp_path: Path) -> None:
                 heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
             ):
                 pass
+        assert time.monotonic() - started_at >= SHORT_LIFETIME_S
+    finally:
+        holder.join(timeout=PROCESS_TIMEOUT_S)
+
+
+def test_waits_for_lock_release_before_timeout(tmp_path: Path) -> None:
+    lock_path = tmp_path / "test.lck"
+    holder_queue: Queue = Queue()
+    holder = Process(
+        target=_child_hold_lock,
+        args=(lock_path, holder_queue),
+        kwargs={"sleep_s": SHORT_SLEEP_S * 2, "lifetime_s": SHORT_LIFETIME_S * 8},
+    )
+    holder.start()
+
+    try:
+        holder_queue.get(timeout=PROCESS_TIMEOUT_S)
+        with lock(
+            lock_path,
+            lifetime_s=SHORT_LIFETIME_S,
+            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+            acquire_timeout_s=SHORT_SLEEP_S * 4,
+            acquire_poll_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+        ):
+            assert lock_path.exists()
     finally:
         holder.join(timeout=PROCESS_TIMEOUT_S)
 
@@ -379,6 +407,7 @@ def test_does_not_break_lock_within_clock_slop(tmp_path: Path) -> None:
                 lock_path,
                 lifetime_s=SHORT_LIFETIME_S,
                 heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+                acquire_timeout_s=0.0,
             ):
                 pass
 
@@ -587,16 +616,18 @@ def test_process_exit_without_cleanup_allows_reclaim_after_expiry(
                 lock_path,
                 lifetime_s=SHORT_LIFETIME_S,
                 heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+                acquire_timeout_s=0.0,
             ):
                 pass
-
-        stale = time.time() - locking_module.CLOCK_SLOP_S - SHORT_SLEEP_S
-        os.utime(lock_path, (stale, stale))
 
         with lock(
             lock_path,
             lifetime_s=SHORT_LIFETIME_S,
             heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+            acquire_timeout_s=SHORT_LIFETIME_S
+            + locking_module.CLOCK_SLOP_S
+            + SHORT_SLEEP_S,
+            acquire_poll_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
         ):
             second_owner = lock_path.read_text(encoding="utf-8").strip()
             assert second_owner != first_owner
