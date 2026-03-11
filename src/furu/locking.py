@@ -10,10 +10,13 @@ from typing import Callable, Iterator
 
 from furu.utils import _nfs_safe_unique_name
 
+# TODO: i think it should be possible to make this code shorter and cleaner while still keeping it NFS safe, so will rewrite at some point
+
 # TODO: move these to the general config rather than having these be hard coded here, so that the user can override them. also consider if we can remove some of these/simplify
 CLOCK_SLOP_S = 10  # NFS systems can be slow, so we add a 10 second safety margin TODO: assume this is included in the 120 second lease time?
-DEFAULT_LIFETIME_S = 120.0
+DEFAULT_LIFETIME_S = 35.0
 DEFAULT_HEARTBEAT_INTERVAL_S = 15.0
+DEFAULT_ACQUIRE_POLL_INTERVAL_S = 5.0
 HEARTBEAT_SHUTDOWN_GRACE_S = 0.01
 CHILD_SIGNAL_POLL_INTERVAL_S = 0.1
 
@@ -156,6 +159,15 @@ def _try_acquire_lock(*, lock_path: Path, owner_claim_path: Path) -> bool:
     return True
 
 
+def _try_acquire_lock_with_stale_break(
+    *, lock_path: Path, owner_claim_path: Path, lifetime_s: float
+) -> bool:
+    if _try_acquire_lock(lock_path=lock_path, owner_claim_path=owner_claim_path):
+        return True
+    _break_stale_lock(lock_path=lock_path, lifetime_s=lifetime_s)
+    return _try_acquire_lock(lock_path=lock_path, owner_claim_path=owner_claim_path)
+
+
 def _break_stale_lock(*, lock_path: Path, lifetime_s: float) -> None:
     lock_stat = _safe_stat(lock_path)
     if lock_stat is None or lock_stat.st_mtime + CLOCK_SLOP_S > time.time():
@@ -225,6 +237,27 @@ def _try_release_if_parent_dead(
     return True
 
 
+def _acquire_retry_sleep_s(
+    *,
+    lock_path: Path,
+    acquire_deadline_monotonic_s: float,
+    acquire_poll_interval_s: float,
+) -> float:
+    remaining_wait_s = max(acquire_deadline_monotonic_s - time.monotonic(), 0.0)
+    if remaining_wait_s == 0.0:
+        return 0.0
+
+    lock_stat = _safe_stat(lock_path)
+    if lock_stat is None:
+        return min(acquire_poll_interval_s, remaining_wait_s)
+
+    remaining_until_stale_s = lock_stat.st_mtime + CLOCK_SLOP_S - time.time()
+    if remaining_until_stale_s <= 0.0:
+        return min(acquire_poll_interval_s, remaining_wait_s)
+
+    return min(acquire_poll_interval_s, remaining_wait_s, remaining_until_stale_s)
+
+
 def _heartbeat_loop(
     *,
     lock_path: Path,
@@ -280,9 +313,18 @@ def lock(
     *,
     lifetime_s: float = DEFAULT_LIFETIME_S,
     heartbeat_interval_s: float = DEFAULT_HEARTBEAT_INTERVAL_S,
+    acquire_timeout_s: float | None = None,
+    acquire_poll_interval_s: float | None = None,
 ) -> Iterator[Callable[[], bool]]:
     lock_path = lock_path.resolve()
     owner_claim_path = _nfs_safe_unique_name(lock_path, name="claim")
+
+    if acquire_timeout_s is None:
+        acquire_timeout_s = lifetime_s + CLOCK_SLOP_S
+    if acquire_poll_interval_s is None:
+        acquire_poll_interval_s = min(
+            DEFAULT_ACQUIRE_POLL_INTERVAL_S, heartbeat_interval_s / 3
+        )
 
     fd = os.open(owner_claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -293,14 +335,22 @@ def lock(
     _touch_future(owner_claim_path, lifetime_s=lifetime_s)
 
     try:
-        if not _try_acquire_lock(
-            lock_path=lock_path, owner_claim_path=owner_claim_path
+        acquire_deadline_monotonic_s = time.monotonic() + max(acquire_timeout_s, 0.0)
+        while not _try_acquire_lock_with_stale_break(
+            lock_path=lock_path,
+            owner_claim_path=owner_claim_path,
+            lifetime_s=lifetime_s,
         ):
-            _break_stale_lock(lock_path=lock_path, lifetime_s=lifetime_s)
-            if not _try_acquire_lock(
-                lock_path=lock_path, owner_claim_path=owner_claim_path
-            ):
-                raise LockAcquireError(f"could not acquire lock at {lock_path}")
+            sleep_s = _acquire_retry_sleep_s(
+                lock_path=lock_path,
+                acquire_deadline_monotonic_s=acquire_deadline_monotonic_s,
+                acquire_poll_interval_s=acquire_poll_interval_s,
+            )
+            if sleep_s <= 0.0:
+                raise LockAcquireError(
+                    f"could not acquire lock at {lock_path} within {acquire_timeout_s:g} seconds"
+                )
+            time.sleep(sleep_s)
 
         _touch_future(owner_claim_path, lifetime_s=lifetime_s)
 

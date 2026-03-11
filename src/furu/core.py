@@ -61,6 +61,10 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
         try:
             with lock(self._internal_furu_dir / "compute.lock") as has_lock:
+                if self._result_path.exists():
+                    with open(self._result_path, "rb") as f:
+                        return pickle.load(f)
+
                 metadata = RunningMetadata(
                     artifact=self.to_json(),
                     artifact_hash=self.artifact_hash,

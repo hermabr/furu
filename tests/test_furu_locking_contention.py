@@ -7,7 +7,11 @@ from pathlib import Path
 
 from furu import Furu
 from furu.config import _FuruDirectories, config
-from furu.locking import LockAcquireError, LockLostError
+from furu.locking import (
+    DEFAULT_ACQUIRE_POLL_INTERVAL_S,
+    LockAcquireError,
+    LockLostError,
+)
 
 
 TEST_TIMING_SCALE = 4.0 if os.environ.get("GITHUB_ACTIONS") == "true" else 1.0
@@ -15,6 +19,7 @@ OVERLAP_SLEEP_S = 0.01 * TEST_TIMING_SCALE
 POLL_INTERVAL_S = 0.005 * TEST_TIMING_SCALE
 PROCESS_TIMEOUT_S = 0.5 * TEST_TIMING_SCALE
 MID_CREATE_TIMEOUT_S = 1.0 * TEST_TIMING_SCALE
+WAIT_FOR_LOCK_RESULT_TIMEOUT_S = DEFAULT_ACQUIRE_POLL_INTERVAL_S + PROCESS_TIMEOUT_S
 
 
 class SlowProbe(Furu[int]):
@@ -107,19 +112,17 @@ def test_two_processes_competing_for_same_furu_object(tmp_path):
     assert all(tag == "ready" for tag, *_ in ready)
     start_evt.set()
     results = [
-        out_q.get(timeout=PROCESS_TIMEOUT_S),
-        out_q.get(timeout=PROCESS_TIMEOUT_S),
+        out_q.get(timeout=WAIT_FOR_LOCK_RESULT_TIMEOUT_S),
+        out_q.get(timeout=WAIT_FOR_LOCK_RESULT_TIMEOUT_S),
     ]
     for p in procs:
-        p.join(timeout=PROCESS_TIMEOUT_S)
+        p.join(timeout=WAIT_FOR_LOCK_RESULT_TIMEOUT_S)
         assert p.exitcode == 0
     oks = [r for r in results if r[0] == "ok"]
     errs = [r for r in results if r[0] == "err"]
-    # current behavior: one winner, one loser
-    assert len(oks) == 1
-    assert len(errs) == 1
-    assert errs[0][2] == "LockAcquireError"
-    # proves _create ran once
+    assert len(oks) == 2
+    assert errs == []
+    # proves _create ran once even though both callers completed
     assert len(list(marker_dir.glob("*.marker"))) == 1
     # and winner persisted result
     result_paths = list(data_dir.glob("**/result.pkl"))
