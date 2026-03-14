@@ -1,10 +1,8 @@
 import errno
-import multiprocessing
 import os
-import signal
+import threading
 import time
 from contextlib import contextmanager, suppress
-from multiprocessing.synchronize import Event as ProcessEvent
 from pathlib import Path
 from typing import Callable, Iterator
 
@@ -18,7 +16,6 @@ DEFAULT_LIFETIME_S = 35.0
 DEFAULT_HEARTBEAT_INTERVAL_S = 15.0
 DEFAULT_ACQUIRE_POLL_INTERVAL_S = 5.0
 HEARTBEAT_SHUTDOWN_GRACE_S = 0.01
-CHILD_SIGNAL_POLL_INTERVAL_S = 0.1
 
 # TODO: currently, we don't handle SIGTERM/SIGINT in the parent. we need to add this (but this needs to be integrated with the general furu handling of SIGINT/SIGTERM)
 
@@ -264,21 +261,8 @@ def _heartbeat_loop(
     owner_claim_path: Path,
     lifetime_s: float,
     heartbeat_interval_s: float,
-    stop_event: ProcessEvent,
-    parent_pid: int,
+    stop_event: threading.Event,
 ) -> None:
-    def handle_shutdown_signal(_signum: int, _frame: object | None) -> None:
-        if _try_release_if_parent_dead(
-            lock_path=lock_path,
-            owner_claim_path=owner_claim_path,
-            parent_pid=parent_pid,
-        ):
-            raise SystemExit(0)
-        _try_touch_future(owner_claim_path, lifetime_s=lifetime_s + CLOCK_SLOP_S)
-
-    signal.signal(signal.SIGINT, handle_shutdown_signal)
-    signal.signal(signal.SIGTERM, handle_shutdown_signal)
-
     if not _is_owner(lock_path=lock_path, owner_claim_path=owner_claim_path):
         return
     if not _try_touch_future(owner_claim_path, lifetime_s=lifetime_s):
@@ -286,20 +270,9 @@ def _heartbeat_loop(
 
     next_heartbeat_at = time.monotonic() + heartbeat_interval_s
     while True:
-        if _try_release_if_parent_dead(
-            lock_path=lock_path,
-            owner_claim_path=owner_claim_path,
-            parent_pid=parent_pid,
-        ):
-            return
-        timeout_s = min(
-            max(next_heartbeat_at - time.monotonic(), 0.0),
-            CHILD_SIGNAL_POLL_INTERVAL_S,
-        )
+        timeout_s = max(next_heartbeat_at - time.monotonic(), 0.0)
         if stop_event.wait(timeout_s):
             return  # TODO: should i mark/log this in any way?
-        if time.monotonic() < next_heartbeat_at:
-            continue
         if not _is_owner(lock_path=lock_path, owner_claim_path=owner_claim_path):
             return  # TODO: should i mark/log this in any way?
         if not _try_touch_future(owner_claim_path, lifetime_s=lifetime_s):
@@ -354,9 +327,8 @@ def lock(
 
         _touch_future(owner_claim_path, lifetime_s=lifetime_s)
 
-        multiprocessing_context = multiprocessing.get_context("spawn")
-        stop_event = multiprocessing_context.Event()
-        heartbeat = multiprocessing_context.Process(
+        stop_event = threading.Event()
+        heartbeat = threading.Thread(
             target=_heartbeat_loop,
             kwargs={
                 "lock_path": lock_path,
@@ -364,7 +336,6 @@ def lock(
                 "lifetime_s": lifetime_s,
                 "heartbeat_interval_s": heartbeat_interval_s,
                 "stop_event": stop_event,
-                "parent_pid": os.getpid(),
             },
             name=f"lock-heartbeat:{lock_path.name}",
             daemon=True,
@@ -383,9 +354,6 @@ def lock(
         finally:
             stop_event.set()
             heartbeat.join(timeout=HEARTBEAT_SHUTDOWN_GRACE_S)
-            if heartbeat.is_alive():
-                heartbeat.terminate()
-                heartbeat.join(timeout=HEARTBEAT_SHUTDOWN_GRACE_S)
             try:
                 _release_lock(lock_path=lock_path, owner_claim_path=owner_claim_path)
             except NotLockedError:
