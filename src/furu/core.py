@@ -4,6 +4,7 @@ import secrets
 import shutil
 import traceback
 from abc import ABC, abstractmethod
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import cache, cached_property
@@ -49,7 +50,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
         if "__dataclass_params__" not in cls.__dict__:
             dataclass(frozen=True, kw_only=True)(cls)
 
-    def load_or_create(self) -> T:
+    def load_or_create(self, use_lock: bool = True) -> T:
         if self._result_path.exists():
             # TODO: validation that its up to date and valid
             with open(self._result_path, "rb") as f:
@@ -60,7 +61,11 @@ class Furu[T](_FuruDataclassTransform, ABC):
         self._internal_furu_dir.mkdir(exist_ok=True, parents=True)
 
         try:
-            with lock(self._internal_furu_dir / "compute.lock") as has_lock:
+            with (
+                lock(self._internal_furu_dir / "compute.lock")
+                if use_lock
+                else nullcontext()
+            ) as has_lock:
                 if self._result_path.exists():
                     with open(self._result_path, "rb") as f:
                         return pickle.load(f)
@@ -79,7 +84,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
                 completed_metadata = metadata.to_complete()
 
-                if not has_lock():
+                if has_lock and not has_lock():
                     raise LockLostError(
                         f"lost lock at {self._internal_furu_dir / 'compute.lock'} "
                         "before writing final result"
@@ -94,7 +99,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
                     f.flush()  # TODO: Do i need this and the os.fsync?
                     os.fsync(f.fileno())
 
-                if not has_lock():
+                if has_lock and not has_lock():
                     raise LockLostError(
                         f"lost lock at {self._internal_furu_dir / 'compute.lock'} "
                         "after writing temporary result"
