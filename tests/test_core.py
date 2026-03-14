@@ -4,7 +4,7 @@ from dataclasses import FrozenInstanceError, is_dataclass, replace
 from enum import Enum
 from functools import partial
 from pathlib import Path
-from typing import Generic, Literal, TypeVar
+from typing import Literal, TypeVar
 from unittest.mock import patch
 
 import pytest
@@ -15,6 +15,8 @@ from furu.serialize import to_json
 from furu.utils import fully_qualified_name
 
 T = TypeVar("T")
+
+type SOME_TYPE = Literal["a", "b"] | int
 
 
 class Node(Furu[str]):
@@ -63,12 +65,13 @@ class A[T](Furu):
     x: int | str | list
     z: T
     w: list[int | float]
+    some_obj: SOME_TYPE = "a"
 
     def _create(self) -> None:
         pass
 
 
-class B(Furu, Generic[T]):
+class B[T](Furu):
     a: A[T] | int
     y: dict[Literal["ney", "hey"] | bool, int]
     t: tuple[int | str, float]
@@ -231,6 +234,10 @@ def expected_schema_for_B_like(cls_name: str) -> dict:
                 {
                     "|class": "test_core.A",
                     "fields": {
+                        "some_obj": [
+                            "builtins.int",
+                            {"|origin": "typing.Literal", "|args": ["a", "b"]},
+                        ],
                         "w": {
                             "|origin": "builtins.list",
                             "|args": [["builtins.float", "builtins.int"]],
@@ -353,7 +360,7 @@ def test_to_json_with_none_field():
             "a": {
                 "|kind": "instance",
                 "|class": "test_core.A",
-                "fields": {"x": 1, "z": "123", "w": [6, 7]},
+                "fields": {"x": 1, "z": "123", "w": [6, 7], "some_obj": "a"},
             },
             "y": {"hey": 123, "ney": 1},
             "t": ["123", 12],
