@@ -153,7 +153,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
             "TODO: decide if i should throw or return error value"
         )
 
-    def delete(self, *, mode: Literal["prompt", "force"] = "prompt") -> bool:
+    def delete(self, mode: Literal["prompt", "force"] = "prompt") -> bool:
         if not self.data_dir.exists():
             return False
 

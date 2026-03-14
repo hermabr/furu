@@ -1,7 +1,6 @@
 import errno
-import multiprocessing
 import os
-import signal
+import threading
 import time
 from contextlib import suppress
 from multiprocessing import Process, Queue
@@ -72,7 +71,7 @@ def _child_acquire_then_exit(
 
 def _child_hold_lock_and_report_heartbeat(
     lock_path: Path,
-    pid_queue: Queue,
+    thread_queue: Queue,
     release_queue: Queue,
     *,
     lifetime_s: float = SHORT_LIFETIME_S,
@@ -84,9 +83,13 @@ def _child_hold_lock_and_report_heartbeat(
             lifetime_s=lifetime_s,
             heartbeat_interval_s=heartbeat_interval_s,
         ):
-            heartbeat_children = multiprocessing.active_children()
-            assert len(heartbeat_children) == 1
-            pid_queue.put((os.getpid(), heartbeat_children[0].pid))
+            heartbeat_threads = [
+                thread.name
+                for thread in threading.enumerate()
+                if thread.name.startswith("lock-heartbeat:")
+            ]
+            assert len(heartbeat_threads) == 1
+            thread_queue.put((os.getpid(), heartbeat_threads[0]))
             release_queue.get()
 
 
@@ -201,20 +204,19 @@ def test_exit_raises_lock_lost_error_when_lock_is_lost_mid_block(
             time.sleep(SHORT_LIFETIME_S)
 
 
-def test_heartbeat_signal_does_not_release_live_parent_lock(tmp_path: Path) -> None:
+def test_lock_starts_heartbeat_thread(tmp_path: Path) -> None:
     lock_path = tmp_path / "test.lck"
-    pid_queue: Queue = Queue()
+    thread_queue: Queue = Queue()
     release_queue: Queue = Queue()
     proc = Process(
         target=_child_hold_lock_and_report_heartbeat,
-        args=(lock_path, pid_queue, release_queue),
+        args=(lock_path, thread_queue, release_queue),
     )
     proc.start()
 
     try:
-        _, heartbeat_pid = pid_queue.get(timeout=PROCESS_TIMEOUT_S)
-        os.kill(heartbeat_pid, signal.SIGTERM)
-        time.sleep(SHORT_SLEEP_S)
+        _, heartbeat_name = thread_queue.get(timeout=PROCESS_TIMEOUT_S)
+        assert heartbeat_name == f"lock-heartbeat:{lock_path.name}"
 
         with pytest.raises(LockAcquireError):
             with lock(

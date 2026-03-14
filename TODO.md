@@ -11,7 +11,7 @@
     - [x] don't allow others to run if file is locked
     - [x] heartbeat and waiting
     - [ ] allow other processes to wait for the worker before they resume their own work
-    - [ ] don't use threading.Thread for heartbeat (gil)
+    - [x] use threading.Thread for heartbeat
     - [ ] move to zig
 - [x] metadata
     - [x] basic metadata
