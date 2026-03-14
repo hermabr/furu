@@ -34,6 +34,8 @@ def schema_type(tp: Any, seen: set[type]) -> JsonValue:
 
     if tp is Ellipsis:
         return fully_qualified_name(types.EllipsisType)
+    if isinstance(tp, typing.TypeAliasType):
+        return schema_type(tp.__value__, seen)
 
     if isinstance(tp, type) and is_dataclass(tp):
         return schema_dataclass(tp, seen)
