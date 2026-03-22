@@ -8,6 +8,7 @@ from typing import Literal, TypeVar
 from unittest.mock import patch
 
 import pytest
+from pydantic import BaseModel, ConfigDict
 
 from furu import Furu
 from furu.config import config
@@ -126,6 +127,18 @@ class UsesPath(Furu[str]):
 
 class UsesClassValue(Furu[None]):
     node_cls: type[Node]
+
+    def _create(self) -> None:
+        return None
+
+
+class PydanticSubclass(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    field1: int
+
+
+class PydanticFields(Furu[None]):
+    pydantic_obj: PydanticSubclass
 
     def _create(self) -> None:
         return None
@@ -313,6 +326,19 @@ def expected_schema_for_B_like(cls_name: str) -> dict:
             },
             id="UsesPath",
         ),
+        pytest.param(
+            lambda: PydanticFields(pydantic_obj=PydanticSubclass(field1=1)),
+            {
+                "|class": "test_core.PydanticFields",
+                "fields": {
+                    "pydantic_obj": {
+                        "|class": "test_core.PydanticSubclass",
+                        "fields": {"field1": "builtins.int"},
+                    }
+                },
+            },
+            id="PydanticFields",
+        ),
     ],
 )
 def test_schema(make: Callable[[], Furu], expected):
@@ -380,6 +406,26 @@ def test_to_json_with_class_field_value():
         "|class": "test_core.UsesClassValue",
         "fields": {"node_cls": {"|kind": "type_ref", "|class": "test_core.Node"}},
     }
+    assert isinstance(obj.artifact_hash, str)
+
+
+def test_to_json_with_pydantic_field_value():
+    obj = PydanticFields(pydantic_obj=PydanticSubclass(field1=1))
+
+    expected = {
+        "|kind": "instance",
+        "|class": "test_core.PydanticFields",
+        "fields": {
+            "pydantic_obj": {
+                "|kind": "instance",
+                "|class": "test_core.PydanticSubclass",
+                "fields": {"field1": 1},
+            }
+        },
+    }
+
+    assert to_json(obj) == expected
+    assert obj.to_json() == expected
     assert isinstance(obj.artifact_hash, str)
 
 
