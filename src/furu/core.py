@@ -16,7 +16,7 @@ from typing import (
     Self,
 )
 
-from furu.config import config
+import furu.config as furu_config
 from furu.locking import LockLostError, lock
 
 # from furu.locking import run_with_lease_and_pickle_result
@@ -225,7 +225,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
     @cached_property  # TODO: decide if something like this should be cached_property or simply property
     def data_dir(self) -> Path:
         return (
-            config.directories.data
+            furu_config.settings.data_dir
             / Path(*fully_qualified_name(type(self)).split("."))
             / self.schema_hash
             / self.artifact_hash
