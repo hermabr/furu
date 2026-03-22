@@ -58,15 +58,3 @@ def _scoped_log_file(log_path: Path) -> Iterator[None]:
         yield
     finally:
         _CURRENT_LOG_PATH.reset(token)
-
-
-def _log_to_parent(msg: str, *args: object) -> None:
-    parent_log_path = _CURRENT_LOG_PATH.get()
-    if parent_log_path is None:
-        return
-
-    token = _CURRENT_LOG_PATH.set(parent_log_path)
-    try:
-        get_logger().info(msg, *args)
-    finally:
-        _CURRENT_LOG_PATH.reset(token)

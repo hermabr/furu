@@ -17,7 +17,7 @@ from typing import (
 )
 
 from furu.config import config
-from furu.logging import _log_to_parent, _scoped_log_file, get_logger
+from furu.logging import _scoped_log_file, get_logger
 from furu.locking import LockLostError, lock
 
 # from furu.locking import run_with_lease_and_pickle_result
@@ -56,7 +56,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
         logger = get_logger()
 
         try:
-            _log_to_parent("calling %s.load_or_create()", self._log_label)
+            logger.info("calling %s.load_or_create()", self._log_label)
             with _scoped_log_file(self._log_path):
                 logger.info("load_or_create start")
 
@@ -124,7 +124,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
                             logger.info("stored result at %s", self._result_path)
 
                         logger.info("load_or_create complete")
-            _log_to_parent("%s.load_or_create() returned", self._log_label)
+            logger.info("%s.load_or_create() returned", self._log_label)
 
         except BaseException as exc:
             with _scoped_log_file(self._log_path):
