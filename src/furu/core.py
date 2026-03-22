@@ -68,7 +68,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
         try:
             logger.info("calling %s.load_or_create()", self._log_label)
             with _scoped_log_file(self._log_path):
-                logger.info("load_or_create start")
+                logger.debug("load_or_create start")
 
                 with (
                     lock(self._internal_furu_dir / "compute.lock")
@@ -92,9 +92,9 @@ class Furu[T](_FuruDataclassTransform, ABC):
                         started_at=datetime.now(timezone.utc),
                     )
                     self._metadata_path.write_text(metadata.model_dump_json(indent=2))
-                    logger.info("running _create()")
+                    logger.debug("running _create()")
                     result = self._create()
-                    logger.info("_create() returned")
+                    logger.debug("_create() returned")
 
                     completed_metadata = metadata.to_complete()
 
@@ -123,9 +123,9 @@ class Furu[T](_FuruDataclassTransform, ABC):
                     self._metadata_path.write_text(
                         completed_metadata.model_dump_json(indent=2)
                     )
-                    logger.info("stored result at %s", self._result_path)
+                    logger.debug("stored result at %s", self._result_path)
 
-                    logger.info("load_or_create complete")
+                    logger.debug("load_or_create complete")
             logger.info("%s.load_or_create() returned", self._log_label)
 
         except BaseException as exc:

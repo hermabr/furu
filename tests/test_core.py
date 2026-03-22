@@ -490,8 +490,6 @@ def test_log_file_is_written_to_internal_dir() -> None:
 
     assert node._log_path == node._internal_furu_dir / "run.log"
     log_text = node._log_path.read_text(encoding="utf-8")
-    assert "load_or_create start" in log_text
-    assert "running _create()" in log_text
     assert "leaf detail for x" in log_text
 
 
@@ -511,4 +509,3 @@ def test_nested_load_or_create_scopes_logs_to_child_file() -> None:
     assert "leaf detail for child" not in parent_log
 
     assert "leaf detail for child" in child_log
-    assert "running _create()" in child_log
