@@ -55,8 +55,6 @@ def schema_type(tp: Any, seen: set[type]) -> JsonValue:
         return schema_dataclass(origin, seen)
     if isinstance(tp, type) and issubclass(tp, PydanticBaseModel):
         return schema_pydantic_model(tp, seen)
-    if isinstance(origin, type) and issubclass(origin, PydanticBaseModel):
-        return schema_pydantic_model(origin, seen)
 
     if origin in (typing.Union, types.UnionType):
         return sorted(
