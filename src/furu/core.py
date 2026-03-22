@@ -52,8 +52,10 @@ class Furu[T](_FuruDataclassTransform, ABC):
             dataclass(frozen=True, kw_only=True)(cls)
 
     def load_or_create(self, use_lock: bool = True) -> T:
+        logger = get_logger()
+
         if self._result_path.exists():
-            get_logger().info(
+            logger.info(
                 "loading cached result for %s from %s",
                 self._log_label,
                 self._result_path,
@@ -63,7 +65,6 @@ class Furu[T](_FuruDataclassTransform, ABC):
                 return pickle.load(f)
 
         self._internal_furu_dir.mkdir(exist_ok=True, parents=True)
-        logger = get_logger()
 
         try:
             logger.info("calling %s.load_or_create()", self._log_label)
