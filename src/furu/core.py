@@ -53,11 +53,11 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     def load_or_create(self, use_lock: bool = True) -> T:
         self._internal_furu_dir.mkdir(exist_ok=True, parents=True)
-        logger = get_logger(fully_qualified_name(type(self)))
+        logger = get_logger()
         has_parent_log_scope = has_active_log_scope()
 
         if has_parent_log_scope:
-            get_logger("core").info("calling %s.load_or_create()", self._log_label)
+            logger.info("calling %s.load_or_create()", self._log_label)
 
         try:
             with scoped_log_file(self._log_path):
@@ -153,7 +153,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
             raise
 
         if has_parent_log_scope:
-            get_logger("core").info("%s.load_or_create() returned", self._log_label)
+            logger.info("%s.load_or_create() returned", self._log_label)
         return result
 
     def status(
