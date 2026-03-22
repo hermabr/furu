@@ -17,6 +17,7 @@ from typing import (
 )
 
 from furu.config import config
+from furu.logging import get_logger, has_active_log_scope, scoped_log_file
 from furu.locking import LockLostError, lock
 
 # from furu.locking import run_with_lease_and_pickle_result
@@ -51,68 +52,84 @@ class Furu[T](_FuruDataclassTransform, ABC):
             dataclass(frozen=True, kw_only=True)(cls)
 
     def load_or_create(self, use_lock: bool = True) -> T:
-        if self._result_path.exists():
-            # TODO: validation that its up to date and valid
-            with open(self._result_path, "rb") as f:
-                return pickle.load(f)
-
-        # TODO: have the logs be per-run with a run id
-
         self._internal_furu_dir.mkdir(exist_ok=True, parents=True)
+        logger = get_logger(fully_qualified_name(type(self)))
+        has_parent_log_scope = has_active_log_scope()
+
+        if has_parent_log_scope:
+            get_logger("core").info("calling %s.load_or_create()", self._log_label)
 
         try:
-            with (
-                lock(self._internal_furu_dir / "compute.lock")
-                if use_lock
-                else nullcontext()
-            ) as has_lock:
+            with scoped_log_file(self._log_path):
+                logger.info("load_or_create start")
+
                 if self._result_path.exists():
+                    logger.info("loading cached result from %s", self._result_path)
                     with open(self._result_path, "rb") as f:
-                        return pickle.load(f)
+                        result: T = pickle.load(f)
+                    logger.info("load_or_create complete")
+                else:
+                    with (
+                        lock(self._internal_furu_dir / "compute.lock")
+                        if use_lock
+                        else nullcontext()
+                    ) as has_lock:
+                        if self._result_path.exists():
+                            logger.info(
+                                "loading cached result after waiting from %s",
+                                self._result_path,
+                            )
+                            with open(self._result_path, "rb") as f:
+                                result = pickle.load(f)
+                        else:
+                            metadata = RunningMetadata(
+                                artifact=self.to_json(),
+                                artifact_hash=self.artifact_hash,
+                                schema_=self.schema,
+                                schema_hash=self.schema_hash,
+                                data_path=self.data_dir.resolve(),
+                                started_at=datetime.now(timezone.utc),
+                            )
+                            self._metadata_path.write_text(
+                                metadata.model_dump_json(indent=2)
+                            )
+                            logger.info("running _create()")
+                            result = self._create()
+                            logger.info("_create() returned")
 
-                metadata = RunningMetadata(
-                    artifact=self.to_json(),
-                    artifact_hash=self.artifact_hash,
-                    schema_=self.schema,
-                    schema_hash=self.schema_hash,
-                    data_path=self.data_dir.resolve(),
-                    started_at=datetime.now(timezone.utc),
-                )
-                self._metadata_path.write_text(metadata.model_dump_json(indent=2))
+                            completed_metadata = metadata.to_complete()
 
-                result = self._create()
+                            if has_lock and not has_lock():
+                                raise LockLostError(
+                                    f"lost lock at {self._internal_furu_dir / 'compute.lock'} "
+                                    "before writing final result"
+                                )
 
-                completed_metadata = metadata.to_complete()
+                            tmp_result_path = self._result_path.with_suffix(".tmp.pkl")
+                            with tmp_result_path.open("wb") as f:
+                                pickle.dump(
+                                    result,
+                                    f,
+                                )
+                                f.flush()  # TODO: Do i need this and the os.fsync?
+                                os.fsync(f.fileno())
 
-                if has_lock and not has_lock():
-                    raise LockLostError(
-                        f"lost lock at {self._internal_furu_dir / 'compute.lock'} "
-                        "before writing final result"
-                    )
+                            if has_lock and not has_lock():
+                                raise LockLostError(
+                                    f"lost lock at {self._internal_furu_dir / 'compute.lock'} "
+                                    "after writing temporary result"
+                                )
 
-                tmp_result_path = self._result_path.with_suffix(".tmp.pkl")
-                with tmp_result_path.open("wb") as f:
-                    pickle.dump(
-                        result,
-                        f,
-                    )
-                    f.flush()  # TODO: Do i need this and the os.fsync?
-                    os.fsync(f.fileno())
+                            tmp_result_path.rename(self._result_path)
+                            self._metadata_path.write_text(
+                                completed_metadata.model_dump_json(indent=2)
+                            )
+                            logger.info("stored result at %s", self._result_path)
 
-                if has_lock and not has_lock():
-                    raise LockLostError(
-                        f"lost lock at {self._internal_furu_dir / 'compute.lock'} "
-                        "after writing temporary result"
-                    )
-
-                tmp_result_path.rename(self._result_path)
-                self._metadata_path.write_text(
-                    completed_metadata.model_dump_json(indent=2)
-                )
-
-            return result
+                        logger.info("load_or_create complete")
 
         except BaseException as exc:
+            logger.exception("load_or_create failed")
             with (  # TODO: log this to the regular log file
                 (
                     self._internal_furu_dir
@@ -134,6 +151,10 @@ class Furu[T](_FuruDataclassTransform, ABC):
                     ).format(chain=True)
                 )
             raise
+
+        if has_parent_log_scope:
+            get_logger("core").info("%s.load_or_create() returned", self._log_label)
+        return result
 
     def status(
         self,
@@ -238,3 +259,11 @@ class Furu[T](_FuruDataclassTransform, ABC):
     @cached_property
     def _metadata_path(self) -> Path:
         return self._internal_furu_dir / "metadata.json"
+
+    @cached_property
+    def _log_path(self) -> Path:
+        return self._internal_furu_dir / "run.log"
+
+    @cached_property
+    def _log_label(self) -> str:
+        return f"{fully_qualified_name(type(self))}:{self.artifact_hash}"
