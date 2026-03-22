@@ -29,7 +29,7 @@ from furu.utils import (
     _nfs_safe_unique_name,
     fully_qualified_name,
 )
-from furu.validate import find_inherited_post_init, run_validation
+from furu.validate import install_validation_hooks
 
 if TYPE_CHECKING:
     from typing_extensions import dataclass_transform
@@ -49,20 +49,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
         if cls is Furu:
             return
 
-        user_post_init = cls.__dict__.get("__post_init__")
-        inherited_post_init = find_inherited_post_init(cls)
-        local_validators = cls.__dict__.get("__furu_local_validators__", [])
-        if user_post_init is not None or local_validators:
-
-            def __post_init__(self, *args: Any, **kwds: Any) -> None:
-                if inherited_post_init is not None:
-                    inherited_post_init(self, *args, **kwds)
-                if user_post_init is not None:
-                    user_post_init(self, *args, **kwds)
-                run_validation(self, local_validators)
-
-            cls.__post_init__ = __post_init__
-
+        install_validation_hooks(cls)
         if "__dataclass_params__" not in cls.__dict__:
             dataclass(frozen=True, kw_only=True)(cls)
 
