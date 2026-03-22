@@ -53,6 +53,11 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     def load_or_create(self, use_lock: bool = True) -> T:
         if self._result_path.exists():
+            get_logger().info(
+                "loading cached result for %s from %s",
+                self._log_label,
+                self._result_path,
+            )
             # TODO: validation that its up to date and valid
             with open(self._result_path, "rb") as f:
                 return pickle.load(f)
