@@ -5,6 +5,8 @@ from pathlib import Path
 import sys
 from typing import Iterator
 
+from furu.config import config
+
 _BASE_LOGGER_NAME = "furu"
 _CURRENT_LOG_PATH: ContextVar[Path | None] = ContextVar(
     "furu_current_log_path", default=None
@@ -15,7 +17,7 @@ class _ScopedFileHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         log_path = _CURRENT_LOG_PATH.get()
         if log_path is None:
-            return
+            log_path = config.directories.data / "furu.log"
 
         try:
             rendered = self.format(record)
