@@ -17,7 +17,7 @@ from typing import (
 )
 
 from furu.config import config
-from furu.logging import get_logger, has_active_log_scope, scoped_log_file
+from furu.logging import scoped_loggers
 from furu.locking import LockLostError, lock
 
 # from furu.locking import run_with_lease_and_pickle_result
@@ -53,21 +53,17 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     def load_or_create(self, use_lock: bool = True) -> T:
         self._internal_furu_dir.mkdir(exist_ok=True, parents=True)
-        logger = get_logger()
-        has_parent_log_scope = has_active_log_scope()
-
-        if has_parent_log_scope:
-            logger.info("calling %s.load_or_create()", self._log_label)
 
         try:
-            with scoped_log_file(self._log_path):
-                logger.info("load_or_create start")
+            with scoped_loggers(self._log_path) as log:
+                log.parent.info("calling %s.load_or_create()", self._log_label)
+                log.current.info("load_or_create start")
 
                 if self._result_path.exists():
-                    logger.info("loading cached result from %s", self._result_path)
+                    log.current.info("loading cached result from %s", self._result_path)
                     with open(self._result_path, "rb") as f:
                         result: T = pickle.load(f)
-                    logger.info("load_or_create complete")
+                    log.current.info("load_or_create complete")
                 else:
                     with (
                         lock(self._internal_furu_dir / "compute.lock")
@@ -75,7 +71,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
                         else nullcontext()
                     ) as has_lock:
                         if self._result_path.exists():
-                            logger.info(
+                            log.current.info(
                                 "loading cached result after waiting from %s",
                                 self._result_path,
                             )
@@ -93,9 +89,9 @@ class Furu[T](_FuruDataclassTransform, ABC):
                             self._metadata_path.write_text(
                                 metadata.model_dump_json(indent=2)
                             )
-                            logger.info("running _create()")
+                            log.current.info("running _create()")
                             result = self._create()
-                            logger.info("_create() returned")
+                            log.current.info("_create() returned")
 
                             completed_metadata = metadata.to_complete()
 
@@ -124,12 +120,16 @@ class Furu[T](_FuruDataclassTransform, ABC):
                             self._metadata_path.write_text(
                                 completed_metadata.model_dump_json(indent=2)
                             )
-                            logger.info("stored result at %s", self._result_path)
+                            log.current.info(
+                                "stored result at %s", self._result_path
+                            )
 
-                        logger.info("load_or_create complete")
+                        log.current.info("load_or_create complete")
+                log.parent.info("%s.load_or_create() returned", self._log_label)
 
         except BaseException as exc:
-            logger.exception("load_or_create failed")
+            with scoped_loggers(self._log_path) as log:
+                log.current.exception("load_or_create failed")
             with (  # TODO: log this to the regular log file
                 (
                     self._internal_furu_dir
@@ -152,8 +152,6 @@ class Furu[T](_FuruDataclassTransform, ABC):
                 )
             raise
 
-        if has_parent_log_scope:
-            logger.info("%s.load_or_create() returned", self._log_label)
         return result
 
     def status(

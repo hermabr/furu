@@ -50,15 +50,32 @@ def get_logger(name: str | None = None) -> logging.Logger:
     return logging.getLogger(f"{_BASE_LOGGER_NAME}.{name}")
 
 
-def has_active_log_scope() -> bool:
-    return _CURRENT_LOG_PATH.get() is not None
+class _ParentScopeLogger:
+    def __init__(self, log_path: Path | None) -> None:
+        self._log_path = log_path
+
+    def info(self, msg: str, *args: object) -> None:
+        if self._log_path is None:
+            return
+        token = _CURRENT_LOG_PATH.set(self._log_path)
+        try:
+            get_logger().info(msg, *args)
+        finally:
+            _CURRENT_LOG_PATH.reset(token)
+
+
+class ScopedLoggers:
+    def __init__(self, *, current: logging.Logger, parent_log_path: Path | None) -> None:
+        self.current = current
+        self.parent = _ParentScopeLogger(parent_log_path)
 
 
 @contextmanager
-def scoped_log_file(log_path: Path) -> Iterator[None]:
+def scoped_loggers(log_path: Path) -> Iterator[ScopedLoggers]:
     _base_logger()
+    parent_log_path = _CURRENT_LOG_PATH.get()
     token = _CURRENT_LOG_PATH.set(log_path)
     try:
-        yield
+        yield ScopedLoggers(current=get_logger(), parent_log_path=parent_log_path)
     finally:
         _CURRENT_LOG_PATH.reset(token)
