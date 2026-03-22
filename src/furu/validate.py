@@ -16,27 +16,19 @@ class validate:
         setattr(owner, name, self.fn)
 
 
-def _get_local_validators(cls: type) -> list[Callable[[Any], None]]:
-    validators = cls.__dict__.get(_LOCAL_VALIDATORS_ATTR)
-    if validators is None:
-        return []
-    return validators
-
-
-def _find_inherited_post_init(cls: type) -> Callable[..., None] | None:
-    for base in cls.__mro__[1:]:
-        post_init = base.__dict__.get("__post_init__")
-        if post_init is not None:
-            return post_init
-    return None
-
-
 def install_validation_hooks(cls: type) -> None:
     user_post_init = cls.__dict__.get("__post_init__")
-    local_validators = _get_local_validators(cls)
+    local_validators = cls.__dict__.get(_LOCAL_VALIDATORS_ATTR, [])
     if user_post_init is None and not local_validators:
         return
-    inherited_post_init = _find_inherited_post_init(cls)
+    inherited_post_init = next(
+        (
+            post_init
+            for base in cls.__mro__[1:]
+            if (post_init := base.__dict__.get("__post_init__")) is not None
+        ),
+        None,
+    )
 
     def __post_init__(self, *args: Any, **kwds: Any) -> None:
         if inherited_post_init is not None:
