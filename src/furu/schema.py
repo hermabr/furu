@@ -15,7 +15,7 @@ from furu.constants import ARGSMARKER, CLASSMARKER, ORIGINMARKER
 from furu.utils import JsonValue, _stable_json_dump, fully_qualified_name
 
 
-def schema_dataclass(tp: type, seen: set[type]) -> JsonValue:
+def schema_class(tp: type, field_names: list[str], seen: set[type]) -> JsonValue:
     if tp in seen:
         return {CLASSMARKER: fully_qualified_name(tp)}
     seen.add(tp)
@@ -24,25 +24,21 @@ def schema_dataclass(tp: type, seen: set[type]) -> JsonValue:
     return {
         CLASSMARKER: fully_qualified_name(tp),
         "fields": {
-            f.name: schema_type(hints[f.name], seen)
-            for f in sorted(fields(tp), key=lambda f: f.name)
-            if not f.name.startswith("_")
+            name: schema_type(hints[name], seen) for name in field_names
         },
     }
+
+
+def schema_dataclass(tp: type, seen: set[type]) -> JsonValue:
+    return schema_class(
+        tp,
+        sorted(f.name for f in fields(tp) if not f.name.startswith("_")),
+        seen,
+    )
 
 
 def schema_pydantic_model(tp: type[PydanticBaseModel], seen: set[type]) -> JsonValue:
-    if tp in seen:
-        return {CLASSMARKER: fully_qualified_name(tp)}
-    seen.add(tp)
-
-    hints = get_type_hints(tp, include_extras=True)
-    return {
-        CLASSMARKER: fully_qualified_name(tp),
-        "fields": {
-            name: schema_type(hints[name], seen) for name in sorted(tp.model_fields)
-        },
-    }
+    return schema_class(tp, sorted(tp.model_fields), seen)
 
 
 def schema_type(tp: Any, seen: set[type]) -> JsonValue:
