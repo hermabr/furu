@@ -4,12 +4,12 @@ from dataclasses import FrozenInstanceError, is_dataclass, replace
 from enum import Enum
 from functools import partial
 from pathlib import Path
-from typing import Literal, TypeVar
+from typing import Any, Literal, TypeVar, cast
 from unittest.mock import patch
 
 import pytest
 
-from furu import Furu
+from furu import Furu, validate
 from furu.config import config
 from furu.serialize import to_json
 from furu.utils import fully_qualified_name
@@ -131,6 +131,33 @@ class UsesClassValue(Furu[None]):
         return None
 
 
+class PositiveValue(Furu[int]):
+    value: int
+
+    @validate
+    def _validate_positive(self) -> None:
+        if self.value <= 0:
+            raise ValueError("value must be positive")
+
+    def _create(self) -> int:
+        return self.value
+
+
+class InheritedPositiveValue(PositiveValue):
+    extra: str
+
+
+class PostInitNormalizedInt(Furu[int]):
+    value: int | str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "value", int(self.value))
+
+    def _create(self) -> int:
+        assert isinstance(self.value, int)
+        return self.value
+
+
 def test_frozen_dataclass_inheritance():
     for cls in [Node, WeightedNode]:
         if cls == Node:
@@ -151,6 +178,36 @@ def test_frozen_dataclass_inheritance():
             cls(1, 2)  # ty: ignore[missing-argument,too-many-positional-arguments]
         with pytest.raises(FrozenInstanceError):
             obj.a = 3  # ty: ignore[invalid-assignment]
+
+
+def test_runtime_type_validation():
+    UsesPath(path=Path("/tmp/furu"))
+    bad_name = cast(Any, 1.5)
+
+    with pytest.raises(TypeError, match="NodePair.name failed validation"):
+        NodePair(
+            name=bad_name,
+            node1=Node(name="y"),
+            node2=WeightedNode(name="z", weight=1),
+        )
+
+
+def test_class_level_validation():
+    assert PositiveValue(value=2).load_or_create() == 2
+
+    with pytest.raises(ValueError, match="value must be positive"):
+        PositiveValue(value=0)
+
+
+def test_validators_are_inherited():
+    InheritedPositiveValue(value=1, extra="ok")
+
+    with pytest.raises(ValueError, match="value must be positive"):
+        InheritedPositiveValue(value=-1, extra="oops")
+
+
+def test_post_init_runs_before_validation():
+    assert PostInitNormalizedInt(value="7").load_or_create() == 7
 
 
 def test_hashes_and_data_dir():
@@ -276,13 +333,13 @@ def expected_schema_for_B_like(cls_name: str) -> dict:
             expected_schema_for_B_like("B"),
             id="B",
         ),
-        pytest.param(
-            lambda: partial(B_priv, _h=1)(
-                a=A(x=1, z="123", w=[6, 7]), y=["123", True], t=("123", 12)
+            pytest.param(
+                lambda: partial(B_priv, _h=1)(
+                    a=A(x=1, z="123", w=[6, 7]), y={"hey": 123, True: 1}, t=("123", 12)
+                ),
+                expected_schema_for_B_like("B_priv"),
+                id="B_priv",
             ),
-            expected_schema_for_B_like("B_priv"),
-            id="B_priv",
-        ),
         pytest.param(
             lambda: NodePair(
                 node1=Node(name="x"),

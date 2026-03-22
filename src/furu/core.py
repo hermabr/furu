@@ -5,7 +5,7 @@ import shutil
 import traceback
 from abc import ABC, abstractmethod
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import datetime, timezone
 from functools import cache, cached_property
 from pathlib import Path
@@ -14,7 +14,10 @@ from typing import (
     Any,
     Literal,
     Self,
+    get_type_hints,
 )
+
+from pydantic import TypeAdapter, ValidationError
 
 from furu.config import config
 from furu.locking import LockLostError, lock
@@ -42,11 +45,88 @@ else:
         pass
 
 
+class validate:
+    def __init__(self, fn):
+        self.fn = fn
+
+    def __set_name__(self, owner: Any, name: str) -> None:
+        _ensure_furu_validators(owner)
+        owner.__furu_validators__.append(self.fn)
+        setattr(owner, name, self.fn)
+
+
+def _ensure_furu_validators(cls: Any) -> None:
+    if "__furu_validators__" in cls.__dict__:
+        return
+
+    validators: list = []
+    for base in cls.__bases__:
+        validators.extend(getattr(base, "__furu_validators__", []))
+    cls.__furu_validators__ = validators
+
+
+@cache
+def _type_adapter(tp: Any) -> TypeAdapter[Any]:
+    return TypeAdapter(tp)
+
+
+@cache
+def _field_hints(cls: type) -> dict[str, Any]:
+    return get_type_hints(cls, include_extras=True)
+
+
+def _validate_field_types(instance: Any) -> None:
+    hints = _field_hints(type(instance))
+    for field in fields(instance):
+        expected_type = hints.get(field.name)
+        if expected_type is None:
+            continue
+
+        value = getattr(instance, field.name)
+        try:
+            _type_adapter(expected_type).validate_python(value, strict=True)
+        except ValidationError as exc:
+            raise TypeError(
+                f"{type(instance).__qualname__}.{field.name} failed validation against "
+                f"{expected_type!r}: {exc}"
+            ) from exc
+
+
+def _run_furu_validation(instance: Any) -> None:
+    _validate_field_types(instance)
+    for validator in getattr(type(instance), "__furu_validators__", []):
+        validator(instance)
+
+
+def _find_inherited_post_init(cls: type) -> Any:
+    for base in cls.__mro__[1:]:
+        post_init = base.__dict__.get("__post_init__")
+        if post_init is not None:
+            return post_init
+    return None
+
+
 class Furu[T](_FuruDataclassTransform, ABC):
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
         if cls is Furu:
             return
+
+        _ensure_furu_validators(cls)
+
+        user_post_init = cls.__dict__.get("__post_init__")
+        inherited_post_init = _find_inherited_post_init(cls)
+        if user_post_init is not None or inherited_post_init is None:
+
+            def __post_init__(self, *args: Any, **kwds: Any) -> None:
+                if inherited_post_init is not None:
+                    inherited_post_init(self, *args, **kwds)
+                if user_post_init is not None:
+                    user_post_init(self, *args, **kwds)
+                _run_furu_validation(self)
+
+            cls.__post_init__ = __post_init__
+
         if "__dataclass_params__" not in cls.__dict__:
             dataclass(frozen=True, kw_only=True)(cls)
 
