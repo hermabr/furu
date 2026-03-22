@@ -8,6 +8,7 @@ from typing import Literal, TypeVar
 from unittest.mock import patch
 
 import pytest
+from pydantic import BaseModel, ConfigDict
 
 from furu import Furu, validate
 from furu.config import config
@@ -158,6 +159,18 @@ class PostInitNormalizedInt(Furu[int]):
         return self.value
 
 
+class PydanticSubclass(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    field1: int
+
+
+class PydanticFields(Furu[None]):
+    pydantic_obj: PydanticSubclass
+
+    def _create(self) -> None:
+        return None
+
+
 def test_frozen_dataclass_inheritance():
     for cls in [Node, WeightedNode]:
         if cls == Node:
@@ -261,7 +274,7 @@ def test_hashes_and_data_dir():
         B(
             a=A(x=1, z="123", w=[6, 7]), y={"ney": 123, True: 1}, t=("123", 12)
         ).schema_hash
-        == B_priv_as_B(
+        != B_priv_as_B(
             a=A(x=1, z="123", w=[6, 7]),
             y={"hey": 123, "ney": 1},
             t=("123", 12),
@@ -270,44 +283,48 @@ def test_hashes_and_data_dir():
     )
 
 
-def expected_schema_for_B_like(cls_name: str) -> dict:
+def expected_schema_for_B_like(cls_name: str, *, include_private_h: bool = False) -> dict:
+    fields = {
+        "a": [
+            "builtins.int",
+            {
+                "|class": "test_core.A",
+                "fields": {
+                    "some_obj": [
+                        "builtins.int",
+                        {"|origin": "typing.Literal", "|args": ["a", "b"]},
+                    ],
+                    "w": {
+                        "|origin": "builtins.list",
+                        "|args": [["builtins.float", "builtins.int"]],
+                    },
+                    "x": ["builtins.int", "builtins.list", "builtins.str"],
+                    "z": "T",
+                },
+            },
+        ],
+        "maybe_val": ["builtins.NoneType", "builtins.int"],
+        "t": {
+            "|origin": "builtins.tuple",
+            "|args": ["builtins.float", ["builtins.int", "builtins.str"]],
+        },
+        "y": {
+            "|origin": "builtins.dict",
+            "|args": [
+                "builtins.int",
+                [
+                    "builtins.bool",
+                    {"|origin": "typing.Literal", "|args": ["hey", "ney"]},
+                ],
+            ],
+        },
+    }
+    if include_private_h:
+        fields["_h"] = "builtins.int"
+
     return {
         "|class": f"test_core.{cls_name}",
-        "fields": {
-            "a": [
-                "builtins.int",
-                {
-                    "|class": "test_core.A",
-                    "fields": {
-                        "some_obj": [
-                            "builtins.int",
-                            {"|origin": "typing.Literal", "|args": ["a", "b"]},
-                        ],
-                        "w": {
-                            "|origin": "builtins.list",
-                            "|args": [["builtins.float", "builtins.int"]],
-                        },
-                        "x": ["builtins.int", "builtins.list", "builtins.str"],
-                        "z": "T",
-                    },
-                },
-            ],
-            "maybe_val": ["builtins.NoneType", "builtins.int"],
-            "t": {
-                "|origin": "builtins.tuple",
-                "|args": ["builtins.float", ["builtins.int", "builtins.str"]],
-            },
-            "y": {
-                "|origin": "builtins.dict",
-                "|args": [
-                    "builtins.int",
-                    [
-                        "builtins.bool",
-                        {"|origin": "typing.Literal", "|args": ["hey", "ney"]},
-                    ],
-                ],
-            },
-        },
+        "fields": fields,
     }
 
 
@@ -321,13 +338,13 @@ def expected_schema_for_B_like(cls_name: str) -> dict:
             expected_schema_for_B_like("B"),
             id="B",
         ),
-            pytest.param(
-                lambda: partial(B_priv, _h=1)(
-                    a=A(x=1, z="123", w=[6, 7]), y={"hey": 123, True: 1}, t=("123", 12)
-                ),
-                expected_schema_for_B_like("B_priv"),
-                id="B_priv",
+        pytest.param(
+            lambda: partial(B_priv, _h=1)(
+                a=A(x=1, z="123", w=[6, 7]), y={"hey": 123, True: 1}, t=("123", 12)
             ),
+            expected_schema_for_B_like("B_priv", include_private_h=True),
+            id="B_priv",
+        ),
         pytest.param(
             lambda: NodePair(
                 node1=Node(name="x"),
@@ -357,6 +374,19 @@ def expected_schema_for_B_like(cls_name: str) -> dict:
                 "fields": {"path": fully_qualified_name(Path)},
             },
             id="UsesPath",
+        ),
+        pytest.param(
+            lambda: PydanticFields(pydantic_obj=PydanticSubclass(field1=1)),
+            {
+                "|class": "test_core.PydanticFields",
+                "fields": {
+                    "pydantic_obj": {
+                        "|class": "test_core.PydanticSubclass",
+                        "fields": {"field1": "builtins.int"},
+                    }
+                },
+            },
+            id="PydanticFields",
         ),
     ],
 )
@@ -425,6 +455,26 @@ def test_to_json_with_class_field_value():
         "|class": "test_core.UsesClassValue",
         "fields": {"node_cls": {"|kind": "type_ref", "|class": "test_core.Node"}},
     }
+    assert isinstance(obj.artifact_hash, str)
+
+
+def test_to_json_with_pydantic_field_value():
+    obj = PydanticFields(pydantic_obj=PydanticSubclass(field1=1))
+
+    expected = {
+        "|kind": "instance",
+        "|class": "test_core.PydanticFields",
+        "fields": {
+            "pydantic_obj": {
+                "|kind": "instance",
+                "|class": "test_core.PydanticSubclass",
+                "fields": {"field1": 1},
+            }
+        },
+    }
+
+    assert to_json(obj) == expected
+    assert obj.to_json() == expected
     assert isinstance(obj.artifact_hash, str)
 
 
