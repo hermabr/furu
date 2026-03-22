@@ -503,7 +503,7 @@ def test_nested_load_or_create_scopes_logs_to_child_file() -> None:
     child_log = child._log_path.read_text(encoding="utf-8")
 
     assert "parent before child" in parent_log
-    assert "calling test_core.LoggedLeaf:" in parent_log
+    assert f"calling {child._log_label}.load_or_create()" in parent_log
     assert ".load_or_create() returned" in parent_log
     assert "parent after child" in parent_log
     assert "leaf detail for child" not in parent_log
