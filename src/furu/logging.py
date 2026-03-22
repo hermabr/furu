@@ -2,6 +2,7 @@ import logging
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
+import sys
 from typing import Iterator
 
 _BASE_LOGGER_NAME = "furu"
@@ -28,17 +29,24 @@ class _ScopedFileHandler(logging.Handler):
 
 def _base_logger() -> logging.Logger:
     logger = logging.getLogger(_BASE_LOGGER_NAME)
-    if not any(isinstance(handler, _ScopedFileHandler) for handler in logger.handlers):
-        handler = _ScopedFileHandler()
-        handler.setFormatter(
-            logging.Formatter(
-                "%(asctime)s %(levelname)s [%(name)s] %(message)s",
-                datefmt="%Y-%m-%d %H:%M:%S",
-            )
-        )
-        logger.addHandler(handler)
+    formatter = logging.Formatter(
+        "%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
 
-    logger.setLevel(logging.INFO)
+    if not any(isinstance(handler, logging.StreamHandler) for handler in logger.handlers):
+        stdout_handler = logging.StreamHandler(sys.stdout)
+        stdout_handler.setLevel(logging.INFO)
+        stdout_handler.setFormatter(formatter)
+        logger.addHandler(stdout_handler)
+
+    if not any(isinstance(handler, _ScopedFileHandler) for handler in logger.handlers):
+        file_handler = _ScopedFileHandler()
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+
+    logger.setLevel(logging.DEBUG)
     logger.propagate = False
     return logger
 

@@ -56,7 +56,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
         if self._result_path.exists():
             logger.info(
-                "loading cached result for %s from %s",
+                "cache hit for %s at %s",
                 self._log_label,
                 self._result_path,
             )
@@ -78,7 +78,8 @@ class Furu[T](_FuruDataclassTransform, ABC):
                 ) as has_lock:
                     if self._result_path.exists():
                         logger.info(
-                            "loading cached result after waiting from %s",
+                            "cache hit for %s after waiting at %s",
+                            self._log_label,
                             self._result_path,
                         )
                         with open(self._result_path, "rb") as f:
