@@ -229,7 +229,7 @@ def test_hashes_and_data_dir():
         B(
             a=A(x=1, z="123", w=[6, 7]), y={"ney": 123, True: 1}, t=("123", 12)
         ).schema_hash
-        == B_priv_as_B(
+        != B_priv_as_B(
             a=A(x=1, z="123", w=[6, 7]),
             y={"hey": 123, "ney": 1},
             t=("123", 12),
@@ -238,44 +238,48 @@ def test_hashes_and_data_dir():
     )
 
 
-def expected_schema_for_B_like(cls_name: str) -> dict:
+def expected_schema_for_B_like(cls_name: str, *, include_private_h: bool = False) -> dict:
+    fields = {
+        "a": [
+            "builtins.int",
+            {
+                "|class": "test_core.A",
+                "fields": {
+                    "some_obj": [
+                        "builtins.int",
+                        {"|origin": "typing.Literal", "|args": ["a", "b"]},
+                    ],
+                    "w": {
+                        "|origin": "builtins.list",
+                        "|args": [["builtins.float", "builtins.int"]],
+                    },
+                    "x": ["builtins.int", "builtins.list", "builtins.str"],
+                    "z": "T",
+                },
+            },
+        ],
+        "maybe_val": ["builtins.NoneType", "builtins.int"],
+        "t": {
+            "|origin": "builtins.tuple",
+            "|args": ["builtins.float", ["builtins.int", "builtins.str"]],
+        },
+        "y": {
+            "|origin": "builtins.dict",
+            "|args": [
+                "builtins.int",
+                [
+                    "builtins.bool",
+                    {"|origin": "typing.Literal", "|args": ["hey", "ney"]},
+                ],
+            ],
+        },
+    }
+    if include_private_h:
+        fields["_h"] = "builtins.int"
+
     return {
         "|class": f"test_core.{cls_name}",
-        "fields": {
-            "a": [
-                "builtins.int",
-                {
-                    "|class": "test_core.A",
-                    "fields": {
-                        "some_obj": [
-                            "builtins.int",
-                            {"|origin": "typing.Literal", "|args": ["a", "b"]},
-                        ],
-                        "w": {
-                            "|origin": "builtins.list",
-                            "|args": [["builtins.float", "builtins.int"]],
-                        },
-                        "x": ["builtins.int", "builtins.list", "builtins.str"],
-                        "z": "T",
-                    },
-                },
-            ],
-            "maybe_val": ["builtins.NoneType", "builtins.int"],
-            "t": {
-                "|origin": "builtins.tuple",
-                "|args": ["builtins.float", ["builtins.int", "builtins.str"]],
-            },
-            "y": {
-                "|origin": "builtins.dict",
-                "|args": [
-                    "builtins.int",
-                    [
-                        "builtins.bool",
-                        {"|origin": "typing.Literal", "|args": ["hey", "ney"]},
-                    ],
-                ],
-            },
-        },
+        "fields": fields,
     }
 
 
@@ -293,7 +297,7 @@ def expected_schema_for_B_like(cls_name: str) -> dict:
             lambda: partial(B_priv, _h=1)(
                 a=A(x=1, z="123", w=[6, 7]), y=["123", True], t=("123", 12)
             ),
-            expected_schema_for_B_like("B_priv"),
+            expected_schema_for_B_like("B_priv", include_private_h=True),
             id="B_priv",
         ),
         pytest.param(

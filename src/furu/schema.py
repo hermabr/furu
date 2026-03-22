@@ -32,7 +32,7 @@ def schema_class(tp: type, field_names: list[str], seen: set[type]) -> JsonValue
 def schema_dataclass(tp: type, seen: set[type]) -> JsonValue:
     return schema_class(
         tp,
-        sorted(f.name for f in fields(tp) if not f.name.startswith("_")),
+        sorted(f.name for f in fields(tp)),
         seen,
     )
 
