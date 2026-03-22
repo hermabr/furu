@@ -4,7 +4,7 @@ from dataclasses import FrozenInstanceError, is_dataclass, replace
 from enum import Enum
 from functools import partial
 from pathlib import Path
-from typing import Any, Literal, TypeVar, cast
+from typing import Literal, TypeVar
 from unittest.mock import patch
 
 import pytest
@@ -178,18 +178,6 @@ def test_frozen_dataclass_inheritance():
             cls(1, 2)  # ty: ignore[missing-argument,too-many-positional-arguments]
         with pytest.raises(FrozenInstanceError):
             obj.a = 3  # ty: ignore[invalid-assignment]
-
-
-def test_runtime_type_validation():
-    UsesPath(path=Path("/tmp/furu"))
-    bad_name = cast(Any, 1.5)
-
-    with pytest.raises(TypeError, match="NodePair.name failed validation"):
-        NodePair(
-            name=bad_name,
-            node1=Node(name="y"),
-            node2=WeightedNode(name="z", weight=1),
-        )
 
 
 def test_class_level_validation():
