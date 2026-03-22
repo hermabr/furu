@@ -81,49 +81,49 @@ class Furu[T](_FuruDataclassTransform, ABC):
                             self._result_path,
                         )
                         with open(self._result_path, "rb") as f:
-                            result = pickle.load(f)
-                    else:
-                        metadata = RunningMetadata(
-                            artifact=self.to_json(),
-                            artifact_hash=self.artifact_hash,
-                            schema_=self.schema,
-                            schema_hash=self.schema_hash,
-                            data_path=self.data_dir.resolve(),
-                            started_at=datetime.now(timezone.utc),
+                            return pickle.load(f)
+
+                    metadata = RunningMetadata(
+                        artifact=self.to_json(),
+                        artifact_hash=self.artifact_hash,
+                        schema_=self.schema,
+                        schema_hash=self.schema_hash,
+                        data_path=self.data_dir.resolve(),
+                        started_at=datetime.now(timezone.utc),
+                    )
+                    self._metadata_path.write_text(metadata.model_dump_json(indent=2))
+                    logger.info("running _create()")
+                    result = self._create()
+                    logger.info("_create() returned")
+
+                    completed_metadata = metadata.to_complete()
+
+                    if has_lock and not has_lock():
+                        raise LockLostError(
+                            f"lost lock at {self._internal_furu_dir / 'compute.lock'} "
+                            "before writing final result"
                         )
-                        self._metadata_path.write_text(metadata.model_dump_json(indent=2))
-                        logger.info("running _create()")
-                        result = self._create()
-                        logger.info("_create() returned")
 
-                        completed_metadata = metadata.to_complete()
-
-                        if has_lock and not has_lock():
-                            raise LockLostError(
-                                f"lost lock at {self._internal_furu_dir / 'compute.lock'} "
-                                "before writing final result"
-                            )
-
-                        tmp_result_path = self._result_path.with_suffix(".tmp.pkl")
-                        with tmp_result_path.open("wb") as f:
-                            pickle.dump(
-                                result,
-                                f,
-                            )
-                            f.flush()  # TODO: Do i need this and the os.fsync?
-                            os.fsync(f.fileno())
-
-                        if has_lock and not has_lock():
-                            raise LockLostError(
-                                f"lost lock at {self._internal_furu_dir / 'compute.lock'} "
-                                "after writing temporary result"
-                            )
-
-                        tmp_result_path.rename(self._result_path)
-                        self._metadata_path.write_text(
-                            completed_metadata.model_dump_json(indent=2)
+                    tmp_result_path = self._result_path.with_suffix(".tmp.pkl")
+                    with tmp_result_path.open("wb") as f:
+                        pickle.dump(
+                            result,
+                            f,
                         )
-                        logger.info("stored result at %s", self._result_path)
+                        f.flush()  # TODO: Do i need this and the os.fsync?
+                        os.fsync(f.fileno())
+
+                    if has_lock and not has_lock():
+                        raise LockLostError(
+                            f"lost lock at {self._internal_furu_dir / 'compute.lock'} "
+                            "after writing temporary result"
+                        )
+
+                    tmp_result_path.rename(self._result_path)
+                    self._metadata_path.write_text(
+                        completed_metadata.model_dump_json(indent=2)
+                    )
+                    logger.info("stored result at %s", self._result_path)
 
                     logger.info("load_or_create complete")
             logger.info("%s.load_or_create() returned", self._log_label)
