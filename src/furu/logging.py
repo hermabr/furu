@@ -1,6 +1,7 @@
 import logging
 from contextlib import contextmanager
 from contextvars import ContextVar
+from functools import cache
 from pathlib import Path
 import sys
 from typing import Iterator
@@ -17,7 +18,7 @@ class _ScopedFileHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         log_path = _CURRENT_LOG_PATH.get()
         if log_path is None:
-            log_path = config.directories.data / "furu.log"
+            log_path = config.directories.data / "fallback.log"
 
         try:
             rendered = self.format(record)
@@ -29,6 +30,7 @@ class _ScopedFileHandler(logging.Handler):
             self.handleError(record)
 
 
+@cache
 def _base_logger() -> logging.Logger:
     logger = logging.getLogger(_BASE_LOGGER_NAME)
     formatter = logging.Formatter(
@@ -36,17 +38,15 @@ def _base_logger() -> logging.Logger:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    if not any(isinstance(handler, logging.StreamHandler) for handler in logger.handlers):
-        stdout_handler = logging.StreamHandler(sys.stdout)
-        stdout_handler.setLevel(logging.INFO)
-        stdout_handler.setFormatter(formatter)
-        logger.addHandler(stdout_handler)
+    stdout_handler = logging.StreamHandler(sys.stdout)
+    stdout_handler.setLevel(logging.INFO)
+    stdout_handler.setFormatter(formatter)
+    logger.addHandler(stdout_handler)
 
-    if not any(isinstance(handler, _ScopedFileHandler) for handler in logger.handlers):
-        file_handler = _ScopedFileHandler()
-        file_handler.setLevel(logging.DEBUG)
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
+    file_handler = _ScopedFileHandler()
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
 
     logger.setLevel(logging.DEBUG)
     logger.propagate = False
@@ -62,7 +62,6 @@ def get_logger(name: str | None = None) -> logging.Logger:
 
 @contextmanager
 def _scoped_log_file(log_path: Path) -> Iterator[None]:
-    _base_logger()
     token = _CURRENT_LOG_PATH.set(log_path)
     try:
         yield
