@@ -2,6 +2,7 @@ import os
 import pickle
 import secrets
 import shutil
+import logging
 import traceback
 from abc import ABC, abstractmethod
 from contextlib import nullcontext
@@ -59,10 +60,8 @@ class Furu[T](_FuruDataclassTransform, ABC):
             dataclass(frozen=True, kw_only=True)(cls)
 
     def load_or_create(self, use_lock: bool = True) -> T:
-        logger = get_logger()
-
         if self._result_path.exists():
-            logger.info(
+            self.logger.info(
                 "cache hit for %s at %s",
                 self._log_label,
                 self._result_path,
@@ -74,9 +73,9 @@ class Furu[T](_FuruDataclassTransform, ABC):
         self._internal_furu_dir.mkdir(exist_ok=True, parents=True)
 
         try:
-            logger.info("calling %s.load_or_create()", self._log_label)
+            self.logger.info("calling %s.load_or_create()", self._log_label)
             with _scoped_log_file(self._log_path):
-                logger.debug("load_or_create start")
+                self.logger.debug("load_or_create start")
 
                 with (
                     lock(self._internal_furu_dir / "compute.lock")
@@ -84,7 +83,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
                     else nullcontext()
                 ) as has_lock:
                     if self._result_path.exists():
-                        logger.info(
+                        self.logger.info(
                             "cache hit for %s after waiting at %s",
                             self._log_label,
                             self._result_path,
@@ -101,9 +100,9 @@ class Furu[T](_FuruDataclassTransform, ABC):
                         started_at=datetime.now(timezone.utc),
                     )
                     self._metadata_path.write_text(metadata.model_dump_json(indent=2))
-                    logger.debug("running _create()")
+                    self.logger.debug("running _create()")
                     result = self._create()
-                    logger.debug("_create() returned")
+                    self.logger.debug("_create() returned")
 
                     completed_metadata = metadata.to_complete()
 
@@ -132,14 +131,14 @@ class Furu[T](_FuruDataclassTransform, ABC):
                     self._metadata_path.write_text(
                         completed_metadata.model_dump_json(indent=2)
                     )
-                    logger.debug("stored result at %s", self._result_path)
+                    self.logger.debug("stored result at %s", self._result_path)
 
-                    logger.debug("load_or_create complete")
-            logger.info("%s.load_or_create() returned", self._log_label)
+                    self.logger.debug("load_or_create complete")
+            self.logger.info("%s.load_or_create() returned", self._log_label)
 
         except BaseException as exc:
             with _scoped_log_file(self._log_path):
-                logger.exception("load_or_create failed")
+                self.logger.exception("load_or_create failed")
             with (  # TODO: log this to the regular log file
                 (
                     self._internal_furu_dir
@@ -220,6 +219,10 @@ class Furu[T](_FuruDataclassTransform, ABC):
     @property
     def _result_path(self) -> Path:
         return self.data_dir / "result.pkl"
+
+    @property
+    def logger(self) -> logging.Logger:
+        return get_logger()
 
     @abstractmethod
     def _create(self) -> T:
