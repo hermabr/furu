@@ -50,10 +50,6 @@ class Furu[T](_FuruDataclassTransform, ABC):
         if cls is Furu:
             return
 
-        if "__post_init__" in cls.__dict__:
-            raise ValueError(
-                "Cannot define __post_init__ on a Furu class; fields define artifact identity"
-            )
         validate_cls(cls)
         if "__dataclass_params__" not in cls.__dict__:
             dataclass(frozen=True, kw_only=True)(cls)
