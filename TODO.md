@@ -1,6 +1,5 @@
 - [x] doing `class MyCls(Furu[int])` should make it a frozen dataclass with named args
 - [x] furu_hash
-    - [ ] add warning if field dataclass is not itself frozen
     - [ ] add support for adding/hooking in custom items. this means you can define manually how i should walk an object like pydantic, if i didn't already have support for it
 - [x] schema
     - [ ] compute basic schema and schema hash
@@ -38,6 +37,8 @@
 - [ ] logging
     - [ ] log when loading or creating object
     - [ ] record log in furu_dir
+    - [ ] make logging more similar to the setup in the repo i shared
+    - [ ] use logging everywhere
     - [ ] support multiple processes, such as torch run with 8 tasks
     - [ ] have a file like events.log or rename the old logs if i start new runs to make debug easier
 - [ ] migration
