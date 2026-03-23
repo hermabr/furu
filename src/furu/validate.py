@@ -38,6 +38,7 @@ def validate_cls(cls: type) -> None:
         return
 
     def __post_init__(self) -> None:
+        # TODO: runtime validate that post init does not break furu load from artifact logic
         for post_init in post_init_chain:
             post_init(self)
         for validator in validators:
