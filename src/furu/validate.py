@@ -8,29 +8,17 @@ def validate(fn: Callable[[Any], None]) -> Callable[[Any], None]:
     return fn
 
 
-def install_validation_hooks(cls: type) -> None:
-    user_post_init = cls.__dict__.get("__post_init__")
+def validate_cls(cls: type) -> None:
     local_validators = [
         value
-        for value in cls.__dict__.values()
+        for base in reversed(cls.__mro__[:-1])
+        for value in base.__dict__.values()
         if getattr(value, _VALIDATOR_MARKER, False)
     ]
-    if user_post_init is None and not local_validators:
+    if not local_validators:
         return
-    inherited_post_init = next(
-        (
-            post_init
-            for base in cls.__mro__[1:]
-            if (post_init := base.__dict__.get("__post_init__")) is not None
-        ),
-        None,
-    )
 
-    def __post_init__(self, *args: Any, **kwds: Any) -> None:
-        if inherited_post_init is not None:
-            inherited_post_init(self, *args, **kwds)
-        if user_post_init is not None:
-            user_post_init(self, *args, **kwds)
+    def __post_init__(self) -> None:
         for validator in local_validators:
             validator(self)
 

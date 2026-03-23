@@ -157,17 +157,6 @@ class ParentAndChildValidated(PositiveValue):
             raise ValueError("child_value must be positive")
 
 
-class PostInitNormalizedInt(Furu[int]):
-    value: int | str
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "value", int(self.value))
-
-    def _create(self) -> int:
-        assert isinstance(self.value, int)
-        return self.value
-
-
 class PydanticSubclass(BaseModel):
     model_config = ConfigDict(frozen=True)
     field1: int
@@ -226,8 +215,21 @@ def test_parent_and_child_validators_both_run():
         ParentAndChildValidated(value=1, child_value=0)
 
 
-def test_post_init_runs_before_validation():
-    assert PostInitNormalizedInt(value="7").load_or_create() == 7
+def test_post_init_is_disallowed():
+    with pytest.raises(
+        ValueError,
+        match="Cannot define __post_init__ on a Furu class; fields define artifact identity",
+    ):
+
+        class InvalidPostInit(Furu[int]):
+            value: int | str
+
+            def __post_init__(self) -> None:
+                object.__setattr__(self, "value", int(self.value))
+
+            def _create(self) -> int:
+                assert isinstance(self.value, int)
+                return self.value
 
 
 def test_hashes_and_data_dir():

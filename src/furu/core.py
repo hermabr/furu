@@ -29,7 +29,7 @@ from furu.utils import (
     _nfs_safe_unique_name,
     fully_qualified_name,
 )
-from furu.validate import install_validation_hooks
+from furu.validate import validate_cls
 
 if TYPE_CHECKING:
     from typing_extensions import dataclass_transform
@@ -49,7 +49,11 @@ class Furu[T](_FuruDataclassTransform, ABC):
         if cls is Furu:
             return
 
-        install_validation_hooks(cls)
+        if "__post_init__" in cls.__dict__:
+            raise ValueError(
+                "Cannot define __post_init__ on a Furu class; fields define artifact identity"
+            )
+        validate_cls(cls)
         if "__dataclass_params__" not in cls.__dict__:
             dataclass(frozen=True, kw_only=True)(cls)
 
