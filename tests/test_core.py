@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pytest
 from pydantic import BaseModel, ConfigDict
 
-from furu import Furu, validate
+from furu import Furu, get_logger, validate
 from furu.config import config
 from furu.serialize import to_json
 from furu.utils import fully_qualified_name
@@ -130,6 +130,24 @@ class UsesClassValue(Furu[None]):
 
     def _create(self) -> None:
         return None
+
+class LoggedLeaf(Furu[str]):
+    name: str
+
+    def _create(self) -> str:
+        get_logger(__name__).info("leaf detail for %s", self.name)
+        return f"leaf:{self.name}"
+
+
+class LoggedParent(Furu[dict[str, str]]):
+    child: LoggedLeaf
+
+    def _create(self) -> dict[str, str]:
+        logger = get_logger(__name__)
+        logger.info("parent before child")
+        child_result = self.child.load_or_create()
+        logger.info("parent after child")
+        return {"child": child_result}
 
 
 class PositiveValue(Furu[int]):
@@ -577,3 +595,31 @@ def test_delete_prompt_cancel() -> None:
 
 def test_delete_returns_false_when_missing() -> None:
     assert not Node(name="x").delete(mode="force")
+
+
+def test_log_file_is_written_to_internal_dir() -> None:
+    node = LoggedLeaf(name="x")
+
+    assert node.load_or_create() == "leaf:x"
+
+    assert node._log_path == node._internal_furu_dir / "run.log"
+    log_text = node._log_path.read_text(encoding="utf-8")
+    assert "leaf detail for x" in log_text
+
+
+def test_nested_load_or_create_scopes_logs_to_child_file() -> None:
+    child = LoggedLeaf(name="child")
+    parent = LoggedParent(child=child)
+
+    assert parent.load_or_create() == {"child": "leaf:child"}
+
+    parent_log = parent._log_path.read_text(encoding="utf-8")
+    child_log = child._log_path.read_text(encoding="utf-8")
+
+    assert "parent before child" in parent_log
+    assert f"calling {child._log_label}.load_or_create()" in parent_log
+    assert ".load_or_create() returned" in parent_log
+    assert "parent after child" in parent_log
+    assert "leaf detail for child" not in parent_log
+
+    assert "leaf detail for child" in child_log
