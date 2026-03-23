@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pytest
 from pydantic import BaseModel, ConfigDict
 
-from furu import Furu, get_logger, validate
+from furu import Furu, validate
 from furu.config import config
 from furu.serialize import to_json
 from furu.utils import fully_qualified_name
@@ -135,7 +135,7 @@ class LoggedLeaf(Furu[str]):
     name: str
 
     def _create(self) -> str:
-        get_logger(__name__).info("leaf detail for %s", self.name)
+        self.logger.info("leaf detail for %s", self.name)
         return f"leaf:{self.name}"
 
 
@@ -143,10 +143,9 @@ class LoggedParent(Furu[dict[str, str]]):
     child: LoggedLeaf
 
     def _create(self) -> dict[str, str]:
-        logger = get_logger(__name__)
-        logger.info("parent before child")
+        self.logger.info("parent before child")
         child_result = self.child.load_or_create()
-        logger.info("parent after child")
+        self.logger.info("parent after child")
         return {"child": child_result}
 
 
