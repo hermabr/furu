@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pytest
 from pydantic import BaseModel, ConfigDict
 
-from furu import Furu
+from furu import Furu, validate
 from furu.config import config
 from furu.serialize import to_json
 from furu.utils import fully_qualified_name
@@ -132,6 +132,31 @@ class UsesClassValue(Furu[None]):
         return None
 
 
+class PositiveValue(Furu[int]):
+    value: int
+
+    @validate
+    def _validate_positive(self) -> None:
+        if self.value <= 0:
+            raise ValueError("value must be positive")
+
+    def _create(self) -> int:
+        return self.value
+
+
+class InheritedPositiveValue(PositiveValue):
+    extra: str
+
+
+class ParentAndChildValidated(PositiveValue):
+    child_value: int
+
+    @validate
+    def _validate_child_value(self) -> None:
+        if self.child_value <= 0:
+            raise ValueError("child_value must be positive")
+
+
 class PydanticSubclass(BaseModel):
     model_config = ConfigDict(frozen=True)
     field1: int
@@ -164,6 +189,47 @@ def test_frozen_dataclass_inheritance():
             cls(1, 2)  # ty: ignore[missing-argument,too-many-positional-arguments]
         with pytest.raises(FrozenInstanceError):
             obj.a = 3  # ty: ignore[invalid-assignment]
+
+
+def test_class_level_validation():
+    assert PositiveValue(value=2).load_or_create() == 2
+
+    with pytest.raises(ValueError, match="value must be positive"):
+        PositiveValue(value=0)
+
+
+def test_validators_are_inherited():
+    InheritedPositiveValue(value=1, extra="ok")
+
+    with pytest.raises(ValueError, match="value must be positive"):
+        InheritedPositiveValue(value=-1, extra="oops")
+
+
+def test_parent_and_child_validators_both_run():
+    ParentAndChildValidated(value=1, child_value=1)
+
+    with pytest.raises(ValueError, match="value must be positive"):
+        ParentAndChildValidated(value=0, child_value=1)
+
+    with pytest.raises(ValueError, match="child_value must be positive"):
+        ParentAndChildValidated(value=1, child_value=0)
+
+
+def test_post_init_is_disallowed():
+    with pytest.raises(
+        ValueError,
+        match="Cannot define __post_init__ on a Furu class; fields define artifact identity",
+    ):
+
+        class InvalidPostInit(Furu[int]):
+            value: int | str
+
+            def __post_init__(self) -> None:
+                object.__setattr__(self, "value", int(self.value))
+
+            def _create(self) -> int:
+                assert isinstance(self.value, int)
+                return self.value
 
 
 def test_hashes_and_data_dir():
@@ -295,7 +361,7 @@ def expected_schema_for_B_like(cls_name: str, *, include_private_h: bool = False
         ),
         pytest.param(
             lambda: partial(B_priv, _h=1)(
-                a=A(x=1, z="123", w=[6, 7]), y=["123", True], t=("123", 12)
+                a=A(x=1, z="123", w=[6, 7]), y={"hey": 123, True: 1}, t=("123", 12)
             ),
             expected_schema_for_B_like("B_priv", include_private_h=True),
             id="B_priv",
