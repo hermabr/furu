@@ -37,8 +37,8 @@
 - [ ] logging
     - [ ] log when loading or creating object
     - [ ] record log in furu_dir
-    - [ ] make logging more similar to the setup in the repo i shared
-    - [ ] use logging everywhere
+    - [ ] use logging consistently
+    - [ ] structured logging
     - [ ] support multiple processes, such as torch run with 8 tasks
     - [ ] have a file like events.log or rename the old logs if i start new runs to make debug easier
 - [ ] migration
