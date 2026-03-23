@@ -148,6 +148,15 @@ class InheritedPositiveValue(PositiveValue):
     extra: str
 
 
+class ParentAndChildValidated(PositiveValue):
+    child_value: int
+
+    @validate
+    def _validate_child_value(self) -> None:
+        if self.child_value <= 0:
+            raise ValueError("child_value must be positive")
+
+
 class PostInitNormalizedInt(Furu[int]):
     value: int | str
 
@@ -205,6 +214,16 @@ def test_validators_are_inherited():
 
     with pytest.raises(ValueError, match="value must be positive"):
         InheritedPositiveValue(value=-1, extra="oops")
+
+
+def test_parent_and_child_validators_both_run():
+    ParentAndChildValidated(value=1, child_value=1)
+
+    with pytest.raises(ValueError, match="value must be positive"):
+        ParentAndChildValidated(value=0, child_value=1)
+
+    with pytest.raises(ValueError, match="child_value must be positive"):
+        ParentAndChildValidated(value=1, child_value=0)
 
 
 def test_post_init_runs_before_validation():

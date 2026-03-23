@@ -1,24 +1,20 @@
 from typing import Any, Callable
 
-_LOCAL_VALIDATORS_ATTR = "__furu_local_validators__"
+_VALIDATOR_MARKER = "__furu_validator__"
 
 
-class validate:
-    def __init__(self, fn: Callable[[Any], None]):
-        self.fn = fn
-
-    def __set_name__(self, owner: Any, name: str) -> None:
-        validators = owner.__dict__.get(_LOCAL_VALIDATORS_ATTR)
-        if validators is None:
-            validators = []
-            setattr(owner, _LOCAL_VALIDATORS_ATTR, validators)
-        validators.append(self.fn)
-        setattr(owner, name, self.fn)
+def validate(fn: Callable[[Any], None]) -> Callable[[Any], None]:
+    setattr(fn, _VALIDATOR_MARKER, True)
+    return fn
 
 
 def install_validation_hooks(cls: type) -> None:
     user_post_init = cls.__dict__.get("__post_init__")
-    local_validators = cls.__dict__.get(_LOCAL_VALIDATORS_ATTR, [])
+    local_validators = [
+        value
+        for value in cls.__dict__.values()
+        if getattr(value, _VALIDATOR_MARKER, False)
+    ]
     if user_post_init is None and not local_validators:
         return
     inherited_post_init = next(
