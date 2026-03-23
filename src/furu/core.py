@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from functools import cache, cached_property
+from functools import cached_property
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -93,7 +93,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
                             return pickle.load(f)
 
                     metadata = RunningMetadata(
-                        artifact=self.to_json(),
+                        artifact=self.artifact,
                         artifact_hash=self.artifact_hash,
                         schema_=self.schema,
                         schema_hash=self.schema_hash,
@@ -225,8 +225,8 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def _create(self) -> T:
         raise NotImplementedError("TODO")
 
-    @cache
-    def to_json(  # TODO: make sure this doesn't prevent garbage collection
+    @cached_property
+    def artifact(  # TODO: make sure this doesn't prevent garbage collection
         self,
     ) -> JsonValue:
         return _to_json(self)
@@ -239,7 +239,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def artifact_hash(  # TODO: should this be __hash__?
         self,
     ) -> str:
-        return _hash_dict_deterministically(self.to_json())
+        return _hash_dict_deterministically(self.artifact)
 
     @cached_property
     def schema(

@@ -455,8 +455,8 @@ def test_to_json():
         },
     }
     assert to_json(node_pair) == expected
-    assert to_json(node_pair) == node_pair.to_json()
-    assert node_pair.to_json() == expected
+    assert to_json(node_pair) == node_pair.artifact
+    assert node_pair.artifact == expected
 
 
 def test_to_json_with_none_field():
@@ -489,7 +489,7 @@ def test_to_json_with_class_field_value():
     obj = UsesClassValue(node_cls=Node)
 
     assert to_json(Node) == {"|kind": "type_ref", "|class": "test_core.Node"}
-    assert obj.to_json() == {
+    assert obj.artifact == {
         "|kind": "instance",
         "|class": "test_core.UsesClassValue",
         "fields": {"node_cls": {"|kind": "type_ref", "|class": "test_core.Node"}},
@@ -513,7 +513,7 @@ def test_to_json_with_pydantic_field_value():
     }
 
     assert to_json(obj) == expected
-    assert obj.to_json() == expected
+    assert obj.artifact == expected
     assert isinstance(obj.artifact_hash, str)
 
 
