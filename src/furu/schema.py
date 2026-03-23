@@ -9,11 +9,13 @@ from typing import (
     get_type_hints,
 )
 
+from pydantic import BaseModel as PydanticBaseModel
+
 from furu.constants import ARGSMARKER, CLASSMARKER, ORIGINMARKER
 from furu.utils import JsonValue, _stable_json_dump, fully_qualified_name
 
 
-def schema_dataclass(tp: type, seen: set[type]) -> JsonValue:
+def schema_class(tp: type, field_names: list[str], seen: set[type]) -> JsonValue:
     if tp in seen:
         return {CLASSMARKER: fully_qualified_name(tp)}
     seen.add(tp)
@@ -22,11 +24,21 @@ def schema_dataclass(tp: type, seen: set[type]) -> JsonValue:
     return {
         CLASSMARKER: fully_qualified_name(tp),
         "fields": {
-            f.name: schema_type(hints[f.name], seen)
-            for f in sorted(fields(tp), key=lambda f: f.name)
-            if not f.name.startswith("_")
+            name: schema_type(hints[name], seen) for name in field_names
         },
     }
+
+
+def schema_dataclass(tp: type, seen: set[type]) -> JsonValue:
+    return schema_class(
+        tp,
+        sorted(f.name for f in fields(tp)),
+        seen,
+    )
+
+
+def schema_pydantic_model(tp: type[PydanticBaseModel], seen: set[type]) -> JsonValue:
+    return schema_class(tp, sorted(tp.model_fields), seen)
 
 
 def schema_type(tp: Any, seen: set[type]) -> JsonValue:
@@ -41,6 +53,8 @@ def schema_type(tp: Any, seen: set[type]) -> JsonValue:
         return schema_dataclass(tp, seen)
     if origin is not None and is_dataclass(origin):
         return schema_dataclass(origin, seen)
+    if isinstance(tp, type) and issubclass(tp, PydanticBaseModel):
+        return schema_pydantic_model(tp, seen)
 
     if origin in (typing.Union, types.UnionType):
         return sorted(

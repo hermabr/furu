@@ -1,5 +1,6 @@
 - [x] doing `class MyCls(Furu[int])` should make it a frozen dataclass with named args
 - [x] furu_hash
+    - [ ] add warning if field dataclass is not itself frozen
     - [ ] add support for adding/hooking in custom items. this means you can define manually how i should walk an object like pydantic, if i didn't already have support for it
 - [x] schema
     - [ ] compute basic schema and schema hash
