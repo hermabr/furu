@@ -232,21 +232,101 @@ def test_parent_and_child_validators_both_run():
         ParentAndChildValidated(value=1, child_value=0)
 
 
-def test_post_init_is_disallowed():
-    with pytest.raises(
-        ValueError,
-        match="Cannot define __post_init__ on a Furu class; fields define artifact identity",
-    ):
+def test_post_init_can_transform_values_before_validation():
+    class PostInitValidated(Furu[int]):
+        raw_value: int | str
+        value: int = 0
 
-        class InvalidPostInit(Furu[int]):
-            value: int | str
+        def __post_init__(self) -> None:
+            object.__setattr__(self, "value", int(self.raw_value))
 
-            def __post_init__(self) -> None:
-                object.__setattr__(self, "value", int(self.value))
+        @validate
+        def _validate_positive(self) -> None:
+            if self.value <= 0:
+                raise ValueError("value must be positive")
 
-            def _create(self) -> int:
-                assert isinstance(self.value, int)
-                return self.value
+        def _create(self) -> int:
+            assert isinstance(self.value, int)
+            return self.value
+
+    assert PostInitValidated(raw_value="2").value == 2
+
+    with pytest.raises(ValueError, match="value must be positive"):
+        PostInitValidated(raw_value="0")
+
+
+def test_post_init_and_inherited_validators_both_run():
+    class PostInitInheritedPositiveValue(PositiveValue):
+        raw_value: int | str
+
+        def __post_init__(self) -> None:
+            object.__setattr__(self, "value", int(self.raw_value))
+
+    assert PostInitInheritedPositiveValue(value=1, raw_value="2").value == 2
+
+    with pytest.raises(ValueError, match="value must be positive"):
+        PostInitInheritedPositiveValue(value=1, raw_value="0")
+
+
+def test_inherited_post_init_and_inherited_validators_both_run():
+    class BasePostInitValue(Furu[int]):
+        raw_value: int | str
+        value: int = 0
+
+        def __post_init__(self) -> None:
+            object.__setattr__(self, "value", int(self.raw_value))
+
+        @validate
+        def _validate_positive(self) -> None:
+            if self.value <= 0:
+                raise ValueError("value must be positive")
+
+        def _create(self) -> int:
+            return self.value
+
+    class ChildPostInitValue(BasePostInitValue):
+        label: str
+
+    assert ChildPostInitValue(raw_value="2", label="ok").value == 2
+
+    with pytest.raises(ValueError, match="value must be positive"):
+        ChildPostInitValue(raw_value="0", label="nope")
+
+
+def test_post_init_chain_runs_before_validators_without_duplicate_calls():
+    calls: list[str] = []
+
+    class BaseOrderedValue(Furu[int]):
+        value: int
+
+        def __post_init__(self) -> None:
+            calls.append("base_post_init")
+
+        @validate
+        def _validate_base(self) -> None:
+            calls.append("base_validate")
+
+        def _create(self) -> int:
+            return self.value
+
+    class ChildOrderedValue(BaseOrderedValue):
+        label: str
+
+        def __post_init__(self) -> None:
+            calls.append("child_post_init")
+
+        @validate
+        def _validate_child(self) -> None:
+            calls.append("child_validate")
+
+    ChildOrderedValue(value=1, label="ok")
+
+    assert calls == [
+        "base_post_init",
+        "child_post_init",
+        "base_validate",
+        "child_validate",
+    ]
 
 
 def test_hashes_and_data_dir():
