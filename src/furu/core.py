@@ -60,6 +60,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     def load_or_create(self, use_lock: bool = True) -> T:
         logger = get_logger()
+        logger.debug("load_or_create called for %s with use_lock=%s", self._log_label, use_lock)
 
         if self._result_path.exists():
             logger.info(
@@ -101,6 +102,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
                         started_at=datetime.now(timezone.utc),
                     )
                     self._metadata_path.write_text(metadata.model_dump_json(indent=2))
+                    logger.debug("wrote running metadata to %s", self._metadata_path)
                     logger.debug("running _create()")
                     result = self._create()
                     logger.debug("_create() returned")
@@ -121,6 +123,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
                         )
                         f.flush()  # TODO: Do i need this and the os.fsync?
                         os.fsync(f.fileno())
+                    logger.debug("wrote temporary result to %s", tmp_result_path)
 
                     if has_lock and not has_lock():
                         raise LockLostError(
@@ -132,6 +135,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
                     self._metadata_path.write_text(
                         completed_metadata.model_dump_json(indent=2)
                     )
+                    logger.debug("wrote completed metadata to %s", self._metadata_path)
                     logger.debug("stored result at %s", self._result_path)
 
                     logger.debug("load_or_create complete")
@@ -176,19 +180,28 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def is_completed(
         self,
     ) -> bool:  # TODO: maybe this should check the is self.status is completed? (in that case status cant check if self.is_completed)
-        return self._result_path.exists()
+        completed = self._result_path.exists()
+        get_logger().debug("checked completion for %s: %s", self._log_label, completed)
+        return completed
 
     def try_load(self) -> T:  # TODO: make a better name for this
+        logger = get_logger()
+        logger.debug("trying to load cached result for %s", self._log_label)
         if self._result_path.exists():
             # TODO: validation that its up to date and valid
             with open(self._result_path, "rb") as f:
+                logger.info("loaded cached result for %s from %s", self._log_label, self._result_path)
                 return pickle.load(f)
+        logger.info("no cached result available for %s at %s", self._log_label, self._result_path)
         raise NotImplementedError(
             "TODO: decide if i should throw or return error value"
         )
 
     def delete(self, mode: Literal["prompt", "force"] = "prompt") -> bool:
+        logger = get_logger()
+        logger.info("deleting %s with mode=%s", self._log_label, mode)
         if not self.data_dir.exists():
+            logger.info("delete skipped because data directory does not exist for %s", self._log_label)
             return False
 
         self._internal_furu_dir.mkdir(exist_ok=True, parents=True)
@@ -197,6 +210,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
         try:
             with lock(self._internal_furu_dir / "compute.lock"):
                 if not self.data_dir.exists():
+                    logger.info("delete skipped after locking because %s no longer exists", self.data_dir)
                     return False
 
                 if mode == "prompt" and (
@@ -205,16 +219,19 @@ class Furu[T](_FuruDataclassTransform, ABC):
                     .lower()
                     != "y"
                 ):
+                    logger.info("delete cancelled by user for %s", self._log_label)
                     return False
 
                 tombstone_path = _nfs_safe_unique_name(self.data_dir, name="deleting")
                 self.data_dir.rename(tombstone_path)
+                logger.debug("renamed %s to tombstone %s before deletion", self.data_dir, tombstone_path)
         except LockLostError:
             if tombstone_path is None:
                 raise
 
         assert tombstone_path is not None
         shutil.rmtree(tombstone_path)
+        logger.info("deleted %s via tombstone %s", self._log_label, tombstone_path)
         return True
 
     @property

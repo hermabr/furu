@@ -6,6 +6,10 @@ import uuid
 from enum import Enum
 from pathlib import Path
 
+from furu.logging import get_logger
+
+logger = get_logger(__name__)
+
 type JsonValue = (
     list[JsonValue] | dict[str, JsonValue] | str | bool | int | float | None
 )
@@ -15,12 +19,16 @@ def fully_qualified_name(tp: type) -> str:
     mod = tp.__module__
     qualname = tp.__qualname__
     if mod == "__main__":  # TODO: allow overwriting
+        logger.debug("cannot compute fully qualified name for __main__ type %s", tp)
         raise ValueError("Cannot serialize objects from __main__ module")
     elif "<locals>" in mod:  # TODO: allow overwriting
+        logger.debug("cannot compute fully qualified name for local type %s", tp)
         raise ValueError("TODO: msg")
     elif "." in qualname:
+        logger.debug("cannot compute fully qualified name for nested qualname %s", qualname)
         raise ValueError("TODO: msg")
     elif (isinstance(tp, type) and issubclass(tp, Enum)) or isinstance(tp, Enum):
+        logger.debug("enum fully qualified names are not supported for %s", tp)
         raise ValueError(
             "TODO: support this in the future"
         )  # return f"{mod}.{qualname}.{obj.name}"
@@ -33,6 +41,7 @@ def _stable_json_dump(x: JsonValue) -> str:
 
 def _hash_dict_deterministically(obj: JsonValue) -> str:
     json_str = _stable_json_dump(obj)
+    logger.debug("hashing json payload with %s bytes", len(json_str))
 
     return hashlib.blake2s(
         json_str.encode(),
@@ -44,4 +53,5 @@ def _nfs_safe_unique_name(path: Path, *, name: str | None = None) -> Path:
     stem = f"{path.name}.{socket.getfqdn()}.{os.getpid()}.{uuid.uuid4().hex}"
     if name is not None:
         stem = f"{stem}.{name}"
+    logger.debug("generated unique NFS-safe name %s for %s", stem, path)
     return path.with_name(stem)

@@ -12,14 +12,19 @@ from typing import (
 from pydantic import BaseModel as PydanticBaseModel
 
 from furu.constants import ARGSMARKER, CLASSMARKER, ORIGINMARKER
+from furu.logging import get_logger
 from furu.utils import JsonValue, _stable_json_dump, fully_qualified_name
+
+logger = get_logger(__name__)
 
 
 def schema_class(tp: type, field_names: list[str], seen: set[type]) -> JsonValue:
     if tp in seen:
+        logger.debug("reusing previously seen schema for %s", fully_qualified_name(tp))
         return {CLASSMARKER: fully_qualified_name(tp)}
     seen.add(tp)
 
+    logger.debug("building schema for %s with fields %s", fully_qualified_name(tp), field_names)
     hints = get_type_hints(tp, include_extras=True)
     return {
         CLASSMARKER: fully_qualified_name(tp),
@@ -42,6 +47,7 @@ def schema_pydantic_model(tp: type[PydanticBaseModel], seen: set[type]) -> JsonV
 
 
 def schema_type(tp: Any, seen: set[type]) -> JsonValue:
+    logger.debug("building schema_type for %r", tp)
     origin = get_origin(tp)
 
     if tp is Ellipsis:
@@ -83,4 +89,5 @@ def schema_type(tp: Any, seen: set[type]) -> JsonValue:
         return fully_qualified_name(tp)
     elif isinstance(tp, type):
         return fully_qualified_name(tp)
+    logger.debug("unexpected type value while building schema: %r", tp)
     assert False, f"TODO: unexpected type value {tp=}"

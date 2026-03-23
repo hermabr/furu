@@ -6,7 +6,10 @@ from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Callable, Iterator
 
+from furu.logging import get_logger
 from furu.utils import _nfs_safe_unique_name
+
+logger = get_logger(__name__)
 
 # TODO: i think it should be possible to make this code shorter and cleaner while still keeping it NFS safe, so will rewrite at some point
 
@@ -50,6 +53,7 @@ def _try_touch_future(path: Path, *, lifetime_s: float) -> bool:
         _touch_future(path, lifetime_s=lifetime_s)
     except OSError as exc:
         if _is_missing_or_stale(exc):
+            logger.debug("could not refresh lease for %s because it is missing or stale", path)
             return False
         raise
     return True
@@ -100,11 +104,14 @@ def _try_acquire_stale_break_dir(*, lock_path: Path, lifetime_s: float) -> Path 
                 break_stat is None
                 or break_stat.st_mtime + lifetime_s + CLOCK_SLOP_S > time.time()
             ):
+                logger.debug("stale-break dir %s already active for %s", break_dir, lock_path)
                 return None
             _safe_rmdir_if_exists(break_dir)
             if _safe_stat(break_dir) is not None:
+                logger.debug("could not clear stale-break dir %s for %s", break_dir, lock_path)
                 return None
             continue
+        logger.info("acquired stale-break dir %s for %s", break_dir, lock_path)
         return break_dir
     return None
 
@@ -142,17 +149,21 @@ def _try_acquire_lock(*, lock_path: Path, owner_claim_path: Path) -> bool:
     try:
         os.link(owner_claim_path, lock_path)
     except FileExistsError:
+        logger.debug("lock %s is already held; owner claim %s waiting", lock_path, owner_claim_path)
         return False
     except OSError as exc:
         if _is_missing_or_stale(exc):
+            logger.debug("lock %s disappeared while trying to acquire it", lock_path)
             return False
         raise
 
     lock_stat = _safe_stat(lock_path)
     if lock_stat is None or lock_stat.st_nlink != 2:
+        logger.debug("lock %s failed validation after acquisition attempt", lock_path)
         _safe_unlink_if_exists(lock_path)
         return False
 
+    logger.info("acquired lock %s via claim %s", lock_path, owner_claim_path)
     return True
 
 
@@ -172,6 +183,7 @@ def _break_stale_lock(*, lock_path: Path, lifetime_s: float) -> None:
 
     owner_claim_path = _safe_read_breakable_claim_path(lock_path)
     if owner_claim_path is None:
+        logger.debug("cannot break stale lock %s because claim path is invalid", lock_path)
         return
 
     break_dir = _try_acquire_stale_break_dir(lock_path=lock_path, lifetime_s=lifetime_s)
@@ -179,8 +191,10 @@ def _break_stale_lock(*, lock_path: Path, lifetime_s: float) -> None:
         return
 
     try:
+        logger.info("attempting to break stale lock %s owned by %s", lock_path, owner_claim_path)
         current_lock_stat = _safe_stat(lock_path)
         if current_lock_stat is None:
+            logger.debug("lock %s disappeared before stale break completed", lock_path)
             return
 
         if not _is_owner(lock_path=lock_path, owner_claim_path=owner_claim_path):
@@ -189,10 +203,12 @@ def _break_stale_lock(*, lock_path: Path, lifetime_s: float) -> None:
             )
 
         if current_lock_stat.st_mtime + CLOCK_SLOP_S > time.time():
+            logger.debug("lock %s became fresh again before stale break", lock_path)
             return
 
         _safe_unlink_if_exists(lock_path)
         _safe_unlink_if_exists(owner_claim_path)
+        logger.info("broke stale lock %s", lock_path)
     finally:
         _safe_rmdir_if_exists(break_dir)
 
@@ -208,6 +224,7 @@ def _release_lock(*, lock_path: Path, owner_claim_path: Path) -> None:
             raise NotLockedError(f"lock {lock_path} does not exist") from exc
         raise
     _safe_unlink_if_exists(owner_claim_path)
+    logger.info("released lock %s", lock_path)
 
 
 def _parent_is_alive(*, parent_pid: int) -> bool:
@@ -227,6 +244,11 @@ def _try_release_if_parent_dead(
     if _parent_is_alive(parent_pid=parent_pid):
         return False
 
+    logger.warning(
+        "parent pid %s is dead; attempting to release lock %s",
+        parent_pid,
+        lock_path,
+    )
     with suppress(NotLockedError, OSError):
         _release_lock(lock_path=lock_path, owner_claim_path=owner_claim_path)
     with suppress(OSError):
@@ -264,19 +286,25 @@ def _heartbeat_loop(
     stop_event: threading.Event,
 ) -> None:
     if not _is_owner(lock_path=lock_path, owner_claim_path=owner_claim_path):
+        logger.warning("heartbeat exiting because ownership was lost for %s", lock_path)
         return
     if not _try_touch_future(owner_claim_path, lifetime_s=lifetime_s):
+        logger.warning("heartbeat exiting because claim file could not be refreshed for %s", lock_path)
         return
 
     next_heartbeat_at = time.monotonic() + heartbeat_interval_s
     while True:
         timeout_s = max(next_heartbeat_at - time.monotonic(), 0.0)
         if stop_event.wait(timeout_s):
-            return  # TODO: should i mark/log this in any way?
+            logger.debug("heartbeat stopping for %s", lock_path)
+            return
         if not _is_owner(lock_path=lock_path, owner_claim_path=owner_claim_path):
-            return  # TODO: should i mark/log this in any way?
+            logger.warning("heartbeat lost ownership for %s", lock_path)
+            return
         if not _try_touch_future(owner_claim_path, lifetime_s=lifetime_s):
-            return  # TODO: should i mark/log this in any way?
+            logger.warning("heartbeat could not refresh claim file for %s", lock_path)
+            return
+        logger.debug("heartbeat refreshed lock claim for %s", lock_path)
         next_heartbeat_at = time.monotonic() + heartbeat_interval_s
 
 
@@ -291,6 +319,7 @@ def lock(
 ) -> Iterator[Callable[[], bool]]:
     lock_path = lock_path.resolve()
     owner_claim_path = _nfs_safe_unique_name(lock_path, name="claim")
+    logger.debug("preparing lock context for %s with claim %s", lock_path, owner_claim_path)
 
     if acquire_timeout_s is None:
         acquire_timeout_s = lifetime_s + CLOCK_SLOP_S
@@ -308,6 +337,12 @@ def lock(
     _touch_future(owner_claim_path, lifetime_s=lifetime_s)
 
     try:
+        logger.info(
+            "acquiring lock %s (timeout=%ss, heartbeat=%ss)",
+            lock_path,
+            acquire_timeout_s,
+            heartbeat_interval_s,
+        )
         acquire_deadline_monotonic_s = time.monotonic() + max(acquire_timeout_s, 0.0)
         while not _try_acquire_lock_with_stale_break(
             lock_path=lock_path,
@@ -320,9 +355,11 @@ def lock(
                 acquire_poll_interval_s=acquire_poll_interval_s,
             )
             if sleep_s <= 0.0:
+                logger.warning("timed out acquiring lock %s", lock_path)
                 raise LockAcquireError(
                     f"could not acquire lock at {lock_path} within {acquire_timeout_s:g} seconds"
                 )
+            logger.debug("waiting %.3fs to retry lock %s", sleep_s, lock_path)
             time.sleep(sleep_s)
 
         _touch_future(owner_claim_path, lifetime_s=lifetime_s)
@@ -341,6 +378,7 @@ def lock(
             daemon=True,
         )
         heartbeat.start()
+        logger.debug("heartbeat thread started for %s", lock_path)
         body_error: BaseException | None = None
 
         def has_lock() -> bool:
@@ -358,6 +396,8 @@ def lock(
                 _release_lock(lock_path=lock_path, owner_claim_path=owner_claim_path)
             except NotLockedError:
                 if body_error is None:
+                    logger.warning("lock %s was lost before clean release", lock_path)
                     raise LockLostError(f"lost lock at {lock_path}")
     finally:
         _safe_unlink_if_exists(owner_claim_path)
+        logger.debug("cleaned up claim file %s", owner_claim_path)

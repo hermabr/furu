@@ -3,7 +3,10 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
+from furu.logging import get_logger
 from furu.utils import JsonValue
+
+logger = get_logger(__name__)
 
 
 class GitData(BaseModel):
@@ -43,6 +46,11 @@ class RunningMetadata(_Metadata):
     # executor info, such as local, local executor, slurm dag or slurm worker
 
     def to_complete(self) -> "CompletedMetadata":
+        logger.debug(
+            "marking metadata complete for artifact_hash=%s at %s",
+            self.artifact_hash,
+            self.data_path,
+        )
         return CompletedMetadata(
             artifact=self.artifact,
             artifact_hash=self.artifact_hash,

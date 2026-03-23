@@ -6,7 +6,10 @@ from typing import Any
 from pydantic import BaseModel as PydanticBaseModel
 
 from furu.constants import CLASSMARKER, KINDMARKER
+from furu.logging import get_logger
 from furu.utils import JsonValue, fully_qualified_name
+
+logger = get_logger(__name__)
 
 
 def to_json(  # TODO: consider caching this (but if i'm going to, I need to figure out how to cache lists and other unhashable objects)
@@ -16,10 +19,14 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
 
     def assert_correct_dict_key(x: Any) -> str:
         if not isinstance(x, str):
+            logger.debug("refusing to serialize non-string dict key of type %s", type(x))
             raise ValueError("TODO")
         if x in [CLASSMARKER, KINDMARKER]:
+            logger.debug("refusing to serialize reserved dict key %s", x)
             raise ValueError("TODO: write error msg")
         return x
+
+    logger.debug("serializing object of type %s", type(obj))
 
     match obj:
         case None:
@@ -52,6 +59,8 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                 "fields": {k: to_json(v) for k, v in obj.model_dump().items()},
             }
         case enum.Enum():
+            logger.debug("enum serialization is not implemented for %s", type(obj))
             raise NotImplementedError("TODO")  #  return {"__enum__": _type_fqn(obj)}
         case _:
+            logger.debug("unexpected object during serialization: %r", obj)
             raise ValueError("unexpected item", obj)  # TODO: explain the error more
