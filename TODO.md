@@ -1,17 +1,16 @@
 - [x] doing `class MyCls(Furu[int])` should make it a frozen dataclass with named args
 - [x] furu_hash
-    - [ ] add warning if field dataclass is not itself frozen
     - [ ] add support for adding/hooking in custom items. this means you can define manually how i should walk an object like pydantic, if i didn't already have support for it
 - [x] schema
-    - [ ] compute basic schema and schema hash
+    - [x] compute basic schema and schema hash
+    - [x] record current schema for each object so that i know if schema was changed from last time code was used
     - [ ] add support for adding/hooking in custom items. this means you can define manually how i should walk an object like pydantic, if i didn't already have support for it
-    - [ ] record current schema for each object so that i know if schema was changed from last time code was used
 - [x] furu config
 - [x] file/compute locking
     - [x] auto make/delete the lock file
     - [x] don't allow others to run if file is locked
     - [x] heartbeat and waiting
-    - [ ] allow other processes to wait for the worker before they resume their own work
+    - [x] allow other processes to wait for the worker before they resume their own work
     - [x] use threading.Thread for heartbeat
     - [ ] move to zig
 - [x] metadata
