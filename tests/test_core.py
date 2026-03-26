@@ -131,6 +131,13 @@ class UsesClassValue(Furu[None]):
     def _create(self) -> None:
         return None
 
+
+class UsesFalseLiteral(Furu[None]):
+    tie_word_embeddings: Literal[False]
+
+    def _create(self) -> None:
+        return None
+
 class LoggedLeaf(Furu[str]):
     name: str
 
@@ -505,6 +512,19 @@ def expected_schema_for_B_like(cls_name: str, *, include_private_h: bool = False
                 },
             },
             id="PydanticFields",
+        ),
+        pytest.param(
+            lambda: UsesFalseLiteral(tie_word_embeddings=False),
+            {
+                "|class": "test_core.UsesFalseLiteral",
+                "fields": {
+                    "tie_word_embeddings": {
+                        "|origin": "typing.Literal",
+                        "|args": [False],
+                    }
+                },
+            },
+            id="UsesFalseLiteral",
         ),
     ],
 )
