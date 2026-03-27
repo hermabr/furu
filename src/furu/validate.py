@@ -1,13 +1,28 @@
-from typing import Any, Callable
+from typing import Any, Callable, overload
 
 _VALIDATOR_MARKER = "__furu_validator__"
 _POST_INIT_WRAPPER_MARKER = "__furu_post_init_wrapper__"
 _USER_POST_INIT_ATTR = "__furu_user_post_init__"
 
 
-def validate(fn: Callable[[Any], None]) -> Callable[[Any], None]:
-    setattr(fn, _VALIDATOR_MARKER, True)
-    return fn
+@overload
+def validate(fn: Callable[[Any], None]) -> Callable[[Any], None]: ...
+
+
+@overload
+def validate() -> Callable[[Callable[[Any], None]], Callable[[Any], None]]: ...
+
+
+def validate(
+    fn: Callable[[Any], None] | None = None,
+) -> Callable[[Any], None] | Callable[[Callable[[Any], None]], Callable[[Any], None]]:
+    def decorator(inner: Callable[[Any], None]) -> Callable[[Any], None]:
+        setattr(inner, _VALIDATOR_MARKER, True)
+        return inner
+
+    if fn is None:
+        return decorator
+    return decorator(fn)
 
 
 def validate_cls(cls: type) -> None:

@@ -239,6 +239,24 @@ def test_parent_and_child_validators_both_run():
         ParentAndChildValidated(value=1, child_value=0)
 
 
+def test_validate_decorator_supports_call_syntax():
+    class CallSyntaxValidated(Furu[int]):
+        value: int
+
+        @validate()
+        def _validate_positive(self) -> None:
+            if self.value <= 0:
+                raise ValueError("value must be positive")
+
+        def _create(self) -> int:
+            return self.value
+
+    assert CallSyntaxValidated(value=2).load_or_create() == 2
+
+    with pytest.raises(ValueError, match="value must be positive"):
+        CallSyntaxValidated(value=0)
+
+
 def test_post_init_can_transform_values_before_validation():
     class PostInitValidated(Furu[int]):
         raw_value: int | str
