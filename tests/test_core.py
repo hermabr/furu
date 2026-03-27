@@ -251,7 +251,7 @@ def test_validate_decorator_supports_call_syntax():
         def _create(self) -> int:
             return self.value
 
-    assert CallSyntaxValidated(value=2).load_or_create() == 2
+    assert CallSyntaxValidated(value=2).value == 2
 
     with pytest.raises(ValueError, match="value must be positive"):
         CallSyntaxValidated(value=0)
