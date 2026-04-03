@@ -9,7 +9,7 @@ from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal, overload
+from typing import Any, Literal, assert_never, overload
 
 from furu.core import Furu
 from furu.logging import _scoped_log_file, _scoped_log_files
@@ -245,18 +245,20 @@ def load_or_create(
 
 def _execute_group(group: list[_AnyFuru], *, has_lock: _HasLock) -> dict[Path, Any]:
     mode = group[0]._furu_create_mode
-    if mode == "batched":
-        metadata_by_data_dir = {
-            _canonical_data_dir(obj): _write_running_metadata(obj) for obj in group
-        }
-        return _execute_batched_group(
-            group,
-            metadata_by_data_dir=metadata_by_data_dir,
-            has_lock=has_lock,
-        )
-    if mode == "single":
-        return _execute_single_group(group, has_lock=has_lock)
-    raise AssertionError(f"unexpected Furu create mode: {mode}")
+    match mode:
+        case "batched":
+            metadata_by_data_dir = {
+                _canonical_data_dir(obj): _write_running_metadata(obj) for obj in group
+            }
+            return _execute_batched_group(
+                group,
+                metadata_by_data_dir=metadata_by_data_dir,
+                has_lock=has_lock,
+            )
+        case "single":
+            return _execute_single_group(group, has_lock=has_lock)
+        case _:
+            assert_never(mode)
 
 
 def _execute_batched_group(
