@@ -2,7 +2,7 @@
 
 ## Task Completion Requirements
 
-- Both `uv run ruff check`, `uv run ty check`, `uv run pytest`, must pass before considering tasks completed.
+- All of `uv run ruff format`, `uv run ruff check`, `uv run ty check` and `uv run pytest`, must pass before considering tasks completed.
 
 ## Project Snapshot
 
