@@ -1,11 +1,12 @@
+import logging
+import inspect
 import os
 import pickle
 import secrets
 import shutil
-import logging
 import traceback
-from abc import ABC, abstractmethod
-from contextlib import nullcontext
+from abc import ABC
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import cached_property
@@ -15,11 +16,12 @@ from typing import (
     Any,
     Literal,
     Self,
+    overload,
 )
 
 from furu.config import config
 from furu.logging import _scoped_log_file, get_logger
-from furu.locking import LockLostError, lock
+from furu.locking import LockLostError, lock, lock_many
 
 # from furu.locking import run_with_lease_and_pickle_result
 from furu.metadata import RunningMetadata
@@ -45,6 +47,10 @@ else:
         pass
 
 
+type _CreatorKind = Literal["single", "batched"]
+type _Lease = Callable[[], bool] | None
+
+
 class Furu[T](_FuruDataclassTransform, ABC):
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -55,109 +61,8 @@ class Furu[T](_FuruDataclassTransform, ABC):
         if "__dataclass_params__" not in cls.__dict__:
             dataclass(frozen=True, kw_only=True)(cls)
 
-    def load_or_create(self, use_lock: bool = True) -> T:
-        if self._result_path.exists():
-            self.logger.info(
-                "cache hit for %s at %s",
-                self._log_label,
-                self._result_path,
-            )
-            # TODO: validation that its up to date and valid
-            with open(self._result_path, "rb") as f:
-                return pickle.load(f)
-
-        self._internal_furu_dir.mkdir(exist_ok=True, parents=True)
-
-        try:
-            self.logger.info("calling %s.load_or_create()", self._log_label)
-            with _scoped_log_file(self._log_path):
-                self.logger.debug("load_or_create start")
-
-                with (
-                    lock(self._internal_furu_dir / "compute.lock")
-                    if use_lock
-                    else nullcontext()
-                ) as has_lock:
-                    if self._result_path.exists():
-                        self.logger.info(
-                            "cache hit for %s after waiting at %s",
-                            self._log_label,
-                            self._result_path,
-                        )
-                        with open(self._result_path, "rb") as f:
-                            return pickle.load(f)
-
-                    metadata = RunningMetadata(
-                        artifact=self.artifact,
-                        artifact_hash=self.artifact_hash,
-                        schema_=self.schema,
-                        schema_hash=self.schema_hash,
-                        data_path=self.data_dir.resolve(),
-                        started_at=datetime.now(timezone.utc),
-                    )
-                    self._metadata_path.write_text(metadata.model_dump_json(indent=2))
-                    self.logger.debug("running _create()")
-                    result = self._create()
-                    self.logger.debug("_create() returned")
-
-                    completed_metadata = metadata.to_complete()
-
-                    if has_lock and not has_lock():
-                        raise LockLostError(
-                            f"lost lock at {self._internal_furu_dir / 'compute.lock'} "
-                            "before writing final result"
-                        )
-
-                    tmp_result_path = self._result_path.with_suffix(".tmp.pkl")
-                    with tmp_result_path.open("wb") as f:
-                        pickle.dump(
-                            result,
-                            f,
-                        )
-                        f.flush()  # TODO: Do i need this and the os.fsync?
-                        os.fsync(f.fileno())
-
-                    if has_lock and not has_lock():
-                        raise LockLostError(
-                            f"lost lock at {self._internal_furu_dir / 'compute.lock'} "
-                            "after writing temporary result"
-                        )
-
-                    tmp_result_path.rename(self._result_path)
-                    self._metadata_path.write_text(
-                        completed_metadata.model_dump_json(indent=2)
-                    )
-                    self.logger.debug("stored result at %s", self._result_path)
-
-                    self.logger.debug("load_or_create complete")
-            self.logger.info("%s.load_or_create() returned", self._log_label)
-
-        except BaseException as exc:
-            with _scoped_log_file(self._log_path):
-                self.logger.exception("load_or_create failed")
-            with (  # TODO: log this to the regular log file
-                (
-                    self._internal_furu_dir
-                    / f"error-{datetime.now():%y%m%d_%H-%M-%S}-{secrets.token_hex(4)}.log"  # TODO: make this part of the regular error
-                ).open("a", encoding="utf-8") as f
-            ):
-                f.write("Traceback (most recent call last):\n")
-                f.writelines(
-                    traceback.format_list(
-                        traceback.extract_stack()[:-1]
-                        + traceback.extract_tb(exc.__traceback__)
-                    )
-                )
-                f.writelines(traceback.format_exception_only(type(exc), exc))
-                f.write("\n=== Debug Details (with locals) ===\n")
-                f.writelines(
-                    traceback.TracebackException.from_exception(
-                        exc, capture_locals=True
-                    ).format(chain=True)
-                )
-            raise
-
-        return result
+    def load_or_create(self, *, use_lock: bool = True) -> T:
+        return load_or_create(self, use_lock=use_lock)
 
     def status(
         self,
@@ -220,8 +125,11 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def logger(self) -> logging.Logger:
         return get_logger()
 
-    @abstractmethod
     def _create(self) -> T:
+        raise NotImplementedError("TODO")
+
+    @classmethod
+    def _create_batched(cls, items: list[Self]) -> list[T]:
         raise NotImplementedError("TODO")
 
     @cached_property
@@ -274,3 +182,313 @@ class Furu[T](_FuruDataclassTransform, ABC):
     @cached_property
     def _log_label(self) -> str:
         return f"{type(self).__name__}:{self.schema_hash[:5]}:{self.artifact_hash[:5]}"
+
+
+def _overrides_base_method(cls: type[Any], base: type[Any], name: str) -> bool:
+    return inspect.getattr_static(cls, name) != inspect.getattr_static(base, name)
+
+
+def _creator_kind_for_class(cls: type[Furu[Any]]) -> _CreatorKind:
+    single = _overrides_base_method(cls, Furu, "_create")
+    batched = _overrides_base_method(cls, Furu, "_create_batched")
+    if single == batched:
+        raise TypeError(
+            f"{cls.__module__}.{cls.__qualname__} must override exactly one of "
+            "_create or _create_batched"
+        )
+    return "single" if single else "batched"
+
+
+def _artifact_key(obj: Furu[Any]) -> Path:
+    return obj.data_dir.resolve()
+
+
+def _compute_lock_path(obj: Furu[Any]) -> Path:
+    return obj._internal_furu_dir / "compute.lock"
+
+
+def _load_result[T](obj: Furu[T]) -> T:
+    with open(obj._result_path, "rb") as f:
+        return pickle.load(f)
+
+
+def _write_failure_diagnostics(obj: Furu[Any], exc: BaseException) -> None:
+    obj._internal_furu_dir.mkdir(exist_ok=True, parents=True)
+
+    with _scoped_log_file(obj._log_path):
+        obj.logger.error(
+            "load_or_create failed",
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+
+    exc_tb = [] if exc.__traceback__ is None else traceback.extract_tb(exc.__traceback__)
+
+    with (
+        (
+            obj._internal_furu_dir
+            / f"error-{datetime.now():%y%m%d_%H-%M-%S}-{secrets.token_hex(4)}.log"
+        ).open("a", encoding="utf-8") as f
+    ):
+        f.write("Traceback (most recent call last):\n")
+        f.writelines(
+            traceback.format_list(traceback.extract_stack()[:-1] + exc_tb)
+        )
+        f.writelines(traceback.format_exception_only(type(exc), exc))
+        f.write("\n=== Debug Details (with locals) ===\n")
+        f.writelines(
+            traceback.TracebackException.from_exception(
+                exc, capture_locals=True
+            ).format(chain=True)
+        )
+
+
+def _write_running_metadata(obj: Furu[Any]) -> RunningMetadata:
+    metadata = RunningMetadata(
+        artifact=obj.artifact,
+        artifact_hash=obj.artifact_hash,
+        schema_=obj.schema,
+        schema_hash=obj.schema_hash,
+        data_path=obj.data_dir.resolve(),
+        started_at=datetime.now(timezone.utc),
+    )
+    obj._metadata_path.write_text(metadata.model_dump_json(indent=2))
+    return metadata
+
+
+def _assert_has_lock(obj: Furu[Any], lease: _Lease, *, phase: str) -> None:
+    if lease is not None and not lease():
+        raise LockLostError(f"lost lock at {_compute_lock_path(obj)} {phase}")
+
+
+def _publish_precomputed_one_unlocked[T](
+    obj: Furu[T],
+    value: T,
+    *,
+    metadata: RunningMetadata,
+    lease: _Lease,
+) -> T:
+    with _scoped_log_file(obj._log_path):
+        completed_metadata = metadata.to_complete()
+
+        _assert_has_lock(obj, lease, phase="before writing final result")
+
+        tmp_result_path = obj._result_path.with_suffix(".tmp.pkl")
+        with tmp_result_path.open("wb") as f:
+            pickle.dump(value, f)
+            f.flush()
+            os.fsync(f.fileno())
+
+        _assert_has_lock(obj, lease, phase="after writing temporary result")
+
+        tmp_result_path.rename(obj._result_path)
+        obj._metadata_path.write_text(completed_metadata.model_dump_json(indent=2))
+        obj.logger.debug("stored result at %s", obj._result_path)
+    return value
+
+
+def _create_and_publish_one_unlocked[T](obj: Furu[T], *, lease: _Lease) -> T:
+    with _scoped_log_file(obj._log_path):
+        metadata = _write_running_metadata(obj)
+        obj.logger.debug("running _create()")
+        result = obj._create()
+        obj.logger.debug("_create() returned")
+        return _publish_precomputed_one_unlocked(
+            obj,
+            result,
+            metadata=metadata,
+            lease=lease,
+        )
+
+
+def _prepare_internal_dirs(objs: list[Furu[Any]]) -> None:
+    for obj in objs:
+        obj._internal_furu_dir.mkdir(exist_ok=True, parents=True)
+
+
+def _stable_dedupe[T](objs: list[Furu[T]]) -> tuple[list[Furu[T]], list[Path]]:
+    unique_by_key: dict[Path, Furu[T]] = {}
+    order: list[Path] = []
+    for obj in objs:
+        key = _artifact_key(obj)
+        order.append(key)
+        unique_by_key.setdefault(key, obj)
+    return list(unique_by_key.values()), order
+
+
+def _split_cached[T](objs: list[Furu[T]]) -> tuple[dict[Path, T], list[Furu[T]]]:
+    cached: dict[Path, T] = {}
+    missing: list[Furu[T]] = []
+    for obj in objs:
+        key = _artifact_key(obj)
+        if obj._result_path.exists():
+            cached[key] = _load_result(obj)
+        else:
+            missing.append(obj)
+    return cached, missing
+
+
+def _reconstruct[T](order: list[Path], values: dict[Path, T]) -> list[T]:
+    return [values[key] for key in order]
+
+
+def _validate_same_type[T](objs: list[Furu[T]]) -> type[Furu[T]]:
+    first_type = type(objs[0])
+    for obj in objs[1:]:
+        if type(obj) is not first_type:
+            raise TypeError(
+                "load_or_create() list inputs must have the exact same concrete type"
+            )
+    return first_type
+
+
+def _execute_missing_unlocked[T](
+    missing: list[Furu[T]],
+    *,
+    creator_kind: _CreatorKind,
+    lease: _Lease,
+    log_failures: bool = True,
+) -> dict[Path, T]:
+    if creator_kind == "single":
+        created: dict[Path, T] = {}
+        for obj in missing:
+            try:
+                created[_artifact_key(obj)] = _create_and_publish_one_unlocked(
+                    obj, lease=lease
+                )
+            except BaseException as exc:
+                if log_failures:
+                    _write_failure_diagnostics(obj, exc)
+                raise
+        return created
+
+    metadata_by_key = {
+        _artifact_key(obj): _write_running_metadata(obj)
+        for obj in missing
+    }
+    batched_cls = type(missing[0])
+
+    try:
+        with _scoped_log_file(missing[0]._log_path):
+            missing[0].logger.debug(
+                "running _create_batched() for %d items", len(missing)
+            )
+            batched_results = batched_cls._create_batched(missing)
+            missing[0].logger.debug("_create_batched() returned")
+    except BaseException as exc:
+        if log_failures:
+            for obj in missing:
+                _write_failure_diagnostics(obj, exc)
+        raise
+
+    if len(batched_results) != len(missing):
+        exc = ValueError(
+            f"{batched_cls.__module__}.{batched_cls.__qualname__}._create_batched "
+            f"returned {len(batched_results)} results for {len(missing)} inputs"
+        )
+        if log_failures:
+            for obj in missing:
+                _write_failure_diagnostics(obj, exc)
+        raise exc
+
+    created: dict[Path, T] = {}
+    for obj, value in zip(missing, batched_results, strict=True):
+        try:
+            created[_artifact_key(obj)] = _publish_precomputed_one_unlocked(
+                obj,
+                value,
+                metadata=metadata_by_key[_artifact_key(obj)],
+                lease=lease,
+            )
+        except BaseException as exc:
+            if log_failures:
+                _write_failure_diagnostics(obj, exc)
+            raise
+    return created
+
+
+def _load_or_create_many[T](
+    objs: list[Furu[T]],
+    *,
+    use_lock: bool,
+    log_failures: bool = True,
+) -> list[T]:
+    cls = _validate_same_type(objs)
+    creator_kind = _creator_kind_for_class(cls)
+
+    unique, order = _stable_dedupe(objs)
+    cached, missing = _split_cached(unique)
+    if not missing:
+        return _reconstruct(order, cached)
+
+    _prepare_internal_dirs(missing)
+
+    if not use_lock:
+        created = _execute_missing_unlocked(
+            missing,
+            creator_kind=creator_kind,
+            lease=None,
+            log_failures=log_failures,
+        )
+        return _reconstruct(order, {**cached, **created})
+
+    lock_paths = [_compute_lock_path(obj) for obj in missing]
+    with lock_many(lock_paths) as lease:
+        cached_after_lock, missing_after_lock = _split_cached(unique)
+        if not missing_after_lock:
+            return _reconstruct(order, cached_after_lock)
+
+        _prepare_internal_dirs(missing_after_lock)
+        created = _execute_missing_unlocked(
+            missing_after_lock,
+            creator_kind=creator_kind,
+            lease=lease,
+            log_failures=log_failures,
+        )
+        return _reconstruct(order, {**cached_after_lock, **created})
+
+
+def _load_or_create_scalar[T](obj: Furu[T], *, use_lock: bool) -> T:
+    if obj._result_path.exists():
+        obj.logger.info("cache hit for %s at %s", obj._log_label, obj._result_path)
+        return _load_result(obj)
+
+    obj._internal_furu_dir.mkdir(exist_ok=True, parents=True)
+
+    try:
+        obj.logger.info("calling %s.load_or_create()", obj._log_label)
+        with _scoped_log_file(obj._log_path):
+            obj.logger.debug("load_or_create start")
+            result = _load_or_create_many(
+                [obj],
+                use_lock=use_lock,
+                log_failures=False,
+            )[0]
+            obj.logger.debug("load_or_create complete")
+        obj.logger.info("%s.load_or_create() returned", obj._log_label)
+        return result
+    except BaseException as exc:
+        _write_failure_diagnostics(obj, exc)
+        raise
+
+
+@overload
+def load_or_create[T](obj: Furu[T], *, use_lock: bool = True) -> T: ...
+
+
+@overload
+def load_or_create[T](objs: list[Furu[T]], *, use_lock: bool = True) -> list[T]: ...
+
+
+def load_or_create[T](
+    obj_or_objs: Furu[T] | Iterable[Furu[T]],
+    *,
+    use_lock: bool = True,
+) -> T | list[T]:
+    if isinstance(obj_or_objs, Furu):
+        return _load_or_create_scalar(obj_or_objs, use_lock=use_lock)
+
+    objs = list(obj_or_objs)
+    if not objs:
+        return []
+
+    return _load_or_create_many(objs, use_lock=use_lock)

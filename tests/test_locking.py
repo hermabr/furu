@@ -17,6 +17,7 @@ from furu.locking import (
     NotLockedError,
     StaleLockRaceError,
     lock,
+    lock_many,
 )
 
 # TODO: make this not using vibes, but by actually thinking through the tests
@@ -64,8 +65,26 @@ def _child_acquire_then_exit(
         lifetime_s=lifetime_s,
         heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
     ):
-        owner = Path(lock_path).read_text(encoding="utf-8").strip()
-        Path(owner_path).write_text(owner, encoding="utf-8")
+        owner_claim_path = locking_module._safe_read_breakable_claim_path(lock_path)
+        assert owner_claim_path is not None
+        Path(owner_path).write_text(str(owner_claim_path), encoding="utf-8")
+        os._exit(0)
+
+
+def _child_acquire_many_then_exit(
+    lock_paths: tuple[Path, Path],
+    owner_path: str,
+    *,
+    lifetime_s: float = SHORT_LIFETIME_S,
+) -> None:
+    with lock_many(
+        lock_paths,
+        lifetime_s=lifetime_s,
+        heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+    ):
+        owner_claim_path = locking_module._safe_read_breakable_claim_path(lock_paths[0])
+        assert owner_claim_path is not None
+        Path(owner_path).write_text(str(owner_claim_path), encoding="utf-8")
         os._exit(0)
 
 
@@ -171,9 +190,16 @@ def test_lock_uses_default_arguments(tmp_path: Path) -> None:
 
 
 def _drop_current_lock(lock_path: Path) -> None:
-    owner_claim_path = Path(lock_path.read_text(encoding="utf-8").strip())
+    owner_claim_path = locking_module._safe_read_breakable_claim_path(lock_path)
+    assert owner_claim_path is not None
     lock_path.unlink()
     owner_claim_path.unlink()
+
+
+def _read_claim_path(lock_path: Path) -> Path:
+    owner_claim_path = locking_module._safe_read_breakable_claim_path(lock_path)
+    assert owner_claim_path is not None
+    return owner_claim_path
 
 
 def test_has_lock_returns_false_when_lock_is_lost(tmp_path: Path) -> None:
@@ -313,14 +339,14 @@ def test_break_stale_lock(tmp_path: Path) -> None:
         queue.get(timeout=PROCESS_TIMEOUT_S)
         stale = time.time() - locking_module.CLOCK_SLOP_S - SHORT_SLEEP_S
         os.utime(lock_path, (stale, stale))
-        first_owner = lock_path.read_text(encoding="utf-8").strip()
+        first_owner = str(_read_claim_path(lock_path))
 
         with lock(
             lock_path,
             lifetime_s=SHORT_LIFETIME_S,
             heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
         ):
-            second_owner = lock_path.read_text(encoding="utf-8").strip()
+            second_owner = str(_read_claim_path(lock_path))
             assert second_owner != first_owner
     finally:
         queue.put(True)
@@ -631,10 +657,110 @@ def test_process_exit_without_cleanup_allows_reclaim_after_expiry(
             + SHORT_SLEEP_S,
             acquire_poll_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
         ):
-            second_owner = lock_path.read_text(encoding="utf-8").strip()
+            second_owner = str(_read_claim_path(lock_path))
             assert second_owner != first_owner
     finally:
         proc.join(timeout=PROCESS_TIMEOUT_S)
+
+
+def test_stale_group_lock_break_removes_whole_group(tmp_path: Path) -> None:
+    lock_paths = (tmp_path / "first.lck", tmp_path / "second.lck")
+    owner_path = tmp_path / "owner.txt"
+    proc = Process(
+        target=_child_acquire_many_then_exit,
+        args=(lock_paths, str(owner_path)),
+        kwargs={"lifetime_s": SHORT_LIFETIME_S},
+    )
+    proc.start()
+
+    try:
+        proc.join(timeout=PROCESS_TIMEOUT_S)
+        assert proc.exitcode == 0
+        first_owner = Path(owner_path).read_text(encoding="utf-8").strip()
+
+        with pytest.raises(LockAcquireError):
+            with lock_many(
+                lock_paths,
+                lifetime_s=SHORT_LIFETIME_S,
+                heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+                acquire_timeout_s=0.0,
+            ):
+                pass
+
+        with lock_many(
+            lock_paths,
+            lifetime_s=SHORT_LIFETIME_S,
+            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+            acquire_timeout_s=SHORT_LIFETIME_S
+            + locking_module.CLOCK_SLOP_S
+            + SHORT_SLEEP_S,
+            acquire_poll_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+        ):
+            second_owner = _read_claim_path(lock_paths[0])
+            assert str(second_owner) != first_owner
+            assert _read_claim_path(lock_paths[1]) == second_owner
+
+        assert not Path(first_owner).exists()
+    finally:
+        proc.join(timeout=PROCESS_TIMEOUT_S)
+
+
+def test_partial_group_acquisition_releases_taken_links_before_retry(
+    tmp_path: Path,
+) -> None:
+    lock_paths = (tmp_path / "first.lck", tmp_path / "second.lck")
+    original_link = os.link
+    failed_once = False
+    saw_clean_retry = False
+
+    def flaky_link(src, dst, *args, **kwargs):
+        nonlocal failed_once, saw_clean_retry
+        dst_path = Path(os.fsdecode(dst))
+        if dst_path == lock_paths[0] and failed_once:
+            saw_clean_retry = True
+            assert not lock_paths[0].exists()
+        if dst_path == lock_paths[1] and not failed_once:
+            failed_once = True
+            raise FileExistsError(errno.EEXIST, "simulated contention", os.fspath(dst))
+        return original_link(src, dst, *args, **kwargs)
+
+    with patch("os.link", side_effect=flaky_link):
+        with lock_many(
+            lock_paths,
+            lifetime_s=SHORT_LIFETIME_S,
+            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+            acquire_timeout_s=SHORT_SLEEP_S * 4,
+            acquire_poll_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+        ):
+            assert all(path.exists() for path in lock_paths)
+
+    assert failed_once
+    assert saw_clean_retry
+
+
+def test_lock_many_raises_clear_error_for_cross_device_batches(
+    tmp_path: Path,
+) -> None:
+    lock_paths = (tmp_path / "first.lck", tmp_path / "second.lck")
+    original_link = os.link
+
+    def cross_device_link(src, dst, *args, **kwargs):
+        dst_path = Path(os.fsdecode(dst))
+        if dst_path == lock_paths[1]:
+            raise OSError(errno.EXDEV, "cross-device link")
+        return original_link(src, dst, *args, **kwargs)
+
+    with patch("os.link", side_effect=cross_device_link):
+        with pytest.raises(LockAcquireError, match="same filesystem"):
+            with lock_many(
+                lock_paths,
+                lifetime_s=SHORT_LIFETIME_S,
+                heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+            ):
+                pass
+
+    assert not lock_paths[0].exists()
+    assert not lock_paths[1].exists()
 
 
 def test_does_not_break_corrupt_claim_file(tmp_path: Path) -> None:

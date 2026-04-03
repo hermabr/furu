@@ -4,8 +4,9 @@ import pickle
 import time
 from multiprocessing import get_context
 from pathlib import Path
+from typing import cast, final
 
-from furu import Furu
+from furu import Furu, load_or_create
 from furu.config import _FuruDirectories, config
 from furu.locking import (
     DEFAULT_ACQUIRE_POLL_INTERVAL_S,
@@ -32,6 +33,22 @@ class SlowProbe(Furu[int]):
         time.sleep(OVERLAP_SLEEP_S)  # force overlap window
         # TODO: make teh sleep times even less if possible
         return 42
+
+
+@final
+class SlowBatchedProbe(Furu[int]):
+    key: int
+
+    @classmethod
+    def _create_batched(cls, items: list[Furu[int]]) -> list[int]:
+        typed_items = [cast(SlowBatchedProbe, item) for item in items]
+        marker_dir = Path(os.environ["FURU_TEST_MARKER_DIR"])
+        marker_dir.mkdir(parents=True, exist_ok=True)
+        (marker_dir / f"batch-{os.getpid()}.marker").write_text(
+            ",".join(str(item.key) for item in typed_items)
+        )
+        time.sleep(OVERLAP_SLEEP_S)
+        return [item.key * 10 for item in typed_items]
 
 
 class MidRunTakeoverProbe(Furu[int]):
@@ -76,6 +93,18 @@ def _takeover_worker(
         out_q.put(("ok", os.getpid(), value))
     except BaseException as e:
         out_q.put(("err", os.getpid(), type(e).__name__, str(e)))
+
+
+def _batched_worker(data_dir: str, start_evt, out_q) -> None:
+    config.directories = _FuruDirectories(data=Path(data_dir))
+    objs = [SlowBatchedProbe(key=1), SlowBatchedProbe(key=2)]
+    out_q.put(("ready", os.getpid()))
+    start_evt.wait()
+    try:
+        values = load_or_create(objs)
+        out_q.put(("ok", os.getpid(), values))
+    except LockAcquireError as e:
+        out_q.put(("err", os.getpid(), type(e).__name__))
 
 
 def _steal_lock(lock_path: str, out_q) -> None:
@@ -129,6 +158,41 @@ def test_two_processes_competing_for_same_furu_object(tmp_path):
     assert len(result_paths) == 1
     with result_paths[0].open("rb") as f:
         assert pickle.load(f) == 42
+
+
+def test_two_processes_competing_for_same_batched_furu_objects(tmp_path):
+    data_dir = tmp_path / "data"
+    marker_dir = tmp_path / "markers"
+    os.environ["FURU_TEST_MARKER_DIR"] = str(marker_dir)
+    ctx = get_context("spawn")
+    start_evt = ctx.Event()
+    out_q = ctx.Queue()
+    procs = [
+        ctx.Process(target=_batched_worker, args=(str(data_dir), start_evt, out_q))
+        for _ in range(2)
+    ]
+    for proc in procs:
+        proc.start()
+
+    ready = [out_q.get(timeout=PROCESS_TIMEOUT_S), out_q.get(timeout=PROCESS_TIMEOUT_S)]
+    assert all(tag == "ready" for tag, *_ in ready)
+
+    start_evt.set()
+    results = [
+        out_q.get(timeout=WAIT_FOR_LOCK_RESULT_TIMEOUT_S),
+        out_q.get(timeout=WAIT_FOR_LOCK_RESULT_TIMEOUT_S),
+    ]
+    for proc in procs:
+        proc.join(timeout=WAIT_FOR_LOCK_RESULT_TIMEOUT_S)
+        assert proc.exitcode == 0
+
+    oks = [result for result in results if result[0] == "ok"]
+    errs = [result for result in results if result[0] == "err"]
+    assert len(oks) == 2
+    assert errs == []
+    assert all(result[2] == [10, 20] for result in oks)
+    assert len(list(marker_dir.glob("*.marker"))) == 1
+    assert len(list(data_dir.glob("**/result.pkl"))) == 2
 
 
 def test_lock_is_taken_over_mid_create(tmp_path):

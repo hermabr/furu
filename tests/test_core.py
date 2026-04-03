@@ -1,16 +1,20 @@
+import pickle
 import types
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import FrozenInstanceError, is_dataclass, replace
 from enum import Enum
 from functools import partial
 from pathlib import Path
-from typing import Literal, TypeVar
+from typing import ClassVar, Literal, TypeVar, cast, final
 from unittest.mock import patch
 
 import pytest
 from pydantic import BaseModel, ConfigDict
 
-from furu import Furu, validate
+import furu.core as core_module
+import furu.locking as locking_module
+from furu import Furu, load_or_create, validate
 from furu.config import config
 from furu.serialize import to_json
 from furu.utils import fully_qualified_name
@@ -55,6 +59,54 @@ class RandomObj(Furu[float]):
         import random
 
         return random.random()
+
+
+class SingleOnlyBatchProbe(Furu[str]):
+    key: int
+
+    create_calls: ClassVar[list[int]] = []
+
+    def _create(self) -> str:
+        type(self).create_calls.append(self.key)
+        return f"single:{self.key}"
+
+
+@final
+class BatchedOnlyProbe(Furu[str]):
+    key: int
+
+    batch_calls: ClassVar[list[list[int]]] = []
+
+    @classmethod
+    def _create_batched(cls, items: list[Furu[str]]) -> list[str]:
+        typed_items = [cast(BatchedOnlyProbe, item) for item in items]
+        cls.batch_calls.append([item.key for item in typed_items])
+        return [f"batched:{item.key}" for item in typed_items]
+
+
+class NeitherCreatorProbe(Furu[int]):
+    key: int
+
+
+@final
+class BothCreatorProbe(Furu[int]):
+    key: int
+
+    def _create(self) -> int:
+        return self.key
+
+    @classmethod
+    def _create_batched(cls, items: list[Furu[int]]) -> list[int]:
+        return [cast(BothCreatorProbe, item).key for item in items]
+
+
+@final
+class LengthMismatchProbe(Furu[str]):
+    key: int
+
+    @classmethod
+    def _create_batched(cls, items: list[Furu[str]]) -> list[str]:
+        return []
 
 
 class Fruit(Enum):  # TODO: test enums at some point
@@ -661,6 +713,163 @@ def test_create_object_and_exists():
         }
     assert node_pair.is_completed()
     assert not replace(node_pair, name="y").is_completed()
+
+
+def test_single_only_scalar_load_or_create() -> None:
+    SingleOnlyBatchProbe.create_calls.clear()
+
+    obj = SingleOnlyBatchProbe(key=1)
+
+    assert obj.load_or_create() == "single:1"
+    assert SingleOnlyBatchProbe.create_calls == [1]
+
+
+def test_single_only_list_load_or_create() -> None:
+    SingleOnlyBatchProbe.create_calls.clear()
+
+    objs = [SingleOnlyBatchProbe(key=1), SingleOnlyBatchProbe(key=2)]
+
+    assert load_or_create(objs) == ["single:1", "single:2"]
+    assert SingleOnlyBatchProbe.create_calls == [1, 2]
+
+
+def test_batched_only_scalar_load_or_create() -> None:
+    BatchedOnlyProbe.batch_calls.clear()
+
+    obj = BatchedOnlyProbe(key=1)
+
+    assert obj.load_or_create() == "batched:1"
+    assert BatchedOnlyProbe.batch_calls == [[1]]
+
+
+def test_batched_only_list_load_or_create() -> None:
+    BatchedOnlyProbe.batch_calls.clear()
+
+    objs = [BatchedOnlyProbe(key=1), BatchedOnlyProbe(key=2)]
+
+    assert load_or_create(objs) == ["batched:1", "batched:2"]
+    assert BatchedOnlyProbe.batch_calls == [[1, 2]]
+
+
+def test_exact_one_validation_rejects_neither_hook() -> None:
+    with pytest.raises(TypeError, match="must override exactly one"):
+        NeitherCreatorProbe(key=1).load_or_create()
+
+
+def test_exact_one_validation_rejects_both_hooks() -> None:
+    with pytest.raises(TypeError, match="must override exactly one"):
+        BothCreatorProbe(key=1).load_or_create()
+
+
+def test_load_or_create_empty_list_returns_empty_list() -> None:
+    assert load_or_create([]) == []
+
+
+def test_load_or_create_rejects_mixed_types() -> None:
+    with pytest.raises(TypeError, match="exact same concrete type"):
+        load_or_create([Node(name="x"), WeightedNode(name="x", weight=1.0)])
+
+
+def test_load_or_create_dedupes_compute_but_preserves_output_multiplicity() -> None:
+    SingleOnlyBatchProbe.create_calls.clear()
+
+    objs = [
+        SingleOnlyBatchProbe(key=1),
+        SingleOnlyBatchProbe(key=1),
+        SingleOnlyBatchProbe(key=2),
+        SingleOnlyBatchProbe(key=1),
+    ]
+
+    assert load_or_create(objs) == [
+        "single:1",
+        "single:1",
+        "single:2",
+        "single:1",
+    ]
+    assert SingleOnlyBatchProbe.create_calls == [1, 2]
+
+
+def test_load_or_create_skips_partially_cached_items() -> None:
+    SingleOnlyBatchProbe.create_calls.clear()
+    first = SingleOnlyBatchProbe(key=1)
+    second = SingleOnlyBatchProbe(key=2)
+
+    assert first.load_or_create() == "single:1"
+
+    SingleOnlyBatchProbe.create_calls.clear()
+    assert load_or_create([first, second]) == ["single:1", "single:2"]
+    assert SingleOnlyBatchProbe.create_calls == [2]
+
+
+def test_load_or_create_rechecks_cache_after_lock() -> None:
+    SingleOnlyBatchProbe.create_calls.clear()
+    first = SingleOnlyBatchProbe(key=1)
+    second = SingleOnlyBatchProbe(key=2)
+    real_lock_many = core_module.lock_many
+
+    @contextmanager
+    def finish_second_before_yield(lock_paths, **kwargs):
+        with real_lock_many(lock_paths, **kwargs) as has_lock:
+            second._internal_furu_dir.mkdir(parents=True, exist_ok=True)
+            with second._result_path.open("wb") as f:
+                pickle.dump("single:2", f)
+            yield has_lock
+
+    with patch.object(core_module, "lock_many", finish_second_before_yield):
+        assert load_or_create([first, second]) == ["single:1", "single:2"]
+
+    assert SingleOnlyBatchProbe.create_calls == [1]
+
+
+def test_single_only_list_uses_one_shared_lock() -> None:
+    SingleOnlyBatchProbe.create_calls.clear()
+    objs = [SingleOnlyBatchProbe(key=1), SingleOnlyBatchProbe(key=2)]
+    real_lock_many = locking_module.lock_many
+    lock_many_calls = 0
+
+    def counting_lock_many(lock_paths, **kwargs):
+        nonlocal lock_many_calls
+        lock_many_calls += 1
+        return real_lock_many(lock_paths, **kwargs)
+
+    with patch.object(core_module, "lock_many", counting_lock_many):
+        assert load_or_create(objs) == ["single:1", "single:2"]
+
+    assert lock_many_calls == 1
+    assert SingleOnlyBatchProbe.create_calls == [1, 2]
+
+
+def test_batched_hook_length_mismatch_raises_cleanly() -> None:
+    objs = [LengthMismatchProbe(key=1), LengthMismatchProbe(key=2)]
+
+    with pytest.raises(
+        ValueError,
+        match=r"_create_batched returned 0 results for 2 inputs",
+    ):
+        load_or_create(objs)
+
+    assert all(not obj._result_path.exists() for obj in objs)
+
+
+def test_publish_never_exposes_half_written_final_result() -> None:
+    BatchedOnlyProbe.batch_calls.clear()
+    objs = [BatchedOnlyProbe(key=1), BatchedOnlyProbe(key=2)]
+    first_result_path = objs[0]._result_path
+    first_temp_path = first_result_path.with_suffix(".tmp.pkl")
+    rename_checks: list[Path] = []
+    original_rename = Path.rename
+
+    def checking_rename(self: Path, target: Path) -> Path:
+        if self == first_temp_path and target == first_result_path:
+            assert not target.exists()
+            assert self.exists()
+            rename_checks.append(target)
+        return original_rename(self, target)
+
+    with patch.object(Path, "rename", checking_rename):
+        assert load_or_create(objs) == ["batched:1", "batched:2"]
+
+    assert rename_checks == [first_result_path]
 
 
 def test_creating_and_loading_random_result_furu_obj():
