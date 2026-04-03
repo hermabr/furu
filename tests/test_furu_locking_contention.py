@@ -4,8 +4,9 @@ import pickle
 import time
 from multiprocessing import get_context
 from pathlib import Path
+from typing import Self
 
-from furu import Furu
+from furu import Furu, load_or_create
 from furu.config import _FuruDirectories, config
 from furu.locking import (
     DEFAULT_ACQUIRE_POLL_INTERVAL_S,
@@ -48,6 +49,22 @@ class MidRunTakeoverProbe(Furu[int]):
         return 42
 
 
+class SlowBatchProbe(Furu[int]):
+    key: int
+
+    @classmethod
+    def _create_batched(  # ty: ignore[invalid-method-override]
+        cls, items: list[Self]
+    ) -> list[int]:
+        marker_dir = Path(os.environ["FURU_TEST_BATCH_MARKER_DIR"])
+        marker_dir.mkdir(parents=True, exist_ok=True)
+        (marker_dir / f"{os.getpid()}.marker").write_text(
+            ",".join(str(item.key) for item in items)
+        )
+        time.sleep(OVERLAP_SLEEP_S)
+        return [item.key * 10 for item in items]
+
+
 def _worker(
     data_dir: str, start_evt, out_q
 ) -> None:  # TODO: do i need to explicitly set the env variables here?
@@ -74,6 +91,18 @@ def _takeover_worker(
     try:
         value = obj.load_or_create()
         out_q.put(("ok", os.getpid(), value))
+    except BaseException as e:
+        out_q.put(("err", os.getpid(), type(e).__name__, str(e)))
+
+
+def _batch_worker(data_dir: str, keys: list[int], start_evt, out_q) -> None:
+    config.directories = _FuruDirectories(data=Path(data_dir))
+    items = [SlowBatchProbe(key=key) for key in keys]
+    out_q.put(("ready", os.getpid()))
+    start_evt.wait()
+    try:
+        values = load_or_create(items)
+        out_q.put(("ok", os.getpid(), values))
     except BaseException as e:
         out_q.put(("err", os.getpid(), type(e).__name__, str(e)))
 
@@ -168,3 +197,50 @@ def test_lock_is_taken_over_mid_create(tmp_path):
     assert result[3].endswith("before writing final result")
     assert list(data_dir.glob("**/result.pkl")) == []
     assert len(list(data_dir.glob("**/error-*.log"))) == 1
+
+
+def test_overlapping_batch_calls_do_not_deadlock(tmp_path):
+    data_dir = tmp_path / "data"
+    marker_dir = tmp_path / "markers"
+    os.environ["FURU_TEST_BATCH_MARKER_DIR"] = str(marker_dir)
+    ctx = get_context("spawn")
+    start_evt = ctx.Event()
+    out_q = ctx.Queue()
+    procs = [
+        ctx.Process(
+            target=_batch_worker,
+            args=(str(data_dir), [1, 2], start_evt, out_q),
+        ),
+        ctx.Process(
+            target=_batch_worker,
+            args=(str(data_dir), [2, 1], start_evt, out_q),
+        ),
+    ]
+
+    for proc in procs:
+        proc.start()
+
+    ready = [
+        out_q.get(timeout=PROCESS_TIMEOUT_S),
+        out_q.get(timeout=PROCESS_TIMEOUT_S),
+    ]
+    assert all(tag == "ready" for tag, *_ in ready)
+
+    start_evt.set()
+
+    results = [
+        out_q.get(timeout=WAIT_FOR_LOCK_RESULT_TIMEOUT_S),
+        out_q.get(timeout=WAIT_FOR_LOCK_RESULT_TIMEOUT_S),
+    ]
+
+    for proc in procs:
+        proc.join(timeout=WAIT_FOR_LOCK_RESULT_TIMEOUT_S)
+        assert proc.exitcode == 0
+
+    oks = [result for result in results if result[0] == "ok"]
+    errs = [result for result in results if result[0] == "err"]
+    assert errs == []
+    assert len(oks) == 2
+    assert {tuple(result[2]) for result in oks} == {(10, 20), (20, 10)}
+    assert len(list(marker_dir.glob("*.marker"))) == 1
+    assert len(list(data_dir.glob("**/result.pkl"))) == 2

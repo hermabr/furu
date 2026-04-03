@@ -7,3 +7,8 @@
 ```bash
 uv add furu # or pip install furu
 ```
+
+## Usage
+
+Use `obj.load_or_create()` for a single object, or `furu.load_or_create([...])` to
+run an explicit batch for a list or iterable of same-type `Furu` objects.
