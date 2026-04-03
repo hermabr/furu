@@ -22,18 +22,20 @@ from furu.utils import (
 from furu.validate import validate_cls
 
 if TYPE_CHECKING:
+    from furu.execution import FuruCreateMode
     from typing_extensions import dataclass_transform
 
     @dataclass_transform(kw_only_default=True, frozen_default=True)
     class _FuruDataclassTransform:
         pass
 else:
+    type FuruCreateMode = Literal["single", "batched"]
 
     class _FuruDataclassTransform:
         pass
 
 class Furu[T](_FuruDataclassTransform, ABC):
-    _furu_create_mode: ClassVar[Literal["single", "batched"]]
+    _furu_create_mode: ClassVar["FuruCreateMode"]
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
