@@ -1,16 +1,19 @@
 import types
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from contextlib import contextmanager
 from dataclasses import FrozenInstanceError, is_dataclass, replace
 from enum import Enum
 from functools import partial
 from pathlib import Path
-from typing import Literal, TypeVar
+import threading
+import pickle
+from typing import ClassVar, Literal, TypeVar, cast
 from unittest.mock import patch
 
 import pytest
 from pydantic import BaseModel, ConfigDict
 
-from furu import Furu, validate
+from furu import Furu, load_or_create, validate
 from furu.config import config
 from furu.serialize import to_json
 from furu.utils import fully_qualified_name
@@ -193,6 +196,79 @@ class PydanticFields(Furu[None]):
         return None
 
 
+class CountingValue(Furu[int]):
+    value: int
+
+    create_calls: ClassVar[list[int]] = []
+
+    def _create(self) -> int:
+        type(self).create_calls.append(self.value)
+        return self.value
+
+
+class BatchOnlyValue(Furu[int]):
+    value: int
+
+    batch_calls: ClassVar[list[list[int]]] = []
+
+    @classmethod
+    def _create_batched(cls, objs: Sequence[Furu[int]]) -> list[int]:
+        typed_objs = [cast(BatchOnlyValue, obj) for obj in objs]
+        cls.batch_calls.append([obj.value for obj in typed_objs])
+        return [obj.value * 10 for obj in typed_objs]
+
+
+class InheritedBatchOnlyValue(BatchOnlyValue):
+    label: str
+
+
+class OtherBatchValue(Furu[str]):
+    value: str
+
+    batch_calls: ClassVar[list[list[str]]] = []
+
+    @classmethod
+    def _create_batched(cls, objs: Sequence[Furu[str]]) -> list[str]:
+        typed_objs = [cast(OtherBatchValue, obj) for obj in objs]
+        cls.batch_calls.append([obj.value for obj in typed_objs])
+        return [obj.value.upper() for obj in typed_objs]
+
+
+class ReentrantSelfLoad(Furu[int]):
+    value: int
+
+    def _create(self) -> int:
+        return self.load_or_create(use_lock=False)
+
+
+class BatchedLoggedValue(Furu[str]):
+    name: str
+
+    @classmethod
+    def _create_batched(cls, objs: Sequence[Furu[str]]) -> list[str]:
+        typed_objs = [cast(BatchedLoggedValue, obj) for obj in objs]
+        typed_objs[0].logger.info(
+            "batch detail for %s",
+            ",".join(obj.name for obj in typed_objs),
+        )
+        return [f"batched:{obj.name}" for obj in typed_objs]
+
+
+class PartialPersistBatch(Furu[object]):
+    key: str
+
+    @classmethod
+    def _create_batched(cls, objs: Sequence[Furu[object]]) -> list[object]:
+        typed_objs = [cast(PartialPersistBatch, obj) for obj in objs]
+        results: list[object] = []
+        for obj in typed_objs:
+            if obj.key == "bad":
+                results.append(threading.Lock())
+            else:
+                results.append(obj.key)
+        return results
+
+
 def test_frozen_dataclass_inheritance():
     for cls in [Node, WeightedNode]:
         if cls == Node:
@@ -273,6 +349,54 @@ def test_post_init_and_inherited_validators_both_run():
 
     with pytest.raises(ValueError, match="value must be positive"):
         PostInitInheritedPositiveValue(value=1, raw_value="0")
+
+
+def test_class_cannot_define_both_create_hooks():
+    with pytest.raises(TypeError, match="at most one"):
+
+        class InvalidBothHooks(Furu[int]):
+            value: int
+
+            def _create(self) -> int:
+                return self.value
+
+            @classmethod
+            def _create_batched(cls, objs: Sequence[Furu[int]]) -> list[int]:
+                return [1 for _ in objs]
+
+
+def test_class_must_define_or_inherit_a_create_hook():
+    with pytest.raises(TypeError, match="must define or inherit exactly one"):
+
+        class MissingCreateHooks(Furu[int]):
+            value: int
+
+
+def test_instance_load_or_create_delegates_to_top_level_function():
+    node = Node(name="x")
+
+    with patch("furu.core.load_or_create", return_value="delegated") as mocked:
+        assert node.load_or_create() == "delegated"
+        mocked.assert_called_once_with(node, use_lock=True)
+
+
+def test_top_level_load_or_create_returns_empty_list_for_empty_input():
+    assert load_or_create([], use_lock=False) == []
+
+
+def test_batch_only_class_works_for_single_object_and_singleton_list():
+    BatchOnlyValue.batch_calls.clear()
+
+    assert BatchOnlyValue(value=2).load_or_create(use_lock=False) == 20
+    assert load_or_create([BatchOnlyValue(value=3)], use_lock=False) == [30]
+    assert BatchOnlyValue.batch_calls == [[2], [3]]
+
+
+def test_batch_mode_is_inherited():
+    BatchOnlyValue.batch_calls.clear()
+
+    assert InheritedBatchOnlyValue(value=4, label="x").load_or_create(use_lock=False) == 40
+    assert BatchOnlyValue.batch_calls == [[4]]
 
 
 def test_inherited_post_init_and_inherited_validators_both_run():
@@ -696,6 +820,95 @@ def test_delete_returns_false_when_missing() -> None:
     assert not Node(name="x").delete(mode="force")
 
 
+def test_list_load_or_create_deduplicates_by_cache_identity_and_preserves_order() -> None:
+    CountingValue.create_calls.clear()
+
+    result = load_or_create(
+        [CountingValue(value=1), CountingValue(value=2), CountingValue(value=1)],
+        use_lock=False,
+    )
+
+    assert result == [1, 2, 1]
+    assert CountingValue.create_calls == [1, 2]
+
+
+def test_completed_items_are_skipped_before_locking() -> None:
+    BatchOnlyValue.batch_calls.clear()
+    completed = BatchOnlyValue(value=1)
+    pending = BatchOnlyValue(value=2)
+
+    assert completed.load_or_create(use_lock=False) == 10
+
+    observed_lock_paths: list[tuple[Path, ...]] = []
+
+    @contextmanager
+    def fake_lock_many(lock_paths, **_kwargs):
+        observed_lock_paths.append(tuple(lock_paths))
+        yield lambda: True
+
+    with patch("furu.core.lock_many", new=fake_lock_many):
+        assert load_or_create([completed, pending], use_lock=True) == [10, 20]
+
+    assert observed_lock_paths == [((pending._internal_furu_dir / "compute.lock"),)]
+    assert BatchOnlyValue.batch_calls == [[1], [2]]
+
+
+def test_pending_items_are_rechecked_after_lock_acquisition() -> None:
+    BatchOnlyValue.batch_calls.clear()
+    pending = BatchOnlyValue(value=5)
+
+    @contextmanager
+    def fake_lock_many(lock_paths, **_kwargs):
+        assert list(lock_paths) == [pending._internal_furu_dir / "compute.lock"]
+        with pending._result_path.open("wb") as f:
+            pickle.dump(50, f)
+        yield lambda: True
+
+    with patch("furu.core.lock_many", new=fake_lock_many):
+        assert load_or_create([pending], use_lock=True) == [50]
+
+    assert BatchOnlyValue.batch_calls == []
+
+
+def test_mixed_concrete_classes_are_partitioned_inside_one_public_call() -> None:
+    BatchOnlyValue.batch_calls.clear()
+    OtherBatchValue.batch_calls.clear()
+
+    result = load_or_create(
+        [
+            BatchOnlyValue(value=1),
+            OtherBatchValue(value="x"),
+            BatchOnlyValue(value=2),
+        ],
+        use_lock=False,
+    )
+
+    assert result == [10, "X", 20]
+    assert BatchOnlyValue.batch_calls == [[1, 2]]
+    assert OtherBatchValue.batch_calls == [["x"]]
+
+
+def test_batch_persistence_is_non_transactional() -> None:
+    ok = PartialPersistBatch(key="ok")
+    bad = PartialPersistBatch(key="bad")
+    tail = PartialPersistBatch(key="tail")
+
+    with pytest.raises(TypeError, match="cannot pickle"):
+        load_or_create([ok, bad, tail], use_lock=False)
+
+    assert ok.is_completed()
+    assert ok.try_load() == "ok"
+    assert not bad.is_completed()
+    assert not tail.is_completed()
+
+
+def test_same_thread_self_reentry_is_rejected() -> None:
+    obj = ReentrantSelfLoad(value=1)
+
+    with pytest.raises(RuntimeError, match="same-thread load_or_create reentry"):
+        obj.load_or_create(use_lock=False)
+
+
 def test_log_file_is_written_to_internal_dir() -> None:
     node = LoggedLeaf(name="x")
 
@@ -722,3 +935,24 @@ def test_nested_load_or_create_scopes_logs_to_child_file() -> None:
     assert "leaf detail for child" not in parent_log
 
     assert "leaf detail for child" in child_log
+
+
+def test_batch_log_scope_fans_out_compute_logs_but_not_per_object_persistence_logs() -> None:
+    left = BatchedLoggedValue(name="left")
+    right = BatchedLoggedValue(name="right")
+
+    assert load_or_create([left, right], use_lock=False) == [
+        "batched:left",
+        "batched:right",
+    ]
+
+    left_log = left._log_path.read_text(encoding="utf-8")
+    right_log = right._log_path.read_text(encoding="utf-8")
+
+    assert "batch detail for left,right" in left_log
+    assert "batch detail for left,right" in right_log
+
+    assert f"stored result at {left._result_path}" in left_log
+    assert f"stored result at {right._result_path}" not in left_log
+    assert f"stored result at {right._result_path}" in right_log
+    assert f"stored result at {left._result_path}" not in right_log

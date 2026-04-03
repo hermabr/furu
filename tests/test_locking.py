@@ -17,6 +17,7 @@ from furu.locking import (
     NotLockedError,
     StaleLockRaceError,
     lock,
+    lock_many,
 )
 
 # TODO: make this not using vibes, but by actually thinking through the tests
@@ -56,6 +57,28 @@ def _child_hold_lock(
                 queue.get()
 
 
+def _child_hold_lock_many(
+    lock_paths: list[Path],
+    queue: Queue,
+    *,
+    sleep_s: float = SHORT_SLEEP_S,
+    lifetime_s: float = SHORT_LIFETIME_S,
+    heartbeat_interval_s: float = SHORT_HEARTBEAT_INTERVAL_S,
+    keep: bool = False,
+) -> None:
+    with suppress(NotLockedError):
+        with lock_many(
+            lock_paths,
+            lifetime_s=lifetime_s,
+            heartbeat_interval_s=heartbeat_interval_s,
+        ):
+            queue.put(True)
+            time.sleep(sleep_s)
+            queue.put(True)
+            if keep:
+                queue.get()
+
+
 def _child_acquire_then_exit(
     lock_path: Path, owner_path: str, *, lifetime_s: float = SHORT_LIFETIME_S
 ) -> None:
@@ -64,8 +87,9 @@ def _child_acquire_then_exit(
         lifetime_s=lifetime_s,
         heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
     ):
-        owner = Path(lock_path).read_text(encoding="utf-8").strip()
-        Path(owner_path).write_text(owner, encoding="utf-8")
+        manifest = locking_module._safe_read_lock_manifest(lock_path)
+        assert manifest is not None
+        Path(owner_path).write_text(str(manifest.claim_path), encoding="utf-8")
         os._exit(0)
 
 
@@ -170,8 +194,44 @@ def test_lock_uses_default_arguments(tmp_path: Path) -> None:
         assert has_lock()
 
 
+def test_lock_wrapper_uses_manifest_format_for_single_path(tmp_path: Path) -> None:
+    lock_path = tmp_path / "test.lck"
+
+    with lock(lock_path) as has_lock:
+        manifest = _read_manifest(lock_path)
+        assert has_lock()
+        assert manifest.version == locking_module.LOCK_MANIFEST_VERSION
+        assert manifest.lock_paths == (lock_path.resolve(),)
+        assert manifest.claim_path.name.endswith(".claim")
+
+
+def test_lock_many_normalizes_paths_and_shares_one_claim_manifest(tmp_path: Path) -> None:
+    lock_a = tmp_path / "a.lck"
+    lock_b = tmp_path / "b.lck"
+
+    with lock_many([lock_b, lock_a, lock_a]) as has_lock:
+        manifest_a = _read_manifest(lock_a)
+        manifest_b = _read_manifest(lock_b)
+
+        assert has_lock()
+        assert manifest_a == manifest_b
+        assert manifest_a.lock_paths == (lock_a.resolve(), lock_b.resolve())
+        assert locking_module._is_owner(
+            lock_path=lock_a, owner_claim_path=manifest_a.claim_path
+        )
+        assert locking_module._is_owner(
+            lock_path=lock_b, owner_claim_path=manifest_a.claim_path
+        )
+
+
+def _read_manifest(lock_path: Path) -> locking_module._LockManifest:
+    manifest = locking_module._safe_read_lock_manifest(lock_path)
+    assert manifest is not None
+    return manifest
+
+
 def _drop_current_lock(lock_path: Path) -> None:
-    owner_claim_path = Path(lock_path.read_text(encoding="utf-8").strip())
+    owner_claim_path = _read_manifest(lock_path).claim_path
     lock_path.unlink()
     owner_claim_path.unlink()
 
@@ -202,6 +262,22 @@ def test_exit_raises_lock_lost_error_when_lock_is_lost_mid_block(
         ):
             _drop_current_lock(lock_path)
             time.sleep(SHORT_LIFETIME_S)
+
+
+def test_lock_many_has_lock_returns_false_when_any_member_is_lost(
+    tmp_path: Path,
+) -> None:
+    lock_a = tmp_path / "a.lck"
+    lock_b = tmp_path / "b.lck"
+
+    with pytest.raises(LockLostError, match="lost lock"):
+        with lock_many(
+            [lock_a, lock_b],
+            lifetime_s=SHORT_LIFETIME_S,
+            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+        ) as has_lock:
+            lock_b.unlink()
+            assert not has_lock()
 
 
 def test_lock_starts_heartbeat_thread(tmp_path: Path) -> None:
@@ -300,31 +376,54 @@ def test_waits_for_lock_release_before_timeout(tmp_path: Path) -> None:
 
 def test_break_stale_lock(tmp_path: Path) -> None:
     lock_path = tmp_path / "test.lck"
-    queue: Queue = Queue()
-    proc = Process(
-        target=_child_hold_lock,
-        args=(lock_path, queue),
-        kwargs={"sleep_s": SHORT_SLEEP_S, "lifetime_s": SHORT_LIFETIME_S, "keep": True},
+    first_owner_claim_path = tmp_path / "test.lck.first.claim"
+
+    locking_module._write_manifest(first_owner_claim_path, (lock_path,))
+    locking_module._touch_future(first_owner_claim_path, lifetime_s=SHORT_LIFETIME_S)
+    assert locking_module._try_acquire_lock(
+        lock_path=lock_path, owner_claim_path=first_owner_claim_path
     )
-    proc.start()
 
-    try:
-        queue.get(timeout=PROCESS_TIMEOUT_S)
-        queue.get(timeout=PROCESS_TIMEOUT_S)
-        stale = time.time() - locking_module.CLOCK_SLOP_S - SHORT_SLEEP_S
-        os.utime(lock_path, (stale, stale))
-        first_owner = lock_path.read_text(encoding="utf-8").strip()
+    stale = time.time() - locking_module.CLOCK_SLOP_S - SHORT_SLEEP_S
+    os.utime(lock_path, (stale, stale))
+    first_owner = _read_manifest(lock_path).claim_path
 
-        with lock(
-            lock_path,
-            lifetime_s=SHORT_LIFETIME_S,
-            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
-        ):
-            second_owner = lock_path.read_text(encoding="utf-8").strip()
-            assert second_owner != first_owner
-    finally:
-        queue.put(True)
-        proc.join(timeout=PROCESS_TIMEOUT_S)
+    with lock(
+        lock_path,
+        lifetime_s=SHORT_LIFETIME_S,
+        heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+    ):
+        second_owner = _read_manifest(lock_path).claim_path
+        assert second_owner != first_owner
+
+
+def test_lock_many_breaks_a_stale_group_for_all_members(tmp_path: Path) -> None:
+    lock_a = tmp_path / "a.lck"
+    lock_b = tmp_path / "b.lck"
+    first_owner_claim_path = tmp_path / "group.claim"
+
+    locking_module._write_manifest(first_owner_claim_path, (lock_a, lock_b))
+    locking_module._touch_future(first_owner_claim_path, lifetime_s=SHORT_LIFETIME_S)
+    assert locking_module._try_acquire_lock(
+        lock_path=lock_a, owner_claim_path=first_owner_claim_path
+    )
+    assert locking_module._try_acquire_lock(
+        lock_path=lock_b, owner_claim_path=first_owner_claim_path
+    )
+
+    stale = time.time() - locking_module.CLOCK_SLOP_S - SHORT_SLEEP_S
+    os.utime(lock_a, (stale, stale))
+    first_owner = _read_manifest(lock_a).claim_path
+
+    with lock_many(
+        [lock_a, lock_b],
+        lifetime_s=SHORT_LIFETIME_S,
+        heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+    ):
+        second_manifest_a = _read_manifest(lock_a)
+        second_manifest_b = _read_manifest(lock_b)
+        assert second_manifest_a == second_manifest_b
+        assert second_manifest_a.claim_path != first_owner
 
 
 def test_lock_raises_if_stale_break_would_remove_reacquired_lock(
@@ -345,7 +444,7 @@ def test_lock_raises_if_stale_break_would_remove_reacquired_lock(
 
     original_try_acquire_stale_break_dir = locking_module._try_acquire_stale_break_dir
 
-    def reacquire_before_break(*, lock_path: Path, lifetime_s: float) -> Path | None:
+    def reacquire_before_break(*, claim_path: Path, lifetime_s: float) -> Path | None:
         _drop_current_lock(lock_path)
         second_owner_claim_path.write_text(
             str(second_owner_claim_path), encoding="utf-8"
@@ -355,7 +454,7 @@ def test_lock_raises_if_stale_break_would_remove_reacquired_lock(
             lock_path=lock_path, owner_claim_path=second_owner_claim_path
         )
         return original_try_acquire_stale_break_dir(
-            lock_path=lock_path, lifetime_s=lifetime_s
+            claim_path=claim_path, lifetime_s=lifetime_s
         )
 
     with patch.object(
@@ -631,7 +730,7 @@ def test_process_exit_without_cleanup_allows_reclaim_after_expiry(
             + SHORT_SLEEP_S,
             acquire_poll_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
         ):
-            second_owner = lock_path.read_text(encoding="utf-8").strip()
+            second_owner = _read_manifest(lock_path).claim_path
             assert second_owner != first_owner
     finally:
         proc.join(timeout=PROCESS_TIMEOUT_S)
@@ -654,3 +753,54 @@ def test_does_not_break_corrupt_claim_file(tmp_path: Path) -> None:
             pass
 
     assert lock_path.exists()
+
+
+def test_safe_read_lock_manifest_supports_legacy_single_path_format(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "test.lck"
+    claim_path = tmp_path / "test.lck.legacy.claim"
+    claim_path.write_text(str(claim_path), encoding="utf-8")
+    os.link(claim_path, lock_path)
+
+    manifest = locking_module._safe_read_lock_manifest(lock_path)
+
+    assert manifest is not None
+    assert manifest.version == 1
+    assert manifest.claim_path == claim_path.resolve()
+    assert manifest.lock_paths == (lock_path.resolve(),)
+
+
+def test_lock_many_rejects_cross_device_groups(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lock_a = tmp_path / "a" / "a.lck"
+    lock_b = tmp_path / "b" / "b.lck"
+    lock_a.parent.mkdir()
+    lock_b.parent.mkdir()
+
+    path_type = type(tmp_path)
+    original_stat = path_type.stat
+    target_parent = lock_b.parent.resolve()
+
+    class _FakeDevStat:
+        def __init__(self, stat_result: os.stat_result, *, st_dev: int):
+            self._stat_result = stat_result
+            self._st_dev = st_dev
+
+        def __getattr__(self, name: str):
+            if name == "st_dev":
+                return self._st_dev
+            return getattr(self._stat_result, name)
+
+    def fake_stat(self, *args, **kwargs):
+        result = original_stat(self, *args, **kwargs)
+        if self == target_parent:
+            return _FakeDevStat(result, st_dev=result.st_dev + 1)
+        return result
+
+    monkeypatch.setattr(path_type, "stat", fake_stat)
+
+    with pytest.raises(ValueError, match="same filesystem device"):
+        with lock_many([lock_a, lock_b]):
+            pass
