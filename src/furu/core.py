@@ -29,13 +29,14 @@ if TYPE_CHECKING:
     class _FuruDataclassTransform:
         pass
 else:
-    type FuruCreateMode = Literal["single", "batched"]
-
     class _FuruDataclassTransform:
         pass
 
+type FuruCreateMode = Literal["single", "batched"]
+
+
 class Furu[T](_FuruDataclassTransform, ABC):
-    _furu_create_mode: ClassVar["FuruCreateMode"]
+    _furu_create_mode: ClassVar[FuruCreateMode]
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)

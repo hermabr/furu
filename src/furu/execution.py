@@ -9,9 +9,9 @@ from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal, assert_never, overload
+from typing import Any, assert_never, overload
 
-from furu.core import Furu
+from furu.core import Furu, FuruCreateMode
 from furu.logging import _scoped_log_file, _scoped_log_files
 from furu.locking import LockLostError, lock_many
 from furu.metadata import RunningMetadata
@@ -19,7 +19,6 @@ from furu.utils import class_label
 
 type _AnyFuru = Furu[Any]
 type _HasLock = Callable[[], bool] | None
-type FuruCreateMode = Literal["single", "batched"]
 
 _CURRENT_EXECUTING_DATA_DIRS: ContextVar[frozenset[Path]] = ContextVar(
     "furu_current_executing_data_dirs",
