@@ -915,6 +915,24 @@ def test_existing_items_are_skipped_before_locking(
     assert lock_calls == [[missing._lock_path]]
 
 
+def test_pending_items_are_rechecked_after_lock_acquisition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pending = CountedSingleValue(key=5)
+
+    @contextmanager
+    def fake_lock_many(lock_paths: list[Path], **_: object):
+        assert lock_paths == [pending._lock_path]
+        with pending._result_path.open("wb") as f:
+            pickle.dump("single:5", f)
+        yield lambda: True
+
+    monkeypatch.setattr(execution_module, "lock_many", fake_lock_many)
+
+    assert load_or_create([pending]) == ["single:5"]
+    assert CountedSingleValue.create_calls == []
+
+
 def test_empty_list_returns_empty_list() -> None:
     assert load_or_create([]) == []
 

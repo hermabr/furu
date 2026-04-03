@@ -201,6 +201,7 @@ def test_overlapping_batch_acquisitions_do_not_deadlock_or_duplicate_compute(tmp
     assert len(list(marker_dir.glob("1-*.marker"))) == 1
     assert len(list(marker_dir.glob("2-*.marker"))) == 1
     assert len(list(marker_dir.glob("3-*.marker"))) == 1
+    assert len(list(data_dir.glob("**/result.pkl"))) == 3
 
 
 def test_lock_is_taken_over_mid_create(tmp_path):
