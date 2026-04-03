@@ -32,12 +32,8 @@ else:
     class _FuruDataclassTransform:
         pass
 
-
-type FuruCreateMode = Literal["single", "batched"]
-
-
 class Furu[T](_FuruDataclassTransform, ABC):
-    _furu_create_mode: ClassVar[FuruCreateMode]
+    _furu_create_mode: ClassVar[Literal["single", "batched"]]
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
