@@ -1,16 +1,19 @@
 import types
+from contextlib import contextmanager
 from collections.abc import Callable
 from dataclasses import FrozenInstanceError, is_dataclass, replace
 from enum import Enum
 from functools import partial
 from pathlib import Path
-from typing import Literal, TypeVar
+import pickle
+from typing import ClassVar, Literal, TypeVar
 from unittest.mock import patch
 
 import pytest
 from pydantic import BaseModel, ConfigDict
 
-from furu import Furu, validate
+import furu.execution as execution_module
+from furu import Furu, load_or_create, validate
 from furu.config import config
 from furu.serialize import to_json
 from furu.utils import fully_qualified_name
@@ -191,6 +194,96 @@ class PydanticFields(Furu[None]):
 
     def _create(self) -> None:
         return None
+
+
+GROUP_EXECUTION_EVENTS: list[tuple[str, tuple[int, ...]]] = []
+
+
+class CountedSingleValue(Furu[str]):
+    key: int
+    create_calls: ClassVar[list[int]] = []
+
+    def _create(self) -> str:
+        type(self).create_calls.append(self.key)
+        GROUP_EXECUTION_EVENTS.append(("single", (self.key,)))
+        return f"single:{self.key}"
+
+
+class BatchOnlyValue(Furu[str]):
+    key: int
+    batch_calls: ClassVar[list[tuple[int, ...]]] = []
+
+    @classmethod
+    def _create_batched(cls, objs) -> list[str]:
+        keys = tuple(obj.key for obj in objs)
+        cls.batch_calls.append(keys)
+        return [f"batch:{obj.key}" for obj in objs]
+
+
+class GroupBatchA(Furu[str]):
+    key: int
+    batch_calls: ClassVar[list[tuple[int, ...]]] = []
+
+    @classmethod
+    def _create_batched(cls, objs) -> list[str]:
+        keys = tuple(obj.key for obj in objs)
+        cls.batch_calls.append(keys)
+        GROUP_EXECUTION_EVENTS.append(("batch_a", keys))
+        return [f"group-a:{obj.key}" for obj in objs]
+
+
+class GroupBatchB(Furu[str]):
+    key: int
+    batch_calls: ClassVar[list[tuple[int, ...]]] = []
+
+    @classmethod
+    def _create_batched(cls, objs) -> list[str]:
+        keys = tuple(obj.key for obj in objs)
+        cls.batch_calls.append(keys)
+        GROUP_EXECUTION_EVENTS.append(("batch_b", keys))
+        return [f"group-b:{obj.key}" for obj in objs]
+
+
+class LoggedBatchValue(Furu[str]):
+    key: int
+
+    @classmethod
+    def _create_batched(cls, objs) -> list[str]:
+        keys = ",".join(str(obj.key) for obj in objs)
+        objs[0].logger.info("batched detail for %s", keys)
+        return [f"logged-batch:{obj.key}" for obj in objs]
+
+
+class FailingBatchValue(Furu[str]):
+    key: int
+
+    @classmethod
+    def _create_batched(cls, objs) -> list[str]:
+        raise RuntimeError(f"failed batch for {[obj.key for obj in objs]}")
+
+
+class PartialBatchValue(Furu[str]):
+    key: int
+
+    @classmethod
+    def _create_batched(cls, objs) -> list[str]:
+        return [f"partial:{obj.key}" for obj in objs]
+
+
+class ReentrantValue(Furu[int]):
+    key: int
+
+    def _create(self) -> int:
+        return load_or_create(self)
+
+
+@pytest.fixture(autouse=True)
+def _reset_batch_trackers() -> None:
+    CountedSingleValue.create_calls.clear()
+    BatchOnlyValue.batch_calls.clear()
+    GroupBatchA.batch_calls.clear()
+    GroupBatchB.batch_calls.clear()
+    GROUP_EXECUTION_EVENTS.clear()
 
 
 def test_frozen_dataclass_inheritance():
@@ -722,3 +815,193 @@ def test_nested_load_or_create_scopes_logs_to_child_file() -> None:
     assert "leaf detail for child" not in parent_log
 
     assert "leaf detail for child" in child_log
+
+
+def test_method_load_or_create_delegates_to_shared_executor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    node = Node(name="delegated")
+    calls: list[tuple[Furu[str], bool]] = []
+
+    def fake_load_or_create(obj: Furu[str], *, use_lock: bool = True) -> str:
+        calls.append((obj, use_lock))
+        return "delegated"
+
+    monkeypatch.setattr(execution_module, "load_or_create", fake_load_or_create)
+
+    assert node.load_or_create(use_lock=False) == "delegated"
+    assert calls == [(node, False)]
+
+
+def test_resolved_create_mode_validation() -> None:
+    class InheritsSingle(Node):
+        label: str
+
+    class SwitchesToSingle(BatchOnlyValue):
+        label: str
+
+        def _create(self) -> str:
+            return f"switched:{self.label}"
+
+    assert Node._furu_create_mode == "single"
+    assert BatchOnlyValue._furu_create_mode == "batched"
+    assert InheritsSingle._furu_create_mode == "single"
+    assert SwitchesToSingle._furu_create_mode == "single"
+
+    with pytest.raises(TypeError, match="cannot define both _create and _create_batched"):
+        class InvalidBoth(Furu[int]):
+            def _create(self) -> int:
+                return 1
+
+            @classmethod
+            def _create_batched(cls, objs) -> list[int]:
+                return [1 for _ in objs]
+
+    with pytest.raises(TypeError, match="must define either _create or _create_batched"):
+        class InvalidNone(Furu[int]):
+            pass
+
+
+def test_single_object_on_batch_only_class_uses_create_batched() -> None:
+    assert load_or_create(BatchOnlyValue(key=1)) == "batch:1"
+    assert BatchOnlyValue.batch_calls == [(1,)]
+
+
+def test_list_input_on_single_only_class_uses_sequential_create() -> None:
+    objs = [CountedSingleValue(key=1), CountedSingleValue(key=2), CountedSingleValue(key=3)]
+
+    assert load_or_create(objs) == ["single:1", "single:2", "single:3"]
+    assert CountedSingleValue.create_calls == [1, 2, 3]
+
+
+def test_list_input_on_batch_only_class_calls_create_batched_once_per_concrete_group() -> None:
+    objs = [GroupBatchA(key=1), GroupBatchB(key=1), GroupBatchA(key=2), GroupBatchB(key=2)]
+
+    assert load_or_create(objs) == ["group-a:1", "group-b:1", "group-a:2", "group-b:2"]
+    assert GroupBatchA.batch_calls == [(1, 2)]
+    assert GroupBatchB.batch_calls == [(1, 2)]
+
+
+def test_duplicate_cache_identities_compute_once_and_preserve_input_order() -> None:
+    objs = [
+        CountedSingleValue(key=1),
+        CountedSingleValue(key=1),
+        CountedSingleValue(key=2),
+        CountedSingleValue(key=1),
+    ]
+
+    assert load_or_create(objs) == ["single:1", "single:1", "single:2", "single:1"]
+    assert CountedSingleValue.create_calls == [1, 2]
+
+
+def test_existing_items_are_skipped_before_locking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    existing = CountedSingleValue(key=1)
+    missing = CountedSingleValue(key=2)
+
+    assert existing.load_or_create() == "single:1"
+
+    lock_calls: list[list[Path]] = []
+
+    @contextmanager
+    def fake_lock_many(lock_paths: list[Path], **_: object):
+        lock_calls.append(lock_paths)
+        yield lambda: True
+
+    monkeypatch.setattr(execution_module, "lock_many", fake_lock_many)
+
+    assert load_or_create([existing, missing]) == ["single:1", "single:2"]
+    assert lock_calls == [[missing._lock_path]]
+
+
+def test_empty_list_returns_empty_list() -> None:
+    assert load_or_create([]) == []
+
+
+def test_mixed_type_list_follows_documented_grouping_policy() -> None:
+    objs = [
+        GroupBatchA(key=1),
+        CountedSingleValue(key=10),
+        GroupBatchA(key=2),
+        GroupBatchB(key=20),
+        CountedSingleValue(key=11),
+        GroupBatchB(key=21),
+    ]
+
+    assert load_or_create(objs) == [
+        "group-a:1",
+        "single:10",
+        "group-a:2",
+        "group-b:20",
+        "single:11",
+        "group-b:21",
+    ]
+    assert GROUP_EXECUTION_EVENTS == [
+        ("batch_a", (1, 2)),
+        ("single", (10,)),
+        ("single", (11,)),
+        ("batch_b", (20, 21)),
+    ]
+
+
+def test_self_reentry_on_same_object_raises_friendly_error() -> None:
+    with pytest.raises(RuntimeError, match="re-entered for objects already being created"):
+        ReentrantValue(key=1).load_or_create()
+
+
+def test_batched_compute_writes_result_layout_per_object() -> None:
+    objs = [BatchOnlyValue(key=1), BatchOnlyValue(key=2)]
+
+    assert load_or_create(objs) == ["batch:1", "batch:2"]
+
+    for obj, expected in zip(objs, ["batch:1", "batch:2"], strict=True):
+        assert obj._result_path.exists()
+        assert obj._metadata_path.exists()
+        assert obj._log_path.exists()
+        with obj._result_path.open("rb") as f:
+            assert pickle.load(f) == expected
+
+
+def test_batched_compute_writes_shared_logs_to_every_participant() -> None:
+    objs = [LoggedBatchValue(key=1), LoggedBatchValue(key=2)]
+
+    assert load_or_create(objs) == ["logged-batch:1", "logged-batch:2"]
+
+    for obj in objs:
+        log_text = obj._log_path.read_text(encoding="utf-8")
+        assert "batched detail for 1,2" in log_text
+
+
+def test_batched_failure_writes_error_logs_for_every_participant() -> None:
+    objs = [FailingBatchValue(key=1), FailingBatchValue(key=2)]
+
+    with pytest.raises(RuntimeError, match="failed batch"):
+        load_or_create(objs)
+
+    for obj in objs:
+        error_logs = list(obj._internal_furu_dir.glob("error-*.log"))
+        assert len(error_logs) == 1
+
+
+def test_partial_persistence_leaves_already_written_objects_completed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    objs = [PartialBatchValue(key=1), PartialBatchValue(key=2)]
+    real_store_result = execution_module._store_result
+    call_count = 0
+
+    def flaky_store_result(*args, **kwargs) -> None:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            raise RuntimeError("stop after first store")
+        real_store_result(*args, **kwargs)
+
+    monkeypatch.setattr(execution_module, "_store_result", flaky_store_result)
+
+    with pytest.raises(RuntimeError, match="stop after first store"):
+        load_or_create(objs)
+
+    assert objs[0]._result_path.exists()
+    assert not objs[1]._result_path.exists()
