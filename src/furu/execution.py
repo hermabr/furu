@@ -244,23 +244,18 @@ def load_or_create(
 
 
 def _execute_group(group: list[_AnyFuru], *, has_lock: _HasLock) -> dict[Path, Any]:
-    metadata_by_data_dir = {
-        _canonical_data_dir(obj): _write_running_metadata(obj) for obj in group
-    }
-
     mode = group[0]._furu_create_mode
     if mode == "batched":
+        metadata_by_data_dir = {
+            _canonical_data_dir(obj): _write_running_metadata(obj) for obj in group
+        }
         return _execute_batched_group(
             group,
             metadata_by_data_dir=metadata_by_data_dir,
             has_lock=has_lock,
         )
     if mode == "single":
-        return _execute_single_group(
-            group,
-            metadata_by_data_dir=metadata_by_data_dir,
-            has_lock=has_lock,
-        )
+        return _execute_single_group(group, has_lock=has_lock)
     raise AssertionError(f"unexpected Furu create mode: {mode}")
 
 
@@ -310,7 +305,6 @@ def _execute_batched_group(
 def _execute_single_group(
     group: list[_AnyFuru],
     *,
-    metadata_by_data_dir: dict[Path, RunningMetadata],
     has_lock: _HasLock,
 ) -> dict[Path, Any]:
     stored: dict[Path, Any] = {}
@@ -320,13 +314,14 @@ def _execute_single_group(
             logger.debug("load_or_create start")
             try:
                 with _reentry_guard([obj]):
+                    metadata = _write_running_metadata(obj)
                     logger.debug("running _create()")
                     result = obj._create()
                     logger.debug("_create() returned")
                 _store_result(
                     obj,
                     result,
-                    metadata=metadata_by_data_dir[_canonical_data_dir(obj)],
+                    metadata=metadata,
                     has_lock=has_lock,
                 )
                 logger.debug("load_or_create complete")

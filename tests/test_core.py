@@ -270,6 +270,24 @@ class PartialBatchValue(Furu[str]):
         return [f"partial:{obj.key}" for obj in objs]
 
 
+class MetadataTimingValue(Furu[str]):
+    key: int
+    create_events: ClassVar[list[tuple[int, bool, bool]]] = []
+    siblings_by_key: ClassVar[dict[int, "MetadataTimingValue"]] = {}
+
+    def _create(self) -> str:
+        sibling_key = 2 if self.key == 1 else 1
+        sibling = type(self).siblings_by_key[sibling_key]
+        type(self).create_events.append(
+            (
+                self.key,
+                self._metadata_path.exists(),
+                sibling._metadata_path.exists(),
+            )
+        )
+        return f"timed:{self.key}"
+
+
 class ReentrantValue(Furu[int]):
     key: int
 
@@ -284,6 +302,8 @@ def _reset_batch_trackers() -> None:
     GroupBatchA.batch_calls.clear()
     GroupBatchB.batch_calls.clear()
     GROUP_EXECUTION_EVENTS.clear()
+    MetadataTimingValue.create_events.clear()
+    MetadataTimingValue.siblings_by_key.clear()
 
 
 def test_frozen_dataclass_inheritance():
@@ -874,6 +894,18 @@ def test_list_input_on_single_only_class_uses_sequential_create() -> None:
     assert CountedSingleValue.create_calls == [1, 2, 3]
 
 
+def test_sequential_fallback_writes_running_metadata_per_object() -> None:
+    first = MetadataTimingValue(key=1)
+    second = MetadataTimingValue(key=2)
+    MetadataTimingValue.siblings_by_key.update({1: first, 2: second})
+
+    assert load_or_create([first, second], use_lock=False) == ["timed:1", "timed:2"]
+    assert MetadataTimingValue.create_events == [
+        (1, True, False),
+        (2, True, True),
+    ]
+
+
 def test_list_input_on_batch_only_class_calls_create_batched_once_per_concrete_group() -> None:
     objs = [GroupBatchA(key=1), GroupBatchB(key=1), GroupBatchA(key=2), GroupBatchB(key=2)]
 
@@ -989,6 +1021,8 @@ def test_batched_compute_writes_shared_logs_to_every_participant() -> None:
     for obj in objs:
         log_text = obj._log_path.read_text(encoding="utf-8")
         assert "batched detail for 1,2" in log_text
+        for persisted_obj in objs:
+            assert f"stored result at {persisted_obj._result_path}" in log_text
 
 
 def test_batched_failure_writes_error_logs_for_every_participant() -> None:
