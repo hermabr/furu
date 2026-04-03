@@ -11,10 +11,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, overload
 
-from furu.core import Furu
+from furu.core import Furu, FuruCreateMode
 from furu.logging import _scoped_log_file, _scoped_log_files
 from furu.locking import LockLostError, lock_many
 from furu.metadata import RunningMetadata
+from furu.utils import class_label
 
 type _AnyFuru = Furu[Any]
 type _HasLock = Callable[[], bool] | None
@@ -23,6 +24,37 @@ _CURRENT_EXECUTING_DATA_DIRS: ContextVar[frozenset[Path]] = ContextVar(
     "furu_current_executing_data_dirs",
     default=frozenset(),
 )
+
+
+def resolve_create_mode(cls: type[Furu[Any]]) -> FuruCreateMode:
+    defines_single = "_create" in cls.__dict__
+    defines_batched = "_create_batched" in cls.__dict__
+
+    if defines_single and defines_batched:
+        raise TypeError(
+            f"{class_label(cls)} cannot define both _create and "
+            "_create_batched in the same class body"
+        )
+
+    if defines_single:
+        return "single"
+    if defines_batched:
+        if not isinstance(cls.__dict__["_create_batched"], classmethod):
+            raise TypeError(
+                f"{class_label(cls)}._create_batched must be declared as a "
+                "@classmethod"
+            )
+        return "batched"
+
+    for base in cls.__mro__[1:]:
+        mode = base.__dict__.get("_furu_create_mode")
+        if mode in ("single", "batched"):
+            return mode
+
+    raise TypeError(
+        f"{class_label(cls)} must define either _create or "
+        "_create_batched, or inherit one resolved mode"
+    )
 
 
 def _normalize_batch_input(

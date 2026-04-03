@@ -11,6 +11,10 @@ type JsonValue = (
 )
 
 
+def class_label(cls: type) -> str:
+    return f"{cls.__module__}.{cls.__qualname__}"
+
+
 def fully_qualified_name(tp: type) -> str:
     mod = tp.__module__
     qualname = tp.__qualname__

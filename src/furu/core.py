@@ -47,7 +47,9 @@ class Furu[T](_FuruDataclassTransform, ABC):
         validate_cls(cls)
         if "__dataclass_params__" not in cls.__dict__:
             dataclass(frozen=True, kw_only=True)(cls)
-        cls._furu_create_mode = _resolve_create_mode(cls)
+        from furu.execution import resolve_create_mode
+
+        cls._furu_create_mode = resolve_create_mode(cls)
 
     def load_or_create(self, use_lock: bool = True) -> T:
         from furu.execution import load_or_create
@@ -176,38 +178,3 @@ class Furu[T](_FuruDataclassTransform, ABC):
     @cached_property
     def _log_label(self) -> str:
         return f"{type(self).__name__}:{self.schema_hash[:5]}:{self.artifact_hash[:5]}"
-
-
-def _resolve_create_mode(cls: type[Furu[Any]]) -> FuruCreateMode:
-    defines_single = "_create" in cls.__dict__
-    defines_batched = "_create_batched" in cls.__dict__
-
-    if defines_single and defines_batched:
-        raise TypeError(
-            f"{_class_label(cls)} cannot define both _create and "
-            "_create_batched in the same class body"
-        )
-
-    if defines_single:
-        return "single"
-    if defines_batched:
-        if not isinstance(cls.__dict__["_create_batched"], classmethod):
-            raise TypeError(
-                f"{_class_label(cls)}._create_batched must be declared as a "
-                "@classmethod"
-            )
-        return "batched"
-
-    for base in cls.__mro__[1:]:
-        mode = base.__dict__.get("_furu_create_mode")
-        if mode in ("single", "batched"):
-            return mode
-
-    raise TypeError(
-        f"{_class_label(cls)} must define either _create or "
-        "_create_batched, or inherit one resolved mode"
-    )
-
-
-def _class_label(cls: type[Any]) -> str:
-    return f"{cls.__module__}.{cls.__qualname__}"
