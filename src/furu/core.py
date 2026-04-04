@@ -48,9 +48,9 @@ class Furu[T](_FuruDataclassTransform, ABC):
         validate_cls(cls)
         if "__dataclass_params__" not in cls.__dict__:
             dataclass(frozen=True, kw_only=True)(cls)
-        from furu.execution import resolve_create_mode
+        from furu.execution import _resolve_create_mode
 
-        cls._furu_create_mode = resolve_create_mode(cls)
+        cls._furu_create_mode = _resolve_create_mode(cls)
 
     def load_or_create(self, use_lock: bool = True) -> T:
         from furu.execution import load_or_create

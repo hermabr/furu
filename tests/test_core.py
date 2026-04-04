@@ -894,7 +894,7 @@ def test_resolved_create_mode_validation() -> None:
         def _create(self) -> str:
             return f"single:{self.label}"
 
-    class ExplicitBatch(Node):
+    class ExplicitBatch(Furu[str]):
         label: str
 
         @classmethod
@@ -905,6 +905,15 @@ def test_resolved_create_mode_validation() -> None:
     assert BatchOnlyValue._furu_create_mode == "batched"
     assert ExplicitSingle._furu_create_mode == "single"
     assert ExplicitBatch._furu_create_mode == "batched"
+
+    class InheritedSingle(Node):
+        label: str
+
+    class InheritedBatch(BatchOnlyValue):
+        label: str
+
+    assert InheritedSingle._furu_create_mode == "single"
+    assert InheritedBatch._furu_create_mode == "batched"
 
     with pytest.raises(
         TypeError, match="must define exactly one of _create or _create_batched"
@@ -925,16 +934,19 @@ def test_resolved_create_mode_validation() -> None:
                 return [1 for _ in objs]
 
     with pytest.raises(
-        TypeError,
-        match="must define exactly one create hook in its own class body",
+        TypeError, match="must define exactly one of _create or _create_batched"
     ):
 
         class InvalidInherited(Node):
             label: str
 
+            @classmethod
+            def _create_batched(cls, objs) -> list[str]:
+                return [obj.label for obj in objs]
+
     with pytest.raises(
         TypeError,
-        match="must define exactly one create hook in its own class body",
+        match="must define exactly one create hook in its inheritance chain",
     ):
 
         class InvalidNone(Furu[int]):
@@ -1118,7 +1130,7 @@ def test_partial_persistence_leaves_already_written_objects_completed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     objs = [PartialBatchValue(key=1), PartialBatchValue(key=2)]
-    real_store_result = execution_module.store_result
+    real_store_result = execution_module._store_result
     call_count = 0
 
     def flaky_store_result(*args, **kwargs) -> None:
@@ -1128,7 +1140,7 @@ def test_partial_persistence_leaves_already_written_objects_completed(
             raise RuntimeError("stop after first store")
         real_store_result(*args, **kwargs)
 
-    monkeypatch.setattr(execution_module, "store_result", flaky_store_result)
+    monkeypatch.setattr(execution_module, "_store_result", flaky_store_result)
 
     with pytest.raises(RuntimeError, match="stop after first store"):
         load_or_create(objs)

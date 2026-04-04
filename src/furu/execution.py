@@ -19,28 +19,37 @@ from furu.utils import class_label
 type HasLock = Callable[[], bool]
 
 
-def resolve_create_mode[T](cls: type[Furu[T]]) -> FuruCreateMode:
-    defines_single = "_create" in cls.__dict__
-    defines_batched = "_create_batched" in cls.__dict__
+def _resolve_create_mode[T](cls: type[Furu[T]]) -> FuruCreateMode:
+    defines_single = False
+    defines_batched = False
 
-    if defines_single and not defines_batched:
-        return "single"
-    if defines_batched and not defines_single:
-        if not isinstance(cls.__dict__["_create_batched"], classmethod):
-            raise TypeError(
-                f"{class_label(cls)}._create_batched must be a @classmethod"
-            )
-        return "batched"
+    for base in cls.__mro__:
+        if not issubclass(base, Furu) or base is Furu:
+            continue
+
+        if "_create" in base.__dict__:
+            defines_single = True
+        if "_create_batched" in base.__dict__:
+            if not isinstance(base.__dict__["_create_batched"], classmethod):
+                raise TypeError(
+                    f"{class_label(base)}._create_batched must be a @classmethod"
+                )
+            defines_batched = True
+
     if defines_single and defines_batched:
         raise TypeError(
             f"{class_label(cls)} must define exactly one of _create or _create_batched"
         )
+    if defines_single:
+        return "single"
+    if defines_batched:
+        return "batched"
     raise TypeError(
-        f"{class_label(cls)} must define exactly one create hook in its own class body"
+        f"{class_label(cls)} must define exactly one create hook in its inheritance chain"
     )
 
 
-def store_result[T](
+def _store_result[T](
     obj: Furu[T],
     result: T,
     *,
@@ -68,10 +77,23 @@ def store_result[T](
     obj.logger.debug("stored result at %s", obj._result_path)
 
 
-def write_error_logs[T](objs: Sequence[Furu[T]], exc: BaseException) -> None:
+def _write_error_logs[T](objs: Sequence[Furu[T]], exc: BaseException) -> None:
     timestamp = datetime.now().strftime("%y%m%d_%H-%M-%S")
     suffix = secrets.token_hex(4)
-    error_text = format_error_log(exc)
+    parts = ["Traceback (most recent call last):\n"]
+    parts.extend(
+        traceback.format_list(
+            traceback.extract_stack()[:-2] + traceback.extract_tb(exc.__traceback__)
+        )
+    )
+    parts.extend(traceback.format_exception_only(type(exc), exc))
+    parts.append("\n=== Debug Details (with locals) ===\n")
+    parts.extend(
+        traceback.TracebackException.from_exception(exc, capture_locals=True).format(
+            chain=True
+        )
+    )
+    error_text = "".join(parts)
     for obj in objs:
         obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
         error_path = obj._internal_furu_dir / f"error-{timestamp}-{suffix}.log"
@@ -151,7 +173,7 @@ def load_or_create[T](
             grouped.setdefault(type(obj), []).append(obj)
 
         for group in grouped.values():
-            execute_group(group, has_lock=has_lock, results_by_dir=results_by_dir)
+            _execute_group(group, has_lock=has_lock, results_by_dir=results_by_dir)
 
     outputs = [results_by_dir[obj.data_dir] for obj in objs]
 
@@ -161,7 +183,7 @@ def load_or_create[T](
     return outputs
 
 
-def execute_group[T](
+def _execute_group[T](
     group: list[Furu[T]],
     *,
     has_lock: HasLock,
@@ -196,7 +218,7 @@ def execute_group[T](
                 )
 
             for obj, result in zip(group, results, strict=True):
-                store_result(
+                _store_result(
                     obj,
                     result,
                     metadata=metadata_by_dir[obj.data_dir],
@@ -207,22 +229,5 @@ def execute_group[T](
             logger.debug("load_or_create complete")
         except BaseException as exc:
             logger.exception("load_or_create failed")
-            write_error_logs(group, exc)
+            _write_error_logs(group, exc)
             raise
-
-
-def format_error_log(exc: BaseException) -> str:
-    parts = ["Traceback (most recent call last):\n"]
-    parts.extend(
-        traceback.format_list(
-            traceback.extract_stack()[:-2] + traceback.extract_tb(exc.__traceback__)
-        )
-    )
-    parts.extend(traceback.format_exception_only(type(exc), exc))
-    parts.append("\n=== Debug Details (with locals) ===\n")
-    parts.extend(
-        traceback.TracebackException.from_exception(exc, capture_locals=True).format(
-            chain=True
-        )
-    )
-    return "".join(parts)
