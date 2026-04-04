@@ -121,7 +121,9 @@ class Furu[T](_FuruDataclassTransform, ABC):
         raise NotImplementedError("TODO")
 
     @classmethod
-    def _create_batched(cls, objs: list[Self]) -> list[T]:
+    def _create_batched[TFuru: Furu[Any]](
+        cls: type[TFuru], objs: list[TFuru]
+    ) -> list[T]:
         raise NotImplementedError("TODO")
 
     @cached_property
