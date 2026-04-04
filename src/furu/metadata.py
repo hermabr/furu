@@ -1,7 +1,8 @@
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from furu.utils import JsonValue
 
@@ -60,3 +61,29 @@ class CompletedMetadata(RunningMetadata):
     # ]  # TODO: this probably means i don't really need to record the package versions? in particular since git data would have uv.lock and pyproject.toml already
     # slurm: SlurmData
     completed_at: datetime
+
+
+class LockClaim(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        frozen=True,
+    )
+
+    version: Literal[1] = 1
+    lock_path: Path
+    claim_path: Path
+    pid: int
+    hostname: str
+
+    @model_validator(mode="after")
+    def _validate_paths(self) -> "LockClaim":
+        if not self.lock_path.is_absolute() or not self.claim_path.is_absolute():
+            raise ValueError("lock claims require absolute paths")
+        if self.claim_path.parent != self.lock_path.parent:
+            raise ValueError("lock claim path must stay in the lock directory")
+        if not self.claim_path.name.startswith(f"{self.lock_path.name}."):
+            raise ValueError("lock claim path must use the lock basename prefix")
+        if not self.claim_path.name.endswith(".claim"):
+            raise ValueError("lock claim path must end with .claim")
+        return self

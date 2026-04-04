@@ -1,7 +1,7 @@
 # TODO: make this test not vibe coded
-import json
 import os
 import pickle
+import socket
 import time
 from multiprocessing import get_context
 from pathlib import Path
@@ -13,6 +13,7 @@ from furu.locking import (
     LockAcquireError,
     LockLostError,
 )
+from furu.metadata import LockClaim
 
 TEST_TIMING_SCALE = 4.0 if os.environ.get("GITHUB_ACTIONS") == "true" else 1.0
 OVERLAP_SLEEP_S = 0.01 * TEST_TIMING_SCALE
@@ -36,14 +37,17 @@ class SlowProbe(Furu[int]):
 class SlowBatchProbe(Furu[int]):
     key: int
 
+    def _create(self) -> int:
+        raise AssertionError("_create() should not be used when _create_many() exists")
+
     @classmethod
-    def _create_batched(cls, objs) -> list[int]:
+    def _create_many(cls, objs) -> list[int]:
         marker_dir = Path(os.environ["FURU_TEST_MARKER_DIR"])
         marker_dir.mkdir(parents=True, exist_ok=True)
         for obj in objs:
-            (marker_dir / f"{obj.key}-{os.getpid()}-{time.time_ns()}.marker").write_text(
-                "created"
-            )
+            (
+                marker_dir / f"{obj.key}-{os.getpid()}-{time.time_ns()}.marker"
+            ).write_text("created")
         time.sleep(OVERLAP_SLEEP_S)
         return [obj.key * 10 for obj in objs]
 
@@ -108,13 +112,15 @@ def _takeover_worker(
 def _steal_lock(lock_path: str, out_q) -> None:
     lock = Path(lock_path)
     claim_path = lock.with_name(f"{lock.name}.stolen.{os.getpid()}.claim").resolve()
-    manifest = {
-        "claim_path": str(claim_path),
-        "lock_paths": [str(lock.resolve())],
-    }
+    claim = LockClaim(
+        lock_path=lock.resolve(),
+        claim_path=claim_path,
+        pid=os.getpid(),
+        hostname=socket.gethostname(),
+    )
     fd = os.open(claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(manifest, f)
+        f.write(claim.model_dump_json(indent=2))
         f.flush()
         os.fsync(f.fileno())
     lock.unlink()

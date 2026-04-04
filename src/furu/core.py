@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import logging
+import os
+import pickle
 import shutil
 from abc import ABC
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from functools import cached_property
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self
+from typing import TYPE_CHECKING, Any, Literal, Self
 
 from furu.config import config
-from furu.locking import LockLostError, lock
+from furu.locking import Lease, LockLostError, lock
 from furu.logging import get_logger
+from furu.metadata import RunningMetadata
 from furu.schema import schema_type as _schema_type
 from furu.serialize import to_json as _to_json
 from furu.utils import (
@@ -33,12 +37,7 @@ else:
         pass
 
 
-type FuruCreateMode = Literal["single", "batched"]
-
-
 class Furu[T](_FuruDataclassTransform, ABC):
-    _furu_create_mode: ClassVar[FuruCreateMode]
-
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
         if cls is Furu:
@@ -47,9 +46,13 @@ class Furu[T](_FuruDataclassTransform, ABC):
         validate_cls(cls)
         if "__dataclass_params__" not in cls.__dict__:
             dataclass(frozen=True, kw_only=True)(cls)
-        from furu.execution import resolve_create_mode
-
-        cls._furu_create_mode = resolve_create_mode(cls)
+        if cls._create is Furu._create:
+            raise TypeError(f"{cls.__name__} must implement _create()")
+        create_many = cls.__dict__.get("_create_many")
+        if create_many is not None and not isinstance(create_many, classmethod):
+            raise TypeError(
+                f"{cls.__name__}._create_many must be declared as a @classmethod"
+            )
 
     def load_or_create(self, use_lock: bool = True) -> T:
         from furu.execution import load_or_create
@@ -72,9 +75,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     def try_load(self) -> T:  # TODO: make a better name for this
         if self._result_path.exists():
-            from furu.execution import _load_result_from_disk
-
-            return _load_result_from_disk(self)
+            return self.load_result()
         raise NotImplementedError(
             "TODO: decide if i should throw or return error value"
         )
@@ -121,8 +122,8 @@ class Furu[T](_FuruDataclassTransform, ABC):
         raise NotImplementedError("TODO")
 
     @classmethod
-    def _create_batched(cls, objs: list[Self]) -> list[T]:
-        raise NotImplementedError("TODO")
+    def _create_many(cls, objs: list[Self]) -> list[T]:
+        return [obj._create() for obj in objs]
 
     @cached_property
     def artifact(  # TODO: make sure this doesn't prevent garbage collection
@@ -160,6 +161,10 @@ class Furu[T](_FuruDataclassTransform, ABC):
         )
 
     @cached_property
+    def cache_key(self) -> Path:
+        return self.data_dir.resolve(strict=False)
+
+    @cached_property
     def _internal_furu_dir(self) -> Path:
         return self.data_dir / ".furu"
 
@@ -178,3 +183,56 @@ class Furu[T](_FuruDataclassTransform, ABC):
     @cached_property
     def _log_label(self) -> str:
         return f"{type(self).__name__}:{self.schema_hash[:5]}:{self.artifact_hash[:5]}"
+
+    def ensure_private_dir(self) -> None:
+        self._internal_furu_dir.mkdir(parents=True, exist_ok=True)
+
+    def load_result(self) -> T:
+        with self._result_path.open("rb") as f:
+            return pickle.load(f)
+
+    def write_running_metadata(self) -> RunningMetadata:
+        metadata = RunningMetadata(
+            artifact=self.artifact,
+            artifact_hash=self.artifact_hash,
+            schema_=self.schema,
+            schema_hash=self.schema_hash,
+            data_path=self.cache_key,
+            started_at=datetime.now(timezone.utc),
+        )
+        self._metadata_path.write_text(
+            metadata.model_dump_json(indent=2),
+            encoding="utf-8",
+        )
+        return metadata
+
+    def commit(
+        self,
+        result: T,
+        *,
+        metadata: RunningMetadata,
+        lease: Lease | None,
+    ) -> None:
+        self.ensure_private_dir()
+        if lease is not None:
+            lease.assert_held(
+                f"lost lock at {self._lock_path} before writing final result"
+            )
+
+        tmp_result_path = self._result_path.with_suffix(".pkl.tmp")
+        with tmp_result_path.open("wb") as f:
+            pickle.dump(result, f)
+            f.flush()
+            os.fsync(f.fileno())
+
+        if lease is not None:
+            lease.assert_held(
+                f"lost lock at {self._lock_path} after writing temporary result"
+            )
+
+        tmp_result_path.rename(self._result_path)
+        self._metadata_path.write_text(
+            metadata.to_complete().model_dump_json(indent=2),
+            encoding="utf-8",
+        )
+        self.logger.debug("stored result at %s", self._result_path)

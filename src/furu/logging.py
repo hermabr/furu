@@ -60,6 +60,7 @@ def get_logger(name: str | None = None) -> logging.Logger:
         return logging.getLogger(_BASE_LOGGER_NAME)
     return logging.getLogger(f"{_BASE_LOGGER_NAME}.{name}")
 
+
 @contextmanager
 def _scoped_log_files(log_paths: tuple[Path, ...]) -> Iterator[None]:
     token = _CURRENT_LOG_PATHS.set(tuple(dict.fromkeys(log_paths)))
