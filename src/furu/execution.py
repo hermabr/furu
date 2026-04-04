@@ -13,7 +13,7 @@ from typing import assert_never, overload
 
 from furu.core import Furu, FuruCreateMode
 from furu.locking import LockLostError, lock_many
-from furu.logging import _scoped_log_file, _scoped_log_files
+from furu.logging import _scoped_log_files
 from furu.metadata import RunningMetadata
 from furu.utils import class_label
 
@@ -306,7 +306,7 @@ def _execute_single_group[T](
 ) -> dict[Path, T]:
     stored: dict[Path, T] = {}
     for obj in group:
-        with _scoped_log_file(obj._log_path):
+        with _scoped_log_files((obj._log_path,)):
             logger = obj.logger
             logger.debug("load_or_create start")
             try:

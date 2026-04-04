@@ -2,8 +2,8 @@ import logging
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import cache
-from pathlib import Path
 import sys
+from pathlib import Path
 from typing import Iterator
 
 from furu.config import config
@@ -59,13 +59,6 @@ def get_logger(name: str | None = None) -> logging.Logger:
     if name is None or name == _BASE_LOGGER_NAME:
         return logging.getLogger(_BASE_LOGGER_NAME)
     return logging.getLogger(f"{_BASE_LOGGER_NAME}.{name}")
-
-
-@contextmanager
-def _scoped_log_file(log_path: Path) -> Iterator[None]:
-    with _scoped_log_files((log_path,)):
-        yield
-
 
 @contextmanager
 def _scoped_log_files(log_paths: tuple[Path, ...]) -> Iterator[None]:
