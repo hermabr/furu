@@ -17,7 +17,6 @@ from furu.utils import (
     JsonValue,
     _hash_dict_deterministically,
     _nfs_safe_unique_name,
-    class_label,
     fully_qualified_name,
 )
 from furu.validate import validate_cls
@@ -37,27 +36,6 @@ else:
 type FuruCreateMode = Literal["single", "batched"]
 
 
-def resolve_create_mode[T](cls: type[Furu[T]]) -> FuruCreateMode:
-    match ("_create" in cls.__dict__, "_create_batched" in cls.__dict__):
-        case (True, False):
-            return "single"
-        case (False, True):
-            if not isinstance(cls.__dict__["_create_batched"], classmethod):
-                raise TypeError(
-                    f"{class_label(cls)}._create_batched must be a @classmethod"
-                )
-            return "batched"
-        case (True, True):
-            raise TypeError(
-                f"{class_label(cls)} must define exactly one of _create or _create_batched"
-            )
-        case (False, False):
-            raise TypeError(
-                f"{class_label(cls)} must define exactly one create hook in its own class body"
-            )
-    raise AssertionError("unreachable")
-
-
 class Furu[T](_FuruDataclassTransform, ABC):
     _furu_create_mode: ClassVar[FuruCreateMode]
 
@@ -69,6 +47,8 @@ class Furu[T](_FuruDataclassTransform, ABC):
         validate_cls(cls)
         if "__dataclass_params__" not in cls.__dict__:
             dataclass(frozen=True, kw_only=True)(cls)
+        from furu.execution import resolve_create_mode
+
         cls._furu_create_mode = resolve_create_mode(cls)
 
     def load_or_create(self, use_lock: bool = True) -> T:
@@ -177,7 +157,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
             / Path(*fully_qualified_name(type(self)).split("."))
             / self.schema_hash
             / self.artifact_hash
-        ).resolve(strict=False)
+        )
 
     @cached_property
     def _internal_furu_dir(self) -> Path:

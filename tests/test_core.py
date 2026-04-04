@@ -818,14 +818,14 @@ def test_data_dir():
         / "NodePair"
         / "50a9b8624ed259ec38df"
         / "c4ff0c2ad0f653af7ce2"
-    ).resolve(strict=False)
+    )
     assert node_pair.data_dir == Path(
         config.directories.data
         / "test_core"
         / "NodePair"
         / node_pair.schema_hash
         / node_pair.artifact_hash
-    ).resolve(strict=False)
+    )
 
 
 def test_create_object_and_exists():

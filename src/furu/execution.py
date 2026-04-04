@@ -9,19 +9,52 @@ from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import overload
+from typing import Literal, assert_never, overload
 
-from furu.core import Furu
+from furu.core import Furu, FuruCreateMode
 from furu.locking import LockLostError, lock_many
 from furu.logging import _scoped_log_files
 from furu.metadata import RunningMetadata
+from furu.utils import class_label
 
 type HasLock = Callable[[], bool]
+type _CreateHookState = Literal["single", "batched", "both", "none"]
 
 _CURRENT_EXECUTING_DATA_DIRS: ContextVar[frozenset[Path]] = ContextVar(
     "furu_current_executing_data_dirs",
     default=frozenset(),
 )
+
+
+def resolve_create_mode[T](cls: type[Furu[T]]) -> FuruCreateMode:
+    create_hook_state: _CreateHookState = (
+        "single"
+        if "_create" in cls.__dict__ and "_create_batched" not in cls.__dict__
+        else "batched"
+        if "_create" not in cls.__dict__ and "_create_batched" in cls.__dict__
+        else "both"
+        if "_create" in cls.__dict__ and "_create_batched" in cls.__dict__
+        else "none"
+    )
+    match create_hook_state:
+        case "single":
+            return "single"
+        case "batched":
+            if not isinstance(cls.__dict__["_create_batched"], classmethod):
+                raise TypeError(
+                    f"{class_label(cls)}._create_batched must be a @classmethod"
+                )
+            return "batched"
+        case "both":
+            raise TypeError(
+                f"{class_label(cls)} must define exactly one of _create or _create_batched"
+            )
+        case "none":
+            raise TypeError(
+                f"{class_label(cls)} must define exactly one create hook in its own class body"
+            )
+        case _:
+            assert_never(create_hook_state)
 
 
 def load_result[T](obj: Furu[T]) -> T:
