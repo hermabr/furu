@@ -6,7 +6,7 @@ from enum import Enum
 from functools import partial
 from pathlib import Path
 import pickle
-from typing import ClassVar, Literal, TypeVar
+from typing import ClassVar, Literal, TypeVar, cast
 from unittest.mock import patch
 
 import pytest
@@ -92,16 +92,21 @@ class B[T](Furu):
 
         ann = dict(getattr(cls, "__annotations__", {}))
         ann["_hidden"] = int
+        namespace: dict[str, object] = {
+            "__annotations__": ann,
+            "_hidden": 0,
+        }
+        if cls._furu_create_mode == "single":
+            namespace["_create"] = lambda self: cls._create(self)
+        else:
+            namespace["_create_batched"] = classmethod(
+                lambda hidden_cls, objs: cls._create_batched(objs)
+            )
 
         Hidden = types.new_class(
             cls.__name__,
             (cls,),
-            exec_body=lambda ns: ns.update(
-                {
-                    "__annotations__": ann,
-                    "_hidden": 0,
-                }
-            ),
+            exec_body=lambda ns: ns.update(namespace),
         )
         Hidden.__module__ = cls.__module__
         Hidden.__qualname__ = cls.__qualname__  # <- the “same qualname” lie
@@ -112,6 +117,9 @@ class B[T](Furu):
 
 class B_priv(B):
     _h: int
+
+    def _create(self):
+        return super()._create()
 
 
 class VariadicTuple(Furu[None]):
@@ -140,6 +148,7 @@ class UsesFalseLiteral(Furu[None]):
 
     def _create(self) -> None:
         return None
+
 
 class LoggedLeaf(Furu[str]):
     name: str
@@ -174,6 +183,9 @@ class PositiveValue(Furu[int]):
 class InheritedPositiveValue(PositiveValue):
     extra: str
 
+    def _create(self) -> int:
+        return super()._create()
+
 
 class ParentAndChildValidated(PositiveValue):
     child_value: int
@@ -182,6 +194,9 @@ class ParentAndChildValidated(PositiveValue):
     def _validate_child_value(self) -> None:
         if self.child_value <= 0:
             raise ValueError("child_value must be positive")
+
+    def _create(self) -> int:
+        return super()._create()
 
 
 class PydanticSubclass(BaseModel):
@@ -254,6 +269,14 @@ class LoggedBatchValue(Furu[str]):
         return [f"logged-batch:{obj.key}" for obj in objs]
 
 
+class LoggedSingleValue(Furu[str]):
+    key: int
+
+    def _create(self) -> str:
+        self.logger.info("single detail for %s", self.key)
+        return f"logged-single:{self.key}"
+
+
 class FailingBatchValue(Furu[str]):
     key: int
 
@@ -295,6 +318,30 @@ class ReentrantValue(Furu[int]):
         return load_or_create(self)
 
 
+class SiblingReentrantValue(Furu[int]):
+    key: int
+    siblings_by_key: ClassVar[dict[int, "SiblingReentrantValue"]] = {}
+
+    def _create(self) -> int:
+        sibling_key = 2 if self.key == 1 else 1
+        return load_or_create(type(self).siblings_by_key[sibling_key])
+
+
+class CrossClassLeafValue(Furu[int]):
+    key: int
+
+    def _create(self) -> int:
+        return self.key
+
+
+class CrossClassCallerValue(Furu[int]):
+    key: int
+    targets_by_key: ClassVar[dict[int, CrossClassLeafValue]] = {}
+
+    def _create(self) -> int:
+        return load_or_create(type(self).targets_by_key[self.key])
+
+
 @pytest.fixture(autouse=True)
 def _reset_batch_trackers() -> None:
     CountedSingleValue.create_calls.clear()
@@ -304,6 +351,8 @@ def _reset_batch_trackers() -> None:
     GROUP_EXECUTION_EVENTS.clear()
     MetadataTimingValue.create_events.clear()
     MetadataTimingValue.siblings_by_key.clear()
+    SiblingReentrantValue.siblings_by_key.clear()
+    CrossClassCallerValue.targets_by_key.clear()
 
 
 def test_frozen_dataclass_inheritance():
@@ -382,6 +431,9 @@ def test_post_init_and_inherited_validators_both_run():
         def __post_init__(self) -> None:
             object.__setattr__(self, "value", int(self.raw_value))
 
+        def _create(self) -> int:
+            return super()._create()
+
     assert PostInitInheritedPositiveValue(value=1, raw_value="2").value == 2
 
     with pytest.raises(ValueError, match="value must be positive"):
@@ -406,6 +458,9 @@ def test_inherited_post_init_and_inherited_validators_both_run():
 
     class ChildPostInitValue(BasePostInitValue):
         label: str
+
+        def _create(self) -> int:
+            return super()._create()
 
     assert ChildPostInitValue(raw_value="2", label="ok").value == 2
 
@@ -438,6 +493,9 @@ def test_post_init_chain_runs_before_validators_without_duplicate_calls():
         @validate
         def _validate_child(self) -> None:
             calls.append("child_validate")
+
+        def _create(self) -> int:
+            return super()._create()
 
     ChildOrderedValue(value=1, label="ok")
 
@@ -502,12 +560,19 @@ def test_hashes_and_data_dir():
         ).schema_hash
     )
 
-    def qualname_alias[T](cls: T, *, ret_typ: type) -> T:
-        alias = type(ret_typ.__qualname__, (cls,), {"__module__": cls.__module__})  # ty: ignore[invalid-base]
+    def qualname_alias(cls: type[Furu[object]], *, ret_typ: type) -> type[Furu[object]]:
+        namespace: dict[str, object] = {"__module__": cls.__module__}
+        if cls._furu_create_mode == "single":
+            namespace["_create"] = lambda self: cls._create(self)
+        else:
+            namespace["_create_batched"] = classmethod(
+                lambda alias_cls, objs: cls._create_batched(objs)
+            )
+        alias = type(ret_typ.__qualname__, (cls,), namespace)
         alias.__qualname__ = ret_typ.__qualname__
-        return alias  # ty: ignore[invalid-return-type]
+        return alias
 
-    B_priv_as_B = qualname_alias(B_priv, ret_typ=B)
+    B_priv_as_B = cast(type[B_priv], qualname_alias(B_priv, ret_typ=B))
     assert (
         B(
             a=A(x=1, z="123", w=[6, 7]), y={"ney": 123, True: 1}, t=("123", 12)
@@ -521,7 +586,9 @@ def test_hashes_and_data_dir():
     )
 
 
-def expected_schema_for_B_like(cls_name: str, *, include_private_h: bool = False) -> dict:
+def expected_schema_for_B_like(
+    cls_name: str, *, include_private_h: bool = False
+) -> dict:
     fields = {
         "a": [
             "builtins.int",
@@ -751,14 +818,14 @@ def test_data_dir():
         / "NodePair"
         / "50a9b8624ed259ec38df"
         / "c4ff0c2ad0f653af7ce2"
-    )
+    ).resolve(strict=False)
     assert node_pair.data_dir == Path(
         config.directories.data
         / "test_core"
         / "NodePair"
         / node_pair.schema_hash
         / node_pair.artifact_hash
-    )
+    ).resolve(strict=False)
 
 
 def test_create_object_and_exists():
@@ -854,21 +921,28 @@ def test_method_load_or_create_delegates_to_shared_executor(
 
 
 def test_resolved_create_mode_validation() -> None:
-    class InheritsSingle(Node):
-        label: str
-
-    class SwitchesToSingle(BatchOnlyValue):
+    class ExplicitSingle(Node):
         label: str
 
         def _create(self) -> str:
-            return f"switched:{self.label}"
+            return f"single:{self.label}"
+
+    class ExplicitBatch(Node):
+        label: str
+
+        @classmethod
+        def _create_batched(cls, objs) -> list[str]:
+            return [f"batch:{obj.label}" for obj in objs]
 
     assert Node._furu_create_mode == "single"
     assert BatchOnlyValue._furu_create_mode == "batched"
-    assert InheritsSingle._furu_create_mode == "single"
-    assert SwitchesToSingle._furu_create_mode == "single"
+    assert ExplicitSingle._furu_create_mode == "single"
+    assert ExplicitBatch._furu_create_mode == "batched"
 
-    with pytest.raises(TypeError, match="cannot define both _create and _create_batched"):
+    with pytest.raises(
+        TypeError, match="must define exactly one of _create or _create_batched"
+    ):
+
         class InvalidBoth(Furu[int]):
             def _create(self) -> int:
                 return 1
@@ -877,7 +951,25 @@ def test_resolved_create_mode_validation() -> None:
             def _create_batched(cls, objs) -> list[int]:
                 return [1 for _ in objs]
 
-    with pytest.raises(TypeError, match="must define either _create or _create_batched"):
+    with pytest.raises(TypeError, match=r"_create_batched must be a @classmethod"):
+
+        class InvalidBatchMethod(Furu[int]):
+            def _create_batched(self, objs) -> list[int]:
+                return [1 for _ in objs]
+
+    with pytest.raises(
+        TypeError,
+        match="must define exactly one create hook in its own class body",
+    ):
+
+        class InvalidInherited(Node):
+            label: str
+
+    with pytest.raises(
+        TypeError,
+        match="must define exactly one create hook in its own class body",
+    ):
+
         class InvalidNone(Furu[int]):
             pass
 
@@ -888,7 +980,11 @@ def test_single_object_on_batch_only_class_uses_create_batched() -> None:
 
 
 def test_list_input_on_single_only_class_uses_sequential_create() -> None:
-    objs = [CountedSingleValue(key=1), CountedSingleValue(key=2), CountedSingleValue(key=3)]
+    objs = [
+        CountedSingleValue(key=1),
+        CountedSingleValue(key=2),
+        CountedSingleValue(key=3),
+    ]
 
     assert load_or_create(objs) == ["single:1", "single:2", "single:3"]
     assert CountedSingleValue.create_calls == [1, 2, 3]
@@ -901,13 +997,20 @@ def test_sequential_fallback_writes_running_metadata_per_object() -> None:
 
     assert load_or_create([first, second], use_lock=False) == ["timed:1", "timed:2"]
     assert MetadataTimingValue.create_events == [
-        (1, True, False),
+        (1, True, True),
         (2, True, True),
     ]
 
 
-def test_list_input_on_batch_only_class_calls_create_batched_once_per_concrete_group() -> None:
-    objs = [GroupBatchA(key=1), GroupBatchB(key=1), GroupBatchA(key=2), GroupBatchB(key=2)]
+def test_list_input_on_batch_only_class_calls_create_batched_once_per_concrete_group() -> (
+    None
+):
+    objs = [
+        GroupBatchA(key=1),
+        GroupBatchB(key=1),
+        GroupBatchA(key=2),
+        GroupBatchB(key=2),
+    ]
 
     assert load_or_create(objs) == ["group-a:1", "group-b:1", "group-a:2", "group-b:2"]
     assert GroupBatchA.batch_calls == [(1, 2)]
@@ -996,8 +1099,34 @@ def test_mixed_type_list_follows_documented_grouping_policy() -> None:
 
 
 def test_self_reentry_on_same_object_raises_friendly_error() -> None:
-    with pytest.raises(RuntimeError, match="re-entered for objects already being created"):
+    with pytest.raises(
+        RuntimeError, match="re-entered for objects already being created"
+    ):
         ReentrantValue(key=1).load_or_create()
+
+
+def test_sibling_reentry_on_same_pending_set_raises_friendly_error() -> None:
+    first = SiblingReentrantValue(key=1)
+    second = SiblingReentrantValue(key=2)
+    SiblingReentrantValue.siblings_by_key.update({1: first, 2: second})
+
+    with pytest.raises(
+        RuntimeError, match="re-entered for objects already being created"
+    ):
+        load_or_create([first, second], use_lock=False)
+
+
+def test_cross_class_sibling_reentry_on_same_pending_set_raises_friendly_error() -> (
+    None
+):
+    caller = CrossClassCallerValue(key=1)
+    target = CrossClassLeafValue(key=1)
+    CrossClassCallerValue.targets_by_key[1] = target
+
+    with pytest.raises(
+        RuntimeError, match="re-entered for objects already being created"
+    ):
+        load_or_create([caller, target], use_lock=False)
 
 
 def test_batched_compute_writes_result_layout_per_object() -> None:
@@ -1025,6 +1154,19 @@ def test_batched_compute_writes_shared_logs_to_every_participant() -> None:
             assert f"stored result at {persisted_obj._result_path}" in log_text
 
 
+def test_sequential_group_compute_writes_shared_logs_to_every_participant() -> None:
+    objs = [LoggedSingleValue(key=1), LoggedSingleValue(key=2)]
+
+    assert load_or_create(objs) == ["logged-single:1", "logged-single:2"]
+
+    for obj in objs:
+        log_text = obj._log_path.read_text(encoding="utf-8")
+        assert "single detail for 1" in log_text
+        assert "single detail for 2" in log_text
+        for persisted_obj in objs:
+            assert f"stored result at {persisted_obj._result_path}" in log_text
+
+
 def test_batched_failure_writes_error_logs_for_every_participant() -> None:
     objs = [FailingBatchValue(key=1), FailingBatchValue(key=2)]
 
@@ -1040,7 +1182,7 @@ def test_partial_persistence_leaves_already_written_objects_completed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     objs = [PartialBatchValue(key=1), PartialBatchValue(key=2)]
-    real_store_result = execution_module._store_result
+    real_store_result = execution_module.store_result
     call_count = 0
 
     def flaky_store_result(*args, **kwargs) -> None:
@@ -1050,7 +1192,7 @@ def test_partial_persistence_leaves_already_written_objects_completed(
             raise RuntimeError("stop after first store")
         real_store_result(*args, **kwargs)
 
-    monkeypatch.setattr(execution_module, "_store_result", flaky_store_result)
+    monkeypatch.setattr(execution_module, "store_result", flaky_store_result)
 
     with pytest.raises(RuntimeError, match="stop after first store"):
         load_or_create(objs)

@@ -41,9 +41,9 @@ class SlowBatchProbe(Furu[int]):
         marker_dir = Path(os.environ["FURU_TEST_MARKER_DIR"])
         marker_dir.mkdir(parents=True, exist_ok=True)
         for obj in objs:
-            (marker_dir / f"{obj.key}-{os.getpid()}-{time.time_ns()}.marker").write_text(
-                "created"
-            )
+            (
+                marker_dir / f"{obj.key}-{os.getpid()}-{time.time_ns()}.marker"
+            ).write_text("created")
         time.sleep(OVERLAP_SLEEP_S)
         return [obj.key * 10 for obj in objs]
 
@@ -109,6 +109,7 @@ def _steal_lock(lock_path: str, out_q) -> None:
     lock = Path(lock_path)
     claim_path = lock.with_name(f"{lock.name}.stolen.{os.getpid()}.claim").resolve()
     manifest = {
+        "version": 1,
         "claim_path": str(claim_path),
         "lock_paths": [str(lock.resolve())],
     }

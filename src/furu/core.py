@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self
 
 from furu.config import config
-from furu.locking import LockLostError, lock
+from furu.locking import LockLostError, lock_many
 from furu.logging import get_logger
 from furu.schema import schema_type as _schema_type
 from furu.serialize import to_json as _to_json
@@ -17,6 +17,7 @@ from furu.utils import (
     JsonValue,
     _hash_dict_deterministically,
     _nfs_safe_unique_name,
+    class_label,
     fully_qualified_name,
 )
 from furu.validate import validate_cls
@@ -36,6 +37,27 @@ else:
 type FuruCreateMode = Literal["single", "batched"]
 
 
+def resolve_create_mode[T](cls: type[Furu[T]]) -> FuruCreateMode:
+    match ("_create" in cls.__dict__, "_create_batched" in cls.__dict__):
+        case (True, False):
+            return "single"
+        case (False, True):
+            if not isinstance(cls.__dict__["_create_batched"], classmethod):
+                raise TypeError(
+                    f"{class_label(cls)}._create_batched must be a @classmethod"
+                )
+            return "batched"
+        case (True, True):
+            raise TypeError(
+                f"{class_label(cls)} must define exactly one of _create or _create_batched"
+            )
+        case (False, False):
+            raise TypeError(
+                f"{class_label(cls)} must define exactly one create hook in its own class body"
+            )
+    raise AssertionError("unreachable")
+
+
 class Furu[T](_FuruDataclassTransform, ABC):
     _furu_create_mode: ClassVar[FuruCreateMode]
 
@@ -47,8 +69,6 @@ class Furu[T](_FuruDataclassTransform, ABC):
         validate_cls(cls)
         if "__dataclass_params__" not in cls.__dict__:
             dataclass(frozen=True, kw_only=True)(cls)
-        from furu.execution import resolve_create_mode
-
         cls._furu_create_mode = resolve_create_mode(cls)
 
     def load_or_create(self, use_lock: bool = True) -> T:
@@ -72,9 +92,9 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     def try_load(self) -> T:  # TODO: make a better name for this
         if self._result_path.exists():
-            from furu.execution import _load_result_from_disk
+            from furu.execution import load_result
 
-            return _load_result_from_disk(self)
+            return load_result(self)
         raise NotImplementedError(
             "TODO: decide if i should throw or return error value"
         )
@@ -87,7 +107,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
         tombstone_path: Path | None = None
         try:
-            with lock(self._lock_path):
+            with lock_many([self._lock_path]):
                 if not self.data_dir.exists():
                     return False
 
@@ -157,7 +177,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
             / Path(*fully_qualified_name(type(self)).split("."))
             / self.schema_hash
             / self.artifact_hash
-        )
+        ).resolve(strict=False)
 
     @cached_property
     def _internal_furu_dir(self) -> Path:
