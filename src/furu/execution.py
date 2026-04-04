@@ -7,7 +7,7 @@ import traceback
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import overload
 
@@ -49,19 +49,6 @@ def resolve_create_mode[T](cls: type[Furu[T]]) -> FuruCreateMode:
 def load_result[T](obj: Furu[T]) -> T:
     with obj._result_path.open("rb") as f:
         return pickle.load(f)
-
-
-def write_running_metadata[T](obj: Furu[T]) -> RunningMetadata:
-    metadata = RunningMetadata(
-        artifact=obj.artifact,
-        artifact_hash=obj.artifact_hash,
-        schema_=obj.schema,
-        schema_hash=obj.schema_hash,
-        data_path=obj.data_dir,
-        started_at=datetime.now(timezone.utc),
-    )
-    obj._metadata_path.write_text(metadata.model_dump_json(indent=2))
-    return metadata
 
 
 def store_result[T](
@@ -192,7 +179,7 @@ def execute_group[T](
     results_by_dir: dict[Path, T],
 ) -> None:
     log_paths = tuple(obj._log_path for obj in group)
-    metadata_by_dir = {obj.data_dir: write_running_metadata(obj) for obj in group}
+    metadata_by_dir = {obj.data_dir: RunningMetadata.write_for(obj) for obj in group}
 
     with _scoped_log_files(log_paths):
         logger = group[0].logger

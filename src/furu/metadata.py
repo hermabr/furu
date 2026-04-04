@@ -1,9 +1,15 @@
+from __future__ import annotations
+
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict
 
 from furu.utils import JsonValue
+
+if TYPE_CHECKING:
+    from furu.core import Furu
 
 
 class GitData(BaseModel):
@@ -41,6 +47,19 @@ class RunningMetadata(_Metadata):
     # TODO: include some hardware information and machine info, such as os/version
     # python_version: str
     # executor info, such as local, local executor, slurm dag or slurm worker
+
+    @classmethod
+    def write_for[T](cls, obj: Furu[T]) -> RunningMetadata:
+        metadata = cls(
+            artifact=obj.artifact,
+            artifact_hash=obj.artifact_hash,
+            schema_=obj.schema,
+            schema_hash=obj.schema_hash,
+            data_path=obj.data_dir,
+            started_at=datetime.now(timezone.utc),
+        )
+        obj._metadata_path.write_text(metadata.model_dump_json(indent=2))
+        return metadata
 
     def to_complete(self) -> "CompletedMetadata":
         return CompletedMetadata(
