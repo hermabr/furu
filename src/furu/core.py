@@ -3,13 +3,14 @@ from __future__ import annotations
 import logging
 import shutil
 from abc import ABC
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, cast
 
 from furu.config import config
-from furu.locking import LockLostError, lock
+from furu.locking import LockLostError, lock_many
 from furu.logging import get_logger
 from furu.schema import schema_type as _schema_type
 from furu.serialize import to_json as _to_json
@@ -33,11 +34,8 @@ else:
         pass
 
 
-type FuruCreateMode = Literal["single", "batched"]
-
-
 class Furu[T](_FuruDataclassTransform, ABC):
-    _furu_create_mode: ClassVar[FuruCreateMode]
+    _furu_create_many: ClassVar[Callable[[list[Any]], list[Any]]]
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -47,9 +45,12 @@ class Furu[T](_FuruDataclassTransform, ABC):
         validate_cls(cls)
         if "__dataclass_params__" not in cls.__dict__:
             dataclass(frozen=True, kw_only=True)(cls)
-        from furu.execution import resolve_create_mode
+        from furu.execution import bind_create_many
 
-        cls._furu_create_mode = resolve_create_mode(cls)
+        cls._furu_create_many = cast(
+            Callable[[list[Any]], list[Any]],
+            bind_create_many(cls),
+        )
 
     def load_or_create(self, use_lock: bool = True) -> T:
         from furu.execution import load_or_create
@@ -87,7 +88,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
         tombstone_path: Path | None = None
         try:
-            with lock(self._lock_path):
+            with lock_many([self._lock_path]):
                 if not self.data_dir.exists():
                     return False
 
@@ -174,6 +175,10 @@ class Furu[T](_FuruDataclassTransform, ABC):
     @cached_property
     def _lock_path(self) -> Path:
         return self._internal_furu_dir / "compute.lock"
+
+    @cached_property
+    def _data_key(self) -> Path:
+        return self.data_dir.resolve(strict=False)
 
     @cached_property
     def _log_label(self) -> str:

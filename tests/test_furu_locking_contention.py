@@ -1,5 +1,4 @@
 # TODO: make this test not vibe coded
-import json
 import os
 import pickle
 import time
@@ -12,6 +11,7 @@ from furu.locking import (
     DEFAULT_ACQUIRE_POLL_INTERVAL_S,
     LockAcquireError,
     LockLostError,
+    LockManifest,
 )
 
 TEST_TIMING_SCALE = 4.0 if os.environ.get("GITHUB_ACTIONS") == "true" else 1.0
@@ -41,9 +41,9 @@ class SlowBatchProbe(Furu[int]):
         marker_dir = Path(os.environ["FURU_TEST_MARKER_DIR"])
         marker_dir.mkdir(parents=True, exist_ok=True)
         for obj in objs:
-            (marker_dir / f"{obj.key}-{os.getpid()}-{time.time_ns()}.marker").write_text(
-                "created"
-            )
+            (
+                marker_dir / f"{obj.key}-{os.getpid()}-{time.time_ns()}.marker"
+            ).write_text("created")
         time.sleep(OVERLAP_SLEEP_S)
         return [obj.key * 10 for obj in objs]
 
@@ -108,13 +108,13 @@ def _takeover_worker(
 def _steal_lock(lock_path: str, out_q) -> None:
     lock = Path(lock_path)
     claim_path = lock.with_name(f"{lock.name}.stolen.{os.getpid()}.claim").resolve()
-    manifest = {
-        "claim_path": str(claim_path),
-        "lock_paths": [str(lock.resolve())],
-    }
+    manifest = LockManifest(
+        claim_path=claim_path,
+        lock_paths=(lock.resolve(),),
+    )
     fd = os.open(claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(manifest, f)
+        f.write(manifest.model_dump_json())
         f.flush()
         os.fsync(f.fileno())
     lock.unlink()
