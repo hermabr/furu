@@ -17,6 +17,7 @@ from furu.utils import (
     JsonValue,
     _hash_dict_deterministically,
     _nfs_safe_unique_name,
+    class_label,
     fully_qualified_name,
 )
 from furu.validate import validate_cls
@@ -36,6 +37,37 @@ else:
 type FuruCreateMode = Literal["single", "batched"]
 
 
+def _resolve_create_mode[T](cls: type["Furu[T]"]) -> FuruCreateMode:
+    defines_single = "_create" in cls.__dict__
+    defines_batched = "_create_batched" in cls.__dict__
+
+    if defines_single and defines_batched:
+        raise TypeError(
+            f"{class_label(cls)} cannot define both _create and "
+            "_create_batched in the same class body"
+        )
+
+    if defines_single:
+        return "single"
+
+    if defines_batched:
+        if not isinstance(cls.__dict__["_create_batched"], classmethod):
+            raise TypeError(
+                f"{class_label(cls)}._create_batched must be declared as a @classmethod"
+            )
+        return "batched"
+
+    for base in cls.__mro__[1:]:
+        mode = base.__dict__.get("_furu_create_mode")
+        if mode in ("single", "batched"):
+            return mode
+
+    raise TypeError(
+        f"{class_label(cls)} must define either _create or "
+        "_create_batched, or inherit one resolved mode"
+    )
+
+
 class Furu[T](_FuruDataclassTransform, ABC):
     _furu_create_mode: ClassVar[FuruCreateMode]
 
@@ -47,9 +79,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
         validate_cls(cls)
         if "__dataclass_params__" not in cls.__dict__:
             dataclass(frozen=True, kw_only=True)(cls)
-        from furu.execution import resolve_create_mode
-
-        cls._furu_create_mode = resolve_create_mode(cls)
+        cls._furu_create_mode = _resolve_create_mode(cls)
 
     def load_or_create(self, use_lock: bool = True) -> T:
         from furu.execution import load_or_create
@@ -72,9 +102,9 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     def try_load(self) -> T:  # TODO: make a better name for this
         if self._result_path.exists():
-            from furu.execution import _load_result_from_disk
+            from furu.execution import _load_result
 
-            return _load_result_from_disk(self)
+            return _load_result(self)
         raise NotImplementedError(
             "TODO: decide if i should throw or return error value"
         )
@@ -158,6 +188,10 @@ class Furu[T](_FuruDataclassTransform, ABC):
             / self.schema_hash
             / self.artifact_hash
         )
+
+    @cached_property
+    def cache_key(self) -> Path:
+        return self.data_dir.resolve(strict=False)
 
     @cached_property
     def _internal_furu_dir(self) -> Path:

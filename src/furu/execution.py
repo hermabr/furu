@@ -4,58 +4,29 @@ import os
 import pickle
 import secrets
 import traceback
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import assert_never, overload
 
-from furu.core import Furu, FuruCreateMode
+from furu.core import Furu
 from furu.locking import LockLostError, lock_many
 from furu.logging import _scoped_log_files
 from furu.metadata import RunningMetadata
-from furu.utils import class_label
 
-type _HasLock = Callable[[], bool] | None
-
-_CURRENT_EXECUTING_DATA_DIRS: ContextVar[frozenset[Path]] = ContextVar(
-    "furu_current_executing_data_dirs",
+_CURRENT_EXECUTING_KEYS: ContextVar[frozenset[Path]] = ContextVar(
+    "furu_current_executing_keys",
     default=frozenset(),
 )
 
 
-def resolve_create_mode[T](cls: type[Furu[T]]) -> FuruCreateMode:
-    defines_single = "_create" in cls.__dict__
-    defines_batched = "_create_batched" in cls.__dict__
-
-    if defines_single and defines_batched:
-        raise TypeError(
-            f"{class_label(cls)} cannot define both _create and "
-            "_create_batched in the same class body"
-        )
-
-    if defines_single:
-        return "single"
-    if defines_batched:
-        if not isinstance(cls.__dict__["_create_batched"], classmethod):
-            raise TypeError(
-                f"{class_label(cls)}._create_batched must be declared as a @classmethod"
-            )
-        return "batched"
-
-    for base in cls.__mro__[1:]:
-        mode = base.__dict__.get("_furu_create_mode")
-        if mode in ("single", "batched"):
-            return mode
-
-    raise TypeError(
-        f"{class_label(cls)} must define either _create or "
-        "_create_batched, or inherit one resolved mode"
-    )
+def _always_has_lock() -> bool:
+    return True
 
 
-def _normalize_batch_input[T](
+def _normalize_input[T](
     obj_or_objs: Furu[T] | Sequence[Furu[T]],
 ) -> tuple[list[Furu[T]], bool]:
     if isinstance(obj_or_objs, Furu):
@@ -75,38 +46,26 @@ def _normalize_batch_input[T](
     return objs, False
 
 
-def _canonical_data_dir[T](obj: Furu[T]) -> Path:
-    return obj.data_dir.resolve(strict=False)
-
-
-def _dedupe_by_data_dir[T](objs: Sequence[Furu[T]]) -> list[Furu[T]]:
+def _dedupe[T](objs: Sequence[Furu[T]]) -> list[Furu[T]]:
     deduped: dict[Path, Furu[T]] = {}
     for obj in objs:
-        deduped.setdefault(_canonical_data_dir(obj), obj)
+        deduped.setdefault(obj.cache_key, obj)
     return list(deduped.values())
 
 
-def _plan_execution[T](
-    unique_objs: Sequence[Furu[T]],
-) -> tuple[list[Furu[T]], list[Furu[T]]]:
-    existing: list[Furu[T]] = []
-    missing: list[Furu[T]] = []
-    for obj in unique_objs:
-        if obj._result_path.exists():
-            existing.append(obj)
-        else:
-            missing.append(obj)
-    return existing, missing
-
-
-def _group_pending_items[T](pending: Sequence[Furu[T]]) -> list[list[Furu[T]]]:
-    grouped: dict[type[object], list[Furu[T]]] = {}
+def _iter_work_units[T](pending: Sequence[Furu[T]]) -> Iterator[list[Furu[T]]]:
+    by_cls: dict[type[object], list[Furu[T]]] = {}
     for obj in pending:
-        grouped.setdefault(type(obj), []).append(obj)
-    return list(grouped.values())
+        by_cls.setdefault(type(obj), []).append(obj)
+
+    for group in by_cls.values():
+        if group[0]._furu_create_mode == "batched":
+            yield group
+        else:
+            yield from ([obj] for obj in group)
 
 
-def _load_result_from_disk[T](obj: Furu[T]) -> T:
+def _load_result[T](obj: Furu[T]) -> T:
     with obj._result_path.open("rb") as f:
         return pickle.load(f)
 
@@ -117,7 +76,7 @@ def _write_running_metadata[T](obj: Furu[T]) -> RunningMetadata:
         artifact_hash=obj.artifact_hash,
         schema_=obj.schema,
         schema_hash=obj.schema_hash,
-        data_path=obj.data_dir.resolve(strict=False),
+        data_path=obj.cache_key,
         started_at=datetime.now(timezone.utc),
     )
     obj._metadata_path.write_text(metadata.model_dump_json(indent=2))
@@ -129,9 +88,9 @@ def _store_result[T](
     result: T,
     *,
     metadata: RunningMetadata,
-    has_lock: _HasLock,
+    has_lock: Callable[[], bool],
 ) -> None:
-    if has_lock is not None and not has_lock():
+    if not has_lock():
         raise LockLostError(
             f"lost lock at {obj._lock_path} before writing final result"
         )
@@ -142,7 +101,7 @@ def _store_result[T](
         f.flush()
         os.fsync(f.fileno())
 
-    if has_lock is not None and not has_lock():
+    if not has_lock():
         raise LockLostError(
             f"lost lock at {obj._lock_path} after writing temporary result"
         )
@@ -152,17 +111,81 @@ def _store_result[T](
     obj.logger.debug("stored result at %s", obj._result_path)
 
 
-def _materialize_outputs[T](
+def _run_work_unit[T](
+    unit: list[Furu[T]],
     *,
-    original_objs: Sequence[Furu[T]],
-    unique_objs: Sequence[Furu[T]],
-    newly_computed: dict[Path, T],
-) -> list[T]:
-    results_by_data_dir = dict(newly_computed)
-    for obj in unique_objs:
-        key = _canonical_data_dir(obj)
-        results_by_data_dir.setdefault(key, _load_result_from_disk(obj))
-    return [results_by_data_dir[_canonical_data_dir(obj)] for obj in original_objs]
+    has_lock: Callable[[], bool],
+) -> dict[Path, T]:
+    if not unit:
+        return {}
+
+    cls = type(unit[0])
+    log_paths = tuple(obj._log_path for obj in unit)
+    metadata_by_key = {obj.cache_key: _write_running_metadata(obj) for obj in unit}
+
+    with _scoped_log_files(log_paths):
+        logger = unit[0].logger
+        logger.debug("load_or_create start")
+        try:
+            mode = cls._furu_create_mode
+            match mode:
+                case "batched":
+                    logger.debug("running _create_batched()")
+                    results = cls._create_batched(unit)
+                    logger.debug("_create_batched() returned")
+                    if not isinstance(results, list):
+                        raise TypeError(
+                            f"{cls.__name__}._create_batched() must return a list"
+                        )
+                    if len(results) != len(unit):
+                        raise TypeError(
+                            f"{cls.__name__}._create_batched() returned "
+                            f"{len(results)} results for {len(unit)} objects"
+                        )
+                case "single":
+                    results = []
+                    for obj in unit:
+                        logger.debug("running _create()")
+                        result = obj._create()
+                        logger.debug("_create() returned")
+                        results.append(result)
+                case _:
+                    assert_never(mode)
+
+            stored: dict[Path, T] = {}
+            for obj, result in zip(unit, results, strict=True):
+                _store_result(
+                    obj,
+                    result,
+                    metadata=metadata_by_key[obj.cache_key],
+                    has_lock=has_lock,
+                )
+                stored[obj.cache_key] = result
+
+            logger.debug("load_or_create complete")
+            return stored
+        except BaseException as exc:
+            logger.exception("load_or_create failed")
+            _write_error_logs(unit, exc)
+            raise
+
+
+@contextmanager
+def _executing[T](objs: Sequence[Furu[T]]):
+    keys = frozenset(obj.cache_key for obj in objs)
+    active = _CURRENT_EXECUTING_KEYS.get()
+    overlap = active & keys
+    if overlap:
+        raise RuntimeError(
+            "load_or_create() re-entered for objects already being created: "
+            + ", ".join(sorted(str(path) for path in overlap))
+        )
+
+    token = _CURRENT_EXECUTING_KEYS.set(active | keys)
+    try:
+        yield
+    finally:
+        _CURRENT_EXECUTING_KEYS.reset(token)
 
 
 def _write_error_logs[T](objs: Sequence[Furu[T]], exc: BaseException) -> None:
@@ -173,189 +196,6 @@ def _write_error_logs[T](objs: Sequence[Furu[T]], exc: BaseException) -> None:
         obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
         error_path = obj._internal_furu_dir / f"error-{timestamp}-{suffix}.log"
         error_path.write_text(error_text, encoding="utf-8")
-
-
-@overload
-def load_or_create[T](obj: Furu[T], *, use_lock: bool = True) -> T: ...
-
-
-@overload
-def load_or_create[T](objs: Sequence[Furu[T]], *, use_lock: bool = True) -> list[T]: ...
-
-
-def load_or_create[T](
-    obj_or_objs: Furu[T] | Sequence[Furu[T]],
-    *,
-    use_lock: bool = True,
-) -> T | list[T]:
-    objs, unwrap = _normalize_batch_input(obj_or_objs)
-    if not objs:
-        return []
-
-    _raise_if_reentrant(objs)
-
-    if unwrap:
-        obj = objs[0]
-        obj.logger.info("calling %s.load_or_create()", obj._log_label)
-
-    unique_objs = _dedupe_by_data_dir(objs)
-    existing, missing = _plan_execution(unique_objs)
-    for obj in existing:
-        obj.logger.info("cache hit for %s at %s", obj._log_label, obj._result_path)
-
-    for obj in missing:
-        obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
-
-    newly_computed: dict[Path, T] = {}
-    lock_context = (
-        lock_many([obj._lock_path for obj in missing])
-        if use_lock and missing
-        else nullcontext(None)
-    )
-    with lock_context as has_lock:
-        pending = [obj for obj in missing if not obj._result_path.exists()]
-        for obj in missing:
-            if obj not in pending and obj._result_path.exists():
-                obj.logger.info(
-                    "cache hit for %s after waiting at %s",
-                    obj._log_label,
-                    obj._result_path,
-                )
-
-        for group in _group_pending_items(pending):
-            newly_computed.update(_execute_group(group, has_lock=has_lock))
-
-    outputs = _materialize_outputs(
-        original_objs=objs,
-        unique_objs=unique_objs,
-        newly_computed=newly_computed,
-    )
-
-    if unwrap:
-        obj = objs[0]
-        obj.logger.info("%s.load_or_create() returned", obj._log_label)
-        return outputs[0]
-    return outputs
-
-
-def _execute_group[T](group: list[Furu[T]], *, has_lock: _HasLock) -> dict[Path, T]:
-    mode = group[0]._furu_create_mode
-    match mode:
-        case "batched":
-            metadata_by_data_dir = {
-                _canonical_data_dir(obj): _write_running_metadata(obj) for obj in group
-            }
-            return _execute_batched_group(
-                group,
-                metadata_by_data_dir=metadata_by_data_dir,
-                has_lock=has_lock,
-            )
-        case "single":
-            return _execute_single_group(group, has_lock=has_lock)
-        case _:
-            assert_never(mode)
-
-
-def _execute_batched_group[T](
-    group: list[Furu[T]],
-    *,
-    metadata_by_data_dir: dict[Path, RunningMetadata],
-    has_lock: _HasLock,
-) -> dict[Path, T]:
-    log_paths = tuple(obj._log_path for obj in group)
-    with _scoped_log_files(log_paths):
-        logger = group[0].logger
-        logger.debug("load_or_create start")
-        try:
-            with _reentry_guard(group):
-                logger.debug("running _create_batched()")
-                results = type(group[0])._create_batched(group)
-                logger.debug("_create_batched() returned")
-
-            if not isinstance(results, list):
-                raise TypeError(
-                    f"{type(group[0]).__name__}._create_batched() must return a list"
-                )
-            if len(results) != len(group):
-                raise TypeError(
-                    f"{type(group[0]).__name__}._create_batched() returned "
-                    f"{len(results)} results for {len(group)} objects"
-                )
-
-            stored: dict[Path, T] = {}
-            for obj, result in zip(group, results, strict=True):
-                _store_result(
-                    obj,
-                    result,
-                    metadata=metadata_by_data_dir[_canonical_data_dir(obj)],
-                    has_lock=has_lock,
-                )
-                stored[_canonical_data_dir(obj)] = result
-            logger.debug("load_or_create complete")
-            return stored
-        except BaseException as exc:
-            logger.exception("load_or_create failed")
-            _write_error_logs(group, exc)
-            raise
-
-
-def _execute_single_group[T](
-    group: list[Furu[T]],
-    *,
-    has_lock: _HasLock,
-) -> dict[Path, T]:
-    stored: dict[Path, T] = {}
-    for obj in group:
-        with _scoped_log_files((obj._log_path,)):
-            logger = obj.logger
-            logger.debug("load_or_create start")
-            try:
-                with _reentry_guard([obj]):
-                    metadata = _write_running_metadata(obj)
-                    logger.debug("running _create()")
-                    result = obj._create()
-                    logger.debug("_create() returned")
-                _store_result(
-                    obj,
-                    result,
-                    metadata=metadata,
-                    has_lock=has_lock,
-                )
-                logger.debug("load_or_create complete")
-            except BaseException as exc:
-                logger.exception("load_or_create failed")
-                _write_error_logs([obj], exc)
-                raise
-        stored[_canonical_data_dir(obj)] = result
-    return stored
-
-
-@contextmanager
-def _reentry_guard[T](objs: Sequence[Furu[T]]):
-    keys = _reentry_keys(objs)
-    _raise_if_reentrant(objs)
-    active_keys = _CURRENT_EXECUTING_DATA_DIRS.get()
-    token = _CURRENT_EXECUTING_DATA_DIRS.set(active_keys | keys)
-    try:
-        yield
-    finally:
-        _CURRENT_EXECUTING_DATA_DIRS.reset(token)
-
-
-def _raise_if_reentrant[T](objs: Sequence[Furu[T]]) -> None:
-    overlapping = _CURRENT_EXECUTING_DATA_DIRS.get() & _reentry_keys(objs)
-    if not overlapping:
-        return
-
-    overlapping_paths = ", ".join(sorted(str(path) for path in overlapping))
-    raise RuntimeError(
-        "load_or_create() re-entered for objects already being created: "
-        f"{overlapping_paths}"
-    )
-
-
-def _reentry_keys[T](objs: Sequence[Furu[T]]) -> frozenset[Path]:
-    return frozenset(_canonical_data_dir(obj) for obj in objs)
 
 
 def _format_error_log(exc: BaseException) -> str:
@@ -373,3 +213,75 @@ def _format_error_log(exc: BaseException) -> str:
         )
     )
     return "".join(parts)
+
+
+@overload
+def load_or_create[T](obj: Furu[T], *, use_lock: bool = True) -> T: ...
+
+
+@overload
+def load_or_create[T](objs: Sequence[Furu[T]], *, use_lock: bool = True) -> list[T]: ...
+
+
+def load_or_create[T](
+    obj_or_objs: Furu[T] | Sequence[Furu[T]],
+    *,
+    use_lock: bool = True,
+) -> T | list[T]:
+    objs, unwrap = _normalize_input(obj_or_objs)
+    if not objs:
+        return []
+
+    if unwrap:
+        obj = objs[0]
+        obj.logger.info("calling %s.load_or_create()", obj._log_label)
+
+    unique = _dedupe(objs)
+    results_by_key: dict[Path, T] = {}
+    missing: list[Furu[T]] = []
+
+    for obj in unique:
+        if obj._result_path.exists():
+            results_by_key[obj.cache_key] = _load_result(obj)
+            obj.logger.info("cache hit for %s at %s", obj._log_label, obj._result_path)
+        else:
+            obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
+            missing.append(obj)
+
+    overlap = _CURRENT_EXECUTING_KEYS.get() & frozenset(
+        obj.cache_key for obj in missing
+    )
+    if overlap:
+        raise RuntimeError(
+            "load_or_create() re-entered for objects already being created: "
+            + ", ".join(sorted(str(path) for path in overlap))
+        )
+
+    lock_ctx = (
+        lock_many([obj._lock_path for obj in missing])
+        if use_lock and missing
+        else nullcontext(_always_has_lock)
+    )
+    with lock_ctx as has_lock:
+        pending: list[Furu[T]] = []
+        for obj in missing:
+            if obj._result_path.exists():
+                results_by_key[obj.cache_key] = _load_result(obj)
+                obj.logger.info(
+                    "cache hit for %s after waiting at %s",
+                    obj._log_label,
+                    obj._result_path,
+                )
+            else:
+                pending.append(obj)
+
+        with _executing(pending):
+            for unit in _iter_work_units(pending):
+                results_by_key.update(_run_work_unit(unit, has_lock=has_lock))
+
+    outputs = [results_by_key[obj.cache_key] for obj in objs]
+    if unwrap:
+        obj = objs[0]
+        obj.logger.info("%s.load_or_create() returned", obj._log_label)
+        return outputs[0]
+    return outputs

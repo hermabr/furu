@@ -141,6 +141,7 @@ class UsesFalseLiteral(Furu[None]):
     def _create(self) -> None:
         return None
 
+
 class LoggedLeaf(Furu[str]):
     name: str
 
@@ -288,11 +289,34 @@ class MetadataTimingValue(Furu[str]):
         return f"timed:{self.key}"
 
 
+class BatchMetadataTimingValue(Furu[str]):
+    key: int
+    create_events: ClassVar[list[tuple[int, tuple[bool, ...]]]] = []
+
+    @classmethod
+    def _create_batched(cls, objs) -> list[str]:
+        cls.create_events.extend(
+            (obj.key, tuple(peer._metadata_path.exists() for peer in objs))
+            for obj in objs
+        )
+        return [f"batch-timed:{obj.key}" for obj in objs]
+
+
 class ReentrantValue(Furu[int]):
     key: int
 
     def _create(self) -> int:
         return load_or_create(self)
+
+
+class PendingSetReentrantValue(Furu[int]):
+    key: int
+    peers: ClassVar[dict[int, "PendingSetReentrantValue"]] = {}
+
+    def _create(self) -> int:
+        if self.key == 1:
+            return load_or_create(type(self).peers[2])
+        return self.key
 
 
 @pytest.fixture(autouse=True)
@@ -304,6 +328,8 @@ def _reset_batch_trackers() -> None:
     GROUP_EXECUTION_EVENTS.clear()
     MetadataTimingValue.create_events.clear()
     MetadataTimingValue.siblings_by_key.clear()
+    BatchMetadataTimingValue.create_events.clear()
+    PendingSetReentrantValue.peers.clear()
 
 
 def test_frozen_dataclass_inheritance():
@@ -521,7 +547,9 @@ def test_hashes_and_data_dir():
     )
 
 
-def expected_schema_for_B_like(cls_name: str, *, include_private_h: bool = False) -> dict:
+def expected_schema_for_B_like(
+    cls_name: str, *, include_private_h: bool = False
+) -> dict:
     fields = {
         "a": [
             "builtins.int",
@@ -868,7 +896,10 @@ def test_resolved_create_mode_validation() -> None:
     assert InheritsSingle._furu_create_mode == "single"
     assert SwitchesToSingle._furu_create_mode == "single"
 
-    with pytest.raises(TypeError, match="cannot define both _create and _create_batched"):
+    with pytest.raises(
+        TypeError, match="cannot define both _create and _create_batched"
+    ):
+
         class InvalidBoth(Furu[int]):
             def _create(self) -> int:
                 return 1
@@ -877,7 +908,10 @@ def test_resolved_create_mode_validation() -> None:
             def _create_batched(cls, objs) -> list[int]:
                 return [1 for _ in objs]
 
-    with pytest.raises(TypeError, match="must define either _create or _create_batched"):
+    with pytest.raises(
+        TypeError, match="must define either _create or _create_batched"
+    ):
+
         class InvalidNone(Furu[int]):
             pass
 
@@ -888,7 +922,11 @@ def test_single_object_on_batch_only_class_uses_create_batched() -> None:
 
 
 def test_list_input_on_single_only_class_uses_sequential_create() -> None:
-    objs = [CountedSingleValue(key=1), CountedSingleValue(key=2), CountedSingleValue(key=3)]
+    objs = [
+        CountedSingleValue(key=1),
+        CountedSingleValue(key=2),
+        CountedSingleValue(key=3),
+    ]
 
     assert load_or_create(objs) == ["single:1", "single:2", "single:3"]
     assert CountedSingleValue.create_calls == [1, 2, 3]
@@ -906,8 +944,25 @@ def test_sequential_fallback_writes_running_metadata_per_object() -> None:
     ]
 
 
-def test_list_input_on_batch_only_class_calls_create_batched_once_per_concrete_group() -> None:
-    objs = [GroupBatchA(key=1), GroupBatchB(key=1), GroupBatchA(key=2), GroupBatchB(key=2)]
+def test_batched_execution_writes_running_metadata_for_every_participant() -> None:
+    objs = [BatchMetadataTimingValue(key=1), BatchMetadataTimingValue(key=2)]
+
+    assert load_or_create(objs, use_lock=False) == ["batch-timed:1", "batch-timed:2"]
+    assert BatchMetadataTimingValue.create_events == [
+        (1, (True, True)),
+        (2, (True, True)),
+    ]
+
+
+def test_list_input_on_batch_only_class_calls_create_batched_once_per_concrete_group() -> (
+    None
+):
+    objs = [
+        GroupBatchA(key=1),
+        GroupBatchB(key=1),
+        GroupBatchA(key=2),
+        GroupBatchB(key=2),
+    ]
 
     assert load_or_create(objs) == ["group-a:1", "group-b:1", "group-a:2", "group-b:2"]
     assert GroupBatchA.batch_calls == [(1, 2)]
@@ -996,8 +1051,21 @@ def test_mixed_type_list_follows_documented_grouping_policy() -> None:
 
 
 def test_self_reentry_on_same_object_raises_friendly_error() -> None:
-    with pytest.raises(RuntimeError, match="re-entered for objects already being created"):
+    with pytest.raises(
+        RuntimeError, match="re-entered for objects already being created"
+    ):
         ReentrantValue(key=1).load_or_create()
+
+
+def test_reentry_on_any_object_in_pending_set_raises_friendly_error() -> None:
+    first = PendingSetReentrantValue(key=1)
+    second = PendingSetReentrantValue(key=2)
+    PendingSetReentrantValue.peers.update({1: first, 2: second})
+
+    with pytest.raises(
+        RuntimeError, match="re-entered for objects already being created"
+    ):
+        load_or_create([first, second], use_lock=False)
 
 
 def test_batched_compute_writes_result_layout_per_object() -> None:
