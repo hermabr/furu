@@ -130,7 +130,6 @@ def test_lock_many_produces_hardlinks_to_one_manifest_inode(tmp_path: Path) -> N
 
         claim_path = Path(str(manifest["claim_path"]))
         claim_stat = claim_path.stat()
-        assert manifest["version"] == 1
         assert manifest["lock_paths"] == [str(path.resolve()) for path in lock_paths]
 
         for lock_path in lock_paths:
@@ -178,7 +177,6 @@ def test_lock_many_normalizes_paths_and_shares_one_claim_manifest(
 
         assert has_lock()
         assert manifest_a == manifest_b
-        assert manifest_a["version"] == 1
         assert manifest_a["lock_paths"] == [
             str(lock_a.resolve()),
             str(lock_b.resolve()),
@@ -359,7 +357,6 @@ def test_lock_raises_if_stale_break_would_remove_reacquired_lock(
     first_claim_path = tmp_path / "first.claim"
     second_claim_path = tmp_path / "second.claim"
     manifest = LockManifest(
-        version=1,
         claim_path=first_claim_path.resolve(),
         lock_paths=(lock_path.resolve(),),
     )
@@ -385,7 +382,6 @@ def test_lock_raises_if_stale_break_would_remove_reacquired_lock(
 
         lock_path.unlink()
         second_manifest = LockManifest(
-            version=1,
             claim_path=second_claim_path.resolve(),
             lock_paths=(lock_path.resolve(),),
         )

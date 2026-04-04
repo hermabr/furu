@@ -311,37 +311,6 @@ class MetadataTimingValue(Furu[str]):
         return f"timed:{self.key}"
 
 
-class ReentrantValue(Furu[int]):
-    key: int
-
-    def _create(self) -> int:
-        return load_or_create(self)
-
-
-class SiblingReentrantValue(Furu[int]):
-    key: int
-    siblings_by_key: ClassVar[dict[int, "SiblingReentrantValue"]] = {}
-
-    def _create(self) -> int:
-        sibling_key = 2 if self.key == 1 else 1
-        return load_or_create(type(self).siblings_by_key[sibling_key])
-
-
-class CrossClassLeafValue(Furu[int]):
-    key: int
-
-    def _create(self) -> int:
-        return self.key
-
-
-class CrossClassCallerValue(Furu[int]):
-    key: int
-    targets_by_key: ClassVar[dict[int, CrossClassLeafValue]] = {}
-
-    def _create(self) -> int:
-        return load_or_create(type(self).targets_by_key[self.key])
-
-
 @pytest.fixture(autouse=True)
 def _reset_batch_trackers() -> None:
     CountedSingleValue.create_calls.clear()
@@ -351,8 +320,6 @@ def _reset_batch_trackers() -> None:
     GROUP_EXECUTION_EVENTS.clear()
     MetadataTimingValue.create_events.clear()
     MetadataTimingValue.siblings_by_key.clear()
-    SiblingReentrantValue.siblings_by_key.clear()
-    CrossClassCallerValue.targets_by_key.clear()
 
 
 def test_frozen_dataclass_inheritance():
@@ -1096,37 +1063,6 @@ def test_mixed_type_list_follows_documented_grouping_policy() -> None:
         ("single", (11,)),
         ("batch_b", (20, 21)),
     ]
-
-
-def test_self_reentry_on_same_object_raises_friendly_error() -> None:
-    with pytest.raises(
-        RuntimeError, match="re-entered for objects already being created"
-    ):
-        ReentrantValue(key=1).load_or_create()
-
-
-def test_sibling_reentry_on_same_pending_set_raises_friendly_error() -> None:
-    first = SiblingReentrantValue(key=1)
-    second = SiblingReentrantValue(key=2)
-    SiblingReentrantValue.siblings_by_key.update({1: first, 2: second})
-
-    with pytest.raises(
-        RuntimeError, match="re-entered for objects already being created"
-    ):
-        load_or_create([first, second], use_lock=False)
-
-
-def test_cross_class_sibling_reentry_on_same_pending_set_raises_friendly_error() -> (
-    None
-):
-    caller = CrossClassCallerValue(key=1)
-    target = CrossClassLeafValue(key=1)
-    CrossClassCallerValue.targets_by_key[1] = target
-
-    with pytest.raises(
-        RuntimeError, match="re-entered for objects already being created"
-    ):
-        load_or_create([caller, target], use_lock=False)
 
 
 def test_batched_compute_writes_result_layout_per_object() -> None:

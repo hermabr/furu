@@ -109,7 +109,6 @@ def _steal_lock(lock_path: str, out_q) -> None:
     lock = Path(lock_path)
     claim_path = lock.with_name(f"{lock.name}.stolen.{os.getpid()}.claim").resolve()
     manifest = {
-        "version": 1,
         "claim_path": str(claim_path),
         "lock_paths": [str(lock.resolve())],
     }

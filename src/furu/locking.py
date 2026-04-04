@@ -7,12 +7,12 @@ import time
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 from furu.utils import _nfs_safe_unique_name
 
+# TODO: move these to the general config rather than having these be hard coded here, so that the user can override them. also consider if we can remove some of these/simplify
 CLOCK_SLOP_S = 10
 DEFAULT_LIFETIME_S = 35.0
 DEFAULT_HEARTBEAT_INTERVAL_S = 15.0
@@ -31,7 +31,6 @@ class LockLostError(RuntimeError):
 class LockManifest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    version: Literal[1] = 1
     claim_path: Path
     lock_paths: tuple[Path, ...]
 
@@ -345,7 +344,6 @@ def lock_many(
         strict=False
     )
     manifest = LockManifest(
-        version=1,
         claim_path=claim_path,
         lock_paths=tuple(lock_paths),
     )
