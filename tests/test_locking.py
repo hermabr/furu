@@ -127,7 +127,6 @@ def test_lock_many_produces_hardlinks_to_one_manifest_inode(tmp_path: Path) -> N
         assert has_lock()
 
         manifest = _read_manifest(lock_paths[0])
-        assert manifest["version"] == 2
 
         claim_path = Path(str(manifest["claim_path"]))
         claim_stat = claim_path.stat()

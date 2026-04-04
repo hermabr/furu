@@ -44,7 +44,6 @@ class _LockManifest:
     def to_json(self) -> str:
         return json.dumps(
             {
-                "version": 2,
                 "claim_path": str(self.claim_path),
                 "lock_paths": [str(path) for path in self.lock_paths],
             },
@@ -152,7 +151,7 @@ def _parse_manifest(raw_manifest: str, *, source_path: Path) -> _LockManifest:
             f"cannot safely break stale lock at {source_path}: malformed lock manifest"
         ) from exc
 
-    if not isinstance(payload, dict) or payload.get("version") != 2:
+    if not isinstance(payload, dict):
         raise LockAcquireError(
             f"cannot safely break stale lock at {source_path}: unsupported lock "
             "manifest"
