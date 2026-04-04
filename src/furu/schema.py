@@ -23,9 +23,7 @@ def schema_class(tp: type, field_names: list[str], seen: set[type]) -> JsonValue
     hints = get_type_hints(tp, include_extras=True)
     return {
         CLASSMARKER: fully_qualified_name(tp),
-        "fields": {
-            name: schema_type(hints[name], seen) for name in field_names
-        },
+        "fields": {name: schema_type(hints[name], seen) for name in field_names},
     }
 
 

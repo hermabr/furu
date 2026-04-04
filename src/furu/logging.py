@@ -2,30 +2,31 @@ import logging
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import cache
-from pathlib import Path
 import sys
+from pathlib import Path
 from typing import Iterator
 
 from furu.config import config
 
 _BASE_LOGGER_NAME = "furu"
-_CURRENT_LOG_PATH: ContextVar[Path | None] = ContextVar(
-    "furu_current_log_path", default=None
+_CURRENT_LOG_PATHS: ContextVar[tuple[Path, ...]] = ContextVar(
+    "furu_current_log_paths", default=()
 )
 
 
 class _ScopedFileHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
-        log_path = _CURRENT_LOG_PATH.get()
-        if log_path is None:
-            log_path = config.directories.data / "fallback.log"
+        log_paths = _CURRENT_LOG_PATHS.get()
+        if not log_paths:
+            log_paths = (config.directories.data / "fallback.log",)
 
         try:
             rendered = self.format(record)
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            with log_path.open("a", encoding="utf-8") as f:
-                f.write(rendered)
-                f.write("\n")
+            for log_path in log_paths:
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                with log_path.open("a", encoding="utf-8") as f:
+                    f.write(rendered)
+                    f.write("\n")
         except Exception:
             self.handleError(record)
 
@@ -61,9 +62,9 @@ def get_logger(name: str | None = None) -> logging.Logger:
 
 
 @contextmanager
-def _scoped_log_file(log_path: Path) -> Iterator[None]:
-    token = _CURRENT_LOG_PATH.set(log_path)
+def _scoped_log_files(log_paths: tuple[Path, ...]) -> Iterator[None]:
+    token = _CURRENT_LOG_PATHS.set(tuple(dict.fromkeys(log_paths)))
     try:
         yield
     finally:
-        _CURRENT_LOG_PATH.reset(token)
+        _CURRENT_LOG_PATHS.reset(token)

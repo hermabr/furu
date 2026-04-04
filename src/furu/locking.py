@@ -1,30 +1,26 @@
+from __future__ import annotations
+
 import errno
 import os
 import threading
 import time
-from contextlib import contextmanager, suppress
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable, Iterator
+
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from furu.utils import _nfs_safe_unique_name
 
-# TODO: i think it should be possible to make this code shorter and cleaner while still keeping it NFS safe, so will rewrite at some point
-
 # TODO: move these to the general config rather than having these be hard coded here, so that the user can override them. also consider if we can remove some of these/simplify
-CLOCK_SLOP_S = 10  # NFS systems can be slow, so we add a 10 second safety margin TODO: assume this is included in the 120 second lease time?
+CLOCK_SLOP_S = 10
 DEFAULT_LIFETIME_S = 35.0
 DEFAULT_HEARTBEAT_INTERVAL_S = 15.0
 DEFAULT_ACQUIRE_POLL_INTERVAL_S = 5.0
 HEARTBEAT_SHUTDOWN_GRACE_S = 0.01
 
-# TODO: currently, we don't handle SIGTERM/SIGINT in the parent. we need to add this (but this needs to be integrated with the general furu handling of SIGINT/SIGTERM)
-
 
 class LockAcquireError(RuntimeError):
-    pass
-
-
-class NotLockedError(RuntimeError):
     pass
 
 
@@ -32,39 +28,76 @@ class LockLostError(RuntimeError):
     pass
 
 
-class StaleLockRaceError(LockAcquireError):
-    pass
+class LockManifest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
+    claim_path: Path
+    lock_paths: tuple[Path, ...]
 
-def _touch_future(path: Path, *, lifetime_s: float) -> None:
-    expiry = time.time() + lifetime_s
-    os.utime(path, times=(expiry, expiry))
+    @field_validator("claim_path")
+    @classmethod
+    def _validate_claim_path(cls, claim_path: Path) -> Path:
+        if not claim_path.is_absolute():
+            raise ValueError("claim_path must be absolute")
+        return claim_path
+
+    @field_validator("lock_paths")
+    @classmethod
+    def _validate_lock_paths(cls, lock_paths: tuple[Path, ...]) -> tuple[Path, ...]:
+        if not lock_paths:
+            raise ValueError("lock_paths must not be empty")
+        if any(not path.is_absolute() for path in lock_paths):
+            raise ValueError("lock_paths must be absolute")
+        if len(lock_paths) != len(set(lock_paths)):
+            raise ValueError("lock_paths must be unique")
+        return lock_paths
 
 
 def _is_missing_or_stale(exc: OSError) -> bool:
     return exc.errno in (errno.ENOENT, errno.ESTALE)
 
 
-def _try_touch_future(path: Path, *, lifetime_s: float) -> bool:
-    try:
-        _touch_future(path, lifetime_s=lifetime_s)
-    except OSError as exc:
-        if _is_missing_or_stale(exc):
-            return False
-        raise
-    return True
+def _same_inode(left: os.stat_result, right: os.stat_result) -> bool:
+    return os.path.samestat(left, right)
 
 
-def _safe_read_path(path: Path) -> str | None:
-    try:
-        return path.read_text(encoding="utf-8").strip()
-    except OSError as exc:
-        if _is_missing_or_stale(exc):
-            return None
-        raise
+def _is_stale(stat_result: os.stat_result) -> bool:
+    return stat_result.st_mtime + CLOCK_SLOP_S <= time.time()
 
 
-def _safe_stat(path: Path) -> os.stat_result | None:
+def _lock_timeout_message(lock_paths: list[Path], acquire_timeout_s: float) -> str:
+    if len(lock_paths) == 1:
+        return (
+            f"could not acquire lock at {lock_paths[0]} within "
+            f"{acquire_timeout_s:g} seconds"
+        )
+    return (
+        "could not acquire lock set within "
+        f"{acquire_timeout_s:g} seconds: " + ", ".join(str(path) for path in lock_paths)
+    )
+
+
+def _lock_lost_message(lock_paths: list[Path]) -> str:
+    if len(lock_paths) == 1:
+        return f"lost lock at {lock_paths[0]}"
+    return "lost lock for paths: " + ", ".join(str(path) for path in lock_paths)
+
+
+def _write_claim_file(manifest: LockManifest, *, lifetime_s: float) -> None:
+    fd = os.open(manifest.claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(manifest.model_dump_json(indent=2))
+        f.flush()
+        os.fsync(f.fileno())
+    touch_future(manifest.claim_path, lifetime_s=lifetime_s)
+
+
+def touch_future(path: Path, *, lifetime_s: float) -> None:
+    expiry = time.time() + lifetime_s
+    os.utime(path, times=(expiry, expiry))
+
+
+def stat_or_none(path: Path) -> os.stat_result | None:
     try:
         return path.stat()
     except OSError as exc:
@@ -73,7 +106,16 @@ def _safe_stat(path: Path) -> os.stat_result | None:
         raise
 
 
-def _safe_unlink_if_exists(path: Path) -> None:
+def read_text_or_none(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as exc:
+        if _is_missing_or_stale(exc):
+            return None
+        raise
+
+
+def unlink_if_exists(path: Path) -> None:
     try:
         path.unlink()
     except OSError as exc:
@@ -81,203 +123,330 @@ def _safe_unlink_if_exists(path: Path) -> None:
             raise
 
 
-def _safe_rmdir_if_exists(path: Path) -> None:
-    try:
-        path.rmdir()
-    except OSError as exc:
-        if not _is_missing_or_stale(exc) and exc.errno != errno.ENOTEMPTY:
-            raise
-
-
-def _try_acquire_stale_break_dir(*, lock_path: Path, lifetime_s: float) -> Path | None:
-    break_dir = lock_path.with_name(f"{lock_path.name}.break")
-    for _ in range(2):
-        try:
-            break_dir.mkdir()
-        except FileExistsError:
-            break_stat = _safe_stat(break_dir)
-            if (
-                break_stat is None
-                or break_stat.st_mtime + lifetime_s + CLOCK_SLOP_S > time.time()
-            ):
-                return None
-            _safe_rmdir_if_exists(break_dir)
-            if _safe_stat(break_dir) is not None:
-                return None
-            continue
-        return break_dir
-    return None
-
-
-def _safe_read_breakable_claim_path(lock_path: Path) -> Path | None:
-    claim_path_str = _safe_read_path(lock_path)
-    if claim_path_str is None:
-        return None
-
-    claim_path = Path(claim_path_str)
-    if not (
-        claim_path.parent == lock_path.parent
-        and claim_path.name.startswith(f"{lock_path.name}.")
-        and claim_path.name.endswith(".claim")
-    ):
-        return None
-
-    if _safe_read_path(claim_path) != str(claim_path):
-        return None
-
-    return claim_path
-
-
-def _is_owner(*, lock_path: Path, owner_claim_path: Path) -> bool:
-    lock_stat = _safe_stat(lock_path)
-    owner_stat = _safe_stat(owner_claim_path)
-    return (
-        lock_stat is not None
-        and owner_stat is not None
-        and os.path.samestat(lock_stat, owner_stat)
+def normalize_lock_paths(lock_paths: Iterable[Path]) -> list[Path]:
+    normalized = sorted(
+        {path.resolve(strict=False) for path in lock_paths},
+        key=lambda path: os.fspath(path),
     )
+    if not normalized:
+        raise ValueError("lock_many() requires at least one lock path")
+    return normalized
 
 
-def _try_acquire_lock(*, lock_path: Path, owner_claim_path: Path) -> bool:
+def assert_same_filesystem(lock_paths: Iterable[Path]) -> None:
+    iterator = iter(lock_paths)
+    first_path = next(iterator)
+    first_device = first_path.parent.stat().st_dev
+    for lock_path in iterator:
+        if lock_path.parent.stat().st_dev != first_device:
+            raise LockAcquireError(
+                "hardlink-based locking requires every lock path to be on the same filesystem device"
+            )
+
+
+def read_manifest(path: Path) -> LockManifest | None:
+    raw = read_text_or_none(path)
+    if raw is None:
+        return None
+
+    contested_path = path.resolve(strict=False)
     try:
-        os.link(owner_claim_path, lock_path)
+        manifest = LockManifest.model_validate_json(raw)
+    except ValidationError as exc:
+        raise LockAcquireError(
+            f"cannot safely break stale lock at {path}: malformed lock manifest"
+        ) from exc
+
+    if contested_path not in manifest.lock_paths:
+        raise LockAcquireError(
+            f"cannot safely break stale lock at {path}: manifest does not include contested lock path"
+        )
+    return manifest
+
+
+def owns(lock_paths: Iterable[Path], *, claim_path: Path) -> bool:
+    claim_stat = stat_or_none(claim_path)
+    if claim_stat is None:
+        return False
+    for lock_path in lock_paths:
+        lock_stat = stat_or_none(lock_path)
+        if lock_stat is None or not _same_inode(lock_stat, claim_stat):
+            return False
+    return True
+
+
+def try_link(*, lock_path: Path, claim_path: Path) -> bool:
+    try:
+        os.link(claim_path, lock_path)
     except FileExistsError:
         return False
     except OSError as exc:
+        if exc.errno == errno.EXDEV:
+            raise LockAcquireError(
+                f"hardlink-based locking cannot link {claim_path} to {lock_path}"
+            ) from exc
         if _is_missing_or_stale(exc):
             return False
         raise
 
-    lock_stat = _safe_stat(lock_path)
-    if lock_stat is None or lock_stat.st_nlink != 2:
-        _safe_unlink_if_exists(lock_path)
+    if not owns([lock_path], claim_path=claim_path):
+        unlink_if_exists(lock_path)
         return False
-
     return True
 
 
-def _try_acquire_lock_with_stale_break(
-    *, lock_path: Path, owner_claim_path: Path, lifetime_s: float
+def release_acquired_subset(lock_paths: Iterable[Path], *, claim_path: Path) -> None:
+    for lock_path in lock_paths:
+        if owns([lock_path], claim_path=claim_path):
+            unlink_if_exists(lock_path)
+
+
+def _unlink_matching_group_members(
+    lock_paths: Iterable[Path], *, reference_stat: os.stat_result
 ) -> bool:
-    if _try_acquire_lock(lock_path=lock_path, owner_claim_path=owner_claim_path):
-        return True
-    _break_stale_lock(lock_path=lock_path, lifetime_s=lifetime_s)
-    return _try_acquire_lock(lock_path=lock_path, owner_claim_path=owner_claim_path)
+    lost_lock = False
+    for lock_path in lock_paths:
+        lock_stat = stat_or_none(lock_path)
+        if lock_stat is None or not _same_inode(lock_stat, reference_stat):
+            lost_lock = True
+            continue
+        try:
+            lock_path.unlink()
+        except OSError as exc:
+            if _is_missing_or_stale(exc):
+                lost_lock = True
+                continue
+            raise
+
+    return lost_lock
 
 
-def _break_stale_lock(*, lock_path: Path, lifetime_s: float) -> None:
-    lock_stat = _safe_stat(lock_path)
-    if lock_stat is None or lock_stat.st_mtime + CLOCK_SLOP_S > time.time():
-        return
+def release_owned_group(
+    lock_paths: Iterable[Path],
+    *,
+    claim_path: Path,
+    owner_stat: os.stat_result,
+) -> bool:
+    lock_paths = tuple(lock_paths)
+    claim_stat = stat_or_none(claim_path)
+    reference_stat = claim_stat
+    lost_lock = claim_stat is None
 
-    owner_claim_path = _safe_read_breakable_claim_path(lock_path)
-    if owner_claim_path is None:
-        return
+    if reference_stat is None:
+        for lock_path in lock_paths:
+            lock_stat = stat_or_none(lock_path)
+            if lock_stat is not None and _same_inode(lock_stat, owner_stat):
+                reference_stat = lock_stat
+                break
 
-    break_dir = _try_acquire_stale_break_dir(lock_path=lock_path, lifetime_s=lifetime_s)
-    if break_dir is None:
-        return
+    if reference_stat is not None:
+        lost_lock = (
+            _unlink_matching_group_members(lock_paths, reference_stat=reference_stat)
+            or lost_lock
+        )
+
+    unlink_if_exists(claim_path)
+    return lost_lock
+
+
+def acquire_break_file(*, claim_path: Path, lifetime_s: float) -> Path | None:
+    break_path = Path(f"{claim_path}.break")
+    for _ in range(2):
+        try:
+            fd = os.open(
+                break_path,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+            )
+        except FileExistsError:
+            break_stat = stat_or_none(break_path)
+            if (
+                break_stat is not None
+                and break_stat.st_mtime + lifetime_s + CLOCK_SLOP_S > time.time()
+            ):
+                return None
+            unlink_if_exists(break_path)
+            if stat_or_none(break_path) is not None:
+                return None
+            continue
+        else:
+            os.close(fd)
+            return break_path
+    return None
+
+
+def break_stale(lock_path: Path, *, lifetime_s: float) -> bool:
+    lock_stat = stat_or_none(lock_path)
+    if lock_stat is None or not _is_stale(lock_stat):
+        return False
+
+    manifest = read_manifest(lock_path)
+    if manifest is None:
+        return False
+
+    break_path = acquire_break_file(
+        claim_path=manifest.claim_path,
+        lifetime_s=lifetime_s,
+    )
+    if break_path is None:
+        return False
 
     try:
-        current_lock_stat = _safe_stat(lock_path)
+        current_lock_stat = stat_or_none(lock_path)
         if current_lock_stat is None:
-            return
+            return True
+        if not _is_stale(current_lock_stat):
+            return False
 
-        if not _is_owner(lock_path=lock_path, owner_claim_path=owner_claim_path):
-            raise StaleLockRaceError(
+        claim_stat = stat_or_none(manifest.claim_path)
+        reference_stat = claim_stat or current_lock_stat
+        if claim_stat is not None and not _same_inode(current_lock_stat, claim_stat):
+            raise LockAcquireError(
                 f"lock {lock_path} changed owners while breaking a stale lock"
             )
 
-        if current_lock_stat.st_mtime + CLOCK_SLOP_S > time.time():
-            return
-
-        _safe_unlink_if_exists(lock_path)
-        _safe_unlink_if_exists(owner_claim_path)
-    finally:
-        _safe_rmdir_if_exists(break_dir)
-
-
-def _release_lock(*, lock_path: Path, owner_claim_path: Path) -> None:
-    if not _is_owner(lock_path=lock_path, owner_claim_path=owner_claim_path):
-        raise NotLockedError(f"lock {lock_path} is owned by another process")
-
-    try:
-        lock_path.unlink()
-    except OSError as exc:
-        if exc.errno in (errno.ENOENT, errno.ESTALE):
-            raise NotLockedError(f"lock {lock_path} does not exist") from exc
-        raise
-    _safe_unlink_if_exists(owner_claim_path)
-
-
-def _parent_is_alive(*, parent_pid: int) -> bool:
-    if os.getppid() == parent_pid:
+        _unlink_matching_group_members(
+            manifest.lock_paths,
+            reference_stat=reference_stat,
+        )
+        unlink_if_exists(manifest.claim_path)
         return True
+    finally:
+        unlink_if_exists(break_path)
 
+
+def _try_touch_future(path: Path, *, lifetime_s: float) -> bool:
     try:
-        os.kill(parent_pid, 0)
+        touch_future(path, lifetime_s=lifetime_s)
     except OSError as exc:
-        return exc.errno != errno.ESRCH
+        if _is_missing_or_stale(exc):
+            return False
+        raise
     return True
 
 
-def _try_release_if_parent_dead(
-    *, lock_path: Path, owner_claim_path: Path, parent_pid: int
-) -> bool:
-    if _parent_is_alive(parent_pid=parent_pid):
-        return False
-
-    with suppress(NotLockedError, OSError):
-        _release_lock(lock_path=lock_path, owner_claim_path=owner_claim_path)
-    with suppress(OSError):
-        _safe_unlink_if_exists(owner_claim_path)
-    return True
-
-
-def _acquire_retry_sleep_s(
+def heartbeat_loop(
     *,
-    lock_path: Path,
-    acquire_deadline_monotonic_s: float,
-    acquire_poll_interval_s: float,
-) -> float:
-    remaining_wait_s = max(acquire_deadline_monotonic_s - time.monotonic(), 0.0)
-    if remaining_wait_s == 0.0:
-        return 0.0
-
-    lock_stat = _safe_stat(lock_path)
-    if lock_stat is None:
-        return min(acquire_poll_interval_s, remaining_wait_s)
-
-    remaining_until_stale_s = lock_stat.st_mtime + CLOCK_SLOP_S - time.time()
-    if remaining_until_stale_s <= 0.0:
-        return min(acquire_poll_interval_s, remaining_wait_s)
-
-    return min(acquire_poll_interval_s, remaining_wait_s, remaining_until_stale_s)
-
-
-def _heartbeat_loop(
-    *,
-    lock_path: Path,
-    owner_claim_path: Path,
+    lock_paths: list[Path],
+    claim_path: Path,
     lifetime_s: float,
     heartbeat_interval_s: float,
     stop_event: threading.Event,
 ) -> None:
-    if not _is_owner(lock_path=lock_path, owner_claim_path=owner_claim_path):
+    if not owns(lock_paths, claim_path=claim_path):
         return
-    if not _try_touch_future(owner_claim_path, lifetime_s=lifetime_s):
+    if not _try_touch_future(claim_path, lifetime_s=lifetime_s):
         return
 
-    next_heartbeat_at = time.monotonic() + heartbeat_interval_s
-    while True:
-        timeout_s = max(next_heartbeat_at - time.monotonic(), 0.0)
-        if stop_event.wait(timeout_s):
-            return  # TODO: should i mark/log this in any way?
-        if not _is_owner(lock_path=lock_path, owner_claim_path=owner_claim_path):
-            return  # TODO: should i mark/log this in any way?
-        if not _try_touch_future(owner_claim_path, lifetime_s=lifetime_s):
-            return  # TODO: should i mark/log this in any way?
-        next_heartbeat_at = time.monotonic() + heartbeat_interval_s
+    while not stop_event.wait(heartbeat_interval_s):
+        if not owns(lock_paths, claim_path=claim_path):
+            return
+        if not _try_touch_future(claim_path, lifetime_s=lifetime_s):
+            return
+
+
+@contextmanager
+def lock_many(
+    lock_paths: Iterable[Path],
+    *,
+    lifetime_s: float = DEFAULT_LIFETIME_S,
+    heartbeat_interval_s: float = DEFAULT_HEARTBEAT_INTERVAL_S,
+    acquire_timeout_s: float | None = None,
+    acquire_poll_interval_s: float | None = None,
+) -> Iterator[Callable[[], bool]]:
+    lock_paths = normalize_lock_paths(lock_paths)
+    assert_same_filesystem(lock_paths)
+
+    if acquire_timeout_s is None:
+        acquire_timeout_s = lifetime_s + CLOCK_SLOP_S
+    if acquire_poll_interval_s is None:
+        acquire_poll_interval_s = min(
+            DEFAULT_ACQUIRE_POLL_INTERVAL_S,
+            heartbeat_interval_s / 3,
+        )
+
+    claim_path = _nfs_safe_unique_name(lock_paths[0], name="claim").resolve(
+        strict=False
+    )
+    manifest = LockManifest(
+        claim_path=claim_path,
+        lock_paths=tuple(lock_paths),
+    )
+    _write_claim_file(manifest, lifetime_s=lifetime_s)
+    owner_stat = claim_path.stat()
+
+    try:
+        deadline = time.monotonic() + max(acquire_timeout_s, 0.0)
+
+        while True:
+            acquired: list[Path] = []
+            blocked: Path | None = None
+            try:
+                for lock_path in lock_paths:
+                    if try_link(lock_path=lock_path, claim_path=claim_path):
+                        acquired.append(lock_path)
+                    else:
+                        blocked = lock_path
+                        break
+            except BaseException:
+                release_acquired_subset(acquired, claim_path=claim_path)
+                raise
+
+            if blocked is None:
+                break
+
+            try:
+                broke_stale = break_stale(blocked, lifetime_s=lifetime_s)
+            finally:
+                release_acquired_subset(acquired, claim_path=claim_path)
+
+            if broke_stale:
+                continue
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise LockAcquireError(
+                    _lock_timeout_message(lock_paths, acquire_timeout_s)
+                )
+            time.sleep(min(acquire_poll_interval_s, remaining))
+
+        touch_future(claim_path, lifetime_s=lifetime_s)
+
+        stop_event = threading.Event()
+        heartbeat = threading.Thread(
+            target=heartbeat_loop,
+            kwargs={
+                "lock_paths": lock_paths,
+                "claim_path": claim_path,
+                "lifetime_s": lifetime_s,
+                "heartbeat_interval_s": heartbeat_interval_s,
+                "stop_event": stop_event,
+            },
+            name=f"lock-heartbeat:{lock_paths[0].name}",
+            daemon=True,
+        )
+        heartbeat.start()
+        body_error: BaseException | None = None
+
+        def has_lock() -> bool:
+            return owns(lock_paths, claim_path=claim_path)
+
+        try:
+            yield has_lock
+        except BaseException as exc:
+            body_error = exc
+            raise
+        finally:
+            stop_event.set()
+            heartbeat.join(timeout=HEARTBEAT_SHUTDOWN_GRACE_S)
+            lost_lock = release_owned_group(
+                lock_paths,
+                claim_path=claim_path,
+                owner_stat=owner_stat,
+            )
+            if lost_lock and body_error is None:
+                raise LockLostError(_lock_lost_message(lock_paths))
+    finally:
+        unlink_if_exists(claim_path)
 
 
 @contextmanager
@@ -289,75 +458,11 @@ def lock(
     acquire_timeout_s: float | None = None,
     acquire_poll_interval_s: float | None = None,
 ) -> Iterator[Callable[[], bool]]:
-    lock_path = lock_path.resolve()
-    owner_claim_path = _nfs_safe_unique_name(lock_path, name="claim")
-
-    if acquire_timeout_s is None:
-        acquire_timeout_s = lifetime_s + CLOCK_SLOP_S
-    if acquire_poll_interval_s is None:
-        acquire_poll_interval_s = min(
-            DEFAULT_ACQUIRE_POLL_INTERVAL_S, heartbeat_interval_s / 3
-        )
-
-    fd = os.open(owner_claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(str(owner_claim_path))
-        f.flush()
-        os.fsync(f.fileno())
-
-    _touch_future(owner_claim_path, lifetime_s=lifetime_s)
-
-    try:
-        acquire_deadline_monotonic_s = time.monotonic() + max(acquire_timeout_s, 0.0)
-        while not _try_acquire_lock_with_stale_break(
-            lock_path=lock_path,
-            owner_claim_path=owner_claim_path,
-            lifetime_s=lifetime_s,
-        ):
-            sleep_s = _acquire_retry_sleep_s(
-                lock_path=lock_path,
-                acquire_deadline_monotonic_s=acquire_deadline_monotonic_s,
-                acquire_poll_interval_s=acquire_poll_interval_s,
-            )
-            if sleep_s <= 0.0:
-                raise LockAcquireError(
-                    f"could not acquire lock at {lock_path} within {acquire_timeout_s:g} seconds"
-                )
-            time.sleep(sleep_s)
-
-        _touch_future(owner_claim_path, lifetime_s=lifetime_s)
-
-        stop_event = threading.Event()
-        heartbeat = threading.Thread(
-            target=_heartbeat_loop,
-            kwargs={
-                "lock_path": lock_path,
-                "owner_claim_path": owner_claim_path,
-                "lifetime_s": lifetime_s,
-                "heartbeat_interval_s": heartbeat_interval_s,
-                "stop_event": stop_event,
-            },
-            name=f"lock-heartbeat:{lock_path.name}",
-            daemon=True,
-        )
-        heartbeat.start()
-        body_error: BaseException | None = None
-
-        def has_lock() -> bool:
-            return _is_owner(lock_path=lock_path, owner_claim_path=owner_claim_path)
-
-        try:
-            yield has_lock
-        except BaseException as exc:
-            body_error = exc
-            raise
-        finally:
-            stop_event.set()
-            heartbeat.join(timeout=HEARTBEAT_SHUTDOWN_GRACE_S)
-            try:
-                _release_lock(lock_path=lock_path, owner_claim_path=owner_claim_path)
-            except NotLockedError:
-                if body_error is None:
-                    raise LockLostError(f"lost lock at {lock_path}")
-    finally:
-        _safe_unlink_if_exists(owner_claim_path)
+    with lock_many(
+        [lock_path],
+        lifetime_s=lifetime_s,
+        heartbeat_interval_s=heartbeat_interval_s,
+        acquire_timeout_s=acquire_timeout_s,
+        acquire_poll_interval_s=acquire_poll_interval_s,
+    ) as has_lock:
+        yield has_lock
