@@ -24,8 +24,6 @@ from furu.validate import validate_cls
 if TYPE_CHECKING:
     from typing_extensions import dataclass_transform
 
-    from furu.execution import FuruCreateMode
-
     @dataclass_transform(kw_only_default=True, frozen_default=True)
     class _FuruDataclassTransform:
         pass
