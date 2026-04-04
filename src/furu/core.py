@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self
 
 from furu.config import config
-from furu.logging import get_logger
 from furu.locking import LockLostError, lock
+from furu.logging import get_logger
 from furu.schema import schema_type as _schema_type
 from furu.serialize import to_json as _to_json
 from furu.utils import (
@@ -22,15 +22,18 @@ from furu.utils import (
 from furu.validate import validate_cls
 
 if TYPE_CHECKING:
-    from furu.execution import FuruCreateMode
     from typing_extensions import dataclass_transform
+
+    from furu.execution import FuruCreateMode
 
     @dataclass_transform(kw_only_default=True, frozen_default=True)
     class _FuruDataclassTransform:
         pass
 else:
+
     class _FuruDataclassTransform:
         pass
+
 
 type FuruCreateMode = Literal["single", "batched"]
 

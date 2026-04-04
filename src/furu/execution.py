@@ -9,15 +9,14 @@ from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, assert_never, overload
+from typing import assert_never, overload
 
 from furu.core import Furu, FuruCreateMode
-from furu.logging import _scoped_log_file, _scoped_log_files
 from furu.locking import LockLostError, lock_many
+from furu.logging import _scoped_log_file, _scoped_log_files
 from furu.metadata import RunningMetadata
 from furu.utils import class_label
 
-type _AnyFuru = Furu[Any]
 type _HasLock = Callable[[], bool] | None
 
 _CURRENT_EXECUTING_DATA_DIRS: ContextVar[frozenset[Path]] = ContextVar(
@@ -26,7 +25,7 @@ _CURRENT_EXECUTING_DATA_DIRS: ContextVar[frozenset[Path]] = ContextVar(
 )
 
 
-def resolve_create_mode(cls: type[Furu[Any]]) -> FuruCreateMode:
+def resolve_create_mode[T](cls: type[Furu[T]]) -> FuruCreateMode:
     defines_single = "_create" in cls.__dict__
     defines_batched = "_create_batched" in cls.__dict__
 
@@ -41,8 +40,7 @@ def resolve_create_mode(cls: type[Furu[Any]]) -> FuruCreateMode:
     if defines_batched:
         if not isinstance(cls.__dict__["_create_batched"], classmethod):
             raise TypeError(
-                f"{class_label(cls)}._create_batched must be declared as a "
-                "@classmethod"
+                f"{class_label(cls)}._create_batched must be declared as a @classmethod"
             )
         return "batched"
 
@@ -57,9 +55,9 @@ def resolve_create_mode(cls: type[Furu[Any]]) -> FuruCreateMode:
     )
 
 
-def _normalize_batch_input(
-    obj_or_objs: _AnyFuru | Sequence[_AnyFuru],
-) -> tuple[list[_AnyFuru], bool]:
+def _normalize_batch_input[T](
+    obj_or_objs: Furu[T] | Sequence[Furu[T]],
+) -> tuple[list[Furu[T]], bool]:
     if isinstance(obj_or_objs, Furu):
         return [obj_or_objs], True
 
@@ -77,22 +75,22 @@ def _normalize_batch_input(
     return objs, False
 
 
-def _canonical_data_dir(obj: _AnyFuru) -> Path:
+def _canonical_data_dir[T](obj: Furu[T]) -> Path:
     return obj.data_dir.resolve(strict=False)
 
 
-def _dedupe_by_data_dir(objs: Sequence[_AnyFuru]) -> list[_AnyFuru]:
-    deduped: dict[Path, _AnyFuru] = {}
+def _dedupe_by_data_dir[T](objs: Sequence[Furu[T]]) -> list[Furu[T]]:
+    deduped: dict[Path, Furu[T]] = {}
     for obj in objs:
         deduped.setdefault(_canonical_data_dir(obj), obj)
     return list(deduped.values())
 
 
-def _plan_execution(
-    unique_objs: Sequence[_AnyFuru],
-) -> tuple[list[_AnyFuru], list[_AnyFuru]]:
-    existing: list[_AnyFuru] = []
-    missing: list[_AnyFuru] = []
+def _plan_execution[T](
+    unique_objs: Sequence[Furu[T]],
+) -> tuple[list[Furu[T]], list[Furu[T]]]:
+    existing: list[Furu[T]] = []
+    missing: list[Furu[T]] = []
     for obj in unique_objs:
         if obj._result_path.exists():
             existing.append(obj)
@@ -101,19 +99,19 @@ def _plan_execution(
     return existing, missing
 
 
-def _group_pending_items(pending: Sequence[_AnyFuru]) -> list[list[_AnyFuru]]:
-    grouped: dict[type[Any], list[_AnyFuru]] = {}
+def _group_pending_items[T](pending: Sequence[Furu[T]]) -> list[list[Furu[T]]]:
+    grouped: dict[type[object], list[Furu[T]]] = {}
     for obj in pending:
         grouped.setdefault(type(obj), []).append(obj)
     return list(grouped.values())
 
 
-def _load_result_from_disk(obj: Furu[Any]) -> Any:
+def _load_result_from_disk[T](obj: Furu[T]) -> T:
     with obj._result_path.open("rb") as f:
         return pickle.load(f)
 
 
-def _write_running_metadata(obj: _AnyFuru) -> RunningMetadata:
+def _write_running_metadata[T](obj: Furu[T]) -> RunningMetadata:
     metadata = RunningMetadata(
         artifact=obj.artifact,
         artifact_hash=obj.artifact_hash,
@@ -126,15 +124,17 @@ def _write_running_metadata(obj: _AnyFuru) -> RunningMetadata:
     return metadata
 
 
-def _store_result(
-    obj: _AnyFuru,
-    result: Any,
+def _store_result[T](
+    obj: Furu[T],
+    result: T,
     *,
     metadata: RunningMetadata,
     has_lock: _HasLock,
 ) -> None:
     if has_lock is not None and not has_lock():
-        raise LockLostError(f"lost lock at {obj._lock_path} before writing final result")
+        raise LockLostError(
+            f"lost lock at {obj._lock_path} before writing final result"
+        )
 
     tmp_result_path = obj._result_path.with_suffix(".pkl.tmp")
     with tmp_result_path.open("wb") as f:
@@ -152,12 +152,12 @@ def _store_result(
     obj.logger.debug("stored result at %s", obj._result_path)
 
 
-def _materialize_outputs(
+def _materialize_outputs[T](
     *,
-    original_objs: Sequence[_AnyFuru],
-    unique_objs: Sequence[_AnyFuru],
-    newly_computed: dict[Path, Any],
-) -> list[Any]:
+    original_objs: Sequence[Furu[T]],
+    unique_objs: Sequence[Furu[T]],
+    newly_computed: dict[Path, T],
+) -> list[T]:
     results_by_data_dir = dict(newly_computed)
     for obj in unique_objs:
         key = _canonical_data_dir(obj)
@@ -165,7 +165,7 @@ def _materialize_outputs(
     return [results_by_data_dir[_canonical_data_dir(obj)] for obj in original_objs]
 
 
-def _write_error_logs(objs: Sequence[_AnyFuru], exc: BaseException) -> None:
+def _write_error_logs[T](objs: Sequence[Furu[T]], exc: BaseException) -> None:
     timestamp = datetime.now().strftime("%y%m%d_%H-%M-%S")
     suffix = secrets.token_hex(4)
     error_text = _format_error_log(exc)
@@ -183,15 +183,11 @@ def load_or_create[T](obj: Furu[T], *, use_lock: bool = True) -> T: ...
 def load_or_create[T](objs: Sequence[Furu[T]], *, use_lock: bool = True) -> list[T]: ...
 
 
-@overload
-def load_or_create(objs: Sequence[Furu[Any]], *, use_lock: bool = True) -> list[Any]: ...
-
-
-def load_or_create(
-    obj_or_objs: _AnyFuru | Sequence[_AnyFuru],
+def load_or_create[T](
+    obj_or_objs: Furu[T] | Sequence[Furu[T]],
     *,
     use_lock: bool = True,
-) -> Any | list[Any]:
+) -> T | list[T]:
     objs, unwrap = _normalize_batch_input(obj_or_objs)
     if not objs:
         return []
@@ -210,7 +206,7 @@ def load_or_create(
     for obj in missing:
         obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
 
-    newly_computed: dict[Path, Any] = {}
+    newly_computed: dict[Path, T] = {}
     lock_context = (
         lock_many([obj._lock_path for obj in missing])
         if use_lock and missing
@@ -242,7 +238,7 @@ def load_or_create(
     return outputs
 
 
-def _execute_group(group: list[_AnyFuru], *, has_lock: _HasLock) -> dict[Path, Any]:
+def _execute_group[T](group: list[Furu[T]], *, has_lock: _HasLock) -> dict[Path, T]:
     mode = group[0]._furu_create_mode
     match mode:
         case "batched":
@@ -260,12 +256,12 @@ def _execute_group(group: list[_AnyFuru], *, has_lock: _HasLock) -> dict[Path, A
             assert_never(mode)
 
 
-def _execute_batched_group(
-    group: list[_AnyFuru],
+def _execute_batched_group[T](
+    group: list[Furu[T]],
     *,
     metadata_by_data_dir: dict[Path, RunningMetadata],
     has_lock: _HasLock,
-) -> dict[Path, Any]:
+) -> dict[Path, T]:
     log_paths = tuple(obj._log_path for obj in group)
     with _scoped_log_files(log_paths):
         logger = group[0].logger
@@ -286,7 +282,7 @@ def _execute_batched_group(
                     f"{len(results)} results for {len(group)} objects"
                 )
 
-            stored: dict[Path, Any] = {}
+            stored: dict[Path, T] = {}
             for obj, result in zip(group, results, strict=True):
                 _store_result(
                     obj,
@@ -303,12 +299,12 @@ def _execute_batched_group(
             raise
 
 
-def _execute_single_group(
-    group: list[_AnyFuru],
+def _execute_single_group[T](
+    group: list[Furu[T]],
     *,
     has_lock: _HasLock,
-) -> dict[Path, Any]:
-    stored: dict[Path, Any] = {}
+) -> dict[Path, T]:
+    stored: dict[Path, T] = {}
     for obj in group:
         with _scoped_log_file(obj._log_path):
             logger = obj.logger
@@ -335,7 +331,7 @@ def _execute_single_group(
 
 
 @contextmanager
-def _reentry_guard(objs: Sequence[_AnyFuru]):
+def _reentry_guard[T](objs: Sequence[Furu[T]]):
     keys = _reentry_keys(objs)
     _raise_if_reentrant(objs)
     active_keys = _CURRENT_EXECUTING_DATA_DIRS.get()
@@ -346,7 +342,7 @@ def _reentry_guard(objs: Sequence[_AnyFuru]):
         _CURRENT_EXECUTING_DATA_DIRS.reset(token)
 
 
-def _raise_if_reentrant(objs: Sequence[_AnyFuru]) -> None:
+def _raise_if_reentrant[T](objs: Sequence[Furu[T]]) -> None:
     overlapping = _CURRENT_EXECUTING_DATA_DIRS.get() & _reentry_keys(objs)
     if not overlapping:
         return
@@ -358,7 +354,7 @@ def _raise_if_reentrant(objs: Sequence[_AnyFuru]) -> None:
     )
 
 
-def _reentry_keys(objs: Sequence[_AnyFuru]) -> frozenset[Path]:
+def _reentry_keys[T](objs: Sequence[Furu[T]]) -> frozenset[Path]:
     return frozenset(_canonical_data_dir(obj) for obj in objs)
 
 
