@@ -8,7 +8,7 @@ from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from furu.utils import _nfs_safe_unique_name
 
@@ -34,17 +34,23 @@ class LockManifest(BaseModel):
     claim_path: Path
     lock_paths: tuple[Path, ...]
 
-    @model_validator(mode="after")
-    def _validate_paths(self) -> LockManifest:
-        if not self.claim_path.is_absolute():
+    @field_validator("claim_path")
+    @classmethod
+    def _validate_claim_path(cls, claim_path: Path) -> Path:
+        if not claim_path.is_absolute():
             raise ValueError("claim_path must be absolute")
-        if not self.lock_paths:
+        return claim_path
+
+    @field_validator("lock_paths")
+    @classmethod
+    def _validate_lock_paths(cls, lock_paths: tuple[Path, ...]) -> tuple[Path, ...]:
+        if not lock_paths:
             raise ValueError("lock_paths must not be empty")
-        if any(not path.is_absolute() for path in self.lock_paths):
+        if any(not path.is_absolute() for path in lock_paths):
             raise ValueError("lock_paths must be absolute")
-        if len(self.lock_paths) != len(set(self.lock_paths)):
+        if len(lock_paths) != len(set(lock_paths)):
             raise ValueError("lock_paths must be unique")
-        return self
+        return lock_paths
 
 
 def _is_missing_or_stale(exc: OSError) -> bool:
