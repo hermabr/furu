@@ -195,17 +195,13 @@ def release_acquired_subset(lock_paths: Iterable[Path], *, claim_path: Path) -> 
             unlink_if_exists(lock_path)
 
 
-def release_owned_group(lock_paths: Iterable[Path], *, claim_path: Path) -> bool:
-    claim_stat = stat_or_none(claim_path)
-    lost_lock = claim_stat is None
-
+def _unlink_matching_group_members(
+    lock_paths: Iterable[Path], *, reference_stat: os.stat_result
+) -> bool:
+    lost_lock = False
     for lock_path in lock_paths:
         lock_stat = stat_or_none(lock_path)
-        if (
-            claim_stat is None
-            or lock_stat is None
-            or not _same_inode(lock_stat, claim_stat)
-        ):
+        if lock_stat is None or not _same_inode(lock_stat, reference_stat):
             lost_lock = True
             continue
         try:
@@ -215,6 +211,33 @@ def release_owned_group(lock_paths: Iterable[Path], *, claim_path: Path) -> bool
                 lost_lock = True
                 continue
             raise
+
+    return lost_lock
+
+
+def release_owned_group(
+    lock_paths: Iterable[Path],
+    *,
+    claim_path: Path,
+    owner_stat: os.stat_result,
+) -> bool:
+    lock_paths = tuple(lock_paths)
+    claim_stat = stat_or_none(claim_path)
+    reference_stat = claim_stat
+    lost_lock = claim_stat is None
+
+    if reference_stat is None:
+        for lock_path in lock_paths:
+            lock_stat = stat_or_none(lock_path)
+            if lock_stat is not None and _same_inode(lock_stat, owner_stat):
+                reference_stat = lock_stat
+                break
+
+    if reference_stat is not None:
+        lost_lock = (
+            _unlink_matching_group_members(lock_paths, reference_stat=reference_stat)
+            or lost_lock
+        )
 
     unlink_if_exists(claim_path)
     return lost_lock
@@ -269,21 +292,16 @@ def break_stale(lock_path: Path, *, lifetime_s: float) -> bool:
             return False
 
         claim_stat = stat_or_none(manifest.claim_path)
-        if claim_stat is None:
-            raise LockAcquireError(
-                f"cannot safely break stale lock at {lock_path}: missing claim file {manifest.claim_path}"
-            )
-        if not _same_inode(current_lock_stat, claim_stat):
+        reference_stat = claim_stat or current_lock_stat
+        if claim_stat is not None and not _same_inode(current_lock_stat, claim_stat):
             raise LockAcquireError(
                 f"lock {lock_path} changed owners while breaking a stale lock"
             )
 
-        for member_lock_path in manifest.lock_paths:
-            member_lock_stat = stat_or_none(member_lock_path)
-            if member_lock_stat is not None and _same_inode(
-                member_lock_stat, claim_stat
-            ):
-                unlink_if_exists(member_lock_path)
+        _unlink_matching_group_members(
+            manifest.lock_paths,
+            reference_stat=reference_stat,
+        )
         unlink_if_exists(manifest.claim_path)
         return True
     finally:
@@ -348,6 +366,7 @@ def lock_many(
         lock_paths=tuple(lock_paths),
     )
     _write_claim_file(manifest, lifetime_s=lifetime_s)
+    owner_stat = claim_path.stat()
 
     try:
         deadline = time.monotonic() + max(acquire_timeout_s, 0.0)
@@ -413,7 +432,11 @@ def lock_many(
         finally:
             stop_event.set()
             heartbeat.join(timeout=HEARTBEAT_SHUTDOWN_GRACE_S)
-            lost_lock = release_owned_group(lock_paths, claim_path=claim_path)
+            lost_lock = release_owned_group(
+                lock_paths,
+                claim_path=claim_path,
+                owner_stat=owner_stat,
+            )
             if lost_lock and body_error is None:
                 raise LockLostError(_lock_lost_message(lock_paths))
     finally:

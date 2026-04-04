@@ -350,6 +350,53 @@ def test_stale_break_from_any_member_path_removes_whole_logical_lock_group(
         assert not stale_claim_path.exists()
 
 
+def test_stale_break_from_any_member_path_clears_group_when_claim_file_is_missing(
+    tmp_path: Path,
+) -> None:
+    lock_paths = [tmp_path / "a.lock", tmp_path / "b.lock", tmp_path / "c.lock"]
+    manifest_out = tmp_path / "manifest.json"
+    proc = Process(
+        target=_child_acquire_batch_then_exit,
+        args=(lock_paths, str(manifest_out)),
+    )
+    proc.start()
+    proc.join(timeout=PROCESS_TIMEOUT_S)
+    assert proc.exitcode == 0
+
+    stale_manifest = json.loads(manifest_out.read_text(encoding="utf-8"))
+    stale_claim_path = Path(str(stale_manifest["claim_path"]))
+    stale_claim_path.unlink()
+
+    stale_time = time.time() - locking_module.CLOCK_SLOP_S - SHORT_SLEEP_S
+    os.utime(lock_paths[0], (stale_time, stale_time))
+
+    with lock(
+        lock_paths[1],
+        lifetime_s=SHORT_LIFETIME_S,
+        heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+    ) as has_lock:
+        assert has_lock()
+        assert not lock_paths[0].exists()
+        assert not lock_paths[2].exists()
+        assert not stale_claim_path.exists()
+
+
+def test_release_cleanup_removes_member_links_when_claim_file_is_missing(
+    tmp_path: Path,
+) -> None:
+    lock_paths = [tmp_path / "a.lock", tmp_path / "b.lock", tmp_path / "c.lock"]
+
+    with pytest.raises(LockLostError, match="lost lock"):
+        with lock_many(
+            lock_paths,
+            lifetime_s=SHORT_LIFETIME_S,
+            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+        ):
+            _manifest_claim_path(lock_paths[0]).unlink()
+
+    assert not any(lock_path.exists() for lock_path in lock_paths)
+
+
 def test_lock_raises_if_stale_break_would_remove_reacquired_lock(
     tmp_path: Path,
 ) -> None:
