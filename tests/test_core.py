@@ -5,7 +5,6 @@ from dataclasses import FrozenInstanceError, is_dataclass, replace
 from enum import Enum
 from functools import partial
 from pathlib import Path
-import pickle
 from typing import ClassVar, Literal, TypeVar, cast
 from unittest.mock import patch
 
@@ -15,6 +14,7 @@ from pydantic import BaseModel, ConfigDict
 import furu.execution as execution_module
 from furu import Furu, load_or_create, validate
 from furu.config import config
+from furu.results import dump_result_bundle
 from furu.serialize import to_json
 from furu.utils import fully_qualified_name
 
@@ -1062,8 +1062,7 @@ def test_pending_items_are_rechecked_after_lock_acquisition(
     @contextmanager
     def fake_lock_many(lock_paths: list[Path], **_: object):
         assert lock_paths == [pending._lock_path]
-        with pending._result_path.open("wb") as f:
-            pickle.dump("single:5", f)
+        dump_result_bundle("single:5", pending._result_dir, pending._result_config())
         yield lambda: True
 
     monkeypatch.setattr(execution_module, "lock_many", fake_lock_many)
@@ -1108,11 +1107,10 @@ def test_batched_compute_writes_result_layout_per_object() -> None:
     assert load_or_create(objs) == ["batch:1", "batch:2"]
 
     for obj, expected in zip(objs, ["batch:1", "batch:2"], strict=True):
-        assert obj._result_path.exists()
+        assert obj._result_manifest_path.exists()
         assert obj._metadata_path.exists()
         assert obj._log_path.exists()
-        with obj._result_path.open("rb") as f:
-            assert pickle.load(f) == expected
+        assert obj.try_load() == expected
 
 
 def test_batched_compute_writes_shared_logs_to_every_participant() -> None:
@@ -1124,7 +1122,7 @@ def test_batched_compute_writes_shared_logs_to_every_participant() -> None:
         log_text = obj._log_path.read_text(encoding="utf-8")
         assert "batched detail for 1,2" in log_text
         for persisted_obj in objs:
-            assert f"stored result at {persisted_obj._result_path}" in log_text
+            assert f"stored result at {persisted_obj._result_manifest_path}" in log_text
 
 
 def test_sequential_group_compute_writes_shared_logs_to_every_participant() -> None:
@@ -1137,7 +1135,7 @@ def test_sequential_group_compute_writes_shared_logs_to_every_participant() -> N
         assert "single detail for 1" in log_text
         assert "single detail for 2" in log_text
         for persisted_obj in objs:
-            assert f"stored result at {persisted_obj._result_path}" in log_text
+            assert f"stored result at {persisted_obj._result_manifest_path}" in log_text
 
 
 def test_batched_failure_writes_error_logs_for_every_participant() -> None:
@@ -1170,5 +1168,5 @@ def test_partial_persistence_leaves_already_written_objects_completed(
     with pytest.raises(RuntimeError, match="stop after first store"):
         load_or_create(objs)
 
-    assert objs[0]._result_path.exists()
-    assert not objs[1]._result_path.exists()
+    assert objs[0]._result_manifest_path.exists()
+    assert not objs[1]._result_manifest_path.exists()

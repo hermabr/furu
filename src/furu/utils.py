@@ -1,4 +1,5 @@
 import hashlib
+import importlib
 import json
 import os
 import socket
@@ -23,12 +24,34 @@ def fully_qualified_name(tp: type) -> str:
     elif "<locals>" in mod:  # TODO: allow overwriting
         raise ValueError("TODO: msg")
     elif "." in qualname:
-        raise ValueError("TODO: msg")
+        raise ValueError("Cannot serialize nested or local classes")
     elif (isinstance(tp, type) and issubclass(tp, Enum)) or isinstance(tp, Enum):
         raise ValueError(
             "TODO: support this in the future"
         )  # return f"{mod}.{qualname}.{obj.name}"
     return f"{mod}.{qualname}"
+
+
+def import_fully_qualified_name(name: str) -> type:
+    if "." not in name:
+        raise ValueError(f"Expected a fully qualified name, got {name!r}")
+
+    module_name, attribute_name = name.rsplit(".", 1)
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as exc:
+        raise ValueError(f"Could not import module {module_name!r}") from exc
+
+    try:
+        value = getattr(module, attribute_name)
+    except AttributeError as exc:
+        raise ValueError(
+            f"Module {module_name!r} does not define {attribute_name!r}"
+        ) from exc
+
+    if not isinstance(value, type):
+        raise ValueError(f"{name!r} does not resolve to a type")
+    return value
 
 
 def _stable_json_dump(x: JsonValue) -> str:
