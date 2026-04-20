@@ -150,11 +150,19 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def schema_hash(self) -> str:
         return _hash_dict_deterministically(self.schema)
 
+    @cached_property
+    def _fully_qualified_name(self) -> str:
+        return fully_qualified_name(type(self))
+
+    @cached_property
+    def object_id(self) -> str:
+        return f"{self._fully_qualified_name}:{self.schema_hash}:{self.artifact_hash}"
+
     @cached_property  # TODO: decide if something like this should be cached_property or simply property
     def data_dir(self) -> Path:
         return (
             config.directories.data
-            / Path(*fully_qualified_name(type(self)).split("."))
+            / Path(*self._fully_qualified_name.split("."))
             / self.schema_hash
             / self.artifact_hash
         )
