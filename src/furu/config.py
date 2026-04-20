@@ -2,6 +2,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Self
 
+from furu.results.registry import ResultRegistry
+from furu.results.rules import ResultRule
+
+
+@dataclass(slots=True)
+class ResultConfig:
+    rules: tuple[ResultRule, ...] = ()
+    registry: ResultRegistry = field(default_factory=ResultRegistry.default)
+
+    @classmethod
+    def default(cls) -> Self:
+        return cls()
+
 
 @dataclass(slots=True)
 class _FuruDirectories:
@@ -20,6 +33,7 @@ class _FuruDirectories:
 class _FuruConfig:
     debug_mode: bool = False
     directories: _FuruDirectories = field(default_factory=_FuruDirectories.default)
+    results: ResultConfig = field(default_factory=ResultConfig.default)
 
 
 config = _FuruConfig()

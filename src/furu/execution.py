@@ -1,7 +1,4 @@
 from __future__ import annotations
-
-import os
-import pickle
 import secrets
 import traceback
 from collections.abc import Callable, Sequence
@@ -14,6 +11,7 @@ from furu.core import Furu, FuruCreateMode
 from furu.locking import LockLostError, lock_many
 from furu.logging import _scoped_log_files
 from furu.metadata import RunningMetadata
+from furu.results.io import load_result_bundle, save_result_bundle
 from furu.utils import class_label
 
 type HasLock = Callable[[], bool]
@@ -55,26 +53,22 @@ def _store_result[T](
     *,
     metadata: RunningMetadata,
     has_lock: HasLock,
-) -> None:
+) -> T:
     if not has_lock():
         raise LockLostError(
             f"lost lock at {obj._lock_path} before writing final result"
         )
 
-    tmp_result_path = obj._result_path.with_suffix(".pkl.tmp")
-    with tmp_result_path.open("wb") as f:
-        pickle.dump(result, f)
-        f.flush()
-        os.fsync(f.fileno())
-
-    if not has_lock():
-        raise LockLostError(
-            f"lost lock at {obj._lock_path} after writing temporary result"
-        )
-
-    tmp_result_path.rename(obj._result_path)
+    save_result_bundle(
+        result,
+        obj._result_dir,
+        obj._result_config(),
+        has_lock=has_lock,
+        lock_path=obj._lock_path,
+    )
     obj._metadata_path.write_text(metadata.to_complete().model_dump_json(indent=2))
-    obj.logger.debug("stored result at %s", obj._result_path)
+    obj.logger.debug("stored result at %s", obj._result_manifest_path)
+    return load_result_bundle(obj._result_dir, obj._result_config())
 
 
 def _write_error_logs[T](objs: Sequence[Furu[T]], exc: BaseException) -> None:
@@ -139,10 +133,15 @@ def load_or_create[T](
     missing: list[Furu[T]] = []
 
     for obj in unique:
-        if obj._result_path.exists():
-            obj.logger.info("cache hit for %s at %s", obj._log_label, obj._result_path)
-            with obj._result_path.open("rb") as f:
-                results_by_dir[obj.data_dir] = pickle.load(f)
+        if obj._result_manifest_path.exists():
+            obj.logger.info(
+                "cache hit for %s at %s",
+                obj._log_label,
+                obj._result_manifest_path,
+            )
+            results_by_dir[obj.data_dir] = load_result_bundle(
+                obj._result_dir, obj._result_config()
+            )
         else:
             obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
             missing.append(obj)
@@ -157,14 +156,15 @@ def load_or_create[T](
         has_lock = maybe_has_lock or (lambda: True)
         pending: list[Furu[T]] = []
         for obj in missing:
-            if obj._result_path.exists():
+            if obj._result_manifest_path.exists():
                 obj.logger.info(
                     "cache hit for %s after waiting at %s",
                     obj._log_label,
-                    obj._result_path,
+                    obj._result_manifest_path,
                 )
-                with obj._result_path.open("rb") as f:
-                    results_by_dir[obj.data_dir] = pickle.load(f)
+                results_by_dir[obj.data_dir] = load_result_bundle(
+                    obj._result_dir, obj._result_config()
+                )
             else:
                 pending.append(obj)
 
@@ -218,13 +218,12 @@ def _execute_group[T](
                 )
 
             for obj, result in zip(group, results, strict=True):
-                _store_result(
+                results_by_dir[obj.data_dir] = _store_result(
                     obj,
                     result,
                     metadata=metadata_by_dir[obj.data_dir],
                     has_lock=has_lock,
                 )
-                results_by_dir[obj.data_dir] = result
 
             logger.debug("load_or_create complete")
         except BaseException as exc:
