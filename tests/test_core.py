@@ -496,6 +496,13 @@ def test_hashes_and_data_dir():
     assert (
         NodePair(
             name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
+        ).object_id
+        == "test_core.NodePair:50a9b8624ed259ec38df:c4ff0c2ad0f653af7ce2"
+    )
+
+    assert (
+        NodePair(
+            name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
         ).artifact_hash
         == "c4ff0c2ad0f653af7ce2"
     )
