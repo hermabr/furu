@@ -12,12 +12,15 @@ import pytest
 
 from furu.config import _FuruDirectories
 from furu.config import config as furu_config
+from furu.results import ResultConfig, default_result_config
 
 
 @dataclass(slots=True)
 class _FuruPytestState:  # TODO: maybe make this auto snapshot the config
     original_directories: _FuruDirectories
+    original_results: ResultConfig
     run_directories: _FuruDirectories
+    run_results: ResultConfig
 
 
 _STATE_KEY = pytest.StashKey[_FuruPytestState]()
@@ -43,12 +46,15 @@ def pytest_configure(config: pytest.Config) -> None:
 
     state = _FuruPytestState(
         original_directories=furu_config.directories,
+        original_results=furu_config.results,
         run_directories=_FuruDirectories(
             data=run_base_directory,
         ),
+        run_results=default_result_config(),
     )
 
     furu_config.directories = state.run_directories
+    furu_config.results = state.run_results
     config.stash[_STATE_KEY] = state
 
 
@@ -59,6 +65,7 @@ def pytest_unconfigure(config: pytest.Config) -> None:
     state = config.stash[_STATE_KEY]
 
     furu_config.directories = state.original_directories
+    furu_config.results = state.original_results
 
     if not _keep_furu_data():
         for field in fields(state.run_directories):
@@ -83,6 +90,7 @@ def _furu_per_test_base_directory(
 
     state = pytestconfig.stash[_STATE_KEY]
     previous_base_directory = furu_config.directories
+    previous_results = furu_config.results
 
     test_base_directory = (
         state.run_directories.data
@@ -90,7 +98,9 @@ def _furu_per_test_base_directory(
     )
 
     furu_config.directories = _FuruDirectories(data=test_base_directory)
+    furu_config.results = default_result_config()
     try:
         yield
     finally:
         furu_config.directories = previous_base_directory
+        furu_config.results = previous_results

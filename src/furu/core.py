@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import pickle
 import shutil
 from abc import ABC
 from dataclasses import dataclass
@@ -12,6 +11,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self
 from furu.config import config
 from furu.locking import LockLostError, lock_many
 from furu.logging import get_logger
+from furu.results import ResultConfig, load_result_bundle
 from furu.schema import schema_type as _schema_type
 from furu.serialize import to_json as _to_json
 from furu.utils import (
@@ -69,15 +69,12 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def is_completed(
         self,
     ) -> bool:  # TODO: maybe this should check the is self.status is completed? (in that case status cant check if self.is_completed)
-        return self._result_path.exists()
+        return self._result_manifest_path.exists()
 
     def try_load(self) -> T:  # TODO: make a better name for this
-        if self._result_path.exists():
-            with self._result_path.open("rb") as f:
-                return pickle.load(f)
-        raise NotImplementedError(
-            "TODO: decide if i should throw or return error value"
-        )
+        if self._result_manifest_path.exists():
+            return load_result_bundle(self._result_dir, self._result_config())
+        raise FileNotFoundError(f"No completed Furu result at {self._result_dir}")
 
     def delete(self, mode: Literal["prompt", "force"] = "prompt") -> bool:
         if not self.data_dir.exists():
@@ -109,9 +106,13 @@ class Furu[T](_FuruDataclassTransform, ABC):
         shutil.rmtree(tombstone_path)
         return True
 
-    @property
-    def _result_path(self) -> Path:
-        return self.data_dir / "result.pkl"
+    @cached_property
+    def _result_dir(self) -> Path:
+        return self.data_dir / "result"
+
+    @cached_property
+    def _result_manifest_path(self) -> Path:
+        return self._result_dir / "manifest.json"
 
     @property
     def logger(self) -> logging.Logger:
@@ -186,3 +187,6 @@ class Furu[T](_FuruDataclassTransform, ABC):
     @cached_property
     def _log_label(self) -> str:
         return f"{type(self).__name__}:{self.schema_hash[:5]}:{self.artifact_hash[:5]}"
+
+    def _result_config(self) -> ResultConfig:
+        return config.results

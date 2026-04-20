@@ -2,6 +2,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Self
 
+from furu.results import ResultConfig, default_result_config
+
 
 @dataclass(slots=True)
 class _FuruDirectories:
@@ -20,6 +22,7 @@ class _FuruDirectories:
 class _FuruConfig:
     debug_mode: bool = False
     directories: _FuruDirectories = field(default_factory=_FuruDirectories.default)
+    results: ResultConfig = field(default_factory=default_result_config)
 
 
 config = _FuruConfig()
