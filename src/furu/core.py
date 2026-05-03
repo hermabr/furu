@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 import logging
-import pickle
 import shutil
 from abc import ABC
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, cast
 
 from furu.config import config
 from furu.locking import LockLostError, lock_many
 from furu.logging import get_logger
+from furu.result import load_result_bundle
 from furu.schema import schema_type as _schema_type
 from furu.serialize import to_json as _to_json
 from furu.utils import (
@@ -69,12 +69,11 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def is_completed(
         self,
     ) -> bool:  # TODO: maybe this should check the is self.status is completed? (in that case status cant check if self.is_completed)
-        return self._result_path.exists()
+        return self._result_manifest_path.exists()
 
     def try_load(self) -> T:  # TODO: make a better name for this
-        if self._result_path.exists():
-            with self._result_path.open("rb") as f:
-                return pickle.load(f)
+        if self._result_manifest_path.exists():
+            return cast(T, load_result_bundle(self._result_dir))
         raise NotImplementedError(
             "TODO: decide if i should throw or return error value"
         )
@@ -110,8 +109,12 @@ class Furu[T](_FuruDataclassTransform, ABC):
         return True
 
     @property
-    def _result_path(self) -> Path:
-        return self.data_dir / "result.pkl"
+    def _result_dir(self) -> Path:
+        return self.data_dir / "result"
+
+    @property
+    def _result_manifest_path(self) -> Path:
+        return self._result_dir / "manifest.json"
 
     @property
     def logger(self) -> logging.Logger:
