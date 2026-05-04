@@ -90,12 +90,19 @@ class ResultCodec(Protocol):
 
     codec_id: ClassVar[str]
 
-    def matches(self, value: object) -> bool:
+    @classmethod
+    def dependencies_available(cls) -> bool:
+        """Whether this codec can run in the current environment."""
+        ...
+
+    @classmethod
+    def matches(cls, value: object) -> bool:
         """Whether this codec should be used for ``value``."""
         ...
 
+    @classmethod
     def dump(
-        self,
+        cls,
         value: object,
         *,
         artifact_dir: Path,
@@ -104,7 +111,8 @@ class ResultCodec(Protocol):
         """Persist ``value`` under ``artifact_dir`` and return manifest meta."""
         ...
 
-    def load(self, *, artifact_dir: Path, meta: JsonValue) -> object:
+    @classmethod
+    def load(cls, *, artifact_dir: Path, meta: JsonValue) -> object:
         """Reconstruct the value from ``artifact_dir`` and ``meta``."""
         ...
 
@@ -114,20 +122,23 @@ class NumpyNpyCodec:
 
     codec_id: ClassVar[str] = "numpy.ndarray.npy"
 
-    def __init__(self) -> None:
-        # Importing here so the codec class can be defined unconditionally
-        # but ``default_codecs()`` skips registration when NumPy is missing.
-        import numpy as np  # noqa: F401  (import-time dependency check)
-
-    def matches(self, value: object) -> bool:
+    @classmethod
+    def dependencies_available(cls) -> bool:
         try:
-            import numpy as np
+            import numpy as np  # noqa: F401
         except ImportError:
             return False
+        return True
+
+    @classmethod
+    def matches(cls, value: object) -> bool:
+        import numpy as np
+
         return isinstance(value, np.ndarray)
 
+    @classmethod
     def dump(
-        self,
+        cls,
         value: object,
         *,
         artifact_dir: Path,
@@ -150,33 +161,40 @@ class NumpyNpyCodec:
             "dtype": str(value.dtype),
         }
 
-    def load(self, *, artifact_dir: Path, meta: JsonValue) -> object:
+    @classmethod
+    def load(cls, *, artifact_dir: Path, meta: JsonValue) -> object:
         import numpy as np
 
         return np.load(artifact_dir / "data.npy", allow_pickle=False)
 
 
-def default_codecs() -> list[ResultCodec]:
-    """Return the default codec list, skipping codecs whose libraries are missing."""
+def default_codecs() -> list[type[ResultCodec]]:
+    """Return the default codec list."""
 
-    codecs: list[ResultCodec] = []
-    try:
-        codecs.append(NumpyNpyCodec())
-    except ImportError:
-        pass
-    return codecs
+    return [NumpyNpyCodec]
 
 
-def _codec_for_value(value: object, codecs: list[ResultCodec]) -> ResultCodec | None:
+def _codec_for_value(
+    value: object,
+    codecs: list[type[ResultCodec]],
+) -> type[ResultCodec] | None:
     for codec in codecs:
-        if codec.matches(value):
+        if codec.dependencies_available() and codec.matches(value):
             return codec
     return None
 
 
-def _codec_by_id(codec_id: str, codecs: list[ResultCodec]) -> ResultCodec:
+def _codec_by_id(
+    codec_id: str,
+    codecs: list[type[ResultCodec]],
+) -> type[ResultCodec]:
     for codec in codecs:
         if codec.codec_id == codec_id:
+            if not codec.dependencies_available():
+                raise ValueError(
+                    f"result codec {codec_id!r} is unavailable because its "
+                    "dependencies are not installed"
+                )
             return codec
     raise ValueError(f"unknown result codec: {codec_id}")
 
@@ -191,7 +209,7 @@ def _dump_value(
     *,
     path: LogicalPath,
     bundle_dir: Path,
-    codecs: list[ResultCodec],
+    codecs: list[type[ResultCodec]],
 ) -> JsonValue:
     # Order matters: bool is a subclass of int, so check it explicitly.
     if value is None or isinstance(value, bool):
@@ -239,7 +257,7 @@ def _dump_list(
     *,
     path: LogicalPath,
     bundle_dir: Path,
-    codecs: list[ResultCodec],
+    codecs: list[type[ResultCodec]],
 ) -> list[JsonValue]:
     width = max(len(str(len(value))), 1)
     return [
@@ -258,7 +276,7 @@ def _dump_dict(
     *,
     path: LogicalPath,
     bundle_dir: Path,
-    codecs: list[ResultCodec],
+    codecs: list[type[ResultCodec]],
 ) -> dict[str, JsonValue]:
     out: dict[str, JsonValue] = {}
     for key, child in value.items():
@@ -291,7 +309,7 @@ def _dump_dataclass(
     *,
     path: LogicalPath,
     bundle_dir: Path,
-    codecs: list[ResultCodec],
+    codecs: list[type[ResultCodec]],
 ) -> dict[str, JsonValue]:
     type_name = fully_qualified_name(type(value))
     fields_out: dict[str, JsonValue] = {}
@@ -321,7 +339,7 @@ def _dump_pydantic(
     *,
     path: LogicalPath,
     bundle_dir: Path,
-    codecs: list[ResultCodec],
+    codecs: list[type[ResultCodec]],
 ) -> dict[str, JsonValue]:
     type_name = fully_qualified_name(type(value))
     fields_out: dict[str, JsonValue] = {}
@@ -352,7 +370,7 @@ def _dump_pydantic(
 def _dump_external(
     value: object,
     *,
-    codec: ResultCodec,
+    codec: type[ResultCodec],
     path: LogicalPath,
     bundle_dir: Path,
 ) -> dict[str, JsonValue]:
@@ -378,7 +396,7 @@ def _load_value(
     node: JsonValue,
     *,
     bundle_dir: Path,
-    codecs: list[ResultCodec],
+    codecs: list[type[ResultCodec]],
 ) -> object:
     if node is None or isinstance(node, (bool, int, float, str)):
         return node
@@ -405,7 +423,7 @@ def _load_wrapper(
     body: JsonValue,
     *,
     bundle_dir: Path,
-    codecs: list[ResultCodec],
+    codecs: list[type[ResultCodec]],
 ) -> object:
     if not isinstance(body, dict):
         raise ValueError(
@@ -426,7 +444,7 @@ def _load_external(
     body: dict[str, JsonValue],
     *,
     bundle_dir: Path,
-    codecs: list[ResultCodec],
+    codecs: list[type[ResultCodec]],
 ) -> object:
     codec_id = body.get("codec")
     if not isinstance(codec_id, str):
@@ -461,7 +479,7 @@ def _load_dataclass(
     body: dict[str, JsonValue],
     *,
     bundle_dir: Path,
-    codecs: list[ResultCodec],
+    codecs: list[type[ResultCodec]],
 ) -> object:
     type_name = body.get("type")
     if not isinstance(type_name, str):
@@ -493,7 +511,7 @@ def _load_pydantic(
     body: dict[str, JsonValue],
     *,
     bundle_dir: Path,
-    codecs: list[ResultCodec],
+    codecs: list[type[ResultCodec]],
 ) -> object:
     type_name = body.get("type")
     if not isinstance(type_name, str):
