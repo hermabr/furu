@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import pickle
 import shutil
 from abc import ABC
 from dataclasses import dataclass
@@ -12,6 +11,8 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self
 from furu.config import config
 from furu.locking import LockLostError, lock_many
 from furu.logging import get_logger
+from furu.result import is_complete as _is_result_complete
+from furu.result import load_result as _load_result
 from furu.schema import schema_type as _schema_type
 from furu.serialize import to_json as _to_json
 from furu.utils import (
@@ -69,12 +70,11 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def is_completed(
         self,
     ) -> bool:  # TODO: maybe this should check the is self.status is completed? (in that case status cant check if self.is_completed)
-        return self._result_path.exists()
+        return _is_result_complete(result_dir=self._result_path)
 
     def try_load(self) -> T:  # TODO: make a better name for this
-        if self._result_path.exists():
-            with self._result_path.open("rb") as f:
-                return pickle.load(f)
+        if _is_result_complete(result_dir=self._result_path):
+            return _load_result(result_dir=self._result_path)
         raise NotImplementedError(
             "TODO: decide if i should throw or return error value"
         )
@@ -111,7 +111,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     @property
     def _result_path(self) -> Path:
-        return self.data_dir / "result.pkl"
+        return self.data_dir / "result"
 
     @property
     def logger(self) -> logging.Logger:

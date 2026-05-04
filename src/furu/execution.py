@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-import pickle
 import secrets
 import traceback
 from collections.abc import Callable, Sequence
@@ -11,9 +9,12 @@ from pathlib import Path
 from typing import assert_never, overload
 
 from furu.core import Furu, FuruCreateMode
-from furu.locking import LockLostError, lock_many
+from furu.locking import lock_many
 from furu.logging import _scoped_log_files
 from furu.metadata import RunningMetadata
+from furu.result import is_complete as _is_result_complete
+from furu.result import load_result as _load_result
+from furu.result import save_result as _save_result
 from furu.utils import class_label
 
 type HasLock = Callable[[], bool]
@@ -56,23 +57,12 @@ def _store_result[T](
     metadata: RunningMetadata,
     has_lock: HasLock,
 ) -> None:
-    if not has_lock():
-        raise LockLostError(
-            f"lost lock at {obj._lock_path} before writing final result"
-        )
-
-    tmp_result_path = obj._result_path.with_suffix(".pkl.tmp")
-    with tmp_result_path.open("wb") as f:
-        pickle.dump(result, f)
-        f.flush()
-        os.fsync(f.fileno())
-
-    if not has_lock():
-        raise LockLostError(
-            f"lost lock at {obj._lock_path} after writing temporary result"
-        )
-
-    tmp_result_path.rename(obj._result_path)
+    _save_result(
+        result=result,
+        result_dir=obj._result_path,
+        has_lock=has_lock,
+        lock_path=obj._lock_path,
+    )
     obj._metadata_path.write_text(metadata.to_complete().model_dump_json(indent=2))
     obj.logger.debug("stored result at %s", obj._result_path)
 
@@ -139,10 +129,9 @@ def load_or_create[T](
     missing: list[Furu[T]] = []
 
     for obj in unique:
-        if obj._result_path.exists():
+        if _is_result_complete(result_dir=obj._result_path):
             obj.logger.info("cache hit for %s at %s", obj._log_label, obj._result_path)
-            with obj._result_path.open("rb") as f:
-                results_by_dir[obj.data_dir] = pickle.load(f)
+            results_by_dir[obj.data_dir] = _load_result(result_dir=obj._result_path)
         else:
             obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
             missing.append(obj)
@@ -157,14 +146,13 @@ def load_or_create[T](
         has_lock = maybe_has_lock or (lambda: True)
         pending: list[Furu[T]] = []
         for obj in missing:
-            if obj._result_path.exists():
+            if _is_result_complete(result_dir=obj._result_path):
                 obj.logger.info(
                     "cache hit for %s after waiting at %s",
                     obj._log_label,
                     obj._result_path,
                 )
-                with obj._result_path.open("rb") as f:
-                    results_by_dir[obj.data_dir] = pickle.load(f)
+                results_by_dir[obj.data_dir] = _load_result(result_dir=obj._result_path)
             else:
                 pending.append(obj)
 
