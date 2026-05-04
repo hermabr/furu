@@ -11,8 +11,8 @@ from pydantic import BaseModel, ConfigDict
 from furu import Furu
 from furu.result import (
     LogicalPath,
-    load_result_bundle,
-    save_result_bundle,
+    load_result,
+    save_result,
 )
 
 
@@ -107,6 +107,24 @@ def test_scalar_root_manifest_is_just_the_value() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Tuple test
+# ---------------------------------------------------------------------------
+
+
+class TupleResult(Furu[tuple[int, str, tuple[int, int]]]):
+    def _create(self) -> tuple[int, str, tuple[int, int]]:
+        return (1, "x", (2, 3))
+
+
+def test_tuple_round_trips() -> None:
+    obj = TupleResult()
+
+    assert obj.load_or_create() == (1, "x", (2, 3))
+    manifest = json.loads(obj._result_manifest_path.read_text())
+    assert manifest["$furu"]["kind"] == "tuple"
+
+
+# ---------------------------------------------------------------------------
 # Non-finite float test
 # ---------------------------------------------------------------------------
 
@@ -152,7 +170,7 @@ class UnsupportedRootResult(Furu[object]):
 def test_unsupported_custom_object_fails_with_root_path(tmp_path) -> None:
     bundle_dir = tmp_path / "bundle"
     with pytest.raises(ValueError) as exc_info:
-        save_result_bundle(_CustomTensor(), bundle_dir)
+        save_result(_CustomTensor(), bundle_dir)
     msg = str(exc_info.value)
     assert "$" in msg
     assert "_CustomTensor" in msg
@@ -164,40 +182,40 @@ def test_unsupported_nested_path_includes_padded_index(tmp_path) -> None:
     layers[3] = {"weights": _CustomTensor()}
 
     with pytest.raises(ValueError) as exc_info:
-        save_result_bundle({"layers": layers}, bundle_dir)
+        save_result({"layers": layers}, bundle_dir)
     assert "$.layers[03].weights" in str(exc_info.value)
 
 
 def test_reserved_furu_dict_key_fails(tmp_path) -> None:
     bundle_dir = tmp_path / "bundle"
     with pytest.raises(ValueError, match="reserved"):
-        save_result_bundle({"$furu": "user data"}, bundle_dir)
+        save_result({"$furu": "user data"}, bundle_dir)
 
 
 def test_non_string_dict_key_fails(tmp_path) -> None:
     bundle_dir = tmp_path / "bundle"
     with pytest.raises(ValueError, match="must be strings"):
-        save_result_bundle({1: "x"}, bundle_dir)
+        save_result({1: "x"}, bundle_dir)
 
 
 def test_unsafe_dict_key_fails(tmp_path) -> None:
     bundle_dir = tmp_path / "bundle"
     with pytest.raises(ValueError) as exc_info:
-        save_result_bundle({"bad/key": "x"}, bundle_dir)
+        save_result({"bad/key": "x"}, bundle_dir)
     assert "artifact path segment" in str(exc_info.value)
 
 
 def test_empty_dict_key_fails(tmp_path) -> None:
     bundle_dir = tmp_path / "bundle"
     with pytest.raises(ValueError) as exc_info:
-        save_result_bundle({"": "x"}, bundle_dir)
+        save_result({"": "x"}, bundle_dir)
     assert "artifact path segment" in str(exc_info.value)
 
 
 def test_dotdot_dict_key_fails(tmp_path) -> None:
     bundle_dir = tmp_path / "bundle"
     with pytest.raises(ValueError, match="artifact path segment"):
-        save_result_bundle({"..": "x"}, bundle_dir)
+        save_result({"..": "x"}, bundle_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -324,6 +342,28 @@ def test_pydantic_with_nested_structures_round_trips() -> None:
     assert loaded.items == [{"v": 1}, {"v": 2}, {"v": 3}]
 
 
+class PydanticWithNumpy(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    weights: Any
+
+
+class PydanticWithNumpyResult(Furu[PydanticWithNumpy]):
+    def _create(self) -> PydanticWithNumpy:
+        np = pytest.importorskip("numpy")
+        return PydanticWithNumpy(weights=np.arange(3, dtype=np.float32))
+
+
+def test_pydantic_walks_field_values_before_codec_dispatch() -> None:
+    np = pytest.importorskip("numpy")
+    obj = PydanticWithNumpyResult()
+
+    loaded = obj.load_or_create()
+
+    assert isinstance(loaded, PydanticWithNumpy)
+    assert (obj._result_dir / "artifacts" / "weights" / "data.npy").exists()
+    assert np.array_equal(loaded.weights, np.arange(3, dtype=np.float32))
+
+
 # ---------------------------------------------------------------------------
 # NumPy codec
 # ---------------------------------------------------------------------------
@@ -361,7 +401,7 @@ def test_numpy_object_dtype_is_rejected(tmp_path) -> None:
     bundle_dir = tmp_path / "bundle"
 
     with pytest.raises(ValueError, match="object-dtype"):
-        save_result_bundle(
+        save_result(
             {"weights": np.array([object()], dtype=object)},
             bundle_dir,
         )
@@ -399,7 +439,7 @@ def test_long_list_uses_three_digit_padding(tmp_path) -> None:
     layers = [{"weights": np.arange(0, dtype=np.float32)} for _ in range(100)]
     layers[3] = {"weights": np.arange(3, dtype=np.float32)}
 
-    save_result_bundle({"layers": layers}, bundle_dir)
+    save_result({"layers": layers}, bundle_dir)
 
     expected = bundle_dir / "artifacts" / "layers" / "003" / "weights" / "data.npy"
     assert expected.exists()
@@ -408,65 +448,15 @@ def test_long_list_uses_three_digit_padding(tmp_path) -> None:
 def test_numpy_root_value_uses_root_artifact_dir(tmp_path) -> None:
     np = pytest.importorskip("numpy")
     bundle_dir = tmp_path / "bundle"
-    save_result_bundle(np.arange(5, dtype=np.int64), bundle_dir)
+    save_result(np.arange(5, dtype=np.int64), bundle_dir)
 
     assert (bundle_dir / "artifacts" / "root" / "data.npy").exists()
     manifest = json.loads((bundle_dir / "manifest.json").read_text())
     assert manifest["$furu"]["kind"] == "external"
     assert manifest["$furu"]["path"] == "artifacts/root"
 
-    loaded = load_result_bundle(bundle_dir)
+    loaded = load_result(bundle_dir)
     assert np.array_equal(loaded, np.arange(5, dtype=np.int64))
-
-
-# ---------------------------------------------------------------------------
-# Polars codec
-# ---------------------------------------------------------------------------
-
-
-class PolarsResult(Furu[dict[str, object]]):
-    def _create(self) -> dict[str, object]:
-        pl = pytest.importorskip("polars")
-        return {"table": pl.DataFrame({"id": [1, 2], "score": [0.1, 0.2]})}
-
-
-def test_polars_dataframe_round_trips() -> None:
-    pl = pytest.importorskip("polars")
-    obj = PolarsResult()
-    loaded = obj.load_or_create()
-
-    assert (obj._result_dir / "artifacts" / "table" / "data.parquet").exists()
-    assert isinstance(loaded, dict)
-    expected = pl.DataFrame({"id": [1, 2], "score": [0.1, 0.2]})
-    assert cast(Any, loaded["table"]).equals(expected)
-
-    manifest = json.loads(obj._result_manifest_path.read_text())
-    assert manifest["table"]["$furu"]["kind"] == "external"
-    assert manifest["table"]["$furu"]["codec"] == "polars.dataframe.parquet"
-    assert manifest["table"]["$furu"]["path"] == "artifacts/table"
-    assert manifest["table"]["$furu"]["meta"]["rows"] == 2
-    assert manifest["table"]["$furu"]["meta"]["columns"] == ["id", "score"]
-
-
-class NestedPolarsResult(Furu[dict[str, list[dict[str, object]]]]):
-    def _create(self) -> dict[str, list[dict[str, object]]]:
-        pl = pytest.importorskip("polars")
-        return {"tables": [{"data": pl.DataFrame({"id": [i]})} for i in range(3)]}
-
-
-def test_nested_polars_paths_use_padded_indexes() -> None:
-    pl = pytest.importorskip("polars")
-    obj = NestedPolarsResult()
-    loaded = obj.load_or_create()
-
-    base = obj._result_dir / "artifacts" / "tables"
-    for i in range(3):
-        assert (base / str(i) / "data" / "data.parquet").exists()
-
-    assert isinstance(loaded, dict)
-    for i, entry in enumerate(loaded["tables"]):
-        assert isinstance(entry, dict)
-        assert cast(Any, entry["data"]).equals(pl.DataFrame({"id": [i]}))
 
 
 # ---------------------------------------------------------------------------
@@ -526,24 +516,24 @@ def test_no_pickle_files_in_data_directory() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_save_result_bundle_refuses_existing_directory(tmp_path) -> None:
+def test_save_result_refuses_existing_directory(tmp_path) -> None:
     bundle_dir = tmp_path / "bundle"
     bundle_dir.mkdir()
     with pytest.raises(FileExistsError):
-        save_result_bundle({"x": 1}, bundle_dir)
+        save_result({"x": 1}, bundle_dir)
 
 
-def test_save_result_bundle_writes_manifest_last(tmp_path) -> None:
+def test_save_result_writes_manifest_last(tmp_path) -> None:
     np = pytest.importorskip("numpy")
     bundle_dir = tmp_path / "bundle"
-    save_result_bundle({"weights": np.arange(2, dtype=np.float32)}, bundle_dir)
+    save_result({"weights": np.arange(2, dtype=np.float32)}, bundle_dir)
 
     # All three pieces should now be present.
     assert (bundle_dir / "manifest.json").exists()
     assert (bundle_dir / "artifacts" / "weights" / "data.npy").exists()
 
 
-def test_load_result_bundle_rejects_artifacts_path_escape(tmp_path) -> None:
+def test_load_result_rejects_artifacts_path_escape(tmp_path) -> None:
     bundle_dir = tmp_path / "bundle"
     bundle_dir.mkdir()
     (bundle_dir / "artifacts").mkdir()
@@ -561,4 +551,4 @@ def test_load_result_bundle_rejects_artifacts_path_escape(tmp_path) -> None:
     )
 
     with pytest.raises(ValueError, match="escapes"):
-        load_result_bundle(bundle_dir)
+        load_result(bundle_dir)

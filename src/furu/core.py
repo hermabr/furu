@@ -11,7 +11,8 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, cast
 from furu.config import config
 from furu.locking import LockLostError, lock_many
 from furu.logging import get_logger
-from furu.result import load_result_bundle
+from furu.result import is_complete as result_is_complete
+from furu.result import load_result
 from furu.schema import schema_type as _schema_type
 from furu.serialize import to_json as _to_json
 from furu.utils import (
@@ -69,11 +70,11 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def is_completed(
         self,
     ) -> bool:  # TODO: maybe this should check the is self.status is completed? (in that case status cant check if self.is_completed)
-        return self._result_manifest_path.exists()
+        return result_is_complete(self._result_dir)
 
     def try_load(self) -> T:  # TODO: make a better name for this
-        if self._result_manifest_path.exists():
-            return cast(T, load_result_bundle(self._result_dir))
+        if result_is_complete(self._result_dir):
+            return cast(T, load_result(self._result_dir))
         raise NotImplementedError(
             "TODO: decide if i should throw or return error value"
         )

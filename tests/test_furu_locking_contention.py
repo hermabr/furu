@@ -12,7 +12,7 @@ from furu.locking import (
     LockAcquireError,
     LockLostError,
 )
-from furu.result import load_result_bundle
+from furu.result import load_result
 
 TEST_TIMING_SCALE = 4.0 if os.environ.get("GITHUB_ACTIONS") == "true" else 1.0
 OVERLAP_SLEEP_S = 0.01 * TEST_TIMING_SCALE
@@ -157,7 +157,7 @@ def test_two_processes_competing_for_same_furu_object(tmp_path):
     manifest_paths = list(data_dir.glob("**/result/manifest.json"))
     assert len(manifest_paths) == 1
     bundle_dir = manifest_paths[0].parent
-    assert load_result_bundle(bundle_dir) == 42
+    assert load_result(bundle_dir) == 42
     assert list(data_dir.glob("**/result.pkl")) == []
 
 

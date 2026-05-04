@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict
 import furu.execution as execution_module
 from furu import Furu, load_or_create, validate
 from furu.config import config
-from furu.result import load_result_bundle, save_result_bundle
+from furu.result import load_result, save_result
 from furu.serialize import to_json
 from furu.utils import fully_qualified_name
 
@@ -1062,7 +1062,7 @@ def test_pending_items_are_rechecked_after_lock_acquisition(
     @contextmanager
     def fake_lock_many(lock_paths: list[Path], **_: object):
         assert lock_paths == [pending._lock_path]
-        save_result_bundle("single:5", pending._result_dir)
+        save_result("single:5", pending._result_dir)
         yield lambda: True
 
     monkeypatch.setattr(execution_module, "lock_many", fake_lock_many)
@@ -1110,7 +1110,7 @@ def test_batched_compute_writes_result_layout_per_object() -> None:
         assert obj._result_manifest_path.exists()
         assert obj._metadata_path.exists()
         assert obj._log_path.exists()
-        assert load_result_bundle(obj._result_dir) == expected
+        assert load_result(obj._result_dir) == expected
 
 
 def test_batched_compute_writes_shared_logs_to_every_participant() -> None:
