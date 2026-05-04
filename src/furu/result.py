@@ -91,18 +91,18 @@ class NumpyNpyCodec(ResultCodec):
     ) -> JsonValue:
         import numpy as np
 
-        assert isinstance(value, np.ndarray)
-        if value.dtype.hasobject:
+        array = cast("np.ndarray[Any, Any]", value)
+        if array.dtype.hasobject:
             raise ValueError(
                 f"Unsupported result value at {_path_display(path)}:\n"
                 "numpy object-dtype arrays are not supported by the default npy codec."
             )
 
-        np.save(artifact_dir / "data.npy", value, allow_pickle=False)
+        np.save(artifact_dir / "data.npy", array, allow_pickle=False)
 
         return {
-            "shape": list(value.shape),
-            "dtype": str(value.dtype),
+            "shape": list(array.shape),
+            "dtype": str(array.dtype),
         }
 
     @classmethod
@@ -123,16 +123,6 @@ def default_codecs() -> dict[str, type[ResultCodec]]:
             continue
         codecs[codec_id] = codec
     return codecs
-
-
-def _codec_for_value(
-    value: object,
-    codecs: dict[str, type[ResultCodec]],
-) -> type[ResultCodec] | None:
-    for codec in codecs.values():
-        if codec.matches(value):
-            return codec
-    return None
 
 
 def _dump_value(
@@ -224,24 +214,24 @@ def _dump_value(
                 }
             }
         case _:
-            codec = _codec_for_value(value, codecs)
-            if codec is not None:
-                artifact_rel = (
-                    Path(ARTIFACTS_DIR_NAME) / _ROOT_ARTIFACT_NAME
-                    if not path
-                    else Path(ARTIFACTS_DIR_NAME, *path)
-                )
-                artifact_dir = bundle_dir / artifact_rel
-                artifact_dir.mkdir(parents=True, exist_ok=False)
-                meta = codec.dump(value, artifact_dir=artifact_dir, path=path)
-                return {
-                    WRAPPER_KEY: {
-                        "kind": "external",
-                        "codec": codec.codec_id(),
-                        "path": artifact_rel.as_posix(),
-                        "meta": meta,
+            for codec in codecs.values():
+                if codec.matches(value):
+                    artifact_rel = (
+                        Path(ARTIFACTS_DIR_NAME) / _ROOT_ARTIFACT_NAME
+                        if not path
+                        else Path(ARTIFACTS_DIR_NAME, *path)
+                    )
+                    artifact_dir = bundle_dir / artifact_rel
+                    artifact_dir.mkdir(parents=True, exist_ok=False)
+                    meta = codec.dump(value, artifact_dir=artifact_dir, path=path)
+                    return {
+                        WRAPPER_KEY: {
+                            "kind": "external",
+                            "codec": codec.codec_id(),
+                            "path": artifact_rel.as_posix(),
+                            "meta": meta,
+                        }
                     }
-                }
 
             raise ValueError(
                 f"Unsupported result value at {_path_display(path)}:\n"
@@ -266,7 +256,9 @@ def _load_value(
     if isinstance(node, dict):
         if WRAPPER_KEY in node:
             return _load_wrapper(
-                node[WRAPPER_KEY], bundle_dir=bundle_dir, codecs=codecs
+                cast(dict[str, Any], node[WRAPPER_KEY]),
+                bundle_dir=bundle_dir,
+                codecs=codecs,
             )
         return {
             key: _load_value(child, bundle_dir=bundle_dir, codecs=codecs)
@@ -277,31 +269,16 @@ def _load_value(
 
 
 def _load_wrapper(
-    body: JsonValue,
+    body: dict[str, Any],
     *,
     bundle_dir: Path,
     codecs: dict[str, type[ResultCodec]],
 ) -> object:
-    if not isinstance(body, dict):
-        raise ValueError(
-            f"malformed Furu wrapper: expected object, got {type(body).__name__}"
-        )
-
-    kind = body.get("kind")
-    if kind not in ("external", "dataclass", "pydantic"):
-        raise ValueError(f"malformed Furu wrapper: unknown kind {kind!r}")
-
-    kind = cast(WrapperKind, kind)
+    kind = cast(WrapperKind, body["kind"])
     match kind:
         case "external":
-            codec_id = body.get("codec")
-            if not isinstance(codec_id, str):
-                raise ValueError("malformed external wrapper: missing codec id")
-
-            rel_path = body.get("path")
-            if not isinstance(rel_path, str):
-                raise ValueError("malformed external wrapper: missing path")
-
+            codec_id: str = body["codec"]
+            rel_path: str = body["path"]
             artifact_rel = Path(rel_path)
             if artifact_rel.is_absolute():
                 raise ValueError(f"external wrapper path must be relative: {rel_path}")
@@ -322,21 +299,12 @@ def _load_wrapper(
 
             if codec_id not in codecs:
                 raise ValueError(f"unknown result codec: {codec_id}")
-            return codecs[codec_id].load(
-                artifact_dir=artifact_dir, meta=body.get("meta")
-            )
+            return codecs[codec_id].load(artifact_dir=artifact_dir, meta=body["meta"])
         case "dataclass":
-            type_name = body.get("type")
-            if not isinstance(type_name, str):
-                raise ValueError("malformed dataclass wrapper: missing type")
-            fields_node = body.get("fields")
-            if not isinstance(fields_node, dict):
-                raise ValueError("malformed dataclass wrapper: missing fields")
-
-            cls = _import_type(type_name)
+            cls = _import_type(body["type"])
             loaded_fields = {
                 name: _load_value(child, bundle_dir=bundle_dir, codecs=codecs)
-                for name, child in fields_node.items()
+                for name, child in body["fields"].items()
             }
 
             obj = object.__new__(cls)
@@ -344,17 +312,10 @@ def _load_wrapper(
                 object.__setattr__(obj, name, value)
             return obj
         case "pydantic":
-            type_name = body.get("type")
-            if not isinstance(type_name, str):
-                raise ValueError("malformed pydantic wrapper: missing type")
-            fields_node = body.get("fields")
-            if not isinstance(fields_node, dict):
-                raise ValueError("malformed pydantic wrapper: missing fields")
-
-            cls = _import_type(type_name)
+            cls = _import_type(body["type"])
             loaded_fields = {
                 name: _load_value(child, bundle_dir=bundle_dir, codecs=codecs)
-                for name, child in fields_node.items()
+                for name, child in body["fields"].items()
             }
             return cls.model_construct(**loaded_fields)
         case _:
@@ -362,16 +323,8 @@ def _load_wrapper(
 
 
 def _import_type(qualified_name: str) -> Any:
-    if "." not in qualified_name:
-        raise ValueError(f"cannot import unqualified type name: {qualified_name!r}")
     module_name, _, attr_name = qualified_name.rpartition(".")
-    module = importlib.import_module(module_name)
-    try:
-        return getattr(module, attr_name)
-    except AttributeError as exc:
-        raise ValueError(
-            f"cannot import {qualified_name!r}: attribute not found in module"
-        ) from exc
+    return getattr(importlib.import_module(module_name), attr_name)
 
 
 def save_result_bundle(value: object, bundle_dir: Path) -> None:
