@@ -14,7 +14,6 @@ import pydantic
 
 from furu.utils import JsonValue, fully_qualified_name
 
-
 WRAPPER_KEY: Final[str] = "$furu"
 ARTIFACTS_DIR_NAME: Final[str] = "artifacts"
 MANIFEST_FILE_NAME: Final[str] = "manifest.json"
@@ -91,12 +90,13 @@ class NumpyNpyCodec(ResultCodec):
     ) -> JsonValue:
         import numpy as np
 
-        array = cast("np.ndarray[Any, Any]", value)
-        np.save(artifact_dir / "data.npy", array, allow_pickle=False)
+        if not isinstance(value, np.ndarray):
+            raise ValueError
+        np.save(artifact_dir / "data.npy", value, allow_pickle=False)
 
         return {
-            "shape": list(array.shape),
-            "dtype": str(array.dtype),
+            "shape": list(value.shape),
+            "dtype": str(value.dtype),
         }
 
     @classmethod
@@ -268,7 +268,7 @@ def _load_wrapper(
     bundle_dir: Path,
     codecs: dict[str, type[ResultCodec]],
 ) -> object:
-    kind = cast(WrapperKind, body["kind"])
+    kind: WrapperKind = body["kind"]
     match kind:
         case "external":
             codec_id: str = body["codec"]
