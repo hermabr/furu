@@ -121,8 +121,12 @@ def _walk(value: Any, *, root_dir: Path, rel_path: tuple[str, ...]) -> Any:
                 "kind": "pydantic",
                 "type": fully_qualified_name(type(value)),
                 "fields": {
-                    _check_key(k): _walk(v, root_dir=root_dir, rel_path=(*rel_path, k))
-                    for k, v in value.model_dump().items()
+                    _check_key(name): _walk(
+                        getattr(value, name),
+                        root_dir=root_dir,
+                        rel_path=(*rel_path, name),
+                    )
+                    for name in type(value).model_fields
                 },
             }
         }
