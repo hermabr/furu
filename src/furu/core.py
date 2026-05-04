@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import pickle
 import shutil
 from abc import ABC
 from dataclasses import dataclass
@@ -73,8 +72,9 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     def try_load(self) -> T:  # TODO: make a better name for this
         if self._result_path.exists():
-            with self._result_path.open("rb") as f:
-                return pickle.load(f)
+            from furu.result import load_result
+
+            return load_result(self._result_path)
         raise NotImplementedError(
             "TODO: decide if i should throw or return error value"
         )
@@ -111,7 +111,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     @property
     def _result_path(self) -> Path:
-        return self.data_dir / "result.pkl"
+        return self.data_dir / "result"
 
     @property
     def logger(self) -> logging.Logger:

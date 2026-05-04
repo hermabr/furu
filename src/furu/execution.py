@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-import pickle
 import secrets
 import traceback
 from collections.abc import Callable, Sequence
@@ -14,6 +12,7 @@ from furu.core import Furu, FuruCreateMode
 from furu.locking import LockLostError, lock_many
 from furu.logging import _scoped_log_files
 from furu.metadata import RunningMetadata
+from furu.result import load_result, save_result
 from furu.utils import class_label
 
 type HasLock = Callable[[], bool]
@@ -61,18 +60,7 @@ def _store_result[T](
             f"lost lock at {obj._lock_path} before writing final result"
         )
 
-    tmp_result_path = obj._result_path.with_suffix(".pkl.tmp")
-    with tmp_result_path.open("wb") as f:
-        pickle.dump(result, f)
-        f.flush()
-        os.fsync(f.fileno())
-
-    if not has_lock():
-        raise LockLostError(
-            f"lost lock at {obj._lock_path} after writing temporary result"
-        )
-
-    tmp_result_path.rename(obj._result_path)
+    save_result(result, obj._result_path, has_lock=has_lock, lock_path=obj._lock_path)
     obj._metadata_path.write_text(metadata.to_complete().model_dump_json(indent=2))
     obj.logger.debug("stored result at %s", obj._result_path)
 
@@ -141,8 +129,7 @@ def load_or_create[T](
     for obj in unique:
         if obj._result_path.exists():
             obj.logger.info("cache hit for %s at %s", obj._log_label, obj._result_path)
-            with obj._result_path.open("rb") as f:
-                results_by_dir[obj.data_dir] = pickle.load(f)
+            results_by_dir[obj.data_dir] = load_result(obj._result_path)
         else:
             obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
             missing.append(obj)
@@ -163,8 +150,7 @@ def load_or_create[T](
                     obj._log_label,
                     obj._result_path,
                 )
-                with obj._result_path.open("rb") as f:
-                    results_by_dir[obj.data_dir] = pickle.load(f)
+                results_by_dir[obj.data_dir] = load_result(obj._result_path)
             else:
                 pending.append(obj)
 

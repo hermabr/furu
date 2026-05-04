@@ -1,7 +1,6 @@
 # TODO: make this test not vibe coded
 import json
 import os
-import pickle
 import time
 from multiprocessing import get_context
 from pathlib import Path
@@ -13,6 +12,7 @@ from furu.locking import (
     LockAcquireError,
     LockLostError,
 )
+from furu.result import load_result
 
 TEST_TIMING_SCALE = 4.0 if os.environ.get("GITHUB_ACTIONS") == "true" else 1.0
 OVERLAP_SLEEP_S = 0.01 * TEST_TIMING_SCALE
@@ -154,10 +154,9 @@ def test_two_processes_competing_for_same_furu_object(tmp_path):
     assert errs == []
     assert len(list(marker_dir.glob("*.marker"))) == 1
 
-    result_paths = list(data_dir.glob("**/result.pkl"))
+    result_paths = list(data_dir.glob("**/result"))
     assert len(result_paths) == 1
-    with result_paths[0].open("rb") as f:
-        assert pickle.load(f) == 42
+    assert load_result(result_paths[0]) == 42
 
 
 def test_overlapping_batch_acquisitions_do_not_deadlock_or_duplicate_compute(tmp_path):
@@ -200,7 +199,7 @@ def test_overlapping_batch_acquisitions_do_not_deadlock_or_duplicate_compute(tmp
     assert len(list(marker_dir.glob("1-*.marker"))) == 1
     assert len(list(marker_dir.glob("2-*.marker"))) == 1
     assert len(list(marker_dir.glob("3-*.marker"))) == 1
-    assert len(list(data_dir.glob("**/result.pkl"))) == 3
+    assert len(list(data_dir.glob("**/result"))) == 3
 
 
 def test_lock_is_taken_over_mid_create(tmp_path):
@@ -238,5 +237,5 @@ def test_lock_is_taken_over_mid_create(tmp_path):
     assert result[0] == "err"
     assert result[2] == LockLostError.__name__
     assert result[3].endswith("before writing final result")
-    assert list(data_dir.glob("**/result.pkl")) == []
+    assert list(data_dir.glob("**/result")) == []
     assert len(list(data_dir.glob("**/error-*.log"))) == 1
