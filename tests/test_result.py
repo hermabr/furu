@@ -337,7 +337,7 @@ def test_numpy_object_dtype_is_rejected(tmp_path) -> None:
     np = pytest.importorskip("numpy")
     bundle_dir = tmp_path / "bundle"
 
-    with pytest.raises(ValueError, match="object-dtype"):
+    with pytest.raises(ValueError, match="allow_pickle=False"):
         save_result_bundle(
             {"weights": np.array([object()], dtype=object)},
             bundle_dir,

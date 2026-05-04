@@ -92,12 +92,6 @@ class NumpyNpyCodec(ResultCodec):
         import numpy as np
 
         array = cast("np.ndarray[Any, Any]", value)
-        if array.dtype.hasobject:
-            raise ValueError(
-                f"Unsupported result value at {_path_display(path)}:\n"
-                "numpy object-dtype arrays are not supported by the default npy codec."
-            )
-
         np.save(artifact_dir / "data.npy", array, allow_pickle=False)
 
         return {
