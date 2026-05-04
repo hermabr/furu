@@ -1,20 +1,3 @@
-"""Stage 1 result persistence.
-
-A persisted result is a *bundle directory* with this layout::
-
-    bundle_dir/
-        manifest.json
-        artifacts/
-            <mirrored logical path>/
-                data.npy
-
-``manifest.json`` directly contains the persisted root value. There is no
-envelope. A result is considered complete when ``manifest.json`` exists.
-
-Stage 1 supports JSON-native scalars/lists/dicts, dataclass instances,
-Pydantic model instances, and an external NumPy codec.
-"""
-
 from __future__ import annotations
 
 import dataclasses
@@ -575,11 +558,11 @@ def save_result_bundle(value: object, bundle_dir: Path) -> None:
     _write_manifest(bundle_dir / MANIFEST_FILE_NAME, manifest)
 
 
-def load_result_bundle(bundle_dir: Path) -> object:
+def load_result_bundle[T](bundle_dir: Path) -> T:
     manifest_path = bundle_dir / MANIFEST_FILE_NAME
     raw = json.loads(manifest_path.read_text(encoding="utf-8"))
     codecs = default_codecs()
-    return _load_value(raw, bundle_dir=bundle_dir, codecs=codecs)
+    return cast(T, _load_value(raw, bundle_dir=bundle_dir, codecs=codecs))
 
 
 def result_bundle_is_complete(bundle_dir: Path) -> bool:

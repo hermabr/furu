@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import secrets
-import shutil
 import traceback
 from collections.abc import Callable, Sequence
 from contextlib import nullcontext
@@ -63,24 +62,19 @@ def _store_result[T](
 
     tmp_result_dir = _nfs_safe_unique_name(obj._result_dir, name="tmp")
 
-    try:
-        save_result_bundle(result, tmp_result_dir)
+    save_result_bundle(result, tmp_result_dir)
 
-        if not has_lock():
-            raise LockLostError(
-                f"lost lock at {obj._lock_path} after writing temporary result"
-            )
+    if not has_lock():
+        raise LockLostError(
+            f"lost lock at {obj._lock_path} after writing temporary result"
+        )
 
-        tmp_result_dir.rename(obj._result_dir)
+    tmp_result_dir.rename(obj._result_dir)
 
-        metadata_text = metadata.to_complete().model_dump_json(indent=2)
-        obj._metadata_path.write_text(metadata_text)
+    metadata_text = metadata.to_complete().model_dump_json(indent=2)
+    obj._metadata_path.write_text(metadata_text)
 
-        obj.logger.debug("stored result bundle at %s", obj._result_dir)
-    except BaseException:
-        if tmp_result_dir.exists():
-            shutil.rmtree(tmp_result_dir, ignore_errors=True)
-        raise
+    obj.logger.debug("stored result bundle at %s", obj._result_dir)
 
 
 def _write_error_logs[T](objs: Sequence[Furu[T]], exc: BaseException) -> None:
