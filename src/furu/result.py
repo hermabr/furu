@@ -91,7 +91,7 @@ class NumpyNpyCodec(ResultCodec):
     ) -> JsonValue:
         import numpy as np
 
-        value = cast(Any, value)
+        assert isinstance(value, np.ndarray)
         if value.dtype.hasobject:
             raise ValueError(
                 f"Unsupported result value at {_path_display(path)}:\n"
@@ -115,12 +115,10 @@ class NumpyNpyCodec(ResultCodec):
 @cache
 def default_codecs() -> dict[str, type[ResultCodec]]:
     codecs: dict[str, type[ResultCodec]] = {}
-    codec_ids: set[str] = set()
     for codec in (NumpyNpyCodec,):
         codec_id = codec.codec_id()
-        if codec_id in codec_ids:
+        if codec_id in codecs:
             raise ValueError(f"duplicate result codec id: {codec_id}")
-        codec_ids.add(codec_id)
         if not codec.dependencies_available():
             continue
         codecs[codec_id] = codec
@@ -135,16 +133,6 @@ def _codec_for_value(
         if codec.matches(value):
             return codec
     return None
-
-
-def _codec_by_id(
-    codec_id: str,
-    codecs: dict[str, type[ResultCodec]],
-) -> type[ResultCodec]:
-    try:
-        return codecs[codec_id]
-    except KeyError as exc:
-        raise ValueError(f"unknown result codec: {codec_id}") from exc
 
 
 def _dump_value(
@@ -332,7 +320,9 @@ def _load_wrapper(
                     f"external wrapper artifact directory missing: {artifact_dir}"
                 )
 
-            return _codec_by_id(codec_id, codecs).load(
+            if codec_id not in codecs:
+                raise ValueError(f"unknown result codec: {codec_id}")
+            return codecs[codec_id].load(
                 artifact_dir=artifact_dir, meta=body.get("meta")
             )
         case "dataclass":
@@ -344,11 +334,6 @@ def _load_wrapper(
                 raise ValueError("malformed dataclass wrapper: missing fields")
 
             cls = _import_type(type_name)
-            if not (dataclasses.is_dataclass(cls) and isinstance(cls, type)):
-                raise ValueError(
-                    f"manifest declared dataclass type {type_name!r}, but it is not a dataclass"
-                )
-
             loaded_fields = {
                 name: _load_value(child, bundle_dir=bundle_dir, codecs=codecs)
                 for name, child in fields_node.items()
@@ -367,11 +352,6 @@ def _load_wrapper(
                 raise ValueError("malformed pydantic wrapper: missing fields")
 
             cls = _import_type(type_name)
-            if not (isinstance(cls, type) and issubclass(cls, pydantic.BaseModel)):
-                raise ValueError(
-                    f"manifest declared pydantic type {type_name!r}, but it is not a BaseModel subclass"
-                )
-
             loaded_fields = {
                 name: _load_value(child, bundle_dir=bundle_dir, codecs=codecs)
                 for name, child in fields_node.items()
