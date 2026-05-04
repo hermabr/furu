@@ -59,7 +59,6 @@ class ResultCodec(ABC):
         value: object,
         *,
         artifact_dir: Path,
-        path: LogicalPath,
     ) -> JsonValue:
         pass
 
@@ -86,7 +85,6 @@ class NumpyNpyCodec(ResultCodec):
         value: object,
         *,
         artifact_dir: Path,
-        path: LogicalPath,
     ) -> JsonValue:
         import numpy as np
 
@@ -217,7 +215,7 @@ def _dump_value(
                     )
                     artifact_dir = bundle_dir / artifact_rel
                     artifact_dir.mkdir(parents=True, exist_ok=False)
-                    meta = codec.dump(value, artifact_dir=artifact_dir, path=path)
+                    meta = codec.dump(value, artifact_dir=artifact_dir)
                     return {
                         WRAPPER_KEY: {
                             "kind": "external",
@@ -268,7 +266,7 @@ def _load_wrapper(
     bundle_dir: Path,
     codecs: dict[str, type[ResultCodec]],
 ) -> object:
-    kind: WrapperKind = body["kind"]
+    kind = cast(WrapperKind, body["kind"])
     match kind:
         case "external":
             codec_id: str = body["codec"]
