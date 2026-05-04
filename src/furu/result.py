@@ -5,9 +5,10 @@ import importlib
 import importlib.util
 import json
 import os
+from abc import ABC, abstractmethod
 from functools import cache
 from pathlib import Path
-from typing import Any, ClassVar, Final, Literal, Protocol, assert_never, cast
+from typing import Any, Final, Literal, assert_never, cast
 
 import pydantic
 
@@ -38,32 +39,38 @@ def _is_safe_path_segment(text: str) -> bool:
     return True
 
 
-class ResultCodec(Protocol):
-    codec_id: ClassVar[str]
+class ResultCodec(ABC):
+    @classmethod
+    def codec_id(cls) -> str:
+        return fully_qualified_name(cls)
 
     @classmethod
     def dependencies_available(cls) -> bool:
         return True
 
     @classmethod
-    def matches(cls, value: object) -> bool: ...
+    @abstractmethod
+    def matches(cls, value: object) -> bool:
+        pass
 
     @classmethod
+    @abstractmethod
     def dump(
         cls,
         value: object,
         *,
         artifact_dir: Path,
         path: LogicalPath,
-    ) -> JsonValue: ...
+    ) -> JsonValue:
+        pass
 
     @classmethod
-    def load(cls, *, artifact_dir: Path, meta: JsonValue) -> object: ...
+    @abstractmethod
+    def load(cls, *, artifact_dir: Path, meta: JsonValue) -> object:
+        pass
 
 
-class NumpyNpyCodec:
-    codec_id: ClassVar[str] = "numpy.ndarray.npy"
-
+class NumpyNpyCodec(ResultCodec):
     @classmethod
     def dependencies_available(cls) -> bool:
         return importlib.util.find_spec("numpy") is not None
@@ -110,12 +117,13 @@ def default_codecs() -> dict[str, type[ResultCodec]]:
     codecs: dict[str, type[ResultCodec]] = {}
     codec_ids: set[str] = set()
     for codec in (NumpyNpyCodec,):
-        if codec.codec_id in codec_ids:
-            raise ValueError(f"duplicate result codec id: {codec.codec_id}")
-        codec_ids.add(codec.codec_id)
+        codec_id = codec.codec_id()
+        if codec_id in codec_ids:
+            raise ValueError(f"duplicate result codec id: {codec_id}")
+        codec_ids.add(codec_id)
         if not codec.dependencies_available():
             continue
-        codecs[codec.codec_id] = codec
+        codecs[codec_id] = codec
     return codecs
 
 
@@ -241,7 +249,7 @@ def _dump_value(
                 return {
                     WRAPPER_KEY: {
                         "kind": "external",
-                        "codec": codec.codec_id,
+                        "codec": codec.codec_id(),
                         "path": artifact_rel.as_posix(),
                         "meta": meta,
                     }

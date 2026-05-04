@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict
 
 from furu import Furu
 from furu.result import (
+    NumpyNpyCodec,
     load_result_bundle,
     save_result_bundle,
 )
@@ -322,7 +323,9 @@ def test_numpy_array_round_trips() -> None:
 
     manifest = json.loads(obj._result_manifest_path.read_text())
     assert manifest["weights"]["$furu"]["kind"] == "external"
-    assert manifest["weights"]["$furu"]["codec"] == "numpy.ndarray.npy"
+    assert manifest["weights"]["$furu"]["codec"] == (
+        f"{NumpyNpyCodec.__module__}.{NumpyNpyCodec.__qualname__}"
+    )
     assert manifest["weights"]["$furu"]["path"] == "artifacts/weights"
     assert manifest["weights"]["$furu"]["meta"] == {
         "shape": [10],
@@ -458,7 +461,7 @@ def test_load_result_bundle_rejects_artifacts_path_escape(tmp_path) -> None:
             {
                 "$furu": {
                     "kind": "external",
-                    "codec": "numpy.ndarray.npy",
+                    "codec": f"{NumpyNpyCodec.__module__}.{NumpyNpyCodec.__qualname__}",
                     "path": "../../../etc/passwd",
                     "meta": {"shape": [], "dtype": "float32"},
                 }
