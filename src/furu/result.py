@@ -1,7 +1,5 @@
 """Stage 1 result persistence.
 
-This module is the single home for Furu's new on-disk result format.
-
 A persisted result is a *bundle directory* with this layout::
 
     bundle_dir/
@@ -9,14 +7,12 @@ A persisted result is a *bundle directory* with this layout::
         artifacts/
             <mirrored logical path>/
                 data.npy
-                data.parquet
 
-`manifest.json` directly contains the persisted root value. There is no
-envelope. A result is considered complete when `manifest.json` exists.
+``manifest.json`` directly contains the persisted root value. There is no
+envelope. A result is considered complete when ``manifest.json`` exists.
 
 Stage 1 supports JSON-native scalars/lists/dicts, dataclass instances,
-Pydantic model instances, plus optional external codecs for NumPy arrays
-and Polars DataFrames.
+Pydantic model instances, and an external NumPy codec.
 """
 
 from __future__ import annotations
@@ -25,10 +21,8 @@ import dataclasses
 import importlib
 import json
 import os
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, Final, cast
+from typing import Any, ClassVar, Final, Protocol, cast
 
 import pydantic
 
@@ -44,94 +38,26 @@ ARTIFACTS_DIR_NAME: Final[str] = "artifacts"
 # Filename containing the manifest tree.
 MANIFEST_FILE_NAME: Final[str] = "manifest.json"
 
-# Logical path string used at the bundle root.
-_ROOT_DISPLAY: Final[str] = "$"
-
 # Artifact subdirectory used when the bundle root is a single external value.
 _ROOT_ARTIFACT_NAME: Final[str] = "root"
 
 
-# ---------------------------------------------------------------------------
-# Logical paths
-# ---------------------------------------------------------------------------
+# A logical path inside a result tree. Each element is the literal string
+# used as a directory component under ``artifacts/``. List indices are
+# formatted with zero-padded width based on the surrounding list length.
+LogicalPath = tuple[str, ...]
 
 
-@dataclass(frozen=True)
-class _KeySegment:
-    key: str
+def _path_display(path: LogicalPath) -> str:
+    if not path:
+        return "<root>"
+    return "/".join(path)
 
 
-@dataclass(frozen=True)
-class _IndexSegment:
-    index: int
-    width: int
-
-
-@dataclass(frozen=True)
-class _FieldSegment:
-    name: str
-
-
-_Segment = _KeySegment | _IndexSegment | _FieldSegment
-
-
-@dataclass(frozen=True)
-class LogicalPath:
-    """A small immutable path describing a position inside a result tree.
-
-    Used for both the human-readable display string in error messages and
-    the on-disk artifact directory under ``bundle_dir/artifacts/``.
-    """
-
-    parts: tuple[_Segment, ...] = ()
-
-    def key(self, key: str) -> "LogicalPath":
-        return LogicalPath(self.parts + (_KeySegment(key),))
-
-    def index(self, index: int, *, width: int) -> "LogicalPath":
-        return LogicalPath(self.parts + (_IndexSegment(index, width),))
-
-    def field(self, name: str) -> "LogicalPath":
-        return LogicalPath(self.parts + (_FieldSegment(name),))
-
-    def display(self) -> str:
-        if not self.parts:
-            return _ROOT_DISPLAY
-
-        chunks: list[str] = [_ROOT_DISPLAY]
-        for part in self.parts:
-            match part:
-                case _KeySegment(key):
-                    if _is_safe_path_segment(key) and _is_simple_identifier(key):
-                        chunks.append(f".{key}")
-                    else:
-                        chunks.append(f"[{json.dumps(key)}]")
-                case _IndexSegment(index, width):
-                    chunks.append(f"[{index:0{width}d}]")
-                case _FieldSegment(name):
-                    chunks.append(f".{name}")
-        return "".join(chunks)
-
-    def artifact_dir(self) -> Path:
-        if not self.parts:
-            return Path(ARTIFACTS_DIR_NAME) / _ROOT_ARTIFACT_NAME
-
-        segments: list[str] = [ARTIFACTS_DIR_NAME]
-        for part in self.parts:
-            match part:
-                case _KeySegment(key):
-                    segments.append(key)
-                case _IndexSegment(index, width):
-                    segments.append(f"{index:0{width}d}")
-                case _FieldSegment(name):
-                    segments.append(name)
-        return Path(*segments)
-
-
-def _is_simple_identifier(text: str) -> bool:
-    """Whether a key can be displayed as ``$.foo`` rather than ``$["foo"]``."""
-
-    return bool(text) and text.isidentifier()
+def _path_artifact_dir(path: LogicalPath) -> Path:
+    if not path:
+        return Path(ARTIFACTS_DIR_NAME) / _ROOT_ARTIFACT_NAME
+    return Path(ARTIFACTS_DIR_NAME, *path)
 
 
 def _is_safe_path_segment(text: str) -> bool:
@@ -151,12 +77,12 @@ def _is_safe_path_segment(text: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Codec protocol and registry
+# Codec protocol and built-in codecs
 # ---------------------------------------------------------------------------
 
 
-class ResultCodec(ABC):
-    """A built-in external result codec.
+class ResultCodec(Protocol):
+    """An external result codec.
 
     A codec knows how to dump a value to a directory and load it back.
     Stage 1 has only built-in codecs; there is no public registration API.
@@ -164,11 +90,10 @@ class ResultCodec(ABC):
 
     codec_id: ClassVar[str]
 
-    @abstractmethod
     def matches(self, value: object) -> bool:
         """Whether this codec should be used for ``value``."""
+        ...
 
-    @abstractmethod
     def dump(
         self,
         value: object,
@@ -177,52 +102,21 @@ class ResultCodec(ABC):
         path: LogicalPath,
     ) -> JsonValue:
         """Persist ``value`` under ``artifact_dir`` and return manifest meta."""
+        ...
 
-    @abstractmethod
     def load(self, *, artifact_dir: Path, meta: JsonValue) -> object:
         """Reconstruct the value from ``artifact_dir`` and ``meta``."""
+        ...
 
 
-class ResultRegistry:
-    """Internal registry mapping values and codec IDs to ``ResultCodec`` instances."""
-
-    def __init__(self) -> None:
-        self._codecs: list[ResultCodec] = []
-        self._by_id: dict[str, ResultCodec] = {}
-
-    def register(self, codec: ResultCodec) -> None:
-        if codec.codec_id in self._by_id:
-            raise ValueError(f"codec already registered: {codec.codec_id}")
-        self._codecs.append(codec)
-        self._by_id[codec.codec_id] = codec
-
-    def codec_for_value(self, value: object) -> ResultCodec | None:
-        for codec in self._codecs:
-            if codec.matches(value):
-                return codec
-        return None
-
-    def codec_by_id(self, codec_id: str) -> ResultCodec:
-        try:
-            return self._by_id[codec_id]
-        except KeyError:
-            raise ValueError(f"unknown result codec: {codec_id}") from None
-
-
-# ---------------------------------------------------------------------------
-# Built-in codecs
-# ---------------------------------------------------------------------------
-
-
-class NumpyNpyCodec(ResultCodec):
+class NumpyNpyCodec:
     """Persist NumPy arrays as ``data.npy`` files."""
 
     codec_id: ClassVar[str] = "numpy.ndarray.npy"
 
     def __init__(self) -> None:
         # Importing here so the codec class can be defined unconditionally
-        # but ``default_result_registry()`` skips registration when NumPy
-        # is unavailable.
+        # but ``default_codecs()`` skips registration when NumPy is missing.
         import numpy as np  # noqa: F401  (import-time dependency check)
 
     def matches(self, value: object) -> bool:
@@ -244,7 +138,7 @@ class NumpyNpyCodec(ResultCodec):
         assert isinstance(value, np.ndarray)
         if value.dtype.hasobject:
             raise ValueError(
-                f"Unsupported result value at {path.display()}:\n"
+                f"Unsupported result value at {_path_display(path)}:\n"
                 "numpy object-dtype arrays are not supported by the default npy codec."
             )
 
@@ -262,62 +156,29 @@ class NumpyNpyCodec(ResultCodec):
         return np.load(artifact_dir / "data.npy", allow_pickle=False)
 
 
-class PolarsParquetCodec(ResultCodec):
-    """Persist Polars DataFrames as ``data.parquet`` files."""
+def default_codecs() -> list[ResultCodec]:
+    """Return the default codec list, skipping codecs whose libraries are missing."""
 
-    codec_id: ClassVar[str] = "polars.dataframe.parquet"
-
-    def __init__(self) -> None:
-        import polars as pl  # noqa: F401
-
-    def matches(self, value: object) -> bool:
-        try:
-            import polars as pl
-        except ImportError:
-            return False
-        # ``LazyFrame`` is intentionally not supported in Stage 1.
-        return isinstance(value, pl.DataFrame)
-
-    def dump(
-        self,
-        value: object,
-        *,
-        artifact_dir: Path,
-        path: LogicalPath,
-    ) -> JsonValue:
-        import polars as pl
-
-        assert isinstance(value, pl.DataFrame)
-        artifact_dir.mkdir(parents=True, exist_ok=False)
-        value.write_parquet(artifact_dir / "data.parquet")
-
-        return {
-            "rows": value.height,
-            "columns": list(value.columns),
-        }
-
-    def load(self, *, artifact_dir: Path, meta: JsonValue) -> object:
-        import polars as pl
-
-        return pl.read_parquet(artifact_dir / "data.parquet")
-
-
-def default_result_registry() -> ResultRegistry:
-    """Build the default registry, skipping codecs whose libraries are missing."""
-
-    registry = ResultRegistry()
-
+    codecs: list[ResultCodec] = []
     try:
-        registry.register(NumpyNpyCodec())
+        codecs.append(NumpyNpyCodec())
     except ImportError:
         pass
+    return codecs
 
-    try:
-        registry.register(PolarsParquetCodec())
-    except ImportError:
-        pass
 
-    return registry
+def _codec_for_value(value: object, codecs: list[ResultCodec]) -> ResultCodec | None:
+    for codec in codecs:
+        if codec.matches(value):
+            return codec
+    return None
+
+
+def _codec_by_id(codec_id: str, codecs: list[ResultCodec]) -> ResultCodec:
+    for codec in codecs:
+        if codec.codec_id == codec_id:
+            return codec
+    raise ValueError(f"unknown result codec: {codec_id}")
 
 
 # ---------------------------------------------------------------------------
@@ -325,28 +186,12 @@ def default_result_registry() -> ResultRegistry:
 # ---------------------------------------------------------------------------
 
 
-def dump_result_tree(
-    value: object,
-    *,
-    bundle_dir: Path,
-    registry: ResultRegistry,
-) -> JsonValue:
-    """Walk ``value`` and emit the manifest tree, writing artifacts as needed."""
-
-    return _dump_value(
-        value,
-        path=LogicalPath(),
-        bundle_dir=bundle_dir,
-        registry=registry,
-    )
-
-
 def _dump_value(
     value: object,
     *,
     path: LogicalPath,
     bundle_dir: Path,
-    registry: ResultRegistry,
+    codecs: list[ResultCodec],
 ) -> JsonValue:
     # Order matters: bool is a subclass of int, so check it explicitly.
     if value is None or isinstance(value, bool):
@@ -359,7 +204,7 @@ def _dump_value(
             cast(list[object], value),
             path=path,
             bundle_dir=bundle_dir,
-            registry=registry,
+            codecs=codecs,
         )
 
     if isinstance(value, dict):
@@ -367,28 +212,24 @@ def _dump_value(
             cast(dict[object, object], value),
             path=path,
             bundle_dir=bundle_dir,
-            registry=registry,
+            codecs=codecs,
         )
 
     # Pydantic and dataclass instances are *structural* containers. Pydantic
     # is checked first because a model can technically also be a dataclass
     # subclass in some configurations.
     if isinstance(value, pydantic.BaseModel):
-        return _dump_pydantic(
-            value, path=path, bundle_dir=bundle_dir, registry=registry
-        )
+        return _dump_pydantic(value, path=path, bundle_dir=bundle_dir, codecs=codecs)
 
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return _dump_dataclass(
-            value, path=path, bundle_dir=bundle_dir, registry=registry
-        )
+        return _dump_dataclass(value, path=path, bundle_dir=bundle_dir, codecs=codecs)
 
-    codec = registry.codec_for_value(value)
+    codec = _codec_for_value(value, codecs)
     if codec is not None:
         return _dump_external(value, codec=codec, path=path, bundle_dir=bundle_dir)
 
     raise ValueError(
-        f"Unsupported result value at {path.display()}:\n"
+        f"Unsupported result value at {_path_display(path)}:\n"
         f"values of type {type(value).__name__!r} are not supported by Furu Stage 1."
     )
 
@@ -398,15 +239,15 @@ def _dump_list(
     *,
     path: LogicalPath,
     bundle_dir: Path,
-    registry: ResultRegistry,
+    codecs: list[ResultCodec],
 ) -> list[JsonValue]:
     width = max(len(str(len(value))), 1)
     return [
         _dump_value(
             item,
-            path=path.index(i, width=width),
+            path=(*path, f"{i:0{width}d}"),
             bundle_dir=bundle_dir,
-            registry=registry,
+            codecs=codecs,
         )
         for i, item in enumerate(value)
     ]
@@ -417,31 +258,30 @@ def _dump_dict(
     *,
     path: LogicalPath,
     bundle_dir: Path,
-    registry: ResultRegistry,
+    codecs: list[ResultCodec],
 ) -> dict[str, JsonValue]:
     out: dict[str, JsonValue] = {}
     for key, child in value.items():
         if not isinstance(key, str):
             raise ValueError(
-                f"Unsupported result value at {path.display()}:\n"
+                f"Unsupported result value at {_path_display(path)}:\n"
                 f"dict result keys must be strings in Stage 1; got {type(key).__name__} key {key!r}."
             )
         if key == WRAPPER_KEY:
             raise ValueError(
-                f"Unsupported result value at {path.display()}:\n"
+                f"Unsupported result value at {_path_display(path)}:\n"
                 f"dict keys named {WRAPPER_KEY!r} are reserved by Furu result persistence."
             )
-        child_path = path.key(key)
         if not _is_safe_path_segment(key):
             raise ValueError(
-                f"Unsupported result path at {child_path.display()}:\n"
+                f"Unsupported result path at {_path_display((*path, key))}:\n"
                 "dict key cannot be used as an artifact path segment."
             )
         out[key] = _dump_value(
             child,
-            path=child_path,
+            path=(*path, key),
             bundle_dir=bundle_dir,
-            registry=registry,
+            codecs=codecs,
         )
     return out
 
@@ -451,21 +291,21 @@ def _dump_dataclass(
     *,
     path: LogicalPath,
     bundle_dir: Path,
-    registry: ResultRegistry,
+    codecs: list[ResultCodec],
 ) -> dict[str, JsonValue]:
     type_name = fully_qualified_name(type(value))
     fields_out: dict[str, JsonValue] = {}
     for field in dataclasses.fields(cast(Any, value)):
         if not _is_safe_path_segment(field.name):
             raise ValueError(
-                f"Unsupported result path at {path.field(field.name).display()}:\n"
+                f"Unsupported result path at {_path_display((*path, field.name))}:\n"
                 "dataclass field name cannot be used as an artifact path segment."
             )
         fields_out[field.name] = _dump_value(
             getattr(value, field.name),
-            path=path.field(field.name),
+            path=(*path, field.name),
             bundle_dir=bundle_dir,
-            registry=registry,
+            codecs=codecs,
         )
     return {
         WRAPPER_KEY: {
@@ -481,24 +321,24 @@ def _dump_pydantic(
     *,
     path: LogicalPath,
     bundle_dir: Path,
-    registry: ResultRegistry,
+    codecs: list[ResultCodec],
 ) -> dict[str, JsonValue]:
     type_name = fully_qualified_name(type(value))
     fields_out: dict[str, JsonValue] = {}
     # Walk actual field values via ``getattr``, not ``model_dump()``, so that
-    # non-JSON leaves (NumPy arrays, Polars frames) survive long enough for
-    # the result walker to dispatch them to the right codec.
+    # non-JSON leaves (NumPy arrays) survive long enough for the result
+    # walker to dispatch them to the right codec.
     for name in value.__class__.model_fields:
         if not _is_safe_path_segment(name):
             raise ValueError(
-                f"Unsupported result path at {path.field(name).display()}:\n"
+                f"Unsupported result path at {_path_display((*path, name))}:\n"
                 "pydantic field name cannot be used as an artifact path segment."
             )
         fields_out[name] = _dump_value(
             getattr(value, name),
-            path=path.field(name),
+            path=(*path, name),
             bundle_dir=bundle_dir,
-            registry=registry,
+            codecs=codecs,
         )
     return {
         WRAPPER_KEY: {
@@ -516,7 +356,7 @@ def _dump_external(
     path: LogicalPath,
     bundle_dir: Path,
 ) -> dict[str, JsonValue]:
-    artifact_rel = path.artifact_dir()
+    artifact_rel = _path_artifact_dir(path)
     artifact_dir = bundle_dir / artifact_rel
     meta = codec.dump(value, artifact_dir=artifact_dir, path=path)
     return {
@@ -534,39 +374,27 @@ def _dump_external(
 # ---------------------------------------------------------------------------
 
 
-def load_result_tree(
-    node: JsonValue,
-    *,
-    bundle_dir: Path,
-    registry: ResultRegistry,
-) -> object:
-    """Reconstruct a Python value from a manifest JSON tree."""
-
-    return _load_value(node, bundle_dir=bundle_dir, registry=registry)
-
-
 def _load_value(
     node: JsonValue,
     *,
     bundle_dir: Path,
-    registry: ResultRegistry,
+    codecs: list[ResultCodec],
 ) -> object:
     if node is None or isinstance(node, (bool, int, float, str)):
         return node
 
     if isinstance(node, list):
         return [
-            _load_value(child, bundle_dir=bundle_dir, registry=registry)
-            for child in node
+            _load_value(child, bundle_dir=bundle_dir, codecs=codecs) for child in node
         ]
 
     if isinstance(node, dict):
         if WRAPPER_KEY in node:
             return _load_wrapper(
-                node[WRAPPER_KEY], bundle_dir=bundle_dir, registry=registry
+                node[WRAPPER_KEY], bundle_dir=bundle_dir, codecs=codecs
             )
         return {
-            key: _load_value(child, bundle_dir=bundle_dir, registry=registry)
+            key: _load_value(child, bundle_dir=bundle_dir, codecs=codecs)
             for key, child in node.items()
         }
 
@@ -577,7 +405,7 @@ def _load_wrapper(
     body: JsonValue,
     *,
     bundle_dir: Path,
-    registry: ResultRegistry,
+    codecs: list[ResultCodec],
 ) -> object:
     if not isinstance(body, dict):
         raise ValueError(
@@ -586,11 +414,11 @@ def _load_wrapper(
 
     kind = body.get("kind")
     if kind == "external":
-        return _load_external(body, bundle_dir=bundle_dir, registry=registry)
+        return _load_external(body, bundle_dir=bundle_dir, codecs=codecs)
     if kind == "dataclass":
-        return _load_dataclass(body, bundle_dir=bundle_dir, registry=registry)
+        return _load_dataclass(body, bundle_dir=bundle_dir, codecs=codecs)
     if kind == "pydantic":
-        return _load_pydantic(body, bundle_dir=bundle_dir, registry=registry)
+        return _load_pydantic(body, bundle_dir=bundle_dir, codecs=codecs)
     raise ValueError(f"malformed Furu wrapper: unknown kind {kind!r}")
 
 
@@ -598,7 +426,7 @@ def _load_external(
     body: dict[str, JsonValue],
     *,
     bundle_dir: Path,
-    registry: ResultRegistry,
+    codecs: list[ResultCodec],
 ) -> object:
     codec_id = body.get("codec")
     if not isinstance(codec_id, str):
@@ -613,7 +441,6 @@ def _load_external(
         raise ValueError(f"external wrapper path must be relative: {rel_path}")
 
     artifact_dir = (bundle_dir / artifact_rel).resolve()
-    bundle_root = bundle_dir.resolve()
     artifacts_root = (bundle_dir / ARTIFACTS_DIR_NAME).resolve()
     try:
         artifact_dir.relative_to(artifacts_root)
@@ -621,21 +448,20 @@ def _load_external(
         raise ValueError(
             f"external wrapper path escapes bundle artifacts dir: {rel_path}"
         ) from exc
-    # Defense in depth - make sure we never read above the bundle either.
-    artifact_dir.relative_to(bundle_root)
 
     if not artifact_dir.exists():
         raise ValueError(f"external wrapper artifact directory missing: {artifact_dir}")
 
-    codec = registry.codec_by_id(codec_id)
-    return codec.load(artifact_dir=artifact_dir, meta=body.get("meta"))
+    return _codec_by_id(codec_id, codecs).load(
+        artifact_dir=artifact_dir, meta=body.get("meta")
+    )
 
 
 def _load_dataclass(
     body: dict[str, JsonValue],
     *,
     bundle_dir: Path,
-    registry: ResultRegistry,
+    codecs: list[ResultCodec],
 ) -> object:
     type_name = body.get("type")
     if not isinstance(type_name, str):
@@ -651,7 +477,7 @@ def _load_dataclass(
         )
 
     loaded_fields = {
-        name: _load_value(child, bundle_dir=bundle_dir, registry=registry)
+        name: _load_value(child, bundle_dir=bundle_dir, codecs=codecs)
         for name, child in fields_node.items()
     }
 
@@ -667,7 +493,7 @@ def _load_pydantic(
     body: dict[str, JsonValue],
     *,
     bundle_dir: Path,
-    registry: ResultRegistry,
+    codecs: list[ResultCodec],
 ) -> object:
     type_name = body.get("type")
     if not isinstance(type_name, str):
@@ -683,7 +509,7 @@ def _load_pydantic(
         )
 
     loaded_fields = {
-        name: _load_value(child, bundle_dir=bundle_dir, registry=registry)
+        name: _load_value(child, bundle_dir=bundle_dir, codecs=codecs)
         for name, child in fields_node.items()
     }
     return cls.model_construct(**loaded_fields)
@@ -720,26 +546,22 @@ def save_result_bundle(value: object, bundle_dir: Path) -> None:
     bundle_dir.mkdir(parents=True)
     (bundle_dir / ARTIFACTS_DIR_NAME).mkdir()
 
-    registry = default_result_registry()
+    codecs = default_codecs()
 
-    try:
-        manifest = dump_result_tree(
-            value,
-            bundle_dir=bundle_dir,
-            registry=registry,
-        )
-        _write_manifest(bundle_dir / MANIFEST_FILE_NAME, manifest)
-    except BaseException:
-        # If anything goes wrong we leave no half-written manifest behind.
-        # The caller is responsible for removing the partial directory.
-        raise
+    manifest = _dump_value(
+        value,
+        path=(),
+        bundle_dir=bundle_dir,
+        codecs=codecs,
+    )
+    _write_manifest(bundle_dir / MANIFEST_FILE_NAME, manifest)
 
 
 def load_result_bundle(bundle_dir: Path) -> object:
     manifest_path = bundle_dir / MANIFEST_FILE_NAME
     raw = json.loads(manifest_path.read_text(encoding="utf-8"))
-    registry = default_result_registry()
-    return load_result_tree(raw, bundle_dir=bundle_dir, registry=registry)
+    codecs = default_codecs()
+    return _load_value(raw, bundle_dir=bundle_dir, codecs=codecs)
 
 
 def result_bundle_is_complete(bundle_dir: Path) -> bool:
@@ -754,9 +576,7 @@ def _write_manifest(manifest_path: Path, manifest: JsonValue) -> None:
     through ``json.loads``.
     """
 
-    text = json.dumps(manifest, indent=2, sort_keys=True)
-    fd = os.open(manifest_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(text)
+    with manifest_path.open("w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2)
         f.flush()
         os.fsync(f.fileno())

@@ -15,7 +15,6 @@ dependencies = [
 [project.optional-dependencies]
 result-codecs = [
     "numpy",
-    "polars",
 ]
 
 [project.entry-points.pytest11]
@@ -29,7 +28,6 @@ build-backend = "uv_build"
 dev = [
     "ipython>=9.10.0",
     "numpy>=2.0",
-    "polars>=1.0",
     "pytest>=9.0.2",
     "ruff>=0.15.2",
     "ty>=0.0.18",

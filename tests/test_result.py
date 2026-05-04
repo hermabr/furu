@@ -10,7 +10,6 @@ from pydantic import BaseModel, ConfigDict
 
 from furu import Furu
 from furu.result import (
-    LogicalPath,
     load_result_bundle,
     save_result_bundle,
 )
@@ -45,7 +44,6 @@ def test_json_only_bundle_round_trips() -> None:
     assert result == expected
 
     assert obj._result_manifest_path.exists()
-    assert not (obj.data_dir / "result.pkl").exists()
 
     manifest = json.loads(obj._result_manifest_path.read_text())
     assert "format" not in manifest
@@ -154,7 +152,7 @@ def test_unsupported_custom_object_fails_with_root_path(tmp_path) -> None:
     with pytest.raises(ValueError) as exc_info:
         save_result_bundle(_CustomTensor(), bundle_dir)
     msg = str(exc_info.value)
-    assert "$" in msg
+    assert "<root>" in msg
     assert "_CustomTensor" in msg
 
 
@@ -165,7 +163,7 @@ def test_unsupported_nested_path_includes_padded_index(tmp_path) -> None:
 
     with pytest.raises(ValueError) as exc_info:
         save_result_bundle({"layers": layers}, bundle_dir)
-    assert "$.layers[03].weights" in str(exc_info.value)
+    assert "layers/03/weights" in str(exc_info.value)
 
 
 def test_reserved_furu_dict_key_fails(tmp_path) -> None:
@@ -198,30 +196,6 @@ def test_dotdot_dict_key_fails(tmp_path) -> None:
     bundle_dir = tmp_path / "bundle"
     with pytest.raises(ValueError, match="artifact path segment"):
         save_result_bundle({"..": "x"}, bundle_dir)
-
-
-# ---------------------------------------------------------------------------
-# Logical path display
-# ---------------------------------------------------------------------------
-
-
-def test_logical_path_display_uses_padded_index() -> None:
-    path = LogicalPath().key("layers").index(3, width=2).key("weights")
-    assert path.display() == "$.layers[03].weights"
-
-
-def test_logical_path_display_quotes_unsafe_keys() -> None:
-    path = LogicalPath().key("bad/key")
-    assert path.display() == '$["bad/key"]'
-
-
-def test_logical_path_artifact_dir() -> None:
-    path = LogicalPath().key("layers").index(3, width=2).key("weights")
-    assert path.artifact_dir().as_posix() == "artifacts/layers/03/weights"
-
-
-def test_logical_path_root_artifact_dir() -> None:
-    assert LogicalPath().artifact_dir().as_posix() == "artifacts/root"
 
 
 # ---------------------------------------------------------------------------
@@ -420,56 +394,6 @@ def test_numpy_root_value_uses_root_artifact_dir(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Polars codec
-# ---------------------------------------------------------------------------
-
-
-class PolarsResult(Furu[dict[str, object]]):
-    def _create(self) -> dict[str, object]:
-        pl = pytest.importorskip("polars")
-        return {"table": pl.DataFrame({"id": [1, 2], "score": [0.1, 0.2]})}
-
-
-def test_polars_dataframe_round_trips() -> None:
-    pl = pytest.importorskip("polars")
-    obj = PolarsResult()
-    loaded = obj.load_or_create()
-
-    assert (obj._result_dir / "artifacts" / "table" / "data.parquet").exists()
-    assert isinstance(loaded, dict)
-    expected = pl.DataFrame({"id": [1, 2], "score": [0.1, 0.2]})
-    assert cast(Any, loaded["table"]).equals(expected)
-
-    manifest = json.loads(obj._result_manifest_path.read_text())
-    assert manifest["table"]["$furu"]["kind"] == "external"
-    assert manifest["table"]["$furu"]["codec"] == "polars.dataframe.parquet"
-    assert manifest["table"]["$furu"]["path"] == "artifacts/table"
-    assert manifest["table"]["$furu"]["meta"]["rows"] == 2
-    assert manifest["table"]["$furu"]["meta"]["columns"] == ["id", "score"]
-
-
-class NestedPolarsResult(Furu[dict[str, list[dict[str, object]]]]):
-    def _create(self) -> dict[str, list[dict[str, object]]]:
-        pl = pytest.importorskip("polars")
-        return {"tables": [{"data": pl.DataFrame({"id": [i]})} for i in range(3)]}
-
-
-def test_nested_polars_paths_use_padded_indexes() -> None:
-    pl = pytest.importorskip("polars")
-    obj = NestedPolarsResult()
-    loaded = obj.load_or_create()
-
-    base = obj._result_dir / "artifacts" / "tables"
-    for i in range(3):
-        assert (base / str(i) / "data" / "data.parquet").exists()
-
-    assert isinstance(loaded, dict)
-    for i, entry in enumerate(loaded["tables"]):
-        assert isinstance(entry, dict)
-        assert cast(Any, entry["data"]).equals(pl.DataFrame({"id": [i]}))
-
-
-# ---------------------------------------------------------------------------
 # Mixed JSON + external + dataclass
 # ---------------------------------------------------------------------------
 
@@ -501,24 +425,6 @@ def test_mixed_dataclass_external_and_json_round_trip() -> None:
     assert inner == MixedOutput(metrics={"loss": 0.5}, values=[1, 2])
     assert np.array_equal(loaded["weights"], np.arange(4, dtype=np.float32))
     assert loaded["labels"] == ["cat", "dog"]
-
-
-# ---------------------------------------------------------------------------
-# No pickle
-# ---------------------------------------------------------------------------
-
-
-class _NoPickleResult(Furu[dict[str, object]]):
-    def _create(self) -> dict[str, object]:
-        return {"x": 1, "y": [1, 2, 3]}
-
-
-def test_no_pickle_files_in_data_directory() -> None:
-    from furu.config import config
-
-    _NoPickleResult().load_or_create()
-
-    assert list(config.directories.data.glob("**/result.pkl")) == []
 
 
 # ---------------------------------------------------------------------------

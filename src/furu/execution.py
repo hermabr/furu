@@ -55,7 +55,7 @@ def _store_result[T](
     *,
     metadata: RunningMetadata,
     has_lock: HasLock,
-) -> T:
+) -> None:
     if not has_lock():
         raise LockLostError(
             f"lost lock at {obj._lock_path} before writing final result"
@@ -77,8 +77,6 @@ def _store_result[T](
         obj._metadata_path.write_text(metadata_text)
 
         obj.logger.debug("stored result bundle at %s", obj._result_dir)
-
-        return cast(T, load_result_bundle(obj._result_dir))
     except BaseException:
         if tmp_result_dir.exists():
             shutil.rmtree(tmp_result_dir, ignore_errors=True)
@@ -226,13 +224,13 @@ def _execute_group[T](
                 )
 
             for obj, result in zip(group, results, strict=True):
-                loaded_result = _store_result(
+                _store_result(
                     obj,
                     result,
                     metadata=metadata_by_dir[obj.data_dir],
                     has_lock=has_lock,
                 )
-                results_by_dir[obj.data_dir] = loaded_result
+                results_by_dir[obj.data_dir] = result
 
             logger.debug("load_or_create complete")
         except BaseException as exc:
