@@ -233,7 +233,6 @@ def _load_wrapper(
 
 def save_result_bundle(value: object, bundle_dir: Path) -> None:
     bundle_dir.mkdir(parents=True, exist_ok=False)
-    (bundle_dir / ARTIFACTS_DIR_NAME).mkdir()
 
     manifest = _dump_value(
         value,

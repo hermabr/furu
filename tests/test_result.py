@@ -42,6 +42,7 @@ def test_json_only_bundle_round_trips() -> None:
     assert result == expected
 
     assert obj._result_manifest_path.exists()
+    assert not (obj._result_dir / "artifacts").exists()
 
     manifest = json.loads(obj._result_manifest_path.read_text())
     assert "format" not in manifest
