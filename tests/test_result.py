@@ -13,9 +13,10 @@ from furu.result import (
     load_result_bundle,
     save_result_bundle,
 )
-from furu.result.codec import NumpyNpyCodec
+from furu.result.codec import NumpyNpyCodec, PolarsParquetCodec
 
 np = pytest.importorskip("numpy")
+pl = pytest.importorskip("polars")
 
 
 class JsonResult(Furu[dict[str, object]]):
@@ -292,6 +293,29 @@ def test_numpy_array_round_trips() -> None:
         f"{NumpyNpyCodec.__module__}.{NumpyNpyCodec.__qualname__}"
     )
     assert manifest["weights"]["$furu"]["path"] == "artifacts/weights"
+
+
+class PolarsResult(Furu[dict[str, object]]):
+    def _create(self) -> dict[str, object]:
+        return {"frame": pl.DataFrame({"x": [1, 2, 3], "y": ["a", "b", "c"]})}
+
+
+def test_polars_dataframe_round_trips() -> None:
+    obj = PolarsResult()
+    loaded = obj.load_or_create()
+
+    assert (obj._result_dir / "artifacts" / "frame" / "data.parquet").exists()
+    assert isinstance(loaded, dict)
+    frame = loaded["frame"]
+    assert isinstance(frame, pl.DataFrame)
+    assert frame.equals(pl.DataFrame({"x": [1, 2, 3], "y": ["a", "b", "c"]}))
+
+    manifest = json.loads(obj._result_manifest_path.read_text())
+    assert manifest["frame"]["$furu"]["kind"] == "external"
+    assert manifest["frame"]["$furu"]["codec"] == (
+        f"{PolarsParquetCodec.__module__}.{PolarsParquetCodec.__qualname__}"
+    )
+    assert manifest["frame"]["$furu"]["path"] == "artifacts/frame"
 
 
 def test_numpy_object_dtype_is_rejected(tmp_path) -> None:
