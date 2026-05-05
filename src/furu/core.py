@@ -51,6 +51,16 @@ class Furu[T](_FuruDataclassTransform, ABC):
                 "instead"
             )
 
+        annotations = getattr(cls, "__annotations__", {})
+        for name, value in cls.__dict__.items():
+            if (
+                not (name.startswith("__") and name.endswith("__"))
+                and name not in annotations
+                and not callable(value)
+                and not isinstance(value, (classmethod, property, cached_property))
+            ):
+                raise TypeError(f"{cls.__name__}.{name} must have a type annotation")
+
         validate_cls(cls)
         if "__dataclass_params__" not in cls.__dict__:
             dataclass(frozen=True, kw_only=True)(cls)
