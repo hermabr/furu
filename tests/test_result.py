@@ -18,11 +18,6 @@ from furu.result.codec import NumpyNpyCodec
 np = pytest.importorskip("numpy")
 
 
-# ---------------------------------------------------------------------------
-# JSON-only bundle test
-# ---------------------------------------------------------------------------
-
-
 class JsonResult(Furu[dict[str, object]]):
     create_calls: ClassVar[list[int]] = []
 
@@ -89,11 +84,6 @@ def test_try_load_returns_persisted_result() -> None:
     }
 
 
-# ---------------------------------------------------------------------------
-# Scalar root test
-# ---------------------------------------------------------------------------
-
-
 class ScalarResult(Furu[int]):
     def _create(self) -> int:
         return 5
@@ -105,11 +95,6 @@ def test_scalar_root_manifest_is_just_the_value() -> None:
     assert obj.load_or_create() == 5
     text = obj._result_manifest_path.read_text()
     assert json.loads(text) == 5
-
-
-# ---------------------------------------------------------------------------
-# Non-finite float test
-# ---------------------------------------------------------------------------
 
 
 class NonFiniteFloatResult(Furu[dict[str, float]]):
@@ -134,11 +119,6 @@ def test_non_finite_floats_round_trip() -> None:
     assert "NaN" in text
     assert "Infinity" in text
     assert "-Infinity" in text
-
-
-# ---------------------------------------------------------------------------
-# Unsupported value tests
-# ---------------------------------------------------------------------------
 
 
 class _CustomTensor:
@@ -201,11 +181,6 @@ def test_dotdot_dict_key_fails(tmp_path) -> None:
         save_result_bundle({"..": "x"}, bundle_dir)
 
 
-# ---------------------------------------------------------------------------
-# Dataclass round-trip
-# ---------------------------------------------------------------------------
-
-
 @dataclass(frozen=True)
 class TrainOutput:
     metrics: dict[str, float]
@@ -256,11 +231,6 @@ def test_nested_dataclass_round_trip() -> None:
     assert loaded == NestedOuter(inner=NestedInner(value=42), label="root")
 
 
-# ---------------------------------------------------------------------------
-# Pydantic round-trip
-# ---------------------------------------------------------------------------
-
-
 class TrainOutputModel(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
     metrics: dict[str, float]
@@ -299,11 +269,6 @@ def test_pydantic_with_nested_structures_round_trips() -> None:
     assert isinstance(loaded, NestedPydanticOuter)
     assert loaded.metrics == {"loss": 0.12, "accuracy": 0.94}
     assert loaded.items == [{"v": 1}, {"v": 2}, {"v": 3}]
-
-
-# ---------------------------------------------------------------------------
-# NumPy codec
-# ---------------------------------------------------------------------------
 
 
 class NumpyResult(Furu[dict[str, object]]):
@@ -387,11 +352,6 @@ def test_numpy_root_value_uses_root_artifact_dir(tmp_path) -> None:
     assert np.array_equal(loaded, np.arange(5, dtype=np.int64))
 
 
-# ---------------------------------------------------------------------------
-# Mixed JSON + external + dataclass
-# ---------------------------------------------------------------------------
-
-
 @dataclass(frozen=True)
 class MixedOutput:
     metrics: dict[str, float]
@@ -417,11 +377,6 @@ def test_mixed_dataclass_external_and_json_round_trip() -> None:
     assert inner == MixedOutput(metrics={"loss": 0.5}, values=[1, 2])
     assert np.array_equal(loaded["weights"], np.arange(4, dtype=np.float32))
     assert loaded["labels"] == ["cat", "dog"]
-
-
-# ---------------------------------------------------------------------------
-# Bundle API edge cases
-# ---------------------------------------------------------------------------
 
 
 def test_save_result_bundle_refuses_existing_directory(tmp_path) -> None:
