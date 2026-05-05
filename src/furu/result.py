@@ -5,7 +5,6 @@ import importlib
 import importlib.util
 import json
 from abc import ABC, abstractmethod
-from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Final, Literal, assert_never, cast
 
@@ -127,38 +126,6 @@ _DEFAULT_CODECS: Final[dict[str, type[ResultCodec]]] = {
 }
 
 
-def _dump_struct(
-    value: object,
-    *,
-    kind: Literal["dataclass", "pydantic"],
-    names: Iterable[str],
-    source: str,
-    path: LogicalPath,
-    bundle_dir: Path,
-    codecs: dict[str, type[ResultCodec]],
-) -> JsonValue:
-    fields_out: dict[str, JsonValue] = {}
-    for raw_name in names:
-        name = _validate_result_path_segment(
-            raw_name,
-            parent_path=path,
-            source=source,
-        )
-        fields_out[name] = _dump_value(
-            getattr(value, name),
-            path=(*path, name),
-            bundle_dir=bundle_dir,
-            codecs=codecs,
-        )
-    return {
-        WRAPPER_KEY: {
-            "kind": kind,
-            "type": fully_qualified_name(type(value)),
-            "fields": fields_out,
-        }
-    }
-
-
 def _dump_value(
     value: object,
     *,
@@ -186,7 +153,6 @@ def _dump_value(
                 key = _validate_result_path_segment(
                     raw_key,
                     parent_path=path,
-                    source="dict key",
                 )
                 out[key] = _dump_value(
                     child,
@@ -196,25 +162,39 @@ def _dump_value(
                 )
             return out
         case pydantic.BaseModel():
-            return _dump_struct(
-                value,
-                kind="pydantic",
-                names=value.__class__.model_fields,
-                source="pydantic field name",
-                path=path,
-                bundle_dir=bundle_dir,
-                codecs=codecs,
-            )
+            fields_out: dict[str, JsonValue] = {}
+            for raw_name in value.__class__.model_fields:
+                name = _validate_result_path_segment(raw_name, parent_path=path)
+                fields_out[name] = _dump_value(
+                    getattr(value, name),
+                    path=(*path, name),
+                    bundle_dir=bundle_dir,
+                    codecs=codecs,
+                )
+            return {
+                WRAPPER_KEY: {
+                    "kind": "pydantic",
+                    "type": fully_qualified_name(type(value)),
+                    "fields": fields_out,
+                }
+            }
         case _ if dataclasses.is_dataclass(value) and not isinstance(value, type):
-            return _dump_struct(
-                value,
-                kind="dataclass",
-                names=[f.name for f in dataclasses.fields(cast(Any, value))],
-                source="dataclass field name",
-                path=path,
-                bundle_dir=bundle_dir,
-                codecs=codecs,
-            )
+            fields_out: dict[str, JsonValue] = {}
+            for field in dataclasses.fields(cast(Any, value)):
+                name = _validate_result_path_segment(field.name, parent_path=path)
+                fields_out[name] = _dump_value(
+                    getattr(value, name),
+                    path=(*path, name),
+                    bundle_dir=bundle_dir,
+                    codecs=codecs,
+                )
+            return {
+                WRAPPER_KEY: {
+                    "kind": "dataclass",
+                    "type": fully_qualified_name(type(value)),
+                    "fields": fields_out,
+                }
+            }
         case _:
             for codec in codecs.values():
                 if codec.matches(value):
@@ -272,20 +252,6 @@ def _import_type(qualified_name: str) -> Any:
     return getattr(importlib.import_module(module_name), attr_name)
 
 
-def _load_struct_fields(
-    body: dict[str, Any],
-    *,
-    bundle_dir: Path,
-    codecs: dict[str, type[ResultCodec]],
-) -> tuple[Any, dict[str, Any]]:
-    cls = _import_type(body["type"])
-    loaded_fields = {
-        name: _load_value(child, bundle_dir=bundle_dir, codecs=codecs)
-        for name, child in body["fields"].items()
-    }
-    return cls, loaded_fields
-
-
 def _load_wrapper(
     body: dict[str, Any],
     *,
@@ -315,17 +281,21 @@ def _load_wrapper(
 
             return codecs[codec_id].load(artifact_dir=artifact_dir)
         case "dataclass":
-            cls, loaded_fields = _load_struct_fields(
-                body, bundle_dir=bundle_dir, codecs=codecs
-            )
+            cls = _import_type(body["type"])
+            loaded_fields = {
+                name: _load_value(child, bundle_dir=bundle_dir, codecs=codecs)
+                for name, child in body["fields"].items()
+            }
             obj = object.__new__(cls)
             for name, value in loaded_fields.items():
                 object.__setattr__(obj, name, value)
             return obj
         case "pydantic":
-            cls, loaded_fields = _load_struct_fields(
-                body, bundle_dir=bundle_dir, codecs=codecs
-            )
+            cls = _import_type(body["type"])
+            loaded_fields = {
+                name: _load_value(child, bundle_dir=bundle_dir, codecs=codecs)
+                for name, child in body["fields"].items()
+            }
             return cls.model_construct(**loaded_fields)
         case _:
             raise ValueError(f"unknown wrapper kind: {kind!r}")

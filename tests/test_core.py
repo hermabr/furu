@@ -5,7 +5,7 @@ from dataclasses import FrozenInstanceError, is_dataclass, replace
 from enum import Enum
 from functools import partial
 from pathlib import Path
-from typing import ClassVar, Literal, TypeVar, cast
+from typing import Any, ClassVar, Literal, TypeVar, cast
 from unittest.mock import patch
 
 import pytest
@@ -581,7 +581,7 @@ def test_hashes_and_data_dir():
 def expected_schema_for_B_like(
     cls_name: str, *, include_private_h: bool = False
 ) -> dict:
-    fields = {
+    fields: dict[str, Any] = {
         "a": [
             "builtins.int",
             {
