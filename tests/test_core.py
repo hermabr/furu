@@ -3,7 +3,7 @@ from contextlib import contextmanager
 from collections.abc import Callable
 from dataclasses import FrozenInstanceError, is_dataclass, replace
 from enum import Enum
-from functools import partial
+from functools import cached_property, partial
 from pathlib import Path
 from typing import Any, ClassVar, Literal, TypeVar, cast
 from unittest.mock import patch
@@ -35,6 +35,12 @@ class WeightedNode(Node):
 
     def _create(self) -> str:
         return f"WNode({self.name}:{self.weight})"
+
+
+class CustomDataRootDirNode(Node):
+    @cached_property
+    def data_root_dir(self) -> Path:
+        return Path("custom/data/location")
 
 
 class NodePair(Furu[dict]):
@@ -818,6 +824,29 @@ def test_data_dir():
         / node_pair.schema_hash
         / node_pair.artifact_hash
     )
+
+
+def test_data_root_dir_can_be_overridden_with_cached_property():
+    node = CustomDataRootDirNode(name="x")
+
+    assert node.data_root_dir == Path("custom/data/location")
+    assert node.data_root_dir is node.data_root_dir
+    assert node.data_dir == (
+        Path("custom/data/location")
+        / "test_core"
+        / "CustomDataRootDirNode"
+        / node.schema_hash
+        / node.artifact_hash
+    )
+
+
+def test_data_dir_override_is_rejected():
+    with pytest.raises(TypeError, match="must not override data_dir"):
+
+        class CustomDataDirNode(Node):
+            @cached_property
+            def data_dir(self) -> Path:
+                return Path("custom/data/location")
 
 
 def test_create_object_and_exists():
