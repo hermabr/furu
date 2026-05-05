@@ -374,6 +374,30 @@ def test_parent_and_child_validators_both_run():
         ParentAndChildValidated(value=1, child_value=0)
 
 
+def test_unannotated_public_attribute_raises_clear_error():
+    with pytest.raises(
+        TypeError, match="UnannotatedParameter.a must have a type annotation"
+    ):
+
+        class UnannotatedParameter(Furu[int]):
+            a = 1
+
+            def _create(self) -> int:
+                return self.a
+
+
+def test_unannotated_private_attribute_raises_clear_error():
+    with pytest.raises(
+        TypeError, match="UnannotatedPrivate._a must have a type annotation"
+    ):
+
+        class UnannotatedPrivate(Furu[int]):
+            _a = 1
+
+            def _create(self) -> int:
+                return self._a
+
+
 def test_validate_decorator_supports_call_syntax():
     class CallSyntaxValidated(Furu[int]):
         value: int
