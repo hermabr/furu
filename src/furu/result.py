@@ -28,14 +28,36 @@ def _path_display(path: LogicalPath) -> str:
     return "/".join(path)
 
 
-def _is_safe_path_segment(text: str) -> bool:
-    if text == "" or text == "." or text == "..":
-        return False
-    if "/" in text or "\\" in text:
-        return False
-    if "\x00" in text:
-        return False
-    return True
+def _validate_result_path_segment(
+    value: object,
+    *,
+    parent_path: LogicalPath,
+    source: Literal["dataclass field name", "dict key", "pydantic field name"],
+) -> str:
+    if not isinstance(value, str):
+        raise ValueError(
+            f"Unsupported result value at {_path_display(parent_path)}:\n"
+            f"dict result keys must be strings in Stage 1; got {type(value).__name__} key {value!r}."
+        )
+    if value == WRAPPER_KEY:
+        subject = "dict keys" if source == "dict key" else f"{source}s"
+        raise ValueError(
+            f"Unsupported result value at {_path_display(parent_path)}:\n"
+            f"{subject} named {WRAPPER_KEY!r} are reserved by Furu result persistence."
+        )
+    if (
+        value == ""
+        or value == "."
+        or value == ".."
+        or "/" in value
+        or "\\" in value
+        or "\x00" in value
+    ):
+        raise ValueError(
+            f"Unsupported result path at {_path_display((*parent_path, value))}:\n"
+            f"{source} cannot be used as an artifact path segment."
+        )
+    return value
 
 
 class ResultCodec(ABC):
@@ -103,12 +125,9 @@ class NumpyNpyCodec(ResultCodec):
 def default_codecs() -> dict[str, type[ResultCodec]]:
     codecs: dict[str, type[ResultCodec]] = {}
     for codec in (NumpyNpyCodec,):
-        codec_id = codec.codec_id()
-        if codec_id in codecs:
-            raise ValueError(f"duplicate result codec id: {codec_id}")
         if not codec.dependencies_available():
             continue
-        codecs[codec_id] = codec
+        codecs[codec.codec_id()] = codec
     return codecs
 
 
@@ -135,22 +154,12 @@ def _dump_value(
             ]
         case dict():
             out: dict[str, JsonValue] = {}
-            for key, child in value.items():
-                if not isinstance(key, str):
-                    raise ValueError(
-                        f"Unsupported result value at {_path_display(path)}:\n"
-                        f"dict result keys must be strings in Stage 1; got {type(key).__name__} key {key!r}."
-                    )
-                if key == WRAPPER_KEY:
-                    raise ValueError(
-                        f"Unsupported result value at {_path_display(path)}:\n"
-                        f"dict keys named {WRAPPER_KEY!r} are reserved by Furu result persistence."
-                    )
-                if not _is_safe_path_segment(key):
-                    raise ValueError(
-                        f"Unsupported result path at {_path_display((*path, key))}:\n"
-                        "dict key cannot be used as an artifact path segment."
-                    )
+            for raw_key, child in value.items():
+                key = _validate_result_path_segment(
+                    raw_key,
+                    parent_path=path,
+                    source="dict key",
+                )
                 out[key] = _dump_value(
                     child,
                     path=(*path, key),
@@ -160,12 +169,12 @@ def _dump_value(
             return out
         case pydantic.BaseModel():
             fields_out: dict[str, JsonValue] = {}
-            for name in value.__class__.model_fields:
-                if not _is_safe_path_segment(name):
-                    raise ValueError(
-                        f"Unsupported result path at {_path_display((*path, name))}:\n"
-                        "pydantic field name cannot be used as an artifact path segment."
-                    )
+            for raw_name in value.__class__.model_fields:
+                name = _validate_result_path_segment(
+                    raw_name,
+                    parent_path=path,
+                    source="pydantic field name",
+                )
                 fields_out[name] = _dump_value(
                     getattr(value, name),
                     path=(*path, name),
@@ -182,14 +191,14 @@ def _dump_value(
         case _ if dataclasses.is_dataclass(value) and not isinstance(value, type):
             fields_out: dict[str, JsonValue] = {}
             for field in dataclasses.fields(cast(Any, value)):
-                if not _is_safe_path_segment(field.name):
-                    raise ValueError(
-                        f"Unsupported result path at {_path_display((*path, field.name))}:\n"
-                        "dataclass field name cannot be used as an artifact path segment."
-                    )
-                fields_out[field.name] = _dump_value(
-                    getattr(value, field.name),
-                    path=(*path, field.name),
+                name = _validate_result_path_segment(
+                    field.name,
+                    parent_path=path,
+                    source="dataclass field name",
+                )
+                fields_out[name] = _dump_value(
+                    getattr(value, name),
+                    path=(*path, name),
                     bundle_dir=bundle_dir,
                     codecs=codecs,
                 )
