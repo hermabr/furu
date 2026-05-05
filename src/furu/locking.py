@@ -10,7 +10,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
-from furu.utils import _nfs_safe_unique_name
+from furu.utils import nfs_safe_unique_name
 
 # TODO: move these to the general config rather than having these be hard coded here, so that the user can override them. also consider if we can remove some of these/simplify
 CLOCK_SLOP_S = 10
@@ -364,9 +364,7 @@ def lock_many(
             heartbeat_interval_s / 3,
         )
 
-    claim_path = _nfs_safe_unique_name(lock_paths[0], name="claim").resolve(
-        strict=False
-    )
+    claim_path = nfs_safe_unique_name(lock_paths[0], name="claim").resolve(strict=False)
     manifest = LockManifest(
         claim_path=claim_path,
         lock_paths=tuple(lock_paths),
