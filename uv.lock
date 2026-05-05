@@ -56,11 +56,6 @@ dependencies = [
     { name = "rich" },
 ]
 
-[package.optional-dependencies]
-result-codecs = [
-    { name = "numpy" },
-]
-
 [package.dev-dependencies]
 dev = [
     { name = "ipython" },
@@ -72,11 +67,9 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "numpy", marker = "extra == 'result-codecs'" },
     { name = "pydantic", specifier = ">=2.12.5" },
     { name = "rich", specifier = ">=14.3.3" },
 ]
-provides-extras = ["result-codecs"]
 
 [package.metadata.requires-dev]
 dev = [

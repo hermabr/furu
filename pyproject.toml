@@ -12,11 +12,6 @@ dependencies = [
     "rich>=14.3.3",
 ]
 
-[project.optional-dependencies]
-result-codecs = [
-    "numpy",
-]
-
 [project.entry-points.pytest11]
 furu = "furu.testing"
 
