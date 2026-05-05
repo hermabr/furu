@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, ClassVar, cast
 
 import pytest
@@ -96,6 +97,50 @@ def test_scalar_root_manifest_is_just_the_value() -> None:
     assert obj.load_or_create() == 5
     text = obj._result_manifest_path.read_text()
     assert json.loads(text) == 5
+
+
+class PathResult(Furu[dict[str, Path]]):
+    def _create(self) -> dict[str, Path]:
+        return {
+            "relative": Path("outputs/model.bin"),
+            "absolute": Path("/tmp/furu/model.bin"),
+        }
+
+
+def test_path_values_round_trip() -> None:
+    obj = PathResult()
+
+    result = obj.load_or_create()
+
+    assert result == {
+        "relative": Path("outputs/model.bin"),
+        "absolute": Path("/tmp/furu/model.bin"),
+    }
+
+    manifest = json.loads(obj._result_manifest_path.read_text())
+    assert manifest == {
+        "relative": {
+            "$furu": {
+                "kind": "path",
+                "value": "outputs/model.bin",
+            }
+        },
+        "absolute": {
+            "$furu": {
+                "kind": "path",
+                "value": "/tmp/furu/model.bin",
+            }
+        },
+    }
+
+
+def test_path_root_value_round_trips(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "bundle"
+    value = Path("outputs/model.bin")
+
+    save_result_bundle(value, bundle_dir)
+
+    assert load_result_bundle(bundle_dir) == value
 
 
 class NonFiniteFloatResult(Furu[dict[str, float]]):
