@@ -10,10 +10,10 @@ from pydantic import BaseModel, ConfigDict
 
 from furu import Furu
 from furu.result import (
-    NumpyNpyCodec,
     load_result_bundle,
     save_result_bundle,
 )
+from furu.result.codec import NumpyNpyCodec
 
 np = pytest.importorskip("numpy")
 
