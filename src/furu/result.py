@@ -28,6 +28,16 @@ def _path_display(path: LogicalPath) -> str:
     return "/".join(path)
 
 
+def _is_safe_path_segment(text: str) -> bool:
+    if text == "" or text == "." or text == "..":
+        return False
+    if "/" in text or "\\" in text:
+        return False
+    if "\x00" in text:
+        return False
+    return True
+
+
 def _validate_result_path_segment(
     value: object,
     *,
@@ -45,14 +55,7 @@ def _validate_result_path_segment(
             f"Unsupported result value at {_path_display(parent_path)}:\n"
             f"{subject} named {WRAPPER_KEY!r} are reserved by Furu result persistence."
         )
-    if (
-        value == ""
-        or value == "."
-        or value == ".."
-        or "/" in value
-        or "\\" in value
-        or "\x00" in value
-    ):
+    if not _is_safe_path_segment(value):
         raise ValueError(
             f"Unsupported result path at {_path_display((*parent_path, value))}:\n"
             f"{source} cannot be used as an artifact path segment."
@@ -228,10 +231,10 @@ def _dump_value(
                         }
                     }
 
-            raise ValueError(
-                f"Unsupported result value at {_path_display(path)}:\n"
-                f"values of type {type(value).__name__!r} are not supported by Furu Stage 1."
-            )
+    raise ValueError(
+        f"Unsupported result value at {_path_display(path)}:\n"
+        f"values of type {type(value).__name__!r} are not supported by Furu. Add a custom codec"
+    )
 
 
 def _load_value(
@@ -240,27 +243,32 @@ def _load_value(
     bundle_dir: Path,
     codecs: dict[str, type[ResultCodec]],
 ) -> object:
-    if node is None or isinstance(node, (bool, int, float, str)):
-        return node
-
-    if isinstance(node, list):
-        return [
-            _load_value(child, bundle_dir=bundle_dir, codecs=codecs) for child in node
-        ]
-
-    if isinstance(node, dict):
-        if WRAPPER_KEY in node:
+    match node:
+        case None | bool() | int() | float() | str():
+            return node
+        case list():
+            return [
+                _load_value(child, bundle_dir=bundle_dir, codecs=codecs)
+                for child in node
+            ]
+        case dict() if WRAPPER_KEY in node:
             return _load_wrapper(
                 cast(dict[str, Any], node[WRAPPER_KEY]),
                 bundle_dir=bundle_dir,
                 codecs=codecs,
             )
-        return {
-            key: _load_value(child, bundle_dir=bundle_dir, codecs=codecs)
-            for key, child in node.items()
-        }
+        case dict():
+            return {
+                key: _load_value(child, bundle_dir=bundle_dir, codecs=codecs)
+                for key, child in node.items()
+            }
+        case _:
+            assert_never(node)
 
-    raise ValueError(f"unsupported manifest node: {type(node).__name__}")
+
+def _import_type(qualified_name: str) -> Any:
+    module_name, _, attr_name = qualified_name.rpartition(".")
+    return getattr(importlib.import_module(module_name), attr_name)
 
 
 def _load_wrapper(
@@ -269,7 +277,7 @@ def _load_wrapper(
     bundle_dir: Path,
     codecs: dict[str, type[ResultCodec]],
 ) -> object:
-    kind = cast(WrapperKind, body["kind"])
+    kind: WrapperKind = body["kind"]
     match kind:
         case "external":
             codec_id: str = body["codec"]
@@ -292,8 +300,6 @@ def _load_wrapper(
                     f"external wrapper artifact directory missing: {artifact_dir}"
                 )
 
-            if codec_id not in codecs:
-                raise ValueError(f"unknown result codec: {codec_id}")
             return codecs[codec_id].load(artifact_dir=artifact_dir)
         case "dataclass":
             cls = _import_type(body["type"])
@@ -317,16 +323,8 @@ def _load_wrapper(
             assert_never(kind)
 
 
-def _import_type(qualified_name: str) -> Any:
-    module_name, _, attr_name = qualified_name.rpartition(".")
-    return getattr(importlib.import_module(module_name), attr_name)
-
-
 def save_result_bundle(value: object, bundle_dir: Path) -> None:
-    if bundle_dir.exists():
-        raise FileExistsError(bundle_dir)
-
-    bundle_dir.mkdir(parents=True)
+    bundle_dir.mkdir(parents=True, exist_ok=False)
     (bundle_dir / ARTIFACTS_DIR_NAME).mkdir()
 
     codecs = default_codecs()
@@ -337,7 +335,10 @@ def save_result_bundle(value: object, bundle_dir: Path) -> None:
         bundle_dir=bundle_dir,
         codecs=codecs,
     )
-    _write_manifest(bundle_dir / MANIFEST_FILE_NAME, manifest)
+    with (bundle_dir / MANIFEST_FILE_NAME).open("w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def load_result_bundle[T](bundle_dir: Path) -> T:
@@ -345,14 +346,3 @@ def load_result_bundle[T](bundle_dir: Path) -> T:
     raw = json.loads(manifest_path.read_text(encoding="utf-8"))
     codecs = default_codecs()
     return cast(T, _load_value(raw, bundle_dir=bundle_dir, codecs=codecs))
-
-
-def result_bundle_is_complete(bundle_dir: Path) -> bool:
-    return (bundle_dir / MANIFEST_FILE_NAME).exists()
-
-
-def _write_manifest(manifest_path: Path, manifest: JsonValue) -> None:
-    with manifest_path.open("w", encoding="utf-8") as f:
-        json.dump(manifest, f, indent=2)
-        f.flush()
-        os.fsync(f.fileno())
