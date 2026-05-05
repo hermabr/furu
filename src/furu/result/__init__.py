@@ -148,6 +148,11 @@ def _dump_value(
     )
 
 
+def _import_type(qualified_name: str) -> Any:
+    module_name, _, attr_name = qualified_name.rpartition(".")
+    return getattr(importlib.import_module(module_name), attr_name)
+
+
 def _load_value(
     node: JsonValue,
     *,
@@ -177,11 +182,6 @@ def _load_value(
             assert_never(node)
 
 
-def _import_type(qualified_name: str) -> Any:
-    module_name, _, attr_name = qualified_name.rpartition(".")
-    return getattr(importlib.import_module(module_name), attr_name)
-
-
 def _load_wrapper(
     body: dict[str, Any],
     *,
@@ -191,17 +191,17 @@ def _load_wrapper(
     kind: WrapperKind = body["kind"]
     match kind:
         case "external":
-            codec_id: str = body["codec"]
-            rel_path: str = body["path"]
-            artifact_rel = Path(rel_path)
+            artifact_rel = Path(body["path"])
             if artifact_rel.is_absolute():
-                raise ValueError(f"external wrapper path must be relative: {rel_path}")
+                raise ValueError(
+                    f"external wrapper path must be relative: {artifact_rel}"
+                )
 
             artifact_dir = (bundle_dir / artifact_rel).resolve()
             artifacts_root = (bundle_dir / ARTIFACTS_DIR_NAME).resolve()
             if not artifact_dir.is_relative_to(artifacts_root):
                 raise ValueError(
-                    f"external wrapper path escapes bundle artifacts dir: {rel_path}"
+                    f"external wrapper path escapes bundle artifacts dir: {artifact_rel}"
                 )
 
             if not artifact_dir.exists():
@@ -209,7 +209,7 @@ def _load_wrapper(
                     f"external wrapper artifact directory missing: {artifact_dir}"
                 )
 
-            return codecs[codec_id].load(artifact_dir=artifact_dir)
+            return codecs[body["codec"]].load(artifact_dir=artifact_dir)
         case "dataclass":
             cls = _import_type(body["type"])
             loaded_fields = {
