@@ -17,7 +17,9 @@ ARTIFACTS_DIR_NAME: Final[str] = "artifacts"
 MANIFEST_FILE_NAME: Final[str] = "manifest.json"
 _ROOT_ARTIFACT_NAME: Final[str] = "root"
 type LogicalPath = tuple[str, ...]
-type WrapperKind = Literal["external", "dataclass", "path", "pydantic"]
+type WrapperKind = Literal[
+    "external", "dataclass", "path", "pydantic", "tuple", "set", "frozenset"
+]
 
 
 def _path_display(path: LogicalPath) -> str:
@@ -77,6 +79,47 @@ def _dump_value(
                 )
                 for i, item in enumerate(value)
             ]
+        case tuple():
+            width = len(str(len(value)))
+            return {
+                WRAPPER_KEY: {
+                    "kind": "tuple",
+                    "items": [
+                        _dump_value(
+                            item,
+                            path=(*path, f"{i:0{width}d}"),
+                            bundle_dir=bundle_dir,
+                            codecs=codecs,
+                        )
+                        for i, item in enumerate(value)
+                    ],
+                }
+            }
+        case set() | frozenset():
+            kind = "frozenset" if isinstance(value, frozenset) else "set"
+            items = sorted(
+                value,
+                key=lambda item: (
+                    type(item).__module__,
+                    type(item).__qualname__,
+                    repr(item),
+                ),
+            )
+            width = len(str(len(items)))
+            return {
+                WRAPPER_KEY: {
+                    "kind": kind,
+                    "items": [
+                        _dump_value(
+                            item,
+                            path=(*path, f"{i:0{width}d}"),
+                            bundle_dir=bundle_dir,
+                            codecs=codecs,
+                        )
+                        for i, item in enumerate(items)
+                    ],
+                }
+            }
         case dict():
             out: dict[str, JsonValue] = {}
             for raw_key, child in value.items():
@@ -229,6 +272,21 @@ def _load_wrapper(
             return obj
         case "path":
             return Path(body["value"])
+        case "tuple":
+            return tuple(
+                _load_value(child, bundle_dir=bundle_dir, codecs=codecs)
+                for child in body["items"]
+            )
+        case "set":
+            return {
+                _load_value(child, bundle_dir=bundle_dir, codecs=codecs)
+                for child in body["items"]
+            }
+        case "frozenset":
+            return frozenset(
+                _load_value(child, bundle_dir=bundle_dir, codecs=codecs)
+                for child in body["items"]
+            )
         case "pydantic":
             cls = _import_type(body["type"])
             loaded_fields = {

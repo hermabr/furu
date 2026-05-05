@@ -144,6 +144,46 @@ def test_path_root_value_round_trips(tmp_path: Path) -> None:
     assert load_result_bundle(bundle_dir) == value
 
 
+def test_tuple_set_and_frozenset_round_trip(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "bundle"
+    value = {
+        "tuple": (1, "x", Path("model.bin")),
+        "set": {3, 1, 2},
+        "frozenset": frozenset({"b", "a"}),
+    }
+
+    save_result_bundle(value, bundle_dir)
+
+    assert load_result_bundle(bundle_dir) == value
+    manifest = json.loads((bundle_dir / "manifest.json").read_text())
+    assert manifest["tuple"] == {
+        "$furu": {
+            "kind": "tuple",
+            "items": [
+                1,
+                "x",
+                {"$furu": {"kind": "path", "value": "model.bin"}},
+            ],
+        }
+    }
+    assert manifest["set"]["$furu"] == {"kind": "set", "items": [1, 2, 3]}
+    assert manifest["frozenset"]["$furu"] == {
+        "kind": "frozenset",
+        "items": ["a", "b"],
+    }
+
+
+def test_tuple_root_value_uses_furu_wrapper(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "bundle"
+    value = (1, 2, 3)
+
+    save_result_bundle(value, bundle_dir)
+
+    assert load_result_bundle(bundle_dir) == value
+    manifest = json.loads((bundle_dir / "manifest.json").read_text())
+    assert manifest == {"$furu": {"kind": "tuple", "items": [1, 2, 3]}}
+
+
 class NonFiniteFloatResult(Furu[dict[str, float]]):
     def _create(self) -> dict[str, float]:
         return {
