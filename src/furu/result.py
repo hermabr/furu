@@ -4,9 +4,8 @@ import dataclasses
 import importlib
 import importlib.util
 import json
-import os
 from abc import ABC, abstractmethod
-from functools import cache
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Final, Literal, assert_never, cast
 
@@ -42,23 +41,21 @@ def _validate_result_path_segment(
     value: object,
     *,
     parent_path: LogicalPath,
-    source: Literal["dataclass field name", "dict key", "pydantic field name"],
 ) -> str:
     if not isinstance(value, str):
         raise ValueError(
             f"Unsupported result value at {_path_display(parent_path)}:\n"
-            f"dict result keys must be strings in Stage 1; got {type(value).__name__} key {value!r}."
+            + f"must be strings; got {type(value).__name__} key {value!r}."
         )
     if value == WRAPPER_KEY:
-        subject = "dict keys" if source == "dict key" else f"{source}s"
         raise ValueError(
             f"Unsupported result value at {_path_display(parent_path)}:\n"
-            f"{subject} named {WRAPPER_KEY!r} are reserved by Furu result persistence."
+            + f"named {WRAPPER_KEY!r} are reserved by Furu result persistence."
         )
     if not _is_safe_path_segment(value):
         raise ValueError(
             f"Unsupported result path at {_path_display((*parent_path, value))}:\n"
-            f"{source} cannot be used as an artifact path segment."
+            + "cannot be used as an artifact path segment."
         )
     return value
 
@@ -113,8 +110,9 @@ class NumpyNpyCodec(ResultCodec):
     ) -> None:
         import numpy as np
 
-        if not isinstance(value, np.ndarray):
-            raise ValueError
+        assert isinstance(value, np.ndarray), (
+            f"NumpyNpyCodec.dump expected np.ndarray, got {type(value).__name__}"
+        )
         np.save(artifact_dir / "data.npy", value, allow_pickle=False)
 
     @classmethod
@@ -124,14 +122,41 @@ class NumpyNpyCodec(ResultCodec):
         return np.load(artifact_dir / "data.npy", allow_pickle=False)
 
 
-@cache
-def default_codecs() -> dict[str, type[ResultCodec]]:
-    codecs: dict[str, type[ResultCodec]] = {}
-    for codec in (NumpyNpyCodec,):
-        if not codec.dependencies_available():
-            continue
-        codecs[codec.codec_id()] = codec
-    return codecs
+_DEFAULT_CODECS: Final[dict[str, type[ResultCodec]]] = {
+    c.codec_id(): c for c in [NumpyNpyCodec] if c.dependencies_available()
+}
+
+
+def _dump_struct(
+    value: object,
+    *,
+    kind: Literal["dataclass", "pydantic"],
+    names: Iterable[str],
+    source: str,
+    path: LogicalPath,
+    bundle_dir: Path,
+    codecs: dict[str, type[ResultCodec]],
+) -> JsonValue:
+    fields_out: dict[str, JsonValue] = {}
+    for raw_name in names:
+        name = _validate_result_path_segment(
+            raw_name,
+            parent_path=path,
+            source=source,
+        )
+        fields_out[name] = _dump_value(
+            getattr(value, name),
+            path=(*path, name),
+            bundle_dir=bundle_dir,
+            codecs=codecs,
+        )
+    return {
+        WRAPPER_KEY: {
+            "kind": kind,
+            "type": fully_qualified_name(type(value)),
+            "fields": fields_out,
+        }
+    }
 
 
 def _dump_value(
@@ -145,7 +170,7 @@ def _dump_value(
         case None | bool() | int() | float() | str():
             return value
         case list():
-            width = max(len(str(len(value))), 1)
+            width = len(str(len(value)))
             return [
                 _dump_value(
                     item,
@@ -171,54 +196,30 @@ def _dump_value(
                 )
             return out
         case pydantic.BaseModel():
-            fields_out: dict[str, JsonValue] = {}
-            for raw_name in value.__class__.model_fields:
-                name = _validate_result_path_segment(
-                    raw_name,
-                    parent_path=path,
-                    source="pydantic field name",
-                )
-                fields_out[name] = _dump_value(
-                    getattr(value, name),
-                    path=(*path, name),
-                    bundle_dir=bundle_dir,
-                    codecs=codecs,
-                )
-            return {
-                WRAPPER_KEY: {
-                    "kind": "pydantic",
-                    "type": fully_qualified_name(type(value)),
-                    "fields": fields_out,
-                }
-            }
+            return _dump_struct(
+                value,
+                kind="pydantic",
+                names=value.__class__.model_fields,
+                source="pydantic field name",
+                path=path,
+                bundle_dir=bundle_dir,
+                codecs=codecs,
+            )
         case _ if dataclasses.is_dataclass(value) and not isinstance(value, type):
-            fields_out: dict[str, JsonValue] = {}
-            for field in dataclasses.fields(cast(Any, value)):
-                name = _validate_result_path_segment(
-                    field.name,
-                    parent_path=path,
-                    source="dataclass field name",
-                )
-                fields_out[name] = _dump_value(
-                    getattr(value, name),
-                    path=(*path, name),
-                    bundle_dir=bundle_dir,
-                    codecs=codecs,
-                )
-            return {
-                WRAPPER_KEY: {
-                    "kind": "dataclass",
-                    "type": fully_qualified_name(type(value)),
-                    "fields": fields_out,
-                }
-            }
+            return _dump_struct(
+                value,
+                kind="dataclass",
+                names=[f.name for f in dataclasses.fields(cast(Any, value))],
+                source="dataclass field name",
+                path=path,
+                bundle_dir=bundle_dir,
+                codecs=codecs,
+            )
         case _:
             for codec in codecs.values():
                 if codec.matches(value):
-                    artifact_rel = (
-                        Path(ARTIFACTS_DIR_NAME) / _ROOT_ARTIFACT_NAME
-                        if not path
-                        else Path(ARTIFACTS_DIR_NAME, *path)
+                    artifact_rel = Path(
+                        ARTIFACTS_DIR_NAME, *(path or (_ROOT_ARTIFACT_NAME,))
                     )
                     artifact_dir = bundle_dir / artifact_rel
                     artifact_dir.mkdir(parents=True, exist_ok=False)
@@ -271,6 +272,20 @@ def _import_type(qualified_name: str) -> Any:
     return getattr(importlib.import_module(module_name), attr_name)
 
 
+def _load_struct_fields(
+    body: dict[str, Any],
+    *,
+    bundle_dir: Path,
+    codecs: dict[str, type[ResultCodec]],
+) -> tuple[Any, dict[str, Any]]:
+    cls = _import_type(body["type"])
+    loaded_fields = {
+        name: _load_value(child, bundle_dir=bundle_dir, codecs=codecs)
+        for name, child in body["fields"].items()
+    }
+    return cls, loaded_fields
+
+
 def _load_wrapper(
     body: dict[str, Any],
     *,
@@ -288,12 +303,10 @@ def _load_wrapper(
 
             artifact_dir = (bundle_dir / artifact_rel).resolve()
             artifacts_root = (bundle_dir / ARTIFACTS_DIR_NAME).resolve()
-            try:
-                artifact_dir.relative_to(artifacts_root)
-            except ValueError as exc:
+            if not artifact_dir.is_relative_to(artifacts_root):
                 raise ValueError(
                     f"external wrapper path escapes bundle artifacts dir: {rel_path}"
-                ) from exc
+                )
 
             if not artifact_dir.exists():
                 raise ValueError(
@@ -302,47 +315,39 @@ def _load_wrapper(
 
             return codecs[codec_id].load(artifact_dir=artifact_dir)
         case "dataclass":
-            cls = _import_type(body["type"])
-            loaded_fields = {
-                name: _load_value(child, bundle_dir=bundle_dir, codecs=codecs)
-                for name, child in body["fields"].items()
-            }
-
+            cls, loaded_fields = _load_struct_fields(
+                body, bundle_dir=bundle_dir, codecs=codecs
+            )
             obj = object.__new__(cls)
             for name, value in loaded_fields.items():
                 object.__setattr__(obj, name, value)
             return obj
         case "pydantic":
-            cls = _import_type(body["type"])
-            loaded_fields = {
-                name: _load_value(child, bundle_dir=bundle_dir, codecs=codecs)
-                for name, child in body["fields"].items()
-            }
+            cls, loaded_fields = _load_struct_fields(
+                body, bundle_dir=bundle_dir, codecs=codecs
+            )
             return cls.model_construct(**loaded_fields)
         case _:
-            assert_never(kind)
+            raise ValueError(f"unknown wrapper kind: {kind!r}")
 
 
 def save_result_bundle(value: object, bundle_dir: Path) -> None:
     bundle_dir.mkdir(parents=True, exist_ok=False)
     (bundle_dir / ARTIFACTS_DIR_NAME).mkdir()
 
-    codecs = default_codecs()
-
     manifest = _dump_value(
         value,
         path=(),
         bundle_dir=bundle_dir,
-        codecs=codecs,
+        codecs=_DEFAULT_CODECS,
     )
-    with (bundle_dir / MANIFEST_FILE_NAME).open("w", encoding="utf-8") as f:
-        json.dump(manifest, f, indent=2)
-        f.flush()
-        os.fsync(f.fileno())
+    (bundle_dir / MANIFEST_FILE_NAME).write_text(
+        json.dumps(manifest, indent=2),
+        encoding="utf-8",
+    )
 
 
-def load_result_bundle[T](bundle_dir: Path) -> T:
+def load_result_bundle(bundle_dir: Path) -> object:
     manifest_path = bundle_dir / MANIFEST_FILE_NAME
     raw = json.loads(manifest_path.read_text(encoding="utf-8"))
-    codecs = default_codecs()
-    return cast(T, _load_value(raw, bundle_dir=bundle_dir, codecs=codecs))
+    return _load_value(raw, bundle_dir=bundle_dir, codecs=_DEFAULT_CODECS)
