@@ -17,7 +17,7 @@ ARTIFACTS_DIR_NAME: Final[str] = "artifacts"
 MANIFEST_FILE_NAME: Final[str] = "manifest.json"
 _ROOT_ARTIFACT_NAME: Final[str] = "root"
 type LogicalPath = tuple[str, ...]
-type WrapperKind = Literal["external", "dataclass", "pydantic"]
+type WrapperKind = Literal["external", "dataclass", "path", "pydantic"]
 
 
 def _path_display(path: LogicalPath) -> str:
@@ -91,6 +91,13 @@ def _dump_value(
                     codecs=codecs,
                 )
             return out
+        case Path():
+            return {
+                WRAPPER_KEY: {
+                    "kind": "path",
+                    "value": str(value),
+                }
+            }
         case pydantic.BaseModel():
             fields_out: dict[str, JsonValue] = {}
             for raw_name in value.__class__.model_fields:
@@ -220,6 +227,8 @@ def _load_wrapper(
             for name, value in loaded_fields.items():
                 object.__setattr__(obj, name, value)
             return obj
+        case "path":
+            return Path(body["value"])
         case "pydantic":
             cls = _import_type(body["type"])
             loaded_fields = {
