@@ -210,7 +210,7 @@ def _load_wrapper(
                 )
 
             return codecs[body["codec"]].load(artifact_dir=artifact_dir)
-        case "dataclass":
+        case "dataclass":  # TODO: do validation on the dataclass/pydantic object, so that we know the new object has exactly the same fields as the old one
             cls = _import_type(body["type"])
             loaded_fields = {
                 name: _load_value(child, bundle_dir=bundle_dir, codecs=codecs)
