@@ -45,6 +45,12 @@ class Furu[T](_FuruDataclassTransform, ABC):
         if cls is Furu:
             return
 
+        if "data_dir" in cls.__dict__:
+            raise TypeError(
+                f"{cls.__name__} must not override data_dir; override data_root_dir "
+                "instead"
+            )
+
         validate_cls(cls)
         if "__dataclass_params__" not in cls.__dict__:
             dataclass(frozen=True, kw_only=True)(cls)
@@ -161,10 +167,14 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def object_id(self) -> str:
         return f"{self._fully_qualified_name}:{self.schema_hash}:{self.artifact_hash}"
 
-    @cached_property  # TODO: decide if something like this should be cached_property or simply property
+    @cached_property
+    def data_root_dir(self) -> Path:
+        return config.directories.data
+
+    @cached_property
     def data_dir(self) -> Path:
         return (
-            config.directories.data
+            self.data_root_dir
             / Path(*self._fully_qualified_name.split("."))
             / self.schema_hash
             / self.artifact_hash
