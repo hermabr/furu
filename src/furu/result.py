@@ -59,12 +59,12 @@ class ResultCodec(ABC):
         value: object,
         *,
         artifact_dir: Path,
-    ) -> JsonValue:
+    ) -> None:
         pass
 
     @classmethod
     @abstractmethod
-    def load(cls, *, artifact_dir: Path, meta: JsonValue) -> object:
+    def load(cls, *, artifact_dir: Path) -> object:
         pass
 
 
@@ -85,20 +85,15 @@ class NumpyNpyCodec(ResultCodec):
         value: object,
         *,
         artifact_dir: Path,
-    ) -> JsonValue:
+    ) -> None:
         import numpy as np
 
         if not isinstance(value, np.ndarray):
             raise ValueError
         np.save(artifact_dir / "data.npy", value, allow_pickle=False)
 
-        return {
-            "shape": list(value.shape),
-            "dtype": str(value.dtype),
-        }
-
     @classmethod
-    def load(cls, *, artifact_dir: Path, meta: JsonValue) -> object:
+    def load(cls, *, artifact_dir: Path) -> object:
         import numpy as np
 
         return np.load(artifact_dir / "data.npy", allow_pickle=False)
@@ -215,13 +210,12 @@ def _dump_value(
                     )
                     artifact_dir = bundle_dir / artifact_rel
                     artifact_dir.mkdir(parents=True, exist_ok=False)
-                    meta = codec.dump(value, artifact_dir=artifact_dir)
+                    codec.dump(value, artifact_dir=artifact_dir)
                     return {
                         WRAPPER_KEY: {
                             "kind": "external",
                             "codec": codec.codec_id(),
                             "path": artifact_rel.as_posix(),
-                            "meta": meta,
                         }
                     }
 
@@ -291,7 +285,7 @@ def _load_wrapper(
 
             if codec_id not in codecs:
                 raise ValueError(f"unknown result codec: {codec_id}")
-            return codecs[codec_id].load(artifact_dir=artifact_dir, meta=body["meta"])
+            return codecs[codec_id].load(artifact_dir=artifact_dir)
         case "dataclass":
             cls = _import_type(body["type"])
             loaded_fields = {

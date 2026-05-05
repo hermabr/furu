@@ -327,10 +327,6 @@ def test_numpy_array_round_trips() -> None:
         f"{NumpyNpyCodec.__module__}.{NumpyNpyCodec.__qualname__}"
     )
     assert manifest["weights"]["$furu"]["path"] == "artifacts/weights"
-    assert manifest["weights"]["$furu"]["meta"] == {
-        "shape": [10],
-        "dtype": "float32",
-    }
 
 
 def test_numpy_object_dtype_is_rejected(tmp_path) -> None:
@@ -463,7 +459,6 @@ def test_load_result_bundle_rejects_artifacts_path_escape(tmp_path) -> None:
                     "kind": "external",
                     "codec": f"{NumpyNpyCodec.__module__}.{NumpyNpyCodec.__qualname__}",
                     "path": "../../../etc/passwd",
-                    "meta": {"shape": [], "dtype": "float32"},
                 }
             }
         )
