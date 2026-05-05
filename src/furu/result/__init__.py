@@ -4,12 +4,12 @@ import dataclasses
 import importlib
 import importlib.util
 import json
-from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Final, Literal, assert_never, cast
 
 import pydantic
 
+from furu.result.codec import _DEFAULT_CODECS, ResultCodec
 from furu.utils import JsonValue, fully_qualified_name
 
 WRAPPER_KEY: Final[str] = "$furu"
@@ -24,16 +24,6 @@ def _path_display(path: LogicalPath) -> str:
     if not path:
         return "<root>"
     return "/".join(path)
-
-
-def _is_safe_path_segment(text: str) -> bool:
-    if text == "" or text == "." or text == "..":
-        return False
-    if "/" in text or "\\" in text:
-        return False
-    if "\x00" in text:
-        return False
-    return True
 
 
 def _validate_result_path_segment(
@@ -51,79 +41,19 @@ def _validate_result_path_segment(
             f"Unsupported result value at {_path_display(parent_path)}:\n"
             + f"named {WRAPPER_KEY!r} are reserved by Furu result persistence."
         )
-    if not _is_safe_path_segment(value):
+    if (
+        value == ""
+        or value == "."
+        or value == ".."
+        or "/" in value
+        or "\\" in value
+        or "\x00" in value
+    ):
         raise ValueError(
             f"Unsupported result path at {_path_display((*parent_path, value))}:\n"
             + "cannot be used as an artifact path segment."
         )
     return value
-
-
-class ResultCodec(ABC):
-    @classmethod
-    def codec_id(cls) -> str:
-        return fully_qualified_name(cls)
-
-    @classmethod
-    def dependencies_available(cls) -> bool:
-        return True
-
-    @classmethod
-    @abstractmethod
-    def matches(cls, value: object) -> bool:
-        pass
-
-    @classmethod
-    @abstractmethod
-    def dump(
-        cls,
-        value: object,
-        *,
-        artifact_dir: Path,
-    ) -> None:
-        pass
-
-    @classmethod
-    @abstractmethod
-    def load(cls, *, artifact_dir: Path) -> object:
-        pass
-
-
-class NumpyNpyCodec(ResultCodec):
-    @classmethod
-    def dependencies_available(cls) -> bool:
-        return importlib.util.find_spec("numpy") is not None
-
-    @classmethod
-    def matches(cls, value: object) -> bool:
-        import numpy as np
-
-        return isinstance(value, np.ndarray)
-
-    @classmethod
-    def dump(
-        cls,
-        value: object,
-        *,
-        artifact_dir: Path,
-    ) -> None:
-        import numpy as np
-
-        assert isinstance(value, np.ndarray), (
-            f"NumpyNpyCodec.dump expected np.ndarray, got {type(value).__name__}"
-        )
-        np.save(artifact_dir / "data.npy", value, allow_pickle=False)
-
-    @classmethod
-    def load(cls, *, artifact_dir: Path) -> object:
-        import numpy as np
-
-        return np.load(artifact_dir / "data.npy", allow_pickle=False)
-
-
-_DEFAULT_CODECS: Final[dict[str, type[ResultCodec]]] = {
-    c.codec_id(): c for c in [NumpyNpyCodec] if c.dependencies_available()
-}
 
 
 def _dump_value(
