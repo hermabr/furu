@@ -47,7 +47,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
         if "data_dir" in cls.__dict__:
             raise TypeError(
-                f"{cls.__name__} must not override data_dir; override data_root_dir "
+                f"{cls.__name__} must not override data_dir; override storage_root "
                 "instead"
             )
 
@@ -168,13 +168,13 @@ class Furu[T](_FuruDataclassTransform, ABC):
         return f"{self._fully_qualified_name}:{self.schema_hash}:{self.artifact_hash}"
 
     @cached_property
-    def data_root_dir(self) -> Path:
+    def storage_root(self) -> Path:
         return config.directories.data
 
     @cached_property
     def data_dir(self) -> Path:
         return (
-            self.data_root_dir
+            self.storage_root
             / Path(*self._fully_qualified_name.split("."))
             / self.schema_hash
             / self.artifact_hash

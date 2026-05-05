@@ -37,9 +37,9 @@ class WeightedNode(Node):
         return f"WNode({self.name}:{self.weight})"
 
 
-class CustomDataRootDirNode(Node):
+class CustomStorageRootNode(Node):
     @cached_property
-    def data_root_dir(self) -> Path:
+    def storage_root(self) -> Path:
         return Path("custom/data/location")
 
 
@@ -826,15 +826,15 @@ def test_data_dir():
     )
 
 
-def test_data_root_dir_can_be_overridden_with_cached_property():
-    node = CustomDataRootDirNode(name="x")
+def test_storage_root_can_be_overridden_with_cached_property():
+    node = CustomStorageRootNode(name="x")
 
-    assert node.data_root_dir == Path("custom/data/location")
-    assert node.data_root_dir is node.data_root_dir
+    assert node.storage_root == Path("custom/data/location")
+    assert node.storage_root is node.storage_root
     assert node.data_dir == (
         Path("custom/data/location")
         / "test_core"
-        / "CustomDataRootDirNode"
+        / "CustomStorageRootNode"
         / node.schema_hash
         / node.artifact_hash
     )
