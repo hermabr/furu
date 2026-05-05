@@ -6,7 +6,7 @@ from abc import ABC
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, cast
 
 from furu.config import config
 from furu.locking import LockLostError, lock_many
@@ -17,8 +17,8 @@ from furu.serialize import to_json as _to_json
 from furu.utils import (
     JsonValue,
     _hash_dict_deterministically,
-    _nfs_safe_unique_name,
     fully_qualified_name,
+    nfs_safe_unique_name,
 )
 from furu.validate import validate_cls
 
@@ -73,7 +73,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     def try_load(self) -> T:  # TODO: make a better name for this
         if self._result_manifest_path.exists():
-            return load_result_bundle(self._result_dir)
+            return cast(T, load_result_bundle(self._result_dir))
         raise NotImplementedError(
             "TODO: decide if i should throw or return error value"
         )
@@ -98,7 +98,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
                 ):
                     return False
 
-                tombstone_path = _nfs_safe_unique_name(self.data_dir, name="deleting")
+                tombstone_path = nfs_safe_unique_name(self.data_dir, name="deleting")
                 self.data_dir.rename(tombstone_path)
         except LockLostError:
             if tombstone_path is None:

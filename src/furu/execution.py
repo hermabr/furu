@@ -13,7 +13,7 @@ from furu.locking import LockLostError, lock_many
 from furu.logging import _scoped_log_files
 from furu.metadata import RunningMetadata
 from furu.result import load_result_bundle, save_result_bundle
-from furu.utils import _nfs_safe_unique_name, class_label
+from furu.utils import class_label, nfs_safe_unique_name
 
 type HasLock = Callable[[], bool]
 
@@ -60,7 +60,7 @@ def _store_result[T](
             f"lost lock at {obj._lock_path} before writing final result"
         )
 
-    tmp_result_dir = _nfs_safe_unique_name(obj._result_dir, name="tmp")
+    tmp_result_dir = nfs_safe_unique_name(obj._result_dir, name="tmp")
 
     save_result_bundle(result, tmp_result_dir)
 

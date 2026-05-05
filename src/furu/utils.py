@@ -44,7 +44,7 @@ def _hash_dict_deterministically(obj: JsonValue) -> str:
     ).hexdigest()
 
 
-def _nfs_safe_unique_name(path: Path, *, name: str | None = None) -> Path:
+def nfs_safe_unique_name(path: Path, *, name: str | None = None) -> Path:
     stem = f"{path.name}.{socket.getfqdn()}.{os.getpid()}.{uuid.uuid4().hex}"
     if name is not None:
         stem = f"{stem}.{name}"

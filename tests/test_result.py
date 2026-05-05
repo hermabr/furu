@@ -15,6 +15,8 @@ from furu.result import (
     save_result_bundle,
 )
 
+np = pytest.importorskip("numpy")
+
 
 # ---------------------------------------------------------------------------
 # JSON-only bundle test
@@ -306,12 +308,10 @@ def test_pydantic_with_nested_structures_round_trips() -> None:
 
 class NumpyResult(Furu[dict[str, object]]):
     def _create(self) -> dict[str, object]:
-        np = pytest.importorskip("numpy")
         return {"weights": np.arange(10, dtype=np.float32)}
 
 
 def test_numpy_array_round_trips() -> None:
-    np = pytest.importorskip("numpy")
     obj = NumpyResult()
     loaded = obj.load_or_create()
 
@@ -330,7 +330,6 @@ def test_numpy_array_round_trips() -> None:
 
 
 def test_numpy_object_dtype_is_rejected(tmp_path) -> None:
-    np = pytest.importorskip("numpy")
     bundle_dir = tmp_path / "bundle"
 
     with pytest.raises(ValueError, match="allow_pickle=False"):
@@ -342,14 +341,12 @@ def test_numpy_object_dtype_is_rejected(tmp_path) -> None:
 
 class NestedNumpyResult(Furu[dict[str, list[dict[str, object]]]]):
     def _create(self) -> dict[str, list[dict[str, object]]]:
-        np = pytest.importorskip("numpy")
         return {
             "layers": [{"weights": np.arange(i, dtype=np.float32)} for i in range(10)]
         }
 
 
 def test_nested_numpy_paths_use_list_length_padded_indexes() -> None:
-    np = pytest.importorskip("numpy")
     obj = NestedNumpyResult()
     loaded = obj.load_or_create()
 
@@ -367,7 +364,6 @@ def test_nested_numpy_paths_use_list_length_padded_indexes() -> None:
 
 
 def test_long_list_uses_three_digit_padding(tmp_path) -> None:
-    np = pytest.importorskip("numpy")
     bundle_dir = tmp_path / "bundle"
     layers = [{"weights": np.arange(0, dtype=np.float32)} for _ in range(100)]
     layers[3] = {"weights": np.arange(3, dtype=np.float32)}
@@ -379,7 +375,6 @@ def test_long_list_uses_three_digit_padding(tmp_path) -> None:
 
 
 def test_numpy_root_value_uses_root_artifact_dir(tmp_path) -> None:
-    np = pytest.importorskip("numpy")
     bundle_dir = tmp_path / "bundle"
     save_result_bundle(np.arange(5, dtype=np.int64), bundle_dir)
 
@@ -405,7 +400,6 @@ class MixedOutput:
 
 class MixedResult(Furu[dict[str, object]]):
     def _create(self) -> dict[str, object]:
-        np = pytest.importorskip("numpy")
         return {
             "result": MixedOutput(metrics={"loss": 0.5}, values=[1, 2]),
             "weights": np.arange(4, dtype=np.float32),
@@ -414,7 +408,6 @@ class MixedResult(Furu[dict[str, object]]):
 
 
 def test_mixed_dataclass_external_and_json_round_trip() -> None:
-    np = pytest.importorskip("numpy")
     obj = MixedResult()
     loaded = obj.load_or_create()
 
@@ -439,7 +432,6 @@ def test_save_result_bundle_refuses_existing_directory(tmp_path) -> None:
 
 
 def test_save_result_bundle_writes_manifest_last(tmp_path) -> None:
-    np = pytest.importorskip("numpy")
     bundle_dir = tmp_path / "bundle"
     save_result_bundle({"weights": np.arange(2, dtype=np.float32)}, bundle_dir)
 
