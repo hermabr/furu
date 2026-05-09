@@ -4,7 +4,9 @@ import dataclasses
 import importlib
 import importlib.util
 import json
+import threading
 from pathlib import Path
+from collections.abc import Callable, Mapping
 from typing import Any, Final, Literal, assert_never, cast
 
 import pydantic
@@ -14,12 +16,45 @@ from furu.utils import JsonValue, fully_qualified_name
 
 WRAPPER_KEY: Final[str] = "$furu"
 ARTIFACTS_DIR_NAME: Final[str] = "artifacts"
+LAZY_DIR_NAME: Final[str] = "lazy"
 MANIFEST_FILE_NAME: Final[str] = "manifest.json"
 _ROOT_ARTIFACT_NAME: Final[str] = "root"
+_UNLOADED: Final[object] = object()
 type LogicalPath = tuple[str, ...]
 type WrapperKind = Literal[
-    "external", "dataclass", "path", "pydantic", "tuple", "set", "frozenset"
+    "external", "dataclass", "path", "pydantic", "tuple", "set", "frozenset", "lazy"
 ]
+
+
+class LazyResult[T]:
+    def __init__(self, value: T) -> None:
+        self._value: T | object = value
+        self._loader: Callable[[], T] | None = None
+        self._lock = threading.Lock()
+
+    @classmethod
+    def _from_loader(cls, loader: Callable[[], T]) -> LazyResult[T]:
+        obj = cls.__new__(cls)
+        obj._value = _UNLOADED
+        obj._loader = loader
+        obj._lock = threading.Lock()
+        return obj
+
+    @property
+    def is_loaded(self) -> bool:
+        return self._value is not _UNLOADED
+
+    def load(self) -> T:
+        if self._value is not _UNLOADED:
+            return cast(T, self._value)
+
+        with self._lock:
+            if self._value is _UNLOADED:
+                if self._loader is None:
+                    raise RuntimeError("lazy result has no loader")
+                self._value = self._loader()
+                self._loader = None
+            return cast(T, self._value)
 
 
 def _path_display(path: LogicalPath) -> str:
@@ -63,9 +98,23 @@ def _dump_value(
     *,
     path: LogicalPath,
     bundle_dir: Path,
-    codecs: dict[str, type[ResultCodec]],
+    codecs: Mapping[str, type[ResultCodec]],
 ) -> JsonValue:
     match value:
+        case LazyResult():
+            lazy_rel = Path(LAZY_DIR_NAME, *(path or (_ROOT_ARTIFACT_NAME,)))
+            nested_bundle_dir = bundle_dir / lazy_rel
+            _save_result_bundle(
+                value.load(),
+                nested_bundle_dir,
+                codecs=codecs,
+            )
+            return {
+                WRAPPER_KEY: {
+                    "kind": "lazy",
+                    "path": lazy_rel.as_posix(),
+                }
+            }
         case None | bool() | int() | float() | str():
             return value
         case list():
@@ -207,7 +256,7 @@ def _load_value(
     node: JsonValue,
     *,
     bundle_dir: Path,
-    codecs: dict[str, type[ResultCodec]],
+    codecs: Mapping[str, type[ResultCodec]],
 ) -> object:
     match node:
         case None | bool() | int() | float() | str():
@@ -236,7 +285,7 @@ def _load_wrapper(
     body: dict[str, Any],
     *,
     bundle_dir: Path,
-    codecs: dict[str, type[ResultCodec]],
+    codecs: Mapping[str, type[ResultCodec]],
 ) -> object:
     kind: WrapperKind = body["kind"]
     match kind:
@@ -260,6 +309,26 @@ def _load_wrapper(
                 )
 
             return codecs[body["codec"]].load(artifact_dir=artifact_dir)
+        case "lazy":
+            nested_rel = Path(body["path"])
+            if nested_rel.is_absolute():
+                raise ValueError(f"lazy wrapper path must be relative: {nested_rel}")
+
+            nested_bundle_dir = (bundle_dir / nested_rel).resolve()
+            lazy_root = (bundle_dir / LAZY_DIR_NAME).resolve()
+            if not nested_bundle_dir.is_relative_to(lazy_root):
+                raise ValueError(
+                    f"lazy wrapper path escapes bundle lazy dir: {nested_rel}"
+                )
+
+            if not (nested_bundle_dir / MANIFEST_FILE_NAME).exists():
+                raise ValueError(
+                    f"lazy wrapper nested manifest missing: {nested_bundle_dir}"
+                )
+
+            return LazyResult._from_loader(
+                lambda: _load_result_bundle(nested_bundle_dir, codecs=codecs)
+            )
         case "dataclass":  # TODO: do validation on the dataclass/pydantic object, so that we know the new object has exactly the same fields as the old one
             cls = _import_type(body["type"])
             loaded_fields = {
@@ -299,13 +368,22 @@ def _load_wrapper(
 
 
 def save_result_bundle(value: object, bundle_dir: Path) -> None:
+    _save_result_bundle(value, bundle_dir, codecs=_DEFAULT_CODECS)
+
+
+def _save_result_bundle(
+    value: object,
+    bundle_dir: Path,
+    *,
+    codecs: Mapping[str, type[ResultCodec]],
+) -> None:
     bundle_dir.mkdir(parents=True, exist_ok=False)
 
     manifest = _dump_value(
         value,
         path=(),
         bundle_dir=bundle_dir,
-        codecs=_DEFAULT_CODECS,
+        codecs=codecs,
     )
     (bundle_dir / MANIFEST_FILE_NAME).write_text(
         json.dumps(manifest, indent=2),
@@ -314,6 +392,14 @@ def save_result_bundle(value: object, bundle_dir: Path) -> None:
 
 
 def load_result_bundle(bundle_dir: Path) -> object:
+    return _load_result_bundle(bundle_dir, codecs=_DEFAULT_CODECS)
+
+
+def _load_result_bundle(
+    bundle_dir: Path,
+    *,
+    codecs: Mapping[str, type[ResultCodec]],
+) -> object:
     manifest_path = bundle_dir / MANIFEST_FILE_NAME
     raw = json.loads(manifest_path.read_text(encoding="utf-8"))
-    return _load_value(raw, bundle_dir=bundle_dir, codecs=_DEFAULT_CODECS)
+    return _load_value(raw, bundle_dir=bundle_dir, codecs=codecs)

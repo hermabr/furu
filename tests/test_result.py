@@ -11,10 +11,13 @@ from pydantic import BaseModel, ConfigDict
 
 from furu import Furu
 from furu.result import (
+    LazyResult,
+    _load_result_bundle,
+    _save_result_bundle,
     load_result_bundle,
     save_result_bundle,
 )
-from furu.result.codec import NumpyNpyCodec, PolarsParquetCodec
+from furu.result.codec import NumpyNpyCodec, PolarsParquetCodec, ResultCodec
 
 np = pytest.importorskip("numpy")
 pl = pytest.importorskip("polars")
@@ -211,6 +214,43 @@ def test_non_finite_floats_round_trip() -> None:
 
 class _CustomTensor:
     pass
+
+
+class _CountingValue:
+    def __init__(self, value: int) -> None:
+        self.value = value
+
+
+class _CountingCodec(ResultCodec):
+    dump_calls: ClassVar[int] = 0
+    load_calls: ClassVar[int] = 0
+
+    @classmethod
+    def matches(cls, value: object) -> bool:
+        return isinstance(value, _CountingValue)
+
+    @classmethod
+    def dump(
+        cls,
+        value: object,
+        *,
+        artifact_dir: Path,
+    ) -> None:
+        cls.dump_calls += 1
+        artifact_dir.joinpath("value.txt").write_text(
+            str(cast(_CountingValue, value).value),
+            encoding="utf-8",
+        )
+
+    @classmethod
+    def load(cls, *, artifact_dir: Path) -> object:
+        cls.load_calls += 1
+        return _CountingValue(
+            int(artifact_dir.joinpath("value.txt").read_text(encoding="utf-8"))
+        )
+
+
+_COUNTING_CODECS = {_CountingCodec.codec_id(): _CountingCodec}
 
 
 class UnsupportedRootResult(Furu[object]):
@@ -523,4 +563,106 @@ def test_load_result_bundle_rejects_artifacts_path_escape(tmp_path) -> None:
     )
 
     with pytest.raises(ValueError, match="escapes"):
+        load_result_bundle(bundle_dir)
+
+
+def test_lazy_result_created_directly_is_loaded() -> None:
+    value = _CountingValue(7)
+    lazy = LazyResult(value)
+
+    assert lazy.is_loaded
+    assert lazy.load() is value
+
+
+def test_root_lazy_result_defers_cache_read_and_memoizes(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "bundle"
+    _CountingCodec.dump_calls = 0
+    _CountingCodec.load_calls = 0
+
+    _save_result_bundle(
+        LazyResult(_CountingValue(9)),
+        bundle_dir,
+        codecs=_COUNTING_CODECS,
+    )
+
+    assert _CountingCodec.dump_calls == 1
+    assert _CountingCodec.load_calls == 0
+    manifest = json.loads((bundle_dir / "manifest.json").read_text())
+    assert manifest == {"$furu": {"kind": "lazy", "path": "lazy/root"}}
+    assert (bundle_dir / "lazy" / "root" / "manifest.json").exists()
+
+    loaded = _load_result_bundle(bundle_dir, codecs=_COUNTING_CODECS)
+
+    assert isinstance(loaded, LazyResult)
+    assert not loaded.is_loaded
+    assert _CountingCodec.load_calls == 0
+
+    first = loaded.load()
+    second = loaded.load()
+
+    assert isinstance(first, _CountingValue)
+    assert first.value == 9
+    assert second is first
+    assert loaded.is_loaded
+    assert _CountingCodec.load_calls == 1
+
+
+def test_nested_lazy_result_round_trips_inside_supported_structures(
+    tmp_path: Path,
+) -> None:
+    bundle_dir = tmp_path / "bundle"
+    _CountingCodec.load_calls = 0
+    value = {
+        "items": [
+            LazyResult(_CountingValue(1)),
+            {"inner": LazyResult((Path("x"), 2))},
+        ]
+    }
+
+    _save_result_bundle(value, bundle_dir, codecs=_COUNTING_CODECS)
+    loaded = _load_result_bundle(bundle_dir, codecs=_COUNTING_CODECS)
+
+    assert isinstance(loaded, dict)
+    loaded_dict = cast(dict[str, Any], loaded)
+    items = loaded_dict["items"]
+    assert isinstance(items, list)
+    first = cast(LazyResult[_CountingValue], items[0])
+    second_container = cast(dict[str, Any], items[1])
+    second = cast(LazyResult[tuple[Path, int]], second_container["inner"])
+    assert isinstance(first, LazyResult)
+    assert isinstance(second, LazyResult)
+    assert not first.is_loaded
+    assert not second.is_loaded
+    assert _CountingCodec.load_calls == 0
+
+    assert first.load().value == 1
+    assert second.load() == (Path("x"), 2)
+    assert _CountingCodec.load_calls == 1
+
+
+def test_load_result_bundle_rejects_lazy_path_escape(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    (bundle_dir / "lazy").mkdir()
+    (bundle_dir / "manifest.json").write_text(
+        json.dumps({"$furu": {"kind": "lazy", "path": "../outside"}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="escapes"):
+        load_result_bundle(bundle_dir)
+
+
+def test_load_result_bundle_rejects_lazy_without_nested_manifest(
+    tmp_path: Path,
+) -> None:
+    bundle_dir = tmp_path / "bundle"
+    nested_dir = bundle_dir / "lazy" / "root"
+    nested_dir.mkdir(parents=True)
+    (bundle_dir / "manifest.json").write_text(
+        json.dumps({"$furu": {"kind": "lazy", "path": "lazy/root"}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="nested manifest missing"):
         load_result_bundle(bundle_dir)
