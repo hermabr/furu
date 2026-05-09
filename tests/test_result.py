@@ -12,12 +12,15 @@ from pydantic import BaseModel, ConfigDict
 from furu import Furu
 from furu.result import (
     LazyResult,
-    _load_result_bundle,
-    _save_result_bundle,
     load_result_bundle,
     save_result_bundle,
 )
-from furu.result.codec import NumpyNpyCodec, PolarsParquetCodec, ResultCodec
+from furu.result.codec import (
+    _DEFAULT_CODECS,
+    NumpyNpyCodec,
+    PolarsParquetCodec,
+    ResultCodec,
+)
 
 np = pytest.importorskip("numpy")
 pl = pytest.importorskip("polars")
@@ -248,9 +251,6 @@ class _CountingCodec(ResultCodec):
         return _CountingValue(
             int(artifact_dir.joinpath("value.txt").read_text(encoding="utf-8"))
         )
-
-
-_COUNTING_CODECS = {_CountingCodec.codec_id(): _CountingCodec}
 
 
 class UnsupportedRootResult(Furu[object]):
@@ -574,16 +574,16 @@ def test_lazy_result_created_directly_is_loaded() -> None:
     assert lazy.load() is value
 
 
-def test_root_lazy_result_defers_cache_read_and_memoizes(tmp_path: Path) -> None:
+def test_root_lazy_result_defers_cache_read_and_memoizes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     bundle_dir = tmp_path / "bundle"
     _CountingCodec.dump_calls = 0
     _CountingCodec.load_calls = 0
+    monkeypatch.setitem(_DEFAULT_CODECS, _CountingCodec.codec_id(), _CountingCodec)
 
-    _save_result_bundle(
-        LazyResult(_CountingValue(9)),
-        bundle_dir,
-        codecs=_COUNTING_CODECS,
-    )
+    save_result_bundle(LazyResult(_CountingValue(9)), bundle_dir)
 
     assert _CountingCodec.dump_calls == 1
     assert _CountingCodec.load_calls == 0
@@ -591,7 +591,7 @@ def test_root_lazy_result_defers_cache_read_and_memoizes(tmp_path: Path) -> None
     assert manifest == {"$furu": {"kind": "lazy", "path": "lazy/root"}}
     assert (bundle_dir / "lazy" / "root" / "manifest.json").exists()
 
-    loaded = _load_result_bundle(bundle_dir, codecs=_COUNTING_CODECS)
+    loaded = load_result_bundle(bundle_dir)
 
     assert isinstance(loaded, LazyResult)
     assert not loaded.is_loaded
@@ -609,9 +609,11 @@ def test_root_lazy_result_defers_cache_read_and_memoizes(tmp_path: Path) -> None
 
 def test_nested_lazy_result_round_trips_inside_supported_structures(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bundle_dir = tmp_path / "bundle"
     _CountingCodec.load_calls = 0
+    monkeypatch.setitem(_DEFAULT_CODECS, _CountingCodec.codec_id(), _CountingCodec)
     value = {
         "items": [
             LazyResult(_CountingValue(1)),
@@ -619,8 +621,8 @@ def test_nested_lazy_result_round_trips_inside_supported_structures(
         ]
     }
 
-    _save_result_bundle(value, bundle_dir, codecs=_COUNTING_CODECS)
-    loaded = _load_result_bundle(bundle_dir, codecs=_COUNTING_CODECS)
+    save_result_bundle(value, bundle_dir)
+    loaded = load_result_bundle(bundle_dir)
 
     assert isinstance(loaded, dict)
     loaded_dict = cast(dict[str, Any], loaded)
