@@ -100,10 +100,11 @@ def _dump_value(
     bundle_dir: Path,
     registry: ResultRegistry,
 ) -> JsonValue:
-    runtime_codec: type[ResultCodec] | None = None
     if isinstance(value, _SaveAs):
         runtime_codec = value.codec
         value = value.value
+    else:
+        runtime_codec = None
 
     declared_codec: type[ResultCodec] | None = None
     if get_origin(declared_type) is Annotated:
