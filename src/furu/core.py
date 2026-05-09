@@ -91,9 +91,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
             return "completed"
         if self._lock_path.exists():
             return "running"
-        if self._metadata_path.exists() or any(
-            self._internal_furu_dir.glob("error-*.log")
-        ):
+        if self.data_dir.exists():
             return "failed"
         return "missing"
 

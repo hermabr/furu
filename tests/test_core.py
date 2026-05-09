@@ -17,7 +17,6 @@ from furu import Furu, load_or_create, validate
 from furu.config import config
 from furu.locking import lock_many
 from furu.metadata import ArtifactMetadata
-from furu.metadata import RunningMetadata
 from furu.result import load_result_bundle, save_result_bundle
 from furu.serialize import _from_json, to_json
 from furu.utils import fully_qualified_name
@@ -1062,18 +1061,9 @@ def test_status_is_running_while_compute_lock_is_held() -> None:
         assert node.status() == "running"
 
 
-def test_status_is_failed_for_abandoned_running_metadata() -> None:
+def test_status_is_failed_when_data_dir_exists_without_result_or_lock() -> None:
     node = Node(name="x")
-    node._internal_furu_dir.mkdir(parents=True, exist_ok=True)
-    RunningMetadata.write_for(node)
-
-    assert node.status() == "failed"
-
-
-def test_status_is_failed_when_error_log_exists() -> None:
-    node = Node(name="x")
-    node._internal_furu_dir.mkdir(parents=True, exist_ok=True)
-    (node._internal_furu_dir / "error-test.log").write_text("boom")
+    node.data_dir.mkdir(parents=True, exist_ok=True)
 
     assert node.status() == "failed"
 
