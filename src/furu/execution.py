@@ -46,14 +46,6 @@ def _resolve_create_mode[T](cls: type[Furu[T]]) -> FuruCreateMode:
     )
 
 
-def _result_type[T](obj: Furu[T]) -> object:
-    for cls in type(obj).__mro__:
-        for base in getattr(cls, "__orig_bases__", ()):
-            if get_origin(base) is Furu:
-                return get_args(base)[0]
-    return Any
-
-
 def _store_result[T](
     obj: Furu[T],
     result: T,
@@ -68,10 +60,20 @@ def _store_result[T](
 
     tmp_result_dir = nfs_safe_unique_name(obj._result_dir, name="tmp")
 
+    expected_type: object = Any
+    for cls in type(obj).__mro__:
+        for base in getattr(cls, "__orig_bases__", ()):
+            if get_origin(base) is Furu:
+                expected_type = get_args(base)[0]
+                break
+        else:
+            continue
+        break
+
     save_result_bundle(
         result,
         tmp_result_dir,
-        expected_type=_result_type(obj),
+        expected_type=expected_type,
         registry=obj.result_registry,
     )
 
