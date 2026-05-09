@@ -37,18 +37,14 @@ class TrainingRunV2(furu.Furu[str]):
     def migrations(cls) -> tuple[furu.Migration, ...]:
         return (
             furu.Migration(
-                edge=furu.MigrationEdge(
-                    old_fully_qualified_name=TrainJobV1(
-                        dataset="", learning_rate=0.0
-                    )._fully_qualified_name,
-                    old_schema_hash=TrainJobV1(
-                        dataset="", learning_rate=0.0
-                    ).artifact_schema_hash,
-                    new_fully_qualified_name=cls(
-                        dataset="", lr=0.0
-                    )._fully_qualified_name,
-                    new_schema_hash=cls(dataset="", lr=0.0).artifact_schema_hash,
-                ),
+                old_fully_qualified_name=TrainJobV1(
+                    dataset="", learning_rate=0.0
+                )._fully_qualified_name,
+                old_schema_hash=TrainJobV1(
+                    dataset="", learning_rate=0.0
+                ).artifact_schema_hash,
+                new_fully_qualified_name=cls(dataset="", lr=0.0)._fully_qualified_name,
+                new_schema_hash=cls(dataset="", lr=0.0).artifact_schema_hash,
                 transform_fn=cls._from_train_job_v1,
             ),
         )
@@ -69,16 +65,14 @@ class DuplicateMigration(furu.Furu[str]):
     @classmethod
     def migrations(cls) -> tuple[furu.Migration, ...]:
         edge = furu.Migration(
-            edge=furu.MigrationEdge(
-                old_fully_qualified_name=TrainJobV1(
-                    dataset="", learning_rate=0.0
-                )._fully_qualified_name,
-                old_schema_hash=TrainJobV1(
-                    dataset="", learning_rate=0.0
-                ).artifact_schema_hash,
-                new_fully_qualified_name=cls()._fully_qualified_name,
-                new_schema_hash=cls().artifact_schema_hash,
-            ),
+            old_fully_qualified_name=TrainJobV1(
+                dataset="", learning_rate=0.0
+            )._fully_qualified_name,
+            old_schema_hash=TrainJobV1(
+                dataset="", learning_rate=0.0
+            ).artifact_schema_hash,
+            new_fully_qualified_name=cls()._fully_qualified_name,
+            new_schema_hash=cls().artifact_schema_hash,
             transform_fn=cls._same,
         )
         return (edge, edge)
@@ -99,18 +93,14 @@ class ReturnsFuruObject(furu.Furu[str]):
     def migrations(cls) -> tuple[furu.Migration, ...]:
         return (
             furu.Migration(
-                edge=furu.MigrationEdge(
-                    old_fully_qualified_name=TrainJobV1(
-                        dataset="", learning_rate=0.0
-                    )._fully_qualified_name,
-                    old_schema_hash=TrainJobV1(
-                        dataset="", learning_rate=0.0
-                    ).artifact_schema_hash,
-                    new_fully_qualified_name=cls(
-                        dataset="", lr=0.0
-                    )._fully_qualified_name,
-                    new_schema_hash=cls(dataset="", lr=0.0).artifact_schema_hash,
-                ),
+                old_fully_qualified_name=TrainJobV1(
+                    dataset="", learning_rate=0.0
+                )._fully_qualified_name,
+                old_schema_hash=TrainJobV1(
+                    dataset="", learning_rate=0.0
+                ).artifact_schema_hash,
+                new_fully_qualified_name=cls(dataset="", lr=0.0)._fully_qualified_name,
+                new_schema_hash=cls(dataset="", lr=0.0).artifact_schema_hash,
                 transform_fn=cls._bad,
             ),
         )
