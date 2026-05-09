@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import JsonValue, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, JsonValue, TypeAdapter, ValidationError
 
 from furu.constants import CLASSMARKER
 from furu.metadata import CompletedMetadata, Metadata
@@ -47,6 +46,47 @@ type MigrationNode = tuple[str, str]
 type MigrationEdgeIdentity = tuple[str, str, str, str]
 
 
+class _ResultLinkBase(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        strict=True,
+    )
+
+
+class _ResultLinkArtifact(_ResultLinkBase):
+    fully_qualified_name: str
+    schema_hash: str
+    artifact_hash: str
+
+
+class _ResultLinkSource(_ResultLinkArtifact):
+    data_dir: str
+
+
+class _ResultLinkMigrationEdge(_ResultLinkBase):
+    old_fully_qualified_name: str
+    old_schema_hash: str
+    new_fully_qualified_name: str
+    new_schema_hash: str
+
+    @property
+    def edge_identity(self) -> MigrationEdgeIdentity:
+        return (
+            self.old_fully_qualified_name,
+            self.old_schema_hash,
+            self.new_fully_qualified_name,
+            self.new_schema_hash,
+        )
+
+
+class _ResultLink(_ResultLinkBase):
+    kind: Literal["result_link"] = "result_link"
+    current: _ResultLinkArtifact
+    source: _ResultLinkSource
+    migration_path: list[_ResultLinkMigrationEdge]
+
+
 def _registered_migrations_for_class(cls: type[Furu[Any]]) -> tuple[Migration, ...]:
     migrations = cls.migrations()
     seen: set[MigrationEdgeIdentity] = set()
@@ -80,30 +120,18 @@ def _resolve_result_manifest_path(obj: Furu[Any]) -> Path | None:
 
 def read_and_verify_result_link(obj: Furu[Any]) -> ResolvedMigration | None:
     try:
-        raw = json.loads(obj._result_link_path.read_text())
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        link = _ResultLink.model_validate_json(obj._result_link_path.read_text())
+    except (FileNotFoundError, OSError, ValidationError):
         return None
 
-    if not isinstance(raw, dict) or raw.get("kind") != "result_link":
+    if link.current != _ResultLinkArtifact(
+        fully_qualified_name=obj._fully_qualified_name,
+        schema_hash=obj.artifact_schema_hash,
+        artifact_hash=obj.artifact_hash,
+    ):
         return None
 
-    current = raw.get("current")
-    source = raw.get("source")
-    raw_path = raw.get("migration_path")
-    if not isinstance(current, dict) or not isinstance(source, dict):
-        return None
-
-    if current != {
-        "fully_qualified_name": obj._fully_qualified_name,
-        "schema_hash": obj.artifact_schema_hash,
-        "artifact_hash": obj.artifact_hash,
-    }:
-        return None
-
-    source_data_dir_value = source.get("data_dir")
-    if not isinstance(source_data_dir_value, str):
-        return None
-    source_data_dir = Path(source_data_dir_value)
+    source_data_dir = Path(link.source.data_dir)
     if not (source_data_dir / "result" / "manifest.json").exists():
         return None
 
@@ -113,15 +141,19 @@ def read_and_verify_result_link(obj: Furu[Any]) -> ResolvedMigration | None:
     if source_metadata is None:
         return None
 
-    if source != {
-        "fully_qualified_name": _artifact_fully_qualified_name(source_metadata),
-        "schema_hash": source_metadata.artifact.schema_hash,
-        "artifact_hash": source_metadata.artifact.hash,
-        "data_dir": str(source_metadata.data_path),
-    }:
+    source_fully_qualified_name = _artifact_fully_qualified_name(source_metadata)
+    if source_fully_qualified_name is None:
         return None
 
-    path = _resolve_registered_path(type(obj), raw_path)
+    if link.source != _ResultLinkSource(
+        fully_qualified_name=source_fully_qualified_name,
+        schema_hash=source_metadata.artifact.schema_hash,
+        artifact_hash=source_metadata.artifact.hash,
+        data_dir=str(source_metadata.data_path),
+    ):
+        return None
+
+    path = _resolve_registered_path(type(obj), link.migration_path)
     if path is None:
         return None
 
@@ -166,30 +198,29 @@ def write_result_link(obj: Furu[Any], match: ResolvedMigration) -> None:
         raise ValueError("source artifact metadata has no fully qualified name")
 
     obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "kind": "result_link",
-        "current": {
-            "fully_qualified_name": obj._fully_qualified_name,
-            "schema_hash": obj.artifact_schema_hash,
-            "artifact_hash": obj.artifact_hash,
-        },
-        "source": {
-            "fully_qualified_name": source_fully_qualified_name,
-            "schema_hash": match.source_metadata.artifact.schema_hash,
-            "artifact_hash": match.source_metadata.artifact.hash,
-            "data_dir": str(match.source_metadata.data_path),
-        },
-        "migration_path": [
-            {
-                "old_fully_qualified_name": migration.old_fully_qualified_name,
-                "old_schema_hash": migration.old_schema_hash,
-                "new_fully_qualified_name": migration.new_fully_qualified_name,
-                "new_schema_hash": migration.new_schema_hash,
-            }
+    link = _ResultLink(
+        current=_ResultLinkArtifact(
+            fully_qualified_name=obj._fully_qualified_name,
+            schema_hash=obj.artifact_schema_hash,
+            artifact_hash=obj.artifact_hash,
+        ),
+        source=_ResultLinkSource(
+            fully_qualified_name=source_fully_qualified_name,
+            schema_hash=match.source_metadata.artifact.schema_hash,
+            artifact_hash=match.source_metadata.artifact.hash,
+            data_dir=str(match.source_metadata.data_path),
+        ),
+        migration_path=[
+            _ResultLinkMigrationEdge(
+                old_fully_qualified_name=migration.old_fully_qualified_name,
+                old_schema_hash=migration.old_schema_hash,
+                new_fully_qualified_name=migration.new_fully_qualified_name,
+                new_schema_hash=migration.new_schema_hash,
+            )
             for migration in match.migration_path
         ],
-    }
-    obj._result_link_path.write_text(json.dumps(payload, indent=2))
+    )
+    obj._result_link_path.write_text(link.model_dump_json(indent=2))
 
 
 class _MigrationGraph:
@@ -300,29 +331,15 @@ def _apply_migration_path(
 
 
 def _resolve_registered_path(
-    cls: type[Furu[Any]], raw_path: object
+    cls: type[Furu[Any]], raw_path: list[_ResultLinkMigrationEdge]
 ) -> tuple[Migration, ...] | None:
-    if not isinstance(raw_path, list):
-        return None
-
     by_identity = {
         migration.edge_identity: migration
         for migration in _registered_migrations_for_class(cls)
     }
     path: list[Migration] = []
-    for item in raw_path:
-        if not isinstance(item, dict):
-            return None
-        raw_edge = cast(dict[str, object], item)
-        identity = (
-            raw_edge.get("old_fully_qualified_name"),
-            raw_edge.get("old_schema_hash"),
-            raw_edge.get("new_fully_qualified_name"),
-            raw_edge.get("new_schema_hash"),
-        )
-        if not all(isinstance(part, str) for part in identity):
-            return None
-        migration = by_identity.get(cast(MigrationEdgeIdentity, identity))
+    for edge in raw_path:
+        migration = by_identity.get(edge.edge_identity)
         if migration is None:
             return None
         path.append(migration)
