@@ -16,10 +16,6 @@ if TYPE_CHECKING:
     from furu.core import Furu
 
 
-_JSON_DICT_ADAPTER = TypeAdapter(dict[str, JsonValue])
-_METADATA_ADAPTER = TypeAdapter(Metadata)
-
-
 @dataclass(frozen=True, slots=True)
 class Migration:
     old_fully_qualified_name: str
@@ -256,7 +252,7 @@ def _read_completed_metadata(path: Path) -> CompletedMetadata | None:
         return None
 
     try:
-        metadata = _METADATA_ADAPTER.validate_json(raw_text)
+        metadata = TypeAdapter(Metadata).validate_json(raw_text)
     except ValidationError:
         return None
     if not isinstance(metadata, CompletedMetadata):
@@ -282,7 +278,7 @@ def _artifact_fields(metadata: CompletedMetadata) -> dict[str, JsonValue] | None
     if not isinstance(fields, dict):
         return None
     try:
-        return _JSON_DICT_ADAPTER.validate_python(fields)
+        return TypeAdapter(dict[str, JsonValue]).validate_python(fields)
     except ValidationError:
         return None
 
@@ -294,7 +290,7 @@ def _requested_fields(obj: Furu[Any]) -> dict[str, JsonValue]:
     fields = data.get("fields")
     if not isinstance(fields, dict):
         raise TypeError("Furu artifact_data must contain a fields object")
-    return _JSON_DICT_ADAPTER.validate_python(fields)
+    return TypeAdapter(dict[str, JsonValue]).validate_python(fields)
 
 
 def _apply_migration_path(
@@ -304,7 +300,7 @@ def _apply_migration_path(
     for migration in path:
         transformed = migration.transform_fn(current)
         try:
-            current = _JSON_DICT_ADAPTER.validate_python(transformed)
+            current = TypeAdapter(dict[str, JsonValue]).validate_python(transformed)
         except ValidationError as exc:
             raise TypeError(
                 "Migration.transform_fn must return dict[str, JsonValue]"
