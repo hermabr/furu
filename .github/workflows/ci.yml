@@ -16,8 +16,8 @@ jobs:
           - label: "3.x"
             python-version: "3.x"
             check-latest: true
-          - label: "3.x free-threaded"
-            python-version: "3.x"
+          - label: "3.13 free-threaded"
+            python-version: "3.13"
             freethreaded: true
             check-latest: true
     steps:
