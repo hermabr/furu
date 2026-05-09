@@ -9,9 +9,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 from furu.config import config
+from furu.identity import (
+    IdentitySpec,
+    code_fingerprint,
+    dependency_fingerprint,
+)
 from furu.locking import LockLostError, lock_many
 from furu.logging import get_logger
-from furu.result import load_result_bundle
+from furu.result import load_result_bundle, validate_result_bundle
 from furu.schema import schema_type as _schema_type
 from furu.serialize import to_json as _to_json
 from furu.utils import (
@@ -36,6 +41,14 @@ else:
 
 
 type FuruCreateMode = Literal["single", "batched"]
+
+
+class MissingResultError(FileNotFoundError):
+    pass
+
+
+class CorruptResultError(RuntimeError):
+    pass
 
 
 class Furu[T](_FuruDataclassTransform, ABC):
@@ -85,9 +98,13 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def status(
         self,
     ) -> Literal[
-        "completed", "missing", "running", "failed"
+        "completed", "missing", "running", "failed", "corrupt"
     ]:  # TODO: add queued/waiting state?
         if self._result_manifest_path.exists():
+            try:
+                validate_result_bundle(self._result_dir)
+            except Exception:
+                return "corrupt"
             return "completed"
         if self._lock_path.exists():
             return "running"
@@ -97,10 +114,13 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     def try_load(self) -> T:  # TODO: make a better name for this
         if self._result_manifest_path.exists():
-            return cast(T, load_result_bundle(self._result_dir))
-        raise NotImplementedError(
-            "TODO: decide if i should throw or return error value"
-        )
+            try:
+                return cast(T, load_result_bundle(self._result_dir))
+            except Exception as exc:
+                raise CorruptResultError(
+                    f"Could not load result bundle at {self._result_dir}"
+                ) from exc
+        raise MissingResultError(f"No completed result exists at {self._result_dir}")
 
     def delete(self, mode: Literal["prompt", "force"] = "prompt") -> bool:
         if not self.data_dir.exists():
@@ -178,11 +198,23 @@ class Furu[T](_FuruDataclassTransform, ABC):
         return fully_qualified_name(type(self))
 
     @cached_property
+    def identity_spec(self) -> IdentitySpec:
+        return IdentitySpec(
+            version=2,
+            class_name=self._fully_qualified_name,
+            artifact_schema_hash=self.artifact_schema_hash,
+            artifact_hash=self.artifact_hash,
+            code=code_fingerprint(type(self)),
+            dependencies=dependency_fingerprint(),
+        )
+
+    @cached_property
     def object_id(self) -> str:
         return (
             f"{self._fully_qualified_name}:"
             + f"{self.artifact_schema_hash}:"
-            + f"{self.artifact_hash}"
+            + f"{self.artifact_hash}:"
+            + f"{self.identity_spec.hash}"
         )
 
     @cached_property
@@ -196,6 +228,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
             / Path(*self._fully_qualified_name.split("."))
             / self.artifact_schema_hash
             / self.artifact_hash
+            / self.identity_spec.hash
         )
 
     @cached_property

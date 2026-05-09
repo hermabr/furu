@@ -9,7 +9,7 @@ from typing import Any, ClassVar, cast
 import pytest
 from pydantic import BaseModel, ConfigDict
 
-from furu import Furu
+from furu import CorruptResultError, Furu, MissingResultError
 from furu.result import (
     LazyResult,
     load_result_bundle,
@@ -93,6 +93,13 @@ def test_try_load_returns_persisted_result() -> None:
     }
 
 
+def test_try_load_missing_result_raises_typed_error() -> None:
+    obj = JsonResult()
+
+    with pytest.raises(MissingResultError, match="No completed result exists"):
+        obj.try_load()
+
+
 class ScalarResult(Furu[int]):
     def _create(self) -> int:
         return 5
@@ -112,6 +119,11 @@ class PathResult(Furu[dict[str, Path]]):
             "relative": Path("outputs/model.bin"),
             "absolute": Path("/tmp/furu/model.bin"),
         }
+
+
+class ExternalArray(Furu[object]):
+    def _create(self) -> object:
+        return np.array([1, 2, 3])
 
 
 def test_path_values_round_trip() -> None:
@@ -139,6 +151,24 @@ def test_path_values_round_trip() -> None:
             }
         },
     }
+
+
+def test_status_reports_corrupt_for_missing_external_artifact() -> None:
+    obj = ExternalArray()
+    obj.load_or_create()
+
+    artifact_dir = obj._result_dir / "artifacts"
+    assert artifact_dir.exists()
+    for path in sorted(artifact_dir.rglob("*"), reverse=True):
+        if path.is_file():
+            path.unlink()
+        else:
+            path.rmdir()
+    artifact_dir.rmdir()
+
+    assert obj.status() == "corrupt"
+    with pytest.raises(CorruptResultError, match="Could not load result bundle"):
+        obj.try_load()
 
 
 def test_path_root_value_round_trips(tmp_path: Path) -> None:

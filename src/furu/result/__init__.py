@@ -428,3 +428,88 @@ def load_result_bundle(bundle_dir: Path) -> object:
     manifest_path = bundle_dir / MANIFEST_FILE_NAME
     raw = json.loads(manifest_path.read_text(encoding="utf-8"))
     return _load_value(raw, bundle_dir=bundle_dir, value_path=())
+
+
+def validate_result_bundle(bundle_dir: Path) -> None:
+    manifest_path = bundle_dir / MANIFEST_FILE_NAME
+    raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    _validate_value(raw, bundle_dir=bundle_dir)
+
+
+def _validate_value(node: JsonValue, *, bundle_dir: Path) -> None:
+    match node:
+        case None | bool() | int() | float() | str():
+            return
+        case list():
+            for child in node:
+                _validate_value(child, bundle_dir=bundle_dir)
+        case dict() if WRAPPER_KEY in node:
+            _validate_wrapper(
+                cast(dict[str, Any], node[WRAPPER_KEY]), bundle_dir=bundle_dir
+            )
+        case dict():
+            for child in node.values():
+                _validate_value(child, bundle_dir=bundle_dir)
+        case _:
+            assert_never(node)
+
+
+def _validate_wrapper(body: dict[str, Any], *, bundle_dir: Path) -> None:
+    kind = body.get("kind")
+    match kind:
+        case "external":
+            codec = body.get("codec")
+            if not isinstance(codec, str) or codec not in _DEFAULT_CODECS:
+                raise ValueError(f"unknown external codec: {codec!r}")
+
+            raw_path = body.get("path")
+            if not isinstance(raw_path, str):
+                raise ValueError("external wrapper path must be a string")
+            artifact_rel = Path(raw_path)
+            if artifact_rel.is_absolute():
+                raise ValueError(
+                    f"external wrapper path must be relative: {artifact_rel}"
+                )
+
+            artifact_dir = (bundle_dir / artifact_rel).resolve()
+            artifacts_root = (bundle_dir / ARTIFACTS_DIR_NAME).resolve()
+            if not artifact_dir.is_relative_to(artifacts_root):
+                raise ValueError(
+                    f"external wrapper path escapes bundle artifacts dir: {artifact_rel}"
+                )
+            if not artifact_dir.exists():
+                raise ValueError(
+                    f"external wrapper artifact directory missing: {artifact_dir}"
+                )
+        case "lazy":
+            raw_path = body.get("path")
+            if not isinstance(raw_path, str):
+                raise ValueError("lazy wrapper path must be a string")
+            nested_rel = Path(raw_path)
+            if nested_rel.is_absolute():
+                raise ValueError(f"lazy wrapper path must be relative: {nested_rel}")
+
+            nested_bundle_dir = (bundle_dir / nested_rel).resolve()
+            lazy_root = (bundle_dir / LAZY_DIR_NAME).resolve()
+            if not nested_bundle_dir.is_relative_to(lazy_root):
+                raise ValueError(
+                    f"lazy wrapper path escapes bundle lazy dir: {nested_rel}"
+                )
+            validate_result_bundle(nested_bundle_dir)
+        case "dataclass" | "pydantic":
+            raw_fields = body.get("fields")
+            if not isinstance(raw_fields, dict):
+                raise ValueError(f"{kind} wrapper fields must be an object")
+            for child in raw_fields.values():
+                _validate_value(child, bundle_dir=bundle_dir)
+        case "tuple" | "set" | "frozenset":
+            raw_items = body.get("items")
+            if not isinstance(raw_items, list):
+                raise ValueError(f"{kind} wrapper items must be a list")
+            for child in raw_items:
+                _validate_value(child, bundle_dir=bundle_dir)
+        case "path":
+            if not isinstance(body.get("value"), str):
+                raise ValueError("path wrapper value must be a string")
+        case _:
+            raise ValueError(f"unknown wrapper kind: {kind!r}")

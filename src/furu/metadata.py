@@ -38,6 +38,7 @@ class RunningMetadata(BaseModel):
     kind: Literal["running"] = "running"
     # python_def: str
     artifact: ArtifactMetadata
+    identity: JsonValue
     data_path: Path
     # git: GitData | None
     started_at: datetime
@@ -60,6 +61,7 @@ class RunningMetadata(BaseModel):
                 schema=obj.schema,
                 schema_hash=obj.artifact_schema_hash,
             ),
+            identity=obj.identity_spec.to_json(),
             data_path=obj.data_dir,
             started_at=datetime.now(timezone.utc),
         )
@@ -69,6 +71,7 @@ class RunningMetadata(BaseModel):
     def to_complete(self) -> CompletedMetadata:
         return CompletedMetadata(
             artifact=self.artifact,
+            identity=self.identity,
             data_path=self.data_path,
             started_at=self.started_at,
             completed_at=datetime.now(timezone.utc),
@@ -84,6 +87,7 @@ class CompletedMetadata(BaseModel):
     kind: Literal["completed"] = "completed"
     # python_def: str
     artifact: ArtifactMetadata
+    identity: JsonValue
     data_path: Path
     # git: GitData | None
     started_at: datetime

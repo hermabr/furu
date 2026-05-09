@@ -60,11 +60,12 @@ def schema_type(tp: Any, seen: set[type]) -> JsonValue:
         )
     elif origin is not None:
         assert (args := get_args(tp))  # TODO: maybe i need to remove this?
+        args_json = [schema_type(a, seen) for a in args]
+        if origin is typing.Literal:
+            args_json = sorted(args_json, key=_stable_json_dump)
         return {
             ORIGINMARKER: fully_qualified_name(origin),
-            ARGSMARKER: sorted(
-                [schema_type(a, seen) for a in args], key=_stable_json_dump
-            ),
+            ARGSMARKER: args_json,
         }
 
     if tp is None or isinstance(tp, (str, bool, int, float)):

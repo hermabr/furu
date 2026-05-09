@@ -34,11 +34,21 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
         case int() | str() | float() | bool():
             return obj
         case Path():
-            return str(obj)
-        case list() | tuple():
-            return [to_json(x) for x in obj]
-        case set() | frozenset():
-            return sorted([to_json(x) for x in obj], key=repr)
+            return {KINDMARKER: "path", "value": str(obj)}
+        case list():
+            return {KINDMARKER: "list", "items": [to_json(x) for x in obj]}
+        case tuple():
+            return {KINDMARKER: "tuple", "items": [to_json(x) for x in obj]}
+        case set():
+            return {
+                KINDMARKER: "set",
+                "items": sorted([to_json(x) for x in obj], key=repr),
+            }
+        case frozenset():
+            return {
+                KINDMARKER: "frozenset",
+                "items": sorted([to_json(x) for x in obj], key=repr),
+            }
         case dict():
             return {assert_correct_dict_key(k): to_json(v) for k, v in obj.items()}
         case type():
@@ -101,12 +111,28 @@ def _from_json(value: JsonValue) -> Any:
         case list():
             return [_from_json(item) for item in value]
         case dict():
+            kind = value.get(KINDMARKER)
+            raw_path = value.get("value")
+            if kind == "path" and isinstance(raw_path, str):
+                return Path(raw_path)
+            raw_items = value.get("items")
+            if kind in {"list", "tuple", "set", "frozenset"} and isinstance(
+                raw_items, list
+            ):
+                items = [_from_json(item) for item in raw_items]
+                if kind == "tuple":
+                    return tuple(items)
+                if kind == "set":
+                    return set(items)
+                if kind == "frozenset":
+                    return frozenset(items)
+                return items
             class_name = value.get(CLASSMARKER)
             field_values = value.get("fields")
-            if value.get(KINDMARKER) == "type_ref" and isinstance(class_name, str):
+            if kind == "type_ref" and isinstance(class_name, str):
                 return _load_type(class_name)
             if (
-                value.get(KINDMARKER) == "instance"
+                kind == "instance"
                 and isinstance(class_name, str)
                 and isinstance(field_values, dict)
             ):

@@ -138,6 +138,69 @@ class VariadicTuple(Furu[None]):
         pass
 
 
+class DictStrInt(Furu[None]):
+    value: dict[str, int]
+
+    def _create(self) -> None:
+        return None
+
+
+class DictIntStr(Furu[None]):
+    value: dict[int, str]
+
+    def _create(self) -> None:
+        return None
+
+
+class TupleIntStr(Furu[None]):
+    value: tuple[int, str]
+
+    def _create(self) -> None:
+        return None
+
+
+class TupleStrInt(Furu[None]):
+    value: tuple[str, int]
+
+    def _create(self) -> None:
+        return None
+
+
+class PathOrString(Furu[None]):
+    value: Path | str
+
+    def _create(self) -> None:
+        return None
+
+
+class ListOrTuple(Furu[None]):
+    value: list[int] | tuple[int, ...]
+
+    def _create(self) -> None:
+        return None
+
+
+class SetOrList(Furu[None]):
+    value: set[int] | list[int]
+
+    def _create(self) -> None:
+        return None
+
+
+class CreateA(Furu[str]):
+    value: str
+
+    def _create(self) -> str:
+        return f"a:{self.value}"
+
+
+class CreateB(Furu[str]):
+    value: str
+
+    def _create(self) -> str:
+        return f"b:{self.value}"
+
+
 class UsesPath(Furu[str]):
     path: Path
 
@@ -533,11 +596,15 @@ def test_post_init_chain_runs_before_validators_without_duplicate_calls():
 
 
 def test_hashes_and_data_dir():
+    node_pair = NodePair(
+        name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
+    )
     assert (
-        NodePair(
-            name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
-        ).object_id
-        == "test_core.NodePair:50a9b8624ed259ec38df:c4ff0c2ad0f653af7ce2"
+        node_pair.object_id
+        == "test_core.NodePair:"
+        + f"{node_pair.artifact_schema_hash}:"
+        + f"{node_pair.artifact_hash}:"
+        + f"{node_pair.identity_spec.hash}"
     )
 
     assert (
@@ -643,16 +710,16 @@ def expected_schema_for_B_like(
         "maybe_val": ["builtins.NoneType", "builtins.int"],
         "t": {
             "|origin": "builtins.tuple",
-            "|args": ["builtins.float", ["builtins.int", "builtins.str"]],
+            "|args": [["builtins.int", "builtins.str"], "builtins.float"],
         },
         "y": {
             "|origin": "builtins.dict",
             "|args": [
-                "builtins.int",
                 [
                     "builtins.bool",
                     {"|origin": "typing.Literal", "|args": ["hey", "ney"]},
                 ],
+                "builtins.int",
             ],
         },
     }
@@ -785,10 +852,15 @@ def test_to_json_with_none_field():
             "a": {
                 "|kind": "instance",
                 "|class": "test_core.A",
-                "fields": {"x": 1, "z": "123", "w": [6, 7], "some_obj": "a"},
+                "fields": {
+                    "x": 1,
+                    "z": "123",
+                    "w": {"|kind": "list", "items": [6, 7]},
+                    "some_obj": "a",
+                },
             },
             "y": {"hey": 123, "ney": 1},
-            "t": ["123", 12],
+            "t": {"|kind": "tuple", "items": ["123", 12]},
             "maybe_val": None,
         },
     }
@@ -849,6 +921,42 @@ def test_furu_object_with_typed_fields_round_trips_from_json_artifact():
     assert _from_json(path_obj.artifact_data) == path_obj
     assert _from_json(class_obj.artifact_data) == class_obj
     assert isinstance(cast(UsesPath, _from_json(path_obj.artifact_data)).path, Path)
+
+
+def test_schema_preserves_ordered_generic_args() -> None:
+    dict_str_int_schema = cast(dict[str, Any], DictStrInt(value={}).schema)
+    dict_int_str_schema = cast(dict[str, Any], DictIntStr(value={}).schema)
+    tuple_int_str_schema = cast(dict[str, Any], TupleIntStr(value=(1, "x")).schema)
+    tuple_str_int_schema = cast(dict[str, Any], TupleStrInt(value=("x", 1)).schema)
+
+    assert (
+        dict_str_int_schema["fields"]["value"] != dict_int_str_schema["fields"]["value"]
+    )
+    assert (
+        tuple_int_str_schema["fields"]["value"]
+        != tuple_str_int_schema["fields"]["value"]
+    )
+
+
+def test_artifact_hash_preserves_value_kinds() -> None:
+    assert (
+        PathOrString(value=Path("x")).artifact_hash
+        != PathOrString(value="x").artifact_hash
+    )
+    assert (
+        ListOrTuple(value=[1, 2]).artifact_hash
+        != ListOrTuple(value=(1, 2)).artifact_hash
+    )
+    assert (
+        SetOrList(value={1, 2}).artifact_hash != SetOrList(value=[1, 2]).artifact_hash
+    )
+
+
+def test_code_fingerprint_is_part_of_storage_identity() -> None:
+    obj_a = CreateA(value="x")
+    obj_b = CreateB(value="x")
+
+    assert obj_a.identity_spec.code != obj_b.identity_spec.code
 
 
 def test_furu_from_artifact_returns_furu_object():
@@ -996,7 +1104,7 @@ def test_schema_with_ellipsis_type_arg():
         "fields": {
             "t": {
                 "|origin": "builtins.tuple",
-                "|args": ["builtins.ellipsis", "builtins.int"],
+                "|args": ["builtins.int", "builtins.ellipsis"],
             }
         },
     }
@@ -1012,6 +1120,7 @@ def test_data_dir():
         / "NodePair"
         / "50a9b8624ed259ec38df"
         / "c4ff0c2ad0f653af7ce2"
+        / node_pair.identity_spec.hash
     )
     assert node_pair.data_dir == Path(
         config.directories.data
@@ -1019,6 +1128,7 @@ def test_data_dir():
         / "NodePair"
         / node_pair.artifact_schema_hash
         / node_pair.artifact_hash
+        / node_pair.identity_spec.hash
     )
 
 
@@ -1033,6 +1143,7 @@ def test_storage_root_can_be_overridden_with_cached_property():
         / "CustomStorageRootNode"
         / node.artifact_schema_hash
         / node.artifact_hash
+        / node.identity_spec.hash
     )
 
 
