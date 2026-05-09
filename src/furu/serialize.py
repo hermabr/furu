@@ -135,7 +135,9 @@ def load_from_metadata[T: "Furu"](
         if isinstance(metadata, Path)
         else json.dumps(metadata)
     )
-    obj = from_json(TypeAdapter(Metadata).validate_json(metadata_json).artifact.data)
-    if not isinstance(obj, expected_type):
+    furu_obj = from_json(
+        TypeAdapter(Metadata).validate_json(metadata_json).artifact.data
+    )
+    if not isinstance(furu_obj, expected_type):
         raise TypeError("Metadata artifact did not describe a Furu object")
-    return obj
+    return furu_obj

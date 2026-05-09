@@ -28,15 +28,6 @@ class ArtifactMetadata:
     schema: JsonValue
     schema_hash: str
 
-    @classmethod
-    def from_furu[T](cls, obj: Furu[T]) -> ArtifactMetadata:
-        return cls(
-            data=obj.artifact,
-            hash=obj.artifact_hash,
-            schema=obj.schema,
-            schema_hash=obj.artifact_schema_hash,
-        )
-
 
 class RunningMetadata(BaseModel):
     model_config = ConfigDict(
@@ -63,7 +54,12 @@ class RunningMetadata(BaseModel):
     @classmethod
     def write_for[T](cls, obj: Furu[T]) -> RunningMetadata:
         metadata = cls(
-            artifact=ArtifactMetadata.from_furu(obj),
+            artifact=ArtifactMetadata(
+                data=obj.artifact,
+                hash=obj.artifact_hash,
+                schema=obj.schema,
+                schema_hash=obj.artifact_schema_hash,
+            ),
             data_path=obj.data_dir,
             started_at=datetime.now(timezone.utc),
         )

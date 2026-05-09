@@ -173,8 +173,8 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def object_id(self) -> str:
         return (
             f"{self._fully_qualified_name}:"
-            f"{self.artifact_schema_hash}:"
-            f"{self.artifact_hash}"
+            + f"{self.artifact_schema_hash}:"
+            + f"{self.artifact_hash}"
         )
 
     @cached_property
@@ -210,6 +210,6 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def _log_label(self) -> str:
         return (
             f"{type(self).__name__}:"
-            f"{self.artifact_schema_hash[:5]}:"
-            f"{self.artifact_hash[:5]}"
+            + f"{self.artifact_schema_hash[:5]}:"
+            + f"{self.artifact_hash[:5]}"
         )
