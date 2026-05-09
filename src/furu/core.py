@@ -92,7 +92,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
     ) -> Literal[
         "completed", "missing", "running", "failed"
     ]:  # TODO: add queued/waiting state?
-        if self._resolved_result_manifest_path is not None:
+        if self._result_manifest_path is not None:
             return "completed"
         if self._lock_path.exists():
             return "running"
@@ -101,14 +101,14 @@ class Furu[T](_FuruDataclassTransform, ABC):
         return "missing"
 
     def try_load(self) -> T:  # TODO: make a better name for this
-        if (result_manifest_path := self._resolved_result_manifest_path) is not None:
+        if (result_manifest_path := self._result_manifest_path) is not None:
             return cast(T, load_result_bundle(result_manifest_path.parent))
         raise NotImplementedError(
             "TODO: decide if i should throw or return error value"
         )
 
     @property
-    def _resolved_result_manifest_path(self) -> Path | None:
+    def _result_manifest_path(self) -> Path | None:
         return _resolve_result_manifest_path(self)
 
     def delete(self, mode: Literal["prompt", "force"] = "prompt") -> bool:
@@ -146,7 +146,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
         return self.data_dir / "result"
 
     @property
-    def _result_manifest_path(self) -> Path:
+    def _own_result_manifest_path(self) -> Path:
         return self._result_dir / "manifest.json"
 
     @property

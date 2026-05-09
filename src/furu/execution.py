@@ -131,7 +131,7 @@ def load_or_create[T](
     missing: list[Furu[T]] = []
 
     for obj in unique:
-        if (result_manifest_path := obj._resolved_result_manifest_path) is not None:
+        if (result_manifest_path := obj._result_manifest_path) is not None:
             obj.logger.info(
                 "cache hit for %s at %s", obj._log_label, result_manifest_path.parent
             )
@@ -152,7 +152,7 @@ def load_or_create[T](
         has_lock = maybe_has_lock or (lambda: True)
         pending: list[Furu[T]] = []
         for obj in missing:
-            if (result_manifest_path := obj._resolved_result_manifest_path) is not None:
+            if (result_manifest_path := obj._result_manifest_path) is not None:
                 obj.logger.info(
                     "cache hit for %s after waiting at %s",
                     obj._log_label,

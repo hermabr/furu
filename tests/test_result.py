@@ -49,10 +49,10 @@ def test_json_only_bundle_round_trips() -> None:
     result = obj.load_or_create()
     assert result == expected
 
-    assert obj._result_manifest_path.exists()
+    assert obj._own_result_manifest_path.exists()
     assert not (obj._result_dir / "artifacts").exists()
 
-    manifest = json.loads(obj._result_manifest_path.read_text())
+    manifest = json.loads(obj._own_result_manifest_path.read_text())
     assert "format" not in manifest
     assert "root" not in manifest
     assert manifest == expected
@@ -69,7 +69,7 @@ def test_json_only_cache_hit_does_not_recompute() -> None:
 
     assert obj.load_or_create() == expected
     assert obj.load_or_create() == expected
-    assert obj._resolved_result_manifest_path == obj._result_manifest_path
+    assert obj._result_manifest_path == obj._own_result_manifest_path
     assert len(JsonResult.create_calls) == 1
 
 
@@ -103,7 +103,7 @@ def test_scalar_root_manifest_is_just_the_value() -> None:
     obj = ScalarResult()
 
     assert obj.load_or_create() == 5
-    text = obj._result_manifest_path.read_text()
+    text = obj._own_result_manifest_path.read_text()
     assert json.loads(text) == 5
 
 
@@ -125,7 +125,7 @@ def test_path_values_round_trip() -> None:
         "absolute": Path("/tmp/furu/model.bin"),
     }
 
-    manifest = json.loads(obj._result_manifest_path.read_text())
+    manifest = json.loads(obj._own_result_manifest_path.read_text())
     assert manifest == {
         "relative": {
             "$furu": {
@@ -208,7 +208,7 @@ def test_non_finite_floats_round_trip() -> None:
     assert result["pos_inf"] == float("inf")
     assert result["neg_inf"] == float("-inf")
 
-    text = obj._result_manifest_path.read_text()
+    text = obj._own_result_manifest_path.read_text()
     # Python's standard library writes these as JSON extensions.
     assert "NaN" in text
     assert "Infinity" in text
@@ -358,7 +358,7 @@ def test_dataclass_round_trip() -> None:
     assert isinstance(loaded, TrainOutput)
     assert loaded == TrainOutput(metrics={"loss": 0.12}, values=[1, 2, 3])
 
-    manifest = json.loads(obj._result_manifest_path.read_text())
+    manifest = json.loads(obj._own_result_manifest_path.read_text())
     assert manifest["$furu"]["kind"] == "dataclass"
     assert manifest["$furu"]["type"] == "test_result.TrainOutput"
     assert manifest["$furu"]["fields"] == {
@@ -548,7 +548,7 @@ def test_numpy_array_round_trips() -> None:
     assert weights.dtype == np.float32
     assert np.array_equal(weights, np.arange(10, dtype=np.float32))
 
-    manifest = json.loads(obj._result_manifest_path.read_text())
+    manifest = json.loads(obj._own_result_manifest_path.read_text())
     assert manifest["weights"]["$furu"]["kind"] == "external"
     assert manifest["weights"]["$furu"]["codec"] == (
         f"{NumpyNpyCodec.__module__}.{NumpyNpyCodec.__qualname__}"
@@ -571,7 +571,7 @@ def test_polars_dataframe_round_trips() -> None:
     assert isinstance(frame, pl.DataFrame)
     assert frame.equals(pl.DataFrame({"x": [1, 2, 3], "y": ["a", "b", "c"]}))
 
-    manifest = json.loads(obj._result_manifest_path.read_text())
+    manifest = json.loads(obj._own_result_manifest_path.read_text())
     assert manifest["frame"]["$furu"]["kind"] == "external"
     assert manifest["frame"]["$furu"]["codec"] == (
         f"{PolarsParquetCodec.__module__}.{PolarsParquetCodec.__qualname__}"

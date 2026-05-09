@@ -77,8 +77,8 @@ def validate_migrations_for_class(cls: type[Furu[Any]]) -> tuple[Migration, ...]
 
 
 def _resolve_result_manifest_path(obj: Furu[Any]) -> Path | None:
-    if obj._result_manifest_path.exists():
-        return obj._result_manifest_path
+    if obj._own_result_manifest_path.exists():
+        return obj._own_result_manifest_path
 
     linked = read_and_verify_result_link(obj)
     if linked is not None:
