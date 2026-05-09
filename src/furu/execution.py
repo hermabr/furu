@@ -55,12 +55,6 @@ def _resolve_create_mode[T](cls: type[Furu[T]]) -> FuruCreateMode:
     )
 
 
-def _contains_typevar(tp: object) -> bool:
-    if isinstance(tp, TypeVar):
-        return True
-    return any(_contains_typevar(arg) for arg in get_args(tp))
-
-
 def _store_result[T](
     obj: Furu[T],
     result: T,
@@ -85,7 +79,9 @@ def _store_result[T](
             continue
         break
 
-    if _contains_typevar(declared_type):
+    if isinstance(declared_type, TypeVar) or any(
+        isinstance(arg, TypeVar) for arg in get_args(declared_type)
+    ):
         raise TypeError(
             f"{type(obj).__name__} must declare its concrete result type directly as Furu[...]"
         )
