@@ -98,28 +98,26 @@ def _from_json_field(value: JsonValue, expected_type: Any) -> Any:
 
 
 def from_json(value: JsonValue) -> Any:
-    if isinstance(value, dict):
-        class_name = value.get(CLASSMARKER)
-        field_values = value.get("fields")
-        if value.get(KINDMARKER) == "type_ref" and isinstance(class_name, str):
-            return _load_type(class_name)
-        if (
-            value.get(KINDMARKER) == "instance"
-            and isinstance(class_name, str)
-            and isinstance(field_values, dict)
-        ):
-            cls = _load_type(class_name)
-            hints = get_type_hints(cls, include_extras=True)
-            converted_fields = {
-                name: _from_json_field(field_value, hints.get(name, Any))
-                for name, field_value in field_values.items()
-            }
-            return cls(**converted_fields)
-
     match value:
         case list():
             return [from_json(item) for item in value]
         case dict():
+            class_name = value.get(CLASSMARKER)
+            field_values = value.get("fields")
+            if value.get(KINDMARKER) == "type_ref" and isinstance(class_name, str):
+                return _load_type(class_name)
+            if (
+                value.get(KINDMARKER) == "instance"
+                and isinstance(class_name, str)
+                and isinstance(field_values, dict)
+            ):
+                cls = _load_type(class_name)
+                hints = get_type_hints(cls, include_extras=True)
+                converted_fields = {
+                    name: _from_json_field(field_value, hints.get(name, Any))
+                    for name, field_value in field_values.items()
+                }
+                return cls(**converted_fields)
             return {key: from_json(child) for key, child in value.items()}
         case _:
             return value
