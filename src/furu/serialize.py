@@ -1,13 +1,18 @@
 import enum
 import importlib
+import json
 from dataclasses import fields, is_dataclass
 from pathlib import Path
-from typing import Any, get_args, get_origin, get_type_hints
+from typing import TYPE_CHECKING, Any, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel as PydanticBaseModel
+from pydantic import TypeAdapter
 
 from furu.constants import CLASSMARKER, KINDMARKER
 from furu.utils import JsonValue, fully_qualified_name
+
+if TYPE_CHECKING:
+    from furu.core import Furu
 
 
 def to_json(  # TODO: consider caching this (but if i'm going to, I need to figure out how to cache lists and other unhashable objects)
@@ -112,3 +117,18 @@ def from_json(value: JsonValue) -> Any:
             return {key: from_json(child) for key, child in value.items()}
         case _:
             return value
+
+
+def load_from_metadata(metadata: Path | dict[str, JsonValue]) -> "Furu[object]":
+    from furu.core import Furu
+    from furu.metadata import Metadata
+
+    metadata_json = (
+        metadata.read_text(encoding="utf-8")
+        if isinstance(metadata, Path)
+        else json.dumps(metadata)
+    )
+    obj = from_json(TypeAdapter(Metadata).validate_json(metadata_json).artifact)
+    if not isinstance(obj, Furu):
+        raise TypeError("Metadata artifact did not describe a Furu object")
+    return obj

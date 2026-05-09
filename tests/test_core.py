@@ -1,4 +1,5 @@
 import types
+import json
 from contextlib import contextmanager
 from collections.abc import Callable
 from dataclasses import FrozenInstanceError, is_dataclass, replace
@@ -14,7 +15,6 @@ from pydantic import BaseModel, ConfigDict
 import furu.execution as execution_module
 from furu import Furu, load_from_metadata, load_or_create, validate
 from furu.config import config
-from furu.metadata import CompletedMetadata
 from furu.result import load_result_bundle, save_result_bundle
 from furu.serialize import from_json, to_json
 from furu.utils import fully_qualified_name
@@ -861,7 +861,7 @@ def test_load_from_metadata_file_returns_furu_object():
 def test_load_from_metadata_accepts_metadata_model():
     obj = Node(name="x")
     obj.load_or_create()
-    metadata = CompletedMetadata.model_validate_json(obj._metadata_path.read_text())
+    metadata = json.loads(obj._metadata_path.read_text())
 
     loaded = load_from_metadata(metadata)
 

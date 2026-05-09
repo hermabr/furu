@@ -4,9 +4,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field
 
-from furu.serialize import from_json
 from furu.utils import JsonValue
 
 if TYPE_CHECKING:
@@ -98,22 +97,3 @@ class CompletedMetadata(BaseModel):
 type Metadata = Annotated[
     RunningMetadata | CompletedMetadata, Field(discriminator="kind")
 ]
-
-
-def _load_metadata(metadata: str | Path | Metadata) -> Metadata:
-    if isinstance(metadata, RunningMetadata | CompletedMetadata):
-        return metadata
-
-    metadata_path = Path(metadata)
-    return TypeAdapter(Metadata).validate_json(
-        metadata_path.read_text(encoding="utf-8")
-    )
-
-
-def load_from_metadata(metadata: str | Path | Metadata) -> Furu[object]:
-    obj = from_json(_load_metadata(metadata).artifact)
-    from furu.core import Furu
-
-    if not isinstance(obj, Furu):
-        raise TypeError("Metadata artifact did not describe a Furu object")
-    return obj

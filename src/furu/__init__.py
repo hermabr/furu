@@ -3,7 +3,7 @@ from importlib.metadata import version
 from furu.core import Furu
 from furu.execution import load_or_create
 from furu.logging import get_logger
-from furu.metadata import load_from_metadata
+from furu.serialize import load_from_metadata
 from furu.validate import validate
 
 __version__ = version("furu")
