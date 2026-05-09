@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 from furu.config import config
 from furu.locking import LockLostError, lock_many
 from furu.logging import get_logger
-from furu.migration import Migration, _resolve_result_location
+from furu.migration import Migration, _resolve_result_manifest_path
 from furu.result import load_result_bundle
 from furu.schema import schema_type as _schema_type
 from furu.serialize import to_json as _to_json
@@ -92,7 +92,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
     ) -> Literal[
         "completed", "missing", "running", "failed"
     ]:  # TODO: add queued/waiting state?
-        if self._result_path is not None:
+        if self._resolved_result_manifest_path is not None:
             return "completed"
         if self._lock_path.exists():
             return "running"
@@ -101,16 +101,16 @@ class Furu[T](_FuruDataclassTransform, ABC):
         return "missing"
 
     def try_load(self) -> T:  # TODO: make a better name for this
-        result_location = self._result_path
-        if result_location is not None:
-            return cast(T, load_result_bundle(result_location))
+        result_manifest_path = self._resolved_result_manifest_path
+        if result_manifest_path is not None:
+            return cast(T, load_result_bundle(result_manifest_path.parent))
         raise NotImplementedError(
             "TODO: decide if i should throw or return error value"
         )
 
     @property
-    def _result_path(self) -> Path | None:
-        return _resolve_result_location(self)
+    def _resolved_result_manifest_path(self) -> Path | None:
+        return _resolve_result_manifest_path(self)
 
     def delete(self, mode: Literal["prompt", "force"] = "prompt") -> bool:
         if not self.data_dir.exists():

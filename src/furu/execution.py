@@ -131,10 +131,14 @@ def load_or_create[T](
     missing: list[Furu[T]] = []
 
     for obj in unique:
-        result_location = obj._result_path
-        if result_location is not None:
-            obj.logger.info("cache hit for %s at %s", obj._log_label, result_location)
-            results_by_dir[obj.data_dir] = cast(T, load_result_bundle(result_location))
+        result_manifest_path = obj._resolved_result_manifest_path
+        if result_manifest_path is not None:
+            obj.logger.info(
+                "cache hit for %s at %s", obj._log_label, result_manifest_path.parent
+            )
+            results_by_dir[obj.data_dir] = cast(
+                T, load_result_bundle(result_manifest_path.parent)
+            )
         else:
             obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
             missing.append(obj)
@@ -149,15 +153,15 @@ def load_or_create[T](
         has_lock = maybe_has_lock or (lambda: True)
         pending: list[Furu[T]] = []
         for obj in missing:
-            result_location = obj._result_path
-            if result_location is not None:
+            result_manifest_path = obj._resolved_result_manifest_path
+            if result_manifest_path is not None:
                 obj.logger.info(
                     "cache hit for %s after waiting at %s",
                     obj._log_label,
-                    result_location,
+                    result_manifest_path.parent,
                 )
                 results_by_dir[obj.data_dir] = cast(
-                    T, load_result_bundle(result_location)
+                    T, load_result_bundle(result_manifest_path.parent)
                 )
             else:
                 pending.append(obj)

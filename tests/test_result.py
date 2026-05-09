@@ -69,7 +69,7 @@ def test_json_only_cache_hit_does_not_recompute() -> None:
 
     assert obj.load_or_create() == expected
     assert obj.load_or_create() == expected
-    assert obj._result_path == obj._result_dir
+    assert obj._resolved_result_manifest_path == obj._result_manifest_path
     assert len(JsonResult.create_calls) == 1
 
 

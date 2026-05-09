@@ -76,18 +76,18 @@ def validate_migrations_for_class(cls: type[Furu[Any]]) -> tuple[Migration, ...]
     return migrations
 
 
-def _resolve_result_location(obj: Furu[Any]) -> Path | None:
+def _resolve_result_manifest_path(obj: Furu[Any]) -> Path | None:
     if obj._result_manifest_path.exists():
-        return obj._result_dir
+        return obj._result_manifest_path
 
     linked = read_and_verify_result_link(obj)
     if linked is not None:
-        return linked.source_data_dir / "result"
+        return linked.source_data_dir / "result" / "manifest.json"
 
     match = find_migrated_result(obj)
     if match is not None:
         write_result_link(obj, match)
-        return match.source_data_dir / "result"
+        return match.source_data_dir / "result" / "manifest.json"
 
     return None
 
