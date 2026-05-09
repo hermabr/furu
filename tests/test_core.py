@@ -294,6 +294,13 @@ class FailingBatchValue(Furu[str]):
         raise RuntimeError(f"failed batch for {[obj.key for obj in objs]}")
 
 
+class FailingSingleValue(Furu[str]):
+    key: int
+
+    def _create(self) -> str:
+        raise RuntimeError(f"failed single for {self.key}")
+
+
 class PartialBatchValue(Furu[str]):
     key: int
 
@@ -1061,11 +1068,13 @@ def test_status_is_running_while_compute_lock_is_held() -> None:
         assert node.status() == "running"
 
 
-def test_status_is_failed_when_data_dir_exists_without_result_or_lock() -> None:
-    node = Node(name="x")
-    node.data_dir.mkdir(parents=True, exist_ok=True)
+def test_status_is_failed_after_create_error() -> None:
+    obj = FailingSingleValue(key=1)
 
-    assert node.status() == "failed"
+    with pytest.raises(RuntimeError, match="failed single for 1"):
+        obj.load_or_create()
+
+    assert obj.status() == "failed"
 
 
 def test_creating_and_loading_random_result_furu_obj():
