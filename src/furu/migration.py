@@ -27,6 +27,15 @@ class Migration:
         dict[str, JsonValue],
     ]
 
+    @property
+    def edge_identity(self) -> MigrationEdgeIdentity:
+        return (
+            self.old_fully_qualified_name,
+            self.old_schema_hash,
+            self.new_fully_qualified_name,
+            self.new_schema_hash,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class ResolvedMigration:
@@ -38,20 +47,11 @@ type MigrationNode = tuple[str, str]
 type MigrationEdgeIdentity = tuple[str, str, str, str]
 
 
-def migration_edge_identity(migration: Migration) -> MigrationEdgeIdentity:
-    return (
-        migration.old_fully_qualified_name,
-        migration.old_schema_hash,
-        migration.new_fully_qualified_name,
-        migration.new_schema_hash,
-    )
-
-
 def _registered_migrations_for_class(cls: type[Furu[Any]]) -> tuple[Migration, ...]:
     migrations = cls.migrations()
     seen: set[MigrationEdgeIdentity] = set()
     for migration in migrations:
-        identity = migration_edge_identity(migration)
+        identity = migration.edge_identity
         if identity in seen:
             raise ValueError(
                 f"{cls.__name__}.migrations() returned duplicate migration edge "
@@ -315,7 +315,7 @@ def _resolve_registered_path(
         return None
 
     by_identity = {
-        migration_edge_identity(migration): migration
+        migration.edge_identity: migration
         for migration in _registered_migrations_for_class(cls)
     }
     path: list[Migration] = []
