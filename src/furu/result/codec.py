@@ -121,6 +121,7 @@ class ResultRegistry:
         return None
 
 
+@cache
 def resolve_result_codec(codec_id: str) -> type[ResultCodec]:
     module_name, _, attr_name = codec_id.rpartition(".")
     if not module_name:
