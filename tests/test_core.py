@@ -868,6 +868,20 @@ def test_load_from_metadata_file_returns_furu_object():
     assert "artifact_schema_hash" not in raw_metadata
 
 
+def test_load_from_metadata_file_infers_furu_object_type():
+    obj = NodePair(
+        name="x",
+        node1=Node(name="y"),
+        node2=WeightedNode(name="z", weight=1),
+    )
+    obj.load_or_create()
+
+    loaded = load_from_metadata(obj._metadata_path)
+
+    assert loaded == obj
+    assert isinstance(loaded, NodePair)
+
+
 def test_load_from_metadata_accepts_metadata_model():
     obj = Node(name="x")
     obj.load_or_create()
