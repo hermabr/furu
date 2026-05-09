@@ -167,9 +167,9 @@ def test_path_root_value_round_trips(tmp_path: Path) -> None:
     bundle_dir = tmp_path / "bundle"
     value = Path("outputs/model.bin")
 
-    save_result_bundle(value, bundle_dir)
+    save_result_bundle(value, bundle_dir, registry=_default_result_registry())
 
-    assert load_result_bundle(bundle_dir) == value
+    assert load_result_bundle(bundle_dir, registry=_default_result_registry()) == value
 
 
 def test_tuple_set_and_frozenset_round_trip(tmp_path: Path) -> None:
@@ -180,9 +180,9 @@ def test_tuple_set_and_frozenset_round_trip(tmp_path: Path) -> None:
         "frozenset": frozenset({"b", "a"}),
     }
 
-    save_result_bundle(value, bundle_dir)
+    save_result_bundle(value, bundle_dir, registry=_default_result_registry())
 
-    assert load_result_bundle(bundle_dir) == value
+    assert load_result_bundle(bundle_dir, registry=_default_result_registry()) == value
     manifest = json.loads((bundle_dir / "manifest.json").read_text())
     assert manifest["tuple"] == {
         "$furu": {
@@ -205,9 +205,9 @@ def test_tuple_root_value_uses_furu_wrapper(tmp_path: Path) -> None:
     bundle_dir = tmp_path / "bundle"
     value = (1, 2, 3)
 
-    save_result_bundle(value, bundle_dir)
+    save_result_bundle(value, bundle_dir, registry=_default_result_registry())
 
-    assert load_result_bundle(bundle_dir) == value
+    assert load_result_bundle(bundle_dir, registry=_default_result_registry()) == value
     manifest = json.loads((bundle_dir / "manifest.json").read_text())
     assert manifest == {"$furu": {"kind": "tuple", "items": [1, 2, 3]}}
 
@@ -491,7 +491,9 @@ class UnsupportedRootResult(Furu[object]):
 def test_unsupported_custom_object_fails_with_root_path(tmp_path) -> None:
     bundle_dir = tmp_path / "bundle"
     with pytest.raises(ValueError) as exc_info:
-        save_result_bundle(_CustomTensor(), bundle_dir)
+        save_result_bundle(
+            _CustomTensor(), bundle_dir, registry=_default_result_registry()
+        )
     msg = str(exc_info.value)
     assert "<root>" in msg
     assert "_CustomTensor" in msg
@@ -503,40 +505,46 @@ def test_unsupported_nested_path_includes_padded_index(tmp_path) -> None:
     layers[3] = {"weights": _CustomTensor()}
 
     with pytest.raises(ValueError) as exc_info:
-        save_result_bundle({"layers": layers}, bundle_dir)
+        save_result_bundle(
+            {"layers": layers}, bundle_dir, registry=_default_result_registry()
+        )
     assert "layers/03/weights" in str(exc_info.value)
 
 
 def test_reserved_furu_dict_key_fails(tmp_path) -> None:
     bundle_dir = tmp_path / "bundle"
     with pytest.raises(ValueError, match="reserved"):
-        save_result_bundle({"$furu": "user data"}, bundle_dir)
+        save_result_bundle(
+            {"$furu": "user data"}, bundle_dir, registry=_default_result_registry()
+        )
 
 
 def test_non_string_dict_key_fails(tmp_path) -> None:
     bundle_dir = tmp_path / "bundle"
     with pytest.raises(ValueError, match="must be strings"):
-        save_result_bundle({1: "x"}, bundle_dir)
+        save_result_bundle({1: "x"}, bundle_dir, registry=_default_result_registry())
 
 
 def test_unsafe_dict_key_fails(tmp_path) -> None:
     bundle_dir = tmp_path / "bundle"
     with pytest.raises(ValueError) as exc_info:
-        save_result_bundle({"bad/key": "x"}, bundle_dir)
+        save_result_bundle(
+            {"bad/key": "x"}, bundle_dir, registry=_default_result_registry()
+        )
     assert "artifact path segment" in str(exc_info.value)
 
 
 def test_empty_dict_key_fails(tmp_path) -> None:
     bundle_dir = tmp_path / "bundle"
     with pytest.raises(ValueError) as exc_info:
-        save_result_bundle({"": "x"}, bundle_dir)
+        save_result_bundle({"": "x"}, bundle_dir, registry=_default_result_registry())
     assert "artifact path segment" in str(exc_info.value)
 
 
 def test_dotdot_dict_key_fails(tmp_path) -> None:
     bundle_dir = tmp_path / "bundle"
     with pytest.raises(ValueError, match="artifact path segment"):
-        save_result_bundle({"..": "x"}, bundle_dir)
+        save_result_bundle({"..": "x"}, bundle_dir, registry=_default_result_registry())
 
 
 @dataclass(frozen=True)
@@ -578,23 +586,29 @@ class DataclassWithPostInit:
 
 def test_dataclass_load_uses_constructor(tmp_path: Path) -> None:
     bundle_dir = tmp_path / "bundle"
-    save_result_bundle(DataclassWithPostInit(value=3), bundle_dir)
+    save_result_bundle(
+        DataclassWithPostInit(value=3), bundle_dir, registry=_default_result_registry()
+    )
 
-    loaded = load_result_bundle(bundle_dir)
+    loaded = load_result_bundle(bundle_dir, registry=_default_result_registry())
 
     assert loaded == DataclassWithPostInit(value=3)
 
 
 def test_dataclass_load_reports_constructor_error_with_path(tmp_path: Path) -> None:
     bundle_dir = tmp_path / "bundle"
-    save_result_bundle({"result": DataclassWithPostInit(value=3)}, bundle_dir)
+    save_result_bundle(
+        {"result": DataclassWithPostInit(value=3)},
+        bundle_dir,
+        registry=_default_result_registry(),
+    )
     manifest_path = bundle_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
     manifest["result"]["$furu"]["fields"]["value"] = -1
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     with pytest.raises(ValueError) as exc_info:
-        load_result_bundle(bundle_dir)
+        load_result_bundle(bundle_dir, registry=_default_result_registry())
 
     message = str(exc_info.value)
     assert "Cannot load dataclass" in message
@@ -607,7 +621,9 @@ def test_dataclass_load_reports_missing_and_extra_fields_with_path(
 ) -> None:
     bundle_dir = tmp_path / "bundle"
     save_result_bundle(
-        {"result": TrainOutput(metrics={"loss": 0.12}, values=[1])}, bundle_dir
+        {"result": TrainOutput(metrics={"loss": 0.12}, values=[1])},
+        bundle_dir,
+        registry=_default_result_registry(),
     )
     manifest_path = bundle_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
@@ -616,7 +632,7 @@ def test_dataclass_load_reports_missing_and_extra_fields_with_path(
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     with pytest.raises(ValueError) as exc_info:
-        load_result_bundle(bundle_dir)
+        load_result_bundle(bundle_dir, registry=_default_result_registry())
 
     message = str(exc_info.value)
     assert "at result" in message
@@ -673,14 +689,18 @@ class ValidatedTrainOutputModel(BaseModel):
 
 def test_pydantic_load_uses_model_validate(tmp_path: Path) -> None:
     bundle_dir = tmp_path / "bundle"
-    save_result_bundle(ValidatedTrainOutputModel(value=1), bundle_dir)
+    save_result_bundle(
+        ValidatedTrainOutputModel(value=1),
+        bundle_dir,
+        registry=_default_result_registry(),
+    )
     manifest_path = bundle_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
     manifest["$furu"]["fields"]["value"] = "not an int"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     with pytest.raises(ValueError) as exc_info:
-        load_result_bundle(bundle_dir)
+        load_result_bundle(bundle_dir, registry=_default_result_registry())
 
     message = str(exc_info.value)
     assert "Cannot load pydantic model" in message
@@ -693,7 +713,9 @@ def test_pydantic_load_reports_missing_and_extra_fields_with_path(
 ) -> None:
     bundle_dir = tmp_path / "bundle"
     save_result_bundle(
-        {"models": [TrainOutputModel(metrics={}, values=[])]}, bundle_dir
+        {"models": [TrainOutputModel(metrics={}, values=[])]},
+        bundle_dir,
+        registry=_default_result_registry(),
     )
     manifest_path = bundle_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
@@ -702,7 +724,7 @@ def test_pydantic_load_reports_missing_and_extra_fields_with_path(
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     with pytest.raises(ValueError) as exc_info:
-        load_result_bundle(bundle_dir)
+        load_result_bundle(bundle_dir, registry=_default_result_registry())
 
     message = str(exc_info.value)
     assert "at models/0" in message
@@ -784,6 +806,7 @@ def test_numpy_object_dtype_is_rejected(tmp_path) -> None:
         save_result_bundle(
             {"weights": np.array([object()], dtype=object)},
             bundle_dir,
+            registry=_default_result_registry(),
         )
 
 
@@ -816,7 +839,9 @@ def test_long_list_uses_three_digit_padding(tmp_path) -> None:
     layers = [{"weights": np.arange(0, dtype=np.float32)} for _ in range(100)]
     layers[3] = {"weights": np.arange(3, dtype=np.float32)}
 
-    save_result_bundle({"layers": layers}, bundle_dir)
+    save_result_bundle(
+        {"layers": layers}, bundle_dir, registry=_default_result_registry()
+    )
 
     expected = bundle_dir / "artifacts" / "layers" / "003" / "weights" / "data.npy"
     assert expected.exists()
@@ -824,14 +849,16 @@ def test_long_list_uses_three_digit_padding(tmp_path) -> None:
 
 def test_numpy_root_value_uses_root_artifact_dir(tmp_path) -> None:
     bundle_dir = tmp_path / "bundle"
-    save_result_bundle(np.arange(5, dtype=np.int64), bundle_dir)
+    save_result_bundle(
+        np.arange(5, dtype=np.int64), bundle_dir, registry=_default_result_registry()
+    )
 
     assert (bundle_dir / "artifacts" / "root" / "data.npy").exists()
     manifest = json.loads((bundle_dir / "manifest.json").read_text())
     assert manifest["$furu"]["kind"] == "external"
     assert manifest["$furu"]["path"] == "artifacts/root"
 
-    loaded = load_result_bundle(bundle_dir)
+    loaded = load_result_bundle(bundle_dir, registry=_default_result_registry())
     assert np.array_equal(loaded, np.arange(5, dtype=np.int64))
 
 
@@ -866,12 +893,16 @@ def test_save_result_bundle_refuses_existing_directory(tmp_path) -> None:
     bundle_dir = tmp_path / "bundle"
     bundle_dir.mkdir()
     with pytest.raises(FileExistsError):
-        save_result_bundle({"x": 1}, bundle_dir)
+        save_result_bundle({"x": 1}, bundle_dir, registry=_default_result_registry())
 
 
 def test_save_result_bundle_writes_manifest_last(tmp_path) -> None:
     bundle_dir = tmp_path / "bundle"
-    save_result_bundle({"weights": np.arange(2, dtype=np.float32)}, bundle_dir)
+    save_result_bundle(
+        {"weights": np.arange(2, dtype=np.float32)},
+        bundle_dir,
+        registry=_default_result_registry(),
+    )
 
     # All three pieces should now be present.
     assert (bundle_dir / "manifest.json").exists()
@@ -895,7 +926,7 @@ def test_load_result_bundle_rejects_artifacts_path_escape(tmp_path) -> None:
     )
 
     with pytest.raises(ValueError, match="escapes"):
-        load_result_bundle(bundle_dir)
+        load_result_bundle(bundle_dir, registry=_default_result_registry())
 
 
 def test_lazy_result_created_directly_is_loaded() -> None:
@@ -985,7 +1016,7 @@ def test_load_result_bundle_rejects_lazy_path_escape(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="escapes"):
-        load_result_bundle(bundle_dir)
+        load_result_bundle(bundle_dir, registry=_default_result_registry())
 
 
 def test_load_result_bundle_rejects_lazy_without_nested_manifest(
@@ -1000,4 +1031,4 @@ def test_load_result_bundle_rejects_lazy_without_nested_manifest(
     )
 
     with pytest.raises(ValueError, match="nested manifest missing"):
-        load_result_bundle(bundle_dir)
+        load_result_bundle(bundle_dir, registry=_default_result_registry())

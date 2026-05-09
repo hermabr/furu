@@ -20,7 +20,7 @@ from typing import (
 
 import pydantic
 
-from furu.result.codec import ResultCodec, ResultRegistry, _default_result_registry
+from furu.result.codec import ResultCodec, ResultRegistry
 from furu.result.lazy import LazyResult
 from furu.result.save_as import _SaveAs
 from furu.result.save_as import save_as as save_as
@@ -539,10 +539,9 @@ def save_result_bundle(
     bundle_dir: Path,
     *,
     declared_type: object = Any,
-    registry: ResultRegistry | None = None,
+    registry: ResultRegistry,
 ) -> None:
     bundle_dir.mkdir(parents=True, exist_ok=False)
-    registry = registry or _default_result_registry()
 
     manifest = _dump_value(
         value,
@@ -560,9 +559,8 @@ def save_result_bundle(
 def load_result_bundle(
     bundle_dir: Path,
     *,
-    registry: ResultRegistry | None = None,
+    registry: ResultRegistry,
 ) -> object:
-    registry = registry or _default_result_registry()
     manifest_path = bundle_dir / MANIFEST_FILE_NAME
     raw = json.loads(manifest_path.read_text(encoding="utf-8"))
     return _load_value(raw, bundle_dir=bundle_dir, value_path=(), registry=registry)
