@@ -19,16 +19,22 @@ ARTIFACTS_DIR_NAME: Final[str] = "artifacts"
 LAZY_DIR_NAME: Final[str] = "lazy"
 MANIFEST_FILE_NAME: Final[str] = "manifest.json"
 _ROOT_ARTIFACT_NAME: Final[str] = "root"
-_UNLOADED: Final[object] = object()
 type LogicalPath = tuple[str, ...]
 type WrapperKind = Literal[
     "external", "dataclass", "path", "pydantic", "tuple", "set", "frozenset", "lazy"
 ]
 
 
+class _Unloaded:
+    pass
+
+
+_UNLOADED: Final = _Unloaded()
+
+
 class LazyResult[T]:
     def __init__(self, value: T) -> None:
-        self._value: T | object = value
+        self._value: T | _Unloaded = value
         self._loader: Callable[[], T] | None = None
         self._lock = threading.Lock()
 
