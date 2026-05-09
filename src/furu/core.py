@@ -6,7 +6,7 @@ from abc import ABC
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast, get_args, get_origin
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 from furu.config import config
 from furu.locking import LockLostError, lock_many
@@ -150,14 +150,6 @@ class Furu[T](_FuruDataclassTransform, ABC):
     @property
     def result_registry(self) -> ResultRegistry:
         return DEFAULT_RESULT_REGISTRY
-
-    @cached_property
-    def _result_type(self) -> object:
-        for cls in type(self).__mro__:
-            for base in getattr(cls, "__orig_bases__", ()):
-                if get_origin(base) is Furu:
-                    return get_args(base)[0]
-        return Any
 
     def _create(self) -> T:
         raise NotImplementedError("TODO")

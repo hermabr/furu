@@ -4,7 +4,7 @@ import traceback
 from collections.abc import Callable, Sequence
 from contextlib import nullcontext
 from pathlib import Path
-from typing import assert_never, cast, overload
+from typing import Any, assert_never, cast, get_args, get_origin, overload
 
 from furu.core import Furu, FuruCreateMode
 from furu.locking import LockLostError, lock_many
@@ -46,6 +46,14 @@ def _resolve_create_mode[T](cls: type[Furu[T]]) -> FuruCreateMode:
     )
 
 
+def _result_type[T](obj: Furu[T]) -> object:
+    for cls in type(obj).__mro__:
+        for base in getattr(cls, "__orig_bases__", ()):
+            if get_origin(base) is Furu:
+                return get_args(base)[0]
+    return Any
+
+
 def _store_result[T](
     obj: Furu[T],
     result: T,
@@ -63,7 +71,7 @@ def _store_result[T](
     save_result_bundle(
         result,
         tmp_result_dir,
-        expected_type=obj._result_type,
+        expected_type=_result_type(obj),
         registry=obj.result_registry,
     )
 
