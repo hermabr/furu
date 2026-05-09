@@ -134,16 +134,17 @@ class ResultRegistry:
         return None
 
     def resolve_codec(self, codec_id: str) -> type[ResultCodec]:
-        try:
+        if codec_id in self._codecs_by_id:
             return self._codecs_by_id[codec_id]
-        except KeyError:
-            module_name, _, attr_name = codec_id.rpartition(".")
-            if not module_name:
-                raise
-            codec = getattr(importlib.import_module(module_name), attr_name)
-            if not issubclass(codec, ResultCodec):
-                raise TypeError(f"{codec_id} is not a ResultCodec")
-            return codec
+
+        module_name, _, attr_name = codec_id.rpartition(".")
+        if not module_name:
+            raise KeyError(codec_id)
+
+        codec = getattr(importlib.import_module(module_name), attr_name)
+        if not issubclass(codec, ResultCodec):
+            raise TypeError(f"{codec_id} is not a ResultCodec")
+        return codec
 
 
 @cache
