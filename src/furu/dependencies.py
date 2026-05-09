@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import fields, is_dataclass
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, Literal, TypeGuard
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel as PydanticBaseModel
 
@@ -26,19 +26,6 @@ class dependency[T](cached_property):
         self.__doc__ = getattr(func, "__doc__", None)
 
 
-def _is_furu_object(value: object) -> TypeGuard[Furu[Any]]:
-    from furu.core import Furu
-
-    return isinstance(value, Furu)
-
-
-def iter_dependency_descriptors(cls: type[object]) -> Iterator[tuple[str, object]]:
-    for base in reversed(cls.__mro__):
-        for name, value in base.__dict__.items():
-            if getattr(value, "__furu_dependency__", False):
-                yield name, value
-
-
 def _join_path(parent: str | None, child: str) -> str:
     if parent is None:
         return child
@@ -50,43 +37,37 @@ def _join_path(parent: str | None, child: str) -> str:
 def find_nested_furu_objects(
     value: object, *, path: str | None = None
 ) -> Iterator[tuple[Furu[Any], str | None]]:
-    if _is_furu_object(value):
-        yield value, path
-        return
+    from furu.core import Furu
 
-    if isinstance(value, (str, bytes, bytearray)):
-        return
-
-    if is_dataclass(value) and not isinstance(value, type):
-        for field in fields(value):
-            yield from find_nested_furu_objects(
-                getattr(value, field.name),
-                path=_join_path(path, field.name),
-            )
-        return
-
-    if isinstance(value, PydanticBaseModel):
-        for name in type(value).model_fields:
-            yield from find_nested_furu_objects(
-                getattr(value, name),
-                path=_join_path(path, name),
-            )
-        return
-
-    if isinstance(value, tuple | list | set | frozenset):
-        for index, item in enumerate(value):
-            yield from find_nested_furu_objects(
-                item,
-                path=_join_path(path, f"[{index}]"),
-            )
-        return
-
-    if isinstance(value, dict):
-        for key, item in value.items():
-            yield from find_nested_furu_objects(
-                item,
-                path=_join_path(path, f"[{key!r}]"),
-            )
+    match value:
+        case Furu():
+            yield value, path
+        case str() | bytes() | bytearray():
+            return
+        case _ if is_dataclass(value) and not isinstance(value, type):
+            for field in fields(value):
+                yield from find_nested_furu_objects(
+                    getattr(value, field.name),
+                    path=_join_path(path, field.name),
+                )
+        case PydanticBaseModel():
+            for name in type(value).model_fields:
+                yield from find_nested_furu_objects(
+                    getattr(value, name),
+                    path=_join_path(path, name),
+                )
+        case tuple() | list() | set() | frozenset():
+            for index, item in enumerate(value):
+                yield from find_nested_furu_objects(
+                    item,
+                    path=_join_path(path, f"[{index}]"),
+                )
+        case dict():
+            for key, item in value.items():
+                yield from find_nested_furu_objects(
+                    item,
+                    path=_join_path(path, f"[{key!r}]"),
+                )
 
 
 def collect_eager_dependencies(obj: Furu[Any]) -> tuple[DependencyRef, ...]:
@@ -102,11 +83,15 @@ def collect_eager_dependencies(obj: Furu[Any]) -> tuple[DependencyRef, ...]:
             )
         )
 
-    for name, _descriptor in iter_dependency_descriptors(type(obj)):
-        refs.extend(
-            DependencyRef.from_furu(dep, via="dependency", path=dep_path)
-            for dep, dep_path in find_nested_furu_objects(getattr(obj, name), path=name)
-        )
+    for base in reversed(type(obj).__mro__):
+        for name, value in base.__dict__.items():
+            if getattr(value, "__furu_dependency__", False):
+                refs.extend(
+                    DependencyRef.from_furu(dep, via="dependency", path=dep_path)
+                    for dep, dep_path in find_nested_furu_objects(
+                        getattr(obj, name), path=name
+                    )
+                )
 
     return dedupe_dependency_refs(refs)
 
