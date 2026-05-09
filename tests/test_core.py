@@ -2,7 +2,7 @@ import json
 import types
 from collections.abc import Callable
 from contextlib import contextmanager
-from dataclasses import FrozenInstanceError, is_dataclass, replace
+from dataclasses import FrozenInstanceError, dataclass, is_dataclass, replace
 from enum import Enum
 from functools import cached_property, partial
 from pathlib import Path
@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 from pydantic import BaseModel, ConfigDict
 
+import furu
 import furu.execution as execution_module
 from furu import Furu, load_or_create, validate
 from furu.config import config
@@ -325,6 +326,66 @@ class MetadataTimingValue(Furu[str]):
             )
         )
         return f"timed:{self.key}"
+
+
+@dataclass(frozen=True)
+class DependencyBundle:
+    first: Node
+    second: WeightedNode
+
+
+class NestedDependencyParent(Furu[str]):
+    bundle: DependencyBundle
+
+    def _create(self) -> str:
+        return self.bundle.first.load_or_create()
+
+
+class ComputedDependencyParent(Furu[str]):
+    name: str
+
+    @furu.dependency
+    def child(self) -> Node:
+        return Node(name=self.name)
+
+    def _create(self) -> str:
+        return self.child.load_or_create()
+
+
+class LazyDependencyParent(Furu[str]):
+    name: str
+
+    def _create(self) -> str:
+        return Node(name=self.name).load_or_create()
+
+
+class TryLoadDependencyParent(Furu[str]):
+    name: str
+
+    def _create(self) -> str:
+        try:
+            Node(name=self.name).try_load()
+        except NotImplementedError:
+            return "missing"
+        return "loaded"
+
+
+class FuruBoundaryParent(Furu[str]):
+    child: NodePair
+
+    def _create(self) -> str:
+        return self.child.node1.load_or_create()
+
+
+class BatchDependencyParent(Furu[str]):
+    key: int
+    eager: Node
+
+    @classmethod
+    def _create_batched(cls, objs) -> list[str]:
+        eager_values = [obj.eager.load_or_create() for obj in objs]
+        lazy_value = Node(name="shared-lazy").load_or_create()
+        return [f"{value}:{lazy_value}" for value in eager_values]
 
 
 @pytest.fixture(autouse=True)
@@ -881,6 +942,96 @@ def test_furu_from_artifact_returns_furu_object():
     assert "artifact_hash" not in raw_metadata
     assert "artifact_schema" not in raw_metadata
     assert "artifact_schema_hash" not in raw_metadata
+
+
+def _dependency_object_ids(obj: Furu[Any], kind: Literal["eager", "lazy"]) -> list[str]:
+    metadata = json.loads(obj._metadata_path.read_text())
+    return [dep["object_id"] for dep in metadata["dependencies"][kind]]
+
+
+def test_field_dependencies_are_eager_and_not_duplicated_as_lazy() -> None:
+    first = Node(name="nested")
+    second = WeightedNode(name="weighted", weight=2)
+    parent = NestedDependencyParent(bundle=DependencyBundle(first=first, second=second))
+
+    assert parent.load_or_create() == "Node(nested)"
+    metadata = json.loads(parent._metadata_path.read_text())
+
+    assert [dep["object_id"] for dep in metadata["dependencies"]["eager"]] == [
+        first.object_id,
+        second.object_id,
+    ]
+    assert metadata["dependencies"]["lazy"] == []
+    assert [dep["path"] for dep in metadata["dependencies"]["eager"]] == [
+        "bundle.first",
+        "bundle.second",
+    ]
+
+
+def test_computed_dependency_is_cached_property_and_eager() -> None:
+    parent = ComputedDependencyParent(name="computed")
+
+    assert parent.child is parent.child
+    assert parent.load_or_create() == "Node(computed)"
+
+    assert _dependency_object_ids(parent, "eager") == [parent.child.object_id]
+    assert _dependency_object_ids(parent, "lazy") == []
+
+
+def test_load_or_create_inside_create_is_lazy_and_deduped() -> None:
+    parent = LazyDependencyParent(name="lazy")
+
+    assert parent.load_or_create() == "Node(lazy)"
+
+    assert _dependency_object_ids(parent, "eager") == []
+    assert _dependency_object_ids(parent, "lazy") == [Node(name="lazy").object_id]
+
+
+def test_try_load_inside_create_is_lazy_even_on_missing_result() -> None:
+    parent = TryLoadDependencyParent(name="optional")
+
+    assert parent.load_or_create() == "missing"
+
+    metadata = json.loads(parent._metadata_path.read_text())
+    assert metadata["dependencies"]["eager"] == []
+    assert [dep["object_id"] for dep in metadata["dependencies"]["lazy"]] == [
+        Node(name="optional").object_id
+    ]
+    assert metadata["dependencies"]["lazy"][0]["via"] == "try_load"
+
+
+def test_furu_objects_block_nested_eager_traversal_but_direct_runtime_loads_are_lazy() -> (
+    None
+):
+    node1 = Node(name="inner")
+    node2 = WeightedNode(name="other", weight=3)
+    child = NodePair(node1=node1, node2=node2, name="pair")
+    parent = FuruBoundaryParent(child=child)
+
+    assert parent.load_or_create() == "Node(inner)"
+
+    assert _dependency_object_ids(parent, "eager") == [child.object_id]
+    assert _dependency_object_ids(parent, "lazy") == [node1.object_id]
+
+
+def test_batched_dependencies_use_per_object_eager_and_shared_lazy_dependencies() -> (
+    None
+):
+    objs = [
+        BatchDependencyParent(key=1, eager=Node(name="eager-1")),
+        BatchDependencyParent(key=2, eager=Node(name="eager-2")),
+    ]
+
+    assert load_or_create(objs) == [
+        "Node(eager-1):Node(shared-lazy)",
+        "Node(eager-2):Node(shared-lazy)",
+    ]
+
+    for obj in objs:
+        assert _dependency_object_ids(obj, "eager") == [obj.eager.object_id]
+        assert _dependency_object_ids(obj, "lazy") == [
+            Node(name="shared-lazy").object_id
+        ]
 
 
 def test_furu_from_artifact_infers_furu_object_type():

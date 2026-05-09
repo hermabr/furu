@@ -1,0 +1,172 @@
+from __future__ import annotations
+
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import fields, is_dataclass
+from functools import cached_property
+from typing import TYPE_CHECKING, Any, Generic, Literal, TypeGuard, TypeVar
+
+from pydantic import BaseModel as PydanticBaseModel
+
+if TYPE_CHECKING:
+    from furu.core import Furu
+    from furu.metadata import DependencyRef
+
+
+T = TypeVar("T")
+DependencyVia = Literal["field", "dependency", "load_or_create", "try_load"]
+
+
+class dependency(cached_property, Generic[T]):
+    __furu_dependency__ = True
+
+    def __init__(self, func: Callable[..., T]):
+        super().__init__(func)
+        self.__name__ = getattr(func, "__name__", type(func).__name__)
+        self.__doc__ = getattr(func, "__doc__", None)
+
+
+def _is_furu_object(value: object) -> TypeGuard[Furu[Any]]:
+    from furu.core import Furu
+
+    return isinstance(value, Furu)
+
+
+def iter_dependency_descriptors(cls: type[object]) -> Iterator[tuple[str, object]]:
+    for base in reversed(cls.__mro__):
+        for name, value in base.__dict__.items():
+            if getattr(value, "__furu_dependency__", False):
+                yield name, value
+
+
+def _join_path(parent: str | None, child: str) -> str:
+    if parent is None:
+        return child
+    if child.startswith("["):
+        return f"{parent}{child}"
+    return f"{parent}.{child}"
+
+
+def find_nested_furu_objects(
+    value: object, *, path: str | None = None
+) -> Iterator[tuple[Furu[Any], str | None]]:
+    if _is_furu_object(value):
+        yield value, path
+        return
+
+    if isinstance(value, (str, bytes, bytearray)):
+        return
+
+    if is_dataclass(value) and not isinstance(value, type):
+        for field in fields(value):
+            yield from find_nested_furu_objects(
+                getattr(value, field.name),
+                path=_join_path(path, field.name),
+            )
+        return
+
+    if isinstance(value, PydanticBaseModel):
+        for name in type(value).model_fields:
+            yield from find_nested_furu_objects(
+                getattr(value, name),
+                path=_join_path(path, name),
+            )
+        return
+
+    if isinstance(value, tuple | list | set | frozenset):
+        for index, item in enumerate(value):
+            yield from find_nested_furu_objects(
+                item,
+                path=_join_path(path, f"[{index}]"),
+            )
+        return
+
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield from find_nested_furu_objects(
+                item,
+                path=_join_path(path, f"[{key!r}]"),
+            )
+
+
+def collect_eager_dependencies(obj: Furu[Any]) -> tuple[DependencyRef, ...]:
+    from furu.metadata import DependencyRef
+
+    refs: list[DependencyRef] = []
+
+    for field in fields(obj):
+        refs.extend(
+            DependencyRef.from_furu(dep, via="field", path=dep_path)
+            for dep, dep_path in find_nested_furu_objects(
+                getattr(obj, field.name), path=field.name
+            )
+        )
+
+    for name, _descriptor in iter_dependency_descriptors(type(obj)):
+        refs.extend(
+            DependencyRef.from_furu(dep, via="dependency", path=dep_path)
+            for dep, dep_path in find_nested_furu_objects(getattr(obj, name), path=name)
+        )
+
+    return dedupe_dependency_refs(refs)
+
+
+def dedupe_dependency_refs(
+    refs: list[DependencyRef] | tuple[DependencyRef, ...],
+) -> tuple[DependencyRef, ...]:
+    by_id: dict[str, DependencyRef] = {}
+    for ref in refs:
+        by_id.setdefault(ref.object_id, ref)
+    return tuple(by_id.values())
+
+
+class DependencyRecorder:
+    def __init__(self) -> None:
+        self._observed: list[DependencyRef] = []
+
+    def record(
+        self, obj: Furu[Any], *, via: Literal["load_or_create", "try_load"]
+    ) -> None:
+        from furu.metadata import DependencyRef
+
+        self._observed.append(DependencyRef.from_furu(obj, via=via))
+
+    @property
+    def observed(self) -> tuple[DependencyRef, ...]:
+        return dedupe_dependency_refs(self._observed)
+
+
+_active_dependency_recorder: ContextVar[DependencyRecorder | None] = ContextVar(
+    "_active_dependency_recorder",
+    default=None,
+)
+
+
+def record_dependency_call(
+    obj: Furu[Any], *, via: Literal["load_or_create", "try_load"]
+) -> None:
+    recorder = _active_dependency_recorder.get()
+    if recorder is not None:
+        recorder.record(obj, via=via)
+
+
+@contextmanager
+def dependency_recorder() -> Iterator[DependencyRecorder]:
+    recorder = DependencyRecorder()
+    token = _active_dependency_recorder.set(recorder)
+    try:
+        yield recorder
+    finally:
+        _active_dependency_recorder.reset(token)
+
+
+def resolve_dependencies(
+    *,
+    eager: tuple[DependencyRef, ...],
+    observed: tuple[DependencyRef, ...],
+) -> tuple[DependencyRef, ...]:
+    eager_ids = {ref.object_id for ref in eager}
+    return dedupe_dependency_refs(
+        tuple(ref for ref in observed if ref.object_id not in eager_ids)
+    )
