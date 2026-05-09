@@ -11,9 +11,7 @@ from typing import (
     Annotated,
     Any,
     Final,
-    Generic,
     Literal,
-    TypeVar,
     assert_never,
     cast,
     get_args,
@@ -36,7 +34,6 @@ ARTIFACTS_DIR_NAME: Final = "artifacts"
 LAZY_DIR_NAME: Final = "lazy"
 MANIFEST_FILE_NAME: Final = "manifest.json"
 _ROOT_ARTIFACT_NAME: Final = "root"
-T = TypeVar("T")
 type ValuePath = tuple[str, ...]
 type WrapperKind = Literal[
     "external", "dataclass", "path", "pydantic", "tuple", "set", "frozenset", "lazy"
@@ -44,16 +41,16 @@ type WrapperKind = Literal[
 
 
 @dataclass(frozen=True)
-class _SaveAs(Generic[T]):
+class _SaveAs[T]:
     value: T
     codec: type[ResultCodec]
 
 
-def save_as(value: T, *, codec: type[ResultCodec]) -> T:
+def save_as[T](value: T, *, codec: type[ResultCodec]) -> T:
     return cast(T, _SaveAs(value=value, codec=codec))
 
 
-def _unwrap_save_as(value: T) -> T:
+def _unwrap_save_as[T](value: T) -> T:
     match value:
         case _SaveAs(value=inner):
             return cast(T, _unwrap_save_as(inner))
