@@ -7,6 +7,7 @@ from typing import Any, cast
 import pydantic
 
 from furu.result.codec import ResultCodec
+from furu.result.lazy import LazyResult
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,12 @@ def _unwrap_save_as[T](value: T) -> T:
             return cast(T, {_unwrap_save_as(item) for item in value})
         case frozenset():
             return cast(T, frozenset(_unwrap_save_as(item) for item in value))
+        case LazyResult():
+            if value.is_loaded:
+                return cast(T, LazyResult(_unwrap_save_as(value.load())))
+            return cast(
+                T, LazyResult._from_loader(lambda: _unwrap_save_as(value.load()))
+            )
         case dict():
             return cast(
                 T, {key: _unwrap_save_as(child) for key, child in value.items()}

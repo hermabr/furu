@@ -403,6 +403,18 @@ class SaveAsArrayResult(Furu[SaveAsOutput]):
         return SaveAsOutput(weights=furu.save_as(np.arange(4), codec=NumpyNpyCodec))
 
 
+@dataclass(frozen=True)
+class LazySaveAsOutput:
+    weights: LazyResult[Any]
+
+
+class LazySaveAsArrayResult(Furu[LazySaveAsOutput]):
+    def _create(self) -> LazySaveAsOutput:
+        return LazySaveAsOutput(
+            weights=LazyResult(furu.save_as(np.arange(4), codec=NumpyNpyCodec))
+        )
+
+
 def test_save_as_selects_codec_and_does_not_leak_wrapper() -> None:
     obj = SaveAsArrayResult()
     loaded = obj.load_or_create()
@@ -414,6 +426,24 @@ def test_save_as_selects_codec_and_does_not_leak_wrapper() -> None:
     loaded_again = obj.load_or_create()
     assert isinstance(loaded_again, SaveAsOutput)
     assert np.array_equal(loaded_again.weights, np.arange(4))
+
+
+def test_save_as_inside_lazy_result_does_not_leak_wrapper() -> None:
+    obj = LazySaveAsArrayResult()
+    loaded = obj.load_or_create()
+
+    assert isinstance(loaded, LazySaveAsOutput)
+    assert isinstance(loaded.weights, LazyResult)
+    assert loaded.weights.is_loaded
+    assert np.array_equal(loaded.weights.load(), np.arange(4))
+    assert type(loaded.weights.load()).__name__ != "_SaveAs"
+
+    loaded_again = obj.load_or_create()
+    assert isinstance(loaded_again, LazySaveAsOutput)
+    assert isinstance(loaded_again.weights, LazyResult)
+    assert not loaded_again.weights.is_loaded
+    assert np.array_equal(loaded_again.weights.load(), np.arange(4))
+    assert type(loaded_again.weights.load()).__name__ != "_SaveAs"
 
 
 @dataclass(frozen=True)
