@@ -4,7 +4,6 @@ import dataclasses
 import importlib
 import importlib.util
 import json
-from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import (
@@ -23,6 +22,7 @@ import pydantic
 
 from furu.result.codec import _default_result_registry, ResultCodec, ResultRegistry
 from furu.result.lazy import LazyResult
+from furu.result.save_as import _SaveAs, save_as as save_as
 from furu.utils import JsonValue, fully_qualified_name
 
 WRAPPER_KEY: Final = "$furu"
@@ -34,16 +34,6 @@ type ValuePath = tuple[str, ...]
 type WrapperKind = Literal[
     "external", "dataclass", "path", "pydantic", "tuple", "set", "frozenset", "lazy"
 ]
-
-
-@dataclass(frozen=True)
-class _SaveAs[T]:
-    value: T
-    codec: type[ResultCodec]
-
-
-def save_as[T](value: T, *, codec: type[ResultCodec]) -> T:
-    return cast(T, _SaveAs(value=value, codec=codec))
 
 
 def _unwrap_save_as[T](value: T) -> T:
