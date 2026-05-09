@@ -4,7 +4,15 @@ import traceback
 from collections.abc import Callable, Sequence
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, assert_never, cast, get_args, get_origin, overload
+from typing import (
+    Any,
+    TypeVar,
+    assert_never,
+    cast,
+    get_args,
+    get_origin,
+    overload,
+)
 
 from furu.core import Furu, FuruCreateMode
 from furu.locking import LockLostError, lock_many
@@ -47,6 +55,12 @@ def _resolve_create_mode[T](cls: type[Furu[T]]) -> FuruCreateMode:
     )
 
 
+def _contains_typevar(tp: object) -> bool:
+    if isinstance(tp, TypeVar):
+        return True
+    return any(_contains_typevar(arg) for arg in get_args(tp))
+
+
 def _store_result[T](
     obj: Furu[T],
     result: T,
@@ -70,6 +84,11 @@ def _store_result[T](
         else:
             continue
         break
+
+    if _contains_typevar(declared_type):
+        raise TypeError(
+            f"{type(obj).__name__} must declare its concrete result type directly as Furu[...]"
+        )
 
     save_result_bundle(
         result,

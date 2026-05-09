@@ -384,6 +384,17 @@ class AnnotatedArrayResult(Furu[AnnotatedArrayOutput]):
         return AnnotatedArrayOutput(weights=np.arange(3, dtype=np.int64))
 
 
+class GenericAnnotatedArrayBase[T](Furu[T]):
+    def _create(self) -> T:
+        return np.arange(3, dtype=np.int64)
+
+
+class GenericAnnotatedArrayResult(
+    GenericAnnotatedArrayBase[Annotated[Any, NumpyNpyCodec]]
+):
+    pass
+
+
 class StrictAnnotatedArrayOutput(BaseModel):
     model_config = ConfigDict(strict=True, arbitrary_types_allowed=True)
 
@@ -402,6 +413,13 @@ def test_annotated_codec_selects_external_artifact() -> None:
     assert isinstance(loaded, AnnotatedArrayOutput)
     assert np.array_equal(loaded.weights, np.arange(3, dtype=np.int64))
     assert (obj._result_dir / "artifacts" / "weights" / "data.npy").exists()
+
+
+def test_generic_furu_base_with_annotated_result_codec_is_rejected() -> None:
+    obj = GenericAnnotatedArrayResult()
+
+    with pytest.raises(TypeError, match="concrete result type directly as Furu"):
+        obj.load_or_create()
 
 
 def test_strict_pydantic_annotated_codec_selects_external_artifact() -> None:
