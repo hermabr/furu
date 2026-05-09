@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal
@@ -45,7 +47,7 @@ class RunningMetadata(BaseModel):
     # executor info, such as local, local executor, slurm dag or slurm worker
 
     @classmethod
-    def write_for[T](cls, obj: "Furu[T]") -> "RunningMetadata":
+    def write_for[T](cls, obj: Furu[T]) -> RunningMetadata:
         metadata = cls(
             artifact=obj.artifact,
             artifact_hash=obj.artifact_hash,
@@ -57,7 +59,7 @@ class RunningMetadata(BaseModel):
         obj._metadata_path.write_text(metadata.model_dump_json(indent=2))
         return metadata
 
-    def to_complete(self) -> "CompletedMetadata":
+    def to_complete(self) -> CompletedMetadata:
         return CompletedMetadata(
             artifact=self.artifact,
             artifact_hash=self.artifact_hash,
