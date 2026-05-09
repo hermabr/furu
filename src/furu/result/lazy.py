@@ -30,6 +30,10 @@ class LazyResult[T]:
     def is_loaded(self) -> bool:
         return self._value is not _UNLOADED
 
+    def __repr__(self) -> str:
+        state = "loaded" if self.is_loaded else "unloaded"
+        return f"{type(self).__name__}({state})"
+
     def load(self) -> T:
         if self._value is not _UNLOADED:
             return cast(T, self._value)

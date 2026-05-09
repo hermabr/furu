@@ -571,6 +571,7 @@ def test_lazy_result_created_directly_is_loaded() -> None:
     lazy = LazyResult(value)
 
     assert lazy.is_loaded
+    assert repr(lazy) == "LazyResult(loaded)"
     assert lazy.load() is value
 
 
@@ -595,6 +596,7 @@ def test_root_lazy_result_defers_cache_read_and_memoizes(
 
     assert isinstance(loaded, LazyResult)
     assert not loaded.is_loaded
+    assert repr(loaded) == "LazyResult(unloaded)"
     assert _CountingCodec.load_calls == 0
 
     first = loaded.load()
@@ -604,6 +606,7 @@ def test_root_lazy_result_defers_cache_read_and_memoizes(
     assert first.value == 9
     assert second is first
     assert loaded.is_loaded
+    assert repr(loaded) == "LazyResult(loaded)"
     assert _CountingCodec.load_calls == 1
 
 
