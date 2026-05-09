@@ -47,6 +47,8 @@ def _child_declared_type(declared_type: object, key: object) -> object:
     args = get_args(declared_type)
     if origin is list and args:
         return args[0]
+    if origin in (set, frozenset) and args:
+        return args[0]
     if origin is dict and len(args) == 2:
         return args[1]
     if origin is tuple and args:
@@ -180,7 +182,7 @@ def _dump_value(
                     "items": [
                         _dump_value(
                             item,
-                            declared_type=Any,
+                            declared_type=_child_declared_type(declared_type, i),
                             value_path=(*value_path, f"{i:0{width}d}"),
                             bundle_dir=bundle_dir,
                             registry=registry,
