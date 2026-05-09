@@ -252,6 +252,38 @@ class _CountingCodec(ResultCodec):
         )
 
 
+def test_codec_id_is_derived_from_class_identity() -> None:
+    assert _CountingCodec.codec_id() == (
+        f"{_CountingCodec.__module__}.{_CountingCodec.__qualname__}"
+    )
+
+
+def test_codec_id_override_is_rejected() -> None:
+    with pytest.raises(TypeError, match="must not override codec_id"):
+
+        class InvalidCodec(ResultCodec):
+            @classmethod
+            def codec_id(cls) -> str:
+                return "custom"
+
+            @classmethod
+            def matches(cls, value: object) -> bool:
+                return False
+
+            @classmethod
+            def dump(
+                cls,
+                value: object,
+                *,
+                artifact_dir: Path,
+            ) -> None:
+                raise AssertionError("unreachable")
+
+            @classmethod
+            def load(cls, *, artifact_dir: Path) -> object:
+                raise AssertionError("unreachable")
+
+
 class UnsupportedRootResult(Furu[object]):
     def _create(self) -> object:
         return _CustomTensor()
