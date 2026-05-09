@@ -8,7 +8,7 @@ from pydantic import BaseModel as PydanticBaseModel
 
 from furu.constants import CLASSMARKER, KINDMARKER
 from furu.metadata import ArtifactMetadata
-from furu.utils import JsonValue, _hash_dict_deterministically, fully_qualified_name
+from furu.utils import JsonValue, fully_qualified_name
 
 if TYPE_CHECKING:
     from furu.core import Furu
@@ -131,36 +131,22 @@ def from_artifact[T: "Furu"](artifact: ArtifactInput, expected_type: type[T]) ->
 def from_artifact(artifact: ArtifactInput, expected_type: None = None) -> "Furu": ...
 
 
-def _validate_artifact_metadata(artifact: ArtifactMetadata) -> JsonValue:
-    actual_hash = _hash_dict_deterministically(artifact.data)
-    if artifact.hash != actual_hash:
-        raise ValueError(
-            f"Artifact hash mismatch: expected {artifact.hash}, got {actual_hash}"
-        )
-
-    actual_schema_hash = _hash_dict_deterministically(artifact.schema)
-    if artifact.schema_hash != actual_schema_hash:
-        raise ValueError(
-            "Artifact schema hash mismatch: "
-            + f"expected {artifact.schema_hash}, got {actual_schema_hash}"
-        )
-
-    return artifact.data
-
-
 def from_artifact[T: "Furu"](
     artifact: ArtifactInput, expected_type: type[T] | None = None
 ) -> T | "Furu":
     from furu.core import Furu
 
     artifact_data = (
-        _validate_artifact_metadata(artifact)
-        if isinstance(artifact, ArtifactMetadata)
-        else artifact
+        artifact.data if isinstance(artifact, ArtifactMetadata) else artifact
     )
     furu_obj = _from_json(artifact_data)
     if expected_type is not None and not isinstance(furu_obj, expected_type):
         raise TypeError("Artifact did not describe a Furu object")
     if expected_type is None and not isinstance(furu_obj, Furu):
         raise TypeError("Artifact did not describe a Furu object")
+    if isinstance(artifact, ArtifactMetadata):
+        if artifact.hash != furu_obj.artifact_hash:
+            raise ValueError("Artifact hash did not match loaded object")
+        if artifact.schema_hash != furu_obj.artifact_schema_hash:
+            raise ValueError("Artifact schema hash did not match loaded object")
     return furu_obj
