@@ -111,24 +111,16 @@ class ResultRegistry:
     def __init__(
         self,
         *,
-        custom_codecs: Iterable[type[ResultCodec]] = (),
-        default_codecs: Iterable[type[ResultCodec]] = (),
+        codecs: Iterable[type[ResultCodec]] = (),
     ) -> None:
-        self.custom_codecs = tuple(custom_codecs)
-        self.default_codecs = tuple(default_codecs)
-        self._codecs_by_id = {
-            codec.codec_id(): codec
-            for codec in (*self.custom_codecs, *self.default_codecs)
-        }
+        self.codecs = tuple(codecs)
+        self._codecs_by_id = {codec.codec_id(): codec for codec in self.codecs}
 
     def register(self, codec: type[ResultCodec]) -> Self:
-        return type(self)(
-            custom_codecs=(codec, *self.custom_codecs),
-            default_codecs=self.default_codecs,
-        )
+        return type(self)(codecs=(codec, *self.codecs))
 
     def find_codec(self, value: object) -> type[ResultCodec] | None:
-        for codec in (*self.custom_codecs, *self.default_codecs):
+        for codec in self.codecs:
             if codec.matches(value):
                 return codec
         return None
@@ -150,7 +142,7 @@ class ResultRegistry:
 @cache
 def _default_result_registry() -> ResultRegistry:
     return ResultRegistry(
-        default_codecs=(
+        codecs=(
             codec
             for codec in (PolarsParquetCodec, NumpyNpyCodec)
             if codec.dependencies_available()
