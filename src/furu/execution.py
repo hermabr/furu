@@ -60,11 +60,11 @@ def _store_result[T](
 
     tmp_result_dir = nfs_safe_unique_name(obj._result_dir, name="tmp")
 
-    expected_type: object = Any
+    declared_type: object = Any
     for cls in type(obj).__mro__:
         for base in getattr(cls, "__orig_bases__", ()):
             if get_origin(base) is Furu:
-                expected_type = get_args(base)[0]
+                declared_type = get_args(base)[0]
                 break
         else:
             continue
@@ -73,7 +73,7 @@ def _store_result[T](
     save_result_bundle(
         result,
         tmp_result_dir,
-        expected_type=expected_type,
+        declared_type=declared_type,
         registry=obj.result_registry,
     )
 

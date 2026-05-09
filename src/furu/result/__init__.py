@@ -92,27 +92,27 @@ def _unwrap_save_as(value: T) -> T:
             return value
 
 
-def _strip_annotated(expected_type: object) -> object:
+def _strip_annotated(declared_type: object) -> object:
     return (
-        get_args(expected_type)[0]
-        if get_origin(expected_type) is Annotated
-        else expected_type
+        get_args(declared_type)[0]
+        if get_origin(declared_type) is Annotated
+        else declared_type
     )
 
 
-def _codec_from_annotated(expected_type: object) -> type[ResultCodec] | None:
-    if get_origin(expected_type) is not Annotated:
+def _codec_from_annotated(declared_type: object) -> type[ResultCodec] | None:
+    if get_origin(declared_type) is not Annotated:
         return None
-    for item in get_args(expected_type)[1:]:
+    for item in get_args(declared_type)[1:]:
         if isinstance(item, type) and issubclass(item, ResultCodec):
             return item
     return None
 
 
-def _child_expected_type(expected_type: object, key: object) -> object:
-    expected_type = _strip_annotated(expected_type)
-    origin = get_origin(expected_type)
-    args = get_args(expected_type)
+def _child_declared_type(declared_type: object, key: object) -> object:
+    declared_type = _strip_annotated(declared_type)
+    origin = get_origin(declared_type)
+    args = get_args(declared_type)
     if origin is list and args:
         return args[0]
     if origin is dict and len(args) == 2:
@@ -185,7 +185,7 @@ def _validate_result_path_segment(
 def _dump_value(
     value: object,
     *,
-    expected_type: object = Any,
+    declared_type: object = Any,
     value_path: ValuePath,
     bundle_dir: Path,
     registry: ResultRegistry | None = None,
@@ -195,18 +195,18 @@ def _dump_value(
         runtime_codec = value.codec
         value = value.value
 
-    annotated_codec = _codec_from_annotated(expected_type)
+    declared_codec = _codec_from_annotated(declared_type)
     if (
         runtime_codec is not None
-        and annotated_codec is not None
-        and runtime_codec is not annotated_codec
+        and declared_codec is not None
+        and runtime_codec is not declared_codec
     ):
         raise TypeError(
             "Conflicting codecs: value was wrapped with furu.save_as(...), "
             "but the field also has an Annotated codec."
         )
 
-    selected_codec = runtime_codec or annotated_codec
+    selected_codec = runtime_codec or declared_codec
     if selected_codec is not None:
         return _dump_external(
             value,
@@ -223,7 +223,7 @@ def _dump_value(
             return [
                 _dump_value(
                     item,
-                    expected_type=_child_expected_type(expected_type, i),
+                    declared_type=_child_declared_type(declared_type, i),
                     value_path=(*value_path, f"{i:0{width}d}"),
                     bundle_dir=bundle_dir,
                     registry=registry,
@@ -238,7 +238,7 @@ def _dump_value(
                     "items": [
                         _dump_value(
                             item,
-                            expected_type=_child_expected_type(expected_type, i),
+                            declared_type=_child_declared_type(declared_type, i),
                             value_path=(*value_path, f"{i:0{width}d}"),
                             bundle_dir=bundle_dir,
                             registry=registry,
@@ -264,7 +264,7 @@ def _dump_value(
                     "items": [
                         _dump_value(
                             item,
-                            expected_type=Any,
+                            declared_type=Any,
                             value_path=(*value_path, f"{i:0{width}d}"),
                             bundle_dir=bundle_dir,
                             registry=registry,
@@ -282,7 +282,7 @@ def _dump_value(
                 )
                 out[key] = _dump_value(
                     child,
-                    expected_type=_child_expected_type(expected_type, raw_key),
+                    declared_type=_child_declared_type(declared_type, raw_key),
                     value_path=(*value_path, key),
                     bundle_dir=bundle_dir,
                     registry=registry,
@@ -304,7 +304,7 @@ def _dump_value(
                 )
                 fields_out[name] = _dump_value(
                     getattr(value, name),
-                    expected_type=field_types.get(name, Any),
+                    declared_type=field_types.get(name, Any),
                     value_path=(*value_path, name),
                     bundle_dir=bundle_dir,
                     registry=registry,
@@ -325,7 +325,7 @@ def _dump_value(
                 )
                 fields_out[name] = _dump_value(
                     getattr(value, name),
-                    expected_type=field_types.get(field.name, Any),
+                    declared_type=field_types.get(field.name, Any),
                     value_path=(*value_path, name),
                     bundle_dir=bundle_dir,
                     registry=registry,
@@ -343,7 +343,7 @@ def _dump_value(
             save_result_bundle(
                 value.load(),
                 nested_bundle_dir,
-                expected_type=_strip_annotated(expected_type),
+                declared_type=_strip_annotated(declared_type),
                 registry=registry,
             )
             return {
@@ -618,14 +618,14 @@ def save_result_bundle(
     value: object,
     bundle_dir: Path,
     *,
-    expected_type: object = Any,
+    declared_type: object = Any,
     registry: ResultRegistry | None = None,
 ) -> None:
     bundle_dir.mkdir(parents=True, exist_ok=False)
 
     manifest = _dump_value(
         value,
-        expected_type=expected_type,
+        declared_type=declared_type,
         value_path=(),
         bundle_dir=bundle_dir,
         registry=registry,
