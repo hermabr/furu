@@ -1355,10 +1355,7 @@ def test_batched_compute_writes_result_layout_per_object() -> None:
         assert obj._result_manifest_path.exists()
         assert obj._metadata_path.exists()
         assert obj._log_path.exists()
-        assert (
-            load_result_bundle(obj._result_dir, registry=_default_result_registry())
-            == expected
-        )
+        assert load_result_bundle(obj._result_dir) == expected
 
 
 def test_batched_compute_writes_shared_logs_to_every_participant() -> None:

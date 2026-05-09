@@ -149,9 +149,7 @@ def load_or_create[T](
     for obj in unique:
         if obj._result_manifest_path.exists():
             obj.logger.info("cache hit for %s at %s", obj._log_label, obj._result_dir)
-            results_by_dir[obj.data_dir] = cast(
-                T, load_result_bundle(obj._result_dir, registry=obj.result_registry)
-            )
+            results_by_dir[obj.data_dir] = cast(T, load_result_bundle(obj._result_dir))
         else:
             obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
             missing.append(obj)
@@ -173,7 +171,7 @@ def load_or_create[T](
                     obj._result_dir,
                 )
                 results_by_dir[obj.data_dir] = cast(
-                    T, load_result_bundle(obj._result_dir, registry=obj.result_registry)
+                    T, load_result_bundle(obj._result_dir)
                 )
             else:
                 pending.append(obj)

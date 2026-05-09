@@ -4,7 +4,7 @@ import importlib
 import importlib.util
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from functools import cache, cached_property
+from functools import cache
 from pathlib import Path
 from typing import Self, cast
 
@@ -120,22 +120,16 @@ class ResultRegistry:
                 return codec
         return None
 
-    def resolve_codec(self, codec_id: str) -> type[ResultCodec]:
-        if codec_id in self._codecs_by_id:
-            return self._codecs_by_id[codec_id]
 
-        module_name, _, attr_name = codec_id.rpartition(".")
-        if not module_name:
-            raise KeyError(codec_id)
+def resolve_result_codec(codec_id: str) -> type[ResultCodec]:
+    module_name, _, attr_name = codec_id.rpartition(".")
+    if not module_name:
+        raise KeyError(codec_id)
 
-        codec = getattr(importlib.import_module(module_name), attr_name)
-        if not issubclass(codec, ResultCodec):
-            raise TypeError(f"{codec_id} is not a ResultCodec")
-        return codec
-
-    @cached_property
-    def _codecs_by_id(self) -> dict[str, type[ResultCodec]]:
-        return {codec.codec_id(): codec for codec in self.codecs}
+    codec = getattr(importlib.import_module(module_name), attr_name)
+    if not issubclass(codec, ResultCodec):
+        raise TypeError(f"{codec_id} is not a ResultCodec")
+    return codec
 
 
 @cache

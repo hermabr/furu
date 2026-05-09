@@ -98,9 +98,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     def try_load(self) -> T:  # TODO: make a better name for this
         if self._result_manifest_path.exists():
-            return cast(
-                T, load_result_bundle(self._result_dir, registry=self.result_registry)
-            )
+            return cast(T, load_result_bundle(self._result_dir))
         raise NotImplementedError(
             "TODO: decide if i should throw or return error value"
         )

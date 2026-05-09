@@ -20,7 +20,7 @@ from typing import (
 
 import pydantic
 
-from furu.result.codec import ResultCodec, ResultRegistry
+from furu.result.codec import ResultCodec, ResultRegistry, resolve_result_codec
 from furu.result.lazy import LazyResult
 from furu.result.save_as import _SaveAs
 from furu.result.save_as import save_as as save_as
@@ -324,7 +324,6 @@ def _load_value(
     *,
     bundle_dir: Path,
     value_path: ValuePath,
-    registry: ResultRegistry,
 ) -> object:
     match node:
         case None | bool() | int() | float() | str():
@@ -336,7 +335,6 @@ def _load_value(
                     child,
                     bundle_dir=bundle_dir,
                     value_path=(*value_path, f"{i:0{width}d}"),
-                    registry=registry,
                 )
                 for i, child in enumerate(node)
             ]
@@ -345,7 +343,6 @@ def _load_value(
                 cast(dict[str, Any], node[WRAPPER_KEY]),
                 bundle_dir=bundle_dir,
                 value_path=value_path,
-                registry=registry,
             )
         case dict():
             return {
@@ -353,7 +350,6 @@ def _load_value(
                     child,
                     bundle_dir=bundle_dir,
                     value_path=(*value_path, key),
-                    registry=registry,
                 )
                 for key, child in node.items()
             }
@@ -369,7 +365,6 @@ def _load_validated_fields(
     raw_fields: dict[str, JsonValue],
     bundle_dir: Path,
     value_path: ValuePath,
-    registry: ResultRegistry,
 ) -> dict[str, object]:
     actual = set(raw_fields)
     missing = expected - actual
@@ -380,7 +375,6 @@ def _load_validated_fields(
                 child,
                 bundle_dir=bundle_dir,
                 value_path=(*value_path, name),
-                registry=registry,
             )
             for name, child in raw_fields.items()
         }
@@ -402,7 +396,6 @@ def _load_wrapper(
     *,
     bundle_dir: Path,
     value_path: ValuePath,
-    registry: ResultRegistry,
 ) -> object:
     kind: WrapperKind = body["kind"]
     match kind:
@@ -425,7 +418,7 @@ def _load_wrapper(
                     f"external wrapper artifact directory missing: {artifact_dir}"
                 )
 
-            return registry.resolve_codec(body["codec"]).load(artifact_dir=artifact_dir)
+            return resolve_result_codec(body["codec"]).load(artifact_dir=artifact_dir)
         case "lazy":
             if (nested_rel := Path(body["path"])).is_absolute():
                 raise ValueError(f"lazy wrapper path must be relative: {nested_rel}")
@@ -446,7 +439,6 @@ def _load_wrapper(
                 partial(
                     load_result_bundle,
                     bundle_dir=nested_bundle_dir,
-                    registry=registry,
                 )
             )
         case "dataclass":
@@ -465,7 +457,6 @@ def _load_wrapper(
                 raw_fields=body["fields"],
                 bundle_dir=bundle_dir,
                 value_path=value_path,
-                registry=registry,
             )
             try:
                 return cls(
@@ -488,7 +479,6 @@ def _load_wrapper(
                     child,
                     bundle_dir=bundle_dir,
                     value_path=(*value_path, str(i)),
-                    registry=registry,
                 )
                 for i, child in enumerate(body["items"])
             )
@@ -498,7 +488,6 @@ def _load_wrapper(
                     child,
                     bundle_dir=bundle_dir,
                     value_path=(*value_path, str(i)),
-                    registry=registry,
                 )
                 for i, child in enumerate(body["items"])
             }
@@ -508,7 +497,6 @@ def _load_wrapper(
                     child,
                     bundle_dir=bundle_dir,
                     value_path=(*value_path, str(i)),
-                    registry=registry,
                 )
                 for i, child in enumerate(body["items"])
             )
@@ -526,7 +514,6 @@ def _load_wrapper(
                 raw_fields=body["fields"],
                 bundle_dir=bundle_dir,
                 value_path=value_path,
-                registry=registry,
             )
             try:
                 return cls.model_validate(loaded_fields)
@@ -561,11 +548,7 @@ def save_result_bundle(
     )
 
 
-def load_result_bundle(
-    bundle_dir: Path,
-    *,
-    registry: ResultRegistry,
-) -> object:
+def load_result_bundle(bundle_dir: Path) -> object:
     manifest_path = bundle_dir / MANIFEST_FILE_NAME
     raw = json.loads(manifest_path.read_text(encoding="utf-8"))
-    return _load_value(raw, bundle_dir=bundle_dir, value_path=(), registry=registry)
+    return _load_value(raw, bundle_dir=bundle_dir, value_path=())

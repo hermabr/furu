@@ -171,7 +171,7 @@ def test_path_root_value_round_trips(tmp_path: Path) -> None:
 
     save_result_bundle(value, bundle_dir, registry=_default_result_registry())
 
-    assert load_result_bundle(bundle_dir, registry=_default_result_registry()) == value
+    assert load_result_bundle(bundle_dir) == value
 
 
 def test_tuple_set_and_frozenset_round_trip(tmp_path: Path) -> None:
@@ -184,7 +184,7 @@ def test_tuple_set_and_frozenset_round_trip(tmp_path: Path) -> None:
 
     save_result_bundle(value, bundle_dir, registry=_default_result_registry())
 
-    assert load_result_bundle(bundle_dir, registry=_default_result_registry()) == value
+    assert load_result_bundle(bundle_dir) == value
     manifest = json.loads((bundle_dir / "manifest.json").read_text())
     assert manifest["tuple"] == {
         "$furu": {
@@ -209,7 +209,7 @@ def test_tuple_root_value_uses_furu_wrapper(tmp_path: Path) -> None:
 
     save_result_bundle(value, bundle_dir, registry=_default_result_registry())
 
-    assert load_result_bundle(bundle_dir, registry=_default_result_registry()) == value
+    assert load_result_bundle(bundle_dir) == value
     manifest = json.loads((bundle_dir / "manifest.json").read_text())
     assert manifest == {"$furu": {"kind": "tuple", "items": [1, 2, 3]}}
 
@@ -496,7 +496,7 @@ class RegistryCountingResult(Furu[_CountingValue]):
         return _CountingValue(8)
 
 
-def test_task_result_registry_is_used_for_inference_and_loading() -> None:
+def test_task_result_registry_is_used_for_save_inference_only() -> None:
     _CountingCodec.dump_calls = 0
     _CountingCodec.load_calls = 0
     obj = RegistryCountingResult()
@@ -646,7 +646,7 @@ def test_dataclass_load_uses_constructor(tmp_path: Path) -> None:
         DataclassWithPostInit(value=3), bundle_dir, registry=_default_result_registry()
     )
 
-    loaded = load_result_bundle(bundle_dir, registry=_default_result_registry())
+    loaded = load_result_bundle(bundle_dir)
 
     assert loaded == DataclassWithPostInit(value=3)
 
@@ -664,7 +664,7 @@ def test_dataclass_load_reports_constructor_error_with_path(tmp_path: Path) -> N
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     with pytest.raises(ValueError) as exc_info:
-        load_result_bundle(bundle_dir, registry=_default_result_registry())
+        load_result_bundle(bundle_dir)
 
     message = str(exc_info.value)
     assert "Cannot load dataclass" in message
@@ -688,7 +688,7 @@ def test_dataclass_load_reports_missing_and_extra_fields_with_path(
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     with pytest.raises(ValueError) as exc_info:
-        load_result_bundle(bundle_dir, registry=_default_result_registry())
+        load_result_bundle(bundle_dir)
 
     message = str(exc_info.value)
     assert "at result" in message
@@ -756,7 +756,7 @@ def test_pydantic_load_uses_model_validate(tmp_path: Path) -> None:
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     with pytest.raises(ValueError) as exc_info:
-        load_result_bundle(bundle_dir, registry=_default_result_registry())
+        load_result_bundle(bundle_dir)
 
     message = str(exc_info.value)
     assert "Cannot load pydantic model" in message
@@ -780,7 +780,7 @@ def test_pydantic_load_reports_missing_and_extra_fields_with_path(
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     with pytest.raises(ValueError) as exc_info:
-        load_result_bundle(bundle_dir, registry=_default_result_registry())
+        load_result_bundle(bundle_dir)
 
     message = str(exc_info.value)
     assert "at models/0" in message
@@ -914,7 +914,7 @@ def test_numpy_root_value_uses_root_artifact_dir(tmp_path) -> None:
     assert manifest["$furu"]["kind"] == "external"
     assert manifest["$furu"]["path"] == "artifacts/root"
 
-    loaded = load_result_bundle(bundle_dir, registry=_default_result_registry())
+    loaded = load_result_bundle(bundle_dir)
     assert np.array_equal(loaded, np.arange(5, dtype=np.int64))
 
 
@@ -982,7 +982,7 @@ def test_load_result_bundle_rejects_artifacts_path_escape(tmp_path) -> None:
     )
 
     with pytest.raises(ValueError, match="escapes"):
-        load_result_bundle(bundle_dir, registry=_default_result_registry())
+        load_result_bundle(bundle_dir)
 
 
 def test_lazy_result_created_directly_is_loaded() -> None:
@@ -1010,7 +1010,7 @@ def test_root_lazy_result_defers_cache_read_and_memoizes(
     assert manifest == {"$furu": {"kind": "lazy", "path": "lazy/root"}}
     assert (bundle_dir / "lazy" / "root" / "manifest.json").exists()
 
-    loaded = load_result_bundle(bundle_dir, registry=registry)
+    loaded = load_result_bundle(bundle_dir)
 
     assert isinstance(loaded, LazyResult)
     assert not loaded.is_loaded
@@ -1059,7 +1059,7 @@ def test_nested_lazy_result_round_trips_inside_supported_structures(
     }
 
     save_result_bundle(value, bundle_dir, registry=registry)
-    loaded = load_result_bundle(bundle_dir, registry=registry)
+    loaded = load_result_bundle(bundle_dir)
 
     assert isinstance(loaded, dict)
     loaded_dict = cast(dict[str, Any], loaded)
@@ -1089,7 +1089,7 @@ def test_load_result_bundle_rejects_lazy_path_escape(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="escapes"):
-        load_result_bundle(bundle_dir, registry=_default_result_registry())
+        load_result_bundle(bundle_dir)
 
 
 def test_load_result_bundle_rejects_lazy_without_nested_manifest(
@@ -1104,4 +1104,4 @@ def test_load_result_bundle_rejects_lazy_without_nested_manifest(
     )
 
     with pytest.raises(ValueError, match="nested manifest missing"):
-        load_result_bundle(bundle_dir, registry=_default_result_registry())
+        load_result_bundle(bundle_dir)
