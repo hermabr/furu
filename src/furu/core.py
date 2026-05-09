@@ -13,6 +13,7 @@ from furu.locking import LockLostError, lock_many
 from furu.logging import get_logger
 from furu.result import load_result_bundle
 from furu.schema import schema_type as _schema_type
+from furu.serialize import from_json as _from_json
 from furu.serialize import to_json as _to_json
 from furu.utils import (
     JsonValue,
@@ -24,6 +25,8 @@ from furu.validate import validate_cls
 
 if TYPE_CHECKING:
     from typing_extensions import dataclass_transform
+
+    from furu.metadata import Metadata
 
     @dataclass_transform(kw_only_default=True, frozen_default=True)
     class _FuruDataclassTransform:
@@ -150,8 +153,21 @@ class Furu[T](_FuruDataclassTransform, ABC):
         return _to_json(self)
 
     @classmethod
-    def from_json(cls) -> Self:
-        raise NotImplementedError("TODO")
+    def from_json(cls, artifact: JsonValue) -> Self:
+        obj = _from_json(artifact)
+        if not isinstance(obj, cls):
+            raise TypeError(
+                f"Expected artifact for {cls.__module__}.{cls.__qualname__}, "
+                f"got {type(obj).__module__}.{type(obj).__qualname__}"
+            )
+        return obj
+
+    @classmethod
+    def from_metadata(cls, metadata: str | Path | Metadata) -> Self:
+        from furu.metadata import load_metadata
+
+        loaded = load_metadata(metadata)
+        return cls.from_json(loaded.artifact)
 
     @cached_property
     def artifact_hash(  # TODO: should this be __hash__?

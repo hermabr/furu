@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
+from furu.serialize import from_json
 from furu.utils import JsonValue
 
 if TYPE_CHECKING:
@@ -20,13 +21,14 @@ class GitData(BaseModel):
     # submodules: dict # TODO: add this
 
 
-class _Metadata(BaseModel):
+class RunningMetadata(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
         validate_assignment=True,
         strict=True,
         revalidate_instances="always",
     )
+    kind: Literal["running"] = "running"
     # python_def: str
     artifact: JsonValue
     artifact_hash: str
@@ -34,9 +36,6 @@ class _Metadata(BaseModel):
     schema_hash: str
     data_path: Path
     # git: GitData | None
-
-
-class RunningMetadata(_Metadata):
     started_at: datetime
     # command: list[str] # TODO: find/decide what the most elegant approach is here
     # hostname: str
@@ -73,9 +72,48 @@ class RunningMetadata(_Metadata):
         )
 
 
-class CompletedMetadata(RunningMetadata):
+class CompletedMetadata(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        validate_assignment=True,
+        strict=True,
+        revalidate_instances="always",
+    )
+    kind: Literal["completed"] = "completed"
+    # python_def: str
+    artifact: JsonValue
+    artifact_hash: str
+    schema_: JsonValue
+    schema_hash: str
+    data_path: Path
+    # git: GitData | None
+    started_at: datetime
     # traced_function_hashes: list[
     #     dict[str, str]
     # ]  # TODO: this probably means i don't really need to record the package versions? in particular since git data would have uv.lock and pyproject.toml already
     # slurm: SlurmData
     completed_at: datetime
+
+
+type Metadata = Annotated[
+    RunningMetadata | CompletedMetadata, Field(discriminator="kind")
+]
+
+
+def load_metadata(metadata: str | Path | Metadata) -> Metadata:
+    if isinstance(metadata, RunningMetadata | CompletedMetadata):
+        return metadata
+
+    metadata_path = Path(metadata)
+    return TypeAdapter(Metadata).validate_json(
+        metadata_path.read_text(encoding="utf-8")
+    )
+
+
+def load_furu_from_metadata(metadata: str | Path | Metadata) -> Furu[object]:
+    obj = from_json(load_metadata(metadata).artifact)
+    from furu.core import Furu
+
+    if not isinstance(obj, Furu):
+        raise TypeError("Metadata artifact did not describe a Furu object")
+    return obj

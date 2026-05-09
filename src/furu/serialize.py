@@ -1,7 +1,8 @@
 import enum
+import importlib
 from dataclasses import fields, is_dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel as PydanticBaseModel
 
@@ -55,3 +56,59 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
             raise NotImplementedError("TODO")  #  return {"__enum__": _type_fqn(obj)}
         case _:
             raise ValueError("unexpected item", obj)  # TODO: explain the error more
+
+
+def _load_type(qualified_name: str) -> type[Any]:
+    module_name, _, class_name = qualified_name.rpartition(".")
+    if not module_name or not class_name:
+        raise ValueError(f"Expected fully qualified class name, got {qualified_name!r}")
+
+    module = importlib.import_module(module_name)
+    value = getattr(module, class_name)
+    if not isinstance(value, type):
+        raise TypeError(f"{qualified_name!r} resolved to a non-type value")
+    return value
+
+
+def _from_json_field(value: JsonValue, expected_type: Any) -> Any:
+    if isinstance(value, dict) and KINDMARKER in value:
+        return from_json(value)
+
+    origin = get_origin(expected_type)
+    args = get_args(expected_type)
+    if isinstance(value, list):
+        item_type = args[0] if args and args[0] is not Ellipsis else Any
+        items = [_from_json_field(item, item_type) for item in value]
+        return tuple(items) if origin is tuple else items
+    if isinstance(value, dict):
+        value_type = args[1] if origin is dict and len(args) == 2 else Any
+        return {
+            key: _from_json_field(child, value_type) for key, child in value.items()
+        }
+    if expected_type is Path and isinstance(value, str):
+        return Path(value)
+    return value
+
+
+def from_json(value: JsonValue) -> Any:
+    match value:
+        case {"|kind": "type_ref", "|class": str(qualified_name)}:
+            return _load_type(qualified_name)
+        case {
+            "|kind": "instance",
+            "|class": str(qualified_name),
+            "fields": dict(field_values),
+        }:
+            cls = _load_type(qualified_name)
+            hints = get_type_hints(cls, include_extras=True)
+            converted_fields = {
+                name: _from_json_field(field_value, hints.get(name, Any))
+                for name, field_value in field_values.items()
+            }
+            return cls(**converted_fields)
+        case list():
+            return [from_json(item) for item in value]
+        case dict():
+            return {key: from_json(child) for key, child in value.items()}
+        case _:
+            return value
