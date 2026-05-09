@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 from furu.config import config
 from furu.locking import LockLostError, lock_many
 from furu.logging import get_logger
+from furu.migration import Migration, resolve_result_location
 from furu.result import load_result_bundle
 from furu.schema import schema_type as _schema_type
 from furu.serialize import to_json as _to_json
@@ -75,6 +76,10 @@ class Furu[T](_FuruDataclassTransform, ABC):
         return load_or_create(self, use_lock=use_lock)
 
     @classmethod
+    def migrations(cls) -> tuple[Migration, ...]:
+        return ()
+
+    @classmethod
     def from_artifact[TFuru: Furu](
         cls: type[TFuru], artifact: ArtifactMetadata
     ) -> TFuru:
@@ -87,17 +92,18 @@ class Furu[T](_FuruDataclassTransform, ABC):
     ) -> Literal[
         "completed", "missing", "running", "failed"
     ]:  # TODO: add queued/waiting state?
-        if self._result_manifest_path.exists():
+        if resolve_result_location(self) is not None:
             return "completed"
         if self._lock_path.exists():
             return "running"
-        if self.data_dir.exists():
+        if self._metadata_path.exists() or self._result_dir.exists():
             return "failed"
         return "missing"
 
     def try_load(self) -> T:  # TODO: make a better name for this
-        if self._result_manifest_path.exists():
-            return cast(T, load_result_bundle(self._result_dir))
+        result_location = resolve_result_location(self)
+        if result_location is not None:
+            return cast(T, load_result_bundle(result_location))
         raise NotImplementedError(
             "TODO: decide if i should throw or return error value"
         )
@@ -205,6 +211,10 @@ class Furu[T](_FuruDataclassTransform, ABC):
     @cached_property
     def _metadata_path(self) -> Path:
         return self._internal_furu_dir / "metadata.json"
+
+    @cached_property
+    def _result_link_path(self) -> Path:
+        return self._internal_furu_dir / "result-link.json"
 
     @cached_property
     def _log_path(self) -> Path:
