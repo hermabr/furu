@@ -2,7 +2,12 @@ from pathlib import Path
 from typing import Self
 
 from pydantic import ConfigDict, Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    PyprojectTomlConfigSettingsSource,
+    SettingsConfigDict,
+)
 
 
 class _FuruDirectories(BaseSettings):
@@ -25,12 +30,31 @@ class _FuruConfig(BaseSettings):
         env_nested_delimiter="__",
         env_file=".env",
         env_file_encoding="utf-8",
+        pyproject_toml_depth=4,
+        pyproject_toml_table_header=("tool", "furu"),
         extra="ignore",
         validate_assignment=True,
     )
 
     debug_mode: bool = False
     directories: _FuruDirectories = Field(default_factory=_FuruDirectories.default)
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        return (
+            init_settings,
+            env_settings,
+            dotenv_settings,
+            PyprojectTomlConfigSettingsSource(settings_cls),
+            file_secret_settings,
+        )
 
 
 config = _FuruConfig()
