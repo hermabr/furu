@@ -3,8 +3,8 @@ from __future__ import annotations
 import importlib
 import importlib.util
 from abc import ABC, abstractmethod
-from collections.abc import Iterable
-from functools import cache
+from dataclasses import dataclass
+from functools import cache, cached_property
 from pathlib import Path
 from typing import Self, cast
 
@@ -107,17 +107,16 @@ class NumpyNpyCodec(ResultCodec):
         return np.load(artifact_dir / "data.npy", allow_pickle=False)
 
 
+@dataclass(frozen=True)
 class ResultRegistry:
-    def __init__(
-        self,
-        *,
-        codecs: Iterable[type[ResultCodec]] = (),
-    ) -> None:
-        self.codecs = tuple(codecs)
-        self._codecs_by_id = {codec.codec_id(): codec for codec in self.codecs}
+    codecs: tuple[type[ResultCodec], ...] = ()
 
     def register(self, codec: type[ResultCodec]) -> Self:
         return type(self)(codecs=(codec, *self.codecs))
+
+    @cached_property
+    def _codecs_by_id(self) -> dict[str, type[ResultCodec]]:
+        return {codec.codec_id(): codec for codec in self.codecs}
 
     def find_codec(self, value: object) -> type[ResultCodec] | None:
         for codec in self.codecs:
@@ -142,9 +141,9 @@ class ResultRegistry:
 @cache
 def _default_result_registry() -> ResultRegistry:
     return ResultRegistry(
-        codecs=(
+        codecs=tuple(
             codec
             for codec in (PolarsParquetCodec, NumpyNpyCodec)
             if codec.dependencies_available()
-        )
+        ),
     )
