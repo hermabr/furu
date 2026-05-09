@@ -10,7 +10,8 @@ from furu.core import Furu, FuruCreateMode
 from furu.locking import LockLostError, lock_many
 from furu.logging import _scoped_log_files
 from furu.metadata import RunningMetadata
-from furu.result import _unwrap_save_as, load_result_bundle, save_result_bundle
+from furu.result import load_result_bundle, save_result_bundle
+from furu.result.save_as import _unwrap_save_as
 from furu.utils import class_label, nfs_safe_unique_name
 
 type HasLock = Callable[[], bool]
