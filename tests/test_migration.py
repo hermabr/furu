@@ -174,5 +174,5 @@ def test_duplicate_migration_edges_are_rejected() -> None:
 def test_migration_transform_must_return_fields_not_furu_object() -> None:
     TrainJobV1(dataset="cifar10", learning_rate=0.001).load_or_create()
 
-    with pytest.raises(TypeError, match="must return fields"):
+    with pytest.raises(TypeError, match=r"must return dict\[str, JsonValue\]"):
         ReturnsFuruObject(dataset="cifar10", lr=0.001).load_or_create()

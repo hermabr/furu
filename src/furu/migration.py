@@ -35,7 +35,6 @@ class Migration:
 @dataclass(frozen=True, slots=True)
 class ResolvedMigration:
     source_metadata: CompletedMetadata
-    source_data_dir: Path
     migration_path: tuple[Migration, ...]
 
 
@@ -52,17 +51,10 @@ def migration_edge_identity(migration: Migration) -> MigrationEdgeIdentity:
     )
 
 
-def validate_migrations_for_class(cls: type[Furu[Any]]) -> tuple[Migration, ...]:
+def _registered_migrations_for_class(cls: type[Furu[Any]]) -> tuple[Migration, ...]:
     migrations = cls.migrations()
-    if not isinstance(migrations, tuple):
-        raise TypeError(f"{cls.__name__}.migrations() must return a tuple")
-
     seen: set[MigrationEdgeIdentity] = set()
     for migration in migrations:
-        if not isinstance(migration, Migration):
-            raise TypeError(
-                f"{cls.__name__}.migrations() must return Migration objects"
-            )
         identity = migration_edge_identity(migration)
         if identity in seen:
             raise ValueError(
@@ -80,12 +72,12 @@ def _resolve_result_manifest_path(obj: Furu[Any]) -> Path | None:
 
     linked = read_and_verify_result_link(obj)
     if linked is not None:
-        return linked.source_data_dir / "result" / "manifest.json"
+        return linked.source_metadata.data_path / "result" / "manifest.json"
 
     match = find_migrated_result(obj)
     if match is not None:
         write_result_link(obj, match)
-        return match.source_data_dir / "result" / "manifest.json"
+        return match.source_metadata.data_path / "result" / "manifest.json"
 
     return None
 
@@ -104,8 +96,6 @@ def read_and_verify_result_link(obj: Furu[Any]) -> ResolvedMigration | None:
     raw_path = raw.get("migration_path")
     if not isinstance(current, dict) or not isinstance(source, dict):
         return None
-    if not isinstance(raw_path, list):
-        return None
 
     if current != {
         "fully_qualified_name": obj._fully_qualified_name,
@@ -118,8 +108,7 @@ def read_and_verify_result_link(obj: Furu[Any]) -> ResolvedMigration | None:
     if not isinstance(source_data_dir_value, str):
         return None
     source_data_dir = Path(source_data_dir_value)
-    source_result_dir = source_data_dir / "result"
-    if not (source_result_dir / "manifest.json").exists():
+    if not (source_data_dir / "result" / "manifest.json").exists():
         return None
 
     source_metadata = _read_completed_metadata(
@@ -144,14 +133,11 @@ def read_and_verify_result_link(obj: Furu[Any]) -> ResolvedMigration | None:
     if fields is None:
         return None
     migrated_fields = _apply_migration_path(path, fields)
-    if migrated_fields is None:
-        return None
     if migrated_fields != _requested_fields(obj):
         return None
 
     return ResolvedMigration(
         source_metadata=source_metadata,
-        source_data_dir=source_data_dir,
         migration_path=path,
     )
 
@@ -159,7 +145,7 @@ def read_and_verify_result_link(obj: Furu[Any]) -> ResolvedMigration | None:
 def find_migrated_result(obj: Furu[Any]) -> ResolvedMigration | None:
     current_node = (obj._fully_qualified_name, obj.artifact_schema_hash)
     requested_fields = _requested_fields(obj)
-    graph = _MigrationGraph(validate_migrations_for_class(type(obj)))
+    graph = _MigrationGraph(_registered_migrations_for_class(type(obj)))
 
     for old_metadata in _completed_old_artifacts(obj.storage_root):
         old_fully_qualified_name = _artifact_fully_qualified_name(old_metadata)
@@ -173,7 +159,6 @@ def find_migrated_result(obj: Furu[Any]) -> ResolvedMigration | None:
             if migrated_fields == requested_fields:
                 return ResolvedMigration(
                     source_metadata=old_metadata,
-                    source_data_dir=old_metadata.data_path,
                     migration_path=path,
                 )
     return None
@@ -314,14 +299,10 @@ def _requested_fields(obj: Furu[Any]) -> dict[str, JsonValue]:
 
 def _apply_migration_path(
     path: tuple[Migration, ...], fields: dict[str, JsonValue]
-) -> dict[str, JsonValue] | None:
+) -> dict[str, JsonValue]:
     current = fields
     for migration in path:
         transformed = migration.transform_fn(current)
-        if _is_furu_object(transformed):
-            raise TypeError(
-                "Migration.transform_fn must return fields, not a Furu object"
-            )
         try:
             current = _JSON_DICT_ADAPTER.validate_python(transformed)
         except ValidationError as exc:
@@ -331,18 +312,15 @@ def _apply_migration_path(
     return current
 
 
-def _is_furu_object(value: object) -> bool:
-    from furu.core import Furu
-
-    return isinstance(value, Furu)
-
-
 def _resolve_registered_path(
-    cls: type[Furu[Any]], raw_path: list[object]
+    cls: type[Furu[Any]], raw_path: object
 ) -> tuple[Migration, ...] | None:
+    if not isinstance(raw_path, list):
+        return None
+
     by_identity = {
         migration_edge_identity(migration): migration
-        for migration in validate_migrations_for_class(cls)
+        for migration in _registered_migrations_for_class(cls)
     }
     path: list[Migration] = []
     for item in raw_path:
@@ -357,8 +335,7 @@ def _resolve_registered_path(
         )
         if not all(isinstance(part, str) for part in identity):
             return None
-        edge_identity = cast(MigrationEdgeIdentity, identity)
-        migration = by_identity.get(edge_identity)
+        migration = by_identity.get(cast(MigrationEdgeIdentity, identity))
         if migration is None:
             return None
         path.append(migration)
