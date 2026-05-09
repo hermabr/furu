@@ -17,11 +17,10 @@ from furu.result import (
     save_result_bundle,
 )
 from furu.result.codec import (
-    _DEFAULT_CODECS,
     NumpyNpyCodec,
     PolarsParquetCodec,
-    ResultRegistry,
     ResultCodec,
+    ResultRegistry,
 )
 
 np = pytest.importorskip("numpy")
@@ -826,14 +825,13 @@ def test_lazy_result_created_directly_is_loaded() -> None:
 
 def test_root_lazy_result_defers_cache_read_and_memoizes(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bundle_dir = tmp_path / "bundle"
+    registry = ResultRegistry.default().register(_CountingCodec)
     _CountingCodec.dump_calls = 0
     _CountingCodec.load_calls = 0
-    monkeypatch.setitem(_DEFAULT_CODECS, _CountingCodec.codec_id(), _CountingCodec)
 
-    save_result_bundle(LazyResult(_CountingValue(9)), bundle_dir)
+    save_result_bundle(LazyResult(_CountingValue(9)), bundle_dir, registry=registry)
 
     assert _CountingCodec.dump_calls == 1
     assert _CountingCodec.load_calls == 0
@@ -841,7 +839,7 @@ def test_root_lazy_result_defers_cache_read_and_memoizes(
     assert manifest == {"$furu": {"kind": "lazy", "path": "lazy/root"}}
     assert (bundle_dir / "lazy" / "root" / "manifest.json").exists()
 
-    loaded = load_result_bundle(bundle_dir)
+    loaded = load_result_bundle(bundle_dir, registry=registry)
 
     assert isinstance(loaded, LazyResult)
     assert not loaded.is_loaded
@@ -861,11 +859,10 @@ def test_root_lazy_result_defers_cache_read_and_memoizes(
 
 def test_nested_lazy_result_round_trips_inside_supported_structures(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bundle_dir = tmp_path / "bundle"
+    registry = ResultRegistry.default().register(_CountingCodec)
     _CountingCodec.load_calls = 0
-    monkeypatch.setitem(_DEFAULT_CODECS, _CountingCodec.codec_id(), _CountingCodec)
     value = {
         "items": [
             LazyResult(_CountingValue(1)),
@@ -873,8 +870,8 @@ def test_nested_lazy_result_round_trips_inside_supported_structures(
         ]
     }
 
-    save_result_bundle(value, bundle_dir)
-    loaded = load_result_bundle(bundle_dir)
+    save_result_bundle(value, bundle_dir, registry=registry)
+    loaded = load_result_bundle(bundle_dir, registry=registry)
 
     assert isinstance(loaded, dict)
     loaded_dict = cast(dict[str, Any], loaded)

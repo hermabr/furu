@@ -21,11 +21,7 @@ from typing import (
 
 import pydantic
 
-from furu.result.codec import (
-    _DEFAULT_CODECS,
-    ResultCodec,
-    ResultRegistry,
-)
+from furu.result.codec import ResultCodec, ResultRegistry
 from furu.result.lazy import LazyResult
 from furu.utils import JsonValue, fully_qualified_name
 
@@ -89,25 +85,12 @@ def _unwrap_save_as[T](value: T) -> T:
             return value
 
 
-def _strip_annotated(declared_type: object) -> object:
-    return (
+def _child_declared_type(declared_type: object, key: object) -> object:
+    declared_type = (
         get_args(declared_type)[0]
         if get_origin(declared_type) is Annotated
         else declared_type
     )
-
-
-def _codec_from_annotated(declared_type: object) -> type[ResultCodec] | None:
-    if get_origin(declared_type) is not Annotated:
-        return None
-    for item in get_args(declared_type)[1:]:
-        if isinstance(item, type) and issubclass(item, ResultCodec):
-            return item
-    return None
-
-
-def _child_declared_type(declared_type: object, key: object) -> object:
-    declared_type = _strip_annotated(declared_type)
     origin = get_origin(declared_type)
     args = get_args(declared_type)
     if origin is list and args:
@@ -120,27 +103,6 @@ def _child_declared_type(declared_type: object, key: object) -> object:
         if isinstance(key, int) and key < len(args):
             return args[key]
     return Any
-
-
-def _dataclass_field_types(cls: type[Any]) -> dict[str, object]:
-    return get_type_hints(cls, include_extras=True)
-
-
-def _find_codec(
-    value: object, registry: ResultRegistry | None
-) -> type[ResultCodec] | None:
-    if registry is None:
-        for codec in _DEFAULT_CODECS.values():
-            if codec.matches(value):
-                return codec
-        return None
-    return registry.find_codec(value)
-
-
-def _resolve_codec(codec_id: str, registry: ResultRegistry | None) -> type[ResultCodec]:
-    if registry is None and codec_id in _DEFAULT_CODECS:
-        return _DEFAULT_CODECS[codec_id]
-    return (registry or ResultRegistry.default()).resolve_codec(codec_id)
 
 
 def _value_path_display(value_path: ValuePath) -> str:
@@ -185,14 +147,19 @@ def _dump_value(
     declared_type: object = Any,
     value_path: ValuePath,
     bundle_dir: Path,
-    registry: ResultRegistry | None = None,
+    registry: ResultRegistry,
 ) -> JsonValue:
     runtime_codec: type[ResultCodec] | None = None
     if isinstance(value, _SaveAs):
         runtime_codec = value.codec
         value = value.value
 
-    declared_codec = _codec_from_annotated(declared_type)
+    declared_codec: type[ResultCodec] | None = None
+    if get_origin(declared_type) is Annotated:
+        for item in get_args(declared_type)[1:]:
+            if isinstance(item, type) and issubclass(item, ResultCodec):
+                declared_codec = item
+                break
     if (
         runtime_codec is not None
         and declared_codec is not None
@@ -315,7 +282,7 @@ def _dump_value(
             }
         case _ if dataclasses.is_dataclass(value) and not isinstance(value, type):
             fields_out: dict[str, JsonValue] = {}
-            field_types = _dataclass_field_types(type(value))
+            field_types = get_type_hints(type(value), include_extras=True)
             for field in dataclasses.fields(cast(Any, value)):
                 name = _validate_result_path_segment(
                     field.name, parent_value_path=value_path
@@ -340,7 +307,11 @@ def _dump_value(
             save_result_bundle(
                 value.load(),
                 nested_bundle_dir,
-                declared_type=_strip_annotated(declared_type),
+                declared_type=(
+                    get_args(declared_type)[0]
+                    if get_origin(declared_type) is Annotated
+                    else declared_type
+                ),
                 registry=registry,
             )
             return {
@@ -350,7 +321,7 @@ def _dump_value(
                 }
             }
         case _:
-            if codec := _find_codec(value, registry):
+            if codec := registry.find_codec(value):
                 return _dump_external(
                     value,
                     codec=codec,
@@ -394,7 +365,7 @@ def _load_value(
     *,
     bundle_dir: Path,
     value_path: ValuePath,
-    registry: ResultRegistry | None = None,
+    registry: ResultRegistry,
 ) -> object:
     match node:
         case None | bool() | int() | float() | str():
@@ -439,7 +410,7 @@ def _load_validated_fields(
     raw_fields: dict[str, JsonValue],
     bundle_dir: Path,
     value_path: ValuePath,
-    registry: ResultRegistry | None = None,
+    registry: ResultRegistry,
 ) -> dict[str, object]:
     actual = set(raw_fields)
     missing = expected - actual
@@ -472,7 +443,7 @@ def _load_wrapper(
     *,
     bundle_dir: Path,
     value_path: ValuePath,
-    registry: ResultRegistry | None = None,
+    registry: ResultRegistry,
 ) -> object:
     kind: WrapperKind = body["kind"]
     match kind:
@@ -495,9 +466,7 @@ def _load_wrapper(
                     f"external wrapper artifact directory missing: {artifact_dir}"
                 )
 
-            return _resolve_codec(body["codec"], registry).load(
-                artifact_dir=artifact_dir
-            )
+            return registry.resolve_codec(body["codec"]).load(artifact_dir=artifact_dir)
         case "lazy":
             if (nested_rel := Path(body["path"])).is_absolute():
                 raise ValueError(f"lazy wrapper path must be relative: {nested_rel}")
@@ -619,6 +588,7 @@ def save_result_bundle(
     registry: ResultRegistry | None = None,
 ) -> None:
     bundle_dir.mkdir(parents=True, exist_ok=False)
+    registry = registry or ResultRegistry.default()
 
     manifest = _dump_value(
         value,
@@ -638,6 +608,7 @@ def load_result_bundle(
     *,
     registry: ResultRegistry | None = None,
 ) -> object:
+    registry = registry or ResultRegistry.default()
     manifest_path = bundle_dir / MANIFEST_FILE_NAME
     raw = json.loads(manifest_path.read_text(encoding="utf-8"))
     return _load_value(raw, bundle_dir=bundle_dir, value_path=(), registry=registry)

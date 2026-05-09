@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from functools import cache
 from pathlib import Path
-from typing import Final, Self, cast
+from typing import Self, cast
 
 from furu.utils import fully_qualified_name
 
@@ -130,7 +130,13 @@ class ResultRegistry:
     @classmethod
     @cache
     def default(cls) -> Self:
-        return cls(default_codecs=_DEFAULT_CODECS.values())
+        return cls(
+            default_codecs=(
+                codec
+                for codec in (PolarsParquetCodec, NumpyNpyCodec)
+                if codec.dependencies_available()
+            )
+        )
 
     def find_codec(self, value: object) -> type[ResultCodec] | None:
         for codec in (*self.custom_codecs, *self.default_codecs):
@@ -149,10 +155,3 @@ class ResultRegistry:
             if not issubclass(codec, ResultCodec):
                 raise TypeError(f"{codec_id} is not a ResultCodec")
             return codec
-
-
-_DEFAULT_CODECS: Final[dict[str, type[ResultCodec]]] = {
-    c.codec_id(): c
-    for c in [PolarsParquetCodec, NumpyNpyCodec]
-    if c.dependencies_available()
-}
