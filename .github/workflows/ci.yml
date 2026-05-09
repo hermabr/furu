@@ -16,10 +16,6 @@ jobs:
           - label: "3.x"
             python-version: "3.x"
             check-latest: true
-          - label: "3.x free-threaded"
-            python-version: "3.x"
-            freethreaded: true
-            check-latest: true
     steps:
       - uses: actions/checkout@v4
 
@@ -31,7 +27,6 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
-          freethreaded: ${{ matrix.freethreaded || false }}
           check-latest: ${{ matrix.check-latest || false }}
 
       - name: Configure uv Python
