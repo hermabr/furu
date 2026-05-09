@@ -19,31 +19,31 @@ ARTIFACTS_DIR_NAME: Final = "artifacts"
 LAZY_DIR_NAME: Final = "lazy"
 MANIFEST_FILE_NAME: Final = "manifest.json"
 _ROOT_ARTIFACT_NAME: Final = "root"
-type LogicalPath = tuple[str, ...]
+type ValuePath = tuple[str, ...]
 type WrapperKind = Literal[
     "external", "dataclass", "path", "pydantic", "tuple", "set", "frozenset", "lazy"
 ]
 
 
-def _path_display(path: LogicalPath) -> str:
-    if not path:
+def _value_path_display(value_path: ValuePath) -> str:
+    if not value_path:
         return "<root>"
-    return "/".join(path)
+    return "/".join(value_path)
 
 
 def _validate_result_path_segment(
     value: object,
     *,
-    parent_path: LogicalPath,
+    parent_value_path: ValuePath,
 ) -> str:
     if not isinstance(value, str):
         raise ValueError(
-            f"Unsupported result value at {_path_display(parent_path)}:\n"
+            f"Unsupported result value at {_value_path_display(parent_value_path)}:\n"
             + f"must be strings; got {type(value).__name__} key {value!r}."
         )
     if value == WRAPPER_KEY:
         raise ValueError(
-            f"Unsupported result value at {_path_display(parent_path)}:\n"
+            f"Unsupported result value at {_value_path_display(parent_value_path)}:\n"
             + f"named {WRAPPER_KEY!r} are reserved by Furu result persistence."
         )
     if (
@@ -55,7 +55,7 @@ def _validate_result_path_segment(
         or "\x00" in value
     ):
         raise ValueError(
-            f"Unsupported result path at {_path_display((*parent_path, value))}:\n"
+            f"Unsupported result path at {_value_path_display((*parent_value_path, value))}:\n"
             + "cannot be used as an artifact path segment."
         )
     return value
@@ -64,7 +64,7 @@ def _validate_result_path_segment(
 def _dump_value(
     value: object,
     *,
-    path: LogicalPath,
+    value_path: ValuePath,
     bundle_dir: Path,
 ) -> JsonValue:
     match value:
@@ -75,7 +75,7 @@ def _dump_value(
             return [
                 _dump_value(
                     item,
-                    path=(*path, f"{i:0{width}d}"),
+                    value_path=(*value_path, f"{i:0{width}d}"),
                     bundle_dir=bundle_dir,
                 )
                 for i, item in enumerate(value)
@@ -88,7 +88,7 @@ def _dump_value(
                     "items": [
                         _dump_value(
                             item,
-                            path=(*path, f"{i:0{width}d}"),
+                            value_path=(*value_path, f"{i:0{width}d}"),
                             bundle_dir=bundle_dir,
                         )
                         for i, item in enumerate(value)
@@ -112,7 +112,7 @@ def _dump_value(
                     "items": [
                         _dump_value(
                             item,
-                            path=(*path, f"{i:0{width}d}"),
+                            value_path=(*value_path, f"{i:0{width}d}"),
                             bundle_dir=bundle_dir,
                         )
                         for i, item in enumerate(items)
@@ -124,11 +124,11 @@ def _dump_value(
             for raw_key, child in value.items():
                 key = _validate_result_path_segment(
                     raw_key,
-                    parent_path=path,
+                    parent_value_path=value_path,
                 )
                 out[key] = _dump_value(
                     child,
-                    path=(*path, key),
+                    value_path=(*value_path, key),
                     bundle_dir=bundle_dir,
                 )
             return out
@@ -142,10 +142,12 @@ def _dump_value(
         case pydantic.BaseModel():
             fields_out: dict[str, JsonValue] = {}
             for raw_name in value.__class__.model_fields:
-                name = _validate_result_path_segment(raw_name, parent_path=path)
+                name = _validate_result_path_segment(
+                    raw_name, parent_value_path=value_path
+                )
                 fields_out[name] = _dump_value(
                     getattr(value, name),
-                    path=(*path, name),
+                    value_path=(*value_path, name),
                     bundle_dir=bundle_dir,
                 )
             return {
@@ -158,10 +160,12 @@ def _dump_value(
         case _ if dataclasses.is_dataclass(value) and not isinstance(value, type):
             fields_out: dict[str, JsonValue] = {}
             for field in dataclasses.fields(cast(Any, value)):
-                name = _validate_result_path_segment(field.name, parent_path=path)
+                name = _validate_result_path_segment(
+                    field.name, parent_value_path=value_path
+                )
                 fields_out[name] = _dump_value(
                     getattr(value, name),
-                    path=(*path, name),
+                    value_path=(*value_path, name),
                     bundle_dir=bundle_dir,
                 )
             return {
@@ -172,7 +176,7 @@ def _dump_value(
                 }
             }
         case LazyResult():
-            lazy_rel = Path(LAZY_DIR_NAME, *(path or (_ROOT_ARTIFACT_NAME,)))
+            lazy_rel = Path(LAZY_DIR_NAME, *(value_path or (_ROOT_ARTIFACT_NAME,)))
             nested_bundle_dir = bundle_dir / lazy_rel
             save_result_bundle(value.load(), nested_bundle_dir)
             return {
@@ -185,7 +189,7 @@ def _dump_value(
             for codec in _DEFAULT_CODECS.values():
                 if codec.matches(value):
                     artifact_rel = Path(
-                        ARTIFACTS_DIR_NAME, *(path or (_ROOT_ARTIFACT_NAME,))
+                        ARTIFACTS_DIR_NAME, *(value_path or (_ROOT_ARTIFACT_NAME,))
                     )
                     artifact_dir = bundle_dir / artifact_rel
                     artifact_dir.mkdir(parents=True, exist_ok=False)
@@ -199,7 +203,7 @@ def _dump_value(
                     }
 
     raise ValueError(
-        f"Unsupported result value at {_path_display(path)}:\n"
+        f"Unsupported result value at {_value_path_display(value_path)}:\n"
         f"values of type {type(value).__name__!r} are not supported by Furu. Add a custom codec"
     )
 
@@ -213,30 +217,75 @@ def _load_value(
     node: JsonValue,
     *,
     bundle_dir: Path,
+    value_path: ValuePath,
 ) -> object:
     match node:
         case None | bool() | int() | float() | str():
             return node
         case list():
-            return [_load_value(child, bundle_dir=bundle_dir) for child in node]
+            width = len(str(len(node)))
+            return [
+                _load_value(
+                    child,
+                    bundle_dir=bundle_dir,
+                    value_path=(*value_path, f"{i:0{width}d}"),
+                )
+                for i, child in enumerate(node)
+            ]
         case dict() if WRAPPER_KEY in node:
             return _load_wrapper(
                 cast(dict[str, Any], node[WRAPPER_KEY]),
                 bundle_dir=bundle_dir,
+                value_path=value_path,
             )
         case dict():
             return {
-                key: _load_value(child, bundle_dir=bundle_dir)
+                key: _load_value(
+                    child, bundle_dir=bundle_dir, value_path=(*value_path, key)
+                )
                 for key, child in node.items()
             }
         case _:
             assert_never(node)
 
 
+def _load_validated_fields(
+    *,
+    kind: str,
+    cls: type[Any],
+    expected: set[str],
+    raw_fields: dict[str, JsonValue],
+    bundle_dir: Path,
+    value_path: ValuePath,
+) -> dict[str, object]:
+    actual = set(raw_fields)
+    missing = expected - actual
+    extra = actual - expected
+    if not missing and not extra:
+        return {
+            name: _load_value(
+                child, bundle_dir=bundle_dir, value_path=(*value_path, name)
+            )
+            for name, child in raw_fields.items()
+        }
+
+    details: list[str] = []
+    if missing:
+        details.append("missing fields: " + ", ".join(sorted(missing)))
+    if extra:
+        details.append("extra fields: " + ", ".join(sorted(extra)))
+
+    raise ValueError(
+        f"Cannot load {kind} {fully_qualified_name(cls)} at {_value_path_display(value_path)}: "
+        + "; ".join(details)
+    )
+
+
 def _load_wrapper(
     body: dict[str, Any],
     *,
     bundle_dir: Path,
+    value_path: ValuePath,
 ) -> object:
     kind: WrapperKind = body["kind"]
     match kind:
@@ -282,37 +331,81 @@ def _load_wrapper(
                     bundle_dir=nested_bundle_dir,
                 )
             )
-        case "dataclass":  # TODO: do validation on the dataclass/pydantic object, so that we know the new object has exactly the same fields as the old one
+        case "dataclass":
             cls = _import_type(body["type"])
-            loaded_fields = {
-                name: _load_value(child, bundle_dir=bundle_dir)
-                for name, child in body["fields"].items()
-            }
-            obj = object.__new__(cls)
-            for name, value in loaded_fields.items():
-                object.__setattr__(obj, name, value)
-            return obj
+            if not dataclasses.is_dataclass(cls):
+                raise ValueError(
+                    f"Cannot load dataclass at {_value_path_display(value_path)}: "
+                    f"{fully_qualified_name(cls)} is not a dataclass"
+                )
+            dataclass_fields = dataclasses.fields(cls)
+            init_fields = {field.name for field in dataclass_fields if field.init}
+            loaded_fields = _load_validated_fields(
+                kind="dataclass",
+                cls=cls,
+                expected={field.name for field in dataclass_fields},
+                raw_fields=body["fields"],
+                bundle_dir=bundle_dir,
+                value_path=value_path,
+            )
+            try:
+                return cls(
+                    **{
+                        name: value
+                        for name, value in loaded_fields.items()
+                        if name in init_fields
+                    }
+                )
+            except Exception as exc:
+                raise ValueError(
+                    f"Cannot load dataclass {fully_qualified_name(cls)} "
+                    f"at {_value_path_display(value_path)}: {exc}"
+                ) from exc
         case "path":
             return Path(body["value"])
         case "tuple":
             return tuple(
-                _load_value(child, bundle_dir=bundle_dir) for child in body["items"]
+                _load_value(
+                    child, bundle_dir=bundle_dir, value_path=(*value_path, str(i))
+                )
+                for i, child in enumerate(body["items"])
             )
         case "set":
             return {
-                _load_value(child, bundle_dir=bundle_dir) for child in body["items"]
+                _load_value(
+                    child, bundle_dir=bundle_dir, value_path=(*value_path, str(i))
+                )
+                for i, child in enumerate(body["items"])
             }
         case "frozenset":
             return frozenset(
-                _load_value(child, bundle_dir=bundle_dir) for child in body["items"]
+                _load_value(
+                    child, bundle_dir=bundle_dir, value_path=(*value_path, str(i))
+                )
+                for i, child in enumerate(body["items"])
             )
         case "pydantic":
             cls = _import_type(body["type"])
-            loaded_fields = {
-                name: _load_value(child, bundle_dir=bundle_dir)
-                for name, child in body["fields"].items()
-            }
-            return cls.model_construct(**loaded_fields)
+            if not issubclass(cls, pydantic.BaseModel):
+                raise ValueError(
+                    f"Cannot load pydantic model at {_value_path_display(value_path)}: "
+                    f"{fully_qualified_name(cls)} is not a pydantic model"
+                )
+            loaded_fields = _load_validated_fields(
+                kind="pydantic model",
+                cls=cls,
+                expected=set(cls.model_fields),
+                raw_fields=body["fields"],
+                bundle_dir=bundle_dir,
+                value_path=value_path,
+            )
+            try:
+                return cls.model_validate(loaded_fields)
+            except pydantic.ValidationError as exc:
+                raise ValueError(
+                    f"Cannot load pydantic model {fully_qualified_name(cls)} "
+                    f"at {_value_path_display(value_path)}: {exc}"
+                ) from exc
         case _:
             raise ValueError(f"unknown wrapper kind: {kind!r}")
 
@@ -322,7 +415,7 @@ def save_result_bundle(value: object, bundle_dir: Path) -> None:
 
     manifest = _dump_value(
         value,
-        path=(),
+        value_path=(),
         bundle_dir=bundle_dir,
     )
     (bundle_dir / MANIFEST_FILE_NAME).write_text(
@@ -334,4 +427,4 @@ def save_result_bundle(value: object, bundle_dir: Path) -> None:
 def load_result_bundle(bundle_dir: Path) -> object:
     manifest_path = bundle_dir / MANIFEST_FILE_NAME
     raw = json.loads(manifest_path.read_text(encoding="utf-8"))
-    return _load_value(raw, bundle_dir=bundle_dir)
+    return _load_value(raw, bundle_dir=bundle_dir, value_path=())
