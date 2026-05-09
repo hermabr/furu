@@ -79,7 +79,7 @@ def _load_type(qualified_name: str) -> type[Any]:
 
 def _from_json_field(value: JsonValue, expected_type: Any) -> Any:
     if isinstance(value, dict) and KINDMARKER in value:
-        return from_json(value)
+        return _from_json(value)
 
     origin = get_origin(expected_type)
     args = get_args(expected_type)
@@ -97,10 +97,10 @@ def _from_json_field(value: JsonValue, expected_type: Any) -> Any:
     return value
 
 
-def from_json(value: JsonValue) -> Any:
+def _from_json(value: JsonValue) -> Any:
     match value:
         case list():
-            return [from_json(item) for item in value]
+            return [_from_json(item) for item in value]
         case dict():
             class_name = value.get(CLASSMARKER)
             field_values = value.get("fields")
@@ -118,7 +118,7 @@ def from_json(value: JsonValue) -> Any:
                     for name, field_value in field_values.items()
                 }
                 return cls(**converted_fields)
-            return {key: from_json(child) for key, child in value.items()}
+            return {key: _from_json(child) for key, child in value.items()}
         case _:
             return value
 
@@ -146,7 +146,7 @@ def load_from_metadata[T: "Furu"](
         if isinstance(metadata, Path)
         else json.dumps(metadata)
     )
-    furu_obj = from_json(
+    furu_obj = _from_json(
         TypeAdapter(Metadata).validate_json(metadata_json).artifact.data
     )
     if expected_type is not None and not isinstance(furu_obj, expected_type):
