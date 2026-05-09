@@ -3,7 +3,7 @@ import importlib
 import json
 from dataclasses import fields, is_dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, get_args, get_origin, get_type_hints
+from typing import TYPE_CHECKING, Any, TypeVar, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel as PydanticBaseModel
 from pydantic import TypeAdapter
@@ -13,6 +13,8 @@ from furu.utils import JsonValue, fully_qualified_name
 
 if TYPE_CHECKING:
     from furu.core import Furu
+
+TFuru = TypeVar("TFuru", bound="Furu[Any]")
 
 
 def to_json(  # TODO: consider caching this (but if i'm going to, I need to figure out how to cache lists and other unhashable objects)
@@ -119,8 +121,9 @@ def from_json(value: JsonValue) -> Any:
             return value
 
 
-def load_from_metadata(metadata: Path | dict[str, JsonValue]) -> "Furu[object]":
-    from furu.core import Furu
+def load_from_metadata(
+    metadata: Path | dict[str, JsonValue], expected_type: type[TFuru]
+) -> TFuru:
     from furu.metadata import Metadata
 
     metadata_json = (
@@ -129,6 +132,6 @@ def load_from_metadata(metadata: Path | dict[str, JsonValue]) -> "Furu[object]":
         else json.dumps(metadata)
     )
     obj = from_json(TypeAdapter(Metadata).validate_json(metadata_json).artifact)
-    if not isinstance(obj, Furu):
+    if not isinstance(obj, expected_type):
         raise TypeError("Metadata artifact did not describe a Furu object")
     return obj

@@ -850,7 +850,7 @@ def test_load_from_metadata_file_returns_furu_object():
     )
     obj.load_or_create()
 
-    loaded = load_from_metadata(obj._metadata_path)
+    loaded = load_from_metadata(obj._metadata_path, NodePair)
 
     assert loaded == obj
     assert isinstance(loaded, NodePair)
@@ -863,7 +863,7 @@ def test_load_from_metadata_accepts_metadata_model():
     obj.load_or_create()
     metadata = json.loads(obj._metadata_path.read_text())
 
-    loaded = load_from_metadata(metadata)
+    loaded = load_from_metadata(metadata, Node)
 
     assert loaded == obj
     assert isinstance(loaded, Node)
