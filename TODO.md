@@ -12,12 +12,13 @@
     - [x] heartbeat and waiting
     - [x] allow other processes to wait for the worker before they resume their own work
     - [x] use threading.Thread for heartbeat
-    - [ ] move to zig
+    - [ ] move to zig?
+    - [ ] database/redis
 - [x] metadata
     - [x] basic metadata
     - [x] write running/completed metadata during load_or_create
+    - [x] load from artifact
     - [ ] record git info
-    - [ ] load from artifact
     - [ ] think deeply about and add most relevant metadata, such as computer used to run it etc
     - [ ] support time traveling to a previous experiment
 - [x] pytest plugin
@@ -31,6 +32,9 @@
         - [x] polars dataframe artifact codec
         - [x] atomic result directory publish through temporary bundle rename
         - [x] cache hits load persisted results without recomputing
+        - [ ] think hard about other built-in codecs
+        - [ ] lazy saving/loading
+        - [ ] use annotations/infer automatically what codec to use
         - [ ] allows users to register handlers/codecs
 - [ ] error handling
     - [x] capture errors
@@ -43,6 +47,8 @@
      - [ ] detect library versions (only of libraries we import?)
      - [ ] detect all functions we call
      - [ ] do not allow _create to depend on/be affected by sys.argv
+     - [ ] take inspiration from pytest-cov
+     - [ ] use this information to invalidate loads
 - [ ] logging
     - [x] log when loading or creating object
     - [x] record run logs in furu_dir
