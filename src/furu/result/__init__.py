@@ -5,8 +5,9 @@ import importlib
 import importlib.util
 import json
 import threading
-from pathlib import Path
 from collections.abc import Callable, Mapping
+from functools import partial
+from pathlib import Path
 from typing import Any, Final, Literal, assert_never, cast
 
 import pydantic
@@ -316,8 +317,7 @@ def _load_wrapper(
 
             return codecs[body["codec"]].load(artifact_dir=artifact_dir)
         case "lazy":
-            nested_rel = Path(body["path"])
-            if nested_rel.is_absolute():
+            if (nested_rel := Path(body["path"])).is_absolute():
                 raise ValueError(f"lazy wrapper path must be relative: {nested_rel}")
 
             nested_bundle_dir = (bundle_dir / nested_rel).resolve()
@@ -333,7 +333,7 @@ def _load_wrapper(
                 )
 
             return LazyResult._from_loader(
-                lambda: _load_result_bundle(nested_bundle_dir, codecs=codecs)
+                partial(_load_result_bundle, nested_bundle_dir, codecs=codecs)
             )
         case "dataclass":  # TODO: do validation on the dataclass/pydantic object, so that we know the new object has exactly the same fields as the old one
             cls = _import_type(body["type"])
