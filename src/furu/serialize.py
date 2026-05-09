@@ -14,7 +14,6 @@ if TYPE_CHECKING:
     from furu.core import Furu
 
 _RESERVED_DICT_KEYS = frozenset({CLASSMARKER, KINDMARKER})
-type ArtifactInput = JsonValue | ArtifactMetadata
 
 
 def to_json(  # TODO: consider caching this (but if i'm going to, I need to figure out how to cache lists and other unhashable objects)
@@ -123,16 +122,12 @@ def _from_json(value: JsonValue) -> Any:
             return value
 
 
-def _from_artifact[T: "Furu"](artifact: ArtifactInput, expected_type: type[T]) -> T:
-    artifact_data = (
-        artifact.data if isinstance(artifact, ArtifactMetadata) else artifact
-    )
-    furu_obj = _from_json(artifact_data)
+def _from_artifact[T: "Furu"](artifact: ArtifactMetadata, expected_type: type[T]) -> T:
+    furu_obj = _from_json(artifact.data)
     if not isinstance(furu_obj, expected_type):
         raise TypeError("Artifact did not describe a Furu object")
-    if isinstance(artifact, ArtifactMetadata):
-        if artifact.hash != furu_obj.artifact_hash:
-            raise ValueError("Artifact hash did not match loaded object")
-        if artifact.schema_hash != furu_obj.artifact_schema_hash:
-            raise ValueError("Artifact schema hash did not match loaded object")
+    if artifact.hash != furu_obj.artifact_hash:
+        raise ValueError("Artifact hash did not match loaded object")
+    if artifact.schema_hash != furu_obj.artifact_schema_hash:
+        raise ValueError("Artifact schema hash did not match loaded object")
     return furu_obj

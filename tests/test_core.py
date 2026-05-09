@@ -758,8 +758,8 @@ def test_to_json():
         },
     }
     assert to_json(node_pair) == expected
-    assert to_json(node_pair) == node_pair.artifact
-    assert node_pair.artifact == expected
+    assert to_json(node_pair) == node_pair.artifact_data
+    assert node_pair.artifact_data == expected
 
 
 def test_to_json_with_none_field():
@@ -792,7 +792,7 @@ def test_to_json_with_class_field_value():
     obj = UsesClassValue(node_cls=Node)
 
     assert to_json(Node) == {"|kind": "type_ref", "|class": "test_core.Node"}
-    assert obj.artifact == {
+    assert obj.artifact_data == {
         "|kind": "instance",
         "|class": "test_core.UsesClassValue",
         "fields": {"node_cls": {"|kind": "type_ref", "|class": "test_core.Node"}},
@@ -816,7 +816,7 @@ def test_to_json_with_pydantic_field_value():
     }
 
     assert to_json(obj) == expected
-    assert obj.artifact == expected
+    assert obj.artifact_data == expected
     assert isinstance(obj.artifact_hash, str)
 
 
@@ -827,7 +827,7 @@ def test_furu_object_round_trips_from_json_artifact():
         node2=WeightedNode(name="z", weight=1),
     )
 
-    loaded = _from_json(obj.artifact)
+    loaded = _from_json(obj.artifact_data)
 
     assert loaded == obj
     assert isinstance(loaded, NodePair)
@@ -838,9 +838,9 @@ def test_furu_object_with_typed_fields_round_trips_from_json_artifact():
     path_obj = UsesPath(path=Path("/tmp/out"))
     class_obj = UsesClassValue(node_cls=Node)
 
-    assert _from_json(path_obj.artifact) == path_obj
-    assert _from_json(class_obj.artifact) == class_obj
-    assert isinstance(cast(UsesPath, _from_json(path_obj.artifact)).path, Path)
+    assert _from_json(path_obj.artifact_data) == path_obj
+    assert _from_json(class_obj.artifact_data) == class_obj
+    assert isinstance(cast(UsesPath, _from_json(path_obj.artifact_data)).path, Path)
 
 
 def test_furu_from_artifact_returns_furu_object():
@@ -850,8 +850,14 @@ def test_furu_from_artifact_returns_furu_object():
         node2=WeightedNode(name="z", weight=1),
     )
     obj.load_or_create()
+    artifact = ArtifactMetadata(
+        data=obj.artifact_data,
+        hash=obj.artifact_hash,
+        schema=obj.schema,
+        schema_hash=obj.artifact_schema_hash,
+    )
 
-    loaded = NodePair.from_artifact(obj.artifact)
+    loaded = NodePair.from_artifact(artifact)
     raw_metadata = json.loads(obj._metadata_path.read_text())
 
     assert loaded == obj
@@ -859,7 +865,7 @@ def test_furu_from_artifact_returns_furu_object():
     assert loaded.data_dir == obj.data_dir
     assert raw_metadata["kind"] == "completed"
     assert raw_metadata["artifact"] == {
-        "data": obj.artifact,
+        "data": obj.artifact_data,
         "hash": obj.artifact_hash,
         "schema": obj.schema,
         "schema_hash": obj.artifact_schema_hash,
@@ -876,8 +882,14 @@ def test_furu_from_artifact_infers_furu_object_type():
         node2=WeightedNode(name="z", weight=1),
     )
     obj.load_or_create()
+    artifact = ArtifactMetadata(
+        data=obj.artifact_data,
+        hash=obj.artifact_hash,
+        schema=obj.schema,
+        schema_hash=obj.artifact_schema_hash,
+    )
 
-    loaded = Furu.from_artifact(obj.artifact)
+    loaded = Furu.from_artifact(artifact)
 
     assert loaded == obj
     assert isinstance(loaded, NodePair)
@@ -887,8 +899,9 @@ def test_furu_from_artifact_accepts_loaded_metadata_artifact():
     obj = Node(name="x")
     obj.load_or_create()
     metadata = json.loads(obj._metadata_path.read_text())
+    artifact = ArtifactMetadata(**metadata["artifact"])
 
-    loaded = Node.from_artifact(metadata["artifact"]["data"])
+    loaded = Node.from_artifact(artifact)
 
     assert loaded == obj
     assert isinstance(loaded, Node)
@@ -897,7 +910,7 @@ def test_furu_from_artifact_accepts_loaded_metadata_artifact():
 def test_furu_from_artifact_accepts_artifact_metadata():
     obj = Node(name="x")
     artifact = ArtifactMetadata(
-        data=obj.artifact,
+        data=obj.artifact_data,
         hash=obj.artifact_hash,
         schema=obj.schema,
         schema_hash=obj.artifact_schema_hash,
@@ -912,7 +925,7 @@ def test_furu_from_artifact_accepts_artifact_metadata():
 def test_furu_from_artifact_rejects_artifact_metadata_hash_mismatch():
     obj = Node(name="x")
     artifact = ArtifactMetadata(
-        data=obj.artifact,
+        data=obj.artifact_data,
         hash="wrong-artifact-hash",
         schema=obj.schema,
         schema_hash=obj.artifact_schema_hash,
@@ -925,7 +938,7 @@ def test_furu_from_artifact_rejects_artifact_metadata_hash_mismatch():
 def test_furu_from_artifact_rejects_artifact_metadata_schema_hash_mismatch():
     obj = Node(name="x")
     artifact = ArtifactMetadata(
-        data=obj.artifact,
+        data=obj.artifact_data,
         hash=obj.artifact_hash,
         schema=obj.schema,
         schema_hash="wrong-schema-hash",
