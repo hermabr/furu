@@ -101,8 +101,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
         return "missing"
 
     def try_load(self) -> T:  # TODO: make a better name for this
-        result_manifest_path = self._resolved_result_manifest_path
-        if result_manifest_path is not None:
+        if (result_manifest_path := self._resolved_result_manifest_path) is not None:
             return cast(T, load_result_bundle(result_manifest_path.parent))
         raise NotImplementedError(
             "TODO: decide if i should throw or return error value"
