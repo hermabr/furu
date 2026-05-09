@@ -12,6 +12,7 @@ from furu.config import config
 from furu.locking import LockLostError, lock_many
 from furu.logging import get_logger
 from furu.result import load_result_bundle
+from furu.result.codec import _default_result_registry, ResultRegistry
 from furu.schema import schema_type as _schema_type
 from furu.serialize import to_json as _to_json
 from furu.utils import (
@@ -143,6 +144,10 @@ class Furu[T](_FuruDataclassTransform, ABC):
     @property
     def logger(self) -> logging.Logger:
         return get_logger()
+
+    @property
+    def result_registry(self) -> ResultRegistry:
+        return _default_result_registry()
 
     def _create(self) -> T:
         raise NotImplementedError("TODO")

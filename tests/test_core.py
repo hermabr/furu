@@ -18,6 +18,7 @@ from furu.config import config
 from furu.locking import lock_many
 from furu.metadata import ArtifactMetadata
 from furu.result import load_result_bundle, save_result_bundle
+from furu.result.codec import _default_result_registry
 from furu.serialize import _from_json, to_json
 from furu.utils import fully_qualified_name
 
@@ -1304,7 +1305,9 @@ def test_pending_items_are_rechecked_after_lock_acquisition(
     @contextmanager
     def fake_lock_many(lock_paths: list[Path], **_: object):
         assert lock_paths == [pending._lock_path]
-        save_result_bundle("single:5", pending._result_dir)
+        save_result_bundle(
+            "single:5", pending._result_dir, registry=_default_result_registry()
+        )
         yield lambda: True
 
     monkeypatch.setattr(execution_module, "lock_many", fake_lock_many)
