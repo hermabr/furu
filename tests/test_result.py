@@ -66,13 +66,14 @@ def test_json_only_cache_hit_does_not_recompute() -> None:
     assert len(JsonResult.create_calls) == 1
 
 
-def test_is_completed_flips_after_first_run() -> None:
+def test_status_is_completed_after_first_run() -> None:
     JsonResult.create_calls.clear()
     obj = JsonResult()
 
-    assert not obj.is_completed()
+    with pytest.raises(NotImplementedError):
+        obj.status()
     obj.load_or_create()
-    assert obj.is_completed()
+    assert obj.status() == "completed"
 
 
 def test_try_load_returns_persisted_result() -> None:

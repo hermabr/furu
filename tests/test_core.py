@@ -1041,15 +1041,17 @@ def test_create_object_and_exists():
     node_pair = NodePair(
         name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
     )
-    assert not node_pair.is_completed()
+    with pytest.raises(NotImplementedError):
+        node_pair.status()
     for _i in range(3):
         assert node_pair.load_or_create() == {
             "node1": "Node(y)",
             "node2": "WNode(z:1)",
             "name": "x",
         }
-    assert node_pair.is_completed()
-    assert not replace(node_pair, name="y").is_completed()
+    assert node_pair.status() == "completed"
+    with pytest.raises(NotImplementedError):
+        replace(node_pair, name="y").status()
 
 
 def test_creating_and_loading_random_result_furu_obj():
