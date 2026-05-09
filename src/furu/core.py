@@ -23,6 +23,7 @@ from furu.utils import (
 from furu.validate import validate_cls
 
 if TYPE_CHECKING:
+    from furu.metadata import ArtifactMetadata
     from typing_extensions import dataclass_transform
 
     @dataclass_transform(kw_only_default=True, frozen_default=True)
@@ -72,6 +73,14 @@ class Furu[T](_FuruDataclassTransform, ABC):
         from furu.execution import load_or_create
 
         return load_or_create(self, use_lock=use_lock)
+
+    @classmethod
+    def from_artifact[TFuru: Furu](
+        cls: type[TFuru], artifact: ArtifactMetadata
+    ) -> TFuru:
+        from furu.serialize import _from_artifact
+
+        return _from_artifact(artifact, cls)
 
     def status(
         self,
@@ -144,7 +153,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
         raise NotImplementedError("TODO")
 
     @cached_property
-    def artifact(  # TODO: make sure this doesn't prevent garbage collection
+    def artifact_data(  # TODO: make sure this doesn't prevent garbage collection
         self,
     ) -> JsonValue:
         return _to_json(self)
@@ -153,7 +162,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def artifact_hash(  # TODO: should this be __hash__?
         self,
     ) -> str:
-        return _hash_dict_deterministically(self.artifact)
+        return _hash_dict_deterministically(self.artifact_data)
 
     @cached_property
     def schema(

@@ -55,7 +55,7 @@ class RunningMetadata(BaseModel):
     def write_for[T](cls, obj: Furu[T]) -> RunningMetadata:
         metadata = cls(
             artifact=ArtifactMetadata(
-                data=obj.artifact,
+                data=obj.artifact_data,
                 hash=obj.artifact_hash,
                 schema=obj.schema,
                 schema_hash=obj.artifact_schema_hash,
