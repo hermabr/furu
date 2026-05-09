@@ -2,7 +2,7 @@ import enum
 import importlib
 from dataclasses import fields, is_dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, get_args, get_origin, get_type_hints, overload
+from typing import TYPE_CHECKING, Any, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel as PydanticBaseModel
 
@@ -123,26 +123,12 @@ def _from_json(value: JsonValue) -> Any:
             return value
 
 
-@overload
-def from_artifact[T: "Furu"](artifact: ArtifactInput, expected_type: type[T]) -> T: ...
-
-
-@overload
-def from_artifact(artifact: ArtifactInput, expected_type: None = None) -> "Furu": ...
-
-
-def from_artifact[T: "Furu"](
-    artifact: ArtifactInput, expected_type: type[T] | None = None
-) -> T | "Furu":
-    from furu.core import Furu
-
+def _from_artifact[T: "Furu"](artifact: ArtifactInput, expected_type: type[T]) -> T:
     artifact_data = (
         artifact.data if isinstance(artifact, ArtifactMetadata) else artifact
     )
     furu_obj = _from_json(artifact_data)
-    if expected_type is not None and not isinstance(furu_obj, expected_type):
-        raise TypeError("Artifact did not describe a Furu object")
-    if expected_type is None and not isinstance(furu_obj, Furu):
+    if not isinstance(furu_obj, expected_type):
         raise TypeError("Artifact did not describe a Furu object")
     if isinstance(artifact, ArtifactMetadata):
         if artifact.hash != furu_obj.artifact_hash:

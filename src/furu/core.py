@@ -23,6 +23,7 @@ from furu.utils import (
 from furu.validate import validate_cls
 
 if TYPE_CHECKING:
+    from furu.serialize import ArtifactInput
     from typing_extensions import dataclass_transform
 
     @dataclass_transform(kw_only_default=True, frozen_default=True)
@@ -72,6 +73,12 @@ class Furu[T](_FuruDataclassTransform, ABC):
         from furu.execution import load_or_create
 
         return load_or_create(self, use_lock=use_lock)
+
+    @classmethod
+    def from_artifact[TFuru: Furu](cls: type[TFuru], artifact: ArtifactInput) -> TFuru:
+        from furu.serialize import _from_artifact
+
+        return _from_artifact(artifact, cls)
 
     def status(
         self,
