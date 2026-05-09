@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import secrets
 import traceback
 from collections.abc import Callable, Sequence
 from contextlib import nullcontext
-from datetime import datetime
 from pathlib import Path
 from typing import assert_never, cast, overload
 
@@ -77,9 +75,7 @@ def _store_result[T](
     obj.logger.debug("stored result bundle at %s", obj._result_dir)
 
 
-def _write_error_logs[T](objs: Sequence[Furu[T]], exc: BaseException) -> None:
-    timestamp = datetime.now().strftime("%y%m%d_%H-%M-%S")
-    suffix = secrets.token_hex(4)
+def _format_error_debug_details(exc: BaseException) -> str:
     parts = ["Traceback (most recent call last):\n"]
     parts.extend(
         traceback.format_list(
@@ -93,11 +89,7 @@ def _write_error_logs[T](objs: Sequence[Furu[T]], exc: BaseException) -> None:
             chain=True
         )
     )
-    error_text = "".join(parts)
-    for obj in objs:
-        obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
-        error_path = obj._internal_furu_dir / f"error-{timestamp}-{suffix}.log"
-        error_path.write_text(error_text, encoding="utf-8")
+    return "".join(parts)
 
 
 @overload
@@ -229,5 +221,7 @@ def _execute_group[T](
             logger.debug("load_or_create complete")
         except BaseException as exc:
             logger.exception("load_or_create failed")
-            _write_error_logs(group, exc)
+            logger.error(
+                "debug traceback with locals:\n%s", _format_error_debug_details(exc)
+            )
             raise

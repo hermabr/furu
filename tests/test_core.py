@@ -1357,15 +1357,20 @@ def test_sequential_group_compute_writes_shared_logs_to_every_participant() -> N
             assert f"stored result bundle at {persisted_obj._result_dir}" in log_text
 
 
-def test_batched_failure_writes_error_logs_for_every_participant() -> None:
+def test_batched_failure_writes_error_details_to_run_log_for_every_participant() -> (
+    None
+):
     objs = [FailingBatchValue(key=1), FailingBatchValue(key=2)]
 
     with pytest.raises(RuntimeError, match="failed batch"):
         load_or_create(objs)
 
     for obj in objs:
-        error_logs = list(obj._internal_furu_dir.glob("error-*.log"))
-        assert len(error_logs) == 1
+        log_text = obj._log_path.read_text(encoding="utf-8")
+        assert "load_or_create failed" in log_text
+        assert "failed batch for [1, 2]" in log_text
+        assert "=== Debug Details (with locals) ===" in log_text
+        assert list(obj._internal_furu_dir.glob("error-*.log")) == []
 
 
 def test_partial_persistence_leaves_already_written_objects_completed(
