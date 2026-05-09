@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal
@@ -20,6 +21,23 @@ class GitData(BaseModel):
     # submodules: dict # TODO: add this
 
 
+@dataclass(frozen=True, kw_only=True)
+class ArtifactMetadata:
+    data: JsonValue
+    hash: str
+    schema: JsonValue
+    schema_hash: str
+
+    @classmethod
+    def from_furu[T](cls, obj: Furu[T]) -> ArtifactMetadata:
+        return cls(
+            data=obj.artifact,
+            hash=obj.artifact_hash,
+            schema=obj.schema,
+            schema_hash=obj.artifact_schema_hash,
+        )
+
+
 class RunningMetadata(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -28,10 +46,7 @@ class RunningMetadata(BaseModel):
     )
     kind: Literal["running"] = "running"
     # python_def: str
-    artifact: JsonValue
-    artifact_hash: str
-    artifact_schema: JsonValue
-    schema_hash: str
+    artifact: ArtifactMetadata
     data_path: Path
     # git: GitData | None
     started_at: datetime
@@ -48,10 +63,7 @@ class RunningMetadata(BaseModel):
     @classmethod
     def write_for[T](cls, obj: Furu[T]) -> RunningMetadata:
         metadata = cls(
-            artifact=obj.artifact,
-            artifact_hash=obj.artifact_hash,
-            artifact_schema=obj.schema,
-            schema_hash=obj.schema_hash,
+            artifact=ArtifactMetadata.from_furu(obj),
             data_path=obj.data_dir,
             started_at=datetime.now(timezone.utc),
         )
@@ -61,9 +73,6 @@ class RunningMetadata(BaseModel):
     def to_complete(self) -> CompletedMetadata:
         return CompletedMetadata(
             artifact=self.artifact,
-            artifact_hash=self.artifact_hash,
-            artifact_schema=self.artifact_schema,
-            schema_hash=self.schema_hash,
             data_path=self.data_path,
             started_at=self.started_at,
             completed_at=datetime.now(timezone.utc),
@@ -78,10 +87,7 @@ class CompletedMetadata(BaseModel):
     )
     kind: Literal["completed"] = "completed"
     # python_def: str
-    artifact: JsonValue
-    artifact_hash: str
-    artifact_schema: JsonValue
-    schema_hash: str
+    artifact: ArtifactMetadata
     data_path: Path
     # git: GitData | None
     started_at: datetime

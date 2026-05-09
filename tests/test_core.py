@@ -550,7 +550,7 @@ def test_hashes_and_data_dir():
     assert (
         NodePair(
             name="y", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
-        ).schema_hash
+        ).artifact_schema_hash
         == "50a9b8624ed259ec38df"
     )
 
@@ -574,13 +574,13 @@ def test_hashes_and_data_dir():
     assert (
         B(
             a=A(x=1, z="123", w=[6, 7]), y={"hey": 123, True: 1}, t=("123", 12)
-        ).schema_hash
+        ).artifact_schema_hash
         != B_priv(
             a=A(x=1, z="123", w=[6, 7]),
             y={"hey": 123, True: 1},
             t=("123", 12),
             _h=1,
-        ).schema_hash
+        ).artifact_schema_hash
     )
 
     def qualname_alias(cls: type[Furu[object]], *, ret_typ: type) -> type[Furu[object]]:
@@ -599,13 +599,13 @@ def test_hashes_and_data_dir():
     assert (
         B(
             a=A(x=1, z="123", w=[6, 7]), y={"ney": 123, True: 1}, t=("123", 12)
-        ).schema_hash
+        ).artifact_schema_hash
         != B_priv_as_B(
             a=A(x=1, z="123", w=[6, 7]),
             y={"hey": 123, "ney": 1},
             t=("123", 12),
             _h=1,
-        ).schema_hash
+        ).artifact_schema_hash
     )
 
 
@@ -851,11 +851,21 @@ def test_load_from_metadata_file_returns_furu_object():
     obj.load_or_create()
 
     loaded = load_from_metadata(obj._metadata_path, NodePair)
+    raw_metadata = json.loads(obj._metadata_path.read_text())
 
     assert loaded == obj
     assert isinstance(loaded, NodePair)
     assert loaded.data_dir == obj.data_dir
-    assert '"kind": "completed"' in obj._metadata_path.read_text()
+    assert raw_metadata["kind"] == "completed"
+    assert raw_metadata["artifact"] == {
+        "data": obj.artifact,
+        "hash": obj.artifact_hash,
+        "schema": obj.schema,
+        "schema_hash": obj.artifact_schema_hash,
+    }
+    assert "artifact_hash" not in raw_metadata
+    assert "artifact_schema" not in raw_metadata
+    assert "artifact_schema_hash" not in raw_metadata
 
 
 def test_load_from_metadata_accepts_metadata_model():
@@ -896,7 +906,7 @@ def test_data_dir():
         config.directories.data
         / "test_core"
         / "NodePair"
-        / node_pair.schema_hash
+        / node_pair.artifact_schema_hash
         / node_pair.artifact_hash
     )
 
@@ -910,7 +920,7 @@ def test_storage_root_can_be_overridden_with_cached_property():
         Path("custom/data/location")
         / "test_core"
         / "CustomStorageRootNode"
-        / node.schema_hash
+        / node.artifact_schema_hash
         / node.artifact_hash
     )
 

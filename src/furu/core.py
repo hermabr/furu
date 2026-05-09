@@ -162,7 +162,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
         return _schema_type(type(self), set())
 
     @cached_property
-    def schema_hash(self) -> str:
+    def artifact_schema_hash(self) -> str:
         return _hash_dict_deterministically(self.schema)
 
     @cached_property
@@ -171,7 +171,11 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     @cached_property
     def object_id(self) -> str:
-        return f"{self._fully_qualified_name}:{self.schema_hash}:{self.artifact_hash}"
+        return (
+            f"{self._fully_qualified_name}:"
+            f"{self.artifact_schema_hash}:"
+            f"{self.artifact_hash}"
+        )
 
     @cached_property
     def storage_root(self) -> Path:
@@ -182,7 +186,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
         return (
             self.storage_root
             / Path(*self._fully_qualified_name.split("."))
-            / self.schema_hash
+            / self.artifact_schema_hash
             / self.artifact_hash
         )
 
@@ -204,4 +208,8 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     @cached_property
     def _log_label(self) -> str:
-        return f"{type(self).__name__}:{self.schema_hash[:5]}:{self.artifact_hash[:5]}"
+        return (
+            f"{type(self).__name__}:"
+            f"{self.artifact_schema_hash[:5]}:"
+            f"{self.artifact_hash[:5]}"
+        )
