@@ -89,7 +89,11 @@ class Furu[T](_FuruDataclassTransform, ABC):
     ]:  # TODO: add queued/waiting state?
         if self._result_manifest_path.exists():
             return "completed"
-        raise NotImplementedError("TODO")
+        if self._lock_path.exists():
+            return "running"
+        if self.data_dir.exists():
+            return "failed"
+        return "missing"
 
     def try_load(self) -> T:  # TODO: make a better name for this
         if self._result_manifest_path.exists():
