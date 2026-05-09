@@ -22,10 +22,6 @@ _JSON_DICT_ADAPTER = TypeAdapter(dict[str, JsonValue])
 _METADATA_ADAPTER = TypeAdapter(Metadata)
 
 
-class DuplicateMigrationError(ValueError):
-    pass
-
-
 @dataclass(frozen=True, slots=True)
 class Migration:
     old_fully_qualified_name: str
@@ -72,7 +68,7 @@ def validate_migrations_for_class(cls: type[Furu[Any]]) -> tuple[Migration, ...]
         _validate_migration(migration)
         identity = migration_edge_identity(migration)
         if identity in seen:
-            raise DuplicateMigrationError(
+            raise ValueError(
                 f"{cls.__name__}.migrations() returned duplicate migration edge "
                 f"{identity!r}"
             )

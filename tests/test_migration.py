@@ -185,7 +185,7 @@ def test_result_link_is_ignored_when_source_result_is_missing() -> None:
 
 
 def test_duplicate_migration_edges_are_rejected() -> None:
-    with pytest.raises(furu.DuplicateMigrationError):
+    with pytest.raises(ValueError, match="duplicate migration edge"):
         DuplicateMigration().status()
 
 
