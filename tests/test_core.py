@@ -1349,7 +1349,7 @@ def test_batched_compute_writes_result_layout_per_object() -> None:
     assert load_or_create(objs) == ["batch:1", "batch:2"]
 
     for obj, expected in zip(objs, ["batch:1", "batch:2"], strict=True):
-        assert obj._own_result_manifest_path.exists()
+        assert (obj._result_dir / "manifest.json").exists()
         assert obj._metadata_path.exists()
         assert obj._log_path.exists()
         assert load_result_bundle(obj._result_dir) == expected
@@ -1415,5 +1415,5 @@ def test_partial_persistence_leaves_already_written_objects_completed(
     with pytest.raises(RuntimeError, match="stop after first store"):
         load_or_create(objs)
 
-    assert objs[0]._own_result_manifest_path.exists()
-    assert not objs[1]._own_result_manifest_path.exists()
+    assert (objs[0]._result_dir / "manifest.json").exists()
+    assert not (objs[1]._result_dir / "manifest.json").exists()

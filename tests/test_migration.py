@@ -140,8 +140,8 @@ def test_migration_reuses_old_result_and_writes_result_link() -> None:
     assert new.status() == "completed"
     assert new.load_or_create() == "trained:cifar10:0.001"
     assert TrainingRunV2.create_calls == 0
-    assert new._result_manifest_path == old._own_result_manifest_path
-    assert not new._own_result_manifest_path.exists()
+    assert new._result_manifest_path == (old._result_dir / "manifest.json")
+    assert not (new._result_dir / "manifest.json").exists()
     assert new._result_link_path.exists()
 
     marker = json.loads(new._result_link_path.read_text())

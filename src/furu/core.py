@@ -146,10 +146,6 @@ class Furu[T](_FuruDataclassTransform, ABC):
         return self.data_dir / "result"
 
     @property
-    def _own_result_manifest_path(self) -> Path:
-        return self._result_dir / "manifest.json"
-
-    @property
     def logger(self) -> logging.Logger:
         return get_logger()
 
