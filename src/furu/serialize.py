@@ -14,6 +14,8 @@ from furu.utils import JsonValue, fully_qualified_name
 if TYPE_CHECKING:
     from furu.core import Furu
 
+_RESERVED_DICT_KEYS = frozenset({CLASSMARKER, KINDMARKER})
+
 
 def to_json(  # TODO: consider caching this (but if i'm going to, I need to figure out how to cache lists and other unhashable objects)
     obj: Any,
@@ -23,7 +25,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
     def assert_correct_dict_key(x: Any) -> str:
         if not isinstance(x, str):
             raise ValueError("TODO")
-        if x in [CLASSMARKER, KINDMARKER]:
+        if x in _RESERVED_DICT_KEYS:
             raise ValueError("TODO: write error msg")
         return x
 
@@ -96,21 +98,25 @@ def _from_json_field(value: JsonValue, expected_type: Any) -> Any:
 
 
 def from_json(value: JsonValue) -> Any:
-    match value:
-        case {"|kind": "type_ref", "|class": str(qualified_name)}:
-            return _load_type(qualified_name)
-        case {
-            "|kind": "instance",
-            "|class": str(qualified_name),
-            "fields": dict(field_values),
-        }:
-            cls = _load_type(qualified_name)
+    if isinstance(value, dict):
+        class_name = value.get(CLASSMARKER)
+        field_values = value.get("fields")
+        if value.get(KINDMARKER) == "type_ref" and isinstance(class_name, str):
+            return _load_type(class_name)
+        if (
+            value.get(KINDMARKER) == "instance"
+            and isinstance(class_name, str)
+            and isinstance(field_values, dict)
+        ):
+            cls = _load_type(class_name)
             hints = get_type_hints(cls, include_extras=True)
             converted_fields = {
                 name: _from_json_field(field_value, hints.get(name, Any))
                 for name, field_value in field_values.items()
             }
             return cls(**converted_fields)
+
+    match value:
         case list():
             return [from_json(item) for item in value]
         case dict():
