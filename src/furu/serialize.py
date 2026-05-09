@@ -1,12 +1,10 @@
 import enum
 import importlib
-import json
 from dataclasses import fields, is_dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, get_args, get_origin, get_type_hints, overload
 
 from pydantic import BaseModel as PydanticBaseModel
-from pydantic import TypeAdapter
 
 from furu.constants import CLASSMARKER, KINDMARKER
 from furu.utils import JsonValue, fully_qualified_name
@@ -124,33 +122,21 @@ def _from_json(value: JsonValue) -> Any:
 
 
 @overload
-def load_from_metadata[T: "Furu"](
-    metadata: Path | dict[str, JsonValue], expected_type: type[T]
-) -> T: ...
+def from_artifact[T: "Furu"](artifact: JsonValue, expected_type: type[T]) -> T: ...
 
 
 @overload
-def load_from_metadata(
-    metadata: Path | dict[str, JsonValue], expected_type: None = None
-) -> "Furu": ...
+def from_artifact(artifact: JsonValue, expected_type: None = None) -> "Furu": ...
 
 
-def load_from_metadata[T: "Furu"](
-    metadata: Path | dict[str, JsonValue], expected_type: type[T] | None = None
+def from_artifact[T: "Furu"](
+    artifact: JsonValue, expected_type: type[T] | None = None
 ) -> T | "Furu":
     from furu.core import Furu
-    from furu.metadata import Metadata
 
-    metadata_json = (
-        metadata.read_text(encoding="utf-8")
-        if isinstance(metadata, Path)
-        else json.dumps(metadata)
-    )
-    furu_obj = _from_json(
-        TypeAdapter(Metadata).validate_json(metadata_json).artifact.data
-    )
+    furu_obj = _from_json(artifact)
     if expected_type is not None and not isinstance(furu_obj, expected_type):
-        raise TypeError("Metadata artifact did not describe a Furu object")
+        raise TypeError("Artifact did not describe a Furu object")
     if expected_type is None and not isinstance(furu_obj, Furu):
-        raise TypeError("Metadata artifact did not describe a Furu object")
+        raise TypeError("Artifact did not describe a Furu object")
     return furu_obj

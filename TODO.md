@@ -17,7 +17,7 @@
     - [x] basic metadata
     - [x] write running/completed metadata during load_or_create
     - [ ] record git info
-    - [ ] load from metadata
+    - [ ] load from artifact
     - [ ] think deeply about and add most relevant metadata, such as computer used to run it etc
     - [ ] support time traveling to a previous experiment
 - [x] pytest plugin

@@ -13,7 +13,7 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 import furu.execution as execution_module
-from furu import Furu, load_from_metadata, load_or_create, validate
+from furu import Furu, from_artifact, load_or_create, validate
 from furu.config import config
 from furu.result import load_result_bundle, save_result_bundle
 from furu.serialize import _from_json, to_json
@@ -842,7 +842,7 @@ def test_furu_object_with_typed_fields_round_trips_from_json_artifact():
     assert isinstance(cast(UsesPath, _from_json(path_obj.artifact)).path, Path)
 
 
-def test_load_from_metadata_file_returns_furu_object():
+def test_from_artifact_returns_furu_object():
     obj = NodePair(
         name="x",
         node1=Node(name="y"),
@@ -850,7 +850,7 @@ def test_load_from_metadata_file_returns_furu_object():
     )
     obj.load_or_create()
 
-    loaded = load_from_metadata(obj._metadata_path, NodePair)
+    loaded = from_artifact(obj.artifact, NodePair)
     raw_metadata = json.loads(obj._metadata_path.read_text())
 
     assert loaded == obj
@@ -868,7 +868,7 @@ def test_load_from_metadata_file_returns_furu_object():
     assert "artifact_schema_hash" not in raw_metadata
 
 
-def test_load_from_metadata_file_infers_furu_object_type():
+def test_from_artifact_infers_furu_object_type():
     obj = NodePair(
         name="x",
         node1=Node(name="y"),
@@ -876,18 +876,18 @@ def test_load_from_metadata_file_infers_furu_object_type():
     )
     obj.load_or_create()
 
-    loaded = load_from_metadata(obj._metadata_path)
+    loaded = from_artifact(obj.artifact)
 
     assert loaded == obj
     assert isinstance(loaded, NodePair)
 
 
-def test_load_from_metadata_accepts_metadata_model():
+def test_from_artifact_accepts_loaded_metadata_artifact():
     obj = Node(name="x")
     obj.load_or_create()
     metadata = json.loads(obj._metadata_path.read_text())
 
-    loaded = load_from_metadata(metadata, Node)
+    loaded = from_artifact(metadata["artifact"]["data"], Node)
 
     assert loaded == obj
     assert isinstance(loaded, Node)
