@@ -114,10 +114,6 @@ class ResultRegistry:
     def register(self, codec: type[ResultCodec]) -> Self:
         return type(self)(codecs=(codec, *self.codecs))
 
-    @cached_property
-    def _codecs_by_id(self) -> dict[str, type[ResultCodec]]:
-        return {codec.codec_id(): codec for codec in self.codecs}
-
     def find_codec(self, value: object) -> type[ResultCodec] | None:
         for codec in self.codecs:
             if codec.matches(value):
@@ -136,6 +132,10 @@ class ResultRegistry:
         if not issubclass(codec, ResultCodec):
             raise TypeError(f"{codec_id} is not a ResultCodec")
         return codec
+
+    @cached_property
+    def _codecs_by_id(self) -> dict[str, type[ResultCodec]]:
+        return {codec.codec_id(): codec for codec in self.codecs}
 
 
 @cache
