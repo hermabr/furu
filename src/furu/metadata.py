@@ -23,15 +23,14 @@ class GitData(BaseModel):
 class RunningMetadata(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
-        validate_assignment=True,
+        frozen=True,
         strict=True,
-        revalidate_instances="always",
     )
     kind: Literal["running"] = "running"
     # python_def: str
     artifact: JsonValue
     artifact_hash: str
-    schema_: JsonValue
+    artifact_schema: JsonValue
     schema_hash: str
     data_path: Path
     # git: GitData | None
@@ -51,7 +50,7 @@ class RunningMetadata(BaseModel):
         metadata = cls(
             artifact=obj.artifact,
             artifact_hash=obj.artifact_hash,
-            schema_=obj.schema,
+            artifact_schema=obj.schema,
             schema_hash=obj.schema_hash,
             data_path=obj.data_dir,
             started_at=datetime.now(timezone.utc),
@@ -63,7 +62,7 @@ class RunningMetadata(BaseModel):
         return CompletedMetadata(
             artifact=self.artifact,
             artifact_hash=self.artifact_hash,
-            schema_=self.schema_,
+            artifact_schema=self.artifact_schema,
             schema_hash=self.schema_hash,
             data_path=self.data_path,
             started_at=self.started_at,
@@ -74,15 +73,14 @@ class RunningMetadata(BaseModel):
 class CompletedMetadata(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
-        validate_assignment=True,
+        frozen=True,
         strict=True,
-        revalidate_instances="always",
     )
     kind: Literal["completed"] = "completed"
     # python_def: str
     artifact: JsonValue
     artifact_hash: str
-    schema_: JsonValue
+    artifact_schema: JsonValue
     schema_hash: str
     data_path: Path
     # git: GitData | None
