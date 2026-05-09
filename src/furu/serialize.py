@@ -119,7 +119,7 @@ def from_json(value: JsonValue) -> Any:
             return value
 
 
-def load_from_metadata[T: "Furu[Any]"](
+def load_from_metadata[T: "Furu"](
     metadata: Path | dict[str, JsonValue], expected_type: type[T]
 ) -> T:
     from furu.metadata import Metadata
