@@ -101,39 +101,32 @@ def _dump_value(
     bundle_dir: Path,
     registry: ResultRegistry,
 ) -> JsonValue:
-    if isinstance(value, _SaveAs):
-        runtime_codec = value.codec
-        value = value.value
-    else:
-        runtime_codec = None
-
     declared_codec: type[ResultCodec] | None = None
     if get_origin(declared_type) is Annotated:
         for item in get_args(declared_type)[1:]:
             if isinstance(item, type) and issubclass(item, ResultCodec):
                 declared_codec = item
                 break
-    match runtime_codec, declared_codec:
-        case runtime_codec, declared_codec if (
-            runtime_codec is not None
-            and declared_codec is not None
-            and runtime_codec is not declared_codec
+
+    match value, declared_codec:
+        case _SaveAs(codec=runtime_codec), declared_codec if (
+            declared_codec is not None and runtime_codec is not declared_codec
         ):
             raise TypeError(
                 "Conflicting codecs: value was wrapped with furu.save_as(...), "
                 "but the field also has an Annotated codec."
             )
-        case selected_codec, _ if selected_codec is not None:
+        case _SaveAs(value=inner_value, codec=runtime_codec), _:
             return _dump_external(
-                value,
-                codec=selected_codec,
+                inner_value,
+                codec=runtime_codec,
                 value_path=value_path,
                 bundle_dir=bundle_dir,
             )
-        case None, selected_codec if selected_codec is not None:
+        case _, declared_codec if declared_codec is not None:
             return _dump_external(
                 value,
-                codec=selected_codec,
+                codec=declared_codec,
                 value_path=value_path,
                 bundle_dir=bundle_dir,
             )
