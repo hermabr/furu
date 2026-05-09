@@ -125,7 +125,11 @@ def _from_json(value: JsonValue) -> Any:
 def _from_artifact[T: "Furu"](artifact: ArtifactMetadata, expected_type: type[T]) -> T:
     furu_obj = _from_json(artifact.data)
     if not isinstance(furu_obj, expected_type):
-        raise TypeError("Artifact did not describe a Furu object")
+        raise TypeError(
+            "Artifact described "
+            + f"{type(furu_obj).__module__}.{type(furu_obj).__qualname__}, "
+            + f"expected {expected_type.__module__}.{expected_type.__qualname__}"
+        )
     if artifact.hash != furu_obj.artifact_hash:
         raise ValueError("Artifact hash did not match loaded object")
     if artifact.schema_hash != furu_obj.artifact_schema_hash:

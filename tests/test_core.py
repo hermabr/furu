@@ -922,6 +922,25 @@ def test_furu_from_artifact_accepts_artifact_metadata():
     assert isinstance(loaded, Node)
 
 
+def test_furu_from_artifact_type_mismatch_names_expected_and_loaded_type():
+    obj = WeightedNode(name="x", weight=1)
+    artifact = ArtifactMetadata(
+        data=obj.artifact_data,
+        hash=obj.artifact_hash,
+        schema=obj.schema,
+        schema_hash=obj.artifact_schema_hash,
+    )
+
+    with pytest.raises(
+        TypeError,
+        match=(
+            r"Artifact described test_core\.WeightedNode, "
+            r"expected test_core\.NodePair"
+        ),
+    ):
+        NodePair.from_artifact(artifact)
+
+
 def test_furu_from_artifact_rejects_artifact_metadata_hash_mismatch():
     obj = Node(name="x")
     artifact = ArtifactMetadata(
