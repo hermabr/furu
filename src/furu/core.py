@@ -164,8 +164,8 @@ class Furu[T](_FuruDataclassTransform, ABC):
     @cached_property
     def artifact_data(  # TODO: make sure this doesn't prevent garbage collection
         self,
-    ) -> JsonValue:
-        return _to_json(self)
+    ) -> dict[str, JsonValue]:
+        return cast(dict[str, JsonValue], _to_json(self))
 
     @cached_property
     def artifact_hash(  # TODO: should this be __hash__?

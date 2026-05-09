@@ -263,18 +263,12 @@ def _read_completed_metadata(path: Path) -> CompletedMetadata | None:
 
 
 def _artifact_fully_qualified_name(metadata: CompletedMetadata) -> str | None:
-    data = metadata.artifact.data
-    if not isinstance(data, dict):
-        return None
-    value = data.get(CLASSMARKER)
+    value = metadata.artifact.data.get(CLASSMARKER)
     return value if isinstance(value, str) else None
 
 
 def _artifact_fields(metadata: CompletedMetadata) -> dict[str, JsonValue] | None:
-    data = metadata.artifact.data
-    if not isinstance(data, dict):
-        return None
-    fields = data.get("fields")
+    fields = metadata.artifact.data.get("fields")
     if not isinstance(fields, dict):
         return None
     try:
@@ -284,10 +278,7 @@ def _artifact_fields(metadata: CompletedMetadata) -> dict[str, JsonValue] | None
 
 
 def _requested_fields(obj: Furu[Any]) -> dict[str, JsonValue]:
-    data = obj.artifact_data
-    if not isinstance(data, dict):
-        raise TypeError("Furu artifact_data must be a JSON object")
-    fields = data.get("fields")
+    fields = obj.artifact_data.get("fields")
     if not isinstance(fields, dict):
         raise TypeError("Furu artifact_data must contain a fields object")
     return TypeAdapter(dict[str, JsonValue]).validate_python(fields)
