@@ -4,6 +4,7 @@ import importlib
 import importlib.util
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
+from functools import cache
 from pathlib import Path
 from typing import Final, Self, cast
 
@@ -106,9 +107,6 @@ class NumpyNpyCodec(ResultCodec):
         return np.load(artifact_dir / "data.npy", allow_pickle=False)
 
 
-NumpyCodec = NumpyNpyCodec
-
-
 class ResultRegistry:
     def __init__(
         self,
@@ -129,6 +127,11 @@ class ResultRegistry:
             default_codecs=self.default_codecs,
         )
 
+    @classmethod
+    @cache
+    def default(cls) -> Self:
+        return cls(default_codecs=_DEFAULT_CODECS.values())
+
     def find_codec(self, value: object) -> type[ResultCodec] | None:
         for codec in (*self.custom_codecs, *self.default_codecs):
             if codec.matches(value):
@@ -148,14 +151,8 @@ class ResultRegistry:
             return codec
 
 
-DEFAULT_RESULT_REGISTRY: Final = ResultRegistry(
-    default_codecs=[
-        c for c in [PolarsParquetCodec, NumpyNpyCodec] if c.dependencies_available()
-    ]
-)
-
 _DEFAULT_CODECS: Final[dict[str, type[ResultCodec]]] = {
     c.codec_id(): c
-    for c in DEFAULT_RESULT_REGISTRY.default_codecs
+    for c in [PolarsParquetCodec, NumpyNpyCodec]
     if c.dependencies_available()
 }

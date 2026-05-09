@@ -17,7 +17,6 @@ from furu.result import (
     save_result_bundle,
 )
 from furu.result.codec import (
-    DEFAULT_RESULT_REGISTRY,
     _DEFAULT_CODECS,
     NumpyNpyCodec,
     PolarsParquetCodec,
@@ -282,10 +281,10 @@ def test_codec_id_is_derived_from_class_identity() -> None:
 
 
 def test_result_registry_register_is_functional() -> None:
-    first = DEFAULT_RESULT_REGISTRY.register(_CountingCodec)
+    first = ResultRegistry.default().register(_CountingCodec)
     second = first.register(_OtherCountingCodec)
 
-    assert DEFAULT_RESULT_REGISTRY.find_codec(_CountingValue(1)) is None
+    assert ResultRegistry.default().find_codec(_CountingValue(1)) is None
     assert first.find_codec(_CountingValue(1)) is _CountingCodec
     assert second.find_codec(_CountingValue(1)) is _OtherCountingCodec
 
@@ -316,7 +315,7 @@ class SaveAsOutput:
 
 class SaveAsArrayResult(Furu[SaveAsOutput]):
     def _create(self) -> SaveAsOutput:
-        return SaveAsOutput(weights=furu.save_as(np.arange(4), codec=furu.NumpyCodec))
+        return SaveAsOutput(weights=furu.save_as(np.arange(4), codec=NumpyNpyCodec))
 
 
 def test_save_as_selects_codec_and_does_not_leak_wrapper() -> None:

@@ -24,7 +24,6 @@ from typing import (
 import pydantic
 
 from furu.result.codec import (
-    DEFAULT_RESULT_REGISTRY,
     _DEFAULT_CODECS,
     ResultCodec,
     ResultRegistry,
@@ -130,8 +129,10 @@ def _dataclass_field_types(cls: type[Any]) -> dict[str, object]:
     return get_type_hints(cls, include_extras=True)
 
 
-def _find_codec(value: object, registry: ResultRegistry) -> type[ResultCodec] | None:
-    if registry is DEFAULT_RESULT_REGISTRY:
+def _find_codec(
+    value: object, registry: ResultRegistry | None
+) -> type[ResultCodec] | None:
+    if registry is None:
         for codec in _DEFAULT_CODECS.values():
             if codec.matches(value):
                 return codec
@@ -139,10 +140,10 @@ def _find_codec(value: object, registry: ResultRegistry) -> type[ResultCodec] | 
     return registry.find_codec(value)
 
 
-def _resolve_codec(codec_id: str, registry: ResultRegistry) -> type[ResultCodec]:
-    if registry is DEFAULT_RESULT_REGISTRY and codec_id in _DEFAULT_CODECS:
+def _resolve_codec(codec_id: str, registry: ResultRegistry | None) -> type[ResultCodec]:
+    if registry is None and codec_id in _DEFAULT_CODECS:
         return _DEFAULT_CODECS[codec_id]
-    return registry.resolve_codec(codec_id)
+    return (registry or ResultRegistry.default()).resolve_codec(codec_id)
 
 
 def _value_path_display(value_path: ValuePath) -> str:
@@ -187,7 +188,7 @@ def _dump_value(
     expected_type: object = Any,
     value_path: ValuePath,
     bundle_dir: Path,
-    registry: ResultRegistry = DEFAULT_RESULT_REGISTRY,
+    registry: ResultRegistry | None = None,
 ) -> JsonValue:
     runtime_codec: type[ResultCodec] | None = None
     if isinstance(value, _SaveAs):
@@ -396,7 +397,7 @@ def _load_value(
     *,
     bundle_dir: Path,
     value_path: ValuePath,
-    registry: ResultRegistry = DEFAULT_RESULT_REGISTRY,
+    registry: ResultRegistry | None = None,
 ) -> object:
     match node:
         case None | bool() | int() | float() | str():
@@ -441,7 +442,7 @@ def _load_validated_fields(
     raw_fields: dict[str, JsonValue],
     bundle_dir: Path,
     value_path: ValuePath,
-    registry: ResultRegistry = DEFAULT_RESULT_REGISTRY,
+    registry: ResultRegistry | None = None,
 ) -> dict[str, object]:
     actual = set(raw_fields)
     missing = expected - actual
@@ -474,7 +475,7 @@ def _load_wrapper(
     *,
     bundle_dir: Path,
     value_path: ValuePath,
-    registry: ResultRegistry = DEFAULT_RESULT_REGISTRY,
+    registry: ResultRegistry | None = None,
 ) -> object:
     kind: WrapperKind = body["kind"]
     match kind:
@@ -618,7 +619,7 @@ def save_result_bundle(
     bundle_dir: Path,
     *,
     expected_type: object = Any,
-    registry: ResultRegistry = DEFAULT_RESULT_REGISTRY,
+    registry: ResultRegistry | None = None,
 ) -> None:
     bundle_dir.mkdir(parents=True, exist_ok=False)
 
@@ -638,7 +639,7 @@ def save_result_bundle(
 def load_result_bundle(
     bundle_dir: Path,
     *,
-    registry: ResultRegistry = DEFAULT_RESULT_REGISTRY,
+    registry: ResultRegistry | None = None,
 ) -> object:
     manifest_path = bundle_dir / MANIFEST_FILE_NAME
     raw = json.loads(manifest_path.read_text(encoding="utf-8"))
