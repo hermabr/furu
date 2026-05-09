@@ -384,6 +384,17 @@ class AnnotatedArrayResult(Furu[AnnotatedArrayOutput]):
         return AnnotatedArrayOutput(weights=np.arange(3, dtype=np.int64))
 
 
+class StrictAnnotatedArrayOutput(BaseModel):
+    model_config = ConfigDict(strict=True, arbitrary_types_allowed=True)
+
+    weights: Annotated[np.ndarray[Any, Any], NumpyNpyCodec]
+
+
+class StrictAnnotatedArrayResult(Furu[StrictAnnotatedArrayOutput]):
+    def _create(self) -> StrictAnnotatedArrayOutput:
+        return StrictAnnotatedArrayOutput(weights=np.arange(3, dtype=np.int64))
+
+
 def test_annotated_codec_selects_external_artifact() -> None:
     obj = AnnotatedArrayResult()
     loaded = obj.load_or_create()
@@ -391,6 +402,19 @@ def test_annotated_codec_selects_external_artifact() -> None:
     assert isinstance(loaded, AnnotatedArrayOutput)
     assert np.array_equal(loaded.weights, np.arange(3, dtype=np.int64))
     assert (obj._result_dir / "artifacts" / "weights" / "data.npy").exists()
+
+
+def test_strict_pydantic_annotated_codec_selects_external_artifact() -> None:
+    obj = StrictAnnotatedArrayResult()
+    loaded = obj.load_or_create()
+
+    assert isinstance(loaded, StrictAnnotatedArrayOutput)
+    assert np.array_equal(loaded.weights, np.arange(3, dtype=np.int64))
+    assert (obj._result_dir / "artifacts" / "weights" / "data.npy").exists()
+
+    loaded_again = obj.load_or_create()
+    assert isinstance(loaded_again, StrictAnnotatedArrayOutput)
+    assert np.array_equal(loaded_again.weights, np.arange(3, dtype=np.int64))
 
 
 @dataclass(frozen=True)
