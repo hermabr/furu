@@ -20,9 +20,10 @@ from typing import (
 
 import pydantic
 
-from furu.result.codec import _default_result_registry, ResultCodec, ResultRegistry
+from furu.result.codec import ResultCodec, ResultRegistry, _default_result_registry
 from furu.result.lazy import LazyResult
-from furu.result.save_as import _SaveAs, save_as as save_as
+from furu.result.save_as import _SaveAs
+from furu.result.save_as import save_as as save_as
 from furu.utils import JsonValue, fully_qualified_name
 
 WRAPPER_KEY: Final = "$furu"
@@ -112,24 +113,30 @@ def _dump_value(
             if isinstance(item, type) and issubclass(item, ResultCodec):
                 declared_codec = item
                 break
-    if (
-        runtime_codec is not None
-        and declared_codec is not None
-        and runtime_codec is not declared_codec
-    ):
-        raise TypeError(
-            "Conflicting codecs: value was wrapped with furu.save_as(...), "
-            "but the field also has an Annotated codec."
-        )
-
-    selected_codec = runtime_codec or declared_codec
-    if selected_codec is not None:
-        return _dump_external(
-            value,
-            codec=selected_codec,
-            value_path=value_path,
-            bundle_dir=bundle_dir,
-        )
+    match runtime_codec, declared_codec:
+        case runtime_codec, declared_codec if (
+            runtime_codec is not None
+            and declared_codec is not None
+            and runtime_codec is not declared_codec
+        ):
+            raise TypeError(
+                "Conflicting codecs: value was wrapped with furu.save_as(...), "
+                "but the field also has an Annotated codec."
+            )
+        case selected_codec, _ if selected_codec is not None:
+            return _dump_external(
+                value,
+                codec=selected_codec,
+                value_path=value_path,
+                bundle_dir=bundle_dir,
+            )
+        case None, selected_codec if selected_codec is not None:
+            return _dump_external(
+                value,
+                codec=selected_codec,
+                value_path=value_path,
+                bundle_dir=bundle_dir,
+            )
 
     match value:
         case None | bool() | int() | float() | str():
