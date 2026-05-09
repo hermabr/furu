@@ -144,7 +144,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
         raise NotImplementedError("TODO")
 
     @cached_property
-    def artifact(  # TODO: make sure this doesn't prevent garbage collection
+    def artifact_data(  # TODO: make sure this doesn't prevent garbage collection
         self,
     ) -> JsonValue:
         return _to_json(self)
@@ -153,7 +153,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def artifact_hash(  # TODO: should this be __hash__?
         self,
     ) -> str:
-        return _hash_dict_deterministically(self.artifact)
+        return _hash_dict_deterministically(self.artifact_data)
 
     @cached_property
     def schema(
