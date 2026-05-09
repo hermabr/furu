@@ -107,20 +107,6 @@ def _dump_value(
     codecs: Mapping[str, type[ResultCodec]],
 ) -> JsonValue:
     match value:
-        case LazyResult():
-            lazy_rel = Path(LAZY_DIR_NAME, *(path or (_ROOT_ARTIFACT_NAME,)))
-            nested_bundle_dir = bundle_dir / lazy_rel
-            _save_result_bundle(
-                value.load(),
-                nested_bundle_dir,
-                codecs=codecs,
-            )
-            return {
-                WRAPPER_KEY: {
-                    "kind": "lazy",
-                    "path": lazy_rel.as_posix(),
-                }
-            }
         case None | bool() | int() | float() | str():
             return value
         case list():
@@ -228,6 +214,20 @@ def _dump_value(
                     "kind": "dataclass",
                     "type": fully_qualified_name(type(value)),
                     "fields": fields_out,
+                }
+            }
+        case LazyResult():
+            lazy_rel = Path(LAZY_DIR_NAME, *(path or (_ROOT_ARTIFACT_NAME,)))
+            nested_bundle_dir = bundle_dir / lazy_rel
+            _save_result_bundle(
+                value.load(),
+                nested_bundle_dir,
+                codecs=codecs,
+            )
+            return {
+                WRAPPER_KEY: {
+                    "kind": "lazy",
+                    "path": lazy_rel.as_posix(),
                 }
             }
         case _:
