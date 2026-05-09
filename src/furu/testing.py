@@ -4,7 +4,7 @@ import secrets
 import shutil
 import tempfile
 from collections.abc import Iterator
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -61,11 +61,11 @@ def pytest_unconfigure(config: pytest.Config) -> None:
     furu_config.directories = state.original_directories
 
     if not _keep_furu_data():
-        for field in fields(state.run_directories):
-            path = getattr(state.run_directories, field.name)
+        for field_name in type(state.run_directories).model_fields:
+            path = getattr(state.run_directories, field_name)
             if not isinstance(path, Path):
                 raise TypeError(
-                    f"Expected Path for run directory '{field.name}', got {type(path).__name__}"
+                    f"Expected Path for run directory '{field_name}', got {type(path).__name__}"
                 )
             shutil.rmtree(path, ignore_errors=True)
     else:
