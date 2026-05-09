@@ -6,7 +6,7 @@ from dataclasses import FrozenInstanceError, dataclass, is_dataclass, replace
 from enum import Enum
 from functools import cached_property, partial
 from pathlib import Path
-from typing import Any, ClassVar, Literal, TypeVar, cast
+from typing import Any, ClassVar, Literal, cast
 from unittest.mock import patch
 
 import pytest
@@ -21,8 +21,6 @@ from furu.metadata import ArtifactMetadata
 from furu.result import load_result_bundle, save_result_bundle
 from furu.serialize import _from_json, to_json
 from furu.utils import fully_qualified_name
-
-T = TypeVar("T")
 
 type SOME_TYPE = Literal["a", "b"] | int
 

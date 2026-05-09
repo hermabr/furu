@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import fields, is_dataclass
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, Generic, Literal, TypeGuard, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypeGuard
 
 from pydantic import BaseModel as PydanticBaseModel
 
@@ -14,11 +14,10 @@ if TYPE_CHECKING:
     from furu.metadata import DependencyRef
 
 
-T = TypeVar("T")
 DependencyVia = Literal["field", "dependency", "load_or_create", "try_load"]
 
 
-class dependency(cached_property, Generic[T]):
+class dependency[T](cached_property):
     __furu_dependency__ = True
 
     def __init__(self, func: Callable[..., T]):
