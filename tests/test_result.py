@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict
 from furu import Furu
 from furu.result import (
     LazyResult,
+    _child_declared_type,
     load_result_bundle,
     save_result_bundle,
 )
@@ -26,6 +27,25 @@ from furu.result.codec import (
 
 np = pytest.importorskip("numpy")
 pl = pytest.importorskip("polars")
+
+_CHILD_DECLARED_TYPE_NAMESPACE: dict[str, object] = {
+    "Annotated": Annotated,
+    "Any": Any,
+    "Ellipsis": Ellipsis,
+    "NumpyNpyCodec": NumpyNpyCodec,
+    "Path": Path,
+    "ResultCodec": ResultCodec,
+    "bool": bool,
+    "dict": dict,
+    "float": float,
+    "frozenset": frozenset,
+    "int": int,
+    "list": list,
+    "object": object,
+    "set": set,
+    "str": str,
+    "tuple": tuple,
+}
 
 
 class JsonResult(Furu[dict[str, object]]):
@@ -287,6 +307,61 @@ def test_result_registry_register_is_functional() -> None:
     assert _default_result_registry().find_codec(_CountingValue(1)) is None
     assert first.find_codec(_CountingValue(1)) is _CountingCodec
     assert second.find_codec(_CountingValue(1)) is _OtherCountingCodec
+
+
+@pytest.mark.parametrize(
+    ("declared_type_expr", "key", "expected_type_expr"),
+    [
+        ("list[int]", 0, "int"),
+        ("list[int]", 12, "int"),
+        ("list[Annotated[int, NumpyNpyCodec]]", 0, "Annotated[int, NumpyNpyCodec]"),
+        ("Annotated[list[str], NumpyNpyCodec]", 0, "str"),
+        ("dict[str, float]", "loss", "float"),
+        ("dict[int, Path]", 7, "Path"),
+        (
+            "dict[str, Annotated[Any, NumpyNpyCodec]]",
+            "weights",
+            "Annotated[Any, NumpyNpyCodec]",
+        ),
+        ("Annotated[dict[str, int], NumpyNpyCodec]", "value", "int"),
+        ("tuple[int, ...]", 0, "int"),
+        ("tuple[int, ...]", 99, "int"),
+        (
+            "tuple[Annotated[Any, NumpyNpyCodec], ...]",
+            3,
+            "Annotated[Any, NumpyNpyCodec]",
+        ),
+        ("Annotated[tuple[str, ...], NumpyNpyCodec]", 3, "str"),
+        ("tuple[int, str, Path]", 0, "int"),
+        ("tuple[int, str, Path]", 1, "str"),
+        ("tuple[int, str, Path]", 2, "Path"),
+        (
+            "tuple[int, Annotated[Any, NumpyNpyCodec], Path]",
+            1,
+            "Annotated[Any, NumpyNpyCodec]",
+        ),
+        ("Annotated[tuple[int, str], NumpyNpyCodec]", 1, "str"),
+        ("tuple[int, str]", 2, "Any"),
+        ("tuple[int, str]", "not-an-index", "Any"),
+        ("set[int]", 0, "Any"),
+        ("frozenset[int]", 0, "Any"),
+        ("object", 0, "Any"),
+        ("Any", 0, "Any"),
+    ],
+)
+def test_child_declared_type_descends_supported_container_annotations(
+    declared_type_expr: str,
+    key: object,
+    expected_type_expr: str,
+) -> None:
+    declared_type = eval(
+        declared_type_expr, {"__builtins__": {}}, _CHILD_DECLARED_TYPE_NAMESPACE
+    )
+    expected_type = eval(
+        expected_type_expr, {"__builtins__": {}}, _CHILD_DECLARED_TYPE_NAMESPACE
+    )
+
+    assert _child_declared_type(declared_type, key) == expected_type
 
 
 @dataclass(frozen=True)
