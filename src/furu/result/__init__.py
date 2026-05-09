@@ -333,7 +333,11 @@ def _load_wrapper(
                 )
 
             return LazyResult._from_loader(
-                partial(_load_result_bundle, nested_bundle_dir, codecs=codecs)
+                partial(
+                    _load_result_bundle,
+                    bundle_dir=nested_bundle_dir,
+                    codecs=codecs,
+                )
             )
         case "dataclass":  # TODO: do validation on the dataclass/pydantic object, so that we know the new object has exactly the same fields as the old one
             cls = _import_type(body["type"])
