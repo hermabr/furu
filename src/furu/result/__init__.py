@@ -103,16 +103,16 @@ def _dump_value(
     bundle_dir: Path,
     registry: ResultRegistry,
 ) -> JsonValue:
-    declared_codec: type[ResultCodec] | None = None
+    annotated_codec: type[ResultCodec] | None = None
     if get_origin(declared_type) is Annotated:
         for item in get_args(declared_type)[1:]:
             if isinstance(item, type) and issubclass(item, ResultCodec):
-                declared_codec = item
+                annotated_codec = item
                 break
 
-    match value, declared_codec:
-        case _SaveAs(codec=runtime_codec), declared_codec if (
-            declared_codec is not None and runtime_codec is not declared_codec
+    match value, annotated_codec:
+        case _SaveAs(codec=runtime_codec), annotated_codec if (
+            annotated_codec is not None and runtime_codec is not annotated_codec
         ):
             raise TypeError(
                 "Conflicting codecs: value was wrapped with furu.save_as(...), "
@@ -125,10 +125,10 @@ def _dump_value(
                 value_path=value_path,
                 bundle_dir=bundle_dir,
             )
-        case _, declared_codec if declared_codec is not None:
+        case _, annotated_codec if annotated_codec is not None:
             return _dump_external(
                 value,
-                codec=declared_codec,
+                codec=annotated_codec,
                 value_path=value_path,
                 bundle_dir=bundle_dir,
             )
