@@ -15,9 +15,10 @@ from pydantic import BaseModel, ConfigDict
 import furu.execution as execution_module
 from furu import Furu, from_artifact, load_or_create, validate
 from furu.config import config
+from furu.metadata import ArtifactMetadata
 from furu.result import load_result_bundle, save_result_bundle
 from furu.serialize import _from_json, to_json
-from furu.utils import fully_qualified_name
+from furu.utils import JsonValue, fully_qualified_name
 
 T = TypeVar("T")
 
@@ -891,6 +892,50 @@ def test_from_artifact_accepts_loaded_metadata_artifact():
 
     assert loaded == obj
     assert isinstance(loaded, Node)
+
+
+def test_from_artifact_accepts_artifact_metadata():
+    obj = Node(name="x")
+    artifact = ArtifactMetadata(
+        data=obj.artifact,
+        hash=obj.artifact_hash,
+        schema=obj.schema,
+        schema_hash=obj.artifact_schema_hash,
+    )
+
+    loaded = from_artifact(artifact, Node)
+
+    assert loaded == obj
+    assert isinstance(loaded, Node)
+
+
+def test_from_artifact_rejects_artifact_metadata_hash_mismatch():
+    obj = Node(name="x")
+    artifact = ArtifactMetadata(
+        data={**cast(dict[str, JsonValue], obj.artifact), "name": "y"},
+        hash=obj.artifact_hash,
+        schema=obj.schema,
+        schema_hash=obj.artifact_schema_hash,
+    )
+
+    with pytest.raises(ValueError, match="Artifact hash mismatch"):
+        from_artifact(artifact, Node)
+
+
+def test_from_artifact_rejects_artifact_metadata_schema_hash_mismatch():
+    obj = Node(name="x")
+    artifact = ArtifactMetadata(
+        data=obj.artifact,
+        hash=obj.artifact_hash,
+        schema={
+            **cast(dict[str, JsonValue], obj.schema),
+            "extra": "schema field",
+        },
+        schema_hash=obj.artifact_schema_hash,
+    )
+
+    with pytest.raises(ValueError, match="Artifact schema hash mismatch"):
+        from_artifact(artifact, Node)
 
 
 def test_schema_with_ellipsis_type_arg():

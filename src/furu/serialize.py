@@ -7,12 +7,14 @@ from typing import TYPE_CHECKING, Any, get_args, get_origin, get_type_hints, ove
 from pydantic import BaseModel as PydanticBaseModel
 
 from furu.constants import CLASSMARKER, KINDMARKER
-from furu.utils import JsonValue, fully_qualified_name
+from furu.metadata import ArtifactMetadata
+from furu.utils import JsonValue, _hash_dict_deterministically, fully_qualified_name
 
 if TYPE_CHECKING:
     from furu.core import Furu
 
 _RESERVED_DICT_KEYS = frozenset({CLASSMARKER, KINDMARKER})
+type ArtifactInput = JsonValue | ArtifactMetadata
 
 
 def to_json(  # TODO: consider caching this (but if i'm going to, I need to figure out how to cache lists and other unhashable objects)
@@ -122,19 +124,41 @@ def _from_json(value: JsonValue) -> Any:
 
 
 @overload
-def from_artifact[T: "Furu"](artifact: JsonValue, expected_type: type[T]) -> T: ...
+def from_artifact[T: "Furu"](artifact: ArtifactInput, expected_type: type[T]) -> T: ...
 
 
 @overload
-def from_artifact(artifact: JsonValue, expected_type: None = None) -> "Furu": ...
+def from_artifact(artifact: ArtifactInput, expected_type: None = None) -> "Furu": ...
+
+
+def _validate_artifact_metadata(artifact: ArtifactMetadata) -> JsonValue:
+    actual_hash = _hash_dict_deterministically(artifact.data)
+    if artifact.hash != actual_hash:
+        raise ValueError(
+            f"Artifact hash mismatch: expected {artifact.hash}, got {actual_hash}"
+        )
+
+    actual_schema_hash = _hash_dict_deterministically(artifact.schema)
+    if artifact.schema_hash != actual_schema_hash:
+        raise ValueError(
+            "Artifact schema hash mismatch: "
+            + f"expected {artifact.schema_hash}, got {actual_schema_hash}"
+        )
+
+    return artifact.data
 
 
 def from_artifact[T: "Furu"](
-    artifact: JsonValue, expected_type: type[T] | None = None
+    artifact: ArtifactInput, expected_type: type[T] | None = None
 ) -> T | "Furu":
     from furu.core import Furu
 
-    furu_obj = _from_json(artifact)
+    artifact_data = (
+        _validate_artifact_metadata(artifact)
+        if isinstance(artifact, ArtifactMetadata)
+        else artifact
+    )
+    furu_obj = _from_json(artifact_data)
     if expected_type is not None and not isinstance(furu_obj, expected_type):
         raise TypeError("Artifact did not describe a Furu object")
     if expected_type is None and not isinstance(furu_obj, Furu):
