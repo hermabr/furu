@@ -15,18 +15,27 @@
     - [ ] move to zig
 - [x] metadata
     - [x] basic metadata
+    - [x] write running/completed metadata during load_or_create
     - [ ] record git info
     - [ ] load from metadata
     - [ ] think deeply about and add most relevant metadata, such as computer used to run it etc
     - [ ] support time traveling to a previous experiment
 - [x] pytest plugin
-- [ ] save and load results
+- [x] save and load results
     - [x] start with pickle
-    - [ ] saves using a pytree-like strategy, with most things in json and some things in custom files
-        - [ ] allows users to register handlers
+    - [x] saves using a pytree-like strategy, with most things in json and some things in custom files
+        - [x] json-native scalars, lists, and dicts
+        - [x] tuple, set, frozenset, pathlib.Path wrappers
+        - [x] dataclass and pydantic model wrappers
+        - [x] numpy array artifact codec
+        - [x] polars dataframe artifact codec
+        - [x] atomic result directory publish through temporary bundle rename
+        - [x] cache hits load persisted results without recomputing
+        - [ ] allows users to register handlers/codecs
 - [ ] error handling
     - [x] capture errors
     - [x] make the errors informative
+    - [x] write traceback and locals to per-run error logs
     - [ ] use rich tracebacks
 - [ ] trace code at runtime to find all functions and save/hash their ast
      - [ ] sandbox the code
@@ -35,15 +44,17 @@
      - [ ] detect all functions we call
      - [ ] do not allow _create to depend on/be affected by sys.argv
 - [ ] logging
-    - [ ] log when loading or creating object
-    - [ ] record log in furu_dir
+    - [x] log when loading or creating object
+    - [x] record run logs in furu_dir
+    - [x] scoped file handler for each active furu run
     - [ ] use logging consistently
     - [ ] structured logging
     - [ ] support multiple processes, such as torch run with 8 tasks
     - [ ] have a file like events.log or rename the old logs if i start new runs to make debug easier
 - [ ] migration
 - [ ] executor
-    - [ ] local
+    - [x] local load_or_create execution
+    - [x] local batched _create_batched execution
     - [ ] slurm workers
     - [ ] slurm dag
     - [ ] time traveling executor (maybe i need git worktrees for this?)
@@ -55,8 +66,9 @@
     - [ ] decide if i need this
     - [ ] check if i'm able to send the name to this
 - [ ] decide/think about if it is possible to inject information into a class, such as if i have unknown sentences and then i want to also add their translations such as for leap
-- [ ] add post_init for validation
-- [ ] storage: do the same behavior as for executor, where you override def _storage_path(self): Path("furu/data") for a furu object
+- [x] add post_init for validation
+- [x] storage: do the same behavior as for executor, where you override def _storage_path(self): Path("furu/data") for a furu object
+    - [x] per-object storage_root override
 - [ ] querying/filtering
 - [ ] don't allow users to call _create directly (maybe i need a context variable + __init_subclass__?)
 - [ ] sync support, so that it is easy to say i want these experiments or these objects from one host to a different one
