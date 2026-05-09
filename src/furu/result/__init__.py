@@ -4,21 +4,24 @@ import dataclasses
 import importlib
 import importlib.util
 import json
+from functools import partial
 from pathlib import Path
 from typing import Any, Final, Literal, assert_never, cast
 
 import pydantic
 
-from furu.result.codec import _DEFAULT_CODECS, ResultCodec
+from furu.result.codec import _DEFAULT_CODECS
+from furu.result.lazy import LazyResult
 from furu.utils import JsonValue, fully_qualified_name
 
-WRAPPER_KEY: Final[str] = "$furu"
-ARTIFACTS_DIR_NAME: Final[str] = "artifacts"
-MANIFEST_FILE_NAME: Final[str] = "manifest.json"
-_ROOT_ARTIFACT_NAME: Final[str] = "root"
+WRAPPER_KEY: Final = "$furu"
+ARTIFACTS_DIR_NAME: Final = "artifacts"
+LAZY_DIR_NAME: Final = "lazy"
+MANIFEST_FILE_NAME: Final = "manifest.json"
+_ROOT_ARTIFACT_NAME: Final = "root"
 type LogicalPath = tuple[str, ...]
 type WrapperKind = Literal[
-    "external", "dataclass", "path", "pydantic", "tuple", "set", "frozenset"
+    "external", "dataclass", "path", "pydantic", "tuple", "set", "frozenset", "lazy"
 ]
 
 
@@ -63,7 +66,6 @@ def _dump_value(
     *,
     path: LogicalPath,
     bundle_dir: Path,
-    codecs: dict[str, type[ResultCodec]],
 ) -> JsonValue:
     match value:
         case None | bool() | int() | float() | str():
@@ -75,7 +77,6 @@ def _dump_value(
                     item,
                     path=(*path, f"{i:0{width}d}"),
                     bundle_dir=bundle_dir,
-                    codecs=codecs,
                 )
                 for i, item in enumerate(value)
             ]
@@ -89,7 +90,6 @@ def _dump_value(
                             item,
                             path=(*path, f"{i:0{width}d}"),
                             bundle_dir=bundle_dir,
-                            codecs=codecs,
                         )
                         for i, item in enumerate(value)
                     ],
@@ -114,7 +114,6 @@ def _dump_value(
                             item,
                             path=(*path, f"{i:0{width}d}"),
                             bundle_dir=bundle_dir,
-                            codecs=codecs,
                         )
                         for i, item in enumerate(items)
                     ],
@@ -131,7 +130,6 @@ def _dump_value(
                     child,
                     path=(*path, key),
                     bundle_dir=bundle_dir,
-                    codecs=codecs,
                 )
             return out
         case Path():
@@ -149,7 +147,6 @@ def _dump_value(
                     getattr(value, name),
                     path=(*path, name),
                     bundle_dir=bundle_dir,
-                    codecs=codecs,
                 )
             return {
                 WRAPPER_KEY: {
@@ -166,7 +163,6 @@ def _dump_value(
                     getattr(value, name),
                     path=(*path, name),
                     bundle_dir=bundle_dir,
-                    codecs=codecs,
                 )
             return {
                 WRAPPER_KEY: {
@@ -175,8 +171,18 @@ def _dump_value(
                     "fields": fields_out,
                 }
             }
+        case LazyResult():
+            lazy_rel = Path(LAZY_DIR_NAME, *(path or (_ROOT_ARTIFACT_NAME,)))
+            nested_bundle_dir = bundle_dir / lazy_rel
+            save_result_bundle(value.load(), nested_bundle_dir)
+            return {
+                WRAPPER_KEY: {
+                    "kind": "lazy",
+                    "path": lazy_rel.as_posix(),
+                }
+            }
         case _:
-            for codec in codecs.values():
+            for codec in _DEFAULT_CODECS.values():
                 if codec.matches(value):
                     artifact_rel = Path(
                         ARTIFACTS_DIR_NAME, *(path or (_ROOT_ARTIFACT_NAME,))
@@ -207,25 +213,20 @@ def _load_value(
     node: JsonValue,
     *,
     bundle_dir: Path,
-    codecs: dict[str, type[ResultCodec]],
 ) -> object:
     match node:
         case None | bool() | int() | float() | str():
             return node
         case list():
-            return [
-                _load_value(child, bundle_dir=bundle_dir, codecs=codecs)
-                for child in node
-            ]
+            return [_load_value(child, bundle_dir=bundle_dir) for child in node]
         case dict() if WRAPPER_KEY in node:
             return _load_wrapper(
                 cast(dict[str, Any], node[WRAPPER_KEY]),
                 bundle_dir=bundle_dir,
-                codecs=codecs,
             )
         case dict():
             return {
-                key: _load_value(child, bundle_dir=bundle_dir, codecs=codecs)
+                key: _load_value(child, bundle_dir=bundle_dir)
                 for key, child in node.items()
             }
         case _:
@@ -236,7 +237,6 @@ def _load_wrapper(
     body: dict[str, Any],
     *,
     bundle_dir: Path,
-    codecs: dict[str, type[ResultCodec]],
 ) -> object:
     kind: WrapperKind = body["kind"]
     match kind:
@@ -259,11 +259,33 @@ def _load_wrapper(
                     f"external wrapper artifact directory missing: {artifact_dir}"
                 )
 
-            return codecs[body["codec"]].load(artifact_dir=artifact_dir)
+            return _DEFAULT_CODECS[body["codec"]].load(artifact_dir=artifact_dir)
+        case "lazy":
+            if (nested_rel := Path(body["path"])).is_absolute():
+                raise ValueError(f"lazy wrapper path must be relative: {nested_rel}")
+
+            nested_bundle_dir = (bundle_dir / nested_rel).resolve()
+            lazy_root = (bundle_dir / LAZY_DIR_NAME).resolve()
+            if not nested_bundle_dir.is_relative_to(lazy_root):
+                raise ValueError(
+                    f"lazy wrapper path escapes bundle lazy dir: {nested_rel}"
+                )
+
+            if not (nested_bundle_dir / MANIFEST_FILE_NAME).exists():
+                raise ValueError(
+                    f"lazy wrapper nested manifest missing: {nested_bundle_dir}"
+                )
+
+            return LazyResult._from_loader(
+                partial(
+                    load_result_bundle,
+                    bundle_dir=nested_bundle_dir,
+                )
+            )
         case "dataclass":  # TODO: do validation on the dataclass/pydantic object, so that we know the new object has exactly the same fields as the old one
             cls = _import_type(body["type"])
             loaded_fields = {
-                name: _load_value(child, bundle_dir=bundle_dir, codecs=codecs)
+                name: _load_value(child, bundle_dir=bundle_dir)
                 for name, child in body["fields"].items()
             }
             obj = object.__new__(cls)
@@ -274,23 +296,20 @@ def _load_wrapper(
             return Path(body["value"])
         case "tuple":
             return tuple(
-                _load_value(child, bundle_dir=bundle_dir, codecs=codecs)
-                for child in body["items"]
+                _load_value(child, bundle_dir=bundle_dir) for child in body["items"]
             )
         case "set":
             return {
-                _load_value(child, bundle_dir=bundle_dir, codecs=codecs)
-                for child in body["items"]
+                _load_value(child, bundle_dir=bundle_dir) for child in body["items"]
             }
         case "frozenset":
             return frozenset(
-                _load_value(child, bundle_dir=bundle_dir, codecs=codecs)
-                for child in body["items"]
+                _load_value(child, bundle_dir=bundle_dir) for child in body["items"]
             )
         case "pydantic":
             cls = _import_type(body["type"])
             loaded_fields = {
-                name: _load_value(child, bundle_dir=bundle_dir, codecs=codecs)
+                name: _load_value(child, bundle_dir=bundle_dir)
                 for name, child in body["fields"].items()
             }
             return cls.model_construct(**loaded_fields)
@@ -305,7 +324,6 @@ def save_result_bundle(value: object, bundle_dir: Path) -> None:
         value,
         path=(),
         bundle_dir=bundle_dir,
-        codecs=_DEFAULT_CODECS,
     )
     (bundle_dir / MANIFEST_FILE_NAME).write_text(
         json.dumps(manifest, indent=2),
@@ -316,4 +334,4 @@ def save_result_bundle(value: object, bundle_dir: Path) -> None:
 def load_result_bundle(bundle_dir: Path) -> object:
     manifest_path = bundle_dir / MANIFEST_FILE_NAME
     raw = json.loads(manifest_path.read_text(encoding="utf-8"))
-    return _load_value(raw, bundle_dir=bundle_dir, codecs=_DEFAULT_CODECS)
+    return _load_value(raw, bundle_dir=bundle_dir)
