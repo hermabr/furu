@@ -87,14 +87,9 @@ class Furu[T](_FuruDataclassTransform, ABC):
     ) -> Literal[
         "completed", "missing", "running", "failed"
     ]:  # TODO: add queued/waiting state?
-        if self.is_completed():
+        if self._result_manifest_path.exists():
             return "completed"
         raise NotImplementedError("TODO")
-
-    def is_completed(
-        self,
-    ) -> bool:  # TODO: maybe this should check the is self.status is completed? (in that case status cant check if self.is_completed)
-        return self._result_manifest_path.exists()
 
     def try_load(self) -> T:  # TODO: make a better name for this
         if self._result_manifest_path.exists():
