@@ -21,7 +21,7 @@ from typing import (
 
 import pydantic
 
-from furu.result.codec import ResultCodec, ResultRegistry
+from furu.result.codec import _default_result_registry, ResultCodec, ResultRegistry
 from furu.result.lazy import LazyResult
 from furu.utils import JsonValue, fully_qualified_name
 
@@ -588,7 +588,7 @@ def save_result_bundle(
     registry: ResultRegistry | None = None,
 ) -> None:
     bundle_dir.mkdir(parents=True, exist_ok=False)
-    registry = registry or ResultRegistry.default()
+    registry = registry or _default_result_registry()
 
     manifest = _dump_value(
         value,
@@ -608,7 +608,7 @@ def load_result_bundle(
     *,
     registry: ResultRegistry | None = None,
 ) -> object:
-    registry = registry or ResultRegistry.default()
+    registry = registry or _default_result_registry()
     manifest_path = bundle_dir / MANIFEST_FILE_NAME
     raw = json.loads(manifest_path.read_text(encoding="utf-8"))
     return _load_value(raw, bundle_dir=bundle_dir, value_path=(), registry=registry)

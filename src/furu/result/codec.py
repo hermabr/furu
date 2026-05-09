@@ -127,17 +127,6 @@ class ResultRegistry:
             default_codecs=self.default_codecs,
         )
 
-    @classmethod
-    @cache
-    def default(cls) -> Self:
-        return cls(
-            default_codecs=(
-                codec
-                for codec in (PolarsParquetCodec, NumpyNpyCodec)
-                if codec.dependencies_available()
-            )
-        )
-
     def find_codec(self, value: object) -> type[ResultCodec] | None:
         for codec in (*self.custom_codecs, *self.default_codecs):
             if codec.matches(value):
@@ -155,3 +144,14 @@ class ResultRegistry:
             if not issubclass(codec, ResultCodec):
                 raise TypeError(f"{codec_id} is not a ResultCodec")
             return codec
+
+
+@cache
+def _default_result_registry() -> ResultRegistry:
+    return ResultRegistry(
+        default_codecs=(
+            codec
+            for codec in (PolarsParquetCodec, NumpyNpyCodec)
+            if codec.dependencies_available()
+        )
+    )

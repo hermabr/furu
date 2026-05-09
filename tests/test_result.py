@@ -21,6 +21,7 @@ from furu.result.codec import (
     PolarsParquetCodec,
     ResultCodec,
     ResultRegistry,
+    _default_result_registry,
 )
 
 np = pytest.importorskip("numpy")
@@ -280,10 +281,10 @@ def test_codec_id_is_derived_from_class_identity() -> None:
 
 
 def test_result_registry_register_is_functional() -> None:
-    first = ResultRegistry.default().register(_CountingCodec)
+    first = _default_result_registry().register(_CountingCodec)
     second = first.register(_OtherCountingCodec)
 
-    assert ResultRegistry.default().find_codec(_CountingValue(1)) is None
+    assert _default_result_registry().find_codec(_CountingValue(1)) is None
     assert first.find_codec(_CountingValue(1)) is _CountingCodec
     assert second.find_codec(_CountingValue(1)) is _OtherCountingCodec
 
@@ -827,7 +828,7 @@ def test_root_lazy_result_defers_cache_read_and_memoizes(
     tmp_path: Path,
 ) -> None:
     bundle_dir = tmp_path / "bundle"
-    registry = ResultRegistry.default().register(_CountingCodec)
+    registry = _default_result_registry().register(_CountingCodec)
     _CountingCodec.dump_calls = 0
     _CountingCodec.load_calls = 0
 
@@ -861,7 +862,7 @@ def test_nested_lazy_result_round_trips_inside_supported_structures(
     tmp_path: Path,
 ) -> None:
     bundle_dir = tmp_path / "bundle"
-    registry = ResultRegistry.default().register(_CountingCodec)
+    registry = _default_result_registry().register(_CountingCodec)
     _CountingCodec.load_calls = 0
     value = {
         "items": [
