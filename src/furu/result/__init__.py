@@ -4,13 +4,31 @@ import dataclasses
 import importlib
 import importlib.util
 import json
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import Any, Final, Literal, assert_never, cast
+from typing import (
+    Annotated,
+    Any,
+    Final,
+    Generic,
+    Literal,
+    TypeVar,
+    assert_never,
+    cast,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 import pydantic
 
-from furu.result.codec import _DEFAULT_CODECS
+from furu.result.codec import (
+    DEFAULT_RESULT_REGISTRY,
+    _DEFAULT_CODECS,
+    ResultCodec,
+    ResultRegistry,
+)
 from furu.result.lazy import LazyResult
 from furu.utils import JsonValue, fully_qualified_name
 
@@ -19,10 +37,112 @@ ARTIFACTS_DIR_NAME: Final = "artifacts"
 LAZY_DIR_NAME: Final = "lazy"
 MANIFEST_FILE_NAME: Final = "manifest.json"
 _ROOT_ARTIFACT_NAME: Final = "root"
+T = TypeVar("T")
 type ValuePath = tuple[str, ...]
 type WrapperKind = Literal[
     "external", "dataclass", "path", "pydantic", "tuple", "set", "frozenset", "lazy"
 ]
+
+
+@dataclass(frozen=True)
+class _SaveAs(Generic[T]):
+    value: T
+    codec: type[ResultCodec]
+
+
+def save_as(value: T, *, codec: type[ResultCodec]) -> T:
+    return cast(T, _SaveAs(value=value, codec=codec))
+
+
+def _unwrap_save_as(value: T) -> T:
+    match value:
+        case _SaveAs(value=inner):
+            return cast(T, _unwrap_save_as(inner))
+        case list():
+            return cast(T, [_unwrap_save_as(item) for item in value])
+        case tuple():
+            return cast(T, tuple(_unwrap_save_as(item) for item in value))
+        case set():
+            return cast(T, {_unwrap_save_as(item) for item in value})
+        case frozenset():
+            return cast(T, frozenset(_unwrap_save_as(item) for item in value))
+        case dict():
+            return cast(
+                T, {key: _unwrap_save_as(child) for key, child in value.items()}
+            )
+        case pydantic.BaseModel():
+            return cast(
+                T,
+                value.model_copy(
+                    update={
+                        name: _unwrap_save_as(getattr(value, name))
+                        for name in value.__class__.model_fields
+                    }
+                ),
+            )
+        case _ if dataclasses.is_dataclass(value) and not isinstance(value, type):
+            return dataclasses.replace(
+                value,
+                **{
+                    field.name: _unwrap_save_as(getattr(value, field.name))
+                    for field in dataclasses.fields(cast(Any, value))
+                    if field.init
+                },
+            )
+        case _:
+            return value
+
+
+def _strip_annotated(expected_type: object) -> object:
+    return (
+        get_args(expected_type)[0]
+        if get_origin(expected_type) is Annotated
+        else expected_type
+    )
+
+
+def _codec_from_annotated(expected_type: object) -> type[ResultCodec] | None:
+    if get_origin(expected_type) is not Annotated:
+        return None
+    for item in get_args(expected_type)[1:]:
+        if isinstance(item, type) and issubclass(item, ResultCodec):
+            return item
+    return None
+
+
+def _child_expected_type(expected_type: object, key: object) -> object:
+    expected_type = _strip_annotated(expected_type)
+    origin = get_origin(expected_type)
+    args = get_args(expected_type)
+    if origin is list and args:
+        return args[0]
+    if origin is dict and len(args) == 2:
+        return args[1]
+    if origin is tuple and args:
+        if len(args) == 2 and args[1] is Ellipsis:
+            return args[0]
+        if isinstance(key, int) and key < len(args):
+            return args[key]
+    return Any
+
+
+def _dataclass_field_types(cls: type[Any]) -> dict[str, object]:
+    return get_type_hints(cls, include_extras=True)
+
+
+def _find_codec(value: object, registry: ResultRegistry) -> type[ResultCodec] | None:
+    if registry is DEFAULT_RESULT_REGISTRY:
+        for codec in _DEFAULT_CODECS.values():
+            if codec.matches(value):
+                return codec
+        return None
+    return registry.find_codec(value)
+
+
+def _resolve_codec(codec_id: str, registry: ResultRegistry) -> type[ResultCodec]:
+    if registry is DEFAULT_RESULT_REGISTRY and codec_id in _DEFAULT_CODECS:
+        return _DEFAULT_CODECS[codec_id]
+    return registry.resolve_codec(codec_id)
 
 
 def _value_path_display(value_path: ValuePath) -> str:
@@ -64,9 +184,36 @@ def _validate_result_path_segment(
 def _dump_value(
     value: object,
     *,
+    expected_type: object = Any,
     value_path: ValuePath,
     bundle_dir: Path,
+    registry: ResultRegistry = DEFAULT_RESULT_REGISTRY,
 ) -> JsonValue:
+    runtime_codec: type[ResultCodec] | None = None
+    if isinstance(value, _SaveAs):
+        runtime_codec = value.codec
+        value = value.value
+
+    annotated_codec = _codec_from_annotated(expected_type)
+    if (
+        runtime_codec is not None
+        and annotated_codec is not None
+        and runtime_codec is not annotated_codec
+    ):
+        raise TypeError(
+            "Conflicting codecs: value was wrapped with furu.save_as(...), "
+            "but the field also has an Annotated codec."
+        )
+
+    selected_codec = runtime_codec or annotated_codec
+    if selected_codec is not None:
+        return _dump_external(
+            value,
+            codec=selected_codec,
+            value_path=value_path,
+            bundle_dir=bundle_dir,
+        )
+
     match value:
         case None | bool() | int() | float() | str():
             return value
@@ -75,8 +222,10 @@ def _dump_value(
             return [
                 _dump_value(
                     item,
+                    expected_type=_child_expected_type(expected_type, i),
                     value_path=(*value_path, f"{i:0{width}d}"),
                     bundle_dir=bundle_dir,
+                    registry=registry,
                 )
                 for i, item in enumerate(value)
             ]
@@ -88,8 +237,10 @@ def _dump_value(
                     "items": [
                         _dump_value(
                             item,
+                            expected_type=_child_expected_type(expected_type, i),
                             value_path=(*value_path, f"{i:0{width}d}"),
                             bundle_dir=bundle_dir,
+                            registry=registry,
                         )
                         for i, item in enumerate(value)
                     ],
@@ -112,8 +263,10 @@ def _dump_value(
                     "items": [
                         _dump_value(
                             item,
+                            expected_type=Any,
                             value_path=(*value_path, f"{i:0{width}d}"),
                             bundle_dir=bundle_dir,
+                            registry=registry,
                         )
                         for i, item in enumerate(items)
                     ],
@@ -128,8 +281,10 @@ def _dump_value(
                 )
                 out[key] = _dump_value(
                     child,
+                    expected_type=_child_expected_type(expected_type, raw_key),
                     value_path=(*value_path, key),
                     bundle_dir=bundle_dir,
+                    registry=registry,
                 )
             return out
         case Path():
@@ -141,14 +296,17 @@ def _dump_value(
             }
         case pydantic.BaseModel():
             fields_out: dict[str, JsonValue] = {}
+            field_types = get_type_hints(value.__class__, include_extras=True)
             for raw_name in value.__class__.model_fields:
                 name = _validate_result_path_segment(
                     raw_name, parent_value_path=value_path
                 )
                 fields_out[name] = _dump_value(
                     getattr(value, name),
+                    expected_type=field_types.get(name, Any),
                     value_path=(*value_path, name),
                     bundle_dir=bundle_dir,
+                    registry=registry,
                 )
             return {
                 WRAPPER_KEY: {
@@ -159,14 +317,17 @@ def _dump_value(
             }
         case _ if dataclasses.is_dataclass(value) and not isinstance(value, type):
             fields_out: dict[str, JsonValue] = {}
+            field_types = _dataclass_field_types(type(value))
             for field in dataclasses.fields(cast(Any, value)):
                 name = _validate_result_path_segment(
                     field.name, parent_value_path=value_path
                 )
                 fields_out[name] = _dump_value(
                     getattr(value, name),
+                    expected_type=field_types.get(field.name, Any),
                     value_path=(*value_path, name),
                     bundle_dir=bundle_dir,
+                    registry=registry,
                 )
             return {
                 WRAPPER_KEY: {
@@ -178,7 +339,12 @@ def _dump_value(
         case LazyResult():
             lazy_rel = Path(LAZY_DIR_NAME, *(value_path or (_ROOT_ARTIFACT_NAME,)))
             nested_bundle_dir = bundle_dir / lazy_rel
-            save_result_bundle(value.load(), nested_bundle_dir)
+            save_result_bundle(
+                value.load(),
+                nested_bundle_dir,
+                expected_type=_strip_annotated(expected_type),
+                registry=registry,
+            )
             return {
                 WRAPPER_KEY: {
                     "kind": "lazy",
@@ -186,26 +352,38 @@ def _dump_value(
                 }
             }
         case _:
-            for codec in _DEFAULT_CODECS.values():
-                if codec.matches(value):
-                    artifact_rel = Path(
-                        ARTIFACTS_DIR_NAME, *(value_path or (_ROOT_ARTIFACT_NAME,))
-                    )
-                    artifact_dir = bundle_dir / artifact_rel
-                    artifact_dir.mkdir(parents=True, exist_ok=False)
-                    codec.dump(value, artifact_dir=artifact_dir)
-                    return {
-                        WRAPPER_KEY: {
-                            "kind": "external",
-                            "codec": codec.codec_id(),
-                            "path": artifact_rel.as_posix(),
-                        }
-                    }
+            if codec := _find_codec(value, registry):
+                return _dump_external(
+                    value,
+                    codec=codec,
+                    value_path=value_path,
+                    bundle_dir=bundle_dir,
+                )
 
     raise ValueError(
         f"Unsupported result value at {_value_path_display(value_path)}:\n"
         f"values of type {type(value).__name__!r} are not supported by Furu. Add a custom codec"
     )
+
+
+def _dump_external(
+    value: object,
+    *,
+    codec: type[ResultCodec],
+    value_path: ValuePath,
+    bundle_dir: Path,
+) -> JsonValue:
+    artifact_rel = Path(ARTIFACTS_DIR_NAME, *(value_path or (_ROOT_ARTIFACT_NAME,)))
+    artifact_dir = bundle_dir / artifact_rel
+    artifact_dir.mkdir(parents=True, exist_ok=False)
+    codec.dump(value, artifact_dir=artifact_dir)
+    return {
+        WRAPPER_KEY: {
+            "kind": "external",
+            "codec": codec.codec_id(),
+            "path": artifact_rel.as_posix(),
+        }
+    }
 
 
 def _import_type(qualified_name: str) -> Any:
@@ -218,6 +396,7 @@ def _load_value(
     *,
     bundle_dir: Path,
     value_path: ValuePath,
+    registry: ResultRegistry = DEFAULT_RESULT_REGISTRY,
 ) -> object:
     match node:
         case None | bool() | int() | float() | str():
@@ -229,6 +408,7 @@ def _load_value(
                     child,
                     bundle_dir=bundle_dir,
                     value_path=(*value_path, f"{i:0{width}d}"),
+                    registry=registry,
                 )
                 for i, child in enumerate(node)
             ]
@@ -237,11 +417,15 @@ def _load_value(
                 cast(dict[str, Any], node[WRAPPER_KEY]),
                 bundle_dir=bundle_dir,
                 value_path=value_path,
+                registry=registry,
             )
         case dict():
             return {
                 key: _load_value(
-                    child, bundle_dir=bundle_dir, value_path=(*value_path, key)
+                    child,
+                    bundle_dir=bundle_dir,
+                    value_path=(*value_path, key),
+                    registry=registry,
                 )
                 for key, child in node.items()
             }
@@ -257,6 +441,7 @@ def _load_validated_fields(
     raw_fields: dict[str, JsonValue],
     bundle_dir: Path,
     value_path: ValuePath,
+    registry: ResultRegistry = DEFAULT_RESULT_REGISTRY,
 ) -> dict[str, object]:
     actual = set(raw_fields)
     missing = expected - actual
@@ -264,7 +449,10 @@ def _load_validated_fields(
     if not missing and not extra:
         return {
             name: _load_value(
-                child, bundle_dir=bundle_dir, value_path=(*value_path, name)
+                child,
+                bundle_dir=bundle_dir,
+                value_path=(*value_path, name),
+                registry=registry,
             )
             for name, child in raw_fields.items()
         }
@@ -286,6 +474,7 @@ def _load_wrapper(
     *,
     bundle_dir: Path,
     value_path: ValuePath,
+    registry: ResultRegistry = DEFAULT_RESULT_REGISTRY,
 ) -> object:
     kind: WrapperKind = body["kind"]
     match kind:
@@ -308,7 +497,9 @@ def _load_wrapper(
                     f"external wrapper artifact directory missing: {artifact_dir}"
                 )
 
-            return _DEFAULT_CODECS[body["codec"]].load(artifact_dir=artifact_dir)
+            return _resolve_codec(body["codec"], registry).load(
+                artifact_dir=artifact_dir
+            )
         case "lazy":
             if (nested_rel := Path(body["path"])).is_absolute():
                 raise ValueError(f"lazy wrapper path must be relative: {nested_rel}")
@@ -329,6 +520,7 @@ def _load_wrapper(
                 partial(
                     load_result_bundle,
                     bundle_dir=nested_bundle_dir,
+                    registry=registry,
                 )
             )
         case "dataclass":
@@ -347,6 +539,7 @@ def _load_wrapper(
                 raw_fields=body["fields"],
                 bundle_dir=bundle_dir,
                 value_path=value_path,
+                registry=registry,
             )
             try:
                 return cls(
@@ -366,21 +559,30 @@ def _load_wrapper(
         case "tuple":
             return tuple(
                 _load_value(
-                    child, bundle_dir=bundle_dir, value_path=(*value_path, str(i))
+                    child,
+                    bundle_dir=bundle_dir,
+                    value_path=(*value_path, str(i)),
+                    registry=registry,
                 )
                 for i, child in enumerate(body["items"])
             )
         case "set":
             return {
                 _load_value(
-                    child, bundle_dir=bundle_dir, value_path=(*value_path, str(i))
+                    child,
+                    bundle_dir=bundle_dir,
+                    value_path=(*value_path, str(i)),
+                    registry=registry,
                 )
                 for i, child in enumerate(body["items"])
             }
         case "frozenset":
             return frozenset(
                 _load_value(
-                    child, bundle_dir=bundle_dir, value_path=(*value_path, str(i))
+                    child,
+                    bundle_dir=bundle_dir,
+                    value_path=(*value_path, str(i)),
+                    registry=registry,
                 )
                 for i, child in enumerate(body["items"])
             )
@@ -398,6 +600,7 @@ def _load_wrapper(
                 raw_fields=body["fields"],
                 bundle_dir=bundle_dir,
                 value_path=value_path,
+                registry=registry,
             )
             try:
                 return cls.model_validate(loaded_fields)
@@ -410,13 +613,21 @@ def _load_wrapper(
             raise ValueError(f"unknown wrapper kind: {kind!r}")
 
 
-def save_result_bundle(value: object, bundle_dir: Path) -> None:
+def save_result_bundle(
+    value: object,
+    bundle_dir: Path,
+    *,
+    expected_type: object = Any,
+    registry: ResultRegistry = DEFAULT_RESULT_REGISTRY,
+) -> None:
     bundle_dir.mkdir(parents=True, exist_ok=False)
 
     manifest = _dump_value(
         value,
+        expected_type=expected_type,
         value_path=(),
         bundle_dir=bundle_dir,
+        registry=registry,
     )
     (bundle_dir / MANIFEST_FILE_NAME).write_text(
         json.dumps(manifest, indent=2),
@@ -424,7 +635,11 @@ def save_result_bundle(value: object, bundle_dir: Path) -> None:
     )
 
 
-def load_result_bundle(bundle_dir: Path) -> object:
+def load_result_bundle(
+    bundle_dir: Path,
+    *,
+    registry: ResultRegistry = DEFAULT_RESULT_REGISTRY,
+) -> object:
     manifest_path = bundle_dir / MANIFEST_FILE_NAME
     raw = json.loads(manifest_path.read_text(encoding="utf-8"))
-    return _load_value(raw, bundle_dir=bundle_dir, value_path=())
+    return _load_value(raw, bundle_dir=bundle_dir, value_path=(), registry=registry)

@@ -4,8 +4,9 @@ import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar, cast
+from typing import Annotated, Any, ClassVar, cast
 
+import furu
 import pytest
 from pydantic import BaseModel, ConfigDict
 
@@ -16,9 +17,11 @@ from furu.result import (
     save_result_bundle,
 )
 from furu.result.codec import (
+    DEFAULT_RESULT_REGISTRY,
     _DEFAULT_CODECS,
     NumpyNpyCodec,
     PolarsParquetCodec,
+    ResultRegistry,
     ResultCodec,
 )
 
@@ -252,10 +255,124 @@ class _CountingCodec(ResultCodec):
         )
 
 
+class _OtherCountingCodec(ResultCodec):
+    @classmethod
+    def matches(cls, value: object) -> bool:
+        return isinstance(value, _CountingValue)
+
+    @classmethod
+    def dump(
+        cls,
+        value: object,
+        *,
+        artifact_dir: Path,
+    ) -> None:
+        artifact_dir.joinpath("other.txt").write_text("x", encoding="utf-8")
+
+    @classmethod
+    def load(cls, *, artifact_dir: Path) -> object:
+        artifact_dir.joinpath("other.txt").read_text(encoding="utf-8")
+        return _CountingValue(0)
+
+
 def test_codec_id_is_derived_from_class_identity() -> None:
     assert _CountingCodec.codec_id() == (
         f"{_CountingCodec.__module__}.{_CountingCodec.__qualname__}"
     )
+
+
+def test_result_registry_register_is_functional() -> None:
+    first = DEFAULT_RESULT_REGISTRY.register(_CountingCodec)
+    second = first.register(_OtherCountingCodec)
+
+    assert DEFAULT_RESULT_REGISTRY.find_codec(_CountingValue(1)) is None
+    assert first.find_codec(_CountingValue(1)) is _CountingCodec
+    assert second.find_codec(_CountingValue(1)) is _OtherCountingCodec
+
+
+@dataclass(frozen=True)
+class AnnotatedArrayOutput:
+    weights: Annotated[Any, NumpyNpyCodec]
+
+
+class AnnotatedArrayResult(Furu[AnnotatedArrayOutput]):
+    def _create(self) -> AnnotatedArrayOutput:
+        return AnnotatedArrayOutput(weights=np.arange(3, dtype=np.int64))
+
+
+def test_annotated_codec_selects_external_artifact() -> None:
+    obj = AnnotatedArrayResult()
+    loaded = obj.load_or_create()
+
+    assert isinstance(loaded, AnnotatedArrayOutput)
+    assert np.array_equal(loaded.weights, np.arange(3, dtype=np.int64))
+    assert (obj._result_dir / "artifacts" / "weights" / "data.npy").exists()
+
+
+@dataclass(frozen=True)
+class SaveAsOutput:
+    weights: Any
+
+
+class SaveAsArrayResult(Furu[SaveAsOutput]):
+    def _create(self) -> SaveAsOutput:
+        return SaveAsOutput(weights=furu.save_as(np.arange(4), codec=furu.NumpyCodec))
+
+
+def test_save_as_selects_codec_and_does_not_leak_wrapper() -> None:
+    obj = SaveAsArrayResult()
+    loaded = obj.load_or_create()
+
+    assert isinstance(loaded, SaveAsOutput)
+    assert np.array_equal(loaded.weights, np.arange(4))
+    assert type(loaded.weights).__name__ != "_SaveAs"
+
+    loaded_again = obj.load_or_create()
+    assert isinstance(loaded_again, SaveAsOutput)
+    assert np.array_equal(loaded_again.weights, np.arange(4))
+
+
+@dataclass(frozen=True)
+class ConflictingSaveAsOutput:
+    weights: Annotated[Any, NumpyNpyCodec]
+
+
+class ConflictingSaveAsResult(Furu[ConflictingSaveAsOutput]):
+    def _create(self) -> ConflictingSaveAsOutput:
+        return ConflictingSaveAsOutput(
+            weights=furu.save_as(np.arange(4), codec=_OtherCountingCodec)
+        )
+
+
+def test_save_as_conflicts_with_annotated_codec() -> None:
+    with pytest.raises(TypeError, match="Conflicting codecs"):
+        ConflictingSaveAsResult().load_or_create()
+
+
+class RegistryCountingResult(Furu[_CountingValue]):
+    @property
+    def result_registry(self) -> ResultRegistry:
+        return super().result_registry.register(_CountingCodec)
+
+    def _create(self) -> _CountingValue:
+        return _CountingValue(8)
+
+
+def test_task_result_registry_is_used_for_inference_and_loading() -> None:
+    _CountingCodec.dump_calls = 0
+    _CountingCodec.load_calls = 0
+    obj = RegistryCountingResult()
+
+    loaded = obj.load_or_create()
+    assert isinstance(loaded, _CountingValue)
+    assert loaded.value == 8
+    assert _CountingCodec.dump_calls == 1
+    assert _CountingCodec.load_calls == 0
+
+    loaded_again = obj.load_or_create()
+    assert isinstance(loaded_again, _CountingValue)
+    assert loaded_again.value == 8
+    assert _CountingCodec.load_calls == 1
 
 
 def test_codec_id_override_is_rejected() -> None:

@@ -6,12 +6,13 @@ from abc import ABC
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast, get_args, get_origin
 
 from furu.config import config
 from furu.locking import LockLostError, lock_many
 from furu.logging import get_logger
 from furu.result import load_result_bundle
+from furu.result.codec import DEFAULT_RESULT_REGISTRY, ResultRegistry
 from furu.schema import schema_type as _schema_type
 from furu.serialize import to_json as _to_json
 from furu.utils import (
@@ -97,7 +98,9 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     def try_load(self) -> T:  # TODO: make a better name for this
         if self._result_manifest_path.exists():
-            return cast(T, load_result_bundle(self._result_dir))
+            return cast(
+                T, load_result_bundle(self._result_dir, registry=self.result_registry)
+            )
         raise NotImplementedError(
             "TODO: decide if i should throw or return error value"
         )
@@ -143,6 +146,18 @@ class Furu[T](_FuruDataclassTransform, ABC):
     @property
     def logger(self) -> logging.Logger:
         return get_logger()
+
+    @property
+    def result_registry(self) -> ResultRegistry:
+        return DEFAULT_RESULT_REGISTRY
+
+    @cached_property
+    def _result_type(self) -> object:
+        for cls in type(self).__mro__:
+            for base in getattr(cls, "__orig_bases__", ()):
+                if get_origin(base) is Furu:
+                    return get_args(base)[0]
+        return Any
 
     def _create(self) -> T:
         raise NotImplementedError("TODO")

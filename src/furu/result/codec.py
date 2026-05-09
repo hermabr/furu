@@ -3,8 +3,9 @@ from __future__ import annotations
 import importlib
 import importlib.util
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Final, cast
+from typing import Final, Self, cast
 
 from furu.utils import fully_qualified_name
 
@@ -105,8 +106,56 @@ class NumpyNpyCodec(ResultCodec):
         return np.load(artifact_dir / "data.npy", allow_pickle=False)
 
 
+NumpyCodec = NumpyNpyCodec
+
+
+class ResultRegistry:
+    def __init__(
+        self,
+        *,
+        custom_codecs: Iterable[type[ResultCodec]] = (),
+        default_codecs: Iterable[type[ResultCodec]] = (),
+    ) -> None:
+        self.custom_codecs = tuple(custom_codecs)
+        self.default_codecs = tuple(default_codecs)
+        self._codecs_by_id = {
+            codec.codec_id(): codec
+            for codec in (*self.custom_codecs, *self.default_codecs)
+        }
+
+    def register(self, codec: type[ResultCodec]) -> Self:
+        return type(self)(
+            custom_codecs=(codec, *self.custom_codecs),
+            default_codecs=self.default_codecs,
+        )
+
+    def find_codec(self, value: object) -> type[ResultCodec] | None:
+        for codec in (*self.custom_codecs, *self.default_codecs):
+            if codec.matches(value):
+                return codec
+        return None
+
+    def resolve_codec(self, codec_id: str) -> type[ResultCodec]:
+        try:
+            return self._codecs_by_id[codec_id]
+        except KeyError:
+            module_name, _, attr_name = codec_id.rpartition(".")
+            if not module_name:
+                raise
+            codec = getattr(importlib.import_module(module_name), attr_name)
+            if not issubclass(codec, ResultCodec):
+                raise TypeError(f"{codec_id} is not a ResultCodec")
+            return codec
+
+
+DEFAULT_RESULT_REGISTRY: Final = ResultRegistry(
+    default_codecs=[
+        c for c in [PolarsParquetCodec, NumpyNpyCodec] if c.dependencies_available()
+    ]
+)
+
 _DEFAULT_CODECS: Final[dict[str, type[ResultCodec]]] = {
     c.codec_id(): c
-    for c in [PolarsParquetCodec, NumpyNpyCodec]
+    for c in DEFAULT_RESULT_REGISTRY.default_codecs
     if c.dependencies_available()
 }

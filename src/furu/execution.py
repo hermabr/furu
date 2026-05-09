@@ -10,7 +10,7 @@ from furu.core import Furu, FuruCreateMode
 from furu.locking import LockLostError, lock_many
 from furu.logging import _scoped_log_files
 from furu.metadata import RunningMetadata
-from furu.result import load_result_bundle, save_result_bundle
+from furu.result import _unwrap_save_as, load_result_bundle, save_result_bundle
 from furu.utils import class_label, nfs_safe_unique_name
 
 type HasLock = Callable[[], bool]
@@ -60,7 +60,12 @@ def _store_result[T](
 
     tmp_result_dir = nfs_safe_unique_name(obj._result_dir, name="tmp")
 
-    save_result_bundle(result, tmp_result_dir)
+    save_result_bundle(
+        result,
+        tmp_result_dir,
+        expected_type=obj._result_type,
+        registry=obj.result_registry,
+    )
 
     if not has_lock():
         raise LockLostError(
@@ -133,7 +138,9 @@ def load_or_create[T](
     for obj in unique:
         if obj._result_manifest_path.exists():
             obj.logger.info("cache hit for %s at %s", obj._log_label, obj._result_dir)
-            results_by_dir[obj.data_dir] = cast(T, load_result_bundle(obj._result_dir))
+            results_by_dir[obj.data_dir] = cast(
+                T, load_result_bundle(obj._result_dir, registry=obj.result_registry)
+            )
         else:
             obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
             missing.append(obj)
@@ -155,7 +162,7 @@ def load_or_create[T](
                     obj._result_dir,
                 )
                 results_by_dir[obj.data_dir] = cast(
-                    T, load_result_bundle(obj._result_dir)
+                    T, load_result_bundle(obj._result_dir, registry=obj.result_registry)
                 )
             else:
                 pending.append(obj)
@@ -216,7 +223,7 @@ def _execute_group[T](
                     metadata=metadata_by_dir[obj.data_dir],
                     has_lock=has_lock,
                 )
-                results_by_dir[obj.data_dir] = result
+                results_by_dir[obj.data_dir] = _unwrap_save_as(result)
 
             logger.debug("load_or_create complete")
         except BaseException as exc:
