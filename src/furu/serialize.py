@@ -1,12 +1,20 @@
 import enum
+import importlib
+import json
 from dataclasses import fields, is_dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, get_args, get_origin, get_type_hints, overload
 
 from pydantic import BaseModel as PydanticBaseModel
+from pydantic import TypeAdapter
 
 from furu.constants import CLASSMARKER, KINDMARKER
 from furu.utils import JsonValue, fully_qualified_name
+
+if TYPE_CHECKING:
+    from furu.core import Furu
+
+_RESERVED_DICT_KEYS = frozenset({CLASSMARKER, KINDMARKER})
 
 
 def to_json(  # TODO: consider caching this (but if i'm going to, I need to figure out how to cache lists and other unhashable objects)
@@ -17,7 +25,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
     def assert_correct_dict_key(x: Any) -> str:
         if not isinstance(x, str):
             raise ValueError("TODO")
-        if x in [CLASSMARKER, KINDMARKER]:
+        if x in _RESERVED_DICT_KEYS:
             raise ValueError("TODO: write error msg")
         return x
 
@@ -55,3 +63,94 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
             raise NotImplementedError("TODO")  #  return {"__enum__": _type_fqn(obj)}
         case _:
             raise ValueError("unexpected item", obj)  # TODO: explain the error more
+
+
+def _load_type(qualified_name: str) -> type[Any]:
+    module_name, _, class_name = qualified_name.rpartition(".")
+    if not module_name or not class_name:
+        raise ValueError(f"Expected fully qualified class name, got {qualified_name!r}")
+
+    module = importlib.import_module(module_name)
+    value = getattr(module, class_name)
+    if not isinstance(value, type):
+        raise TypeError(f"{qualified_name!r} resolved to a non-type value")
+    return value
+
+
+def _from_json_field(value: JsonValue, expected_type: Any) -> Any:
+    if isinstance(value, dict) and KINDMARKER in value:
+        return _from_json(value)
+
+    origin = get_origin(expected_type)
+    args = get_args(expected_type)
+    if isinstance(value, list):
+        item_type = args[0] if args and args[0] is not Ellipsis else Any
+        items = [_from_json_field(item, item_type) for item in value]
+        return tuple(items) if origin is tuple else items
+    if isinstance(value, dict):
+        value_type = args[1] if origin is dict and len(args) == 2 else Any
+        return {
+            key: _from_json_field(child, value_type) for key, child in value.items()
+        }
+    if expected_type is Path and isinstance(value, str):
+        return Path(value)
+    return value
+
+
+def _from_json(value: JsonValue) -> Any:
+    match value:
+        case list():
+            return [_from_json(item) for item in value]
+        case dict():
+            class_name = value.get(CLASSMARKER)
+            field_values = value.get("fields")
+            if value.get(KINDMARKER) == "type_ref" and isinstance(class_name, str):
+                return _load_type(class_name)
+            if (
+                value.get(KINDMARKER) == "instance"
+                and isinstance(class_name, str)
+                and isinstance(field_values, dict)
+            ):
+                cls = _load_type(class_name)
+                hints = get_type_hints(cls, include_extras=True)
+                converted_fields = {
+                    name: _from_json_field(field_value, hints.get(name, Any))
+                    for name, field_value in field_values.items()
+                }
+                return cls(**converted_fields)
+            return {key: _from_json(child) for key, child in value.items()}
+        case _:
+            return value
+
+
+@overload
+def load_from_metadata[T: "Furu"](
+    metadata: Path | dict[str, JsonValue], expected_type: type[T]
+) -> T: ...
+
+
+@overload
+def load_from_metadata(
+    metadata: Path | dict[str, JsonValue], expected_type: None = None
+) -> "Furu": ...
+
+
+def load_from_metadata[T: "Furu"](
+    metadata: Path | dict[str, JsonValue], expected_type: type[T] | None = None
+) -> T | "Furu":
+    from furu.core import Furu
+    from furu.metadata import Metadata
+
+    metadata_json = (
+        metadata.read_text(encoding="utf-8")
+        if isinstance(metadata, Path)
+        else json.dumps(metadata)
+    )
+    furu_obj = _from_json(
+        TypeAdapter(Metadata).validate_json(metadata_json).artifact.data
+    )
+    if expected_type is not None and not isinstance(furu_obj, expected_type):
+        raise TypeError("Metadata artifact did not describe a Furu object")
+    if expected_type is None and not isinstance(furu_obj, Furu):
+        raise TypeError("Metadata artifact did not describe a Furu object")
+    return furu_obj

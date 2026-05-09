@@ -1,6 +1,7 @@
+import json
 import types
-from contextlib import contextmanager
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import FrozenInstanceError, is_dataclass, replace
 from enum import Enum
 from functools import cached_property, partial
@@ -12,10 +13,10 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 import furu.execution as execution_module
-from furu import Furu, load_or_create, validate
+from furu import Furu, load_from_metadata, load_or_create, validate
 from furu.config import config
 from furu.result import load_result_bundle, save_result_bundle
-from furu.serialize import to_json
+from furu.serialize import _from_json, to_json
 from furu.utils import fully_qualified_name
 
 T = TypeVar("T")
@@ -549,7 +550,7 @@ def test_hashes_and_data_dir():
     assert (
         NodePair(
             name="y", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
-        ).schema_hash
+        ).artifact_schema_hash
         == "50a9b8624ed259ec38df"
     )
 
@@ -573,13 +574,13 @@ def test_hashes_and_data_dir():
     assert (
         B(
             a=A(x=1, z="123", w=[6, 7]), y={"hey": 123, True: 1}, t=("123", 12)
-        ).schema_hash
+        ).artifact_schema_hash
         != B_priv(
             a=A(x=1, z="123", w=[6, 7]),
             y={"hey": 123, True: 1},
             t=("123", 12),
             _h=1,
-        ).schema_hash
+        ).artifact_schema_hash
     )
 
     def qualname_alias(cls: type[Furu[object]], *, ret_typ: type) -> type[Furu[object]]:
@@ -598,13 +599,13 @@ def test_hashes_and_data_dir():
     assert (
         B(
             a=A(x=1, z="123", w=[6, 7]), y={"ney": 123, True: 1}, t=("123", 12)
-        ).schema_hash
+        ).artifact_schema_hash
         != B_priv_as_B(
             a=A(x=1, z="123", w=[6, 7]),
             y={"hey": 123, "ney": 1},
             t=("123", 12),
             _h=1,
-        ).schema_hash
+        ).artifact_schema_hash
     )
 
 
@@ -818,6 +819,80 @@ def test_to_json_with_pydantic_field_value():
     assert isinstance(obj.artifact_hash, str)
 
 
+def test_furu_object_round_trips_from_json_artifact():
+    obj = NodePair(
+        name="x",
+        node1=Node(name="y"),
+        node2=WeightedNode(name="z", weight=1),
+    )
+
+    loaded = _from_json(obj.artifact)
+
+    assert loaded == obj
+    assert isinstance(loaded, NodePair)
+    assert loaded.object_id == obj.object_id
+
+
+def test_furu_object_with_typed_fields_round_trips_from_json_artifact():
+    path_obj = UsesPath(path=Path("/tmp/out"))
+    class_obj = UsesClassValue(node_cls=Node)
+
+    assert _from_json(path_obj.artifact) == path_obj
+    assert _from_json(class_obj.artifact) == class_obj
+    assert isinstance(cast(UsesPath, _from_json(path_obj.artifact)).path, Path)
+
+
+def test_load_from_metadata_file_returns_furu_object():
+    obj = NodePair(
+        name="x",
+        node1=Node(name="y"),
+        node2=WeightedNode(name="z", weight=1),
+    )
+    obj.load_or_create()
+
+    loaded = load_from_metadata(obj._metadata_path, NodePair)
+    raw_metadata = json.loads(obj._metadata_path.read_text())
+
+    assert loaded == obj
+    assert isinstance(loaded, NodePair)
+    assert loaded.data_dir == obj.data_dir
+    assert raw_metadata["kind"] == "completed"
+    assert raw_metadata["artifact"] == {
+        "data": obj.artifact,
+        "hash": obj.artifact_hash,
+        "schema": obj.schema,
+        "schema_hash": obj.artifact_schema_hash,
+    }
+    assert "artifact_hash" not in raw_metadata
+    assert "artifact_schema" not in raw_metadata
+    assert "artifact_schema_hash" not in raw_metadata
+
+
+def test_load_from_metadata_file_infers_furu_object_type():
+    obj = NodePair(
+        name="x",
+        node1=Node(name="y"),
+        node2=WeightedNode(name="z", weight=1),
+    )
+    obj.load_or_create()
+
+    loaded = load_from_metadata(obj._metadata_path)
+
+    assert loaded == obj
+    assert isinstance(loaded, NodePair)
+
+
+def test_load_from_metadata_accepts_metadata_model():
+    obj = Node(name="x")
+    obj.load_or_create()
+    metadata = json.loads(obj._metadata_path.read_text())
+
+    loaded = load_from_metadata(metadata, Node)
+
+    assert loaded == obj
+    assert isinstance(loaded, Node)
+
+
 def test_schema_with_ellipsis_type_arg():
     assert VariadicTuple(t=(1, 2, 3)).schema == {
         "|class": "test_core.VariadicTuple",
@@ -845,7 +920,7 @@ def test_data_dir():
         config.directories.data
         / "test_core"
         / "NodePair"
-        / node_pair.schema_hash
+        / node_pair.artifact_schema_hash
         / node_pair.artifact_hash
     )
 
@@ -859,7 +934,7 @@ def test_storage_root_can_be_overridden_with_cached_property():
         Path("custom/data/location")
         / "test_core"
         / "CustomStorageRootNode"
-        / node.schema_hash
+        / node.artifact_schema_hash
         / node.artifact_hash
     )
 

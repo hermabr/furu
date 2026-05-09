@@ -6,7 +6,7 @@ from abc import ABC
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Self, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 from furu.config import config
 from furu.locking import LockLostError, lock_many
@@ -149,10 +149,6 @@ class Furu[T](_FuruDataclassTransform, ABC):
     ) -> JsonValue:
         return _to_json(self)
 
-    @classmethod
-    def from_json(cls) -> Self:
-        raise NotImplementedError("TODO")
-
     @cached_property
     def artifact_hash(  # TODO: should this be __hash__?
         self,
@@ -166,7 +162,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
         return _schema_type(type(self), set())
 
     @cached_property
-    def schema_hash(self) -> str:
+    def artifact_schema_hash(self) -> str:
         return _hash_dict_deterministically(self.schema)
 
     @cached_property
@@ -175,7 +171,11 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     @cached_property
     def object_id(self) -> str:
-        return f"{self._fully_qualified_name}:{self.schema_hash}:{self.artifact_hash}"
+        return (
+            f"{self._fully_qualified_name}:"
+            + f"{self.artifact_schema_hash}:"
+            + f"{self.artifact_hash}"
+        )
 
     @cached_property
     def storage_root(self) -> Path:
@@ -186,7 +186,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
         return (
             self.storage_root
             / Path(*self._fully_qualified_name.split("."))
-            / self.schema_hash
+            / self.artifact_schema_hash
             / self.artifact_hash
         )
 
@@ -208,4 +208,8 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     @cached_property
     def _log_label(self) -> str:
-        return f"{type(self).__name__}:{self.schema_hash[:5]}:{self.artifact_hash[:5]}"
+        return (
+            f"{type(self).__name__}:"
+            + f"{self.artifact_schema_hash[:5]}:"
+            + f"{self.artifact_hash[:5]}"
+        )
