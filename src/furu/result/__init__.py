@@ -14,11 +14,11 @@ import pydantic
 from furu.result.codec import _DEFAULT_CODECS, ResultCodec
 from furu.utils import JsonValue, fully_qualified_name
 
-WRAPPER_KEY: Final[str] = "$furu"
-ARTIFACTS_DIR_NAME: Final[str] = "artifacts"
-LAZY_DIR_NAME: Final[str] = "lazy"
-MANIFEST_FILE_NAME: Final[str] = "manifest.json"
-_ROOT_ARTIFACT_NAME: Final[str] = "root"
+WRAPPER_KEY: Final = "$furu"
+ARTIFACTS_DIR_NAME: Final = "artifacts"
+LAZY_DIR_NAME: Final = "lazy"
+MANIFEST_FILE_NAME: Final = "manifest.json"
+_ROOT_ARTIFACT_NAME: Final = "root"
 type LogicalPath = tuple[str, ...]
 type WrapperKind = Literal[
     "external", "dataclass", "path", "pydantic", "tuple", "set", "frozenset", "lazy"
