@@ -76,7 +76,7 @@ def validate_migrations_for_class(cls: type[Furu[Any]]) -> tuple[Migration, ...]
     return migrations
 
 
-def resolve_result_location(obj: Furu[Any]) -> Path | None:
+def _resolve_result_location(obj: Furu[Any]) -> Path | None:
     if obj._result_manifest_path.exists():
         return obj._result_dir
 

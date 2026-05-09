@@ -10,7 +10,6 @@ from furu.core import Furu, FuruCreateMode
 from furu.locking import LockLostError, lock_many
 from furu.logging import _scoped_log_files
 from furu.metadata import RunningMetadata
-from furu.migration import resolve_result_location
 from furu.result import load_result_bundle, save_result_bundle
 from furu.utils import class_label, nfs_safe_unique_name
 
@@ -132,7 +131,7 @@ def load_or_create[T](
     missing: list[Furu[T]] = []
 
     for obj in unique:
-        result_location = resolve_result_location(obj)
+        result_location = obj.result_path
         if result_location is not None:
             obj.logger.info("cache hit for %s at %s", obj._log_label, result_location)
             results_by_dir[obj.data_dir] = cast(T, load_result_bundle(result_location))
@@ -150,7 +149,7 @@ def load_or_create[T](
         has_lock = maybe_has_lock or (lambda: True)
         pending: list[Furu[T]] = []
         for obj in missing:
-            result_location = resolve_result_location(obj)
+            result_location = obj.result_path
             if result_location is not None:
                 obj.logger.info(
                     "cache hit for %s after waiting at %s",
