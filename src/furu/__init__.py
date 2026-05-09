@@ -3,7 +3,7 @@ from importlib.metadata import version
 from furu.core import Furu
 from furu.execution import load_or_create
 from furu.logging import get_logger
-from furu.migration import Migration
+from furu.migration import Migration, MigrationEdge
 from furu.result import LazyResult
 from furu.validate import validate
 
@@ -14,6 +14,7 @@ __all__ = [
     "Furu",
     "LazyResult",
     "Migration",
+    "MigrationEdge",
     "get_logger",
     "load_or_create",
     "validate",

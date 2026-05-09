@@ -16,15 +16,11 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True, slots=True)
-class Migration:
+class MigrationEdge:
     old_fully_qualified_name: str
     old_schema_hash: str
     new_fully_qualified_name: str
     new_schema_hash: str
-    transform_fn: Callable[
-        [dict[str, JsonValue]],
-        dict[str, JsonValue],
-    ]
 
     @property
     def edge_identity(self) -> MigrationEdgeIdentity:
@@ -34,6 +30,15 @@ class Migration:
             self.new_fully_qualified_name,
             self.new_schema_hash,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class Migration:
+    edge: MigrationEdge
+    transform_fn: Callable[
+        [dict[str, JsonValue]],
+        dict[str, JsonValue],
+    ]
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,34 +69,18 @@ class _ResultLinkSource(_ResultLinkArtifact):
     data_dir: str
 
 
-class _ResultLinkMigrationEdge(_ResultLinkBase):
-    old_fully_qualified_name: str
-    old_schema_hash: str
-    new_fully_qualified_name: str
-    new_schema_hash: str
-
-    @property
-    def edge_identity(self) -> MigrationEdgeIdentity:
-        return (
-            self.old_fully_qualified_name,
-            self.old_schema_hash,
-            self.new_fully_qualified_name,
-            self.new_schema_hash,
-        )
-
-
 class _ResultLink(_ResultLinkBase):
     kind: Literal["result_link"] = "result_link"
     current: _ResultLinkArtifact
     source: _ResultLinkSource
-    migration_path: list[_ResultLinkMigrationEdge]
+    migration_path: list[MigrationEdge]
 
 
 def _registered_migrations_for_class(cls: type[Furu[Any]]) -> tuple[Migration, ...]:
     migrations = cls.migrations()
     seen: set[MigrationEdgeIdentity] = set()
     for migration in migrations:
-        identity = migration.edge_identity
+        identity = migration.edge.edge_identity
         if identity in seen:
             raise ValueError(
                 f"{cls.__name__}.migrations() returned duplicate migration edge "
@@ -211,11 +200,11 @@ def write_result_link(obj: Furu[Any], match: ResolvedMigration) -> None:
             data_dir=str(match.source_metadata.data_path),
         ),
         migration_path=[
-            _ResultLinkMigrationEdge(
-                old_fully_qualified_name=migration.old_fully_qualified_name,
-                old_schema_hash=migration.old_schema_hash,
-                new_fully_qualified_name=migration.new_fully_qualified_name,
-                new_schema_hash=migration.new_schema_hash,
+            MigrationEdge(
+                old_fully_qualified_name=migration.edge.old_fully_qualified_name,
+                old_schema_hash=migration.edge.old_schema_hash,
+                new_fully_qualified_name=migration.edge.new_fully_qualified_name,
+                new_schema_hash=migration.edge.new_schema_hash,
             )
             for migration in match.migration_path
         ],
@@ -228,7 +217,11 @@ class _MigrationGraph:
         self._by_old: dict[MigrationNode, list[Migration]] = {}
         for migration in migrations:
             self._by_old.setdefault(
-                (migration.old_fully_qualified_name, migration.old_schema_hash), []
+                (
+                    migration.edge.old_fully_qualified_name,
+                    migration.edge.old_schema_hash,
+                ),
+                [],
             ).append(migration)
 
     def paths(
@@ -250,8 +243,8 @@ class _MigrationGraph:
 
         for migration in self._by_old.get(current, ()):
             next_node = (
-                migration.new_fully_qualified_name,
-                migration.new_schema_hash,
+                migration.edge.new_fully_qualified_name,
+                migration.edge.new_schema_hash,
             )
             if next_node in visited:
                 continue
@@ -331,10 +324,10 @@ def _apply_migration_path(
 
 
 def _resolve_registered_path(
-    cls: type[Furu[Any]], raw_path: list[_ResultLinkMigrationEdge]
+    cls: type[Furu[Any]], raw_path: list[MigrationEdge]
 ) -> tuple[Migration, ...] | None:
     by_identity = {
-        migration.edge_identity: migration
+        migration.edge.edge_identity: migration
         for migration in _registered_migrations_for_class(cls)
     }
     path: list[Migration] = []
