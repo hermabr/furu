@@ -331,14 +331,12 @@ def _load_wrapper(
                     f"{fully_qualified_name(cls)} is not a dataclass"
                 )
             dataclass_fields = dataclasses.fields(cls)
-            expected_fields = {field.name for field in dataclass_fields}
             init_fields = {field.name for field in dataclass_fields if field.init}
-            raw_fields = body["fields"]
             loaded_fields = _load_validated_fields(
                 kind="dataclass",
                 cls=cls,
-                expected=expected_fields,
-                raw_fields=raw_fields,
+                expected={field.name for field in dataclass_fields},
+                raw_fields=body["fields"],
                 bundle_dir=bundle_dir,
                 path=path,
             )
@@ -379,12 +377,11 @@ def _load_wrapper(
                     f"Cannot load pydantic model at {_path_display(path)}: "
                     f"{fully_qualified_name(cls)} is not a pydantic model"
                 )
-            raw_fields = body["fields"]
             loaded_fields = _load_validated_fields(
                 kind="pydantic model",
                 cls=cls,
                 expected=set(cls.model_fields),
-                raw_fields=raw_fields,
+                raw_fields=body["fields"],
                 bundle_dir=bundle_dir,
                 path=path,
             )
