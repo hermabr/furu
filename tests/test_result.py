@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar, cast
 
@@ -335,6 +335,65 @@ def test_dataclass_round_trip() -> None:
 
 
 @dataclass(frozen=True)
+class DataclassWithPostInit:
+    value: int
+    doubled: int = field(init=False)
+
+    def __post_init__(self) -> None:
+        if self.value < 0:
+            raise ValueError("value must be non-negative")
+        object.__setattr__(self, "doubled", self.value * 2)
+
+
+def test_dataclass_load_uses_constructor(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "bundle"
+    save_result_bundle(DataclassWithPostInit(value=3), bundle_dir)
+
+    loaded = load_result_bundle(bundle_dir)
+
+    assert loaded == DataclassWithPostInit(value=3)
+
+
+def test_dataclass_load_reports_constructor_error_with_path(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "bundle"
+    save_result_bundle({"result": DataclassWithPostInit(value=3)}, bundle_dir)
+    manifest_path = bundle_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["result"]["$furu"]["fields"]["value"] = -1
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError) as exc_info:
+        load_result_bundle(bundle_dir)
+
+    message = str(exc_info.value)
+    assert "Cannot load dataclass" in message
+    assert "at result" in message
+    assert "value must be non-negative" in message
+
+
+def test_dataclass_load_reports_missing_and_extra_fields_with_path(
+    tmp_path: Path,
+) -> None:
+    bundle_dir = tmp_path / "bundle"
+    save_result_bundle(
+        {"result": TrainOutput(metrics={"loss": 0.12}, values=[1])}, bundle_dir
+    )
+    manifest_path = bundle_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    fields = manifest["result"]["$furu"]["fields"]
+    fields["renamed_values"] = fields.pop("values")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError) as exc_info:
+        load_result_bundle(bundle_dir)
+
+    message = str(exc_info.value)
+    assert "at result" in message
+    assert "missing fields: values" in message
+    assert "extra fields: renamed_values" in message
+
+
+@dataclass(frozen=True)
 class NestedOuter:
     inner: "NestedInner"
     label: str
@@ -375,6 +434,49 @@ def test_pydantic_round_trip() -> None:
     assert isinstance(loaded, TrainOutputModel)
     assert loaded.metrics == {"loss": 0.12}
     assert loaded.values == [1, 2, 3]
+
+
+class ValidatedTrainOutputModel(BaseModel):
+    value: int
+
+
+def test_pydantic_load_uses_model_validate(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "bundle"
+    save_result_bundle(ValidatedTrainOutputModel(value=1), bundle_dir)
+    manifest_path = bundle_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["$furu"]["fields"]["value"] = "not an int"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError) as exc_info:
+        load_result_bundle(bundle_dir)
+
+    message = str(exc_info.value)
+    assert "Cannot load pydantic model" in message
+    assert "at <root>" in message
+    assert "value" in message
+
+
+def test_pydantic_load_reports_missing_and_extra_fields_with_path(
+    tmp_path: Path,
+) -> None:
+    bundle_dir = tmp_path / "bundle"
+    save_result_bundle(
+        {"models": [TrainOutputModel(metrics={}, values=[])]}, bundle_dir
+    )
+    manifest_path = bundle_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    fields = manifest["models"][0]["$furu"]["fields"]
+    fields["renamed_values"] = fields.pop("values")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError) as exc_info:
+        load_result_bundle(bundle_dir)
+
+    message = str(exc_info.value)
+    assert "at models/0" in message
+    assert "missing fields: values" in message
+    assert "extra fields: renamed_values" in message
 
 
 class NestedPydanticOuter(BaseModel):

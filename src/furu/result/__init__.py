@@ -213,30 +213,66 @@ def _load_value(
     node: JsonValue,
     *,
     bundle_dir: Path,
+    path: LogicalPath,
 ) -> object:
     match node:
         case None | bool() | int() | float() | str():
             return node
         case list():
-            return [_load_value(child, bundle_dir=bundle_dir) for child in node]
+            width = len(str(len(node)))
+            return [
+                _load_value(
+                    child,
+                    bundle_dir=bundle_dir,
+                    path=(*path, f"{i:0{width}d}"),
+                )
+                for i, child in enumerate(node)
+            ]
         case dict() if WRAPPER_KEY in node:
             return _load_wrapper(
                 cast(dict[str, Any], node[WRAPPER_KEY]),
                 bundle_dir=bundle_dir,
+                path=path,
             )
         case dict():
             return {
-                key: _load_value(child, bundle_dir=bundle_dir)
+                key: _load_value(child, bundle_dir=bundle_dir, path=(*path, key))
                 for key, child in node.items()
             }
         case _:
             assert_never(node)
 
 
+def _validate_loaded_fields(
+    *,
+    kind: str,
+    cls: type[Any],
+    expected: set[str],
+    actual: set[str],
+    path: LogicalPath,
+) -> None:
+    missing = expected - actual
+    extra = actual - expected
+    if not missing and not extra:
+        return
+
+    details: list[str] = []
+    if missing:
+        details.append("missing fields: " + ", ".join(sorted(missing)))
+    if extra:
+        details.append("extra fields: " + ", ".join(sorted(extra)))
+
+    raise ValueError(
+        f"Cannot load {kind} {fully_qualified_name(cls)} at {_path_display(path)}: "
+        + "; ".join(details)
+    )
+
+
 def _load_wrapper(
     body: dict[str, Any],
     *,
     bundle_dir: Path,
+    path: LogicalPath,
 ) -> object:
     kind: WrapperKind = body["kind"]
     match kind:
@@ -282,37 +318,84 @@ def _load_wrapper(
                     bundle_dir=nested_bundle_dir,
                 )
             )
-        case "dataclass":  # TODO: do validation on the dataclass/pydantic object, so that we know the new object has exactly the same fields as the old one
+        case "dataclass":
             cls = _import_type(body["type"])
+            if not dataclasses.is_dataclass(cls):
+                raise ValueError(
+                    f"Cannot load dataclass at {_path_display(path)}: "
+                    f"{fully_qualified_name(cls)} is not a dataclass"
+                )
+            dataclass_fields = dataclasses.fields(cls)
+            expected_fields = {field.name for field in dataclass_fields}
+            init_fields = {field.name for field in dataclass_fields if field.init}
+            raw_fields = body["fields"]
+            _validate_loaded_fields(
+                kind="dataclass",
+                cls=cls,
+                expected=expected_fields,
+                actual=set(raw_fields),
+                path=path,
+            )
             loaded_fields = {
-                name: _load_value(child, bundle_dir=bundle_dir)
-                for name, child in body["fields"].items()
+                name: _load_value(child, bundle_dir=bundle_dir, path=(*path, name))
+                for name, child in raw_fields.items()
             }
-            obj = object.__new__(cls)
-            for name, value in loaded_fields.items():
-                object.__setattr__(obj, name, value)
-            return obj
+            try:
+                return cls(
+                    **{
+                        name: value
+                        for name, value in loaded_fields.items()
+                        if name in init_fields
+                    }
+                )
+            except Exception as exc:
+                raise ValueError(
+                    f"Cannot load dataclass {fully_qualified_name(cls)} "
+                    f"at {_path_display(path)}: {exc}"
+                ) from exc
         case "path":
             return Path(body["value"])
         case "tuple":
             return tuple(
-                _load_value(child, bundle_dir=bundle_dir) for child in body["items"]
+                _load_value(child, bundle_dir=bundle_dir, path=(*path, str(i)))
+                for i, child in enumerate(body["items"])
             )
         case "set":
             return {
-                _load_value(child, bundle_dir=bundle_dir) for child in body["items"]
+                _load_value(child, bundle_dir=bundle_dir, path=(*path, str(i)))
+                for i, child in enumerate(body["items"])
             }
         case "frozenset":
             return frozenset(
-                _load_value(child, bundle_dir=bundle_dir) for child in body["items"]
+                _load_value(child, bundle_dir=bundle_dir, path=(*path, str(i)))
+                for i, child in enumerate(body["items"])
             )
         case "pydantic":
             cls = _import_type(body["type"])
+            if not issubclass(cls, pydantic.BaseModel):
+                raise ValueError(
+                    f"Cannot load pydantic model at {_path_display(path)}: "
+                    f"{fully_qualified_name(cls)} is not a pydantic model"
+                )
+            raw_fields = body["fields"]
+            _validate_loaded_fields(
+                kind="pydantic model",
+                cls=cls,
+                expected=set(cls.model_fields),
+                actual=set(raw_fields),
+                path=path,
+            )
             loaded_fields = {
-                name: _load_value(child, bundle_dir=bundle_dir)
-                for name, child in body["fields"].items()
+                name: _load_value(child, bundle_dir=bundle_dir, path=(*path, name))
+                for name, child in raw_fields.items()
             }
-            return cls.model_construct(**loaded_fields)
+            try:
+                return cls.model_validate(loaded_fields)
+            except pydantic.ValidationError as exc:
+                raise ValueError(
+                    f"Cannot load pydantic model {fully_qualified_name(cls)} "
+                    f"at {_path_display(path)}: {exc}"
+                ) from exc
         case _:
             raise ValueError(f"unknown wrapper kind: {kind!r}")
 
@@ -334,4 +417,4 @@ def save_result_bundle(value: object, bundle_dir: Path) -> None:
 def load_result_bundle(bundle_dir: Path) -> object:
     manifest_path = bundle_dir / MANIFEST_FILE_NAME
     raw = json.loads(manifest_path.read_text(encoding="utf-8"))
-    return _load_value(raw, bundle_dir=bundle_dir)
+    return _load_value(raw, bundle_dir=bundle_dir, path=())
