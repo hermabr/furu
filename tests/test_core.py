@@ -12,9 +12,9 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 import furu.execution as execution_module
-from furu import Furu, load_or_create, validate
+from furu import Furu, load_from_metadata, load_or_create, validate
 from furu.config import config
-from furu.metadata import CompletedMetadata, load_furu_from_metadata, load_metadata
+from furu.metadata import CompletedMetadata
 from furu.result import load_result_bundle, save_result_bundle
 from furu.serialize import from_json, to_json
 from furu.utils import fully_qualified_name
@@ -842,7 +842,7 @@ def test_furu_object_with_typed_fields_round_trips_from_json_artifact():
     assert isinstance(cast(UsesPath, from_json(path_obj.artifact)).path, Path)
 
 
-def test_furu_class_loads_from_metadata_file():
+def test_load_from_metadata_file_returns_furu_object():
     obj = NodePair(
         name="x",
         node1=Node(name="y"),
@@ -850,24 +850,23 @@ def test_furu_class_loads_from_metadata_file():
     )
     obj.load_or_create()
 
-    loaded = NodePair.from_metadata(obj._metadata_path)
-    metadata = load_metadata(obj._metadata_path)
+    loaded = load_from_metadata(obj._metadata_path)
 
     assert loaded == obj
+    assert isinstance(loaded, NodePair)
     assert loaded.data_dir == obj.data_dir
-    assert metadata.kind == "completed"
+    assert '"kind": "completed"' in obj._metadata_path.read_text()
 
 
-def test_load_furu_from_metadata_accepts_metadata_model():
+def test_load_from_metadata_accepts_metadata_model():
     obj = Node(name="x")
     obj.load_or_create()
-    metadata = load_metadata(obj._metadata_path)
+    metadata = CompletedMetadata.model_validate_json(obj._metadata_path.read_text())
 
-    loaded = load_furu_from_metadata(metadata)
+    loaded = load_from_metadata(metadata)
 
     assert loaded == obj
     assert isinstance(loaded, Node)
-    assert isinstance(metadata, CompletedMetadata)
 
 
 def test_schema_with_ellipsis_type_arg():

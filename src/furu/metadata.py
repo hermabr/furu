@@ -100,7 +100,7 @@ type Metadata = Annotated[
 ]
 
 
-def load_metadata(metadata: str | Path | Metadata) -> Metadata:
+def _load_metadata(metadata: str | Path | Metadata) -> Metadata:
     if isinstance(metadata, RunningMetadata | CompletedMetadata):
         return metadata
 
@@ -110,8 +110,8 @@ def load_metadata(metadata: str | Path | Metadata) -> Metadata:
     )
 
 
-def load_furu_from_metadata(metadata: str | Path | Metadata) -> Furu[object]:
-    obj = from_json(load_metadata(metadata).artifact)
+def load_from_metadata(metadata: str | Path | Metadata) -> Furu[object]:
+    obj = from_json(_load_metadata(metadata).artifact)
     from furu.core import Furu
 
     if not isinstance(obj, Furu):
