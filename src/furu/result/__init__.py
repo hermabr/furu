@@ -4,8 +4,6 @@ import dataclasses
 import importlib
 import importlib.util
 import json
-import threading
-from collections.abc import Callable
 from functools import partial
 from pathlib import Path
 from typing import Any, Final, Literal, assert_never, cast
@@ -13,6 +11,7 @@ from typing import Any, Final, Literal, assert_never, cast
 import pydantic
 
 from furu.result.codec import _DEFAULT_CODECS
+from furu.result.lazy import LazyResult
 from furu.utils import JsonValue, fully_qualified_name
 
 WRAPPER_KEY: Final = "$furu"
@@ -24,44 +23,6 @@ type LogicalPath = tuple[str, ...]
 type WrapperKind = Literal[
     "external", "dataclass", "path", "pydantic", "tuple", "set", "frozenset", "lazy"
 ]
-
-
-class _Unloaded:
-    pass
-
-
-_UNLOADED: Final = _Unloaded()
-
-
-class LazyResult[T]:
-    def __init__(self, value: T) -> None:
-        self._value: T | _Unloaded = value
-        self._loader: Callable[[], T] | None = None
-        self._lock = threading.Lock()
-
-    @classmethod
-    def _from_loader(cls, loader: Callable[[], T]) -> LazyResult[T]:
-        obj = cls.__new__(cls)
-        obj._value = _UNLOADED
-        obj._loader = loader
-        obj._lock = threading.Lock()
-        return obj
-
-    @property
-    def is_loaded(self) -> bool:
-        return self._value is not _UNLOADED
-
-    def load(self) -> T:
-        if self._value is not _UNLOADED:
-            return cast(T, self._value)
-
-        with self._lock:
-            if self._value is _UNLOADED:
-                if self._loader is None:
-                    raise RuntimeError("lazy result has no loader")
-                self._value = self._loader()
-                self._loader = None
-            return cast(T, self._value)
 
 
 def _path_display(path: LogicalPath) -> str:
