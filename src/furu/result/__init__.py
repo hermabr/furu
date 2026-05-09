@@ -37,12 +37,14 @@ type WrapperKind = Literal[
 ]
 
 
+def _strip_annotated_declared_type(declared_type: object) -> object:
+    if get_origin(declared_type) is Annotated:
+        return get_args(declared_type)[0]
+    return declared_type
+
+
 def _child_declared_type(declared_type: object, key: object) -> object:
-    declared_type = (
-        get_args(declared_type)[0]
-        if get_origin(declared_type) is Annotated
-        else declared_type
-    )
+    declared_type = _strip_annotated_declared_type(declared_type)
     origin = get_origin(declared_type)
     args = get_args(declared_type)
     if origin is list and args:
@@ -258,14 +260,17 @@ def _dump_value(
         case LazyResult():
             lazy_rel = Path(LAZY_DIR_NAME, *(value_path or (_ROOT_ARTIFACT_NAME,)))
             nested_bundle_dir = bundle_dir / lazy_rel
+            lazy_declared_type = _strip_annotated_declared_type(declared_type)
+            if get_origin(lazy_declared_type) is LazyResult:
+                lazy_declared_args = get_args(lazy_declared_type)
+                if lazy_declared_args:
+                    lazy_declared_type = lazy_declared_args[0]
+            else:
+                lazy_declared_type = Any
             save_result_bundle(
                 value.load(),
                 nested_bundle_dir,
-                declared_type=(
-                    get_args(declared_type)[0]
-                    if get_origin(declared_type) is Annotated
-                    else declared_type
-                ),
+                declared_type=lazy_declared_type,
                 registry=registry,
             )
             return {

@@ -32,6 +32,7 @@ _CHILD_DECLARED_TYPE_NAMESPACE: dict[str, object] = {
     "Annotated": Annotated,
     "Any": Any,
     "Ellipsis": Ellipsis,
+    "LazyResult": LazyResult,
     "NumpyNpyCodec": NumpyNpyCodec,
     "Path": Path,
     "ResultCodec": ResultCodec,
@@ -46,6 +47,7 @@ _CHILD_DECLARED_TYPE_NAMESPACE: dict[str, object] = {
     "str": str,
     "tuple": tuple,
 }
+_CHILD_DECLARED_TYPE_GLOBALS = {"__builtins__": {"__import__": __import__}}
 
 
 class JsonResult(Furu[dict[str, object]]):
@@ -363,10 +365,10 @@ def test_child_declared_type_descends_supported_container_annotations(
     expected_type_expr: str,
 ) -> None:
     declared_type = eval(
-        declared_type_expr, {"__builtins__": {}}, _CHILD_DECLARED_TYPE_NAMESPACE
+        declared_type_expr, _CHILD_DECLARED_TYPE_GLOBALS, _CHILD_DECLARED_TYPE_NAMESPACE
     )
     expected_type = eval(
-        expected_type_expr, {"__builtins__": {}}, _CHILD_DECLARED_TYPE_NAMESPACE
+        expected_type_expr, _CHILD_DECLARED_TYPE_GLOBALS, _CHILD_DECLARED_TYPE_NAMESPACE
     )
 
     assert _child_declared_type(declared_type, key) == expected_type
@@ -970,6 +972,23 @@ def test_root_lazy_result_defers_cache_read_and_memoizes(
     assert loaded.is_loaded
     assert repr(loaded) == "LazyResult(_CountingValue)"
     assert _CountingCodec.load_calls == 1
+
+
+def test_lazy_result_uses_declared_inner_annotated_codec(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "bundle"
+    value = LazyResult(np.arange(4, dtype=np.int64))
+
+    save_result_bundle(
+        value,
+        bundle_dir,
+        declared_type=LazyResult[Annotated[Any, NumpyNpyCodec]],
+        registry=_default_result_registry(),
+    )
+
+    assert (bundle_dir / "lazy" / "root" / "artifacts" / "root" / "data.npy").exists()
+    manifest = json.loads((bundle_dir / "lazy" / "root" / "manifest.json").read_text())
+    assert manifest["$furu"]["kind"] == "external"
+    assert manifest["$furu"]["codec"] == NumpyNpyCodec.codec_id()
 
 
 def test_nested_lazy_result_round_trips_inside_supported_structures(
