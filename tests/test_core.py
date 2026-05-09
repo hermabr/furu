@@ -15,7 +15,9 @@ from pydantic import BaseModel, ConfigDict
 import furu.execution as execution_module
 from furu import Furu, load_or_create, validate
 from furu.config import config
+from furu.locking import lock_many
 from furu.metadata import ArtifactMetadata
+from furu.metadata import RunningMetadata
 from furu.result import load_result_bundle, save_result_bundle
 from furu.serialize import _from_json, to_json
 from furu.utils import fully_qualified_name
@@ -1041,8 +1043,7 @@ def test_create_object_and_exists():
     node_pair = NodePair(
         name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
     )
-    with pytest.raises(NotImplementedError):
-        node_pair.status()
+    assert node_pair.status() == "missing"
     for _i in range(3):
         assert node_pair.load_or_create() == {
             "node1": "Node(y)",
@@ -1050,8 +1051,31 @@ def test_create_object_and_exists():
             "name": "x",
         }
     assert node_pair.status() == "completed"
-    with pytest.raises(NotImplementedError):
-        replace(node_pair, name="y").status()
+    assert replace(node_pair, name="y").status() == "missing"
+
+
+def test_status_is_running_while_compute_lock_is_held() -> None:
+    node = Node(name="x")
+    node._internal_furu_dir.mkdir(parents=True, exist_ok=True)
+
+    with lock_many([node._lock_path]):
+        assert node.status() == "running"
+
+
+def test_status_is_failed_for_abandoned_running_metadata() -> None:
+    node = Node(name="x")
+    node._internal_furu_dir.mkdir(parents=True, exist_ok=True)
+    RunningMetadata.write_for(node)
+
+    assert node.status() == "failed"
+
+
+def test_status_is_failed_when_error_log_exists() -> None:
+    node = Node(name="x")
+    node._internal_furu_dir.mkdir(parents=True, exist_ok=True)
+    (node._internal_furu_dir / "error-test.log").write_text("boom")
+
+    assert node.status() == "failed"
 
 
 def test_creating_and_loading_random_result_furu_obj():

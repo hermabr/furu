@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
+import time
 from abc import ABC
 from dataclasses import dataclass
 from functools import cached_property
@@ -9,7 +11,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 from furu.config import config
-from furu.locking import LockLostError, lock_many
+from furu.locking import (
+    CLOCK_SLOP_S,
+    LockAcquireError,
+    LockLostError,
+    lock_many,
+    read_manifest,
+)
 from furu.logging import get_logger
 from furu.result import load_result_bundle
 from furu.schema import schema_type as _schema_type
@@ -89,7 +97,17 @@ class Furu[T](_FuruDataclassTransform, ABC):
     ]:  # TODO: add queued/waiting state?
         if self._result_manifest_path.exists():
             return "completed"
-        raise NotImplementedError("TODO")
+
+        if self._has_live_compute_lock():
+            return "running"
+
+        if self._has_failure_artifact():
+            return "failed"
+
+        if self._metadata_path.exists():
+            return "failed"
+
+        return "missing"
 
     def try_load(self) -> T:  # TODO: make a better name for this
         if self._result_manifest_path.exists():
@@ -209,6 +227,34 @@ class Furu[T](_FuruDataclassTransform, ABC):
     @cached_property
     def _lock_path(self) -> Path:
         return self._internal_furu_dir / "compute.lock"
+
+    def _has_live_compute_lock(self) -> bool:
+        try:
+            manifest = read_manifest(self._lock_path)
+        except (LockAcquireError, OSError):
+            return False
+        if manifest is None:
+            return False
+
+        try:
+            lock_stat = self._lock_path.stat()
+            claim_stat = manifest.claim_path.stat()
+        except OSError:
+            return False
+
+        if not os.path.samestat(lock_stat, claim_stat):
+            return False
+
+        return lock_stat.st_mtime + CLOCK_SLOP_S > time.time()
+
+    def _has_failure_artifact(self) -> bool:
+        try:
+            next(self._internal_furu_dir.glob("error-*.log"))
+        except StopIteration:
+            return False
+        except OSError:
+            return False
+        return True
 
     @cached_property
     def _log_label(self) -> str:

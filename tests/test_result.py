@@ -70,8 +70,7 @@ def test_status_is_completed_after_first_run() -> None:
     JsonResult.create_calls.clear()
     obj = JsonResult()
 
-    with pytest.raises(NotImplementedError):
-        obj.status()
+    assert obj.status() == "missing"
     obj.load_or_create()
     assert obj.status() == "completed"
 
