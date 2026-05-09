@@ -109,25 +109,6 @@ class ReturnsFuruObject(furu.Furu[str]):
         return "created"
 
 
-class PrefixedHashMigration(furu.Furu[str]):
-    def _create(self) -> str:
-        return "created"
-
-    @classmethod
-    def migrations(cls) -> tuple[furu.Migration, ...]:
-        return (
-            furu.Migration(
-                old_fully_qualified_name=TrainJobV1(
-                    dataset="", learning_rate=0.0
-                )._fully_qualified_name,
-                old_schema_hash="furu-schema-sha256-v1:abc",
-                new_fully_qualified_name=cls()._fully_qualified_name,
-                new_schema_hash=cls().artifact_schema_hash,
-                transform_fn=lambda fields: fields,
-            ),
-        )
-
-
 def test_migration_reuses_old_result_and_writes_result_link() -> None:
     TrainJobV1.create_calls = 0
     TrainingRunV2.create_calls = 0
@@ -195,8 +176,3 @@ def test_migration_transform_must_return_fields_not_furu_object() -> None:
 
     with pytest.raises(TypeError, match="must return fields"):
         ReturnsFuruObject(dataset="cifar10", lr=0.001).load_or_create()
-
-
-def test_schema_hashes_must_be_raw_lowercase_hashes() -> None:
-    with pytest.raises(ValueError, match="raw lowercase hexadecimal hash"):
-        PrefixedHashMigration().status()

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,7 +16,6 @@ if TYPE_CHECKING:
     from furu.core import Furu
 
 
-_RAW_HASH_RE = re.compile(r"^[0-9a-f]+$")
 _JSON_DICT_ADAPTER = TypeAdapter(dict[str, JsonValue])
 _METADATA_ADAPTER = TypeAdapter(Metadata)
 
@@ -65,7 +63,6 @@ def validate_migrations_for_class(cls: type[Furu[Any]]) -> tuple[Migration, ...]
             raise TypeError(
                 f"{cls.__name__}.migrations() must return Migration objects"
             )
-        _validate_migration(migration)
         identity = migration_edge_identity(migration)
         if identity in seen:
             raise ValueError(
@@ -252,26 +249,6 @@ class _MigrationGraph:
                 visited=visited | {next_node},
                 path=(*path, migration),
             )
-
-
-def _validate_migration(migration: Migration) -> None:
-    for field_name in (
-        "old_fully_qualified_name",
-        "new_fully_qualified_name",
-    ):
-        value = getattr(migration, field_name)
-        if not isinstance(value, str) or not value:
-            raise ValueError(f"Migration.{field_name} must be a non-empty string")
-
-    for field_name in ("old_schema_hash", "new_schema_hash"):
-        value = getattr(migration, field_name)
-        if not isinstance(value, str) or _RAW_HASH_RE.fullmatch(value) is None:
-            raise ValueError(
-                f"Migration.{field_name} must be a raw lowercase hexadecimal hash"
-            )
-
-    if not callable(migration.transform_fn):
-        raise TypeError("Migration.transform_fn must be callable")
 
 
 def _completed_old_artifacts(storage_root: Path) -> Iterable[CompletedMetadata]:
