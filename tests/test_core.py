@@ -943,27 +943,42 @@ def test_furu_from_artifact_type_mismatch_names_expected_and_loaded_type():
 
 def test_furu_from_artifact_rejects_artifact_metadata_hash_mismatch():
     obj = Node(name="x")
+    bad_hash = "wrong-artifact-hash"
     artifact = ArtifactMetadata(
         data=obj.artifact_data,
-        hash="wrong-artifact-hash",
+        hash=bad_hash,
         schema=obj.schema,
         schema_hash=obj.artifact_schema_hash,
     )
 
-    with pytest.raises(ValueError, match="Artifact hash did not match"):
+    with pytest.raises(
+        ValueError,
+        match=(
+            "Artifact hash did not match loaded object: "
+            + f"artifact={bad_hash[:5]}, loaded={obj.artifact_hash[:5]}"
+        ),
+    ):
         Node.from_artifact(artifact)
 
 
 def test_furu_from_artifact_rejects_artifact_metadata_schema_hash_mismatch():
     obj = Node(name="x")
+    bad_schema_hash = "wrong-schema-hash"
     artifact = ArtifactMetadata(
         data=obj.artifact_data,
         hash=obj.artifact_hash,
         schema=obj.schema,
-        schema_hash="wrong-schema-hash",
+        schema_hash=bad_schema_hash,
     )
 
-    with pytest.raises(ValueError, match="Artifact schema hash did not match"):
+    with pytest.raises(
+        ValueError,
+        match=(
+            "Artifact schema hash did not match loaded object: "
+            + f"artifact={bad_schema_hash[:5]}, "
+            + f"loaded={obj.artifact_schema_hash[:5]}"
+        ),
+    ):
         Node.from_artifact(artifact)
 
 
