@@ -94,6 +94,14 @@ def test_try_load_returns_persisted_result() -> None:
     }
 
 
+def test_try_load_rejects_non_completed_result() -> None:
+    JsonResult.create_calls.clear()
+    obj = JsonResult()
+
+    with pytest.raises(RuntimeError, match="status is 'missing'.*not 'completed'"):
+        obj.try_load()
+
+
 class ScalarResult(Furu[int]):
     def _create(self) -> int:
         return 5
