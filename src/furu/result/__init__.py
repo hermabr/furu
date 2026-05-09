@@ -243,18 +243,23 @@ def _load_value(
             assert_never(node)
 
 
-def _validate_loaded_fields(
+def _load_validated_fields(
     *,
     kind: str,
     cls: type[Any],
     expected: set[str],
-    actual: set[str],
+    raw_fields: dict[str, JsonValue],
+    bundle_dir: Path,
     path: LogicalPath,
-) -> None:
+) -> dict[str, object]:
+    actual = set(raw_fields)
     missing = expected - actual
     extra = actual - expected
     if not missing and not extra:
-        return
+        return {
+            name: _load_value(child, bundle_dir=bundle_dir, path=(*path, name))
+            for name, child in raw_fields.items()
+        }
 
     details: list[str] = []
     if missing:
@@ -329,17 +334,14 @@ def _load_wrapper(
             expected_fields = {field.name for field in dataclass_fields}
             init_fields = {field.name for field in dataclass_fields if field.init}
             raw_fields = body["fields"]
-            _validate_loaded_fields(
+            loaded_fields = _load_validated_fields(
                 kind="dataclass",
                 cls=cls,
                 expected=expected_fields,
-                actual=set(raw_fields),
+                raw_fields=raw_fields,
+                bundle_dir=bundle_dir,
                 path=path,
             )
-            loaded_fields = {
-                name: _load_value(child, bundle_dir=bundle_dir, path=(*path, name))
-                for name, child in raw_fields.items()
-            }
             try:
                 return cls(
                     **{
@@ -378,17 +380,14 @@ def _load_wrapper(
                     f"{fully_qualified_name(cls)} is not a pydantic model"
                 )
             raw_fields = body["fields"]
-            _validate_loaded_fields(
+            loaded_fields = _load_validated_fields(
                 kind="pydantic model",
                 cls=cls,
                 expected=set(cls.model_fields),
-                actual=set(raw_fields),
+                raw_fields=raw_fields,
+                bundle_dir=bundle_dir,
                 path=path,
             )
-            loaded_fields = {
-                name: _load_value(child, bundle_dir=bundle_dir, path=(*path, name))
-                for name, child in raw_fields.items()
-            }
             try:
                 return cls.model_validate(loaded_fields)
             except pydantic.ValidationError as exc:
