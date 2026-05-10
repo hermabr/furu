@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -106,10 +107,10 @@ def migrate(obj: Furu[Any]) -> bool:
     artifact_data = cast(dict[str, JsonValue], obj.artifact_data)
     target_fields = cast(JsonFields, artifact_data["fields"])
 
-    by_target: dict[_Node, list[Migration]] = {}
+    by_target: defaultdict[_Node, list[Migration]] = defaultdict(list)
     for migration in migrations:
         new_node = (migration.new_fully_qualified_name, migration.new_schema_hash)
-        by_target.setdefault(new_node, []).append(migration)
+        by_target[new_node].append(migration)
 
     def visit(
         node: _Node,
