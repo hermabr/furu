@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -80,9 +79,11 @@ def read_and_verify_result_link(obj: Furu[Any]) -> ResolvedMigration | None:
     if source_metadata is None:
         return None
 
-    source_fully_qualified_name = _artifact_fully_qualified_name(source_metadata)
-    if source_fully_qualified_name is None:
+    source_fully_qualified_name = source_metadata.artifact.data.get(CLASSMARKER)
+    if not isinstance(source_fully_qualified_name, str):
         return None
+
+    source_fields = source_metadata.artifact.data.get("fields")
 
     if link.source != _ResultLinkSource(
         fully_qualified_name=source_fully_qualified_name,
@@ -92,32 +93,71 @@ def read_and_verify_result_link(obj: Furu[Any]) -> ResolvedMigration | None:
     ):
         return None
 
-    path = _resolve_registered_path(type(obj), link.migration_path)
-    if path is None:
+    by_identity = {
+        MigrationEdgeIdentity.from_migration(migration): migration
+        for migration in _registered_migrations_for_class(type(obj))
+    }
+    path: list[Migration] = []
+    for edge in link.migration_path:
+        migration = by_identity.get(MigrationEdgeIdentity.from_migration(edge))
+        if migration is None:
+            return None
+        path.append(migration)
+
+    if not isinstance(source_fields, dict):
+        return None
+    try:
+        source_fields = TypeAdapter(dict[str, JsonValue]).validate_python(source_fields)
+    except ValidationError:
         return None
 
-    fields = _artifact_fields(source_metadata)
-    if fields is None:
-        return None
-    migrated_fields = _apply_migration_path(path, fields)
-    if migrated_fields != _requested_fields(obj):
-        return None
+    requested_fields = obj.artifact_data.get("fields")
+    if not isinstance(requested_fields, dict):
+        raise TypeError("Furu artifact_data must contain a fields object")
+    requested_fields = TypeAdapter(dict[str, JsonValue]).validate_python(
+        requested_fields
+    )
 
+    migration_path = tuple(path)
+    migrated_fields = _apply_migration_path(migration_path, source_fields)
+    if migrated_fields != requested_fields:
+        return None
     return ResolvedMigration(
         source_metadata=source_metadata,
-        migration_path=path,
+        migration_path=migration_path,
     )
 
 
 def find_migrated_result(obj: Furu[Any]) -> ResolvedMigration | None:
     current_node = (obj._fully_qualified_name, obj.artifact_schema_hash)
-    requested_fields = _requested_fields(obj)
+    requested_fields = obj.artifact_data.get("fields")
+    if not isinstance(requested_fields, dict):
+        raise TypeError("Furu artifact_data must contain a fields object")
+    requested_fields = TypeAdapter(dict[str, JsonValue]).validate_python(
+        requested_fields
+    )
     graph = _MigrationGraph(_registered_migrations_for_class(type(obj)))
 
-    for old_metadata in _completed_old_artifacts(obj.storage_root):
-        old_fully_qualified_name = _artifact_fully_qualified_name(old_metadata)
-        old_fields = _artifact_fields(old_metadata)
-        if old_fully_qualified_name is None or old_fields is None:
+    if not obj.storage_root.exists():
+        return None
+
+    for metadata_path in obj.storage_root.glob("**/.furu/metadata.json"):
+        old_metadata = _read_completed_metadata(metadata_path)
+        if (
+            old_metadata is None
+            or not (old_metadata.data_path / "result" / "manifest.json").exists()
+        ):
+            continue
+
+        old_fully_qualified_name = old_metadata.artifact.data.get(CLASSMARKER)
+        old_fields = old_metadata.artifact.data.get("fields")
+        if not isinstance(old_fully_qualified_name, str) or not isinstance(
+            old_fields, dict
+        ):
+            continue
+        try:
+            old_fields = TypeAdapter(dict[str, JsonValue]).validate_python(old_fields)
+        except ValidationError:
             continue
 
         old_node = (old_fully_qualified_name, old_metadata.artifact.schema_hash)
@@ -132,8 +172,8 @@ def find_migrated_result(obj: Furu[Any]) -> ResolvedMigration | None:
 
 
 def write_result_link(obj: Furu[Any], match: ResolvedMigration) -> None:
-    source_fully_qualified_name = _artifact_fully_qualified_name(match.source_metadata)
-    if source_fully_qualified_name is None:
+    source_fully_qualified_name = match.source_metadata.artifact.data.get(CLASSMARKER)
+    if not isinstance(source_fully_qualified_name, str):
         raise ValueError("source artifact metadata has no fully qualified name")
 
     obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
@@ -162,19 +202,6 @@ def write_result_link(obj: Furu[Any], match: ResolvedMigration) -> None:
     obj._result_link_path.write_text(link.model_dump_json(indent=2))
 
 
-def _completed_old_artifacts(storage_root: Path) -> Iterable[CompletedMetadata]:
-    if not storage_root.exists():
-        return
-
-    for metadata_path in storage_root.glob("**/.furu/metadata.json"):
-        metadata = _read_completed_metadata(metadata_path)
-        if (
-            metadata is not None
-            and (metadata.data_path / "result" / "manifest.json").exists()
-        ):
-            yield metadata
-
-
 def _read_completed_metadata(path: Path) -> CompletedMetadata | None:
     try:
         raw_text = path.read_text()
@@ -192,28 +219,6 @@ def _read_completed_metadata(path: Path) -> CompletedMetadata | None:
     return metadata
 
 
-def _artifact_fully_qualified_name(metadata: CompletedMetadata) -> str | None:
-    value = metadata.artifact.data.get(CLASSMARKER)
-    return value if isinstance(value, str) else None
-
-
-def _artifact_fields(metadata: CompletedMetadata) -> dict[str, JsonValue] | None:
-    fields = metadata.artifact.data.get("fields")
-    if not isinstance(fields, dict):
-        return None
-    try:
-        return TypeAdapter(dict[str, JsonValue]).validate_python(fields)
-    except ValidationError:
-        return None
-
-
-def _requested_fields(obj: Furu[Any]) -> dict[str, JsonValue]:
-    fields = obj.artifact_data.get("fields")
-    if not isinstance(fields, dict):
-        raise TypeError("Furu artifact_data must contain a fields object")
-    return TypeAdapter(dict[str, JsonValue]).validate_python(fields)
-
-
 def _apply_migration_path(
     path: tuple[Migration, ...], fields: dict[str, JsonValue]
 ) -> dict[str, JsonValue]:
@@ -227,19 +232,3 @@ def _apply_migration_path(
                 "Migration.transform_fn must return dict[str, JsonValue]"
             ) from exc
     return current
-
-
-def _resolve_registered_path(
-    cls: type[Furu[Any]], raw_path: list[_MigrationEdge]
-) -> tuple[Migration, ...] | None:
-    by_identity = {
-        MigrationEdgeIdentity.from_migration(migration): migration
-        for migration in _registered_migrations_for_class(cls)
-    }
-    path: list[Migration] = []
-    for edge in raw_path:
-        migration = by_identity.get(MigrationEdgeIdentity.from_migration(edge))
-        if migration is None:
-            return None
-        path.append(migration)
-    return tuple(path)
