@@ -119,16 +119,3 @@ def dependency_recorder() -> Iterator[DependencyRecorder]:
         yield recorder
     finally:
         _active_dependency_recorder.reset(token)
-
-
-def resolve_dependencies(
-    *,
-    eager: tuple[DependencyRef, ...],
-    observed: tuple[DependencyRef, ...],
-) -> tuple[DependencyRef, ...]:
-    eager_ids = {ref.object_id for ref in eager}
-    refs_by_id: dict[str, DependencyRef] = {}
-    for ref in observed:
-        if ref.object_id not in eager_ids:
-            refs_by_id.setdefault(ref.object_id, ref)
-    return tuple(sorted(refs_by_id.values(), key=lambda ref: ref.object_id))

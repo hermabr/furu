@@ -11,7 +11,6 @@ from furu.dependencies import (
     collect_eager_dependencies,
     dependency_recorder,
     record_dependency_call,
-    resolve_dependencies,
 )
 from furu.locking import LockLostError, lock_many
 from furu.logging import _scoped_log_files
@@ -198,6 +197,17 @@ def _execute_group[T](
     log_paths = tuple(obj._log_path for obj in group)
     eager_by_dir = {obj.data_dir: collect_eager_dependencies(obj) for obj in group}
     eager_union = {ref.object_id for refs in eager_by_dir.values() for ref in refs}
+
+    def resolve_lazy_dependencies(
+        obj: Furu[T], observed: tuple[DependencyRef, ...]
+    ) -> tuple[DependencyRef, ...]:
+        eager_ids = {ref.object_id for ref in eager_by_dir[obj.data_dir]}
+        refs_by_id: dict[str, DependencyRef] = {}
+        for ref in observed:
+            if ref.object_id not in eager_ids:
+                refs_by_id.setdefault(ref.object_id, ref)
+        return tuple(sorted(refs_by_id.values(), key=lambda ref: ref.object_id))
+
     metadata_by_dir = {
         obj.data_dir: RunningMetadata.write_for(
             obj,
@@ -240,17 +250,13 @@ def _execute_group[T](
             match group[0]._furu_create_mode:
                 case "batched":
                     lazy_by_dir = {
-                        obj.data_dir: resolve_dependencies(
-                            eager=eager_by_dir[obj.data_dir],
-                            observed=observed,
-                        )
+                        obj.data_dir: resolve_lazy_dependencies(obj, observed)
                         for obj in group
                     }
                 case "single":
                     lazy_by_dir = {
-                        obj.data_dir: resolve_dependencies(
-                            eager=eager_by_dir[obj.data_dir],
-                            observed=observed_by_dir[obj.data_dir],
+                        obj.data_dir: resolve_lazy_dependencies(
+                            obj, observed_by_dir[obj.data_dir]
                         )
                         for obj in group
                     }
