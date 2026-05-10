@@ -9,6 +9,9 @@ from typing import Iterator
 from furu.config import config
 
 _BASE_LOGGER_NAME = "furu"
+# TODO: ContextVar state does not propagate to new threads. Logs emitted from
+# worker threads inside _create() or _create_batched() will use fallback.log
+# unless the current log path context is propagated explicitly.
 _CURRENT_LOG_PATHS: ContextVar[tuple[Path, ...]] = ContextVar(
     "furu_current_log_paths", default=()
 )
