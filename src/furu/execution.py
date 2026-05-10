@@ -61,7 +61,7 @@ def _store_result[T](
     result: T,
     *,
     metadata: RunningMetadata,
-    dependencies: tuple[str, ...],
+    observed_dependencies: tuple[str, ...],
     has_lock: HasLock,
 ) -> None:
     if not has_lock():
@@ -102,9 +102,9 @@ def _store_result[T](
 
     tmp_result_dir.rename(obj._result_dir)
 
-    metadata_text = metadata.to_complete(dependencies=dependencies).model_dump_json(
-        indent=2
-    )
+    metadata_text = metadata.to_complete(
+        observed_dependencies=observed_dependencies
+    ).model_dump_json(indent=2)
     obj._metadata_path.write_text(metadata_text)
 
     obj.logger.debug("stored result bundle at %s", obj._result_dir)
@@ -241,15 +241,15 @@ def _execute_group[T](
                     # TODO: Track dependency calls per object during batched execution.
                     # This currently assigns dependencies observed anywhere in the batch
                     # to every object.
-                    dependencies = [observed for _ in group]
+                    observed_dependencies = [observed for _ in group]
                 case "single":
                     logger.debug("running sequential _create() fallback")
                     results = []
-                    dependencies = []
+                    observed_dependencies = []
                     for obj in group:
                         with dependency_recorder() as recorder:
                             results.append(obj._create())
-                        dependencies.append(recorder.finalize())
+                        observed_dependencies.append(recorder.finalize())
                     logger.debug("sequential _create() fallback returned")
                 case _:
                     assert_never(group[0]._furu_create_mode)
@@ -259,10 +259,10 @@ def _execute_group[T](
                     f"{type(group[0]).__name__} returned {len(results)} results for {len(group)} objects"
                 )
 
-            for obj, result, dependency_ids, obj_metadata in zip(
+            for obj, result, observed_dependency_ids, obj_metadata in zip(
                 group,
                 results,
-                dependencies,
+                observed_dependencies,
                 metadata,
                 strict=True,
             ):
@@ -270,7 +270,7 @@ def _execute_group[T](
                     obj,
                     result,
                     metadata=obj_metadata,
-                    dependencies=dependency_ids,
+                    observed_dependencies=observed_dependency_ids,
                     has_lock=has_lock,
                 )
                 results_by_dir[obj.data_dir] = _unwrap_save_as(result)

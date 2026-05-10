@@ -72,14 +72,14 @@ class RunningMetadata(BaseModel):
     def to_complete(
         self,
         *,
-        dependencies: tuple[str, ...],
+        observed_dependencies: tuple[str, ...],
     ) -> CompletedMetadata:
         return CompletedMetadata(
             artifact=self.artifact,
             data_path=self.data_path,
             started_at=self.started_at,
             completed_at=datetime.now(timezone.utc),
-            dependencies=dependencies,
+            observed_dependencies=observed_dependencies,
         )
 
 
@@ -100,7 +100,7 @@ class CompletedMetadata(BaseModel):
     # ]  # TODO: this probably means i don't really need to record the package versions? in particular since git data would have uv.lock and pyproject.toml already
     # slurm: SlurmData
     completed_at: datetime
-    dependencies: tuple[str, ...]
+    observed_dependencies: tuple[str, ...]
 
 
 type Metadata = Annotated[
