@@ -88,11 +88,15 @@ def result_dir_for_loading(obj: Furu[Any]) -> Path | None:
     if not link_path.exists():
         return None
     link = _ResultLink.model_validate_json(link_path.read_text(encoding="utf-8"))
-    return _result_dir_in(link.source.data_dir)
+    result_dir = _result_dir_in(link.source.data_dir)
+    if not _result_manifest_path_in(link.source.data_dir).exists():
+        raise RuntimeError(f"{link_path} points to a missing result")
+    return result_dir
 
 
 def migrate(obj: Furu[Any]) -> bool:
     if _result_link_path_in(obj.data_dir).exists():
+        result_dir_for_loading(obj)
         return True
     if obj._result_manifest_path.exists():
         return False

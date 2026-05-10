@@ -133,6 +133,21 @@ def test_migrate_returns_true_when_already_migrated() -> None:
     assert new.migrate() is True
 
 
+def test_migrate_raises_when_existing_link_source_is_missing() -> None:
+    old = _OldRun(learning_rate=0.001, dataset="cifar10")
+    old.load_or_create()
+
+    new = _NewRun(dataset="cifar10", lr=0.001)
+    assert new.migrate() is True
+
+    old._result_manifest_path.unlink()
+
+    with pytest.raises(RuntimeError, match="points to a missing result"):
+        new.migrate()
+    with pytest.raises(RuntimeError, match="points to a missing result"):
+        new.try_load()
+
+
 def test_migrate_returns_false_when_already_has_direct_result() -> None:
     new = _NewRun(dataset="cifar10", lr=0.001)
     new.load_or_create()
