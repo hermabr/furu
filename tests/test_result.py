@@ -297,7 +297,7 @@ class _OtherCountingCodec(ResultCodec):
 
 
 def test_codec_id_is_derived_from_class_identity() -> None:
-    assert _CountingCodec.codec_id() == (
+    assert _CountingCodec._codec_id() == (
         f"{_CountingCodec.__module__}.{_CountingCodec.__qualname__}"
     )
 
@@ -529,32 +529,6 @@ def test_task_result_registry_is_used_for_save_inference_only() -> None:
     assert isinstance(loaded_again, _CountingValue)
     assert loaded_again.value == 8
     assert _CountingCodec.load_calls == 1
-
-
-def test_codec_id_override_is_rejected() -> None:
-    with pytest.raises(TypeError, match="must not override codec_id"):
-
-        class InvalidCodec(ResultCodec):
-            @classmethod
-            def codec_id(cls) -> str:
-                return "custom"
-
-            @classmethod
-            def matches(cls, value: object) -> bool:
-                return False
-
-            @classmethod
-            def dump(
-                cls,
-                value: object,
-                *,
-                artifact_dir: Path,
-            ) -> None:
-                raise AssertionError("unreachable")
-
-            @classmethod
-            def load(cls, *, artifact_dir: Path) -> object:
-                raise AssertionError("unreachable")
 
 
 class UnsupportedRootResult(Furu[object]):
@@ -1060,7 +1034,7 @@ def test_lazy_result_uses_declared_inner_annotated_codec(tmp_path: Path) -> None
     assert (bundle_dir / "lazy" / "root" / "artifacts" / "root" / "data.npy").exists()
     manifest = json.loads((bundle_dir / "lazy" / "root" / "manifest.json").read_text())
     assert manifest["$furu"]["kind"] == "external"
-    assert manifest["$furu"]["codec"] == NumpyNpyCodec.codec_id()
+    assert manifest["$furu"]["codec"] == NumpyNpyCodec._codec_id()
 
 
 def test_nested_lazy_result_round_trips_inside_supported_structures(

@@ -308,7 +308,7 @@ def _dump_external(
     return {
         WRAPPER_KEY: {
             "kind": "external",
-            "codec": codec.codec_id(),
+            "codec": codec._codec_id(),
             "path": artifact_rel.as_posix(),
         }
     }
