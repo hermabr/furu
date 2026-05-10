@@ -1,98 +1,37 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from collections.abc import Iterable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, ConfigDict, JsonValue, TypeAdapter, ValidationError
+from pydantic import JsonValue, TypeAdapter, ValidationError
 
 from furu.constants import CLASSMARKER
 from furu.metadata import CompletedMetadata, Metadata
+from furu.migration._result_link import (
+    _ResultLink,
+    _ResultLinkArtifact,
+    _ResultLinkSource,
+)
+from furu.migration._types import (
+    Migration,
+    MigrationEdgeIdentity,
+    MigrationNode,
+    ResolvedMigration,
+    _MigrationEdge,
+    _edge_identity,
+)
 from furu.utils import _hash_dict_deterministically
 
 if TYPE_CHECKING:
     from furu.core import Furu
 
 
-@dataclass(frozen=True, slots=True)
-class Migration:
-    old_fully_qualified_name: str
-    old_schema_hash: str
-    new_fully_qualified_name: str
-    new_schema_hash: str
-    transform_fn: Callable[
-        [dict[str, JsonValue]],
-        dict[str, JsonValue],
-    ]
-
-    @property
-    def edge_identity(self) -> MigrationEdgeIdentity:
-        return (
-            self.old_fully_qualified_name,
-            self.old_schema_hash,
-            self.new_fully_qualified_name,
-            self.new_schema_hash,
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class ResolvedMigration:
-    source_metadata: CompletedMetadata
-    migration_path: tuple[Migration, ...]
-
-
-type MigrationNode = tuple[str, str]
-type MigrationEdgeIdentity = tuple[str, str, str, str]
-
-
-@dataclass(frozen=True, slots=True)
-class _MigrationEdge:
-    old_fully_qualified_name: str
-    old_schema_hash: str
-    new_fully_qualified_name: str
-    new_schema_hash: str
-
-    @property
-    def edge_identity(self) -> MigrationEdgeIdentity:
-        return (
-            self.old_fully_qualified_name,
-            self.old_schema_hash,
-            self.new_fully_qualified_name,
-            self.new_schema_hash,
-        )
-
-
-class _ResultLinkBase(BaseModel):
-    model_config = ConfigDict(
-        extra="forbid",
-        frozen=True,
-        strict=True,
-    )
-
-
-class _ResultLinkArtifact(_ResultLinkBase):
-    fully_qualified_name: str
-    schema_hash: str
-    artifact_hash: str
-
-
-class _ResultLinkSource(_ResultLinkArtifact):
-    data_dir: str
-
-
-class _ResultLink(_ResultLinkBase):
-    kind: Literal["result_link"] = "result_link"
-    current: _ResultLinkArtifact
-    source: _ResultLinkSource
-    migration_path: list[_MigrationEdge]
-
-
 def _registered_migrations_for_class(cls: type[Furu[Any]]) -> tuple[Migration, ...]:
     migrations = cls.migrations()
     seen: set[MigrationEdgeIdentity] = set()
     for migration in migrations:
-        identity = migration.edge_identity
+        identity = _edge_identity(migration)
         if identity in seen:
             raise ValueError(
                 f"{cls.__name__}.migrations() returned duplicate migration edge "
@@ -336,12 +275,12 @@ def _resolve_registered_path(
     cls: type[Furu[Any]], raw_path: list[_MigrationEdge]
 ) -> tuple[Migration, ...] | None:
     by_identity = {
-        migration.edge_identity: migration
+        _edge_identity(migration): migration
         for migration in _registered_migrations_for_class(cls)
     }
     path: list[Migration] = []
     for edge in raw_path:
-        migration = by_identity.get(edge.edge_identity)
+        migration = by_identity.get(_edge_identity(edge))
         if migration is None:
             return None
         path.append(migration)

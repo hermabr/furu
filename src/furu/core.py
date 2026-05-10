@@ -11,7 +11,8 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 from furu.config import config
 from furu.locking import LockLostError, lock_many
 from furu.logging import get_logger
-from furu.migration import Migration, _resolve_result_manifest_path
+from furu.migration._core import _resolve_result_manifest_path
+from furu.migration._types import Migration
 from furu.result import load_result_bundle
 from furu.schema import schema_type as _schema_type
 from furu.serialize import to_json as _to_json
