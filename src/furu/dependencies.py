@@ -83,15 +83,6 @@ def collect_eager_dependencies(obj: Furu[Any]) -> tuple[DependencyRef, ...]:
     return tuple(sorted(refs_by_id.values(), key=lambda ref: ref.object_id))
 
 
-def normalize_dependency_refs(
-    refs: list[DependencyRef] | tuple[DependencyRef, ...],
-) -> tuple[DependencyRef, ...]:
-    by_id: dict[str, DependencyRef] = {}
-    for ref in refs:
-        by_id.setdefault(ref.object_id, ref)
-    return tuple(sorted(by_id.values(), key=lambda ref: ref.object_id))
-
-
 class DependencyRecorder:
     def __init__(self) -> None:
         self._observed_by_id: dict[str, DependencyRef] = {}
@@ -137,6 +128,8 @@ def resolve_dependencies(
     observed: tuple[DependencyRef, ...],
 ) -> tuple[DependencyRef, ...]:
     eager_ids = {ref.object_id for ref in eager}
-    return normalize_dependency_refs(
-        tuple(ref for ref in observed if ref.object_id not in eager_ids)
-    )
+    refs_by_id: dict[str, DependencyRef] = {}
+    for ref in observed:
+        if ref.object_id not in eager_ids:
+            refs_by_id.setdefault(ref.object_id, ref)
+    return tuple(sorted(refs_by_id.values(), key=lambda ref: ref.object_id))
