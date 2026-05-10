@@ -13,6 +13,9 @@ if TYPE_CHECKING:
     from furu.core import Furu
 
 
+type DependencyVia = Literal["field", "dependency", "load_or_create", "try_load"]
+
+
 class GitData(BaseModel):
     commit: str
     branch: str
@@ -41,7 +44,7 @@ class DependencyRef(BaseModel):
     data_path: Path
     artifact_hash: str
     artifact_schema_hash: str
-    via: Literal["field", "dependency", "load_or_create", "try_load"]
+    via: DependencyVia
     path: str | None = None
 
     @classmethod
@@ -49,7 +52,7 @@ class DependencyRef(BaseModel):
         cls,
         obj: Furu[Any],
         *,
-        via: Literal["field", "dependency", "load_or_create", "try_load"],
+        via: DependencyVia,
         path: str | None = None,
     ) -> DependencyRef:
         return cls(

@@ -5,16 +5,13 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import fields, is_dataclass
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel as PydanticBaseModel
 
 if TYPE_CHECKING:
     from furu.core import Furu
-    from furu.metadata import DependencyRef
-
-
-DependencyVia = Literal["field", "dependency", "load_or_create", "try_load"]
+    from furu.metadata import DependencyRef, DependencyVia
 
 
 class dependency[T](cached_property):
@@ -101,9 +98,7 @@ class DependencyRecorder:
     def __init__(self) -> None:
         self._observed_by_id: dict[str, DependencyRef] = {}
 
-    def record(
-        self, obj: Furu[Any], *, via: Literal["load_or_create", "try_load"]
-    ) -> None:
+    def record(self, obj: Furu[Any], *, via: DependencyVia) -> None:
         from furu.metadata import DependencyRef
 
         ref = DependencyRef.from_furu(obj, via=via)
@@ -122,9 +117,7 @@ _active_dependency_recorder: ContextVar[DependencyRecorder | None] = ContextVar(
 )
 
 
-def record_dependency_call(
-    obj: Furu[Any], *, via: Literal["load_or_create", "try_load"]
-) -> None:
+def record_dependency_call(obj: Furu[Any], *, via: DependencyVia) -> None:
     recorder = _active_dependency_recorder.get()
     if recorder is not None:
         recorder.record(obj, via=via)
