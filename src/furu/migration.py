@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -30,6 +30,23 @@ class Migration:
     transform_fn: Callable[[JsonFields], JsonFields]
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class MigrationStep:
+    old_fully_qualified_name: str
+    old_schema_hash: str
+    new_fully_qualified_name: str
+    new_schema_hash: str
+
+    @classmethod
+    def from_migration(cls, migration: Migration) -> MigrationStep:
+        return cls(
+            old_fully_qualified_name=migration.old_fully_qualified_name,
+            old_schema_hash=migration.old_schema_hash,
+            new_fully_qualified_name=migration.new_fully_qualified_name,
+            new_schema_hash=migration.new_schema_hash,
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class _Source:
     ultimate_data_dir: Path
@@ -37,7 +54,7 @@ class _Source:
     ultimate_schema_hash: str
     ultimate_artifact_hash: str
     fields: JsonFields
-    prior_migration_path: tuple[dict[str, str], ...]
+    prior_migration_path: tuple[MigrationStep, ...]
 
 
 _Node = tuple[str, str]
@@ -113,7 +130,9 @@ def _source_from_artifact_dir(artifact_dir: Path) -> _Source | None:
             ultimate_schema_hash=source["schema_hash"],
             ultimate_artifact_hash=source["artifact_hash"],
             fields=current["fields"],
-            prior_migration_path=tuple(link["migration_path"]),
+            prior_migration_path=tuple(
+                MigrationStep(**step) for step in link["migration_path"]
+            ),
         )
 
     return None
@@ -153,19 +172,10 @@ def _find_source_for_path(
     return None
 
 
-def _migration_to_dict(migration: Migration) -> dict[str, str]:
-    return {
-        "old_fully_qualified_name": migration.old_fully_qualified_name,
-        "old_schema_hash": migration.old_schema_hash,
-        "new_fully_qualified_name": migration.new_fully_qualified_name,
-        "new_schema_hash": migration.new_schema_hash,
-    }
-
-
 def _write_result_link(
     obj: Furu[Any],
     source: _Source,
-    migration_path: tuple[dict[str, str], ...],
+    migration_path: tuple[MigrationStep, ...],
 ) -> None:
     obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
     artifact_data = cast(dict[str, JsonValue], obj.artifact_data)
@@ -183,7 +193,7 @@ def _write_result_link(
             "artifact_hash": source.ultimate_artifact_hash,
             "data_dir": str(source.ultimate_data_dir),
         },
-        "migration_path": list(migration_path),
+        "migration_path": [asdict(step) for step in migration_path],
     }
     link_path = _result_link_path_in(obj.data_dir)
     tmp = nfs_safe_unique_name(link_path, name="tmp")
@@ -216,7 +226,7 @@ def migrate(obj: Furu[Any]) -> bool:
         )
         if source is not None:
             full_path = source.prior_migration_path + tuple(
-                _migration_to_dict(m) for m in migration_path
+                MigrationStep.from_migration(m) for m in migration_path
             )
             _write_result_link(obj=obj, source=source, migration_path=full_path)
             return True
