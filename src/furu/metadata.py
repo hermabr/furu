@@ -105,7 +105,7 @@ class RunningMetadata(BaseModel):
         cls,
         obj: Furu[T],
         *,
-        dependencies: DependencyMetadata | None = None,
+        dependencies: DependencyMetadata,
     ) -> RunningMetadata:
         metadata = cls(
             artifact=ArtifactMetadata(
@@ -116,20 +116,18 @@ class RunningMetadata(BaseModel):
             ),
             data_path=obj.data_dir,
             started_at=datetime.now(timezone.utc),
-            dependencies=dependencies or DependencyMetadata(),
+            dependencies=dependencies,
         )
         obj._metadata_path.write_text(metadata.model_dump_json(indent=2))
         return metadata
 
-    def to_complete(
-        self, *, dependencies: DependencyMetadata | None = None
-    ) -> CompletedMetadata:
+    def to_complete(self, *, dependencies: DependencyMetadata) -> CompletedMetadata:
         return CompletedMetadata(
             artifact=self.artifact,
             data_path=self.data_path,
             started_at=self.started_at,
             completed_at=datetime.now(timezone.utc),
-            dependencies=dependencies or self.dependencies,
+            dependencies=dependencies,
         )
 
 
