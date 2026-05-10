@@ -15,7 +15,7 @@ from furu.dependencies import (
 )
 from furu.locking import LockLostError, lock_many
 from furu.logging import _scoped_log_files
-from furu.metadata import DependencyMetadata, RunningMetadata
+from furu.metadata import DependencyRef, RunningMetadata
 from furu.result import load_result_bundle, save_result_bundle
 from furu.utils import class_label, nfs_safe_unique_name
 
@@ -57,7 +57,8 @@ def _store_result[T](
     result: T,
     *,
     metadata: RunningMetadata,
-    dependencies: DependencyMetadata,
+    eager_dependencies: tuple[DependencyRef, ...],
+    lazy_dependencies: tuple[DependencyRef, ...],
     has_lock: HasLock,
 ) -> None:
     if not has_lock():
@@ -76,9 +77,10 @@ def _store_result[T](
 
     tmp_result_dir.rename(obj._result_dir)
 
-    metadata_text = metadata.to_complete(dependencies=dependencies).model_dump_json(
-        indent=2
-    )
+    metadata_text = metadata.to_complete(
+        eager_dependencies=eager_dependencies,
+        lazy_dependencies=lazy_dependencies,
+    ).model_dump_json(indent=2)
     obj._metadata_path.write_text(metadata_text)
 
     obj.logger.debug("stored result bundle at %s", obj._result_dir)
@@ -196,14 +198,10 @@ def _execute_group[T](
     log_paths = tuple(obj._log_path for obj in group)
     eager_by_dir = {obj.data_dir: collect_eager_dependencies(obj) for obj in group}
     eager_union = {ref.object_id for refs in eager_by_dir.values() for ref in refs}
-    dependencies_by_dir = {
-        obj.data_dir: DependencyMetadata(eager=eager_by_dir[obj.data_dir])
-        for obj in group
-    }
     metadata_by_dir = {
         obj.data_dir: RunningMetadata.write_for(
             obj,
-            dependencies=dependencies_by_dir[obj.data_dir],
+            eager_dependencies=eager_by_dir[obj.data_dir],
         )
         for obj in group
     }
@@ -241,23 +239,21 @@ def _execute_group[T](
 
             match group[0]._furu_create_mode:
                 case "batched":
-                    for obj in group:
-                        dependencies_by_dir[obj.data_dir] = DependencyMetadata(
+                    lazy_by_dir = {
+                        obj.data_dir: resolve_dependencies(
                             eager=eager_by_dir[obj.data_dir],
-                            lazy=resolve_dependencies(
-                                eager=eager_by_dir[obj.data_dir],
-                                observed=observed,
-                            ),
+                            observed=observed,
                         )
+                        for obj in group
+                    }
                 case "single":
-                    for obj in group:
-                        dependencies_by_dir[obj.data_dir] = DependencyMetadata(
+                    lazy_by_dir = {
+                        obj.data_dir: resolve_dependencies(
                             eager=eager_by_dir[obj.data_dir],
-                            lazy=resolve_dependencies(
-                                eager=eager_by_dir[obj.data_dir],
-                                observed=observed_by_dir[obj.data_dir],
-                            ),
+                            observed=observed_by_dir[obj.data_dir],
                         )
+                        for obj in group
+                    }
                 case _:
                     assert_never(group[0]._furu_create_mode)
 
@@ -271,7 +267,8 @@ def _execute_group[T](
                     obj,
                     result,
                     metadata=metadata_by_dir[obj.data_dir],
-                    dependencies=dependencies_by_dir[obj.data_dir],
+                    eager_dependencies=eager_by_dir[obj.data_dir],
+                    lazy_dependencies=lazy_by_dir[obj.data_dir],
                     has_lock=has_lock,
                 )
                 results_by_dir[obj.data_dir] = result

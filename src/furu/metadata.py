@@ -66,17 +66,6 @@ class DependencyRef(BaseModel):
         )
 
 
-class DependencyMetadata(BaseModel):
-    model_config = ConfigDict(
-        extra="forbid",
-        frozen=True,
-        strict=True,
-    )
-
-    eager: tuple[DependencyRef, ...] = ()
-    lazy: tuple[DependencyRef, ...] = ()
-
-
 class RunningMetadata(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -89,7 +78,7 @@ class RunningMetadata(BaseModel):
     data_path: Path
     # git: GitData | None
     started_at: datetime
-    dependencies: DependencyMetadata = DependencyMetadata()
+    eager_dependencies: tuple[DependencyRef, ...]
     # command: list[str] # TODO: find/decide what the most elegant approach is here
     # hostname: str
     # user: str
@@ -105,7 +94,7 @@ class RunningMetadata(BaseModel):
         cls,
         obj: Furu[T],
         *,
-        dependencies: DependencyMetadata,
+        eager_dependencies: tuple[DependencyRef, ...],
     ) -> RunningMetadata:
         metadata = cls(
             artifact=ArtifactMetadata(
@@ -116,18 +105,24 @@ class RunningMetadata(BaseModel):
             ),
             data_path=obj.data_dir,
             started_at=datetime.now(timezone.utc),
-            dependencies=dependencies,
+            eager_dependencies=eager_dependencies,
         )
         obj._metadata_path.write_text(metadata.model_dump_json(indent=2))
         return metadata
 
-    def to_complete(self, *, dependencies: DependencyMetadata) -> CompletedMetadata:
+    def to_complete(
+        self,
+        *,
+        eager_dependencies: tuple[DependencyRef, ...],
+        lazy_dependencies: tuple[DependencyRef, ...],
+    ) -> CompletedMetadata:
         return CompletedMetadata(
             artifact=self.artifact,
             data_path=self.data_path,
             started_at=self.started_at,
             completed_at=datetime.now(timezone.utc),
-            dependencies=dependencies,
+            eager_dependencies=eager_dependencies,
+            lazy_dependencies=lazy_dependencies,
         )
 
 
@@ -148,7 +143,8 @@ class CompletedMetadata(BaseModel):
     # ]  # TODO: this probably means i don't really need to record the package versions? in particular since git data would have uv.lock and pyproject.toml already
     # slurm: SlurmData
     completed_at: datetime
-    dependencies: DependencyMetadata = DependencyMetadata()
+    eager_dependencies: tuple[DependencyRef, ...]
+    lazy_dependencies: tuple[DependencyRef, ...]
 
 
 type Metadata = Annotated[
