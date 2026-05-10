@@ -97,7 +97,6 @@ def test_migrate_with_matching_old_artifact_writes_result_link() -> None:
 
     link_path = new._internal_furu_dir / "result-link.json"
     link = json.loads(link_path.read_text())
-    assert link["kind"] == "result_link"
     assert link["current"]["fully_qualified_name"] == new._fully_qualified_name
     assert link["current"]["schema_hash"] == new.artifact_schema_hash
     assert link["current"]["artifact_hash"] == new.artifact_hash

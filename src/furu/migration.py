@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Iterator
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
+
+from pydantic import BaseModel, ConfigDict
 
 from furu.core import (
     _internal_furu_dir_in,
@@ -54,6 +56,32 @@ class _Source:
     prior_migration_path: tuple[MigrationStep, ...]
 
 
+class _ResultLinkCurrent(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    fully_qualified_name: str
+    schema_hash: str
+    artifact_hash: str
+    fields: JsonFields
+
+
+class _ResultLinkSource(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    fully_qualified_name: str
+    schema_hash: str
+    artifact_hash: str
+    data_dir: Path
+
+
+class _ResultLink(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    current: _ResultLinkCurrent
+    source: _ResultLinkSource
+    migration_path: tuple[MigrationStep, ...]
+
+
 _Node = tuple[str, str]
 
 
@@ -67,8 +95,8 @@ def result_dir_for_loading(obj: Furu[Any]) -> Path | None:
     link_path = _result_link_path_in(obj.data_dir)
     if not link_path.exists():
         return None
-    link = json.loads(link_path.read_text(encoding="utf-8"))
-    return _result_dir_in(Path(link["source"]["data_dir"]))
+    link = _ResultLink.model_validate_json(link_path.read_text(encoding="utf-8"))
+    return _result_dir_in(link.source.data_dir)
 
 
 def _write_result_link(
@@ -78,25 +106,24 @@ def _write_result_link(
 ) -> None:
     obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
     artifact_data = cast(dict[str, JsonValue], obj.artifact_data)
-    link = {
-        "kind": "result_link",
-        "current": {
-            "fully_qualified_name": fully_qualified_name(type(obj)),
-            "schema_hash": obj.artifact_schema_hash,
-            "artifact_hash": obj.artifact_hash,
-            "fields": artifact_data["fields"],
-        },
-        "source": {
-            "fully_qualified_name": source.ultimate_fully_qualified_name,
-            "schema_hash": source.ultimate_schema_hash,
-            "artifact_hash": source.ultimate_artifact_hash,
-            "data_dir": str(source.ultimate_data_dir),
-        },
-        "migration_path": [asdict(step) for step in migration_path],
-    }
+    link = _ResultLink(
+        current=_ResultLinkCurrent(
+            fully_qualified_name=fully_qualified_name(type(obj)),
+            schema_hash=obj.artifact_schema_hash,
+            artifact_hash=obj.artifact_hash,
+            fields=cast(JsonFields, artifact_data["fields"]),
+        ),
+        source=_ResultLinkSource(
+            fully_qualified_name=source.ultimate_fully_qualified_name,
+            schema_hash=source.ultimate_schema_hash,
+            artifact_hash=source.ultimate_artifact_hash,
+            data_dir=source.ultimate_data_dir,
+        ),
+        migration_path=migration_path,
+    )
     link_path = _result_link_path_in(obj.data_dir)
     tmp = nfs_safe_unique_name(link_path, name="tmp")
-    tmp.write_text(json.dumps(link, indent=2), encoding="utf-8")
+    tmp.write_text(link.model_dump_json(indent=2), encoding="utf-8")
     tmp.rename(link_path)
 
 
@@ -167,20 +194,16 @@ def migrate(obj: Furu[Any]) -> bool:
             else:
                 link_path = _result_link_path_in(artifact_dir)
                 if link_path.exists():
-                    link = json.loads(link_path.read_text(encoding="utf-8"))
-                    current = link["current"]
-                    link_source = link["source"]
+                    link = _ResultLink.model_validate_json(
+                        link_path.read_text(encoding="utf-8")
+                    )
                     source = _Source(
-                        ultimate_data_dir=Path(link_source["data_dir"]),
-                        ultimate_fully_qualified_name=link_source[
-                            "fully_qualified_name"
-                        ],
-                        ultimate_schema_hash=link_source["schema_hash"],
-                        ultimate_artifact_hash=link_source["artifact_hash"],
-                        fields=current["fields"],
-                        prior_migration_path=tuple(
-                            MigrationStep(**step) for step in link["migration_path"]
-                        ),
+                        ultimate_data_dir=link.source.data_dir,
+                        ultimate_fully_qualified_name=link.source.fully_qualified_name,
+                        ultimate_schema_hash=link.source.schema_hash,
+                        ultimate_artifact_hash=link.source.artifact_hash,
+                        fields=link.current.fields,
+                        prior_migration_path=link.migration_path,
                     )
 
             if source is None:
