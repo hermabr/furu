@@ -37,23 +37,23 @@ def find_nested_furu_objects(value: object) -> Iterator[Furu[Any]]:
                 yield from find_nested_furu_objects(item)
 
 
-def collect_eager_dependencies(obj: Furu[Any]) -> tuple[Furu[Any], ...]:
-    dependencies_by_id: dict[str, Furu[Any]] = {}
+def collect_declared_refs(obj: Furu[Any]) -> tuple[Furu[Any], ...]:
+    refs_by_id: dict[str, Furu[Any]] = {}
 
     for field in fields(obj):
-        for dep in find_nested_furu_objects(getattr(obj, field.name)):
-            dependencies_by_id.setdefault(dep.object_id, dep)
+        for ref in find_nested_furu_objects(getattr(obj, field.name)):
+            refs_by_id.setdefault(ref.object_id, ref)
 
     for base in reversed(type(obj).__mro__):
         for name, value in base.__dict__.items():
             if getattr(value, "__furu_dependency__", False):
-                for dep in find_nested_furu_objects(getattr(obj, name)):
-                    dependencies_by_id.setdefault(dep.object_id, dep)
+                for ref in find_nested_furu_objects(getattr(obj, name)):
+                    refs_by_id.setdefault(ref.object_id, ref)
 
     return tuple(
-        dep
-        for _, dep in sorted(
-            dependencies_by_id.items(),
+        ref
+        for _, ref in sorted(
+            refs_by_id.items(),
             key=lambda item: item[0],
         )
     )

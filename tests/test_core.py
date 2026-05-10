@@ -945,7 +945,7 @@ def test_furu_from_artifact_returns_furu_object():
 
 def _dependency_object_ids(obj: Furu[Any]) -> list[str]:
     metadata = json.loads(obj._metadata_path.read_text())
-    return metadata["dependencies"]
+    return metadata["observed_dependencies"]
 
 
 def test_field_dependencies_are_eager_but_metadata_stores_only_loaded_objects() -> None:
@@ -953,7 +953,7 @@ def test_field_dependencies_are_eager_but_metadata_stores_only_loaded_objects() 
     second = WeightedNode(name="weighted", weight=2)
     parent = NestedDependencyParent(bundle=DependencyBundle(first=first, second=second))
 
-    assert parent._all_eager_dependencies() == (first, second)
+    assert parent._declared_refs() == (first, second)
     assert parent.load_or_create() == "Node(nested)"
     assert _dependency_object_ids(parent) == [first.object_id]
 
@@ -962,7 +962,7 @@ def test_computed_dependency_is_cached_property_and_eager_loaded_dependency() ->
     parent = ComputedDependencyParent(name="computed")
 
     assert parent.child is parent.child
-    assert parent._all_eager_dependencies() == (parent.child,)
+    assert parent._declared_refs() == (parent.child,)
     assert parent.load_or_create() == "Node(computed)"
 
     assert _dependency_object_ids(parent) == [parent.child.object_id]
@@ -982,7 +982,7 @@ def test_try_load_inside_create_is_recorded_even_on_missing_result() -> None:
     assert parent.load_or_create() == "missing"
 
     metadata = json.loads(parent._metadata_path.read_text())
-    assert metadata["dependencies"] == [Node(name="optional").object_id]
+    assert metadata["observed_dependencies"] == [Node(name="optional").object_id]
 
 
 def test_furu_objects_block_nested_eager_traversal_but_direct_runtime_loads_are_recorded() -> (
@@ -995,7 +995,7 @@ def test_furu_objects_block_nested_eager_traversal_but_direct_runtime_loads_are_
 
     assert parent.load_or_create() == "Node(inner)"
 
-    assert parent._all_eager_dependencies() == (child,)
+    assert parent._declared_refs() == (child,)
     assert _dependency_object_ids(parent) == [node1.object_id]
 
 
@@ -1011,7 +1011,7 @@ def test_batched_dependencies_record_all_observed_loads() -> None:
     ]
 
     for obj in objs:
-        assert obj._all_eager_dependencies() == (obj.eager,)
+        assert obj._declared_refs() == (obj.eager,)
         assert _dependency_object_ids(obj) == sorted(
             [
                 objs[0].eager.object_id,
