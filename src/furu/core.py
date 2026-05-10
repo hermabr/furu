@@ -98,7 +98,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def try_load(self) -> T:  # TODO: make a better name for this
         from furu.dependencies import record_dependency_call
 
-        record_dependency_call(self, via="try_load")
+        record_dependency_call(self)
         if self._result_manifest_path.exists():
             return cast(T, load_result_bundle(self._result_dir))
         raise NotImplementedError(

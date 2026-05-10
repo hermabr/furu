@@ -11,7 +11,6 @@ from pydantic import BaseModel as PydanticBaseModel
 
 if TYPE_CHECKING:
     from furu.core import Furu
-    from furu.metadata import DependencyRef, DependencyVia
 
 
 class dependency[T](cached_property):
@@ -59,42 +58,33 @@ def find_nested_furu_objects(
                 )
 
 
-def collect_eager_dependencies(obj: Furu[Any]) -> tuple[DependencyRef, ...]:
-    from furu.metadata import DependencyRef
-
-    refs_by_id: dict[str, DependencyRef] = {}
+def collect_eager_dependencies(obj: Furu[Any]) -> tuple[str, ...]:
+    dependency_ids: set[str] = set()
 
     for field in fields(obj):
         for dep, _ in find_nested_furu_objects(
             getattr(obj, field.name), path=field.name
         ):
-            ref = DependencyRef(object_id=dep.object_id, via="field")
-            refs_by_id.setdefault(ref.object_id, ref)
+            dependency_ids.add(dep.object_id)
 
     for base in reversed(type(obj).__mro__):
         for name, value in base.__dict__.items():
             if getattr(value, "__furu_dependency__", False):
                 for dep, _ in find_nested_furu_objects(getattr(obj, name), path=name):
-                    ref = DependencyRef(object_id=dep.object_id, via="dependency")
-                    refs_by_id.setdefault(ref.object_id, ref)
+                    dependency_ids.add(dep.object_id)
 
-    return tuple(sorted(refs_by_id.values(), key=lambda ref: ref.object_id))
+    return tuple(sorted(dependency_ids))
 
 
 class DependencyRecorder:
     def __init__(self) -> None:
-        self._observed_by_id: dict[str, DependencyRef] = {}
+        self._observed_ids: set[str] = set()
 
-    def record(self, obj: Furu[Any], *, via: DependencyVia) -> None:
-        from furu.metadata import DependencyRef
+    def record(self, obj: Furu[Any]) -> None:
+        self._observed_ids.add(obj.object_id)
 
-        ref = DependencyRef(object_id=obj.object_id, via=via)
-        self._observed_by_id.setdefault(ref.object_id, ref)
-
-    def finalize(self) -> tuple[DependencyRef, ...]:
-        return tuple(
-            sorted(self._observed_by_id.values(), key=lambda ref: ref.object_id)
-        )
+    def finalize(self) -> tuple[str, ...]:
+        return tuple(sorted(self._observed_ids))
 
 
 _active_dependency_recorder: ContextVar[DependencyRecorder | None] = ContextVar(
@@ -103,10 +93,10 @@ _active_dependency_recorder: ContextVar[DependencyRecorder | None] = ContextVar(
 )
 
 
-def record_dependency_call(obj: Furu[Any], *, via: DependencyVia) -> None:
+def record_dependency_call(obj: Furu[Any]) -> None:
     recorder = _active_dependency_recorder.get()
     if recorder is not None:
-        recorder.record(obj, via=via)
+        recorder.record(obj)
 
 
 @contextmanager

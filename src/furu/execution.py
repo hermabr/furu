@@ -14,7 +14,7 @@ from furu.dependencies import (
 )
 from furu.locking import LockLostError, lock_many
 from furu.logging import _scoped_log_files
-from furu.metadata import DependencyRef, RunningMetadata
+from furu.metadata import RunningMetadata
 from furu.result import load_result_bundle, save_result_bundle
 from furu.utils import class_label, nfs_safe_unique_name
 
@@ -56,8 +56,8 @@ def _store_result[T](
     result: T,
     *,
     metadata: RunningMetadata,
-    eager_dependencies: tuple[DependencyRef, ...],
-    lazy_dependencies: tuple[DependencyRef, ...],
+    eager_dependencies: tuple[str, ...],
+    lazy_dependencies: tuple[str, ...],
     has_lock: HasLock,
 ) -> None:
     if not has_lock():
@@ -118,7 +118,7 @@ def load_or_create[T](
     if isinstance(obj_or_objs, Furu):
         objs = [obj_or_objs]
         unwrap = True
-        record_dependency_call(objs[0], via="load_or_create")
+        record_dependency_call(objs[0])
         objs[0].logger.info("calling %s.load_or_create()", objs[0]._log_label)
     else:
         if not isinstance(obj_or_objs, Sequence):
@@ -130,7 +130,7 @@ def load_or_create[T](
         if any(not isinstance(obj, Furu) for obj in objs):
             raise TypeError("load_or_create() expected Furu objects")
         for obj in objs:
-            record_dependency_call(obj, via="load_or_create")
+            record_dependency_call(obj)
 
     if not objs:
         return []
@@ -196,17 +196,19 @@ def _execute_group[T](
 ) -> None:
     log_paths = tuple(obj._log_path for obj in group)
     eager_by_dir = {obj.data_dir: collect_eager_dependencies(obj) for obj in group}
-    eager_union = {ref.object_id for refs in eager_by_dir.values() for ref in refs}
+    eager_union = {
+        dependency_id for ids in eager_by_dir.values() for dependency_id in ids
+    }
 
     def resolve_lazy_dependencies(
-        obj: Furu[T], observed: tuple[DependencyRef, ...]
-    ) -> tuple[DependencyRef, ...]:
-        eager_ids = {ref.object_id for ref in eager_by_dir[obj.data_dir]}
-        refs_by_id: dict[str, DependencyRef] = {}
-        for ref in observed:
-            if ref.object_id not in eager_ids:
-                refs_by_id.setdefault(ref.object_id, ref)
-        return tuple(sorted(refs_by_id.values(), key=lambda ref: ref.object_id))
+        obj: Furu[T], observed: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        eager_ids = set(eager_by_dir[obj.data_dir])
+        return tuple(
+            dependency_id
+            for dependency_id in observed
+            if dependency_id not in eager_ids
+        )
 
     metadata_by_dir = {
         obj.data_dir: RunningMetadata.write_for(
@@ -226,9 +228,9 @@ def _execute_group[T](
                     with dependency_recorder() as recorder:
                         results = type(group[0])._create_batched(group)
                     observed = tuple(
-                        ref
-                        for ref in recorder.finalize()
-                        if ref.object_id not in eager_union
+                        dependency_id
+                        for dependency_id in recorder.finalize()
+                        if dependency_id not in eager_union
                     )
                     logger.debug("_create_batched() returned")
                     if not isinstance(results, list):
