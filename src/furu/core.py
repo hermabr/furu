@@ -12,7 +12,7 @@ from furu.config import config
 from furu.locking import LockLostError, lock_many
 from furu.logging import get_logger
 from furu.result import load_result_bundle
-from furu.result.codec import _default_result_registry, ResultRegistry
+from furu.result.codec import ResultRegistry, _default_result_registry
 from furu.schema import schema_type as _schema_type
 from furu.serialize import to_json as _to_json
 from furu.utils import (
@@ -24,9 +24,10 @@ from furu.utils import (
 from furu.validate import validate_cls
 
 if TYPE_CHECKING:
+    from typing_extensions import dataclass_transform
+
     from furu.metadata import ArtifactMetadata
     from furu.migration import Migration
-    from typing_extensions import dataclass_transform
 
     @dataclass_transform(kw_only_default=True, frozen_default=True)
     class _FuruDataclassTransform:
@@ -185,8 +186,8 @@ class Furu[T](_FuruDataclassTransform, ABC):
     @cached_property
     def artifact_data(  # TODO: make sure this doesn't prevent garbage collection
         self,
-    ) -> JsonValue:
-        return _to_json(self)
+    ) -> dict[str, JsonValue]:
+        return _to_json(self)  # ty:ignore[invalid-return-type] # TODO: check this or make _to_json return dict[str, JsonValue] or typed value
 
     @cached_property
     def artifact_hash(  # TODO: should this be __hash__?

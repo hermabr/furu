@@ -16,7 +16,7 @@ from furu.core import (
     _result_manifest_path_in,
 )
 from furu.metadata import CompletedMetadata
-from furu.utils import JsonFields, JsonValue, fully_qualified_name
+from furu.utils import JsonFields, fully_qualified_name
 
 if TYPE_CHECKING:
     from furu.core import Furu
@@ -105,8 +105,7 @@ def migrate(obj: Furu[Any]) -> bool:
         fully_qualified_name(type(obj)),
         obj.artifact_schema_hash,
     )
-    artifact_data = cast(dict[str, JsonValue], obj.artifact_data)
-    target_fields = cast(JsonFields, artifact_data["fields"])
+    target_fields = cast(JsonFields, obj.artifact_data["fields"])
 
     by_target: defaultdict[_Node, list[Migration]] = defaultdict(list)
     for migration in migrations:
@@ -148,14 +147,14 @@ def migrate(obj: Furu[Any]) -> bool:
                     metadata_path.read_text(encoding="utf-8")
                 )
                 artifact = metadata.artifact
-                data = cast(dict[str, JsonValue], artifact.data)
-                artifact_fully_qualified_name = cast(str, data[CLASSMARKER])
+                artifact_fully_qualified_name = cast(str, artifact.data[CLASSMARKER])
+                artifact_fields = cast(JsonFields, artifact.data["fields"])
                 source_link = _ResultLink(
                     current=_ResultLinkCurrent(
                         fully_qualified_name=artifact_fully_qualified_name,
                         schema_hash=artifact.schema_hash,
                         artifact_hash=artifact.hash,
-                        fields=cast(JsonFields, data["fields"]),
+                        fields=artifact_fields,
                     ),
                     source=_ResultLinkSource(
                         fully_qualified_name=artifact_fully_qualified_name,
