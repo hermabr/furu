@@ -22,55 +22,37 @@ class dependency[T](cached_property):
         self.__doc__ = getattr(func, "__doc__", None)
 
 
-def find_nested_furu_objects(
-    value: object, *, path: str | None = None
-) -> Iterator[tuple[Furu[Any], str | None]]:
+def find_nested_furu_objects(value: object) -> Iterator[Furu[Any]]:
     from furu.core import Furu
 
     match value:
         case Furu():
-            yield value, path
+            yield value
         case _ if is_dataclass(value) and not isinstance(value, type):
             for field in fields(value):
-                yield from find_nested_furu_objects(
-                    getattr(value, field.name),
-                    path=f"{path}.{field.name}" if path else field.name,
-                )
+                yield from find_nested_furu_objects(getattr(value, field.name))
         case PydanticBaseModel():
             for name in type(value).model_fields:
-                yield from find_nested_furu_objects(
-                    getattr(value, name),
-                    path=f"{path}.{name}" if path else name,
-                )
+                yield from find_nested_furu_objects(getattr(value, name))
         case tuple() | list() | set() | frozenset():
-            for index, item in enumerate(value):
-                item_path = f"[{index}]"
-                yield from find_nested_furu_objects(
-                    item,
-                    path=f"{path}[{index}]" if path else item_path,
-                )
+            for item in value:
+                yield from find_nested_furu_objects(item)
         case dict():
-            for key, item in value.items():
-                item_path = f"[{key!r}]"
-                yield from find_nested_furu_objects(
-                    item,
-                    path=f"{path}[{key!r}]" if path else item_path,
-                )
+            for item in value.values():
+                yield from find_nested_furu_objects(item)
 
 
 def collect_eager_dependencies(obj: Furu[Any]) -> tuple[str, ...]:
     dependency_ids: set[str] = set()
 
     for field in fields(obj):
-        for dep, _ in find_nested_furu_objects(
-            getattr(obj, field.name), path=field.name
-        ):
+        for dep in find_nested_furu_objects(getattr(obj, field.name)):
             dependency_ids.add(dep.object_id)
 
     for base in reversed(type(obj).__mro__):
         for name, value in base.__dict__.items():
             if getattr(value, "__furu_dependency__", False):
-                for dep, _ in find_nested_furu_objects(getattr(obj, name), path=name):
+                for dep in find_nested_furu_objects(getattr(obj, name)):
                     dependency_ids.add(dep.object_id)
 
     return tuple(sorted(dependency_ids))
