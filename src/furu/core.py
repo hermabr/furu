@@ -141,9 +141,9 @@ class Furu[T](_FuruDataclassTransform, ABC):
         return migrate(self)
 
     def is_migrated(self) -> bool:
-        from furu.migration import is_migrated
+        from furu.migration import _result_link_path_in
 
-        return is_migrated(self)
+        return _result_link_path_in(self.data_dir).exists()
 
     def delete(self, mode: Literal["prompt", "force"] = "prompt") -> bool:
         if not self.data_dir.exists():

@@ -47,27 +47,14 @@ def _result_link_path_in(data_dir: Path) -> Path:
     return _internal_furu_dir_in(data_dir) / "result-link.json"
 
 
-def _result_link_path(obj: Furu[Any]) -> Path:
-    return _result_link_path_in(obj.data_dir)
-
-
-def _read_result_link(obj: Furu[Any]) -> dict[str, Any] | None:
-    link_path = _result_link_path(obj)
-    if not link_path.exists():
-        return None
-    return cast(dict[str, Any], json.loads(link_path.read_text(encoding="utf-8")))
-
-
 def result_dir_for_loading(obj: Furu[Any]) -> Path | None:
     if obj._result_manifest_path.exists():
         return obj._result_dir
-    if (link := _read_result_link(obj)) is None:
+    link_path = _result_link_path_in(obj.data_dir)
+    if not link_path.exists():
         return None
+    link = json.loads(link_path.read_text(encoding="utf-8"))
     return _result_dir_in(Path(link["source"]["data_dir"]))
-
-
-def is_migrated(obj: Furu[Any]) -> bool:
-    return _result_link_path(obj).exists()
 
 
 def _migration_paths_ending_at(
@@ -175,13 +162,6 @@ def _migration_to_dict(migration: Migration) -> dict[str, str]:
     }
 
 
-def _write_json_atomically(path: Path, content: object) -> None:
-    text = json.dumps(content, indent=2)
-    tmp = nfs_safe_unique_name(path, name="tmp")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.rename(path)
-
-
 def _write_result_link(
     obj: Furu[Any],
     source: _Source,
@@ -205,11 +185,14 @@ def _write_result_link(
         },
         "migration_path": list(migration_path),
     }
-    _write_json_atomically(_result_link_path(obj), link)
+    link_path = _result_link_path_in(obj.data_dir)
+    tmp = nfs_safe_unique_name(link_path, name="tmp")
+    tmp.write_text(json.dumps(link, indent=2), encoding="utf-8")
+    tmp.rename(link_path)
 
 
 def migrate(obj: Furu[Any]) -> bool:
-    if is_migrated(obj):
+    if _result_link_path_in(obj.data_dir).exists():
         return True
     if obj._result_manifest_path.exists():
         return False
