@@ -35,19 +35,7 @@ class TrainingRunV2(furu.Furu[str]):
 
     @classmethod
     def migrations(cls) -> tuple[furu.Migration, ...]:
-        return (
-            furu.Migration(
-                old_fully_qualified_name=TrainJobV1(
-                    dataset="", learning_rate=0.0
-                )._fully_qualified_name,
-                old_schema_hash=TrainJobV1(
-                    dataset="", learning_rate=0.0
-                ).artifact_schema_hash,
-                new_fully_qualified_name=cls(dataset="", lr=0.0)._fully_qualified_name,
-                new_schema_hash=cls(dataset="", lr=0.0).artifact_schema_hash,
-                transform_fn=cls._from_train_job_v1,
-            ),
-        )
+        return (furu.Migration.from_classes(TrainJobV1, cls, cls._from_train_job_v1),)
 
     def _create(self) -> str:
         type(self).create_calls += 1
@@ -64,17 +52,7 @@ class DuplicateMigration(furu.Furu[str]):
 
     @classmethod
     def migrations(cls) -> tuple[furu.Migration, ...]:
-        edge = furu.Migration(
-            old_fully_qualified_name=TrainJobV1(
-                dataset="", learning_rate=0.0
-            )._fully_qualified_name,
-            old_schema_hash=TrainJobV1(
-                dataset="", learning_rate=0.0
-            ).artifact_schema_hash,
-            new_fully_qualified_name=cls()._fully_qualified_name,
-            new_schema_hash=cls().artifact_schema_hash,
-            transform_fn=cls._same,
-        )
+        edge = furu.Migration.from_classes(TrainJobV1, cls, cls._same)
         return (edge, edge)
 
 
@@ -91,19 +69,7 @@ class ReturnsFuruObject(furu.Furu[str]):
 
     @classmethod
     def migrations(cls) -> tuple[furu.Migration, ...]:
-        return (
-            furu.Migration(
-                old_fully_qualified_name=TrainJobV1(
-                    dataset="", learning_rate=0.0
-                )._fully_qualified_name,
-                old_schema_hash=TrainJobV1(
-                    dataset="", learning_rate=0.0
-                ).artifact_schema_hash,
-                new_fully_qualified_name=cls(dataset="", lr=0.0)._fully_qualified_name,
-                new_schema_hash=cls(dataset="", lr=0.0).artifact_schema_hash,
-                transform_fn=cls._bad,
-            ),
-        )
+        return (furu.Migration.from_classes(TrainJobV1, cls, cls._bad),)
 
     def _create(self) -> str:
         return "created"
