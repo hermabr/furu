@@ -196,7 +196,6 @@ def _execute_group[T](
 ) -> None:
     log_paths = tuple(obj._log_path for obj in group)
     eager_dependencies = [collect_eager_dependencies(obj) for obj in group]
-    eager_union = {dependency_id for ids in eager_dependencies for dependency_id in ids}
 
     def resolve_lazy_dependencies(
         eager_ids: tuple[str, ...], observed: tuple[str, ...]
@@ -223,6 +222,11 @@ def _execute_group[T](
             match group[0]._furu_create_mode:
                 case "batched":
                     logger.debug("running _create_batched()")
+                    eager_union = {
+                        dependency_id
+                        for ids in eager_dependencies
+                        for dependency_id in ids
+                    }
                     with dependency_recorder() as recorder:
                         results = type(group[0])._create_batched(group)
                     observed = tuple(
