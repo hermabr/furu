@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -48,9 +48,9 @@ class DependencyRef(BaseModel):
     path: str | None = None
 
     @classmethod
-    def from_furu(
+    def from_furu[TFuru: Furu](
         cls,
-        obj: Furu[Any],
+        obj: TFuru,
         *,
         via: DependencyVia,
         path: str | None = None,
