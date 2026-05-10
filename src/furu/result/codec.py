@@ -12,16 +12,8 @@ from furu.utils import fully_qualified_name
 
 
 class ResultCodec(ABC):
-    def __init_subclass__(cls) -> None:
-        super().__init_subclass__()
-        if "codec_id" in cls.__dict__:
-            raise TypeError(
-                f"{cls.__module__}.{cls.__qualname__} must not override codec_id; "
-                "codec ids are derived from codec class identity"
-            )
-
     @classmethod
-    def codec_id(cls) -> str:
+    def _codec_id(cls) -> str:
         return fully_qualified_name(cls)
 
     @classmethod
