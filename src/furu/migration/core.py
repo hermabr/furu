@@ -19,7 +19,6 @@ from furu.migration.types import (
     MigrationNode,
     ResolvedMigration,
     _MigrationEdge,
-    _edge_identity,
 )
 from furu.utils import _hash_dict_deterministically
 
@@ -31,7 +30,7 @@ def _registered_migrations_for_class(cls: type[Furu[Any]]) -> tuple[Migration, .
     migrations = cls.migrations()
     seen: set[MigrationEdgeIdentity] = set()
     for migration in migrations:
-        identity = _edge_identity(migration)
+        identity = MigrationEdgeIdentity.from_migration(migration)
         if identity in seen:
             raise ValueError(
                 f"{cls.__name__}.migrations() returned duplicate migration edge "
@@ -275,12 +274,12 @@ def _resolve_registered_path(
     cls: type[Furu[Any]], raw_path: list[_MigrationEdge]
 ) -> tuple[Migration, ...] | None:
     by_identity = {
-        _edge_identity(migration): migration
+        MigrationEdgeIdentity.from_migration(migration): migration
         for migration in _registered_migrations_for_class(cls)
     }
     path: list[Migration] = []
     for edge in raw_path:
-        migration = by_identity.get(_edge_identity(edge))
+        migration = by_identity.get(MigrationEdgeIdentity.from_migration(edge))
         if migration is None:
             return None
         path.append(migration)
