@@ -62,27 +62,25 @@ def find_nested_furu_objects(
 def collect_eager_dependencies(obj: Furu[Any]) -> tuple[DependencyRef, ...]:
     from furu.metadata import DependencyRef
 
-    refs: list[DependencyRef] = []
+    refs_by_id: dict[str, DependencyRef] = {}
 
     for field in fields(obj):
-        refs.extend(
-            DependencyRef.from_furu(dep, via="field", path=dep_path)
-            for dep, dep_path in find_nested_furu_objects(
-                getattr(obj, field.name), path=field.name
-            )
-        )
+        for dep, dep_path in find_nested_furu_objects(
+            getattr(obj, field.name), path=field.name
+        ):
+            ref = DependencyRef.from_furu(dep, via="field", path=dep_path)
+            refs_by_id.setdefault(ref.object_id, ref)
 
     for base in reversed(type(obj).__mro__):
         for name, value in base.__dict__.items():
             if getattr(value, "__furu_dependency__", False):
-                refs.extend(
-                    DependencyRef.from_furu(dep, via="dependency", path=dep_path)
-                    for dep, dep_path in find_nested_furu_objects(
-                        getattr(obj, name), path=name
-                    )
-                )
+                for dep, dep_path in find_nested_furu_objects(
+                    getattr(obj, name), path=name
+                ):
+                    ref = DependencyRef.from_furu(dep, via="dependency", path=dep_path)
+                    refs_by_id.setdefault(ref.object_id, ref)
 
-    return normalize_dependency_refs(refs)
+    return tuple(sorted(refs_by_id.values(), key=lambda ref: ref.object_id))
 
 
 def normalize_dependency_refs(
