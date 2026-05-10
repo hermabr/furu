@@ -46,16 +46,6 @@ class MigrationStep:
         )
 
 
-@dataclass(frozen=True, slots=True)
-class _Source:
-    ultimate_data_dir: Path
-    ultimate_fully_qualified_name: str
-    ultimate_schema_hash: str
-    ultimate_artifact_hash: str
-    fields: JsonFields
-    prior_migration_path: tuple[MigrationStep, ...]
-
-
 class _ResultLinkCurrent(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -101,7 +91,7 @@ def result_dir_for_loading(obj: Furu[Any]) -> Path | None:
 
 def _write_result_link(
     obj: Furu[Any],
-    source: _Source,
+    source_link: _ResultLink,
     migration_path: tuple[MigrationStep, ...],
 ) -> None:
     obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
@@ -114,10 +104,10 @@ def _write_result_link(
             fields=cast(JsonFields, artifact_data["fields"]),
         ),
         source=_ResultLinkSource(
-            fully_qualified_name=source.ultimate_fully_qualified_name,
-            schema_hash=source.ultimate_schema_hash,
-            artifact_hash=source.ultimate_artifact_hash,
-            data_dir=source.ultimate_data_dir,
+            fully_qualified_name=source_link.source.fully_qualified_name,
+            schema_hash=source_link.source.schema_hash,
+            artifact_hash=source_link.source.artifact_hash,
+            data_dir=source_link.source.data_dir,
         ),
         migration_path=migration_path,
     )
@@ -178,46 +168,47 @@ def migrate(obj: Furu[Any]) -> bool:
 
             result_manifest = _result_manifest_path_in(artifact_dir)
             metadata_path = _metadata_path_in(artifact_dir)
-            source: _Source | None = None
+            source_link: _ResultLink | None = None
             if result_manifest.exists() and metadata_path.exists():
                 metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
                 artifact = metadata["artifact"]
                 data = artifact["data"]
-                source = _Source(
-                    ultimate_data_dir=artifact_dir,
-                    ultimate_fully_qualified_name=data["|class"],
-                    ultimate_schema_hash=artifact["schema_hash"],
-                    ultimate_artifact_hash=artifact["hash"],
-                    fields=data["fields"],
-                    prior_migration_path=(),
+                source_link = _ResultLink(
+                    current=_ResultLinkCurrent(
+                        fully_qualified_name=data["|class"],
+                        schema_hash=artifact["schema_hash"],
+                        artifact_hash=artifact["hash"],
+                        fields=data["fields"],
+                    ),
+                    source=_ResultLinkSource(
+                        fully_qualified_name=data["|class"],
+                        schema_hash=artifact["schema_hash"],
+                        artifact_hash=artifact["hash"],
+                        data_dir=artifact_dir,
+                    ),
+                    migration_path=(),
                 )
             else:
                 link_path = _result_link_path_in(artifact_dir)
                 if link_path.exists():
-                    link = _ResultLink.model_validate_json(
+                    source_link = _ResultLink.model_validate_json(
                         link_path.read_text(encoding="utf-8")
                     )
-                    source = _Source(
-                        ultimate_data_dir=link.source.data_dir,
-                        ultimate_fully_qualified_name=link.source.fully_qualified_name,
-                        ultimate_schema_hash=link.source.schema_hash,
-                        ultimate_artifact_hash=link.source.artifact_hash,
-                        fields=link.current.fields,
-                        prior_migration_path=link.migration_path,
-                    )
 
-            if source is None:
+            if source_link is None:
                 continue
 
-            fields = source.fields
+            fields = source_link.current.fields
             for step in migration_path:
                 fields = step.transform_fn(fields)
             if fields != target_fields:
                 continue
 
-            full_path = source.prior_migration_path + tuple(
+            full_path = source_link.migration_path + tuple(
                 MigrationStep.from_migration(step) for step in migration_path
             )
-            _write_result_link(obj=obj, source=source, migration_path=full_path)
+            _write_result_link(
+                obj=obj, source_link=source_link, migration_path=full_path
+            )
             return True
     return False
