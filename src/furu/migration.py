@@ -14,7 +14,7 @@ from furu.core import (
     _result_dir_in,
     _result_manifest_path_in,
 )
-from furu.utils import JsonFields, JsonValue, fully_qualified_name, nfs_safe_unique_name
+from furu.utils import JsonFields, JsonValue, fully_qualified_name
 
 if TYPE_CHECKING:
     from furu.core import Furu
@@ -87,14 +87,6 @@ def result_dir_for_loading(obj: Furu[Any]) -> Path | None:
         return None
     link = _ResultLink.model_validate_json(link_path.read_text(encoding="utf-8"))
     return _result_dir_in(link.source.data_dir)
-
-
-def _write_result_link(obj: Furu[Any], link: _ResultLink) -> None:
-    obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
-    link_path = _result_link_path_in(obj.data_dir)
-    tmp = nfs_safe_unique_name(link_path, name="tmp")
-    tmp.write_text(link.model_dump_json(indent=2), encoding="utf-8")
-    tmp.rename(link_path)
 
 
 def migrate(obj: Furu[Any]) -> bool:
@@ -187,18 +179,19 @@ def migrate(obj: Furu[Any]) -> bool:
             full_path = source_link.migration_path + tuple(
                 MigrationStep.from_migration(step) for step in migration_path
             )
-            _write_result_link(
-                obj,
-                _ResultLink(
-                    current=_ResultLinkCurrent(
-                        fully_qualified_name=fully_qualified_name(type(obj)),
-                        schema_hash=obj.artifact_schema_hash,
-                        artifact_hash=obj.artifact_hash,
-                        fields=target_fields,
-                    ),
-                    source=source_link.source,
-                    migration_path=full_path,
+            result_link = _ResultLink(
+                current=_ResultLinkCurrent(
+                    fully_qualified_name=fully_qualified_name(type(obj)),
+                    schema_hash=obj.artifact_schema_hash,
+                    artifact_hash=obj.artifact_hash,
+                    fields=target_fields,
                 ),
+                source=source_link.source,
+                migration_path=full_path,
+            )
+            obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
+            _result_link_path_in(obj.data_dir).write_text(
+                result_link.model_dump_json(indent=2), encoding="utf-8"
             )
             return True
     return False
