@@ -12,13 +12,10 @@ from furu.core import (
     _result_dir_in,
     _result_manifest_path_in,
 )
-from furu.utils import JsonValue, fully_qualified_name, nfs_safe_unique_name
+from furu.utils import JsonFields, JsonValue, fully_qualified_name, nfs_safe_unique_name
 
 if TYPE_CHECKING:
     from furu.core import Furu
-
-
-type JsonFields = dict[str, JsonValue]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
