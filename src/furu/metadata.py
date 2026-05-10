@@ -41,7 +41,6 @@ class RunningMetadata(BaseModel):
     data_path: Path
     # git: GitData | None
     started_at: datetime
-    eager_dependencies: tuple[str, ...]
     # command: list[str] # TODO: find/decide what the most elegant approach is here
     # hostname: str
     # user: str
@@ -56,8 +55,6 @@ class RunningMetadata(BaseModel):
     def write_for[T](
         cls,
         obj: Furu[T],
-        *,
-        eager_dependencies: tuple[str, ...],
     ) -> RunningMetadata:
         metadata = cls(
             artifact=ArtifactMetadata(
@@ -68,7 +65,6 @@ class RunningMetadata(BaseModel):
             ),
             data_path=obj.data_dir,
             started_at=datetime.now(timezone.utc),
-            eager_dependencies=eager_dependencies,
         )
         obj._metadata_path.write_text(metadata.model_dump_json(indent=2))
         return metadata
@@ -76,16 +72,14 @@ class RunningMetadata(BaseModel):
     def to_complete(
         self,
         *,
-        eager_dependencies: tuple[str, ...],
-        lazy_dependencies: tuple[str, ...],
+        dependencies: tuple[str, ...],
     ) -> CompletedMetadata:
         return CompletedMetadata(
             artifact=self.artifact,
             data_path=self.data_path,
             started_at=self.started_at,
             completed_at=datetime.now(timezone.utc),
-            eager_dependencies=eager_dependencies,
-            lazy_dependencies=lazy_dependencies,
+            dependencies=dependencies,
         )
 
 
@@ -106,8 +100,7 @@ class CompletedMetadata(BaseModel):
     # ]  # TODO: this probably means i don't really need to record the package versions? in particular since git data would have uv.lock and pyproject.toml already
     # slurm: SlurmData
     completed_at: datetime
-    eager_dependencies: tuple[str, ...]
-    lazy_dependencies: tuple[str, ...]
+    dependencies: tuple[str, ...]
 
 
 type Metadata = Annotated[

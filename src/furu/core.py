@@ -106,6 +106,11 @@ class Furu[T](_FuruDataclassTransform, ABC):
             "TODO: decide if i should throw or return error value"
         )
 
+    def _all_eager_dependencies(self) -> tuple[Furu[Any], ...]:
+        from furu.dependencies import collect_eager_dependencies
+
+        return collect_eager_dependencies(self)
+
     def delete(self, mode: Literal["prompt", "force"] = "prompt") -> bool:
         if not self.data_dir.exists():
             return False

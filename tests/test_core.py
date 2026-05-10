@@ -943,54 +943,49 @@ def test_furu_from_artifact_returns_furu_object():
     assert "artifact_schema_hash" not in raw_metadata
 
 
-def _dependency_object_ids(obj: Furu[Any], kind: Literal["eager", "lazy"]) -> list[str]:
+def _dependency_object_ids(obj: Furu[Any]) -> list[str]:
     metadata = json.loads(obj._metadata_path.read_text())
-    return metadata[f"{kind}_dependencies"]
+    return metadata["dependencies"]
 
 
-def test_field_dependencies_are_eager_and_not_duplicated_as_lazy() -> None:
+def test_field_dependencies_are_eager_but_metadata_stores_only_loaded_objects() -> None:
     first = Node(name="nested")
     second = WeightedNode(name="weighted", weight=2)
     parent = NestedDependencyParent(bundle=DependencyBundle(first=first, second=second))
 
+    assert parent._all_eager_dependencies() == (first, second)
     assert parent.load_or_create() == "Node(nested)"
-    assert _dependency_object_ids(parent, "eager") == [
-        first.object_id,
-        second.object_id,
-    ]
-    assert _dependency_object_ids(parent, "lazy") == []
+    assert _dependency_object_ids(parent) == [first.object_id]
 
 
-def test_computed_dependency_is_cached_property_and_eager() -> None:
+def test_computed_dependency_is_cached_property_and_eager_loaded_dependency() -> None:
     parent = ComputedDependencyParent(name="computed")
 
     assert parent.child is parent.child
+    assert parent._all_eager_dependencies() == (parent.child,)
     assert parent.load_or_create() == "Node(computed)"
 
-    assert _dependency_object_ids(parent, "eager") == [parent.child.object_id]
-    assert _dependency_object_ids(parent, "lazy") == []
+    assert _dependency_object_ids(parent) == [parent.child.object_id]
 
 
-def test_load_or_create_inside_create_is_lazy_and_deduped() -> None:
+def test_load_or_create_inside_create_is_recorded_and_deduped() -> None:
     parent = LazyDependencyParent(name="lazy")
 
     assert parent.load_or_create() == "Node(lazy)"
 
-    assert _dependency_object_ids(parent, "eager") == []
-    assert _dependency_object_ids(parent, "lazy") == [Node(name="lazy").object_id]
+    assert _dependency_object_ids(parent) == [Node(name="lazy").object_id]
 
 
-def test_try_load_inside_create_is_lazy_even_on_missing_result() -> None:
+def test_try_load_inside_create_is_recorded_even_on_missing_result() -> None:
     parent = TryLoadDependencyParent(name="optional")
 
     assert parent.load_or_create() == "missing"
 
     metadata = json.loads(parent._metadata_path.read_text())
-    assert metadata["eager_dependencies"] == []
-    assert metadata["lazy_dependencies"] == [Node(name="optional").object_id]
+    assert metadata["dependencies"] == [Node(name="optional").object_id]
 
 
-def test_furu_objects_block_nested_eager_traversal_but_direct_runtime_loads_are_lazy() -> (
+def test_furu_objects_block_nested_eager_traversal_but_direct_runtime_loads_are_recorded() -> (
     None
 ):
     node1 = Node(name="inner")
@@ -1000,11 +995,11 @@ def test_furu_objects_block_nested_eager_traversal_but_direct_runtime_loads_are_
 
     assert parent.load_or_create() == "Node(inner)"
 
-    assert _dependency_object_ids(parent, "eager") == [child.object_id]
-    assert _dependency_object_ids(parent, "lazy") == [node1.object_id]
+    assert parent._all_eager_dependencies() == (child,)
+    assert _dependency_object_ids(parent) == [node1.object_id]
 
 
-def test_batched_dependencies_filter_only_each_objects_own_eager_dependencies() -> None:
+def test_batched_dependencies_record_all_observed_loads() -> None:
     objs = [
         BatchDependencyParent(key=1, eager=Node(name="eager-1")),
         BatchDependencyParent(key=2, eager=Node(name="eager-2")),
@@ -1016,12 +1011,13 @@ def test_batched_dependencies_filter_only_each_objects_own_eager_dependencies() 
     ]
 
     for obj in objs:
-        other_eager_ids = [
-            other.eager.object_id for other in objs if other.data_dir != obj.data_dir
-        ]
-        assert _dependency_object_ids(obj, "eager") == [obj.eager.object_id]
-        assert _dependency_object_ids(obj, "lazy") == sorted(
-            [*other_eager_ids, Node(name="shared-lazy").object_id]
+        assert obj._all_eager_dependencies() == (obj.eager,)
+        assert _dependency_object_ids(obj) == sorted(
+            [
+                objs[0].eager.object_id,
+                objs[1].eager.object_id,
+                Node(name="shared-lazy").object_id,
+            ]
         )
 
 
