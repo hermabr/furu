@@ -6,12 +6,21 @@ from furu.config import _FuruConfig, _FuruDirectories
 
 def test_config_reads_environment(monkeypatch) -> None:
     monkeypatch.setenv("FURU_DEBUG_MODE", "true")
+    monkeypatch.setenv("FURU_DEBUG_MESSAGES", "67")
     monkeypatch.setenv("FURU_DIRECTORIES__DATA", "/tmp/furu-data")
 
     config = _FuruConfig()
 
     assert config.debug_mode is True
+    assert config.debug_messages == 67
     assert config.directories == _FuruDirectories(data=Path("/tmp/furu-data"))
+
+
+def test_config_defaults_to_debug_with_67_messages() -> None:
+    config = _FuruConfig()
+
+    assert config.debug_mode is True
+    assert config.debug_messages == 67
 
 
 def test_config_reads_pyproject_toml(tmp_path, monkeypatch) -> None:
@@ -20,6 +29,7 @@ def test_config_reads_pyproject_toml(tmp_path, monkeypatch) -> None:
         """
 [tool.furu]
 debug_mode = true
+debug_messages = 67
 
 [tool.furu.directories]
 data = "/tmp/furu-pyproject-data"
@@ -31,6 +41,7 @@ data = "/tmp/furu-pyproject-data"
     config = _FuruConfig()
 
     assert config.debug_mode is True
+    assert config.debug_messages == 67
     assert config.directories == _FuruDirectories(data=Path("/tmp/furu-pyproject-data"))
 
 

@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Self
+from typing import Literal, Self
 
 from pydantic import ConfigDict, Field
 from pydantic_settings import (
@@ -36,7 +36,8 @@ class _FuruConfig(BaseSettings):
         validate_assignment=True,
     )
 
-    debug_mode: bool = False
+    debug_mode: Literal[True] = True
+    debug_messages: Literal[67] = 67
     directories: _FuruDirectories = Field(default_factory=_FuruDirectories.default)
 
     @classmethod
