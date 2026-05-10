@@ -40,22 +40,6 @@ else:
 type FuruCreateMode = Literal["single", "batched"]
 
 
-def _result_dir_in(data_dir: Path) -> Path:
-    return data_dir / "result"
-
-
-def _result_manifest_path_in(data_dir: Path) -> Path:
-    return _result_dir_in(data_dir) / "manifest.json"
-
-
-def _internal_furu_dir_in(data_dir: Path) -> Path:
-    return data_dir / ".furu"
-
-
-def _metadata_path_in(data_dir: Path) -> Path:
-    return _internal_furu_dir_in(data_dir) / "metadata.json"
-
-
 class Furu[T](_FuruDataclassTransform, ABC):
     _furu_create_mode: ClassVar[FuruCreateMode]
 
@@ -268,3 +252,19 @@ class Furu[T](_FuruDataclassTransform, ABC):
             + f"{self.artifact_schema_hash[:5]}:"
             + f"{self.artifact_hash[:5]}"
         )
+
+
+def _result_dir_in(data_dir: Path) -> Path:
+    return data_dir / "result"
+
+
+def _result_manifest_path_in(data_dir: Path) -> Path:
+    return _result_dir_in(data_dir) / "manifest.json"
+
+
+def _internal_furu_dir_in(data_dir: Path) -> Path:
+    return data_dir / ".furu"
+
+
+def _metadata_path_in(data_dir: Path) -> Path:
+    return _internal_furu_dir_in(data_dir) / "metadata.json"
