@@ -37,20 +37,26 @@ def find_nested_furu_objects(value: object) -> Iterator[Furu[Any]]:
                 yield from find_nested_furu_objects(item)
 
 
-def collect_eager_dependencies(obj: Furu[Any]) -> tuple[str, ...]:
-    dependency_ids: set[str] = set()
+def collect_eager_dependencies(obj: Furu[Any]) -> tuple[Furu[Any], ...]:
+    dependencies_by_id: dict[str, Furu[Any]] = {}
 
     for field in fields(obj):
         for dep in find_nested_furu_objects(getattr(obj, field.name)):
-            dependency_ids.add(dep.object_id)
+            dependencies_by_id.setdefault(dep.object_id, dep)
 
     for base in reversed(type(obj).__mro__):
         for name, value in base.__dict__.items():
             if getattr(value, "__furu_dependency__", False):
                 for dep in find_nested_furu_objects(getattr(obj, name)):
-                    dependency_ids.add(dep.object_id)
+                    dependencies_by_id.setdefault(dep.object_id, dep)
 
-    return tuple(sorted(dependency_ids))
+    return tuple(
+        dep
+        for _, dep in sorted(
+            dependencies_by_id.items(),
+            key=lambda item: item[0],
+        )
+    )
 
 
 class DependencyRecorder:
