@@ -1,6 +1,7 @@
 from importlib.metadata import version
 
 from furu.core import Furu
+from furu.dependencies import dependency
 from furu.execution import load_or_create
 from furu.logging import get_logger
 from furu.result import LazyResult, save_as
@@ -15,6 +16,7 @@ __all__ = [
     "LazyResult",
     "ResultCodec",
     "ResultRegistry",
+    "dependency",
     "get_logger",
     "load_or_create",
     "save_as",

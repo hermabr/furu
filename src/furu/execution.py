@@ -15,6 +15,12 @@ from typing import (
 )
 
 from furu.core import Furu, FuruCreateMode
+from furu.dependencies import (
+    DependencyMetadata,
+    _record_call,
+    _scoped_recorder,
+    collect_eager_dependencies,
+)
 from furu.locking import LockLostError, lock_many
 from furu.logging import _scoped_log_files
 from furu.metadata import RunningMetadata
@@ -61,6 +67,7 @@ def _store_result[T](
     *,
     metadata: RunningMetadata,
     has_lock: HasLock,
+    dependencies: DependencyMetadata,
 ) -> None:
     if not has_lock():
         raise LockLostError(
@@ -100,7 +107,9 @@ def _store_result[T](
 
     tmp_result_dir.rename(obj._result_dir)
 
-    metadata_text = metadata.to_complete().model_dump_json(indent=2)
+    metadata_text = metadata.to_complete(dependencies=dependencies).model_dump_json(
+        indent=2
+    )
     obj._metadata_path.write_text(metadata_text)
 
     obj.logger.debug("stored result bundle at %s", obj._result_dir)
@@ -152,6 +161,9 @@ def load_or_create[T](
 
     if not objs:
         return []
+
+    for obj in objs:
+        _record_call(obj, via="load_or_create")
 
     unique_by_dir: dict[Path, Furu[T]] = {}
     for obj in objs:
@@ -213,7 +225,15 @@ def _execute_group[T](
     results_by_dir: dict[Path, T],
 ) -> None:
     log_paths = tuple(obj._log_path for obj in group)
-    metadata_by_dir = {obj.data_dir: RunningMetadata.write_for(obj) for obj in group}
+    eager_per_dir = {obj.data_dir: collect_eager_dependencies(obj) for obj in group}
+    metadata_by_dir = {
+        obj.data_dir: RunningMetadata.write_for(
+            obj,
+            dependencies=DependencyMetadata(eager=tuple(eager_per_dir[obj.data_dir])),
+        )
+        for obj in group
+    }
+    final_deps_by_dir: dict[Path, DependencyMetadata] = {}
 
     with _scoped_log_files(log_paths):
         logger = group[0].logger
@@ -222,15 +242,36 @@ def _execute_group[T](
             match group[0]._furu_create_mode:
                 case "batched":
                     logger.debug("running _create_batched()")
-                    results = type(group[0])._create_batched(group)
+                    with _scoped_recorder() as recorder:
+                        results = type(group[0])._create_batched(group)
                     logger.debug("_create_batched() returned")
+                    eager_union_ids = {
+                        ref.object_id for refs in eager_per_dir.values() for ref in refs
+                    }
+                    for obj in group:
+                        own_eager = eager_per_dir[obj.data_dir]
+                        lazy = recorder.lazy_refs(exclude_object_ids=eager_union_ids)
+                        final_deps_by_dir[obj.data_dir] = DependencyMetadata(
+                            eager=tuple(own_eager),
+                            lazy=tuple(lazy),
+                        )
                     if not isinstance(results, list):
                         raise TypeError(
                             f"{type(group[0]).__name__}._create_batched() must return a list"
                         )
                 case "single":
                     logger.debug("running sequential _create() fallback")
-                    results = [obj._create() for obj in group]
+                    results = []
+                    for obj in group:
+                        with _scoped_recorder() as recorder:
+                            results.append(obj._create())
+                        own_eager = eager_per_dir[obj.data_dir]
+                        own_eager_ids = {ref.object_id for ref in own_eager}
+                        lazy = recorder.lazy_refs(exclude_object_ids=own_eager_ids)
+                        final_deps_by_dir[obj.data_dir] = DependencyMetadata(
+                            eager=tuple(own_eager),
+                            lazy=tuple(lazy),
+                        )
                     logger.debug("sequential _create() fallback returned")
                 case _:
                     assert_never(group[0]._furu_create_mode)
@@ -246,6 +287,7 @@ def _execute_group[T](
                     result,
                     metadata=metadata_by_dir[obj.data_dir],
                     has_lock=has_lock,
+                    dependencies=final_deps_by_dir[obj.data_dir],
                 )
                 results_by_dir[obj.data_dir] = _unwrap_save_as(result)
 

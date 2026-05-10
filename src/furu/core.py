@@ -96,12 +96,13 @@ class Furu[T](_FuruDataclassTransform, ABC):
             return "failed"
         return "missing"
 
-    def try_load(self) -> T:  # TODO: make a better name for this
+    def try_load(self) -> T | None:  # TODO: make a better name for this
+        from furu.dependencies import _record_call
+
+        _record_call(self, via="try_load")
         if self._result_manifest_path.exists():
             return cast(T, load_result_bundle(self._result_dir))
-        raise NotImplementedError(
-            "TODO: decide if i should throw or return error value"
-        )
+        return None
 
     def delete(self, mode: Literal["prompt", "force"] = "prompt") -> bool:
         if not self.data_dir.exists():
