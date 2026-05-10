@@ -93,8 +93,7 @@ class DependencyRecorder:
         ref = DependencyRef.from_furu(obj, via=via)
         self._observed_by_id.setdefault(ref.object_id, ref)
 
-    @property
-    def observed(self) -> tuple[DependencyRef, ...]:
+    def finalize(self) -> tuple[DependencyRef, ...]:
         return tuple(
             sorted(self._observed_by_id.values(), key=lambda ref: ref.object_id)
         )

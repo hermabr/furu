@@ -217,7 +217,7 @@ def _execute_group[T](
                         results = type(group[0])._create_batched(group)
                     observed = tuple(
                         ref
-                        for ref in recorder.observed
+                        for ref in recorder.finalize()
                         if ref.object_id not in eager_union
                     )
                     logger.debug("_create_batched() returned")
@@ -232,7 +232,7 @@ def _execute_group[T](
                     for obj in group:
                         with dependency_recorder() as recorder:
                             results.append(obj._create())
-                        observed_by_dir[obj.data_dir] = recorder.observed
+                        observed_by_dir[obj.data_dir] = recorder.finalize()
                     logger.debug("sequential _create() fallback returned")
                 case _:
                     assert_never(group[0]._furu_create_mode)
