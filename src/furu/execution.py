@@ -15,6 +15,11 @@ from typing import (
 )
 
 from furu.core import Furu, FuruCreateMode
+from furu.dependencies import (
+    collect_eager_dependencies,
+    dependency_recorder,
+    record_dependency_call,
+)
 from furu.locking import LockLostError, lock_many
 from furu.logging import _scoped_log_files
 from furu.metadata import RunningMetadata
@@ -60,6 +65,8 @@ def _store_result[T](
     result: T,
     *,
     metadata: RunningMetadata,
+    eager_dependencies: tuple[str, ...],
+    lazy_dependencies: tuple[str, ...],
     has_lock: HasLock,
 ) -> None:
     if not has_lock():
@@ -100,7 +107,10 @@ def _store_result[T](
 
     tmp_result_dir.rename(obj._result_dir)
 
-    metadata_text = metadata.to_complete().model_dump_json(indent=2)
+    metadata_text = metadata.to_complete(
+        eager_dependencies=eager_dependencies,
+        lazy_dependencies=lazy_dependencies,
+    ).model_dump_json(indent=2)
     obj._metadata_path.write_text(metadata_text)
 
     obj.logger.debug("stored result bundle at %s", obj._result_dir)
@@ -139,6 +149,7 @@ def load_or_create[T](
     if isinstance(obj_or_objs, Furu):
         objs = [obj_or_objs]
         unwrap = True
+        record_dependency_call(objs[0])
         objs[0].logger.info("calling %s.load_or_create()", objs[0]._log_label)
     else:
         if not isinstance(obj_or_objs, Sequence):
@@ -149,6 +160,8 @@ def load_or_create[T](
         unwrap = False
         if any(not isinstance(obj, Furu) for obj in objs):
             raise TypeError("load_or_create() expected Furu objects")
+        for obj in objs:
+            record_dependency_call(obj)
 
     if not objs:
         return []
@@ -213,24 +226,59 @@ def _execute_group[T](
     results_by_dir: dict[Path, T],
 ) -> None:
     log_paths = tuple(obj._log_path for obj in group)
-    metadata_by_dir = {obj.data_dir: RunningMetadata.write_for(obj) for obj in group}
+    eager_dependencies = [collect_eager_dependencies(obj) for obj in group]
+
+    metadata = [
+        RunningMetadata.write_for(
+            obj,
+            eager_dependencies=eager_ids,
+        )
+        for obj, eager_ids in zip(group, eager_dependencies, strict=True)
+    ]
 
     with _scoped_log_files(log_paths):
         logger = group[0].logger
         logger.debug("load_or_create start")
         try:
+
+            def resolve_lazy_dependencies(
+                eager_ids: tuple[str, ...], observed: tuple[str, ...]
+            ) -> tuple[str, ...]:
+                eager_set = set(eager_ids)
+                return tuple(
+                    dependency_id
+                    for dependency_id in observed
+                    if dependency_id not in eager_set
+                )
+
             match group[0]._furu_create_mode:
                 case "batched":
                     logger.debug("running _create_batched()")
-                    results = type(group[0])._create_batched(group)
+                    with dependency_recorder() as recorder:
+                        results = type(group[0])._create_batched(group)
+                    observed = recorder.finalize()
                     logger.debug("_create_batched() returned")
                     if not isinstance(results, list):
                         raise TypeError(
                             f"{type(group[0]).__name__}._create_batched() must return a list"
                         )
+                    # TODO: Track dependency calls per object during batched execution.
+                    # This currently assigns dependencies observed anywhere in the batch
+                    # to every object except each object's own eager dependencies.
+                    lazy_dependencies = [
+                        resolve_lazy_dependencies(eager_ids, observed)
+                        for eager_ids in eager_dependencies
+                    ]
                 case "single":
                     logger.debug("running sequential _create() fallback")
-                    results = [obj._create() for obj in group]
+                    results = []
+                    lazy_dependencies = []
+                    for obj, eager_ids in zip(group, eager_dependencies, strict=True):
+                        with dependency_recorder() as recorder:
+                            results.append(obj._create())
+                        lazy_dependencies.append(
+                            resolve_lazy_dependencies(eager_ids, recorder.finalize())
+                        )
                     logger.debug("sequential _create() fallback returned")
                 case _:
                     assert_never(group[0]._furu_create_mode)
@@ -240,11 +288,20 @@ def _execute_group[T](
                     f"{type(group[0]).__name__} returned {len(results)} results for {len(group)} objects"
                 )
 
-            for obj, result in zip(group, results, strict=True):
+            for obj, result, eager_ids, lazy_ids, obj_metadata in zip(
+                group,
+                results,
+                eager_dependencies,
+                lazy_dependencies,
+                metadata,
+                strict=True,
+            ):
                 _store_result(
                     obj,
                     result,
-                    metadata=metadata_by_dir[obj.data_dir],
+                    metadata=obj_metadata,
+                    eager_dependencies=eager_ids,
+                    lazy_dependencies=lazy_ids,
                     has_lock=has_lock,
                 )
                 results_by_dir[obj.data_dir] = _unwrap_save_as(result)
