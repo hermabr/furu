@@ -955,12 +955,10 @@ def test_field_dependencies_are_eager_and_not_duplicated_as_lazy() -> None:
     assert parent.load_or_create() == "Node(nested)"
     metadata = json.loads(parent._metadata_path.read_text())
 
-    assert {
-        dep["object_id"]: dep["path"] for dep in metadata["eager_dependencies"]
-    } == {
-        first.object_id: "bundle.first",
-        second.object_id: "bundle.second",
-    }
+    assert _dependency_object_ids(parent, "eager") == [
+        first.object_id,
+        second.object_id,
+    ]
     assert metadata["lazy_dependencies"] == []
 
 
@@ -993,7 +991,6 @@ def test_try_load_inside_create_is_lazy_even_on_missing_result() -> None:
     assert [dep["object_id"] for dep in metadata["lazy_dependencies"]] == [
         Node(name="optional").object_id
     ]
-    assert metadata["lazy_dependencies"][0]["via"] == "try_load"
 
 
 def test_furu_objects_block_nested_eager_traversal_but_direct_runtime_loads_are_lazy() -> (

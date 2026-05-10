@@ -118,7 +118,7 @@ def load_or_create[T](
     if isinstance(obj_or_objs, Furu):
         objs = [obj_or_objs]
         unwrap = True
-        record_dependency_call(objs[0], via="load_or_create")
+        record_dependency_call(objs[0])
         objs[0].logger.info("calling %s.load_or_create()", objs[0]._log_label)
     else:
         if not isinstance(obj_or_objs, Sequence):
@@ -130,7 +130,7 @@ def load_or_create[T](
         if any(not isinstance(obj, Furu) for obj in objs):
             raise TypeError("load_or_create() expected Furu objects")
         for obj in objs:
-            record_dependency_call(obj, via="load_or_create")
+            record_dependency_call(obj)
 
     if not objs:
         return []
