@@ -991,6 +991,7 @@ def test_try_load_inside_create_is_lazy_even_on_missing_result() -> None:
     assert [dep["object_id"] for dep in metadata["lazy_dependencies"]] == [
         Node(name="optional").object_id
     ]
+    assert metadata["lazy_dependencies"][0]["via"] == "try_load"
 
 
 def test_furu_objects_block_nested_eager_traversal_but_direct_runtime_loads_are_lazy() -> (

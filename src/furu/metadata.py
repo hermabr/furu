@@ -9,6 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from furu.utils import JsonValue
 
+type DependencyVia = Literal["field", "dependency", "load_or_create", "try_load"]
+
 if TYPE_CHECKING:
     from furu.core import Furu
 
@@ -37,10 +39,7 @@ class DependencyRef(BaseModel):
     )
 
     object_id: str
-
-    @classmethod
-    def from_furu[TFuru: Furu](cls, obj: TFuru) -> DependencyRef:
-        return cls(object_id=obj.object_id)
+    via: DependencyVia
 
 
 class RunningMetadata(BaseModel):
