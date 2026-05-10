@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from collections import defaultdict
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -15,6 +14,7 @@ from furu.core import (
     _result_dir_in,
     _result_manifest_path_in,
 )
+from furu.metadata import CompletedMetadata
 from furu.utils import JsonFields, JsonValue, fully_qualified_name
 
 if TYPE_CHECKING:
@@ -143,20 +143,24 @@ def migrate(obj: Furu[Any]) -> bool:
             metadata_path = _metadata_path_in(artifact_dir)
             source_link: _ResultLink | None = None
             if result_manifest.exists() and metadata_path.exists():
-                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-                artifact = metadata["artifact"]
-                data = artifact["data"]
+                metadata = CompletedMetadata.model_validate_json(
+                    metadata_path.read_text(encoding="utf-8")
+                )
+                artifact = metadata.artifact
+                data = cast(dict[str, JsonValue], artifact.data)
+                artifact_fully_qualified_name = cast(str, data["|class"])
+                artifact_fields = cast(JsonFields, data["fields"])
                 source_link = _ResultLink(
                     current=_ResultLinkCurrent(
-                        fully_qualified_name=data["|class"],
-                        schema_hash=artifact["schema_hash"],
-                        artifact_hash=artifact["hash"],
-                        fields=data["fields"],
+                        fully_qualified_name=artifact_fully_qualified_name,
+                        schema_hash=artifact.schema_hash,
+                        artifact_hash=artifact.hash,
+                        fields=artifact_fields,
                     ),
                     source=_ResultLinkSource(
-                        fully_qualified_name=data["|class"],
-                        schema_hash=artifact["schema_hash"],
-                        artifact_hash=artifact["hash"],
+                        fully_qualified_name=artifact_fully_qualified_name,
+                        schema_hash=artifact.schema_hash,
+                        artifact_hash=artifact.hash,
                         data_dir=artifact_dir,
                     ),
                     migration_path=(),
