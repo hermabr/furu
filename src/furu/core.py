@@ -12,7 +12,7 @@ from furu.config import config
 from furu.locking import LockLostError, lock_many
 from furu.logging import get_logger
 from furu.result import load_result_bundle
-from furu.result.codec import _default_result_registry, ResultRegistry
+from furu.result.codec import ResultRegistry, _default_result_registry
 from furu.schema import schema_type as _schema_type
 from furu.serialize import to_json as _to_json
 from furu.utils import (
@@ -24,8 +24,10 @@ from furu.utils import (
 from furu.validate import validate_cls
 
 if TYPE_CHECKING:
-    from furu.metadata import ArtifactMetadata
     from typing_extensions import dataclass_transform
+
+    from furu.metadata import ArtifactMetadata
+    from furu.migration import Migration
 
     @dataclass_transform(kw_only_default=True, frozen_default=True)
     class _FuruDataclassTransform:
@@ -90,6 +92,8 @@ class Furu[T](_FuruDataclassTransform, ABC):
     ]:  # TODO: add queued/waiting state?
         if self._result_manifest_path.exists():
             return "completed"
+        if self.is_migrated():
+            return "completed"
         if self._lock_path.exists():
             return "running"
         if self.data_dir.exists():
@@ -98,10 +102,11 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     def try_load(self) -> T:  # TODO: make a better name for this
         from furu.dependencies import record_dependency_call
+        from furu.migration import result_dir_for_loading
 
         record_dependency_call(self)
-        if self._result_manifest_path.exists():
-            return cast(T, load_result_bundle(self._result_dir))
+        if (result_dir := result_dir_for_loading(self)) is not None:
+            return cast(T, load_result_bundle(result_dir))
         raise NotImplementedError(
             "TODO: decide if i should throw or return error value"
         )
@@ -110,6 +115,20 @@ class Furu[T](_FuruDataclassTransform, ABC):
         from furu.dependencies import collect_declared_refs
 
         return collect_declared_refs(self)
+
+    @classmethod
+    def migrations(cls) -> tuple[Migration, ...]:
+        return ()
+
+    def migrate(self) -> bool:
+        from furu.migration import migrate
+
+        return migrate(self)
+
+    def is_migrated(self) -> bool:
+        from furu.migration import _result_link_path_in
+
+        return _result_link_path_in(self.data_dir).exists()
 
     def delete(self, mode: Literal["prompt", "force"] = "prompt") -> bool:
         if not self.data_dir.exists():
@@ -143,11 +162,11 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     @property
     def _result_dir(self) -> Path:
-        return self.data_dir / "result"
+        return _result_dir_in(self.data_dir)
 
     @property
     def _result_manifest_path(self) -> Path:
-        return self._result_dir / "manifest.json"
+        return _result_manifest_path_in(self.data_dir)
 
     @property
     def logger(self) -> logging.Logger:
@@ -167,8 +186,8 @@ class Furu[T](_FuruDataclassTransform, ABC):
     @cached_property
     def artifact_data(  # TODO: make sure this doesn't prevent garbage collection
         self,
-    ) -> JsonValue:
-        return _to_json(self)
+    ) -> dict[str, JsonValue]:
+        return _to_json(self)  # ty:ignore[invalid-return-type] # TODO: check this or make _to_json return dict[str, JsonValue] or typed value
 
     @cached_property
     def artifact_hash(  # TODO: should this be __hash__?
@@ -213,11 +232,11 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     @cached_property
     def _internal_furu_dir(self) -> Path:
-        return self.data_dir / ".furu"
+        return _internal_furu_dir_in(self.data_dir)
 
     @cached_property
     def _metadata_path(self) -> Path:
-        return self._internal_furu_dir / "metadata.json"
+        return _metadata_path_in(self.data_dir)
 
     @cached_property
     def _log_path(self) -> Path:
@@ -234,3 +253,19 @@ class Furu[T](_FuruDataclassTransform, ABC):
             + f"{self.artifact_schema_hash[:5]}:"
             + f"{self.artifact_hash[:5]}"
         )
+
+
+def _result_dir_in(data_dir: Path) -> Path:
+    return data_dir / "result"
+
+
+def _result_manifest_path_in(data_dir: Path) -> Path:
+    return _result_dir_in(data_dir) / "manifest.json"
+
+
+def _internal_furu_dir_in(data_dir: Path) -> Path:
+    return data_dir / ".furu"
+
+
+def _metadata_path_in(data_dir: Path) -> Path:
+    return _internal_furu_dir_in(data_dir) / "metadata.json"

@@ -6,9 +6,10 @@ import uuid
 from enum import Enum
 from pathlib import Path
 
-type JsonValue = (
-    list[JsonValue] | dict[str, JsonValue] | str | bool | int | float | None
-)
+from pydantic import JsonValue
+
+
+type JsonFields = dict[str, JsonValue]
 
 
 def class_label(cls: type) -> str:

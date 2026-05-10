@@ -23,7 +23,7 @@ class GitData(BaseModel):
 
 @dataclass(frozen=True, kw_only=True)
 class ArtifactMetadata:
-    data: JsonValue
+    data: dict[str, JsonValue]
     hash: str
     schema: JsonValue
     schema_hash: str
