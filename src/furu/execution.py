@@ -209,6 +209,17 @@ def _execute_group[T](
         logger = group[0].logger
         logger.debug("load_or_create start")
         try:
+
+            def resolve_lazy_dependencies(
+                eager_ids: tuple[str, ...], observed: tuple[str, ...]
+            ) -> tuple[str, ...]:
+                eager_set = set(eager_ids)
+                return tuple(
+                    dependency_id
+                    for dependency_id in observed
+                    if dependency_id not in eager_set
+                )
+
             match group[0]._furu_create_mode:
                 case "batched":
                     logger.debug("running _create_batched()")
@@ -229,45 +240,21 @@ def _execute_group[T](
                         raise TypeError(
                             f"{type(group[0]).__name__}._create_batched() must return a list"
                         )
+                    lazy_dependencies = [
+                        resolve_lazy_dependencies(eager_ids, observed)
+                        for eager_ids in eager_dependencies
+                    ]
                 case "single":
                     logger.debug("running sequential _create() fallback")
                     results = []
-                    observed_by_dir = {}
-                    for obj in group:
+                    lazy_dependencies = []
+                    for obj, eager_ids in zip(group, eager_dependencies, strict=True):
                         with dependency_recorder() as recorder:
                             results.append(obj._create())
-                        observed_by_dir[obj.data_dir] = recorder.finalize()
+                        lazy_dependencies.append(
+                            resolve_lazy_dependencies(eager_ids, recorder.finalize())
+                        )
                     logger.debug("sequential _create() fallback returned")
-                case _:
-                    assert_never(group[0]._furu_create_mode)
-
-            def resolve_lazy_dependencies(
-                eager_ids: tuple[str, ...], observed: tuple[str, ...]
-            ) -> tuple[str, ...]:
-                eager_set = set(eager_ids)
-                return tuple(
-                    dependency_id
-                    for dependency_id in observed
-                    if dependency_id not in eager_set
-                )
-
-            match group[0]._furu_create_mode:
-                case "batched":
-                    lazy_by_dir = {
-                        obj.data_dir: resolve_lazy_dependencies(eager_ids, observed)
-                        for obj, eager_ids in zip(
-                            group, eager_dependencies, strict=True
-                        )
-                    }
-                case "single":
-                    lazy_by_dir = {
-                        obj.data_dir: resolve_lazy_dependencies(
-                            eager_ids, observed_by_dir[obj.data_dir]
-                        )
-                        for obj, eager_ids in zip(
-                            group, eager_dependencies, strict=True
-                        )
-                    }
                 case _:
                     assert_never(group[0]._furu_create_mode)
 
@@ -276,15 +263,20 @@ def _execute_group[T](
                     f"{type(group[0]).__name__} returned {len(results)} results for {len(group)} objects"
                 )
 
-            for obj, result, eager_ids, obj_metadata in zip(
-                group, results, eager_dependencies, metadata, strict=True
+            for obj, result, eager_ids, lazy_ids, obj_metadata in zip(
+                group,
+                results,
+                eager_dependencies,
+                lazy_dependencies,
+                metadata,
+                strict=True,
             ):
                 _store_result(
                     obj,
                     result,
                     metadata=obj_metadata,
                     eager_dependencies=eager_ids,
-                    lazy_dependencies=lazy_by_dir[obj.data_dir],
+                    lazy_dependencies=lazy_ids,
                     has_lock=has_lock,
                 )
                 results_by_dir[obj.data_dir] = result
