@@ -207,13 +207,13 @@ def _execute_group[T](
             if dependency_id not in eager_set
         )
 
-    metadata_by_dir = {
-        obj.data_dir: RunningMetadata.write_for(
+    metadata = [
+        RunningMetadata.write_for(
             obj,
             eager_dependencies=eager_ids,
         )
         for obj, eager_ids in zip(group, eager_dependencies, strict=True)
-    }
+    ]
 
     with _scoped_log_files(log_paths):
         logger = group[0].logger
@@ -276,13 +276,13 @@ def _execute_group[T](
                     f"{type(group[0]).__name__} returned {len(results)} results for {len(group)} objects"
                 )
 
-            for obj, result, eager_ids in zip(
-                group, results, eager_dependencies, strict=True
+            for obj, result, eager_ids, obj_metadata in zip(
+                group, results, eager_dependencies, metadata, strict=True
             ):
                 _store_result(
                     obj,
                     result,
-                    metadata=metadata_by_dir[obj.data_dir],
+                    metadata=obj_metadata,
                     eager_dependencies=eager_ids,
                     lazy_dependencies=lazy_by_dir[obj.data_dir],
                     has_lock=has_lock,
