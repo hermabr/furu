@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 from furu.config import config
 from furu.locking import LockLostError, lock_many
 from furu.logging import get_logger
+from furu.migration import Migration, is_migrated, migrate, result_dir_for_loading
 from furu.result import load_result_bundle
 from furu.result.codec import _default_result_registry, ResultRegistry
 from furu.schema import schema_type as _schema_type
@@ -90,6 +91,8 @@ class Furu[T](_FuruDataclassTransform, ABC):
     ]:  # TODO: add queued/waiting state?
         if self._result_manifest_path.exists():
             return "completed"
+        if self.is_migrated():
+            return "completed"
         if self._lock_path.exists():
             return "running"
         if self.data_dir.exists():
@@ -100,8 +103,9 @@ class Furu[T](_FuruDataclassTransform, ABC):
         from furu.dependencies import record_dependency_call
 
         record_dependency_call(self)
-        if self._result_manifest_path.exists():
-            return cast(T, load_result_bundle(self._result_dir))
+        result_dir = result_dir_for_loading(self)
+        if result_dir is not None:
+            return cast(T, load_result_bundle(result_dir))
         raise NotImplementedError(
             "TODO: decide if i should throw or return error value"
         )
@@ -110,6 +114,16 @@ class Furu[T](_FuruDataclassTransform, ABC):
         from furu.dependencies import collect_eager_dependencies
 
         return collect_eager_dependencies(self)
+
+    @classmethod
+    def migrations(cls) -> tuple[Migration, ...]:
+        return ()
+
+    def migrate(self) -> bool:
+        return migrate(self)
+
+    def is_migrated(self) -> bool:
+        return is_migrated(self)
 
     def delete(self, mode: Literal["prompt", "force"] = "prompt") -> bool:
         if not self.data_dir.exists():
