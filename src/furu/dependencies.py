@@ -34,8 +34,6 @@ def find_nested_furu_objects(
     match value:
         case Furu():
             yield value, path
-        case str() | bytes() | bytearray():
-            return
         case _ if is_dataclass(value) and not isinstance(value, type):
             for field in fields(value):
                 yield from find_nested_furu_objects(
