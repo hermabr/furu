@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from furu.migration._types import _MigrationEdge
+from furu.migration.types import _MigrationEdge
 
 
 class _ResultLinkBase(BaseModel):

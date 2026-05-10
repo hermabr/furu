@@ -8,12 +8,12 @@ from pydantic import JsonValue, TypeAdapter, ValidationError
 
 from furu.constants import CLASSMARKER
 from furu.metadata import CompletedMetadata, Metadata
-from furu.migration._result_link import (
+from furu.migration.result_link import (
     _ResultLink,
     _ResultLinkArtifact,
     _ResultLinkSource,
 )
-from furu.migration._types import (
+from furu.migration.types import (
     Migration,
     MigrationEdgeIdentity,
     MigrationNode,
