@@ -1003,9 +1003,7 @@ def test_furu_objects_block_nested_eager_traversal_but_direct_runtime_loads_are_
     assert _dependency_object_ids(parent, "lazy") == [node1.object_id]
 
 
-def test_batched_dependencies_use_per_object_eager_and_shared_lazy_dependencies() -> (
-    None
-):
+def test_batched_dependencies_filter_only_each_objects_own_eager_dependencies() -> None:
     objs = [
         BatchDependencyParent(key=1, eager=Node(name="eager-1")),
         BatchDependencyParent(key=2, eager=Node(name="eager-2")),
@@ -1017,10 +1015,13 @@ def test_batched_dependencies_use_per_object_eager_and_shared_lazy_dependencies(
     ]
 
     for obj in objs:
-        assert _dependency_object_ids(obj, "eager") == [obj.eager.object_id]
-        assert _dependency_object_ids(obj, "lazy") == [
-            Node(name="shared-lazy").object_id
+        other_eager_ids = [
+            other.eager.object_id for other in objs if other.data_dir != obj.data_dir
         ]
+        assert _dependency_object_ids(obj, "eager") == [obj.eager.object_id]
+        assert _dependency_object_ids(obj, "lazy") == sorted(
+            [*other_eager_ids, Node(name="shared-lazy").object_id]
+        )
 
 
 def test_furu_from_artifact_infers_furu_object_type():

@@ -223,18 +223,9 @@ def _execute_group[T](
             match group[0]._furu_create_mode:
                 case "batched":
                     logger.debug("running _create_batched()")
-                    eager_union = {
-                        dependency_id
-                        for ids in eager_dependencies
-                        for dependency_id in ids
-                    }
                     with dependency_recorder() as recorder:
                         results = type(group[0])._create_batched(group)
-                    observed = tuple(
-                        dependency_id
-                        for dependency_id in recorder.finalize()
-                        if dependency_id not in eager_union
-                    )
+                    observed = recorder.finalize()
                     logger.debug("_create_batched() returned")
                     if not isinstance(results, list):
                         raise TypeError(
