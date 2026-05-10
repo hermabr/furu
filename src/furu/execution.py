@@ -23,6 +23,7 @@ from furu.dependencies import (
 from furu.locking import LockLostError, lock_many
 from furu.logging import _scoped_log_files
 from furu.metadata import RunningMetadata
+from furu.migration import result_dir_for_loading
 from furu.result import load_result_bundle, save_result_bundle
 from furu.result.save_as import _unwrap_save_as
 from furu.utils import class_label, nfs_safe_unique_name
@@ -175,9 +176,10 @@ def load_or_create[T](
     missing: list[Furu[T]] = []
 
     for obj in unique:
-        if obj._result_manifest_path.exists():
-            obj.logger.info("cache hit for %s at %s", obj._log_label, obj._result_dir)
-            results_by_dir[obj.data_dir] = cast(T, load_result_bundle(obj._result_dir))
+        result_dir = result_dir_for_loading(obj)
+        if result_dir is not None:
+            obj.logger.info("cache hit for %s at %s", obj._log_label, result_dir)
+            results_by_dir[obj.data_dir] = cast(T, load_result_bundle(result_dir))
         else:
             obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
             missing.append(obj)
@@ -192,15 +194,14 @@ def load_or_create[T](
         has_lock = maybe_has_lock or (lambda: True)
         pending: list[Furu[T]] = []
         for obj in missing:
-            if obj._result_manifest_path.exists():
+            result_dir = result_dir_for_loading(obj)
+            if result_dir is not None:
                 obj.logger.info(
                     "cache hit for %s after waiting at %s",
                     obj._log_label,
-                    obj._result_dir,
+                    result_dir,
                 )
-                results_by_dir[obj.data_dir] = cast(
-                    T, load_result_bundle(obj._result_dir)
-                )
+                results_by_dir[obj.data_dir] = cast(T, load_result_bundle(result_dir))
             else:
                 pending.append(obj)
 

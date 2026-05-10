@@ -21,7 +21,7 @@ from furu.metadata import ArtifactMetadata
 from furu.result import load_result_bundle, save_result_bundle
 from furu.result.codec import _default_result_registry
 from furu.serialize import _from_json, to_json
-from furu.utils import fully_qualified_name
+from furu.utils import JsonValue, fully_qualified_name
 
 type SOME_TYPE = Literal["a", "b"] | int
 
@@ -385,6 +385,114 @@ class BatchDependencyParent(Furu[str]):
         eager_values = [obj.eager.load_or_create() for obj in objs]
         lazy_value = Node(name="shared-lazy").load_or_create()
         return [f"{value}:{lazy_value}" for value in eager_values]
+
+
+class OldTrainJob(Furu[str]):
+    dataset: str
+    learning_rate: float
+
+    def _create(self) -> str:
+        return f"{self.dataset}:{self.learning_rate}"
+
+
+class TrainingRun(Furu[str]):
+    dataset: str
+    lr: float
+    seed: int = 0
+    create_calls: ClassVar[int] = 0
+
+    @staticmethod
+    def _from_train_job_v1(fields: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        return {
+            "dataset": fields["dataset"],
+            "lr": fields["learning_rate"],
+            "seed": 0,
+        }
+
+    @classmethod
+    def migrations(cls) -> tuple[furu.Migration, ...]:
+        return (
+            furu.Migration(
+                old_fully_qualified_name=fully_qualified_name(OldTrainJob),
+                old_schema_hash=OldTrainJob(
+                    dataset="", learning_rate=0.0
+                ).artifact_schema_hash,
+                new_fully_qualified_name=fully_qualified_name(cls),
+                new_schema_hash=cls(dataset="", lr=0.0).artifact_schema_hash,
+                transform_fn=cls._from_train_job_v1,
+            ),
+        )
+
+    def _create(self) -> str:
+        type(self).create_calls += 1
+        return f"{self.dataset}:{self.lr}:{self.seed}"
+
+
+class IntermediateTrainJob(Furu[str]):
+    dataset: str
+    lr: float
+
+    @staticmethod
+    def _from_old(fields: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        return {
+            "dataset": fields["dataset"],
+            "lr": fields["learning_rate"],
+        }
+
+    @classmethod
+    def migrations(cls) -> tuple[furu.Migration, ...]:
+        return (
+            furu.Migration(
+                old_fully_qualified_name=fully_qualified_name(OldTrainJob),
+                old_schema_hash=OldTrainJob(
+                    dataset="", learning_rate=0.0
+                ).artifact_schema_hash,
+                new_fully_qualified_name=fully_qualified_name(cls),
+                new_schema_hash=cls(dataset="", lr=0.0).artifact_schema_hash,
+                transform_fn=cls._from_old,
+            ),
+        )
+
+    def _create(self) -> str:
+        return f"intermediate:{self.dataset}:{self.lr}"
+
+
+class FinalTrainingRun(Furu[str]):
+    dataset: str
+    lr: float
+    seed: int
+
+    @staticmethod
+    def _from_old(fields: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        return IntermediateTrainJob._from_old(fields)
+
+    @staticmethod
+    def _from_intermediate(
+        fields: dict[str, JsonValue],
+    ) -> dict[str, JsonValue]:
+        return {
+            "dataset": fields["dataset"],
+            "lr": fields["lr"],
+            "seed": 0,
+        }
+
+    @classmethod
+    def migrations(cls) -> tuple[furu.Migration, ...]:
+        return (
+            *IntermediateTrainJob.migrations(),
+            furu.Migration(
+                old_fully_qualified_name=fully_qualified_name(IntermediateTrainJob),
+                old_schema_hash=IntermediateTrainJob(
+                    dataset="", lr=0.0
+                ).artifact_schema_hash,
+                new_fully_qualified_name=fully_qualified_name(cls),
+                new_schema_hash=cls(dataset="", lr=0.0, seed=0).artifact_schema_hash,
+                transform_fn=cls._from_intermediate,
+            ),
+        )
+
+    def _create(self) -> str:
+        return f"final:{self.dataset}:{self.lr}:{self.seed}"
 
 
 @pytest.fixture(autouse=True)
@@ -1200,6 +1308,79 @@ def test_create_object_and_exists():
         }
     assert node_pair.status() == "completed"
     assert replace(node_pair, name="y").status() == "missing"
+
+
+def test_migrate_explicitly_links_to_old_result() -> None:
+    TrainingRun.create_calls = 0
+    old = OldTrainJob(dataset="cifar10", learning_rate=0.001)
+    new = TrainingRun(dataset="cifar10", lr=0.001)
+
+    assert old.load_or_create() == "cifar10:0.001"
+    assert new.status() == "missing"
+
+    assert new.migrate()
+
+    link = json.loads((new._internal_furu_dir / "result-link.json").read_text())
+    assert link["kind"] == "result_link"
+    assert link["current"]["fields"] == {
+        "dataset": "cifar10",
+        "lr": 0.001,
+        "seed": 0,
+    }
+    assert link["source"]["data_dir"] == str(old.data_dir)
+    assert new.is_migrated()
+    assert new.status() == "completed"
+    assert not new._result_manifest_path.exists()
+    assert new.try_load() == "cifar10:0.001"
+    assert new.load_or_create() == "cifar10:0.001"
+    assert TrainingRun.create_calls == 0
+
+
+def test_load_or_create_does_not_migrate_automatically() -> None:
+    TrainingRun.create_calls = 0
+    old = OldTrainJob(dataset="mnist", learning_rate=0.01)
+    new = TrainingRun(dataset="mnist", lr=0.01)
+
+    assert old.load_or_create() == "mnist:0.01"
+
+    assert new.load_or_create() == "mnist:0.01:0"
+
+    assert TrainingRun.create_calls == 1
+    assert not new.is_migrated()
+    assert new._result_manifest_path.exists()
+
+
+def test_migrate_uses_result_link_as_multi_hop_source() -> None:
+    old = OldTrainJob(dataset="imagenet", learning_rate=0.1)
+    intermediate = IntermediateTrainJob(dataset="imagenet", lr=0.1)
+    final = FinalTrainingRun(dataset="imagenet", lr=0.1, seed=0)
+
+    assert old.load_or_create() == "imagenet:0.1"
+    assert intermediate.migrate()
+    assert final.migrate()
+
+    link = json.loads((final._internal_furu_dir / "result-link.json").read_text())
+    assert link["source"]["data_dir"] == str(old.data_dir)
+    assert link["current"]["fields"] == {
+        "dataset": "imagenet",
+        "lr": 0.1,
+        "seed": 0,
+    }
+    assert link["migration_path"] == [
+        {
+            "old_fully_qualified_name": fully_qualified_name(OldTrainJob),
+            "old_schema_hash": old.artifact_schema_hash,
+            "new_fully_qualified_name": fully_qualified_name(IntermediateTrainJob),
+            "new_schema_hash": intermediate.artifact_schema_hash,
+        },
+        {
+            "old_fully_qualified_name": fully_qualified_name(IntermediateTrainJob),
+            "old_schema_hash": intermediate.artifact_schema_hash,
+            "new_fully_qualified_name": fully_qualified_name(FinalTrainingRun),
+            "new_schema_hash": final.artifact_schema_hash,
+        },
+    ]
+    assert final.load_or_create() == "imagenet:0.1"
 
 
 def test_status_is_running_while_compute_lock_is_held() -> None:
