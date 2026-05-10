@@ -262,6 +262,9 @@ def _execute_group[T](
                         raise TypeError(
                             f"{type(group[0]).__name__}._create_batched() must return a list"
                         )
+                    # TODO: Track dependency calls per object during batched execution.
+                    # This currently assigns dependencies observed anywhere in the batch
+                    # to every object except each object's own eager dependencies.
                     lazy_dependencies = [
                         resolve_lazy_dependencies(eager_ids, observed)
                         for eager_ids in eager_dependencies
