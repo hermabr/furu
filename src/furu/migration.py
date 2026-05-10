@@ -89,28 +89,8 @@ def result_dir_for_loading(obj: Furu[Any]) -> Path | None:
     return _result_dir_in(link.source.data_dir)
 
 
-def _write_result_link(
-    obj: Furu[Any],
-    source_link: _ResultLink,
-    migration_path: tuple[MigrationStep, ...],
-) -> None:
+def _write_result_link(obj: Furu[Any], link: _ResultLink) -> None:
     obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
-    artifact_data = cast(dict[str, JsonValue], obj.artifact_data)
-    link = _ResultLink(
-        current=_ResultLinkCurrent(
-            fully_qualified_name=fully_qualified_name(type(obj)),
-            schema_hash=obj.artifact_schema_hash,
-            artifact_hash=obj.artifact_hash,
-            fields=cast(JsonFields, artifact_data["fields"]),
-        ),
-        source=_ResultLinkSource(
-            fully_qualified_name=source_link.source.fully_qualified_name,
-            schema_hash=source_link.source.schema_hash,
-            artifact_hash=source_link.source.artifact_hash,
-            data_dir=source_link.source.data_dir,
-        ),
-        migration_path=migration_path,
-    )
     link_path = _result_link_path_in(obj.data_dir)
     tmp = nfs_safe_unique_name(link_path, name="tmp")
     tmp.write_text(link.model_dump_json(indent=2), encoding="utf-8")
@@ -208,7 +188,17 @@ def migrate(obj: Furu[Any]) -> bool:
                 MigrationStep.from_migration(step) for step in migration_path
             )
             _write_result_link(
-                obj=obj, source_link=source_link, migration_path=full_path
+                obj,
+                _ResultLink(
+                    current=_ResultLinkCurrent(
+                        fully_qualified_name=fully_qualified_name(type(obj)),
+                        schema_hash=obj.artifact_schema_hash,
+                        artifact_hash=obj.artifact_hash,
+                        fields=target_fields,
+                    ),
+                    source=source_link.source,
+                    migration_path=full_path,
+                ),
             )
             return True
     return False
