@@ -1,4 +1,6 @@
 CLASSMARKER = "|class"
+FIELDSMARKER = "|fields"
 KINDMARKER = "|kind"
+TYPEMARKER = "|type"
 ORIGINMARKER = "|origin"
 ARGSMARKER = "|args"

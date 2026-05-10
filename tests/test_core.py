@@ -597,14 +597,14 @@ def test_hashes_and_data_dir():
         NodePair(
             name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
         ).object_id
-        == "test_core.NodePair:50a9b8624ed259ec38df:c4ff0c2ad0f653af7ce2"
+        == "test_core.NodePair:21733b1febfab88b565c:685af925669262434640"
     )
 
     assert (
         NodePair(
             name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
         ).artifact_hash
-        == "c4ff0c2ad0f653af7ce2"
+        == "685af925669262434640"
     )
 
     assert (
@@ -620,7 +620,7 @@ def test_hashes_and_data_dir():
         NodePair(
             name="y", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
         ).artifact_schema_hash
-        == "50a9b8624ed259ec38df"
+        == "21733b1febfab88b565c"
     )
 
     assert NodePair(
@@ -686,7 +686,7 @@ def expected_schema_for_B_like(
             "builtins.int",
             {
                 "|class": "test_core.A",
-                "fields": {
+                "|fields": {
                     "some_obj": [
                         "builtins.int",
                         {"|origin": "typing.Literal", "|args": ["a", "b"]},
@@ -721,7 +721,7 @@ def expected_schema_for_B_like(
 
     return {
         "|class": f"test_core.{cls_name}",
-        "fields": fields,
+        "|fields": fields,
     }
 
 
@@ -750,15 +750,15 @@ def expected_schema_for_B_like(
             ),
             {
                 "|class": "test_core.NodePair",
-                "fields": {
+                "|fields": {
                     "name": ["builtins.int", "builtins.str"],
                     "node1": {
                         "|class": "test_core.Node",
-                        "fields": {"name": "builtins.str"},
+                        "|fields": {"name": "builtins.str"},
                     },
                     "node2": {
                         "|class": "test_core.WeightedNode",
-                        "fields": {"name": "builtins.str", "weight": "builtins.float"},
+                        "|fields": {"name": "builtins.str", "weight": "builtins.float"},
                     },
                 },
             },
@@ -768,7 +768,7 @@ def expected_schema_for_B_like(
             lambda: UsesPath(path=Path("/tmp/out")),
             {
                 "|class": "test_core.UsesPath",
-                "fields": {"path": fully_qualified_name(Path)},
+                "|fields": {"path": fully_qualified_name(Path)},
             },
             id="UsesPath",
         ),
@@ -776,10 +776,10 @@ def expected_schema_for_B_like(
             lambda: PydanticFields(pydantic_obj=PydanticSubclass(field1=1)),
             {
                 "|class": "test_core.PydanticFields",
-                "fields": {
+                "|fields": {
                     "pydantic_obj": {
                         "|class": "test_core.PydanticSubclass",
-                        "fields": {"field1": "builtins.int"},
+                        "|fields": {"field1": "builtins.int"},
                     }
                 },
             },
@@ -789,7 +789,7 @@ def expected_schema_for_B_like(
             lambda: UsesFalseLiteral(tie_word_embeddings=False),
             {
                 "|class": "test_core.UsesFalseLiteral",
-                "fields": {
+                "|fields": {
                     "tie_word_embeddings": {
                         "|origin": "typing.Literal",
                         "|args": [False],
@@ -811,16 +811,16 @@ def test_to_json():
     expected = {
         "|kind": "instance",
         "|class": "test_core.NodePair",
-        "fields": {
+        "|fields": {
             "node1": {
                 "|kind": "instance",
                 "|class": "test_core.Node",
-                "fields": {"name": "y"},
+                "|fields": {"name": "y"},
             },
             "node2": {
                 "|kind": "instance",
                 "|class": "test_core.WeightedNode",
-                "fields": {"name": "z", "weight": 1},
+                "|fields": {"name": "z", "weight": 1},
             },
             "name": "x",
         },
@@ -841,11 +841,11 @@ def test_to_json_with_none_field():
     expected = {
         "|kind": "instance",
         "|class": "test_core.B",
-        "fields": {
+        "|fields": {
             "a": {
                 "|kind": "instance",
                 "|class": "test_core.A",
-                "fields": {"x": 1, "z": "123", "w": [6, 7], "some_obj": "a"},
+                "|fields": {"x": 1, "z": "123", "w": [6, 7], "some_obj": "a"},
             },
             "y": {"hey": 123, "ney": 1},
             "t": ["123", 12],
@@ -863,7 +863,7 @@ def test_to_json_with_class_field_value():
     assert obj.artifact_data == {
         "|kind": "instance",
         "|class": "test_core.UsesClassValue",
-        "fields": {"node_cls": {"|kind": "type_ref", "|class": "test_core.Node"}},
+        "|fields": {"node_cls": {"|kind": "type_ref", "|class": "test_core.Node"}},
     }
     assert isinstance(obj.artifact_hash, str)
 
@@ -874,11 +874,11 @@ def test_to_json_with_pydantic_field_value():
     expected = {
         "|kind": "instance",
         "|class": "test_core.PydanticFields",
-        "fields": {
+        "|fields": {
             "pydantic_obj": {
                 "|kind": "instance",
                 "|class": "test_core.PydanticSubclass",
-                "fields": {"field1": 1},
+                "|fields": {"field1": 1},
             }
         },
     }
@@ -1131,7 +1131,7 @@ def test_furu_from_artifact_rejects_artifact_metadata_schema_hash_mismatch():
 def test_schema_with_ellipsis_type_arg():
     assert VariadicTuple(t=(1, 2, 3)).schema == {
         "|class": "test_core.VariadicTuple",
-        "fields": {
+        "|fields": {
             "t": {
                 "|origin": "builtins.tuple",
                 "|args": ["builtins.ellipsis", "builtins.int"],
@@ -1148,8 +1148,8 @@ def test_data_dir():
         config.directories.data
         / "test_core"
         / "NodePair"
-        / "50a9b8624ed259ec38df"
-        / "c4ff0c2ad0f653af7ce2"
+        / "21733b1febfab88b565c"
+        / "685af925669262434640"
     )
     assert node_pair.data_dir == Path(
         config.directories.data

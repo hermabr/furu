@@ -6,14 +6,14 @@ from typing import TYPE_CHECKING, Any, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel as PydanticBaseModel
 
-from furu.constants import CLASSMARKER, KINDMARKER
+from furu.constants import CLASSMARKER, FIELDSMARKER, KINDMARKER
 from furu.metadata import ArtifactMetadata
 from furu.utils import JsonValue, fully_qualified_name
 
 if TYPE_CHECKING:
     from furu.core import Furu
 
-_RESERVED_DICT_KEYS = frozenset({CLASSMARKER, KINDMARKER})
+_RESERVED_DICT_KEYS = frozenset({CLASSMARKER, FIELDSMARKER, KINDMARKER})
 
 
 def to_json(  # TODO: consider caching this (but if i'm going to, I need to figure out how to cache lists and other unhashable objects)
@@ -50,13 +50,13 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
             return {
                 KINDMARKER: "instance",
                 CLASSMARKER: fully_qualified_name(type(x)),
-                "fields": {f.name: to_json(getattr(x, f.name)) for f in fields(x)},
+                FIELDSMARKER: {f.name: to_json(getattr(x, f.name)) for f in fields(x)},
             }
         case PydanticBaseModel():
             return {
                 KINDMARKER: "instance",
                 CLASSMARKER: fully_qualified_name(type(obj)),
-                "fields": {k: to_json(v) for k, v in obj.model_dump().items()},
+                FIELDSMARKER: {k: to_json(v) for k, v in obj.model_dump().items()},
             }
         case enum.Enum():
             raise NotImplementedError("TODO")  #  return {"__enum__": _type_fqn(obj)}
@@ -102,7 +102,7 @@ def _from_json(value: JsonValue) -> Any:
             return [_from_json(item) for item in value]
         case dict():
             class_name = value.get(CLASSMARKER)
-            field_values = value.get("fields")
+            field_values = value.get(FIELDSMARKER)
             if value.get(KINDMARKER) == "type_ref" and isinstance(class_name, str):
                 return _load_type(class_name)
             if (

@@ -20,6 +20,7 @@ from typing import (
 
 import pydantic
 
+from furu.constants import FIELDSMARKER, KINDMARKER, TYPEMARKER
 from furu.result.codec import ResultCodec, ResultRegistry, resolve_result_codec
 from furu.result.lazy import LazyResult
 from furu.result.save_as import _SaveAs
@@ -154,7 +155,7 @@ def _dump_value(
             width = len(str(len(value)))
             return {
                 WRAPPER_KEY: {
-                    "kind": "tuple",
+                    KINDMARKER: "tuple",
                     "items": [
                         _dump_value(
                             item,
@@ -180,7 +181,7 @@ def _dump_value(
             width = len(str(len(items)))
             return {
                 WRAPPER_KEY: {
-                    "kind": kind,
+                    KINDMARKER: kind,
                     "items": [
                         _dump_value(
                             item,
@@ -211,7 +212,7 @@ def _dump_value(
         case Path():
             return {
                 WRAPPER_KEY: {
-                    "kind": "path",
+                    KINDMARKER: "path",
                     "value": str(value),
                 }
             }
@@ -231,9 +232,9 @@ def _dump_value(
                 )
             return {
                 WRAPPER_KEY: {
-                    "kind": "pydantic",
-                    "type": fully_qualified_name(type(value)),
-                    "fields": fields_out,
+                    KINDMARKER: "pydantic",
+                    TYPEMARKER: fully_qualified_name(type(value)),
+                    FIELDSMARKER: fields_out,
                 }
             }
         case _ if dataclasses.is_dataclass(value) and not isinstance(value, type):
@@ -252,9 +253,9 @@ def _dump_value(
                 )
             return {
                 WRAPPER_KEY: {
-                    "kind": "dataclass",
-                    "type": fully_qualified_name(type(value)),
-                    "fields": fields_out,
+                    KINDMARKER: "dataclass",
+                    TYPEMARKER: fully_qualified_name(type(value)),
+                    FIELDSMARKER: fields_out,
                 }
             }
         case LazyResult():
@@ -275,7 +276,7 @@ def _dump_value(
             )
             return {
                 WRAPPER_KEY: {
-                    "kind": "lazy",
+                    KINDMARKER: "lazy",
                     "path": lazy_rel.as_posix(),
                 }
             }
@@ -307,7 +308,7 @@ def _dump_external(
     codec.dump(value, artifact_dir=artifact_dir)
     return {
         WRAPPER_KEY: {
-            "kind": "external",
+            KINDMARKER: "external",
             "codec": codec._codec_id(),
             "path": artifact_rel.as_posix(),
         }
@@ -397,7 +398,7 @@ def _load_wrapper(
     bundle_dir: Path,
     value_path: ValuePath,
 ) -> object:
-    kind: WrapperKind = body["kind"]
+    kind: WrapperKind = body[KINDMARKER]
     match kind:
         case "external":
             artifact_rel = Path(body["path"])
@@ -442,7 +443,7 @@ def _load_wrapper(
                 )
             )
         case "dataclass":
-            cls = _import_type(body["type"])
+            cls = _import_type(body[TYPEMARKER])
             if not dataclasses.is_dataclass(cls):
                 raise ValueError(
                     f"Cannot load dataclass at {_value_path_display(value_path)}: "
@@ -454,7 +455,7 @@ def _load_wrapper(
                 kind="dataclass",
                 cls=cls,
                 expected={field.name for field in dataclass_fields},
-                raw_fields=body["fields"],
+                raw_fields=body[FIELDSMARKER],
                 bundle_dir=bundle_dir,
                 value_path=value_path,
             )
@@ -501,7 +502,7 @@ def _load_wrapper(
                 for i, child in enumerate(body["items"])
             )
         case "pydantic":
-            cls = _import_type(body["type"])
+            cls = _import_type(body[TYPEMARKER])
             if not issubclass(cls, pydantic.BaseModel):
                 raise ValueError(
                     f"Cannot load pydantic model at {_value_path_display(value_path)}: "
@@ -511,7 +512,7 @@ def _load_wrapper(
                 kind="pydantic model",
                 cls=cls,
                 expected=set(cls.model_fields),
-                raw_fields=body["fields"],
+                raw_fields=body[FIELDSMARKER],
                 bundle_dir=bundle_dir,
                 value_path=value_path,
             )

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel, ConfigDict
 
-from furu.constants import CLASSMARKER
+from furu.constants import CLASSMARKER, FIELDSMARKER
 from furu.core import (
     _internal_furu_dir_in,
     _metadata_path_in,
@@ -105,7 +105,7 @@ def migrate(obj: Furu[Any]) -> bool:
         fully_qualified_name(type(obj)),
         obj.artifact_schema_hash,
     )
-    target_fields = cast(JsonFields, obj.artifact_data["fields"])
+    target_fields = cast(JsonFields, obj.artifact_data[FIELDSMARKER])
 
     by_target: defaultdict[_Node, list[Migration]] = defaultdict(list)
     for migration in migrations:
@@ -148,7 +148,7 @@ def migrate(obj: Furu[Any]) -> bool:
                 )
                 artifact = metadata.artifact
                 artifact_fully_qualified_name = cast(str, artifact.data[CLASSMARKER])
-                artifact_fields = cast(JsonFields, artifact.data["fields"])
+                artifact_fields = cast(JsonFields, artifact.data[FIELDSMARKER])
                 source_link = _ResultLink(
                     current=_ResultLinkCurrent(
                         fully_qualified_name=artifact_fully_qualified_name,

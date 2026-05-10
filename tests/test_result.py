@@ -152,13 +152,13 @@ def test_path_values_round_trip() -> None:
     assert manifest == {
         "relative": {
             "$furu": {
-                "kind": "path",
+                "|kind": "path",
                 "value": "outputs/model.bin",
             }
         },
         "absolute": {
             "$furu": {
-                "kind": "path",
+                "|kind": "path",
                 "value": "/tmp/furu/model.bin",
             }
         },
@@ -188,17 +188,17 @@ def test_tuple_set_and_frozenset_round_trip(tmp_path: Path) -> None:
     manifest = json.loads((bundle_dir / "manifest.json").read_text())
     assert manifest["tuple"] == {
         "$furu": {
-            "kind": "tuple",
+            "|kind": "tuple",
             "items": [
                 1,
                 "x",
-                {"$furu": {"kind": "path", "value": "model.bin"}},
+                {"$furu": {"|kind": "path", "value": "model.bin"}},
             ],
         }
     }
-    assert manifest["set"]["$furu"] == {"kind": "set", "items": [1, 2, 3]}
+    assert manifest["set"]["$furu"] == {"|kind": "set", "items": [1, 2, 3]}
     assert manifest["frozenset"]["$furu"] == {
-        "kind": "frozenset",
+        "|kind": "frozenset",
         "items": ["a", "b"],
     }
 
@@ -211,7 +211,7 @@ def test_tuple_root_value_uses_furu_wrapper(tmp_path: Path) -> None:
 
     assert load_result_bundle(bundle_dir) == value
     manifest = json.loads((bundle_dir / "manifest.json").read_text())
-    assert manifest == {"$furu": {"kind": "tuple", "items": [1, 2, 3]}}
+    assert manifest == {"$furu": {"|kind": "tuple", "items": [1, 2, 3]}}
 
 
 class NonFiniteFloatResult(Furu[dict[str, float]]):
@@ -613,9 +613,9 @@ def test_dataclass_round_trip() -> None:
     assert loaded == TrainOutput(metrics={"loss": 0.12}, values=[1, 2, 3])
 
     manifest = json.loads(obj._result_manifest_path.read_text())
-    assert manifest["$furu"]["kind"] == "dataclass"
-    assert manifest["$furu"]["type"] == "test_result.TrainOutput"
-    assert manifest["$furu"]["fields"] == {
+    assert manifest["$furu"]["|kind"] == "dataclass"
+    assert manifest["$furu"]["|type"] == "test_result.TrainOutput"
+    assert manifest["$furu"]["|fields"] == {
         "metrics": {"loss": 0.12},
         "values": [1, 2, 3],
     }
@@ -652,7 +652,7 @@ def test_dataclass_load_reports_constructor_error_with_path(tmp_path: Path) -> N
     )
     manifest_path = bundle_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
-    manifest["result"]["$furu"]["fields"]["value"] = -1
+    manifest["result"]["$furu"]["|fields"]["value"] = -1
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     with pytest.raises(ValueError) as exc_info:
@@ -675,7 +675,7 @@ def test_dataclass_load_reports_missing_and_extra_fields_with_path(
     )
     manifest_path = bundle_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
-    fields = manifest["result"]["$furu"]["fields"]
+    fields = manifest["result"]["$furu"]["|fields"]
     fields["renamed_values"] = fields.pop("values")
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
@@ -744,7 +744,7 @@ def test_pydantic_load_uses_model_validate(tmp_path: Path) -> None:
     )
     manifest_path = bundle_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
-    manifest["$furu"]["fields"]["value"] = "not an int"
+    manifest["$furu"]["|fields"]["value"] = "not an int"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     with pytest.raises(ValueError) as exc_info:
@@ -767,7 +767,7 @@ def test_pydantic_load_reports_missing_and_extra_fields_with_path(
     )
     manifest_path = bundle_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
-    fields = manifest["models"][0]["$furu"]["fields"]
+    fields = manifest["models"][0]["$furu"]["|fields"]
     fields["renamed_values"] = fields.pop("values")
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
@@ -817,7 +817,7 @@ def test_numpy_array_round_trips() -> None:
     assert np.array_equal(weights, np.arange(10, dtype=np.float32))
 
     manifest = json.loads(obj._result_manifest_path.read_text())
-    assert manifest["weights"]["$furu"]["kind"] == "external"
+    assert manifest["weights"]["$furu"]["|kind"] == "external"
     assert manifest["weights"]["$furu"]["codec"] == (
         f"{NumpyNpyCodec.__module__}.{NumpyNpyCodec.__qualname__}"
     )
@@ -840,7 +840,7 @@ def test_polars_dataframe_round_trips() -> None:
     assert frame.equals(pl.DataFrame({"x": [1, 2, 3], "y": ["a", "b", "c"]}))
 
     manifest = json.loads(obj._result_manifest_path.read_text())
-    assert manifest["frame"]["$furu"]["kind"] == "external"
+    assert manifest["frame"]["$furu"]["|kind"] == "external"
     assert manifest["frame"]["$furu"]["codec"] == (
         f"{PolarsParquetCodec.__module__}.{PolarsParquetCodec.__qualname__}"
     )
@@ -903,7 +903,7 @@ def test_numpy_root_value_uses_root_artifact_dir(tmp_path) -> None:
 
     assert (bundle_dir / "artifacts" / "root" / "data.npy").exists()
     manifest = json.loads((bundle_dir / "manifest.json").read_text())
-    assert manifest["$furu"]["kind"] == "external"
+    assert manifest["$furu"]["|kind"] == "external"
     assert manifest["$furu"]["path"] == "artifacts/root"
 
     loaded = load_result_bundle(bundle_dir)
@@ -965,7 +965,7 @@ def test_load_result_bundle_rejects_artifacts_path_escape(tmp_path) -> None:
         json.dumps(
             {
                 "$furu": {
-                    "kind": "external",
+                    "|kind": "external",
                     "codec": f"{NumpyNpyCodec.__module__}.{NumpyNpyCodec.__qualname__}",
                     "path": "../../../etc/passwd",
                 }
@@ -999,7 +999,7 @@ def test_root_lazy_result_defers_cache_read_and_memoizes(
     assert _CountingCodec.dump_calls == 1
     assert _CountingCodec.load_calls == 0
     manifest = json.loads((bundle_dir / "manifest.json").read_text())
-    assert manifest == {"$furu": {"kind": "lazy", "path": "lazy/root"}}
+    assert manifest == {"$furu": {"|kind": "lazy", "path": "lazy/root"}}
     assert (bundle_dir / "lazy" / "root" / "manifest.json").exists()
 
     loaded = load_result_bundle(bundle_dir)
@@ -1033,7 +1033,7 @@ def test_lazy_result_uses_declared_inner_annotated_codec(tmp_path: Path) -> None
 
     assert (bundle_dir / "lazy" / "root" / "artifacts" / "root" / "data.npy").exists()
     manifest = json.loads((bundle_dir / "lazy" / "root" / "manifest.json").read_text())
-    assert manifest["$furu"]["kind"] == "external"
+    assert manifest["$furu"]["|kind"] == "external"
     assert manifest["$furu"]["codec"] == NumpyNpyCodec._codec_id()
 
 
@@ -1076,7 +1076,7 @@ def test_load_result_bundle_rejects_lazy_path_escape(tmp_path: Path) -> None:
     bundle_dir.mkdir()
     (bundle_dir / "lazy").mkdir()
     (bundle_dir / "manifest.json").write_text(
-        json.dumps({"$furu": {"kind": "lazy", "path": "../outside"}}),
+        json.dumps({"$furu": {"|kind": "lazy", "path": "../outside"}}),
         encoding="utf-8",
     )
 
@@ -1091,7 +1091,7 @@ def test_load_result_bundle_rejects_lazy_without_nested_manifest(
     nested_dir = bundle_dir / "lazy" / "root"
     nested_dir.mkdir(parents=True)
     (bundle_dir / "manifest.json").write_text(
-        json.dumps({"$furu": {"kind": "lazy", "path": "lazy/root"}}),
+        json.dumps({"$furu": {"|kind": "lazy", "path": "lazy/root"}}),
         encoding="utf-8",
     )
 
