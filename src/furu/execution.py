@@ -195,27 +195,25 @@ def _execute_group[T](
     results_by_dir: dict[Path, T],
 ) -> None:
     log_paths = tuple(obj._log_path for obj in group)
-    eager_by_dir = {obj.data_dir: collect_eager_dependencies(obj) for obj in group}
-    eager_union = {
-        dependency_id for ids in eager_by_dir.values() for dependency_id in ids
-    }
+    eager_dependencies = [collect_eager_dependencies(obj) for obj in group]
+    eager_union = {dependency_id for ids in eager_dependencies for dependency_id in ids}
 
     def resolve_lazy_dependencies(
-        obj: Furu[T], observed: tuple[str, ...]
+        eager_ids: tuple[str, ...], observed: tuple[str, ...]
     ) -> tuple[str, ...]:
-        eager_ids = set(eager_by_dir[obj.data_dir])
+        eager_set = set(eager_ids)
         return tuple(
             dependency_id
             for dependency_id in observed
-            if dependency_id not in eager_ids
+            if dependency_id not in eager_set
         )
 
     metadata_by_dir = {
         obj.data_dir: RunningMetadata.write_for(
             obj,
-            eager_dependencies=eager_by_dir[obj.data_dir],
+            eager_dependencies=eager_ids,
         )
-        for obj in group
+        for obj, eager_ids in zip(group, eager_dependencies, strict=True)
     }
 
     with _scoped_log_files(log_paths):
@@ -252,15 +250,19 @@ def _execute_group[T](
             match group[0]._furu_create_mode:
                 case "batched":
                     lazy_by_dir = {
-                        obj.data_dir: resolve_lazy_dependencies(obj, observed)
-                        for obj in group
+                        obj.data_dir: resolve_lazy_dependencies(eager_ids, observed)
+                        for obj, eager_ids in zip(
+                            group, eager_dependencies, strict=True
+                        )
                     }
                 case "single":
                     lazy_by_dir = {
                         obj.data_dir: resolve_lazy_dependencies(
-                            obj, observed_by_dir[obj.data_dir]
+                            eager_ids, observed_by_dir[obj.data_dir]
                         )
-                        for obj in group
+                        for obj, eager_ids in zip(
+                            group, eager_dependencies, strict=True
+                        )
                     }
                 case _:
                     assert_never(group[0]._furu_create_mode)
@@ -270,12 +272,14 @@ def _execute_group[T](
                     f"{type(group[0]).__name__} returned {len(results)} results for {len(group)} objects"
                 )
 
-            for obj, result in zip(group, results, strict=True):
+            for obj, result, eager_ids in zip(
+                group, results, eager_dependencies, strict=True
+            ):
                 _store_result(
                     obj,
                     result,
                     metadata=metadata_by_dir[obj.data_dir],
-                    eager_dependencies=eager_by_dir[obj.data_dir],
+                    eager_dependencies=eager_ids,
                     lazy_dependencies=lazy_by_dir[obj.data_dir],
                     has_lock=has_lock,
                 )
