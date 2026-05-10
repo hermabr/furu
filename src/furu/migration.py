@@ -150,13 +150,12 @@ def migrate(obj: Furu[Any]) -> bool:
                 artifact = metadata.artifact
                 data = cast(dict[str, JsonValue], artifact.data)
                 artifact_fully_qualified_name = cast(str, data[CLASSMARKER])
-                artifact_fields = cast(JsonFields, data["fields"])
                 source_link = _ResultLink(
                     current=_ResultLinkCurrent(
                         fully_qualified_name=artifact_fully_qualified_name,
                         schema_hash=artifact.schema_hash,
                         artifact_hash=artifact.hash,
-                        fields=artifact_fields,
+                        fields=cast(JsonFields, data["fields"]),
                     ),
                     source=_ResultLinkSource(
                         fully_qualified_name=artifact_fully_qualified_name,
