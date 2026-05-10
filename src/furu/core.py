@@ -40,20 +40,20 @@ else:
 type FuruCreateMode = Literal["single", "batched"]
 
 
-def result_dir_in(data_dir: Path) -> Path:
+def _result_dir_in(data_dir: Path) -> Path:
     return data_dir / "result"
 
 
-def result_manifest_path_in(data_dir: Path) -> Path:
-    return result_dir_in(data_dir) / "manifest.json"
+def _result_manifest_path_in(data_dir: Path) -> Path:
+    return _result_dir_in(data_dir) / "manifest.json"
 
 
-def internal_furu_dir_in(data_dir: Path) -> Path:
+def _internal_furu_dir_in(data_dir: Path) -> Path:
     return data_dir / ".furu"
 
 
-def metadata_path_in(data_dir: Path) -> Path:
-    return internal_furu_dir_in(data_dir) / "metadata.json"
+def _metadata_path_in(data_dir: Path) -> Path:
+    return _internal_furu_dir_in(data_dir) / "metadata.json"
 
 
 class Furu[T](_FuruDataclassTransform, ABC):
@@ -177,11 +177,11 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     @property
     def _result_dir(self) -> Path:
-        return result_dir_in(self.data_dir)
+        return _result_dir_in(self.data_dir)
 
     @property
     def _result_manifest_path(self) -> Path:
-        return result_manifest_path_in(self.data_dir)
+        return _result_manifest_path_in(self.data_dir)
 
     @property
     def logger(self) -> logging.Logger:
@@ -247,11 +247,11 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     @cached_property
     def _internal_furu_dir(self) -> Path:
-        return internal_furu_dir_in(self.data_dir)
+        return _internal_furu_dir_in(self.data_dir)
 
     @cached_property
     def _metadata_path(self) -> Path:
-        return metadata_path_in(self.data_dir)
+        return _metadata_path_in(self.data_dir)
 
     @cached_property
     def _log_path(self) -> Path:

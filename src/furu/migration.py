@@ -7,10 +7,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from furu.core import (
-    internal_furu_dir_in,
-    metadata_path_in,
-    result_dir_in,
-    result_manifest_path_in,
+    _internal_furu_dir_in,
+    _metadata_path_in,
+    _result_dir_in,
+    _result_manifest_path_in,
 )
 from furu.utils import JsonValue, fully_qualified_name, nfs_safe_unique_name
 
@@ -44,7 +44,7 @@ _Node = tuple[str, str]
 
 
 def _result_link_path_in(data_dir: Path) -> Path:
-    return internal_furu_dir_in(data_dir) / "result-link.json"
+    return _internal_furu_dir_in(data_dir) / "result-link.json"
 
 
 def _result_link_path(obj: Furu[Any]) -> Path:
@@ -63,7 +63,7 @@ def result_dir_for_loading(obj: Furu[Any]) -> Path | None:
         return obj._result_dir
     if (link := _read_result_link(obj)) is None:
         return None
-    return result_dir_in(Path(link["source"]["data_dir"]))
+    return _result_dir_in(Path(link["source"]["data_dir"]))
 
 
 def is_migrated(obj: Furu[Any]) -> bool:
@@ -99,8 +99,8 @@ def _migration_paths_ending_at(
 
 
 def _source_from_artifact_dir(artifact_dir: Path) -> _Source | None:
-    result_manifest = result_manifest_path_in(artifact_dir)
-    metadata_path = metadata_path_in(artifact_dir)
+    result_manifest = _result_manifest_path_in(artifact_dir)
+    metadata_path = _metadata_path_in(artifact_dir)
 
     if result_manifest.exists() and metadata_path.exists():
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
