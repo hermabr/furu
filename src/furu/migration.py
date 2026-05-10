@@ -20,8 +20,6 @@ if TYPE_CHECKING:
 
 type JsonFields = dict[str, JsonValue]
 
-RESULT_LINK_FILENAME = "result-link.json"
-
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Migration:
@@ -46,7 +44,7 @@ _Node = tuple[str, str]
 
 
 def _result_link_path_in(data_dir: Path) -> Path:
-    return internal_furu_dir_in(data_dir) / RESULT_LINK_FILENAME
+    return internal_furu_dir_in(data_dir) / "result-link.json"
 
 
 def _result_link_path(obj: Furu[Any]) -> Path:
