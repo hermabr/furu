@@ -26,14 +26,6 @@ class dependency[T](cached_property):
         self.__doc__ = getattr(func, "__doc__", None)
 
 
-def _join_path(parent: str | None, child: str) -> str:
-    if parent is None:
-        return child
-    if child.startswith("["):
-        return f"{parent}{child}"
-    return f"{parent}.{child}"
-
-
 def find_nested_furu_objects(
     value: object, *, path: str | None = None
 ) -> Iterator[tuple[Furu[Any], str | None]]:
@@ -48,25 +40,27 @@ def find_nested_furu_objects(
             for field in fields(value):
                 yield from find_nested_furu_objects(
                     getattr(value, field.name),
-                    path=_join_path(path, field.name),
+                    path=f"{path}.{field.name}" if path else field.name,
                 )
         case PydanticBaseModel():
             for name in type(value).model_fields:
                 yield from find_nested_furu_objects(
                     getattr(value, name),
-                    path=_join_path(path, name),
+                    path=f"{path}.{name}" if path else name,
                 )
         case tuple() | list() | set() | frozenset():
             for index, item in enumerate(value):
+                item_path = f"[{index}]"
                 yield from find_nested_furu_objects(
                     item,
-                    path=_join_path(path, f"[{index}]"),
+                    path=f"{path}[{index}]" if path else item_path,
                 )
         case dict():
             for key, item in value.items():
+                item_path = f"[{key!r}]"
                 yield from find_nested_furu_objects(
                     item,
-                    path=_join_path(path, f"[{key!r}]"),
+                    path=f"{path}[{key!r}]" if path else item_path,
                 )
 
 
