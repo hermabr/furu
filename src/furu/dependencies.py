@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import fields, is_dataclass
@@ -15,11 +15,6 @@ if TYPE_CHECKING:
 
 class dependency[T](cached_property):
     __furu_dependency__ = True
-
-    def __init__(self, func: Callable[..., T]):
-        super().__init__(func)
-        self.__name__ = getattr(func, "__name__", type(func).__name__)
-        self.__doc__ = getattr(func, "__doc__", None)
 
 
 def find_nested_furu_objects(value: object) -> Iterator[Furu[Any]]:
