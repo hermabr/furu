@@ -955,15 +955,13 @@ def test_field_dependencies_are_eager_and_not_duplicated_as_lazy() -> None:
     assert parent.load_or_create() == "Node(nested)"
     metadata = json.loads(parent._metadata_path.read_text())
 
-    assert [dep["object_id"] for dep in metadata["dependencies"]["eager"]] == [
-        first.object_id,
-        second.object_id,
-    ]
+    assert {
+        dep["object_id"]: dep["path"] for dep in metadata["dependencies"]["eager"]
+    } == {
+        first.object_id: "bundle.first",
+        second.object_id: "bundle.second",
+    }
     assert metadata["dependencies"]["lazy"] == []
-    assert [dep["path"] for dep in metadata["dependencies"]["eager"]] == [
-        "bundle.first",
-        "bundle.second",
-    ]
 
 
 def test_computed_dependency_is_cached_property_and_eager() -> None:

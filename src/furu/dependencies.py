@@ -93,32 +93,35 @@ def collect_eager_dependencies(obj: Furu[Any]) -> tuple[DependencyRef, ...]:
                     )
                 )
 
-    return dedupe_dependency_refs(refs)
+    return normalize_dependency_refs(refs)
 
 
-def dedupe_dependency_refs(
+def normalize_dependency_refs(
     refs: list[DependencyRef] | tuple[DependencyRef, ...],
 ) -> tuple[DependencyRef, ...]:
     by_id: dict[str, DependencyRef] = {}
     for ref in refs:
         by_id.setdefault(ref.object_id, ref)
-    return tuple(by_id.values())
+    return tuple(sorted(by_id.values(), key=lambda ref: ref.object_id))
 
 
 class DependencyRecorder:
     def __init__(self) -> None:
-        self._observed: list[DependencyRef] = []
+        self._observed_by_id: dict[str, DependencyRef] = {}
 
     def record(
         self, obj: Furu[Any], *, via: Literal["load_or_create", "try_load"]
     ) -> None:
         from furu.metadata import DependencyRef
 
-        self._observed.append(DependencyRef.from_furu(obj, via=via))
+        ref = DependencyRef.from_furu(obj, via=via)
+        self._observed_by_id.setdefault(ref.object_id, ref)
 
     @property
     def observed(self) -> tuple[DependencyRef, ...]:
-        return dedupe_dependency_refs(self._observed)
+        return tuple(
+            sorted(self._observed_by_id.values(), key=lambda ref: ref.object_id)
+        )
 
 
 _active_dependency_recorder: ContextVar[DependencyRecorder | None] = ContextVar(
@@ -151,6 +154,6 @@ def resolve_dependencies(
     observed: tuple[DependencyRef, ...],
 ) -> tuple[DependencyRef, ...]:
     eager_ids = {ref.object_id for ref in eager}
-    return dedupe_dependency_refs(
+    return normalize_dependency_refs(
         tuple(ref for ref in observed if ref.object_id not in eager_ids)
     )
