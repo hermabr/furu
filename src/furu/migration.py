@@ -77,29 +77,26 @@ def result_dir_for_loading(obj: Furu[Any]) -> Path | None:
 def _migration_paths_ending_at(
     target_node: _Node,
     migrations: tuple[Migration, ...],
-) -> list[tuple[Migration, ...]]:
+) -> Iterator[tuple[Migration, ...]]:
     by_target: dict[_Node, list[Migration]] = {}
     for migration in migrations:
         new_node = (migration.new_fully_qualified_name, migration.new_schema_hash)
         by_target.setdefault(new_node, []).append(migration)
 
-    paths: list[tuple[Migration, ...]] = []
-
     def visit(
         node: _Node,
         suffix: tuple[Migration, ...],
         visited: frozenset[_Node],
-    ) -> None:
+    ) -> Iterator[tuple[Migration, ...]]:
         for migration in by_target.get(node, ()):
             old_node = (migration.old_fully_qualified_name, migration.old_schema_hash)
             if old_node in visited:
                 continue
             new_path = (migration, *suffix)
-            paths.append(new_path)
-            visit(old_node, new_path, visited | {old_node})
+            yield new_path
+            yield from visit(old_node, new_path, visited | {old_node})
 
-    visit(target_node, (), frozenset({target_node}))
-    return paths
+    yield from visit(target_node, (), frozenset({target_node}))
 
 
 def _source_from_artifact_dir(artifact_dir: Path) -> _Source | None:
