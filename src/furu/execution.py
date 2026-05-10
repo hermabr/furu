@@ -18,6 +18,7 @@ from furu.core import Furu, FuruCreateMode
 from furu.locking import LockLostError, lock_many
 from furu.logging import _scoped_log_files
 from furu.metadata import RunningMetadata
+from furu.migration import resolve_migrated_result_dir
 from furu.result import load_result_bundle, save_result_bundle
 from furu.result.save_as import _unwrap_save_as
 from furu.utils import class_label, nfs_safe_unique_name
@@ -165,9 +166,18 @@ def load_or_create[T](
         if obj._result_manifest_path.exists():
             obj.logger.info("cache hit for %s at %s", obj._log_label, obj._result_dir)
             results_by_dir[obj.data_dir] = cast(T, load_result_bundle(obj._result_dir))
-        else:
-            obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
-            missing.append(obj)
+            continue
+        obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
+        migrated_dir = resolve_migrated_result_dir(obj)
+        if migrated_dir is not None:
+            obj.logger.info(
+                "migration cache hit for %s from %s",
+                obj._log_label,
+                migrated_dir,
+            )
+            results_by_dir[obj.data_dir] = cast(T, load_result_bundle(migrated_dir))
+            continue
+        missing.append(obj)
 
     lock_ctx = (
         lock_many([obj._lock_path for obj in missing])
@@ -188,8 +198,17 @@ def load_or_create[T](
                 results_by_dir[obj.data_dir] = cast(
                     T, load_result_bundle(obj._result_dir)
                 )
-            else:
-                pending.append(obj)
+                continue
+            migrated_dir = resolve_migrated_result_dir(obj)
+            if migrated_dir is not None:
+                obj.logger.info(
+                    "migration cache hit for %s after waiting from %s",
+                    obj._log_label,
+                    migrated_dir,
+                )
+                results_by_dir[obj.data_dir] = cast(T, load_result_bundle(migrated_dir))
+                continue
+            pending.append(obj)
 
         grouped: dict[type[object], list[Furu[T]]] = {}
         for obj in pending:

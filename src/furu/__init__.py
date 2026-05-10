@@ -3,6 +3,7 @@ from importlib.metadata import version
 from furu.core import Furu
 from furu.execution import load_or_create
 from furu.logging import get_logger
+from furu.migration import DuplicateMigrationError, Migration
 from furu.result import LazyResult, save_as
 from furu.result.codec import ResultCodec, ResultRegistry
 from furu.validate import validate
@@ -11,8 +12,10 @@ __version__ = version("furu")
 
 __all__ = [
     "__version__",
+    "DuplicateMigrationError",
     "Furu",
     "LazyResult",
+    "Migration",
     "ResultCodec",
     "ResultRegistry",
     "get_logger",

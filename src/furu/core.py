@@ -11,6 +11,12 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 from furu.config import config
 from furu.locking import LockLostError, lock_many
 from furu.logging import get_logger
+from furu.migration import (
+    Migration,
+    _read_and_verify_result_link,
+    _result_link_path_for,
+    _validate_class_migrations,
+)
 from furu.result import load_result_bundle
 from furu.result.codec import _default_result_registry, ResultRegistry
 from furu.schema import schema_type as _schema_type
@@ -18,6 +24,7 @@ from furu.serialize import to_json as _to_json
 from furu.utils import (
     JsonValue,
     _hash_dict_deterministically,
+    class_label,
     fully_qualified_name,
     nfs_safe_unique_name,
 )
@@ -69,6 +76,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
         from furu.execution import _resolve_create_mode
 
         cls._furu_create_mode = _resolve_create_mode(cls)
+        _validate_class_migrations(cls.migrations(), cls_label_str=class_label(cls))
 
     def load_or_create(self, use_lock: bool = True) -> T:
         from furu.execution import load_or_create
@@ -83,12 +91,18 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
         return _from_artifact(artifact, cls)
 
+    @classmethod
+    def migrations(cls) -> tuple[Migration, ...]:
+        return ()
+
     def status(
         self,
     ) -> Literal[
         "completed", "missing", "running", "failed"
     ]:  # TODO: add queued/waiting state?
         if self._result_manifest_path.exists():
+            return "completed"
+        if _read_and_verify_result_link(self) is not None:
             return "completed"
         if self._lock_path.exists():
             return "running"
@@ -218,6 +232,10 @@ class Furu[T](_FuruDataclassTransform, ABC):
     @cached_property
     def _lock_path(self) -> Path:
         return self._internal_furu_dir / "compute.lock"
+
+    @cached_property
+    def _result_link_path(self) -> Path:
+        return _result_link_path_for(self._internal_furu_dir)
 
     @cached_property
     def _log_label(self) -> str:
