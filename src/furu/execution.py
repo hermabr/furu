@@ -4,7 +4,15 @@ import traceback
 from collections.abc import Callable, Sequence
 from contextlib import nullcontext
 from pathlib import Path
-from typing import assert_never, cast, overload
+from typing import (
+    Any,
+    TypeVar,
+    assert_never,
+    cast,
+    get_args,
+    get_origin,
+    overload,
+)
 
 from furu.core import Furu, FuruCreateMode
 from furu.dependencies import (
@@ -16,6 +24,7 @@ from furu.locking import LockLostError, lock_many
 from furu.logging import _scoped_log_files
 from furu.metadata import RunningMetadata
 from furu.result import load_result_bundle, save_result_bundle
+from furu.result.save_as import _unwrap_save_as
 from furu.utils import class_label, nfs_safe_unique_name
 
 type HasLock = Callable[[], bool]
@@ -67,7 +76,29 @@ def _store_result[T](
 
     tmp_result_dir = nfs_safe_unique_name(obj._result_dir, name="tmp")
 
-    save_result_bundle(result, tmp_result_dir)
+    declared_type: object = Any
+    for cls in type(obj).__mro__:
+        for base in getattr(cls, "__orig_bases__", ()):
+            if get_origin(base) is Furu:
+                declared_type = get_args(base)[0]
+                break
+        else:
+            continue
+        break
+
+    if isinstance(declared_type, TypeVar) or any(
+        isinstance(arg, TypeVar) for arg in get_args(declared_type)
+    ):
+        raise TypeError(
+            f"{type(obj).__name__} must declare its concrete result type directly as Furu[...]"
+        )
+
+    save_result_bundle(
+        result,
+        tmp_result_dir,
+        declared_type=declared_type,
+        registry=obj.result_registry,
+    )
 
     if not has_lock():
         raise LockLostError(
@@ -270,7 +301,7 @@ def _execute_group[T](
                     lazy_dependencies=lazy_ids,
                     has_lock=has_lock,
                 )
-                results_by_dir[obj.data_dir] = result
+                results_by_dir[obj.data_dir] = _unwrap_save_as(result)
 
             logger.debug("load_or_create complete")
         except BaseException as exc:
