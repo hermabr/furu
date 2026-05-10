@@ -170,8 +170,7 @@ def load_or_create[T](
     missing: list[Furu[T]] = []
 
     for obj in unique:
-        cached_result_dir = result_dir_for_loading(obj)
-        if cached_result_dir is not None:
+        if (cached_result_dir := result_dir_for_loading(obj)) is not None:
             obj.logger.info("cache hit for %s at %s", obj._log_label, cached_result_dir)
             results_by_dir[obj.data_dir] = cast(
                 T, load_result_bundle(cached_result_dir)
@@ -190,8 +189,7 @@ def load_or_create[T](
         has_lock = maybe_has_lock or (lambda: True)
         pending: list[Furu[T]] = []
         for obj in missing:
-            cached_result_dir = result_dir_for_loading(obj)
-            if cached_result_dir is not None:
+            if (cached_result_dir := result_dir_for_loading(obj)) is not None:
                 obj.logger.info(
                     "cache hit for %s after waiting at %s",
                     obj._log_label,

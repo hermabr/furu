@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 from furu.config import config
 from furu.locking import LockLostError, lock_many
 from furu.logging import get_logger
-from furu.migration import Migration, is_migrated, migrate, result_dir_for_loading
 from furu.result import load_result_bundle
 from furu.result.codec import _default_result_registry, ResultRegistry
 from furu.schema import schema_type as _schema_type
@@ -26,6 +25,7 @@ from furu.validate import validate_cls
 
 if TYPE_CHECKING:
     from furu.metadata import ArtifactMetadata
+    from furu.migration import Migration
     from typing_extensions import dataclass_transform
 
     @dataclass_transform(kw_only_default=True, frozen_default=True)
@@ -38,6 +38,22 @@ else:
 
 
 type FuruCreateMode = Literal["single", "batched"]
+
+
+def result_dir_in(data_dir: Path) -> Path:
+    return data_dir / "result"
+
+
+def result_manifest_path_in(data_dir: Path) -> Path:
+    return result_dir_in(data_dir) / "manifest.json"
+
+
+def internal_furu_dir_in(data_dir: Path) -> Path:
+    return data_dir / ".furu"
+
+
+def metadata_path_in(data_dir: Path) -> Path:
+    return internal_furu_dir_in(data_dir) / "metadata.json"
 
 
 class Furu[T](_FuruDataclassTransform, ABC):
@@ -101,10 +117,10 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     def try_load(self) -> T:  # TODO: make a better name for this
         from furu.dependencies import record_dependency_call
+        from furu.migration import result_dir_for_loading
 
         record_dependency_call(self)
-        result_dir = result_dir_for_loading(self)
-        if result_dir is not None:
+        if (result_dir := result_dir_for_loading(self)) is not None:
             return cast(T, load_result_bundle(result_dir))
         raise NotImplementedError(
             "TODO: decide if i should throw or return error value"
@@ -120,9 +136,13 @@ class Furu[T](_FuruDataclassTransform, ABC):
         return ()
 
     def migrate(self) -> bool:
+        from furu.migration import migrate
+
         return migrate(self)
 
     def is_migrated(self) -> bool:
+        from furu.migration import is_migrated
+
         return is_migrated(self)
 
     def delete(self, mode: Literal["prompt", "force"] = "prompt") -> bool:
@@ -157,11 +177,11 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     @property
     def _result_dir(self) -> Path:
-        return self.data_dir / "result"
+        return result_dir_in(self.data_dir)
 
     @property
     def _result_manifest_path(self) -> Path:
-        return self._result_dir / "manifest.json"
+        return result_manifest_path_in(self.data_dir)
 
     @property
     def logger(self) -> logging.Logger:
@@ -227,11 +247,11 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     @cached_property
     def _internal_furu_dir(self) -> Path:
-        return self.data_dir / ".furu"
+        return internal_furu_dir_in(self.data_dir)
 
     @cached_property
     def _metadata_path(self) -> Path:
-        return self._internal_furu_dir / "metadata.json"
+        return metadata_path_in(self.data_dir)
 
     @cached_property
     def _log_path(self) -> Path:

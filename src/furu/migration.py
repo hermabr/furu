@@ -6,6 +6,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from furu.core import (
+    internal_furu_dir_in,
+    metadata_path_in,
+    result_dir_in,
+    result_manifest_path_in,
+)
 from furu.utils import JsonValue, fully_qualified_name, nfs_safe_unique_name
 
 if TYPE_CHECKING:
@@ -15,10 +21,6 @@ if TYPE_CHECKING:
 type JsonFields = dict[str, JsonValue]
 
 RESULT_LINK_FILENAME = "result-link.json"
-_INTERNAL_DIR_NAME = ".furu"
-_RESULT_DIR_NAME = "result"
-_RESULT_MANIFEST_FILENAME = "manifest.json"
-_METADATA_FILENAME = "metadata.json"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -43,8 +45,12 @@ class _Source:
 _Node = tuple[str, str]
 
 
+def _result_link_path_in(data_dir: Path) -> Path:
+    return internal_furu_dir_in(data_dir) / RESULT_LINK_FILENAME
+
+
 def _result_link_path(obj: Furu[Any]) -> Path:
-    return obj._internal_furu_dir / RESULT_LINK_FILENAME
+    return _result_link_path_in(obj.data_dir)
 
 
 def _read_result_link(obj: Furu[Any]) -> dict[str, Any] | None:
@@ -57,10 +63,9 @@ def _read_result_link(obj: Furu[Any]) -> dict[str, Any] | None:
 def result_dir_for_loading(obj: Furu[Any]) -> Path | None:
     if obj._result_manifest_path.exists():
         return obj._result_dir
-    link = _read_result_link(obj)
-    if link is None:
+    if (link := _read_result_link(obj)) is None:
         return None
-    return Path(link["source"]["data_dir"]) / _RESULT_DIR_NAME
+    return result_dir_in(Path(link["source"]["data_dir"]))
 
 
 def is_migrated(obj: Furu[Any]) -> bool:
@@ -96,8 +101,8 @@ def _migration_paths_ending_at(
 
 
 def _source_from_artifact_dir(artifact_dir: Path) -> _Source | None:
-    result_manifest = artifact_dir / _RESULT_DIR_NAME / _RESULT_MANIFEST_FILENAME
-    metadata_path = artifact_dir / _INTERNAL_DIR_NAME / _METADATA_FILENAME
+    result_manifest = result_manifest_path_in(artifact_dir)
+    metadata_path = metadata_path_in(artifact_dir)
 
     if result_manifest.exists() and metadata_path.exists():
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -112,7 +117,7 @@ def _source_from_artifact_dir(artifact_dir: Path) -> _Source | None:
             prior_migration_path=(),
         )
 
-    link_path = artifact_dir / _INTERNAL_DIR_NAME / RESULT_LINK_FILENAME
+    link_path = _result_link_path_in(artifact_dir)
     if link_path.exists():
         link = json.loads(link_path.read_text(encoding="utf-8"))
         current = link["current"]
