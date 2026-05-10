@@ -197,16 +197,6 @@ def _execute_group[T](
     log_paths = tuple(obj._log_path for obj in group)
     eager_dependencies = [collect_eager_dependencies(obj) for obj in group]
 
-    def resolve_lazy_dependencies(
-        eager_ids: tuple[str, ...], observed: tuple[str, ...]
-    ) -> tuple[str, ...]:
-        eager_set = set(eager_ids)
-        return tuple(
-            dependency_id
-            for dependency_id in observed
-            if dependency_id not in eager_set
-        )
-
     metadata = [
         RunningMetadata.write_for(
             obj,
@@ -250,6 +240,16 @@ def _execute_group[T](
                     logger.debug("sequential _create() fallback returned")
                 case _:
                     assert_never(group[0]._furu_create_mode)
+
+            def resolve_lazy_dependencies(
+                eager_ids: tuple[str, ...], observed: tuple[str, ...]
+            ) -> tuple[str, ...]:
+                eager_set = set(eager_ids)
+                return tuple(
+                    dependency_id
+                    for dependency_id in observed
+                    if dependency_id not in eager_set
+                )
 
             match group[0]._furu_create_mode:
                 case "batched":
