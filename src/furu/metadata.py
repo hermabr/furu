@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from furu.storage_layout import metadata_path_in
-from furu.utils import JsonValue
+from furu.utils import JsonValue, object_id_from_parts
 
 if TYPE_CHECKING:
     from furu.core import Furu
@@ -23,12 +24,20 @@ class GitData(BaseModel):
 
 
 @dataclass(frozen=True, kw_only=True)
-class ArtifactMetadata:
+class ArtifactSpec:
     fully_qualified_name: str
     data: dict[str, JsonValue]
     artifact_hash: str
     schema: JsonValue
     schema_hash: str
+
+    @cached_property
+    def object_id(self) -> str:
+        return object_id_from_parts(
+            fully_qualified_name=self.fully_qualified_name,
+            schema_hash=self.schema_hash,
+            artifact_hash=self.artifact_hash,
+        )
 
 
 class RunningMetadata(BaseModel):
@@ -39,7 +48,7 @@ class RunningMetadata(BaseModel):
     )
     kind: Literal["running"] = "running"
     # python_def: str
-    artifact: ArtifactMetadata
+    artifact: ArtifactSpec
     data_path: Path
     # git: GitData | None
     started_at: datetime
@@ -59,7 +68,7 @@ class RunningMetadata(BaseModel):
         obj: Furu[T],
     ) -> RunningMetadata:
         metadata = cls(
-            artifact=ArtifactMetadata(
+            artifact=ArtifactSpec(
                 fully_qualified_name=obj._fully_qualified_name,
                 data=obj.artifact_data,
                 artifact_hash=obj.artifact_hash,
@@ -94,7 +103,7 @@ class CompletedMetadata(BaseModel):
     )
     kind: Literal["completed"] = "completed"
     # python_def: str
-    artifact: ArtifactMetadata
+    artifact: ArtifactSpec
     data_path: Path
     # git: GitData | None
     started_at: datetime

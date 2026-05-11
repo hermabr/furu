@@ -26,13 +26,14 @@ from furu.utils import (
     _hash_dict_deterministically,
     fully_qualified_name,
     nfs_safe_unique_name,
+    object_id_from_parts,
 )
 from furu.validate import validate_cls
 
 if TYPE_CHECKING:
     from typing_extensions import dataclass_transform
 
-    from furu.metadata import ArtifactMetadata
+    from furu.metadata import ArtifactSpec
     from furu.migration import Migration
 
     @dataclass_transform(kw_only_default=True, frozen_default=True)
@@ -85,9 +86,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
         return load_or_create(self, use_lock=use_lock)
 
     @classmethod
-    def from_artifact[TFuru: Furu](
-        cls: type[TFuru], artifact: ArtifactMetadata
-    ) -> TFuru:
+    def from_artifact[TFuru: Furu](cls: type[TFuru], artifact: ArtifactSpec) -> TFuru:
         from furu.serialize import _from_artifact
 
         return _from_artifact(artifact, cls)
@@ -203,10 +202,10 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     @cached_property
     def object_id(self) -> str:
-        return (
-            f"{self._fully_qualified_name}:"
-            + f"{self.artifact_schema_hash}:"
-            + f"{self.artifact_hash}"
+        return object_id_from_parts(
+            fully_qualified_name=self._fully_qualified_name,
+            schema_hash=self.artifact_schema_hash,
+            artifact_hash=self.artifact_hash,
         )
 
     @cached_property
