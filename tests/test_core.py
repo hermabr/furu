@@ -31,7 +31,7 @@ from furu.storage_layout import (
     run_log_path_in,
 )
 from furu.utils import fully_qualified_name
-from furu.dag import node_key_for
+from furu.dag import NodeKey
 from furu.worker_execution import (
     _DependencyNotReady,
     _in_worker_execution_context,
@@ -1571,7 +1571,7 @@ def test_worker_execution_context_is_scoped() -> None:
 
     assert not _in_worker_execution_context()
     with worker_execution_context(
-        current_node=node_key_for(current),
+        current_node=NodeKey.from_furu(current),
         lease_id="lease-1",
     ):
         assert _in_worker_execution_context()
@@ -1588,7 +1588,7 @@ def test_worker_load_or_create_loads_cached_result_without_recomputing(
     ObjectIdStorageRootValue.create_calls.clear()
 
     with worker_execution_context(
-        current_node=node_key_for(cached),
+        current_node=NodeKey.from_furu(cached),
         lease_id="lease-1",
     ):
         assert cached.load_or_create() == "object-id:10"
@@ -1605,7 +1605,7 @@ def test_worker_load_or_create_reports_all_missing_dependencies(
 
     with (
         worker_execution_context(
-            current_node=node_key_for(first),
+            current_node=NodeKey.from_furu(first),
             lease_id="lease-1",
         ),
         pytest.raises(_DependencyNotReady) as exc_info,
@@ -1615,7 +1615,7 @@ def test_worker_load_or_create_reports_all_missing_dependencies(
     exc = exc_info.value
     assert exc.call_kind == "load_or_create"
     assert exc.dependencies == (first, second)
-    assert exc.keys == (node_key_for(first), node_key_for(second))
+    assert exc.keys == (NodeKey.from_furu(first), NodeKey.from_furu(second))
     assert tuple(artifact.object_id for artifact in exc.artifacts) == (
         first.object_id,
         second.object_id,
@@ -1631,7 +1631,7 @@ def test_worker_try_load_reports_missing_dependency(tmp_path: Path) -> None:
 
     with (
         worker_execution_context(
-            current_node=node_key_for(missing),
+            current_node=NodeKey.from_furu(missing),
             lease_id="lease-1",
         ),
         pytest.raises(_DependencyNotReady) as exc_info,
@@ -1641,7 +1641,7 @@ def test_worker_try_load_reports_missing_dependency(tmp_path: Path) -> None:
     exc = exc_info.value
     assert exc.call_kind == "try_load"
     assert exc.dependencies == (missing,)
-    assert exc.keys == (node_key_for(missing),)
+    assert exc.keys == (NodeKey.from_furu(missing),)
     assert exc.artifacts[0].object_id == missing.object_id
 
 
@@ -1653,7 +1653,7 @@ def test_worker_dependency_not_ready_is_not_caught_as_exception(
 
     with pytest.raises(_DependencyNotReady):
         with worker_execution_context(
-            current_node=node_key_for(missing),
+            current_node=NodeKey.from_furu(missing),
             lease_id="lease-1",
         ):
             try:

@@ -17,9 +17,9 @@ class NodeKey(BaseModel):
     object_id: str
     data_path: str
 
-
-def node_key_for(obj: Furu[Any]) -> NodeKey:
-    return NodeKey(
-        object_id=obj.object_id,
-        data_path=str(obj.data_dir.resolve(strict=False)),
-    )
+    @classmethod
+    def from_furu(cls, obj: Furu[Any]) -> NodeKey:
+        return cls(
+            object_id=obj.object_id,
+            data_path=str(obj.data_dir.resolve(strict=False)),
+        )

@@ -6,7 +6,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
-from furu.dag import NodeKey, node_key_for
+from furu.dag import NodeKey
 from furu.metadata import ArtifactSpec
 
 if TYPE_CHECKING:
@@ -65,7 +65,7 @@ class _DependencyNotReady(BaseException):
         self.dependencies = tuple(dependencies)
         self.call_kind = call_kind
         self.artifacts = tuple(ArtifactSpec.from_furu(dep) for dep in self.dependencies)
-        self.keys = tuple(node_key_for(dep) for dep in self.dependencies)
+        self.keys = tuple(NodeKey.from_furu(dep) for dep in self.dependencies)
 
         super().__init__(
             f"{call_kind} discovered "

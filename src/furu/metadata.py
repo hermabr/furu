@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import cached_property
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -32,7 +32,7 @@ class ArtifactSpec:
     schema_hash: str
 
     @classmethod
-    def from_furu(cls, obj: Furu[Any]) -> ArtifactSpec:
+    def from_furu[TFuru: Furu](cls, obj: TFuru) -> ArtifactSpec:
         return cls(
             fully_qualified_name=obj._fully_qualified_name,
             data=obj.artifact_data,
