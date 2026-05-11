@@ -148,7 +148,7 @@ def migrate(obj: Furu[Any]) -> bool:
                     metadata_path.read_text(encoding="utf-8")
                 )
                 artifact = metadata.artifact
-                artifact_fields = cast(JsonFields, artifact.data[FIELDSMARKER])
+                artifact_fields = cast(JsonFields, artifact.artifact_data[FIELDSMARKER])
                 source_link = _ResultLink(
                     current=_ResultLinkCurrent(
                         fully_qualified_name=artifact.fully_qualified_name,

@@ -123,7 +123,7 @@ def _from_json(value: JsonValue) -> Any:
 
 
 def _from_artifact[T: "Furu"](artifact: ArtifactSpec, expected_type: type[T]) -> T:
-    furu_obj = _from_json(artifact.data)
+    furu_obj = _from_json(artifact.artifact_data)
     if not isinstance(furu_obj, expected_type):
         raise TypeError(
             "Artifact described "

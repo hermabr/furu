@@ -26,7 +26,7 @@ class GitData(BaseModel):
 @dataclass(frozen=True, kw_only=True)
 class ArtifactSpec:
     fully_qualified_name: str
-    data: dict[str, JsonValue]
+    artifact_data: dict[str, JsonValue]
     artifact_hash: str
     schema: JsonValue
     schema_hash: str
@@ -35,7 +35,7 @@ class ArtifactSpec:
     def from_furu[TFuru: Furu](cls, obj: TFuru) -> ArtifactSpec:
         return cls(
             fully_qualified_name=obj._fully_qualified_name,
-            data=obj.artifact_data,
+            artifact_data=obj.artifact_data,
             artifact_hash=obj.artifact_hash,
             schema=obj.schema,
             schema_hash=obj.artifact_schema_hash,

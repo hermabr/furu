@@ -976,7 +976,7 @@ def test_furu_from_artifact_returns_furu_object():
     obj.load_or_create()
     artifact = ArtifactSpec(
         fully_qualified_name=obj._fully_qualified_name,
-        data=obj.artifact_data,
+        artifact_data=obj.artifact_data,
         artifact_hash=obj.artifact_hash,
         schema=obj.schema,
         schema_hash=obj.artifact_schema_hash,
@@ -992,7 +992,7 @@ def test_furu_from_artifact_returns_furu_object():
     assert raw_metadata["kind"] == "completed"
     assert raw_metadata["artifact"] == {
         "fully_qualified_name": obj._fully_qualified_name,
-        "data": obj.artifact_data,
+        "artifact_data": obj.artifact_data,
         "artifact_hash": obj.artifact_hash,
         "schema": obj.schema,
         "schema_hash": obj.artifact_schema_hash,
@@ -1112,7 +1112,7 @@ def test_furu_from_artifact_infers_furu_object_type():
     obj.load_or_create()
     artifact = ArtifactSpec(
         fully_qualified_name=obj._fully_qualified_name,
-        data=obj.artifact_data,
+        artifact_data=obj.artifact_data,
         artifact_hash=obj.artifact_hash,
         schema=obj.schema,
         schema_hash=obj.artifact_schema_hash,
@@ -1142,7 +1142,7 @@ def test_furu_from_artifact_accepts_artifact_spec():
     obj = Node(name="x")
     artifact = ArtifactSpec(
         fully_qualified_name=obj._fully_qualified_name,
-        data=obj.artifact_data,
+        artifact_data=obj.artifact_data,
         artifact_hash=obj.artifact_hash,
         schema=obj.schema,
         schema_hash=obj.artifact_schema_hash,
@@ -1159,7 +1159,7 @@ def test_furu_from_artifact_type_mismatch_names_expected_and_loaded_type():
     obj = WeightedNode(name="x", weight=1)
     artifact = ArtifactSpec(
         fully_qualified_name=obj._fully_qualified_name,
-        data=obj.artifact_data,
+        artifact_data=obj.artifact_data,
         artifact_hash=obj.artifact_hash,
         schema=obj.schema,
         schema_hash=obj.artifact_schema_hash,
@@ -1180,7 +1180,7 @@ def test_furu_from_artifact_rejects_artifact_spec_hash_mismatch():
     bad_hash = "wrong-artifact-hash"
     artifact = ArtifactSpec(
         fully_qualified_name=obj._fully_qualified_name,
-        data=obj.artifact_data,
+        artifact_data=obj.artifact_data,
         artifact_hash=bad_hash,
         schema=obj.schema,
         schema_hash=obj.artifact_schema_hash,
@@ -1201,7 +1201,7 @@ def test_furu_from_artifact_rejects_artifact_spec_schema_hash_mismatch():
     bad_schema_hash = "wrong-schema-hash"
     artifact = ArtifactSpec(
         fully_qualified_name=obj._fully_qualified_name,
-        data=obj.artifact_data,
+        artifact_data=obj.artifact_data,
         artifact_hash=obj.artifact_hash,
         schema=obj.schema,
         schema_hash=bad_schema_hash,
