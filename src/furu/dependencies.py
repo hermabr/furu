@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import fields, is_dataclass
 from functools import cached_property
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable, Literal, overload
 
 from pydantic import BaseModel as PydanticBaseModel
 
@@ -13,8 +13,53 @@ if TYPE_CHECKING:
     from furu.core import Furu
 
 
-class dependency[T](cached_property):
+class _CachedDependency[T](cached_property):
     __furu_dependency__ = True
+
+
+class _UncachedDependency[T](property):
+    __furu_dependency__ = True
+
+
+@overload
+def dependency[T](func: Callable[[Any], T], /) -> _CachedDependency[T]: ...
+
+
+@overload
+def dependency[T](
+    *, cached: Literal[True] = True
+) -> Callable[[Callable[[Any], T]], _CachedDependency[T]]: ...
+
+
+@overload
+def dependency[T](
+    *, cached: Literal[False]
+) -> Callable[[Callable[[Any], T]], _UncachedDependency[T]]: ...
+
+
+@overload
+def dependency[T](
+    *, cached: bool
+) -> Callable[[Callable[[Any], T]], _CachedDependency[T] | _UncachedDependency[T]]: ...
+
+
+def dependency[T](
+    func: Callable[[Any], T] | None = None, /, *, cached: bool = True
+) -> (
+    _CachedDependency[T]
+    | _UncachedDependency[T]
+    | Callable[[Callable[[Any], T]], _CachedDependency[T] | _UncachedDependency[T]]
+):
+    def decorate(
+        func: Callable[[Any], T],
+    ) -> _CachedDependency[T] | _UncachedDependency[T]:
+        if cached:
+            return _CachedDependency(func)
+        return _UncachedDependency(func)
+
+    if func is not None:
+        return decorate(func)
+    return decorate
 
 
 def find_nested_furu_objects(value: object) -> Iterator[Furu[Any]]:

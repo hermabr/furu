@@ -351,6 +351,32 @@ class ComputedDependencyParent(Furu[str]):
         return self.child.load_or_create()
 
 
+class ExplicitCachedDependencyParent(Furu[str]):
+    name: str
+    calls: ClassVar[int] = 0
+
+    @furu.dependency(cached=True)
+    def child(self) -> Node:
+        type(self).calls += 1
+        return Node(name=f"{self.name}-{type(self).calls}")
+
+    def _create(self) -> str:
+        return self.child.load_or_create()
+
+
+class UncachedDependencyParent(Furu[str]):
+    name: str
+    calls: ClassVar[int] = 0
+
+    @furu.dependency(cached=False)
+    def child(self) -> Node:
+        type(self).calls += 1
+        return Node(name=f"{self.name}-{type(self).calls}")
+
+    def _create(self) -> str:
+        return self.child.load_or_create()
+
+
 class LazyDependencyParent(Furu[str]):
     name: str
 
@@ -966,6 +992,29 @@ def test_computed_dependency_is_cached_property_and_eager_loaded_dependency() ->
     assert parent.load_or_create() == "Node(computed)"
 
     assert _dependency_object_ids(parent) == [parent.child.object_id]
+
+
+def test_dependency_accepts_explicit_cached_true() -> None:
+    ExplicitCachedDependencyParent.calls = 0
+    parent = ExplicitCachedDependencyParent(name="explicit-cached")
+
+    assert parent.child is parent.child
+    assert parent._declared_refs() == (parent.child,)
+    assert ExplicitCachedDependencyParent.calls == 1
+
+
+def test_dependency_can_be_uncached_property() -> None:
+    UncachedDependencyParent.calls = 0
+    parent = UncachedDependencyParent(name="uncached")
+    first = parent.child
+    second = parent.child
+
+    assert first is not second
+    assert first.object_id != second.object_id
+    declared_refs = parent._declared_refs()
+    assert len(declared_refs) == 1
+    assert declared_refs[0].object_id == Node(name="uncached-3").object_id
+    assert UncachedDependencyParent.calls == 3
 
 
 def test_load_or_create_inside_create_is_recorded_and_deduped() -> None:
