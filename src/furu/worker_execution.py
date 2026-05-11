@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 from furu.metadata import ArtifactSpec
@@ -14,19 +13,14 @@ if TYPE_CHECKING:
 type DependencyCallKind = Literal["load_or_create", "try_load"]
 
 
-@dataclass(frozen=True)
-class WorkerExecutionContext:
-    lease_id: str
-
-
-_worker_execution_context: ContextVar[WorkerExecutionContext | None] = ContextVar(
-    "_worker_execution_context",
+_worker_execution_lease_id: ContextVar[str | None] = ContextVar(
+    "_worker_execution_lease_id",
     default=None,
 )
 
 
 def _in_worker_execution_context() -> bool:
-    return _worker_execution_context.get() is not None
+    return _worker_execution_lease_id.get() is not None
 
 
 @contextmanager
@@ -34,16 +28,12 @@ def worker_execution_context(
     *,
     lease_id: str,
 ) -> Iterator[None]:
-    token = _worker_execution_context.set(
-        WorkerExecutionContext(
-            lease_id=lease_id,
-        )
-    )
+    token = _worker_execution_lease_id.set(lease_id)
 
     try:
         yield
     finally:
-        _worker_execution_context.reset(token)
+        _worker_execution_lease_id.reset(token)
 
 
 class _DependencyNotReady(BaseException):
