@@ -23,8 +23,9 @@ class GitData(BaseModel):
 
 @dataclass(frozen=True, kw_only=True)
 class ArtifactMetadata:
+    fully_qualified_name: str
     data: dict[str, JsonValue]
-    hash: str
+    artifact_hash: str
     schema: JsonValue
     schema_hash: str
 
@@ -58,8 +59,9 @@ class RunningMetadata(BaseModel):
     ) -> RunningMetadata:
         metadata = cls(
             artifact=ArtifactMetadata(
+                fully_qualified_name=obj._fully_qualified_name,
                 data=obj.artifact_data,
-                hash=obj.artifact_hash,
+                artifact_hash=obj.artifact_hash,
                 schema=obj.schema,
                 schema_hash=obj.artifact_schema_hash,
             ),
