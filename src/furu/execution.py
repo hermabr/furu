@@ -43,39 +43,36 @@ def _allow_direct_create() -> Iterator[None]:
         _create_execution_active.reset(token)
 
 
+def _install_guard(
+    cls: type[Furu[Any]],
+    attr: str,
+    *,
+    is_classmethod: bool,
+    suggestion: str,
+) -> None:
+    if attr not in cls.__dict__:
+        return
+    raw = cls.__dict__[attr]
+    func = raw.__func__ if is_classmethod else raw
+
+    @functools.wraps(func)
+    def guarded(first: Any, *args: Any, **kwargs: Any) -> Any:
+        if not _create_execution_active.get():
+            owner = first.__name__ if is_classmethod else type(first).__name__
+            raise RuntimeError(
+                f"{owner}.{attr}() must not be called directly; "
+                f"call {suggestion} instead"
+            )
+        return func(first, *args, **kwargs)
+
+    setattr(cls, attr, classmethod(guarded) if is_classmethod else guarded)
+
+
 def _install_create_guards(cls: type[Furu[Any]]) -> None:
-    if "create" in cls.__dict__:
-        func = cls.__dict__["create"]
-
-        @functools.wraps(func)
-        def guarded_create(self: Furu[Any], *args: Any, **kwargs: Any) -> Any:
-            if not _create_execution_active.get():
-                raise RuntimeError(
-                    f"{type(self).__name__}.create() must not be called directly; "
-                    "call .load_or_create() instead"
-                )
-            return func(self, *args, **kwargs)
-
-        cls.create = guarded_create  # ty:ignore[invalid-assignment]
-
-    if "create_batched" in cls.__dict__:
-        raw = cls.__dict__["create_batched"]
-        batched_func = raw.__func__
-
-        @functools.wraps(batched_func)
-        def guarded_create_batched(
-            inner_cls: type[Furu[Any]], *args: Any, **kwargs: Any
-        ) -> Any:
-            if not _create_execution_active.get():
-                raise RuntimeError(
-                    f"{inner_cls.__name__}.create_batched() must not be called "
-                    "directly; call furu.load_or_create() instead"
-                )
-            return batched_func(inner_cls, *args, **kwargs)
-
-        cls.create_batched = classmethod(  # ty:ignore[invalid-assignment]
-            guarded_create_batched
-        )
+    _install_guard(cls, "create", is_classmethod=False, suggestion=".load_or_create()")
+    _install_guard(
+        cls, "create_batched", is_classmethod=True, suggestion="furu.load_or_create()"
+    )
 
 
 def _resolve_create_mode[T](cls: type[Furu[T]]) -> FuruCreateMode:
