@@ -67,14 +67,10 @@ class RunningMetadata(BaseModel):
         cls,
         obj: Furu[T],
     ) -> RunningMetadata:
+        from furu.artifact import artifact_spec_for
+
         metadata = cls(
-            artifact=ArtifactSpec(
-                fully_qualified_name=obj._fully_qualified_name,
-                data=obj.artifact_data,
-                artifact_hash=obj.artifact_hash,
-                schema=obj.schema,
-                schema_hash=obj.artifact_schema_hash,
-            ),
+            artifact=artifact_spec_for(obj),
             data_path=obj.data_dir,
             started_at=datetime.now(timezone.utc),
         )

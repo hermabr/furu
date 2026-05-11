@@ -31,6 +31,12 @@ from furu.storage_layout import (
     run_log_path_in,
 )
 from furu.utils import fully_qualified_name
+from furu.dag import node_key_for
+from furu.worker_execution import (
+    _DependencyNotReady,
+    _in_worker_execution_context,
+    worker_execution_context,
+)
 
 type SOME_TYPE = Literal["a", "b"] | int
 
@@ -1558,6 +1564,104 @@ def test_pending_items_are_rechecked_after_lock_acquisition(
 
 def test_empty_list_returns_empty_list() -> None:
     assert load_or_create([]) == []
+
+
+def test_worker_execution_context_is_scoped() -> None:
+    current = Node(name="worker-context")
+
+    assert not _in_worker_execution_context()
+    with worker_execution_context(
+        current_node=node_key_for(current),
+        lease_id="lease-1",
+    ):
+        assert _in_worker_execution_context()
+    assert not _in_worker_execution_context()
+
+
+def test_worker_load_or_create_loads_cached_result_without_recomputing(
+    tmp_path: Path,
+) -> None:
+    ObjectIdStorageRootValue.storage_root_override = tmp_path / "data"
+    cached = ObjectIdStorageRootValue(key=10)
+
+    assert cached.load_or_create() == "object-id:10"
+    ObjectIdStorageRootValue.create_calls.clear()
+
+    with worker_execution_context(
+        current_node=node_key_for(cached),
+        lease_id="lease-1",
+    ):
+        assert cached.load_or_create() == "object-id:10"
+
+    assert ObjectIdStorageRootValue.create_calls == []
+
+
+def test_worker_load_or_create_reports_all_missing_dependencies(
+    tmp_path: Path,
+) -> None:
+    ObjectIdStorageRootValue.storage_root_override = tmp_path / "data"
+    first = ObjectIdStorageRootValue(key=11)
+    second = ObjectIdStorageRootValue(key=12)
+
+    with (
+        worker_execution_context(
+            current_node=node_key_for(first),
+            lease_id="lease-1",
+        ),
+        pytest.raises(_DependencyNotReady) as exc_info,
+    ):
+        load_or_create([first, second])
+
+    exc = exc_info.value
+    assert exc.call_kind == "load_or_create"
+    assert exc.dependencies == (first, second)
+    assert exc.keys == (node_key_for(first), node_key_for(second))
+    assert tuple(artifact.object_id for artifact in exc.artifacts) == (
+        first.object_id,
+        second.object_id,
+    )
+    assert ObjectIdStorageRootValue.create_calls == []
+    assert not result_manifest_path_in(first.data_dir).exists()
+    assert not result_manifest_path_in(second.data_dir).exists()
+
+
+def test_worker_try_load_reports_missing_dependency(tmp_path: Path) -> None:
+    ObjectIdStorageRootValue.storage_root_override = tmp_path / "data"
+    missing = ObjectIdStorageRootValue(key=13)
+
+    with (
+        worker_execution_context(
+            current_node=node_key_for(missing),
+            lease_id="lease-1",
+        ),
+        pytest.raises(_DependencyNotReady) as exc_info,
+    ):
+        missing.try_load()
+
+    exc = exc_info.value
+    assert exc.call_kind == "try_load"
+    assert exc.dependencies == (missing,)
+    assert exc.keys == (node_key_for(missing),)
+    assert exc.artifacts[0].object_id == missing.object_id
+
+
+def test_worker_dependency_not_ready_is_not_caught_as_exception(
+    tmp_path: Path,
+) -> None:
+    ObjectIdStorageRootValue.storage_root_override = tmp_path / "data"
+    missing = ObjectIdStorageRootValue(key=14)
+
+    with pytest.raises(_DependencyNotReady):
+        with worker_execution_context(
+            current_node=node_key_for(missing),
+            lease_id="lease-1",
+        ):
+            try:
+                missing.try_load()
+            except Exception as exc:  # pragma: no cover
+                raise AssertionError(
+                    "ordinary Exception handler caught signal"
+                ) from exc
 
 
 def test_mixed_type_list_follows_documented_grouping_policy() -> None:
