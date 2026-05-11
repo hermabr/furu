@@ -1609,10 +1609,6 @@ def test_worker_load_or_create_reports_all_missing_dependencies(
     exc = exc_info.value
     assert exc.call_kind == "load_or_create"
     assert exc.dependencies == (first, second)
-    assert tuple(artifact.object_id for artifact in exc.artifacts) == (
-        first.object_id,
-        second.object_id,
-    )
     assert ObjectIdStorageRootValue.create_calls == []
     assert not result_manifest_path_in(first.data_dir).exists()
     assert not result_manifest_path_in(second.data_dir).exists()
@@ -1633,7 +1629,6 @@ def test_worker_try_load_reports_missing_dependency(tmp_path: Path) -> None:
     exc = exc_info.value
     assert exc.call_kind == "try_load"
     assert exc.dependencies == (missing,)
-    assert exc.artifacts[0].object_id == missing.object_id
 
 
 def test_worker_dependency_not_ready_is_not_caught_as_exception(

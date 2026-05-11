@@ -5,8 +5,6 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Literal
 
-from furu.metadata import ArtifactSpec
-
 if TYPE_CHECKING:
     from furu.core import Furu
 
@@ -35,7 +33,6 @@ def worker_execution_context(
 class _DependencyNotReady(BaseException):
     dependencies: tuple[Furu[Any], ...]
     call_kind: DependencyCallKind
-    artifacts: tuple[ArtifactSpec, ...]
 
     def __init__(
         self,
@@ -45,7 +42,6 @@ class _DependencyNotReady(BaseException):
     ) -> None:
         self.dependencies = tuple(dependencies)
         self.call_kind = call_kind
-        self.artifacts = tuple(ArtifactSpec.from_furu(dep) for dep in self.dependencies)
 
         super().__init__(
             f"{call_kind} discovered "
