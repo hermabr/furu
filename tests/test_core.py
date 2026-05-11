@@ -17,7 +17,7 @@ import furu.execution as execution_module
 from furu import Furu, load_or_create, validate
 from furu.config import config
 from furu.locking import lock_many
-from furu.metadata import ArtifactMetadata
+from furu.metadata import ArtifactSpec
 from furu.result import load_result_bundle, save_result_bundle
 from furu.result.codec import _default_result_registry
 from furu.serialize import _from_json, to_json
@@ -944,7 +944,7 @@ def test_furu_from_artifact_returns_furu_object():
         node2=WeightedNode(name="z", weight=1),
     )
     obj.load_or_create()
-    artifact = ArtifactMetadata(
+    artifact = ArtifactSpec(
         fully_qualified_name=obj._fully_qualified_name,
         data=obj.artifact_data,
         artifact_hash=obj.artifact_hash,
@@ -955,6 +955,7 @@ def test_furu_from_artifact_returns_furu_object():
     loaded = NodePair.from_artifact(artifact)
     raw_metadata = json.loads(obj._metadata_path.read_text())
 
+    assert artifact.object_id == obj.object_id
     assert loaded == obj
     assert isinstance(loaded, NodePair)
     assert loaded.data_dir == obj.data_dir
@@ -1079,7 +1080,7 @@ def test_furu_from_artifact_infers_furu_object_type():
         node2=WeightedNode(name="z", weight=1),
     )
     obj.load_or_create()
-    artifact = ArtifactMetadata(
+    artifact = ArtifactSpec(
         fully_qualified_name=obj._fully_qualified_name,
         data=obj.artifact_data,
         artifact_hash=obj.artifact_hash,
@@ -1089,6 +1090,7 @@ def test_furu_from_artifact_infers_furu_object_type():
 
     loaded = Furu.from_artifact(artifact)
 
+    assert artifact.object_id == obj.object_id
     assert loaded == obj
     assert isinstance(loaded, NodePair)
 
@@ -1097,17 +1099,18 @@ def test_furu_from_artifact_accepts_loaded_metadata_artifact():
     obj = Node(name="x")
     obj.load_or_create()
     metadata = json.loads(obj._metadata_path.read_text())
-    artifact = ArtifactMetadata(**metadata["artifact"])
+    artifact = ArtifactSpec(**metadata["artifact"])
 
     loaded = Node.from_artifact(artifact)
 
+    assert artifact.object_id == obj.object_id
     assert loaded == obj
     assert isinstance(loaded, Node)
 
 
-def test_furu_from_artifact_accepts_artifact_metadata():
+def test_furu_from_artifact_accepts_artifact_spec():
     obj = Node(name="x")
-    artifact = ArtifactMetadata(
+    artifact = ArtifactSpec(
         fully_qualified_name=obj._fully_qualified_name,
         data=obj.artifact_data,
         artifact_hash=obj.artifact_hash,
@@ -1117,13 +1120,14 @@ def test_furu_from_artifact_accepts_artifact_metadata():
 
     loaded = Node.from_artifact(artifact)
 
+    assert artifact.object_id == obj.object_id
     assert loaded == obj
     assert isinstance(loaded, Node)
 
 
 def test_furu_from_artifact_type_mismatch_names_expected_and_loaded_type():
     obj = WeightedNode(name="x", weight=1)
-    artifact = ArtifactMetadata(
+    artifact = ArtifactSpec(
         fully_qualified_name=obj._fully_qualified_name,
         data=obj.artifact_data,
         artifact_hash=obj.artifact_hash,
@@ -1141,10 +1145,10 @@ def test_furu_from_artifact_type_mismatch_names_expected_and_loaded_type():
         NodePair.from_artifact(artifact)
 
 
-def test_furu_from_artifact_rejects_artifact_metadata_hash_mismatch():
+def test_furu_from_artifact_rejects_artifact_spec_hash_mismatch():
     obj = Node(name="x")
     bad_hash = "wrong-artifact-hash"
-    artifact = ArtifactMetadata(
+    artifact = ArtifactSpec(
         fully_qualified_name=obj._fully_qualified_name,
         data=obj.artifact_data,
         artifact_hash=bad_hash,
@@ -1162,10 +1166,10 @@ def test_furu_from_artifact_rejects_artifact_metadata_hash_mismatch():
         Node.from_artifact(artifact)
 
 
-def test_furu_from_artifact_rejects_artifact_metadata_schema_hash_mismatch():
+def test_furu_from_artifact_rejects_artifact_spec_schema_hash_mismatch():
     obj = Node(name="x")
     bad_schema_hash = "wrong-schema-hash"
-    artifact = ArtifactMetadata(
+    artifact = ArtifactSpec(
         fully_qualified_name=obj._fully_qualified_name,
         data=obj.artifact_data,
         artifact_hash=obj.artifact_hash,

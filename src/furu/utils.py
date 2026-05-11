@@ -32,6 +32,15 @@ def fully_qualified_name(tp: type) -> str:
     return f"{mod}.{qualname}"
 
 
+def object_id_from_parts(
+    *,
+    fully_qualified_name: str,
+    schema_hash: str,
+    artifact_hash: str,
+) -> str:
+    return f"{fully_qualified_name}:{schema_hash}:{artifact_hash}"
+
+
 def _stable_json_dump(x: JsonValue) -> str:
     return json.dumps(x, sort_keys=True, separators=(",", ":"))
 
