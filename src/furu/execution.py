@@ -47,22 +47,24 @@ def _install_create_guards(cls: type[Furu[Any]]) -> None:
     for attr in ("create", "create_batched"):
         if attr not in cls.__dict__:
             continue
-        is_classmethod = attr == "create_batched"
-        suggestion = "furu.load_or_create()" if is_classmethod else ".load_or_create()"
+        is_batched = attr == "create_batched"
         raw = cls.__dict__[attr]
-        func = raw.__func__ if is_classmethod else raw
+        func = raw.__func__ if is_batched else raw
 
         @functools.wraps(func)
         def guarded(first: Any, *args: Any, **kwargs: Any) -> Any:
             if not _create_execution_active.get():
-                owner = first.__name__ if is_classmethod else type(first).__name__
+                owner = first.__name__ if is_batched else type(first).__name__
+                suggestion = (
+                    "furu.load_or_create()" if is_batched else ".load_or_create()"
+                )
                 raise RuntimeError(
                     f"{owner}.{attr}() must not be called directly; "
                     f"call {suggestion} instead"
                 )
             return func(first, *args, **kwargs)
 
-        setattr(cls, attr, classmethod(guarded) if is_classmethod else guarded)
+        setattr(cls, attr, classmethod(guarded) if is_batched else guarded)
 
 
 def _resolve_create_mode[T](cls: type[Furu[T]]) -> FuruCreateMode:
