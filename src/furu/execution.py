@@ -68,8 +68,8 @@ def _install_guard(
 
 
 def _install_create_guards(cls: type[Furu[Any]]) -> None:
-    _install_guard(cls, "create")
-    _install_guard(cls, "create_batched")
+    for attr in ("create", "create_batched"):
+        _install_guard(cls, attr)
 
 
 def _resolve_create_mode[T](cls: type[Furu[T]]) -> FuruCreateMode:
