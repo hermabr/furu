@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, get_args, get_origin, get_type_hints
 from pydantic import BaseModel as PydanticBaseModel
 
 from furu.constants import CLASSMARKER, FIELDSMARKER, KINDMARKER
-from furu.metadata import ArtifactMetadata
+from furu.metadata import ArtifactSpec
 from furu.utils import JsonValue, fully_qualified_name
 
 if TYPE_CHECKING:
@@ -122,7 +122,7 @@ def _from_json(value: JsonValue) -> Any:
             return value
 
 
-def _from_artifact[T: "Furu"](artifact: ArtifactMetadata, expected_type: type[T]) -> T:
+def _from_artifact[T: "Furu"](artifact: ArtifactSpec, expected_type: type[T]) -> T:
     furu_obj = _from_json(artifact.data)
     if not isinstance(furu_obj, expected_type):
         raise TypeError(
