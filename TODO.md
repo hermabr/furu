@@ -46,7 +46,7 @@
      - [ ] detect changes in local files
      - [ ] detect library versions (only of libraries we import?)
      - [ ] detect all functions we call
-     - [ ] do not allow _create to depend on/be affected by sys.argv
+     - [ ] do not allow create to depend on/be affected by sys.argv
      - [ ] take inspiration from pytest-cov
      - [ ] use this information to invalidate loads
 - [ ] logging
@@ -66,7 +66,7 @@
     - [ ] time traveling executor (maybe i need git worktrees for this?)
     - [ ] dependencies
          - [ ] eager dependencies you define with something like @furu.dependency
-         - [ ] lazy dependencies that you can register while running the _create fn, such as if you have a variable number of chunks you need to download
+         - [ ] lazy dependencies that you can register while running the create fn, such as if you have a variable number of chunks you need to download
             - [ ] capture any time a .load_or_create is called inside a method and add them to the lazy dependencies
 - [ ] furu list
     - [ ] decide if i need this
@@ -76,7 +76,7 @@
 - [x] storage: do the same behavior as for executor, where you override def _storage_path(self): Path("furu/data") for a furu object
     - [x] per-object storage_root override
 - [ ] querying/filtering
-- [ ] don't allow users to call _create directly (maybe i need a context variable + __init_subclass__?)
+- [x] don't allow users to call create directly (maybe i need a context variable + __init_subclass__?)
 - [ ] sync support, so that it is easy to say i want these experiments or these objects from one host to a different one
 - [ ] dashboard
 - [ ] make docs

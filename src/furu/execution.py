@@ -14,7 +14,7 @@ from typing import (
     overload,
 )
 
-from furu.core import Furu, FuruCreateMode
+from furu.core import Furu, FuruCreateMode, _create_call_allowed
 from furu.dependencies import dependency_recorder, record_dependency_call
 from furu.locking import LockLostError, lock_many
 from furu.logging import _scoped_log_files
@@ -36,6 +36,10 @@ def _resolve_create_mode[T](cls: type[Furu[T]]) -> FuruCreateMode:
             continue
 
         if "_create" in base.__dict__:
+            raise TypeError(
+                f"{class_label(base)} must define create instead of _create"
+            )
+        if "create" in base.__dict__:
             defines_single = True
         if "_create_batched" in base.__dict__:
             if not isinstance(base.__dict__["_create_batched"], classmethod):
@@ -46,7 +50,7 @@ def _resolve_create_mode[T](cls: type[Furu[T]]) -> FuruCreateMode:
 
     if defines_single and defines_batched:
         raise TypeError(
-            f"{class_label(cls)} must define exactly one of _create or _create_batched"
+            f"{class_label(cls)} must define exactly one of create or _create_batched"
         )
     if defines_single:
         return "single"
@@ -246,14 +250,18 @@ def _execute_group[T](
                     # to every object.
                     observed_dependencies = [observed for _ in group]
                 case "single":
-                    logger.debug("running sequential _create() fallback")
+                    logger.debug("running sequential create() fallback")
                     results = []
                     observed_dependencies = []
                     for obj in group:
                         with dependency_recorder() as recorder:
-                            results.append(obj._create())
+                            token = _create_call_allowed.set(True)
+                            try:
+                                results.append(obj.create())
+                            finally:
+                                _create_call_allowed.reset(token)
                         observed_dependencies.append(recorder.finalize())
-                    logger.debug("sequential _create() fallback returned")
+                    logger.debug("sequential create() fallback returned")
                 case _:
                     assert_never(group[0]._furu_create_mode)
 

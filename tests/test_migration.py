@@ -28,7 +28,7 @@ class _OldRun(Furu[dict[str, str]]):
     learning_rate: float
     dataset: str
 
-    def _create(self) -> dict[str, str]:
+    def create(self) -> dict[str, str]:
         _COUNTER.calls += 1
         return {"dataset": self.dataset, "learning_rate": str(self.learning_rate)}
 
@@ -61,7 +61,7 @@ class _NewRun(Furu[dict[str, str]]):
             ),
         )
 
-    def _create(self) -> dict[str, str]:
+    def create(self) -> dict[str, str]:
         _COUNTER.calls += 1
         return {"dataset": self.dataset, "lr": str(self.lr), "seed": str(self.seed)}
 
@@ -69,7 +69,7 @@ class _NewRun(Furu[dict[str, str]]):
 class _NoMigrations(Furu[int]):
     n: int
 
-    def _create(self) -> int:
+    def create(self) -> int:
         return self.n
 
 
@@ -207,7 +207,7 @@ class _MidRun(Furu[dict[str, str]]):
             ),
         )
 
-    def _create(self) -> dict[str, str]:
+    def create(self) -> dict[str, str]:
         return {"dataset": self.dataset, "lr": str(self.lr)}
 
 
@@ -242,7 +242,7 @@ class _FinalRun(Furu[dict[str, str]]):
             ),
         )
 
-    def _create(self) -> dict[str, str]:
+    def create(self) -> dict[str, str]:
         return {
             "dataset": self.dataset,
             "lr": str(self.lr),

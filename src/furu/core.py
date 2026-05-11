@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import shutil
 from abc import ABC
+from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
@@ -41,6 +42,11 @@ else:
 type FuruCreateMode = Literal["single", "batched"]
 
 
+_create_call_allowed: ContextVar[bool] = ContextVar(
+    "_create_call_allowed", default=False
+)
+
+
 class Furu[T](_FuruDataclassTransform, ABC):
     _furu_create_mode: ClassVar[FuruCreateMode]
 
@@ -71,6 +77,21 @@ class Furu[T](_FuruDataclassTransform, ABC):
         from furu.execution import _resolve_create_mode
 
         cls._furu_create_mode = _resolve_create_mode(cls)
+        if "create" in cls.__dict__:
+            user_create = cls.__dict__["create"]
+
+            def guarded_create(self: Furu[T]) -> T:
+                if not _create_call_allowed.get():
+                    raise RuntimeError(
+                        f"{type(self).__name__}.create() cannot be called directly; "
+                        "use load_or_create() instead"
+                    )
+                return user_create(self)
+
+            guarded_create.__name__ = user_create.__name__
+            guarded_create.__qualname__ = user_create.__qualname__
+            guarded_create.__doc__ = user_create.__doc__
+            setattr(cls, "create", guarded_create)
 
     def load_or_create(self, use_lock: bool = True) -> T:
         from furu.execution import load_or_create
@@ -176,7 +197,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def result_registry(self) -> ResultRegistry:
         return _default_result_registry()
 
-    def _create(self) -> T:
+    def create(self) -> T:
         raise NotImplementedError("TODO")
 
     @classmethod
