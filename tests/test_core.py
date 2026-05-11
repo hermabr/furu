@@ -1345,12 +1345,6 @@ def test_resolved_create_mode_validation() -> None:
             def _create_batched(self, objs) -> list[int]:
                 return [1 for _ in objs]
 
-    with pytest.raises(TypeError, match="must define create instead of _create"):
-
-        class InvalidOldCreate(Furu[int]):
-            def _create(self) -> int:
-                return 1
-
     with pytest.raises(
         TypeError, match="must define exactly one of create or _create_batched"
     ):

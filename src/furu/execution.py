@@ -35,10 +35,6 @@ def _resolve_create_mode[T](cls: type[Furu[T]]) -> FuruCreateMode:
         if not issubclass(base, Furu) or base is Furu:
             continue
 
-        if "_create" in base.__dict__:
-            raise TypeError(
-                f"{class_label(base)} must define create instead of _create"
-            )
         if "create" in base.__dict__:
             defines_single = True
         if "_create_batched" in base.__dict__:
