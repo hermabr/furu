@@ -31,6 +31,7 @@ from furu.storage_layout import (
     run_log_path_in,
 )
 from furu.utils import class_label, nfs_safe_unique_name
+from furu.worker_execution import _DependencyNotReady, _worker_execution_lease_id
 
 type HasLock = Callable[[], bool]
 
@@ -185,6 +186,14 @@ def load_or_create[T](
     *,
     use_lock: bool = True,
 ) -> T | list[T]:
+    if _worker_execution_lease_id.get() is not None:
+        return _load_or_create_worker(obj_or_objs)
+    return _load_or_create_local(obj_or_objs, use_lock=use_lock)
+
+
+def _normalize_load_or_create_input[T](
+    obj_or_objs: Furu[T] | Sequence[Furu[T]],
+) -> tuple[list[Furu[T]], bool]:
     if isinstance(obj_or_objs, Furu):
         objs = [obj_or_objs]
         unwrap = True
@@ -201,6 +210,44 @@ def load_or_create[T](
             raise TypeError("load_or_create() expected Furu objects")
         for obj in objs:
             record_dependency_call(obj)
+    return objs, unwrap
+
+
+def _load_or_create_worker[T](
+    obj_or_objs: Furu[T] | Sequence[Furu[T]],
+) -> T | list[T]:
+    objs, unwrap = _normalize_load_or_create_input(obj_or_objs)
+
+    loaded: list[T] = []
+    missing: list[Furu[T]] = []
+
+    for obj in objs:
+        if (cached_result_dir := result_dir_for_loading(obj)) is not None:
+            obj.logger.info("cache hit for %s at %s", obj._log_label, cached_result_dir)
+            loaded.append(cast(T, load_result_bundle(cached_result_dir)))
+        else:
+            missing.append(obj)
+
+    if missing:
+        raise _DependencyNotReady(
+            dependencies=missing,
+            call_kind="load_or_create",
+        )
+
+    if unwrap:
+        (obj,) = objs
+        (result,) = loaded
+        obj.logger.info("%s.load_or_create() returned", obj._log_label)
+        return result
+    return loaded
+
+
+def _load_or_create_local[T](
+    obj_or_objs: Furu[T] | Sequence[Furu[T]],
+    *,
+    use_lock: bool = True,
+) -> T | list[T]:
+    objs, unwrap = _normalize_load_or_create_input(obj_or_objs)
 
     if not objs:
         return []
@@ -259,8 +306,10 @@ def load_or_create[T](
     outputs = [results_by_object_id[obj.object_id] for obj in objs]
 
     if unwrap:
-        objs[0].logger.info("%s.load_or_create() returned", objs[0]._log_label)
-        return outputs[0]
+        (obj,) = objs
+        (output,) = outputs
+        obj.logger.info("%s.load_or_create() returned", obj._log_label)
+        return output
     return outputs
 
 

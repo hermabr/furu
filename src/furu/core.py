@@ -109,10 +109,19 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def try_load(self) -> T:  # TODO: make a better name for this
         from furu.dependencies import record_dependency_call
         from furu.migration import result_dir_for_loading
+        from furu.worker_execution import (
+            _DependencyNotReady,
+            _worker_execution_lease_id,
+        )
 
         record_dependency_call(self)
         if (result_dir := result_dir_for_loading(self)) is not None:
             return cast(T, load_result_bundle(result_dir))
+        if _worker_execution_lease_id.get() is not None:
+            raise _DependencyNotReady(
+                dependencies=[self],
+                call_kind="try_load",
+            )
         raise NotImplementedError(
             "TODO: decide if i should throw or return error value"
         )
