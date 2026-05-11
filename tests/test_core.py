@@ -108,8 +108,8 @@ class B[T](Furu):
         if cls._furu_create_mode == "single":
             namespace["create"] = lambda self: cls.create(self)
         else:
-            namespace["_create_batched"] = classmethod(
-                lambda hidden_cls, objs: cls._create_batched(objs)
+            namespace["create_batched"] = classmethod(
+                lambda hidden_cls, objs: cls.create_batched(objs)
             )
 
         Hidden = types.new_class(
@@ -238,7 +238,7 @@ class BatchOnlyValue(Furu[str]):
     batch_calls: ClassVar[list[tuple[int, ...]]] = []
 
     @classmethod
-    def _create_batched(cls, objs) -> list[str]:
+    def create_batched(cls, objs) -> list[str]:
         keys = tuple(obj.key for obj in objs)
         cls.batch_calls.append(keys)
         return [f"batch:{obj.key}" for obj in objs]
@@ -249,7 +249,7 @@ class GroupBatchA(Furu[str]):
     batch_calls: ClassVar[list[tuple[int, ...]]] = []
 
     @classmethod
-    def _create_batched(cls, objs) -> list[str]:
+    def create_batched(cls, objs) -> list[str]:
         keys = tuple(obj.key for obj in objs)
         cls.batch_calls.append(keys)
         GROUP_EXECUTION_EVENTS.append(("batch_a", keys))
@@ -261,7 +261,7 @@ class GroupBatchB(Furu[str]):
     batch_calls: ClassVar[list[tuple[int, ...]]] = []
 
     @classmethod
-    def _create_batched(cls, objs) -> list[str]:
+    def create_batched(cls, objs) -> list[str]:
         keys = tuple(obj.key for obj in objs)
         cls.batch_calls.append(keys)
         GROUP_EXECUTION_EVENTS.append(("batch_b", keys))
@@ -272,7 +272,7 @@ class LoggedBatchValue(Furu[str]):
     key: int
 
     @classmethod
-    def _create_batched(cls, objs) -> list[str]:
+    def create_batched(cls, objs) -> list[str]:
         keys = ",".join(str(obj.key) for obj in objs)
         objs[0].logger.info("batched detail for %s", keys)
         return [f"logged-batch:{obj.key}" for obj in objs]
@@ -290,7 +290,7 @@ class FailingBatchValue(Furu[str]):
     key: int
 
     @classmethod
-    def _create_batched(cls, objs) -> list[str]:
+    def create_batched(cls, objs) -> list[str]:
         raise RuntimeError(f"failed batch for {[obj.key for obj in objs]}")
 
 
@@ -305,7 +305,7 @@ class PartialBatchValue(Furu[str]):
     key: int
 
     @classmethod
-    def _create_batched(cls, objs) -> list[str]:
+    def create_batched(cls, objs) -> list[str]:
         return [f"partial:{obj.key}" for obj in objs]
 
 
@@ -381,7 +381,7 @@ class BatchDependencyParent(Furu[str]):
     eager: Node
 
     @classmethod
-    def _create_batched(cls, objs) -> list[str]:
+    def create_batched(cls, objs) -> list[str]:
         eager_values = [obj.eager.load_or_create() for obj in objs]
         lazy_value = Node(name="shared-lazy").load_or_create()
         return [f"{value}:{lazy_value}" for value in eager_values]
@@ -657,8 +657,8 @@ def test_hashes_and_data_dir():
         if cls._furu_create_mode == "single":
             namespace["create"] = lambda self: cls.create(self)
         else:
-            namespace["_create_batched"] = classmethod(
-                lambda alias_cls, objs: cls._create_batched(objs)
+            namespace["create_batched"] = classmethod(
+                lambda alias_cls, objs: cls.create_batched(objs)
             )
         alias = type(ret_typ.__qualname__, (cls,), namespace)
         alias.__qualname__ = ret_typ.__qualname__
@@ -1310,7 +1310,7 @@ def test_resolved_create_mode_validation() -> None:
         label: str
 
         @classmethod
-        def _create_batched(cls, objs) -> list[str]:
+        def create_batched(cls, objs) -> list[str]:
             return [f"batch:{obj.label}" for obj in objs]
 
     assert Node._furu_create_mode == "single"
@@ -1328,7 +1328,7 @@ def test_resolved_create_mode_validation() -> None:
     assert InheritedBatch._furu_create_mode == "batched"
 
     with pytest.raises(
-        TypeError, match="must define exactly one of create or _create_batched"
+        TypeError, match="must define exactly one of create or create_batched"
     ):
 
         class InvalidBoth(Furu[int]):
@@ -1336,24 +1336,24 @@ def test_resolved_create_mode_validation() -> None:
                 return 1
 
             @classmethod
-            def _create_batched(cls, objs) -> list[int]:
+            def create_batched(cls, objs) -> list[int]:
                 return [1 for _ in objs]
 
-    with pytest.raises(TypeError, match=r"_create_batched must be a @classmethod"):
+    with pytest.raises(TypeError, match=r"create_batched must be a @classmethod"):
 
         class InvalidBatchMethod(Furu[int]):
-            def _create_batched(self, objs) -> list[int]:
+            def create_batched(self, objs) -> list[int]:
                 return [1 for _ in objs]
 
     with pytest.raises(
-        TypeError, match="must define exactly one of create or _create_batched"
+        TypeError, match="must define exactly one of create or create_batched"
     ):
 
         class InvalidInherited(Node):
             label: str
 
             @classmethod
-            def _create_batched(cls, objs) -> list[str]:
+            def create_batched(cls, objs) -> list[str]:
                 return [obj.label for obj in objs]
 
     with pytest.raises(

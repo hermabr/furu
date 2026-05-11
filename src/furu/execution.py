@@ -37,16 +37,16 @@ def _resolve_create_mode[T](cls: type[Furu[T]]) -> FuruCreateMode:
 
         if "create" in base.__dict__:
             defines_single = True
-        if "_create_batched" in base.__dict__:
-            if not isinstance(base.__dict__["_create_batched"], classmethod):
+        if "create_batched" in base.__dict__:
+            if not isinstance(base.__dict__["create_batched"], classmethod):
                 raise TypeError(
-                    f"{class_label(base)}._create_batched must be a @classmethod"
+                    f"{class_label(base)}.create_batched must be a @classmethod"
                 )
             defines_batched = True
 
     if defines_single and defines_batched:
         raise TypeError(
-            f"{class_label(cls)} must define exactly one of create or _create_batched"
+            f"{class_label(cls)} must define exactly one of create or create_batched"
         )
     if defines_single:
         return "single"
@@ -232,14 +232,18 @@ def _execute_group[T](
         try:
             match group[0]._furu_create_mode:
                 case "batched":
-                    logger.debug("running _create_batched()")
+                    logger.debug("running create_batched()")
                     with dependency_recorder() as recorder:
-                        results = type(group[0])._create_batched(group)
+                        token = _create_call_allowed.set(True)
+                        try:
+                            results = type(group[0]).create_batched(group)
+                        finally:
+                            _create_call_allowed.reset(token)
                     observed = recorder.finalize()
-                    logger.debug("_create_batched() returned")
+                    logger.debug("create_batched() returned")
                     if not isinstance(results, list):
                         raise TypeError(
-                            f"{type(group[0]).__name__}._create_batched() must return a list"
+                            f"{type(group[0]).__name__}.create_batched() must return a list"
                         )
                     # TODO: Track dependency calls per object during batched execution.
                     # This currently assigns dependencies observed anywhere in the batch

@@ -37,7 +37,7 @@ class SlowBatchProbe(Furu[int]):
     key: int
 
     @classmethod
-    def _create_batched(cls, objs) -> list[int]:
+    def create_batched(cls, objs) -> list[int]:
         marker_dir = Path(os.environ["FURU_TEST_MARKER_DIR"])
         marker_dir.mkdir(parents=True, exist_ok=True)
         for obj in objs:

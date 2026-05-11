@@ -60,7 +60,7 @@
 - [ ] migration
 - [ ] executor
     - [x] local load_or_create execution
-    - [x] local batched _create_batched execution
+    - [x] local batched create_batched execution
     - [ ] slurm workers
     - [ ] slurm dag
     - [ ] time traveling executor (maybe i need git worktrees for this?)

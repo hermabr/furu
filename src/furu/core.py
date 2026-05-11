@@ -5,7 +5,7 @@ import shutil
 from abc import ABC
 from contextvars import ContextVar
 from dataclasses import dataclass
-from functools import cached_property
+from functools import cached_property, wraps
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
@@ -80,6 +80,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
         if "create" in cls.__dict__:
             user_create = cls.__dict__["create"]
 
+            @wraps(user_create)
             def guarded_create(self: Furu[T]) -> T:
                 if not _create_call_allowed.get():
                     raise RuntimeError(
@@ -88,10 +89,22 @@ class Furu[T](_FuruDataclassTransform, ABC):
                     )
                 return user_create(self)
 
-            guarded_create.__name__ = user_create.__name__
-            guarded_create.__qualname__ = user_create.__qualname__
-            guarded_create.__doc__ = user_create.__doc__
             setattr(cls, "create", guarded_create)
+        if "create_batched" in cls.__dict__:
+            user_create_batched = cls.__dict__["create_batched"].__func__
+
+            @wraps(user_create_batched)
+            def guarded_create_batched(
+                batched_cls: type[Furu[T]], objs: list[Furu[T]]
+            ) -> list[T]:
+                if not _create_call_allowed.get():
+                    raise RuntimeError(
+                        f"{batched_cls.__name__}.create_batched() cannot be called "
+                        "directly; use load_or_create() instead"
+                    )
+                return user_create_batched(batched_cls, objs)
+
+            setattr(cls, "create_batched", classmethod(guarded_create_batched))
 
     def load_or_create(self, use_lock: bool = True) -> T:
         from furu.execution import load_or_create
@@ -201,7 +214,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
         raise NotImplementedError("TODO")
 
     @classmethod
-    def _create_batched[TFuru: Furu](cls: type[TFuru], objs: list[TFuru]) -> list[T]:
+    def create_batched[TFuru: Furu](cls: type[TFuru], objs: list[TFuru]) -> list[T]:
         raise NotImplementedError("TODO")
 
     @cached_property
