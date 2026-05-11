@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import functools
+import shutil
 import traceback
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, nullcontext
@@ -29,8 +30,30 @@ from furu.utils import class_label, nfs_safe_unique_name
 type HasLock = Callable[[], bool]
 
 
+class BlockedOnDependencies(RuntimeError):
+    def __init__(self, deps: Sequence[Furu[Any]]) -> None:
+        unique_by_id: dict[str, Furu[Any]] = {}
+        for dep in deps:
+            unique_by_id.setdefault(dep.object_id, dep)
+
+        self.deps = tuple(
+            dep
+            for _, dep in sorted(
+                unique_by_id.items(),
+                key=lambda item: item[0],
+            )
+        )
+        self.dependency_ids = tuple(dep.object_id for dep in self.deps)
+        super().__init__(
+            "blocked on missing dependencies: " + ", ".join(self.dependency_ids)
+        )
+
+
 _create_execution_active: ContextVar[bool] = ContextVar(
     "_furu_create_execution_active", default=False
+)
+_executor_job_active: ContextVar[bool] = ContextVar(
+    "_furu_executor_job_active", default=False
 )
 
 
@@ -41,6 +64,15 @@ def _allow_direct_create() -> Iterator[None]:
         yield
     finally:
         _create_execution_active.reset(token)
+
+
+@contextmanager
+def _executor_job_context() -> Iterator[None]:
+    token = _executor_job_active.set(True)
+    try:
+        yield
+    finally:
+        _executor_job_active.reset(token)
 
 
 def _install_create_guards(cls: type[Furu[Any]]) -> None:
@@ -208,6 +240,7 @@ def load_or_create[T](
 
     results_by_dir: dict[Path, T] = {}
     missing: list[Furu[T]] = []
+    is_executor_job = _executor_job_active.get()
 
     for obj in unique:
         if (cached_result_dir := result_dir_for_loading(obj)) is not None:
@@ -216,8 +249,13 @@ def load_or_create[T](
                 T, load_result_bundle(cached_result_dir)
             )
         else:
-            obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
             missing.append(obj)
+
+    if is_executor_job and missing:
+        raise BlockedOnDependencies(cast(Sequence[Furu[Any]], missing))
+
+    for obj in missing:
+        obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
 
     lock_ctx = (
         lock_many([obj._lock_path for obj in missing])
@@ -254,6 +292,38 @@ def load_or_create[T](
         objs[0].logger.info("%s.load_or_create() returned", objs[0]._log_label)
         return outputs[0]
     return outputs
+
+
+def _cleanup_suspended_run(obj: Furu[Any]) -> None:
+    if result_dir_for_loading(obj) is not None:
+        return
+    shutil.rmtree(obj.data_dir, ignore_errors=True)
+
+
+def _run_claimed_artifact[T](obj: Furu[T]) -> T:
+    if (cached_result_dir := result_dir_for_loading(obj)) is not None:
+        obj.logger.info("cache hit for %s at %s", obj._log_label, cached_result_dir)
+        return cast(T, load_result_bundle(cached_result_dir))
+
+    obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        with lock_many([obj._lock_path]) as has_lock:
+            if (cached_result_dir := result_dir_for_loading(obj)) is not None:
+                obj.logger.info(
+                    "cache hit for %s after waiting at %s",
+                    obj._log_label,
+                    cached_result_dir,
+                )
+                return cast(T, load_result_bundle(cached_result_dir))
+
+            results_by_dir: dict[Path, T] = {}
+            with _executor_job_context():
+                _execute_group([obj], has_lock=has_lock, results_by_dir=results_by_dir)
+            return results_by_dir[obj.data_dir]
+    except BlockedOnDependencies:
+        _cleanup_suspended_run(obj)
+        raise
 
 
 def _execute_group[T](
@@ -319,6 +389,9 @@ def _execute_group[T](
                 results_by_dir[obj.data_dir] = _unwrap_save_as(result)
 
             logger.debug("load_or_create complete")
+        except BlockedOnDependencies:
+            logger.info("load_or_create suspended on missing dependencies")
+            raise
         except BaseException as exc:
             logger.exception("load_or_create failed")
             logger.error(
