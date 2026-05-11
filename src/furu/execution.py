@@ -8,6 +8,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import (
     Any,
+    Literal,
     TypeVar,
     assert_never,
     cast,
@@ -44,14 +45,12 @@ def _allow_direct_create() -> Iterator[None]:
 
 
 def _install_guard(
-    cls: type[Furu[Any]],
-    attr: str,
-    *,
-    is_classmethod: bool,
-    suggestion: str,
+    cls: type[Furu[Any]], attr: Literal["create", "create_batched"]
 ) -> None:
     if attr not in cls.__dict__:
         return
+    is_classmethod = attr == "create_batched"
+    suggestion = "furu.load_or_create()" if is_classmethod else ".load_or_create()"
     raw = cls.__dict__[attr]
     func = raw.__func__ if is_classmethod else raw
 
@@ -69,10 +68,8 @@ def _install_guard(
 
 
 def _install_create_guards(cls: type[Furu[Any]]) -> None:
-    _install_guard(cls, "create", is_classmethod=False, suggestion=".load_or_create()")
-    _install_guard(
-        cls, "create_batched", is_classmethod=True, suggestion="furu.load_or_create()"
-    )
+    _install_guard(cls, "create")
+    _install_guard(cls, "create_batched")
 
 
 def _resolve_create_mode[T](cls: type[Furu[T]]) -> FuruCreateMode:
