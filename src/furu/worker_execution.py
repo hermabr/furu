@@ -6,7 +6,6 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
-from furu.dag import NodeKey
 from furu.metadata import ArtifactSpec
 
 if TYPE_CHECKING:
@@ -17,7 +16,6 @@ type DependencyCallKind = Literal["load_or_create", "try_load"]
 
 @dataclass(frozen=True)
 class WorkerExecutionContext:
-    current_node: NodeKey
     lease_id: str
 
 
@@ -34,12 +32,10 @@ def _in_worker_execution_context() -> bool:
 @contextmanager
 def worker_execution_context(
     *,
-    current_node: NodeKey,
     lease_id: str,
 ) -> Iterator[None]:
     token = _worker_execution_context.set(
         WorkerExecutionContext(
-            current_node=current_node,
             lease_id=lease_id,
         )
     )
@@ -54,7 +50,6 @@ class _DependencyNotReady(BaseException):
     dependencies: tuple[Furu[Any], ...]
     call_kind: DependencyCallKind
     artifacts: tuple[ArtifactSpec, ...]
-    keys: tuple[NodeKey, ...]
 
     def __init__(
         self,
@@ -65,7 +60,6 @@ class _DependencyNotReady(BaseException):
         self.dependencies = tuple(dependencies)
         self.call_kind = call_kind
         self.artifacts = tuple(ArtifactSpec.from_furu(dep) for dep in self.dependencies)
-        self.keys = tuple(NodeKey.from_furu(dep) for dep in self.dependencies)
 
         super().__init__(
             f"{call_kind} discovered "
