@@ -18,6 +18,11 @@ from typing import (
 
 from furu.core import Furu, FuruCreateMode
 from furu.dependencies import dependency_recorder, record_dependency_call
+from furu.layout import (
+    _internal_furu_dir_in,
+    _metadata_path_in,
+    _result_dir_in,
+)
 from furu.locking import LockLostError, lock_many
 from furu.logging import _scoped_log_files
 from furu.metadata import RunningMetadata
@@ -110,7 +115,7 @@ def _store_result[T](
             f"lost lock at {obj._lock_path} before writing final result"
         )
 
-    tmp_result_dir = nfs_safe_unique_name(obj._result_dir, name="tmp")
+    tmp_result_dir = nfs_safe_unique_name(_result_dir_in(obj.data_dir), name="tmp")
 
     declared_type: object = Any
     for cls in type(obj).__mro__:
@@ -141,14 +146,15 @@ def _store_result[T](
             f"lost lock at {obj._lock_path} after writing temporary result"
         )
 
-    tmp_result_dir.rename(obj._result_dir)
+    result_dir = _result_dir_in(obj.data_dir)
+    tmp_result_dir.rename(result_dir)
 
     metadata_text = metadata.to_complete(
         observed_dependencies=observed_dependencies
     ).model_dump_json(indent=2)
-    obj._metadata_path.write_text(metadata_text)
+    _metadata_path_in(obj.data_dir).write_text(metadata_text)
 
-    obj.logger.debug("stored result bundle at %s", obj._result_dir)
+    obj.logger.debug("stored result bundle at %s", result_dir)
 
 
 def _format_error_debug_details(exc: BaseException) -> str:
@@ -216,7 +222,7 @@ def load_or_create[T](
                 T, load_result_bundle(cached_result_dir)
             )
         else:
-            obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
+            _internal_furu_dir_in(obj.data_dir).mkdir(parents=True, exist_ok=True)
             missing.append(obj)
 
     lock_ctx = (

@@ -9,10 +9,11 @@ from typing import TYPE_CHECKING, Any, cast
 from pydantic import BaseModel, ConfigDict
 
 from furu.constants import FIELDSMARKER
-from furu.core import (
+from furu.layout import (
     _internal_furu_dir_in,
     _metadata_path_in,
     _result_dir_in,
+    _result_link_path_in,
     _result_manifest_path_in,
 )
 from furu.metadata import CompletedMetadata
@@ -77,13 +78,9 @@ class _ResultLink(BaseModel):
 _Node = tuple[str, str]
 
 
-def _result_link_path_in(data_dir: Path) -> Path:
-    return _internal_furu_dir_in(data_dir) / "result-link.json"
-
-
 def result_dir_for_loading(obj: Furu[Any]) -> Path | None:
-    if obj._result_manifest_path.exists():
-        return obj._result_dir
+    if _result_manifest_path_in(obj.data_dir).exists():
+        return _result_dir_in(obj.data_dir)
     link_path = _result_link_path_in(obj.data_dir)
     if not link_path.exists():
         return None
@@ -98,7 +95,7 @@ def migrate(obj: Furu[Any]) -> bool:
     if _result_link_path_in(obj.data_dir).exists():
         result_dir_for_loading(obj)
         return True
-    if obj._result_manifest_path.exists():
+    if _result_manifest_path_in(obj.data_dir).exists():
         return False
 
     migrations = type(obj).migrations()
@@ -196,7 +193,7 @@ def migrate(obj: Furu[Any]) -> bool:
                 source=source_link.source,
                 migration_path=full_path,
             )
-            obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
+            _internal_furu_dir_in(obj.data_dir).mkdir(parents=True, exist_ok=True)
             _result_link_path_in(obj.data_dir).write_text(
                 result_link.model_dump_json(indent=2), encoding="utf-8"
             )

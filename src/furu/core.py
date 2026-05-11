@@ -9,6 +9,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 from furu.config import config
+from furu.layout import (
+    _internal_furu_dir_in,
+    _result_link_path_in,
+    _result_manifest_path_in,
+)
 from furu.locking import LockLostError, lock_many
 from furu.logging import get_logger
 from furu.result import load_result_bundle
@@ -91,7 +96,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
     ) -> Literal[
         "completed", "missing", "running", "failed"
     ]:  # TODO: add queued/waiting state?
-        if self._result_manifest_path.exists():
+        if _result_manifest_path_in(self.data_dir).exists():
             return "completed"
         if self.is_migrated():
             return "completed"
@@ -127,15 +132,13 @@ class Furu[T](_FuruDataclassTransform, ABC):
         return migrate(self)
 
     def is_migrated(self) -> bool:
-        from furu.migration import _result_link_path_in
-
         return _result_link_path_in(self.data_dir).exists()
 
     def delete(self, mode: Literal["prompt", "force"] = "prompt") -> bool:
         if not self.data_dir.exists():
             return False
 
-        self._internal_furu_dir.mkdir(exist_ok=True, parents=True)
+        _internal_furu_dir_in(self.data_dir).mkdir(exist_ok=True, parents=True)
 
         tombstone_path: Path | None = None
         try:
@@ -160,14 +163,6 @@ class Furu[T](_FuruDataclassTransform, ABC):
         assert tombstone_path is not None
         shutil.rmtree(tombstone_path)
         return True
-
-    @property
-    def _result_dir(self) -> Path:
-        return _result_dir_in(self.data_dir)
-
-    @property
-    def _result_manifest_path(self) -> Path:
-        return _result_manifest_path_in(self.data_dir)
 
     @property
     def logger(self) -> logging.Logger:
@@ -232,20 +227,12 @@ class Furu[T](_FuruDataclassTransform, ABC):
         )
 
     @cached_property
-    def _internal_furu_dir(self) -> Path:
-        return _internal_furu_dir_in(self.data_dir)
-
-    @cached_property
-    def _metadata_path(self) -> Path:
-        return _metadata_path_in(self.data_dir)
-
-    @cached_property
     def _log_path(self) -> Path:
-        return self._internal_furu_dir / "run.log"
+        return _internal_furu_dir_in(self.data_dir) / "run.log"
 
     @cached_property
     def _lock_path(self) -> Path:
-        return self._internal_furu_dir / "compute.lock"
+        return _internal_furu_dir_in(self.data_dir) / "compute.lock"
 
     @cached_property
     def _log_label(self) -> str:
@@ -254,19 +241,3 @@ class Furu[T](_FuruDataclassTransform, ABC):
             + f"{self.artifact_schema_hash[:5]}:"
             + f"{self.artifact_hash[:5]}"
         )
-
-
-def _result_dir_in(data_dir: Path) -> Path:
-    return data_dir / "result"
-
-
-def _result_manifest_path_in(data_dir: Path) -> Path:
-    return _result_dir_in(data_dir) / "manifest.json"
-
-
-def _internal_furu_dir_in(data_dir: Path) -> Path:
-    return data_dir / ".furu"
-
-
-def _metadata_path_in(data_dir: Path) -> Path:
-    return _internal_furu_dir_in(data_dir) / "metadata.json"
