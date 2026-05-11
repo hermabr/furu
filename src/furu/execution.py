@@ -31,7 +31,7 @@ from furu.storage_layout import (
     run_log_path_in,
 )
 from furu.utils import class_label, nfs_safe_unique_name
-from furu.worker_execution import _DependencyNotReady, _in_worker_execution_context
+from furu.worker_execution import _DependencyNotReady, _worker_execution_lease_id
 
 type HasLock = Callable[[], bool]
 
@@ -186,7 +186,7 @@ def load_or_create[T](
     *,
     use_lock: bool = True,
 ) -> T | list[T]:
-    if _in_worker_execution_context():
+    if _worker_execution_lease_id.get() is not None:
         return _load_or_create_worker(obj_or_objs)
     return _load_or_create_local(obj_or_objs, use_lock=use_lock)
 

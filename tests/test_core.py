@@ -33,7 +33,7 @@ from furu.storage_layout import (
 from furu.utils import fully_qualified_name
 from furu.worker_execution import (
     _DependencyNotReady,
-    _in_worker_execution_context,
+    _worker_execution_lease_id,
     worker_execution_context,
 )
 
@@ -1566,12 +1566,12 @@ def test_empty_list_returns_empty_list() -> None:
 
 
 def test_worker_execution_context_is_scoped() -> None:
-    assert not _in_worker_execution_context()
+    assert _worker_execution_lease_id.get() is None
     with worker_execution_context(
         lease_id="lease-1",
     ):
-        assert _in_worker_execution_context()
-    assert not _in_worker_execution_context()
+        assert _worker_execution_lease_id.get() == "lease-1"
+    assert _worker_execution_lease_id.get() is None
 
 
 def test_worker_load_or_create_loads_cached_result_without_recomputing(

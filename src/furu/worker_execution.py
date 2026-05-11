@@ -19,10 +19,6 @@ _worker_execution_lease_id: ContextVar[str | None] = ContextVar(
 )
 
 
-def _in_worker_execution_context() -> bool:
-    return _worker_execution_lease_id.get() is not None
-
-
 @contextmanager
 def worker_execution_context(
     *,
