@@ -22,6 +22,13 @@ from furu.locking import LockLostError, lock_many
 from furu.logging import _scoped_log_files
 from furu.metadata import RunningMetadata
 from furu.migration import result_dir_for_loading
+from furu.paths import (
+    _internal_furu_dir_in,
+    _lock_path_in,
+    _log_path_in,
+    _metadata_path_in,
+    _result_dir_in,
+)
 from furu.result import load_result_bundle, save_result_bundle
 from furu.result.save_as import _unwrap_save_as
 from furu.utils import class_label, nfs_safe_unique_name
@@ -107,10 +114,11 @@ def _store_result[T](
 ) -> None:
     if not has_lock():
         raise LockLostError(
-            f"lost lock at {obj._lock_path} before writing final result"
+            f"lost lock at {_lock_path_in(obj.data_dir)} before writing final result"
         )
 
-    tmp_result_dir = nfs_safe_unique_name(obj._result_dir, name="tmp")
+    result_dir = _result_dir_in(obj.data_dir)
+    tmp_result_dir = nfs_safe_unique_name(result_dir, name="tmp")
 
     declared_type: object = Any
     for cls in type(obj).__mro__:
@@ -138,17 +146,17 @@ def _store_result[T](
 
     if not has_lock():
         raise LockLostError(
-            f"lost lock at {obj._lock_path} after writing temporary result"
+            f"lost lock at {_lock_path_in(obj.data_dir)} after writing temporary result"
         )
 
-    tmp_result_dir.rename(obj._result_dir)
+    tmp_result_dir.rename(result_dir)
 
     metadata_text = metadata.to_complete(
         observed_dependencies=observed_dependencies
     ).model_dump_json(indent=2)
-    obj._metadata_path.write_text(metadata_text)
+    _metadata_path_in(obj.data_dir).write_text(metadata_text)
 
-    obj.logger.debug("stored result bundle at %s", obj._result_dir)
+    obj.logger.debug("stored result bundle at %s", result_dir)
 
 
 def _format_error_debug_details(exc: BaseException) -> str:
@@ -216,11 +224,11 @@ def load_or_create[T](
                 T, load_result_bundle(cached_result_dir)
             )
         else:
-            obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
+            _internal_furu_dir_in(obj.data_dir).mkdir(parents=True, exist_ok=True)
             missing.append(obj)
 
     lock_ctx = (
-        lock_many([obj._lock_path for obj in missing])
+        lock_many([_lock_path_in(obj.data_dir) for obj in missing])
         if use_lock and missing
         else nullcontext()
     )
@@ -262,7 +270,7 @@ def _execute_group[T](
     has_lock: HasLock,
     results_by_dir: dict[Path, T],
 ) -> None:
-    log_paths = tuple(obj._log_path for obj in group)
+    log_paths = tuple(_log_path_in(obj.data_dir) for obj in group)
 
     metadata = [RunningMetadata.write_for(obj) for obj in group]
 

@@ -11,6 +11,7 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from furu import Furu
+from furu.paths import _result_dir_in, _result_manifest_path_in
 from furu.result import (
     LazyResult,
     _child_declared_type,
@@ -73,10 +74,10 @@ def test_json_only_bundle_round_trips() -> None:
     result = obj.load_or_create()
     assert result == expected
 
-    assert obj._result_manifest_path.exists()
-    assert not (obj._result_dir / "artifacts").exists()
+    assert _result_manifest_path_in(obj.data_dir).exists()
+    assert not (_result_dir_in(obj.data_dir) / "artifacts").exists()
 
-    manifest = json.loads(obj._result_manifest_path.read_text())
+    manifest = json.loads(_result_manifest_path_in(obj.data_dir).read_text())
     assert "format" not in manifest
     assert "root" not in manifest
     assert manifest == expected
@@ -126,7 +127,7 @@ def test_scalar_root_manifest_is_just_the_value() -> None:
     obj = ScalarResult()
 
     assert obj.load_or_create() == 5
-    text = obj._result_manifest_path.read_text()
+    text = _result_manifest_path_in(obj.data_dir).read_text()
     assert json.loads(text) == 5
 
 
@@ -148,7 +149,7 @@ def test_path_values_round_trip() -> None:
         "absolute": Path("/tmp/furu/model.bin"),
     }
 
-    manifest = json.loads(obj._result_manifest_path.read_text())
+    manifest = json.loads(_result_manifest_path_in(obj.data_dir).read_text())
     assert manifest == {
         "relative": {
             "$furu": {
@@ -231,7 +232,7 @@ def test_non_finite_floats_round_trip() -> None:
     assert result["pos_inf"] == float("inf")
     assert result["neg_inf"] == float("-inf")
 
-    text = obj._result_manifest_path.read_text()
+    text = _result_manifest_path_in(obj.data_dir).read_text()
     # Python's standard library writes these as JSON extensions.
     assert "NaN" in text
     assert "Infinity" in text
@@ -412,7 +413,9 @@ def test_annotated_codec_selects_external_artifact() -> None:
 
     assert isinstance(loaded, AnnotatedArrayOutput)
     assert np.array_equal(loaded.weights, np.arange(3, dtype=np.int64))
-    assert (obj._result_dir / "artifacts" / "weights" / "data.npy").exists()
+    assert (
+        _result_dir_in(obj.data_dir) / "artifacts" / "weights" / "data.npy"
+    ).exists()
 
 
 def test_generic_furu_base_with_annotated_result_codec_is_rejected() -> None:
@@ -428,7 +431,9 @@ def test_strict_pydantic_annotated_codec_selects_external_artifact() -> None:
 
     assert isinstance(loaded, StrictAnnotatedArrayOutput)
     assert np.array_equal(loaded.weights, np.arange(3, dtype=np.int64))
-    assert (obj._result_dir / "artifacts" / "weights" / "data.npy").exists()
+    assert (
+        _result_dir_in(obj.data_dir) / "artifacts" / "weights" / "data.npy"
+    ).exists()
 
     loaded_again = obj.load_or_create()
     assert isinstance(loaded_again, StrictAnnotatedArrayOutput)
@@ -612,7 +617,7 @@ def test_dataclass_round_trip() -> None:
     assert isinstance(loaded, TrainOutput)
     assert loaded == TrainOutput(metrics={"loss": 0.12}, values=[1, 2, 3])
 
-    manifest = json.loads(obj._result_manifest_path.read_text())
+    manifest = json.loads(_result_manifest_path_in(obj.data_dir).read_text())
     assert manifest["$furu"]["|kind"] == "dataclass"
     assert manifest["$furu"]["|type"] == "test_result.TrainOutput"
     assert manifest["$furu"]["|fields"] == {
@@ -810,13 +815,15 @@ def test_numpy_array_round_trips() -> None:
     obj = NumpyResult()
     loaded = obj.load_or_create()
 
-    assert (obj._result_dir / "artifacts" / "weights" / "data.npy").exists()
+    assert (
+        _result_dir_in(obj.data_dir) / "artifacts" / "weights" / "data.npy"
+    ).exists()
     assert isinstance(loaded, dict)
     weights = cast(Any, loaded["weights"])
     assert weights.dtype == np.float32
     assert np.array_equal(weights, np.arange(10, dtype=np.float32))
 
-    manifest = json.loads(obj._result_manifest_path.read_text())
+    manifest = json.loads(_result_manifest_path_in(obj.data_dir).read_text())
     assert manifest["weights"]["$furu"]["|kind"] == "external"
     assert manifest["weights"]["$furu"]["codec"] == (
         f"{NumpyNpyCodec.__module__}.{NumpyNpyCodec.__qualname__}"
@@ -833,13 +840,15 @@ def test_polars_dataframe_round_trips() -> None:
     obj = PolarsResult()
     loaded = obj.load_or_create()
 
-    assert (obj._result_dir / "artifacts" / "frame" / "data.parquet").exists()
+    assert (
+        _result_dir_in(obj.data_dir) / "artifacts" / "frame" / "data.parquet"
+    ).exists()
     assert isinstance(loaded, dict)
     frame = loaded["frame"]
     assert isinstance(frame, pl.DataFrame)
     assert frame.equals(pl.DataFrame({"x": [1, 2, 3], "y": ["a", "b", "c"]}))
 
-    manifest = json.loads(obj._result_manifest_path.read_text())
+    manifest = json.loads(_result_manifest_path_in(obj.data_dir).read_text())
     assert manifest["frame"]["$furu"]["|kind"] == "external"
     assert manifest["frame"]["$furu"]["codec"] == (
         f"{PolarsParquetCodec.__module__}.{PolarsParquetCodec.__qualname__}"
@@ -869,7 +878,7 @@ def test_nested_numpy_paths_use_list_length_padded_indexes() -> None:
     obj = NestedNumpyResult()
     loaded = obj.load_or_create()
 
-    layers_dir = obj._result_dir / "artifacts" / "layers"
+    layers_dir = _result_dir_in(obj.data_dir) / "artifacts" / "layers"
     for i in range(10):
         weights_file = layers_dir / f"{i:02d}" / "weights" / "data.npy"
         assert weights_file.exists(), f"missing {weights_file}"

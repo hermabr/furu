@@ -8,6 +8,11 @@ import pytest
 import furu
 import furu.execution as execution_module
 from furu import Furu
+from furu.paths import (
+    _lock_path_in,
+    _result_link_path_in,
+    _result_manifest_path_in,
+)
 from furu.utils import JsonValue
 
 
@@ -95,7 +100,7 @@ def test_migrate_with_matching_old_artifact_writes_result_link() -> None:
     assert new.is_migrated() is True
     assert new.status() == "completed"
 
-    link_path = new._internal_furu_dir / "result-link.json"
+    link_path = _result_link_path_in(new.data_dir)
     link = json.loads(link_path.read_text())
     assert link["current"]["fully_qualified_name"] == new._fully_qualified_name
     assert link["current"]["schema_hash"] == new.artifact_schema_hash
@@ -140,7 +145,7 @@ def test_migrate_raises_when_existing_link_source_is_missing() -> None:
     new = _NewRun(dataset="cifar10", lr=0.001)
     assert new.migrate() is True
 
-    old._result_manifest_path.unlink()
+    _result_manifest_path_in(old.data_dir).unlink()
 
     with pytest.raises(RuntimeError, match="points to a missing result"):
         new.migrate()
@@ -152,7 +157,7 @@ def test_migrate_returns_false_when_already_has_direct_result() -> None:
     new = _NewRun(dataset="cifar10", lr=0.001)
     new.load_or_create()
     assert new.migrate() is False
-    assert not (new._internal_furu_dir / "result-link.json").exists()
+    assert not (_result_link_path_in(new.data_dir)).exists()
 
 
 def test_load_or_create_does_not_call_migrate(
@@ -176,7 +181,7 @@ def test_load_or_create_does_not_call_migrate(
     new.load_or_create()
     assert migrate_calls == 0
     assert _COUNTER.calls == 1
-    assert not (new._internal_furu_dir / "result-link.json").exists()
+    assert not (_result_link_path_in(new.data_dir)).exists()
 
 
 def test_status_treats_migrated_object_as_completed() -> None:
@@ -265,7 +270,7 @@ def test_multi_hop_migration_points_directly_at_ultimate_source() -> None:
     final = _FinalRun(dataset="cifar10", lr=0.001)
     assert final.migrate() is True
 
-    link = json.loads((final._internal_furu_dir / "result-link.json").read_text())
+    link = json.loads((_result_link_path_in(final.data_dir)).read_text())
     assert link["source"]["data_dir"] == str(old.data_dir)
     assert link["source"]["fully_qualified_name"] == old._fully_qualified_name
     assert [hop["new_schema_hash"] for hop in link["migration_path"]] == [
@@ -286,7 +291,7 @@ def test_multi_hop_works_without_intermediate_migrate() -> None:
     final = _FinalRun(dataset="cifar10", lr=0.001)
     assert final.migrate() is True
 
-    link = json.loads((final._internal_furu_dir / "result-link.json").read_text())
+    link = json.loads((_result_link_path_in(final.data_dir)).read_text())
     assert link["source"]["data_dir"] == str(old.data_dir)
     assert [hop["new_schema_hash"] for hop in link["migration_path"]] == [
         _MidRun(dataset="cifar10", lr=0.001).artifact_schema_hash,
@@ -307,7 +312,7 @@ def test_load_or_create_post_lock_check_uses_result_link(
 
     @contextmanager
     def fake_lock_many(lock_paths: list[Path], **_: object):
-        assert lock_paths == [new._lock_path]
+        assert lock_paths == [_lock_path_in(new.data_dir)]
         new.migrate()
         yield lambda: True
 

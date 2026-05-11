@@ -18,6 +18,14 @@ from furu import Furu, load_or_create, validate
 from furu.config import config
 from furu.locking import lock_many
 from furu.metadata import ArtifactMetadata
+from furu.paths import (
+    _internal_furu_dir_in,
+    _lock_path_in,
+    _log_path_in,
+    _metadata_path_in,
+    _result_dir_in,
+    _result_manifest_path_in,
+)
 from furu.result import load_result_bundle, save_result_bundle
 from furu.result.codec import _default_result_registry
 from furu.serialize import _from_json, to_json
@@ -320,8 +328,8 @@ class MetadataTimingValue(Furu[str]):
         type(self).create_events.append(
             (
                 self.key,
-                self._metadata_path.exists(),
-                sibling._metadata_path.exists(),
+                _metadata_path_in(self.data_dir).exists(),
+                _metadata_path_in(sibling.data_dir).exists(),
             )
         )
         return f"timed:{self.key}"
@@ -953,7 +961,7 @@ def test_furu_from_artifact_returns_furu_object():
     )
 
     loaded = NodePair.from_artifact(artifact)
-    raw_metadata = json.loads(obj._metadata_path.read_text())
+    raw_metadata = json.loads(_metadata_path_in(obj.data_dir).read_text())
 
     assert loaded == obj
     assert isinstance(loaded, NodePair)
@@ -972,7 +980,7 @@ def test_furu_from_artifact_returns_furu_object():
 
 
 def _dependency_object_ids(obj: Furu[Any]) -> list[str]:
-    metadata = json.loads(obj._metadata_path.read_text())
+    metadata = json.loads(_metadata_path_in(obj.data_dir).read_text())
     return metadata["observed_dependencies"]
 
 
@@ -1032,7 +1040,7 @@ def test_try_load_inside_create_is_recorded_even_on_missing_result() -> None:
 
     assert parent.load_or_create() == "missing"
 
-    metadata = json.loads(parent._metadata_path.read_text())
+    metadata = json.loads(_metadata_path_in(parent.data_dir).read_text())
     assert metadata["observed_dependencies"] == [Node(name="optional").object_id]
 
 
@@ -1096,7 +1104,7 @@ def test_furu_from_artifact_infers_furu_object_type():
 def test_furu_from_artifact_accepts_loaded_metadata_artifact():
     obj = Node(name="x")
     obj.load_or_create()
-    metadata = json.loads(obj._metadata_path.read_text())
+    metadata = json.loads(_metadata_path_in(obj.data_dir).read_text())
     artifact = ArtifactMetadata(**metadata["artifact"])
 
     loaded = Node.from_artifact(artifact)
@@ -1256,9 +1264,9 @@ def test_create_object_and_exists():
 
 def test_status_is_running_while_compute_lock_is_held() -> None:
     node = Node(name="x")
-    node._internal_furu_dir.mkdir(parents=True, exist_ok=True)
+    _internal_furu_dir_in(node.data_dir).mkdir(parents=True, exist_ok=True)
 
-    with lock_many([node._lock_path]):
+    with lock_many([_lock_path_in(node.data_dir)]):
         assert node.status() == "running"
 
 
@@ -1309,8 +1317,10 @@ def test_log_file_is_written_to_internal_dir() -> None:
 
     assert node.load_or_create() == "leaf:x"
 
-    assert node._log_path == node._internal_furu_dir / "run.log"
-    log_text = node._log_path.read_text(encoding="utf-8")
+    assert (
+        _log_path_in(node.data_dir) == _internal_furu_dir_in(node.data_dir) / "run.log"
+    )
+    log_text = _log_path_in(node.data_dir).read_text(encoding="utf-8")
     assert "leaf detail for x" in log_text
 
 
@@ -1320,8 +1330,8 @@ def test_nested_load_or_create_scopes_logs_to_child_file() -> None:
 
     assert parent.load_or_create() == {"child": "leaf:child"}
 
-    parent_log = parent._log_path.read_text(encoding="utf-8")
-    child_log = child._log_path.read_text(encoding="utf-8")
+    parent_log = _log_path_in(parent.data_dir).read_text(encoding="utf-8")
+    child_log = _log_path_in(child.data_dir).read_text(encoding="utf-8")
 
     assert "parent before child" in parent_log
     assert f"calling {child._log_label}.load_or_create()" in parent_log
@@ -1487,7 +1497,7 @@ def test_existing_items_are_skipped_before_locking(
     monkeypatch.setattr(execution_module, "lock_many", fake_lock_many)
 
     assert load_or_create([existing, missing]) == ["single:1", "single:2"]
-    assert lock_calls == [[missing._lock_path]]
+    assert lock_calls == [[_lock_path_in(missing.data_dir)]]
 
 
 def test_pending_items_are_rechecked_after_lock_acquisition(
@@ -1497,9 +1507,11 @@ def test_pending_items_are_rechecked_after_lock_acquisition(
 
     @contextmanager
     def fake_lock_many(lock_paths: list[Path], **_: object):
-        assert lock_paths == [pending._lock_path]
+        assert lock_paths == [_lock_path_in(pending.data_dir)]
         save_result_bundle(
-            "single:5", pending._result_dir, registry=_default_result_registry()
+            "single:5",
+            _result_dir_in(pending.data_dir),
+            registry=_default_result_registry(),
         )
         yield lambda: True
 
@@ -1545,10 +1557,10 @@ def test_batched_compute_writes_result_layout_per_object() -> None:
     assert load_or_create(objs) == ["batch:1", "batch:2"]
 
     for obj, expected in zip(objs, ["batch:1", "batch:2"], strict=True):
-        assert obj._result_manifest_path.exists()
-        assert obj._metadata_path.exists()
-        assert obj._log_path.exists()
-        assert load_result_bundle(obj._result_dir) == expected
+        assert _result_manifest_path_in(obj.data_dir).exists()
+        assert _metadata_path_in(obj.data_dir).exists()
+        assert _log_path_in(obj.data_dir).exists()
+        assert load_result_bundle(_result_dir_in(obj.data_dir)) == expected
 
 
 def test_batched_compute_writes_shared_logs_to_every_participant() -> None:
@@ -1557,10 +1569,13 @@ def test_batched_compute_writes_shared_logs_to_every_participant() -> None:
     assert load_or_create(objs) == ["logged-batch:1", "logged-batch:2"]
 
     for obj in objs:
-        log_text = obj._log_path.read_text(encoding="utf-8")
+        log_text = _log_path_in(obj.data_dir).read_text(encoding="utf-8")
         assert "batched detail for 1,2" in log_text
         for persisted_obj in objs:
-            assert f"stored result bundle at {persisted_obj._result_dir}" in log_text
+            assert (
+                f"stored result bundle at {_result_dir_in(persisted_obj.data_dir)}"
+                in log_text
+            )
 
 
 def test_sequential_group_compute_writes_shared_logs_to_every_participant() -> None:
@@ -1569,11 +1584,14 @@ def test_sequential_group_compute_writes_shared_logs_to_every_participant() -> N
     assert load_or_create(objs) == ["logged-single:1", "logged-single:2"]
 
     for obj in objs:
-        log_text = obj._log_path.read_text(encoding="utf-8")
+        log_text = _log_path_in(obj.data_dir).read_text(encoding="utf-8")
         assert "single detail for 1" in log_text
         assert "single detail for 2" in log_text
         for persisted_obj in objs:
-            assert f"stored result bundle at {persisted_obj._result_dir}" in log_text
+            assert (
+                f"stored result bundle at {_result_dir_in(persisted_obj.data_dir)}"
+                in log_text
+            )
 
 
 def test_batched_failure_writes_error_details_to_run_log_for_every_participant() -> (
@@ -1585,11 +1603,11 @@ def test_batched_failure_writes_error_details_to_run_log_for_every_participant()
         load_or_create(objs)
 
     for obj in objs:
-        log_text = obj._log_path.read_text(encoding="utf-8")
+        log_text = _log_path_in(obj.data_dir).read_text(encoding="utf-8")
         assert "load_or_create failed" in log_text
         assert "failed batch for [1, 2]" in log_text
         assert "=== Debug Details (with locals) ===" in log_text
-        assert list(obj._internal_furu_dir.glob("error-*.log")) == []
+        assert list(_internal_furu_dir_in(obj.data_dir).glob("error-*.log")) == []
 
 
 def test_partial_persistence_leaves_already_written_objects_completed(
@@ -1611,8 +1629,8 @@ def test_partial_persistence_leaves_already_written_objects_completed(
     with pytest.raises(RuntimeError, match="stop after first store"):
         load_or_create(objs)
 
-    assert objs[0]._result_manifest_path.exists()
-    assert not objs[1]._result_manifest_path.exists()
+    assert _result_manifest_path_in(objs[0].data_dir).exists()
+    assert not _result_manifest_path_in(objs[1].data_dir).exists()
 
 
 def test_create_cannot_be_called_directly() -> None:
