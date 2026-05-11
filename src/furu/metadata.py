@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal
 
@@ -23,21 +21,33 @@ class GitData(BaseModel):
     # submodules: dict # TODO: add this
 
 
-@dataclass(frozen=True, kw_only=True)
-class ArtifactSpec:
+class ArtifactSpec(BaseModel):
+    model_config = ConfigDict(
+        strict=True,
+        extra="forbid",
+        frozen=True,
+        serialize_by_alias=True,
+        validate_by_alias=True,
+        validate_by_name=True,
+    )
+
     fully_qualified_name: str
     data: dict[str, JsonValue]
     artifact_hash: str
-    schema: JsonValue
+    schema_: JsonValue = Field(alias="schema")
     schema_hash: str
 
-    @cached_property
+    @property
     def object_id(self) -> str:
         return object_id_from_parts(
             fully_qualified_name=self.fully_qualified_name,
             schema_hash=self.schema_hash,
             artifact_hash=self.artifact_hash,
         )
+
+    @property
+    def schema(self) -> JsonValue:
+        return self.schema_
 
 
 class RunningMetadata(BaseModel):

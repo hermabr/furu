@@ -85,15 +85,18 @@ def find_nested_furu_objects(value: object) -> Iterator[Furu[Any]]:
 def collect_declared_refs(obj: Furu[Any]) -> tuple[Furu[Any], ...]:
     refs_by_id: dict[str, Furu[Any]] = {}
 
+    def ref_identity(ref: Furu[Any]) -> str:
+        return f"{ref.object_id}\0{ref.data_dir.resolve(strict=False)}"
+
     for field in fields(obj):
         for ref in find_nested_furu_objects(getattr(obj, field.name)):
-            refs_by_id.setdefault(ref.object_id, ref)
+            refs_by_id.setdefault(ref_identity(ref), ref)
 
     for base in reversed(type(obj).__mro__):
         for name, value in base.__dict__.items():
             if getattr(value, "__furu_dependency__", False):
                 for ref in find_nested_furu_objects(getattr(obj, name)):
-                    refs_by_id.setdefault(ref.object_id, ref)
+                    refs_by_id.setdefault(ref_identity(ref), ref)
 
     return tuple(
         ref

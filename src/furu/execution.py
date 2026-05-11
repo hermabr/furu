@@ -3,7 +3,7 @@ from __future__ import annotations
 import functools
 import traceback
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager, nullcontext, suppress
 from contextvars import ContextVar
 from pathlib import Path
 from typing import (
@@ -18,6 +18,7 @@ from typing import (
 
 from furu.core import Furu, FuruCreateMode
 from furu.dependencies import dependency_recorder, record_dependency_call
+from furu.graph import NodeKey, node_key_for
 from furu.locking import LockLostError, lock_many
 from furu.logging import _scoped_log_files
 from furu.metadata import RunningMetadata
@@ -32,6 +33,7 @@ from furu.storage_layout import (
     run_log_path_in,
 )
 from furu.utils import class_label, nfs_safe_unique_name
+from furu.worker_context import _DependencyNotReady, _in_worker_execution_context
 
 type HasLock = Callable[[], bool]
 
@@ -186,11 +188,17 @@ def load_or_create[T](
     *,
     use_lock: bool = True,
 ) -> T | list[T]:
+    if _in_worker_execution_context():
+        return _load_or_create_worker(obj_or_objs)
+    return _load_or_create_local(obj_or_objs, use_lock=use_lock)
+
+
+def _normalize_load_input[T](
+    obj_or_objs: Furu[T] | Sequence[Furu[T]],
+) -> tuple[list[Furu[T]], bool]:
     if isinstance(obj_or_objs, Furu):
         objs = [obj_or_objs]
         unwrap = True
-        record_dependency_call(objs[0])
-        objs[0].logger.info("calling %s.load_or_create()", objs[0]._log_label)
     else:
         if not isinstance(obj_or_objs, Sequence):
             raise TypeError(
@@ -200,8 +208,60 @@ def load_or_create[T](
         unwrap = False
         if any(not isinstance(obj, Furu) for obj in objs):
             raise TypeError("load_or_create() expected Furu objects")
-        for obj in objs:
-            record_dependency_call(obj)
+    return objs, unwrap
+
+
+def _record_load_calls(objs: Sequence[Furu[Any]], *, unwrap: bool) -> None:
+    if unwrap:
+        record_dependency_call(objs[0])
+        objs[0].logger.info("calling %s.load_or_create()", objs[0]._log_label)
+        return
+
+    for obj in objs:
+        record_dependency_call(obj)
+
+
+def _load_or_create_worker[T](
+    obj_or_objs: Furu[T] | Sequence[Furu[T]],
+) -> T | list[T]:
+    objs, unwrap = _normalize_load_input(obj_or_objs)
+
+    if not objs:
+        return []
+
+    _record_load_calls(objs, unwrap=unwrap)
+
+    results_by_dir: dict[Path, T] = {}
+    missing_by_key: dict[NodeKey, Furu[T]] = {}
+
+    for obj in objs:
+        if (cached_result_dir := result_dir_for_loading(obj)) is None:
+            missing_by_key.setdefault(node_key_for(obj), obj)
+            continue
+        results_by_dir[obj.data_dir] = cast(T, load_result_bundle(cached_result_dir))
+
+    if missing_by_key:
+        raise _DependencyNotReady(
+            tuple(missing_by_key.values()),
+            call_kind="load_or_create",
+        )
+
+    outputs = [results_by_dir[obj.data_dir] for obj in objs]
+    if unwrap:
+        objs[0].logger.info("%s.load_or_create() returned", objs[0]._log_label)
+        return outputs[0]
+    return outputs
+
+
+def _load_or_create_local[T](
+    obj_or_objs: Furu[T] | Sequence[Furu[T]],
+    *,
+    use_lock: bool = True,
+) -> T | list[T]:
+    objs, unwrap = _normalize_load_input(obj_or_objs)
+
+    if objs:
+        _record_load_calls(objs, unwrap=unwrap)
 
     if not objs:
         return []
@@ -259,6 +319,26 @@ def load_or_create[T](
         objs[0].logger.info("%s.load_or_create() returned", objs[0]._log_label)
         return outputs[0]
     return outputs
+
+
+def execute_artifact_create_logic[T](obj: Furu[T]) -> None:
+    internal_furu_dir_in(obj.data_dir).mkdir(parents=True, exist_ok=True)
+    lock_path = compute_lock_path_in(obj.data_dir)
+    with lock_many([lock_path]) as has_lock:
+        if result_dir_for_loading(obj) is not None:
+            return
+        _execute_group([obj], has_lock=has_lock, results_by_dir={})
+
+
+def cleanup_incomplete_attempt(obj: Furu[Any]) -> None:
+    if result_dir_for_loading(obj) is not None:
+        return
+    with suppress(FileNotFoundError):
+        metadata_path_in(obj.data_dir).unlink()
+
+
+def cleanup_or_mark_failed_attempt(obj: Furu[Any]) -> None:
+    internal_furu_dir_in(obj.data_dir).mkdir(parents=True, exist_ok=True)
 
 
 def _execute_group[T](
@@ -324,6 +404,9 @@ def _execute_group[T](
                 results_by_dir[obj.data_dir] = _unwrap_save_as(result)
 
             logger.debug("load_or_create complete")
+        except _DependencyNotReady:
+            logger.debug("load_or_create blocked on missing worker dependency")
+            raise
         except BaseException as exc:
             logger.exception("load_or_create failed")
             logger.error(
