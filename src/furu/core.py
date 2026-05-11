@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import functools
 import logging
 import shutil
 from abc import ABC
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
@@ -41,6 +45,46 @@ else:
 type FuruCreateMode = Literal["single", "batched"]
 
 
+_create_execution_active: ContextVar[bool] = ContextVar(
+    "_furu_create_execution_active", default=False
+)
+
+
+@contextmanager
+def _allow_direct_create() -> Iterator[None]:
+    token = _create_execution_active.set(True)
+    try:
+        yield
+    finally:
+        _create_execution_active.reset(token)
+
+
+def _guard_create[F: Callable[..., Any]](func: F) -> F:
+    @functools.wraps(func)
+    def wrapper(self: Furu[Any], *args: Any, **kwargs: Any) -> Any:
+        if not _create_execution_active.get():
+            raise RuntimeError(
+                f"{type(self).__name__}.create() must not be called directly; "
+                "call .load_or_create() instead"
+            )
+        return func(self, *args, **kwargs)
+
+    return cast(F, wrapper)
+
+
+def _guard_create_batched[F: Callable[..., Any]](func: F) -> F:
+    @functools.wraps(func)
+    def wrapper(cls: type[Furu[Any]], *args: Any, **kwargs: Any) -> Any:
+        if not _create_execution_active.get():
+            raise RuntimeError(
+                f"{cls.__name__}.create_batched() must not be called directly; "
+                "call furu.load_or_create() instead"
+            )
+        return func(cls, *args, **kwargs)
+
+    return cast(F, wrapper)
+
+
 class Furu[T](_FuruDataclassTransform, ABC):
     _furu_create_mode: ClassVar[FuruCreateMode]
 
@@ -71,6 +115,14 @@ class Furu[T](_FuruDataclassTransform, ABC):
         from furu.execution import _resolve_create_mode
 
         cls._furu_create_mode = _resolve_create_mode(cls)
+
+        if "create" in cls.__dict__:
+            cls.create = _guard_create(cls.__dict__["create"])
+        if "create_batched" in cls.__dict__:
+            raw = cls.__dict__["create_batched"]
+            cls.create_batched = classmethod(  # ty:ignore[invalid-assignment]
+                _guard_create_batched(raw.__func__)
+            )
 
     def load_or_create(self, use_lock: bool = True) -> T:
         from furu.execution import load_or_create
@@ -176,11 +228,11 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def result_registry(self) -> ResultRegistry:
         return _default_result_registry()
 
-    def _create(self) -> T:
+    def create(self) -> T:
         raise NotImplementedError("TODO")
 
     @classmethod
-    def _create_batched[TFuru: Furu](cls: type[TFuru], objs: list[TFuru]) -> list[T]:
+    def create_batched[TFuru: Furu](cls: type[TFuru], objs: list[TFuru]) -> list[T]:
         raise NotImplementedError("TODO")
 
     @cached_property

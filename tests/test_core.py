@@ -29,14 +29,14 @@ type SOME_TYPE = Literal["a", "b"] | int
 class Node(Furu[str]):
     name: str
 
-    def _create(self) -> str:
+    def create(self) -> str:
         return f"Node({self.name})"
 
 
 class WeightedNode(Node):
     weight: float
 
-    def _create(self) -> str:
+    def create(self) -> str:
         return f"WNode({self.name}:{self.weight})"
 
 
@@ -51,7 +51,7 @@ class NodePair(Furu[dict]):
     node2: WeightedNode
     name: str | int
 
-    def _create(self) -> dict:
+    def create(self) -> dict:
         return {
             "node1": self.node1.load_or_create(),
             "node2": self.node2.load_or_create(),
@@ -62,7 +62,7 @@ class NodePair(Furu[dict]):
 class RandomObj(Furu[float]):
     id: int
 
-    def _create(self) -> float:
+    def create(self) -> float:
         # Intentionally non-deterministic to test that load_or_create caches results
         import random
 
@@ -80,7 +80,7 @@ class A[T](Furu):
     w: list[int | float]
     some_obj: SOME_TYPE = "a"
 
-    def _create(self) -> None:
+    def create(self) -> None:
         pass
 
 
@@ -90,7 +90,7 @@ class B[T](Furu):
     t: tuple[int | str, float]
     maybe_val: int | None = None
 
-    def _create(self):
+    def create(self):
         pass
 
     @classmethod
@@ -106,10 +106,10 @@ class B[T](Furu):
             "_hidden": 0,
         }
         if cls._furu_create_mode == "single":
-            namespace["_create"] = lambda self: cls._create(self)
+            namespace["create"] = lambda self: cls.create(self)
         else:
-            namespace["_create_batched"] = classmethod(
-                lambda hidden_cls, objs: cls._create_batched(objs)
+            namespace["create_batched"] = classmethod(
+                lambda hidden_cls, objs: cls.create_batched(objs)
             )
 
         Hidden = types.new_class(
@@ -127,42 +127,42 @@ class B[T](Furu):
 class B_priv(B):
     _h: int
 
-    def _create(self):
-        return super()._create()
+    def create(self):
+        return super().create()
 
 
 class VariadicTuple(Furu[None]):
     t: tuple[int, ...]
 
-    def _create(self):
+    def create(self):
         pass
 
 
 class UsesPath(Furu[str]):
     path: Path
 
-    def _create(self) -> str:
+    def create(self) -> str:
         return str(self.path)
 
 
 class UsesClassValue(Furu[None]):
     node_cls: type[Node]
 
-    def _create(self) -> None:
+    def create(self) -> None:
         return None
 
 
 class UsesFalseLiteral(Furu[None]):
     tie_word_embeddings: Literal[False]
 
-    def _create(self) -> None:
+    def create(self) -> None:
         return None
 
 
 class LoggedLeaf(Furu[str]):
     name: str
 
-    def _create(self) -> str:
+    def create(self) -> str:
         self.logger.info("leaf detail for %s", self.name)
         return f"leaf:{self.name}"
 
@@ -170,7 +170,7 @@ class LoggedLeaf(Furu[str]):
 class LoggedParent(Furu[dict[str, str]]):
     child: LoggedLeaf
 
-    def _create(self) -> dict[str, str]:
+    def create(self) -> dict[str, str]:
         self.logger.info("parent before child")
         child_result = self.child.load_or_create()
         self.logger.info("parent after child")
@@ -185,15 +185,15 @@ class PositiveValue(Furu[int]):
         if self.value <= 0:
             raise ValueError("value must be positive")
 
-    def _create(self) -> int:
+    def create(self) -> int:
         return self.value
 
 
 class InheritedPositiveValue(PositiveValue):
     extra: str
 
-    def _create(self) -> int:
-        return super()._create()
+    def create(self) -> int:
+        return super().create()
 
 
 class ParentAndChildValidated(PositiveValue):
@@ -204,8 +204,8 @@ class ParentAndChildValidated(PositiveValue):
         if self.child_value <= 0:
             raise ValueError("child_value must be positive")
 
-    def _create(self) -> int:
-        return super()._create()
+    def create(self) -> int:
+        return super().create()
 
 
 class PydanticSubclass(BaseModel):
@@ -216,7 +216,7 @@ class PydanticSubclass(BaseModel):
 class PydanticFields(Furu[None]):
     pydantic_obj: PydanticSubclass
 
-    def _create(self) -> None:
+    def create(self) -> None:
         return None
 
 
@@ -227,7 +227,7 @@ class CountedSingleValue(Furu[str]):
     key: int
     create_calls: ClassVar[list[int]] = []
 
-    def _create(self) -> str:
+    def create(self) -> str:
         type(self).create_calls.append(self.key)
         GROUP_EXECUTION_EVENTS.append(("single", (self.key,)))
         return f"single:{self.key}"
@@ -238,7 +238,7 @@ class BatchOnlyValue(Furu[str]):
     batch_calls: ClassVar[list[tuple[int, ...]]] = []
 
     @classmethod
-    def _create_batched(cls, objs) -> list[str]:
+    def create_batched(cls, objs) -> list[str]:
         keys = tuple(obj.key for obj in objs)
         cls.batch_calls.append(keys)
         return [f"batch:{obj.key}" for obj in objs]
@@ -249,7 +249,7 @@ class GroupBatchA(Furu[str]):
     batch_calls: ClassVar[list[tuple[int, ...]]] = []
 
     @classmethod
-    def _create_batched(cls, objs) -> list[str]:
+    def create_batched(cls, objs) -> list[str]:
         keys = tuple(obj.key for obj in objs)
         cls.batch_calls.append(keys)
         GROUP_EXECUTION_EVENTS.append(("batch_a", keys))
@@ -261,7 +261,7 @@ class GroupBatchB(Furu[str]):
     batch_calls: ClassVar[list[tuple[int, ...]]] = []
 
     @classmethod
-    def _create_batched(cls, objs) -> list[str]:
+    def create_batched(cls, objs) -> list[str]:
         keys = tuple(obj.key for obj in objs)
         cls.batch_calls.append(keys)
         GROUP_EXECUTION_EVENTS.append(("batch_b", keys))
@@ -272,7 +272,7 @@ class LoggedBatchValue(Furu[str]):
     key: int
 
     @classmethod
-    def _create_batched(cls, objs) -> list[str]:
+    def create_batched(cls, objs) -> list[str]:
         keys = ",".join(str(obj.key) for obj in objs)
         objs[0].logger.info("batched detail for %s", keys)
         return [f"logged-batch:{obj.key}" for obj in objs]
@@ -281,7 +281,7 @@ class LoggedBatchValue(Furu[str]):
 class LoggedSingleValue(Furu[str]):
     key: int
 
-    def _create(self) -> str:
+    def create(self) -> str:
         self.logger.info("single detail for %s", self.key)
         return f"logged-single:{self.key}"
 
@@ -290,14 +290,14 @@ class FailingBatchValue(Furu[str]):
     key: int
 
     @classmethod
-    def _create_batched(cls, objs) -> list[str]:
+    def create_batched(cls, objs) -> list[str]:
         raise RuntimeError(f"failed batch for {[obj.key for obj in objs]}")
 
 
 class FailingSingleValue(Furu[str]):
     key: int
 
-    def _create(self) -> str:
+    def create(self) -> str:
         raise RuntimeError(f"failed single for {self.key}")
 
 
@@ -305,7 +305,7 @@ class PartialBatchValue(Furu[str]):
     key: int
 
     @classmethod
-    def _create_batched(cls, objs) -> list[str]:
+    def create_batched(cls, objs) -> list[str]:
         return [f"partial:{obj.key}" for obj in objs]
 
 
@@ -314,7 +314,7 @@ class MetadataTimingValue(Furu[str]):
     create_events: ClassVar[list[tuple[int, bool, bool]]] = []
     siblings_by_key: ClassVar[dict[int, "MetadataTimingValue"]] = {}
 
-    def _create(self) -> str:
+    def create(self) -> str:
         sibling_key = 2 if self.key == 1 else 1
         sibling = type(self).siblings_by_key[sibling_key]
         type(self).create_events.append(
@@ -336,7 +336,7 @@ class DependencyBundle:
 class NestedDependencyParent(Furu[str]):
     bundle: DependencyBundle
 
-    def _create(self) -> str:
+    def create(self) -> str:
         return self.bundle.first.load_or_create()
 
 
@@ -347,21 +347,21 @@ class ComputedDependencyParent(Furu[str]):
     def child(self) -> Node:
         return Node(name=self.name)
 
-    def _create(self) -> str:
+    def create(self) -> str:
         return self.child.load_or_create()
 
 
 class LazyDependencyParent(Furu[str]):
     name: str
 
-    def _create(self) -> str:
+    def create(self) -> str:
         return Node(name=self.name).load_or_create()
 
 
 class TryLoadDependencyParent(Furu[str]):
     name: str
 
-    def _create(self) -> str:
+    def create(self) -> str:
         try:
             Node(name=self.name).try_load()
         except NotImplementedError:
@@ -372,7 +372,7 @@ class TryLoadDependencyParent(Furu[str]):
 class FuruBoundaryParent(Furu[str]):
     child: NodePair
 
-    def _create(self) -> str:
+    def create(self) -> str:
         return self.child.node1.load_or_create()
 
 
@@ -381,7 +381,7 @@ class BatchDependencyParent(Furu[str]):
     eager: Node
 
     @classmethod
-    def _create_batched(cls, objs) -> list[str]:
+    def create_batched(cls, objs) -> list[str]:
         eager_values = [obj.eager.load_or_create() for obj in objs]
         lazy_value = Node(name="shared-lazy").load_or_create()
         return [f"{value}:{lazy_value}" for value in eager_values]
@@ -452,7 +452,7 @@ def test_unannotated_public_attribute_raises_clear_error():
         class UnannotatedParameter(Furu[int]):
             a = 1
 
-            def _create(self) -> int:
+            def create(self) -> int:
                 return self.a
 
 
@@ -464,7 +464,7 @@ def test_unannotated_private_attribute_raises_clear_error():
         class UnannotatedPrivate(Furu[int]):
             _a = 1
 
-            def _create(self) -> int:
+            def create(self) -> int:
                 return self._a
 
 
@@ -477,7 +477,7 @@ def test_validate_decorator_supports_call_syntax():
             if self.value <= 0:
                 raise ValueError("value must be positive")
 
-        def _create(self) -> int:
+        def create(self) -> int:
             return self.value
 
     assert CallSyntaxValidated(value=2).value == 2
@@ -499,7 +499,7 @@ def test_post_init_can_transform_values_before_validation():
             if self.value <= 0:
                 raise ValueError("value must be positive")
 
-        def _create(self) -> int:
+        def create(self) -> int:
             assert isinstance(self.value, int)
             return self.value
 
@@ -516,8 +516,8 @@ def test_post_init_and_inherited_validators_both_run():
         def __post_init__(self) -> None:
             object.__setattr__(self, "value", int(self.raw_value))
 
-        def _create(self) -> int:
-            return super()._create()
+        def create(self) -> int:
+            return super().create()
 
     assert PostInitInheritedPositiveValue(value=1, raw_value="2").value == 2
 
@@ -538,14 +538,14 @@ def test_inherited_post_init_and_inherited_validators_both_run():
             if self.value <= 0:
                 raise ValueError("value must be positive")
 
-        def _create(self) -> int:
+        def create(self) -> int:
             return self.value
 
     class ChildPostInitValue(BasePostInitValue):
         label: str
 
-        def _create(self) -> int:
-            return super()._create()
+        def create(self) -> int:
+            return super().create()
 
     assert ChildPostInitValue(raw_value="2", label="ok").value == 2
 
@@ -566,7 +566,7 @@ def test_post_init_chain_runs_before_validators_without_duplicate_calls():
         def _validate_base(self) -> None:
             calls.append("base_validate")
 
-        def _create(self) -> int:
+        def create(self) -> int:
             return self.value
 
     class ChildOrderedValue(BaseOrderedValue):
@@ -579,8 +579,8 @@ def test_post_init_chain_runs_before_validators_without_duplicate_calls():
         def _validate_child(self) -> None:
             calls.append("child_validate")
 
-        def _create(self) -> int:
-            return super()._create()
+        def create(self) -> int:
+            return super().create()
 
     ChildOrderedValue(value=1, label="ok")
 
@@ -655,10 +655,10 @@ def test_hashes_and_data_dir():
     def qualname_alias(cls: type[Furu[object]], *, ret_typ: type) -> type[Furu[object]]:
         namespace: dict[str, object] = {"__module__": cls.__module__}
         if cls._furu_create_mode == "single":
-            namespace["_create"] = lambda self: cls._create(self)
+            namespace["create"] = lambda self: cls.create(self)
         else:
-            namespace["_create_batched"] = classmethod(
-                lambda alias_cls, objs: cls._create_batched(objs)
+            namespace["create_batched"] = classmethod(
+                lambda alias_cls, objs: cls.create_batched(objs)
             )
         alias = type(ret_typ.__qualname__, (cls,), namespace)
         alias.__qualname__ = ret_typ.__qualname__
@@ -1296,14 +1296,14 @@ def test_resolved_create_mode_validation() -> None:
     class ExplicitSingle(Node):
         label: str
 
-        def _create(self) -> str:
+        def create(self) -> str:
             return f"single:{self.label}"
 
     class ExplicitBatch(Furu[str]):
         label: str
 
         @classmethod
-        def _create_batched(cls, objs) -> list[str]:
+        def create_batched(cls, objs) -> list[str]:
             return [f"batch:{obj.label}" for obj in objs]
 
     assert Node._furu_create_mode == "single"
@@ -1321,32 +1321,32 @@ def test_resolved_create_mode_validation() -> None:
     assert InheritedBatch._furu_create_mode == "batched"
 
     with pytest.raises(
-        TypeError, match="must define exactly one of _create or _create_batched"
+        TypeError, match="must define exactly one of create or create_batched"
     ):
 
         class InvalidBoth(Furu[int]):
-            def _create(self) -> int:
+            def create(self) -> int:
                 return 1
 
             @classmethod
-            def _create_batched(cls, objs) -> list[int]:
+            def create_batched(cls, objs) -> list[int]:
                 return [1 for _ in objs]
 
-    with pytest.raises(TypeError, match=r"_create_batched must be a @classmethod"):
+    with pytest.raises(TypeError, match=r"create_batched must be a @classmethod"):
 
         class InvalidBatchMethod(Furu[int]):
-            def _create_batched(self, objs) -> list[int]:
+            def create_batched(self, objs) -> list[int]:
                 return [1 for _ in objs]
 
     with pytest.raises(
-        TypeError, match="must define exactly one of _create or _create_batched"
+        TypeError, match="must define exactly one of create or create_batched"
     ):
 
         class InvalidInherited(Node):
             label: str
 
             @classmethod
-            def _create_batched(cls, objs) -> list[str]:
+            def create_batched(cls, objs) -> list[str]:
                 return [obj.label for obj in objs]
 
     with pytest.raises(
@@ -1557,3 +1557,15 @@ def test_partial_persistence_leaves_already_written_objects_completed(
 
     assert objs[0]._result_manifest_path.exists()
     assert not objs[1]._result_manifest_path.exists()
+
+
+def test_create_cannot_be_called_directly() -> None:
+    obj = Node(name="direct")
+    with pytest.raises(RuntimeError, match="must not be called directly"):
+        obj.create()
+
+
+def test_create_batched_cannot_be_called_directly() -> None:
+    objs = [BatchOnlyValue(key=1), BatchOnlyValue(key=2)]
+    with pytest.raises(RuntimeError, match="must not be called directly"):
+        BatchOnlyValue.create_batched(objs)

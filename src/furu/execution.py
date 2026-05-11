@@ -14,7 +14,7 @@ from typing import (
     overload,
 )
 
-from furu.core import Furu, FuruCreateMode
+from furu.core import Furu, FuruCreateMode, _allow_direct_create
 from furu.dependencies import dependency_recorder, record_dependency_call
 from furu.locking import LockLostError, lock_many
 from furu.logging import _scoped_log_files
@@ -35,18 +35,18 @@ def _resolve_create_mode[T](cls: type[Furu[T]]) -> FuruCreateMode:
         if not issubclass(base, Furu) or base is Furu:
             continue
 
-        if "_create" in base.__dict__:
+        if "create" in base.__dict__:
             defines_single = True
-        if "_create_batched" in base.__dict__:
-            if not isinstance(base.__dict__["_create_batched"], classmethod):
+        if "create_batched" in base.__dict__:
+            if not isinstance(base.__dict__["create_batched"], classmethod):
                 raise TypeError(
-                    f"{class_label(base)}._create_batched must be a @classmethod"
+                    f"{class_label(base)}.create_batched must be a @classmethod"
                 )
             defines_batched = True
 
     if defines_single and defines_batched:
         raise TypeError(
-            f"{class_label(cls)} must define exactly one of _create or _create_batched"
+            f"{class_label(cls)} must define exactly one of create or create_batched"
         )
     if defines_single:
         return "single"
@@ -226,34 +226,34 @@ def _execute_group[T](
 
     metadata = [RunningMetadata.write_for(obj) for obj in group]
 
-    with _scoped_log_files(log_paths):
+    with _scoped_log_files(log_paths), _allow_direct_create():
         logger = group[0].logger
         logger.debug("load_or_create start")
         try:
             match group[0]._furu_create_mode:
                 case "batched":
-                    logger.debug("running _create_batched()")
+                    logger.debug("running create_batched()")
                     with dependency_recorder() as recorder:
-                        results = type(group[0])._create_batched(group)
+                        results = type(group[0]).create_batched(group)
                     observed = recorder.finalize()
-                    logger.debug("_create_batched() returned")
+                    logger.debug("create_batched() returned")
                     if not isinstance(results, list):
                         raise TypeError(
-                            f"{type(group[0]).__name__}._create_batched() must return a list"
+                            f"{type(group[0]).__name__}.create_batched() must return a list"
                         )
                     # TODO: Track dependency calls per object during batched execution.
                     # This currently assigns dependencies observed anywhere in the batch
                     # to every object.
                     observed_dependencies = [observed for _ in group]
                 case "single":
-                    logger.debug("running sequential _create() fallback")
+                    logger.debug("running sequential create() fallback")
                     results = []
                     observed_dependencies = []
                     for obj in group:
                         with dependency_recorder() as recorder:
-                            results.append(obj._create())
+                            results.append(obj.create())
                         observed_dependencies.append(recorder.finalize())
-                    logger.debug("sequential _create() fallback returned")
+                    logger.debug("sequential create() fallback returned")
                 case _:
                     assert_never(group[0]._furu_create_mode)
 

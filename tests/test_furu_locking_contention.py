@@ -25,7 +25,7 @@ WAIT_FOR_LOCK_RESULT_TIMEOUT_S = DEFAULT_ACQUIRE_POLL_INTERVAL_S + PROCESS_TIMEO
 class SlowProbe(Furu[int]):
     key: int
 
-    def _create(self) -> int:
+    def create(self) -> int:
         marker_dir = Path(os.environ["FURU_TEST_MARKER_DIR"])
         marker_dir.mkdir(parents=True, exist_ok=True)
         (marker_dir / f"{os.getpid()}.marker").write_text("created")
@@ -37,7 +37,7 @@ class SlowBatchProbe(Furu[int]):
     key: int
 
     @classmethod
-    def _create_batched(cls, objs) -> list[int]:
+    def create_batched(cls, objs) -> list[int]:
         marker_dir = Path(os.environ["FURU_TEST_MARKER_DIR"])
         marker_dir.mkdir(parents=True, exist_ok=True)
         for obj in objs:
@@ -53,7 +53,7 @@ class MidRunTakeoverProbe(Furu[int]):
     entered_path: str
     release_path: str
 
-    def _create(self) -> int:
+    def create(self) -> int:
         Path(self.entered_path).touch()
         deadline = time.monotonic() + MID_CREATE_TIMEOUT_S
         while not Path(self.release_path).exists():
