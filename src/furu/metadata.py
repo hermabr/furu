@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import cached_property
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -30,6 +30,16 @@ class ArtifactSpec:
     artifact_hash: str
     schema: JsonValue
     schema_hash: str
+
+    @classmethod
+    def from_furu(cls, obj: Furu[Any]) -> ArtifactSpec:
+        return cls(
+            fully_qualified_name=obj._fully_qualified_name,
+            data=obj.artifact_data,
+            artifact_hash=obj.artifact_hash,
+            schema=obj.schema,
+            schema_hash=obj.artifact_schema_hash,
+        )
 
     @cached_property
     def object_id(self) -> str:
@@ -67,10 +77,8 @@ class RunningMetadata(BaseModel):
         cls,
         obj: Furu[T],
     ) -> RunningMetadata:
-        from furu.artifact import artifact_spec_for
-
         metadata = cls(
-            artifact=artifact_spec_for(obj),
+            artifact=ArtifactSpec.from_furu(obj),
             data_path=obj.data_dir,
             started_at=datetime.now(timezone.utc),
         )
