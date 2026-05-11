@@ -13,12 +13,6 @@ from furu.locking import (
     LockLostError,
 )
 from furu.result import load_result_bundle
-from furu.storage_layout import (
-    COMPUTE_LOCK_FILE_NAME,
-    RESULT_DIR_NAME,
-    RESULT_MANIFEST_FILE_NAME,
-    RUN_LOG_FILE_NAME,
-)
 
 TEST_TIMING_SCALE = 4.0 if os.environ.get("GITHUB_ACTIONS") == "true" else 1.0
 OVERLAP_SLEEP_S = 0.01 * TEST_TIMING_SCALE
@@ -160,9 +154,7 @@ def test_two_processes_competing_for_same_furu_object(tmp_path):
     assert errs == []
     assert len(list(marker_dir.glob("*.marker"))) == 1
 
-    manifest_paths = list(
-        data_dir.glob(f"**/{RESULT_DIR_NAME}/{RESULT_MANIFEST_FILE_NAME}")
-    )
+    manifest_paths = list(data_dir.glob("**/result/manifest.json"))
     assert len(manifest_paths) == 1
     bundle_dir = manifest_paths[0].parent
     assert load_result_bundle(bundle_dir) == 42
@@ -209,10 +201,7 @@ def test_overlapping_batch_acquisitions_do_not_deadlock_or_duplicate_compute(tmp
     assert len(list(marker_dir.glob("1-*.marker"))) == 1
     assert len(list(marker_dir.glob("2-*.marker"))) == 1
     assert len(list(marker_dir.glob("3-*.marker"))) == 1
-    assert (
-        len(list(data_dir.glob(f"**/{RESULT_DIR_NAME}/{RESULT_MANIFEST_FILE_NAME}")))
-        == 3
-    )
+    assert len(list(data_dir.glob("**/result/manifest.json"))) == 3
     assert list(data_dir.glob("**/result.pkl")) == []
 
 
@@ -233,7 +222,7 @@ def test_lock_is_taken_over_mid_create(tmp_path):
         assert time.monotonic() < deadline
         time.sleep(POLL_INTERVAL_S)
 
-    lock_paths = list(data_dir.glob(f"**/{COMPUTE_LOCK_FILE_NAME}"))
+    lock_paths = list(data_dir.glob("**/compute.lock"))
     assert len(lock_paths) == 1
 
     steal_q = ctx.Queue()
@@ -251,13 +240,11 @@ def test_lock_is_taken_over_mid_create(tmp_path):
     assert result[0] == "err"
     assert result[2] == LockLostError.__name__
     assert result[3].endswith("before writing final result")
-    assert (
-        list(data_dir.glob(f"**/{RESULT_DIR_NAME}/{RESULT_MANIFEST_FILE_NAME}")) == []
-    )
+    assert list(data_dir.glob("**/result/manifest.json")) == []
     assert list(data_dir.glob("**/result.pkl")) == []
     assert list(data_dir.glob("**/error-*.log")) == []
 
-    run_logs = list(data_dir.glob(f"**/{RUN_LOG_FILE_NAME}"))
+    run_logs = list(data_dir.glob("**/run.log"))
     assert len(run_logs) == 1
     log_text = run_logs[0].read_text(encoding="utf-8")
     assert "load_or_create failed" in log_text
