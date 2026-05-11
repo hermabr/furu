@@ -242,6 +242,20 @@ class CountedSingleValue(Furu[str]):
         return f"single:{self.key}"
 
 
+class ObjectIdStorageRootValue(Furu[str]):
+    key: int
+    storage_root_override: ClassVar[Path] = Path("object-id-root")
+    create_calls: ClassVar[list[int]] = []
+
+    @cached_property
+    def storage_root(self) -> Path:
+        return type(self).storage_root_override
+
+    def create(self) -> str:
+        type(self).create_calls.append(self.key)
+        return f"object-id:{self.key}"
+
+
 class BatchOnlyValue(Furu[str]):
     key: int
     batch_calls: ClassVar[list[tuple[int, ...]]] = []
@@ -425,6 +439,8 @@ class BatchDependencyParent(Furu[str]):
 @pytest.fixture(autouse=True)
 def _reset_batch_trackers() -> None:
     CountedSingleValue.create_calls.clear()
+    ObjectIdStorageRootValue.storage_root_override = Path("object-id-root")
+    ObjectIdStorageRootValue.create_calls.clear()
     BatchOnlyValue.batch_calls.clear()
     GroupBatchA.batch_calls.clear()
     GroupBatchB.batch_calls.clear()
@@ -1480,6 +1496,22 @@ def test_duplicate_cache_identities_compute_once_and_preserve_input_order() -> N
 
     assert load_or_create(objs) == ["single:1", "single:1", "single:2", "single:1"]
     assert CountedSingleValue.create_calls == [1, 2]
+
+
+def test_executor_deduplicates_by_object_id_not_data_dir(tmp_path: Path) -> None:
+    ObjectIdStorageRootValue.storage_root_override = tmp_path / "first"
+    first = ObjectIdStorageRootValue(key=1)
+    first_data_dir = first.data_dir
+
+    ObjectIdStorageRootValue.storage_root_override = tmp_path / "second"
+    second = ObjectIdStorageRootValue(key=1)
+    second_data_dir = second.data_dir
+
+    assert first.object_id == second.object_id
+    assert first_data_dir != second_data_dir
+
+    assert load_or_create([first, second]) == ["object-id:1", "object-id:1"]
+    assert ObjectIdStorageRootValue.create_calls == [1]
 
 
 def test_existing_items_are_skipped_before_locking(
