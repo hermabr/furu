@@ -9,11 +9,12 @@ from typing import TYPE_CHECKING, Any, cast
 from pydantic import BaseModel, ConfigDict
 
 from furu.constants import FIELDSMARKER
-from furu.core import (
-    _internal_furu_dir_in,
-    _metadata_path_in,
-    _result_dir_in,
-    _result_manifest_path_in,
+from furu.storage_layout import (
+    internal_furu_dir_in,
+    metadata_path_in,
+    result_dir_in,
+    result_link_path_in,
+    result_manifest_path_in,
 )
 from furu.metadata import CompletedMetadata
 from furu.utils import JsonFields, fully_qualified_name
@@ -77,28 +78,24 @@ class _ResultLink(BaseModel):
 _Node = tuple[str, str]
 
 
-def _result_link_path_in(data_dir: Path) -> Path:
-    return _internal_furu_dir_in(data_dir) / "result-link.json"
-
-
 def result_dir_for_loading(obj: Furu[Any]) -> Path | None:
-    if obj._result_manifest_path.exists():
-        return obj._result_dir
-    link_path = _result_link_path_in(obj.data_dir)
+    if result_manifest_path_in(obj.data_dir).exists():
+        return result_dir_in(obj.data_dir)
+    link_path = result_link_path_in(obj.data_dir)
     if not link_path.exists():
         return None
     link = _ResultLink.model_validate_json(link_path.read_text(encoding="utf-8"))
-    result_dir = _result_dir_in(link.source.data_dir)
-    if not _result_manifest_path_in(link.source.data_dir).exists():
+    result_dir = result_dir_in(link.source.data_dir)
+    if not result_manifest_path_in(link.source.data_dir).exists():
         raise RuntimeError(f"{link_path} points to a missing result")
     return result_dir
 
 
 def migrate(obj: Furu[Any]) -> bool:
-    if _result_link_path_in(obj.data_dir).exists():
+    if result_link_path_in(obj.data_dir).exists():
         result_dir_for_loading(obj)
         return True
-    if obj._result_manifest_path.exists():
+    if result_manifest_path_in(obj.data_dir).exists():
         return False
 
     migrations = type(obj).migrations()
@@ -143,8 +140,8 @@ def migrate(obj: Furu[Any]) -> bool:
             if not artifact_dir.is_dir():
                 continue
 
-            result_manifest = _result_manifest_path_in(artifact_dir)
-            metadata_path = _metadata_path_in(artifact_dir)
+            result_manifest = result_manifest_path_in(artifact_dir)
+            metadata_path = metadata_path_in(artifact_dir)
             source_link: _ResultLink | None = None
             if result_manifest.exists() and metadata_path.exists():
                 metadata = CompletedMetadata.model_validate_json(
@@ -168,7 +165,7 @@ def migrate(obj: Furu[Any]) -> bool:
                     migration_path=(),
                 )
             else:
-                link_path = _result_link_path_in(artifact_dir)
+                link_path = result_link_path_in(artifact_dir)
                 if link_path.exists():
                     source_link = _ResultLink.model_validate_json(
                         link_path.read_text(encoding="utf-8")
@@ -196,8 +193,8 @@ def migrate(obj: Furu[Any]) -> bool:
                 source=source_link.source,
                 migration_path=full_path,
             )
-            obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
-            _result_link_path_in(obj.data_dir).write_text(
+            internal_furu_dir_in(obj.data_dir).mkdir(parents=True, exist_ok=True)
+            result_link_path_in(obj.data_dir).write_text(
                 result_link.model_dump_json(indent=2), encoding="utf-8"
             )
             return True
