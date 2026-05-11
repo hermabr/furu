@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import functools
 import traceback
+from contextlib import AbstractContextManager
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
@@ -27,11 +28,35 @@ from furu.result.save_as import _unwrap_save_as
 from furu.utils import class_label, nfs_safe_unique_name
 
 type HasLock = Callable[[], bool]
+type CreateContextFactory = Callable[[], AbstractContextManager[None]]
+
+
+class BlockedOnDependencies(Exception):
+    def __init__(self, deps: Sequence[Furu[Any]]) -> None:
+        deps_by_id: dict[str, Furu[Any]] = {}
+        for dep in deps:
+            deps_by_id.setdefault(dep.object_id, dep)
+
+        self.deps = tuple(deps_by_id.values())
+        labels = ", ".join(dep._log_label for dep in self.deps)
+        super().__init__(f"blocked on missing Furu dependencies: {labels}")
 
 
 _create_execution_active: ContextVar[bool] = ContextVar(
     "_furu_create_execution_active", default=False
 )
+_executor_job_active: ContextVar[bool] = ContextVar(
+    "_furu_executor_job_active", default=False
+)
+
+
+@contextmanager
+def executor_job_context() -> Iterator[None]:
+    token = _executor_job_active.set(True)
+    try:
+        yield
+    finally:
+        _executor_job_active.reset(token)
 
 
 @contextmanager
@@ -219,6 +244,9 @@ def load_or_create[T](
             obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
             missing.append(obj)
 
+    if _executor_job_active.get() and missing:
+        raise BlockedOnDependencies(missing)
+
     lock_ctx = (
         lock_many([obj._lock_path for obj in missing])
         if use_lock and missing
@@ -256,11 +284,43 @@ def load_or_create[T](
     return outputs
 
 
+def execute_artifact_direct[T](
+    obj: Furu[T],
+    *,
+    executor_mode: bool = False,
+) -> T:
+    if (cached_result_dir := result_dir_for_loading(obj)) is not None:
+        obj.logger.info("cache hit for %s at %s", obj._log_label, cached_result_dir)
+        return cast(T, load_result_bundle(cached_result_dir))
+
+    obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
+
+    with lock_many([obj._lock_path]) as has_lock:
+        if (cached_result_dir := result_dir_for_loading(obj)) is not None:
+            obj.logger.info(
+                "cache hit for %s after waiting at %s",
+                obj._log_label,
+                cached_result_dir,
+            )
+            return cast(T, load_result_bundle(cached_result_dir))
+
+        results_by_dir: dict[Path, T] = {}
+        create_context_factory = executor_job_context if executor_mode else nullcontext
+        _execute_group(
+            [obj],
+            has_lock=has_lock,
+            results_by_dir=results_by_dir,
+            create_context_factory=create_context_factory,
+        )
+        return results_by_dir[obj.data_dir]
+
+
 def _execute_group[T](
     group: list[Furu[T]],
     *,
     has_lock: HasLock,
     results_by_dir: dict[Path, T],
+    create_context_factory: CreateContextFactory = nullcontext,
 ) -> None:
     log_paths = tuple(obj._log_path for obj in group)
 
@@ -274,7 +334,8 @@ def _execute_group[T](
                 case "batched":
                     logger.debug("running create_batched()")
                     with dependency_recorder() as recorder:
-                        results = type(group[0]).create_batched(group)
+                        with create_context_factory():
+                            results = type(group[0]).create_batched(group)
                     observed = recorder.finalize()
                     logger.debug("create_batched() returned")
                     if not isinstance(results, list):
@@ -291,7 +352,8 @@ def _execute_group[T](
                     observed_dependencies = []
                     for obj in group:
                         with dependency_recorder() as recorder:
-                            results.append(obj.create())
+                            with create_context_factory():
+                                results.append(obj.create())
                         observed_dependencies.append(recorder.finalize())
                     logger.debug("sequential create() fallback returned")
                 case _:
@@ -319,6 +381,9 @@ def _execute_group[T](
                 results_by_dir[obj.data_dir] = _unwrap_save_as(result)
 
             logger.debug("load_or_create complete")
+        except BlockedOnDependencies:
+            logger.info("load_or_create suspended on missing executor dependencies")
+            raise
         except BaseException as exc:
             logger.exception("load_or_create failed")
             logger.error(

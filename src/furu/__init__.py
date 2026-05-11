@@ -2,6 +2,7 @@ from importlib.metadata import version
 
 from furu.core import Furu
 from furu.dependencies import dependency
+from furu.executor import run_local
 from furu.execution import load_or_create
 from furu.logging import get_logger
 from furu.migration import Migration
@@ -21,6 +22,7 @@ __all__ = [
     "ResultRegistry",
     "get_logger",
     "load_or_create",
+    "run_local",
     "save_as",
     "validate",
 ]
