@@ -399,7 +399,7 @@ class TryLoadDependencyParent(Furu[str]):
     def create(self) -> str:
         try:
             Node(name=self.name).try_load()
-        except NotImplementedError:
+        except RuntimeError:
             return "missing"
         return "loaded"
 
@@ -957,7 +957,7 @@ def test_furu_from_artifact_returns_furu_object():
         fully_qualified_name=obj._fully_qualified_name,
         data=obj.artifact_data,
         artifact_hash=obj.artifact_hash,
-        schema=obj.schema,
+        artifact_schema=obj.schema,
         schema_hash=obj.artifact_schema_hash,
     )
 
@@ -973,10 +973,12 @@ def test_furu_from_artifact_returns_furu_object():
         "fully_qualified_name": obj._fully_qualified_name,
         "data": obj.artifact_data,
         "artifact_hash": obj.artifact_hash,
-        "schema": obj.schema,
+        "artifact_schema": obj.schema,
         "schema_hash": obj.artifact_schema_hash,
     }
     assert "hash" not in raw_metadata["artifact"]
+    assert "schema" not in raw_metadata["artifact"]
+    assert "artifact_schema" in raw_metadata["artifact"]
     assert "artifact_schema" not in raw_metadata
     assert "artifact_schema_hash" not in raw_metadata
 
@@ -1093,7 +1095,7 @@ def test_furu_from_artifact_infers_furu_object_type():
         fully_qualified_name=obj._fully_qualified_name,
         data=obj.artifact_data,
         artifact_hash=obj.artifact_hash,
-        schema=obj.schema,
+        artifact_schema=obj.schema,
         schema_hash=obj.artifact_schema_hash,
     )
 
@@ -1123,7 +1125,7 @@ def test_furu_from_artifact_accepts_artifact_spec():
         fully_qualified_name=obj._fully_qualified_name,
         data=obj.artifact_data,
         artifact_hash=obj.artifact_hash,
-        schema=obj.schema,
+        artifact_schema=obj.schema,
         schema_hash=obj.artifact_schema_hash,
     )
 
@@ -1140,7 +1142,7 @@ def test_furu_from_artifact_type_mismatch_names_expected_and_loaded_type():
         fully_qualified_name=obj._fully_qualified_name,
         data=obj.artifact_data,
         artifact_hash=obj.artifact_hash,
-        schema=obj.schema,
+        artifact_schema=obj.schema,
         schema_hash=obj.artifact_schema_hash,
     )
 
@@ -1161,7 +1163,7 @@ def test_furu_from_artifact_rejects_artifact_spec_hash_mismatch():
         fully_qualified_name=obj._fully_qualified_name,
         data=obj.artifact_data,
         artifact_hash=bad_hash,
-        schema=obj.schema,
+        artifact_schema=obj.schema,
         schema_hash=obj.artifact_schema_hash,
     )
 
@@ -1182,7 +1184,7 @@ def test_furu_from_artifact_rejects_artifact_spec_schema_hash_mismatch():
         fully_qualified_name=obj._fully_qualified_name,
         data=obj.artifact_data,
         artifact_hash=obj.artifact_hash,
-        schema=obj.schema,
+        artifact_schema=obj.schema,
         schema_hash=bad_schema_hash,
     )
 

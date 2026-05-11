@@ -186,6 +186,21 @@ def load_or_create[T](
     *,
     use_lock: bool = True,
 ) -> T | list[T]:
+    from furu.worker_execution import (
+        _load_or_create_worker,
+        in_worker_execution_context,
+    )
+
+    if in_worker_execution_context():
+        return _load_or_create_worker(obj_or_objs)
+    return _load_or_create_local(obj_or_objs, use_lock=use_lock)
+
+
+def _load_or_create_local[T](
+    obj_or_objs: Furu[T] | Sequence[Furu[T]],
+    *,
+    use_lock: bool = True,
+) -> T | list[T]:
     if isinstance(obj_or_objs, Furu):
         objs = [obj_or_objs]
         unwrap = True
