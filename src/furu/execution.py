@@ -32,6 +32,21 @@ type HasLock = Callable[[], bool]
 _create_execution_active: ContextVar[bool] = ContextVar(
     "_furu_create_execution_active", default=False
 )
+_executor_job_active: ContextVar[bool] = ContextVar(
+    "_furu_executor_job_active", default=False
+)
+
+
+class BlockedOnDependencies(Exception):
+    def __init__(self, deps: Sequence[Furu[Any]]) -> None:
+        unique: dict[str, Furu[Any]] = {}
+        for dep in deps:
+            unique.setdefault(dep.object_id, dep)
+        self.deps = tuple(unique.values())
+        super().__init__(
+            "blocked on missing Furu dependencies: "
+            + ", ".join(dep._log_label for dep in self.deps)
+        )
 
 
 @contextmanager
@@ -41,6 +56,15 @@ def _allow_direct_create() -> Iterator[None]:
         yield
     finally:
         _create_execution_active.reset(token)
+
+
+@contextmanager
+def executor_job_context() -> Iterator[None]:
+    token = _executor_job_active.set(True)
+    try:
+        yield
+    finally:
+        _executor_job_active.reset(token)
 
 
 def _install_create_guards(cls: type[Furu[Any]]) -> None:
@@ -216,8 +240,13 @@ def load_or_create[T](
                 T, load_result_bundle(cached_result_dir)
             )
         else:
-            obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
             missing.append(obj)
+
+    if missing and _executor_job_active.get():
+        raise BlockedOnDependencies(missing)
+
+    for obj in missing:
+        obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
 
     lock_ctx = (
         lock_many([obj._lock_path for obj in missing])
@@ -319,6 +348,8 @@ def _execute_group[T](
                 results_by_dir[obj.data_dir] = _unwrap_save_as(result)
 
             logger.debug("load_or_create complete")
+        except BlockedOnDependencies:
+            raise
         except BaseException as exc:
             logger.exception("load_or_create failed")
             logger.error(

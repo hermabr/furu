@@ -68,6 +68,8 @@ class Furu[T](_FuruDataclassTransform, ABC):
         validate_cls(cls)
         if "__dataclass_params__" not in cls.__dict__:
             dataclass(frozen=True, kw_only=True)(cls)
+        if "_create" in cls.__dict__ and "create" not in cls.__dict__:
+            setattr(cls, "create", cls.__dict__["_create"])
         from furu.execution import _install_create_guards, _resolve_create_mode
 
         cls._furu_create_mode = _resolve_create_mode(cls)
