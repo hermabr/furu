@@ -360,7 +360,7 @@ class ExplicitCachedDependencyParent(Furu[str]):
         type(self).calls += 1
         return Node(name=f"{self.name}-{type(self).calls}")
 
-    def _create(self) -> str:
+    def create(self) -> str:
         return self.child.load_or_create()
 
 
@@ -373,7 +373,7 @@ class UncachedDependencyParent(Furu[str]):
         type(self).calls += 1
         return Node(name=f"{self.name}-{type(self).calls}")
 
-    def _create(self) -> str:
+    def create(self) -> str:
         return self.child.load_or_create()
 
 
@@ -945,8 +945,9 @@ def test_furu_from_artifact_returns_furu_object():
     )
     obj.load_or_create()
     artifact = ArtifactMetadata(
+        fully_qualified_name=obj._fully_qualified_name,
         data=obj.artifact_data,
-        hash=obj.artifact_hash,
+        artifact_hash=obj.artifact_hash,
         schema=obj.schema,
         schema_hash=obj.artifact_schema_hash,
     )
@@ -959,12 +960,13 @@ def test_furu_from_artifact_returns_furu_object():
     assert loaded.data_dir == obj.data_dir
     assert raw_metadata["kind"] == "completed"
     assert raw_metadata["artifact"] == {
+        "fully_qualified_name": obj._fully_qualified_name,
         "data": obj.artifact_data,
-        "hash": obj.artifact_hash,
+        "artifact_hash": obj.artifact_hash,
         "schema": obj.schema,
         "schema_hash": obj.artifact_schema_hash,
     }
-    assert "artifact_hash" not in raw_metadata
+    assert "hash" not in raw_metadata["artifact"]
     assert "artifact_schema" not in raw_metadata
     assert "artifact_schema_hash" not in raw_metadata
 
@@ -1078,8 +1080,9 @@ def test_furu_from_artifact_infers_furu_object_type():
     )
     obj.load_or_create()
     artifact = ArtifactMetadata(
+        fully_qualified_name=obj._fully_qualified_name,
         data=obj.artifact_data,
-        hash=obj.artifact_hash,
+        artifact_hash=obj.artifact_hash,
         schema=obj.schema,
         schema_hash=obj.artifact_schema_hash,
     )
@@ -1105,8 +1108,9 @@ def test_furu_from_artifact_accepts_loaded_metadata_artifact():
 def test_furu_from_artifact_accepts_artifact_metadata():
     obj = Node(name="x")
     artifact = ArtifactMetadata(
+        fully_qualified_name=obj._fully_qualified_name,
         data=obj.artifact_data,
-        hash=obj.artifact_hash,
+        artifact_hash=obj.artifact_hash,
         schema=obj.schema,
         schema_hash=obj.artifact_schema_hash,
     )
@@ -1120,8 +1124,9 @@ def test_furu_from_artifact_accepts_artifact_metadata():
 def test_furu_from_artifact_type_mismatch_names_expected_and_loaded_type():
     obj = WeightedNode(name="x", weight=1)
     artifact = ArtifactMetadata(
+        fully_qualified_name=obj._fully_qualified_name,
         data=obj.artifact_data,
-        hash=obj.artifact_hash,
+        artifact_hash=obj.artifact_hash,
         schema=obj.schema,
         schema_hash=obj.artifact_schema_hash,
     )
@@ -1140,8 +1145,9 @@ def test_furu_from_artifact_rejects_artifact_metadata_hash_mismatch():
     obj = Node(name="x")
     bad_hash = "wrong-artifact-hash"
     artifact = ArtifactMetadata(
+        fully_qualified_name=obj._fully_qualified_name,
         data=obj.artifact_data,
-        hash=bad_hash,
+        artifact_hash=bad_hash,
         schema=obj.schema,
         schema_hash=obj.artifact_schema_hash,
     )
@@ -1160,8 +1166,9 @@ def test_furu_from_artifact_rejects_artifact_metadata_schema_hash_mismatch():
     obj = Node(name="x")
     bad_schema_hash = "wrong-schema-hash"
     artifact = ArtifactMetadata(
+        fully_qualified_name=obj._fully_qualified_name,
         data=obj.artifact_data,
-        hash=obj.artifact_hash,
+        artifact_hash=obj.artifact_hash,
         schema=obj.schema,
         schema_hash=bad_schema_hash,
     )
