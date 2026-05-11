@@ -7,7 +7,7 @@ class SubtractPositive(Furu[int]):
     a: int
     b: int
 
-    def _create(self) -> int:
+    def create(self) -> int:
         res = self.a - self.b
         assert res > 0
         return res

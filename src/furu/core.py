@@ -68,9 +68,10 @@ class Furu[T](_FuruDataclassTransform, ABC):
         validate_cls(cls)
         if "__dataclass_params__" not in cls.__dict__:
             dataclass(frozen=True, kw_only=True)(cls)
-        from furu.execution import _resolve_create_mode
+        from furu.execution import _install_create_guards, _resolve_create_mode
 
         cls._furu_create_mode = _resolve_create_mode(cls)
+        _install_create_guards(cls)
 
     def load_or_create(self, use_lock: bool = True) -> T:
         from furu.execution import load_or_create
@@ -176,11 +177,11 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def result_registry(self) -> ResultRegistry:
         return _default_result_registry()
 
-    def _create(self) -> T:
+    def create(self) -> T:
         raise NotImplementedError("TODO")
 
     @classmethod
-    def _create_batched[TFuru: Furu](cls: type[TFuru], objs: list[TFuru]) -> list[T]:
+    def create_batched[TFuru: Furu](cls: type[TFuru], objs: list[TFuru]) -> list[T]:
         raise NotImplementedError("TODO")
 
     @cached_property

@@ -53,7 +53,7 @@ _CHILD_DECLARED_TYPE_GLOBALS = {"__builtins__": {"__import__": __import__}}
 class JsonResult(Furu[dict[str, object]]):
     create_calls: ClassVar[list[int]] = []
 
-    def _create(self) -> dict[str, object]:
+    def create(self) -> dict[str, object]:
         type(self).create_calls.append(1)
         return {
             "metrics": {"loss": 0.12, "ok": True},
@@ -118,7 +118,7 @@ def test_try_load_returns_persisted_result() -> None:
 
 
 class ScalarResult(Furu[int]):
-    def _create(self) -> int:
+    def create(self) -> int:
         return 5
 
 
@@ -131,7 +131,7 @@ def test_scalar_root_manifest_is_just_the_value() -> None:
 
 
 class PathResult(Furu[dict[str, Path]]):
-    def _create(self) -> dict[str, Path]:
+    def create(self) -> dict[str, Path]:
         return {
             "relative": Path("outputs/model.bin"),
             "absolute": Path("/tmp/furu/model.bin"),
@@ -215,7 +215,7 @@ def test_tuple_root_value_uses_furu_wrapper(tmp_path: Path) -> None:
 
 
 class NonFiniteFloatResult(Furu[dict[str, float]]):
-    def _create(self) -> dict[str, float]:
+    def create(self) -> dict[str, float]:
         return {
             "nan": float("nan"),
             "pos_inf": float("inf"),
@@ -380,12 +380,12 @@ class AnnotatedArrayOutput:
 
 
 class AnnotatedArrayResult(Furu[AnnotatedArrayOutput]):
-    def _create(self) -> AnnotatedArrayOutput:
+    def create(self) -> AnnotatedArrayOutput:
         return AnnotatedArrayOutput(weights=np.arange(3, dtype=np.int64))
 
 
 class GenericAnnotatedArrayBase[T](Furu[T]):
-    def _create(self) -> T:
+    def create(self) -> T:
         return np.arange(3, dtype=np.int64)
 
 
@@ -402,7 +402,7 @@ class StrictAnnotatedArrayOutput(BaseModel):
 
 
 class StrictAnnotatedArrayResult(Furu[StrictAnnotatedArrayOutput]):
-    def _create(self) -> StrictAnnotatedArrayOutput:
+    def create(self) -> StrictAnnotatedArrayOutput:
         return StrictAnnotatedArrayOutput(weights=np.arange(3, dtype=np.int64))
 
 
@@ -441,7 +441,7 @@ class SaveAsOutput:
 
 
 class SaveAsArrayResult(Furu[SaveAsOutput]):
-    def _create(self) -> SaveAsOutput:
+    def create(self) -> SaveAsOutput:
         return SaveAsOutput(weights=furu.save_as(np.arange(4), codec=NumpyNpyCodec))
 
 
@@ -451,7 +451,7 @@ class LazySaveAsOutput:
 
 
 class LazySaveAsArrayResult(Furu[LazySaveAsOutput]):
-    def _create(self) -> LazySaveAsOutput:
+    def create(self) -> LazySaveAsOutput:
         return LazySaveAsOutput(
             weights=LazyResult(furu.save_as(np.arange(4), codec=NumpyNpyCodec))
         )
@@ -494,7 +494,7 @@ class ConflictingSaveAsOutput:
 
 
 class ConflictingSaveAsResult(Furu[ConflictingSaveAsOutput]):
-    def _create(self) -> ConflictingSaveAsOutput:
+    def create(self) -> ConflictingSaveAsOutput:
         return ConflictingSaveAsOutput(
             weights=furu.save_as(np.arange(4), codec=_OtherCountingCodec)
         )
@@ -510,7 +510,7 @@ class RegistryCountingResult(Furu[_CountingValue]):
     def result_registry(self) -> ResultRegistry:
         return super().result_registry.register(_CountingCodec)
 
-    def _create(self) -> _CountingValue:
+    def create(self) -> _CountingValue:
         return _CountingValue(8)
 
 
@@ -532,7 +532,7 @@ def test_task_result_registry_is_used_for_save_inference_only() -> None:
 
 
 class UnsupportedRootResult(Furu[object]):
-    def _create(self) -> object:
+    def create(self) -> object:
         return _CustomTensor()
 
 
@@ -602,7 +602,7 @@ class TrainOutput:
 
 
 class DataclassResult(Furu[TrainOutput]):
-    def _create(self) -> TrainOutput:
+    def create(self) -> TrainOutput:
         return TrainOutput(metrics={"loss": 0.12}, values=[1, 2, 3])
 
 
@@ -700,7 +700,7 @@ class NestedInner:
 
 
 class NestedDataclassResult(Furu[NestedOuter]):
-    def _create(self) -> NestedOuter:
+    def create(self) -> NestedOuter:
         return NestedOuter(inner=NestedInner(value=42), label="root")
 
 
@@ -719,7 +719,7 @@ class TrainOutputModel(BaseModel):
 
 
 class PydanticResult(Furu[TrainOutputModel]):
-    def _create(self) -> TrainOutputModel:
+    def create(self) -> TrainOutputModel:
         return TrainOutputModel(metrics={"loss": 0.12}, values=[1, 2, 3])
 
 
@@ -786,7 +786,7 @@ class NestedPydanticOuter(BaseModel):
 
 
 class NestedPydanticResult(Furu[NestedPydanticOuter]):
-    def _create(self) -> NestedPydanticOuter:
+    def create(self) -> NestedPydanticOuter:
         return NestedPydanticOuter(
             metrics={"loss": 0.12, "accuracy": 0.94},
             items=[{"v": 1}, {"v": 2}, {"v": 3}],
@@ -802,7 +802,7 @@ def test_pydantic_with_nested_structures_round_trips() -> None:
 
 
 class NumpyResult(Furu[dict[str, object]]):
-    def _create(self) -> dict[str, object]:
+    def create(self) -> dict[str, object]:
         return {"weights": np.arange(10, dtype=np.float32)}
 
 
@@ -825,7 +825,7 @@ def test_numpy_array_round_trips() -> None:
 
 
 class PolarsResult(Furu[dict[str, object]]):
-    def _create(self) -> dict[str, object]:
+    def create(self) -> dict[str, object]:
         return {"frame": pl.DataFrame({"x": [1, 2, 3], "y": ["a", "b", "c"]})}
 
 
@@ -859,7 +859,7 @@ def test_numpy_object_dtype_is_rejected(tmp_path) -> None:
 
 
 class NestedNumpyResult(Furu[dict[str, list[dict[str, object]]]]):
-    def _create(self) -> dict[str, list[dict[str, object]]]:
+    def create(self) -> dict[str, list[dict[str, object]]]:
         return {
             "layers": [{"weights": np.arange(i, dtype=np.float32)} for i in range(10)]
         }
@@ -917,7 +917,7 @@ class MixedOutput:
 
 
 class MixedResult(Furu[dict[str, object]]):
-    def _create(self) -> dict[str, object]:
+    def create(self) -> dict[str, object]:
         return {
             "result": MixedOutput(metrics={"loss": 0.5}, values=[1, 2]),
             "weights": np.arange(4, dtype=np.float32),
