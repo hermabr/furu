@@ -173,6 +173,23 @@ def _format_error_debug_details(exc: BaseException) -> str:
     return "".join(parts)
 
 
+def _normalize_load_or_create_input[T](
+    obj_or_objs: Furu[T] | Sequence[Furu[T]],
+) -> tuple[list[Furu[T]], bool]:
+    if isinstance(obj_or_objs, Furu):
+        return [obj_or_objs], True
+
+    if not isinstance(obj_or_objs, Sequence):
+        raise TypeError(
+            "load_or_create() expected a Furu object or a sequence of Furu objects"
+        )
+
+    objs = list(obj_or_objs)
+    if any(not isinstance(obj, Furu) for obj in objs):
+        raise TypeError("load_or_create() expected Furu objects")
+    return objs, False
+
+
 @overload
 def load_or_create[T](obj: Furu[T], *, use_lock: bool = True) -> T: ...
 
@@ -186,20 +203,57 @@ def load_or_create[T](
     *,
     use_lock: bool = True,
 ) -> T | list[T]:
-    if isinstance(obj_or_objs, Furu):
-        objs = [obj_or_objs]
-        unwrap = True
+    from furu.worker_execution import in_worker_execution_context
+
+    if in_worker_execution_context():
+        return _load_or_create_worker(obj_or_objs)
+
+    return _load_or_create_local(obj_or_objs, use_lock=use_lock)
+
+
+def _load_or_create_worker[T](
+    obj_or_objs: Furu[T] | Sequence[Furu[T]],
+) -> T | list[T]:
+    from furu.worker_execution import _DependencyNotReady
+
+    objs, unwrap = _normalize_load_or_create_input(obj_or_objs)
+
+    if not objs:
+        return []
+
+    results_by_dir: dict[Path, T] = {}
+    missing: list[Furu[T]] = []
+
+    for obj in objs:
+        record_dependency_call(obj)
+
+        if (result_dir := result_dir_for_loading(obj)) is not None:
+            results_by_dir[obj.data_dir] = cast(T, load_result_bundle(result_dir))
+        else:
+            missing.append(obj)
+
+    if missing:
+        raise _DependencyNotReady(
+            dependencies=missing,
+            call_kind="load_or_create",
+        )
+
+    outputs = [results_by_dir[obj.data_dir] for obj in objs]
+
+    return outputs[0] if unwrap else outputs
+
+
+def _load_or_create_local[T](
+    obj_or_objs: Furu[T] | Sequence[Furu[T]],
+    *,
+    use_lock: bool = True,
+) -> T | list[T]:
+    objs, unwrap = _normalize_load_or_create_input(obj_or_objs)
+
+    if unwrap:
         record_dependency_call(objs[0])
         objs[0].logger.info("calling %s.load_or_create()", objs[0]._log_label)
     else:
-        if not isinstance(obj_or_objs, Sequence):
-            raise TypeError(
-                "load_or_create() expected a Furu object or a sequence of Furu objects"
-            )
-        objs = list(obj_or_objs)
-        unwrap = False
-        if any(not isinstance(obj, Furu) for obj in objs):
-            raise TypeError("load_or_create() expected Furu objects")
         for obj in objs:
             record_dependency_call(obj)
 
@@ -325,6 +379,15 @@ def _execute_group[T](
 
             logger.debug("load_or_create complete")
         except BaseException as exc:
+            from furu.worker_execution import _DependencyNotReady
+
+            if isinstance(exc, _DependencyNotReady):
+                logger.debug(
+                    "load_or_create blocked on %d missing dependency/dependencies",
+                    len(exc.dependencies),
+                )
+                raise
+
             logger.exception("load_or_create failed")
             logger.error(
                 "debug traceback with locals:\n%s", _format_error_debug_details(exc)

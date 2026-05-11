@@ -33,8 +33,10 @@ from furu.validate import validate_cls
 if TYPE_CHECKING:
     from typing_extensions import dataclass_transform
 
+    from furu.executors import Executor
     from furu.metadata import ArtifactSpec
     from furu.migration import Migration
+    from furu.submission import Submission
 
     @dataclass_transform(kw_only_default=True, frozen_default=True)
     class _FuruDataclassTransform:
@@ -85,6 +87,11 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
         return load_or_create(self, use_lock=use_lock)
 
+    def submit(self, *, executor: Executor) -> Submission[T]:
+        from furu.submit import submit
+
+        return submit(self, executor=executor)
+
     @classmethod
     def from_artifact[TFuru: Furu](cls: type[TFuru], artifact: ArtifactSpec) -> TFuru:
         from furu.serialize import _from_artifact
@@ -109,10 +116,21 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def try_load(self) -> T:  # TODO: make a better name for this
         from furu.dependencies import record_dependency_call
         from furu.migration import result_dir_for_loading
+        from furu.worker_execution import (
+            _DependencyNotReady,
+            in_worker_execution_context,
+        )
 
         record_dependency_call(self)
         if (result_dir := result_dir_for_loading(self)) is not None:
             return cast(T, load_result_bundle(result_dir))
+
+        if in_worker_execution_context():
+            raise _DependencyNotReady(
+                dependencies=[self],
+                call_kind="try_load",
+            )
+
         raise NotImplementedError(
             "TODO: decide if i should throw or return error value"
         )

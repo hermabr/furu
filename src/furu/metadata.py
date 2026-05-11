@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from functools import cached_property
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -23,21 +21,37 @@ class GitData(BaseModel):
     # submodules: dict # TODO: add this
 
 
-@dataclass(frozen=True, kw_only=True)
-class ArtifactSpec:
+class ArtifactSpec(BaseModel):
+    model_config = ConfigDict(
+        strict=True,
+        extra="forbid",
+        frozen=True,
+        protected_namespaces=(),
+    )
+
     fully_qualified_name: str
     data: dict[str, JsonValue]
     artifact_hash: str
     schema: JsonValue
     schema_hash: str
 
-    @cached_property
+    @property
     def object_id(self) -> str:
         return object_id_from_parts(
             fully_qualified_name=self.fully_qualified_name,
             schema_hash=self.schema_hash,
             artifact_hash=self.artifact_hash,
         )
+
+
+def artifact_spec_for(obj: Furu[Any]) -> ArtifactSpec:
+    return ArtifactSpec(
+        fully_qualified_name=obj._fully_qualified_name,
+        data=obj.artifact_data,
+        artifact_hash=obj.artifact_hash,
+        schema=obj.schema,
+        schema_hash=obj.artifact_schema_hash,
+    )
 
 
 class RunningMetadata(BaseModel):
@@ -68,13 +82,7 @@ class RunningMetadata(BaseModel):
         obj: Furu[T],
     ) -> RunningMetadata:
         metadata = cls(
-            artifact=ArtifactSpec(
-                fully_qualified_name=obj._fully_qualified_name,
-                data=obj.artifact_data,
-                artifact_hash=obj.artifact_hash,
-                schema=obj.schema,
-                schema_hash=obj.artifact_schema_hash,
-            ),
+            artifact=artifact_spec_for(obj),
             data_path=obj.data_dir,
             started_at=datetime.now(timezone.utc),
         )
