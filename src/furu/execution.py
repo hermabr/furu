@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import functools
 import traceback
-from collections.abc import Callable, Sequence
-from contextlib import nullcontext
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager, nullcontext
+from contextvars import ContextVar
 from pathlib import Path
 from typing import (
     Any,
@@ -14,7 +16,7 @@ from typing import (
     overload,
 )
 
-from furu.core import Furu, FuruCreateMode, _allow_direct_create
+from furu.core import Furu, FuruCreateMode
 from furu.dependencies import dependency_recorder, record_dependency_call
 from furu.locking import LockLostError, lock_many
 from furu.logging import _scoped_log_files
@@ -25,6 +27,55 @@ from furu.result.save_as import _unwrap_save_as
 from furu.utils import class_label, nfs_safe_unique_name
 
 type HasLock = Callable[[], bool]
+
+
+_create_execution_active: ContextVar[bool] = ContextVar(
+    "_furu_create_execution_active", default=False
+)
+
+
+@contextmanager
+def _allow_direct_create() -> Iterator[None]:
+    token = _create_execution_active.set(True)
+    try:
+        yield
+    finally:
+        _create_execution_active.reset(token)
+
+
+def _install_create_guards(cls: type[Furu[Any]]) -> None:
+    if "create" in cls.__dict__:
+        func = cls.__dict__["create"]
+
+        @functools.wraps(func)
+        def guarded_create(self: Furu[Any], *args: Any, **kwargs: Any) -> Any:
+            if not _create_execution_active.get():
+                raise RuntimeError(
+                    f"{type(self).__name__}.create() must not be called directly; "
+                    "call .load_or_create() instead"
+                )
+            return func(self, *args, **kwargs)
+
+        cls.create = guarded_create  # ty:ignore[invalid-assignment]
+
+    if "create_batched" in cls.__dict__:
+        raw = cls.__dict__["create_batched"]
+        batched_func = raw.__func__
+
+        @functools.wraps(batched_func)
+        def guarded_create_batched(
+            inner_cls: type[Furu[Any]], *args: Any, **kwargs: Any
+        ) -> Any:
+            if not _create_execution_active.get():
+                raise RuntimeError(
+                    f"{inner_cls.__name__}.create_batched() must not be called "
+                    "directly; call furu.load_or_create() instead"
+                )
+            return batched_func(inner_cls, *args, **kwargs)
+
+        cls.create_batched = classmethod(  # ty:ignore[invalid-assignment]
+            guarded_create_batched
+        )
 
 
 def _resolve_create_mode[T](cls: type[Furu[T]]) -> FuruCreateMode:
