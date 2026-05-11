@@ -15,6 +15,12 @@ from furu.result import load_result_bundle
 from furu.result.codec import ResultRegistry, _default_result_registry
 from furu.schema import schema_type as _schema_type
 from furu.serialize import to_json as _to_json
+from furu.storage_layout import (
+    compute_lock_path_in,
+    internal_furu_dir_in,
+    result_link_path_in,
+    result_manifest_path_in,
+)
 from furu.utils import (
     JsonValue,
     _hash_dict_deterministically,
@@ -90,11 +96,11 @@ class Furu[T](_FuruDataclassTransform, ABC):
     ) -> Literal[
         "completed", "missing", "running", "failed"
     ]:  # TODO: add queued/waiting state?
-        if self._result_manifest_path.exists():
+        if result_manifest_path_in(self.data_dir).exists():
             return "completed"
         if self.is_migrated():
             return "completed"
-        if self._lock_path.exists():
+        if compute_lock_path_in(self.data_dir).exists():
             return "running"
         if self.data_dir.exists():
             return "failed"
@@ -111,11 +117,6 @@ class Furu[T](_FuruDataclassTransform, ABC):
             "TODO: decide if i should throw or return error value"
         )
 
-    def _declared_refs(self) -> tuple[Furu[Any], ...]:
-        from furu.dependencies import collect_declared_refs
-
-        return collect_declared_refs(self)
-
     @classmethod
     def migrations(cls) -> tuple[Migration, ...]:
         return ()
@@ -126,19 +127,17 @@ class Furu[T](_FuruDataclassTransform, ABC):
         return migrate(self)
 
     def is_migrated(self) -> bool:
-        from furu.migration import _result_link_path_in
-
-        return _result_link_path_in(self.data_dir).exists()
+        return result_link_path_in(self.data_dir).exists()
 
     def delete(self, mode: Literal["prompt", "force"] = "prompt") -> bool:
         if not self.data_dir.exists():
             return False
 
-        self._internal_furu_dir.mkdir(exist_ok=True, parents=True)
+        internal_furu_dir_in(self.data_dir).mkdir(exist_ok=True, parents=True)
 
         tombstone_path: Path | None = None
         try:
-            with lock_many([self._lock_path]):
+            with lock_many([compute_lock_path_in(self.data_dir)]):
                 if not self.data_dir.exists():
                     return False
 
@@ -159,14 +158,6 @@ class Furu[T](_FuruDataclassTransform, ABC):
         assert tombstone_path is not None
         shutil.rmtree(tombstone_path)
         return True
-
-    @property
-    def _result_dir(self) -> Path:
-        return _result_dir_in(self.data_dir)
-
-    @property
-    def _result_manifest_path(self) -> Path:
-        return _result_manifest_path_in(self.data_dir)
 
     @property
     def logger(self) -> logging.Logger:
@@ -231,41 +222,9 @@ class Furu[T](_FuruDataclassTransform, ABC):
         )
 
     @cached_property
-    def _internal_furu_dir(self) -> Path:
-        return _internal_furu_dir_in(self.data_dir)
-
-    @cached_property
-    def _metadata_path(self) -> Path:
-        return _metadata_path_in(self.data_dir)
-
-    @cached_property
-    def _log_path(self) -> Path:
-        return self._internal_furu_dir / "run.log"
-
-    @cached_property
-    def _lock_path(self) -> Path:
-        return self._internal_furu_dir / "compute.lock"
-
-    @cached_property
     def _log_label(self) -> str:
         return (
             f"{type(self).__name__}:"
             + f"{self.artifact_schema_hash[:5]}:"
             + f"{self.artifact_hash[:5]}"
         )
-
-
-def _result_dir_in(data_dir: Path) -> Path:
-    return data_dir / "result"
-
-
-def _result_manifest_path_in(data_dir: Path) -> Path:
-    return _result_dir_in(data_dir) / "manifest.json"
-
-
-def _internal_furu_dir_in(data_dir: Path) -> Path:
-    return data_dir / ".furu"
-
-
-def _metadata_path_in(data_dir: Path) -> Path:
-    return _internal_furu_dir_in(data_dir) / "metadata.json"
