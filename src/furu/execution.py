@@ -5,7 +5,6 @@ import traceback
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
-from pathlib import Path
 from typing import (
     Any,
     TypeVar,
@@ -206,18 +205,18 @@ def load_or_create[T](
     if not objs:
         return []
 
-    unique_by_dir: dict[Path, Furu[T]] = {}
+    unique_by_object_id: dict[str, Furu[T]] = {}
     for obj in objs:
-        unique_by_dir.setdefault(obj.data_dir, obj)
-    unique = list(unique_by_dir.values())
+        unique_by_object_id.setdefault(obj.object_id, obj)
+    unique = list(unique_by_object_id.values())
 
-    results_by_dir: dict[Path, T] = {}
+    results_by_object_id: dict[str, T] = {}
     missing: list[Furu[T]] = []
 
     for obj in unique:
         if (cached_result_dir := result_dir_for_loading(obj)) is not None:
             obj.logger.info("cache hit for %s at %s", obj._log_label, cached_result_dir)
-            results_by_dir[obj.data_dir] = cast(
+            results_by_object_id[obj.object_id] = cast(
                 T, load_result_bundle(cached_result_dir)
             )
         else:
@@ -240,7 +239,7 @@ def load_or_create[T](
                     obj._log_label,
                     cached_result_dir,
                 )
-                results_by_dir[obj.data_dir] = cast(
+                results_by_object_id[obj.object_id] = cast(
                     T, load_result_bundle(cached_result_dir)
                 )
             else:
@@ -251,9 +250,13 @@ def load_or_create[T](
             grouped.setdefault(type(obj), []).append(obj)
 
         for group in grouped.values():
-            _execute_group(group, has_lock=has_lock, results_by_dir=results_by_dir)
+            _execute_group(
+                group,
+                has_lock=has_lock,
+                results_by_object_id=results_by_object_id,
+            )
 
-    outputs = [results_by_dir[obj.data_dir] for obj in objs]
+    outputs = [results_by_object_id[obj.object_id] for obj in objs]
 
     if unwrap:
         objs[0].logger.info("%s.load_or_create() returned", objs[0]._log_label)
@@ -265,7 +268,7 @@ def _execute_group[T](
     group: list[Furu[T]],
     *,
     has_lock: HasLock,
-    results_by_dir: dict[Path, T],
+    results_by_object_id: dict[str, T],
 ) -> None:
     log_paths = tuple(run_log_path_in(obj.data_dir) for obj in group)
 
@@ -321,7 +324,7 @@ def _execute_group[T](
                     observed_dependencies=observed_dependency_ids,
                     has_lock=has_lock,
                 )
-                results_by_dir[obj.data_dir] = _unwrap_save_as(result)
+                results_by_object_id[obj.object_id] = _unwrap_save_as(result)
 
             logger.debug("load_or_create complete")
         except BaseException as exc:
