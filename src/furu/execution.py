@@ -8,7 +8,6 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import (
     Any,
-    Literal,
     TypeVar,
     assert_never,
     cast,
@@ -44,32 +43,26 @@ def _allow_direct_create() -> Iterator[None]:
         _create_execution_active.reset(token)
 
 
-def _install_guard(
-    cls: type[Furu[Any]], attr: Literal["create", "create_batched"]
-) -> None:
-    if attr not in cls.__dict__:
-        return
-    is_classmethod = attr == "create_batched"
-    suggestion = "furu.load_or_create()" if is_classmethod else ".load_or_create()"
-    raw = cls.__dict__[attr]
-    func = raw.__func__ if is_classmethod else raw
-
-    @functools.wraps(func)
-    def guarded(first: Any, *args: Any, **kwargs: Any) -> Any:
-        if not _create_execution_active.get():
-            owner = first.__name__ if is_classmethod else type(first).__name__
-            raise RuntimeError(
-                f"{owner}.{attr}() must not be called directly; "
-                f"call {suggestion} instead"
-            )
-        return func(first, *args, **kwargs)
-
-    setattr(cls, attr, classmethod(guarded) if is_classmethod else guarded)
-
-
 def _install_create_guards(cls: type[Furu[Any]]) -> None:
     for attr in ("create", "create_batched"):
-        _install_guard(cls, attr)
+        if attr not in cls.__dict__:
+            continue
+        is_classmethod = attr == "create_batched"
+        suggestion = "furu.load_or_create()" if is_classmethod else ".load_or_create()"
+        raw = cls.__dict__[attr]
+        func = raw.__func__ if is_classmethod else raw
+
+        @functools.wraps(func)
+        def guarded(first: Any, *args: Any, **kwargs: Any) -> Any:
+            if not _create_execution_active.get():
+                owner = first.__name__ if is_classmethod else type(first).__name__
+                raise RuntimeError(
+                    f"{owner}.{attr}() must not be called directly; "
+                    f"call {suggestion} instead"
+                )
+            return func(first, *args, **kwargs)
+
+        setattr(cls, attr, classmethod(guarded) if is_classmethod else guarded)
 
 
 def _resolve_create_mode[T](cls: type[Furu[T]]) -> FuruCreateMode:
