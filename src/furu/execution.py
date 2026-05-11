@@ -34,6 +34,22 @@ _create_execution_active: ContextVar[bool] = ContextVar(
 )
 
 
+_executor_active: ContextVar[bool] = ContextVar("_furu_executor_active", default=False)
+
+
+class BlockedOnDependencies(BaseException):
+    """Control-flow signal raised inside executor mode when a load_or_create()
+    call encounters missing artifacts. Carries the missing Furu objects so the
+    scheduler can register them and retry the current job later."""
+
+    def __init__(self, deps: tuple[Furu[Any], ...]) -> None:
+        self.deps = deps
+        super().__init__(
+            f"blocked on {len(deps)} dependencies: "
+            + ", ".join(dep._log_label for dep in deps)
+        )
+
+
 @contextmanager
 def _allow_direct_create() -> Iterator[None]:
     token = _create_execution_active.set(True)
@@ -41,6 +57,15 @@ def _allow_direct_create() -> Iterator[None]:
         yield
     finally:
         _create_execution_active.reset(token)
+
+
+@contextmanager
+def _executor_mode() -> Iterator[None]:
+    token = _executor_active.set(True)
+    try:
+        yield
+    finally:
+        _executor_active.reset(token)
 
 
 def _install_create_guards(cls: type[Furu[Any]]) -> None:
@@ -216,8 +241,18 @@ def load_or_create[T](
                 T, load_result_bundle(cached_result_dir)
             )
         else:
-            obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
             missing.append(obj)
+
+    if _executor_active.get():
+        if missing:
+            raise BlockedOnDependencies(tuple(missing))
+        outputs = [results_by_dir[obj.data_dir] for obj in objs]
+        if unwrap:
+            return outputs[0]
+        return outputs
+
+    for obj in missing:
+        obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
 
     lock_ctx = (
         lock_many([obj._lock_path for obj in missing])
@@ -254,6 +289,72 @@ def load_or_create[T](
         objs[0].logger.info("%s.load_or_create() returned", objs[0]._log_label)
         return outputs[0]
     return outputs
+
+
+def _run_single_artifact(obj: Furu[Any]) -> None:
+    """Execute a single claimed artifact under executor mode.
+
+    Used by the in-memory worker to run a job directly without going through
+    ``load_or_create``'s recursive cache-miss compute path. The artifact's
+    ``create()`` method is called inside :func:`_executor_mode` so that any
+    nested ``load_or_create`` calls raise :class:`BlockedOnDependencies` for
+    missing dependencies instead of recursively computing them.
+
+    If the artifact is already cached on disk, the call returns immediately.
+    Propagates :class:`BlockedOnDependencies` so the worker can re-queue.
+    """
+    if result_dir_for_loading(obj) is not None:
+        return
+
+    obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
+
+    with lock_many([obj._lock_path]) as has_lock:
+        if result_dir_for_loading(obj) is not None:
+            return
+
+        metadata = RunningMetadata.write_for(obj)
+
+        with (
+            _scoped_log_files((obj._log_path,)),
+            _allow_direct_create(),
+            _executor_mode(),
+        ):
+            logger = obj.logger
+            logger.debug("worker running %s", obj._log_label)
+            try:
+                with dependency_recorder() as recorder:
+                    match obj._furu_create_mode:
+                        case "batched":
+                            results = type(obj).create_batched([obj])
+                            if not isinstance(results, list) or len(results) != 1:
+                                raise TypeError(
+                                    f"{type(obj).__name__}.create_batched() must "
+                                    "return a list of length 1"
+                                )
+                            result = results[0]
+                        case "single":
+                            result = obj.create()
+                        case _:
+                            assert_never(obj._furu_create_mode)
+                observed = recorder.finalize()
+            except BlockedOnDependencies:
+                logger.debug("suspending %s on missing dependencies", obj._log_label)
+                raise
+            except BaseException as exc:
+                logger.exception("create failed for %s", obj._log_label)
+                logger.error(
+                    "debug traceback with locals:\n%s",
+                    _format_error_debug_details(exc),
+                )
+                raise
+
+            _store_result(
+                obj,
+                result,
+                metadata=metadata,
+                observed_dependencies=observed,
+                has_lock=has_lock,
+            )
 
 
 def _execute_group[T](

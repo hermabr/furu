@@ -360,7 +360,7 @@ class ExplicitCachedDependencyParent(Furu[str]):
         type(self).calls += 1
         return Node(name=f"{self.name}-{type(self).calls}")
 
-    def _create(self) -> str:
+    def create(self) -> str:
         return self.child.load_or_create()
 
 
@@ -373,7 +373,7 @@ class UncachedDependencyParent(Furu[str]):
         type(self).calls += 1
         return Node(name=f"{self.name}-{type(self).calls}")
 
-    def _create(self) -> str:
+    def create(self) -> str:
         return self.child.load_or_create()
 
 
