@@ -34,6 +34,11 @@ _create_execution_active: ContextVar[bool] = ContextVar(
 )
 
 
+_executor_job_active: ContextVar[bool] = ContextVar(
+    "_furu_executor_job_active", default=False
+)
+
+
 @contextmanager
 def _allow_direct_create() -> Iterator[None]:
     token = _create_execution_active.set(True)
@@ -41,6 +46,31 @@ def _allow_direct_create() -> Iterator[None]:
         yield
     finally:
         _create_execution_active.reset(token)
+
+
+@contextmanager
+def _enter_executor_job() -> Iterator[None]:
+    token = _executor_job_active.set(True)
+    try:
+        yield
+    finally:
+        _executor_job_active.reset(token)
+
+
+class BlockedOnDependencies(Exception):
+    """Raised by ``load_or_create()`` inside an executor job context when one or
+    more requested artifacts are missing.
+
+    The local executor catches this, schedules the missing dependencies'
+    subgraphs, registers them as dependencies of the suspended job, and re-queues
+    the job. Treat this as a scheduling event, not a failure.
+    """
+
+    def __init__(self, deps: Sequence[Furu[Any]]) -> None:
+        self.deps: tuple[Furu[Any], ...] = tuple(deps)
+        super().__init__(
+            "blocked on dependencies: " + ", ".join(dep.object_id for dep in self.deps)
+        )
 
 
 def _install_create_guards(cls: type[Furu[Any]]) -> None:
@@ -216,8 +246,13 @@ def load_or_create[T](
                 T, load_result_bundle(cached_result_dir)
             )
         else:
-            obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
             missing.append(obj)
+
+    if missing and _executor_job_active.get():
+        raise BlockedOnDependencies(missing)
+
+    for obj in missing:
+        obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
 
     lock_ctx = (
         lock_many([obj._lock_path for obj in missing])
@@ -325,3 +360,70 @@ def _execute_group[T](
                 "debug traceback with locals:\n%s", _format_error_debug_details(exc)
             )
             raise
+
+
+def _run_artifact_in_worker[T](obj: Furu[T]) -> None:
+    """Run a single artifact's ``create()`` under its own lock and persist the
+    result, bypassing ``load_or_create``'s public contract.
+
+    Used by the local executor worker: while ``create()`` runs, any internal
+    ``load_or_create()`` calls raise :class:`BlockedOnDependencies` instead of
+    executing missing dependencies inline. The caller is responsible for
+    treating that exception as a scheduling event and re-running this function
+    once dependencies have completed.
+    """
+    if result_dir_for_loading(obj) is not None:
+        return
+
+    obj._internal_furu_dir.mkdir(parents=True, exist_ok=True)
+
+    with lock_many([obj._lock_path]) as has_lock:
+        if result_dir_for_loading(obj) is not None:
+            return
+
+        metadata = RunningMetadata.write_for(obj)
+
+        with (
+            _scoped_log_files((obj._log_path,)),
+            _allow_direct_create(),
+            _enter_executor_job(),
+        ):
+            logger = obj.logger
+            logger.debug("executor: starting %s", obj._log_label)
+            try:
+                with dependency_recorder() as recorder:
+                    match obj._furu_create_mode:
+                        case "single":
+                            result = obj.create()
+                        case "batched":
+                            batched_results = type(obj).create_batched([obj])
+                            if (
+                                not isinstance(batched_results, list)
+                                or len(batched_results) != 1
+                            ):
+                                raise TypeError(
+                                    f"{type(obj).__name__}.create_batched() must return "
+                                    "a list of length 1 when invoked by the executor"
+                                )
+                            result = batched_results[0]
+                        case _:
+                            assert_never(obj._furu_create_mode)
+                observed_dependencies = recorder.finalize()
+                _store_result(
+                    obj,
+                    result,
+                    metadata=metadata,
+                    observed_dependencies=observed_dependencies,
+                    has_lock=has_lock,
+                )
+                logger.debug("executor: completed %s", obj._log_label)
+            except BlockedOnDependencies:
+                logger.debug("executor: %s blocked on dependencies", obj._log_label)
+                raise
+            except BaseException as exc:
+                logger.exception("executor: %s failed", obj._log_label)
+                logger.error(
+                    "debug traceback with locals:\n%s",
+                    _format_error_debug_details(exc),
+                )
+                raise
