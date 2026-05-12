@@ -12,10 +12,10 @@ if TYPE_CHECKING:
 
 
 @dataclass(eq=False)
-class DagNode[TFuru: Furu]:
-    obj: TFuru
-    dependencies: list[DagNode[TFuru]] = field(default_factory=list)
-    dependents: list[DagNode[TFuru]] = field(default_factory=list)
+class DagNode:
+    obj: Furu
+    dependencies: list[DagNode] = field(default_factory=list)
+    dependents: list[DagNode] = field(default_factory=list)
 
 
 def _add_to_dag(manager: Manager, objs: Sequence[Furu]) -> None:
@@ -25,7 +25,7 @@ def _add_to_dag(manager: Manager, objs: Sequence[Furu]) -> None:
         raise TypeError("expected Furu objects")
 
     refs_by_id: dict[str, tuple[Furu, ...]] = {}
-    newly_added: list[DagNode[Furu]] = []
+    newly_added: list[DagNode] = []
     # TODO: detect cycles and raise a clear error
     pending = list(objs)
 

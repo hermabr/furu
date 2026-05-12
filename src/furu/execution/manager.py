@@ -22,13 +22,13 @@ from furu.worker.protocol import (
 @dataclass(frozen=True, slots=True)
 class RunningJob:
     lease_id: str
-    node: DagNode[Furu]
+    node: DagNode
 
 
 @dataclass(frozen=True, slots=True)
 class FailedJob:
     lease_id: str
-    node: DagNode[Furu]
+    node: DagNode
     error: str
 
 
@@ -37,11 +37,11 @@ class Manager:
         if not objs:
             raise ValueError("Manager requires at least one Furu object")
 
-        self.nodes_by_id: dict[str, DagNode[Furu]] = {}
-        self.ready: dict[str, DagNode[Furu]] = {}
-        self.blocked: dict[str, DagNode[Furu]] = {}
+        self.nodes_by_id: dict[str, DagNode] = {}
+        self.ready: dict[str, DagNode] = {}
+        self.blocked: dict[str, DagNode] = {}
         self.running: dict[str, RunningJob] = {}
-        self.completed: dict[str, DagNode[Furu]] = {}
+        self.completed: dict[str, DagNode] = {}
         self.failed: dict[str, FailedJob] = {}
         self.lock = threading.Lock()
         self.done = threading.Event()
@@ -157,7 +157,7 @@ class Manager:
         except KeyError as exc:
             raise KeyError(f"unknown running lease_id: {lease_id}") from exc
 
-    def _release_dependents_locked(self, node: DagNode[Furu]) -> None:
+    def _release_dependents_locked(self, node: DagNode) -> None:
         for dependent in tuple(node.dependents):
             if node in dependent.dependencies:
                 dependent.dependencies.remove(node)
