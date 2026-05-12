@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 from furu.dependencies import collect_declared_refs
-from furu.worker_execution import _DependencyNotReady, worker_execution_context
 
 if TYPE_CHECKING:
     from furu.core import Furu
@@ -64,37 +63,3 @@ def make_execution_dag[TFuru: Furu](
     nodes_by_id: dict[str, FuruDagNode[TFuru]] = {}
     zero_dependency_nodes = _extend_execution_dag(objs, nodes_by_id)
     return zero_dependency_nodes, nodes_by_id
-
-
-def submit(objs: Sequence[Furu[Any]]) -> None:
-    from furu.execution import _load_or_create_local
-
-    zero_dependency_nodes, nodes_by_id = make_execution_dag(objs)
-
-    while zero_dependency_nodes:
-        node = zero_dependency_nodes.pop(0)
-        try:
-            with worker_execution_context(lease_id=node.obj.object_id):
-                _load_or_create_local(node.obj)
-        except _DependencyNotReady as exc:
-            new_objs = [
-                dep for dep in exc.dependencies if dep.object_id not in nodes_by_id
-            ]
-            zero_dependency_nodes.extend(_extend_execution_dag(new_objs, nodes_by_id))
-            for lazy_dep in exc.dependencies:
-                dep_node = nodes_by_id[lazy_dep.object_id]
-                if dep_node not in node.dependencies:
-                    node.dependencies.append(dep_node)
-                    dep_node.dependents.append(node)
-        else:
-            del nodes_by_id[node.obj.object_id]
-            for dependent in list(node.dependents):
-                dependent.dependencies.remove(node)
-                if not dependent.dependencies:
-                    zero_dependency_nodes.append(dependent)
-
-    if nodes_by_id:
-        unresolved = ", ".join(sorted(nodes_by_id))
-        raise RuntimeError(
-            f"submit() could not make progress; unresolved dependencies: {unresolved}"
-        )

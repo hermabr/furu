@@ -4,8 +4,8 @@ from typing import ClassVar
 import pytest
 
 import furu
-from furu import Furu
-from furu.dag import FuruDagNode, make_execution_dag, submit
+from furu import Furu, submit
+from furu.dag import FuruDagNode, make_execution_dag
 
 
 class Leaf(Furu[str]):
