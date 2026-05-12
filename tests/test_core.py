@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict
 
 import furu
 import furu.execution as execution_module
-from furu import Furu, load_or_create, make_dag, validate
+from furu import Furu, FuruDagNode, load_or_create, make_dag, validate
 from furu.config import config
 from furu.dependencies import collect_declared_refs
 from furu.locking import lock_many
@@ -1018,6 +1018,30 @@ def _dependency_object_ids(obj: Furu[Any]) -> list[str]:
     return metadata["observed_dependencies"]
 
 
+def _dag_objects(nodes: tuple[FuruDagNode[Furu], ...]) -> tuple[Furu[Any], ...]:
+    return tuple(node.obj for node in nodes)
+
+
+def _dag_object_ids(nodes: tuple[FuruDagNode[Furu], ...]) -> tuple[str, ...]:
+    return tuple(node.obj.object_id for node in nodes)
+
+
+def _dag_dependencies_by_id(
+    nodes: tuple[FuruDagNode[Furu], ...],
+) -> dict[str, tuple[str, ...]]:
+    return {node.obj.object_id: node.dependencies for node in nodes}
+
+
+def _dag_edges(
+    nodes: tuple[FuruDagNode[Furu], ...],
+) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (dependency_id, node.obj.object_id)
+        for node in nodes
+        for dependency_id in node.dependencies
+    )
+
+
 def test_field_dependencies_are_eager_but_metadata_stores_only_loaded_objects() -> None:
     first = Node(name="nested")
     second = WeightedNode(name="weighted", weight=2)
@@ -1120,22 +1144,22 @@ def test_make_dag_recursively_collects_declared_refs() -> None:
     child = NodePair(node1=first, node2=second, name="pair")
     parent = FuruBoundaryParent(child=child)
 
-    dag = make_dag(parent)
+    nodes = make_dag(parent)
+    dependencies_by_id = _dag_dependencies_by_id(nodes)
 
-    assert set(dag.object_ids) == {
+    assert set(_dag_object_ids(nodes)) == {
         first.object_id,
         second.object_id,
         child.object_id,
         parent.object_id,
     }
-    assert dag.roots == (parent.object_id,)
-    assert dag.object_ids[-2:] == (child.object_id, parent.object_id)
-    assert set(dag.dependencies_by_id[child.object_id]) == {
+    assert _dag_object_ids(nodes)[-2:] == (child.object_id, parent.object_id)
+    assert set(dependencies_by_id[child.object_id]) == {
         first.object_id,
         second.object_id,
     }
-    assert dag.dependencies_by_id[parent.object_id] == (child.object_id,)
-    assert set(dag.edges) == {
+    assert dependencies_by_id[parent.object_id] == (child.object_id,)
+    assert set(_dag_edges(nodes)) == {
         (first.object_id, child.object_id),
         (second.object_id, child.object_id),
         (child.object_id, parent.object_id),
@@ -1151,27 +1175,21 @@ def test_make_dag_stops_at_completed_objects() -> None:
     child.load_or_create()
     parent = FuruBoundaryParent(child=child)
 
-    dag = make_dag(parent)
+    nodes = make_dag(parent)
+    dependencies_by_id = _dag_dependencies_by_id(nodes)
 
-    assert set(dag.object_ids) == {child.object_id, parent.object_id}
-    assert dag.dependencies_by_id[child.object_id] == ()
-    assert dag.dependencies_by_id[parent.object_id] == (child.object_id,)
+    assert set(_dag_object_ids(nodes)) == {child.object_id, parent.object_id}
+    assert dependencies_by_id[child.object_id] == ()
+    assert dependencies_by_id[parent.object_id] == (child.object_id,)
 
 
 def test_make_dag_deduplicates_by_object_id() -> None:
     first = Node(name="same")
     second = Node(name="same")
 
-    dag = make_dag([first, second])
+    nodes = make_dag([first, second])
 
-    assert dag.roots == (first.object_id,)
-    assert dag.objects == (first,)
-
-
-def test_furu_make_dag_delegates_to_shared_dag_builder() -> None:
-    node = Node(name="method")
-
-    assert node.make_dag() == make_dag(node)
+    assert _dag_objects(nodes) == (first,)
 
 
 def test_make_dag_rejects_cycles() -> None:

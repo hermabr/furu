@@ -33,7 +33,6 @@ from furu.validate import validate_cls
 if TYPE_CHECKING:
     from typing_extensions import dataclass_transform
 
-    from furu.dependencies import FuruDag
     from furu.metadata import ArtifactSpec
     from furu.migration import Migration
 
@@ -85,11 +84,6 @@ class Furu[T](_FuruDataclassTransform, ABC):
         from furu.execution import load_or_create
 
         return load_or_create(self, use_lock=use_lock)
-
-    def make_dag(self) -> FuruDag:
-        from furu.dependencies import make_dag
-
-        return make_dag(self)
 
     @classmethod
     def from_artifact[TFuru: Furu](cls: type[TFuru], artifact: ArtifactSpec) -> TFuru:

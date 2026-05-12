@@ -105,35 +105,9 @@ def collect_declared_refs(obj: Furu[Any]) -> tuple[Furu[Any], ...]:
 
 
 @dataclass(frozen=True)
-class FuruDagNode:
-    obj: Furu[Any]
+class FuruDagNode[TFuru: Furu]:
+    obj: TFuru
     dependencies: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class FuruDag:
-    roots: tuple[str, ...]
-    nodes: tuple[FuruDagNode, ...]
-
-    @property
-    def objects(self) -> tuple[Furu[Any], ...]:
-        return tuple(node.obj for node in self.nodes)
-
-    @property
-    def object_ids(self) -> tuple[str, ...]:
-        return tuple(node.obj.object_id for node in self.nodes)
-
-    @property
-    def dependencies_by_id(self) -> dict[str, tuple[str, ...]]:
-        return {node.obj.object_id: node.dependencies for node in self.nodes}
-
-    @property
-    def edges(self) -> tuple[tuple[str, str], ...]:
-        return tuple(
-            (dependency_id, node.obj.object_id)
-            for node in self.nodes
-            for dependency_id in node.dependencies
-        )
 
 
 def _normalize_make_dag_input(
@@ -158,11 +132,12 @@ def _is_success_status(obj: Furu[Any]) -> bool:
     return cast(str, obj.status()) in {"completed", "success"}
 
 
-def make_dag(obj_or_objs: Furu[Any] | Sequence[Furu[Any]]) -> FuruDag:
+def make_dag(
+    obj_or_objs: Furu[Any] | Sequence[Furu[Any]],
+) -> tuple[FuruDagNode[Furu], ...]:
     objs = _normalize_make_dag_input(obj_or_objs)
 
-    root_ids_by_id: dict[str, str] = {}
-    nodes_by_id: dict[str, FuruDagNode] = {}
+    nodes_by_id: dict[str, FuruDagNode[Furu]] = {}
     visiting: set[str] = set()
 
     def visit(obj: Furu[Any]) -> None:
@@ -182,13 +157,9 @@ def make_dag(obj_or_objs: Furu[Any] | Sequence[Furu[Any]]) -> FuruDag:
         nodes_by_id[obj_id] = FuruDagNode(obj=obj, dependencies=dependency_ids)
 
     for obj in objs:
-        root_ids_by_id.setdefault(obj.object_id, obj.object_id)
         visit(obj)
 
-    return FuruDag(
-        roots=tuple(root_ids_by_id.values()),
-        nodes=tuple(nodes_by_id.values()),
-    )
+    return tuple(nodes_by_id.values())
 
 
 class DependencyRecorder:
