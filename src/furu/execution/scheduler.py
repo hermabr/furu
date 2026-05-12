@@ -41,7 +41,7 @@ class FailedJob:
     error: str
 
 
-class Manager:
+class Scheduler:
     def __init__(self, objs: Sequence[Furu[Any]]) -> None:
         self.nodes_by_id: dict[str, DagNode[Furu[Any]]] = {}
         self.ready: dict[str, DagNode[Furu[Any]]] = {}
@@ -180,10 +180,10 @@ class Manager:
 
         import uvicorn
 
-        from furu.worker.api import create_manager_app
+        from furu.worker.api import create_scheduler_app
         from furu.worker.loop import worker_loop
 
-        app = create_manager_app(self)
+        app = create_scheduler_app(self)
         sock = _bind_socket(host=host, port=port)
         bound_host, bound_port = sock.getsockname()[:2]
         server_url = f"http://{bound_host}:{bound_port}"
@@ -199,7 +199,7 @@ class Manager:
         server_thread = threading.Thread(
             target=server.run,
             kwargs={"sockets": [sock]},
-            name="furu-manager-server",
+            name="furu-scheduler-server",
         )
         workers = [
             threading.Thread(
@@ -219,7 +219,7 @@ class Manager:
 
             while not self.done.wait(timeout=0.1):
                 if any(not worker.is_alive() for worker in workers):
-                    self.fail("a worker exited before manager run completed")
+                    self.fail("a worker exited before scheduler run completed")
                     break
 
             for worker in workers:
@@ -239,7 +239,7 @@ class Manager:
             if self.done.is_set():
                 return
             self._finish_error = message
-            get_logger().error("furu manager finished with error: %s", message)
+            get_logger().error("furu scheduler finished with error: %s", message)
             self.done.set()
 
     def _pop_running_locked(self, lease_id: str) -> RunningJob:
@@ -264,10 +264,10 @@ class Manager:
         if self.failed or self.blocked:
             self._finish_error = self._format_finish_error_locked()
             get_logger().error(
-                "furu manager finished with error: %s", self._finish_error
+                "furu scheduler finished with error: %s", self._finish_error
             )
         else:
-            get_logger().info("furu manager finished successfully")
+            get_logger().info("furu scheduler finished successfully")
         self.done.set()
 
     def _format_finish_error_locked(self) -> str:
@@ -285,7 +285,7 @@ class Manager:
                 f"first failure for {first_object_id} "
                 f"(lease {failed_job.lease_id}): {failed_job.error}"
             )
-        return "manager run could not complete; " + "; ".join(parts)
+        return "scheduler run could not complete; " + "; ".join(parts)
 
 
 def _bind_socket(*, host: str, port: int) -> socket.socket:
@@ -301,7 +301,7 @@ def _wait_for_server(server: Any, server_thread: threading.Thread) -> None:
     deadline = time.monotonic() + 10
     while not server.started:
         if not server_thread.is_alive():
-            raise RuntimeError("manager server exited before it was ready")
+            raise RuntimeError("scheduler server exited before it was ready")
         if time.monotonic() > deadline:
-            raise TimeoutError("manager server did not start within 10 seconds")
+            raise TimeoutError("scheduler server did not start within 10 seconds")
         time.sleep(0.01)

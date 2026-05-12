@@ -7,20 +7,20 @@ from fastapi import FastAPI, HTTPException
 from furu.worker.protocol import BlockedRequest, FinishRequest, GetJobResponse
 
 if TYPE_CHECKING:
-    from furu.execution.manager import Manager
+    from furu.execution.scheduler import Scheduler
 
 
-def create_manager_app(manager: Manager) -> FastAPI:
+def create_scheduler_app(scheduler: Scheduler) -> FastAPI:
     app = FastAPI()
 
     @app.get("/get_job", response_model=GetJobResponse)
     def get_job() -> GetJobResponse:
-        return manager.get_job()
+        return scheduler.get_job()
 
     @app.post("/finish/{lease_id}")
     def finish(lease_id: str, request: FinishRequest) -> dict[str, bool]:
         try:
-            manager.finish(lease_id, request)
+            scheduler.finish(lease_id, request)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"ok": True}
@@ -28,7 +28,7 @@ def create_manager_app(manager: Manager) -> FastAPI:
     @app.post("/blocked/{lease_id}")
     def blocked(lease_id: str, request: BlockedRequest) -> dict[str, bool]:
         try:
-            manager.block(lease_id, request.dependencies)
+            scheduler.block(lease_id, request.dependencies)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"ok": True}
