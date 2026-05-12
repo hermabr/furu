@@ -26,16 +26,13 @@ class ArtifactSpec(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
         frozen=True,
-        serialize_by_alias=True,
         strict=True,
-        validate_by_alias=True,
-        validate_by_name=True,
     )
 
     fully_qualified_name: str
     artifact_data: dict[str, JsonValue]
     artifact_hash: str
-    schema_: JsonValue = Field(alias="schema")
+    schema_data: JsonValue
     schema_hash: str
 
     @classmethod
@@ -44,13 +41,9 @@ class ArtifactSpec(BaseModel):
             fully_qualified_name=obj._fully_qualified_name,
             artifact_data=obj.artifact_data,
             artifact_hash=obj.artifact_hash,
-            schema=obj.schema,
+            schema_data=obj.schema,
             schema_hash=obj.artifact_schema_hash,
         )
-
-    @property
-    def schema(self) -> JsonValue:
-        return self.schema_
 
     @cached_property
     def object_id(self) -> str:
