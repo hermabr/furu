@@ -1,7 +1,7 @@
 from importlib.metadata import version
 
 from furu.core import Furu
-from furu.dag import FuruDagNode, make_dag
+from furu.dag import FuruDagNode, make_execution_dag
 from furu.dependencies import dependency
 from furu.execution import load_or_create
 from furu.logging import get_logger
@@ -19,7 +19,7 @@ __all__ = [
     "LazyResult",
     "Migration",
     "dependency",
-    "make_dag",
+    "make_execution_dag",
     "ResultCodec",
     "ResultRegistry",
     "get_logger",

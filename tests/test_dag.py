@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import pytest
 
 import furu
-from furu import Furu, FuruDagNode, make_dag
+from furu import Furu, FuruDagNode, make_execution_dag
 
 
 class Leaf(Furu[str]):
@@ -68,9 +68,9 @@ def _walk_all[TFuru: Furu](
     return seen
 
 
-def test_make_dag_single_object_no_dependencies():
+def test_make_execution_dag_single_object_no_dependencies():
     leaf = Leaf(name="x")
-    roots = make_dag(leaf)
+    roots = make_execution_dag(leaf)
 
     assert len(roots) == 1
     (root,) = roots
@@ -80,14 +80,14 @@ def test_make_dag_single_object_no_dependencies():
     assert root.dependents == []
 
 
-def test_make_dag_traverses_declared_refs_recursively():
+def test_make_execution_dag_traverses_declared_refs_recursively():
     leaf_a = Leaf(name="a")
     leaf_b = Leaf(name="b")
     mid_left = Mid(label="L", child=leaf_a)
     mid_right = Mid(label="R", child=leaf_b)
     top = Top(name="t", left=mid_left, right=mid_right)
 
-    roots = make_dag(top)
+    roots = make_execution_dag(top)
 
     root_ids = {root.obj.object_id for root in roots}
     assert root_ids == {leaf_a.object_id, leaf_b.object_id}
@@ -116,13 +116,13 @@ def test_make_dag_traverses_declared_refs_recursively():
     assert top_node.dependents == []
 
 
-def test_make_dag_shared_dependency_has_multiple_dependents():
+def test_make_execution_dag_shared_dependency_has_multiple_dependents():
     shared = Leaf(name="shared")
     mid_left = Mid(label="L", child=shared)
     mid_right = Mid(label="R", child=shared)
     top = Top(name="t", left=mid_left, right=mid_right)
 
-    roots = make_dag(top)
+    roots = make_execution_dag(top)
 
     assert len(roots) == 1
     (shared_root,) = roots
@@ -142,13 +142,13 @@ def test_make_dag_shared_dependency_has_multiple_dependents():
     }
 
 
-def test_make_dag_stops_recursion_at_completed_objects():
+def test_make_execution_dag_stops_recursion_at_completed_objects():
     leaf = Leaf(name="cached")
     mid = Mid(label="m", child=leaf)
     leaf.load_or_create()
     assert leaf.status() == "completed"
 
-    roots = make_dag(mid)
+    roots = make_execution_dag(mid)
 
     assert len(roots) == 1
     (leaf_root,) = roots
@@ -160,13 +160,13 @@ def test_make_dag_stops_recursion_at_completed_objects():
     assert {n.obj.object_id for n in leaf_root.dependents} == {mid.object_id}
 
 
-def test_make_dag_completed_root_has_no_dependencies():
+def test_make_execution_dag_completed_root_has_no_dependencies():
     leaf = Leaf(name="root-cached")
     mid = Mid(label="m", child=leaf)
     mid.load_or_create()
     assert mid.status() == "completed"
 
-    roots = make_dag(mid)
+    roots = make_execution_dag(mid)
 
     assert len(roots) == 1
     (root,) = roots
@@ -175,12 +175,12 @@ def test_make_dag_completed_root_has_no_dependencies():
     assert root.dependents == []
 
 
-def test_make_dag_accepts_a_list_of_inputs():
+def test_make_execution_dag_accepts_a_list_of_inputs():
     leaf_a = Leaf(name="a")
     leaf_b = Leaf(name="b")
     mid = Mid(label="m", child=leaf_a)
 
-    roots = make_dag([mid, leaf_b])
+    roots = make_execution_dag([mid, leaf_b])
 
     root_ids = {root.obj.object_id for root in roots}
     assert root_ids == {leaf_a.object_id, leaf_b.object_id}
@@ -192,12 +192,12 @@ def test_make_dag_accepts_a_list_of_inputs():
     assert leaf_b_node.dependents == []
 
 
-def test_make_dag_handles_nested_dataclass_refs():
+def test_make_execution_dag_handles_nested_dataclass_refs():
     leaf_a = Leaf(name="a")
     leaf_b = Leaf(name="b")
     parent = NestedParent(bundle=LeafBundle(a=leaf_a, b=leaf_b))
 
-    roots = make_dag(parent)
+    roots = make_execution_dag(parent)
 
     root_ids = {root.obj.object_id for root in roots}
     assert root_ids == {leaf_a.object_id, leaf_b.object_id}
@@ -206,10 +206,10 @@ def test_make_dag_handles_nested_dataclass_refs():
     assert set(all_nodes) == {leaf_a.object_id, leaf_b.object_id, parent.object_id}
 
 
-def test_make_dag_walks_computed_dependencies():
+def test_make_execution_dag_walks_computed_dependencies():
     parent = ComputedParent(name="p")
 
-    roots = make_dag(parent)
+    roots = make_execution_dag(parent)
 
     assert len(roots) == 1
     (child_root,) = roots
@@ -217,15 +217,15 @@ def test_make_dag_walks_computed_dependencies():
     assert {n.obj.object_id for n in child_root.dependents} == {parent.object_id}
 
 
-def test_make_dag_empty_list_returns_empty_list():
-    assert make_dag([]) == []
+def test_make_execution_dag_empty_list_returns_empty_list():
+    assert make_execution_dag([]) == []
 
 
-def test_make_dag_rejects_non_furu_values():
+def test_make_execution_dag_rejects_non_furu_values():
     with pytest.raises(TypeError, match="expected Furu objects"):
-        make_dag([Leaf(name="ok"), "not-a-furu"])  # ty: ignore[invalid-argument-type]
+        make_execution_dag([Leaf(name="ok"), "not-a-furu"])  # ty: ignore[invalid-argument-type]
 
     with pytest.raises(
         TypeError, match="expected a Furu object or a sequence of Furu objects"
     ):
-        make_dag(42)  # ty: ignore[invalid-argument-type]
+        make_execution_dag(42)  # ty: ignore[invalid-argument-type]

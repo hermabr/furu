@@ -17,7 +17,7 @@ class FuruDagNode[TFuru: Furu]:
     dependents: list[FuruDagNode[TFuru]] = field(default_factory=list)
 
 
-def make_dag[TFuru: Furu](
+def make_execution_dag[TFuru: Furu](
     obj_or_objs: TFuru | Sequence[TFuru],
 ) -> list[FuruDagNode[TFuru]]:
     from furu.core import Furu
@@ -27,10 +27,10 @@ def make_dag[TFuru: Furu](
     elif isinstance(obj_or_objs, Sequence):
         inputs = list(obj_or_objs)
         if any(not isinstance(obj, Furu) for obj in inputs):
-            raise TypeError("make_dag() expected Furu objects")
+            raise TypeError("make_execution_dag() expected Furu objects")
     else:
         raise TypeError(
-            "make_dag() expected a Furu object or a sequence of Furu objects"
+            "make_execution_dag() expected a Furu object or a sequence of Furu objects"
         )
 
     nodes_by_id: dict[str, FuruDagNode[TFuru]] = {}
