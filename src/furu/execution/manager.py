@@ -9,32 +9,39 @@ from typing import Any
 from uuid import uuid4
 
 from furu.core import Furu
-from furu.dag import FuruDagNode, make_execution_dag
+from furu.dependencies import collect_declared_refs
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
 from furu.worker.protocol import FinishFailedRequest, FinishRequest, GetJobResponse, Job
 
 
+@dataclass(eq=False)
+class DagNode[TFuru: Furu]:
+    obj: TFuru
+    dependencies: list[DagNode[TFuru]] = field(default_factory=list)
+    dependents: list[DagNode[TFuru]] = field(default_factory=list)
+
+
 @dataclass(frozen=True, slots=True)
 class RunningJob:
     lease_id: str
-    node: FuruDagNode[Furu[Any]]
+    node: DagNode[Furu[Any]]
 
 
 @dataclass(frozen=True, slots=True)
 class FailedJob:
     lease_id: str
-    node: FuruDagNode[Furu[Any]]
+    node: DagNode[Furu[Any]]
     error: str
 
 
 @dataclass
 class Manager:
-    nodes_by_id: dict[str, FuruDagNode[Furu[Any]]] = field(default_factory=dict)
-    ready: dict[str, FuruDagNode[Furu[Any]]] = field(default_factory=dict)
-    blocked: dict[str, FuruDagNode[Furu[Any]]] = field(default_factory=dict)
+    nodes_by_id: dict[str, DagNode[Furu[Any]]] = field(default_factory=dict)
+    ready: dict[str, DagNode[Furu[Any]]] = field(default_factory=dict)
+    blocked: dict[str, DagNode[Furu[Any]]] = field(default_factory=dict)
     running: dict[str, RunningJob] = field(default_factory=dict)
-    completed: dict[str, FuruDagNode[Furu[Any]]] = field(default_factory=dict)
+    completed: dict[str, DagNode[Furu[Any]]] = field(default_factory=dict)
     failed: dict[str, FailedJob] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     done: threading.Event = field(default_factory=threading.Event, repr=False)
@@ -43,12 +50,7 @@ class Manager:
     @classmethod
     def submit(cls, objs: Sequence[Furu[Any]]) -> Manager:
         manager = cls()
-        make_execution_dag(
-            objs,
-            manager.nodes_by_id,
-            ready=manager.ready,
-            blocked=manager.blocked,
-        )
+        manager._add_to_dag(objs)
         with manager.lock:
             manager._maybe_finish_locked()
         return manager
@@ -98,12 +100,7 @@ class Manager:
 
                 if (dep_node := self.nodes_by_id.get(artifact.object_id)) is None:
                     dep_obj = Furu.from_artifact(artifact)
-                    make_execution_dag(
-                        [dep_obj],
-                        self.nodes_by_id,
-                        ready=self.ready,
-                        blocked=self.blocked,
-                    )
+                    self._add_to_dag([dep_obj])
                     dep_node = self.nodes_by_id[artifact.object_id]
 
                 if dep_node not in node.dependencies:
@@ -116,6 +113,42 @@ class Manager:
             else:
                 self.ready[node.obj.object_id] = node
             self._maybe_finish_locked()
+
+    def _add_to_dag(self, objs: Sequence[Furu[Any]]) -> None:
+        if any(not isinstance(obj, Furu) for obj in objs):
+            # TODO: accept pytrees of Furu objects (e.g. nested lists/dicts/dataclasses)
+            # and flatten them before walking dependencies.
+            raise TypeError("expected Furu objects")
+
+        refs_by_id: dict[str, tuple[Furu[Any], ...]] = {}
+        newly_added: list[DagNode[Furu[Any]]] = []
+        # TODO: detect cycles and raise a clear error
+        pending = list(objs)
+
+        while pending:
+            obj = pending.pop()
+            if obj.object_id in self.nodes_by_id:
+                continue
+            node = DagNode(obj=obj)
+            self.nodes_by_id[obj.object_id] = node
+            newly_added.append(node)
+            if obj.status() == "completed":
+                refs_by_id[obj.object_id] = ()
+                continue
+            refs = collect_declared_refs(obj)
+            refs_by_id[obj.object_id] = refs
+            pending.extend(refs)
+
+        for obj_id, refs in refs_by_id.items():
+            node = self.nodes_by_id[obj_id]
+            for ref in refs:
+                dep_node = self.nodes_by_id[ref.object_id]
+                node.dependencies.append(dep_node)
+                dep_node.dependents.append(node)
+
+        for node in newly_added:
+            target = self.ready if not node.dependencies else self.blocked
+            target[node.obj.object_id] = node
 
     def run(
         self,
@@ -203,7 +236,7 @@ class Manager:
         except KeyError as exc:
             raise KeyError(f"unknown running lease_id: {lease_id}") from exc
 
-    def _release_dependents_locked(self, node: FuruDagNode[Furu[Any]]) -> None:
+    def _release_dependents_locked(self, node: DagNode[Furu[Any]]) -> None:
         for dependent in tuple(node.dependents):
             if node in dependent.dependencies:
                 dependent.dependencies.remove(node)
