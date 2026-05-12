@@ -29,6 +29,7 @@ def make_execution_dag[TFuru: Furu](
 
     nodes_by_id: dict[str, FuruDagNode[TFuru]] = {}
     refs_by_id: dict[str, tuple[TFuru, ...]] = {}
+    # TODO: detect cycles and raise a clear error
     pending: list[TFuru] = list(objs)
 
     while pending:
