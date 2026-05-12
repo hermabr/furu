@@ -1004,7 +1004,7 @@ def test_furu_from_artifact_returns_furu_object():
     assert "artifact_schema_hash" not in raw_metadata
 
 
-def _dependency_object_ids(obj: Furu[Any]) -> list[str]:
+def _dependency_object_ids(obj: Furu) -> list[str]:
     metadata = json.loads(metadata_path_in(obj.data_dir).read_text())
     return metadata["observed_dependencies"]
 

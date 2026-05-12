@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from furu.core import Furu
@@ -31,12 +31,12 @@ def worker_execution_context(
 
 
 class _DependencyNotReady(BaseException):
-    dependencies: tuple[Furu[Any], ...]
+    dependencies: tuple[Furu, ...]
     call_kind: DependencyCallKind
 
     def __init__(
         self,
-        dependencies: Sequence[Furu[Any]],
+        dependencies: Sequence[Furu],
         *,
         call_kind: DependencyCallKind,
     ) -> None:

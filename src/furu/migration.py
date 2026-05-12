@@ -4,7 +4,7 @@ from collections import defaultdict
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 from pydantic import BaseModel, ConfigDict
 
@@ -78,7 +78,7 @@ class _ResultLink(BaseModel):
 _Node = tuple[str, str]
 
 
-def result_dir_for_loading(obj: Furu[Any]) -> Path | None:
+def result_dir_for_loading(obj: Furu) -> Path | None:
     if result_manifest_path_in(obj.data_dir).exists():
         return result_dir_in(obj.data_dir)
     link_path = result_link_path_in(obj.data_dir)
@@ -91,7 +91,7 @@ def result_dir_for_loading(obj: Furu[Any]) -> Path | None:
     return result_dir
 
 
-def migrate(obj: Furu[Any]) -> bool:
+def migrate(obj: Furu) -> bool:
     if result_link_path_in(obj.data_dir).exists():
         result_dir_for_loading(obj)
         return True

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from furu.core import Furu
 from furu.dependencies import collect_declared_refs
@@ -18,14 +18,14 @@ class DagNode[TFuru: Furu]:
     dependents: list[DagNode[TFuru]] = field(default_factory=list)
 
 
-def _add_to_dag(manager: Manager, objs: Sequence[Furu[Any]]) -> None:
+def _add_to_dag(manager: Manager, objs: Sequence[Furu]) -> None:
     if any(not isinstance(obj, Furu) for obj in objs):
         # TODO: accept pytrees of Furu objects (e.g. nested lists/dicts/dataclasses)
         # and flatten them before walking dependencies.
         raise TypeError("expected Furu objects")
 
-    refs_by_id: dict[str, tuple[Furu[Any], ...]] = {}
-    newly_added: list[DagNode[Furu[Any]]] = []
+    refs_by_id: dict[str, tuple[Furu, ...]] = {}
+    newly_added: list[DagNode[Furu]] = []
     # TODO: detect cycles and raise a clear error
     pending = list(objs)
 

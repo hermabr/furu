@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, assert_never
+from typing import assert_never
 from uuid import uuid4
 
 from furu.core import Furu
@@ -22,26 +22,26 @@ from furu.worker.protocol import (
 @dataclass(frozen=True, slots=True)
 class RunningJob:
     lease_id: str
-    node: DagNode[Furu[Any]]
+    node: DagNode[Furu]
 
 
 @dataclass(frozen=True, slots=True)
 class FailedJob:
     lease_id: str
-    node: DagNode[Furu[Any]]
+    node: DagNode[Furu]
     error: str
 
 
 class Manager:
-    def __init__(self, objs: Sequence[Furu[Any]]) -> None:
+    def __init__(self, objs: Sequence[Furu]) -> None:
         if not objs:
             raise ValueError("Manager requires at least one Furu object")
 
-        self.nodes_by_id: dict[str, DagNode[Furu[Any]]] = {}
-        self.ready: dict[str, DagNode[Furu[Any]]] = {}
-        self.blocked: dict[str, DagNode[Furu[Any]]] = {}
+        self.nodes_by_id: dict[str, DagNode[Furu]] = {}
+        self.ready: dict[str, DagNode[Furu]] = {}
+        self.blocked: dict[str, DagNode[Furu]] = {}
         self.running: dict[str, RunningJob] = {}
-        self.completed: dict[str, DagNode[Furu[Any]]] = {}
+        self.completed: dict[str, DagNode[Furu]] = {}
         self.failed: dict[str, FailedJob] = {}
         self.lock = threading.Lock()
         self.done = threading.Event()
@@ -107,7 +107,7 @@ class Manager:
 
             dependency_ids: list[str] = []
             missing_dependency_ids: set[str] = set()
-            missing_dependencies: list[Furu[Any]] = []
+            missing_dependencies: list[Furu] = []
             for artifact in dependencies:
                 if artifact.object_id in self.completed:
                     continue
@@ -157,7 +157,7 @@ class Manager:
         except KeyError as exc:
             raise KeyError(f"unknown running lease_id: {lease_id}") from exc
 
-    def _release_dependents_locked(self, node: DagNode[Furu[Any]]) -> None:
+    def _release_dependents_locked(self, node: DagNode[Furu]) -> None:
         for dependent in tuple(node.dependents):
             if node in dependent.dependencies:
                 dependent.dependencies.remove(node)
