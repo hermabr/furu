@@ -14,11 +14,20 @@ class Job(BaseModel):
     artifact: ArtifactSpec
 
 
-class FinishRequest(BaseModel):
+class FinishSuccessRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    status: Literal["completed", "failed"]
-    error: str | None = None
+    status: Literal["completed"] = "completed"
+
+
+class FinishFailedRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    status: Literal["failed"] = "failed"
+    error: str
+
+
+type FinishRequest = FinishSuccessRequest | FinishFailedRequest
 
 
 class BlockedRequest(BaseModel):

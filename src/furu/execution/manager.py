@@ -6,12 +6,26 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
+from uuid import uuid4
 
 from furu.core import Furu
 from furu.dag import FuruDagNode, make_execution_dag
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
-from furu.worker.protocol import FinishRequest, GetJobResponse, Job
+from furu.worker.protocol import FinishFailedRequest, FinishRequest, GetJobResponse, Job
+
+
+@dataclass(frozen=True, slots=True)
+class RunningJob:
+    lease_id: str
+    node: FuruDagNode[Furu[Any]]
+
+
+@dataclass(frozen=True, slots=True)
+class FailedJob:
+    lease_id: str
+    node: FuruDagNode[Furu[Any]]
+    error: str
 
 
 @dataclass
@@ -19,10 +33,9 @@ class Manager:
     nodes_by_id: dict[str, FuruDagNode[Furu[Any]]] = field(default_factory=dict)
     ready: dict[str, FuruDagNode[Furu[Any]]] = field(default_factory=dict)
     blocked: dict[str, FuruDagNode[Furu[Any]]] = field(default_factory=dict)
-    running: dict[str, FuruDagNode[Furu[Any]]] = field(default_factory=dict)
+    running: dict[str, RunningJob] = field(default_factory=dict)
     completed: dict[str, FuruDagNode[Furu[Any]]] = field(default_factory=dict)
-    failed: dict[str, FuruDagNode[Furu[Any]]] = field(default_factory=dict)
-    failure_messages: dict[str, str] = field(default_factory=dict)
+    failed: dict[str, FailedJob] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     done: threading.Event = field(default_factory=threading.Event, repr=False)
     _finish_error: str | None = field(default=None, init=False, repr=False)
@@ -48,9 +61,12 @@ class Manager:
             if not self.ready:
                 return "wait"
 
-            lease_id = next(iter(self.ready))
-            node = self.ready.pop(lease_id)
-            self.running[lease_id] = node
+            object_id = next(iter(self.ready))
+            node = self.ready.pop(object_id)
+            lease_id = str(uuid4())
+            if lease_id in self.running:
+                raise RuntimeError(f"generated duplicate lease_id: {lease_id}")
+            self.running[lease_id] = RunningJob(lease_id=lease_id, node=node)
             return Job(
                 lease_id=lease_id,
                 artifact=ArtifactSpec.from_furu(node.obj),
@@ -58,19 +74,23 @@ class Manager:
 
     def finish(self, lease_id: str, request: FinishRequest) -> None:
         with self.lock:
-            node = self._pop_running_locked(lease_id)
+            running_job = self._pop_running_locked(lease_id)
             if request.status == "completed":
-                self.completed[lease_id] = node
-                self._release_dependents_locked(node)
+                self.completed[running_job.node.obj.object_id] = running_job.node
+                self._release_dependents_locked(running_job.node)
             else:
-                self.failed[lease_id] = node
-                if request.error is not None:
-                    self.failure_messages[lease_id] = request.error
+                assert isinstance(request, FinishFailedRequest)
+                self.failed[running_job.node.obj.object_id] = FailedJob(
+                    lease_id=lease_id,
+                    node=running_job.node,
+                    error=request.error,
+                )
             self._maybe_finish_locked()
 
     def block(self, lease_id: str, dependencies: Sequence[ArtifactSpec]) -> None:
         with self.lock:
-            node = self._pop_running_locked(lease_id)
+            running_job = self._pop_running_locked(lease_id)
+            node = running_job.node
 
             for artifact in dependencies:
                 if artifact.object_id in self.completed:
@@ -92,9 +112,9 @@ class Manager:
                     dep_node.dependents.append(node)
 
             if node.dependencies:
-                self.blocked[lease_id] = node
+                self.blocked[node.obj.object_id] = node
             else:
-                self.ready[lease_id] = node
+                self.ready[node.obj.object_id] = node
             self._maybe_finish_locked()
 
     def run(
@@ -113,10 +133,10 @@ class Manager:
             self.raise_for_failure()
             return
 
+        import uvicorn
+
         from furu.worker.api import create_manager_app
         from furu.worker.loop import worker_loop
-
-        import uvicorn
 
         app = create_manager_app(self)
         sock = _bind_socket(host=host, port=port)
@@ -177,7 +197,7 @@ class Manager:
             get_logger().error("furu manager finished with error: %s", message)
             self.done.set()
 
-    def _pop_running_locked(self, lease_id: str) -> FuruDagNode[Furu[Any]]:
+    def _pop_running_locked(self, lease_id: str) -> RunningJob:
         try:
             return self.running.pop(lease_id)
         except KeyError as exc:
@@ -213,11 +233,12 @@ class Manager:
         if self.blocked:
             blocked = ", ".join(sorted(self.blocked))
             parts.append(f"blocked jobs: {blocked}")
-        if self.failure_messages:
-            first_lease_id = next(iter(sorted(self.failure_messages)))
+        if self.failed:
+            first_object_id = next(iter(sorted(self.failed)))
+            failed_job = self.failed[first_object_id]
             parts.append(
-                f"first failure for {first_lease_id}: "
-                f"{self.failure_messages[first_lease_id]}"
+                f"first failure for {first_object_id} "
+                f"(lease {failed_job.lease_id}): {failed_job.error}"
             )
         return "submit() could not complete; " + "; ".join(parts)
 

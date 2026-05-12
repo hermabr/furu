@@ -12,7 +12,13 @@ from furu.core import Furu
 from furu.execution import _load_or_create_local
 from furu.metadata import ArtifactSpec
 from furu.worker.context import _DependencyNotReady, worker_execution_context
-from furu.worker.protocol import BlockedRequest, FinishRequest, Job
+from furu.worker.protocol import (
+    BlockedRequest,
+    FinishFailedRequest,
+    FinishRequest,
+    FinishSuccessRequest,
+    Job,
+)
 
 
 class ServerUnavailable(RuntimeError):
@@ -62,8 +68,7 @@ def worker_loop(
             try:
                 _post_json(
                     f"{server_url}/finish/{_quote_path(job.lease_id)}",
-                    FinishRequest(
-                        status="failed",
+                    FinishFailedRequest(
                         error="".join(
                             traceback.format_exception(
                                 type(exc),
@@ -81,7 +86,7 @@ def worker_loop(
             try:
                 _post_json(
                     f"{server_url}/finish/{_quote_path(job.lease_id)}",
-                    FinishRequest(status="completed"),
+                    FinishSuccessRequest(),
                     unavailable_timeout=unavailable_timeout,
                     retry_interval=retry_interval,
                 )

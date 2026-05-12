@@ -1,12 +1,14 @@
 import time
+from uuid import UUID
 
 import pytest
+from pydantic import ValidationError
 
 from furu import Furu
-from furu.execution.manager import Manager
+from furu.execution.manager import FailedJob, Manager, RunningJob
 from furu.metadata import ArtifactSpec
 from furu.worker.loop import worker_loop
-from furu.worker.protocol import FinishRequest, Job
+from furu.worker.protocol import FinishFailedRequest, FinishSuccessRequest, Job
 
 
 class ManagerLeaf(Furu[int]):
@@ -48,10 +50,14 @@ def test_manager_finish_moves_dependents_to_ready() -> None:
 
     job = manager.get_job()
     assert isinstance(job, Job)
-    assert job.lease_id == leaf.object_id
-    assert set(manager.running) == {leaf.object_id}
+    assert job.lease_id != leaf.object_id
+    assert UUID(job.lease_id).version == 4
+    assert set(manager.running) == {job.lease_id}
+    running_job = manager.running[job.lease_id]
+    assert isinstance(running_job, RunningJob)
+    assert running_job.node.obj is leaf
 
-    manager.finish(job.lease_id, FinishRequest(status="completed"))
+    manager.finish(job.lease_id, FinishSuccessRequest())
 
     assert manager.running == {}
     assert set(manager.completed) == {leaf.object_id}
@@ -66,7 +72,7 @@ def test_manager_block_discovers_lazy_dependency_and_reruns_parent() -> None:
 
     parent_job = manager.get_job()
     assert isinstance(parent_job, Job)
-    assert parent_job.lease_id == parent.object_id
+    assert parent_job.lease_id != parent.object_id
 
     manager.block(
         parent_job.lease_id,
@@ -78,10 +84,41 @@ def test_manager_block_discovers_lazy_dependency_and_reruns_parent() -> None:
 
     dependency_job = manager.get_job()
     assert isinstance(dependency_job, Job)
-    manager.finish(dependency_job.lease_id, FinishRequest(status="completed"))
+    manager.finish(dependency_job.lease_id, FinishSuccessRequest())
 
     assert set(manager.ready) == {parent.object_id}
     assert manager.blocked == {}
+
+
+def test_manager_uses_new_lease_when_blocked_job_is_released() -> None:
+    parent = ManagerLazyParent(value=2)
+    dependency = ManagerLeaf(value=2)
+    manager = Manager.submit([parent])
+
+    first_parent_job = manager.get_job()
+    assert isinstance(first_parent_job, Job)
+
+    manager.block(
+        first_parent_job.lease_id,
+        [ArtifactSpec.from_furu(dependency)],
+    )
+
+    dependency_job = manager.get_job()
+    assert isinstance(dependency_job, Job)
+    manager.finish(dependency_job.lease_id, FinishSuccessRequest())
+
+    second_parent_job = manager.get_job()
+    assert isinstance(second_parent_job, Job)
+    assert second_parent_job.lease_id != first_parent_job.lease_id
+    assert second_parent_job.artifact.object_id == parent.object_id
+
+    with pytest.raises(KeyError, match="unknown running lease_id"):
+        manager.finish(
+            first_parent_job.lease_id,
+            FinishSuccessRequest(),
+        )
+
+    assert set(manager.running) == {second_parent_job.lease_id}
 
 
 def test_manager_failed_job_finishes_with_error() -> None:
@@ -90,10 +127,21 @@ def test_manager_failed_job_finishes_with_error() -> None:
     job = manager.get_job()
     assert isinstance(job, Job)
 
-    manager.finish(job.lease_id, FinishRequest(status="failed", error="boom"))
+    manager.finish(job.lease_id, FinishFailedRequest(error="boom"))
 
+    assert set(manager.failed) == {leaf.object_id}
+    failed_job = manager.failed[leaf.object_id]
+    assert isinstance(failed_job, FailedJob)
+    assert failed_job.lease_id == job.lease_id
+    assert failed_job.node.obj is leaf
+    assert failed_job.error == "boom"
     with pytest.raises(RuntimeError, match="failed jobs"):
         manager.raise_for_failure()
+
+
+def test_finish_request_requires_error_for_failed_status() -> None:
+    with pytest.raises(ValidationError, match="Field required"):
+        FinishFailedRequest.model_validate({})
 
 
 def test_worker_loop_exits_when_server_is_unavailable() -> None:
