@@ -16,7 +16,6 @@ from typing import (
 )
 
 from furu.core import Furu, FuruCreateMode
-from furu.dag import FuruDagNode, make_execution_dag
 from furu.dependencies import dependency_recorder, record_dependency_call
 from furu.locking import LockLostError, lock_many
 from furu.logging import _scoped_log_files
@@ -35,7 +34,6 @@ from furu.utils import class_label, nfs_safe_unique_name
 from furu.worker_execution import (
     _DependencyNotReady,
     _worker_execution_lease_id,
-    worker_execution_context,
 )
 
 type HasLock = Callable[[], bool]
@@ -196,37 +194,32 @@ def load_or_create[T](
     return _load_or_create_local(obj_or_objs, use_lock=use_lock)
 
 
-def submit(objs: Sequence[Furu[Any]]) -> None:
-    nodes_by_id: dict[str, FuruDagNode[Furu[Any]]] = {}
-    zero_dependency_nodes = make_execution_dag(objs, nodes_by_id)
+def _execute_one(obj: Furu[Any]) -> None:
+    """Execute a single furu node.
 
-    while zero_dependency_nodes:
-        node = zero_dependency_nodes.pop(0)
-        try:
-            with worker_execution_context(lease_id=node.obj.object_id):
-                _load_or_create_local(node.obj)
-        except _DependencyNotReady as exc:
-            new_objs = [
-                dep for dep in exc.dependencies if dep.object_id not in nodes_by_id
-            ]
-            zero_dependency_nodes.extend(make_execution_dag(new_objs, nodes_by_id))
-            for lazy_dep in exc.dependencies:
-                dep_node = nodes_by_id[lazy_dep.object_id]
-                if dep_node not in node.dependencies:
-                    node.dependencies.append(dep_node)
-                    dep_node.dependents.append(node)
-            continue
+    Caller is responsible for entering ``worker_execution_context``. Acquires the
+    per-object file lock. If the result is already cached, returns immediately.
+    Propagates ``_DependencyNotReady`` so the caller can resolve missing deps.
+    """
+    if result_dir_for_loading(obj) is not None:
+        obj.logger.info("cache hit for %s", obj._log_label)
+        return
 
-        del nodes_by_id[node.obj.object_id]
-        for dependent in node.dependents:
-            dependent.dependencies.remove(node)
-            if not dependent.dependencies:
-                zero_dependency_nodes.append(dependent)
+    internal_furu_dir_in(obj.data_dir).mkdir(parents=True, exist_ok=True)
 
-    if nodes_by_id:
-        unresolved = ", ".join(sorted(nodes_by_id))
-        raise RuntimeError(
-            f"submit() could not make progress; unresolved dependencies: {unresolved}"
+    with lock_many([compute_lock_path_in(obj.data_dir)]) as maybe_has_lock:
+        has_lock = maybe_has_lock or (lambda: True)
+        if result_dir_for_loading(obj) is not None:
+            obj.logger.info(
+                "cache hit for %s after waiting",
+                obj._log_label,
+            )
+            return
+
+        _execute_group(
+            [obj],
+            has_lock=has_lock,
+            results_by_object_id={},
         )
 
 

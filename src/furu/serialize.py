@@ -143,3 +143,15 @@ def _from_artifact[T: "Furu"](artifact: ArtifactSpec, expected_type: type[T]) ->
             + f"loaded={furu_obj.artifact_schema_hash[:5]}"
         )
     return furu_obj
+
+
+def load_furu_from_artifact(artifact: ArtifactSpec) -> "Furu[Any]":
+    from furu.core import Furu
+
+    cls = _load_type(artifact.fully_qualified_name)
+    if not issubclass(cls, Furu):
+        raise TypeError(
+            f"{artifact.fully_qualified_name!r} resolved to "
+            f"{cls.__module__}.{cls.__qualname__}, which is not a Furu subclass"
+        )
+    return _from_artifact(artifact, cls)

@@ -1,12 +1,10 @@
 from dataclasses import dataclass
-from typing import ClassVar
 
 import pytest
 
 import furu
-from furu import Furu, submit
+from furu import Furu
 from furu.dag import FuruDagNode, make_execution_dag
-from furu.storage_layout import run_log_path_in
 
 
 class Leaf(Furu[str]):
@@ -225,105 +223,3 @@ def test_make_execution_dag_empty_list_returns_empty_results():
 def test_make_execution_dag_rejects_non_furu_values():
     with pytest.raises(TypeError, match="expected Furu objects"):
         make_execution_dag([Leaf(name="ok"), "not-a-furu"], {})  # ty: ignore[invalid-argument-type]
-
-
-class TrackingLeaf(Furu[int]):
-    n: int
-    create_calls: ClassVar[list[int]] = []
-
-    def create(self) -> int:
-        type(self).create_calls.append(self.n)
-        return self.n * 2
-
-
-class TrackingMid(Furu[int]):
-    label: str
-    child: TrackingLeaf
-    create_calls: ClassVar[list[str]] = []
-
-    def create(self) -> int:
-        type(self).create_calls.append(self.label)
-        return self.child.load_or_create() + 1
-
-
-class LazyChildLoader(Furu[int]):
-    base: int
-    create_calls: ClassVar[list[int]] = []
-
-    def create(self) -> int:
-        type(self).create_calls.append(self.base)
-        return self.base + TrackingLeaf(n=self.base).load_or_create()
-
-
-@pytest.fixture(autouse=True)
-def _reset_tracking() -> None:
-    TrackingLeaf.create_calls.clear()
-    TrackingMid.create_calls.clear()
-    LazyChildLoader.create_calls.clear()
-
-
-def test_submit_runs_single_zero_dependency_node():
-    leaf = TrackingLeaf(n=3)
-
-    submit([leaf])
-
-    assert TrackingLeaf.create_calls == [3]
-    assert leaf.status() == "completed"
-    assert leaf.load_or_create() == 6
-
-
-def test_submit_runs_static_dependencies_in_order():
-    leaf = TrackingLeaf(n=4)
-    mid = TrackingMid(label="m", child=leaf)
-
-    submit([mid])
-
-    assert TrackingLeaf.create_calls == [4]
-    assert TrackingMid.create_calls == ["m"]
-    assert mid.load_or_create() == 9
-
-
-def test_submit_handles_shared_dependency_only_once():
-    shared = TrackingLeaf(n=5)
-    left = TrackingMid(label="L", child=shared)
-    right = TrackingMid(label="R", child=shared)
-
-    submit([left, right])
-
-    assert TrackingLeaf.create_calls == [5]
-    assert sorted(TrackingMid.create_calls) == ["L", "R"]
-
-
-def test_submit_discovers_lazy_dependencies_and_reruns_parent():
-    parent = LazyChildLoader(base=7)
-
-    submit([parent])
-
-    assert TrackingLeaf.create_calls == [7]
-    # Parent's create() is called once to discover the lazy dep (raising
-    # _DependencyNotReady), then once more after the dep completes.
-    assert LazyChildLoader.create_calls == [7, 7]
-    assert parent.load_or_create() == 21
-    parent_log = run_log_path_in(parent.data_dir).read_text(encoding="utf-8")
-    assert (
-        "load_or_create deferred: load_or_create discovered 1 missing dependency/dependencies"
-        in parent_log
-    )
-    assert "load_or_create failed" not in parent_log
-    assert "=== Debug Details (with locals) ===" not in parent_log
-
-
-def test_submit_skips_already_completed_objects():
-    leaf = TrackingLeaf(n=8)
-    leaf.load_or_create()
-    TrackingLeaf.create_calls.clear()
-    mid = TrackingMid(label="cached-child", child=leaf)
-
-    submit([mid])
-
-    assert TrackingLeaf.create_calls == []
-    assert TrackingMid.create_calls == ["cached-child"]
-
-
-def test_submit_empty_list_is_noop():
-    submit([])
