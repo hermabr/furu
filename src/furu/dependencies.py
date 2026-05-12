@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, fields, is_dataclass
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence, overload
+from typing import TYPE_CHECKING, Any, Callable, Literal, overload
 
 from pydantic import BaseModel as PydanticBaseModel
 
@@ -119,31 +119,11 @@ class FuruDependencyNode[TFuru: Furu]:
     )
 
 
-@overload
-def _normalize_execution_dag_input[TFuru: Furu](
-    obj_or_objs: TFuru,
-) -> list[TFuru]: ...
-
-
-@overload
-def _normalize_execution_dag_input[TFuru: Furu](
-    obj_or_objs: Sequence[TFuru],
-) -> list[TFuru]: ...
-
-
-def _normalize_execution_dag_input(
-    obj_or_objs: Furu | Sequence[Furu],
-) -> list[Furu]:
+def _normalize_execution_dag_input[TFuru: Furu](objs: list[TFuru]) -> list[TFuru]:
     from furu.core import Furu
 
-    if isinstance(obj_or_objs, Furu):
-        return [obj_or_objs]
-    if not isinstance(obj_or_objs, Sequence):
-        raise TypeError(
-            "make_execution_dag() expected a Furu object or a sequence of Furu objects"
-        )
-
-    objs = list(obj_or_objs)
+    if not isinstance(objs, list):
+        raise TypeError("make_execution_dag() expected a list of Furu objects")
     if any(not isinstance(obj, Furu) for obj in objs):
         raise TypeError("make_execution_dag() expected Furu objects")
     return objs
@@ -153,22 +133,10 @@ def _is_success_status[TFuru: Furu](obj: TFuru) -> bool:
     return obj.status() == "completed"
 
 
-@overload
 def make_execution_dag[TFuru: Furu](
-    obj_or_objs: TFuru,
-) -> list[FuruDependencyNode[Furu]]: ...
-
-
-@overload
-def make_execution_dag[TFuru: Furu](
-    obj_or_objs: Sequence[TFuru],
-) -> list[FuruDependencyNode[Furu]]: ...
-
-
-def make_execution_dag(
-    obj_or_objs: Furu | Sequence[Furu],
+    objs: list[TFuru],
 ) -> list[FuruDependencyNode[Furu]]:
-    objs = _normalize_execution_dag_input(obj_or_objs)
+    objs = _normalize_execution_dag_input(objs)
 
     nodes_by_id: dict[str, FuruDependencyNode[Furu]] = {}
     dependency_ids_by_id: dict[str, tuple[str, ...]] = {}

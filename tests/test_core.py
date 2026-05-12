@@ -1166,7 +1166,7 @@ def test_make_execution_dag_recursively_collects_declared_refs() -> None:
     child = NodePair(node1=first, node2=second, name="pair")
     parent = FuruBoundaryParent(child=child)
 
-    ready_nodes = make_execution_dag(parent)
+    ready_nodes = make_execution_dag([parent])
     nodes = _topological_nodes(ready_nodes)
     nodes_by_id = _topological_nodes_by_id(nodes)
     first_node = nodes_by_id[first.object_id]
@@ -1207,7 +1207,7 @@ def test_make_execution_dag_stops_at_completed_objects() -> None:
     child.load_or_create()
     parent = FuruBoundaryParent(child=child)
 
-    ready_nodes = make_execution_dag(parent)
+    ready_nodes = make_execution_dag([parent])
     nodes = _topological_nodes(ready_nodes)
     nodes_by_id = _topological_nodes_by_id(nodes)
     child_node = nodes_by_id[child.object_id]
@@ -1234,7 +1234,16 @@ def test_make_execution_dag_rejects_cycles() -> None:
     node = SelfDependency(name="cycle")
 
     with pytest.raises(ValueError, match="declared Furu dependencies contain a cycle"):
-        make_execution_dag(node)
+        make_execution_dag([node])
+
+
+def test_make_execution_dag_rejects_non_list_input() -> None:
+    node = Node(name="not-list")
+
+    with pytest.raises(TypeError, match="expected a list of Furu objects"):
+        make_execution_dag(cast(Any, node))
+    with pytest.raises(TypeError, match="expected a list of Furu objects"):
+        make_execution_dag(cast(Any, (node,)))
 
 
 def test_furu_from_artifact_infers_furu_object_type():
