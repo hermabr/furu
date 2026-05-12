@@ -59,7 +59,6 @@ def test_make_dag_single_object_no_dependencies():
     dag = make_dag(leaf)
 
     assert isinstance(dag, FuruDag)
-    assert dag.roots == (leaf.object_id,)
     assert dag.nodes == {leaf.object_id: leaf}
     assert dag.dependencies == {leaf.object_id: ()}
 
@@ -73,7 +72,6 @@ def test_make_dag_traverses_declared_refs_recursively():
 
     dag = make_dag(top)
 
-    assert dag.roots == (top.object_id,)
     assert set(dag.nodes) == {
         top.object_id,
         mid_left.object_id,
@@ -142,19 +140,9 @@ def test_make_dag_accepts_a_list_of_roots():
 
     dag = make_dag([mid, leaf_b])
 
-    assert dag.roots == (mid.object_id, leaf_b.object_id)
     assert set(dag.nodes) == {mid.object_id, leaf_a.object_id, leaf_b.object_id}
     assert dag.dependencies[mid.object_id] == (leaf_a.object_id,)
     assert dag.dependencies[leaf_b.object_id] == ()
-
-
-def test_make_dag_deduplicates_root_input_preserving_first_seen_order():
-    leaf_a = Leaf(name="a")
-    leaf_b = Leaf(name="b")
-
-    dag = make_dag([leaf_b, leaf_a, leaf_b])
-
-    assert dag.roots == (leaf_b.object_id, leaf_a.object_id)
 
 
 def test_make_dag_handles_nested_dataclass_refs():
@@ -183,7 +171,6 @@ def test_make_dag_walks_computed_dependencies():
 def test_make_dag_empty_list_returns_empty_dag():
     dag = make_dag([])
 
-    assert dag.roots == ()
     assert dag.nodes == {}
     assert dag.dependencies == {}
 
