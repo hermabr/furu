@@ -16,11 +16,8 @@ import furu
 import furu.execution as execution_module
 from furu import Furu, load_or_create, validate
 from furu.config import config
-from furu.dependencies import (
-    FuruDependencyNode,
-    collect_declared_refs,
-    make_execution_dag,
-)
+from furu.dag import FuruDependencyNode, make_execution_dag
+from furu.dependencies import collect_declared_refs
 from furu.locking import lock_many
 from furu.metadata import ArtifactSpec
 from furu.result import load_result_bundle, save_result_bundle
