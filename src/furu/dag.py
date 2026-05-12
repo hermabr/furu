@@ -20,6 +20,9 @@ class FuruDagNode[TFuru: Furu]:
 def make_execution_dag[TFuru: Furu](
     objs: Sequence[TFuru],
     nodes_by_id: dict[str, FuruDagNode[TFuru]],
+    *,
+    ready: dict[str, FuruDagNode[TFuru]] | None = None,
+    blocked: dict[str, FuruDagNode[TFuru]] | None = None,
 ) -> list[FuruDagNode[TFuru]]:
     from furu.core import Furu
 
@@ -54,4 +57,14 @@ def make_execution_dag[TFuru: Furu](
             node.dependencies.append(dep_node)
             dep_node.dependents.append(node)
 
-    return [node for node in newly_added if not node.dependencies]
+    zero_dependency_nodes = [node for node in newly_added if not node.dependencies]
+
+    if ready is not None:
+        for node in zero_dependency_nodes:
+            ready[node.obj.object_id] = node
+    if blocked is not None:
+        for node in newly_added:
+            if node.dependencies:
+                blocked[node.obj.object_id] = node
+
+    return zero_dependency_nodes

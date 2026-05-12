@@ -16,7 +16,6 @@ from typing import (
 )
 
 from furu.core import Furu, FuruCreateMode
-from furu.dag import FuruDagNode, make_execution_dag
 from furu.dependencies import dependency_recorder, record_dependency_call
 from furu.locking import LockLostError, lock_many
 from furu.logging import _scoped_log_files
@@ -35,7 +34,6 @@ from furu.utils import class_label, nfs_safe_unique_name
 from furu.worker_execution import (
     _DependencyNotReady,
     _worker_execution_lease_id,
-    worker_execution_context,
 )
 
 type HasLock = Callable[[], bool]
@@ -197,37 +195,9 @@ def load_or_create[T](
 
 
 def submit(objs: Sequence[Furu[Any]]) -> None:
-    nodes_by_id: dict[str, FuruDagNode[Furu[Any]]] = {}
-    zero_dependency_nodes = make_execution_dag(objs, nodes_by_id)
+    from furu.worker import Manager
 
-    while zero_dependency_nodes:
-        node = zero_dependency_nodes.pop(0)
-        try:
-            with worker_execution_context(lease_id=node.obj.object_id):
-                _load_or_create_local(node.obj)
-        except _DependencyNotReady as exc:
-            new_objs = [
-                dep for dep in exc.dependencies if dep.object_id not in nodes_by_id
-            ]
-            zero_dependency_nodes.extend(make_execution_dag(new_objs, nodes_by_id))
-            for lazy_dep in exc.dependencies:
-                dep_node = nodes_by_id[lazy_dep.object_id]
-                if dep_node not in node.dependencies:
-                    node.dependencies.append(dep_node)
-                    dep_node.dependents.append(node)
-            continue
-
-        del nodes_by_id[node.obj.object_id]
-        for dependent in node.dependents:
-            dependent.dependencies.remove(node)
-            if not dependent.dependencies:
-                zero_dependency_nodes.append(dependent)
-
-    if nodes_by_id:
-        unresolved = ", ".join(sorted(nodes_by_id))
-        raise RuntimeError(
-            f"submit() could not make progress; unresolved dependencies: {unresolved}"
-        )
+    Manager.submit(objs)
 
 
 def _normalize_load_or_create_input[T](
