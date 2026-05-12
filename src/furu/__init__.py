@@ -4,6 +4,7 @@ from furu.core import Furu
 from furu.dependencies import dependency
 from furu.execution import load_or_create, submit
 from furu.logging import get_logger
+from furu.manager import Manager
 from furu.migration import Migration
 from furu.result import LazyResult, save_as
 from furu.result.codec import ResultCodec, ResultRegistry
@@ -15,6 +16,7 @@ __all__ = [
     "__version__",
     "Furu",
     "LazyResult",
+    "Manager",
     "Migration",
     "dependency",
     "ResultCodec",

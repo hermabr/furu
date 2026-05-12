@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import cached_property
 from pathlib import Path
@@ -23,12 +22,20 @@ class GitData(BaseModel):
     # submodules: dict # TODO: add this
 
 
-@dataclass(frozen=True, kw_only=True)
-class ArtifactSpec:
+class ArtifactSpec(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        serialize_by_alias=True,
+        strict=True,
+        validate_by_alias=True,
+        validate_by_name=True,
+    )
+
     fully_qualified_name: str
     artifact_data: dict[str, JsonValue]
     artifact_hash: str
-    schema: JsonValue
+    schema_: JsonValue = Field(alias="schema")
     schema_hash: str
 
     @classmethod
@@ -40,6 +47,10 @@ class ArtifactSpec:
             schema=obj.schema,
             schema_hash=obj.artifact_schema_hash,
         )
+
+    @property
+    def schema(self) -> JsonValue:
+        return self.schema_
 
     @cached_property
     def object_id(self) -> str:

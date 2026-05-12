@@ -20,8 +20,14 @@ class FuruDagNode[TFuru: Furu]:
 def make_execution_dag[TFuru: Furu](
     objs: Sequence[TFuru],
     nodes_by_id: dict[str, FuruDagNode[TFuru]],
+    *,
+    ready: dict[str, FuruDagNode[TFuru]] | None = None,
+    blocked: dict[str, FuruDagNode[TFuru]] | None = None,
 ) -> list[FuruDagNode[TFuru]]:
     from furu.core import Furu
+
+    if (ready is None) != (blocked is None):
+        raise TypeError("ready and blocked must be provided together")
 
     if any(not isinstance(obj, Furu) for obj in objs):
         # TODO: accept pytrees of Furu objects (e.g. nested lists/dicts/dataclasses)
@@ -54,4 +60,11 @@ def make_execution_dag[TFuru: Furu](
             node.dependencies.append(dep_node)
             dep_node.dependents.append(node)
 
-    return [node for node in newly_added if not node.dependencies]
+    zero_dependency_nodes = [node for node in newly_added if not node.dependencies]
+
+    if ready is not None and blocked is not None:
+        for node in newly_added:
+            target = ready if not node.dependencies else blocked
+            target[node.obj.object_id] = node
+
+    return zero_dependency_nodes
