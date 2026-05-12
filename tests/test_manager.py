@@ -1,8 +1,8 @@
 from furu import Furu
 from furu.dag import FuruDagNode, make_execution_dag
-from furu.manager import Manager
+from furu.execution.manager import Manager
 from furu.metadata import ArtifactSpec
-from furu.worker_execution import BlockedUpdate, FinishUpdate, Job
+from furu.worker import BlockedUpdate, FinishUpdate, Job
 
 
 class ManagerLeaf(Furu[int]):

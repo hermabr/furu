@@ -109,7 +109,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def try_load(self) -> T:  # TODO: make a better name for this
         from furu.dependencies import record_dependency_call
         from furu.migration import result_dir_for_loading
-        from furu.worker_execution import (
+        from furu.worker import (
             _DependencyNotReady,
             _worker_execution_lease_id,
         )
