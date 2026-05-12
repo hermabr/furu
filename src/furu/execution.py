@@ -215,12 +215,13 @@ def submit(objs: Sequence[Furu[Any]]) -> None:
                 if dep_node not in node.dependencies:
                     node.dependencies.append(dep_node)
                     dep_node.dependents.append(node)
-        else:
-            del nodes_by_id[node.obj.object_id]
-            for dependent in list(node.dependents):
-                dependent.dependencies.remove(node)
-                if not dependent.dependencies:
-                    zero_dependency_nodes.append(dependent)
+            continue
+
+        del nodes_by_id[node.obj.object_id]
+        for dependent in list(node.dependents):
+            dependent.dependencies.remove(node)
+            if not dependent.dependencies:
+                zero_dependency_nodes.append(dependent)
 
     if nodes_by_id:
         unresolved = ", ".join(sorted(nodes_by_id))
