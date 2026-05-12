@@ -415,6 +415,13 @@ def _execute_group[T](
                 results_by_object_id[obj.object_id] = _unwrap_save_as(result)
 
             logger.debug("load_or_create complete")
+        except _DependencyNotReady as exc:
+            logger.debug(
+                "load_or_create deferred: %s discovered %d missing dependency/dependencies",
+                exc.call_kind,
+                len(exc.dependencies),
+            )
+            raise
         except BaseException as exc:
             logger.exception("load_or_create failed")
             logger.error(
