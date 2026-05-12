@@ -1,32 +1,22 @@
 from __future__ import annotations
 
-import socket
 import threading
-import time
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, assert_never
 from uuid import uuid4
 
 from furu.core import Furu
-from furu.dependencies import collect_declared_refs
+from furu.dag import DagNode, _add_to_dag
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
 from furu.worker.protocol import (
-    BlockedRequest,
     FinishFailedRequest,
     FinishRequest,
     FinishSuccessRequest,
     GetJobResponse,
     Job,
 )
-
-
-@dataclass(eq=False)
-class DagNode[TFuru: Furu]:
-    obj: TFuru
-    dependencies: list[DagNode[TFuru]] = field(default_factory=list)
-    dependents: list[DagNode[TFuru]] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,8 +32,11 @@ class FailedJob:
     error: str
 
 
-class Scheduler:
+class Manager:
     def __init__(self, objs: Sequence[Furu[Any]]) -> None:
+        if not objs:
+            raise ValueError("Manager requires at least one Furu object")
+
         self.nodes_by_id: dict[str, DagNode[Furu[Any]]] = {}
         self.ready: dict[str, DagNode[Furu[Any]]] = {}
         self.blocked: dict[str, DagNode[Furu[Any]]] = {}
@@ -54,7 +47,18 @@ class Scheduler:
         self.done = threading.Event()
         self._finish_error: str | None = None
 
-        self._add_to_dag(objs)
+        _add_to_dag(self, objs)
+
+    def run(
+        self,
+        *,
+        n_workers: int = 1,
+        host: str = "127.0.0.1",
+        port: int = 0,
+    ) -> None:
+        from furu.execution.server import run_until_done
+
+        run_until_done(self, n_workers=n_workers, host=host, port=port)
 
     def get_job(self) -> GetJobResponse:
         with self.lock:
@@ -92,7 +96,11 @@ class Scheduler:
                     assert_never(request)
             self._maybe_finish_locked()
 
-    def block(self, lease_id: str, dependencies: Sequence[ArtifactSpec]) -> None:
+    def report_blocked(
+        self,
+        lease_id: str,
+        dependencies: Sequence[ArtifactSpec],
+    ) -> None:
         with self.lock:
             running_job = self._pop_running_locked(lease_id)
             node = running_job.node
@@ -112,7 +120,7 @@ class Scheduler:
                     missing_dependency_ids.add(artifact.object_id)
                     missing_dependencies.append(Furu.from_artifact(artifact))
 
-            self._add_to_dag(missing_dependencies)
+            _add_to_dag(self, missing_dependencies)
 
             for dependency_id in dependency_ids:
                 dep_node = self.nodes_by_id[dependency_id]
@@ -127,129 +135,9 @@ class Scheduler:
                 self.ready[node.obj.object_id] = node
             self._maybe_finish_locked()
 
-    def create_app(self) -> Any:
-        from fastapi import FastAPI
-
-        app = FastAPI()
-
-        @app.get("/get_job", response_model=GetJobResponse)
-        def get_job() -> GetJobResponse:
-            return self.get_job()
-
-        @app.post("/finish/{lease_id}")
-        def finish(lease_id: str, request: FinishRequest) -> dict[str, bool]:
-            self.finish(lease_id, request)
-            return {"ok": True}
-
-        @app.post("/blocked/{lease_id}")
-        def blocked(lease_id: str, request: BlockedRequest) -> dict[str, bool]:
-            self.block(lease_id, request.dependencies)
-            return {"ok": True}
-
-        return app
-
-    def _add_to_dag(self, objs: Sequence[Furu[Any]]) -> None:
-        if any(not isinstance(obj, Furu) for obj in objs):
-            # TODO: accept pytrees of Furu objects (e.g. nested lists/dicts/dataclasses)
-            # and flatten them before walking dependencies.
-            raise TypeError("expected Furu objects")
-
-        refs_by_id: dict[str, tuple[Furu[Any], ...]] = {}
-        newly_added: list[DagNode[Furu[Any]]] = []
-        # TODO: detect cycles and raise a clear error
-        pending = list(objs)
-
-        while pending:
-            obj = pending.pop()
-            if obj.object_id in self.nodes_by_id:
-                continue
-            node = DagNode(obj=obj)
-            self.nodes_by_id[obj.object_id] = node
-            newly_added.append(node)
-            if obj.status() == "completed":
-                refs_by_id[obj.object_id] = ()
-                continue
-            refs = collect_declared_refs(obj)
-            refs_by_id[obj.object_id] = refs
-            pending.extend(refs)
-
-        for obj_id, refs in refs_by_id.items():
-            node = self.nodes_by_id[obj_id]
-            for ref in refs:
-                dep_node = self.nodes_by_id[ref.object_id]
-                node.dependencies.append(dep_node)
-                dep_node.dependents.append(node)
-
-        for node in newly_added:
-            target = self.ready if not node.dependencies else self.blocked
-            target[node.obj.object_id] = node
-
-    def run(
-        self,
-        *,
-        n_workers: int = 1,
-        host: str = "127.0.0.1",
-        port: int = 0,
-    ) -> None:
-        if n_workers < 1:
-            raise ValueError("n_workers must be at least 1")
-
+    def unresolved_object_ids(self) -> list[str]:
         with self.lock:
-            self._maybe_finish_locked()
-        if self.done.is_set():
-            self.raise_for_failure()
-            return
-
-        import uvicorn
-
-        from furu.worker.loop import worker_loop
-
-        app = self.create_app()
-        sock = _bind_socket(host=host, port=port)
-        bound_host, bound_port = sock.getsockname()[:2]
-        server_url = f"http://{bound_host}:{bound_port}"
-
-        server = uvicorn.Server(
-            uvicorn.Config(
-                app,
-                log_level="warning",
-                lifespan="off",
-                ws="none",
-            )
-        )
-        server_thread = threading.Thread(
-            target=server.run,
-            kwargs={"sockets": [sock]},
-            name="furu-scheduler-server",
-        )
-        workers = [
-            threading.Thread(
-                target=worker_loop,
-                kwargs={"server_url": server_url},
-                name=f"furu-worker-{idx}",
-            )
-            for idx in range(n_workers)
-        ]
-
-        try:
-            server_thread.start()
-            _wait_for_server(server, server_thread)
-
-            for worker in workers:
-                worker.start()
-
-            while not self.done.wait(timeout=0.1):
-                if any(not worker.is_alive() for worker in workers):
-                    self.fail("a worker exited before scheduler run completed")
-                    break
-
-            for worker in workers:
-                worker.join(timeout=5)
-        finally:
-            server.should_exit = True
-            server_thread.join(timeout=10)
-
-        self.raise_for_failure()
+            return sorted(self.blocked)
 
     def raise_for_failure(self) -> None:
         if self._finish_error is not None:
@@ -260,7 +148,7 @@ class Scheduler:
             if self.done.is_set():
                 return
             self._finish_error = message
-            get_logger().error("furu scheduler finished with error: %s", message)
+            get_logger().error("furu manager finished with error: %s", message)
             self.done.set()
 
     def _pop_running_locked(self, lease_id: str) -> RunningJob:
@@ -285,10 +173,10 @@ class Scheduler:
         if self.failed or self.blocked:
             self._finish_error = self._format_finish_error_locked()
             get_logger().error(
-                "furu scheduler finished with error: %s", self._finish_error
+                "furu manager finished with error: %s", self._finish_error
             )
         else:
-            get_logger().info("furu scheduler finished successfully")
+            get_logger().info("furu manager finished successfully")
         self.done.set()
 
     def _format_finish_error_locked(self) -> str:
@@ -306,23 +194,4 @@ class Scheduler:
                 f"first failure for {first_object_id} "
                 f"(lease {failed_job.lease_id}): {failed_job.error}"
             )
-        return "scheduler run could not complete; " + "; ".join(parts)
-
-
-def _bind_socket(*, host: str, port: int) -> socket.socket:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind((host, port))
-    sock.listen()
-    sock.set_inheritable(True)
-    return sock
-
-
-def _wait_for_server(server: Any, server_thread: threading.Thread) -> None:
-    deadline = time.monotonic() + 10
-    while not server.started:
-        if not server_thread.is_alive():
-            raise RuntimeError("scheduler server exited before it was ready")
-        if time.monotonic() > deadline:
-            raise TimeoutError("scheduler server did not start within 10 seconds")
-        time.sleep(0.01)
+        return "manager run could not complete; " + "; ".join(parts)
