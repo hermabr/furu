@@ -7,7 +7,11 @@ import furu
 from furu import Furu
 from furu.dag import DagNode
 from furu.execution.manager import Manager
-from furu.storage_layout import run_log_path_in
+from furu.storage_layout import (
+    compute_lock_path_in,
+    internal_furu_dir_in,
+    run_log_path_in,
+)
 
 
 class Leaf(Furu[str]):
@@ -56,6 +60,11 @@ class ComputedParent(Furu[str]):
 
     def create(self) -> str:
         return self.computed_child.load_or_create()
+
+
+def mark_running(obj: Furu) -> None:
+    internal_furu_dir_in(obj.data_dir).mkdir(parents=True, exist_ok=True)
+    compute_lock_path_in(obj.data_dir).touch()
 
 
 def test_add_to_dag_single_object_no_dependencies():
@@ -166,6 +175,25 @@ def test_add_to_dag_completed_root_has_no_dependencies():
     assert manager.ready == {}
     assert manager.nodes_by_id == {}
     assert manager.blocked == {}
+
+
+def test_add_to_dag_rejects_running_root():
+    leaf = Leaf(name="running-root")
+    mark_running(leaf)
+    assert leaf.status() == "running"
+
+    with pytest.raises(RuntimeError, match="cannot add running object to DAG"):
+        Manager([leaf])
+
+
+def test_add_to_dag_rejects_running_dependency():
+    leaf = Leaf(name="running-dependency")
+    mid = Mid(label="m", child=leaf)
+    mark_running(leaf)
+    assert leaf.status() == "running"
+
+    with pytest.raises(RuntimeError, match="cannot add running object to DAG"):
+        Manager([mid])
 
 
 def test_add_to_dag_accepts_a_list_of_inputs():
