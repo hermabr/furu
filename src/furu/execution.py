@@ -16,7 +16,7 @@ from typing import (
 )
 
 from furu.core import Furu, FuruCreateMode
-from furu.dag import _extend_execution_dag, make_execution_dag
+from furu.dag import FuruDagNode, make_execution_dag
 from furu.dependencies import dependency_recorder, record_dependency_call
 from furu.locking import LockLostError, lock_many
 from furu.logging import _scoped_log_files
@@ -197,7 +197,8 @@ def load_or_create[T](
 
 
 def submit(objs: Sequence[Furu[Any]]) -> None:
-    zero_dependency_nodes, nodes_by_id = make_execution_dag(objs)
+    nodes_by_id: dict[str, FuruDagNode[Furu[Any]]] = {}
+    zero_dependency_nodes = make_execution_dag(objs, nodes_by_id)
 
     while zero_dependency_nodes:
         node = zero_dependency_nodes.pop(0)
@@ -208,7 +209,7 @@ def submit(objs: Sequence[Furu[Any]]) -> None:
             new_objs = [
                 dep for dep in exc.dependencies if dep.object_id not in nodes_by_id
             ]
-            zero_dependency_nodes.extend(_extend_execution_dag(new_objs, nodes_by_id))
+            zero_dependency_nodes.extend(make_execution_dag(new_objs, nodes_by_id))
             for lazy_dep in exc.dependencies:
                 dep_node = nodes_by_id[lazy_dep.object_id]
                 if dep_node not in node.dependencies:

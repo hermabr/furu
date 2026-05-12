@@ -17,7 +17,7 @@ class FuruDagNode[TFuru: Furu]:
     dependents: list[FuruDagNode[TFuru]] = field(default_factory=list)
 
 
-def _extend_execution_dag[TFuru: Furu](
+def make_execution_dag[TFuru: Furu](
     objs: Sequence[TFuru],
     nodes_by_id: dict[str, FuruDagNode[TFuru]],
 ) -> list[FuruDagNode[TFuru]]:
@@ -55,11 +55,3 @@ def _extend_execution_dag[TFuru: Furu](
             dep_node.dependents.append(node)
 
     return [node for node in newly_added if not node.dependencies]
-
-
-def make_execution_dag[TFuru: Furu](
-    objs: Sequence[TFuru],
-) -> tuple[list[FuruDagNode[TFuru]], dict[str, FuruDagNode[TFuru]]]:
-    nodes_by_id: dict[str, FuruDagNode[TFuru]] = {}
-    zero_dependency_nodes = _extend_execution_dag(objs, nodes_by_id)
-    return zero_dependency_nodes, nodes_by_id

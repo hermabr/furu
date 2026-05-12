@@ -58,7 +58,8 @@ class ComputedParent(Furu[str]):
 
 def test_make_execution_dag_single_object_no_dependencies():
     leaf = Leaf(name="x")
-    zero_dep, nodes_by_id = make_execution_dag([leaf])
+    nodes_by_id: dict[str, FuruDagNode[Furu]] = {}
+    zero_dep = make_execution_dag([leaf], nodes_by_id)
 
     assert len(zero_dep) == 1
     (root,) = zero_dep
@@ -77,7 +78,8 @@ def test_make_execution_dag_traverses_declared_refs_recursively():
     mid_right = Mid(label="R", child=leaf_b)
     top = Top(name="t", left=mid_left, right=mid_right)
 
-    zero_dep, nodes_by_id = make_execution_dag([top])
+    nodes_by_id: dict[str, FuruDagNode[Furu]] = {}
+    zero_dep = make_execution_dag([top], nodes_by_id)
 
     zero_dep_ids = {node.obj.object_id for node in zero_dep}
     assert zero_dep_ids == {leaf_a.object_id, leaf_b.object_id}
@@ -111,7 +113,8 @@ def test_make_execution_dag_shared_dependency_has_multiple_dependents():
     mid_right = Mid(label="R", child=shared)
     top = Top(name="t", left=mid_left, right=mid_right)
 
-    zero_dep, nodes_by_id = make_execution_dag([top])
+    nodes_by_id: dict[str, FuruDagNode[Furu]] = {}
+    zero_dep = make_execution_dag([top], nodes_by_id)
 
     assert len(zero_dep) == 1
     (shared_root,) = zero_dep
@@ -137,7 +140,8 @@ def test_make_execution_dag_stops_recursion_at_completed_objects():
     leaf.load_or_create()
     assert leaf.status() == "completed"
 
-    zero_dep, nodes_by_id = make_execution_dag([mid])
+    nodes_by_id: dict[str, FuruDagNode[Furu]] = {}
+    zero_dep = make_execution_dag([mid], nodes_by_id)
 
     assert len(zero_dep) == 1
     (leaf_root,) = zero_dep
@@ -154,7 +158,8 @@ def test_make_execution_dag_completed_root_has_no_dependencies():
     mid.load_or_create()
     assert mid.status() == "completed"
 
-    zero_dep, nodes_by_id = make_execution_dag([mid])
+    nodes_by_id: dict[str, FuruDagNode[Furu]] = {}
+    zero_dep = make_execution_dag([mid], nodes_by_id)
 
     assert len(zero_dep) == 1
     (root,) = zero_dep
@@ -169,7 +174,8 @@ def test_make_execution_dag_accepts_a_list_of_inputs():
     leaf_b = Leaf(name="b")
     mid = Mid(label="m", child=leaf_a)
 
-    zero_dep, nodes_by_id = make_execution_dag([mid, leaf_b])
+    nodes_by_id: dict[str, FuruDagNode[Furu]] = {}
+    zero_dep = make_execution_dag([mid, leaf_b], nodes_by_id)
 
     zero_dep_ids = {node.obj.object_id for node in zero_dep}
     assert zero_dep_ids == {leaf_a.object_id, leaf_b.object_id}
@@ -185,7 +191,8 @@ def test_make_execution_dag_handles_nested_dataclass_refs():
     leaf_b = Leaf(name="b")
     parent = NestedParent(bundle=LeafBundle(a=leaf_a, b=leaf_b))
 
-    zero_dep, nodes_by_id = make_execution_dag([parent])
+    nodes_by_id: dict[str, FuruDagNode[Furu]] = {}
+    zero_dep = make_execution_dag([parent], nodes_by_id)
 
     zero_dep_ids = {node.obj.object_id for node in zero_dep}
     assert zero_dep_ids == {leaf_a.object_id, leaf_b.object_id}
@@ -196,7 +203,8 @@ def test_make_execution_dag_handles_nested_dataclass_refs():
 def test_make_execution_dag_walks_computed_dependencies():
     parent = ComputedParent(name="p")
 
-    zero_dep, nodes_by_id = make_execution_dag([parent])
+    nodes_by_id: dict[str, FuruDagNode[Furu]] = {}
+    zero_dep = make_execution_dag([parent], nodes_by_id)
 
     assert len(zero_dep) == 1
     (child_root,) = zero_dep
@@ -206,7 +214,8 @@ def test_make_execution_dag_walks_computed_dependencies():
 
 
 def test_make_execution_dag_empty_list_returns_empty_results():
-    zero_dep, nodes_by_id = make_execution_dag([])
+    nodes_by_id: dict[str, FuruDagNode[Furu]] = {}
+    zero_dep = make_execution_dag([], nodes_by_id)
 
     assert zero_dep == []
     assert nodes_by_id == {}
@@ -214,7 +223,7 @@ def test_make_execution_dag_empty_list_returns_empty_results():
 
 def test_make_execution_dag_rejects_non_furu_values():
     with pytest.raises(TypeError, match="expected Furu objects"):
-        make_execution_dag([Leaf(name="ok"), "not-a-furu"])  # ty: ignore[invalid-argument-type]
+        make_execution_dag([Leaf(name="ok"), "not-a-furu"], {})  # ty: ignore[invalid-argument-type]
 
 
 class TrackingLeaf(Furu[int]):
