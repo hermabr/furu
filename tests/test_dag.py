@@ -1,9 +1,10 @@
 from dataclasses import dataclass
+from typing import ClassVar
 
 import pytest
 
 import furu
-from furu import Furu
+from furu import Furu, submit
 from furu.dag import FuruDagNode, make_execution_dag
 
 
@@ -57,7 +58,8 @@ class ComputedParent(Furu[str]):
 
 def test_make_execution_dag_single_object_no_dependencies():
     leaf = Leaf(name="x")
-    zero_dep, nodes_by_id = make_execution_dag([leaf])
+    nodes_by_id: dict[str, FuruDagNode[Furu]] = {}
+    zero_dep = make_execution_dag([leaf], nodes_by_id)
 
     assert len(zero_dep) == 1
     (root,) = zero_dep
@@ -76,7 +78,8 @@ def test_make_execution_dag_traverses_declared_refs_recursively():
     mid_right = Mid(label="R", child=leaf_b)
     top = Top(name="t", left=mid_left, right=mid_right)
 
-    zero_dep, nodes_by_id = make_execution_dag([top])
+    nodes_by_id: dict[str, FuruDagNode[Furu]] = {}
+    zero_dep = make_execution_dag([top], nodes_by_id)
 
     zero_dep_ids = {node.obj.object_id for node in zero_dep}
     assert zero_dep_ids == {leaf_a.object_id, leaf_b.object_id}
@@ -110,7 +113,8 @@ def test_make_execution_dag_shared_dependency_has_multiple_dependents():
     mid_right = Mid(label="R", child=shared)
     top = Top(name="t", left=mid_left, right=mid_right)
 
-    zero_dep, nodes_by_id = make_execution_dag([top])
+    nodes_by_id: dict[str, FuruDagNode[Furu]] = {}
+    zero_dep = make_execution_dag([top], nodes_by_id)
 
     assert len(zero_dep) == 1
     (shared_root,) = zero_dep
@@ -136,7 +140,8 @@ def test_make_execution_dag_stops_recursion_at_completed_objects():
     leaf.load_or_create()
     assert leaf.status() == "completed"
 
-    zero_dep, nodes_by_id = make_execution_dag([mid])
+    nodes_by_id: dict[str, FuruDagNode[Furu]] = {}
+    zero_dep = make_execution_dag([mid], nodes_by_id)
 
     assert len(zero_dep) == 1
     (leaf_root,) = zero_dep
@@ -153,7 +158,8 @@ def test_make_execution_dag_completed_root_has_no_dependencies():
     mid.load_or_create()
     assert mid.status() == "completed"
 
-    zero_dep, nodes_by_id = make_execution_dag([mid])
+    nodes_by_id: dict[str, FuruDagNode[Furu]] = {}
+    zero_dep = make_execution_dag([mid], nodes_by_id)
 
     assert len(zero_dep) == 1
     (root,) = zero_dep
@@ -168,7 +174,8 @@ def test_make_execution_dag_accepts_a_list_of_inputs():
     leaf_b = Leaf(name="b")
     mid = Mid(label="m", child=leaf_a)
 
-    zero_dep, nodes_by_id = make_execution_dag([mid, leaf_b])
+    nodes_by_id: dict[str, FuruDagNode[Furu]] = {}
+    zero_dep = make_execution_dag([mid, leaf_b], nodes_by_id)
 
     zero_dep_ids = {node.obj.object_id for node in zero_dep}
     assert zero_dep_ids == {leaf_a.object_id, leaf_b.object_id}
@@ -184,7 +191,8 @@ def test_make_execution_dag_handles_nested_dataclass_refs():
     leaf_b = Leaf(name="b")
     parent = NestedParent(bundle=LeafBundle(a=leaf_a, b=leaf_b))
 
-    zero_dep, nodes_by_id = make_execution_dag([parent])
+    nodes_by_id: dict[str, FuruDagNode[Furu]] = {}
+    zero_dep = make_execution_dag([parent], nodes_by_id)
 
     zero_dep_ids = {node.obj.object_id for node in zero_dep}
     assert zero_dep_ids == {leaf_a.object_id, leaf_b.object_id}
@@ -195,7 +203,8 @@ def test_make_execution_dag_handles_nested_dataclass_refs():
 def test_make_execution_dag_walks_computed_dependencies():
     parent = ComputedParent(name="p")
 
-    zero_dep, nodes_by_id = make_execution_dag([parent])
+    nodes_by_id: dict[str, FuruDagNode[Furu]] = {}
+    zero_dep = make_execution_dag([parent], nodes_by_id)
 
     assert len(zero_dep) == 1
     (child_root,) = zero_dep
@@ -205,7 +214,8 @@ def test_make_execution_dag_walks_computed_dependencies():
 
 
 def test_make_execution_dag_empty_list_returns_empty_results():
-    zero_dep, nodes_by_id = make_execution_dag([])
+    nodes_by_id: dict[str, FuruDagNode[Furu]] = {}
+    zero_dep = make_execution_dag([], nodes_by_id)
 
     assert zero_dep == []
     assert nodes_by_id == {}
@@ -213,4 +223,99 @@ def test_make_execution_dag_empty_list_returns_empty_results():
 
 def test_make_execution_dag_rejects_non_furu_values():
     with pytest.raises(TypeError, match="expected Furu objects"):
-        make_execution_dag([Leaf(name="ok"), "not-a-furu"])  # ty: ignore[invalid-argument-type]
+        make_execution_dag([Leaf(name="ok"), "not-a-furu"], {})  # ty: ignore[invalid-argument-type]
+
+
+class TrackingLeaf(Furu[int]):
+    n: int
+    create_calls: ClassVar[list[int]] = []
+
+    def create(self) -> int:
+        type(self).create_calls.append(self.n)
+        return self.n * 2
+
+
+class TrackingMid(Furu[int]):
+    label: str
+    child: TrackingLeaf
+    create_calls: ClassVar[list[str]] = []
+
+    def create(self) -> int:
+        type(self).create_calls.append(self.label)
+        return self.child.load_or_create() + 1
+
+
+class LazyChildLoader(Furu[int]):
+    base: int
+    create_calls: ClassVar[list[int]] = []
+
+    def create(self) -> int:
+        type(self).create_calls.append(self.base)
+        return self.base + TrackingLeaf(n=self.base).load_or_create()
+
+
+@pytest.fixture(autouse=True)
+def _reset_tracking() -> None:
+    TrackingLeaf.create_calls.clear()
+    TrackingMid.create_calls.clear()
+    LazyChildLoader.create_calls.clear()
+
+
+def test_submit_runs_single_zero_dependency_node():
+    leaf = TrackingLeaf(n=3)
+
+    submit([leaf])
+
+    assert TrackingLeaf.create_calls == [3]
+    assert leaf.status() == "completed"
+    assert leaf.load_or_create() == 6
+
+
+def test_submit_runs_static_dependencies_in_order():
+    leaf = TrackingLeaf(n=4)
+    mid = TrackingMid(label="m", child=leaf)
+
+    submit([mid])
+
+    assert TrackingLeaf.create_calls == [4]
+    assert TrackingMid.create_calls == ["m"]
+    assert mid.load_or_create() == 9
+
+
+def test_submit_handles_shared_dependency_only_once():
+    shared = TrackingLeaf(n=5)
+    left = TrackingMid(label="L", child=shared)
+    right = TrackingMid(label="R", child=shared)
+
+    submit([left, right])
+
+    assert TrackingLeaf.create_calls == [5]
+    assert sorted(TrackingMid.create_calls) == ["L", "R"]
+
+
+def test_submit_discovers_lazy_dependencies_and_reruns_parent():
+    parent = LazyChildLoader(base=7)
+
+    submit([parent])
+
+    assert TrackingLeaf.create_calls == [7]
+    # Parent's create() is called once to discover the lazy dep (raising
+    # _DependencyNotReady), then once more after the dep completes.
+    assert LazyChildLoader.create_calls == [7, 7]
+    assert parent.load_or_create() == 21
+
+
+def test_submit_skips_already_completed_objects():
+    leaf = TrackingLeaf(n=8)
+    leaf.load_or_create()
+    TrackingLeaf.create_calls.clear()
+    mid = TrackingMid(label="cached-child", child=leaf)
+
+    submit([mid])
+
+    assert TrackingLeaf.create_calls == []
+    assert TrackingMid.create_calls == ["cached-child"]
+
+
+def test_submit_empty_list_is_noop():
+    submit([])
