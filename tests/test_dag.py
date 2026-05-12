@@ -6,6 +6,7 @@ import pytest
 import furu
 from furu import Furu, submit
 from furu.dag import FuruDagNode, make_execution_dag
+from furu.storage_layout import run_log_path_in
 
 
 class Leaf(Furu[str]):
@@ -330,6 +331,9 @@ def test_submit_discovers_lazy_dependencies_and_reruns_parent():
     # _DependencyNotReady), then once more after the dep completes.
     assert LazyChildLoader.create_calls == [7, 7]
     assert parent.load_or_create() == 21
+    parent_log = run_log_path_in(parent.data_dir).read_text(encoding="utf-8")
+    assert "load_or_create failed" not in parent_log
+    assert "=== Debug Details (with locals) ===" not in parent_log
 
 
 def test_submit_cleans_blocked_parent_attempt_before_runtime_dependency_runs():

@@ -182,39 +182,6 @@ def _format_error_debug_details(exc: BaseException) -> str:
     return "".join(parts)
 
 
-def _quarantine_blocked_attempts[T](
-    group: Sequence[Furu[T]],
-    *,
-    has_lock: HasLock,
-) -> list[Path]:
-    if not has_lock():
-        lock_paths = ", ".join(str(compute_lock_path_in(obj.data_dir)) for obj in group)
-        raise LockLostError(
-            f"lost lock before cleaning blocked attempt(s): {lock_paths}"
-        )
-
-    tombstones: list[Path] = []
-    for obj in group:
-        if not obj.data_dir.exists():
-            continue
-        if (
-            result_manifest_path_in(obj.data_dir).exists()
-            or result_link_path_in(obj.data_dir).exists()
-        ):
-            continue
-
-        tombstone_path = nfs_safe_unique_name(obj.data_dir, name="blocked")
-        obj.data_dir.rename(tombstone_path)
-        tombstones.append(tombstone_path)
-
-    return tombstones
-
-
-def _remove_quarantined_attempts(tombstones: Sequence[Path]) -> None:
-    for tombstone in tombstones:
-        shutil.rmtree(tombstone, ignore_errors=True)
-
-
 @overload
 def load_or_create[T](obj: Furu[T], *, use_lock: bool = True) -> T: ...
 
@@ -382,12 +349,33 @@ def _load_or_create_local[T](
                         results_by_object_id=results_by_object_id,
                     )
                 except _DependencyNotReady:
-                    blocked_tombstones.extend(
-                        _quarantine_blocked_attempts(group, has_lock=has_lock)
-                    )
+                    if not has_lock():
+                        lock_paths = ", ".join(
+                            str(compute_lock_path_in(obj.data_dir)) for obj in group
+                        )
+                        raise LockLostError(
+                            f"lost lock before cleaning blocked attempt(s): {lock_paths}"
+                        )
+
+                    for obj in group:
+                        if not obj.data_dir.exists():
+                            continue
+                        if (
+                            result_manifest_path_in(obj.data_dir).exists()
+                            or result_link_path_in(obj.data_dir).exists()
+                        ):
+                            continue
+
+                        tombstone_path = nfs_safe_unique_name(
+                            obj.data_dir,
+                            name="blocked",
+                        )
+                        obj.data_dir.rename(tombstone_path)
+                        blocked_tombstones.append(tombstone_path)
                     raise
     finally:
-        _remove_quarantined_attempts(blocked_tombstones)
+        for tombstone in blocked_tombstones:
+            shutil.rmtree(tombstone, ignore_errors=True)
 
     outputs = [results_by_object_id[obj.object_id] for obj in objs]
 
@@ -462,8 +450,12 @@ def _execute_group[T](
                 results_by_object_id[obj.object_id] = _unwrap_save_as(result)
 
             logger.debug("load_or_create complete")
-        except _DependencyNotReady:
-            logger.debug("load_or_create blocked by runtime dependency")
+        except _DependencyNotReady as exc:
+            logger.debug(
+                "load_or_create deferred: %s discovered %d missing dependency/dependencies",
+                exc.call_kind,
+                len(exc.dependencies),
+            )
             raise
         except BaseException as exc:
             logger.exception("load_or_create failed")
