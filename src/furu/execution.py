@@ -16,6 +16,12 @@ from typing import (
 )
 
 from furu.core import Furu, FuruCreateMode
+from furu.dag import (
+    FuruDagNode,
+    add_dag_dependency,
+    ensure_execution_dag_node,
+    make_execution_dag,
+)
 from furu.dependencies import dependency_recorder, record_dependency_call
 from furu.locking import LockLostError, lock_many
 from furu.logging import _scoped_log_files
@@ -31,7 +37,11 @@ from furu.storage_layout import (
     run_log_path_in,
 )
 from furu.utils import class_label, nfs_safe_unique_name
-from furu.worker_execution import _DependencyNotReady, _worker_execution_lease_id
+from furu.worker_execution import (
+    _DependencyNotReady,
+    _worker_execution_lease_id,
+    worker_execution_context,
+)
 
 type HasLock = Callable[[], bool]
 
@@ -189,6 +199,86 @@ def load_or_create[T](
     if _worker_execution_lease_id.get() is not None:
         return _load_or_create_worker(obj_or_objs)
     return _load_or_create_local(obj_or_objs, use_lock=use_lock)
+
+
+def submit(objs: Sequence[Furu[Any]]) -> None:
+    zero_dependency_nodes, nodes_by_id = make_execution_dag(objs)
+
+    while zero_dependency_nodes:
+        node = zero_dependency_nodes.pop(0)
+        if nodes_by_id.get(node.obj.object_id) is not node:
+            continue
+
+        try:
+            with worker_execution_context(lease_id=node.obj.object_id):
+                _load_or_create_local(node.obj)
+        except _DependencyNotReady as exc:
+            _add_lazy_dependencies(
+                node,
+                exc.dependencies,
+                zero_dependency_nodes=zero_dependency_nodes,
+                nodes_by_id=nodes_by_id,
+            )
+        else:
+            _complete_dag_node(
+                node,
+                zero_dependency_nodes=zero_dependency_nodes,
+                nodes_by_id=nodes_by_id,
+            )
+
+    if nodes_by_id:
+        unresolved = ", ".join(sorted(nodes_by_id))
+        raise RuntimeError(
+            f"submit() could not make progress; unresolved dependencies: {unresolved}"
+        )
+
+
+def _add_lazy_dependencies(
+    node: FuruDagNode[Furu[Any]],
+    dependencies: Sequence[Furu[Any]],
+    *,
+    zero_dependency_nodes: list[FuruDagNode[Furu[Any]]],
+    nodes_by_id: dict[str, FuruDagNode[Furu[Any]]],
+) -> None:
+    queued_ids = {queued.obj.object_id for queued in zero_dependency_nodes}
+    known_ids = set(nodes_by_id)
+
+    for dependency in dependencies:
+        dependency_node = ensure_execution_dag_node(dependency, nodes_by_id)
+        add_dag_dependency(node, dependency_node)
+
+    for obj_id in nodes_by_id.keys() - known_ids:
+        new_node = nodes_by_id[obj_id]
+        if not new_node.dependencies and obj_id not in queued_ids:
+            zero_dependency_nodes.append(new_node)
+            queued_ids.add(obj_id)
+
+
+def _complete_dag_node(
+    node: FuruDagNode[Furu[Any]],
+    *,
+    zero_dependency_nodes: list[FuruDagNode[Furu[Any]]],
+    nodes_by_id: dict[str, FuruDagNode[Furu[Any]]],
+) -> None:
+    nodes_by_id.pop(node.obj.object_id, None)
+
+    for dependent in tuple(node.dependents):
+        dependent.dependencies = [
+            dependency
+            for dependency in dependent.dependencies
+            if dependency.obj.object_id != node.obj.object_id
+        ]
+        if (
+            not dependent.dependencies
+            and dependent.obj.object_id in nodes_by_id
+            and all(
+                queued.obj.object_id != dependent.obj.object_id
+                for queued in zero_dependency_nodes
+            )
+        ):
+            zero_dependency_nodes.append(dependent)
+
+    node.dependents.clear()
 
 
 def _normalize_load_or_create_input[T](

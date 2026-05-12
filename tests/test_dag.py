@@ -1,9 +1,10 @@
 from dataclasses import dataclass
+from typing import ClassVar
 
 import pytest
 
 import furu
-from furu import Furu
+from furu import Furu, submit
 from furu.dag import FuruDagNode, make_execution_dag
 
 
@@ -53,6 +54,34 @@ class ComputedParent(Furu[str]):
 
     def create(self) -> str:
         return self.computed_child.load_or_create()
+
+
+class SubmitLeaf(Furu[str]):
+    name: str
+    create_calls: ClassVar[list[str]] = []
+
+    def create(self) -> str:
+        type(self).create_calls.append(self.name)
+        return f"submit-leaf:{self.name}"
+
+
+class SubmitParent(Furu[str]):
+    name: str
+    child: SubmitLeaf
+    create_calls: ClassVar[list[str]] = []
+
+    def create(self) -> str:
+        type(self).create_calls.append(self.name)
+        return f"submit-parent:{self.name}:{self.child.load_or_create()}"
+
+
+class SubmitLazyParent(Furu[str]):
+    name: str
+    create_calls: ClassVar[list[str]] = []
+
+    def create(self) -> str:
+        type(self).create_calls.append(self.name)
+        return SubmitLeaf(name=f"lazy-{self.name}").load_or_create()
 
 
 def test_make_execution_dag_single_object_no_dependencies():
@@ -214,3 +243,29 @@ def test_make_execution_dag_empty_list_returns_empty_results():
 def test_make_execution_dag_rejects_non_furu_values():
     with pytest.raises(TypeError, match="expected Furu objects"):
         make_execution_dag([Leaf(name="ok"), "not-a-furu"])  # ty: ignore[invalid-argument-type]
+
+
+def test_submit_runs_declared_dependencies_before_dependents() -> None:
+    SubmitLeaf.create_calls.clear()
+    SubmitParent.create_calls.clear()
+    child = SubmitLeaf(name="child")
+    parent = SubmitParent(name="parent", child=child)
+
+    submit([parent])
+
+    assert child.load_or_create() == "submit-leaf:child"
+    assert parent.load_or_create() == "submit-parent:parent:submit-leaf:child"
+    assert SubmitLeaf.create_calls == ["child"]
+    assert SubmitParent.create_calls == ["parent"]
+
+
+def test_submit_adds_lazy_dependencies_and_reruns_parent() -> None:
+    SubmitLeaf.create_calls.clear()
+    SubmitLazyParent.create_calls.clear()
+    parent = SubmitLazyParent(name="parent")
+
+    submit([parent])
+
+    assert parent.load_or_create() == "submit-leaf:lazy-parent"
+    assert SubmitLeaf.create_calls == ["lazy-parent"]
+    assert SubmitLazyParent.create_calls == ["parent", "parent"]
