@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import functools
 import traceback
+from collections import deque
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
@@ -16,6 +17,12 @@ from typing import (
 )
 
 from furu.core import Furu, FuruCreateMode
+from furu.dag import (
+    FuruDagNode,
+    add_dependency,
+    add_execution_dag_nodes,
+    make_execution_dag,
+)
 from furu.dependencies import dependency_recorder, record_dependency_call
 from furu.locking import LockLostError, lock_many
 from furu.logging import _scoped_log_files
@@ -31,9 +38,14 @@ from furu.storage_layout import (
     run_log_path_in,
 )
 from furu.utils import class_label, nfs_safe_unique_name
-from furu.worker_execution import _DependencyNotReady, _worker_execution_lease_id
+from furu.worker_execution import (
+    _DependencyNotReady,
+    _worker_execution_lease_id,
+    worker_execution_context,
+)
 
 type HasLock = Callable[[], bool]
+type _AnyFuruNode = FuruDagNode[Furu[Any]]
 
 
 _create_execution_active: ContextVar[bool] = ContextVar(
@@ -189,6 +201,129 @@ def load_or_create[T](
     if _worker_execution_lease_id.get() is not None:
         return _load_or_create_worker(obj_or_objs)
     return _load_or_create_local(obj_or_objs, use_lock=use_lock)
+
+
+def _enqueue_zero_dependency_node(
+    node: _AnyFuruNode,
+    zero_dependency_nodes: deque[_AnyFuruNode],
+    queued_node_ids: set[str],
+) -> None:
+    node_id = node.obj.object_id
+    if node.dependencies or node_id in queued_node_ids:
+        return
+    zero_dependency_nodes.append(node)
+    queued_node_ids.add(node_id)
+
+
+def _add_lazy_dependencies_to_execution_dag(
+    *,
+    node: _AnyFuruNode,
+    dependencies: Sequence[Furu[Any]],
+    nodes_by_id: dict[str, _AnyFuruNode],
+    zero_dependency_nodes: deque[_AnyFuruNode],
+    queued_node_ids: set[str],
+) -> None:
+    added_nodes = add_execution_dag_nodes(dependencies, nodes_by_id)
+
+    for dependency in dependencies:
+        dependency_node = nodes_by_id[dependency.object_id]
+        add_dependency(node, dependency_node)
+        _enqueue_zero_dependency_node(
+            dependency_node,
+            zero_dependency_nodes,
+            queued_node_ids,
+        )
+
+    for added_node in added_nodes:
+        _enqueue_zero_dependency_node(
+            added_node,
+            zero_dependency_nodes,
+            queued_node_ids,
+        )
+
+
+def _complete_execution_dag_node(
+    node: _AnyFuruNode,
+    *,
+    nodes_by_id: dict[str, _AnyFuruNode],
+    zero_dependency_nodes: deque[_AnyFuruNode],
+    queued_node_ids: set[str],
+) -> None:
+    node_id = node.obj.object_id
+    if nodes_by_id.pop(node_id, None) is None:
+        return
+
+    for dependency in node.dependencies:
+        dependency.dependents = [
+            dependent
+            for dependent in dependency.dependents
+            if dependent.obj.object_id != node_id
+        ]
+
+    for dependent in node.dependents:
+        dependent.dependencies = [
+            dependency
+            for dependency in dependent.dependencies
+            if dependency.obj.object_id != node_id
+        ]
+        if dependent.obj.object_id in nodes_by_id:
+            _enqueue_zero_dependency_node(
+                dependent,
+                zero_dependency_nodes,
+                queued_node_ids,
+            )
+
+    node.dependencies.clear()
+    node.dependents.clear()
+
+
+def _format_unresolved_dag_nodes(nodes_by_id: dict[str, _AnyFuruNode]) -> str:
+    labels = [
+        f"{type(node.obj).__name__}:{node.obj.artifact_hash[:5]}"
+        for node in nodes_by_id.values()
+    ]
+    if len(labels) <= 5:
+        return ", ".join(labels)
+    return ", ".join(labels[:5]) + f", and {len(labels) - 5} more"
+
+
+def submit(objs: Sequence[Furu[Any]]) -> None:
+    zero_dependency_nodes_list, nodes_by_id = make_execution_dag(objs)
+    zero_dependency_nodes = deque(zero_dependency_nodes_list)
+    queued_node_ids = {node.obj.object_id for node in zero_dependency_nodes}
+
+    while zero_dependency_nodes:
+        node = zero_dependency_nodes.popleft()
+        node_id = node.obj.object_id
+        queued_node_ids.discard(node_id)
+        if nodes_by_id.get(node_id) is not node or node.dependencies:
+            continue
+
+        try:
+            with worker_execution_context(lease_id=node_id):
+                _load_or_create_local(node.obj)
+        except _DependencyNotReady as exc:
+            _add_lazy_dependencies_to_execution_dag(
+                node=node,
+                dependencies=exc.dependencies,
+                nodes_by_id=nodes_by_id,
+                zero_dependency_nodes=zero_dependency_nodes,
+                queued_node_ids=queued_node_ids,
+            )
+            continue
+
+        _complete_execution_dag_node(
+            node,
+            nodes_by_id=nodes_by_id,
+            zero_dependency_nodes=zero_dependency_nodes,
+            queued_node_ids=queued_node_ids,
+        )
+
+    if nodes_by_id:
+        raise RuntimeError(
+            "submit() could not make progress through the execution DAG; "
+            f"unresolved nodes: {_format_unresolved_dag_nodes(nodes_by_id)}"
+        )
 
 
 def _normalize_load_or_create_input[T](
@@ -376,6 +511,8 @@ def _execute_group[T](
                 results_by_object_id[obj.object_id] = _unwrap_save_as(result)
 
             logger.debug("load_or_create complete")
+        except _DependencyNotReady:
+            raise
         except BaseException as exc:
             logger.exception("load_or_create failed")
             logger.error(

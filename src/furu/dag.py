@@ -17,17 +17,34 @@ class FuruDagNode[TFuru: Furu]:
     dependents: list[FuruDagNode[TFuru]] = field(default_factory=list)
 
 
-def make_execution_dag[TFuru: Furu](
+def add_dependency[TFuru: Furu](
+    node: FuruDagNode[TFuru],
+    dependency: FuruDagNode[TFuru],
+) -> None:
+    if all(
+        existing.obj.object_id != dependency.obj.object_id
+        for existing in node.dependencies
+    ):
+        node.dependencies.append(dependency)
+    if all(
+        existing.obj.object_id != node.obj.object_id
+        for existing in dependency.dependents
+    ):
+        dependency.dependents.append(node)
+
+
+def add_execution_dag_nodes[TFuru: Furu](
     objs: Sequence[TFuru],
-) -> tuple[list[FuruDagNode[TFuru]], dict[str, FuruDagNode[TFuru]]]:
+    nodes_by_id: dict[str, FuruDagNode[TFuru]],
+    *,
+    type_error_message: str = "add_execution_dag_nodes() expected Furu objects",
+) -> list[FuruDagNode[TFuru]]:
     from furu.core import Furu
 
     if any(not isinstance(obj, Furu) for obj in objs):
-        # TODO: accept pytrees of Furu objects (e.g. nested lists/dicts/dataclasses)
-        # and flatten them before walking dependencies.
-        raise TypeError("make_execution_dag() expected Furu objects")
+        raise TypeError(type_error_message)
 
-    nodes_by_id: dict[str, FuruDagNode[TFuru]] = {}
+    added_nodes: list[FuruDagNode[TFuru]] = []
     refs_by_id: dict[str, tuple[TFuru, ...]] = {}
     # TODO: detect cycles and raise a clear error
     pending: list[TFuru] = list(objs)
@@ -36,7 +53,9 @@ def make_execution_dag[TFuru: Furu](
         obj = pending.pop()
         if obj.object_id in nodes_by_id:
             continue
-        nodes_by_id[obj.object_id] = FuruDagNode(obj=obj)
+        node = FuruDagNode(obj=obj)
+        nodes_by_id[obj.object_id] = node
+        added_nodes.append(node)
         if obj.status() == "completed":
             refs_by_id[obj.object_id] = ()
             continue
@@ -48,8 +67,20 @@ def make_execution_dag[TFuru: Furu](
         node = nodes_by_id[obj_id]
         for ref in refs:
             dep_node = nodes_by_id[ref.object_id]
-            node.dependencies.append(dep_node)
-            dep_node.dependents.append(node)
+            add_dependency(node, dep_node)
+
+    return added_nodes
+
+
+def make_execution_dag[TFuru: Furu](
+    objs: Sequence[TFuru],
+) -> tuple[list[FuruDagNode[TFuru]], dict[str, FuruDagNode[TFuru]]]:
+    nodes_by_id: dict[str, FuruDagNode[TFuru]] = {}
+    add_execution_dag_nodes(
+        objs,
+        nodes_by_id,
+        type_error_message="make_execution_dag() expected Furu objects",
+    )
 
     zero_dependency_nodes = [
         node for node in nodes_by_id.values() if not node.dependencies
