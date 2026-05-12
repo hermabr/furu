@@ -14,9 +14,9 @@ from pydantic import BaseModel, ConfigDict
 
 import furu
 import furu.execution as execution_module
-from furu import Furu, FuruDagNode, load_or_create, make_dag, validate
+from furu import Furu, load_or_create, validate
 from furu.config import config
-from furu.dependencies import collect_declared_refs
+from furu.dependencies import FuruDagNode, collect_declared_refs, make_dag
 from furu.locking import lock_many
 from furu.metadata import ArtifactSpec
 from furu.result import load_result_bundle, save_result_bundle
