@@ -23,6 +23,8 @@ def make_execution_dag[TFuru: Furu](
     from furu.core import Furu
 
     if any(not isinstance(obj, Furu) for obj in objs):
+        # TODO: accept pytrees of Furu objects (e.g. nested lists/dicts/dataclasses)
+        # and flatten them before walking dependencies.
         raise TypeError("make_execution_dag() expected Furu objects")
 
     nodes_by_id: dict[str, FuruDagNode[TFuru]] = {}
