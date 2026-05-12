@@ -31,7 +31,7 @@ from furu.storage_layout import (
     run_log_path_in,
 )
 from furu.utils import fully_qualified_name
-from furu.worker_execution import (
+from furu.worker.context import (
     _DependencyNotReady,
     _worker_execution_lease_id,
     worker_execution_context,

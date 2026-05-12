@@ -4,7 +4,7 @@ import pytest
 
 import furu
 from furu import Furu, Manager
-from furu.manager import Job
+from furu.execution.manager import Job
 from furu.metadata import ArtifactSpec
 from furu.storage_layout import run_log_path_in
 

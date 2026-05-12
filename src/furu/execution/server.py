@@ -8,8 +8,8 @@ import uvicorn
 from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict
 
+from furu.execution.manager import GetJobResponse, Manager
 from furu.logging import get_logger
-from furu.manager import GetJobResponse, Manager
 from furu.metadata import ArtifactSpec
 
 

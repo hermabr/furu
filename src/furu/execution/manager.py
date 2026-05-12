@@ -67,7 +67,7 @@ class Manager:
         n_workers: int = 4,
         host: str = "127.0.0.1",
     ) -> Manager:
-        from furu.manager_server import run_until_done
+        from furu.execution.server import run_until_done
 
         manager = cls.from_objs(objs)
         run_until_done(manager, n_workers=n_workers, host=host)

@@ -6,12 +6,11 @@ from typing import Any
 
 import httpx
 
-from furu.execution import _execute_one
+from furu.execution.manager import GetJobResponse, Job
 from furu.logging import get_logger
-from furu.manager import GetJobResponse, Job
 from furu.metadata import ArtifactSpec
 from furu.serialize import load_furu_from_artifact
-from furu.worker_execution import _DependencyNotReady, worker_execution_context
+from furu.worker.context import _DependencyNotReady, worker_execution_context
 
 _UNAVAILABLE_TOTAL_WAIT_SECONDS = 30.0
 _UNAVAILABLE_RETRY_SECONDS = 5.0
@@ -99,6 +98,8 @@ def _run_job(client: httpx.Client, job: Job, *, logger: Any) -> None:
         obj._log_label,
         job.lease_id,
     )
+
+    from furu.execution import _execute_one
 
     try:
         with worker_execution_context(lease_id=job.lease_id):
