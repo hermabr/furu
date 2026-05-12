@@ -18,12 +18,6 @@ _WAIT_POLL_SECONDS = 0.05
 
 
 def worker_loop(base_url: str, *, worker_id: str) -> None:
-    """Run a worker: pull jobs from the manager and execute them.
-
-    Exits cleanly when the manager returns ``"stop"``. If the manager endpoint
-    becomes unreachable, retries every 5 seconds for up to 30 seconds, then
-    exits with an error log.
-    """
     logger = get_logger(f"worker.{worker_id}")
     logger.debug("worker started against %s", base_url)
     with httpx.Client(base_url=base_url, timeout=30.0) as client:

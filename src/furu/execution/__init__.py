@@ -195,12 +195,6 @@ def load_or_create[T](
 
 
 def _execute_one(obj: Furu[Any]) -> None:
-    """Execute a single furu node.
-
-    Caller is responsible for entering ``worker_execution_context``. Acquires the
-    per-object file lock. If the result is already cached, returns immediately.
-    Propagates ``_DependencyNotReady`` so the caller can resolve missing deps.
-    """
     if result_dir_for_loading(obj) is not None:
         obj.logger.info("cache hit for %s", obj._log_label)
         return

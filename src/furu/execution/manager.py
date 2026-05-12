@@ -28,17 +28,6 @@ type GetJobResponse = Job | Literal["wait", "stop"]
 
 
 class Manager:
-    """Tracks DAG state for a single submission and serves jobs to workers.
-
-    State transitions (guarded by ``lock``):
-        ready --(get_job)--> running
-        running --(finish ok)--> completed   (promotes dependents from blocked → ready)
-        running --(finish err)--> failed     (dependents stay in blocked)
-        running --(report_blocked)--> blocked or ready (if newly-linked deps already done)
-    Termination: ``get_job`` returns ``"stop"`` when both ``ready`` and ``running``
-    are empty; any remaining ``blocked`` entries are surfaced as unresolved.
-    """
-
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.nodes_by_id: dict[str, FuruDagNode[Furu[Any]]] = {}

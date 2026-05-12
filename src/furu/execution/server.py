@@ -44,8 +44,6 @@ def make_app(manager: Manager) -> FastAPI:
 
 
 class _ServerHandle:
-    """Background uvicorn server bound to an OS-assigned port."""
-
     def __init__(self, server: uvicorn.Server, thread: threading.Thread, port: int):
         self.server = server
         self.thread = thread
