@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
@@ -75,7 +74,7 @@ def submit(objs: Sequence[Furu[Any]]) -> None:
     while zero_dependency_nodes:
         node = zero_dependency_nodes.pop(0)
         try:
-            with worker_execution_context(lease_id=uuid.uuid4().hex):
+            with worker_execution_context(lease_id=node.obj.object_id):
                 _load_or_create_local(node.obj)
         except _DependencyNotReady as exc:
             new_objs = [
@@ -93,3 +92,9 @@ def submit(objs: Sequence[Furu[Any]]) -> None:
                 dependent.dependencies.remove(node)
                 if not dependent.dependencies:
                     zero_dependency_nodes.append(dependent)
+
+    if nodes_by_id:
+        unresolved = ", ".join(sorted(nodes_by_id))
+        raise RuntimeError(
+            f"submit() could not make progress; unresolved dependencies: {unresolved}"
+        )
