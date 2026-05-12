@@ -16,6 +16,7 @@ from typing import (
 )
 
 from furu.core import Furu, FuruCreateMode
+from furu.dag import FuruDagNode, make_execution_dag
 from furu.dependencies import dependency_recorder, record_dependency_call
 from furu.locking import LockLostError, lock_many
 from furu.logging import _scoped_log_files
@@ -32,6 +33,7 @@ from furu.storage_layout import (
 )
 from furu.utils import class_label, nfs_safe_unique_name
 from furu.worker_execution import _DependencyNotReady, _worker_execution_lease_id
+from furu.worker_execution import worker_execution_context
 
 type HasLock = Callable[[], bool]
 
@@ -189,6 +191,142 @@ def load_or_create[T](
     if _worker_execution_lease_id.get() is not None:
         return _load_or_create_worker(obj_or_objs)
     return _load_or_create_local(obj_or_objs, use_lock=use_lock)
+
+
+def submit[T](objs: Sequence[Furu[T]]) -> list[T]:
+    if any(not isinstance(obj, Furu) for obj in objs):
+        raise TypeError("submit() expected Furu objects")
+
+    zero_dependency_nodes, nodes_by_id = make_execution_dag(objs)
+    ready_by_id = {node.obj.object_id: node for node in zero_dependency_nodes}
+    results_by_object_id: dict[str, T] = {}
+
+    while zero_dependency_nodes:
+        node = zero_dependency_nodes.pop(0)
+        ready_by_id.pop(node.obj.object_id, None)
+
+        if node.obj.object_id not in nodes_by_id:
+            continue
+
+        if (cached_result_dir := result_dir_for_loading(node.obj)) is not None:
+            results_by_object_id[node.obj.object_id] = cast(
+                T, load_result_bundle(cached_result_dir)
+            )
+            _complete_submitted_node(
+                node,
+                nodes_by_id=nodes_by_id,
+                ready=zero_dependency_nodes,
+                ready_by_id=ready_by_id,
+            )
+            continue
+
+        try:
+            _execute_submitted_node(node, results_by_object_id=results_by_object_id)
+        except _DependencyNotReady as exc:
+            if exc.call_kind != "load_or_create":
+                raise
+            _add_lazy_dependencies(
+                node,
+                exc.dependencies,
+                nodes_by_id=nodes_by_id,
+                ready=zero_dependency_nodes,
+                ready_by_id=ready_by_id,
+            )
+            continue
+
+        _complete_submitted_node(
+            node,
+            nodes_by_id=nodes_by_id,
+            ready=zero_dependency_nodes,
+            ready_by_id=ready_by_id,
+        )
+
+    if nodes_by_id:
+        waiting = ", ".join(
+            sorted(node.obj._log_label for node in nodes_by_id.values())
+        )
+        raise RuntimeError(f"submit() could not make progress; waiting on {waiting}")
+
+    return [results_by_object_id[obj.object_id] for obj in objs]
+
+
+def _execute_submitted_node[T](
+    node: FuruDagNode[Furu[T]],
+    *,
+    results_by_object_id: dict[str, T],
+) -> None:
+    obj = node.obj
+    internal_furu_dir_in(obj.data_dir).mkdir(parents=True, exist_ok=True)
+    with (
+        lock_many([compute_lock_path_in(obj.data_dir)]) as has_lock,
+        worker_execution_context(lease_id=f"submit:{obj.object_id}"),
+    ):
+        if (cached_result_dir := result_dir_for_loading(obj)) is not None:
+            results_by_object_id[obj.object_id] = cast(
+                T, load_result_bundle(cached_result_dir)
+            )
+            return
+        _execute_group(
+            [obj], has_lock=has_lock, results_by_object_id=results_by_object_id
+        )
+
+
+def _add_lazy_dependencies(
+    node: FuruDagNode[Furu[Any]],
+    dependencies: Sequence[Furu[Any]],
+    *,
+    nodes_by_id: dict[str, FuruDagNode[Furu[Any]]],
+    ready: list[FuruDagNode[Furu[Any]]],
+    ready_by_id: dict[str, FuruDagNode[Furu[Any]]],
+) -> None:
+    existing_dependency_ids = {
+        dependency.obj.object_id for dependency in node.dependencies
+    }
+
+    for dependency in dependencies:
+        dependency_id = dependency.object_id
+        if dependency_id == node.obj.object_id:
+            raise RuntimeError(f"{node.obj._log_label} depends on itself")
+        if dependency_id in existing_dependency_ids:
+            continue
+
+        dependency_node = nodes_by_id.get(dependency_id)
+        if dependency_node is None:
+            dependency_node = FuruDagNode(obj=dependency)
+            nodes_by_id[dependency_id] = dependency_node
+
+        node.dependencies.append(dependency_node)
+        dependency_node.dependents.append(node)
+        existing_dependency_ids.add(dependency_id)
+
+        if not dependency_node.dependencies and dependency_id not in ready_by_id:
+            ready.append(dependency_node)
+            ready_by_id[dependency_id] = dependency_node
+
+
+def _complete_submitted_node(
+    node: FuruDagNode[Furu[Any]],
+    *,
+    nodes_by_id: dict[str, FuruDagNode[Furu[Any]]],
+    ready: list[FuruDagNode[Furu[Any]]],
+    ready_by_id: dict[str, FuruDagNode[Furu[Any]]],
+) -> None:
+    nodes_by_id.pop(node.obj.object_id, None)
+
+    for dependent in list(node.dependents):
+        dependent.dependencies = [
+            dependency
+            for dependency in dependent.dependencies
+            if dependency.obj.object_id != node.obj.object_id
+        ]
+        dependent_id = dependent.obj.object_id
+        if (
+            not dependent.dependencies
+            and dependent_id in nodes_by_id
+            and dependent_id not in ready_by_id
+        ):
+            ready.append(dependent)
+            ready_by_id[dependent_id] = dependent
 
 
 def _normalize_load_or_create_input[T](

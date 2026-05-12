@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict
 
 import furu
 import furu.execution as execution_module
-from furu import Furu, load_or_create, validate
+from furu import Furu, load_or_create, submit, validate
 from furu.config import config
 from furu.dependencies import collect_declared_refs
 from furu.locking import lock_many
@@ -410,6 +410,14 @@ class LazyDependencyParent(Furu[str]):
 
     def create(self) -> str:
         return Node(name=self.name).load_or_create()
+
+
+class DuplicateLazyDependencyParent(Furu[str]):
+    name: str
+
+    def create(self) -> str:
+        first, second = load_or_create([Node(name=self.name), Node(name=self.name)])
+        return f"{first}:{second}"
 
 
 class TryLoadDependencyParent(Furu[str]):
@@ -1563,6 +1571,70 @@ def test_pending_items_are_rechecked_after_lock_acquisition(
 
 def test_empty_list_returns_empty_list() -> None:
     assert load_or_create([]) == []
+
+
+def test_submit_empty_list_returns_empty_list() -> None:
+    assert submit([]) == []
+
+
+def test_submit_runs_declared_dependencies_before_dependents() -> None:
+    parent = NodePair(
+        node1=Node(name="submitted-a"),
+        node2=WeightedNode(name="submitted-b", weight=2),
+        name="submitted-parent",
+    )
+
+    assert submit([parent]) == [
+        {
+            "node1": "Node(submitted-a)",
+            "node2": "WNode(submitted-b:2)",
+            "name": "submitted-parent",
+        }
+    ]
+
+    assert parent.node1.status() == "completed"
+    assert parent.node2.status() == "completed"
+    assert parent.status() == "completed"
+
+
+def test_submit_discovers_lazy_load_or_create_dependencies() -> None:
+    parent = LazyDependencyParent(name="submitted-lazy")
+    lazy = Node(name="submitted-lazy")
+
+    assert submit([parent]) == ["Node(submitted-lazy)"]
+
+    assert lazy.status() == "completed"
+    assert parent.status() == "completed"
+    assert _dependency_object_ids(parent) == [lazy.object_id]
+
+
+def test_submit_deduplicates_lazy_dependencies() -> None:
+    parent = DuplicateLazyDependencyParent(name="submitted-duplicate-lazy")
+    lazy = Node(name="submitted-duplicate-lazy")
+
+    assert submit([parent]) == [
+        "Node(submitted-duplicate-lazy):Node(submitted-duplicate-lazy)"
+    ]
+
+    assert lazy.status() == "completed"
+    assert parent.status() == "completed"
+    assert _dependency_object_ids(parent) == [lazy.object_id]
+
+
+def test_submit_preserves_input_order_and_skips_cached_inputs() -> None:
+    cached = CountedSingleValue(key=1)
+    missing = CountedSingleValue(key=2)
+
+    assert cached.load_or_create() == "single:1"
+    CountedSingleValue.create_calls.clear()
+
+    assert submit([missing, cached]) == ["single:2", "single:1"]
+    assert CountedSingleValue.create_calls == [2]
+
+
+def test_submit_rejects_non_furu_values() -> None:
+    with pytest.raises(TypeError, match="expected Furu objects"):
+        submit([Node(name="ok"), "not-a-furu"])  # ty: ignore[invalid-argument-type]
 
 
 def test_worker_execution_context_is_scoped() -> None:
