@@ -1,7 +1,7 @@
 from importlib.metadata import version
 
 from furu.core import Furu
-from furu.dependencies import FuruDagNode, dependency, make_dag
+from furu.dependencies import FuruDagNode, dependency, make_execution_dag
 from furu.execution import load_or_create
 from furu.logging import get_logger
 from furu.migration import Migration
@@ -22,7 +22,7 @@ __all__ = [
     "ResultRegistry",
     "get_logger",
     "load_or_create",
-    "make_dag",
+    "make_execution_dag",
     "save_as",
     "validate",
 ]

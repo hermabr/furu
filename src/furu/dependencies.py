@@ -111,7 +111,7 @@ class FuruDagNode:
     dependents: list[FuruDagNode]
 
 
-def _normalize_make_dag_input(
+def _normalize_make_execution_dag_input(
     obj_or_objs: Furu[Any] | Sequence[Furu[Any]],
 ) -> list[Furu[Any]]:
     from furu.core import Furu
@@ -120,17 +120,19 @@ def _normalize_make_dag_input(
         return [obj_or_objs]
     if not isinstance(obj_or_objs, Sequence):
         raise TypeError(
-            "make_dag() expected a Furu object or a sequence of Furu objects"
+            "make_execution_dag() expected a Furu object or a sequence of Furu objects"
         )
 
     objs = list(obj_or_objs)
     if any(not isinstance(obj, Furu) for obj in objs):
-        raise TypeError("make_dag() expected Furu objects")
+        raise TypeError("make_execution_dag() expected Furu objects")
     return objs
 
 
-def make_dag(obj_or_objs: Furu[Any] | Sequence[Furu[Any]]) -> list[FuruDagNode]:
-    roots = _normalize_make_dag_input(obj_or_objs)
+def make_execution_dag(
+    obj_or_objs: Furu[Any] | Sequence[Furu[Any]],
+) -> list[FuruDagNode]:
+    roots = _normalize_make_execution_dag_input(obj_or_objs)
     nodes_by_id: dict[str, FuruDagNode] = {}
     dependency_ids_by_id: dict[str, tuple[str, ...]] = {}
 

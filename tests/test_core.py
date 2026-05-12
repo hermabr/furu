@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict
 
 import furu
 import furu.execution as execution_module
-from furu import Furu, load_or_create, make_dag, validate
+from furu import Furu, load_or_create, make_execution_dag, validate
 from furu.config import config
 from furu.dependencies import FuruDagNode, collect_declared_refs
 from furu.locking import lock_many
@@ -1109,13 +1109,15 @@ def test_furu_objects_block_nested_eager_traversal_but_direct_runtime_loads_are_
     assert _dependency_object_ids(parent) == [node1.object_id]
 
 
-def test_make_dag_collects_declared_refs_recursively_and_dedupes_by_object_id() -> None:
+def test_make_execution_dag_collects_declared_refs_recursively_and_dedupes_by_object_id() -> (
+    None
+):
     first = Node(name="first")
     second = WeightedNode(name="second", weight=1)
     shared = NodePair(node1=first, node2=second, name="shared")
     root = FuruBoundaryParent(child=shared)
 
-    ready = make_dag(root)
+    ready = make_execution_dag(root)
     nodes_by_id = _dag_nodes_by_id(ready)
 
     assert [node.obj.object_id for node in ready] == sorted(
@@ -1141,12 +1143,14 @@ def test_make_dag_collects_declared_refs_recursively_and_dedupes_by_object_id() 
     }
 
 
-def test_make_dag_accepts_lists_and_dedupes_shared_objects_by_object_id() -> None:
+def test_make_execution_dag_accepts_lists_and_dedupes_shared_objects_by_object_id() -> (
+    None
+):
     shared = Node(name="shared")
     first = BatchDependencyParent(key=1, eager=shared)
     second = BatchDependencyParent(key=2, eager=shared)
 
-    ready = make_dag([first, second, first])
+    ready = make_execution_dag([first, second, first])
     nodes_by_id = _dag_nodes_by_id(ready)
 
     assert [node.obj.object_id for node in ready] == [shared.object_id]
@@ -1162,7 +1166,7 @@ def test_make_dag_accepts_lists_and_dedupes_shared_objects_by_object_id() -> Non
     )
 
 
-def test_make_dag_stops_at_completed_objects() -> None:
+def test_make_execution_dag_stops_at_completed_objects() -> None:
     first = Node(name="completed-inner")
     second = WeightedNode(name="completed-inner", weight=2)
     completed_child = NodePair(node1=first, node2=second, name="completed-child")
@@ -1170,7 +1174,7 @@ def test_make_dag_stops_at_completed_objects() -> None:
 
     completed_child.load_or_create()
 
-    ready = make_dag(root)
+    ready = make_execution_dag(root)
     nodes_by_id = _dag_nodes_by_id(ready)
 
     assert [node.obj.object_id for node in ready] == [completed_child.object_id]
