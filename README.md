@@ -1,9 +1,8 @@
-# furu
+uu
 
-> **Note:** `v0.0.x` is alpha and may (will) include breaking changes.
+oeiaaaaiiueeaiae
 
-## Installation
+Iaaio
 
-```bash
-uv add furu # or pip install furu
-```
+a
+uauuoiiauu
