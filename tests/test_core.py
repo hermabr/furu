@@ -1019,36 +1019,10 @@ def _dependency_object_ids(obj: Furu[Any]) -> list[str]:
     return metadata["observed_dependencies"]
 
 
-def _topological_nodes(
-    ready_nodes: list[FuruDependencyNode[Furu]],
-) -> tuple[FuruDependencyNode[Furu], ...]:
-    nodes_by_id: dict[str, FuruDependencyNode[Furu]] = {}
-    pending = list(ready_nodes)
-    while pending:
-        node = pending.pop(0)
-        if node.obj.object_id in nodes_by_id:
-            continue
-        nodes_by_id[node.obj.object_id] = node
-        pending.extend(node.dependents)
-    return tuple(nodes_by_id.values())
-
-
-def _topological_objects(
-    nodes: tuple[FuruDependencyNode[Furu], ...],
-) -> tuple[Furu[Any], ...]:
-    return tuple(node.obj for node in nodes)
-
-
 def _topological_object_ids(
     nodes: tuple[FuruDependencyNode[Furu], ...],
 ) -> tuple[str, ...]:
     return tuple(node.obj.object_id for node in nodes)
-
-
-def _topological_nodes_by_id(
-    nodes: tuple[FuruDependencyNode[Furu], ...],
-) -> dict[str, FuruDependencyNode[Furu]]:
-    return {node.obj.object_id: node for node in nodes}
 
 
 def _topological_edges(
@@ -1163,19 +1137,18 @@ def test_make_execution_dag_recursively_collects_declared_refs() -> None:
     child = NodePair(node1=first, node2=second, name="pair")
     parent = FuruBoundaryParent(child=child)
 
-    ready_nodes = make_execution_dag([parent])
-    nodes = _topological_nodes(ready_nodes)
-    nodes_by_id = _topological_nodes_by_id(nodes)
+    ready_objects, nodes_by_id = make_execution_dag([parent])
+    nodes = tuple(nodes_by_id.values())
     first_node = nodes_by_id[first.object_id]
     second_node = nodes_by_id[second.object_id]
     child_node = nodes_by_id[child.object_id]
     parent_node = nodes_by_id[parent.object_id]
 
-    assert {node.obj.object_id for node in ready_nodes} == {
+    assert {obj.object_id for obj in ready_objects} == {
         first.object_id,
         second.object_id,
     }
-    assert all(node.dependencies == () for node in ready_nodes)
+    assert all(nodes_by_id[obj.object_id].dependencies == () for obj in ready_objects)
     assert set(_topological_object_ids(nodes)) == {
         first.object_id,
         second.object_id,
@@ -1204,13 +1177,12 @@ def test_make_execution_dag_stops_at_completed_objects() -> None:
     child.load_or_create()
     parent = FuruBoundaryParent(child=child)
 
-    ready_nodes = make_execution_dag([parent])
-    nodes = _topological_nodes(ready_nodes)
-    nodes_by_id = _topological_nodes_by_id(nodes)
+    ready_objects, nodes_by_id = make_execution_dag([parent])
+    nodes = tuple(nodes_by_id.values())
     child_node = nodes_by_id[child.object_id]
     parent_node = nodes_by_id[parent.object_id]
 
-    assert _topological_objects(tuple(ready_nodes)) == (child,)
+    assert tuple(ready_objects) == (child,)
     assert set(_topological_object_ids(nodes)) == {child.object_id, parent.object_id}
     assert child_node.dependencies == ()
     assert child_node.dependents == (parent_node,)
@@ -1222,9 +1194,10 @@ def test_make_execution_dag_deduplicates_by_object_id() -> None:
     first = Node(name="same")
     second = Node(name="same")
 
-    ready_nodes = make_execution_dag([first, second])
+    ready_objects, nodes_by_id = make_execution_dag([first, second])
 
-    assert _topological_objects(tuple(ready_nodes)) == (first,)
+    assert tuple(ready_objects) == (first,)
+    assert set(nodes_by_id) == {first.object_id}
 
 
 def test_make_execution_dag_rejects_cycles() -> None:

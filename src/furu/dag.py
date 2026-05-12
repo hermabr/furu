@@ -38,7 +38,7 @@ def _is_success_status[TFuru: Furu](obj: TFuru) -> bool:
 
 def make_execution_dag[TFuru: Furu](
     objs: list[TFuru],
-) -> list[FuruDependencyNode[Furu]]:
+) -> tuple[list[Furu], dict[str, FuruDependencyNode[Furu]]]:
     objs = _normalize_execution_dag_input(objs)
 
     nodes_by_id: dict[str, FuruDependencyNode[Furu]] = {}
@@ -91,4 +91,7 @@ def make_execution_dag[TFuru: Furu](
             ),
         )
 
-    return [node for node in nodes_by_id.values() if not node.dependencies]
+    return (
+        [node.obj for node in nodes_by_id.values() if not node.dependencies],
+        nodes_by_id,
+    )
