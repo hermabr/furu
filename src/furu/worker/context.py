@@ -34,9 +34,9 @@ class _DependencyNotReady(BaseException):
     dependencies: tuple[Furu, ...]
     call_kind: DependencyCallKind
 
-    def __init__(
+    def __init__[T](
         self,
-        dependencies: Sequence[Furu],
+        dependencies: Sequence[Furu[T]],
         *,
         call_kind: DependencyCallKind,
     ) -> None:

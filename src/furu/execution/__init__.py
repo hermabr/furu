@@ -53,7 +53,7 @@ def _allow_direct_create() -> Iterator[None]:
         _create_execution_active.reset(token)
 
 
-def _install_create_guards(cls: type[Furu]) -> None:
+def _install_create_guards[T](cls: type[Furu[T]]) -> None:
     for attr in ("create", "create_batched"):
         if attr not in cls.__dict__:
             continue
@@ -194,7 +194,7 @@ def load_or_create[T](
     return _load_or_create_local(obj_or_objs, use_lock=use_lock)
 
 
-def _execute_one(obj: Furu) -> None:
+def _execute_one[T](obj: Furu[T]) -> None:
     if (cached_result_dir := result_dir_for_loading(obj)) is not None:
         obj.logger.info("cache hit for %s at %s", obj._log_label, cached_result_dir)
         return

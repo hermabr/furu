@@ -108,7 +108,7 @@ class DependencyRecorder:
     def __init__(self) -> None:
         self._observed_ids: set[str] = set()
 
-    def record(self, obj: Furu) -> None:
+    def record[T](self, obj: Furu[T]) -> None:
         self._observed_ids.add(obj.object_id)
 
     def finalize(self) -> tuple[str, ...]:
@@ -124,7 +124,7 @@ _active_dependency_recorder: ContextVar[DependencyRecorder | None] = ContextVar(
 )
 
 
-def record_dependency_call(obj: Furu) -> None:
+def record_dependency_call[T](obj: Furu[T]) -> None:
     recorder = _active_dependency_recorder.get()
     if recorder is not None:
         recorder.record(obj)
