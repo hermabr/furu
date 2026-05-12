@@ -9,7 +9,7 @@ import urllib.request
 from typing import Any
 
 from furu.core import Furu
-from furu.execution import _load_or_create_local
+from furu.execution import _execute_one
 from furu.metadata import ArtifactSpec
 from furu.worker.context import _DependencyNotReady, worker_execution_context
 from furu.worker.protocol import (
@@ -97,7 +97,7 @@ def worker_loop(
 def _run_job(job: Job) -> None:
     obj = Furu.from_artifact(job.artifact)
     with worker_execution_context(lease_id=job.lease_id):
-        _load_or_create_local(obj)
+        _execute_one(obj)
 
 
 def _post_json(

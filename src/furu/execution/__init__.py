@@ -194,6 +194,29 @@ def load_or_create[T](
     return _load_or_create_local(obj_or_objs, use_lock=use_lock)
 
 
+def _execute_one(obj: Furu[Any]) -> None:
+    if (cached_result_dir := result_dir_for_loading(obj)) is not None:
+        obj.logger.info("cache hit for %s at %s", obj._log_label, cached_result_dir)
+        return
+
+    internal_furu_dir_in(obj.data_dir).mkdir(parents=True, exist_ok=True)
+
+    with lock_many([compute_lock_path_in(obj.data_dir)]) as has_lock:
+        if (cached_result_dir := result_dir_for_loading(obj)) is not None:
+            obj.logger.info(
+                "cache hit for %s after waiting at %s",
+                obj._log_label,
+                cached_result_dir,
+            )
+            return
+
+        _execute_group(
+            [obj],
+            has_lock=has_lock,
+            results_by_object_id={},
+        )
+
+
 def submit(objs: Sequence[Furu[Any]], *, n_workers: int = 1) -> None:
     from furu.execution.manager import Manager
 
