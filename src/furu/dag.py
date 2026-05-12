@@ -18,24 +18,16 @@ class FuruDagNode[TFuru: Furu]:
 
 
 def make_execution_dag[TFuru: Furu](
-    obj_or_objs: TFuru | Sequence[TFuru],
+    objs: Sequence[TFuru],
 ) -> list[FuruDagNode[TFuru]]:
     from furu.core import Furu
 
-    if isinstance(obj_or_objs, Furu):
-        inputs: list[TFuru] = [cast("TFuru", obj_or_objs)]
-    elif isinstance(obj_or_objs, Sequence):
-        inputs = list(obj_or_objs)
-        if any(not isinstance(obj, Furu) for obj in inputs):
-            raise TypeError("make_execution_dag() expected Furu objects")
-    else:
-        raise TypeError(
-            "make_execution_dag() expected a Furu object or a sequence of Furu objects"
-        )
+    if any(not isinstance(obj, Furu) for obj in objs):
+        raise TypeError("make_execution_dag() expected Furu objects")
 
     nodes_by_id: dict[str, FuruDagNode[TFuru]] = {}
     refs_by_id: dict[str, tuple[TFuru, ...]] = {}
-    pending: list[TFuru] = list(inputs)
+    pending: list[TFuru] = list(objs)
 
     while pending:
         obj = pending.pop()

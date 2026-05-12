@@ -3,7 +3,8 @@ from dataclasses import dataclass
 import pytest
 
 import furu
-from furu import Furu, FuruDagNode, make_execution_dag
+from furu import Furu
+from furu.dag import FuruDagNode, make_execution_dag
 
 
 class Leaf(Furu[str]):
@@ -70,7 +71,7 @@ def _walk_all[TFuru: Furu](
 
 def test_make_execution_dag_single_object_no_dependencies():
     leaf = Leaf(name="x")
-    roots = make_execution_dag(leaf)
+    roots = make_execution_dag([leaf])
 
     assert len(roots) == 1
     (root,) = roots
@@ -87,7 +88,7 @@ def test_make_execution_dag_traverses_declared_refs_recursively():
     mid_right = Mid(label="R", child=leaf_b)
     top = Top(name="t", left=mid_left, right=mid_right)
 
-    roots = make_execution_dag(top)
+    roots = make_execution_dag([top])
 
     root_ids = {root.obj.object_id for root in roots}
     assert root_ids == {leaf_a.object_id, leaf_b.object_id}
@@ -122,7 +123,7 @@ def test_make_execution_dag_shared_dependency_has_multiple_dependents():
     mid_right = Mid(label="R", child=shared)
     top = Top(name="t", left=mid_left, right=mid_right)
 
-    roots = make_execution_dag(top)
+    roots = make_execution_dag([top])
 
     assert len(roots) == 1
     (shared_root,) = roots
@@ -148,7 +149,7 @@ def test_make_execution_dag_stops_recursion_at_completed_objects():
     leaf.load_or_create()
     assert leaf.status() == "completed"
 
-    roots = make_execution_dag(mid)
+    roots = make_execution_dag([mid])
 
     assert len(roots) == 1
     (leaf_root,) = roots
@@ -166,7 +167,7 @@ def test_make_execution_dag_completed_root_has_no_dependencies():
     mid.load_or_create()
     assert mid.status() == "completed"
 
-    roots = make_execution_dag(mid)
+    roots = make_execution_dag([mid])
 
     assert len(roots) == 1
     (root,) = roots
@@ -197,7 +198,7 @@ def test_make_execution_dag_handles_nested_dataclass_refs():
     leaf_b = Leaf(name="b")
     parent = NestedParent(bundle=LeafBundle(a=leaf_a, b=leaf_b))
 
-    roots = make_execution_dag(parent)
+    roots = make_execution_dag([parent])
 
     root_ids = {root.obj.object_id for root in roots}
     assert root_ids == {leaf_a.object_id, leaf_b.object_id}
@@ -209,7 +210,7 @@ def test_make_execution_dag_handles_nested_dataclass_refs():
 def test_make_execution_dag_walks_computed_dependencies():
     parent = ComputedParent(name="p")
 
-    roots = make_execution_dag(parent)
+    roots = make_execution_dag([parent])
 
     assert len(roots) == 1
     (child_root,) = roots
@@ -224,8 +225,3 @@ def test_make_execution_dag_empty_list_returns_empty_list():
 def test_make_execution_dag_rejects_non_furu_values():
     with pytest.raises(TypeError, match="expected Furu objects"):
         make_execution_dag([Leaf(name="ok"), "not-a-furu"])  # ty: ignore[invalid-argument-type]
-
-    with pytest.raises(
-        TypeError, match="expected a Furu object or a sequence of Furu objects"
-    ):
-        make_execution_dag(42)  # ty: ignore[invalid-argument-type]
