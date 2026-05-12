@@ -16,7 +16,11 @@ import furu
 import furu.execution as execution_module
 from furu import Furu, load_or_create, validate
 from furu.config import config
-from furu.dependencies import FuruDagNode, collect_declared_refs, make_dag
+from furu.dependencies import (
+    FuruDependencyNode,
+    collect_declared_refs,
+    make_topological_sort,
+)
 from furu.locking import lock_many
 from furu.metadata import ArtifactSpec
 from furu.result import load_result_bundle, save_result_bundle
@@ -1018,27 +1022,45 @@ def _dependency_object_ids(obj: Furu[Any]) -> list[str]:
     return metadata["observed_dependencies"]
 
 
-def _dag_objects(nodes: tuple[FuruDagNode[Furu], ...]) -> tuple[Furu[Any], ...]:
+def _topological_nodes(
+    ready_nodes: list[FuruDependencyNode[Furu]],
+) -> tuple[FuruDependencyNode[Furu], ...]:
+    nodes_by_id: dict[str, FuruDependencyNode[Furu]] = {}
+    pending = list(ready_nodes)
+    while pending:
+        node = pending.pop(0)
+        if node.obj.object_id in nodes_by_id:
+            continue
+        nodes_by_id[node.obj.object_id] = node
+        pending.extend(node.dependents)
+    return tuple(nodes_by_id.values())
+
+
+def _topological_objects(
+    nodes: tuple[FuruDependencyNode[Furu], ...],
+) -> tuple[Furu[Any], ...]:
     return tuple(node.obj for node in nodes)
 
 
-def _dag_object_ids(nodes: tuple[FuruDagNode[Furu], ...]) -> tuple[str, ...]:
+def _topological_object_ids(
+    nodes: tuple[FuruDependencyNode[Furu], ...],
+) -> tuple[str, ...]:
     return tuple(node.obj.object_id for node in nodes)
 
 
-def _dag_dependencies_by_id(
-    nodes: tuple[FuruDagNode[Furu], ...],
-) -> dict[str, tuple[str, ...]]:
-    return {node.obj.object_id: node.dependencies for node in nodes}
+def _topological_nodes_by_id(
+    nodes: tuple[FuruDependencyNode[Furu], ...],
+) -> dict[str, FuruDependencyNode[Furu]]:
+    return {node.obj.object_id: node for node in nodes}
 
 
-def _dag_edges(
-    nodes: tuple[FuruDagNode[Furu], ...],
+def _topological_edges(
+    nodes: tuple[FuruDependencyNode[Furu], ...],
 ) -> tuple[tuple[str, str], ...]:
     return tuple(
-        (dependency_id, node.obj.object_id)
+        (dependency.obj.object_id, node.obj.object_id)
         for node in nodes
-        for dependency_id in node.dependencies
+        for dependency in node.dependencies
     )
 
 
@@ -1138,35 +1160,45 @@ def test_batched_dependencies_record_all_observed_loads() -> None:
         )
 
 
-def test_make_dag_recursively_collects_declared_refs() -> None:
+def test_make_topological_sort_recursively_collects_declared_refs() -> None:
     first = Node(name="inner")
     second = WeightedNode(name="other", weight=3)
     child = NodePair(node1=first, node2=second, name="pair")
     parent = FuruBoundaryParent(child=child)
 
-    nodes = make_dag(parent)
-    dependencies_by_id = _dag_dependencies_by_id(nodes)
+    ready_nodes = make_topological_sort(parent)
+    nodes = _topological_nodes(ready_nodes)
+    nodes_by_id = _topological_nodes_by_id(nodes)
+    first_node = nodes_by_id[first.object_id]
+    second_node = nodes_by_id[second.object_id]
+    child_node = nodes_by_id[child.object_id]
+    parent_node = nodes_by_id[parent.object_id]
 
-    assert set(_dag_object_ids(nodes)) == {
+    assert {node.obj.object_id for node in ready_nodes} == {
+        first.object_id,
+        second.object_id,
+    }
+    assert all(node.dependencies == () for node in ready_nodes)
+    assert set(_topological_object_ids(nodes)) == {
         first.object_id,
         second.object_id,
         child.object_id,
         parent.object_id,
     }
-    assert _dag_object_ids(nodes)[-2:] == (child.object_id, parent.object_id)
-    assert set(dependencies_by_id[child.object_id]) == {
-        first.object_id,
-        second.object_id,
-    }
-    assert dependencies_by_id[parent.object_id] == (child.object_id,)
-    assert set(_dag_edges(nodes)) == {
+    assert set(child_node.dependencies) == {first_node, second_node}
+    assert parent_node.dependencies == (child_node,)
+    assert first_node.dependents == (child_node,)
+    assert second_node.dependents == (child_node,)
+    assert child_node.dependents == (parent_node,)
+    assert parent_node.dependents == ()
+    assert set(_topological_edges(nodes)) == {
         (first.object_id, child.object_id),
         (second.object_id, child.object_id),
         (child.object_id, parent.object_id),
     }
 
 
-def test_make_dag_stops_at_completed_objects() -> None:
+def test_make_topological_sort_stops_at_completed_objects() -> None:
     child = NodePair(
         node1=Node(name="inner"),
         node2=WeightedNode(name="other", weight=3),
@@ -1175,28 +1207,34 @@ def test_make_dag_stops_at_completed_objects() -> None:
     child.load_or_create()
     parent = FuruBoundaryParent(child=child)
 
-    nodes = make_dag(parent)
-    dependencies_by_id = _dag_dependencies_by_id(nodes)
+    ready_nodes = make_topological_sort(parent)
+    nodes = _topological_nodes(ready_nodes)
+    nodes_by_id = _topological_nodes_by_id(nodes)
+    child_node = nodes_by_id[child.object_id]
+    parent_node = nodes_by_id[parent.object_id]
 
-    assert set(_dag_object_ids(nodes)) == {child.object_id, parent.object_id}
-    assert dependencies_by_id[child.object_id] == ()
-    assert dependencies_by_id[parent.object_id] == (child.object_id,)
+    assert _topological_objects(tuple(ready_nodes)) == (child,)
+    assert set(_topological_object_ids(nodes)) == {child.object_id, parent.object_id}
+    assert child_node.dependencies == ()
+    assert child_node.dependents == (parent_node,)
+    assert parent_node.dependencies == (child_node,)
+    assert parent_node.dependents == ()
 
 
-def test_make_dag_deduplicates_by_object_id() -> None:
+def test_make_topological_sort_deduplicates_by_object_id() -> None:
     first = Node(name="same")
     second = Node(name="same")
 
-    nodes = make_dag([first, second])
+    ready_nodes = make_topological_sort([first, second])
 
-    assert _dag_objects(nodes) == (first,)
+    assert _topological_objects(tuple(ready_nodes)) == (first,)
 
 
-def test_make_dag_rejects_cycles() -> None:
+def test_make_topological_sort_rejects_cycles() -> None:
     node = SelfDependency(name="cycle")
 
     with pytest.raises(ValueError, match="declared Furu dependencies contain a cycle"):
-        make_dag(node)
+        make_topological_sort(node)
 
 
 def test_furu_from_artifact_infers_furu_object_type():
