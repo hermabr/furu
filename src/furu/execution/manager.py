@@ -5,14 +5,20 @@ import threading
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, assert_never
 from uuid import uuid4
 
 from furu.core import Furu
 from furu.dependencies import collect_declared_refs
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
-from furu.worker.protocol import FinishFailedRequest, FinishRequest, GetJobResponse, Job
+from furu.worker.protocol import (
+    FinishFailedRequest,
+    FinishRequest,
+    FinishSuccessRequest,
+    GetJobResponse,
+    Job,
+)
 
 
 @dataclass(eq=False)
@@ -77,16 +83,18 @@ class Manager:
     def finish(self, lease_id: str, request: FinishRequest) -> None:
         with self.lock:
             running_job = self._pop_running_locked(lease_id)
-            if request.status == "completed":
-                self.completed[running_job.node.obj.object_id] = running_job.node
-                self._release_dependents_locked(running_job.node)
-            else:
-                assert isinstance(request, FinishFailedRequest)
-                self.failed[running_job.node.obj.object_id] = FailedJob(
-                    lease_id=lease_id,
-                    node=running_job.node,
-                    error=request.error,
-                )
+            match request:
+                case FinishSuccessRequest():
+                    self.completed[running_job.node.obj.object_id] = running_job.node
+                    self._release_dependents_locked(running_job.node)
+                case FinishFailedRequest(error=error):
+                    self.failed[running_job.node.obj.object_id] = FailedJob(
+                        lease_id=lease_id,
+                        node=running_job.node,
+                        error=error,
+                    )
+                case _:
+                    assert_never(request)
             self._maybe_finish_locked()
 
     def block(self, lease_id: str, dependencies: Sequence[ArtifactSpec]) -> None:
