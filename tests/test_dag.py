@@ -5,17 +5,9 @@ import pytest
 
 import furu
 from furu import Furu
-from furu.dag import DagNode, _add_to_dag
+from furu.dag import DagNode
 from furu.execution.manager import Manager
 from furu.storage_layout import run_log_path_in
-
-
-def _empty_dag_manager() -> Manager:
-    manager = object.__new__(Manager)
-    manager.nodes_by_id = {}
-    manager.ready = {}
-    manager.blocked = {}
-    return manager
 
 
 class Leaf(Furu[str]):
@@ -68,8 +60,7 @@ class ComputedParent(Furu[str]):
 
 def test_add_to_dag_single_object_no_dependencies():
     leaf = Leaf(name="x")
-    manager = _empty_dag_manager()
-    _add_to_dag(manager, [leaf])
+    manager = Manager([leaf])
 
     assert len(manager.ready) == 1
     (root,) = manager.ready.values()
@@ -89,8 +80,7 @@ def test_add_to_dag_traverses_declared_refs_recursively():
     mid_right = Mid(label="R", child=leaf_b)
     top = Top(name="t", left=mid_left, right=mid_right)
 
-    manager = _empty_dag_manager()
-    _add_to_dag(manager, [top])
+    manager = Manager([top])
 
     assert set(manager.ready) == {leaf_a.object_id, leaf_b.object_id}
     assert set(manager.blocked) == {
@@ -128,8 +118,7 @@ def test_add_to_dag_shared_dependency_has_multiple_dependents():
     mid_right = Mid(label="R", child=shared)
     top = Top(name="t", left=mid_left, right=mid_right)
 
-    manager = _empty_dag_manager()
-    _add_to_dag(manager, [top])
+    manager = Manager([top])
 
     assert len(manager.ready) == 1
     (shared_root,) = manager.ready.values()
@@ -155,8 +144,7 @@ def test_add_to_dag_stops_recursion_at_completed_objects():
     leaf.load_or_create()
     assert leaf.status() == "completed"
 
-    manager = _empty_dag_manager()
-    _add_to_dag(manager, [mid])
+    manager = Manager([mid])
 
     assert len(manager.ready) == 1
     (leaf_root,) = manager.ready.values()
@@ -173,8 +161,7 @@ def test_add_to_dag_completed_root_has_no_dependencies():
     mid.load_or_create()
     assert mid.status() == "completed"
 
-    manager = _empty_dag_manager()
-    _add_to_dag(manager, [mid])
+    manager = Manager([mid])
 
     assert len(manager.ready) == 1
     (root,) = manager.ready.values()
@@ -190,8 +177,7 @@ def test_add_to_dag_accepts_a_list_of_inputs():
     leaf_b = Leaf(name="b")
     mid = Mid(label="m", child=leaf_a)
 
-    manager = _empty_dag_manager()
-    _add_to_dag(manager, [mid, leaf_b])
+    manager = Manager([mid, leaf_b])
 
     assert set(manager.ready) == {leaf_a.object_id, leaf_b.object_id}
 
@@ -210,8 +196,7 @@ def test_add_to_dag_handles_nested_dataclass_refs():
     leaf_b = Leaf(name="b")
     parent = NestedParent(bundle=LeafBundle(a=leaf_a, b=leaf_b))
 
-    manager = _empty_dag_manager()
-    _add_to_dag(manager, [parent])
+    manager = Manager([parent])
 
     assert set(manager.ready) == {leaf_a.object_id, leaf_b.object_id}
 
@@ -225,8 +210,7 @@ def test_add_to_dag_handles_nested_dataclass_refs():
 def test_add_to_dag_walks_computed_dependencies():
     parent = ComputedParent(name="p")
 
-    manager = _empty_dag_manager()
-    _add_to_dag(manager, [parent])
+    manager = Manager([parent])
 
     assert len(manager.ready) == 1
     (child_root,) = manager.ready.values()
@@ -238,19 +222,9 @@ def test_add_to_dag_walks_computed_dependencies():
     }
 
 
-def test_add_to_dag_empty_list_is_noop():
-    manager = _empty_dag_manager()
-    _add_to_dag(manager, [])
-
-    assert manager.ready == {}
-    assert manager.blocked == {}
-    assert manager.nodes_by_id == {}
-
-
 def test_add_to_dag_rejects_non_furu_values():
-    manager = _empty_dag_manager()
     with pytest.raises(TypeError, match="expected Furu objects"):
-        _add_to_dag(manager, [Leaf(name="ok"), "not-a-furu"])  # ty: ignore[invalid-argument-type]
+        Manager([Leaf(name="ok"), "not-a-furu"])  # ty: ignore[invalid-argument-type]
 
 
 class TrackingLeaf(Furu[int]):
