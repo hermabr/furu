@@ -19,7 +19,7 @@ class FuruDagNode[TFuru: Furu]:
 
 def make_execution_dag[TFuru: Furu](
     objs: Sequence[TFuru],
-) -> list[FuruDagNode[TFuru]]:
+) -> tuple[list[FuruDagNode[TFuru]], dict[str, FuruDagNode[TFuru]]]:
     from furu.core import Furu
 
     if any(not isinstance(obj, Furu) for obj in objs):
@@ -48,4 +48,7 @@ def make_execution_dag[TFuru: Furu](
             node.dependencies.append(dep_node)
             dep_node.dependents.append(node)
 
-    return [node for node in nodes_by_id.values() if not node.dependencies]
+    zero_dependency_nodes = [
+        node for node in nodes_by_id.values() if not node.dependencies
+    ]
+    return zero_dependency_nodes, nodes_by_id
