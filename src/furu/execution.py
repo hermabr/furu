@@ -218,7 +218,7 @@ def submit(objs: Sequence[Furu[Any]]) -> None:
             continue
 
         del nodes_by_id[node.obj.object_id]
-        for dependent in list(node.dependents):
+        for dependent in node.dependents:
             dependent.dependencies.remove(node)
             if not dependent.dependencies:
                 zero_dependency_nodes.append(dependent)
