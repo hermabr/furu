@@ -13,6 +13,7 @@ from furu.dependencies import collect_declared_refs
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
 from furu.worker.protocol import (
+    BlockedRequest,
     FinishFailedRequest,
     FinishRequest,
     FinishSuccessRequest,
@@ -126,6 +127,27 @@ class Scheduler:
                 self.ready[node.obj.object_id] = node
             self._maybe_finish_locked()
 
+    def create_app(self) -> Any:
+        from fastapi import FastAPI
+
+        app = FastAPI()
+
+        @app.get("/get_job", response_model=GetJobResponse)
+        def get_job() -> GetJobResponse:
+            return self.get_job()
+
+        @app.post("/finish/{lease_id}")
+        def finish(lease_id: str, request: FinishRequest) -> dict[str, bool]:
+            self.finish(lease_id, request)
+            return {"ok": True}
+
+        @app.post("/blocked/{lease_id}")
+        def blocked(lease_id: str, request: BlockedRequest) -> dict[str, bool]:
+            self.block(lease_id, request.dependencies)
+            return {"ok": True}
+
+        return app
+
     def _add_to_dag(self, objs: Sequence[Furu[Any]]) -> None:
         if any(not isinstance(obj, Furu) for obj in objs):
             # TODO: accept pytrees of Furu objects (e.g. nested lists/dicts/dataclasses)
@@ -180,10 +202,9 @@ class Scheduler:
 
         import uvicorn
 
-        from furu.worker.api import create_scheduler_app
         from furu.worker.loop import worker_loop
 
-        app = create_scheduler_app(self)
+        app = self.create_app()
         sock = _bind_socket(host=host, port=port)
         bound_host, bound_port = sock.getsockname()[:2]
         server_url = f"http://{bound_host}:{bound_port}"
