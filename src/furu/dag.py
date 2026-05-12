@@ -53,11 +53,9 @@ def _add_to_dag(manager: Manager, objs: Sequence[Furu]) -> None:
     for obj_id, refs in refs_by_id.items():
         node = manager.nodes_by_id[obj_id]
         for ref in refs:
-            dep_node = manager.nodes_by_id.get(ref.object_id)
-            if dep_node is None:
-                continue
-            node.dependencies.append(dep_node)
-            dep_node.dependents.append(node)
+            if dep_node := manager.nodes_by_id.get(ref.object_id):
+                node.dependencies.append(dep_node)
+                dep_node.dependents.append(node)
 
     for node in newly_added:
         target = manager.ready if not node.dependencies else manager.blocked
