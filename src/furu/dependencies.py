@@ -3,9 +3,9 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import fields, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, Callable, Literal, overload
+from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence, overload
 
 from pydantic import BaseModel as PydanticBaseModel
 
@@ -101,6 +101,71 @@ def collect_declared_refs(obj: Furu[Any]) -> tuple[Furu[Any], ...]:
             refs_by_id.items(),
             key=lambda item: item[0],
         )
+    )
+
+
+@dataclass(frozen=True)
+class FuruDag:
+    nodes: tuple[Furu[Any], ...]
+    edges: tuple[tuple[str, str], ...]
+    dependencies_by_id: dict[str, tuple[str, ...]]
+
+    @property
+    def nodes_by_id(self) -> dict[str, Furu[Any]]:
+        return {obj.object_id: obj for obj in self.nodes}
+
+
+def _normalize_make_dag_input(
+    obj_or_objs: Furu[Any] | Sequence[Furu[Any]],
+) -> list[Furu[Any]]:
+    from furu.core import Furu
+
+    if isinstance(obj_or_objs, Furu):
+        return [obj_or_objs]
+    if not isinstance(obj_or_objs, Sequence):
+        raise TypeError(
+            "make_dag() expected a Furu object or a sequence of Furu objects"
+        )
+
+    objs = list(obj_or_objs)
+    if any(not isinstance(obj, Furu) for obj in objs):
+        raise TypeError("make_dag() expected Furu objects")
+    return objs
+
+
+def make_dag(obj_or_objs: Furu[Any] | Sequence[Furu[Any]]) -> FuruDag:
+    roots = _normalize_make_dag_input(obj_or_objs)
+    nodes_by_id: dict[str, Furu[Any]] = {}
+    dependencies_by_id: dict[str, tuple[str, ...]] = {}
+    edges: set[tuple[str, str]] = set()
+
+    def visit(obj: Furu[Any]) -> None:
+        if obj.object_id in nodes_by_id:
+            return
+
+        nodes_by_id[obj.object_id] = obj
+
+        if obj.status() == "completed":
+            dependencies_by_id[obj.object_id] = ()
+            return
+
+        refs = collect_declared_refs(obj)
+        dependencies_by_id[obj.object_id] = tuple(ref.object_id for ref in refs)
+
+        for ref in refs:
+            edges.add((ref.object_id, obj.object_id))
+            visit(ref)
+
+    for root in roots:
+        visit(root)
+
+    sorted_ids = tuple(sorted(nodes_by_id))
+    return FuruDag(
+        nodes=tuple(nodes_by_id[object_id] for object_id in sorted_ids),
+        edges=tuple(sorted(edges)),
+        dependencies_by_id={
+            object_id: dependencies_by_id[object_id] for object_id in sorted_ids
+        },
     )
 
 
