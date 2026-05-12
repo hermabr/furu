@@ -32,11 +32,11 @@ class ManagerLazyParent(Furu[int]):
         return ManagerLeaf(value=self.value).load_or_create() + 1
 
 
-def test_manager_submit_partitions_ready_and_blocked() -> None:
+def test_manager_init_partitions_ready_and_blocked() -> None:
     leaf = ManagerLeaf(value=1)
     parent = ManagerParent(child=leaf)
 
-    manager = Manager.submit([parent])
+    manager = Manager([parent])
 
     assert set(manager.ready) == {leaf.object_id}
     assert set(manager.blocked) == {parent.object_id}
@@ -46,7 +46,7 @@ def test_manager_submit_partitions_ready_and_blocked() -> None:
 def test_manager_finish_moves_dependents_to_ready() -> None:
     leaf = ManagerLeaf(value=1)
     parent = ManagerParent(child=leaf)
-    manager = Manager.submit([parent])
+    manager = Manager([parent])
 
     job = manager.get_job()
     assert isinstance(job, Job)
@@ -68,7 +68,7 @@ def test_manager_finish_moves_dependents_to_ready() -> None:
 def test_manager_block_discovers_lazy_dependency_and_reruns_parent() -> None:
     parent = ManagerLazyParent(value=2)
     dependency = ManagerLeaf(value=2)
-    manager = Manager.submit([parent])
+    manager = Manager([parent])
 
     parent_job = manager.get_job()
     assert isinstance(parent_job, Job)
@@ -93,7 +93,7 @@ def test_manager_block_discovers_lazy_dependency_and_reruns_parent() -> None:
 def test_manager_block_discovers_multiple_lazy_dependencies_together() -> None:
     parent = ManagerLazyParent(value=2)
     dependencies = [ManagerLeaf(value=2), ManagerLeaf(value=3)]
-    manager = Manager.submit([parent])
+    manager = Manager([parent])
 
     parent_job = manager.get_job()
     assert isinstance(parent_job, Job)
@@ -118,7 +118,7 @@ def test_manager_block_discovers_multiple_lazy_dependencies_together() -> None:
 def test_manager_uses_new_lease_when_blocked_job_is_released() -> None:
     parent = ManagerLazyParent(value=2)
     dependency = ManagerLeaf(value=2)
-    manager = Manager.submit([parent])
+    manager = Manager([parent])
 
     first_parent_job = manager.get_job()
     assert isinstance(first_parent_job, Job)
@@ -148,7 +148,7 @@ def test_manager_uses_new_lease_when_blocked_job_is_released() -> None:
 
 def test_manager_failed_job_finishes_with_error() -> None:
     leaf = ManagerLeaf(value=1)
-    manager = Manager.submit([leaf])
+    manager = Manager([leaf])
     job = manager.get_job()
     assert isinstance(job, Job)
 

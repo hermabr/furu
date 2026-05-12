@@ -217,13 +217,6 @@ def _execute_one(obj: Furu[Any]) -> None:
         )
 
 
-def submit(objs: Sequence[Furu[Any]], *, n_workers: int = 1) -> None:
-    from furu.execution.manager import Manager
-
-    manager = Manager.submit(objs)
-    manager.run(n_workers=n_workers)
-
-
 def _normalize_load_or_create_input[T](
     obj_or_objs: Furu[T] | Sequence[Furu[T]],
 ) -> tuple[list[Furu[T]], bool]:

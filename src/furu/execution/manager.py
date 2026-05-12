@@ -41,25 +41,19 @@ class FailedJob:
     error: str
 
 
-@dataclass
 class Manager:
-    nodes_by_id: dict[str, DagNode[Furu[Any]]] = field(default_factory=dict)
-    ready: dict[str, DagNode[Furu[Any]]] = field(default_factory=dict)
-    blocked: dict[str, DagNode[Furu[Any]]] = field(default_factory=dict)
-    running: dict[str, RunningJob] = field(default_factory=dict)
-    completed: dict[str, DagNode[Furu[Any]]] = field(default_factory=dict)
-    failed: dict[str, FailedJob] = field(default_factory=dict)
-    lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
-    done: threading.Event = field(default_factory=threading.Event, repr=False)
-    _finish_error: str | None = field(default=None, init=False, repr=False)
+    def __init__(self, objs: Sequence[Furu[Any]]) -> None:
+        self.nodes_by_id: dict[str, DagNode[Furu[Any]]] = {}
+        self.ready: dict[str, DagNode[Furu[Any]]] = {}
+        self.blocked: dict[str, DagNode[Furu[Any]]] = {}
+        self.running: dict[str, RunningJob] = {}
+        self.completed: dict[str, DagNode[Furu[Any]]] = {}
+        self.failed: dict[str, FailedJob] = {}
+        self.lock = threading.Lock()
+        self.done = threading.Event()
+        self._finish_error: str | None = None
 
-    @classmethod
-    def submit(cls, objs: Sequence[Furu[Any]]) -> Manager:
-        manager = cls()
-        manager._add_to_dag(objs)
-        with manager.lock:
-            manager._maybe_finish_locked()
-        return manager
+        self._add_to_dag(objs)
 
     def get_job(self) -> GetJobResponse:
         with self.lock:
@@ -225,7 +219,7 @@ class Manager:
 
             while not self.done.wait(timeout=0.1):
                 if any(not worker.is_alive() for worker in workers):
-                    self.fail("a worker exited before submit() completed")
+                    self.fail("a worker exited before manager run completed")
                     break
 
             for worker in workers:
@@ -291,7 +285,7 @@ class Manager:
                 f"first failure for {first_object_id} "
                 f"(lease {failed_job.lease_id}): {failed_job.error}"
             )
-        return "submit() could not complete; " + "; ".join(parts)
+        return "manager run could not complete; " + "; ".join(parts)
 
 
 def _bind_socket(*, host: str, port: int) -> socket.socket:

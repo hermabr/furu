@@ -2,7 +2,7 @@ from importlib.metadata import version
 
 from furu.core import Furu
 from furu.dependencies import dependency
-from furu.execution import load_or_create, submit
+from furu.execution import load_or_create
 from furu.logging import get_logger
 from furu.migration import Migration
 from furu.result import LazyResult, save_as
@@ -22,6 +22,5 @@ __all__ = [
     "get_logger",
     "load_or_create",
     "save_as",
-    "submit",
     "validate",
 ]
