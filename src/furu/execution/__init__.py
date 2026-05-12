@@ -31,7 +31,7 @@ from furu.storage_layout import (
     run_log_path_in,
 )
 from furu.utils import class_label, nfs_safe_unique_name
-from furu.worker_execution import (
+from furu.worker.context import (
     _DependencyNotReady,
     _worker_execution_lease_id,
 )
@@ -195,7 +195,7 @@ def load_or_create[T](
 
 
 def submit(objs: Sequence[Furu[Any]], *, n_workers: int = 1) -> None:
-    from furu.manager import Manager
+    from furu.execution.manager import Manager
 
     manager = Manager.submit(objs)
     manager.run(n_workers=n_workers)

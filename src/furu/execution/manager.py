@@ -11,7 +11,7 @@ from furu.core import Furu
 from furu.dag import FuruDagNode, make_execution_dag
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
-from furu.worker_protocol import FinishRequest, GetJobResponse, Job
+from furu.worker.protocol import FinishRequest, GetJobResponse, Job
 
 
 @dataclass
@@ -113,8 +113,8 @@ class Manager:
             self.raise_for_failure()
             return
 
-        from furu.worker import worker_loop
-        from furu.worker_api import create_manager_app
+        from furu.worker.api import create_manager_app
+        from furu.worker.loop import worker_loop
 
         import uvicorn
 

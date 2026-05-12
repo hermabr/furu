@@ -3,10 +3,10 @@ import time
 import pytest
 
 from furu import Furu
-from furu.manager import Manager
+from furu.execution.manager import Manager
 from furu.metadata import ArtifactSpec
-from furu.worker import worker_loop
-from furu.worker_protocol import FinishRequest, Job
+from furu.worker.loop import worker_loop
+from furu.worker.protocol import FinishRequest, Job
 
 
 class ManagerLeaf(Furu[int]):

@@ -11,8 +11,8 @@ from typing import Any
 from furu.core import Furu
 from furu.execution import _load_or_create_local
 from furu.metadata import ArtifactSpec
-from furu.worker_execution import _DependencyNotReady, worker_execution_context
-from furu.worker_protocol import BlockedRequest, FinishRequest, Job
+from furu.worker.context import _DependencyNotReady, worker_execution_context
+from furu.worker.protocol import BlockedRequest, FinishRequest, Job
 
 
 class ServerUnavailable(RuntimeError):

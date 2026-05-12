@@ -4,10 +4,10 @@ from typing import TYPE_CHECKING
 
 from fastapi import FastAPI, HTTPException
 
-from furu.worker_protocol import BlockedRequest, FinishRequest, GetJobResponse
+from furu.worker.protocol import BlockedRequest, FinishRequest, GetJobResponse
 
 if TYPE_CHECKING:
-    from furu.manager import Manager
+    from furu.execution.manager import Manager
 
 
 def create_manager_app(manager: Manager) -> FastAPI:
