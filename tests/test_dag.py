@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import pytest
 
 import furu
-from furu import Furu, FuruDag, make_dag
+from furu import Furu, FuruDagNode, make_dag
 
 
 class Leaf(Furu[str]):
@@ -54,13 +54,30 @@ class ComputedParent(Furu[str]):
         return self.computed_child.load_or_create()
 
 
+def _walk_all[TFuru: Furu](
+    roots: list[FuruDagNode[TFuru]],
+) -> dict[str, FuruDagNode[TFuru]]:
+    seen: dict[str, FuruDagNode[TFuru]] = {}
+    stack = list(roots)
+    while stack:
+        node = stack.pop()
+        if node.obj.object_id in seen:
+            continue
+        seen[node.obj.object_id] = node
+        stack.extend(node.dependents)
+    return seen
+
+
 def test_make_dag_single_object_no_dependencies():
     leaf = Leaf(name="x")
-    dag = make_dag(leaf)
+    roots = make_dag(leaf)
 
-    assert isinstance(dag, FuruDag)
-    assert dag.nodes == {leaf.object_id: leaf}
-    assert dag.dependencies == {leaf.object_id: ()}
+    assert len(roots) == 1
+    (root,) = roots
+    assert isinstance(root, FuruDagNode)
+    assert root.obj is leaf
+    assert root.dependencies == []
+    assert root.dependents == []
 
 
 def test_make_dag_traverses_declared_refs_recursively():
@@ -70,42 +87,59 @@ def test_make_dag_traverses_declared_refs_recursively():
     mid_right = Mid(label="R", child=leaf_b)
     top = Top(name="t", left=mid_left, right=mid_right)
 
-    dag = make_dag(top)
+    roots = make_dag(top)
 
-    assert set(dag.nodes) == {
-        top.object_id,
-        mid_left.object_id,
-        mid_right.object_id,
+    root_ids = {root.obj.object_id for root in roots}
+    assert root_ids == {leaf_a.object_id, leaf_b.object_id}
+
+    all_nodes = _walk_all(roots)
+    assert set(all_nodes) == {
         leaf_a.object_id,
         leaf_b.object_id,
+        mid_left.object_id,
+        mid_right.object_id,
+        top.object_id,
     }
-    assert set(dag.dependencies[top.object_id]) == {
+
+    leaf_a_node = all_nodes[leaf_a.object_id]
+    mid_left_node = all_nodes[mid_left.object_id]
+    top_node = all_nodes[top.object_id]
+
+    assert leaf_a_node.dependencies == []
+    assert leaf_a_node.dependents == [mid_left_node]
+    assert mid_left_node.dependencies == [leaf_a_node]
+    assert mid_left_node.dependents == [top_node]
+    assert {dep.obj.object_id for dep in top_node.dependencies} == {
         mid_left.object_id,
         mid_right.object_id,
     }
-    assert dag.dependencies[mid_left.object_id] == (leaf_a.object_id,)
-    assert dag.dependencies[mid_right.object_id] == (leaf_b.object_id,)
-    assert dag.dependencies[leaf_a.object_id] == ()
-    assert dag.dependencies[leaf_b.object_id] == ()
+    assert top_node.dependents == []
 
 
-def test_make_dag_deduplicates_shared_refs_by_object_id():
+def test_make_dag_shared_dependency_has_multiple_dependents():
     shared = Leaf(name="shared")
     mid_left = Mid(label="L", child=shared)
     mid_right = Mid(label="R", child=shared)
     top = Top(name="t", left=mid_left, right=mid_right)
 
-    dag = make_dag(top)
+    roots = make_dag(top)
 
-    assert set(dag.nodes) == {
-        top.object_id,
+    assert len(roots) == 1
+    (shared_root,) = roots
+    assert shared_root.obj is shared
+    assert shared_root.dependencies == []
+    assert {n.obj.object_id for n in shared_root.dependents} == {
         mid_left.object_id,
         mid_right.object_id,
-        shared.object_id,
     }
-    assert dag.dependencies[mid_left.object_id] == (shared.object_id,)
-    assert dag.dependencies[mid_right.object_id] == (shared.object_id,)
-    assert dag.dependencies[shared.object_id] == ()
+
+    all_nodes = _walk_all(roots)
+    assert set(all_nodes) == {
+        shared.object_id,
+        mid_left.object_id,
+        mid_right.object_id,
+        top.object_id,
+    }
 
 
 def test_make_dag_stops_recursion_at_completed_objects():
@@ -114,35 +148,48 @@ def test_make_dag_stops_recursion_at_completed_objects():
     leaf.load_or_create()
     assert leaf.status() == "completed"
 
-    dag = make_dag(mid)
+    roots = make_dag(mid)
 
-    assert set(dag.nodes) == {mid.object_id, leaf.object_id}
-    assert dag.dependencies[mid.object_id] == (leaf.object_id,)
-    assert dag.dependencies[leaf.object_id] == ()
+    assert len(roots) == 1
+    (leaf_root,) = roots
+    assert leaf_root.obj is leaf
+    assert leaf_root.dependencies == []
+
+    all_nodes = _walk_all(roots)
+    assert set(all_nodes) == {leaf.object_id, mid.object_id}
+    assert {n.obj.object_id for n in leaf_root.dependents} == {mid.object_id}
 
 
-def test_make_dag_includes_completed_root_but_does_not_expand_it():
+def test_make_dag_completed_root_has_no_dependencies():
     leaf = Leaf(name="root-cached")
     mid = Mid(label="m", child=leaf)
     mid.load_or_create()
     assert mid.status() == "completed"
 
-    dag = make_dag(mid)
+    roots = make_dag(mid)
 
-    assert dag.nodes == {mid.object_id: mid}
-    assert dag.dependencies == {mid.object_id: ()}
+    assert len(roots) == 1
+    (root,) = roots
+    assert root.obj is mid
+    assert root.dependencies == []
+    assert root.dependents == []
 
 
-def test_make_dag_accepts_a_list_of_roots():
+def test_make_dag_accepts_a_list_of_inputs():
     leaf_a = Leaf(name="a")
     leaf_b = Leaf(name="b")
     mid = Mid(label="m", child=leaf_a)
 
-    dag = make_dag([mid, leaf_b])
+    roots = make_dag([mid, leaf_b])
 
-    assert set(dag.nodes) == {mid.object_id, leaf_a.object_id, leaf_b.object_id}
-    assert dag.dependencies[mid.object_id] == (leaf_a.object_id,)
-    assert dag.dependencies[leaf_b.object_id] == ()
+    root_ids = {root.obj.object_id for root in roots}
+    assert root_ids == {leaf_a.object_id, leaf_b.object_id}
+
+    all_nodes = _walk_all(roots)
+    assert set(all_nodes) == {leaf_a.object_id, leaf_b.object_id, mid.object_id}
+
+    leaf_b_node = all_nodes[leaf_b.object_id]
+    assert leaf_b_node.dependents == []
 
 
 def test_make_dag_handles_nested_dataclass_refs():
@@ -150,29 +197,28 @@ def test_make_dag_handles_nested_dataclass_refs():
     leaf_b = Leaf(name="b")
     parent = NestedParent(bundle=LeafBundle(a=leaf_a, b=leaf_b))
 
-    dag = make_dag(parent)
+    roots = make_dag(parent)
 
-    assert set(dag.nodes) == {parent.object_id, leaf_a.object_id, leaf_b.object_id}
-    assert set(dag.dependencies[parent.object_id]) == {
-        leaf_a.object_id,
-        leaf_b.object_id,
-    }
+    root_ids = {root.obj.object_id for root in roots}
+    assert root_ids == {leaf_a.object_id, leaf_b.object_id}
+
+    all_nodes = _walk_all(roots)
+    assert set(all_nodes) == {leaf_a.object_id, leaf_b.object_id, parent.object_id}
 
 
 def test_make_dag_walks_computed_dependencies():
     parent = ComputedParent(name="p")
 
-    dag = make_dag(parent)
+    roots = make_dag(parent)
 
-    assert set(dag.nodes) == {parent.object_id, parent.computed_child.object_id}
-    assert dag.dependencies[parent.object_id] == (parent.computed_child.object_id,)
+    assert len(roots) == 1
+    (child_root,) = roots
+    assert child_root.obj.object_id == parent.computed_child.object_id
+    assert {n.obj.object_id for n in child_root.dependents} == {parent.object_id}
 
 
-def test_make_dag_empty_list_returns_empty_dag():
-    dag = make_dag([])
-
-    assert dag.nodes == {}
-    assert dag.dependencies == {}
+def test_make_dag_empty_list_returns_empty_list():
+    assert make_dag([]) == []
 
 
 def test_make_dag_rejects_non_furu_values():
