@@ -91,6 +91,25 @@ def test_manager_report_blocked_discovers_lazy_dependency_and_reruns_parent() ->
     assert manager.blocked == {}
 
 
+def test_manager_report_blocked_ignores_completed_lazy_dependency() -> None:
+    parent = ManagerLazyParent(value=2)
+    dependency = ManagerLeaf(value=2)
+    dependency.load_or_create()
+    manager = Manager([parent])
+
+    parent_job = manager.get_job()
+    assert isinstance(parent_job, Job)
+
+    manager.report_blocked(
+        parent_job.lease_id,
+        [ArtifactSpec.from_furu(dependency)],
+    )
+
+    assert set(manager.ready) == {parent.object_id}
+    assert manager.blocked == {}
+    assert dependency.object_id not in manager.nodes_by_id
+
+
 def test_manager_report_blocked_discovers_multiple_lazy_dependencies_together() -> None:
     parent = ManagerLazyParent(value=2)
     dependencies = [ManagerLeaf(value=2), ManagerLeaf(value=3)]

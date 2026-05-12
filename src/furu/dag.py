@@ -33,12 +33,11 @@ def _add_to_dag(manager: Manager, objs: Sequence[Furu]) -> None:
         obj = pending.pop()
         if obj.object_id in manager.nodes_by_id:
             continue
+        if obj.status() == "completed":
+            continue
         node = DagNode(obj=obj)
         manager.nodes_by_id[obj.object_id] = node
         newly_added.append(node)
-        if obj.status() == "completed":
-            refs_by_id[obj.object_id] = ()
-            continue
         refs = collect_declared_refs(obj)
         refs_by_id[obj.object_id] = refs
         pending.extend(refs)
@@ -46,7 +45,9 @@ def _add_to_dag(manager: Manager, objs: Sequence[Furu]) -> None:
     for obj_id, refs in refs_by_id.items():
         node = manager.nodes_by_id[obj_id]
         for ref in refs:
-            dep_node = manager.nodes_by_id[ref.object_id]
+            dep_node = manager.nodes_by_id.get(ref.object_id)
+            if dep_node is None:
+                continue
             node.dependencies.append(dep_node)
             dep_node.dependents.append(node)
 

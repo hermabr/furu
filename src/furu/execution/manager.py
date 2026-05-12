@@ -112,13 +112,19 @@ class Manager:
                 if artifact.object_id in self.completed:
                     continue
 
-                dependency_ids.append(artifact.object_id)
-                if (
-                    artifact.object_id not in self.nodes_by_id
-                    and artifact.object_id not in missing_dependency_ids
-                ):
+                if artifact.object_id in self.nodes_by_id:
+                    if self.nodes_by_id[artifact.object_id].obj.status() == "completed":
+                        continue
+                    dependency_ids.append(artifact.object_id)
+                    continue
+
+                if artifact.object_id not in missing_dependency_ids:
+                    dependency = Furu.from_artifact(artifact)
+                    if dependency.status() == "completed":
+                        continue
                     missing_dependency_ids.add(artifact.object_id)
-                    missing_dependencies.append(Furu.from_artifact(artifact))
+                    missing_dependencies.append(dependency)
+                dependency_ids.append(artifact.object_id)
 
             _add_to_dag(self, missing_dependencies)
 

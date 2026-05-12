@@ -147,12 +147,12 @@ def test_add_to_dag_stops_recursion_at_completed_objects():
     manager = Manager([mid])
 
     assert len(manager.ready) == 1
-    (leaf_root,) = manager.ready.values()
-    assert leaf_root.obj is leaf
-    assert leaf_root.dependencies == []
+    (mid_root,) = manager.ready.values()
+    assert mid_root.obj is mid
+    assert mid_root.dependencies == []
 
-    assert set(manager.nodes_by_id) == {leaf.object_id, mid.object_id}
-    assert {n.obj.object_id for n in leaf_root.dependents} == {mid.object_id}
+    assert set(manager.nodes_by_id) == {mid.object_id}
+    assert mid_root.dependents == []
 
 
 def test_add_to_dag_completed_root_has_no_dependencies():
@@ -163,12 +163,8 @@ def test_add_to_dag_completed_root_has_no_dependencies():
 
     manager = Manager([mid])
 
-    assert len(manager.ready) == 1
-    (root,) = manager.ready.values()
-    assert root.obj is mid
-    assert root.dependencies == []
-    assert root.dependents == []
-    assert manager.nodes_by_id == {mid.object_id: root}
+    assert manager.ready == {}
+    assert manager.nodes_by_id == {}
     assert manager.blocked == {}
 
 
