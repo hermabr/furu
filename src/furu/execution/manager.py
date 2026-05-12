@@ -102,15 +102,25 @@ class Manager:
             running_job = self._pop_running_locked(lease_id)
             node = running_job.node
 
+            dependency_ids: list[str] = []
+            missing_dependency_ids: set[str] = set()
+            missing_dependencies: list[Furu[Any]] = []
             for artifact in dependencies:
                 if artifact.object_id in self.completed:
                     continue
 
-                if (dep_node := self.nodes_by_id.get(artifact.object_id)) is None:
-                    dep_obj = Furu.from_artifact(artifact)
-                    self._add_to_dag([dep_obj])
-                    dep_node = self.nodes_by_id[artifact.object_id]
+                dependency_ids.append(artifact.object_id)
+                if (
+                    artifact.object_id not in self.nodes_by_id
+                    and artifact.object_id not in missing_dependency_ids
+                ):
+                    missing_dependency_ids.add(artifact.object_id)
+                    missing_dependencies.append(Furu.from_artifact(artifact))
 
+            self._add_to_dag(missing_dependencies)
+
+            for dependency_id in dependency_ids:
+                dep_node = self.nodes_by_id[dependency_id]
                 if dep_node not in node.dependencies:
                     node.dependencies.append(dep_node)
                 if node not in dep_node.dependents:

@@ -90,6 +90,31 @@ def test_manager_block_discovers_lazy_dependency_and_reruns_parent() -> None:
     assert manager.blocked == {}
 
 
+def test_manager_block_discovers_multiple_lazy_dependencies_together() -> None:
+    parent = ManagerLazyParent(value=2)
+    dependencies = [ManagerLeaf(value=2), ManagerLeaf(value=3)]
+    manager = Manager.submit([parent])
+
+    parent_job = manager.get_job()
+    assert isinstance(parent_job, Job)
+
+    manager.block(
+        parent_job.lease_id,
+        [ArtifactSpec.from_furu(dependency) for dependency in dependencies],
+    )
+
+    assert set(manager.ready) == {dependency.object_id for dependency in dependencies}
+    assert set(manager.blocked) == {parent.object_id}
+
+    parent_node = manager.nodes_by_id[parent.object_id]
+    assert {node.obj.object_id for node in parent_node.dependencies} == {
+        dependency.object_id for dependency in dependencies
+    }
+    for dependency in dependencies:
+        dependency_node = manager.nodes_by_id[dependency.object_id]
+        assert parent_node in dependency_node.dependents
+
+
 def test_manager_uses_new_lease_when_blocked_job_is_released() -> None:
     parent = ManagerLazyParent(value=2)
     dependency = ManagerLeaf(value=2)
