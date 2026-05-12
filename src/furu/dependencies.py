@@ -120,18 +120,18 @@ class FuruDependencyNode[TFuru: Furu]:
 
 
 @overload
-def _normalize_topological_sort_input[TFuru: Furu](
+def _normalize_execution_dag_input[TFuru: Furu](
     obj_or_objs: TFuru,
 ) -> list[TFuru]: ...
 
 
 @overload
-def _normalize_topological_sort_input[TFuru: Furu](
+def _normalize_execution_dag_input[TFuru: Furu](
     obj_or_objs: Sequence[TFuru],
 ) -> list[TFuru]: ...
 
 
-def _normalize_topological_sort_input(
+def _normalize_execution_dag_input(
     obj_or_objs: Furu | Sequence[Furu],
 ) -> list[Furu]:
     from furu.core import Furu
@@ -140,13 +140,12 @@ def _normalize_topological_sort_input(
         return [obj_or_objs]
     if not isinstance(obj_or_objs, Sequence):
         raise TypeError(
-            "make_topological_sort() expected a Furu object or a sequence of "
-            "Furu objects"
+            "make_execution_dag() expected a Furu object or a sequence of Furu objects"
         )
 
     objs = list(obj_or_objs)
     if any(not isinstance(obj, Furu) for obj in objs):
-        raise TypeError("make_topological_sort() expected Furu objects")
+        raise TypeError("make_execution_dag() expected Furu objects")
     return objs
 
 
@@ -155,21 +154,21 @@ def _is_success_status[TFuru: Furu](obj: TFuru) -> bool:
 
 
 @overload
-def make_topological_sort[TFuru: Furu](
+def make_execution_dag[TFuru: Furu](
     obj_or_objs: TFuru,
 ) -> list[FuruDependencyNode[Furu]]: ...
 
 
 @overload
-def make_topological_sort[TFuru: Furu](
+def make_execution_dag[TFuru: Furu](
     obj_or_objs: Sequence[TFuru],
 ) -> list[FuruDependencyNode[Furu]]: ...
 
 
-def make_topological_sort(
+def make_execution_dag(
     obj_or_objs: Furu | Sequence[Furu],
 ) -> list[FuruDependencyNode[Furu]]:
-    objs = _normalize_topological_sort_input(obj_or_objs)
+    objs = _normalize_execution_dag_input(obj_or_objs)
 
     nodes_by_id: dict[str, FuruDependencyNode[Furu]] = {}
     dependency_ids_by_id: dict[str, tuple[str, ...]] = {}
