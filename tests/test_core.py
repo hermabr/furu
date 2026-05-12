@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict
 
 import furu
 import furu.execution as execution_module
-from furu import Furu, load_or_create, validate
+from furu import Furu, load_or_create, make_dag, validate
 from furu.config import config
 from furu.dependencies import collect_declared_refs
 from furu.locking import lock_many
@@ -428,6 +428,17 @@ class FuruBoundaryParent(Furu[str]):
 
     def create(self) -> str:
         return self.child.node1.load_or_create()
+
+
+class SelfDependency(Furu[str]):
+    name: str
+
+    @furu.dependency
+    def child(self) -> Furu[Any]:
+        return self
+
+    def create(self) -> str:
+        return self.name
 
 
 class BatchDependencyParent(Furu[str]):
@@ -1101,6 +1112,73 @@ def test_batched_dependencies_record_all_observed_loads() -> None:
                 Node(name="shared-lazy").object_id,
             ]
         )
+
+
+def test_make_dag_recursively_collects_declared_refs() -> None:
+    first = Node(name="inner")
+    second = WeightedNode(name="other", weight=3)
+    child = NodePair(node1=first, node2=second, name="pair")
+    parent = FuruBoundaryParent(child=child)
+
+    dag = make_dag(parent)
+
+    assert set(dag.object_ids) == {
+        first.object_id,
+        second.object_id,
+        child.object_id,
+        parent.object_id,
+    }
+    assert dag.roots == (parent.object_id,)
+    assert dag.object_ids[-2:] == (child.object_id, parent.object_id)
+    assert set(dag.dependencies_by_id[child.object_id]) == {
+        first.object_id,
+        second.object_id,
+    }
+    assert dag.dependencies_by_id[parent.object_id] == (child.object_id,)
+    assert set(dag.edges) == {
+        (first.object_id, child.object_id),
+        (second.object_id, child.object_id),
+        (child.object_id, parent.object_id),
+    }
+
+
+def test_make_dag_stops_at_completed_objects() -> None:
+    child = NodePair(
+        node1=Node(name="inner"),
+        node2=WeightedNode(name="other", weight=3),
+        name="pair",
+    )
+    child.load_or_create()
+    parent = FuruBoundaryParent(child=child)
+
+    dag = make_dag(parent)
+
+    assert set(dag.object_ids) == {child.object_id, parent.object_id}
+    assert dag.dependencies_by_id[child.object_id] == ()
+    assert dag.dependencies_by_id[parent.object_id] == (child.object_id,)
+
+
+def test_make_dag_deduplicates_by_object_id() -> None:
+    first = Node(name="same")
+    second = Node(name="same")
+
+    dag = make_dag([first, second])
+
+    assert dag.roots == (first.object_id,)
+    assert dag.objects == (first,)
+
+
+def test_furu_make_dag_delegates_to_shared_dag_builder() -> None:
+    node = Node(name="method")
+
+    assert node.make_dag() == make_dag(node)
+
+
+def test_make_dag_rejects_cycles() -> None:
+    node = SelfDependency(name="cycle")
+
+    with pytest.raises(ValueError, match="declared Furu dependencies contain a cycle"):
+        make_dag(node)
 
 
 def test_furu_from_artifact_infers_furu_object_type():
