@@ -1,6 +1,7 @@
 from importlib.metadata import version
 
 from furu.core import Furu
+from furu.dag import submit
 from furu.dependencies import dependency
 from furu.execution import load_or_create
 from furu.logging import get_logger
@@ -22,5 +23,6 @@ __all__ = [
     "get_logger",
     "load_or_create",
     "save_as",
+    "submit",
     "validate",
 ]
