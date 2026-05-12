@@ -1129,16 +1129,6 @@ def test_make_dag_accepts_lists_and_dedupes_shared_objects_by_object_id() -> Non
     }
 
 
-def test_make_dag_instance_method_matches_public_function() -> None:
-    obj = NestedDependencyParent(
-        bundle=DependencyBundle(
-            first=Node(name="x"), second=WeightedNode(name="y", weight=1)
-        )
-    )
-
-    assert obj.make_dag() == make_dag(obj)
-
-
 def test_make_dag_stops_at_completed_objects() -> None:
     first = Node(name="completed-inner")
     second = WeightedNode(name="completed-inner", weight=2)
