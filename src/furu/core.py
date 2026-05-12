@@ -196,14 +196,14 @@ class Furu[T](_FuruDataclassTransform, ABC):
         return _hash_dict_deterministically(self.artifact_data)
 
     @cached_property
-    def schema(
+    def schema_data(
         self,
     ) -> JsonValue:
         return _schema_type(type(self), set())
 
     @cached_property
     def artifact_schema_hash(self) -> str:
-        return _hash_dict_deterministically(self.schema)
+        return _hash_dict_deterministically(self.schema_data)
 
     @cached_property
     def _fully_qualified_name(self) -> str:

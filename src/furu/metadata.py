@@ -41,7 +41,7 @@ class ArtifactSpec(BaseModel):
             fully_qualified_name=obj._fully_qualified_name,
             artifact_data=obj.artifact_data,
             artifact_hash=obj.artifact_hash,
-            schema_data=obj.schema,
+            schema_data=obj.schema_data,
             schema_hash=obj.artifact_schema_hash,
         )
 

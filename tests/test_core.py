@@ -857,7 +857,7 @@ def expected_schema_for_B_like(
     ],
 )
 def test_schema(make: Callable[[], Furu], expected):
-    assert make().schema == expected
+    assert make().schema_data == expected
 
 
 def test_to_json():
@@ -978,7 +978,7 @@ def test_furu_from_artifact_returns_furu_object():
         fully_qualified_name=obj._fully_qualified_name,
         artifact_data=obj.artifact_data,
         artifact_hash=obj.artifact_hash,
-        schema_data=obj.schema,
+        schema_data=obj.schema_data,
         schema_hash=obj.artifact_schema_hash,
     )
 
@@ -986,7 +986,7 @@ def test_furu_from_artifact_returns_furu_object():
     raw_metadata = json.loads(metadata_path_in(obj.data_dir).read_text())
 
     assert artifact.object_id == obj.object_id
-    assert artifact.schema_data == obj.schema
+    assert artifact.schema_data == obj.schema_data
     assert "schema_data" in type(artifact).model_fields
     assert loaded == obj
     assert isinstance(loaded, NodePair)
@@ -996,7 +996,7 @@ def test_furu_from_artifact_returns_furu_object():
         "fully_qualified_name": obj._fully_qualified_name,
         "artifact_data": obj.artifact_data,
         "artifact_hash": obj.artifact_hash,
-        "schema_data": obj.schema,
+        "schema_data": obj.schema_data,
         "schema_hash": obj.artifact_schema_hash,
     }
     assert "hash" not in raw_metadata["artifact"]
@@ -1116,7 +1116,7 @@ def test_furu_from_artifact_infers_furu_object_type():
         fully_qualified_name=obj._fully_qualified_name,
         artifact_data=obj.artifact_data,
         artifact_hash=obj.artifact_hash,
-        schema_data=obj.schema,
+        schema_data=obj.schema_data,
         schema_hash=obj.artifact_schema_hash,
     )
 
@@ -1146,7 +1146,7 @@ def test_furu_from_artifact_accepts_artifact_spec():
         fully_qualified_name=obj._fully_qualified_name,
         artifact_data=obj.artifact_data,
         artifact_hash=obj.artifact_hash,
-        schema_data=obj.schema,
+        schema_data=obj.schema_data,
         schema_hash=obj.artifact_schema_hash,
     )
 
@@ -1163,7 +1163,7 @@ def test_furu_from_artifact_type_mismatch_names_expected_and_loaded_type():
         fully_qualified_name=obj._fully_qualified_name,
         artifact_data=obj.artifact_data,
         artifact_hash=obj.artifact_hash,
-        schema_data=obj.schema,
+        schema_data=obj.schema_data,
         schema_hash=obj.artifact_schema_hash,
     )
 
@@ -1184,7 +1184,7 @@ def test_furu_from_artifact_rejects_artifact_spec_hash_mismatch():
         fully_qualified_name=obj._fully_qualified_name,
         artifact_data=obj.artifact_data,
         artifact_hash=bad_hash,
-        schema_data=obj.schema,
+        schema_data=obj.schema_data,
         schema_hash=obj.artifact_schema_hash,
     )
 
@@ -1205,7 +1205,7 @@ def test_furu_from_artifact_rejects_artifact_spec_schema_hash_mismatch():
         fully_qualified_name=obj._fully_qualified_name,
         artifact_data=obj.artifact_data,
         artifact_hash=obj.artifact_hash,
-        schema_data=obj.schema,
+        schema_data=obj.schema_data,
         schema_hash=bad_schema_hash,
     )
 
@@ -1221,7 +1221,7 @@ def test_furu_from_artifact_rejects_artifact_spec_schema_hash_mismatch():
 
 
 def test_schema_with_ellipsis_type_arg():
-    assert VariadicTuple(t=(1, 2, 3)).schema == {
+    assert VariadicTuple(t=(1, 2, 3)).schema_data == {
         "|class": "test_core.VariadicTuple",
         "|fields": {
             "t": {
