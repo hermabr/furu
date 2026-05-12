@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import functools
+import shutil
 import traceback
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
+from pathlib import Path
 from typing import (
     Any,
     TypeVar,
@@ -28,7 +30,9 @@ from furu.storage_layout import (
     compute_lock_path_in,
     internal_furu_dir_in,
     metadata_path_in,
+    result_link_path_in,
     result_dir_in,
+    result_manifest_path_in,
     run_log_path_in,
 )
 from furu.utils import class_label, nfs_safe_unique_name
@@ -178,6 +182,39 @@ def _format_error_debug_details(exc: BaseException) -> str:
     return "".join(parts)
 
 
+def _quarantine_blocked_attempts[T](
+    group: Sequence[Furu[T]],
+    *,
+    has_lock: HasLock,
+) -> list[Path]:
+    if not has_lock():
+        lock_paths = ", ".join(str(compute_lock_path_in(obj.data_dir)) for obj in group)
+        raise LockLostError(
+            f"lost lock before cleaning blocked attempt(s): {lock_paths}"
+        )
+
+    tombstones: list[Path] = []
+    for obj in group:
+        if not obj.data_dir.exists():
+            continue
+        if (
+            result_manifest_path_in(obj.data_dir).exists()
+            or result_link_path_in(obj.data_dir).exists()
+        ):
+            continue
+
+        tombstone_path = nfs_safe_unique_name(obj.data_dir, name="blocked")
+        obj.data_dir.rename(tombstone_path)
+        tombstones.append(tombstone_path)
+
+    return tombstones
+
+
+def _remove_quarantined_attempts(tombstones: Sequence[Path]) -> None:
+    for tombstone in tombstones:
+        shutil.rmtree(tombstone, ignore_errors=True)
+
+
 @overload
 def load_or_create[T](obj: Furu[T], *, use_lock: bool = True) -> T: ...
 
@@ -315,32 +352,42 @@ def _load_or_create_local[T](
         else nullcontext()
     )
 
-    with lock_ctx as maybe_has_lock:
-        has_lock = maybe_has_lock or (lambda: True)
-        pending: list[Furu[T]] = []
-        for obj in missing:
-            if (cached_result_dir := result_dir_for_loading(obj)) is not None:
-                obj.logger.info(
-                    "cache hit for %s after waiting at %s",
-                    obj._log_label,
-                    cached_result_dir,
-                )
-                results_by_object_id[obj.object_id] = cast(
-                    T, load_result_bundle(cached_result_dir)
-                )
-            else:
-                pending.append(obj)
+    blocked_tombstones: list[Path] = []
+    try:
+        with lock_ctx as maybe_has_lock:
+            has_lock = maybe_has_lock or (lambda: True)
+            pending: list[Furu[T]] = []
+            for obj in missing:
+                if (cached_result_dir := result_dir_for_loading(obj)) is not None:
+                    obj.logger.info(
+                        "cache hit for %s after waiting at %s",
+                        obj._log_label,
+                        cached_result_dir,
+                    )
+                    results_by_object_id[obj.object_id] = cast(
+                        T, load_result_bundle(cached_result_dir)
+                    )
+                else:
+                    pending.append(obj)
 
-        grouped: dict[type[object], list[Furu[T]]] = {}
-        for obj in pending:
-            grouped.setdefault(type(obj), []).append(obj)
+            grouped: dict[type[object], list[Furu[T]]] = {}
+            for obj in pending:
+                grouped.setdefault(type(obj), []).append(obj)
 
-        for group in grouped.values():
-            _execute_group(
-                group,
-                has_lock=has_lock,
-                results_by_object_id=results_by_object_id,
-            )
+            for group in grouped.values():
+                try:
+                    _execute_group(
+                        group,
+                        has_lock=has_lock,
+                        results_by_object_id=results_by_object_id,
+                    )
+                except _DependencyNotReady:
+                    blocked_tombstones.extend(
+                        _quarantine_blocked_attempts(group, has_lock=has_lock)
+                    )
+                    raise
+    finally:
+        _remove_quarantined_attempts(blocked_tombstones)
 
     outputs = [results_by_object_id[obj.object_id] for obj in objs]
 
@@ -415,6 +462,9 @@ def _execute_group[T](
                 results_by_object_id[obj.object_id] = _unwrap_save_as(result)
 
             logger.debug("load_or_create complete")
+        except _DependencyNotReady:
+            logger.debug("load_or_create blocked by runtime dependency")
+            raise
         except BaseException as exc:
             logger.exception("load_or_create failed")
             logger.error(

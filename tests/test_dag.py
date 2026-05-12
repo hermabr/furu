@@ -254,11 +254,38 @@ class LazyChildLoader(Furu[int]):
         return self.base + TrackingLeaf(n=self.base).load_or_create()
 
 
+class StatusCheckingRuntimeChild(Furu[int]):
+    base: int
+    parent: ClassVar[Furu[int] | None] = None
+    observed_parent_statuses: ClassVar[list[str]] = []
+    observed_parent_data_dir_exists: ClassVar[list[bool]] = []
+
+    def create(self) -> int:
+        parent = type(self).parent
+        assert parent is not None
+        type(self).observed_parent_statuses.append(parent.status())
+        type(self).observed_parent_data_dir_exists.append(parent.data_dir.exists())
+        return self.base * 2
+
+
+class RuntimeDependencyParent(Furu[int]):
+    base: int
+    create_calls: ClassVar[list[int]] = []
+
+    def create(self) -> int:
+        type(self).create_calls.append(self.base)
+        return StatusCheckingRuntimeChild(base=self.base).load_or_create() + 1
+
+
 @pytest.fixture(autouse=True)
 def _reset_tracking() -> None:
     TrackingLeaf.create_calls.clear()
     TrackingMid.create_calls.clear()
     LazyChildLoader.create_calls.clear()
+    StatusCheckingRuntimeChild.parent = None
+    StatusCheckingRuntimeChild.observed_parent_statuses.clear()
+    StatusCheckingRuntimeChild.observed_parent_data_dir_exists.clear()
+    RuntimeDependencyParent.create_calls.clear()
 
 
 def test_submit_runs_single_zero_dependency_node():
@@ -303,6 +330,19 @@ def test_submit_discovers_lazy_dependencies_and_reruns_parent():
     # _DependencyNotReady), then once more after the dep completes.
     assert LazyChildLoader.create_calls == [7, 7]
     assert parent.load_or_create() == 21
+
+
+def test_submit_cleans_blocked_parent_attempt_before_runtime_dependency_runs():
+    parent = RuntimeDependencyParent(base=9)
+    StatusCheckingRuntimeChild.parent = parent
+
+    submit([parent])
+
+    assert StatusCheckingRuntimeChild.observed_parent_statuses == ["missing"]
+    assert StatusCheckingRuntimeChild.observed_parent_data_dir_exists == [False]
+    assert RuntimeDependencyParent.create_calls == [9, 9]
+    assert parent.status() == "completed"
+    assert parent.load_or_create() == 19
 
 
 def test_submit_skips_already_completed_objects():
