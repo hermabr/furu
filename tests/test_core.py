@@ -16,7 +16,7 @@ import furu
 import furu.execution as execution_module
 from furu import Furu, load_or_create, make_dag, validate
 from furu.config import config
-from furu.dependencies import collect_declared_refs
+from furu.dependencies import FuruDagNode, collect_declared_refs
 from furu.locking import lock_many
 from furu.metadata import ArtifactSpec
 from furu.result import load_result_bundle, save_result_bundle
@@ -1007,6 +1007,34 @@ def _dependency_object_ids(obj: Furu[Any]) -> list[str]:
     return metadata["observed_dependencies"]
 
 
+def _dag_nodes_by_id(ready: list[FuruDagNode]) -> dict[str, FuruDagNode]:
+    nodes_by_id: dict[str, FuruDagNode] = {}
+    stack = list(ready)
+
+    while stack:
+        node = stack.pop()
+        if node.obj.object_id in nodes_by_id:
+            continue
+        nodes_by_id[node.obj.object_id] = node
+        stack.extend(node.dependents)
+
+    return nodes_by_id
+
+
+def _dag_dependency_ids(nodes_by_id: dict[str, FuruDagNode]) -> dict[str, list[str]]:
+    return {
+        object_id: sorted(dependency.obj.object_id for dependency in node.dependencies)
+        for object_id, node in nodes_by_id.items()
+    }
+
+
+def _dag_dependent_ids(nodes_by_id: dict[str, FuruDagNode]) -> dict[str, list[str]]:
+    return {
+        object_id: sorted(dependent.obj.object_id for dependent in node.dependents)
+        for object_id, node in nodes_by_id.items()
+    }
+
+
 def test_field_dependencies_are_eager_but_metadata_stores_only_loaded_objects() -> None:
     first = Node(name="nested")
     second = WeightedNode(name="weighted", weight=2)
@@ -1087,24 +1115,29 @@ def test_make_dag_collects_declared_refs_recursively_and_dedupes_by_object_id() 
     shared = NodePair(node1=first, node2=second, name="shared")
     root = FuruBoundaryParent(child=shared)
 
-    dag = make_dag(root)
+    ready = make_dag(root)
+    nodes_by_id = _dag_nodes_by_id(ready)
 
-    assert set(dag.nodes_by_id) == {
+    assert [node.obj.object_id for node in ready] == sorted(
+        [first.object_id, second.object_id]
+    )
+    assert set(nodes_by_id) == {
         first.object_id,
         second.object_id,
         shared.object_id,
         root.object_id,
     }
-    assert dag.dependencies_by_id == {
-        first.object_id: (),
-        second.object_id: (),
-        shared.object_id: (first.object_id, second.object_id),
-        root.object_id: (shared.object_id,),
+    assert _dag_dependency_ids(nodes_by_id) == {
+        first.object_id: [],
+        second.object_id: [],
+        shared.object_id: [first.object_id, second.object_id],
+        root.object_id: [shared.object_id],
     }
-    assert set(dag.edges) == {
-        (first.object_id, shared.object_id),
-        (second.object_id, shared.object_id),
-        (shared.object_id, root.object_id),
+    assert _dag_dependent_ids(nodes_by_id) == {
+        first.object_id: [shared.object_id],
+        second.object_id: [shared.object_id],
+        shared.object_id: [root.object_id],
+        root.object_id: [],
     }
 
 
@@ -1113,20 +1146,20 @@ def test_make_dag_accepts_lists_and_dedupes_shared_objects_by_object_id() -> Non
     first = BatchDependencyParent(key=1, eager=shared)
     second = BatchDependencyParent(key=2, eager=shared)
 
-    dag = make_dag([first, second, first])
+    ready = make_dag([first, second, first])
+    nodes_by_id = _dag_nodes_by_id(ready)
 
-    assert list(dag.nodes_by_id).count(shared.object_id) == 1
-    assert set(dag.nodes_by_id) == {
+    assert [node.obj.object_id for node in ready] == [shared.object_id]
+    assert set(nodes_by_id) == {
         shared.object_id,
         first.object_id,
         second.object_id,
     }
-    assert dag.dependencies_by_id[first.object_id] == (shared.object_id,)
-    assert dag.dependencies_by_id[second.object_id] == (shared.object_id,)
-    assert set(dag.edges) == {
-        (shared.object_id, first.object_id),
-        (shared.object_id, second.object_id),
-    }
+    assert _dag_dependency_ids(nodes_by_id)[first.object_id] == [shared.object_id]
+    assert _dag_dependency_ids(nodes_by_id)[second.object_id] == [shared.object_id]
+    assert _dag_dependent_ids(nodes_by_id)[shared.object_id] == sorted(
+        [first.object_id, second.object_id]
+    )
 
 
 def test_make_dag_stops_at_completed_objects() -> None:
@@ -1137,17 +1170,22 @@ def test_make_dag_stops_at_completed_objects() -> None:
 
     completed_child.load_or_create()
 
-    dag = make_dag(root)
+    ready = make_dag(root)
+    nodes_by_id = _dag_nodes_by_id(ready)
 
-    assert set(dag.nodes_by_id) == {
+    assert [node.obj.object_id for node in ready] == [completed_child.object_id]
+    assert set(nodes_by_id) == {
         completed_child.object_id,
         root.object_id,
     }
-    assert dag.dependencies_by_id == {
-        completed_child.object_id: (),
-        root.object_id: (completed_child.object_id,),
+    assert _dag_dependency_ids(nodes_by_id) == {
+        completed_child.object_id: [],
+        root.object_id: [completed_child.object_id],
     }
-    assert dag.edges == ((completed_child.object_id, root.object_id),)
+    assert _dag_dependent_ids(nodes_by_id) == {
+        completed_child.object_id: [root.object_id],
+        root.object_id: [],
+    }
 
 
 def test_batched_dependencies_record_all_observed_loads() -> None:

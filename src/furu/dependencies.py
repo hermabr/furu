@@ -104,15 +104,11 @@ def collect_declared_refs(obj: Furu[Any]) -> tuple[Furu[Any], ...]:
     )
 
 
-@dataclass(frozen=True)
-class FuruDag:
-    nodes: tuple[Furu[Any], ...]
-    edges: tuple[tuple[str, str], ...]
-    dependencies_by_id: dict[str, tuple[str, ...]]
-
-    @property
-    def nodes_by_id(self) -> dict[str, Furu[Any]]:
-        return {obj.object_id: obj for obj in self.nodes}
+@dataclass(slots=True)
+class FuruDagNode:
+    obj: Furu[Any]
+    dependencies: list[FuruDagNode]
+    dependents: list[FuruDagNode]
 
 
 def _normalize_make_dag_input(
@@ -133,40 +129,47 @@ def _normalize_make_dag_input(
     return objs
 
 
-def make_dag(obj_or_objs: Furu[Any] | Sequence[Furu[Any]]) -> FuruDag:
+def make_dag(obj_or_objs: Furu[Any] | Sequence[Furu[Any]]) -> list[FuruDagNode]:
     roots = _normalize_make_dag_input(obj_or_objs)
-    nodes_by_id: dict[str, Furu[Any]] = {}
-    dependencies_by_id: dict[str, tuple[str, ...]] = {}
-    edges: set[tuple[str, str]] = set()
+    nodes_by_id: dict[str, FuruDagNode] = {}
+    dependency_ids_by_id: dict[str, tuple[str, ...]] = {}
 
     def visit(obj: Furu[Any]) -> None:
-        if obj.object_id in nodes_by_id:
+        object_id = obj.object_id
+        if object_id in nodes_by_id:
             return
 
-        nodes_by_id[obj.object_id] = obj
+        nodes_by_id[object_id] = FuruDagNode(
+            obj=obj,
+            dependencies=[],
+            dependents=[],
+        )
 
         if obj.status() == "completed":
-            dependencies_by_id[obj.object_id] = ()
+            dependency_ids_by_id[object_id] = ()
             return
 
         refs = collect_declared_refs(obj)
-        dependencies_by_id[obj.object_id] = tuple(ref.object_id for ref in refs)
+        dependency_ids_by_id[object_id] = tuple(ref.object_id for ref in refs)
 
         for ref in refs:
-            edges.add((ref.object_id, obj.object_id))
             visit(ref)
 
     for root in roots:
         visit(root)
 
-    sorted_ids = tuple(sorted(nodes_by_id))
-    return FuruDag(
-        nodes=tuple(nodes_by_id[object_id] for object_id in sorted_ids),
-        edges=tuple(sorted(edges)),
-        dependencies_by_id={
-            object_id: dependencies_by_id[object_id] for object_id in sorted_ids
-        },
-    )
+    for object_id in sorted(nodes_by_id):
+        node = nodes_by_id[object_id]
+        for dependency_id in dependency_ids_by_id[object_id]:
+            dependency = nodes_by_id[dependency_id]
+            node.dependencies.append(dependency)
+            dependency.dependents.append(node)
+
+    return [
+        nodes_by_id[object_id]
+        for object_id in sorted(nodes_by_id)
+        if not nodes_by_id[object_id].dependencies
+    ]
 
 
 class DependencyRecorder:
