@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import functools
+import shutil
 import traceback
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, nullcontext
@@ -362,62 +363,76 @@ def _execute_group[T](
 
     metadata = [RunningMetadata.write_for(obj) for obj in group]
 
-    with _scoped_log_files(log_paths), _allow_direct_create():
-        logger = group[0].logger
-        logger.debug("load_or_create start")
-        try:
-            match group[0]._furu_create_mode:
-                case "batched":
-                    logger.debug("running create_batched()")
-                    with dependency_recorder() as recorder:
-                        results = type(group[0]).create_batched(group)
-                    observed = recorder.finalize()
-                    logger.debug("create_batched() returned")
-                    if not isinstance(results, list):
-                        raise TypeError(
-                            f"{type(group[0]).__name__}.create_batched() must return a list"
-                        )
-                    # TODO: Track dependency calls per object during batched execution.
-                    # This currently assigns dependencies observed anywhere in the batch
-                    # to every object.
-                    observed_dependencies = [observed for _ in group]
-                case "single":
-                    logger.debug("running sequential create() fallback")
-                    results = []
-                    observed_dependencies = []
-                    for obj in group:
+    try:
+        with _scoped_log_files(log_paths), _allow_direct_create():
+            logger = group[0].logger
+            logger.debug("load_or_create start")
+            try:
+                match group[0]._furu_create_mode:
+                    case "batched":
+                        logger.debug("running create_batched()")
                         with dependency_recorder() as recorder:
-                            results.append(obj.create())
-                        observed_dependencies.append(recorder.finalize())
-                    logger.debug("sequential create() fallback returned")
-                case _:
-                    assert_never(group[0]._furu_create_mode)
+                            results = type(group[0]).create_batched(group)
+                        observed = recorder.finalize()
+                        logger.debug("create_batched() returned")
+                        if not isinstance(results, list):
+                            raise TypeError(
+                                f"{type(group[0]).__name__}.create_batched() must return a list"
+                            )
+                        # TODO: Track dependency calls per object during batched execution.
+                        # This currently assigns dependencies observed anywhere in the batch
+                        # to every object.
+                        observed_dependencies = [observed for _ in group]
+                    case "single":
+                        logger.debug("running sequential create() fallback")
+                        results = []
+                        observed_dependencies = []
+                        for obj in group:
+                            with dependency_recorder() as recorder:
+                                results.append(obj.create())
+                            observed_dependencies.append(recorder.finalize())
+                        logger.debug("sequential create() fallback returned")
+                    case _:
+                        assert_never(group[0]._furu_create_mode)
 
-            if len(results) != len(group):
-                raise TypeError(
-                    f"{type(group[0]).__name__} returned {len(results)} results for {len(group)} objects"
+                if len(results) != len(group):
+                    raise TypeError(
+                        f"{type(group[0]).__name__} returned {len(results)} results for {len(group)} objects"
+                    )
+
+                for obj, result, observed_dependency_ids, obj_metadata in zip(
+                    group,
+                    results,
+                    observed_dependencies,
+                    metadata,
+                    strict=True,
+                ):
+                    _store_result(
+                        obj,
+                        result,
+                        metadata=obj_metadata,
+                        observed_dependencies=observed_dependency_ids,
+                        has_lock=has_lock,
+                    )
+                    results_by_object_id[obj.object_id] = _unwrap_save_as(result)
+
+                logger.debug("load_or_create complete")
+            except _DependencyNotReady:
+                logger.debug("load_or_create blocked on missing dependencies")
+                raise
+            except BaseException as exc:
+                logger.exception("load_or_create failed")
+                logger.error(
+                    "debug traceback with locals:\n%s",
+                    _format_error_debug_details(exc),
                 )
+                raise
+    except _DependencyNotReady:
+        for obj in group:
+            _cleanup_blocked_attempt(obj)
+        raise
 
-            for obj, result, observed_dependency_ids, obj_metadata in zip(
-                group,
-                results,
-                observed_dependencies,
-                metadata,
-                strict=True,
-            ):
-                _store_result(
-                    obj,
-                    result,
-                    metadata=obj_metadata,
-                    observed_dependencies=observed_dependency_ids,
-                    has_lock=has_lock,
-                )
-                results_by_object_id[obj.object_id] = _unwrap_save_as(result)
 
-            logger.debug("load_or_create complete")
-        except BaseException as exc:
-            logger.exception("load_or_create failed")
-            logger.error(
-                "debug traceback with locals:\n%s", _format_error_debug_details(exc)
-            )
-            raise
+def _cleanup_blocked_attempt(obj: Furu[Any]) -> None:
+    if obj.data_dir.exists():
+        shutil.rmtree(obj.data_dir)

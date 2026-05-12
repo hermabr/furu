@@ -254,11 +254,29 @@ class LazyChildLoader(Furu[int]):
         return self.base + TrackingLeaf(n=self.base).load_or_create()
 
 
+class ParentStatusObserver(Furu[int]):
+    base: int
+    observed_parent_status: ClassVar[list[str]] = []
+
+    def create(self) -> int:
+        parent = BlockingParent(base=self.base)
+        type(self).observed_parent_status.append(parent.status())
+        return self.base * 2
+
+
+class BlockingParent(Furu[int]):
+    base: int
+
+    def create(self) -> int:
+        return self.base + ParentStatusObserver(base=self.base).load_or_create()
+
+
 @pytest.fixture(autouse=True)
 def _reset_tracking() -> None:
     TrackingLeaf.create_calls.clear()
     TrackingMid.create_calls.clear()
     LazyChildLoader.create_calls.clear()
+    ParentStatusObserver.observed_parent_status.clear()
 
 
 def test_submit_runs_single_zero_dependency_node():
@@ -319,3 +337,12 @@ def test_submit_skips_already_completed_objects():
 
 def test_submit_empty_list_is_noop():
     submit([])
+
+
+def test_submit_cleans_up_blocked_parent_attempt():
+    parent = BlockingParent(base=3)
+
+    submit([parent])
+
+    assert ParentStatusObserver.observed_parent_status == ["missing"]
+    assert parent.load_or_create() == 9
