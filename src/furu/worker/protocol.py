@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from furu.metadata import ArtifactSpec
 
@@ -27,7 +27,10 @@ class FinishFailedRequest(BaseModel):
     error: str
 
 
-type FinishRequest = FinishSuccessRequest | FinishFailedRequest
+type FinishRequest = Annotated[
+    FinishSuccessRequest | FinishFailedRequest,
+    Field(discriminator="status"),
+]
 
 
 class BlockedRequest(BaseModel):

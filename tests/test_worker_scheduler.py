@@ -2,13 +2,14 @@ import time
 from uuid import UUID
 
 import pytest
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from furu import Furu
 from furu.execution.scheduler import FailedJob, Scheduler, RunningJob
 from furu.metadata import ArtifactSpec
 from furu.worker.loop import worker_loop
 from furu.worker.protocol import FinishFailedRequest, FinishSuccessRequest, Job
+from furu.worker.protocol import FinishRequest
 
 
 class SchedulerLeaf(Furu[int]):
@@ -166,7 +167,18 @@ def test_scheduler_failed_job_finishes_with_error() -> None:
 
 def test_finish_request_requires_error_for_failed_status() -> None:
     with pytest.raises(ValidationError, match="Field required"):
-        FinishFailedRequest.model_validate({})
+        FinishFailedRequest.model_validate({"status": "failed"})
+
+
+def test_finish_request_uses_status_discriminator() -> None:
+    adapter = TypeAdapter(FinishRequest)
+
+    assert adapter.validate_python({"status": "completed"}) == FinishSuccessRequest()
+    assert adapter.validate_python(
+        {"status": "failed", "error": "boom"}
+    ) == FinishFailedRequest(error="boom")
+    with pytest.raises(ValidationError, match="Input tag 'skipped'"):
+        adapter.validate_python({"status": "skipped"})
 
 
 def test_worker_loop_exits_when_server_is_unavailable() -> None:
