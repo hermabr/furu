@@ -255,6 +255,28 @@ def test_manager_server_exposes_bound_host_and_port() -> None:
         assert server.auth_token
 
 
+def test_manager_server_rejects_requests_without_auth_token() -> None:
+    manager = Manager([ManagerLeaf(value=12)])
+
+    with manager_server(manager, bind_host="127.0.0.1", port=0) as server:
+        response = httpx.post(f"{server.server_url}/lease_job")
+        assert response.status_code == 401
+        assert response.json() == {"detail": "invalid furu manager auth token"}
+
+        response = httpx.post(
+            f"{server.server_url}/lease_job",
+            headers={"Authorization": "Bearer wrong"},
+        )
+        assert response.status_code == 401
+        assert response.json() == {"detail": "invalid furu manager auth token"}
+
+        response = httpx.post(
+            f"{server.server_url}/lease_job",
+            headers={"Authorization": f"Bearer {server.auth_token}"},
+        )
+        assert response.status_code == 200
+
+
 def test_manager_run_requires_explicit_worker_backend() -> None:
     manager = Manager([ManagerLeaf(value=12)])
 
