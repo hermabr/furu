@@ -16,7 +16,6 @@ from typing import (
 )
 
 from furu.core import Furu, FuruCreateMode
-from furu.dag import FuruDagNode, make_execution_dag
 from furu.dependencies import dependency_recorder, record_dependency_call
 from furu.locking import LockLostError, lock_many
 from furu.logging import _scoped_log_files
@@ -32,10 +31,9 @@ from furu.storage_layout import (
     run_log_path_in,
 )
 from furu.utils import class_label, nfs_safe_unique_name
-from furu.worker_execution import (
+from furu.worker.context import (
     _DependencyNotReady,
     _worker_execution_lease_id,
-    worker_execution_context,
 )
 
 type HasLock = Callable[[], bool]
@@ -55,7 +53,7 @@ def _allow_direct_create() -> Iterator[None]:
         _create_execution_active.reset(token)
 
 
-def _install_create_guards(cls: type[Furu[Any]]) -> None:
+def _install_create_guards[T](cls: type[Furu[T]]) -> None:
     for attr in ("create", "create_batched"):
         if attr not in cls.__dict__:
             continue
@@ -196,37 +194,26 @@ def load_or_create[T](
     return _load_or_create_local(obj_or_objs, use_lock=use_lock)
 
 
-def submit(objs: Sequence[Furu[Any]]) -> None:
-    nodes_by_id: dict[str, FuruDagNode[Furu[Any]]] = {}
-    zero_dependency_nodes = make_execution_dag(objs, nodes_by_id)
+def _ensure_single_result[T](obj: Furu[T]) -> None:
+    if (cached_result_dir := result_dir_for_loading(obj)) is not None:
+        obj.logger.info("cache hit for %s at %s", obj._log_label, cached_result_dir)
+        return
 
-    while zero_dependency_nodes:
-        node = zero_dependency_nodes.pop(0)
-        try:
-            with worker_execution_context(lease_id=node.obj.object_id):
-                _load_or_create_local(node.obj)
-        except _DependencyNotReady as exc:
-            new_objs = [
-                dep for dep in exc.dependencies if dep.object_id not in nodes_by_id
-            ]
-            zero_dependency_nodes.extend(make_execution_dag(new_objs, nodes_by_id))
-            for lazy_dep in exc.dependencies:
-                dep_node = nodes_by_id[lazy_dep.object_id]
-                if dep_node not in node.dependencies:
-                    node.dependencies.append(dep_node)
-                    dep_node.dependents.append(node)
-            continue
+    internal_furu_dir_in(obj.data_dir).mkdir(parents=True, exist_ok=True)
 
-        del nodes_by_id[node.obj.object_id]
-        for dependent in node.dependents:
-            dependent.dependencies.remove(node)
-            if not dependent.dependencies:
-                zero_dependency_nodes.append(dependent)
+    with lock_many([compute_lock_path_in(obj.data_dir)]) as has_lock:
+        if (cached_result_dir := result_dir_for_loading(obj)) is not None:
+            obj.logger.info(
+                "cache hit for %s after waiting at %s",
+                obj._log_label,
+                cached_result_dir,
+            )
+            return
 
-    if nodes_by_id:
-        unresolved = ", ".join(sorted(nodes_by_id))
-        raise RuntimeError(
-            f"submit() could not make progress; unresolved dependencies: {unresolved}"
+        _create_and_store_group(
+            [obj],
+            has_lock=has_lock,
+            results_by_object_id={},
         )
 
 
@@ -336,7 +323,7 @@ def _load_or_create_local[T](
             grouped.setdefault(type(obj), []).append(obj)
 
         for group in grouped.values():
-            _execute_group(
+            _create_and_store_group(
                 group,
                 has_lock=has_lock,
                 results_by_object_id=results_by_object_id,
@@ -352,7 +339,7 @@ def _load_or_create_local[T](
     return outputs
 
 
-def _execute_group[T](
+def _create_and_store_group[T](
     group: list[Furu[T]],
     *,
     has_lock: HasLock,
@@ -422,7 +409,7 @@ def _execute_group[T](
                 len(exc.dependencies),
             )
             raise
-        except BaseException as exc:
+        except Exception as exc:
             logger.exception("load_or_create failed")
             logger.error(
                 "debug traceback with locals:\n%s", _format_error_debug_details(exc)

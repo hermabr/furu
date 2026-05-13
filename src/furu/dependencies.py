@@ -62,7 +62,7 @@ def dependency[T](
     return decorate
 
 
-def find_nested_furu_objects(value: object) -> Iterator[Furu[Any]]:
+def find_nested_furu_objects(value: object) -> Iterator[Furu]:
     from furu.core import Furu
 
     match value:
@@ -82,8 +82,8 @@ def find_nested_furu_objects(value: object) -> Iterator[Furu[Any]]:
                 yield from find_nested_furu_objects(item)
 
 
-def collect_declared_refs(obj: Furu[Any]) -> tuple[Furu[Any], ...]:
-    refs_by_id: dict[str, Furu[Any]] = {}
+def collect_declared_refs(obj: Furu) -> tuple[Furu, ...]:
+    refs_by_id: dict[str, Furu] = {}
 
     for field in fields(obj):
         for ref in find_nested_furu_objects(getattr(obj, field.name)):
@@ -108,7 +108,7 @@ class DependencyRecorder:
     def __init__(self) -> None:
         self._observed_ids: set[str] = set()
 
-    def record(self, obj: Furu[Any]) -> None:
+    def record[T](self, obj: Furu[T]) -> None:
         self._observed_ids.add(obj.object_id)
 
     def finalize(self) -> tuple[str, ...]:
@@ -124,7 +124,7 @@ _active_dependency_recorder: ContextVar[DependencyRecorder | None] = ContextVar(
 )
 
 
-def record_dependency_call(obj: Furu[Any]) -> None:
+def record_dependency_call[T](obj: Furu[T]) -> None:
     recorder = _active_dependency_recorder.get()
     if recorder is not None:
         recorder.record(obj)

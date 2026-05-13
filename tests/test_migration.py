@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from typing import Any
 
 import pytest
 
@@ -170,7 +169,7 @@ def test_load_or_create_does_not_call_migrate(
     migrate_calls = 0
     real_migrate = furu.migration.migrate
 
-    def spy_migrate(obj: Furu[Any]) -> bool:
+    def spy_migrate(obj: Furu) -> bool:
         nonlocal migrate_calls
         migrate_calls += 1
         return real_migrate(obj)

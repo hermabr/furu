@@ -31,7 +31,7 @@ from furu.storage_layout import (
     run_log_path_in,
 )
 from furu.utils import fully_qualified_name
-from furu.worker_execution import (
+from furu.worker.context import (
     _DependencyNotReady,
     _worker_execution_lease_id,
     worker_execution_context,
@@ -327,6 +327,13 @@ class FailingSingleValue(Furu[str]):
 
     def create(self) -> str:
         raise RuntimeError(f"failed single for {self.key}")
+
+
+class InterruptingValue(Furu[str]):
+    key: int
+
+    def create(self) -> str:
+        raise KeyboardInterrupt
 
 
 class PartialBatchValue(Furu[str]):
@@ -857,7 +864,7 @@ def expected_schema_for_B_like(
     ],
 )
 def test_schema(make: Callable[[], Furu], expected):
-    assert make().schema == expected
+    assert make().schema_data == expected
 
 
 def test_to_json():
@@ -978,7 +985,7 @@ def test_furu_from_artifact_returns_furu_object():
         fully_qualified_name=obj._fully_qualified_name,
         artifact_data=obj.artifact_data,
         artifact_hash=obj.artifact_hash,
-        schema=obj.schema,
+        schema_data=obj.schema_data,
         schema_hash=obj.artifact_schema_hash,
     )
 
@@ -986,6 +993,8 @@ def test_furu_from_artifact_returns_furu_object():
     raw_metadata = json.loads(metadata_path_in(obj.data_dir).read_text())
 
     assert artifact.object_id == obj.object_id
+    assert artifact.schema_data == obj.schema_data
+    assert "schema_data" in type(artifact).model_fields
     assert loaded == obj
     assert isinstance(loaded, NodePair)
     assert loaded.data_dir == obj.data_dir
@@ -994,7 +1003,7 @@ def test_furu_from_artifact_returns_furu_object():
         "fully_qualified_name": obj._fully_qualified_name,
         "artifact_data": obj.artifact_data,
         "artifact_hash": obj.artifact_hash,
-        "schema": obj.schema,
+        "schema_data": obj.schema_data,
         "schema_hash": obj.artifact_schema_hash,
     }
     assert "hash" not in raw_metadata["artifact"]
@@ -1002,7 +1011,7 @@ def test_furu_from_artifact_returns_furu_object():
     assert "artifact_schema_hash" not in raw_metadata
 
 
-def _dependency_object_ids(obj: Furu[Any]) -> list[str]:
+def _dependency_object_ids(obj: Furu) -> list[str]:
     metadata = json.loads(metadata_path_in(obj.data_dir).read_text())
     return metadata["observed_dependencies"]
 
@@ -1114,7 +1123,7 @@ def test_furu_from_artifact_infers_furu_object_type():
         fully_qualified_name=obj._fully_qualified_name,
         artifact_data=obj.artifact_data,
         artifact_hash=obj.artifact_hash,
-        schema=obj.schema,
+        schema_data=obj.schema_data,
         schema_hash=obj.artifact_schema_hash,
     )
 
@@ -1144,7 +1153,7 @@ def test_furu_from_artifact_accepts_artifact_spec():
         fully_qualified_name=obj._fully_qualified_name,
         artifact_data=obj.artifact_data,
         artifact_hash=obj.artifact_hash,
-        schema=obj.schema,
+        schema_data=obj.schema_data,
         schema_hash=obj.artifact_schema_hash,
     )
 
@@ -1161,7 +1170,7 @@ def test_furu_from_artifact_type_mismatch_names_expected_and_loaded_type():
         fully_qualified_name=obj._fully_qualified_name,
         artifact_data=obj.artifact_data,
         artifact_hash=obj.artifact_hash,
-        schema=obj.schema,
+        schema_data=obj.schema_data,
         schema_hash=obj.artifact_schema_hash,
     )
 
@@ -1182,7 +1191,7 @@ def test_furu_from_artifact_rejects_artifact_spec_hash_mismatch():
         fully_qualified_name=obj._fully_qualified_name,
         artifact_data=obj.artifact_data,
         artifact_hash=bad_hash,
-        schema=obj.schema,
+        schema_data=obj.schema_data,
         schema_hash=obj.artifact_schema_hash,
     )
 
@@ -1203,7 +1212,7 @@ def test_furu_from_artifact_rejects_artifact_spec_schema_hash_mismatch():
         fully_qualified_name=obj._fully_qualified_name,
         artifact_data=obj.artifact_data,
         artifact_hash=obj.artifact_hash,
-        schema=obj.schema,
+        schema_data=obj.schema_data,
         schema_hash=bad_schema_hash,
     )
 
@@ -1219,7 +1228,7 @@ def test_furu_from_artifact_rejects_artifact_spec_schema_hash_mismatch():
 
 
 def test_schema_with_ellipsis_type_arg():
-    assert VariadicTuple(t=(1, 2, 3)).schema == {
+    assert VariadicTuple(t=(1, 2, 3)).schema_data == {
         "|class": "test_core.VariadicTuple",
         "|fields": {
             "t": {
@@ -1732,6 +1741,17 @@ def test_batched_failure_writes_error_details_to_run_log_for_every_participant()
         assert "failed batch for [1, 2]" in log_text
         assert "=== Debug Details (with locals) ===" in log_text
         assert list(internal_furu_dir_in(obj.data_dir).glob("error-*.log")) == []
+
+
+def test_base_exception_does_not_log_as_load_failure() -> None:
+    obj = InterruptingValue(key=1)
+
+    with pytest.raises(KeyboardInterrupt):
+        obj.load_or_create()
+
+    log_text = run_log_path_in(obj.data_dir).read_text(encoding="utf-8")
+    assert "load_or_create failed" not in log_text
+    assert "=== Debug Details (with locals) ===" not in log_text
 
 
 def test_partial_persistence_leaves_already_written_objects_completed(

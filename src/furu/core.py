@@ -109,7 +109,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def try_load(self) -> T:  # TODO: make a better name for this
         from furu.dependencies import record_dependency_call
         from furu.migration import result_dir_for_loading
-        from furu.worker_execution import (
+        from furu.worker.context import (
             _DependencyNotReady,
             _worker_execution_lease_id,
         )
@@ -196,14 +196,14 @@ class Furu[T](_FuruDataclassTransform, ABC):
         return _hash_dict_deterministically(self.artifact_data)
 
     @cached_property
-    def schema(
+    def schema_data(
         self,
     ) -> JsonValue:
         return _schema_type(type(self), set())
 
     @cached_property
     def artifact_schema_hash(self) -> str:
-        return _hash_dict_deterministically(self.schema)
+        return _hash_dict_deterministically(self.schema_data)
 
     @cached_property
     def _fully_qualified_name(self) -> str:
