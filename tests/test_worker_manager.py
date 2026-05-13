@@ -9,7 +9,7 @@ from furu import Furu
 from furu.execution import api
 from furu.execution.manager import FailedJob, Manager, RunningJob
 from furu.metadata import ArtifactSpec
-from furu.worker.backend import LocalThreadWorkerBackend, LocalThreadWorkerPool
+from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
 from furu.worker.loop import worker_loop
 from furu.worker.protocol import (
     JobBlockedResult,

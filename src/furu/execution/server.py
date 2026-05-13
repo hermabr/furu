@@ -8,7 +8,7 @@ import uvicorn
 
 from furu.execution.api import create_manager_api_app
 from furu.execution.manager import Manager
-from furu.worker.backend import WorkerBackend
+from furu.worker.backends import WorkerBackend
 
 
 def _run_until_done(

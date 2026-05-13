@@ -12,7 +12,7 @@ from furu.storage_layout import (
     internal_furu_dir_in,
     run_log_path_in,
 )
-from furu.worker.backend import LocalThreadWorkerBackend
+from furu.worker.backends.local import LocalThreadWorkerBackend
 
 
 class Leaf(Furu[str]):

@@ -20,7 +20,7 @@ from furu.worker.protocol import (
 )
 
 if TYPE_CHECKING:
-    from furu.worker.backend import WorkerBackend
+    from furu.worker.backends import WorkerBackend
 
 
 @dataclass(frozen=True, slots=True)
