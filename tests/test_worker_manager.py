@@ -73,6 +73,18 @@ def test_manager_job_result_completed_moves_dependents_to_ready() -> None:
     assert manager.blocked == {}
 
 
+def test_manager_get_job_returns_wait_when_only_running_jobs_can_unblock_work() -> None:
+    leaf = ManagerLeaf(value=1)
+    parent = ManagerParent(child=leaf)
+    manager = Manager([parent])
+
+    job = manager.get_job()
+    assert isinstance(job, Job)
+
+    assert manager.get_job() == "wait"
+    assert not manager.done.is_set()
+
+
 def test_manager_job_result_blocked_discovers_lazy_dependency_and_reruns_parent() -> (
     None
 ):

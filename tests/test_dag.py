@@ -279,6 +279,21 @@ class LazyChildLoader(Furu[int]):
         return self.base + TrackingLeaf(n=self.base).load_or_create()
 
 
+class AlwaysFails(Furu[int]):
+    name: str
+
+    def create(self) -> int:
+        raise RuntimeError(f"intentional failure: {self.name}")
+
+
+class DependsOnFailing(Furu[int]):
+    label: str
+    child: AlwaysFails
+
+    def create(self) -> int:
+        return self.child.load_or_create() + 1
+
+
 @pytest.fixture(autouse=True)
 def _reset_tracking() -> None:
     TrackingLeaf.create_calls.clear()
@@ -318,6 +333,16 @@ def test_manager_run_handles_shared_dependency_only_once():
     assert sorted(TrackingMid.create_calls) == ["L", "R"]
 
 
+def test_manager_run_with_multiple_workers_runs_independent_nodes():
+    leaves = [TrackingLeaf(n=i) for i in range(8)]
+
+    Manager(leaves).run(n_workers=4)
+
+    assert sorted(TrackingLeaf.create_calls) == list(range(8))
+    for leaf in leaves:
+        assert leaf.status() == "completed"
+
+
 def test_manager_run_discovers_lazy_dependencies_and_reruns_parent():
     parent = LazyChildLoader(base=7)
 
@@ -347,6 +372,20 @@ def test_manager_run_skips_already_completed_objects():
 
     assert TrackingLeaf.create_calls == []
     assert TrackingMid.create_calls == ["cached-child"]
+
+
+def test_manager_run_records_worker_failures_and_blocked_dependents():
+    failing = AlwaysFails(name="boom")
+    parent = DependsOnFailing(label="p", child=failing)
+    manager = Manager([parent])
+
+    with pytest.raises(RuntimeError, match="failed jobs"):
+        manager.run(n_workers=1)
+
+    assert failing.object_id in manager.failed
+    assert "intentional failure: boom" in manager.failed[failing.object_id].error
+    assert parent.object_id in manager.blocked
+    assert manager.done.is_set()
 
 
 def test_manager_requires_at_least_one_object():
