@@ -11,7 +11,7 @@ from furu.execution.api import create_manager_api_app
 from furu.execution.manager import Manager
 
 
-def run_until_done(
+def _run_until_done(
     manager: Manager,
     *,
     n_workers: int,

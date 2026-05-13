@@ -57,9 +57,9 @@ class Manager:
         host: str = "127.0.0.1",
         port: int = 0,
     ) -> None:
-        from furu.execution.server import run_until_done
+        from furu.execution.server import _run_until_done
 
-        run_until_done(self, n_workers=n_workers, host=host, port=port)
+        _run_until_done(self, n_workers=n_workers, host=host, port=port)
 
     def get_job(self) -> GetJobResponse:
         with self.lock:
