@@ -231,16 +231,12 @@ def test_manager_run_uses_worker_backend() -> None:
     assert backend.server_urls[0].startswith("http://127.0.0.1:")
 
 
-def test_manager_server_exposes_bound_port_and_worker_url() -> None:
+def test_manager_server_exposes_bound_host_and_port() -> None:
     manager = Manager([ManagerLeaf(value=12)])
 
     with manager_server(manager, bind_host="127.0.0.1", port=0) as server:
         assert server.bound_host == "127.0.0.1"
         assert server.bound_port > 0
-        assert (
-            server.url_for_workers("workers.example.test")
-            == f"http://workers.example.test:{server.bound_port}"
-        )
 
 
 def test_manager_run_requires_explicit_worker_backend() -> None:

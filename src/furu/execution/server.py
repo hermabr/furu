@@ -19,8 +19,9 @@ class ManagerServer:
     bound_host: str
     bound_port: int
 
-    def url_for_workers(self, advertise_host: str) -> str:
-        return f"http://{advertise_host}:{self.bound_port}"
+    @property
+    def server_url(self) -> str:
+        return f"http://{self.bound_host}:{self.bound_port}"
 
 
 @contextmanager
@@ -75,13 +76,10 @@ def _run_until_done(
     *,
     worker_backend: WorkerBackend,
     host: str,
-    advertise_host: str,
     port: int,
 ) -> None:
     with manager_server(manager, bind_host=host, port=port) as server:
-        server_url = server.url_for_workers(advertise_host)
-
-        worker_pool = worker_backend.start_pool(server_url=server_url)
+        worker_pool = worker_backend.start_pool(server_url=server.server_url)
 
         while not manager.done.wait(timeout=0.1):
             if not worker_pool.is_healthy():
