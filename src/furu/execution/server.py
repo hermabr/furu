@@ -39,9 +39,6 @@ def run_until_done(
     host: str = "127.0.0.1",
     port: int = 0,
 ) -> None:
-    if n_workers < 1:
-        raise ValueError("n_workers must be at least 1")
-
     with manager.lock:
         manager._maybe_finish_locked()
     if manager.done.is_set():
