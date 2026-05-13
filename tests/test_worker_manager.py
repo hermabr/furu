@@ -242,12 +242,14 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
         def job_result(self, lease_id: str, request: JobResultRequest) -> None:
             self.calls.append("job_result")
 
-    def run_job(job: Job) -> None:
+    def ensure_single_result(obj: Furu[object]) -> None:
         raise KeyboardInterrupt
 
     test_client = TestClient("http://worker.test")
     monkeypatch.setattr(api, "ManagerApiClient", lambda server_url: test_client)
-    monkeypatch.setattr(worker_loop_module, "_run_job", run_job)
+    monkeypatch.setattr(
+        worker_loop_module, "_ensure_single_result", ensure_single_result
+    )
 
     with pytest.raises(KeyboardInterrupt):
         worker_loop(server_url="http://worker.test")

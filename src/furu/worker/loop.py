@@ -9,7 +9,6 @@ from furu.execution import api
 from furu.metadata import ArtifactSpec
 from furu.worker.context import _DependencyNotReady, worker_execution_context
 from furu.worker.protocol import (
-    Job,
     JobBlockedResult,
     JobCompletedResult,
     JobFailedResult,
@@ -34,7 +33,9 @@ def worker_loop(
 
         job = response
         try:
-            _run_job(job)
+            obj = Furu.from_artifact(job.artifact)
+            with worker_execution_context(lease_id=job.lease_id):
+                _ensure_single_result(obj)
         except _DependencyNotReady as exc:
             dependencies = [ArtifactSpec.from_furu(dep) for dep in exc.dependencies]
             client.job_result(
@@ -56,9 +57,3 @@ def worker_loop(
             )
         else:
             client.job_result(job.lease_id, JobCompletedResult())
-
-
-def _run_job(job: Job) -> None:
-    obj = Furu.from_artifact(job.artifact)
-    with worker_execution_context(lease_id=job.lease_id):
-        _ensure_single_result(obj)
