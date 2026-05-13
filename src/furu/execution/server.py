@@ -39,12 +39,6 @@ def run_until_done(
     host: str = "127.0.0.1",
     port: int = 0,
 ) -> None:
-    with manager.lock:
-        manager._maybe_finish_locked()
-    if manager.done.is_set():
-        manager.raise_for_failure()
-        return
-
     from furu.worker.loop import worker_loop
 
     app = make_app(manager)
