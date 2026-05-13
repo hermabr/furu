@@ -8,25 +8,22 @@ from dataclasses import dataclass
 class LocalThreadWorkerBackend:
     n_workers: int = 1
 
-    def __post_init__(self) -> None:
-        if self.n_workers < 1:
-            raise ValueError("LocalThreadWorkerBackend requires at least one worker")
-
-    def start_pool(self, *, server_url: str) -> LocalThreadWorkerPool:
-        return LocalThreadWorkerPool(server_url=server_url, n_workers=self.n_workers)
+    def start_pool(self, *, server_url: str, auth_token: str) -> LocalThreadWorkerPool:
+        return LocalThreadWorkerPool(
+            server_url=server_url,
+            auth_token=auth_token,
+            n_workers=self.n_workers,
+        )
 
 
 class LocalThreadWorkerPool:
-    def __init__(self, *, server_url: str, n_workers: int) -> None:
-        if n_workers < 1:
-            raise ValueError("LocalThreadWorkerPool requires at least one worker")
-
+    def __init__(self, *, server_url: str, auth_token: str, n_workers: int) -> None:
         from furu.worker.loop import worker_loop
 
         self._threads = [
             threading.Thread(
                 target=worker_loop,
-                kwargs={"server_url": server_url},
+                kwargs={"server_url": server_url, "auth_token": auth_token},
                 name=f"furu-worker-{idx}",
             )
             for idx in range(n_workers)

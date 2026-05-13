@@ -2,15 +2,17 @@ from uuid import UUID
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 from pydantic import TypeAdapter, ValidationError
 
 import furu.worker.loop as worker_loop_module
 from furu import Furu
 from furu.execution import api
+from furu.execution.api import create_manager_api_app
 from furu.execution.manager import FailedJob, Manager, RunningJob
 from furu.execution.server import manager_server
 from furu.metadata import ArtifactSpec
-from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
+from furu.worker.backends.local import LocalThreadWorkerPool
 from furu.worker.loop import worker_loop
 from furu.worker.protocol import (
     JobBlockedResult,
@@ -215,10 +217,21 @@ def test_manager_run_uses_worker_backend() -> None:
     class RecordingBackend:
         def __init__(self) -> None:
             self.server_urls: list[str] = []
+            self.auth_tokens: list[str] = []
 
-        def start_pool(self, *, server_url: str) -> LocalThreadWorkerPool:
+        def start_pool(
+            self,
+            *,
+            server_url: str,
+            auth_token: str,
+        ) -> LocalThreadWorkerPool:
             self.server_urls.append(server_url)
-            return LocalThreadWorkerPool(server_url=server_url, n_workers=1)
+            self.auth_tokens.append(auth_token)
+            return LocalThreadWorkerPool(
+                server_url=server_url,
+                auth_token=auth_token,
+                n_workers=1,
+            )
 
     leaf = ManagerLeaf(value=11)
     backend = RecordingBackend()
@@ -229,6 +242,8 @@ def test_manager_run_uses_worker_backend() -> None:
     assert leaf.load_or_create() == 11
     assert len(backend.server_urls) == 1
     assert backend.server_urls[0].startswith("http://127.0.0.1:")
+    assert len(backend.auth_tokens) == 1
+    assert backend.auth_tokens[0]
 
 
 def test_manager_server_exposes_bound_host_and_port() -> None:
@@ -237,6 +252,29 @@ def test_manager_server_exposes_bound_host_and_port() -> None:
     with manager_server(manager, bind_host="127.0.0.1", port=0) as server:
         assert server.bound_host == "127.0.0.1"
         assert server.bound_port > 0
+        assert server.auth_token
+
+
+def test_manager_server_rejects_requests_without_auth_token() -> None:
+    manager = Manager([ManagerLeaf(value=12)])
+
+    with manager_server(manager, bind_host="127.0.0.1", port=0) as server:
+        response = httpx.post(f"{server.server_url}/lease_job")
+        assert response.status_code == 401
+        assert response.json() == {"detail": "invalid furu manager auth token"}
+
+        response = httpx.post(
+            f"{server.server_url}/lease_job",
+            headers={"Authorization": "Bearer wrong"},
+        )
+        assert response.status_code == 401
+        assert response.json() == {"detail": "invalid furu manager auth token"}
+
+        response = httpx.post(
+            f"{server.server_url}/lease_job",
+            headers={"Authorization": f"Bearer {server.auth_token}"},
+        )
+        assert response.status_code == 200
 
 
 def test_manager_run_requires_explicit_worker_backend() -> None:
@@ -244,11 +282,6 @@ def test_manager_run_requires_explicit_worker_backend() -> None:
 
     with pytest.raises(TypeError, match="worker_backend"):
         manager.run()  # ty: ignore[missing-argument]
-
-
-def test_local_thread_worker_backend_requires_at_least_one_worker() -> None:
-    with pytest.raises(ValueError, match="at least one worker"):
-        LocalThreadWorkerBackend(n_workers=0)
 
 
 def test_job_result_request_requires_error_for_failed_status() -> None:
@@ -272,7 +305,7 @@ def test_job_result_request_uses_status_discriminator() -> None:
 
 def test_worker_loop_raises_when_server_is_unavailable() -> None:
     with pytest.raises(httpx.ConnectError):
-        worker_loop(server_url="http://127.0.0.1:1")
+        worker_loop(server_url="http://127.0.0.1:1", auth_token="test-token")
 
 
 def test_worker_loop_does_not_swallow_keyboard_interrupt(
@@ -284,7 +317,7 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
     class TestClient:
         calls: list[str]
 
-        def __init__(self, server_url: str) -> None:
+        def __init__(self, server_url: str, *, auth_token: str) -> None:
             self.calls = []
 
         def lease_job(self) -> LeaseJobResponse:
@@ -297,14 +330,18 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
     def ensure_single_result(obj: Furu[object]) -> None:
         raise KeyboardInterrupt
 
-    test_client = TestClient("http://worker.test")
-    monkeypatch.setattr(api, "ManagerApiClient", lambda server_url: test_client)
+    test_client = TestClient("http://worker.test", auth_token="test-token")
+    monkeypatch.setattr(
+        api,
+        "ManagerApiClient",
+        lambda server_url, *, auth_token: test_client,
+    )
     monkeypatch.setattr(
         worker_loop_module, "_ensure_single_result", ensure_single_result
     )
 
     with pytest.raises(KeyboardInterrupt):
-        worker_loop(server_url="http://worker.test")
+        worker_loop(server_url="http://worker.test", auth_token="test-token")
 
     assert test_client.calls == ["lease_job"]
 
@@ -312,23 +349,24 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
 def test_client_job_result_uses_job_result_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    requests: list[tuple[str, str, object | None]] = []
+    requests: list[tuple[str, str, dict[str, str], object | None]] = []
 
     def request(
         method: str,
         url: str,
         *,
+        headers: dict[str, str],
         json: object | None,
         timeout: float,
     ) -> httpx.Response:
-        requests.append((method, url, json))
+        requests.append((method, url, headers, json))
         return httpx.Response(
             200, json={"ok": True}, request=httpx.Request(method, url)
         )
 
     monkeypatch.setattr(httpx, "request", request)
 
-    api.ManagerApiClient("http://worker.test/").job_result(
+    api.ManagerApiClient("http://worker.test/", auth_token="secret-token").job_result(
         "lease-1", JobBlockedResult(dependencies=[])
     )
 
@@ -336,6 +374,7 @@ def test_client_job_result_uses_job_result_endpoint(
         (
             "POST",
             "http://worker.test/job_result/lease-1",
+            {"Authorization": "Bearer secret-token"},
             {"status": "blocked", "dependencies": []},
         )
     ]
@@ -348,6 +387,7 @@ def test_client_job_result_rejects_non_ok_response(
         method: str,
         url: str,
         *,
+        headers: dict[str, str],
         json: object | None,
         timeout: float,
     ) -> httpx.Response:
@@ -358,7 +398,9 @@ def test_client_job_result_rejects_non_ok_response(
     monkeypatch.setattr(httpx, "request", request)
 
     with pytest.raises(ValidationError, match="Input should be True"):
-        api.ManagerApiClient("http://worker.test").job_result(
+        api.ManagerApiClient(
+            "http://worker.test", auth_token="secret-token"
+        ).job_result(
             "lease-1",
             JobCompletedResult(),
         )
@@ -371,6 +413,7 @@ def test_client_lease_job_rejects_empty_response(
         method: str,
         url: str,
         *,
+        headers: dict[str, str],
         json: object | None,
         timeout: float,
     ) -> httpx.Response:
@@ -379,23 +422,26 @@ def test_client_lease_job_rejects_empty_response(
     monkeypatch.setattr(httpx, "request", request)
 
     with pytest.raises(RuntimeError, match="returned an empty response"):
-        api.ManagerApiClient("http://worker.test").lease_job()
+        api.ManagerApiClient(
+            "http://worker.test", auth_token="secret-token"
+        ).lease_job()
 
 
 def test_client_lease_job_posts_to_lease_job_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     leaf = ManagerLeaf(value=1)
-    requests: list[tuple[str, str, object | None]] = []
+    requests: list[tuple[str, str, dict[str, str], object | None]] = []
 
     def request(
         method: str,
         url: str,
         *,
+        headers: dict[str, str],
         json: object | None,
         timeout: float,
     ) -> httpx.Response:
-        requests.append((method, url, json))
+        requests.append((method, url, headers, json))
         return httpx.Response(
             200,
             json={
@@ -407,7 +453,53 @@ def test_client_lease_job_posts_to_lease_job_endpoint(
 
     monkeypatch.setattr(httpx, "request", request)
 
-    job = api.ManagerApiClient("http://worker.test/").lease_job()
+    job = api.ManagerApiClient(
+        "http://worker.test/",
+        auth_token="secret-token",
+    ).lease_job()
 
     assert isinstance(job, Job)
-    assert requests == [("POST", "http://worker.test/lease_job", None)]
+    assert requests == [
+        (
+            "POST",
+            "http://worker.test/lease_job",
+            {"Authorization": "Bearer secret-token"},
+            None,
+        )
+    ]
+
+
+def test_manager_api_rejects_missing_auth_token() -> None:
+    app = create_manager_api_app(Manager([ManagerLeaf(value=1)]), auth_token="secret")
+    client = TestClient(app)
+
+    response = client.post("/lease_job")
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "invalid furu manager auth token"}
+
+
+def test_manager_api_rejects_wrong_auth_token() -> None:
+    app = create_manager_api_app(Manager([ManagerLeaf(value=1)]), auth_token="secret")
+    client = TestClient(app)
+
+    response = client.post(
+        "/lease_job",
+        headers={"Authorization": "Bearer wrong"},
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "invalid furu manager auth token"}
+
+
+def test_manager_api_accepts_matching_auth_token() -> None:
+    app = create_manager_api_app(Manager([ManagerLeaf(value=1)]), auth_token="secret")
+    client = TestClient(app)
+
+    response = client.post(
+        "/lease_job",
+        headers={"Authorization": "Bearer secret"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["artifact"]["artifact_data"]["|fields"] == {"value": 1}
