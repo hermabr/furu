@@ -19,8 +19,9 @@ from furu.worker.protocol import (
 def worker_loop(
     *,
     server_url: str,
+    auth_token: str,
 ) -> None:
-    client = api.ManagerApiClient(server_url)
+    client = api.ManagerApiClient(server_url, auth_token=auth_token)
 
     while True:
         match client.lease_job():

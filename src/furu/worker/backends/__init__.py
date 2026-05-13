@@ -4,7 +4,7 @@ from typing import Protocol
 
 
 class WorkerBackend(Protocol):
-    def start_pool(self, *, server_url: str) -> WorkerPool: ...
+    def start_pool(self, *, server_url: str, auth_token: str) -> WorkerPool: ...
 
 
 class WorkerPool(Protocol):
