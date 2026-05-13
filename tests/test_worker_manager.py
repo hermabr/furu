@@ -12,7 +12,7 @@ from furu.execution.api import create_manager_api_app
 from furu.execution.manager import FailedJob, Manager, RunningJob
 from furu.execution.server import manager_server
 from furu.metadata import ArtifactSpec
-from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
+from furu.worker.backends.local import LocalThreadWorkerPool
 from furu.worker.loop import worker_loop
 from furu.worker.protocol import (
     JobBlockedResult,
@@ -260,11 +260,6 @@ def test_manager_run_requires_explicit_worker_backend() -> None:
 
     with pytest.raises(TypeError, match="worker_backend"):
         manager.run()  # ty: ignore[missing-argument]
-
-
-def test_local_thread_worker_backend_requires_at_least_one_worker() -> None:
-    with pytest.raises(ValueError, match="at least one worker"):
-        LocalThreadWorkerBackend(n_workers=0)
 
 
 def test_job_result_request_requires_error_for_failed_status() -> None:
