@@ -82,11 +82,18 @@ class Manager:
 
     def job_result(self, lease_id: str, request: JobResultRequest) -> None:
         with self.lock:
-            running_job = self._pop_running_locked(lease_id)
+            running_job = self.running.pop(lease_id)
             match request:
                 case JobCompletedResult():
                     self.completed[running_job.node.obj.object_id] = running_job.node
-                    self._release_dependents_locked(running_job.node)
+                    for dependent in tuple(running_job.node.dependents):
+                        if running_job.node in dependent.dependencies:
+                            dependent.dependencies.remove(running_job.node)
+
+                        dependent_id = dependent.obj.object_id
+                        if not dependent.dependencies and dependent_id in self.blocked:
+                            self.ready[dependent_id] = self.blocked.pop(dependent_id)
+
                 case JobFailedResult(error=error):
                     self.failed[running_job.node.obj.object_id] = FailedJob(
                         lease_id=lease_id,
@@ -139,10 +146,6 @@ class Manager:
         else:
             self.ready[node.obj.object_id] = node
 
-    def unresolved_object_ids(self) -> list[str]:
-        with self.lock:
-            return sorted(self.blocked)
-
     def raise_for_failure(self) -> None:
         if self._finish_error is not None:
             raise RuntimeError(self._finish_error)
@@ -155,47 +158,29 @@ class Manager:
             get_logger().error("furu manager finished with error: %s", message)
             self.done.set()
 
-    def _pop_running_locked(self, lease_id: str) -> RunningJob:
-        try:
-            return self.running.pop(lease_id)
-        except KeyError as exc:
-            raise KeyError(f"unknown running lease_id: {lease_id}") from exc
-
-    def _release_dependents_locked(self, node: DagNode) -> None:
-        for dependent in tuple(node.dependents):
-            if node in dependent.dependencies:
-                dependent.dependencies.remove(node)
-
-            dependent_id = dependent.obj.object_id
-            if not dependent.dependencies and dependent_id in self.blocked:
-                self.ready[dependent_id] = self.blocked.pop(dependent_id)
-
     def _maybe_finish_locked(self) -> None:
         if self.done.is_set() or self.ready or self.running:
             return
 
         if self.failed or self.blocked:
-            self._finish_error = self._format_finish_error_locked()
+            parts: list[str] = []
+            if self.failed:
+                failed = ", ".join(sorted(self.failed))
+                parts.append(f"failed jobs: {failed}")
+            if self.blocked:
+                blocked = ", ".join(sorted(self.blocked))
+                parts.append(f"blocked jobs: {blocked}")
+            if self.failed:
+                first_object_id = next(iter(sorted(self.failed)))
+                failed_job = self.failed[first_object_id]
+                parts.append(
+                    f"first failure for {first_object_id} "
+                    f"(lease {failed_job.lease_id}): {failed_job.error}"
+                )
+            self._finish_error = "manager run could not complete; " + "; ".join(parts)
             get_logger().error(
                 "furu manager finished with error: %s", self._finish_error
             )
         else:
             get_logger().info("furu manager finished successfully")
         self.done.set()
-
-    def _format_finish_error_locked(self) -> str:
-        parts: list[str] = []
-        if self.failed:
-            failed = ", ".join(sorted(self.failed))
-            parts.append(f"failed jobs: {failed}")
-        if self.blocked:
-            blocked = ", ".join(sorted(self.blocked))
-            parts.append(f"blocked jobs: {blocked}")
-        if self.failed:
-            first_object_id = next(iter(sorted(self.failed)))
-            failed_job = self.failed[first_object_id]
-            parts.append(
-                f"first failure for {first_object_id} "
-                f"(lease {failed_job.lease_id}): {failed_job.error}"
-            )
-        return "manager run could not complete; " + "; ".join(parts)
