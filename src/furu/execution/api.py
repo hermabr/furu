@@ -59,26 +59,17 @@ class ManagerApiClient:
             ) from exc
 
 
-def _authorize_manager_request(
-    expected_token: str,
-):
-    def dependency(authorization: str | None = Header(default=None)) -> None:
-        scheme, _, token = (authorization or "").partition(" ")
-        if scheme.lower() != "bearer" or not compare_digest(token, expected_token):
+def create_manager_api_app(manager: Manager, *, auth_token: str) -> FastAPI:
+    def require_auth(authorization: str = Header(default="")) -> None:
+        scheme, _, token = authorization.partition(" ")
+        if scheme.lower() != "bearer" or not compare_digest(token, auth_token):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="invalid furu manager auth token",
             )
 
-    return dependency
-
-
-def create_manager_api_app(manager: Manager, *, auth_token: str) -> FastAPI:
-    if not auth_token:
-        raise ValueError("manager auth_token must not be empty")
-
     app = FastAPI()
-    auth_dependency = Depends(_authorize_manager_request(auth_token))
+    auth_dependency = Depends(require_auth)
 
     @app.post(
         "/lease_job",
