@@ -1,6 +1,6 @@
-import urllib.error
 from uuid import UUID
 
+import httpx
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
@@ -202,7 +202,7 @@ def test_finish_request_uses_status_discriminator() -> None:
 
 
 def test_worker_loop_raises_when_server_is_unavailable() -> None:
-    with pytest.raises(urllib.error.URLError):
+    with pytest.raises(httpx.ConnectError):
         worker_loop(server_url="http://127.0.0.1:1")
 
 

@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import json
 import time
 import traceback
-import urllib.error
 import urllib.parse
-import urllib.request
 from typing import Any
+
+import httpx
 
 from furu.core import Furu
 from furu.execution import _execute_one
@@ -90,29 +89,16 @@ def _request_json(
     payload: object | None = None,
 ) -> Any:
     try:
-        request = _build_request(url, method=method, payload=payload)
-        with urllib.request.urlopen(request) as response:
-            body = response.read()
-        if not body:
+        response = httpx.request(method, url, json=payload, timeout=10.0)
+        response.raise_for_status()
+        if not response.content:
             return None
-        return json.loads(body.decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"{method} {url} failed with HTTP {exc.code}: {detail}")
-
-
-def _build_request(
-    url: str,
-    *,
-    method: str,
-    payload: object | None,
-) -> urllib.request.Request:
-    headers: dict[str, str] = {}
-    data: bytes | None = None
-    if payload is not None:
-        data = json.dumps(payload).encode("utf-8")
-        headers["Content-Type"] = "application/json"
-    return urllib.request.Request(url, data=data, headers=headers, method=method)
+        return response.json()
+    except httpx.HTTPStatusError as exc:
+        raise RuntimeError(
+            f"{method} {url} failed with HTTP "
+            f"{exc.response.status_code}: {exc.response.text}"
+        ) from exc
 
 
 def _quote_path(value: str) -> str:
