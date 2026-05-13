@@ -4,6 +4,7 @@ from uuid import UUID
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
+import furu.worker.loop as worker_loop_module
 from furu import Furu
 from furu.execution.manager import FailedJob, Manager, RunningJob
 from furu.metadata import ArtifactSpec
@@ -203,3 +204,31 @@ def test_finish_request_uses_status_discriminator() -> None:
 def test_worker_loop_raises_when_server_is_unavailable() -> None:
     with pytest.raises(urllib.error.URLError):
         worker_loop(server_url="http://127.0.0.1:1")
+
+
+def test_worker_loop_does_not_swallow_keyboard_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    leaf = ManagerLeaf(value=1)
+    job = Job(lease_id="lease-1", artifact=ArtifactSpec.from_furu(leaf))
+    requests: list[tuple[str, object | None]] = []
+
+    def request_json(
+        url: str,
+        *,
+        method: str = "GET",
+        payload: object | None = None,
+    ) -> object:
+        requests.append((url, payload))
+        return job.model_dump(mode="json")
+
+    def run_job(job: Job) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(worker_loop_module, "_request_json", request_json)
+    monkeypatch.setattr(worker_loop_module, "_run_job", run_job)
+
+    with pytest.raises(KeyboardInterrupt):
+        worker_loop(server_url="http://worker.test")
+
+    assert requests == [("http://worker.test/get_job", None)]

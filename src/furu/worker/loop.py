@@ -46,7 +46,7 @@ def worker_loop(
                 f"{server_url}/blocked/{_quote_path(job.lease_id)}",
                 BlockedRequest(dependencies=dependencies),
             )
-        except BaseException as exc:
+        except Exception as exc:
             _post_json(
                 f"{server_url}/finish/{_quote_path(job.lease_id)}",
                 FinishFailedRequest(
