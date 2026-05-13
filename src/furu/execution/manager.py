@@ -11,7 +11,7 @@ from furu.dag import DagNode, _add_to_dag, _update_dag_blocking_dependencies
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
 from furu.worker.protocol import (
-    GetJobResponse,
+    LeaseJobResponse,
     Job,
     JobBlockedResult,
     JobCompletedResult,
@@ -61,7 +61,7 @@ class Manager:
 
         _run_until_done(self, n_workers=n_workers, host=host, port=port)
 
-    def get_job(self) -> GetJobResponse:
+    def lease_job(self) -> LeaseJobResponse:
         with self.lock:
             self._maybe_finish_locked()
             if self.done.is_set():

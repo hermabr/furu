@@ -46,4 +46,4 @@ class OkResponse(BaseModel):
     ok: Literal[True] = True
 
 
-type GetJobResponse = Job | Literal["wait", "stop"]
+type LeaseJobResponse = Job | Literal["wait", "stop"]

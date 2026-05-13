@@ -16,7 +16,7 @@ from furu.worker.protocol import (
     JobFailedResult,
     JobResultRequest,
 )
-from furu.worker.protocol import GetJobResponse, Job
+from furu.worker.protocol import LeaseJobResponse, Job
 
 
 class ManagerLeaf(Furu[int]):
@@ -56,7 +56,7 @@ def test_manager_job_result_completed_moves_dependents_to_ready() -> None:
     parent = ManagerParent(child=leaf)
     manager = Manager([parent])
 
-    job = manager.get_job()
+    job = manager.lease_job()
     assert isinstance(job, Job)
     assert job.lease_id != leaf.object_id
     assert UUID(job.lease_id).version == 4
@@ -73,15 +73,17 @@ def test_manager_job_result_completed_moves_dependents_to_ready() -> None:
     assert manager.blocked == {}
 
 
-def test_manager_get_job_returns_wait_when_only_running_jobs_can_unblock_work() -> None:
+def test_manager_lease_job_returns_wait_when_only_running_jobs_can_unblock_work() -> (
+    None
+):
     leaf = ManagerLeaf(value=1)
     parent = ManagerParent(child=leaf)
     manager = Manager([parent])
 
-    job = manager.get_job()
+    job = manager.lease_job()
     assert isinstance(job, Job)
 
-    assert manager.get_job() == "wait"
+    assert manager.lease_job() == "wait"
     assert not manager.done.is_set()
 
 
@@ -92,7 +94,7 @@ def test_manager_job_result_blocked_discovers_lazy_dependency_and_reruns_parent(
     dependency = ManagerLeaf(value=2)
     manager = Manager([parent])
 
-    parent_job = manager.get_job()
+    parent_job = manager.lease_job()
     assert isinstance(parent_job, Job)
     assert parent_job.lease_id != parent.object_id
 
@@ -104,7 +106,7 @@ def test_manager_job_result_blocked_discovers_lazy_dependency_and_reruns_parent(
     assert set(manager.ready) == {dependency.object_id}
     assert set(manager.blocked) == {parent.object_id}
 
-    dependency_job = manager.get_job()
+    dependency_job = manager.lease_job()
     assert isinstance(dependency_job, Job)
     manager.job_result(dependency_job.lease_id, JobCompletedResult())
 
@@ -118,7 +120,7 @@ def test_manager_job_result_blocked_ignores_completed_lazy_dependency() -> None:
     dependency.load_or_create()
     manager = Manager([parent])
 
-    parent_job = manager.get_job()
+    parent_job = manager.lease_job()
     assert isinstance(parent_job, Job)
 
     manager.job_result(
@@ -138,7 +140,7 @@ def test_manager_job_result_blocked_discovers_multiple_lazy_dependencies_togethe
     dependencies = [ManagerLeaf(value=2), ManagerLeaf(value=3)]
     manager = Manager([parent])
 
-    parent_job = manager.get_job()
+    parent_job = manager.lease_job()
     assert isinstance(parent_job, Job)
 
     manager.job_result(
@@ -167,7 +169,7 @@ def test_manager_uses_new_lease_when_blocked_job_is_released() -> None:
     dependency = ManagerLeaf(value=2)
     manager = Manager([parent])
 
-    first_parent_job = manager.get_job()
+    first_parent_job = manager.lease_job()
     assert isinstance(first_parent_job, Job)
 
     manager.job_result(
@@ -175,11 +177,11 @@ def test_manager_uses_new_lease_when_blocked_job_is_released() -> None:
         JobBlockedResult(dependencies=[ArtifactSpec.from_furu(dependency)]),
     )
 
-    dependency_job = manager.get_job()
+    dependency_job = manager.lease_job()
     assert isinstance(dependency_job, Job)
     manager.job_result(dependency_job.lease_id, JobCompletedResult())
 
-    second_parent_job = manager.get_job()
+    second_parent_job = manager.lease_job()
     assert isinstance(second_parent_job, Job)
     assert second_parent_job.lease_id != first_parent_job.lease_id
     assert second_parent_job.artifact.object_id == parent.object_id
@@ -191,7 +193,7 @@ def test_manager_uses_new_lease_when_blocked_job_is_released() -> None:
 def test_manager_job_result_failed_finishes_with_error() -> None:
     leaf = ManagerLeaf(value=1)
     manager = Manager([leaf])
-    job = manager.get_job()
+    job = manager.lease_job()
     assert isinstance(job, Job)
 
     manager.job_result(job.lease_id, JobFailedResult(error="boom"))
@@ -243,8 +245,8 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
         def __init__(self, server_url: str) -> None:
             self.calls = []
 
-        def get_job(self) -> GetJobResponse:
-            self.calls.append("get_job")
+        def lease_job(self) -> LeaseJobResponse:
+            self.calls.append("lease_job")
             return job
 
         def job_result(self, lease_id: str, request: JobResultRequest) -> None:
@@ -262,7 +264,7 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
     with pytest.raises(KeyboardInterrupt):
         worker_loop(server_url="http://worker.test")
 
-    assert test_client.calls == ["get_job"]
+    assert test_client.calls == ["lease_job"]
 
 
 def test_client_job_result_uses_job_result_endpoint(
@@ -320,7 +322,7 @@ def test_client_job_result_rejects_non_ok_response(
         )
 
 
-def test_client_get_job_rejects_empty_response(
+def test_client_lease_job_rejects_empty_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def request(
@@ -335,4 +337,35 @@ def test_client_get_job_rejects_empty_response(
     monkeypatch.setattr(httpx, "request", request)
 
     with pytest.raises(RuntimeError, match="returned an empty response"):
-        api.ManagerApiClient("http://worker.test").get_job()
+        api.ManagerApiClient("http://worker.test").lease_job()
+
+
+def test_client_lease_job_posts_to_lease_job_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    leaf = ManagerLeaf(value=1)
+    requests: list[tuple[str, str, object | None]] = []
+
+    def request(
+        method: str,
+        url: str,
+        *,
+        json: object | None,
+        timeout: float,
+    ) -> httpx.Response:
+        requests.append((method, url, json))
+        return httpx.Response(
+            200,
+            json={
+                "lease_id": "lease-1",
+                "artifact": ArtifactSpec.from_furu(leaf).model_dump(mode="json"),
+            },
+            request=httpx.Request(method, url),
+        )
+
+    monkeypatch.setattr(httpx, "request", request)
+
+    job = api.ManagerApiClient("http://worker.test/").lease_job()
+
+    assert isinstance(job, Job)
+    assert requests == [("POST", "http://worker.test/lease_job", None)]

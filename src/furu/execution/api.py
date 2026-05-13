@@ -8,7 +8,7 @@ from pydantic import TypeAdapter
 
 from furu.execution.manager import Manager
 from furu.worker.protocol import (
-    GetJobResponse,
+    LeaseJobResponse,
     JobResultRequest,
     OkResponse,
 )
@@ -18,9 +18,9 @@ class ManagerApiClient:
     def __init__(self, server_url: str) -> None:
         self._server_url = server_url.rstrip("/")
 
-    def get_job(self) -> GetJobResponse:
-        response = self._request_json("/get_job")
-        return TypeAdapter(GetJobResponse).validate_python(response)
+    def lease_job(self) -> LeaseJobResponse:
+        response = self._request_json("/lease_job", method="POST")
+        return TypeAdapter(LeaseJobResponse).validate_python(response)
 
     def job_result(self, lease_id: str, request: JobResultRequest) -> None:
         response = self._request_json(
@@ -54,9 +54,9 @@ class ManagerApiClient:
 def create_manager_api_app(manager: Manager) -> FastAPI:
     app = FastAPI()
 
-    @app.get("/get_job", response_model=GetJobResponse)
-    def get_job() -> GetJobResponse:
-        return manager.get_job()
+    @app.post("/lease_job", response_model=LeaseJobResponse)
+    def lease_job() -> LeaseJobResponse:
+        return manager.lease_job()
 
     @app.post("/job_result/{lease_id}", response_model=OkResponse)
     def job_result(lease_id: str, request: JobResultRequest) -> OkResponse:

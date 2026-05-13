@@ -23,7 +23,7 @@ def worker_loop(
     client = api.ManagerApiClient(server_url)
 
     while True:
-        match client.get_job():
+        match client.lease_job():
             case "stop":
                 return
             case "wait":
