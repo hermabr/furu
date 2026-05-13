@@ -111,26 +111,25 @@ class Manager:
         node: DagNode,
         dependencies: Sequence[ArtifactSpec],
     ) -> None:
-        dependency_ids: list[str] = []
-        missing_dependency_ids: set[str] = set()
+        dependency_ids: dict[str, None] = {}
         missing_dependencies: list[Furu] = []
         for artifact in dependencies:
-            if artifact.object_id in self.completed:
+            object_id = artifact.object_id
+            if object_id in self.completed or object_id in dependency_ids:
                 continue
 
-            if artifact.object_id in self.nodes_by_id:
-                if self.nodes_by_id[artifact.object_id].obj.status() == "completed":
-                    continue
-                dependency_ids.append(artifact.object_id)
+            dep_node = self.nodes_by_id.get(object_id)
+            if dep_node is not None:
+                if dep_node.obj.status() != "completed":
+                    dependency_ids[object_id] = None
                 continue
 
-            if artifact.object_id not in missing_dependency_ids:
-                dependency = Furu.from_artifact(artifact)
-                if dependency.status() == "completed":
-                    continue
-                missing_dependency_ids.add(artifact.object_id)
-                missing_dependencies.append(dependency)
-            dependency_ids.append(artifact.object_id)
+            dependency = Furu.from_artifact(artifact)
+            if dependency.status() == "completed":
+                continue
+
+            dependency_ids[object_id] = None
+            missing_dependencies.append(dependency)
 
         _add_to_dag(self, missing_dependencies)
 
@@ -141,10 +140,8 @@ class Manager:
             if node not in dep_node.dependents:
                 dep_node.dependents.append(node)
 
-        if node.dependencies:
-            self.blocked[node.obj.object_id] = node
-        else:
-            self.ready[node.obj.object_id] = node
+        target = self.blocked if node.dependencies else self.ready
+        target[node.obj.object_id] = node
 
     def raise_for_failure(self) -> None:
         if self._finish_error is not None:
