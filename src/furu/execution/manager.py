@@ -11,11 +11,12 @@ from furu.dag import DagNode, _add_to_dag
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
 from furu.worker.protocol import (
-    FinishFailedRequest,
-    FinishRequest,
-    FinishSuccessRequest,
     GetJobResponse,
     Job,
+    JobBlockedResult,
+    JobCompletedResult,
+    JobFailedResult,
+    JobResultRequest,
 )
 
 
@@ -79,67 +80,64 @@ class Manager:
                 artifact=ArtifactSpec.from_furu(node.obj),
             )
 
-    def finish(self, lease_id: str, request: FinishRequest) -> None:
+    def job_result(self, lease_id: str, request: JobResultRequest) -> None:
         with self.lock:
             running_job = self._pop_running_locked(lease_id)
             match request:
-                case FinishSuccessRequest():
+                case JobCompletedResult():
                     self.completed[running_job.node.obj.object_id] = running_job.node
                     self._release_dependents_locked(running_job.node)
-                case FinishFailedRequest(error=error):
+                case JobFailedResult(error=error):
                     self.failed[running_job.node.obj.object_id] = FailedJob(
                         lease_id=lease_id,
                         node=running_job.node,
                         error=error,
                     )
+                case JobBlockedResult(dependencies=dependencies):
+                    self._block_job_locked(running_job.node, dependencies)
                 case _:
                     assert_never(request)
             self._maybe_finish_locked()
 
-    def report_blocked(
+    def _block_job_locked(
         self,
-        lease_id: str,
+        node: DagNode,
         dependencies: Sequence[ArtifactSpec],
     ) -> None:
-        with self.lock:
-            running_job = self._pop_running_locked(lease_id)
-            node = running_job.node
+        dependency_ids: list[str] = []
+        missing_dependency_ids: set[str] = set()
+        missing_dependencies: list[Furu] = []
+        for artifact in dependencies:
+            if artifact.object_id in self.completed:
+                continue
 
-            dependency_ids: list[str] = []
-            missing_dependency_ids: set[str] = set()
-            missing_dependencies: list[Furu] = []
-            for artifact in dependencies:
-                if artifact.object_id in self.completed:
+            if artifact.object_id in self.nodes_by_id:
+                if self.nodes_by_id[artifact.object_id].obj.status() == "completed":
                     continue
-
-                if artifact.object_id in self.nodes_by_id:
-                    if self.nodes_by_id[artifact.object_id].obj.status() == "completed":
-                        continue
-                    dependency_ids.append(artifact.object_id)
-                    continue
-
-                if artifact.object_id not in missing_dependency_ids:
-                    dependency = Furu.from_artifact(artifact)
-                    if dependency.status() == "completed":
-                        continue
-                    missing_dependency_ids.add(artifact.object_id)
-                    missing_dependencies.append(dependency)
                 dependency_ids.append(artifact.object_id)
+                continue
 
-            _add_to_dag(self, missing_dependencies)
+            if artifact.object_id not in missing_dependency_ids:
+                dependency = Furu.from_artifact(artifact)
+                if dependency.status() == "completed":
+                    continue
+                missing_dependency_ids.add(artifact.object_id)
+                missing_dependencies.append(dependency)
+            dependency_ids.append(artifact.object_id)
 
-            for dependency_id in dependency_ids:
-                dep_node = self.nodes_by_id[dependency_id]
-                if dep_node not in node.dependencies:
-                    node.dependencies.append(dep_node)
-                if node not in dep_node.dependents:
-                    dep_node.dependents.append(node)
+        _add_to_dag(self, missing_dependencies)
 
-            if node.dependencies:
-                self.blocked[node.obj.object_id] = node
-            else:
-                self.ready[node.obj.object_id] = node
-            self._maybe_finish_locked()
+        for dependency_id in dependency_ids:
+            dep_node = self.nodes_by_id[dependency_id]
+            if dep_node not in node.dependencies:
+                node.dependencies.append(dep_node)
+            if node not in dep_node.dependents:
+                dep_node.dependents.append(node)
+
+        if node.dependencies:
+            self.blocked[node.obj.object_id] = node
+        else:
+            self.ready[node.obj.object_id] = node
 
     def unresolved_object_ids(self) -> list[str]:
         with self.lock:

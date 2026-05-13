@@ -8,9 +8,8 @@ from pydantic import TypeAdapter
 
 from furu.execution.manager import Manager
 from furu.worker.protocol import (
-    BlockedRequest,
-    FinishRequest,
     GetJobResponse,
+    JobResultRequest,
     OkResponse,
 )
 
@@ -23,21 +22,9 @@ class ManagerApiClient:
         response = self._request_json("/get_job")
         return TypeAdapter(GetJobResponse).validate_python(response)
 
-    def finish(self, lease_id: str, request: FinishRequest) -> None:
+    def job_result(self, lease_id: str, request: JobResultRequest) -> None:
         response = self._request_json(
-            f"/finish/{lease_id}",
-            method="POST",
-            payload=request.model_dump(mode="json"),
-        )
-        OkResponse.model_validate(response)
-
-    def report_blocked(
-        self,
-        lease_id: str,
-        request: BlockedRequest,
-    ) -> None:
-        response = self._request_json(
-            f"/report_blocked/{lease_id}",
+            f"/job_result/{lease_id}",
             method="POST",
             payload=request.model_dump(mode="json"),
         )
@@ -71,14 +58,9 @@ def create_manager_api_app(manager: Manager) -> FastAPI:
     def get_job() -> GetJobResponse:
         return manager.get_job()
 
-    @app.post("/finish/{lease_id}", response_model=OkResponse)
-    def finish(lease_id: str, request: FinishRequest) -> OkResponse:
-        manager.finish(lease_id, request)
-        return OkResponse()
-
-    @app.post("/report_blocked/{lease_id}", response_model=OkResponse)
-    def report_blocked(lease_id: str, request: BlockedRequest) -> OkResponse:
-        manager.report_blocked(lease_id, request.dependencies)
+    @app.post("/job_result/{lease_id}", response_model=OkResponse)
+    def job_result(lease_id: str, request: JobResultRequest) -> OkResponse:
+        manager.job_result(lease_id, request)
         return OkResponse()
 
     return app

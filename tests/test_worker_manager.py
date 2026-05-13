@@ -11,11 +11,11 @@ from furu.execution.manager import FailedJob, Manager, RunningJob
 from furu.metadata import ArtifactSpec
 from furu.worker.loop import worker_loop
 from furu.worker.protocol import (
-    BlockedRequest,
-    FinishFailedRequest,
-    FinishSuccessRequest,
+    JobBlockedResult,
+    JobCompletedResult,
+    JobFailedResult,
+    JobResultRequest,
 )
-from furu.worker.protocol import FinishRequest
 from furu.worker.protocol import GetJobResponse, Job
 
 
@@ -51,7 +51,7 @@ def test_manager_init_partitions_ready_and_blocked() -> None:
     assert manager.running == {}
 
 
-def test_manager_finish_moves_dependents_to_ready() -> None:
+def test_manager_job_result_completed_moves_dependents_to_ready() -> None:
     leaf = ManagerLeaf(value=1)
     parent = ManagerParent(child=leaf)
     manager = Manager([parent])
@@ -65,7 +65,7 @@ def test_manager_finish_moves_dependents_to_ready() -> None:
     assert isinstance(running_job, RunningJob)
     assert running_job.node.obj is leaf
 
-    manager.finish(job.lease_id, FinishSuccessRequest())
+    manager.job_result(job.lease_id, JobCompletedResult())
 
     assert manager.running == {}
     assert set(manager.completed) == {leaf.object_id}
@@ -73,7 +73,9 @@ def test_manager_finish_moves_dependents_to_ready() -> None:
     assert manager.blocked == {}
 
 
-def test_manager_report_blocked_discovers_lazy_dependency_and_reruns_parent() -> None:
+def test_manager_job_result_blocked_discovers_lazy_dependency_and_reruns_parent() -> (
+    None
+):
     parent = ManagerLazyParent(value=2)
     dependency = ManagerLeaf(value=2)
     manager = Manager([parent])
@@ -82,9 +84,9 @@ def test_manager_report_blocked_discovers_lazy_dependency_and_reruns_parent() ->
     assert isinstance(parent_job, Job)
     assert parent_job.lease_id != parent.object_id
 
-    manager.report_blocked(
+    manager.job_result(
         parent_job.lease_id,
-        [ArtifactSpec.from_furu(dependency)],
+        JobBlockedResult(dependencies=[ArtifactSpec.from_furu(dependency)]),
     )
 
     assert set(manager.ready) == {dependency.object_id}
@@ -92,13 +94,13 @@ def test_manager_report_blocked_discovers_lazy_dependency_and_reruns_parent() ->
 
     dependency_job = manager.get_job()
     assert isinstance(dependency_job, Job)
-    manager.finish(dependency_job.lease_id, FinishSuccessRequest())
+    manager.job_result(dependency_job.lease_id, JobCompletedResult())
 
     assert set(manager.ready) == {parent.object_id}
     assert manager.blocked == {}
 
 
-def test_manager_report_blocked_ignores_completed_lazy_dependency() -> None:
+def test_manager_job_result_blocked_ignores_completed_lazy_dependency() -> None:
     parent = ManagerLazyParent(value=2)
     dependency = ManagerLeaf(value=2)
     dependency.load_or_create()
@@ -107,9 +109,9 @@ def test_manager_report_blocked_ignores_completed_lazy_dependency() -> None:
     parent_job = manager.get_job()
     assert isinstance(parent_job, Job)
 
-    manager.report_blocked(
+    manager.job_result(
         parent_job.lease_id,
-        [ArtifactSpec.from_furu(dependency)],
+        JobBlockedResult(dependencies=[ArtifactSpec.from_furu(dependency)]),
     )
 
     assert set(manager.ready) == {parent.object_id}
@@ -117,7 +119,9 @@ def test_manager_report_blocked_ignores_completed_lazy_dependency() -> None:
     assert dependency.object_id not in manager.nodes_by_id
 
 
-def test_manager_report_blocked_discovers_multiple_lazy_dependencies_together() -> None:
+def test_manager_job_result_blocked_discovers_multiple_lazy_dependencies_together() -> (
+    None
+):
     parent = ManagerLazyParent(value=2)
     dependencies = [ManagerLeaf(value=2), ManagerLeaf(value=3)]
     manager = Manager([parent])
@@ -125,9 +129,13 @@ def test_manager_report_blocked_discovers_multiple_lazy_dependencies_together() 
     parent_job = manager.get_job()
     assert isinstance(parent_job, Job)
 
-    manager.report_blocked(
+    manager.job_result(
         parent_job.lease_id,
-        [ArtifactSpec.from_furu(dependency) for dependency in dependencies],
+        JobBlockedResult(
+            dependencies=[
+                ArtifactSpec.from_furu(dependency) for dependency in dependencies
+            ]
+        ),
     )
 
     assert set(manager.ready) == {dependency.object_id for dependency in dependencies}
@@ -150,14 +158,14 @@ def test_manager_uses_new_lease_when_blocked_job_is_released() -> None:
     first_parent_job = manager.get_job()
     assert isinstance(first_parent_job, Job)
 
-    manager.report_blocked(
+    manager.job_result(
         first_parent_job.lease_id,
-        [ArtifactSpec.from_furu(dependency)],
+        JobBlockedResult(dependencies=[ArtifactSpec.from_furu(dependency)]),
     )
 
     dependency_job = manager.get_job()
     assert isinstance(dependency_job, Job)
-    manager.finish(dependency_job.lease_id, FinishSuccessRequest())
+    manager.job_result(dependency_job.lease_id, JobCompletedResult())
 
     second_parent_job = manager.get_job()
     assert isinstance(second_parent_job, Job)
@@ -165,21 +173,21 @@ def test_manager_uses_new_lease_when_blocked_job_is_released() -> None:
     assert second_parent_job.artifact.object_id == parent.object_id
 
     with pytest.raises(KeyError, match="unknown running lease_id"):
-        manager.finish(
+        manager.job_result(
             first_parent_job.lease_id,
-            FinishSuccessRequest(),
+            JobCompletedResult(),
         )
 
     assert set(manager.running) == {second_parent_job.lease_id}
 
 
-def test_manager_failed_job_finishes_with_error() -> None:
+def test_manager_job_result_failed_finishes_with_error() -> None:
     leaf = ManagerLeaf(value=1)
     manager = Manager([leaf])
     job = manager.get_job()
     assert isinstance(job, Job)
 
-    manager.finish(job.lease_id, FinishFailedRequest(error="boom"))
+    manager.job_result(job.lease_id, JobFailedResult(error="boom"))
 
     assert set(manager.failed) == {leaf.object_id}
     failed_job = manager.failed[leaf.object_id]
@@ -191,18 +199,21 @@ def test_manager_failed_job_finishes_with_error() -> None:
         manager.raise_for_failure()
 
 
-def test_finish_request_requires_error_for_failed_status() -> None:
+def test_job_result_request_requires_error_for_failed_status() -> None:
     with pytest.raises(ValidationError, match="Field required"):
-        FinishFailedRequest.model_validate({"status": "failed"})
+        JobFailedResult.model_validate({"status": "failed"})
 
 
-def test_finish_request_uses_status_discriminator() -> None:
-    adapter = TypeAdapter(FinishRequest)
+def test_job_result_request_uses_status_discriminator() -> None:
+    adapter = TypeAdapter(JobResultRequest)
 
-    assert adapter.validate_python({"status": "completed"}) == FinishSuccessRequest()
+    assert adapter.validate_python({"status": "completed"}) == JobCompletedResult()
     assert adapter.validate_python(
         {"status": "failed", "error": "boom"}
-    ) == FinishFailedRequest(error="boom")
+    ) == JobFailedResult(error="boom")
+    assert adapter.validate_python(
+        {"status": "blocked", "dependencies": []}
+    ) == JobBlockedResult(dependencies=[])
     with pytest.raises(ValidationError, match="Input tag 'skipped'"):
         adapter.validate_python({"status": "skipped"})
 
@@ -228,11 +239,8 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
             self.calls.append("get_job")
             return job
 
-        def finish(self, lease_id: str, request: FinishRequest) -> None:
-            self.calls.append("finish")
-
-        def report_blocked(self, lease_id: str, request: BlockedRequest) -> None:
-            self.calls.append("report_blocked")
+        def job_result(self, lease_id: str, request: JobResultRequest) -> None:
+            self.calls.append("job_result")
 
     def run_job(job: Job) -> None:
         raise KeyboardInterrupt
@@ -247,7 +255,7 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
     assert test_client.calls == ["get_job"]
 
 
-def test_client_report_blocked_uses_report_blocked_endpoint(
+def test_client_job_result_uses_job_result_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     requests: list[tuple[str, str, object | None]] = []
@@ -266,20 +274,20 @@ def test_client_report_blocked_uses_report_blocked_endpoint(
 
     monkeypatch.setattr(httpx, "request", request)
 
-    api.ManagerApiClient("http://worker.test/").report_blocked(
-        "lease-1", BlockedRequest(dependencies=[])
+    api.ManagerApiClient("http://worker.test/").job_result(
+        "lease-1", JobBlockedResult(dependencies=[])
     )
 
     assert requests == [
         (
             "POST",
-            "http://worker.test/report_blocked/lease-1",
-            {"dependencies": []},
+            "http://worker.test/job_result/lease-1",
+            {"status": "blocked", "dependencies": []},
         )
     ]
 
 
-def test_client_finish_rejects_non_ok_response(
+def test_client_job_result_rejects_non_ok_response(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def request(
@@ -296,9 +304,9 @@ def test_client_finish_rejects_non_ok_response(
     monkeypatch.setattr(httpx, "request", request)
 
     with pytest.raises(ValidationError, match="Input should be True"):
-        api.ManagerApiClient("http://worker.test").finish(
+        api.ManagerApiClient("http://worker.test").job_result(
             "lease-1",
-            FinishSuccessRequest(),
+            JobCompletedResult(),
         )
 
 

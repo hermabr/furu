@@ -14,29 +14,30 @@ class Job(BaseModel):
     artifact: ArtifactSpec
 
 
-class FinishSuccessRequest(BaseModel):
+class JobCompletedResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     status: Literal["completed"] = "completed"
 
 
-class FinishFailedRequest(BaseModel):
+class JobFailedResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     status: Literal["failed"] = "failed"
     error: str
 
 
-type FinishRequest = Annotated[
-    FinishSuccessRequest | FinishFailedRequest,
-    Field(discriminator="status"),
-]
-
-
-class BlockedRequest(BaseModel):
+class JobBlockedResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
+    status: Literal["blocked"] = "blocked"
     dependencies: list[ArtifactSpec]
+
+
+type JobResultRequest = Annotated[
+    JobCompletedResult | JobFailedResult | JobBlockedResult,
+    Field(discriminator="status"),
+]
 
 
 class OkResponse(BaseModel):
