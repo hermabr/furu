@@ -5,8 +5,7 @@ import traceback
 from typing import assert_never
 
 from furu.core import Furu
-from furu.execution import _ensure_single_result
-from furu.execution import api
+from furu.execution import _ensure_single_result, api
 from furu.metadata import ArtifactSpec
 from furu.worker.context import _DependencyNotReady, worker_execution_context
 from furu.worker.protocol import (
@@ -20,7 +19,6 @@ from furu.worker.protocol import (
 def worker_loop(
     *,
     server_url: str,
-    wait_interval: float = 0.1,
 ) -> None:
     client = api.ManagerApiClient(server_url)
 
@@ -29,7 +27,7 @@ def worker_loop(
             case "stop":
                 return
             case "wait":
-                time.sleep(wait_interval)
+                time.sleep(0.1)
                 continue
             case Job() as job:
                 try:
