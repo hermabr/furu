@@ -56,19 +56,13 @@ class Manager:
     def run(
         self,
         *,
-        n_workers: int = 1,
-        worker_backend: WorkerBackend | None = None,
+        worker_backend: WorkerBackend,
         host: str = "127.0.0.1",
         port: int = 0,
     ) -> None:
         from furu.execution.server import _run_until_done
-        from furu.worker.backend import LocalThreadWorkerBackend
 
-        if worker_backend is not None and n_workers != 1:
-            raise ValueError("pass either worker_backend or n_workers, not both")
-
-        backend = worker_backend or LocalThreadWorkerBackend(n_workers=n_workers)
-        _run_until_done(self, worker_backend=backend, host=host, port=port)
+        _run_until_done(self, worker_backend=worker_backend, host=host, port=port)
 
     def lease_job(self) -> LeaseJobResponse:
         with self.lock:

@@ -230,11 +230,11 @@ def test_manager_run_uses_worker_backend() -> None:
     assert backend.server_urls[0].startswith("http://127.0.0.1:")
 
 
-def test_manager_run_rejects_n_workers_with_worker_backend() -> None:
+def test_manager_run_requires_explicit_worker_backend() -> None:
     manager = Manager([ManagerLeaf(value=12)])
 
-    with pytest.raises(ValueError, match="either worker_backend or n_workers"):
-        manager.run(n_workers=2, worker_backend=LocalThreadWorkerBackend())
+    with pytest.raises(TypeError, match="worker_backend"):
+        manager.run()  # ty: ignore[missing-argument]
 
 
 def test_local_thread_worker_backend_requires_at_least_one_worker() -> None:
