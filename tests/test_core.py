@@ -329,6 +329,13 @@ class FailingSingleValue(Furu[str]):
         raise RuntimeError(f"failed single for {self.key}")
 
 
+class InterruptingValue(Furu[str]):
+    key: int
+
+    def create(self) -> str:
+        raise KeyboardInterrupt
+
+
 class PartialBatchValue(Furu[str]):
     key: int
 
@@ -1734,6 +1741,17 @@ def test_batched_failure_writes_error_details_to_run_log_for_every_participant()
         assert "failed batch for [1, 2]" in log_text
         assert "=== Debug Details (with locals) ===" in log_text
         assert list(internal_furu_dir_in(obj.data_dir).glob("error-*.log")) == []
+
+
+def test_base_exception_does_not_log_as_load_failure() -> None:
+    obj = InterruptingValue(key=1)
+
+    with pytest.raises(KeyboardInterrupt):
+        obj.load_or_create()
+
+    log_text = run_log_path_in(obj.data_dir).read_text(encoding="utf-8")
+    assert "load_or_create failed" not in log_text
+    assert "=== Debug Details (with locals) ===" not in log_text
 
 
 def test_partial_persistence_leaves_already_written_objects_completed(

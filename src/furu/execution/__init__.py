@@ -409,7 +409,7 @@ def _execute_group[T](
                 len(exc.dependencies),
             )
             raise
-        except BaseException as exc:
+        except Exception as exc:
             logger.exception("load_or_create failed")
             logger.error(
                 "debug traceback with locals:\n%s", _format_error_debug_details(exc)
