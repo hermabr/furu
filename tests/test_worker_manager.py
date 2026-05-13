@@ -9,6 +9,7 @@ from furu import Furu
 from furu.execution import api
 from furu.execution.manager import FailedJob, Manager, RunningJob
 from furu.metadata import ArtifactSpec
+from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
 from furu.worker.loop import worker_loop
 from furu.worker.protocol import (
     JobBlockedResult,
@@ -207,6 +208,38 @@ def test_manager_job_result_failed_finishes_with_error() -> None:
     assert failed_job.error == "boom"
     with pytest.raises(RuntimeError, match="failed jobs"):
         manager.raise_for_failure()
+
+
+def test_manager_run_uses_worker_backend() -> None:
+    class RecordingBackend:
+        def __init__(self) -> None:
+            self.server_urls: list[str] = []
+
+        def start_pool(self, *, server_url: str) -> LocalThreadWorkerPool:
+            self.server_urls.append(server_url)
+            return LocalThreadWorkerPool(server_url=server_url, n_workers=1)
+
+    leaf = ManagerLeaf(value=11)
+    backend = RecordingBackend()
+
+    Manager([leaf]).run(worker_backend=backend)
+
+    assert leaf.status() == "completed"
+    assert leaf.load_or_create() == 11
+    assert len(backend.server_urls) == 1
+    assert backend.server_urls[0].startswith("http://127.0.0.1:")
+
+
+def test_manager_run_requires_explicit_worker_backend() -> None:
+    manager = Manager([ManagerLeaf(value=12)])
+
+    with pytest.raises(TypeError, match="worker_backend"):
+        manager.run()  # ty: ignore[missing-argument]
+
+
+def test_local_thread_worker_backend_requires_at_least_one_worker() -> None:
+    with pytest.raises(ValueError, match="at least one worker"):
+        LocalThreadWorkerBackend(n_workers=0)
 
 
 def test_job_result_request_requires_error_for_failed_status() -> None:

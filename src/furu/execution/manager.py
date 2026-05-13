@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import assert_never
+from typing import TYPE_CHECKING, assert_never
 from uuid import uuid4
 
 from furu.core import Furu
@@ -18,6 +18,9 @@ from furu.worker.protocol import (
     JobFailedResult,
     JobResultRequest,
 )
+
+if TYPE_CHECKING:
+    from furu.worker.backends import WorkerBackend
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,13 +56,13 @@ class Manager:
     def run(
         self,
         *,
-        n_workers: int = 1,
+        worker_backend: WorkerBackend,
         host: str = "127.0.0.1",
         port: int = 0,
     ) -> None:
         from furu.execution.server import _run_until_done
 
-        _run_until_done(self, n_workers=n_workers, host=host, port=port)
+        _run_until_done(self, worker_backend=worker_backend, host=host, port=port)
 
     def lease_job(self) -> LeaseJobResponse:
         with self.lock:
