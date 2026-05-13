@@ -6,30 +6,9 @@ import time
 from collections.abc import Sequence
 
 import uvicorn
-from fastapi import FastAPI
 
+from furu.execution.api import create_manager_api_app
 from furu.execution.manager import Manager
-from furu.worker.protocol import BlockedRequest, FinishRequest, GetJobResponse
-
-
-def make_app(manager: Manager) -> FastAPI:
-    app = FastAPI()
-
-    @app.get("/get_job", response_model=GetJobResponse)
-    def get_job() -> GetJobResponse:
-        return manager.get_job()
-
-    @app.post("/finish/{lease_id}")
-    def finish(lease_id: str, request: FinishRequest) -> dict[str, bool]:
-        manager.finish(lease_id, request)
-        return {"ok": True}
-
-    @app.post("/blocked/{lease_id}")
-    def blocked(lease_id: str, request: BlockedRequest) -> dict[str, bool]:
-        manager.report_blocked(lease_id, request.dependencies)
-        return {"ok": True}
-
-    return app
 
 
 def run_until_done(
@@ -41,7 +20,7 @@ def run_until_done(
 ) -> None:
     from furu.worker.loop import worker_loop
 
-    app = make_app(manager)
+    app = create_manager_api_app(manager)
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((host, port))

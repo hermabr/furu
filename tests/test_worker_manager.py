@@ -6,11 +6,17 @@ from pydantic import TypeAdapter, ValidationError
 
 import furu.worker.loop as worker_loop_module
 from furu import Furu
+from furu.execution import api
 from furu.execution.manager import FailedJob, Manager, RunningJob
 from furu.metadata import ArtifactSpec
 from furu.worker.loop import worker_loop
-from furu.worker.protocol import FinishFailedRequest, FinishSuccessRequest, Job
+from furu.worker.protocol import (
+    BlockedRequest,
+    FinishFailedRequest,
+    FinishSuccessRequest,
+)
 from furu.worker.protocol import FinishRequest
+from furu.worker.protocol import GetJobResponse, Job
 
 
 class ManagerLeaf(Furu[int]):
@@ -211,24 +217,104 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
 ) -> None:
     leaf = ManagerLeaf(value=1)
     job = Job(lease_id="lease-1", artifact=ArtifactSpec.from_furu(leaf))
-    requests: list[tuple[str, object | None]] = []
 
-    def request_json(
-        url: str,
-        *,
-        method: str = "GET",
-        payload: object | None = None,
-    ) -> object:
-        requests.append((url, payload))
-        return job.model_dump(mode="json")
+    class TestClient:
+        calls: list[str]
+
+        def __init__(self, server_url: str) -> None:
+            self.calls = []
+
+        def get_job(self) -> GetJobResponse:
+            self.calls.append("get_job")
+            return job
+
+        def finish(self, lease_id: str, request: FinishRequest) -> None:
+            self.calls.append("finish")
+
+        def report_blocked(self, lease_id: str, request: BlockedRequest) -> None:
+            self.calls.append("report_blocked")
 
     def run_job(job: Job) -> None:
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(worker_loop_module, "_request_json", request_json)
+    test_client = TestClient("http://worker.test")
+    monkeypatch.setattr(api, "ManagerApiClient", lambda server_url: test_client)
     monkeypatch.setattr(worker_loop_module, "_run_job", run_job)
 
     with pytest.raises(KeyboardInterrupt):
         worker_loop(server_url="http://worker.test")
 
-    assert requests == [("http://worker.test/get_job", None)]
+    assert test_client.calls == ["get_job"]
+
+
+def test_client_report_blocked_uses_report_blocked_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[tuple[str, str, object | None]] = []
+
+    def request(
+        method: str,
+        url: str,
+        *,
+        json: object | None,
+        timeout: float,
+    ) -> httpx.Response:
+        requests.append((method, url, json))
+        return httpx.Response(
+            200, json={"ok": True}, request=httpx.Request(method, url)
+        )
+
+    monkeypatch.setattr(httpx, "request", request)
+
+    api.ManagerApiClient("http://worker.test/").report_blocked(
+        "lease-1", BlockedRequest(dependencies=[])
+    )
+
+    assert requests == [
+        (
+            "POST",
+            "http://worker.test/report_blocked/lease-1",
+            {"dependencies": []},
+        )
+    ]
+
+
+def test_client_finish_rejects_non_ok_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def request(
+        method: str,
+        url: str,
+        *,
+        json: object | None,
+        timeout: float,
+    ) -> httpx.Response:
+        return httpx.Response(
+            200, json={"ok": False}, request=httpx.Request(method, url)
+        )
+
+    monkeypatch.setattr(httpx, "request", request)
+
+    with pytest.raises(ValidationError, match="Input should be True"):
+        api.ManagerApiClient("http://worker.test").finish(
+            "lease-1",
+            FinishSuccessRequest(),
+        )
+
+
+def test_client_get_job_rejects_empty_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def request(
+        method: str,
+        url: str,
+        *,
+        json: object | None,
+        timeout: float,
+    ) -> httpx.Response:
+        return httpx.Response(200, request=httpx.Request(method, url))
+
+    monkeypatch.setattr(httpx, "request", request)
+
+    with pytest.raises(RuntimeError, match="returned an empty response"):
+        api.ManagerApiClient("http://worker.test").get_job()

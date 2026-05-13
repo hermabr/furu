@@ -39,4 +39,10 @@ class BlockedRequest(BaseModel):
     dependencies: list[ArtifactSpec]
 
 
+class OkResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    ok: Literal[True] = True
+
+
 type GetJobResponse = Job | Literal["wait", "stop"]
