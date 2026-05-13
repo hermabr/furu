@@ -15,8 +15,8 @@ def _run_until_done(
     manager: Manager,
     *,
     n_workers: int,
-    host: str = "127.0.0.1",
-    port: int = 0,
+    host: str,
+    port: int,
 ) -> None:
     from furu.worker.loop import worker_loop
 
