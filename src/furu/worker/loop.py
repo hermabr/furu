@@ -4,7 +4,7 @@ import time
 import traceback
 
 from furu.core import Furu
-from furu.execution import _execute_one
+from furu.execution import _ensure_single_result
 from furu.execution import api
 from furu.metadata import ArtifactSpec
 from furu.worker.context import _DependencyNotReady, worker_execution_context
@@ -61,4 +61,4 @@ def worker_loop(
 def _run_job(job: Job) -> None:
     obj = Furu.from_artifact(job.artifact)
     with worker_execution_context(lease_id=job.lease_id):
-        _execute_one(obj)
+        _ensure_single_result(obj)

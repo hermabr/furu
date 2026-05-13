@@ -194,7 +194,7 @@ def load_or_create[T](
     return _load_or_create_local(obj_or_objs, use_lock=use_lock)
 
 
-def _execute_one[T](obj: Furu[T]) -> None:
+def _ensure_single_result[T](obj: Furu[T]) -> None:
     if (cached_result_dir := result_dir_for_loading(obj)) is not None:
         obj.logger.info("cache hit for %s at %s", obj._log_label, cached_result_dir)
         return
@@ -210,7 +210,7 @@ def _execute_one[T](obj: Furu[T]) -> None:
             )
             return
 
-        _execute_group(
+        _create_and_store_group(
             [obj],
             has_lock=has_lock,
             results_by_object_id={},
@@ -323,7 +323,7 @@ def _load_or_create_local[T](
             grouped.setdefault(type(obj), []).append(obj)
 
         for group in grouped.values():
-            _execute_group(
+            _create_and_store_group(
                 group,
                 has_lock=has_lock,
                 results_by_object_id=results_by_object_id,
@@ -339,7 +339,7 @@ def _load_or_create_local[T](
     return outputs
 
 
-def _execute_group[T](
+def _create_and_store_group[T](
     group: list[Furu[T]],
     *,
     has_lock: HasLock,
