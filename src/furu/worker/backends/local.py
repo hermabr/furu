@@ -37,6 +37,9 @@ class LocalThreadWorkerPool:
     def is_healthy(self) -> bool:
         return all(worker.is_alive() for worker in self._threads)
 
+    def stop(self) -> None:
+        pass
+
     def join(self, *, timeout: float) -> None:
         for worker in self._threads:
             worker.join(timeout=timeout)
