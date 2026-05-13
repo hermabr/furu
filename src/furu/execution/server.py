@@ -28,29 +28,30 @@ def manager_server(
     manager: Manager, *, bind_host: str, port: int
 ) -> Iterator[ManagerServer]:
     app = create_manager_api_app(manager)
-
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind((bind_host, port))
-    sock.listen()
-    sock.set_inheritable(True)
-    bound_host, bound_port = sock.getsockname()[:2]
-
-    server = uvicorn.Server(
-        uvicorn.Config(
-            app,
-            log_level="warning",
-            lifespan="off",
-            ws="none",
-        )
-    )
-    thread = threading.Thread(
-        target=server.run,
-        kwargs={"sockets": [sock]},
-        name="furu-manager-server",
-    )
+    server: uvicorn.Server | None = None
+    thread: threading.Thread | None = None
 
     try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((bind_host, port))
+        sock.listen()
+        sock.set_inheritable(True)
+        bound_host, bound_port = sock.getsockname()[:2]
+
+        server = uvicorn.Server(
+            uvicorn.Config(
+                app,
+                log_level="warning",
+                lifespan="off",
+                ws="none",
+            )
+        )
+        thread = threading.Thread(
+            target=server.run,
+            kwargs={"sockets": [sock]},
+            name="furu-manager-server",
+        )
         thread.start()
         deadline = time.monotonic() + 10
         while not server.started:
@@ -62,8 +63,11 @@ def manager_server(
 
         yield ManagerServer(bound_host=bound_host, bound_port=bound_port)
     finally:
-        server.should_exit = True
-        thread.join(timeout=10)
+        if server is not None:
+            server.should_exit = True
+        if thread is not None:
+            thread.join(timeout=10)
+        sock.close()
 
 
 def _run_until_done(

@@ -8,6 +8,7 @@ import furu.worker.loop as worker_loop_module
 from furu import Furu
 from furu.execution import api
 from furu.execution.manager import FailedJob, Manager, RunningJob
+from furu.execution.server import manager_server
 from furu.metadata import ArtifactSpec
 from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
 from furu.worker.loop import worker_loop
@@ -228,6 +229,18 @@ def test_manager_run_uses_worker_backend() -> None:
     assert leaf.load_or_create() == 11
     assert len(backend.server_urls) == 1
     assert backend.server_urls[0].startswith("http://127.0.0.1:")
+
+
+def test_manager_server_exposes_bound_port_and_worker_url() -> None:
+    manager = Manager([ManagerLeaf(value=12)])
+
+    with manager_server(manager, bind_host="127.0.0.1", port=0) as server:
+        assert server.bound_host == "127.0.0.1"
+        assert server.bound_port > 0
+        assert (
+            server.url_for_workers("workers.example.test")
+            == f"http://workers.example.test:{server.bound_port}"
+        )
 
 
 def test_manager_run_requires_explicit_worker_backend() -> None:
