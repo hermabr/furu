@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, assert_never
 
 from furu.core import Furu
 from furu.dependencies import collect_declared_refs
+from furu.metadata import ArtifactSpec
 
 if TYPE_CHECKING:
     from furu.execution.manager import Manager
@@ -58,5 +59,47 @@ def _add_to_dag(manager: Manager, objs: Sequence[Furu]) -> None:
                 dep_node.dependents.append(node)
 
     for node in newly_added:
-        target = manager.ready if not node.dependencies else manager.blocked
-        target[node.obj.object_id] = node
+        if node.dependencies:
+            manager.blocked[node.obj.object_id] = node
+        else:
+            manager.ready[node.obj.object_id] = node
+
+
+def _update_dag_blocking_dependencies(
+    manager: Manager,
+    node: DagNode,
+    dependencies: Sequence[ArtifactSpec],
+) -> None:
+    dependency_ids: dict[str, None] = {}
+    missing_dependencies: list[Furu] = []
+    for artifact in dependencies:
+        object_id = artifact.object_id
+        if object_id in manager.completed or object_id in dependency_ids:
+            continue
+
+        dep_node = manager.nodes_by_id.get(object_id)
+        if dep_node is not None:
+            if dep_node.obj.status() != "completed":
+                dependency_ids[object_id] = None
+            continue
+
+        dependency = Furu.from_artifact(artifact)
+        if dependency.status() == "completed":
+            continue
+
+        dependency_ids[object_id] = None
+        missing_dependencies.append(dependency)
+
+    _add_to_dag(manager, missing_dependencies)
+
+    for dependency_id in dependency_ids:
+        dep_node = manager.nodes_by_id[dependency_id]
+        if dep_node not in node.dependencies:
+            node.dependencies.append(dep_node)
+        if node not in dep_node.dependents:
+            dep_node.dependents.append(node)
+
+    if node.dependencies:
+        manager.blocked[node.obj.object_id] = node
+    else:
+        manager.ready[node.obj.object_id] = node

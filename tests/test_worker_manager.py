@@ -189,6 +189,7 @@ def test_manager_job_result_failed_finishes_with_error() -> None:
 
     manager.job_result(job.lease_id, JobFailedResult(error="boom"))
 
+    assert manager.running == {}
     assert set(manager.failed) == {leaf.object_id}
     failed_job = manager.failed[leaf.object_id]
     assert isinstance(failed_job, FailedJob)

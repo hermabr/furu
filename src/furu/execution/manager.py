@@ -7,7 +7,7 @@ from typing import assert_never
 from uuid import uuid4
 
 from furu.core import Furu
-from furu.dag import DagNode, _add_to_dag
+from furu.dag import DagNode, _add_to_dag, _update_dag_blocking_dependencies
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
 from furu.worker.protocol import (
@@ -101,47 +101,12 @@ class Manager:
                         error=error,
                     )
                 case JobBlockedResult(dependencies=dependencies):
-                    self._block_job_locked(running_job.node, dependencies)
+                    _update_dag_blocking_dependencies(
+                        self, running_job.node, dependencies
+                    )
                 case _:
                     assert_never(request)
             self._maybe_finish_locked()
-
-    def _block_job_locked(
-        self,
-        node: DagNode,
-        dependencies: Sequence[ArtifactSpec],
-    ) -> None:
-        dependency_ids: dict[str, None] = {}
-        missing_dependencies: list[Furu] = []
-        for artifact in dependencies:
-            object_id = artifact.object_id
-            if object_id in self.completed or object_id in dependency_ids:
-                continue
-
-            dep_node = self.nodes_by_id.get(object_id)
-            if dep_node is not None:
-                if dep_node.obj.status() != "completed":
-                    dependency_ids[object_id] = None
-                continue
-
-            dependency = Furu.from_artifact(artifact)
-            if dependency.status() == "completed":
-                continue
-
-            dependency_ids[object_id] = None
-            missing_dependencies.append(dependency)
-
-        _add_to_dag(self, missing_dependencies)
-
-        for dependency_id in dependency_ids:
-            dep_node = self.nodes_by_id[dependency_id]
-            if dep_node not in node.dependencies:
-                node.dependencies.append(dep_node)
-            if node not in dep_node.dependents:
-                dep_node.dependents.append(node)
-
-        target = self.blocked if node.dependencies else self.ready
-        target[node.obj.object_id] = node
 
     def raise_for_failure(self) -> None:
         if self._finish_error is not None:
