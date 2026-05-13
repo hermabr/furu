@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import hmac
 from typing import Any
 
 import httpx
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import TypeAdapter
 
 from furu.execution.manager import Manager
@@ -15,8 +16,9 @@ from furu.worker.protocol import (
 
 
 class ManagerApiClient:
-    def __init__(self, server_url: str) -> None:
+    def __init__(self, server_url: str, *, auth_token: str) -> None:
         self._server_url = server_url.rstrip("/")
+        self._auth_token = auth_token
 
     def lease_job(self) -> LeaseJobResponse:
         response = self._request_json("/lease_job", method="POST")
@@ -38,8 +40,11 @@ class ManagerApiClient:
         payload: object | None = None,
     ) -> Any:
         url = f"{self._server_url}{path}"
+        headers = {"Authorization": f"Bearer {self._auth_token}"}
         try:
-            response = httpx.request(method, url, json=payload, timeout=10.0)
+            response = httpx.request(
+                method, url, json=payload, headers=headers, timeout=10.0
+            )
             response.raise_for_status()
             if not response.content:
                 raise RuntimeError(f"{method} {url} returned an empty response")
@@ -51,14 +56,29 @@ class ManagerApiClient:
             ) from exc
 
 
-def create_manager_api_app(manager: Manager) -> FastAPI:
+def create_manager_api_app(manager: Manager, *, auth_token: str) -> FastAPI:
     app = FastAPI()
 
-    @app.post("/lease_job", response_model=LeaseJobResponse)
+    def require_auth(authorization: str = Header(default="")) -> None:
+        scheme, _, credentials = authorization.partition(" ")
+        if scheme.lower() != "bearer" or not hmac.compare_digest(
+            credentials, auth_token
+        ):
+            raise HTTPException(status_code=401, detail="invalid auth token")
+
+    @app.post(
+        "/lease_job",
+        response_model=LeaseJobResponse,
+        dependencies=[Depends(require_auth)],
+    )
     def lease_job() -> LeaseJobResponse:
         return manager.lease_job()
 
-    @app.post("/job_result/{lease_id}", response_model=OkResponse)
+    @app.post(
+        "/job_result/{lease_id}",
+        response_model=OkResponse,
+        dependencies=[Depends(require_auth)],
+    )
     def job_result(lease_id: str, request: JobResultRequest) -> OkResponse:
         manager.job_result(lease_id, request)
         return OkResponse()

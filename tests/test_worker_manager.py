@@ -214,11 +214,15 @@ def test_manager_job_result_failed_finishes_with_error() -> None:
 def test_manager_run_uses_worker_backend() -> None:
     class RecordingBackend:
         def __init__(self) -> None:
-            self.server_urls: list[str] = []
+            self.calls: list[tuple[str, str]] = []
 
-        def start_pool(self, *, server_url: str) -> LocalThreadWorkerPool:
-            self.server_urls.append(server_url)
-            return LocalThreadWorkerPool(server_url=server_url, n_workers=1)
+        def start_pool(
+            self, *, server_url: str, auth_token: str
+        ) -> LocalThreadWorkerPool:
+            self.calls.append((server_url, auth_token))
+            return LocalThreadWorkerPool(
+                server_url=server_url, auth_token=auth_token, n_workers=1
+            )
 
     leaf = ManagerLeaf(value=11)
     backend = RecordingBackend()
@@ -227,8 +231,10 @@ def test_manager_run_uses_worker_backend() -> None:
 
     assert leaf.status() == "completed"
     assert leaf.load_or_create() == 11
-    assert len(backend.server_urls) == 1
-    assert backend.server_urls[0].startswith("http://127.0.0.1:")
+    assert len(backend.calls) == 1
+    server_url, auth_token = backend.calls[0]
+    assert server_url.startswith("http://127.0.0.1:")
+    assert auth_token
 
 
 def test_manager_server_exposes_bound_host_and_port() -> None:
@@ -237,6 +243,27 @@ def test_manager_server_exposes_bound_host_and_port() -> None:
     with manager_server(manager, bind_host="127.0.0.1", port=0) as server:
         assert server.bound_host == "127.0.0.1"
         assert server.bound_port > 0
+        assert server.auth_token
+
+
+def test_manager_server_rejects_requests_without_auth_token() -> None:
+    manager = Manager([ManagerLeaf(value=12)])
+
+    with manager_server(manager, bind_host="127.0.0.1", port=0) as server:
+        response = httpx.post(f"{server.server_url}/lease_job")
+        assert response.status_code == 401
+
+        response = httpx.post(
+            f"{server.server_url}/lease_job",
+            headers={"Authorization": "Bearer wrong"},
+        )
+        assert response.status_code == 401
+
+        response = httpx.post(
+            f"{server.server_url}/lease_job",
+            headers={"Authorization": f"Bearer {server.auth_token}"},
+        )
+        assert response.status_code == 200
 
 
 def test_manager_run_requires_explicit_worker_backend() -> None:
@@ -272,7 +299,7 @@ def test_job_result_request_uses_status_discriminator() -> None:
 
 def test_worker_loop_raises_when_server_is_unavailable() -> None:
     with pytest.raises(httpx.ConnectError):
-        worker_loop(server_url="http://127.0.0.1:1")
+        worker_loop(server_url="http://127.0.0.1:1", auth_token="token")
 
 
 def test_worker_loop_does_not_swallow_keyboard_interrupt(
@@ -284,7 +311,7 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
     class TestClient:
         calls: list[str]
 
-        def __init__(self, server_url: str) -> None:
+        def __init__(self, server_url: str, *, auth_token: str) -> None:
             self.calls = []
 
         def lease_job(self) -> LeaseJobResponse:
@@ -297,14 +324,16 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
     def ensure_single_result(obj: Furu[object]) -> None:
         raise KeyboardInterrupt
 
-    test_client = TestClient("http://worker.test")
-    monkeypatch.setattr(api, "ManagerApiClient", lambda server_url: test_client)
+    test_client = TestClient("http://worker.test", auth_token="token")
+    monkeypatch.setattr(
+        api, "ManagerApiClient", lambda server_url, *, auth_token: test_client
+    )
     monkeypatch.setattr(
         worker_loop_module, "_ensure_single_result", ensure_single_result
     )
 
     with pytest.raises(KeyboardInterrupt):
-        worker_loop(server_url="http://worker.test")
+        worker_loop(server_url="http://worker.test", auth_token="token")
 
     assert test_client.calls == ["lease_job"]
 
@@ -312,23 +341,24 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
 def test_client_job_result_uses_job_result_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    requests: list[tuple[str, str, object | None]] = []
+    requests: list[tuple[str, str, object | None, dict[str, str]]] = []
 
     def request(
         method: str,
         url: str,
         *,
         json: object | None,
+        headers: dict[str, str],
         timeout: float,
     ) -> httpx.Response:
-        requests.append((method, url, json))
+        requests.append((method, url, json, headers))
         return httpx.Response(
             200, json={"ok": True}, request=httpx.Request(method, url)
         )
 
     monkeypatch.setattr(httpx, "request", request)
 
-    api.ManagerApiClient("http://worker.test/").job_result(
+    api.ManagerApiClient("http://worker.test/", auth_token="secret").job_result(
         "lease-1", JobBlockedResult(dependencies=[])
     )
 
@@ -337,6 +367,7 @@ def test_client_job_result_uses_job_result_endpoint(
             "POST",
             "http://worker.test/job_result/lease-1",
             {"status": "blocked", "dependencies": []},
+            {"Authorization": "Bearer secret"},
         )
     ]
 
@@ -349,6 +380,7 @@ def test_client_job_result_rejects_non_ok_response(
         url: str,
         *,
         json: object | None,
+        headers: dict[str, str],
         timeout: float,
     ) -> httpx.Response:
         return httpx.Response(
@@ -358,7 +390,7 @@ def test_client_job_result_rejects_non_ok_response(
     monkeypatch.setattr(httpx, "request", request)
 
     with pytest.raises(ValidationError, match="Input should be True"):
-        api.ManagerApiClient("http://worker.test").job_result(
+        api.ManagerApiClient("http://worker.test", auth_token="t").job_result(
             "lease-1",
             JobCompletedResult(),
         )
@@ -372,6 +404,7 @@ def test_client_lease_job_rejects_empty_response(
         url: str,
         *,
         json: object | None,
+        headers: dict[str, str],
         timeout: float,
     ) -> httpx.Response:
         return httpx.Response(200, request=httpx.Request(method, url))
@@ -379,23 +412,24 @@ def test_client_lease_job_rejects_empty_response(
     monkeypatch.setattr(httpx, "request", request)
 
     with pytest.raises(RuntimeError, match="returned an empty response"):
-        api.ManagerApiClient("http://worker.test").lease_job()
+        api.ManagerApiClient("http://worker.test", auth_token="t").lease_job()
 
 
 def test_client_lease_job_posts_to_lease_job_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     leaf = ManagerLeaf(value=1)
-    requests: list[tuple[str, str, object | None]] = []
+    requests: list[tuple[str, str, object | None, dict[str, str]]] = []
 
     def request(
         method: str,
         url: str,
         *,
         json: object | None,
+        headers: dict[str, str],
         timeout: float,
     ) -> httpx.Response:
-        requests.append((method, url, json))
+        requests.append((method, url, json, headers))
         return httpx.Response(
             200,
             json={
@@ -407,7 +441,14 @@ def test_client_lease_job_posts_to_lease_job_endpoint(
 
     monkeypatch.setattr(httpx, "request", request)
 
-    job = api.ManagerApiClient("http://worker.test/").lease_job()
+    job = api.ManagerApiClient("http://worker.test/", auth_token="secret").lease_job()
 
     assert isinstance(job, Job)
-    assert requests == [("POST", "http://worker.test/lease_job", None)]
+    assert requests == [
+        (
+            "POST",
+            "http://worker.test/lease_job",
+            None,
+            {"Authorization": "Bearer secret"},
+        )
+    ]
