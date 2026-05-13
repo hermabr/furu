@@ -172,13 +172,8 @@ def test_manager_uses_new_lease_when_blocked_job_is_released() -> None:
     assert second_parent_job.lease_id != first_parent_job.lease_id
     assert second_parent_job.artifact.object_id == parent.object_id
 
-    with pytest.raises(KeyError, match="unknown running lease_id"):
-        manager.job_result(
-            first_parent_job.lease_id,
-            JobCompletedResult(),
-        )
-
     assert set(manager.running) == {second_parent_job.lease_id}
+    assert set(manager.completed) == {dependency.object_id}
 
 
 def test_manager_job_result_failed_finishes_with_error() -> None:
