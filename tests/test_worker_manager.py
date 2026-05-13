@@ -1,4 +1,4 @@
-import time
+import urllib.error
 from uuid import UUID
 
 import pytest
@@ -200,13 +200,6 @@ def test_finish_request_uses_status_discriminator() -> None:
         adapter.validate_python({"status": "skipped"})
 
 
-def test_worker_loop_exits_when_server_is_unavailable() -> None:
-    started = time.monotonic()
-
-    worker_loop(
-        server_url="http://127.0.0.1:1",
-        unavailable_timeout=0.01,
-        retry_interval=0.01,
-    )
-
-    assert time.monotonic() - started < 1
+def test_worker_loop_raises_when_server_is_unavailable() -> None:
+    with pytest.raises(urllib.error.URLError):
+        worker_loop(server_url="http://127.0.0.1:1")
