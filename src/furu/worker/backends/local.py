@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass
 
 
@@ -23,10 +24,11 @@ class LocalThreadWorkerPool:
 
         from furu.worker.loop import worker_loop
 
+        self._stop_event = threading.Event()
         self._threads = [
             threading.Thread(
                 target=worker_loop,
-                kwargs={"server_url": server_url},
+                kwargs={"server_url": server_url, "stop_event": self._stop_event},
                 name=f"furu-worker-{idx}",
             )
             for idx in range(n_workers)
@@ -37,6 +39,11 @@ class LocalThreadWorkerPool:
     def is_healthy(self) -> bool:
         return all(worker.is_alive() for worker in self._threads)
 
-    def join(self, *, timeout: float) -> None:
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def join(self, *, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
         for worker in self._threads:
-            worker.join(timeout=timeout)
+            worker.join(timeout=max(0.0, deadline - time.monotonic()))
+        return all(not worker.is_alive() for worker in self._threads)

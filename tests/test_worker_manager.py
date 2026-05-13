@@ -1,3 +1,4 @@
+import threading
 from uuid import UUID
 
 import httpx
@@ -8,7 +9,7 @@ import furu.worker.loop as worker_loop_module
 from furu import Furu
 from furu.execution import api
 from furu.execution.manager import FailedJob, Manager, RunningJob
-from furu.execution.server import manager_server
+from furu.execution.server import _run_until_done, manager_server
 from furu.metadata import ArtifactSpec
 from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
 from furu.worker.loop import worker_loop
@@ -251,6 +252,98 @@ def test_local_thread_worker_backend_requires_at_least_one_worker() -> None:
         LocalThreadWorkerBackend(n_workers=0)
 
 
+def test_local_thread_worker_pool_stop_requests_worker_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = threading.Event()
+    seen_stop_events: list[threading.Event] = []
+
+    def fake_worker_loop(
+        *,
+        server_url: str,
+        stop_event: threading.Event | None = None,
+    ) -> None:
+        assert server_url == "http://worker.test"
+        assert stop_event is not None
+        seen_stop_events.append(stop_event)
+        started.set()
+        stop_event.wait(timeout=10)
+
+    monkeypatch.setattr(worker_loop_module, "worker_loop", fake_worker_loop)
+
+    pool = LocalThreadWorkerPool(server_url="http://worker.test", n_workers=1)
+    try:
+        assert started.wait(timeout=1)
+        assert not pool.join(timeout=0.01)
+
+        pool.stop()
+
+        assert pool.join(timeout=1)
+        assert [event.is_set() for event in seen_stop_events] == [True]
+    finally:
+        pool.stop()
+        pool.join(timeout=1)
+
+
+def test_run_until_done_stops_worker_pool_before_join() -> None:
+    events: list[str] = []
+
+    class TestWorkerPool:
+        def is_healthy(self) -> bool:
+            return True
+
+        def stop(self) -> None:
+            events.append("stop")
+
+        def join(self, *, timeout: float) -> bool:
+            events.append(f"join:{timeout:g}")
+            return True
+
+    class TestWorkerBackend:
+        def start_pool(self, *, server_url: str) -> TestWorkerPool:
+            assert server_url.startswith("http://127.0.0.1:")
+            return TestWorkerPool()
+
+    manager = Manager([ManagerLeaf(value=1)])
+    manager.done.set()
+
+    _run_until_done(
+        manager,
+        worker_backend=TestWorkerBackend(),
+        host="127.0.0.1",
+        port=0,
+    )
+
+    assert events == ["stop", "join:5"]
+
+
+def test_run_until_done_raises_when_worker_pool_does_not_stop() -> None:
+    class TestWorkerPool:
+        def is_healthy(self) -> bool:
+            return True
+
+        def stop(self) -> None:
+            pass
+
+        def join(self, *, timeout: float) -> bool:
+            return False
+
+    class TestWorkerBackend:
+        def start_pool(self, *, server_url: str) -> TestWorkerPool:
+            return TestWorkerPool()
+
+    manager = Manager([ManagerLeaf(value=1)])
+    manager.done.set()
+
+    with pytest.raises(RuntimeError, match="worker backend did not stop"):
+        _run_until_done(
+            manager,
+            worker_backend=TestWorkerBackend(),
+            host="127.0.0.1",
+            port=0,
+        )
+
+
 def test_job_result_request_requires_error_for_failed_status() -> None:
     with pytest.raises(ValidationError, match="Field required"):
         JobFailedResult.model_validate({"status": "failed"})
@@ -273,6 +366,23 @@ def test_job_result_request_uses_status_discriminator() -> None:
 def test_worker_loop_raises_when_server_is_unavailable() -> None:
     with pytest.raises(httpx.ConnectError):
         worker_loop(server_url="http://127.0.0.1:1")
+
+
+def test_worker_loop_exits_when_stop_event_is_already_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class TestClient:
+        def __init__(self, server_url: str) -> None:
+            pass
+
+        def lease_job(self) -> LeaseJobResponse:
+            raise AssertionError("worker should stop before polling for a job")
+
+    monkeypatch.setattr(api, "ManagerApiClient", TestClient)
+    stop_event = threading.Event()
+    stop_event.set()
+
+    worker_loop(server_url="http://worker.test", stop_event=stop_event)
 
 
 def test_worker_loop_does_not_swallow_keyboard_interrupt(

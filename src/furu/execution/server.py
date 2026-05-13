@@ -78,16 +78,22 @@ def _run_until_done(
     host: str,
     port: int,
 ) -> None:
+    worker_pool_stopped = True
     with manager_server(manager, bind_host=host, port=port) as server:
         worker_pool = worker_backend.start_pool(server_url=server.server_url)
+        worker_pool_stopped = False
 
-        while not manager.done.wait(timeout=0.1):
-            if not worker_pool.is_healthy():
-                manager.fail(
-                    "worker backend became unhealthy before manager run completed"
-                )
-                break
-
-        worker_pool.join(timeout=5)
+        try:
+            while not manager.done.wait(timeout=0.1):
+                if not worker_pool.is_healthy():
+                    manager.fail(
+                        "worker backend became unhealthy before manager run completed"
+                    )
+                    break
+        finally:
+            worker_pool.stop()
+            worker_pool_stopped = worker_pool.join(timeout=5)
 
     manager.raise_for_failure()
+    if not worker_pool_stopped:
+        raise RuntimeError("worker backend did not stop within 5 seconds")
