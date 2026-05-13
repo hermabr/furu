@@ -40,8 +40,6 @@ def _run_until_done(
         kwargs={"sockets": [sock]},
         name="furu-manager-server",
     )
-    worker_pool = worker_backend.create_pool(server_url=server_url)
-
     try:
         server_thread.start()
         deadline = time.monotonic() + 10
@@ -52,7 +50,7 @@ def _run_until_done(
                 raise TimeoutError("manager server did not start within 10 seconds")
             time.sleep(0.01)
 
-        worker_pool.start()
+        worker_pool = worker_backend.start_pool(server_url=server_url)
 
         while not manager.done.wait(timeout=0.1):
             if not worker_pool.is_healthy():

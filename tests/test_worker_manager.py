@@ -215,7 +215,7 @@ def test_manager_run_uses_worker_backend() -> None:
         def __init__(self) -> None:
             self.server_urls: list[str] = []
 
-        def create_pool(self, *, server_url: str) -> LocalThreadWorkerPool:
+        def start_pool(self, *, server_url: str) -> LocalThreadWorkerPool:
             self.server_urls.append(server_url)
             return LocalThreadWorkerPool(server_url=server_url, n_workers=1)
 
