@@ -30,11 +30,9 @@ def manager_server(
     *,
     bind_host: str,
     port: int,
-    startup_timeout: float = 10.0,
 ) -> Iterator[ManagerServer]:
     app = create_manager_api_app(manager)
-    server: uvicorn.Server | None = None
-    server_thread: threading.Thread | None = None
+
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
     try:
@@ -52,37 +50,29 @@ def manager_server(
                 ws="none",
             )
         )
-        server_thread = threading.Thread(
+        thread = threading.Thread(
             target=server.run,
             kwargs={"sockets": [sock]},
             name="furu-manager-server",
         )
-        server_thread.start()
-        _wait_until_started(server, server_thread, startup_timeout)
 
-        yield ManagerServer(bound_host=bound_host, bound_port=bound_port)
-    finally:
-        if server is not None:
+        try:
+            thread.start()
+            deadline = time.monotonic() + 10
+            while not server.started:
+                if not thread.is_alive():
+                    raise RuntimeError("manager server exited before it was ready")
+                if time.monotonic() > deadline:
+                    raise TimeoutError("manager server did not start within 10 seconds")
+                time.sleep(0.01)
+
+            yield ManagerServer(bound_host=bound_host, bound_port=bound_port)
+        finally:
             server.should_exit = True
-        if server_thread is not None and server_thread.ident is not None:
-            server_thread.join(timeout=10)
+            if thread.ident is not None:
+                thread.join(timeout=10)
+    finally:
         sock.close()
-
-
-def _wait_until_started(
-    server: uvicorn.Server,
-    server_thread: threading.Thread,
-    startup_timeout: float,
-) -> None:
-    deadline = time.monotonic() + startup_timeout
-    while not server.started:
-        if not server_thread.is_alive():
-            raise RuntimeError("manager server exited before it was ready")
-        if time.monotonic() > deadline:
-            raise TimeoutError(
-                f"manager server did not start within {startup_timeout:g} seconds"
-            )
-        time.sleep(0.01)
 
 
 def _run_until_done(
