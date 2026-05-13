@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import time
+import threading
 import traceback
 from typing import assert_never
 
@@ -19,15 +19,17 @@ from furu.worker.protocol import (
 def worker_loop(
     *,
     server_url: str,
+    stop_event: threading.Event | None = None,
 ) -> None:
     client = api.ManagerApiClient(server_url)
+    stop_event = stop_event if stop_event is not None else threading.Event()
 
-    while True:
+    while not stop_event.is_set():
         match client.lease_job():
             case "stop":
                 return
             case "wait":
-                time.sleep(0.1)
+                stop_event.wait(timeout=0.1)
                 continue
             case Job() as job:
                 try:

@@ -88,6 +88,7 @@ def _run_until_done(
                 )
                 break
 
+        worker_pool.stop()
         worker_pool.join(timeout=5)
 
     manager.raise_for_failure()

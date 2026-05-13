@@ -23,10 +23,11 @@ class LocalThreadWorkerPool:
 
         from furu.worker.loop import worker_loop
 
+        self._stop_event = threading.Event()
         self._threads = [
             threading.Thread(
                 target=worker_loop,
-                kwargs={"server_url": server_url},
+                kwargs={"server_url": server_url, "stop_event": self._stop_event},
                 name=f"furu-worker-{idx}",
             )
             for idx in range(n_workers)
@@ -38,7 +39,7 @@ class LocalThreadWorkerPool:
         return all(worker.is_alive() for worker in self._threads)
 
     def stop(self) -> None:
-        pass
+        self._stop_event.set()
 
     def join(self, *, timeout: float) -> None:
         for worker in self._threads:
