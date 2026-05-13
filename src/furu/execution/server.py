@@ -3,12 +3,13 @@ from __future__ import annotations
 import socket
 import threading
 import time
-from collections.abc import Sequence
 
 import uvicorn
 
 from furu.execution.api import create_manager_api_app
 from furu.execution.manager import Manager
+from furu.worker.backend import WorkerBackend
+from furu.worker.local import LocalThreadBackend
 
 
 def _run_until_done(
@@ -17,8 +18,10 @@ def _run_until_done(
     n_workers: int,
     host: str,
     port: int,
+    backend: WorkerBackend | None = None,
 ) -> None:
-    from furu.worker.loop import worker_loop
+    if backend is None:
+        backend = LocalThreadBackend()
 
     app = create_manager_api_app(manager)
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -42,14 +45,7 @@ def _run_until_done(
         kwargs={"sockets": [sock]},
         name="furu-manager-server",
     )
-    workers: Sequence[threading.Thread] = [
-        threading.Thread(
-            target=worker_loop,
-            kwargs={"server_url": server_url},
-            name=f"furu-worker-{idx}",
-        )
-        for idx in range(n_workers)
-    ]
+    pool = backend.create_pool(n_workers=n_workers, server_url=server_url)
 
     try:
         server_thread.start()
@@ -61,16 +57,14 @@ def _run_until_done(
                 raise TimeoutError("manager server did not start within 10 seconds")
             time.sleep(0.01)
 
-        for worker in workers:
-            worker.start()
+        pool.start()
 
         while not manager.done.wait(timeout=0.1):
-            if any(not worker.is_alive() for worker in workers):
-                manager.fail("a worker exited before manager run completed")
+            if (dead := pool.first_dead_worker()) is not None:
+                manager.fail(f"worker {dead} exited before manager run completed")
                 break
 
-        for worker in workers:
-            worker.join(timeout=5)
+        pool.join(timeout=5)
     finally:
         server.should_exit = True
         server_thread.join(timeout=10)

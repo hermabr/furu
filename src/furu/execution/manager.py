@@ -10,6 +10,7 @@ from furu.core import Furu
 from furu.dag import DagNode, _add_to_dag, _update_dag_blocking_dependencies
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
+from furu.worker.backend import WorkerBackend
 from furu.worker.protocol import (
     LeaseJobResponse,
     Job,
@@ -56,10 +57,17 @@ class Manager:
         n_workers: int = 1,
         host: str = "127.0.0.1",
         port: int = 0,
+        backend: WorkerBackend | None = None,
     ) -> None:
         from furu.execution.server import _run_until_done
 
-        _run_until_done(self, n_workers=n_workers, host=host, port=port)
+        _run_until_done(
+            self,
+            n_workers=n_workers,
+            host=host,
+            port=port,
+            backend=backend,
+        )
 
     def lease_job(self) -> LeaseJobResponse:
         with self.lock:
