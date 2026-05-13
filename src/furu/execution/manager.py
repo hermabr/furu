@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import assert_never
@@ -24,6 +25,7 @@ from furu.worker.protocol import (
 class RunningJob:
     lease_id: str
     node: DagNode
+    leased_at: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,9 +36,16 @@ class FailedJob:
 
 
 class Manager:
-    def __init__(self, objs: Sequence[Furu]) -> None:
+    def __init__(
+        self,
+        objs: Sequence[Furu],
+        *,
+        lease_timeout: float | None = None,
+    ) -> None:
         if not objs:
             raise ValueError("Manager requires at least one Furu object")
+        if lease_timeout is not None and lease_timeout <= 0:
+            raise ValueError("lease_timeout must be positive")
 
         self.nodes_by_id: dict[str, DagNode] = {}
         self.ready: dict[str, DagNode] = {}
@@ -47,6 +56,7 @@ class Manager:
         self.lock = threading.Lock()
         self.done = threading.Event()
         self._finish_error: str | None = None
+        self._lease_timeout = lease_timeout
 
         _add_to_dag(self, objs)
 
@@ -56,10 +66,17 @@ class Manager:
         n_workers: int = 1,
         host: str = "127.0.0.1",
         port: int = 0,
+        advertise_host: str | None = None,
     ) -> None:
         from furu.execution.server import _run_until_done
 
-        _run_until_done(self, n_workers=n_workers, host=host, port=port)
+        _run_until_done(
+            self,
+            n_workers=n_workers,
+            bind_host=host,
+            port=port,
+            advertise_host=advertise_host,
+        )
 
     def lease_job(self) -> LeaseJobResponse:
         with self.lock:
@@ -74,7 +91,11 @@ class Manager:
             lease_id = str(uuid4())
             if lease_id in self.running:
                 raise RuntimeError(f"generated duplicate lease_id: {lease_id}")
-            self.running[lease_id] = RunningJob(lease_id=lease_id, node=node)
+            self.running[lease_id] = RunningJob(
+                lease_id=lease_id,
+                node=node,
+                leased_at=time.monotonic(),
+            )
             return Job(
                 lease_id=lease_id,
                 artifact=ArtifactSpec.from_furu(node.obj),
@@ -114,11 +135,35 @@ class Manager:
 
     def fail(self, message: str) -> None:
         with self.lock:
+            self._fail_locked(message)
+
+    def expire_old_leases(self, *, now: float | None = None) -> None:
+        if self._lease_timeout is None:
+            return
+        checked_at = time.monotonic() if now is None else now
+        with self.lock:
             if self.done.is_set():
                 return
-            self._finish_error = message
-            get_logger().error("furu manager finished with error: %s", message)
-            self.done.set()
+            expired = [
+                running_job
+                for running_job in self.running.values()
+                if checked_at - running_job.leased_at >= self._lease_timeout
+            ]
+            if not expired:
+                return
+            expired.sort(key=lambda running_job: running_job.leased_at)
+            first = expired[0]
+            self._fail_locked(
+                f"lease {first.lease_id} for {first.node.obj.object_id} "
+                f"expired after {self._lease_timeout:g} seconds"
+            )
+
+    def _fail_locked(self, message: str) -> None:
+        if self.done.is_set():
+            return
+        self._finish_error = message
+        get_logger().error("furu manager finished with error: %s", message)
+        self.done.set()
 
     def _maybe_finish_locked(self) -> None:
         if self.done.is_set() or self.ready or self.running:

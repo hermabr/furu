@@ -2,12 +2,14 @@ from uuid import UUID
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 from pydantic import TypeAdapter, ValidationError
 
 import furu.worker.loop as worker_loop_module
 from furu import Furu
 from furu.execution import api
 from furu.execution.manager import FailedJob, Manager, RunningJob
+from furu.execution.server import ManagerServer, _run_until_done
 from furu.metadata import ArtifactSpec
 from furu.worker.loop import worker_loop
 from furu.worker.protocol import (
@@ -85,6 +87,21 @@ def test_manager_lease_job_returns_wait_when_only_running_jobs_can_unblock_work(
 
     assert manager.lease_job() == "wait"
     assert not manager.done.is_set()
+
+
+def test_manager_expire_old_leases_fails_stale_running_job() -> None:
+    leaf = ManagerLeaf(value=1)
+    manager = Manager([leaf], lease_timeout=1.0)
+
+    job = manager.lease_job()
+    assert isinstance(job, Job)
+    running_job = manager.running[job.lease_id]
+
+    manager.expire_old_leases(now=running_job.leased_at + 1.0)
+
+    assert manager.done.is_set()
+    with pytest.raises(RuntimeError, match="expired"):
+        manager.raise_for_failure()
 
 
 def test_manager_job_result_blocked_discovers_lazy_dependency_and_reruns_parent() -> (
@@ -369,3 +386,96 @@ def test_client_lease_job_posts_to_lease_job_endpoint(
 
     assert isinstance(job, Job)
     assert requests == [("POST", "http://worker.test/lease_job", None)]
+
+
+def test_client_sends_manager_token_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[tuple[str, str, dict[str, str] | None]] = []
+
+    def request(
+        method: str,
+        url: str,
+        *,
+        json: object | None,
+        timeout: float,
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Response:
+        requests.append((method, url, headers))
+        return httpx.Response(200, json="wait", request=httpx.Request(method, url))
+
+    monkeypatch.setattr(httpx, "request", request)
+
+    assert api.ManagerApiClient("http://worker.test", token="secret").lease_job() == (
+        "wait"
+    )
+
+    assert requests == [
+        (
+            "POST",
+            "http://worker.test/lease_job",
+            {api.MANAGER_TOKEN_HEADER: "secret"},
+        )
+    ]
+
+
+def test_manager_api_rejects_invalid_token() -> None:
+    manager = Manager([ManagerLeaf(value=1)])
+    client = TestClient(api.create_manager_api_app(manager, token="secret"))
+
+    assert client.post("/lease_job").status_code == 401
+    assert (
+        client.post(
+            "/lease_job",
+            headers={api.MANAGER_TOKEN_HEADER: "wrong"},
+        ).status_code
+        == 401
+    )
+    assert (
+        client.post(
+            "/lease_job",
+            headers={api.MANAGER_TOKEN_HEADER: "secret"},
+        ).status_code
+        == 200
+    )
+
+
+def test_manager_server_url_for_workers_uses_advertise_host() -> None:
+    manager = Manager([ManagerLeaf(value=1)])
+
+    with ManagerServer(manager, bind_host="127.0.0.1") as server:
+        server_url = server.url_for_workers(advertise_host="worker-host.test")
+
+    assert server_url.startswith("http://worker-host.test:")
+    assert server.token
+
+
+def test_run_until_done_stops_pool_when_pool_check_fails() -> None:
+    manager = Manager([ManagerLeaf(value=1)])
+
+    class FailingPool:
+        stopped = False
+
+        def start(self, *, server_url: str, token: str | None) -> None:
+            assert server_url.startswith("http://127.0.0.1:")
+            assert token
+
+        def check(self) -> str | None:
+            return "worker pool failed"
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    pool = FailingPool()
+
+    with pytest.raises(RuntimeError, match="worker pool failed"):
+        _run_until_done(
+            manager,
+            n_workers=1,
+            bind_host="127.0.0.1",
+            port=0,
+            advertise_host=None,
+            pool=pool,
+        )
+
+    assert pool.stopped

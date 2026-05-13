@@ -19,8 +19,12 @@ from furu.worker.protocol import (
 def worker_loop(
     *,
     server_url: str,
+    token: str | None = None,
 ) -> None:
-    client = api.ManagerApiClient(server_url)
+    if token is None:
+        client = api.ManagerApiClient(server_url)
+    else:
+        client = api.ManagerApiClient(server_url, token=token)
 
     while True:
         match client.lease_job():
