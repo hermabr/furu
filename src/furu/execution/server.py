@@ -51,7 +51,11 @@ def run_until_done(
     from furu.worker.loop import worker_loop
 
     app = make_app(manager)
-    sock = _bind_socket(host=host, port=port)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind((host, port))
+    sock.listen()
+    sock.set_inheritable(True)
     bound_host, bound_port = sock.getsockname()[:2]
     server_url = f"http://{bound_host}:{bound_port}"
 
@@ -79,7 +83,13 @@ def run_until_done(
 
     try:
         server_thread.start()
-        _wait_for_server(server, server_thread)
+        deadline = time.monotonic() + 10
+        while not server.started:
+            if not server_thread.is_alive():
+                raise RuntimeError("manager server exited before it was ready")
+            if time.monotonic() > deadline:
+                raise TimeoutError("manager server did not start within 10 seconds")
+            time.sleep(0.01)
 
         for worker in workers:
             worker.start()
@@ -96,25 +106,3 @@ def run_until_done(
         server_thread.join(timeout=10)
 
     manager.raise_for_failure()
-
-
-def _bind_socket(*, host: str, port: int) -> socket.socket:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind((host, port))
-    sock.listen()
-    sock.set_inheritable(True)
-    return sock
-
-
-def _wait_for_server(
-    server: uvicorn.Server,
-    server_thread: threading.Thread,
-) -> None:
-    deadline = time.monotonic() + 10
-    while not server.started:
-        if not server_thread.is_alive():
-            raise RuntimeError("manager server exited before it was ready")
-        if time.monotonic() > deadline:
-            raise TimeoutError("manager server did not start within 10 seconds")
-        time.sleep(0.01)
