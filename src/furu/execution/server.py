@@ -20,21 +20,15 @@ class ManagerServer:
     bound_host: str
     bound_port: int
     auth_token: str
-    advertised_host: str | None = None
 
     @property
     def server_url(self) -> str:
-        host = (
-            self.advertised_host
-            if self.advertised_host is not None
-            else self.bound_host
-        )
-        return f"http://{host}:{self.bound_port}"
+        return f"http://{self.bound_host}:{self.bound_port}"
 
 
 @contextmanager
 def manager_server(
-    manager: Manager, *, bind_host: str, port: int, advertised_host: str | None = None
+    manager: Manager, *, bind_host: str, port: int
 ) -> Iterator[ManagerServer]:
     auth_token = token_urlsafe(32)
     app = create_manager_api_app(manager, auth_token=auth_token)
@@ -75,7 +69,6 @@ def manager_server(
             bound_host=bound_host,
             bound_port=bound_port,
             auth_token=auth_token,
-            advertised_host=advertised_host,
         )
     finally:
         if server is not None:
@@ -91,14 +84,8 @@ def _run_until_done(
     worker_backend: WorkerBackend,
     host: str,
     port: int,
-    advertised_host: str | None,
 ) -> None:
-    with manager_server(
-        manager,
-        bind_host=host,
-        port=port,
-        advertised_host=advertised_host,
-    ) as server:
+    with manager_server(manager, bind_host=host, port=port) as server:
         worker_pool = worker_backend.start_pool(
             server_url=server.server_url,
             auth_token=server.auth_token,

@@ -33,19 +33,19 @@ def test_worker_cli_calls_worker_loop(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls == [("http://manager.test", "secret")]
 
 
-def test_worker_cli_reads_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_worker_cli_requires_connection_flags(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str, str]] = []
 
     def worker_loop(*, server_url: str, auth_token: str) -> None:
         calls.append((server_url, auth_token))
 
-    monkeypatch.setenv("FURU_MANAGER_SERVER_URL", "http://manager.test")
-    monkeypatch.setenv("FURU_MANAGER_AUTH_TOKEN", "secret")
     monkeypatch.setattr(cli, "worker_loop", worker_loop)
 
-    assert cli.main([]) == 0
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main([])
 
-    assert calls == [("http://manager.test", "secret")]
+    assert exc_info.value.code == 2
+    assert calls == []
 
 
 def test_slurm_backend_submits_workers_with_required_sbatch_options(
@@ -58,6 +58,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     log_dir = tmp_path / "logs"
 
     backend = SlurmWorkerBackend(
+        advertised_host="manager.cluster",
         n_workers=2,
         resources=SlurmResources(
             partition="debug",
@@ -72,7 +73,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     )
 
     pool = backend.start_pool(
-        server_url="http://manager.cluster:1234",
+        server_url="http://127.0.0.1:1234",
         auth_token="secret-token",
     )
 
@@ -96,16 +97,18 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
             in argv
         )
         assert "--job-name=furu-worker" in argv
-        assert (
-            "--export=ALL,"
-            "FURU_MANAGER_SERVER_URL=http://manager.cluster:1234,"
-            "FURU_MANAGER_AUTH_TOKEN=secret-token"
-        ) in argv
+        assert not any(arg.startswith("--export") for arg in argv)
         assert "--partition=debug" in argv
         assert "--cpus-per-task=4" in argv
         assert "--mem=8G" in argv
         assert "--exclusive" in argv
-        assert "--wrap=/venv/bin/python -m furu.worker.cli" in argv
+        assert (
+            "--wrap=/venv/bin/python -m furu.worker.cli "
+            "--server-url http://manager.cluster:1234 --auth-token '<redacted>'"
+        ) in argv
+        assert not record["has_manager_environment"]
+
+    assert "secret-token" not in record_file.read_text()
 
 
 def test_slurm_worker_pool_health_tracks_squeue_jobs(
@@ -114,10 +117,10 @@ def test_slurm_worker_pool_health_tracks_squeue_jobs(
 ) -> None:
     _record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
     backend = SlurmWorkerBackend(
+        advertised_host="127.0.0.1",
         n_workers=2,
         log_dir=tmp_path / "logs",
         chdir=tmp_path,
-        allow_local_server_url=True,
         poll_interval=0,
     )
     pool = backend.start_pool(
@@ -147,21 +150,13 @@ def test_slurm_worker_pool_join_cancels_jobs_left_after_timeout(
     assert records[-1] == {"executable": "scancel", "argv": ["100", "101"]}
 
 
-@pytest.mark.parametrize(
-    "server_url",
-    [
-        "http://0.0.0.0:1234",
-        "http://127.0.0.1:1234",
-        "http://localhost:1234",
-    ],
-)
-def test_slurm_backend_rejects_local_server_urls_by_default(
-    server_url: str,
-) -> None:
-    backend = SlurmWorkerBackend()
+def test_slurm_backend_requires_advertised_host() -> None:
+    with pytest.raises(TypeError):
+        SlurmWorkerBackend()  # ty: ignore[missing-argument]
 
-    with pytest.raises(ValueError, match="advertised_host"):
-        backend.start_pool(server_url=server_url, auth_token="secret-token")
+    assert SlurmWorkerBackend(advertised_host="manager.cluster").advertised_host == (
+        "manager.cluster"
+    )
 
 
 def _install_fake_slurm(
@@ -176,6 +171,8 @@ def _install_fake_slurm(
     active_file.write_text("")
     counter_file.write_text("100")
 
+    monkeypatch.delenv("FURU_MANAGER_SERVER_URL", raising=False)
+    monkeypatch.delenv("FURU_MANAGER_AUTH_TOKEN", raising=False)
     monkeypatch.setenv("FURU_FAKE_SLURM_RECORD_FILE", str(record_file))
     monkeypatch.setenv("FURU_FAKE_SLURM_ACTIVE_FILE", str(active_file))
     monkeypatch.setenv("FURU_FAKE_SLURM_COUNTER_FILE", str(counter_file))
@@ -189,14 +186,42 @@ def _install_fake_slurm(
         """
         import json
         import os
+        import shlex
         import sys
 
         record_file = os.environ["FURU_FAKE_SLURM_RECORD_FILE"]
         active_file = os.environ["FURU_FAKE_SLURM_ACTIVE_FILE"]
         counter_file = os.environ["FURU_FAKE_SLURM_COUNTER_FILE"]
 
+        def redact_auth_token(argv):
+            redacted = []
+            for arg in argv:
+                if not arg.startswith("--wrap="):
+                    redacted.append(arg)
+                    continue
+
+                command = arg.removeprefix("--wrap=")
+                command_parts = shlex.split(command)
+                for index, value in enumerate(command_parts[:-1]):
+                    if value == "--auth-token":
+                        command_parts[index + 1] = "<redacted>"
+                redacted.append("--wrap=" + shlex.join(command_parts))
+            return redacted
+
         with open(record_file, "a", encoding="utf-8") as file:
-            file.write(json.dumps({"executable": "sbatch", "argv": sys.argv[1:]}) + "\\n")
+            file.write(
+                json.dumps(
+                    {
+                        "executable": "sbatch",
+                        "argv": redact_auth_token(sys.argv[1:]),
+                        "has_manager_environment": (
+                            "FURU_MANAGER_SERVER_URL" in os.environ
+                            or "FURU_MANAGER_AUTH_TOKEN" in os.environ
+                        ),
+                    }
+                )
+                + "\\n"
+            )
 
         with open(counter_file, encoding="utf-8") as file:
             job_id = int(file.read())
