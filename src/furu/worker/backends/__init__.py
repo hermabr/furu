@@ -8,6 +8,9 @@ class WorkerBackend(Protocol):
 
 
 class WorkerPool(Protocol):
+    @property
+    def health_check_interval(self) -> float: ...
+
     def is_healthy(self) -> bool: ...
 
     def join(self, *, timeout: float) -> None: ...

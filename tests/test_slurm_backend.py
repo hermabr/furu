@@ -70,7 +70,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
         ),
         chdir=work_dir,
         python_executable="/venv/bin/python",
-        poll_interval=0,
+        poll_interval=1.5,
     )
 
     with executor_context(executor_dir):
@@ -82,6 +82,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert pool.array_job_id == "100"
     assert pool.job_ids == ("100",)
     assert pool.n_workers == 2
+    assert pool.health_check_interval == 1.5
     assert log_dir.is_dir()
 
     records = _read_records(record_file)
@@ -162,9 +163,10 @@ def test_slurm_backend_requires_advertised_host() -> None:
     with pytest.raises(TypeError):
         SlurmWorkerBackend()  # ty: ignore[missing-argument]
 
-    assert SlurmWorkerBackend(advertised_host="manager.cluster").advertised_host == (
-        "manager.cluster"
-    )
+    backend = SlurmWorkerBackend(advertised_host="manager.cluster")
+
+    assert backend.advertised_host == "manager.cluster"
+    assert backend.poll_interval == 10.0
 
 
 def _install_fake_slurm(

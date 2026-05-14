@@ -63,7 +63,7 @@ class SlurmWorkerBackend:
     chdir: Path | str | None = None
     python_executable: str = sys.executable
     job_name: str = "furu-worker"
-    poll_interval: float = 1.0
+    poll_interval: float = 10.0
 
     def start_pool(self, *, server_url: str, auth_token: str) -> SlurmWorkerPool:
         if self.n_workers < 1:
@@ -139,7 +139,7 @@ class SlurmWorkerPool:
         *,
         array_job_id: str,
         n_workers: int,
-        poll_interval: float = 1.0,
+        poll_interval: float = 10.0,
     ) -> None:
         if n_workers < 1:
             raise ValueError("SlurmWorkerPool requires at least one worker")
@@ -150,6 +150,10 @@ class SlurmWorkerPool:
     @property
     def job_ids(self) -> tuple[str, ...]:
         return (self.array_job_id,)
+
+    @property
+    def health_check_interval(self) -> float:
+        return self._poll_interval
 
     def is_healthy(self) -> bool:
         try:

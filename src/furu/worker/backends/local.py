@@ -17,6 +17,8 @@ class LocalThreadWorkerBackend:
 
 
 class LocalThreadWorkerPool:
+    health_check_interval = 0.1
+
     def __init__(self, *, server_url: str, auth_token: str, n_workers: int) -> None:
         from furu.worker.loop import worker_loop
 

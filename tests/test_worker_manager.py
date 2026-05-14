@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any, cast
 from uuid import UUID
 
 import httpx
@@ -13,7 +14,7 @@ from furu.execution import api
 from furu.execution.api import create_manager_api_app
 from furu.execution.manager import FailedJob, Manager, RunningJob
 from furu.execution.runtime import current_executor_dir, executor_id_from_objs
-from furu.execution.server import manager_server
+from furu.execution.server import _run_until_done, manager_server
 from furu.metadata import ArtifactSpec
 from furu.worker.backends.local import LocalThreadWorkerPool
 from furu.worker.loop import worker_loop
@@ -286,6 +287,53 @@ def test_manager_run_sets_executor_context_for_worker_backend() -> None:
     manager.run(worker_backend=backend)
 
     assert backend.executor_dirs == [manager.executor_dir.resolve()]
+
+
+def test_manager_run_waits_using_worker_pool_health_check_interval() -> None:
+    class RecordingDone:
+        def __init__(self) -> None:
+            self.timeouts: list[float | None] = []
+
+        def wait(self, timeout: float | None = None) -> bool:
+            self.timeouts.append(timeout)
+            return True
+
+    class RecordingPool:
+        health_check_interval = 2.5
+
+        def __init__(self) -> None:
+            self.health_checks = 0
+            self.join_timeouts: list[float] = []
+
+        def is_healthy(self) -> bool:
+            self.health_checks += 1
+            return True
+
+        def join(self, *, timeout: float) -> None:
+            self.join_timeouts.append(timeout)
+
+    class RecordingBackend:
+        def __init__(self, pool: RecordingPool) -> None:
+            self.pool = pool
+
+        def start_pool(self, *, server_url: str, auth_token: str) -> RecordingPool:
+            return self.pool
+
+    manager = Manager([ManagerLeaf(value=13)])
+    done = RecordingDone()
+    pool = RecordingPool()
+    cast(Any, manager).done = done
+
+    _run_until_done(
+        manager,
+        worker_backend=RecordingBackend(pool),
+        host="127.0.0.1",
+        port=0,
+    )
+
+    assert done.timeouts == [2.5]
+    assert pool.health_checks == 0
+    assert pool.join_timeouts == [5]
 
 
 def test_manager_server_exposes_bound_host_and_port() -> None:

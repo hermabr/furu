@@ -98,8 +98,9 @@ def _run_until_done(
             server_url=server.server_url,
             auth_token=server.auth_token,
         )
+        health_check_interval = worker_pool.health_check_interval
 
-        while not manager.done.wait(timeout=0.1):
+        while not manager.done.wait(timeout=health_check_interval):
             if not worker_pool.is_healthy():
                 manager.fail(
                     "worker backend became unhealthy before manager run completed"
