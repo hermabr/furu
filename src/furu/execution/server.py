@@ -12,7 +12,11 @@ import uvicorn
 
 from furu.execution.api import create_manager_api_app
 from furu.execution.manager import Manager
+from furu.logging import get_logger
 from furu.worker.backends import WorkerBackend
+
+
+logger = get_logger()
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,17 +89,32 @@ def _run_until_done(
     host: str,
     port: int,
 ) -> None:
-    with manager_server(manager, bind_host=host, port=port) as server:
-        worker_pool = worker_backend.start_pool(
-            server_url=server.server_url,
-            auth_token=server.auth_token,
-            executor_dir=manager.executor_dir,
+    with manager.log_context():
+        logger.info(
+            "starting furu manager: executor_id=%s executor_dir=%s ready=%d blocked=%d",
+            manager.executor_id,
+            manager.executor_dir,
+            len(manager.ready),
+            len(manager.blocked),
         )
-        while not manager.done.wait(timeout=worker_pool.health_check_interval):
-            if not worker_pool.is_healthy():
-                manager.fail(
-                    "worker backend became unhealthy before manager run completed"
-                )
-                break
-        worker_pool.join(timeout=5)
+        with manager_server(manager, bind_host=host, port=port) as server:
+            logger.info("manager server listening: server_url=%s", server.server_url)
+            worker_pool = worker_backend.start_pool(
+                server_url=server.server_url,
+                auth_token=server.auth_token,
+                executor_dir=manager.executor_dir,
+            )
+            logger.info(
+                "worker pool started: backend=%s health_check_interval=%s",
+                type(worker_backend).__name__,
+                worker_pool.health_check_interval,
+            )
+            while not manager.done.wait(timeout=worker_pool.health_check_interval):
+                if not worker_pool.is_healthy():
+                    manager.fail(
+                        "worker backend became unhealthy before manager run completed"
+                    )
+                    break
+            worker_pool.join(timeout=5)
+            logger.debug("worker pool joined")
     manager.raise_for_failure()
