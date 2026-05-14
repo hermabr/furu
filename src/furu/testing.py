@@ -44,7 +44,8 @@ def pytest_configure(config: pytest.Config) -> None:
     state = _FuruPytestState(
         original_directories=furu_config.directories,
         run_directories=_FuruDirectories(
-            data=run_base_directory,
+            data=run_base_directory / "data",
+            executions=run_base_directory / "executions",
         ),
     )
 
@@ -70,6 +71,7 @@ def pytest_unconfigure(config: pytest.Config) -> None:
             shutil.rmtree(path, ignore_errors=True)
     else:
         print(f"kept furu data at {state.run_directories.data}")
+        print(f"kept furu executions at {state.run_directories.executions}")
 
 
 @pytest.fixture(autouse=True)
@@ -84,12 +86,14 @@ def _furu_per_test_base_directory(
     state = pytestconfig.stash[_STATE_KEY]
     previous_base_directory = furu_config.directories
 
-    test_base_directory = (
-        state.run_directories.data
-        / hashlib.sha1(request.node.nodeid.encode("utf-8")).hexdigest()[:12]
-    )
+    test_id = hashlib.sha1(request.node.nodeid.encode("utf-8")).hexdigest()[:12]
+    test_data_directory = state.run_directories.data / test_id
+    test_executions_directory = state.run_directories.executions / test_id
 
-    furu_config.directories = _FuruDirectories(data=test_base_directory)
+    furu_config.directories = _FuruDirectories(
+        data=test_data_directory,
+        executions=test_executions_directory,
+    )
     try:
         yield
     finally:

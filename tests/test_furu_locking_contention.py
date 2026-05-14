@@ -59,7 +59,7 @@ class MidRunTakeoverProbe(Furu[int]):
 
 
 def _worker(data_dir: str, start_evt, out_q) -> None:
-    config.directories = _FuruDirectories(data=Path(data_dir))
+    config.directories = _directories_for_data(data_dir)
     obj = SlowProbe(key=1)
     out_q.put(("ready", os.getpid()))
     start_evt.wait()
@@ -71,7 +71,7 @@ def _worker(data_dir: str, start_evt, out_q) -> None:
 
 
 def _batch_worker(data_dir: str, keys: list[int], start_evt, out_q) -> None:
-    config.directories = _FuruDirectories(data=Path(data_dir))
+    config.directories = _directories_for_data(data_dir)
     objs = [SlowBatchProbe(key=key) for key in keys]
     out_q.put(("ready", os.getpid()))
     start_evt.wait()
@@ -88,7 +88,7 @@ def _takeover_worker(
     release_path: str,
     out_q,
 ) -> None:
-    config.directories = _FuruDirectories(data=Path(data_dir))
+    config.directories = _directories_for_data(data_dir)
     obj = MidRunTakeoverProbe(
         key=1,
         entered_path=entered_path,
@@ -99,6 +99,11 @@ def _takeover_worker(
         out_q.put(("ok", os.getpid(), value))
     except BaseException as exc:
         out_q.put(("err", os.getpid(), type(exc).__name__, str(exc)))
+
+
+def _directories_for_data(data_dir: str) -> _FuruDirectories:
+    data_path = Path(data_dir)
+    return _FuruDirectories(data=data_path, executions=data_path.parent / "executions")
 
 
 def _steal_lock(lock_path: str, out_q) -> None:

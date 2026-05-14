@@ -8,7 +8,6 @@ from pathlib import Path
 
 from pydantic import JsonValue
 
-
 type JsonFields = dict[str, JsonValue]
 
 
@@ -59,3 +58,10 @@ def nfs_safe_unique_name(path: Path, *, name: str | None = None) -> Path:
     if name is not None:
         stem = f"{stem}.{name}"
     return path.with_name(stem)
+
+
+def write_private_file(path: Path, contents: str, *, mode: int) -> None:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    with os.fdopen(fd, "w", encoding="utf-8") as file:
+        file.write(contents)
+    path.chmod(mode)

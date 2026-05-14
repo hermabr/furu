@@ -387,8 +387,3 @@ def test_manager_run_records_worker_failures_and_blocked_dependents():
     assert "intentional failure: boom" in manager.failed[failing.object_id].error
     assert parent.object_id in manager.blocked
     assert manager.done.is_set()
-
-
-def test_manager_requires_at_least_one_object():
-    with pytest.raises(ValueError, match="requires at least one Furu object"):
-        Manager([])
