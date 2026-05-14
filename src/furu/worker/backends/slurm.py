@@ -4,7 +4,7 @@ import shlex
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -57,8 +57,8 @@ class SlurmResources:
 @dataclass(frozen=True, slots=True)
 class SlurmWorkerBackend:
     advertised_host: str
-    n_workers: int = 1
-    resources: SlurmResources = field(default_factory=SlurmResources)
+    n_workers: int
+    resources: SlurmResources
     log_dir: Path | str | None = None
     chdir: Path | str | None = None
     python_executable: str = sys.executable
@@ -139,7 +139,7 @@ class SlurmWorkerPool:
         *,
         array_job_id: str,
         n_workers: int,
-        poll_interval: float = 10.0,
+        poll_interval: float,
     ) -> None:
         if n_workers < 1:
             raise ValueError("SlurmWorkerPool requires at least one worker")
