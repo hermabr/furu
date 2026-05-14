@@ -14,6 +14,7 @@ class _FuruDirectories(BaseSettings):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     data: Path
+    executions: Path
     # TODO: make this better and more user configurable, so that it is easy for the user to define exactly which paths they want to save to and which furu objects should save where
 
     @classmethod
@@ -21,7 +22,8 @@ class _FuruDirectories(BaseSettings):
         # TODO: make sure this location is deterministic/more predictable, such as by finding the next .git or pyproject.toml or furu directory
         base_dir = Path("furu")
         data_dir = base_dir / "data"
-        return cls(data=data_dir)
+        executions_dir = base_dir / "executions"
+        return cls(data=data_dir, executions=executions_dir)
 
 
 class _FuruConfig(BaseSettings):

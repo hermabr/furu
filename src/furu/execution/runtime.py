@@ -28,7 +28,7 @@ def executor_id_from_objs(objs: Sequence[Furu]) -> str:
 
 
 def executor_dir_for_id(executor_id: str) -> Path:
-    return config.directories.data.parent / "executions" / executor_id
+    return config.directories.executions / executor_id
 
 
 def current_executor_dir() -> Path | None:

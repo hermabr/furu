@@ -67,9 +67,7 @@ def test_manager_executor_id_is_stable_hash_of_root_object_tuple() -> None:
     assert manager.executor_id == executor_id_from_objs([left, right])
     assert Manager([left, right]).executor_id == manager.executor_id
     assert Manager([right, left]).executor_id != manager.executor_id
-    assert manager.executor_dir == (
-        config.directories.data.parent / "executions" / manager.executor_id
-    )
+    assert manager.executor_dir == config.directories.executions / manager.executor_id
 
 
 def test_manager_job_result_completed_moves_dependents_to_ready() -> None:
