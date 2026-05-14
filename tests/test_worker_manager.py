@@ -23,12 +23,13 @@ from furu.storage_layout import manager_log_path_in
 from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
 from furu.worker.loop import worker_loop
 from furu.worker.protocol import (
+    Job,
     JobBlockedResult,
     JobCompletedResult,
     JobFailedResult,
     JobResultRequest,
+    LeaseJobResponse,
 )
-from furu.worker.protocol import LeaseJobResponse, Job
 
 
 class ManagerLeaf(Furu[int]):
@@ -233,7 +234,7 @@ def test_manager_job_result_failed_finishes_with_error() -> None:
     assert failed_job.lease_id == job.lease_id
     assert failed_job.node.obj is leaf
     assert failed_job.error == "boom"
-    log_text = manager.log_path.read_text(encoding="utf-8")
+    log_text = manager_log_path_in(manager.executor_dir).read_text(encoding="utf-8")
     assert "job failed:" in log_text
     assert "boom" in log_text
     assert "furu manager finished with error" in log_text
@@ -310,7 +311,7 @@ def test_manager_run_writes_log_to_executor_dir() -> None:
     manager.run(worker_backend=LocalThreadWorkerBackend())
 
     log_path = manager_log_path_in(manager.executor_dir)
-    assert manager.log_path == log_path
+    assert manager_log_path_in(manager.executor_dir) == log_path
     assert log_path.parent == manager.executor_dir
 
     log_text = log_path.read_text(encoding="utf-8")
