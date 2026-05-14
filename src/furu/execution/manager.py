@@ -14,12 +14,12 @@ from furu.dag import DagNode, _add_to_dag, _update_dag_blocking_dependencies
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
 from furu.worker.protocol import (
-    LeaseJobResponse,
     Job,
     JobBlockedResult,
     JobCompletedResult,
     JobFailedResult,
     JobResultRequest,
+    LeaseJobResponse,
 )
 
 if TYPE_CHECKING:
@@ -39,19 +39,8 @@ class FailedJob:
     error: str
 
 
-def _executor_id_from_objs(objs: Sequence[Furu]) -> str:
-    digest = hashlib.blake2s(digest_size=16)
-    for obj in objs:
-        digest.update(obj.object_id.encode("utf-8"))
-        digest.update(b"\0")
-    return digest.hexdigest()
-
-
 class Manager:
     def __init__(self, objs: Sequence[Furu]) -> None:
-        if not objs:
-            raise ValueError("Manager requires at least one Furu object")
-
         self.nodes_by_id: dict[str, DagNode] = {}
         self.ready: dict[str, DagNode] = {}
         self.blocked: dict[str, DagNode] = {}
@@ -63,7 +52,12 @@ class Manager:
         self._finish_error: str | None = None
 
         _add_to_dag(self, objs)
-        self.executor_id = _executor_id_from_objs(objs)
+
+        digest = hashlib.blake2s(digest_size=16)
+        for obj in objs:
+            digest.update(obj.object_id.encode("utf-8"))
+            digest.update(b"\0")
+        self.executor_id = digest.hexdigest()
 
     @property
     def executor_dir(self) -> Path:
