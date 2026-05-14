@@ -6,7 +6,6 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,7 +53,6 @@ class SlurmResources:
 
 @dataclass(frozen=True, slots=True)
 class SlurmWorkerBackend:
-    advertised_host: str
     n_workers: int
     resources: SlurmResources
     job_name: str = "furu-worker"
@@ -67,20 +65,13 @@ class SlurmWorkerBackend:
         auth_token: str,
         executor_dir: Path,
     ) -> SlurmWorkerPool:
-        if self.n_workers < 1:
-            raise ValueError("SlurmWorkerBackend requires at least one worker")
-
         chdir = Path.cwd().resolve()
         log_dir = executor_dir.resolve() / "workers" / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
-        worker_server_url = _with_advertised_host(
-            server_url,
-            advertised_host=self.advertised_host,
-        )
 
         result = subprocess.run(
             self._sbatch_command(
-                server_url=worker_server_url,
+                server_url=server_url,
                 auth_token=auth_token,
                 chdir=chdir,
                 log_dir=log_dir,
@@ -229,29 +220,3 @@ def _parse_squeue_array_task(line: str) -> tuple[str, int]:
         raise ValueError(f"squeue returned an invalid array task row: {line!r}")
     job_id, task_id = parts
     return _parse_squeue_job_id(job_id), int(task_id)
-
-
-def _with_advertised_host(server_url: str, *, advertised_host: str) -> str:
-    parsed = urlsplit(server_url)
-    hostname = parsed.hostname
-    if hostname is None:
-        raise ValueError(f"Slurm manager server URL must include a host: {server_url}")
-
-    return urlunsplit(
-        (
-            parsed.scheme,
-            _format_netloc(advertised_host, port=parsed.port),
-            parsed.path,
-            parsed.query,
-            parsed.fragment,
-        )
-    )
-
-
-def _format_netloc(host: str, *, port: int | None) -> str:
-    netloc = host
-    if ":" in host and not host.startswith("["):
-        netloc = f"[{host}]"
-    if port is None:
-        return netloc
-    return f"{netloc}:{port}"

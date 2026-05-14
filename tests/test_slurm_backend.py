@@ -60,7 +60,6 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     monkeypatch.chdir(work_dir)
 
     backend = SlurmWorkerBackend(
-        advertised_host="manager.cluster",
         n_workers=2,
         resources=SlurmResources(
             partition="debug",
@@ -72,7 +71,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     )
 
     pool = backend.start_pool(
-        server_url="http://127.0.0.1:1234",
+        server_url="http://manager.cluster:1234",
         auth_token="secret-token",
         executor_dir=executor_dir,
     )
@@ -114,7 +113,6 @@ def test_slurm_worker_pool_health_tracks_squeue_jobs(
 ) -> None:
     _record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
     backend = SlurmWorkerBackend(
-        advertised_host="127.0.0.1",
         n_workers=2,
         resources=SlurmResources(),
         poll_interval=0,
@@ -134,7 +132,6 @@ def test_slurm_worker_pool_health_tracks_squeue_jobs(
 
 def test_slurm_backend_requires_explicit_executor_dir() -> None:
     backend = SlurmWorkerBackend(
-        advertised_host="manager.cluster",
         n_workers=1,
         resources=SlurmResources(),
     )
@@ -161,17 +158,15 @@ def test_slurm_worker_pool_join_cancels_jobs_left_after_timeout(
     assert records[-1] == {"executable": "scancel", "argv": ["100"]}
 
 
-def test_slurm_backend_requires_advertised_host() -> None:
+def test_slurm_backend_uses_default_poll_interval() -> None:
     with pytest.raises(TypeError):
         SlurmWorkerBackend()  # ty: ignore[missing-argument]
 
     backend = SlurmWorkerBackend(
-        advertised_host="manager.cluster",
         n_workers=1,
         resources=SlurmResources(),
     )
 
-    assert backend.advertised_host == "manager.cluster"
     assert backend.poll_interval == 10.0
 
 
