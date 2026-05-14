@@ -7,11 +7,7 @@ from pathlib import Path
 
 from furu import Furu, load_or_create
 from furu.config import _FuruDirectories, config
-from furu.locking import (
-    DEFAULT_ACQUIRE_POLL_INTERVAL_S,
-    LockAcquireError,
-    LockLostError,
-)
+from furu.locking import DEFAULT_ACQUIRE_POLL_INTERVAL_S
 from furu.result import load_result_bundle
 
 TEST_TIMING_SCALE = 4.0 if os.environ.get("GITHUB_ACTIONS") == "true" else 1.0
@@ -70,7 +66,7 @@ def _worker(data_dir: str, start_evt, out_q) -> None:
     try:
         value = obj.load_or_create()
         out_q.put(("ok", os.getpid(), value))
-    except LockAcquireError as exc:
+    except RuntimeError as exc:
         out_q.put(("err", os.getpid(), type(exc).__name__))
 
 
@@ -238,7 +234,7 @@ def test_lock_is_taken_over_mid_create(tmp_path):
     proc.join(timeout=PROCESS_TIMEOUT_S)
     assert proc.exitcode == 0
     assert result[0] == "err"
-    assert result[2] == LockLostError.__name__
+    assert result[2] == RuntimeError.__name__
     assert result[3].endswith("before writing final result")
     assert list(data_dir.glob("**/result/manifest.json")) == []
     assert list(data_dir.glob("**/result.pkl")) == []

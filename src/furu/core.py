@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 from furu.config import config
-from furu.locking import LockLostError, lock_many
+from furu.locking import lock_many
 from furu.logging import get_logger
 from furu.result import load_result_bundle
 from furu.result.codec import ResultRegistry, _default_result_registry
@@ -160,7 +160,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
                 tombstone_path = nfs_safe_unique_name(self.data_dir, name="deleting")
                 self.data_dir.rename(tombstone_path)
-        except LockLostError:
+        except RuntimeError:
             if tombstone_path is None:
                 raise
 

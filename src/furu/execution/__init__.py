@@ -17,7 +17,7 @@ from typing import (
 
 from furu.core import Furu, FuruCreateMode
 from furu.dependencies import dependency_recorder, record_dependency_call
-from furu.locking import LockLostError, lock_many
+from furu.locking import lock_many
 from furu.logging import _scoped_log_files
 from furu.metadata import RunningMetadata
 from furu.migration import result_dir_for_loading
@@ -118,7 +118,7 @@ def _store_result[T](
     lock_path = compute_lock_path_in(obj.data_dir)
     result_dir = result_dir_in(obj.data_dir)
     if not has_lock():
-        raise LockLostError(f"lost lock at {lock_path} before writing final result")
+        raise RuntimeError(f"lost lock at {lock_path} before writing final result")
 
     tmp_result_dir = nfs_safe_unique_name(result_dir, name="tmp")
 
@@ -147,7 +147,7 @@ def _store_result[T](
     )
 
     if not has_lock():
-        raise LockLostError(f"lost lock at {lock_path} after writing temporary result")
+        raise RuntimeError(f"lost lock at {lock_path} after writing temporary result")
 
     tmp_result_dir.rename(result_dir)
 

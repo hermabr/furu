@@ -20,14 +20,6 @@ DEFAULT_ACQUIRE_POLL_INTERVAL_S = 0.05
 HEARTBEAT_SHUTDOWN_GRACE_S = 0.01
 
 
-class LockAcquireError(RuntimeError):
-    pass
-
-
-class LockLostError(RuntimeError):
-    pass
-
-
 class LockManifest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -139,7 +131,7 @@ def assert_same_filesystem(lock_paths: Iterable[Path]) -> None:
     first_device = first_path.parent.stat().st_dev
     for lock_path in iterator:
         if lock_path.parent.stat().st_dev != first_device:
-            raise LockAcquireError(
+            raise RuntimeError(
                 "hardlink-based locking requires every lock path to be on the same filesystem device"
             )
 
@@ -153,12 +145,12 @@ def read_manifest(path: Path) -> LockManifest | None:
     try:
         manifest = LockManifest.model_validate_json(raw)
     except ValidationError as exc:
-        raise LockAcquireError(
+        raise RuntimeError(
             f"cannot safely break stale lock at {path}: malformed lock manifest"
         ) from exc
 
     if contested_path not in manifest.lock_paths:
-        raise LockAcquireError(
+        raise RuntimeError(
             f"cannot safely break stale lock at {path}: manifest does not include contested lock path"
         )
     return manifest
@@ -182,7 +174,7 @@ def try_link(*, lock_path: Path, claim_path: Path) -> bool:
         return False
     except OSError as exc:
         if exc.errno == errno.EXDEV:
-            raise LockAcquireError(
+            raise RuntimeError(
                 f"hardlink-based locking cannot link {claim_path} to {lock_path}"
             ) from exc
         if _is_missing_or_stale(exc):
@@ -300,7 +292,7 @@ def break_stale(lock_path: Path, *, lifetime_s: float) -> bool:
         claim_stat = stat_or_none(manifest.claim_path)
         reference_stat = claim_stat or current_lock_stat
         if claim_stat is not None and not _same_inode(current_lock_stat, claim_stat):
-            raise LockAcquireError(
+            raise RuntimeError(
                 f"lock {lock_path} changed owners while breaking a stale lock"
             )
 
@@ -402,9 +394,7 @@ def lock_many(
 
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise LockAcquireError(
-                    _lock_timeout_message(lock_paths, acquire_timeout_s)
-                )
+                raise RuntimeError(_lock_timeout_message(lock_paths, acquire_timeout_s))
             time.sleep(min(acquire_poll_interval_s, remaining))
 
         touch_future(claim_path, lifetime_s=lifetime_s)
@@ -442,7 +432,7 @@ def lock_many(
                 owner_stat=owner_stat,
             )
             if lost_lock and body_error is None:
-                raise LockLostError(_lock_lost_message(lock_paths))
+                raise RuntimeError(_lock_lost_message(lock_paths))
     finally:
         unlink_if_exists(claim_path)
 
