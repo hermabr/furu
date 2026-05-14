@@ -7,6 +7,7 @@ import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 from pydantic import TypeAdapter
 
+from furu.config import _FuruConfig, get_config, use_config
 from furu.execution.manager import Manager
 from furu.worker.protocol import (
     LeaseJobResponse,
@@ -59,7 +60,14 @@ class ManagerApiClient:
             ) from exc
 
 
-def create_manager_api_app(manager: Manager, *, auth_token: str) -> FastAPI:
+def create_manager_api_app(
+    manager: Manager,
+    *,
+    auth_token: str,
+    config: _FuruConfig | None = None,
+) -> FastAPI:
+    active_config = get_config() if config is None else config
+
     def require_auth(authorization: str = Header(default="")) -> None:
         scheme, _, token = authorization.partition(" ")
         if scheme.lower() != "bearer" or not compare_digest(token, auth_token):
@@ -77,7 +85,8 @@ def create_manager_api_app(manager: Manager, *, auth_token: str) -> FastAPI:
         dependencies=[auth_dependency],
     )
     def lease_job() -> LeaseJobResponse:
-        return manager.lease_job()
+        with use_config(active_config):
+            return manager.lease_job()
 
     @app.post(
         "/job_result/{lease_id}",
@@ -85,7 +94,8 @@ def create_manager_api_app(manager: Manager, *, auth_token: str) -> FastAPI:
         dependencies=[auth_dependency],
     )
     def job_result(lease_id: str, request: JobResultRequest) -> OkResponse:
-        manager.job_result(lease_id, request)
+        with use_config(active_config):
+            manager.job_result(lease_id, request)
         return OkResponse()
 
     return app

@@ -4,20 +4,24 @@ import secrets
 import shutil
 import tempfile
 from collections.abc import Iterator
+from contextvars import Token
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 import pytest
 
+from furu.config import _FuruConfig
 from furu.config import _FuruDirectories
-from furu.config import config as furu_config
+from furu.config import replace_config
+from furu.config import reset_config
+from furu.config import set_config
 
 
 @dataclass(slots=True)
-class _FuruPytestState:  # TODO: maybe make this auto snapshot the config
-    original_directories: _FuruDirectories
-    run_directories: _FuruDirectories
+class _FuruPytestState:
+    run_config: _FuruConfig
+    session_token: Token[_FuruConfig]
 
 
 _STATE_KEY = pytest.StashKey[_FuruPytestState]()
@@ -41,14 +45,14 @@ def pytest_configure(config: pytest.Config) -> None:
     )
     # run_base_directory.mkdir(parents=True, exist_ok=True)
 
-    state = _FuruPytestState(
-        original_directories=furu_config.directories,
-        run_directories=_FuruDirectories(
+    run_config = replace_config(
+        directories=_FuruDirectories(
             data=run_base_directory,
-        ),
+        )
     )
+    session_token = set_config(run_config)
 
-    furu_config.directories = state.run_directories
+    state = _FuruPytestState(run_config=run_config, session_token=session_token)
     config.stash[_STATE_KEY] = state
 
 
@@ -58,18 +62,18 @@ def pytest_unconfigure(config: pytest.Config) -> None:
 
     state = config.stash[_STATE_KEY]
 
-    furu_config.directories = state.original_directories
+    reset_config(state.session_token)
 
     if not _keep_furu_data():
-        for field_name in type(state.run_directories).model_fields:
-            path = getattr(state.run_directories, field_name)
+        for field_name in type(state.run_config.directories).model_fields:
+            path = getattr(state.run_config.directories, field_name)
             if not isinstance(path, Path):
                 raise TypeError(
                     f"Expected Path for run directory '{field_name}', got {type(path).__name__}"
                 )
             shutil.rmtree(path, ignore_errors=True)
     else:
-        print(f"kept furu data at {state.run_directories.data}")
+        print(f"kept furu data at {state.run_config.directories.data}")
 
 
 @pytest.fixture(autouse=True)
@@ -82,15 +86,18 @@ def _furu_per_test_base_directory(
         return
 
     state = pytestconfig.stash[_STATE_KEY]
-    previous_base_directory = furu_config.directories
 
     test_base_directory = (
-        state.run_directories.data
+        state.run_config.directories.data
         / hashlib.sha1(request.node.nodeid.encode("utf-8")).hexdigest()[:12]
     )
 
-    furu_config.directories = _FuruDirectories(data=test_base_directory)
+    token = set_config(
+        replace_config(
+            directories=_FuruDirectories(data=test_base_directory),
+        )
+    )
     try:
         yield
     finally:
-        furu_config.directories = previous_base_directory
+        reset_config(token)
