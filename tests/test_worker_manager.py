@@ -246,6 +246,34 @@ def test_manager_run_uses_worker_backend() -> None:
     assert backend.auth_tokens[0]
 
 
+def test_manager_run_passes_advertised_host_to_worker_backend() -> None:
+    class RecordingBackend:
+        def __init__(self) -> None:
+            self.server_urls: list[str] = []
+
+        def start_pool(
+            self,
+            *,
+            server_url: str,
+            auth_token: str,
+        ) -> LocalThreadWorkerPool:
+            self.server_urls.append(server_url)
+            return LocalThreadWorkerPool(
+                server_url=server_url.replace("manager.test", "127.0.0.1"),
+                auth_token=auth_token,
+                n_workers=1,
+            )
+
+    leaf = ManagerLeaf(value=12)
+    backend = RecordingBackend()
+
+    Manager([leaf]).run(worker_backend=backend, advertised_host="manager.test")
+
+    assert leaf.status() == "completed"
+    assert len(backend.server_urls) == 1
+    assert backend.server_urls[0].startswith("http://manager.test:")
+
+
 def test_manager_server_exposes_bound_host_and_port() -> None:
     manager = Manager([ManagerLeaf(value=12)])
 
@@ -253,6 +281,18 @@ def test_manager_server_exposes_bound_host_and_port() -> None:
         assert server.bound_host == "127.0.0.1"
         assert server.bound_port > 0
         assert server.auth_token
+
+
+def test_manager_server_uses_advertised_host_in_server_url() -> None:
+    manager = Manager([ManagerLeaf(value=12)])
+
+    with manager_server(
+        manager,
+        bind_host="127.0.0.1",
+        port=0,
+        advertised_host="manager.test",
+    ) as server:
+        assert server.server_url == f"http://manager.test:{server.bound_port}"
 
 
 def test_manager_server_rejects_requests_without_auth_token() -> None:

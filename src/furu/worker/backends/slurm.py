@@ -1,0 +1,244 @@
+from __future__ import annotations
+
+import ipaddress
+import shlex
+import subprocess
+import sys
+import time
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from pathlib import Path
+from urllib.parse import urlparse
+
+
+@dataclass(frozen=True, slots=True)
+class SlurmResources:
+    account: str | None = None
+    partition: str | None = None
+    qos: str | None = None
+    time_limit: str | None = None
+    nodes: int | None = None
+    ntasks: int | None = None
+    cpus_per_task: int | None = None
+    mem: str | None = None
+    mem_per_cpu: str | None = None
+    gres: str | None = None
+    constraint: str | None = None
+    extra_sbatch_args: tuple[str, ...] = ()
+
+    def to_sbatch_args(self) -> list[str]:
+        args: list[str] = []
+        _append_optional(args, "--account", self.account)
+        _append_optional(args, "--partition", self.partition)
+        _append_optional(args, "--qos", self.qos)
+        _append_optional(args, "--time", self.time_limit)
+        _append_optional(args, "--nodes", self.nodes)
+        _append_optional(args, "--ntasks", self.ntasks)
+        _append_optional(args, "--cpus-per-task", self.cpus_per_task)
+        _append_optional(args, "--mem", self.mem)
+        _append_optional(args, "--mem-per-cpu", self.mem_per_cpu)
+        _append_optional(args, "--gres", self.gres)
+        _append_optional(args, "--constraint", self.constraint)
+        args.extend(self.extra_sbatch_args)
+        return args
+
+
+@dataclass(frozen=True, slots=True)
+class SlurmWorkerBackend:
+    n_workers: int = 1
+    resources: SlurmResources = field(default_factory=SlurmResources)
+    log_dir: Path | str = "furu-slurm-logs"
+    chdir: Path | str | None = None
+    python_executable: str = sys.executable
+    job_name: str = "furu-worker"
+    sbatch: str = "sbatch"
+    squeue: str = "squeue"
+    scancel: str = "scancel"
+    poll_interval: float = 1.0
+    allow_local_server_url: bool = False
+
+    def start_pool(self, *, server_url: str, auth_token: str) -> SlurmWorkerPool:
+        if self.n_workers < 1:
+            raise ValueError("SlurmWorkerBackend requires at least one worker")
+        if not self.allow_local_server_url:
+            _raise_for_local_server_url(server_url)
+
+        base_dir = Path.cwd()
+        chdir = _resolve_path(self.chdir, base=base_dir)
+        log_dir = _resolve_path(self.log_dir, base=chdir)
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        job_ids: list[str] = []
+        for worker_index in range(self.n_workers):
+            result = subprocess.run(
+                self._sbatch_command(
+                    server_url=server_url,
+                    auth_token=auth_token,
+                    chdir=chdir,
+                    log_dir=log_dir,
+                    worker_index=worker_index,
+                ),
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            job_ids.append(_parse_sbatch_job_id(result.stdout))
+
+        return SlurmWorkerPool(
+            job_ids=job_ids,
+            squeue=self.squeue,
+            scancel=self.scancel,
+            poll_interval=self.poll_interval,
+        )
+
+    def _sbatch_command(
+        self,
+        *,
+        server_url: str,
+        auth_token: str,
+        chdir: Path,
+        log_dir: Path,
+        worker_index: int,
+    ) -> list[str]:
+        worker_command = shlex.join([self.python_executable, "-m", "furu.worker.cli"])
+        return [
+            self.sbatch,
+            "--parsable",
+            f"--chdir={chdir}",
+            f"--output={log_dir / f'furu-worker-{worker_index}-%j.out'}",
+            f"--error={log_dir / f'furu-worker-{worker_index}-%j.err'}",
+            f"--job-name={self.job_name}",
+            (
+                "--export=ALL,"
+                f"FURU_MANAGER_SERVER_URL={server_url},"
+                f"FURU_MANAGER_AUTH_TOKEN={auth_token}"
+            ),
+            *self.resources.to_sbatch_args(),
+            f"--wrap={worker_command}",
+        ]
+
+
+class SlurmWorkerPool:
+    def __init__(
+        self,
+        *,
+        job_ids: Sequence[str],
+        squeue: str = "squeue",
+        scancel: str = "scancel",
+        poll_interval: float = 1.0,
+    ) -> None:
+        self.job_ids = tuple(job_ids)
+        self._squeue = squeue
+        self._scancel = scancel
+        self._poll_interval = poll_interval
+
+    def is_healthy(self) -> bool:
+        try:
+            return self._active_job_ids() == set(self.job_ids)
+        except (OSError, subprocess.SubprocessError):
+            return False
+
+    def join(self, *, timeout: float) -> None:
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                active_job_ids = self._active_job_ids()
+            except (OSError, subprocess.SubprocessError):
+                self.cancel()
+                return
+
+            if not active_job_ids:
+                return
+            if time.monotonic() >= deadline:
+                self.cancel(job_ids=active_job_ids)
+                return
+
+            sleep_for = min(self._poll_interval, deadline - time.monotonic())
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+
+    def cancel(self, *, job_ids: set[str] | None = None) -> None:
+        jobs_to_cancel = set(self.job_ids) if job_ids is None else job_ids
+        if not jobs_to_cancel:
+            return
+        subprocess.run(
+            [self._scancel, *sorted(jobs_to_cancel)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    def _active_job_ids(self) -> set[str]:
+        if not self.job_ids:
+            return set()
+
+        result = subprocess.run(
+            [
+                self._squeue,
+                "--noheader",
+                "--jobs",
+                ",".join(self.job_ids),
+                "--format",
+                "%A",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return {
+            _parse_squeue_job_id(line)
+            for line in result.stdout.splitlines()
+            if line.strip()
+        }
+
+
+def _append_optional(args: list[str], flag: str, value: str | int | None) -> None:
+    if value is not None:
+        args.append(f"{flag}={value}")
+
+
+def _resolve_path(path: Path | str | None, *, base: Path) -> Path:
+    if path is None:
+        return base.resolve()
+    resolved = Path(path).expanduser()
+    if not resolved.is_absolute():
+        resolved = base / resolved
+    return resolved.resolve()
+
+
+def _parse_sbatch_job_id(stdout: str) -> str:
+    lines = stdout.strip().splitlines()
+    if not lines:
+        raise RuntimeError(f"sbatch returned an empty job id: {stdout!r}")
+    first_line = lines[0]
+    job_id = first_line.split(";", maxsplit=1)[0]
+    if not job_id:
+        raise RuntimeError(f"sbatch returned an empty job id: {stdout!r}")
+    return job_id
+
+
+def _parse_squeue_job_id(line: str) -> str:
+    return line.strip().split(maxsplit=1)[0]
+
+
+def _raise_for_local_server_url(server_url: str) -> None:
+    parsed = urlparse(server_url)
+    hostname = parsed.hostname
+    if hostname is None:
+        raise ValueError(f"Slurm manager server URL must include a host: {server_url}")
+    if _is_local_or_unspecified_host(hostname):
+        raise ValueError(
+            "Slurm workers require a manager URL that is reachable from compute "
+            "nodes; pass Manager.run(..., advertised_host='reachable-host') or set "
+            "allow_local_server_url=True if this URL is intentional"
+        )
+
+
+def _is_local_or_unspecified_host(hostname: str) -> bool:
+    if hostname == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_unspecified
