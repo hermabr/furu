@@ -39,7 +39,7 @@ class FailedJob:
     error: str
 
 
-def executor_id_from_objs(objs: Sequence[Furu]) -> str:
+def _executor_id_from_objs(objs: Sequence[Furu]) -> str:
     digest = hashlib.blake2s(digest_size=16)
     for obj in objs:
         digest.update(obj.object_id.encode("utf-8"))
@@ -63,7 +63,7 @@ class Manager:
         self._finish_error: str | None = None
 
         _add_to_dag(self, objs)
-        self.executor_id = executor_id_from_objs(objs)
+        self.executor_id = _executor_id_from_objs(objs)
 
     @property
     def executor_dir(self) -> Path:

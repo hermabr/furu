@@ -16,7 +16,6 @@ from furu.execution.manager import (
     FailedJob,
     Manager,
     RunningJob,
-    executor_id_from_objs,
 )
 from furu.execution.server import _run_until_done, manager_server
 from furu.metadata import ArtifactSpec
@@ -69,7 +68,8 @@ def test_manager_executor_id_is_stable_hash_of_root_object_tuple() -> None:
 
     manager = Manager([left, right])
 
-    assert manager.executor_id == executor_id_from_objs([left, right])
+    assert len(manager.executor_id) == 32
+    assert int(manager.executor_id, 16) >= 0
     assert Manager([left, right]).executor_id == manager.executor_id
     assert Manager([right, left]).executor_id != manager.executor_id
     assert manager.executor_dir == config.directories.executions / manager.executor_id
