@@ -118,14 +118,15 @@ def test_slurm_worker_pool_health_tracks_squeue_jobs(
     backend = SlurmWorkerBackend(
         advertised_host="127.0.0.1",
         n_workers=2,
-        log_dir=tmp_path / "logs",
+        resources=SlurmResources(),
         chdir=tmp_path,
         poll_interval=0,
     )
-    pool = backend.start_pool(
-        server_url="http://127.0.0.1:1234",
-        auth_token="secret-token",
-    )
+    with executor_context(tmp_path / "executor"):
+        pool = backend.start_pool(
+            server_url="http://127.0.0.1:1234",
+            auth_token="secret-token",
+        )
 
     assert pool.is_healthy()
 
@@ -134,10 +135,14 @@ def test_slurm_worker_pool_health_tracks_squeue_jobs(
     assert not pool.is_healthy()
 
 
-def test_slurm_backend_requires_log_dir_when_not_started_by_manager() -> None:
-    backend = SlurmWorkerBackend(advertised_host="manager.cluster")
+def test_slurm_backend_requires_executor_context_for_worker_logs() -> None:
+    backend = SlurmWorkerBackend(
+        advertised_host="manager.cluster",
+        n_workers=1,
+        resources=SlurmResources(),
+    )
 
-    with pytest.raises(RuntimeError, match="log_dir"):
+    with pytest.raises(RuntimeError, match="executor context"):
         backend.start_pool(
             server_url="http://127.0.0.1:1234",
             auth_token="secret-token",
@@ -163,7 +168,11 @@ def test_slurm_backend_requires_advertised_host() -> None:
     with pytest.raises(TypeError):
         SlurmWorkerBackend()  # ty: ignore[missing-argument]
 
-    backend = SlurmWorkerBackend(advertised_host="manager.cluster")
+    backend = SlurmWorkerBackend(
+        advertised_host="manager.cluster",
+        n_workers=1,
+        resources=SlurmResources(),
+    )
 
     assert backend.advertised_host == "manager.cluster"
     assert backend.poll_interval == 10.0

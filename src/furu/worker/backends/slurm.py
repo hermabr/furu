@@ -59,7 +59,6 @@ class SlurmWorkerBackend:
     advertised_host: str
     n_workers: int
     resources: SlurmResources
-    log_dir: Path | str | None = None
     chdir: Path | str | None = None
     python_executable: str = sys.executable
     job_name: str = "furu-worker"
@@ -71,11 +70,7 @@ class SlurmWorkerBackend:
 
         base_dir = Path.cwd()
         chdir = _resolve_path(self.chdir, base=base_dir)
-        log_dir = (
-            _resolve_path(self.log_dir, base=chdir)
-            if self.log_dir is not None
-            else _default_log_dir()
-        )
+        log_dir = _default_log_dir()
         log_dir.mkdir(parents=True, exist_ok=True)
         worker_server_url = _with_advertised_host(
             server_url,
@@ -225,7 +220,7 @@ def _default_log_dir() -> Path:
     executor_dir = current_executor_dir()
     if executor_dir is None:
         raise RuntimeError(
-            "SlurmWorkerBackend requires log_dir when it is not started by Manager.run"
+            "SlurmWorkerBackend requires an executor context for worker logs"
         )
     return executor_dir / "workers" / "logs"
 
