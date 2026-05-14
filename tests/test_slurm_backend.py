@@ -167,11 +167,11 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert all(token_file.exists() for token_file in token_files)
 
 
-def test_slurm_worker_pool_health_tracks_squeue_jobs(
+def test_slurm_worker_pool_health_tracks_sacct_jobs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
     backend = SlurmWorkerBackend(
         n_workers=2,
         resources=SlurmResources(),
@@ -185,9 +185,21 @@ def test_slurm_worker_pool_health_tracks_squeue_jobs(
 
     assert pool.is_healthy()
 
-    active_file.write_text("100_0\n")
+    active_file.write_text("100_0\n100_1 FAILED\n")
 
     assert not pool.is_healthy()
+    sacct_records = [
+        record
+        for record in _read_records(record_file)
+        if record["executable"] == "sacct"
+    ]
+    assert sacct_records[-1]["argv"] == [
+        "-o",
+        "JobID,State,NodeList",
+        "--parsable2",
+        "-j",
+        "100",
+    ]
 
 
 def test_slurm_backend_requires_explicit_executor_dir() -> None:
@@ -295,6 +307,37 @@ def _install_fake_slurm(
                 file.write(f"{job_id}_{task_id}\\n")
 
         print(f"{job_id};cluster")
+        """,
+    )
+    _write_executable(
+        bin_dir / "sacct",
+        """
+        import json
+        import os
+        import sys
+
+        record_file = os.environ["FURU_FAKE_SLURM_RECORD_FILE"]
+        active_file = os.environ["FURU_FAKE_SLURM_ACTIVE_FILE"]
+
+        with open(record_file, "a", encoding="utf-8") as file:
+            file.write(json.dumps({"executable": "sacct", "argv": sys.argv[1:]}) + "\\n")
+
+        requested_jobs = set()
+        for index, arg in enumerate(sys.argv[1:]):
+            if arg == "-j":
+                requested_jobs.update(sys.argv[index + 2].split(","))
+            elif arg.startswith("-j="):
+                requested_jobs.update(arg.removeprefix("-j=").split(","))
+
+        print("JobID|State|NodeList")
+        with open(active_file, encoding="utf-8") as file:
+            active_jobs = file.read().splitlines()
+
+        for active_job in sorted(active_jobs):
+            job_id, _, state = active_job.partition(" ")
+            if job_id.partition("_")[0] not in requested_jobs:
+                continue
+            print(f"{job_id}|{state or 'RUNNING'}|node-a")
         """,
     )
     _write_executable(
