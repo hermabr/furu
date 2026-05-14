@@ -407,8 +407,6 @@ def test_is_healthy_returns_true_while_jobs_remain_queued(
     fake_slurm.set_queued_jobs(["1000", "1001"])
     pool = SlurmWorkerPool(
         job_ids=("1000", "1001"),
-        squeue_executable="squeue",
-        scancel_executable="scancel",
         health_check_interval=0.0,
     )
     assert pool.is_healthy() is True
@@ -420,8 +418,6 @@ def test_is_healthy_returns_false_when_all_jobs_have_left_squeue(
     fake_slurm.set_queued_jobs([])
     pool = SlurmWorkerPool(
         job_ids=("1000",),
-        squeue_executable="squeue",
-        scancel_executable="scancel",
         health_check_interval=0.0,
     )
     assert pool.is_healthy() is False
@@ -431,8 +427,6 @@ def test_is_healthy_caches_within_interval(fake_slurm: FakeSlurm) -> None:
     fake_slurm.set_queued_jobs(["1000"])
     pool = SlurmWorkerPool(
         job_ids=("1000",),
-        squeue_executable="squeue",
-        scancel_executable="scancel",
         health_check_interval=60.0,
     )
     assert pool.is_healthy() is True
@@ -445,8 +439,6 @@ def test_join_cancels_remaining_jobs_after_timeout(fake_slurm: FakeSlurm) -> Non
     fake_slurm.set_queued_jobs(["1000", "1001"])
     pool = SlurmWorkerPool(
         job_ids=("1000", "1001"),
-        squeue_executable="squeue",
-        scancel_executable="scancel",
         health_check_interval=0.0,
     )
 
@@ -464,8 +456,6 @@ def test_join_does_not_cancel_when_jobs_already_finished(
     fake_slurm.set_queued_jobs([])
     pool = SlurmWorkerPool(
         job_ids=("1000",),
-        squeue_executable="squeue",
-        scancel_executable="scancel",
         health_check_interval=0.0,
     )
 

@@ -66,9 +66,6 @@ class SlurmWorkerBackend:
     chdir: Path = field(default_factory=Path.cwd)
     python_executable: str = field(default_factory=lambda: sys.executable)
     job_name_prefix: str = "furu-worker"
-    sbatch_executable: str = "sbatch"
-    squeue_executable: str = "squeue"
-    scancel_executable: str = "scancel"
     health_check_interval: float = 5.0
 
     def start_pool(self, *, server_url: str, auth_token: str) -> SlurmWorkerPool:
@@ -89,7 +86,7 @@ class SlurmWorkerBackend:
             stdout_path = log_dir / f"{job_name}-%j.out"
             stderr_path = log_dir / f"{job_name}-%j.err"
             sbatch_cmd = [
-                self.sbatch_executable,
+                "sbatch",
                 "--parsable",
                 "--chdir",
                 str(chdir),
@@ -124,8 +121,6 @@ class SlurmWorkerBackend:
 
         return SlurmWorkerPool(
             job_ids=tuple(job_ids),
-            squeue_executable=self.squeue_executable,
-            scancel_executable=self.scancel_executable,
             health_check_interval=self.health_check_interval,
         )
 
@@ -135,13 +130,9 @@ class SlurmWorkerPool:
         self,
         *,
         job_ids: tuple[str, ...],
-        squeue_executable: str,
-        scancel_executable: str,
         health_check_interval: float,
     ) -> None:
         self._job_ids = job_ids
-        self._squeue_executable = squeue_executable
-        self._scancel_executable = scancel_executable
         self._health_check_interval = health_check_interval
         self._lock = threading.Lock()
         self._last_check_at: float | None = None
@@ -154,7 +145,7 @@ class SlurmWorkerPool:
     def _query_active_jobs(self) -> frozenset[str]:
         result = subprocess.run(
             [
-                self._squeue_executable,
+                "squeue",
                 "--jobs",
                 ",".join(self._job_ids),
                 "--noheader",
@@ -190,7 +181,7 @@ class SlurmWorkerPool:
             active = self._query_active_jobs()
         if active:
             subprocess.run(
-                [self._scancel_executable, *sorted(active)],
+                ["scancel", *sorted(active)],
                 check=False,
                 capture_output=True,
                 text=True,
