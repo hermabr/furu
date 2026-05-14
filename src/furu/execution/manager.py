@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import hashlib
-import logging
 import threading
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, assert_never
@@ -26,6 +26,9 @@ from furu.worker.protocol import (
 
 if TYPE_CHECKING:
     from furu.worker.backends import WorkerBackend
+
+
+logger = get_logger()
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,21 +83,13 @@ class Manager:
 
         _run_until_done(self, worker_backend=worker_backend, host=host, port=port)
 
-    def _log(self, level: int, message: str, *args: object) -> None:
+    @contextmanager
+    def log_context(self) -> Iterator[None]:
         with _scoped_log_files((self.log_path,)):
-            get_logger("execution.manager").log(level, message, *args)
-
-    def log_debug(self, message: str, *args: object) -> None:
-        self._log(logging.DEBUG, message, *args)
-
-    def log_info(self, message: str, *args: object) -> None:
-        self._log(logging.INFO, message, *args)
-
-    def log_error(self, message: str, *args: object) -> None:
-        self._log(logging.ERROR, message, *args)
+            yield
 
     def lease_job(self) -> LeaseJobResponse:
-        with self.lock:
+        with self.log_context(), self.lock:
             self._maybe_finish_locked()
             if self.done.is_set():
                 return "stop"
@@ -107,7 +102,7 @@ class Manager:
             if lease_id in self.running:
                 raise RuntimeError(f"generated duplicate lease_id: {lease_id}")
             self.running[lease_id] = RunningJob(lease_id=lease_id, node=node)
-            self.log_debug(
+            logger.debug(
                 "leased job: lease_id=%s object_id=%s ready=%d running=%d blocked=%d completed=%d failed=%d",
                 lease_id,
                 node.obj.object_id,
@@ -123,7 +118,7 @@ class Manager:
             )
 
     def job_result(self, lease_id: str, request: JobResultRequest) -> None:
-        with self.lock:
+        with self.log_context(), self.lock:
             running_job = self.running.pop(lease_id)
             match request:
                 case JobCompletedResult():
@@ -135,7 +130,7 @@ class Manager:
                         dependent_id = dependent.obj.object_id
                         if not dependent.dependencies and dependent_id in self.blocked:
                             self.ready[dependent_id] = self.blocked.pop(dependent_id)
-                    self.log_debug(
+                    logger.debug(
                         "job completed: lease_id=%s object_id=%s ready=%d running=%d blocked=%d completed=%d failed=%d",
                         lease_id,
                         running_job.node.obj.object_id,
@@ -152,7 +147,7 @@ class Manager:
                         node=running_job.node,
                         error=error,
                     )
-                    self.log_debug(
+                    logger.debug(
                         "job failed: lease_id=%s object_id=%s error=%s",
                         lease_id,
                         running_job.node.obj.object_id,
@@ -162,7 +157,7 @@ class Manager:
                     _update_dag_blocking_dependencies(
                         self, running_job.node, dependencies
                     )
-                    self.log_debug(
+                    logger.debug(
                         "job blocked: lease_id=%s object_id=%s dependencies=%d ready=%d running=%d blocked=%d completed=%d failed=%d",
                         lease_id,
                         running_job.node.obj.object_id,
@@ -182,11 +177,11 @@ class Manager:
             raise RuntimeError(self._finish_error)
 
     def fail(self, message: str) -> None:
-        with self.lock:
+        with self.log_context(), self.lock:
             if self.done.is_set():
                 return
             self._finish_error = message
-            self.log_error("furu manager finished with error: %s", message)
+            logger.error("furu manager finished with error: %s", message)
             self.done.set()
 
     def _maybe_finish_locked(self) -> None:
@@ -209,7 +204,7 @@ class Manager:
                     f"(lease {failed_job.lease_id}): {failed_job.error}"
                 )
             self._finish_error = "manager run could not complete; " + "; ".join(parts)
-            self.log_error("furu manager finished with error: %s", self._finish_error)
+            logger.error("furu manager finished with error: %s", self._finish_error)
         else:
-            self.log_info("furu manager finished successfully")
+            logger.info("furu manager finished successfully")
         self.done.set()
