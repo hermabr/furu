@@ -155,13 +155,13 @@ class SlurmWorkerPool:
         return self._poll_interval
 
     def is_healthy(self) -> bool:
-        return self._active_task_ids() == set(range(self.n_workers))
+        return self._unfinished_task_ids() == set(range(self.n_workers))
 
     def join(self, *, timeout: float) -> None:
         deadline = time.monotonic() + timeout
-        while self._active_task_ids() and time.monotonic() < deadline:
+        while self._unfinished_task_ids() and time.monotonic() < deadline:
             time.sleep(min(self._poll_interval, deadline - time.monotonic()))
-        if self._active_task_ids():
+        if self._unfinished_task_ids():
             subprocess.run(
                 ["scancel", self.array_job_id],
                 check=False,
@@ -169,24 +169,42 @@ class SlurmWorkerPool:
                 text=True,
             )
 
-    def _active_task_ids(self) -> set[int]:
+    def _unfinished_task_ids(self) -> set[int]:
         result = subprocess.run(
             [
-                "squeue",
-                "--noheader",
-                "--array",
-                "--jobs",
+                "sacct",
+                "-o",
+                "JobID,State,NodeList",
+                "--parsable2",
+                "-j",
                 self.array_job_id,
-                "--format",
-                "%A %a",
             ],
             check=True,
             capture_output=True,
             text=True,
         )
-        active_task_ids: set[int] = set()
-        for line in result.stdout.splitlines():
-            job_id, task_id = line.strip().split()
-            if job_id == self.array_job_id:
-                active_task_ids.add(int(task_id))
-        return active_task_ids
+        unfinished_task_ids: set[int] = set()
+        for line in result.stdout.splitlines()[1:]:
+            job_id, state, _node_list = line.split("|")
+            if "." in job_id:
+                raise RuntimeError(
+                    f"Unexpected Slurm job step in sacct output: {job_id}"
+                )
+            array_job_id, separator, task_id = job_id.partition("_")
+            if array_job_id != self.array_job_id or not separator:
+                raise ValueError(f"unexpected Slurm job id: {job_id!r}")
+            if not task_id.isdecimal():
+                raise RuntimeError(
+                    f"Unexpected Slurm job step in sacct output: {line!r}"
+                )
+            if state.upper() in {
+                "COMPLETING",
+                "PENDING",
+                "PREEMPTED",
+                "READY",
+                "REQUEUED",
+                "RUNNING",
+                "UNKNOWN",
+            }:
+                unfinished_task_ids.add(int(task_id))
+        return unfinished_task_ids
