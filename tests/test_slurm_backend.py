@@ -18,8 +18,13 @@ from furu.worker.backends.slurm import (
 )
 
 
-def test_worker_cli_calls_worker_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_worker_cli_reads_auth_token_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls: list[tuple[str, str]] = []
+    token_file = tmp_path / "worker.token"
+    token_file.write_text("secret\n\n")
 
     def worker_loop(*, server_url: str, auth_token: str) -> None:
         calls.append((server_url, auth_token))
@@ -27,13 +32,22 @@ def test_worker_cli_calls_worker_loop(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli, "worker_loop", worker_loop)
 
     assert (
-        cli.main(["--server-url", "http://manager.test", "--auth-token", "secret"]) == 0
+        cli.main(
+            [
+                "--server-url",
+                "http://manager.test",
+                "--auth-token-file",
+                str(token_file),
+            ]
+        )
+        == 0
     )
 
     assert calls == [("http://manager.test", "secret")]
+    assert token_file.exists()
 
 
-def test_worker_cli_requires_connection_flags(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_worker_cli_requires_auth_token_file(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str, str]] = []
 
     def worker_loop(*, server_url: str, auth_token: str) -> None:
@@ -42,7 +56,36 @@ def test_worker_cli_requires_connection_flags(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(cli, "worker_loop", worker_loop)
 
     with pytest.raises(SystemExit) as exc_info:
-        cli.main([])
+        cli.main(["--server-url", "http://manager.test"])
+
+    assert exc_info.value.code == 2
+    assert calls == []
+
+
+def test_worker_cli_rejects_auth_token_argument(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+    token_file = tmp_path / "worker.token"
+    token_file.write_text("secret")
+
+    def worker_loop(*, server_url: str, auth_token: str) -> None:
+        calls.append((server_url, auth_token))
+
+    monkeypatch.setattr(cli, "worker_loop", worker_loop)
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main(
+            [
+                "--server-url",
+                "http://manager.test",
+                "--auth-token-file",
+                str(token_file),
+                "--auth-token",
+                "secret",
+            ]
+        )
 
     assert exc_info.value.code == 2
     assert calls == []
@@ -56,7 +99,8 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     work_dir = tmp_path / "work"
     work_dir.mkdir()
     executor_dir = tmp_path / "furu" / "executions" / "executor-1"
-    log_dir = executor_dir / "workers" / "logs"
+    worker_dir = executor_dir / "workers"
+    log_dir = worker_dir / "logs"
     monkeypatch.chdir(work_dir)
 
     backend = SlurmWorkerBackend(
@@ -77,7 +121,6 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     )
 
     assert pool.array_job_id == "100"
-    assert pool.job_ids == ("100",)
     assert pool.n_workers == 2
     assert pool.health_check_interval == 1.5
     assert log_dir.is_dir()
@@ -93,18 +136,37 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert f"--error={log_dir.resolve() / 'furu-worker-%A-%a.err'}" in argv
     assert "--job-name=furu-worker" in argv
     assert "--array=0-1" in argv
-    assert not any(arg.startswith("--export") for arg in argv)
+    assert "--export=NIL" in argv
+    assert not any(arg.startswith("--wrap") for arg in argv)
     assert "--partition=debug" in argv
     assert "--cpus-per-task=4" in argv
     assert "--mem=8G" in argv
     assert "--exclusive" in argv
-    assert (
-        f"--wrap={sys.executable} -m furu.worker.cli "
-        "--server-url http://manager.cluster:1234 --auth-token '<redacted>'"
-    ) in argv
+    assert "secret-token" not in " ".join(argv)
+
+    script_path = Path(argv[-1])
+    script = script_path.read_text()
+    assert "--auth-token-file" in script
+    assert "--auth-token " not in script
+    assert "secret-token" not in script
+    assert f"exec {sys.executable} -m furu.worker.cli" in script
+    assert "--server-url http://manager.cluster:1234" in script
+
+    assert not (worker_dir / "secrets").exists()
+    token_files = sorted(worker_dir.glob("worker-*.token"))
+    assert len(token_files) == 1
+    for token_file in token_files:
+        assert _mode(token_file) == 0o600
+        assert token_file.read_text() == "secret-token"
+        assert str(token_file) in script
+
     assert not sbatch_records[0]["has_manager_environment"]
 
     assert "secret-token" not in record_file.read_text()
+
+    pool.cancel()
+
+    assert all(token_file.exists() for token_file in token_files)
 
 
 def test_slurm_worker_pool_health_tracks_squeue_jobs(
@@ -197,34 +259,18 @@ def _install_fake_slurm(
         """
         import json
         import os
-        import shlex
         import sys
 
         record_file = os.environ["FURU_FAKE_SLURM_RECORD_FILE"]
         active_file = os.environ["FURU_FAKE_SLURM_ACTIVE_FILE"]
         counter_file = os.environ["FURU_FAKE_SLURM_COUNTER_FILE"]
 
-        def redact_auth_token(argv):
-            redacted = []
-            for arg in argv:
-                if not arg.startswith("--wrap="):
-                    redacted.append(arg)
-                    continue
-
-                command = arg.removeprefix("--wrap=")
-                command_parts = shlex.split(command)
-                for index, value in enumerate(command_parts[:-1]):
-                    if value == "--auth-token":
-                        command_parts[index + 1] = "<redacted>"
-                redacted.append("--wrap=" + shlex.join(command_parts))
-            return redacted
-
         with open(record_file, "a", encoding="utf-8") as file:
             file.write(
                 json.dumps(
                     {
                         "executable": "sbatch",
-                        "argv": redact_auth_token(sys.argv[1:]),
+                        "argv": sys.argv[1:],
                         "has_manager_environment": (
                             "FURU_MANAGER_SERVER_URL" in os.environ
                             or "FURU_MANAGER_AUTH_TOKEN" in os.environ
@@ -327,3 +373,7 @@ def _read_records(record_file: Path) -> list[dict[str, Any]]:
     if not record_file.exists():
         return []
     return [json.loads(line) for line in record_file.read_text().splitlines()]
+
+
+def _mode(path: Path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)

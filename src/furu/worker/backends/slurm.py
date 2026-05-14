@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import secrets
 import shlex
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+
+from furu.utils import write_private_file
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,21 +69,18 @@ class SlurmWorkerBackend:
         executor_dir: Path,
     ) -> SlurmWorkerPool:
         chdir = Path.cwd().resolve()
-        log_dir = executor_dir.resolve() / "workers" / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
+        worker_dir = executor_dir.resolve() / "workers"
+        worker_dir.mkdir(parents=True, exist_ok=True)
 
-        result = subprocess.run(
-            self._sbatch_command(
-                server_url=server_url,
-                auth_token=auth_token,
-                chdir=chdir,
-                log_dir=log_dir,
-            ),
-            check=True,
-            capture_output=True,
-            text=True,
+        token_file = worker_dir / f"worker-{secrets.token_hex(16)}.token"
+        write_private_file(token_file, auth_token, mode=0o600)
+
+        array_job_id = self._launch_jobs(
+            chdir=chdir,
+            token_file=token_file,
+            worker_dir=worker_dir,
+            server_url=server_url,
         )
-        array_job_id = _parse_sbatch_job_id(result.stdout)
 
         return SlurmWorkerPool(
             array_job_id=array_job_id,
@@ -88,36 +88,54 @@ class SlurmWorkerBackend:
             poll_interval=self.poll_interval,
         )
 
-    def _sbatch_command(
-        self,
-        *,
-        server_url: str,
-        auth_token: str,
-        chdir: Path,
-        log_dir: Path,
-    ) -> list[str]:
-        worker_command = shlex.join(
-            [
-                sys.executable,
-                "-m",
-                "furu.worker.cli",
-                "--server-url",
-                server_url,
-                "--auth-token",
-                auth_token,
-            ]
+    def _launch_jobs(
+        self, chdir: Path, token_file: Path, worker_dir: Path, server_url: str
+    ) -> str:
+        script_path = self._write_sbatch_script(
+            worker_dir=worker_dir, token_file=token_file, server_url=server_url
         )
-        return [
-            "sbatch",
-            "--parsable",
-            f"--chdir={chdir}",
-            f"--output={log_dir / 'furu-worker-%A-%a.out'}",
-            f"--error={log_dir / 'furu-worker-%A-%a.err'}",
-            f"--job-name={self.job_name}",
-            f"--array=0-{self.n_workers - 1}",
-            *self.resources.to_sbatch_args(),
-            f"--wrap={worker_command}",
-        ]
+
+        log_dir = worker_dir / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        result = subprocess.run(
+            [
+                "sbatch",
+                "--parsable",
+                f"--chdir={chdir}",
+                f"--output={log_dir / 'furu-worker-%A-%a.out'}",
+                f"--error={log_dir / 'furu-worker-%A-%a.err'}",
+                f"--job-name={self.job_name}",
+                f"--array=0-{self.n_workers - 1}",
+                *self.resources.to_sbatch_args(),
+                "--export=NIL",
+                str(script_path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        array_job_id = result.stdout.strip().split(";", maxsplit=1)[0]
+        return array_job_id
+
+    def _write_sbatch_script(
+        self, *, worker_dir: Path, token_file: Path, server_url: str
+    ) -> Path:
+        scripts_dir = worker_dir / "scripts"
+        scripts_dir.mkdir(parents=True, exist_ok=True)
+        script_path = scripts_dir / f"worker-{secrets.token_hex(16)}.sh"
+        write_private_file(
+            script_path,
+            (
+                "#!/bin/bash\n"
+                "set -euo pipefail\n"
+                "\n"
+                f"exec {shlex.quote(sys.executable)} -m furu.worker.cli \\\n"
+                f"    --server-url {shlex.quote(server_url)} \\\n"
+                f"    --auth-token-file {shlex.quote(str(token_file))}\n"
+            ),
+            mode=0o700,
+        )
+        return script_path
 
 
 class SlurmWorkerPool:
@@ -128,52 +146,28 @@ class SlurmWorkerPool:
         n_workers: int,
         poll_interval: float,
     ) -> None:
-        if n_workers < 1:
-            raise ValueError("SlurmWorkerPool requires at least one worker")
         self.array_job_id = array_job_id
         self.n_workers = n_workers
         self._poll_interval = poll_interval
-
-    @property
-    def job_ids(self) -> tuple[str, ...]:
-        return (self.array_job_id,)
 
     @property
     def health_check_interval(self) -> float:
         return self._poll_interval
 
     def is_healthy(self) -> bool:
-        try:
-            return self._active_task_ids() == set(range(self.n_workers))
-        except (OSError, ValueError, subprocess.SubprocessError):
-            return False
+        return self._active_task_ids() == set(range(self.n_workers))
 
     def join(self, *, timeout: float) -> None:
         deadline = time.monotonic() + timeout
-        while True:
-            try:
-                active_task_ids = self._active_task_ids()
-            except (OSError, ValueError, subprocess.SubprocessError):
-                self.cancel()
-                return
-
-            if not active_task_ids:
-                return
-            if time.monotonic() >= deadline:
-                self.cancel()
-                return
-
-            sleep_for = min(self._poll_interval, deadline - time.monotonic())
-            if sleep_for > 0:
-                time.sleep(sleep_for)
-
-    def cancel(self) -> None:
-        subprocess.run(
-            ["scancel", self.array_job_id],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
+        while self._active_task_ids() and time.monotonic() < deadline:
+            time.sleep(min(self._poll_interval, deadline - time.monotonic()))
+        if self._active_task_ids():
+            subprocess.run(
+                ["scancel", self.array_job_id],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
 
     def _active_task_ids(self) -> set[int]:
         result = subprocess.run(
@@ -190,33 +184,9 @@ class SlurmWorkerPool:
             capture_output=True,
             text=True,
         )
-        return {
-            task_id
-            for line in result.stdout.splitlines()
-            if line.strip()
-            for job_id, task_id in [_parse_squeue_array_task(line)]
-            if job_id == self.array_job_id
-        }
-
-
-def _parse_sbatch_job_id(stdout: str) -> str:
-    lines = stdout.strip().splitlines()
-    if not lines:
-        raise RuntimeError(f"sbatch returned an empty job id: {stdout!r}")
-    first_line = lines[0]
-    job_id = first_line.split(";", maxsplit=1)[0]
-    if not job_id:
-        raise RuntimeError(f"sbatch returned an empty job id: {stdout!r}")
-    return job_id
-
-
-def _parse_squeue_job_id(line: str) -> str:
-    return line.strip().split(maxsplit=1)[0]
-
-
-def _parse_squeue_array_task(line: str) -> tuple[str, int]:
-    parts = line.strip().split()
-    if len(parts) != 2:
-        raise ValueError(f"squeue returned an invalid array task row: {line!r}")
-    job_id, task_id = parts
-    return _parse_squeue_job_id(job_id), int(task_id)
+        active_task_ids: set[int] = set()
+        for line in result.stdout.splitlines():
+            job_id, task_id = line.strip().split()
+            if job_id == self.array_job_id:
+                active_task_ids.add(int(task_id))
+        return active_task_ids
