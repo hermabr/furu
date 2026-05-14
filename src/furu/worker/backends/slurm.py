@@ -9,10 +9,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
-from furu.worker.cli import AUTH_TOKEN_ENV_VAR
-
-_LOCAL_ONLY_HOSTS = frozenset({"0.0.0.0", "127.0.0.1", "localhost", "::", "::1"})
-
 
 @dataclass(frozen=True, slots=True)
 class SlurmResources:
@@ -51,32 +47,24 @@ class SlurmResources:
         return args
 
 
-def _resolve_worker_server_url(server_url: str, advertised_host: str | None) -> str:
+def _rewrite_host(server_url: str, advertised_host: str) -> str:
     parsed = urlparse(server_url)
-    host = parsed.hostname or ""
-    if advertised_host is not None:
-        if parsed.port is not None:
-            netloc = f"{advertised_host}:{parsed.port}"
-        else:
-            netloc = advertised_host
-        return urlunparse(parsed._replace(netloc=netloc))
-    if host in _LOCAL_ONLY_HOSTS:
-        raise ValueError(
-            f"Slurm workers cannot reach the manager at host {host!r}; "
-            "set advertised_host on SlurmWorkerBackend to a network-reachable "
-            "hostname, or pass advertised_host explicitly to opt in"
-        )
-    return server_url
+    netloc = (
+        f"{advertised_host}:{parsed.port}"
+        if parsed.port is not None
+        else advertised_host
+    )
+    return urlunparse(parsed._replace(netloc=netloc))
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class SlurmWorkerBackend:
+    advertised_host: str
     resources: SlurmResources = field(default_factory=SlurmResources)
     n_workers: int = 1
     log_dir: Path = field(default_factory=lambda: Path("logs") / "furu-workers")
     chdir: Path = field(default_factory=Path.cwd)
     python_executable: str = field(default_factory=lambda: sys.executable)
-    advertised_host: str | None = None
     job_name_prefix: str = "furu-worker"
     sbatch_executable: str = "sbatch"
     squeue_executable: str = "squeue"
@@ -84,14 +72,15 @@ class SlurmWorkerBackend:
     health_check_interval: float = 5.0
 
     def start_pool(self, *, server_url: str, auth_token: str) -> SlurmWorkerPool:
-        worker_server_url = _resolve_worker_server_url(server_url, self.advertised_host)
+        worker_server_url = _rewrite_host(server_url, self.advertised_host)
         log_dir = self.log_dir.resolve()
         log_dir.mkdir(parents=True, exist_ok=True)
         chdir = self.chdir.resolve()
 
         worker_command = (
             f"{shlex.quote(self.python_executable)} -m furu.worker.cli "
-            f"--server-url {shlex.quote(worker_server_url)}"
+            f"--server-url {shlex.quote(worker_server_url)} "
+            f"--auth-token {shlex.quote(auth_token)}"
         )
 
         job_ids: list[str] = []
@@ -110,7 +99,6 @@ class SlurmWorkerBackend:
                 str(stdout_path),
                 "--error",
                 str(stderr_path),
-                f"--export=ALL,{AUTH_TOKEN_ENV_VAR}={auth_token}",
                 *self.resources.to_sbatch_args(),
                 "--wrap",
                 worker_command,

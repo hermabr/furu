@@ -15,7 +15,7 @@ from furu.worker.backends.slurm import (
     SlurmResources,
     SlurmWorkerBackend,
     SlurmWorkerPool,
-    _resolve_worker_server_url,
+    _rewrite_host,
 )
 
 
@@ -60,37 +60,23 @@ def test_slurm_resources_to_sbatch_args_full() -> None:
     ]
 
 
-@pytest.mark.parametrize(
-    "url", ["http://0.0.0.0:8080", "http://127.0.0.1:8080", "http://localhost:8080"]
-)
-def test_resolve_worker_server_url_rejects_local_host_without_advertised_host(
-    url: str,
-) -> None:
-    with pytest.raises(ValueError, match="advertised_host"):
-        _resolve_worker_server_url(url, advertised_host=None)
-
-
-def test_resolve_worker_server_url_applies_advertised_host_preserving_port() -> None:
+def test_rewrite_host_preserves_port() -> None:
     assert (
-        _resolve_worker_server_url(
-            "http://0.0.0.0:8080", advertised_host="head.example.com"
-        )
+        _rewrite_host("http://0.0.0.0:8080", advertised_host="head.example.com")
         == "http://head.example.com:8080"
     )
 
 
-def test_resolve_worker_server_url_allows_explicit_loopback_advertised_host() -> None:
+def test_rewrite_host_without_port() -> None:
     assert (
-        _resolve_worker_server_url("http://0.0.0.0:8080", advertised_host="127.0.0.1")
-        == "http://127.0.0.1:8080"
+        _rewrite_host("http://0.0.0.0", advertised_host="head.example.com")
+        == "http://head.example.com"
     )
 
 
-def test_resolve_worker_server_url_passes_through_non_local_host() -> None:
-    assert (
-        _resolve_worker_server_url("http://head.example.com:8080", advertised_host=None)
-        == "http://head.example.com:8080"
-    )
+def test_slurm_worker_backend_requires_advertised_host() -> None:
+    with pytest.raises(TypeError, match="advertised_host"):
+        SlurmWorkerBackend()  # ty: ignore[missing-argument]
 
 
 @dataclass(frozen=True, slots=True)
@@ -323,10 +309,9 @@ def test_start_pool_passes_expected_sbatch_flags(
         assert "--wrap" in args
         wrap_value = args[args.index("--wrap") + 1]
         assert "-m furu.worker.cli" in wrap_value
-        assert "http://head.example.com:8080" in wrap_value
-        assert "secret-token" not in wrap_value
-        export_arg = next(arg for arg in args if arg.startswith("--export="))
-        assert "FURU_AUTH_TOKEN=secret-token" in export_arg
+        assert "--server-url http://head.example.com:8080" in wrap_value
+        assert "--auth-token secret-token" in wrap_value
+        assert not any(arg.startswith("--export=") for arg in args)
     finally:
         pool.join(timeout=1.0)
 
@@ -352,24 +337,6 @@ def test_start_pool_creates_log_directory_before_submission(
         assert log_dir.is_dir()
     finally:
         pool.join(timeout=1.0)
-
-
-def test_start_pool_rejects_local_server_url_without_advertised_host(
-    fake_slurm: FakeSlurm, tmp_path: Path
-) -> None:
-    backend = SlurmWorkerBackend(
-        n_workers=1,
-        log_dir=tmp_path / "log-dir",
-        chdir=tmp_path,
-    )
-
-    with pytest.raises(ValueError, match="advertised_host"):
-        backend.start_pool(
-            server_url="http://127.0.0.1:8080",
-            auth_token="secret-token",
-        )
-
-    assert fake_slurm.read_sbatch_calls() == []
 
 
 def test_start_pool_raises_when_sbatch_returns_no_job_id(
