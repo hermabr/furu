@@ -68,10 +68,6 @@ class Manager:
     def executor_dir(self) -> Path:
         return get_config().directories.executions / self.executor_id
 
-    @property
-    def log_path(self) -> Path:
-        return manager_log_path_in(self.executor_dir)
-
     def run(
         self,
         *,
@@ -85,7 +81,7 @@ class Manager:
 
     @contextmanager
     def log_context(self) -> Iterator[None]:
-        with _scoped_log_files((self.log_path,)):
+        with _scoped_log_files((manager_log_path_in(self.executor_dir),)):
             yield
 
     def lease_job(self) -> LeaseJobResponse:
