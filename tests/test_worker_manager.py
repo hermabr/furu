@@ -1,4 +1,7 @@
 from uuid import UUID
+import os
+from pathlib import Path
+import stat
 
 import httpx
 import pytest
@@ -13,6 +16,7 @@ from furu.execution.manager import FailedJob, Manager, RunningJob
 from furu.execution.server import manager_server
 from furu.metadata import ArtifactSpec
 from furu.worker.backends.local import LocalThreadWorkerPool
+from furu.worker.backends.slurm import SlurmResources, SlurmWorkerBackend
 from furu.worker.loop import worker_loop
 from furu.worker.protocol import (
     JobBlockedResult,
@@ -255,6 +259,51 @@ def test_manager_server_exposes_bound_host_and_port() -> None:
         assert server.auth_token
 
 
+def test_manager_server_uses_advertised_host_for_worker_url() -> None:
+    manager = Manager([ManagerLeaf(value=12)])
+
+    with manager_server(
+        manager,
+        bind_host="127.0.0.1",
+        port=0,
+        advertised_host="manager.cluster",
+    ) as server:
+        assert server.bound_host == "127.0.0.1"
+        assert server.server_url == f"http://manager.cluster:{server.bound_port}"
+
+
+def test_manager_run_passes_advertised_host_to_worker_backend() -> None:
+    class RecordingBackend:
+        server_url: str | None = None
+
+        def start_pool(
+            self,
+            *,
+            server_url: str,
+            auth_token: str,
+        ) -> LocalThreadWorkerPool:
+            del auth_token
+            self.server_url = server_url
+
+            class CompletedPool:
+                def is_healthy(self) -> bool:
+                    return True
+
+                def join(self, *, timeout: float) -> None:
+                    del timeout
+
+            manager.done.set()
+            return CompletedPool()  # ty: ignore[invalid-return-type]
+
+    manager = Manager([ManagerLeaf(value=12)])
+    backend = RecordingBackend()
+
+    manager.run(worker_backend=backend, advertised_host="manager.cluster")
+
+    assert backend.server_url is not None
+    assert backend.server_url.startswith("http://manager.cluster:")
+
+
 def test_manager_server_rejects_requests_without_auth_token() -> None:
     manager = Manager([ManagerLeaf(value=12)])
 
@@ -275,6 +324,108 @@ def test_manager_server_rejects_requests_without_auth_token() -> None:
             headers={"Authorization": f"Bearer {server.auth_token}"},
         )
         assert response.status_code == 200
+
+
+def test_slurm_worker_backend_submits_workers_and_creates_log_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    slurm_bin = _make_fake_slurm_bin(tmp_path)
+    monkeypatch.setenv("PATH", f"{slurm_bin}{os.pathsep}{os.environ['PATH']}")
+
+    log_dir = tmp_path / "logs"
+    backend = SlurmWorkerBackend(
+        n_workers=2,
+        log_dir=log_dir,
+        chdir=tmp_path,
+        resources=SlurmResources(
+            cpus_per_task=4,
+            memory="8G",
+            time="00:10:00",
+            partition="debug",
+        ),
+    )
+
+    pool = backend.start_pool(
+        server_url="http://manager.cluster:39001",
+        auth_token="secret-token",
+    )
+
+    assert log_dir.is_dir()
+    assert pool.job_ids == ("1001", "1002")
+    assert pool.is_healthy()
+
+    sbatch_calls = (tmp_path / "sbatch.calls").read_text().splitlines()
+    assert len(sbatch_calls) == 2
+    first_call = sbatch_calls[0]
+    assert "--parsable" in first_call
+    assert f"--chdir {tmp_path}" in first_call
+    assert f"--output {log_dir / 'furu-worker-%j.out'}" in first_call
+    assert f"--error {log_dir / 'furu-worker-%j.err'}" in first_call
+    assert "--cpus-per-task 4" in first_call
+    assert "--mem 8G" in first_call
+    assert "--time 00:10:00" in first_call
+    assert "--partition debug" in first_call
+    assert "-m furu.worker.cli" in first_call
+    assert "--server-url http://manager.cluster:39001" in first_call
+    assert "--auth-token secret-token" in first_call
+
+    pool.join(timeout=0)
+
+    assert (tmp_path / "squeue.calls").read_text().strip() == (
+        "--noheader --jobs 1001,1002"
+    )
+    assert (tmp_path / "scancel.calls").read_text().strip() == "1001 1002"
+
+
+def test_slurm_worker_backend_rejects_local_manager_urls(tmp_path: Path) -> None:
+    backend = SlurmWorkerBackend(
+        log_dir=tmp_path / "logs",
+        allow_local_manager_url=False,
+    )
+
+    with pytest.raises(ValueError, match="advertised_host"):
+        backend.start_pool(
+            server_url="http://127.0.0.1:39001",
+            auth_token="secret-token",
+        )
+
+
+def _make_fake_slurm_bin(tmp_path: Path) -> Path:
+    slurm_bin = tmp_path / "bin"
+    slurm_bin.mkdir()
+    job_counter = tmp_path / "job-counter"
+    job_counter.write_text("1000")
+
+    _write_executable(
+        slurm_bin / "sbatch",
+        f"""#!/bin/sh
+printf '%s\\n' "$*" >> {tmp_path / "sbatch.calls"}
+job_id=$(cat {job_counter})
+job_id=$((job_id + 1))
+printf '%s\\n' "$job_id" > {job_counter}
+printf '%s\\n' "$job_id"
+""",
+    )
+    _write_executable(
+        slurm_bin / "squeue",
+        f"""#!/bin/sh
+printf '%s\\n' "$*" >> {tmp_path / "squeue.calls"}
+printf '1001 RUNNING\\n1002 RUNNING\\n'
+""",
+    )
+    _write_executable(
+        slurm_bin / "scancel",
+        f"""#!/bin/sh
+printf '%s\\n' "$*" >> {tmp_path / "scancel.calls"}
+""",
+    )
+    return slurm_bin
+
+
+def _write_executable(path: Path, content: str) -> None:
+    path.write_text(content)
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
 def test_manager_run_requires_explicit_worker_backend() -> None:

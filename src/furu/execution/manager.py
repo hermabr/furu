@@ -59,10 +59,17 @@ class Manager:
         worker_backend: WorkerBackend,
         host: str = "127.0.0.1",
         port: int = 0,
+        advertised_host: str | None = None,
     ) -> None:
         from furu.execution.server import _run_until_done
 
-        _run_until_done(self, worker_backend=worker_backend, host=host, port=port)
+        _run_until_done(
+            self,
+            worker_backend=worker_backend,
+            host=host,
+            port=port,
+            advertised_host=advertised_host,
+        )
 
     def lease_job(self) -> LeaseJobResponse:
         with self.lock:
