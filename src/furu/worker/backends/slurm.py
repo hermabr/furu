@@ -4,7 +4,6 @@ import shlex
 import subprocess
 import sys
 import time
-from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -83,24 +82,22 @@ class SlurmWorkerBackend:
             advertised_host=self.advertised_host,
         )
 
-        job_ids: list[str] = []
-        for worker_index in range(self.n_workers):
-            result = subprocess.run(
-                self._sbatch_command(
-                    server_url=worker_server_url,
-                    auth_token=auth_token,
-                    chdir=chdir,
-                    log_dir=log_dir,
-                    worker_index=worker_index,
-                ),
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            job_ids.append(_parse_sbatch_job_id(result.stdout))
+        result = subprocess.run(
+            self._sbatch_command(
+                server_url=worker_server_url,
+                auth_token=auth_token,
+                chdir=chdir,
+                log_dir=log_dir,
+            ),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        array_job_id = _parse_sbatch_job_id(result.stdout)
 
         return SlurmWorkerPool(
-            job_ids=job_ids,
+            array_job_id=array_job_id,
+            n_workers=self.n_workers,
             poll_interval=self.poll_interval,
         )
 
@@ -111,7 +108,6 @@ class SlurmWorkerBackend:
         auth_token: str,
         chdir: Path,
         log_dir: Path,
-        worker_index: int,
     ) -> list[str]:
         worker_command = shlex.join(
             [
@@ -128,9 +124,10 @@ class SlurmWorkerBackend:
             "sbatch",
             "--parsable",
             f"--chdir={chdir}",
-            f"--output={log_dir / f'furu-worker-{worker_index}-%j.out'}",
-            f"--error={log_dir / f'furu-worker-{worker_index}-%j.err'}",
+            f"--output={log_dir / 'furu-worker-%A-%a.out'}",
+            f"--error={log_dir / 'furu-worker-%A-%a.err'}",
             f"--job-name={self.job_name}",
+            f"--array=0-{self.n_workers - 1}",
             *self.resources.to_sbatch_args(),
             f"--wrap={worker_command}",
         ]
@@ -140,69 +137,74 @@ class SlurmWorkerPool:
     def __init__(
         self,
         *,
-        job_ids: Sequence[str],
+        array_job_id: str,
+        n_workers: int,
         poll_interval: float = 1.0,
     ) -> None:
-        self.job_ids = tuple(job_ids)
+        if n_workers < 1:
+            raise ValueError("SlurmWorkerPool requires at least one worker")
+        self.array_job_id = array_job_id
+        self.n_workers = n_workers
         self._poll_interval = poll_interval
+
+    @property
+    def job_ids(self) -> tuple[str, ...]:
+        return (self.array_job_id,)
 
     def is_healthy(self) -> bool:
         try:
-            return self._active_job_ids() == set(self.job_ids)
-        except (OSError, subprocess.SubprocessError):
+            return self._active_task_ids() == set(range(self.n_workers))
+        except (OSError, ValueError, subprocess.SubprocessError):
             return False
 
     def join(self, *, timeout: float) -> None:
         deadline = time.monotonic() + timeout
         while True:
             try:
-                active_job_ids = self._active_job_ids()
-            except (OSError, subprocess.SubprocessError):
+                active_task_ids = self._active_task_ids()
+            except (OSError, ValueError, subprocess.SubprocessError):
                 self.cancel()
                 return
 
-            if not active_job_ids:
+            if not active_task_ids:
                 return
             if time.monotonic() >= deadline:
-                self.cancel(job_ids=active_job_ids)
+                self.cancel()
                 return
 
             sleep_for = min(self._poll_interval, deadline - time.monotonic())
             if sleep_for > 0:
                 time.sleep(sleep_for)
 
-    def cancel(self, *, job_ids: set[str] | None = None) -> None:
-        jobs_to_cancel = set(self.job_ids) if job_ids is None else job_ids
-        if not jobs_to_cancel:
-            return
+    def cancel(self) -> None:
         subprocess.run(
-            ["scancel", *sorted(jobs_to_cancel)],
+            ["scancel", self.array_job_id],
             check=False,
             capture_output=True,
             text=True,
         )
 
-    def _active_job_ids(self) -> set[str]:
-        if not self.job_ids:
-            return set()
-
+    def _active_task_ids(self) -> set[int]:
         result = subprocess.run(
             [
                 "squeue",
                 "--noheader",
+                "--array",
                 "--jobs",
-                ",".join(self.job_ids),
+                self.array_job_id,
                 "--format",
-                "%A",
+                "%A %a",
             ],
             check=True,
             capture_output=True,
             text=True,
         )
         return {
-            _parse_squeue_job_id(line)
+            task_id
             for line in result.stdout.splitlines()
             if line.strip()
+            for job_id, task_id in [_parse_squeue_array_task(line)]
+            if job_id == self.array_job_id
         }
 
 
@@ -237,6 +239,14 @@ def _parse_sbatch_job_id(stdout: str) -> str:
 
 def _parse_squeue_job_id(line: str) -> str:
     return line.strip().split(maxsplit=1)[0]
+
+
+def _parse_squeue_array_task(line: str) -> tuple[str, int]:
+    parts = line.strip().split()
+    if len(parts) != 2:
+        raise ValueError(f"squeue returned an invalid array task row: {line!r}")
+    job_id, task_id = parts
+    return _parse_squeue_job_id(job_id), int(task_id)
 
 
 def _with_advertised_host(server_url: str, *, advertised_host: str) -> str:

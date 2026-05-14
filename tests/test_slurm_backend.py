@@ -79,36 +79,32 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
             auth_token="secret-token",
         )
 
-    assert pool.job_ids == ("100", "101")
+    assert pool.array_job_id == "100"
+    assert pool.job_ids == ("100",)
+    assert pool.n_workers == 2
     assert log_dir.is_dir()
 
     records = _read_records(record_file)
     sbatch_records = [record for record in records if record["executable"] == "sbatch"]
-    assert len(sbatch_records) == 2
+    assert len(sbatch_records) == 1
 
-    for worker_index, record in enumerate(sbatch_records):
-        argv = record["argv"]
-        assert "--parsable" in argv
-        assert f"--chdir={work_dir.resolve()}" in argv
-        assert (
-            f"--output={log_dir.resolve() / f'furu-worker-{worker_index}-%j.out'}"
-            in argv
-        )
-        assert (
-            f"--error={log_dir.resolve() / f'furu-worker-{worker_index}-%j.err'}"
-            in argv
-        )
-        assert "--job-name=furu-worker" in argv
-        assert not any(arg.startswith("--export") for arg in argv)
-        assert "--partition=debug" in argv
-        assert "--cpus-per-task=4" in argv
-        assert "--mem=8G" in argv
-        assert "--exclusive" in argv
-        assert (
-            "--wrap=/venv/bin/python -m furu.worker.cli "
-            "--server-url http://manager.cluster:1234 --auth-token '<redacted>'"
-        ) in argv
-        assert not record["has_manager_environment"]
+    argv = sbatch_records[0]["argv"]
+    assert "--parsable" in argv
+    assert f"--chdir={work_dir.resolve()}" in argv
+    assert f"--output={log_dir.resolve() / 'furu-worker-%A-%a.out'}" in argv
+    assert f"--error={log_dir.resolve() / 'furu-worker-%A-%a.err'}" in argv
+    assert "--job-name=furu-worker" in argv
+    assert "--array=0-1" in argv
+    assert not any(arg.startswith("--export") for arg in argv)
+    assert "--partition=debug" in argv
+    assert "--cpus-per-task=4" in argv
+    assert "--mem=8G" in argv
+    assert "--exclusive" in argv
+    assert (
+        "--wrap=/venv/bin/python -m furu.worker.cli "
+        "--server-url http://manager.cluster:1234 --auth-token '<redacted>'"
+    ) in argv
+    assert not sbatch_records[0]["has_manager_environment"]
 
     assert "secret-token" not in record_file.read_text()
 
@@ -132,7 +128,7 @@ def test_slurm_worker_pool_health_tracks_squeue_jobs(
 
     assert pool.is_healthy()
 
-    active_file.write_text("100\n")
+    active_file.write_text("100_0\n")
 
     assert not pool.is_healthy()
 
@@ -152,14 +148,14 @@ def test_slurm_worker_pool_join_cancels_jobs_left_after_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    active_file.write_text("100\n101\n")
-    pool = SlurmWorkerPool(job_ids=("100", "101"), poll_interval=0)
+    active_file.write_text("100_0\n100_1\n")
+    pool = SlurmWorkerPool(array_job_id="100", n_workers=2, poll_interval=0)
 
     pool.join(timeout=0)
 
     assert active_file.read_text() == ""
     records = _read_records(record_file)
-    assert records[-1] == {"executable": "scancel", "argv": ["100", "101"]}
+    assert records[-1] == {"executable": "scancel", "argv": ["100"]}
 
 
 def test_slurm_backend_requires_advertised_host() -> None:
@@ -239,8 +235,17 @@ def _install_fake_slurm(
             job_id = int(file.read())
         with open(counter_file, "w", encoding="utf-8") as file:
             file.write(str(job_id + 1))
+        array_arg = next(
+            (arg.removeprefix("--array=") for arg in sys.argv[1:] if arg.startswith("--array=")),
+            "0",
+        )
+        start_text, separator, end_text = array_arg.partition("-")
+        start = int(start_text)
+        end = int(end_text if separator else start_text)
+
         with open(active_file, "a", encoding="utf-8") as file:
-            file.write(f"{job_id}\\n")
+            for task_id in range(start, end + 1):
+                file.write(f"{job_id}_{task_id}\\n")
 
         print(f"{job_id};cluster")
         """,
@@ -265,11 +270,19 @@ def _install_fake_slurm(
             elif arg.startswith("--jobs="):
                 requested_jobs.update(arg.removeprefix("--jobs=").split(","))
 
+        show_array_tasks = "--array" in sys.argv[1:]
+
         with open(active_file, encoding="utf-8") as file:
             active_jobs = set(file.read().split())
 
-        for job_id in sorted(requested_jobs & active_jobs):
-            print(job_id)
+        for active_job in sorted(active_jobs):
+            job_id, separator, task_id = active_job.partition("_")
+            if job_id not in requested_jobs:
+                continue
+            if show_array_tasks and separator:
+                print(f"{job_id} {task_id}")
+            else:
+                print(job_id)
         """,
     )
     _write_executable(
@@ -288,7 +301,12 @@ def _install_fake_slurm(
         cancelled_jobs = set(sys.argv[1:])
         with open(active_file, encoding="utf-8") as file:
             active_jobs = set(file.read().split())
-        active_jobs.difference_update(cancelled_jobs)
+        active_jobs = {
+            active_job
+            for active_job in active_jobs
+            if active_job not in cancelled_jobs
+            and active_job.partition("_")[0] not in cancelled_jobs
+        }
         with open(active_file, "w", encoding="utf-8") as file:
             file.write("".join(f"{job_id}\\n" for job_id in sorted(active_jobs)))
         """,
