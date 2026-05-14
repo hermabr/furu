@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True, slots=True)
 class LocalThreadWorkerBackend:
     n_workers: int = 1
 
-    def start_pool(self, *, server_url: str, auth_token: str) -> LocalThreadWorkerPool:
+    def start_pool(
+        self, *, server_url: str, auth_token: str, executor_dir: Path
+    ) -> LocalThreadWorkerPool:
         return LocalThreadWorkerPool(
             server_url=server_url,
             auth_token=auth_token,

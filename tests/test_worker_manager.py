@@ -12,8 +12,12 @@ from furu import Furu
 from furu.config import config
 from furu.execution import api
 from furu.execution.api import create_manager_api_app
-from furu.execution.manager import FailedJob, Manager, RunningJob
-from furu.execution.runtime import current_executor_dir, executor_id_from_objs
+from furu.execution.manager import (
+    FailedJob,
+    Manager,
+    RunningJob,
+    executor_id_from_objs,
+)
 from furu.execution.server import _run_until_done, manager_server
 from furu.metadata import ArtifactSpec
 from furu.worker.backends.local import LocalThreadWorkerPool
@@ -240,6 +244,7 @@ def test_manager_run_uses_worker_backend() -> None:
             *,
             server_url: str,
             auth_token: str,
+            executor_dir: Path,
         ) -> LocalThreadWorkerPool:
             self.server_urls.append(server_url)
             self.auth_tokens.append(auth_token)
@@ -262,18 +267,19 @@ def test_manager_run_uses_worker_backend() -> None:
     assert backend.auth_tokens[0]
 
 
-def test_manager_run_sets_executor_context_for_worker_backend() -> None:
+def test_manager_run_passes_executor_dir_to_worker_backend() -> None:
     class RecordingBackend:
         def __init__(self) -> None:
-            self.executor_dirs: list[Path | None] = []
+            self.executor_dirs: list[Path] = []
 
         def start_pool(
             self,
             *,
             server_url: str,
             auth_token: str,
+            executor_dir: Path,
         ) -> LocalThreadWorkerPool:
-            self.executor_dirs.append(current_executor_dir())
+            self.executor_dirs.append(executor_dir)
             return LocalThreadWorkerPool(
                 server_url=server_url,
                 auth_token=auth_token,
@@ -286,7 +292,7 @@ def test_manager_run_sets_executor_context_for_worker_backend() -> None:
 
     manager.run(worker_backend=backend)
 
-    assert backend.executor_dirs == [manager.executor_dir.resolve()]
+    assert backend.executor_dirs == [manager.executor_dir]
 
 
 def test_manager_run_waits_using_worker_pool_health_check_interval() -> None:
@@ -316,7 +322,13 @@ def test_manager_run_waits_using_worker_pool_health_check_interval() -> None:
         def __init__(self, pool: RecordingPool) -> None:
             self.pool = pool
 
-        def start_pool(self, *, server_url: str, auth_token: str) -> RecordingPool:
+        def start_pool(
+            self,
+            *,
+            server_url: str,
+            auth_token: str,
+            executor_dir: Path,
+        ) -> RecordingPool:
             return self.pool
 
     manager = Manager([ManagerLeaf(value=13)])

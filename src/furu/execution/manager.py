@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -7,9 +8,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, assert_never
 from uuid import uuid4
 
+from furu.config import config
 from furu.core import Furu
 from furu.dag import DagNode, _add_to_dag, _update_dag_blocking_dependencies
-from furu.execution.runtime import executor_dir_for_id, executor_id_from_objs
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
 from furu.worker.protocol import (
@@ -38,6 +39,14 @@ class FailedJob:
     error: str
 
 
+def executor_id_from_objs(objs: Sequence[Furu]) -> str:
+    digest = hashlib.blake2s(digest_size=16)
+    for obj in objs:
+        digest.update(obj.object_id.encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
 class Manager:
     def __init__(self, objs: Sequence[Furu]) -> None:
         if not objs:
@@ -58,7 +67,7 @@ class Manager:
 
     @property
     def executor_dir(self) -> Path:
-        return executor_dir_for_id(self.executor_id)
+        return config.directories.executions / self.executor_id
 
     def run(
         self,

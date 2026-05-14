@@ -10,7 +10,6 @@ from typing import Any
 
 import pytest
 
-from furu.execution.runtime import executor_context
 from furu.worker import cli
 from furu.worker.backends.slurm import (
     SlurmResources,
@@ -73,11 +72,11 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
         poll_interval=1.5,
     )
 
-    with executor_context(executor_dir):
-        pool = backend.start_pool(
-            server_url="http://127.0.0.1:1234",
-            auth_token="secret-token",
-        )
+    pool = backend.start_pool(
+        server_url="http://127.0.0.1:1234",
+        auth_token="secret-token",
+        executor_dir=executor_dir,
+    )
 
     assert pool.array_job_id == "100"
     assert pool.job_ids == ("100",)
@@ -122,11 +121,11 @@ def test_slurm_worker_pool_health_tracks_squeue_jobs(
         chdir=tmp_path,
         poll_interval=0,
     )
-    with executor_context(tmp_path / "executor"):
-        pool = backend.start_pool(
-            server_url="http://127.0.0.1:1234",
-            auth_token="secret-token",
-        )
+    pool = backend.start_pool(
+        server_url="http://127.0.0.1:1234",
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+    )
 
     assert pool.is_healthy()
 
@@ -135,18 +134,18 @@ def test_slurm_worker_pool_health_tracks_squeue_jobs(
     assert not pool.is_healthy()
 
 
-def test_slurm_backend_requires_executor_context_for_worker_logs() -> None:
+def test_slurm_backend_requires_explicit_executor_dir() -> None:
     backend = SlurmWorkerBackend(
         advertised_host="manager.cluster",
         n_workers=1,
         resources=SlurmResources(),
     )
 
-    with pytest.raises(RuntimeError, match="executor context"):
+    with pytest.raises(TypeError, match="executor_dir"):
         backend.start_pool(
             server_url="http://127.0.0.1:1234",
             auth_token="secret-token",
-        )
+        )  # ty: ignore[missing-argument]
 
 
 def test_slurm_worker_pool_join_cancels_jobs_left_after_timeout(

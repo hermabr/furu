@@ -8,8 +8,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-from furu.execution.runtime import current_executor_dir
-
 
 @dataclass(frozen=True, slots=True)
 class SlurmResources:
@@ -64,13 +62,19 @@ class SlurmWorkerBackend:
     job_name: str = "furu-worker"
     poll_interval: float = 10.0
 
-    def start_pool(self, *, server_url: str, auth_token: str) -> SlurmWorkerPool:
+    def start_pool(
+        self,
+        *,
+        server_url: str,
+        auth_token: str,
+        executor_dir: Path,
+    ) -> SlurmWorkerPool:
         if self.n_workers < 1:
             raise ValueError("SlurmWorkerBackend requires at least one worker")
 
         base_dir = Path.cwd()
         chdir = _resolve_path(self.chdir, base=base_dir)
-        log_dir = _default_log_dir()
+        log_dir = executor_dir.resolve() / "workers" / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         worker_server_url = _with_advertised_host(
             server_url,
@@ -214,15 +218,6 @@ def _resolve_path(path: Path | str | None, *, base: Path) -> Path:
     if not resolved.is_absolute():
         resolved = base / resolved
     return resolved.resolve()
-
-
-def _default_log_dir() -> Path:
-    executor_dir = current_executor_dir()
-    if executor_dir is None:
-        raise RuntimeError(
-            "SlurmWorkerBackend requires an executor context for worker logs"
-        )
-    return executor_dir / "workers" / "logs"
 
 
 def _parse_sbatch_job_id(stdout: str) -> str:
