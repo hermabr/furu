@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, assert_never
 from uuid import uuid4
 
-from furu.config import config
+from furu.config import get_config
 from furu.core import Furu
 from furu.dag import DagNode, _add_to_dag, _update_dag_blocking_dependencies
 from furu.logging import get_logger
@@ -61,7 +61,7 @@ class Manager:
 
     @property
     def executor_dir(self) -> Path:
-        return config.directories.executions / self.executor_id
+        return get_config().directories.executions / self.executor_id
 
     def run(
         self,

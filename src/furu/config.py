@@ -35,7 +35,7 @@ class _FuruConfig(BaseSettings):
         pyproject_toml_depth=4,
         pyproject_toml_table_header=("tool", "furu"),
         extra="ignore",
-        validate_assignment=True,
+        frozen=True,
     )
 
     debug_mode: bool = False
@@ -59,4 +59,8 @@ class _FuruConfig(BaseSettings):
         )
 
 
-config = _FuruConfig()
+_config = _FuruConfig()
+
+
+def get_config() -> _FuruConfig:
+    return _config

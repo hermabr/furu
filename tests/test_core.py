@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict
 import furu
 import furu.execution as execution_module
 from furu import Furu, load_or_create, validate
-from furu.config import config
+from furu.config import get_config
 from furu.dependencies import collect_declared_refs
 from furu.locking import lock_many
 from furu.metadata import ArtifactSpec
@@ -1244,14 +1244,14 @@ def test_data_dir():
         name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
     )
     assert node_pair.data_dir == (
-        config.directories.data
+        get_config().directories.data
         / "test_core"
         / "NodePair"
         / "21733b1febfab88b565c"
         / "685af925669262434640"
     )
     assert node_pair.data_dir == Path(
-        config.directories.data
+        get_config().directories.data
         / "test_core"
         / "NodePair"
         / node_pair.artifact_schema_hash

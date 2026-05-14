@@ -9,7 +9,7 @@ from pydantic import TypeAdapter, ValidationError
 
 import furu.worker.loop as worker_loop_module
 from furu import Furu
-from furu.config import config
+from furu.config import get_config
 from furu.execution import api
 from furu.execution.api import create_manager_api_app
 from furu.execution.manager import (
@@ -72,7 +72,10 @@ def test_manager_executor_id_is_stable_hash_of_root_object_tuple() -> None:
     assert int(manager.executor_id, 16) >= 0
     assert Manager([left, right]).executor_id == manager.executor_id
     assert Manager([right, left]).executor_id != manager.executor_id
-    assert manager.executor_dir == config.directories.executions / manager.executor_id
+    assert (
+        manager.executor_dir
+        == get_config().directories.executions / manager.executor_id
+    )
 
 
 def test_manager_job_result_completed_moves_dependents_to_ready() -> None:

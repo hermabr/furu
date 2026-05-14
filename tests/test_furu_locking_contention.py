@@ -6,7 +6,8 @@ from multiprocessing import get_context
 from pathlib import Path
 
 from furu import Furu, load_or_create
-from furu.config import _FuruDirectories, config
+import furu.config as furu_config
+from furu.config import _FuruConfig, _FuruDirectories
 from furu.locking import DEFAULT_ACQUIRE_POLL_INTERVAL_S
 from furu.result import load_result_bundle
 
@@ -59,7 +60,7 @@ class MidRunTakeoverProbe(Furu[int]):
 
 
 def _worker(data_dir: str, start_evt, out_q) -> None:
-    config.directories = _directories_for_data(data_dir)
+    furu_config._config = _FuruConfig(directories=_directories_for_data(data_dir))
     obj = SlowProbe(key=1)
     out_q.put(("ready", os.getpid()))
     start_evt.wait()
@@ -71,7 +72,7 @@ def _worker(data_dir: str, start_evt, out_q) -> None:
 
 
 def _batch_worker(data_dir: str, keys: list[int], start_evt, out_q) -> None:
-    config.directories = _directories_for_data(data_dir)
+    furu_config._config = _FuruConfig(directories=_directories_for_data(data_dir))
     objs = [SlowBatchProbe(key=key) for key in keys]
     out_q.put(("ready", os.getpid()))
     start_evt.wait()
@@ -88,7 +89,7 @@ def _takeover_worker(
     release_path: str,
     out_q,
 ) -> None:
-    config.directories = _directories_for_data(data_dir)
+    furu_config._config = _FuruConfig(directories=_directories_for_data(data_dir))
     obj = MidRunTakeoverProbe(
         key=1,
         entered_path=entered_path,

@@ -1,7 +1,14 @@
 from pathlib import Path
-from typing import Any, cast
 
-from furu.config import _FuruConfig, _FuruDirectories
+import pytest
+from pydantic import ValidationError
+
+import furu.config as furu_config
+from furu.config import (
+    _FuruConfig,
+    _FuruDirectories,
+    get_config,
+)
 
 
 def test_config_reads_environment(monkeypatch) -> None:
@@ -93,18 +100,24 @@ executions = "/tmp/furu-pyproject-executions"
     )
 
 
-def test_config_validates_directory_assignment() -> None:
+def test_config_is_frozen() -> None:
     config = _FuruConfig()
 
-    config.directories = cast(
-        Any,
-        {
-            "data": "/tmp/assigned-furu-data",
-            "executions": "/tmp/assigned-furu-executions",
-        },
+    with pytest.raises(ValidationError, match="Instance is frozen"):
+        config.directories = _FuruDirectories(
+            data=Path("/tmp/assigned-furu-data"),
+            executions=Path("/tmp/assigned-furu-executions"),
+        )
+
+
+def test_private_config_module_value_can_be_replaced(monkeypatch) -> None:
+    replacement_config = _FuruConfig(
+        directories=_FuruDirectories(
+            data=Path("/tmp/context-furu-data"),
+            executions=Path("/tmp/context-furu-executions"),
+        ),
     )
 
-    assert config.directories == _FuruDirectories(
-        data=Path("/tmp/assigned-furu-data"),
-        executions=Path("/tmp/assigned-furu-executions"),
-    )
+    monkeypatch.setattr(furu_config, "_config", replacement_config)
+
+    assert get_config() is replacement_config
