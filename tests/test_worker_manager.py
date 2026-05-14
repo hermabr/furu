@@ -1,3 +1,5 @@
+from pathlib import Path
+from typing import Any, cast
 from uuid import UUID
 
 import httpx
@@ -7,10 +9,15 @@ from pydantic import TypeAdapter, ValidationError
 
 import furu.worker.loop as worker_loop_module
 from furu import Furu
+from furu.config import get_config
 from furu.execution import api
 from furu.execution.api import create_manager_api_app
-from furu.execution.manager import FailedJob, Manager, RunningJob
-from furu.execution.server import manager_server
+from furu.execution.manager import (
+    FailedJob,
+    Manager,
+    RunningJob,
+)
+from furu.execution.server import _run_until_done, manager_server
 from furu.metadata import ArtifactSpec
 from furu.worker.backends.local import LocalThreadWorkerPool
 from furu.worker.loop import worker_loop
@@ -53,6 +60,22 @@ def test_manager_init_partitions_ready_and_blocked() -> None:
     assert set(manager.ready) == {leaf.object_id}
     assert set(manager.blocked) == {parent.object_id}
     assert manager.running == {}
+
+
+def test_manager_executor_id_is_stable_hash_of_root_object_tuple() -> None:
+    left = ManagerLeaf(value=1)
+    right = ManagerLeaf(value=2)
+
+    manager = Manager([left, right])
+
+    assert len(manager.executor_id) == 32
+    assert int(manager.executor_id, 16) >= 0
+    assert Manager([left, right]).executor_id == manager.executor_id
+    assert Manager([right, left]).executor_id != manager.executor_id
+    assert (
+        manager.executor_dir
+        == get_config().directories.executions / manager.executor_id
+    )
 
 
 def test_manager_job_result_completed_moves_dependents_to_ready() -> None:
@@ -224,6 +247,7 @@ def test_manager_run_uses_worker_backend() -> None:
             *,
             server_url: str,
             auth_token: str,
+            executor_dir: Path,
         ) -> LocalThreadWorkerPool:
             self.server_urls.append(server_url)
             self.auth_tokens.append(auth_token)
@@ -244,6 +268,87 @@ def test_manager_run_uses_worker_backend() -> None:
     assert backend.server_urls[0].startswith("http://127.0.0.1:")
     assert len(backend.auth_tokens) == 1
     assert backend.auth_tokens[0]
+
+
+def test_manager_run_passes_executor_dir_to_worker_backend() -> None:
+    class RecordingBackend:
+        def __init__(self) -> None:
+            self.executor_dirs: list[Path] = []
+
+        def start_pool(
+            self,
+            *,
+            server_url: str,
+            auth_token: str,
+            executor_dir: Path,
+        ) -> LocalThreadWorkerPool:
+            self.executor_dirs.append(executor_dir)
+            return LocalThreadWorkerPool(
+                server_url=server_url,
+                auth_token=auth_token,
+                n_workers=1,
+            )
+
+    leaf = ManagerLeaf(value=12)
+    manager = Manager([leaf])
+    backend = RecordingBackend()
+
+    manager.run(worker_backend=backend)
+
+    assert backend.executor_dirs == [manager.executor_dir]
+
+
+def test_manager_run_waits_using_worker_pool_health_check_interval() -> None:
+    class RecordingDone:
+        def __init__(self) -> None:
+            self.timeouts: list[float | None] = []
+
+        def wait(self, timeout: float | None = None) -> bool:
+            self.timeouts.append(timeout)
+            return True
+
+    class RecordingPool:
+        health_check_interval = 2.5
+
+        def __init__(self) -> None:
+            self.health_checks = 0
+            self.join_timeouts: list[float] = []
+
+        def is_healthy(self) -> bool:
+            self.health_checks += 1
+            return True
+
+        def join(self, *, timeout: float) -> None:
+            self.join_timeouts.append(timeout)
+
+    class RecordingBackend:
+        def __init__(self, pool: RecordingPool) -> None:
+            self.pool = pool
+
+        def start_pool(
+            self,
+            *,
+            server_url: str,
+            auth_token: str,
+            executor_dir: Path,
+        ) -> RecordingPool:
+            return self.pool
+
+    manager = Manager([ManagerLeaf(value=13)])
+    done = RecordingDone()
+    pool = RecordingPool()
+    cast(Any, manager).done = done
+
+    _run_until_done(
+        manager,
+        worker_backend=RecordingBackend(pool),
+        host="127.0.0.1",
+        port=0,
+    )
+
+    assert done.timeouts == [2.5]
+    assert pool.health_checks == 0
+    assert pool.join_timeouts == [5]
 
 
 def test_manager_server_exposes_bound_host_and_port() -> None:
