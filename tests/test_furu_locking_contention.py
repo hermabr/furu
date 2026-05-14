@@ -6,7 +6,8 @@ from multiprocessing import get_context
 from pathlib import Path
 
 from furu import Furu, load_or_create
-from furu.config import _FuruConfig, _FuruDirectories, use_config
+import furu.config as furu_config
+from furu.config import _FuruConfig, _FuruDirectories
 from furu.locking import (
     DEFAULT_ACQUIRE_POLL_INTERVAL_S,
     LockAcquireError,
@@ -63,27 +64,27 @@ class MidRunTakeoverProbe(Furu[int]):
 
 
 def _worker(data_dir: str, start_evt, out_q) -> None:
-    with use_config(_FuruConfig(directories=_FuruDirectories(data=Path(data_dir)))):
-        obj = SlowProbe(key=1)
-        out_q.put(("ready", os.getpid()))
-        start_evt.wait()
-        try:
-            value = obj.load_or_create()
-            out_q.put(("ok", os.getpid(), value))
-        except LockAcquireError as exc:
-            out_q.put(("err", os.getpid(), type(exc).__name__))
+    furu_config.config = _FuruConfig(directories=_FuruDirectories(data=Path(data_dir)))
+    obj = SlowProbe(key=1)
+    out_q.put(("ready", os.getpid()))
+    start_evt.wait()
+    try:
+        value = obj.load_or_create()
+        out_q.put(("ok", os.getpid(), value))
+    except LockAcquireError as exc:
+        out_q.put(("err", os.getpid(), type(exc).__name__))
 
 
 def _batch_worker(data_dir: str, keys: list[int], start_evt, out_q) -> None:
-    with use_config(_FuruConfig(directories=_FuruDirectories(data=Path(data_dir)))):
-        objs = [SlowBatchProbe(key=key) for key in keys]
-        out_q.put(("ready", os.getpid()))
-        start_evt.wait()
-        try:
-            values = load_or_create(objs)
-            out_q.put(("ok", os.getpid(), values))
-        except BaseException as exc:
-            out_q.put(("err", os.getpid(), type(exc).__name__, str(exc)))
+    furu_config.config = _FuruConfig(directories=_FuruDirectories(data=Path(data_dir)))
+    objs = [SlowBatchProbe(key=key) for key in keys]
+    out_q.put(("ready", os.getpid()))
+    start_evt.wait()
+    try:
+        values = load_or_create(objs)
+        out_q.put(("ok", os.getpid(), values))
+    except BaseException as exc:
+        out_q.put(("err", os.getpid(), type(exc).__name__, str(exc)))
 
 
 def _takeover_worker(
@@ -92,17 +93,17 @@ def _takeover_worker(
     release_path: str,
     out_q,
 ) -> None:
-    with use_config(_FuruConfig(directories=_FuruDirectories(data=Path(data_dir)))):
-        obj = MidRunTakeoverProbe(
-            key=1,
-            entered_path=entered_path,
-            release_path=release_path,
-        )
-        try:
-            value = obj.load_or_create()
-            out_q.put(("ok", os.getpid(), value))
-        except BaseException as exc:
-            out_q.put(("err", os.getpid(), type(exc).__name__, str(exc)))
+    furu_config.config = _FuruConfig(directories=_FuruDirectories(data=Path(data_dir)))
+    obj = MidRunTakeoverProbe(
+        key=1,
+        entered_path=entered_path,
+        release_path=release_path,
+    )
+    try:
+        value = obj.load_or_create()
+        out_q.put(("ok", os.getpid(), value))
+    except BaseException as exc:
+        out_q.put(("err", os.getpid(), type(exc).__name__, str(exc)))
 
 
 def _steal_lock(lock_path: str, out_q) -> None:

@@ -3,12 +3,10 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+import furu.config as furu_config
 from furu.config import (
     _FuruConfig,
     _FuruDirectories,
-    get_config,
-    replace_config,
-    use_config,
 )
 
 
@@ -93,23 +91,11 @@ def test_config_is_frozen() -> None:
         config.directories = _FuruDirectories(data=Path("/tmp/assigned-furu-data"))
 
 
-def test_replace_config_validates_updates() -> None:
-    config = replace_config(
-        _FuruConfig(),
-        directories={"data": "/tmp/replaced-furu-data"},
-    )
-
-    assert config.directories == _FuruDirectories(data=Path("/tmp/replaced-furu-data"))
-
-
-def test_use_config_scopes_active_config() -> None:
-    original_config = get_config()
-    replacement_config = replace_config(
-        original_config,
+def test_config_module_value_can_be_replaced(monkeypatch) -> None:
+    replacement_config = _FuruConfig(
         directories=_FuruDirectories(data=Path("/tmp/context-furu-data")),
     )
 
-    with use_config(replacement_config):
-        assert get_config() is replacement_config
+    monkeypatch.setattr(furu_config, "config", replacement_config)
 
-    assert get_config() is original_config
+    assert furu_config.config is replacement_config

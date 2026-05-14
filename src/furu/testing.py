@@ -4,24 +4,21 @@ import secrets
 import shutil
 import tempfile
 from collections.abc import Iterator
-from contextvars import Token
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 import pytest
 
+import furu.config as furu_config
 from furu.config import _FuruConfig
 from furu.config import _FuruDirectories
-from furu.config import replace_config
-from furu.config import reset_config
-from furu.config import set_config
 
 
 @dataclass(slots=True)
 class _FuruPytestState:
+    original_config: _FuruConfig
     run_config: _FuruConfig
-    session_token: Token[_FuruConfig]
 
 
 _STATE_KEY = pytest.StashKey[_FuruPytestState]()
@@ -35,6 +32,15 @@ def _keep_furu_data() -> bool:
     return os.environ.get("FURU_PYTEST_KEEP", "clean").strip().lower() == "keep"
 
 
+def _replace_config_directories(
+    config: _FuruConfig,
+    directories: _FuruDirectories,
+) -> _FuruConfig:
+    data = config.model_dump()
+    data["directories"] = directories
+    return _FuruConfig.model_validate(data)
+
+
 def pytest_configure(config: pytest.Config) -> None:
     if not _is_furu_pytest_mode_enabled():
         return
@@ -45,14 +51,18 @@ def pytest_configure(config: pytest.Config) -> None:
     )
     # run_base_directory.mkdir(parents=True, exist_ok=True)
 
-    run_config = replace_config(
-        directories=_FuruDirectories(
+    run_config = _replace_config_directories(
+        furu_config.config,
+        _FuruDirectories(
             data=run_base_directory,
-        )
+        ),
     )
-    session_token = set_config(run_config)
 
-    state = _FuruPytestState(run_config=run_config, session_token=session_token)
+    state = _FuruPytestState(
+        original_config=furu_config.config,
+        run_config=run_config,
+    )
+    furu_config.config = run_config
     config.stash[_STATE_KEY] = state
 
 
@@ -62,7 +72,7 @@ def pytest_unconfigure(config: pytest.Config) -> None:
 
     state = config.stash[_STATE_KEY]
 
-    reset_config(state.session_token)
+    furu_config.config = state.original_config
 
     if not _keep_furu_data():
         for field_name in type(state.run_config.directories).model_fields:
@@ -86,18 +96,18 @@ def _furu_per_test_base_directory(
         return
 
     state = pytestconfig.stash[_STATE_KEY]
+    previous_config = furu_config.config
 
     test_base_directory = (
         state.run_config.directories.data
         / hashlib.sha1(request.node.nodeid.encode("utf-8")).hexdigest()[:12]
     )
 
-    token = set_config(
-        replace_config(
-            directories=_FuruDirectories(data=test_base_directory),
-        )
+    furu_config.config = _replace_config_directories(
+        previous_config,
+        _FuruDirectories(data=test_base_directory),
     )
     try:
         yield
     finally:
-        reset_config(token)
+        furu_config.config = previous_config

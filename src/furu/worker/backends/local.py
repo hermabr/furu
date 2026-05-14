@@ -18,18 +18,12 @@ class LocalThreadWorkerBackend:
 
 class LocalThreadWorkerPool:
     def __init__(self, *, server_url: str, auth_token: str, n_workers: int) -> None:
-        from furu.config import get_config, use_config
         from furu.worker.loop import worker_loop
-
-        active_config = get_config()
-
-        def run_worker() -> None:
-            with use_config(active_config):
-                worker_loop(server_url=server_url, auth_token=auth_token)
 
         self._threads = [
             threading.Thread(
-                target=run_worker,
+                target=worker_loop,
+                kwargs={"server_url": server_url, "auth_token": auth_token},
                 name=f"furu-worker-{idx}",
             )
             for idx in range(n_workers)

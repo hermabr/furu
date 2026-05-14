@@ -1,8 +1,5 @@
-from collections.abc import Iterator
-from contextlib import contextmanager
-from contextvars import ContextVar, Token
 from pathlib import Path
-from typing import Any, Self
+from typing import Self
 
 from pydantic import ConfigDict, Field
 from pydantic_settings import (
@@ -60,47 +57,4 @@ class _FuruConfig(BaseSettings):
         )
 
 
-_CONFIG: ContextVar[_FuruConfig] = ContextVar("furu_config", default=_FuruConfig())
-
-
-def get_config() -> _FuruConfig:
-    return _CONFIG.get()
-
-
-def set_config(config: _FuruConfig) -> Token[_FuruConfig]:
-    return _CONFIG.set(config)
-
-
-def reset_config(token: Token[_FuruConfig]) -> None:
-    _CONFIG.reset(token)
-
-
-@contextmanager
-def use_config(config: _FuruConfig) -> Iterator[_FuruConfig]:
-    token = set_config(config)
-    try:
-        yield config
-    finally:
-        reset_config(token)
-
-
-def replace_config(config: _FuruConfig | None = None, **updates: Any) -> _FuruConfig:
-    data = (get_config() if config is None else config).model_dump()
-    data.update(updates)
-    return _FuruConfig.model_validate(data)
-
-
-class _ActiveConfigProxy:
-    def __getattr__(self, name: str) -> Any:
-        return getattr(get_config(), name)
-
-    def __setattr__(self, name: str, value: object) -> None:
-        raise TypeError(
-            "Furu config is frozen; use use_config() with a replacement _FuruConfig"
-        )
-
-    def __repr__(self) -> str:
-        return repr(get_config())
-
-
-config = _ActiveConfigProxy()
+config = _FuruConfig()

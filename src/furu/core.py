@@ -8,7 +8,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
-from furu.config import get_config
+import furu.config as furu_config
 from furu.locking import LockLostError, lock_many
 from furu.logging import get_logger
 from furu.result import load_result_bundle
@@ -219,7 +219,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     @cached_property
     def storage_root(self) -> Path:
-        return get_config().directories.data
+        return furu_config.config.directories.data
 
     @cached_property
     def data_dir(self) -> Path:
