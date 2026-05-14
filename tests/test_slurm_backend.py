@@ -164,8 +164,6 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
 
     assert "secret-token" not in record_file.read_text()
 
-    pool.cancel()
-
     assert all(token_file.exists() for token_file in token_files)
 
 
