@@ -21,6 +21,10 @@ def run_log_path_in(data_dir: Path) -> Path:
     return internal_furu_dir_in(data_dir) / "run.log"
 
 
+def manager_log_path_in(executor_dir: Path) -> Path:
+    return executor_dir / "manager.log"
+
+
 def compute_lock_path_in(data_dir: Path) -> Path:
     return internal_furu_dir_in(data_dir) / "compute.lock"
 

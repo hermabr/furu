@@ -85,11 +85,24 @@ def _run_until_done(
     host: str,
     port: int,
 ) -> None:
+    manager.log_info(
+        "starting furu manager: executor_id=%s executor_dir=%s ready=%d blocked=%d",
+        manager.executor_id,
+        manager.executor_dir,
+        len(manager.ready),
+        len(manager.blocked),
+    )
     with manager_server(manager, bind_host=host, port=port) as server:
+        manager.log_info("manager server listening: server_url=%s", server.server_url)
         worker_pool = worker_backend.start_pool(
             server_url=server.server_url,
             auth_token=server.auth_token,
             executor_dir=manager.executor_dir,
+        )
+        manager.log_info(
+            "worker pool started: backend=%s health_check_interval=%s",
+            type(worker_backend).__name__,
+            worker_pool.health_check_interval,
         )
         while not manager.done.wait(timeout=worker_pool.health_check_interval):
             if not worker_pool.is_healthy():
@@ -98,4 +111,5 @@ def _run_until_done(
                 )
                 break
         worker_pool.join(timeout=5)
+        manager.log_debug("worker pool joined")
     manager.raise_for_failure()

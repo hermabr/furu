@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -11,8 +12,9 @@ from uuid import uuid4
 from furu.config import get_config
 from furu.core import Furu
 from furu.dag import DagNode, _add_to_dag, _update_dag_blocking_dependencies
-from furu.logging import get_logger
+from furu.logging import _scoped_log_files, get_logger
 from furu.metadata import ArtifactSpec
+from furu.storage_layout import manager_log_path_in
 from furu.worker.protocol import (
     Job,
     JobBlockedResult,
@@ -63,6 +65,10 @@ class Manager:
     def executor_dir(self) -> Path:
         return get_config().directories.executions / self.executor_id
 
+    @property
+    def log_path(self) -> Path:
+        return manager_log_path_in(self.executor_dir)
+
     def run(
         self,
         *,
@@ -73,6 +79,19 @@ class Manager:
         from furu.execution.server import _run_until_done
 
         _run_until_done(self, worker_backend=worker_backend, host=host, port=port)
+
+    def _log(self, level: int, message: str, *args: object) -> None:
+        with _scoped_log_files((self.log_path,)):
+            get_logger("execution.manager").log(level, message, *args)
+
+    def log_debug(self, message: str, *args: object) -> None:
+        self._log(logging.DEBUG, message, *args)
+
+    def log_info(self, message: str, *args: object) -> None:
+        self._log(logging.INFO, message, *args)
+
+    def log_error(self, message: str, *args: object) -> None:
+        self._log(logging.ERROR, message, *args)
 
     def lease_job(self) -> LeaseJobResponse:
         with self.lock:
@@ -88,6 +107,16 @@ class Manager:
             if lease_id in self.running:
                 raise RuntimeError(f"generated duplicate lease_id: {lease_id}")
             self.running[lease_id] = RunningJob(lease_id=lease_id, node=node)
+            self.log_debug(
+                "leased job: lease_id=%s object_id=%s ready=%d running=%d blocked=%d completed=%d failed=%d",
+                lease_id,
+                node.obj.object_id,
+                len(self.ready),
+                len(self.running),
+                len(self.blocked),
+                len(self.completed),
+                len(self.failed),
+            )
             return Job(
                 lease_id=lease_id,
                 artifact=ArtifactSpec.from_furu(node.obj),
@@ -106,6 +135,16 @@ class Manager:
                         dependent_id = dependent.obj.object_id
                         if not dependent.dependencies and dependent_id in self.blocked:
                             self.ready[dependent_id] = self.blocked.pop(dependent_id)
+                    self.log_debug(
+                        "job completed: lease_id=%s object_id=%s ready=%d running=%d blocked=%d completed=%d failed=%d",
+                        lease_id,
+                        running_job.node.obj.object_id,
+                        len(self.ready),
+                        len(self.running),
+                        len(self.blocked),
+                        len(self.completed),
+                        len(self.failed),
+                    )
 
                 case JobFailedResult(error=error):
                     self.failed[running_job.node.obj.object_id] = FailedJob(
@@ -113,9 +152,26 @@ class Manager:
                         node=running_job.node,
                         error=error,
                     )
+                    self.log_debug(
+                        "job failed: lease_id=%s object_id=%s error=%s",
+                        lease_id,
+                        running_job.node.obj.object_id,
+                        error,
+                    )
                 case JobBlockedResult(dependencies=dependencies):
                     _update_dag_blocking_dependencies(
                         self, running_job.node, dependencies
+                    )
+                    self.log_debug(
+                        "job blocked: lease_id=%s object_id=%s dependencies=%d ready=%d running=%d blocked=%d completed=%d failed=%d",
+                        lease_id,
+                        running_job.node.obj.object_id,
+                        len(dependencies),
+                        len(self.ready),
+                        len(self.running),
+                        len(self.blocked),
+                        len(self.completed),
+                        len(self.failed),
                     )
                 case _:
                     assert_never(request)
@@ -130,7 +186,7 @@ class Manager:
             if self.done.is_set():
                 return
             self._finish_error = message
-            get_logger().error("furu manager finished with error: %s", message)
+            self.log_error("furu manager finished with error: %s", message)
             self.done.set()
 
     def _maybe_finish_locked(self) -> None:
@@ -153,9 +209,7 @@ class Manager:
                     f"(lease {failed_job.lease_id}): {failed_job.error}"
                 )
             self._finish_error = "manager run could not complete; " + "; ".join(parts)
-            get_logger().error(
-                "furu manager finished with error: %s", self._finish_error
-            )
+            self.log_error("furu manager finished with error: %s", self._finish_error)
         else:
-            get_logger().info("furu manager finished successfully")
+            self.log_info("furu manager finished successfully")
         self.done.set()

@@ -19,7 +19,8 @@ from furu.execution.manager import (
 )
 from furu.execution.server import _run_until_done, manager_server
 from furu.metadata import ArtifactSpec
-from furu.worker.backends.local import LocalThreadWorkerPool
+from furu.storage_layout import manager_log_path_in
+from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
 from furu.worker.loop import worker_loop
 from furu.worker.protocol import (
     JobBlockedResult,
@@ -232,6 +233,10 @@ def test_manager_job_result_failed_finishes_with_error() -> None:
     assert failed_job.lease_id == job.lease_id
     assert failed_job.node.obj is leaf
     assert failed_job.error == "boom"
+    log_text = manager.log_path.read_text(encoding="utf-8")
+    assert "job failed:" in log_text
+    assert "boom" in log_text
+    assert "furu manager finished with error" in log_text
     with pytest.raises(RuntimeError, match="failed jobs"):
         manager.raise_for_failure()
 
@@ -296,6 +301,25 @@ def test_manager_run_passes_executor_dir_to_worker_backend() -> None:
     manager.run(worker_backend=backend)
 
     assert backend.executor_dirs == [manager.executor_dir]
+
+
+def test_manager_run_writes_log_to_executor_dir() -> None:
+    leaf = ManagerLeaf(value=14)
+    manager = Manager([leaf])
+
+    manager.run(worker_backend=LocalThreadWorkerBackend())
+
+    log_path = manager_log_path_in(manager.executor_dir)
+    assert manager.log_path == log_path
+    assert log_path.parent == manager.executor_dir
+
+    log_text = log_path.read_text(encoding="utf-8")
+    assert "starting furu manager" in log_text
+    assert "manager server listening" in log_text
+    assert "leased job:" in log_text
+    assert leaf.object_id in log_text
+    assert "job completed:" in log_text
+    assert "furu manager finished successfully" in log_text
 
 
 def test_manager_run_waits_using_worker_pool_health_check_interval() -> None:
