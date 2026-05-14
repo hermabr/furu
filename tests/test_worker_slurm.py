@@ -149,6 +149,7 @@ _SBATCH_SCRIPT = """\
 import json
 import os
 import pathlib
+import re
 import sys
 
 state_dir = pathlib.Path(os.environ["FAKE_SLURM_STATE"])
@@ -161,6 +162,15 @@ calls.append({{
 }})
 log.write_text(json.dumps(calls))
 
+args = sys.argv[1:]
+array_spec = None
+i = 0
+while i < len(args):
+    if args[i] == "--array" and i + 1 < len(args):
+        array_spec = args[i + 1]
+        break
+    i += 1
+
 next_id_file = state_dir / "next_id.txt"
 next_id = int(next_id_file.read_text()) if next_id_file.exists() else 1000
 next_id_file.write_text(str(next_id + 1))
@@ -168,9 +178,17 @@ next_id_file.write_text(str(next_id + 1))
 queue_file = state_dir / "queue.txt"
 queued = queue_file.read_text().splitlines() if queue_file.exists() else []
 queued = [line for line in queued if line]
-queued.append(str(next_id))
-queue_file.write_text("\\n".join(queued))
 
+if array_spec is None:
+    sys.exit("fake sbatch: expected --array spec")
+match = re.match(r"^(\\d+)-(\\d+)$", array_spec)
+if match is None:
+    sys.exit(f"fake sbatch: unsupported --array spec {{array_spec!r}}")
+lo, hi = int(match.group(1)), int(match.group(2))
+for idx in range(lo, hi + 1):
+    queued.append(f"{{next_id}}_{{idx}}")
+
+queue_file.write_text("\\n".join(queued))
 print(next_id)
 """
 
@@ -201,8 +219,13 @@ while i < len(args):
     i += 1
 
 for job_id in queued:
-    if not requested or job_id in requested:
+    if not requested:
         print(job_id)
+        continue
+    for req in requested:
+        if job_id == req or job_id.startswith(req + "_"):
+            print(job_id)
+            break
 """
 
 _SCANCEL_SCRIPT = """\
@@ -222,7 +245,18 @@ queue_file = state_dir / "queue.txt"
 queued = queue_file.read_text().splitlines() if queue_file.exists() else []
 queued = [line for line in queued if line]
 to_cancel = set(sys.argv[1:])
-remaining = [j for j in queued if j not in to_cancel]
+
+
+def keep(line: str) -> bool:
+    if line in to_cancel:
+        return False
+    for target in to_cancel:
+        if line.startswith(target + "_"):
+            return False
+    return True
+
+
+remaining = [j for j in queued if keep(j)]
 queue_file.write_text("\\n".join(remaining))
 """
 
@@ -249,11 +283,11 @@ def fake_slurm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Fake
     yield FakeSlurm(state_dir=state_dir, bin_dir=bin_dir)
 
 
-def test_start_pool_submits_one_sbatch_per_worker(
+def test_start_pool_submits_single_array_job(
     fake_slurm: FakeSlurm, tmp_path: Path
 ) -> None:
     backend = SlurmWorkerBackend(
-        n_workers=2,
+        n_workers=3,
         log_dir=tmp_path / "worker-logs",
         chdir=tmp_path,
         advertised_host="head.example.com",
@@ -266,8 +300,12 @@ def test_start_pool_submits_one_sbatch_per_worker(
 
     try:
         calls = fake_slurm.read_sbatch_calls()
-        assert len(calls) == 2
-        assert pool.job_ids == ("1000", "1001")
+        assert len(calls) == 1
+        args = calls[0].args
+        assert "--array" in args
+        assert args[args.index("--array") + 1] == "0-2"
+        assert pool.array_job_id == "1000"
+        assert sorted(fake_slurm.queued_jobs()) == ["1000_0", "1000_1", "1000_2"]
     finally:
         pool.join(timeout=1.0)
 
@@ -295,6 +333,8 @@ def test_start_pool_passes_expected_sbatch_flags(
         call = fake_slurm.read_sbatch_calls()[0]
         args = call.args
         assert args[0] == "--parsable"
+        assert "--array" in args
+        assert args[args.index("--array") + 1] == "0-0"
         assert "--chdir" in args
         assert args[args.index("--chdir") + 1] == str(chdir.resolve())
         assert "--output" in args
@@ -303,6 +343,8 @@ def test_start_pool_passes_expected_sbatch_flags(
         error_path = args[args.index("--error") + 1]
         assert output_path.startswith(str(log_dir.resolve()))
         assert error_path.startswith(str(log_dir.resolve()))
+        assert output_path.endswith("%A_%a.out")
+        assert error_path.endswith("%A_%a.err")
         assert "--job-name" in args
         assert "--partition" in args
         assert "--cpus-per-task" in args
@@ -337,6 +379,20 @@ def test_start_pool_creates_log_directory_before_submission(
         assert log_dir.is_dir()
     finally:
         pool.join(timeout=1.0)
+
+
+def test_start_pool_rejects_zero_workers(tmp_path: Path) -> None:
+    backend = SlurmWorkerBackend(
+        n_workers=0,
+        log_dir=tmp_path / "log-dir",
+        chdir=tmp_path,
+        advertised_host="head.example.com",
+    )
+    with pytest.raises(ValueError, match="n_workers must be >= 1"):
+        backend.start_pool(
+            server_url="http://0.0.0.0:8080",
+            auth_token="secret-token",
+        )
 
 
 def test_start_pool_raises_when_sbatch_returns_no_job_id(
@@ -401,32 +457,35 @@ def test_start_pool_propagates_sbatch_failure(
         )
 
 
-def test_is_healthy_returns_true_while_jobs_remain_queued(
+def test_is_healthy_returns_true_while_tasks_remain_queued(
     fake_slurm: FakeSlurm,
 ) -> None:
-    fake_slurm.set_queued_jobs(["1000", "1001"])
+    fake_slurm.set_queued_jobs(["1000_0", "1000_1"])
     pool = SlurmWorkerPool(
-        job_ids=("1000", "1001"),
+        array_job_id="1000",
+        n_tasks=2,
         health_check_interval=0.0,
     )
     assert pool.is_healthy() is True
 
 
-def test_is_healthy_returns_false_when_all_jobs_have_left_squeue(
+def test_is_healthy_returns_false_when_all_tasks_have_left_squeue(
     fake_slurm: FakeSlurm,
 ) -> None:
     fake_slurm.set_queued_jobs([])
     pool = SlurmWorkerPool(
-        job_ids=("1000",),
+        array_job_id="1000",
+        n_tasks=1,
         health_check_interval=0.0,
     )
     assert pool.is_healthy() is False
 
 
 def test_is_healthy_caches_within_interval(fake_slurm: FakeSlurm) -> None:
-    fake_slurm.set_queued_jobs(["1000"])
+    fake_slurm.set_queued_jobs(["1000_0"])
     pool = SlurmWorkerPool(
-        job_ids=("1000",),
+        array_job_id="1000",
+        n_tasks=1,
         health_check_interval=60.0,
     )
     assert pool.is_healthy() is True
@@ -435,10 +494,11 @@ def test_is_healthy_caches_within_interval(fake_slurm: FakeSlurm) -> None:
     assert len(fake_slurm.read_squeue_calls()) == 1
 
 
-def test_join_cancels_remaining_jobs_after_timeout(fake_slurm: FakeSlurm) -> None:
-    fake_slurm.set_queued_jobs(["1000", "1001"])
+def test_join_cancels_array_after_timeout(fake_slurm: FakeSlurm) -> None:
+    fake_slurm.set_queued_jobs(["1000_0", "1000_1"])
     pool = SlurmWorkerPool(
-        job_ids=("1000", "1001"),
+        array_job_id="1000",
+        n_tasks=2,
         health_check_interval=0.0,
     )
 
@@ -446,16 +506,17 @@ def test_join_cancels_remaining_jobs_after_timeout(fake_slurm: FakeSlurm) -> Non
 
     cancel_calls = fake_slurm.read_scancel_calls()
     assert len(cancel_calls) == 1
-    assert sorted(cancel_calls[0].args) == ["1000", "1001"]
+    assert cancel_calls[0].args == ["1000"]
     assert fake_slurm.queued_jobs() == []
 
 
-def test_join_does_not_cancel_when_jobs_already_finished(
+def test_join_does_not_cancel_when_tasks_already_finished(
     fake_slurm: FakeSlurm,
 ) -> None:
     fake_slurm.set_queued_jobs([])
     pool = SlurmWorkerPool(
-        job_ids=("1000",),
+        array_job_id="1000",
+        n_tasks=1,
         health_check_interval=0.0,
     )
 

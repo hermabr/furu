@@ -69,6 +69,8 @@ class SlurmWorkerBackend:
     health_check_interval: float = 5.0
 
     def start_pool(self, *, server_url: str, auth_token: str) -> SlurmWorkerPool:
+        if self.n_workers < 1:
+            raise ValueError(f"n_workers must be >= 1, got {self.n_workers}")
         worker_server_url = _rewrite_host(server_url, self.advertised_host)
         log_dir = self.log_dir.resolve()
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -80,47 +82,47 @@ class SlurmWorkerBackend:
             f"--auth-token {shlex.quote(auth_token)}"
         )
 
-        job_ids: list[str] = []
-        for idx in range(self.n_workers):
-            job_name = f"{self.job_name_prefix}-{idx}"
-            stdout_path = log_dir / f"{job_name}-%j.out"
-            stderr_path = log_dir / f"{job_name}-%j.err"
-            sbatch_cmd = [
-                "sbatch",
-                "--parsable",
-                "--chdir",
-                str(chdir),
-                "--job-name",
-                job_name,
-                "--output",
-                str(stdout_path),
-                "--error",
-                str(stderr_path),
-                *self.resources.to_sbatch_args(),
-                "--wrap",
-                worker_command,
-            ]
-            result = subprocess.run(
-                sbatch_cmd,
-                check=True,
-                capture_output=True,
-                text=True,
+        job_name = self.job_name_prefix
+        stdout_path = log_dir / f"{job_name}-%A_%a.out"
+        stderr_path = log_dir / f"{job_name}-%A_%a.err"
+        sbatch_cmd = [
+            "sbatch",
+            "--parsable",
+            "--array",
+            f"0-{self.n_workers - 1}",
+            "--chdir",
+            str(chdir),
+            "--job-name",
+            job_name,
+            "--output",
+            str(stdout_path),
+            "--error",
+            str(stderr_path),
+            *self.resources.to_sbatch_args(),
+            "--wrap",
+            worker_command,
+        ]
+        result = subprocess.run(
+            sbatch_cmd,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        raw = result.stdout.strip()
+        if not raw:
+            raise RuntimeError(
+                "sbatch --parsable did not return a job id "
+                f"(stdout={result.stdout!r}, stderr={result.stderr!r})"
             )
-            raw = result.stdout.strip()
-            if not raw:
-                raise RuntimeError(
-                    "sbatch --parsable did not return a job id "
-                    f"(stdout={result.stdout!r}, stderr={result.stderr!r})"
-                )
-            job_id = raw.split(";", 1)[0]
-            if not job_id:
-                raise RuntimeError(
-                    f"sbatch --parsable returned an empty job id (stdout={result.stdout!r})"
-                )
-            job_ids.append(job_id)
+        array_job_id = raw.split(";", 1)[0]
+        if not array_job_id:
+            raise RuntimeError(
+                f"sbatch --parsable returned an empty job id (stdout={result.stdout!r})"
+            )
 
         return SlurmWorkerPool(
-            job_ids=tuple(job_ids),
+            array_job_id=array_job_id,
+            n_tasks=self.n_workers,
             health_check_interval=self.health_check_interval,
         )
 
@@ -129,25 +131,31 @@ class SlurmWorkerPool:
     def __init__(
         self,
         *,
-        job_ids: tuple[str, ...],
+        array_job_id: str,
+        n_tasks: int,
         health_check_interval: float,
     ) -> None:
-        self._job_ids = job_ids
+        self._array_job_id = array_job_id
+        self._n_tasks = n_tasks
+        self._expected_tasks: frozenset[str] = frozenset(
+            f"{array_job_id}_{i}" for i in range(n_tasks)
+        )
         self._health_check_interval = health_check_interval
         self._lock = threading.Lock()
         self._last_check_at: float | None = None
-        self._last_active_jobs: frozenset[str] = frozenset(job_ids)
+        self._last_active_tasks: frozenset[str] = self._expected_tasks
 
     @property
-    def job_ids(self) -> tuple[str, ...]:
-        return self._job_ids
+    def array_job_id(self) -> str:
+        return self._array_job_id
 
-    def _query_active_jobs(self) -> frozenset[str]:
+    def _query_active_tasks(self) -> frozenset[str]:
         result = subprocess.run(
             [
                 "squeue",
                 "--jobs",
-                ",".join(self._job_ids),
+                self._array_job_id,
+                "--array",
                 "--noheader",
                 "--format=%i",
             ],
@@ -158,7 +166,7 @@ class SlurmWorkerPool:
         active: set[str] = set()
         for line in result.stdout.splitlines():
             token = line.strip()
-            if token and token in self._job_ids:
+            if token in self._expected_tasks:
                 active.add(token)
         return frozenset(active)
 
@@ -169,23 +177,23 @@ class SlurmWorkerPool:
                 self._last_check_at is None
                 or now - self._last_check_at >= self._health_check_interval
             ):
-                self._last_active_jobs = self._query_active_jobs()
+                self._last_active_tasks = self._query_active_tasks()
                 self._last_check_at = now
-            return bool(self._last_active_jobs)
+            return bool(self._last_active_tasks)
 
     def join(self, *, timeout: float) -> None:
         deadline = time.monotonic() + timeout
-        active = self._query_active_jobs()
+        active = self._query_active_tasks()
         while active and time.monotonic() < deadline:
             time.sleep(0.1)
-            active = self._query_active_jobs()
+            active = self._query_active_tasks()
         if active:
             subprocess.run(
-                ["scancel", *sorted(active)],
+                ["scancel", self._array_job_id],
                 check=False,
                 capture_output=True,
                 text=True,
             )
             with self._lock:
-                self._last_active_jobs = frozenset()
+                self._last_active_tasks = frozenset()
                 self._last_check_at = time.monotonic()
