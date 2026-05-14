@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Iterator
 
-import furu.config as furu_config
+from furu.config import get_config
 
 _BASE_LOGGER_NAME = "furu"
 # TODO: ContextVar state does not propagate to new threads. Logs emitted from
@@ -21,7 +21,7 @@ class _ScopedFileHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         log_paths = _CURRENT_LOG_PATHS.get()
         if not log_paths:
-            log_paths = (furu_config.config.directories.data / "fallback.log",)
+            log_paths = (get_config().directories.data / "fallback.log",)
 
         try:
             rendered = self.format(record)

@@ -57,4 +57,8 @@ class _FuruConfig(BaseSettings):
         )
 
 
-config = _FuruConfig()
+_config = _FuruConfig()
+
+
+def get_config() -> _FuruConfig:
+    return _config

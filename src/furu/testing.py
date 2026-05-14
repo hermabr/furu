@@ -13,6 +13,7 @@ import pytest
 import furu.config as furu_config
 from furu.config import _FuruConfig
 from furu.config import _FuruDirectories
+from furu.config import get_config
 
 
 @dataclass(slots=True)
@@ -52,17 +53,17 @@ def pytest_configure(config: pytest.Config) -> None:
     # run_base_directory.mkdir(parents=True, exist_ok=True)
 
     run_config = _replace_config_directories(
-        furu_config.config,
+        get_config(),
         _FuruDirectories(
             data=run_base_directory,
         ),
     )
 
     state = _FuruPytestState(
-        original_config=furu_config.config,
+        original_config=get_config(),
         run_config=run_config,
     )
-    furu_config.config = run_config
+    furu_config._config = run_config
     config.stash[_STATE_KEY] = state
 
 
@@ -72,7 +73,7 @@ def pytest_unconfigure(config: pytest.Config) -> None:
 
     state = config.stash[_STATE_KEY]
 
-    furu_config.config = state.original_config
+    furu_config._config = state.original_config
 
     if not _keep_furu_data():
         for field_name in type(state.run_config.directories).model_fields:
@@ -96,18 +97,18 @@ def _furu_per_test_base_directory(
         return
 
     state = pytestconfig.stash[_STATE_KEY]
-    previous_config = furu_config.config
+    previous_config = get_config()
 
     test_base_directory = (
         state.run_config.directories.data
         / hashlib.sha1(request.node.nodeid.encode("utf-8")).hexdigest()[:12]
     )
 
-    furu_config.config = _replace_config_directories(
+    furu_config._config = _replace_config_directories(
         previous_config,
         _FuruDirectories(data=test_base_directory),
     )
     try:
         yield
     finally:
-        furu_config.config = previous_config
+        furu_config._config = previous_config

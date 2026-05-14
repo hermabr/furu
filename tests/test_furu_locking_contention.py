@@ -64,7 +64,7 @@ class MidRunTakeoverProbe(Furu[int]):
 
 
 def _worker(data_dir: str, start_evt, out_q) -> None:
-    furu_config.config = _FuruConfig(directories=_FuruDirectories(data=Path(data_dir)))
+    furu_config._config = _FuruConfig(directories=_FuruDirectories(data=Path(data_dir)))
     obj = SlowProbe(key=1)
     out_q.put(("ready", os.getpid()))
     start_evt.wait()
@@ -76,7 +76,7 @@ def _worker(data_dir: str, start_evt, out_q) -> None:
 
 
 def _batch_worker(data_dir: str, keys: list[int], start_evt, out_q) -> None:
-    furu_config.config = _FuruConfig(directories=_FuruDirectories(data=Path(data_dir)))
+    furu_config._config = _FuruConfig(directories=_FuruDirectories(data=Path(data_dir)))
     objs = [SlowBatchProbe(key=key) for key in keys]
     out_q.put(("ready", os.getpid()))
     start_evt.wait()
@@ -93,7 +93,7 @@ def _takeover_worker(
     release_path: str,
     out_q,
 ) -> None:
-    furu_config.config = _FuruConfig(directories=_FuruDirectories(data=Path(data_dir)))
+    furu_config._config = _FuruConfig(directories=_FuruDirectories(data=Path(data_dir)))
     obj = MidRunTakeoverProbe(
         key=1,
         entered_path=entered_path,
