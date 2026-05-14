@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
+from furu.execution.runtime import current_executor_dir
+
 
 @dataclass(frozen=True, slots=True)
 class SlurmResources:
@@ -27,17 +29,28 @@ class SlurmResources:
 
     def to_sbatch_args(self) -> list[str]:
         args: list[str] = []
-        _append_optional(args, "--account", self.account)
-        _append_optional(args, "--partition", self.partition)
-        _append_optional(args, "--qos", self.qos)
-        _append_optional(args, "--time", self.time_limit)
-        _append_optional(args, "--nodes", self.nodes)
-        _append_optional(args, "--ntasks", self.ntasks)
-        _append_optional(args, "--cpus-per-task", self.cpus_per_task)
-        _append_optional(args, "--mem", self.mem)
-        _append_optional(args, "--mem-per-cpu", self.mem_per_cpu)
-        _append_optional(args, "--gres", self.gres)
-        _append_optional(args, "--constraint", self.constraint)
+        if self.account is not None:
+            args.append(f"--account={self.account}")
+        if self.partition is not None:
+            args.append(f"--partition={self.partition}")
+        if self.qos is not None:
+            args.append(f"--qos={self.qos}")
+        if self.time_limit is not None:
+            args.append(f"--time={self.time_limit}")
+        if self.nodes is not None:
+            args.append(f"--nodes={self.nodes}")
+        if self.ntasks is not None:
+            args.append(f"--ntasks={self.ntasks}")
+        if self.cpus_per_task is not None:
+            args.append(f"--cpus-per-task={self.cpus_per_task}")
+        if self.mem is not None:
+            args.append(f"--mem={self.mem}")
+        if self.mem_per_cpu is not None:
+            args.append(f"--mem-per-cpu={self.mem_per_cpu}")
+        if self.gres is not None:
+            args.append(f"--gres={self.gres}")
+        if self.constraint is not None:
+            args.append(f"--constraint={self.constraint}")
         args.extend(self.extra_sbatch_args)
         return args
 
@@ -47,7 +60,7 @@ class SlurmWorkerBackend:
     advertised_host: str
     n_workers: int = 1
     resources: SlurmResources = field(default_factory=SlurmResources)
-    log_dir: Path | str = "furu-slurm-logs"
+    log_dir: Path | str | None = None
     chdir: Path | str | None = None
     python_executable: str = sys.executable
     job_name: str = "furu-worker"
@@ -59,7 +72,11 @@ class SlurmWorkerBackend:
 
         base_dir = Path.cwd()
         chdir = _resolve_path(self.chdir, base=base_dir)
-        log_dir = _resolve_path(self.log_dir, base=chdir)
+        log_dir = (
+            _resolve_path(self.log_dir, base=chdir)
+            if self.log_dir is not None
+            else _default_log_dir()
+        )
         log_dir.mkdir(parents=True, exist_ok=True)
         worker_server_url = _with_advertised_host(
             server_url,
@@ -189,11 +206,6 @@ class SlurmWorkerPool:
         }
 
 
-def _append_optional(args: list[str], flag: str, value: str | int | None) -> None:
-    if value is not None:
-        args.append(f"{flag}={value}")
-
-
 def _resolve_path(path: Path | str | None, *, base: Path) -> Path:
     if path is None:
         return base.resolve()
@@ -201,6 +213,15 @@ def _resolve_path(path: Path | str | None, *, base: Path) -> Path:
     if not resolved.is_absolute():
         resolved = base / resolved
     return resolved.resolve()
+
+
+def _default_log_dir() -> Path:
+    executor_dir = current_executor_dir()
+    if executor_dir is None:
+        raise RuntimeError(
+            "SlurmWorkerBackend requires log_dir when it is not started by Manager.run"
+        )
+    return executor_dir / "workers" / "logs"
 
 
 def _parse_sbatch_job_id(stdout: str) -> str:

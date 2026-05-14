@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from furu.execution.runtime import executor_context
 from furu.worker import cli
 from furu.worker.backends.slurm import (
     SlurmResources,
@@ -55,7 +56,8 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
     work_dir = tmp_path / "work"
     work_dir.mkdir()
-    log_dir = tmp_path / "logs"
+    executor_dir = tmp_path / "furu" / "executions" / "executor-1"
+    log_dir = executor_dir / "workers" / "logs"
 
     backend = SlurmWorkerBackend(
         advertised_host="manager.cluster",
@@ -66,16 +68,16 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
             mem="8G",
             extra_sbatch_args=("--exclusive",),
         ),
-        log_dir=log_dir,
         chdir=work_dir,
         python_executable="/venv/bin/python",
         poll_interval=0,
     )
 
-    pool = backend.start_pool(
-        server_url="http://127.0.0.1:1234",
-        auth_token="secret-token",
-    )
+    with executor_context(executor_dir):
+        pool = backend.start_pool(
+            server_url="http://127.0.0.1:1234",
+            auth_token="secret-token",
+        )
 
     assert pool.job_ids == ("100", "101")
     assert log_dir.is_dir()
@@ -133,6 +135,16 @@ def test_slurm_worker_pool_health_tracks_squeue_jobs(
     active_file.write_text("100\n")
 
     assert not pool.is_healthy()
+
+
+def test_slurm_backend_requires_log_dir_when_not_started_by_manager() -> None:
+    backend = SlurmWorkerBackend(advertised_host="manager.cluster")
+
+    with pytest.raises(RuntimeError, match="log_dir"):
+        backend.start_pool(
+            server_url="http://127.0.0.1:1234",
+            auth_token="secret-token",
+        )
 
 
 def test_slurm_worker_pool_join_cancels_jobs_left_after_timeout(

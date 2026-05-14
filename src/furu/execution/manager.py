@@ -3,11 +3,13 @@ from __future__ import annotations
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, assert_never
 from uuid import uuid4
 
 from furu.core import Furu
 from furu.dag import DagNode, _add_to_dag, _update_dag_blocking_dependencies
+from furu.execution.runtime import executor_dir_for_id, executor_id_from_objs
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
 from furu.worker.protocol import (
@@ -52,6 +54,11 @@ class Manager:
         self._finish_error: str | None = None
 
         _add_to_dag(self, objs)
+        self.executor_id = executor_id_from_objs(objs)
+
+    @property
+    def executor_dir(self) -> Path:
+        return executor_dir_for_id(self.executor_id)
 
     def run(
         self,

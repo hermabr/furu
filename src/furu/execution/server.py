@@ -12,6 +12,7 @@ import uvicorn
 
 from furu.execution.api import create_manager_api_app
 from furu.execution.manager import Manager
+from furu.execution.runtime import executor_context
 from furu.worker.backends import WorkerBackend
 
 
@@ -85,7 +86,14 @@ def _run_until_done(
     host: str,
     port: int,
 ) -> None:
-    with manager_server(manager, bind_host=host, port=port) as server:
+    with (
+        executor_context(manager.executor_dir),
+        manager_server(
+            manager,
+            bind_host=host,
+            port=port,
+        ) as server,
+    ):
         worker_pool = worker_backend.start_pool(
             server_url=server.server_url,
             auth_token=server.auth_token,

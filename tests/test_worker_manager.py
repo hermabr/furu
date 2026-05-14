@@ -1,3 +1,4 @@
+from pathlib import Path
 from uuid import UUID
 
 import httpx
@@ -7,9 +8,11 @@ from pydantic import TypeAdapter, ValidationError
 
 import furu.worker.loop as worker_loop_module
 from furu import Furu
+from furu.config import config
 from furu.execution import api
 from furu.execution.api import create_manager_api_app
 from furu.execution.manager import FailedJob, Manager, RunningJob
+from furu.execution.runtime import current_executor_dir, executor_id_from_objs
 from furu.execution.server import manager_server
 from furu.metadata import ArtifactSpec
 from furu.worker.backends.local import LocalThreadWorkerPool
@@ -53,6 +56,20 @@ def test_manager_init_partitions_ready_and_blocked() -> None:
     assert set(manager.ready) == {leaf.object_id}
     assert set(manager.blocked) == {parent.object_id}
     assert manager.running == {}
+
+
+def test_manager_executor_id_is_stable_hash_of_root_object_tuple() -> None:
+    left = ManagerLeaf(value=1)
+    right = ManagerLeaf(value=2)
+
+    manager = Manager([left, right])
+
+    assert manager.executor_id == executor_id_from_objs([left, right])
+    assert Manager([left, right]).executor_id == manager.executor_id
+    assert Manager([right, left]).executor_id != manager.executor_id
+    assert manager.executor_dir == (
+        config.directories.data.parent / "executions" / manager.executor_id
+    )
 
 
 def test_manager_job_result_completed_moves_dependents_to_ready() -> None:
@@ -244,6 +261,33 @@ def test_manager_run_uses_worker_backend() -> None:
     assert backend.server_urls[0].startswith("http://127.0.0.1:")
     assert len(backend.auth_tokens) == 1
     assert backend.auth_tokens[0]
+
+
+def test_manager_run_sets_executor_context_for_worker_backend() -> None:
+    class RecordingBackend:
+        def __init__(self) -> None:
+            self.executor_dirs: list[Path | None] = []
+
+        def start_pool(
+            self,
+            *,
+            server_url: str,
+            auth_token: str,
+        ) -> LocalThreadWorkerPool:
+            self.executor_dirs.append(current_executor_dir())
+            return LocalThreadWorkerPool(
+                server_url=server_url,
+                auth_token=auth_token,
+                n_workers=1,
+            )
+
+    leaf = ManagerLeaf(value=12)
+    manager = Manager([leaf])
+    backend = RecordingBackend()
+
+    manager.run(worker_backend=backend)
+
+    assert backend.executor_dirs == [manager.executor_dir.resolve()]
 
 
 def test_manager_server_exposes_bound_host_and_port() -> None:
