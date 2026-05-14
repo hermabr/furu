@@ -57,6 +57,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     work_dir.mkdir()
     executor_dir = tmp_path / "furu" / "executions" / "executor-1"
     log_dir = executor_dir / "workers" / "logs"
+    monkeypatch.chdir(work_dir)
 
     backend = SlurmWorkerBackend(
         advertised_host="manager.cluster",
@@ -67,8 +68,6 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
             mem="8G",
             extra_sbatch_args=("--exclusive",),
         ),
-        chdir=work_dir,
-        python_executable="/venv/bin/python",
         poll_interval=1.5,
     )
 
@@ -101,7 +100,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert "--mem=8G" in argv
     assert "--exclusive" in argv
     assert (
-        "--wrap=/venv/bin/python -m furu.worker.cli "
+        f"--wrap={sys.executable} -m furu.worker.cli "
         "--server-url http://manager.cluster:1234 --auth-token '<redacted>'"
     ) in argv
     assert not sbatch_records[0]["has_manager_environment"]
@@ -118,7 +117,6 @@ def test_slurm_worker_pool_health_tracks_squeue_jobs(
         advertised_host="127.0.0.1",
         n_workers=2,
         resources=SlurmResources(),
-        chdir=tmp_path,
         poll_interval=0,
     )
     pool = backend.start_pool(

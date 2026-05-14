@@ -57,8 +57,6 @@ class SlurmWorkerBackend:
     advertised_host: str
     n_workers: int
     resources: SlurmResources
-    chdir: Path | str | None = None
-    python_executable: str = sys.executable
     job_name: str = "furu-worker"
     poll_interval: float = 10.0
 
@@ -72,8 +70,7 @@ class SlurmWorkerBackend:
         if self.n_workers < 1:
             raise ValueError("SlurmWorkerBackend requires at least one worker")
 
-        base_dir = Path.cwd()
-        chdir = _resolve_path(self.chdir, base=base_dir)
+        chdir = Path.cwd().resolve()
         log_dir = executor_dir.resolve() / "workers" / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         worker_server_url = _with_advertised_host(
@@ -110,7 +107,7 @@ class SlurmWorkerBackend:
     ) -> list[str]:
         worker_command = shlex.join(
             [
-                self.python_executable,
+                sys.executable,
                 "-m",
                 "furu.worker.cli",
                 "--server-url",
@@ -209,15 +206,6 @@ class SlurmWorkerPool:
             for job_id, task_id in [_parse_squeue_array_task(line)]
             if job_id == self.array_job_id
         }
-
-
-def _resolve_path(path: Path | str | None, *, base: Path) -> Path:
-    if path is None:
-        return base.resolve()
-    resolved = Path(path).expanduser()
-    if not resolved.is_absolute():
-        resolved = base / resolved
-    return resolved.resolve()
 
 
 def _parse_sbatch_job_id(stdout: str) -> str:
