@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import urlsplit
 from uuid import UUID
 
 import httpx
@@ -367,13 +368,66 @@ def test_manager_run_waits_using_worker_pool_health_check_interval() -> None:
     _run_until_done(
         manager,
         worker_backend=RecordingBackend(pool),
-        host="127.0.0.1",
+        bind_host="127.0.0.1",
         port=0,
     )
 
     assert done.timeouts == [2.5]
     assert pool.health_checks == 0
     assert pool.join_timeouts == [5]
+
+
+def test_manager_run_passes_bound_url_while_binding_requested_interface() -> None:
+    class RecordingDone:
+        def wait(self, timeout: float | None = None) -> bool:
+            return True
+
+    class RecordingPool:
+        health_check_interval = 0.1
+
+        def is_healthy(self) -> bool:
+            return True
+
+        def join(self, *, timeout: float) -> None:
+            pass
+
+    class RecordingBackend:
+        def __init__(self) -> None:
+            self.server_urls: list[str] = []
+            self.bound_status_codes: list[int] = []
+
+        def start_pool(
+            self,
+            *,
+            server_url: str,
+            auth_token: str,
+            executor_dir: Path,
+        ) -> RecordingPool:
+            self.server_urls.append(server_url)
+            parsed_url = urlsplit(server_url)
+            assert parsed_url.hostname == "0.0.0.0"
+            assert parsed_url.port is not None
+            response = httpx.get(
+                f"http://127.0.0.1:{parsed_url.port}/not-found",
+                timeout=10.0,
+            )
+            self.bound_status_codes.append(response.status_code)
+            return RecordingPool()
+
+    manager = Manager([ManagerLeaf(value=13)])
+    backend = RecordingBackend()
+    cast(Any, manager).done = RecordingDone()
+
+    _run_until_done(
+        manager,
+        worker_backend=backend,
+        bind_host="0.0.0.0",
+        port=0,
+    )
+
+    assert len(backend.server_urls) == 1
+    assert backend.server_urls[0].startswith("http://0.0.0.0:")
+    assert backend.bound_status_codes == [404]
 
 
 def test_manager_server_exposes_bound_host_and_port() -> None:

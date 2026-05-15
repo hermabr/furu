@@ -6,7 +6,9 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from ipaddress import ip_address
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from furu.utils import write_private_file
 
@@ -60,6 +62,8 @@ class SlurmWorkerBackend:
     resources: SlurmResources
     job_name: str = "furu-worker"
     poll_interval: float = 10.0
+    advertised_host: str | None = None
+    allow_local_manager_url: bool = False
 
     def start_pool(
         self,
@@ -68,6 +72,15 @@ class SlurmWorkerBackend:
         auth_token: str,
         executor_dir: Path,
     ) -> SlurmWorkerPool:
+        server_url = _manager_url_for_workers(
+            server_url,
+            advertised_host=self.advertised_host,
+        )
+        _validate_manager_url(
+            server_url,
+            allow_local_manager_url=self.allow_local_manager_url,
+        )
+
         chdir = Path.cwd().resolve()
         worker_dir = executor_dir.resolve() / "workers"
         worker_dir.mkdir(parents=True, exist_ok=True)
@@ -208,3 +221,58 @@ class SlurmWorkerPool:
             }:
                 unfinished_task_ids.add(int(task_id))
         return unfinished_task_ids
+
+
+def _validate_manager_url(
+    server_url: str,
+    *,
+    allow_local_manager_url: bool,
+) -> None:
+    hostname = urlsplit(server_url).hostname
+    if hostname is None:
+        raise ValueError(
+            f"Slurm manager server URL must include a hostname: {server_url!r}"
+        )
+    if allow_local_manager_url or not _is_local_or_wildcard_host(hostname):
+        return
+    raise ValueError(
+        "Slurm workers need a manager URL reachable from compute nodes; "
+        f"{hostname!r} is local-only or a wildcard bind address. Pass "
+        "SlurmWorkerBackend(advertised_host=...) with a cluster-reachable "
+        "address, or set allow_local_manager_url=True only when the compute workers can "
+        "deliberately reach that address."
+    )
+
+
+def _manager_url_for_workers(server_url: str, *, advertised_host: str | None) -> str:
+    if advertised_host is None:
+        return server_url
+    parsed_url = urlsplit(server_url)
+    if parsed_url.hostname is None:
+        raise ValueError(
+            f"Slurm manager server URL must include a hostname: {server_url!r}"
+        )
+    if parsed_url.port is None:
+        raise ValueError(
+            f"Slurm manager server URL must include a port: {server_url!r}"
+        )
+    return parsed_url._replace(
+        netloc=f"{_format_url_host(advertised_host)}:{parsed_url.port}"
+    ).geturl()
+
+
+def _format_url_host(host: str) -> str:
+    if ":" in host and not host.startswith("["):
+        return f"[{host}]"
+    return host
+
+
+def _is_local_or_wildcard_host(hostname: str) -> bool:
+    normalized = hostname.rstrip(".").lower()
+    if normalized == "localhost":
+        return True
+    try:
+        address = ip_address(normalized)
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_unspecified
