@@ -17,6 +17,7 @@ from furu._storage_layout import (
 from furu.config import get_config
 from furu.locking import lock_many
 from furu.logging import get_logger
+from furu.resources import ResourceRequirements
 from furu.result import load_result_bundle
 from furu.result.codec import ResultRegistry, _default_result_registry
 from furu.schema import schema_type as _schema_type
@@ -96,6 +97,10 @@ class Furu[T](_FuruDataclassTransform, ABC):
     @property
     def result_registry(self) -> ResultRegistry:
         return _default_result_registry()
+
+    @property
+    def resource_requirements(self) -> ResourceRequirements | None:
+        return None
 
     @property
     def logger(self) -> logging.Logger:
