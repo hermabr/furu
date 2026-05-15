@@ -75,11 +75,15 @@ class Furu[T](_FuruDataclassTransform, ABC):
         _install_create_guards(cls)
 
     def create(self) -> T:
-        raise NotImplementedError("TODO")
+        raise NotImplementedError(
+            f"{type(self).__name__} must implement create() or create_batched()"
+        )
 
     @classmethod
     def create_batched[TFuru: Furu](cls: type[TFuru], objs: list[TFuru]) -> list[T]:
-        raise NotImplementedError("TODO")
+        raise NotImplementedError(
+            f"{cls.__name__} must implement create() or create_batched()"
+        )
 
     @classmethod
     def migrations(cls) -> tuple[Migration, ...]:
