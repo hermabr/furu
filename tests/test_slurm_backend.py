@@ -12,6 +12,9 @@ import pytest
 
 from furu.worker import cli
 from furu.worker.backends.slurm import (
+    Mem,
+    MemPerCpu,
+    MemPerGpu,
     SlurmResources,
     SlurmWorkerBackend,
     SlurmWorkerPool,
@@ -108,7 +111,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
         resources=SlurmResources(
             partition="debug",
             cpus_per_task=4,
-            mem="8G",
+            memory=Mem("8G"),
             extra_sbatch_args=("--exclusive",),
         ),
         advertised_host="manager.cluster",
@@ -166,6 +169,21 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert "secret-token" not in record_file.read_text()
 
     assert all(token_file.exists() for token_file in token_files)
+
+
+@pytest.mark.parametrize(
+    ("memory", "expected_arg"),
+    [
+        (Mem("8G"), "--mem=8G"),
+        (MemPerCpu("2G"), "--mem-per-cpu=2G"),
+        (MemPerGpu("16G"), "--mem-per-gpu=16G"),
+    ],
+)
+def test_slurm_resources_emit_one_memory_option(
+    memory: Mem | MemPerCpu | MemPerGpu,
+    expected_arg: str,
+) -> None:
+    assert SlurmResources(memory=memory).to_sbatch_args() == [expected_arg]
 
 
 def test_slurm_backend_rewrites_manager_url_to_advertised_host(

@@ -12,6 +12,33 @@ from furu.utils import write_private_file
 
 
 @dataclass(frozen=True, slots=True)
+class Mem:
+    value: str
+
+    def to_sbatch_arg(self) -> str:
+        return f"--mem={self.value}"
+
+
+@dataclass(frozen=True, slots=True)
+class MemPerCpu:
+    value: str
+
+    def to_sbatch_arg(self) -> str:
+        return f"--mem-per-cpu={self.value}"
+
+
+@dataclass(frozen=True, slots=True)
+class MemPerGpu:
+    value: str
+
+    def to_sbatch_arg(self) -> str:
+        return f"--mem-per-gpu={self.value}"
+
+
+type SlurmMemory = Mem | MemPerCpu | MemPerGpu
+
+
+@dataclass(frozen=True, slots=True)
 class SlurmResources:
     account: str | None = None
     partition: str | None = None
@@ -20,8 +47,7 @@ class SlurmResources:
     nodes: int | None = None
     ntasks: int | None = None
     cpus_per_task: int | None = None
-    mem: str | None = None
-    mem_per_cpu: str | None = None
+    memory: SlurmMemory | None = None
     gres: str | None = None
     constraint: str | None = None
     extra_sbatch_args: tuple[str, ...] = ()
@@ -42,10 +68,8 @@ class SlurmResources:
             args.append(f"--ntasks={self.ntasks}")
         if self.cpus_per_task is not None:
             args.append(f"--cpus-per-task={self.cpus_per_task}")
-        if self.mem is not None:
-            args.append(f"--mem={self.mem}")
-        if self.mem_per_cpu is not None:
-            args.append(f"--mem-per-cpu={self.mem_per_cpu}")
+        if self.memory is not None:
+            args.append(self.memory.to_sbatch_arg())
         if self.gres is not None:
             args.append(f"--gres={self.gres}")
         if self.constraint is not None:
