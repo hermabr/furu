@@ -142,8 +142,6 @@ class Furu[T](_FuruDataclassTransform, ABC):
         if not self._base_dir.exists():
             return False
 
-        self._base_dir.mkdir(parents=True, exist_ok=True)
-
         tombstone_path: Path | None = None
         try:
             with lock_many([compute_lock_path_in(self._base_dir)]):
