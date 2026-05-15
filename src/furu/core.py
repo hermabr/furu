@@ -74,17 +74,20 @@ class Furu[T](_FuruDataclassTransform, ABC):
         cls._furu_create_mode = _resolve_create_mode(cls)
         _install_create_guards(cls)
 
+    @final
     def load_or_create(self, use_lock: bool = True) -> T:
         from furu.execution import load_or_create
 
         return load_or_create(self, use_lock=use_lock)
 
+    @final
     @classmethod
     def from_artifact[TFuru: Furu](cls: type[TFuru], artifact: ArtifactSpec) -> TFuru:
         from furu.serialize import _from_artifact
 
         return _from_artifact(artifact, cls)
 
+    @final
     def status(
         self,
     ) -> Literal[
@@ -100,6 +103,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
             return "failed"
         return "missing"
 
+    @final
     def try_load(self) -> T:  # TODO: make a better name for this
         from furu.dependencies import record_dependency_call
         from furu.migration import result_dir_for_loading
@@ -124,14 +128,17 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def migrations(cls) -> tuple[Migration, ...]:
         return ()
 
+    @final
     def migrate(self) -> bool:
         from furu.migration import migrate
 
         return migrate(self)
 
+    @final
     def is_migrated(self) -> bool:
         return result_link_path_in(self._base_dir).exists()
 
+    @final
     def delete(self, mode: Literal["prompt", "force"] = "prompt") -> bool:
         if not self._base_dir.exists():
             return False
@@ -175,32 +182,38 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def create_batched[TFuru: Furu](cls: type[TFuru], objs: list[TFuru]) -> list[T]:
         raise NotImplementedError("TODO")
 
+    @final
     @cached_property
     def artifact_data(  # TODO: make sure this doesn't prevent garbage collection
         self,
     ) -> dict[str, JsonValue]:
         return _to_json(self)  # ty:ignore[invalid-return-type] # TODO: check this or make _to_json return dict[str, JsonValue] or typed value
 
+    @final
     @cached_property
     def artifact_hash(  # TODO: should this be __hash__?
         self,
     ) -> str:
         return _hash_dict_deterministically(self.artifact_data)
 
+    @final
     @cached_property
     def schema_data(
         self,
     ) -> JsonValue:
         return _schema_type(type(self), set())
 
+    @final
     @cached_property
     def artifact_schema_hash(self) -> str:
         return _hash_dict_deterministically(self.schema_data)
 
+    @final
     @cached_property
     def _fully_qualified_name(self) -> str:
         return fully_qualified_name(type(self))
 
+    @final
     @cached_property
     def object_id(self) -> str:
         return object_id_from_parts(
@@ -213,6 +226,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def storage_root(self) -> Path:
         return get_config().directories.objects
 
+    @final
     @cached_property
     def _base_dir(self) -> Path:
         return (
@@ -229,6 +243,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
         data_dir.mkdir(parents=True, exist_ok=True)
         return data_dir
 
+    @final
     @cached_property
     def _log_label(self) -> str:
         return (
