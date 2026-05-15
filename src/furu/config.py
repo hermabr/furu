@@ -15,7 +15,6 @@ class _FuruDirectories(BaseSettings):
 
     objects: Path
     executions: Path
-    # TODO: make this better and more user configurable, so that it is easy for the user to define exactly which paths they want to save to and which furu objects should save where
 
     @classmethod
     def default(cls) -> Self:
