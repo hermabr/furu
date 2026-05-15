@@ -105,6 +105,15 @@ class Furu[T](_FuruDataclassTransform, ABC):
         return data_dir
 
     @final
+    @cached_property
+    def object_id(self) -> str:
+        return object_id_from_parts(
+            fully_qualified_name=self._fully_qualified_name,
+            schema_hash=self._artifact_schema_hash,
+            artifact_hash=self._artifact_hash,
+        )
+
+    @final
     def load_or_create(self, use_lock: bool = True) -> T:
         from furu.execution import load_or_create
 
@@ -223,15 +232,6 @@ class Furu[T](_FuruDataclassTransform, ABC):
     @cached_property
     def _fully_qualified_name(self) -> str:
         return fully_qualified_name(type(self))
-
-    @final
-    @cached_property
-    def object_id(self) -> str:
-        return object_id_from_parts(
-            fully_qualified_name=self._fully_qualified_name,
-            schema_hash=self._artifact_schema_hash,
-            artifact_hash=self._artifact_hash,
-        )
 
     @final
     @cached_property
