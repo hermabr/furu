@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict
 
 from furu.constants import FIELDSMARKER
 from furu._storage_layout import (
-    ensure_object_dirs_in,
+    ensure_base_dir_in,
     metadata_path_in,
     result_dir_in,
     result_link_path_in,
@@ -193,7 +193,7 @@ def migrate[T](obj: Furu[T]) -> bool:
                 source=source_link.source,
                 migration_path=full_path,
             )
-            ensure_object_dirs_in(obj._base_dir)
+            ensure_base_dir_in(obj._base_dir)
             result_link_path_in(obj._base_dir).write_text(
                 result_link.model_dump_json(indent=2), encoding="utf-8"
             )

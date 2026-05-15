@@ -25,7 +25,7 @@ from furu.result import load_result_bundle, save_result_bundle
 from furu.result.save_as import _unwrap_save_as
 from furu._storage_layout import (
     compute_lock_path_in,
-    ensure_object_dirs_in,
+    ensure_base_dir_in,
     metadata_path_in,
     result_dir_in,
     run_log_path_in,
@@ -199,7 +199,7 @@ def _ensure_single_result[T](obj: Furu[T]) -> None:
         obj.logger.info("cache hit for %s at %s", obj._log_label, cached_result_dir)
         return
 
-    ensure_object_dirs_in(obj._base_dir)
+    ensure_base_dir_in(obj._base_dir)
 
     with lock_many([compute_lock_path_in(obj._base_dir)]) as has_lock:
         if (cached_result_dir := result_dir_for_loading(obj)) is not None:
@@ -293,7 +293,7 @@ def _load_or_create_local[T](
                 T, load_result_bundle(cached_result_dir)
             )
         else:
-            ensure_object_dirs_in(obj._base_dir)
+            ensure_base_dir_in(obj._base_dir)
             missing.append(obj)
 
     lock_ctx = (

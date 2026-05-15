@@ -1319,6 +1319,25 @@ def test_data_dir_is_user_data_subdirectory() -> None:
     assert not (obj._base_dir / ".furu").exists()
 
 
+def test_unused_data_dir_is_not_created_by_load_or_create() -> None:
+    node = Node(name="unused-data")
+    user_data_path = node._base_dir / "data"
+
+    assert node.load_or_create() == "Node(unused-data)"
+
+    assert not user_data_path.exists()
+
+
+def test_data_dir_property_creates_user_data_subdirectory_without_failure() -> None:
+    node = Node(name="manual-data")
+    user_data_path = node._base_dir / "data"
+
+    assert not user_data_path.exists()
+    assert node.data_dir == user_data_path
+    assert user_data_path.exists()
+    assert node.status() == "missing"
+
+
 def test_status_is_running_while_compute_lock_is_held() -> None:
     node = Node(name="x")
     node._base_dir.mkdir(parents=True, exist_ok=True)

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from furu._storage_layout import metadata_path_in
+from furu._storage_layout import data_dir_in, metadata_path_in
 from furu.utils import JsonValue, object_id_from_parts
 
 if TYPE_CHECKING:
@@ -83,7 +83,7 @@ class RunningMetadata(BaseModel):
     ) -> RunningMetadata:
         metadata = cls(
             artifact=ArtifactSpec.from_furu(obj),
-            data_path=obj.data_dir,
+            data_path=data_dir_in(obj._base_dir),
             started_at=datetime.now(timezone.utc),
         )
         metadata_path_in(obj._base_dir).write_text(metadata.model_dump_json(indent=2))
