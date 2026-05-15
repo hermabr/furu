@@ -111,6 +111,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
             mem="8G",
             extra_sbatch_args=("--exclusive",),
         ),
+        advertised_host="manager.cluster",
         poll_interval=1.5,
     )
 
@@ -167,6 +168,35 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert all(token_file.exists() for token_file in token_files)
 
 
+def test_slurm_backend_rewrites_manager_url_to_advertised_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    backend = SlurmWorkerBackend(
+        n_workers=1,
+        resources=SlurmResources(),
+        advertised_host="manager.cluster",
+    )
+
+    pool = backend.start_pool(
+        server_url="http://0.0.0.0:4321",
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+    )
+
+    assert pool.array_job_id == "100"
+
+    records = _read_records(record_file)
+    sbatch_records = [record for record in records if record["executable"] == "sbatch"]
+    assert len(sbatch_records) == 1
+
+    script_path = Path(sbatch_records[0]["argv"][-1])
+    script = script_path.read_text()
+    assert "--server-url http://manager.cluster:4321" in script
+    assert "http://0.0.0.0:4321" not in script
+
+
 def test_slurm_worker_pool_health_tracks_sacct_jobs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -175,10 +205,11 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
     backend = SlurmWorkerBackend(
         n_workers=2,
         resources=SlurmResources(),
+        advertised_host="manager.cluster",
         poll_interval=0,
     )
     pool = backend.start_pool(
-        server_url="http://127.0.0.1:1234",
+        server_url="http://manager.cluster:1234",
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
     )
@@ -206,6 +237,7 @@ def test_slurm_backend_requires_explicit_executor_dir() -> None:
     backend = SlurmWorkerBackend(
         n_workers=1,
         resources=SlurmResources(),
+        advertised_host="manager.cluster",
     )
 
     with pytest.raises(TypeError, match="executor_dir"):
@@ -237,6 +269,7 @@ def test_slurm_backend_uses_default_poll_interval() -> None:
     backend = SlurmWorkerBackend(
         n_workers=1,
         resources=SlurmResources(),
+        advertised_host="manager.cluster",
     )
 
     assert backend.poll_interval == 10.0

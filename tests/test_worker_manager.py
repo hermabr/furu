@@ -367,7 +367,7 @@ def test_manager_run_waits_using_worker_pool_health_check_interval() -> None:
     _run_until_done(
         manager,
         worker_backend=RecordingBackend(pool),
-        host="127.0.0.1",
+        bind_host="127.0.0.1",
         port=0,
     )
 

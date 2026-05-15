@@ -72,12 +72,17 @@ class Manager:
         self,
         *,
         worker_backend: WorkerBackend,
-        host: str = "127.0.0.1",
+        bind_host: str = "127.0.0.1",
         port: int = 0,
     ) -> None:
         from furu.execution.server import _run_until_done
 
-        _run_until_done(self, worker_backend=worker_backend, host=host, port=port)
+        _run_until_done(
+            self,
+            worker_backend=worker_backend,
+            bind_host=bind_host,
+            port=port,
+        )
 
     @contextmanager
     def log_context(self) -> Iterator[None]:

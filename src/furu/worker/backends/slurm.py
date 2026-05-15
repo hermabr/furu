@@ -58,6 +58,7 @@ class SlurmResources:
 class SlurmWorkerBackend:
     n_workers: int
     resources: SlurmResources
+    advertised_host: str
     job_name: str = "furu-worker"
     poll_interval: float = 10.0
 
@@ -68,6 +69,11 @@ class SlurmWorkerBackend:
         auth_token: str,
         executor_dir: Path,
     ) -> SlurmWorkerPool:
+        scheme, rest = server_url.split("://", maxsplit=1)
+        server_url = (
+            f"{scheme}://{self.advertised_host}:{rest.rsplit(':', maxsplit=1)[1]}"
+        )
+
         chdir = Path.cwd().resolve()
         worker_dir = executor_dir.resolve() / "workers"
         worker_dir.mkdir(parents=True, exist_ok=True)
