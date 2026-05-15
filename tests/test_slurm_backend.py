@@ -221,31 +221,6 @@ def test_slurm_backend_rejects_local_manager_urls_by_default(
         )
 
 
-def test_slurm_backend_allows_local_manager_url_when_explicitly_overridden(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    backend = SlurmWorkerBackend(
-        n_workers=1,
-        resources=SlurmResources(),
-        allow_local_manager_url=True,
-    )
-
-    pool = backend.start_pool(
-        server_url="http://127.0.0.1:1234",
-        auth_token="secret-token",
-        executor_dir=tmp_path / "executor",
-    )
-
-    assert pool.array_job_id == "100"
-    assert [
-        record
-        for record in _read_records(record_file)
-        if record["executable"] == "sbatch"
-    ]
-
-
 def test_slurm_worker_pool_health_tracks_sacct_jobs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

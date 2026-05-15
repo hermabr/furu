@@ -26,18 +26,8 @@ class ManagerServer:
     auth_token: str
 
     @property
-    def bound_url(self) -> str:
-        return _http_url(self.bound_host, self.bound_port)
-
-    @property
     def server_url(self) -> str:
-        return self.bound_url
-
-
-def _http_url(host: str, port: int) -> str:
-    if ":" in host and not host.startswith("["):
-        host = f"[{host}]"
-    return f"http://{host}:{port}"
+        return f"http://{self.bound_host}:{self.bound_port}"
 
 
 @contextmanager
