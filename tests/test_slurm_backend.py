@@ -111,6 +111,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
             mem="8G",
             extra_sbatch_args=("--exclusive",),
         ),
+        advertised_host="manager.cluster",
         poll_interval=1.5,
     )
 
@@ -196,31 +197,6 @@ def test_slurm_backend_rewrites_manager_url_to_advertised_host(
     assert "http://0.0.0.0:4321" not in script
 
 
-@pytest.mark.parametrize(
-    "server_url",
-    [
-        "http://localhost:1234",
-        "http://127.0.0.1:1234",
-        "http://0.0.0.0:1234",
-    ],
-)
-def test_slurm_backend_rejects_local_manager_urls_by_default(
-    tmp_path: Path,
-    server_url: str,
-) -> None:
-    backend = SlurmWorkerBackend(
-        n_workers=1,
-        resources=SlurmResources(),
-    )
-
-    with pytest.raises(ValueError, match="cluster-reachable"):
-        backend.start_pool(
-            server_url=server_url,
-            auth_token="secret-token",
-            executor_dir=tmp_path / "executor",
-        )
-
-
 def test_slurm_worker_pool_health_tracks_sacct_jobs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -229,6 +205,7 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
     backend = SlurmWorkerBackend(
         n_workers=2,
         resources=SlurmResources(),
+        advertised_host="manager.cluster",
         poll_interval=0,
     )
     pool = backend.start_pool(
@@ -260,6 +237,7 @@ def test_slurm_backend_requires_explicit_executor_dir() -> None:
     backend = SlurmWorkerBackend(
         n_workers=1,
         resources=SlurmResources(),
+        advertised_host="manager.cluster",
     )
 
     with pytest.raises(TypeError, match="executor_dir"):
@@ -291,6 +269,7 @@ def test_slurm_backend_uses_default_poll_interval() -> None:
     backend = SlurmWorkerBackend(
         n_workers=1,
         resources=SlurmResources(),
+        advertised_host="manager.cluster",
     )
 
     assert backend.poll_interval == 10.0

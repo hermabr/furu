@@ -58,9 +58,9 @@ class SlurmResources:
 class SlurmWorkerBackend:
     n_workers: int
     resources: SlurmResources
+    advertised_host: str
     job_name: str = "furu-worker"
     poll_interval: float = 10.0
-    advertised_host: str | None = None
 
     def start_pool(
         self,
@@ -69,16 +69,10 @@ class SlurmWorkerBackend:
         auth_token: str,
         executor_dir: Path,
     ) -> SlurmWorkerPool:
-        if self.advertised_host is None and any(
-            host in server_url
-            for host in ("//localhost:", "//127.0.0.1:", "//0.0.0.0:")
-        ):
-            raise ValueError("Slurm workers need a cluster-reachable manager URL")
-        if self.advertised_host is not None:
-            scheme, rest = server_url.split("://", maxsplit=1)
-            server_url = (
-                f"{scheme}://{self.advertised_host}:{rest.rsplit(':', maxsplit=1)[1]}"
-            )
+        scheme, rest = server_url.split("://", maxsplit=1)
+        server_url = (
+            f"{scheme}://{self.advertised_host}:{rest.rsplit(':', maxsplit=1)[1]}"
+        )
 
         chdir = Path.cwd().resolve()
         worker_dir = executor_dir.resolve() / "workers"
