@@ -55,7 +55,7 @@ def pytest_configure(config: pytest.Config) -> None:
     run_config = _replace_config_directories(
         get_config(),
         _FuruDirectories(
-            data=run_base_directory / "data",
+            objects=run_base_directory / "objects",
             executions=run_base_directory / "executions",
         ),
     )
@@ -85,7 +85,7 @@ def pytest_unconfigure(config: pytest.Config) -> None:
                 )
             shutil.rmtree(path, ignore_errors=True)
     else:
-        print(f"kept furu data at {state.run_config.directories.data}")
+        print(f"kept furu objects at {state.run_config.directories.objects}")
         print(f"kept furu executions at {state.run_config.directories.executions}")
 
 
@@ -102,13 +102,13 @@ def _furu_per_test_base_directory(
     previous_config = get_config()
 
     test_id = hashlib.sha1(request.node.nodeid.encode("utf-8")).hexdigest()[:12]
-    test_data_directory = state.run_config.directories.data / test_id
+    test_objects_directory = state.run_config.directories.objects / test_id
     test_executions_directory = state.run_config.directories.executions / test_id
 
     furu_config._config = _replace_config_directories(
         previous_config,
         _FuruDirectories(
-            data=test_data_directory,
+            objects=test_objects_directory,
             executions=test_executions_directory,
         ),
     )

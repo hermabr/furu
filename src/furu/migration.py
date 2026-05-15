@@ -9,8 +9,7 @@ from typing import TYPE_CHECKING, cast
 from pydantic import BaseModel, ConfigDict
 
 from furu.constants import FIELDSMARKER
-from furu.storage_layout import (
-    internal_furu_dir_in,
+from furu._storage_layout import (
     metadata_path_in,
     result_dir_in,
     result_link_path_in,
@@ -64,7 +63,7 @@ class _ResultLinkSource(BaseModel):
     fully_qualified_name: str
     schema_hash: str
     artifact_hash: str
-    data_dir: Path
+    base_dir: Path
 
 
 class _ResultLink(BaseModel):
@@ -79,23 +78,23 @@ _Node = tuple[str, str]
 
 
 def result_dir_for_loading[T](obj: Furu[T]) -> Path | None:
-    if result_manifest_path_in(obj.data_dir).exists():
-        return result_dir_in(obj.data_dir)
-    link_path = result_link_path_in(obj.data_dir)
+    if result_manifest_path_in(obj._base_dir).exists():
+        return result_dir_in(obj._base_dir)
+    link_path = result_link_path_in(obj._base_dir)
     if not link_path.exists():
         return None
     link = _ResultLink.model_validate_json(link_path.read_text(encoding="utf-8"))
-    result_dir = result_dir_in(link.source.data_dir)
-    if not result_manifest_path_in(link.source.data_dir).exists():
+    result_dir = result_dir_in(link.source.base_dir)
+    if not result_manifest_path_in(link.source.base_dir).exists():
         raise RuntimeError(f"{link_path} points to a missing result")
     return result_dir
 
 
 def migrate[T](obj: Furu[T]) -> bool:
-    if result_link_path_in(obj.data_dir).exists():
+    if result_link_path_in(obj._base_dir).exists():
         result_dir_for_loading(obj)
         return True
-    if result_manifest_path_in(obj.data_dir).exists():
+    if result_manifest_path_in(obj._base_dir).exists():
         return False
 
     migrations = type(obj).migrations()
@@ -104,9 +103,9 @@ def migrate[T](obj: Furu[T]) -> bool:
 
     target_node = (
         fully_qualified_name(type(obj)),
-        obj.artifact_schema_hash,
+        obj._artifact_schema_hash,
     )
-    target_fields = cast(JsonFields, obj.artifact_data[FIELDSMARKER])
+    target_fields = cast(JsonFields, obj._artifact_data[FIELDSMARKER])
 
     by_target: defaultdict[_Node, list[Migration]] = defaultdict(list)
     for migration in migrations:
@@ -160,7 +159,7 @@ def migrate[T](obj: Furu[T]) -> bool:
                         fully_qualified_name=artifact.fully_qualified_name,
                         schema_hash=artifact.schema_hash,
                         artifact_hash=artifact.artifact_hash,
-                        data_dir=artifact_dir,
+                        base_dir=artifact_dir,
                     ),
                     migration_path=(),
                 )
@@ -186,15 +185,15 @@ def migrate[T](obj: Furu[T]) -> bool:
             result_link = _ResultLink(
                 current=_ResultLinkCurrent(
                     fully_qualified_name=fully_qualified_name(type(obj)),
-                    schema_hash=obj.artifact_schema_hash,
-                    artifact_hash=obj.artifact_hash,
+                    schema_hash=obj._artifact_schema_hash,
+                    artifact_hash=obj._artifact_hash,
                     fields=target_fields,
                 ),
                 source=source_link.source,
                 migration_path=full_path,
             )
-            internal_furu_dir_in(obj.data_dir).mkdir(parents=True, exist_ok=True)
-            result_link_path_in(obj.data_dir).write_text(
+            obj._base_dir.mkdir(parents=True, exist_ok=True)
+            result_link_path_in(obj._base_dir).write_text(
                 result_link.model_dump_json(indent=2), encoding="utf-8"
             )
             return True

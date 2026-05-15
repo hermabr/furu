@@ -22,9 +22,8 @@ from furu.metadata import ArtifactSpec
 from furu.result import load_result_bundle, save_result_bundle
 from furu.result.codec import _default_result_registry
 from furu.serialize import _from_json, to_json
-from furu.storage_layout import (
+from furu._storage_layout import (
     compute_lock_path_in,
-    internal_furu_dir_in,
     metadata_path_in,
     result_dir_in,
     result_manifest_path_in,
@@ -81,6 +80,15 @@ class RandomObj(Furu[float]):
         import random
 
         return random.random()
+
+
+class UserDataWritingValue(Furu[str]):
+    name: str
+
+    def create(self) -> str:
+        payload_path = self.data_dir / "payload.txt"
+        payload_path.write_text(self.name, encoding="utf-8")
+        return payload_path.read_text(encoding="utf-8")
 
 
 class Fruit(Enum):  # TODO: test enums at some point
@@ -355,8 +363,8 @@ class MetadataTimingValue(Furu[str]):
         type(self).create_events.append(
             (
                 self.key,
-                metadata_path_in(self.data_dir).exists(),
-                metadata_path_in(sibling.data_dir).exists(),
+                metadata_path_in(self._base_dir).exists(),
+                metadata_path_in(sibling._base_dir).exists(),
             )
         )
         return f"timed:{self.key}"
@@ -425,7 +433,7 @@ class TryLoadDependencyParent(Furu[str]):
     def create(self) -> str:
         try:
             Node(name=self.name).try_load()
-        except NotImplementedError:
+        except RuntimeError:
             return "missing"
         return "loaded"
 
@@ -666,23 +674,23 @@ def test_hashes_and_data_dir():
     assert (
         NodePair(
             name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
-        ).artifact_hash
+        )._artifact_hash
         == "685af925669262434640"
     )
 
     assert (
         NodePair(
             name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
-        ).artifact_hash
+        )._artifact_hash
         != NodePair(
             name="z", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
-        ).artifact_hash
+        )._artifact_hash
     )
 
     assert (
         NodePair(
             name="y", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
-        ).artifact_schema_hash
+        )._artifact_schema_hash
         == "21733b1febfab88b565c"
     )
 
@@ -706,13 +714,13 @@ def test_hashes_and_data_dir():
     assert (
         B(
             a=A(x=1, z="123", w=[6, 7]), y={"hey": 123, True: 1}, t=("123", 12)
-        ).artifact_schema_hash
+        )._artifact_schema_hash
         != B_priv(
             a=A(x=1, z="123", w=[6, 7]),
             y={"hey": 123, True: 1},
             t=("123", 12),
             _h=1,
-        ).artifact_schema_hash
+        )._artifact_schema_hash
     )
 
     def qualname_alias(cls: type[Furu[object]], *, ret_typ: type) -> type[Furu[object]]:
@@ -731,13 +739,13 @@ def test_hashes_and_data_dir():
     assert (
         B(
             a=A(x=1, z="123", w=[6, 7]), y={"ney": 123, True: 1}, t=("123", 12)
-        ).artifact_schema_hash
+        )._artifact_schema_hash
         != B_priv_as_B(
             a=A(x=1, z="123", w=[6, 7]),
             y={"hey": 123, "ney": 1},
             t=("123", 12),
             _h=1,
-        ).artifact_schema_hash
+        )._artifact_schema_hash
     )
 
 
@@ -864,7 +872,7 @@ def expected_schema_for_B_like(
     ],
 )
 def test_schema(make: Callable[[], Furu], expected):
-    assert make().schema_data == expected
+    assert make()._schema_data == expected
 
 
 def test_to_json():
@@ -889,8 +897,8 @@ def test_to_json():
         },
     }
     assert to_json(node_pair) == expected
-    assert to_json(node_pair) == node_pair.artifact_data
-    assert node_pair.artifact_data == expected
+    assert to_json(node_pair) == node_pair._artifact_data
+    assert node_pair._artifact_data == expected
 
 
 def test_to_json_with_none_field():
@@ -923,12 +931,12 @@ def test_to_json_with_class_field_value():
     obj = UsesClassValue(node_cls=Node)
 
     assert to_json(Node) == {"|kind": "type_ref", "|class": "test_core.Node"}
-    assert obj.artifact_data == {
+    assert obj._artifact_data == {
         "|kind": "instance",
         "|class": "test_core.UsesClassValue",
         "|fields": {"node_cls": {"|kind": "type_ref", "|class": "test_core.Node"}},
     }
-    assert isinstance(obj.artifact_hash, str)
+    assert isinstance(obj._artifact_hash, str)
 
 
 def test_to_json_with_pydantic_field_value():
@@ -947,8 +955,8 @@ def test_to_json_with_pydantic_field_value():
     }
 
     assert to_json(obj) == expected
-    assert obj.artifact_data == expected
-    assert isinstance(obj.artifact_hash, str)
+    assert obj._artifact_data == expected
+    assert isinstance(obj._artifact_hash, str)
 
 
 def test_furu_object_round_trips_from_json_artifact():
@@ -958,7 +966,7 @@ def test_furu_object_round_trips_from_json_artifact():
         node2=WeightedNode(name="z", weight=1),
     )
 
-    loaded = _from_json(obj.artifact_data)
+    loaded = _from_json(obj._artifact_data)
 
     assert loaded == obj
     assert isinstance(loaded, NodePair)
@@ -969,9 +977,9 @@ def test_furu_object_with_typed_fields_round_trips_from_json_artifact():
     path_obj = UsesPath(path=Path("/tmp/out"))
     class_obj = UsesClassValue(node_cls=Node)
 
-    assert _from_json(path_obj.artifact_data) == path_obj
-    assert _from_json(class_obj.artifact_data) == class_obj
-    assert isinstance(cast(UsesPath, _from_json(path_obj.artifact_data)).path, Path)
+    assert _from_json(path_obj._artifact_data) == path_obj
+    assert _from_json(class_obj._artifact_data) == class_obj
+    assert isinstance(cast(UsesPath, _from_json(path_obj._artifact_data)).path, Path)
 
 
 def test_furu_from_artifact_returns_furu_object():
@@ -983,28 +991,30 @@ def test_furu_from_artifact_returns_furu_object():
     obj.load_or_create()
     artifact = ArtifactSpec(
         fully_qualified_name=obj._fully_qualified_name,
-        artifact_data=obj.artifact_data,
-        artifact_hash=obj.artifact_hash,
-        schema_data=obj.schema_data,
-        schema_hash=obj.artifact_schema_hash,
+        artifact_data=obj._artifact_data,
+        artifact_hash=obj._artifact_hash,
+        schema_data=obj._schema_data,
+        schema_hash=obj._artifact_schema_hash,
     )
 
     loaded = NodePair.from_artifact(artifact)
-    raw_metadata = json.loads(metadata_path_in(obj.data_dir).read_text())
+    raw_metadata = json.loads(metadata_path_in(obj._base_dir).read_text())
 
     assert artifact.object_id == obj.object_id
-    assert artifact.schema_data == obj.schema_data
+    assert artifact.schema_data == obj._schema_data
     assert "schema_data" in type(artifact).model_fields
     assert loaded == obj
     assert isinstance(loaded, NodePair)
     assert loaded.data_dir == obj.data_dir
     assert raw_metadata["kind"] == "completed"
+    assert raw_metadata["base_path"] == str(obj._base_dir)
+    assert "data_path" not in raw_metadata
     assert raw_metadata["artifact"] == {
         "fully_qualified_name": obj._fully_qualified_name,
-        "artifact_data": obj.artifact_data,
-        "artifact_hash": obj.artifact_hash,
-        "schema_data": obj.schema_data,
-        "schema_hash": obj.artifact_schema_hash,
+        "artifact_data": obj._artifact_data,
+        "artifact_hash": obj._artifact_hash,
+        "schema_data": obj._schema_data,
+        "schema_hash": obj._artifact_schema_hash,
     }
     assert "hash" not in raw_metadata["artifact"]
     assert "artifact_schema" not in raw_metadata
@@ -1012,7 +1022,7 @@ def test_furu_from_artifact_returns_furu_object():
 
 
 def _dependency_object_ids(obj: Furu) -> list[str]:
-    metadata = json.loads(metadata_path_in(obj.data_dir).read_text())
+    metadata = json.loads(metadata_path_in(obj._base_dir).read_text())
     return metadata["observed_dependencies"]
 
 
@@ -1072,8 +1082,20 @@ def test_try_load_inside_create_is_recorded_even_on_missing_result() -> None:
 
     assert parent.load_or_create() == "missing"
 
-    metadata = json.loads(metadata_path_in(parent.data_dir).read_text())
+    metadata = json.loads(metadata_path_in(parent._base_dir).read_text())
     assert metadata["observed_dependencies"] == [Node(name="optional").object_id]
+
+
+def test_try_load_missing_result_explains_how_to_compute() -> None:
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            r"Node:[a-f0-9]{5}:[a-f0-9]{5}\.try_load\(\) could not find a result\. "
+            r"try_load\(\) only loads existing results; use load_or_create\(\) to "
+            r"compute missing results\."
+        ),
+    ):
+        Node(name="missing").try_load()
 
 
 def test_furu_objects_block_nested_eager_traversal_but_direct_runtime_loads_are_recorded() -> (
@@ -1121,10 +1143,10 @@ def test_furu_from_artifact_infers_furu_object_type():
     obj.load_or_create()
     artifact = ArtifactSpec(
         fully_qualified_name=obj._fully_qualified_name,
-        artifact_data=obj.artifact_data,
-        artifact_hash=obj.artifact_hash,
-        schema_data=obj.schema_data,
-        schema_hash=obj.artifact_schema_hash,
+        artifact_data=obj._artifact_data,
+        artifact_hash=obj._artifact_hash,
+        schema_data=obj._schema_data,
+        schema_hash=obj._artifact_schema_hash,
     )
 
     loaded = Furu.from_artifact(artifact)
@@ -1137,7 +1159,7 @@ def test_furu_from_artifact_infers_furu_object_type():
 def test_furu_from_artifact_accepts_loaded_metadata_artifact():
     obj = Node(name="x")
     obj.load_or_create()
-    metadata = json.loads(metadata_path_in(obj.data_dir).read_text())
+    metadata = json.loads(metadata_path_in(obj._base_dir).read_text())
     artifact = ArtifactSpec(**metadata["artifact"])
 
     loaded = Node.from_artifact(artifact)
@@ -1151,10 +1173,10 @@ def test_furu_from_artifact_accepts_artifact_spec():
     obj = Node(name="x")
     artifact = ArtifactSpec(
         fully_qualified_name=obj._fully_qualified_name,
-        artifact_data=obj.artifact_data,
-        artifact_hash=obj.artifact_hash,
-        schema_data=obj.schema_data,
-        schema_hash=obj.artifact_schema_hash,
+        artifact_data=obj._artifact_data,
+        artifact_hash=obj._artifact_hash,
+        schema_data=obj._schema_data,
+        schema_hash=obj._artifact_schema_hash,
     )
 
     loaded = Node.from_artifact(artifact)
@@ -1168,10 +1190,10 @@ def test_furu_from_artifact_type_mismatch_names_expected_and_loaded_type():
     obj = WeightedNode(name="x", weight=1)
     artifact = ArtifactSpec(
         fully_qualified_name=obj._fully_qualified_name,
-        artifact_data=obj.artifact_data,
-        artifact_hash=obj.artifact_hash,
-        schema_data=obj.schema_data,
-        schema_hash=obj.artifact_schema_hash,
+        artifact_data=obj._artifact_data,
+        artifact_hash=obj._artifact_hash,
+        schema_data=obj._schema_data,
+        schema_hash=obj._artifact_schema_hash,
     )
 
     with pytest.raises(
@@ -1189,17 +1211,17 @@ def test_furu_from_artifact_rejects_artifact_spec_hash_mismatch():
     bad_hash = "wrong-artifact-hash"
     artifact = ArtifactSpec(
         fully_qualified_name=obj._fully_qualified_name,
-        artifact_data=obj.artifact_data,
+        artifact_data=obj._artifact_data,
         artifact_hash=bad_hash,
-        schema_data=obj.schema_data,
-        schema_hash=obj.artifact_schema_hash,
+        schema_data=obj._schema_data,
+        schema_hash=obj._artifact_schema_hash,
     )
 
     with pytest.raises(
         ValueError,
         match=(
             "Artifact hash did not match loaded object: "
-            + f"artifact={bad_hash[:5]}, loaded={obj.artifact_hash[:5]}"
+            + f"artifact={bad_hash[:5]}, loaded={obj._artifact_hash[:5]}"
         ),
     ):
         Node.from_artifact(artifact)
@@ -1210,9 +1232,9 @@ def test_furu_from_artifact_rejects_artifact_spec_schema_hash_mismatch():
     bad_schema_hash = "wrong-schema-hash"
     artifact = ArtifactSpec(
         fully_qualified_name=obj._fully_qualified_name,
-        artifact_data=obj.artifact_data,
-        artifact_hash=obj.artifact_hash,
-        schema_data=obj.schema_data,
+        artifact_data=obj._artifact_data,
+        artifact_hash=obj._artifact_hash,
+        schema_data=obj._schema_data,
         schema_hash=bad_schema_hash,
     )
 
@@ -1221,14 +1243,14 @@ def test_furu_from_artifact_rejects_artifact_spec_schema_hash_mismatch():
         match=(
             "Artifact schema hash did not match loaded object: "
             + f"artifact={bad_schema_hash[:5]}, "
-            + f"loaded={obj.artifact_schema_hash[:5]}"
+            + f"loaded={obj._artifact_schema_hash[:5]}"
         ),
     ):
         Node.from_artifact(artifact)
 
 
 def test_schema_with_ellipsis_type_arg():
-    assert VariadicTuple(t=(1, 2, 3)).schema_data == {
+    assert VariadicTuple(t=(1, 2, 3))._schema_data == {
         "|class": "test_core.VariadicTuple",
         "|fields": {
             "t": {
@@ -1243,19 +1265,21 @@ def test_data_dir():
     node_pair = NodePair(
         name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
     )
-    assert node_pair.data_dir == (
-        get_config().directories.data
+    assert node_pair._base_dir == (
+        get_config().directories.objects
         / "test_core"
         / "NodePair"
         / "21733b1febfab88b565c"
         / "685af925669262434640"
     )
+    assert node_pair.data_dir == node_pair._base_dir / "data"
     assert node_pair.data_dir == Path(
-        get_config().directories.data
+        get_config().directories.objects
         / "test_core"
         / "NodePair"
-        / node_pair.artifact_schema_hash
-        / node_pair.artifact_hash
+        / node_pair._artifact_schema_hash
+        / node_pair._artifact_hash
+        / "data"
     )
 
 
@@ -1264,22 +1288,14 @@ def test_storage_root_can_be_overridden_with_cached_property():
 
     assert node.storage_root == Path("custom/data/location")
     assert node.storage_root is node.storage_root
-    assert node.data_dir == (
+    assert node._base_dir == (
         Path("custom/data/location")
         / "test_core"
         / "CustomStorageRootNode"
-        / node.artifact_schema_hash
-        / node.artifact_hash
+        / node._artifact_schema_hash
+        / node._artifact_hash
     )
-
-
-def test_data_dir_override_is_rejected():
-    with pytest.raises(TypeError, match="must not override data_dir"):
-
-        class CustomDataDirNode(Node):
-            @cached_property
-            def data_dir(self) -> Path:
-                return Path("custom/data/location")
+    assert node.data_dir == node._base_dir / "data"
 
 
 def test_create_object_and_exists():
@@ -1297,11 +1313,41 @@ def test_create_object_and_exists():
     assert replace(node_pair, name="y").status() == "missing"
 
 
+def test_data_dir_is_user_data_subdirectory() -> None:
+    obj = UserDataWritingValue(name="payload")
+
+    assert obj.load_or_create() == "payload"
+
+    assert (obj.data_dir / "payload.txt").read_text(encoding="utf-8") == "payload"
+    assert result_manifest_path_in(obj._base_dir).exists()
+    assert metadata_path_in(obj._base_dir).exists()
+    assert not (obj._base_dir / ".furu").exists()
+
+
+def test_unused_data_dir_is_not_created_by_load_or_create() -> None:
+    node = Node(name="unused-data")
+    user_data_path = node._base_dir / "data"
+
+    assert node.load_or_create() == "Node(unused-data)"
+
+    assert not user_data_path.exists()
+
+
+def test_data_dir_property_creates_user_data_subdirectory() -> None:
+    node = Node(name="manual-data")
+    user_data_path = node._base_dir / "data"
+
+    assert not user_data_path.exists()
+    assert node.data_dir == user_data_path
+    assert user_data_path.exists()
+    assert node.status() == "failed"
+
+
 def test_status_is_running_while_compute_lock_is_held() -> None:
     node = Node(name="x")
-    internal_furu_dir_in(node.data_dir).mkdir(parents=True, exist_ok=True)
+    node._base_dir.mkdir(parents=True, exist_ok=True)
 
-    with lock_many([compute_lock_path_in(node.data_dir)]):
+    with lock_many([compute_lock_path_in(node._base_dir)]):
         assert node.status() == "running"
 
 
@@ -1347,13 +1393,13 @@ def test_delete_returns_false_when_missing() -> None:
     assert not Node(name="x").delete(mode="force")
 
 
-def test_log_file_is_written_to_internal_dir() -> None:
+def test_log_file_is_written_to_base_dir() -> None:
     node = LoggedLeaf(name="x")
 
     assert node.load_or_create() == "leaf:x"
 
-    assert run_log_path_in(node.data_dir).parent == internal_furu_dir_in(node.data_dir)
-    log_text = run_log_path_in(node.data_dir).read_text(encoding="utf-8")
+    assert run_log_path_in(node._base_dir).parent == node._base_dir
+    log_text = run_log_path_in(node._base_dir).read_text(encoding="utf-8")
     assert "leaf detail for x" in log_text
 
 
@@ -1363,8 +1409,8 @@ def test_nested_load_or_create_scopes_logs_to_child_file() -> None:
 
     assert parent.load_or_create() == {"child": "leaf:child"}
 
-    parent_log = run_log_path_in(parent.data_dir).read_text(encoding="utf-8")
-    child_log = run_log_path_in(child.data_dir).read_text(encoding="utf-8")
+    parent_log = run_log_path_in(parent._base_dir).read_text(encoding="utf-8")
+    child_log = run_log_path_in(child._base_dir).read_text(encoding="utf-8")
 
     assert "parent before child" in parent_log
     assert f"calling {child._log_label}.load_or_create()" in parent_log
@@ -1546,7 +1592,7 @@ def test_existing_items_are_skipped_before_locking(
     monkeypatch.setattr(execution_module, "lock_many", fake_lock_many)
 
     assert load_or_create([existing, missing]) == ["single:1", "single:2"]
-    assert lock_calls == [[compute_lock_path_in(missing.data_dir)]]
+    assert lock_calls == [[compute_lock_path_in(missing._base_dir)]]
 
 
 def test_pending_items_are_rechecked_after_lock_acquisition(
@@ -1556,10 +1602,10 @@ def test_pending_items_are_rechecked_after_lock_acquisition(
 
     @contextmanager
     def fake_lock_many(lock_paths: list[Path], **_: object):
-        assert lock_paths == [compute_lock_path_in(pending.data_dir)]
+        assert lock_paths == [compute_lock_path_in(pending._base_dir)]
         save_result_bundle(
             "single:5",
-            result_dir_in(pending.data_dir),
+            result_dir_in(pending._base_dir),
             registry=_default_result_registry(),
         )
         yield lambda: True
@@ -1619,8 +1665,8 @@ def test_worker_load_or_create_reports_all_missing_dependencies(
     assert exc.call_kind == "load_or_create"
     assert exc.dependencies == (first, second)
     assert ObjectIdStorageRootValue.create_calls == []
-    assert not result_manifest_path_in(first.data_dir).exists()
-    assert not result_manifest_path_in(second.data_dir).exists()
+    assert not result_manifest_path_in(first._base_dir).exists()
+    assert not result_manifest_path_in(second._base_dir).exists()
 
 
 def test_worker_try_load_reports_missing_dependency(tmp_path: Path) -> None:
@@ -1690,10 +1736,10 @@ def test_batched_compute_writes_result_layout_per_object() -> None:
     assert load_or_create(objs) == ["batch:1", "batch:2"]
 
     for obj, expected in zip(objs, ["batch:1", "batch:2"], strict=True):
-        assert result_manifest_path_in(obj.data_dir).exists()
-        assert metadata_path_in(obj.data_dir).exists()
-        assert run_log_path_in(obj.data_dir).exists()
-        assert load_result_bundle(result_dir_in(obj.data_dir)) == expected
+        assert result_manifest_path_in(obj._base_dir).exists()
+        assert metadata_path_in(obj._base_dir).exists()
+        assert run_log_path_in(obj._base_dir).exists()
+        assert load_result_bundle(result_dir_in(obj._base_dir)) == expected
 
 
 def test_batched_compute_writes_shared_logs_to_every_participant() -> None:
@@ -1702,11 +1748,11 @@ def test_batched_compute_writes_shared_logs_to_every_participant() -> None:
     assert load_or_create(objs) == ["logged-batch:1", "logged-batch:2"]
 
     for obj in objs:
-        log_text = run_log_path_in(obj.data_dir).read_text(encoding="utf-8")
+        log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
         assert "batched detail for 1,2" in log_text
         for persisted_obj in objs:
             assert (
-                f"stored result bundle at {result_dir_in(persisted_obj.data_dir)}"
+                f"stored result bundle at {result_dir_in(persisted_obj._base_dir)}"
                 in log_text
             )
 
@@ -1717,12 +1763,12 @@ def test_sequential_group_compute_writes_shared_logs_to_every_participant() -> N
     assert load_or_create(objs) == ["logged-single:1", "logged-single:2"]
 
     for obj in objs:
-        log_text = run_log_path_in(obj.data_dir).read_text(encoding="utf-8")
+        log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
         assert "single detail for 1" in log_text
         assert "single detail for 2" in log_text
         for persisted_obj in objs:
             assert (
-                f"stored result bundle at {result_dir_in(persisted_obj.data_dir)}"
+                f"stored result bundle at {result_dir_in(persisted_obj._base_dir)}"
                 in log_text
             )
 
@@ -1736,11 +1782,11 @@ def test_batched_failure_writes_error_details_to_run_log_for_every_participant()
         load_or_create(objs)
 
     for obj in objs:
-        log_text = run_log_path_in(obj.data_dir).read_text(encoding="utf-8")
+        log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
         assert "load_or_create failed" in log_text
         assert "failed batch for [1, 2]" in log_text
         assert "=== Debug Details (with locals) ===" in log_text
-        assert list(internal_furu_dir_in(obj.data_dir).glob("error-*.log")) == []
+        assert list(obj._base_dir.glob("error-*.log")) == []
 
 
 def test_base_exception_does_not_log_as_load_failure() -> None:
@@ -1749,7 +1795,7 @@ def test_base_exception_does_not_log_as_load_failure() -> None:
     with pytest.raises(KeyboardInterrupt):
         obj.load_or_create()
 
-    log_text = run_log_path_in(obj.data_dir).read_text(encoding="utf-8")
+    log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
     assert "load_or_create failed" not in log_text
     assert "=== Debug Details (with locals) ===" not in log_text
 
@@ -1773,8 +1819,8 @@ def test_partial_persistence_leaves_already_written_objects_completed(
     with pytest.raises(RuntimeError, match="stop after first store"):
         load_or_create(objs)
 
-    assert result_manifest_path_in(objs[0].data_dir).exists()
-    assert not result_manifest_path_in(objs[1].data_dir).exists()
+    assert result_manifest_path_in(objs[0]._base_dir).exists()
+    assert not result_manifest_path_in(objs[1]._base_dir).exists()
 
 
 def test_create_cannot_be_called_directly() -> None:

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from furu.storage_layout import metadata_path_in
+from furu._storage_layout import metadata_path_in
 from furu.utils import JsonValue, object_id_from_parts
 
 if TYPE_CHECKING:
@@ -39,10 +39,10 @@ class ArtifactSpec(BaseModel):
     def from_furu[TFuru: Furu](cls, obj: TFuru) -> ArtifactSpec:
         return cls(
             fully_qualified_name=obj._fully_qualified_name,
-            artifact_data=obj.artifact_data,
-            artifact_hash=obj.artifact_hash,
-            schema_data=obj.schema_data,
-            schema_hash=obj.artifact_schema_hash,
+            artifact_data=obj._artifact_data,
+            artifact_hash=obj._artifact_hash,
+            schema_data=obj._schema_data,
+            schema_hash=obj._artifact_schema_hash,
         )
 
     @cached_property
@@ -63,7 +63,7 @@ class RunningMetadata(BaseModel):
     kind: Literal["running"] = "running"
     # python_def: str
     artifact: ArtifactSpec
-    data_path: Path
+    base_path: Path
     # git: GitData | None
     started_at: datetime
     # command: list[str] # TODO: find/decide what the most elegant approach is here
@@ -83,10 +83,10 @@ class RunningMetadata(BaseModel):
     ) -> RunningMetadata:
         metadata = cls(
             artifact=ArtifactSpec.from_furu(obj),
-            data_path=obj.data_dir,
+            base_path=obj._base_dir,
             started_at=datetime.now(timezone.utc),
         )
-        metadata_path_in(obj.data_dir).write_text(metadata.model_dump_json(indent=2))
+        metadata_path_in(obj._base_dir).write_text(metadata.model_dump_json(indent=2))
         return metadata
 
     def to_complete(
@@ -96,7 +96,7 @@ class RunningMetadata(BaseModel):
     ) -> CompletedMetadata:
         return CompletedMetadata(
             artifact=self.artifact,
-            data_path=self.data_path,
+            base_path=self.base_path,
             started_at=self.started_at,
             completed_at=datetime.now(timezone.utc),
             observed_dependencies=observed_dependencies,
@@ -112,7 +112,7 @@ class CompletedMetadata(BaseModel):
     kind: Literal["completed"] = "completed"
     # python_def: str
     artifact: ArtifactSpec
-    data_path: Path
+    base_path: Path
     # git: GitData | None
     started_at: datetime
     # traced_function_hashes: list[

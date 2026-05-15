@@ -104,7 +104,10 @@ def _takeover_worker(
 
 def _directories_for_data(data_dir: str) -> _FuruDirectories:
     data_path = Path(data_dir)
-    return _FuruDirectories(data=data_path, executions=data_path.parent / "executions")
+    return _FuruDirectories(
+        objects=data_path,
+        executions=data_path.parent / "executions",
+    )
 
 
 def _steal_lock(lock_path: str, out_q) -> None:

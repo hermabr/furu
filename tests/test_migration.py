@@ -7,7 +7,7 @@ import pytest
 import furu
 import furu.execution as execution_module
 from furu import Furu
-from furu.storage_layout import (
+from furu._storage_layout import (
     compute_lock_path_in,
     result_link_path_in,
     result_manifest_path_in,
@@ -56,11 +56,11 @@ class _NewRun(Furu[dict[str, str]]):
         return (
             furu.Migration(
                 old_fully_qualified_name=old._fully_qualified_name,
-                old_schema_hash=old.artifact_schema_hash,
+                old_schema_hash=old._artifact_schema_hash,
                 new_fully_qualified_name=cls(
                     dataset="ignored", lr=0.0
                 )._fully_qualified_name,
-                new_schema_hash=cls(dataset="ignored", lr=0.0).artifact_schema_hash,
+                new_schema_hash=cls(dataset="ignored", lr=0.0)._artifact_schema_hash,
                 transform_fn=_from_old_run,
             ),
         )
@@ -99,16 +99,16 @@ def test_migrate_with_matching_old_artifact_writes_result_link() -> None:
     assert new.is_migrated() is True
     assert new.status() == "completed"
 
-    link_path = result_link_path_in(new.data_dir)
+    link_path = result_link_path_in(new._base_dir)
     link = json.loads(link_path.read_text())
     assert link["current"]["fully_qualified_name"] == new._fully_qualified_name
-    assert link["current"]["schema_hash"] == new.artifact_schema_hash
-    assert link["current"]["artifact_hash"] == new.artifact_hash
-    assert link["source"]["data_dir"] == str(old.data_dir)
-    assert link["source"]["schema_hash"] == old.artifact_schema_hash
-    assert link["source"]["artifact_hash"] == old.artifact_hash
-    assert link["migration_path"][0]["old_schema_hash"] == old.artifact_schema_hash
-    assert link["migration_path"][0]["new_schema_hash"] == new.artifact_schema_hash
+    assert link["current"]["schema_hash"] == new._artifact_schema_hash
+    assert link["current"]["artifact_hash"] == new._artifact_hash
+    assert link["source"]["base_dir"] == str(old._base_dir)
+    assert link["source"]["schema_hash"] == old._artifact_schema_hash
+    assert link["source"]["artifact_hash"] == old._artifact_hash
+    assert link["migration_path"][0]["old_schema_hash"] == old._artifact_schema_hash
+    assert link["migration_path"][0]["new_schema_hash"] == new._artifact_schema_hash
 
 
 def test_migrate_loads_result_through_link() -> None:
@@ -144,7 +144,7 @@ def test_migrate_raises_when_existing_link_source_is_missing() -> None:
     new = _NewRun(dataset="cifar10", lr=0.001)
     assert new.migrate() is True
 
-    result_manifest_path_in(old.data_dir).unlink()
+    result_manifest_path_in(old._base_dir).unlink()
 
     with pytest.raises(RuntimeError, match="points to a missing result"):
         new.migrate()
@@ -156,7 +156,7 @@ def test_migrate_returns_false_when_already_has_direct_result() -> None:
     new = _NewRun(dataset="cifar10", lr=0.001)
     new.load_or_create()
     assert new.migrate() is False
-    assert not result_link_path_in(new.data_dir).exists()
+    assert not result_link_path_in(new._base_dir).exists()
 
 
 def test_load_or_create_does_not_call_migrate(
@@ -180,7 +180,7 @@ def test_load_or_create_does_not_call_migrate(
     new.load_or_create()
     assert migrate_calls == 0
     assert _COUNTER.calls == 1
-    assert not result_link_path_in(new.data_dir).exists()
+    assert not result_link_path_in(new._base_dir).exists()
 
 
 def test_status_treats_migrated_object_as_completed() -> None:
@@ -204,9 +204,9 @@ class _MidRun(Furu[dict[str, str]]):
         return (
             furu.Migration(
                 old_fully_qualified_name=old._fully_qualified_name,
-                old_schema_hash=old.artifact_schema_hash,
+                old_schema_hash=old._artifact_schema_hash,
                 new_fully_qualified_name=mid._fully_qualified_name,
-                new_schema_hash=mid.artifact_schema_hash,
+                new_schema_hash=mid._artifact_schema_hash,
                 transform_fn=_old_to_mid,
             ),
         )
@@ -232,16 +232,16 @@ class _FinalRun(Furu[dict[str, str]]):
         return (
             furu.Migration(
                 old_fully_qualified_name=old._fully_qualified_name,
-                old_schema_hash=old.artifact_schema_hash,
+                old_schema_hash=old._artifact_schema_hash,
                 new_fully_qualified_name=mid._fully_qualified_name,
-                new_schema_hash=mid.artifact_schema_hash,
+                new_schema_hash=mid._artifact_schema_hash,
                 transform_fn=_old_to_mid,
             ),
             furu.Migration(
                 old_fully_qualified_name=mid._fully_qualified_name,
-                old_schema_hash=mid.artifact_schema_hash,
+                old_schema_hash=mid._artifact_schema_hash,
                 new_fully_qualified_name=final._fully_qualified_name,
-                new_schema_hash=final.artifact_schema_hash,
+                new_schema_hash=final._artifact_schema_hash,
                 transform_fn=_mid_to_final,
             ),
         )
@@ -269,12 +269,12 @@ def test_multi_hop_migration_points_directly_at_ultimate_source() -> None:
     final = _FinalRun(dataset="cifar10", lr=0.001)
     assert final.migrate() is True
 
-    link = json.loads(result_link_path_in(final.data_dir).read_text())
-    assert link["source"]["data_dir"] == str(old.data_dir)
+    link = json.loads(result_link_path_in(final._base_dir).read_text())
+    assert link["source"]["base_dir"] == str(old._base_dir)
     assert link["source"]["fully_qualified_name"] == old._fully_qualified_name
     assert [hop["new_schema_hash"] for hop in link["migration_path"]] == [
-        mid.artifact_schema_hash,
-        final.artifact_schema_hash,
+        mid._artifact_schema_hash,
+        final._artifact_schema_hash,
     ]
 
     assert final.load_or_create() == {
@@ -290,11 +290,11 @@ def test_multi_hop_works_without_intermediate_migrate() -> None:
     final = _FinalRun(dataset="cifar10", lr=0.001)
     assert final.migrate() is True
 
-    link = json.loads(result_link_path_in(final.data_dir).read_text())
-    assert link["source"]["data_dir"] == str(old.data_dir)
+    link = json.loads(result_link_path_in(final._base_dir).read_text())
+    assert link["source"]["base_dir"] == str(old._base_dir)
     assert [hop["new_schema_hash"] for hop in link["migration_path"]] == [
-        _MidRun(dataset="cifar10", lr=0.001).artifact_schema_hash,
-        final.artifact_schema_hash,
+        _MidRun(dataset="cifar10", lr=0.001)._artifact_schema_hash,
+        final._artifact_schema_hash,
     ]
 
 
@@ -311,7 +311,7 @@ def test_load_or_create_post_lock_check_uses_result_link(
 
     @contextmanager
     def fake_lock_many(lock_paths: list[Path], **_: object):
-        assert lock_paths == [compute_lock_path_in(new.data_dir)]
+        assert lock_paths == [compute_lock_path_in(new._base_dir)]
         new.migrate()
         yield lambda: True
 
