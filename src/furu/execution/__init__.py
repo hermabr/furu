@@ -25,7 +25,7 @@ from furu.result import load_result_bundle, save_result_bundle
 from furu.result.save_as import _unwrap_save_as
 from furu.storage_layout import (
     compute_lock_path_in,
-    internal_furu_dir_in,
+    ensure_object_dirs_in,
     metadata_path_in,
     result_dir_in,
     run_log_path_in,
@@ -115,8 +115,8 @@ def _store_result[T](
     observed_dependencies: tuple[str, ...],
     has_lock: HasLock,
 ) -> None:
-    lock_path = compute_lock_path_in(obj.data_dir)
-    result_dir = result_dir_in(obj.data_dir)
+    lock_path = compute_lock_path_in(obj._base_dir)
+    result_dir = result_dir_in(obj._base_dir)
     if not has_lock():
         raise RuntimeError(f"lost lock at {lock_path} before writing final result")
 
@@ -154,7 +154,7 @@ def _store_result[T](
     metadata_text = metadata.to_complete(
         observed_dependencies=observed_dependencies
     ).model_dump_json(indent=2)
-    metadata_path_in(obj.data_dir).write_text(metadata_text)
+    metadata_path_in(obj._base_dir).write_text(metadata_text)
 
     obj.logger.debug("stored result bundle at %s", result_dir)
 
@@ -199,9 +199,9 @@ def _ensure_single_result[T](obj: Furu[T]) -> None:
         obj.logger.info("cache hit for %s at %s", obj._log_label, cached_result_dir)
         return
 
-    internal_furu_dir_in(obj.data_dir).mkdir(parents=True, exist_ok=True)
+    ensure_object_dirs_in(obj._base_dir)
 
-    with lock_many([compute_lock_path_in(obj.data_dir)]) as has_lock:
+    with lock_many([compute_lock_path_in(obj._base_dir)]) as has_lock:
         if (cached_result_dir := result_dir_for_loading(obj)) is not None:
             obj.logger.info(
                 "cache hit for %s after waiting at %s",
@@ -293,11 +293,11 @@ def _load_or_create_local[T](
                 T, load_result_bundle(cached_result_dir)
             )
         else:
-            internal_furu_dir_in(obj.data_dir).mkdir(parents=True, exist_ok=True)
+            ensure_object_dirs_in(obj._base_dir)
             missing.append(obj)
 
     lock_ctx = (
-        lock_many([compute_lock_path_in(obj.data_dir) for obj in missing])
+        lock_many([compute_lock_path_in(obj._base_dir) for obj in missing])
         if use_lock and missing
         else nullcontext()
     )
@@ -345,7 +345,7 @@ def _create_and_store_group[T](
     has_lock: HasLock,
     results_by_object_id: dict[str, T],
 ) -> None:
-    log_paths = tuple(run_log_path_in(obj.data_dir) for obj in group)
+    log_paths = tuple(run_log_path_in(obj._base_dir) for obj in group)
 
     metadata = [RunningMetadata.write_for(obj) for obj in group]
 

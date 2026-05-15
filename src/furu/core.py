@@ -17,7 +17,8 @@ from furu.schema import schema_type as _schema_type
 from furu.serialize import to_json as _to_json
 from furu.storage_layout import (
     compute_lock_path_in,
-    internal_furu_dir_in,
+    data_dir_in,
+    ensure_object_dirs_in,
     result_link_path_in,
     result_manifest_path_in,
 )
@@ -96,13 +97,13 @@ class Furu[T](_FuruDataclassTransform, ABC):
     ) -> Literal[
         "completed", "missing", "running", "failed"
     ]:  # TODO: add queued/waiting state?
-        if result_manifest_path_in(self.data_dir).exists():
+        if result_manifest_path_in(self._base_dir).exists():
             return "completed"
         if self.is_migrated():
             return "completed"
-        if compute_lock_path_in(self.data_dir).exists():
+        if compute_lock_path_in(self._base_dir).exists():
             return "running"
-        if self.data_dir.exists():
+        if self._base_dir.exists():
             return "failed"
         return "missing"
 
@@ -136,30 +137,30 @@ class Furu[T](_FuruDataclassTransform, ABC):
         return migrate(self)
 
     def is_migrated(self) -> bool:
-        return result_link_path_in(self.data_dir).exists()
+        return result_link_path_in(self._base_dir).exists()
 
     def delete(self, mode: Literal["prompt", "force"] = "prompt") -> bool:
-        if not self.data_dir.exists():
+        if not self._base_dir.exists():
             return False
 
-        internal_furu_dir_in(self.data_dir).mkdir(exist_ok=True, parents=True)
+        ensure_object_dirs_in(self._base_dir)
 
         tombstone_path: Path | None = None
         try:
-            with lock_many([compute_lock_path_in(self.data_dir)]):
-                if not self.data_dir.exists():
+            with lock_many([compute_lock_path_in(self._base_dir)]):
+                if not self._base_dir.exists():
                     return False
 
                 if mode == "prompt" and (
-                    input(f"Do you want to delete {self.data_dir}? [y/N] ")
+                    input(f"Do you want to delete {self._base_dir}? [y/N] ")
                     .strip()
                     .lower()
                     != "y"
                 ):
                     return False
 
-                tombstone_path = nfs_safe_unique_name(self.data_dir, name="deleting")
-                self.data_dir.rename(tombstone_path)
+                tombstone_path = nfs_safe_unique_name(self._base_dir, name="deleting")
+                self._base_dir.rename(tombstone_path)
         except RuntimeError:
             if tombstone_path is None:
                 raise
@@ -222,13 +223,17 @@ class Furu[T](_FuruDataclassTransform, ABC):
         return get_config().directories.data
 
     @cached_property
-    def data_dir(self) -> Path:
+    def _base_dir(self) -> Path:
         return (
             self.storage_root
             / Path(*self._fully_qualified_name.split("."))
             / self.artifact_schema_hash
             / self.artifact_hash
         )
+
+    @cached_property
+    def data_dir(self) -> Path:
+        return data_dir_in(self._base_dir)
 
     @cached_property
     def _log_label(self) -> str:

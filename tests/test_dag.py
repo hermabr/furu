@@ -9,7 +9,6 @@ from furu.dag import DagNode
 from furu.execution.manager import Manager
 from furu.storage_layout import (
     compute_lock_path_in,
-    internal_furu_dir_in,
     run_log_path_in,
 )
 from furu.worker.backends.local import LocalThreadWorkerBackend
@@ -64,8 +63,8 @@ class ComputedParent(Furu[str]):
 
 
 def mark_running(obj: Furu) -> None:
-    internal_furu_dir_in(obj.data_dir).mkdir(parents=True, exist_ok=True)
-    compute_lock_path_in(obj.data_dir).touch()
+    obj._base_dir.mkdir(parents=True, exist_ok=True)
+    compute_lock_path_in(obj._base_dir).touch()
 
 
 def test_add_to_dag_single_object_no_dependencies():
@@ -354,7 +353,7 @@ def test_manager_run_discovers_lazy_dependencies_and_reruns_parent():
     # _DependencyNotReady), then once more after the dep completes.
     assert LazyChildLoader.create_calls == [7, 7]
     assert parent.load_or_create() == 21
-    parent_log = run_log_path_in(parent.data_dir).read_text(encoding="utf-8")
+    parent_log = run_log_path_in(parent._base_dir).read_text(encoding="utf-8")
     assert (
         "load_or_create deferred: load_or_create discovered 1 missing dependency/dependencies"
         in parent_log

@@ -86,7 +86,7 @@ class RunningMetadata(BaseModel):
             data_path=obj.data_dir,
             started_at=datetime.now(timezone.utc),
         )
-        metadata_path_in(obj.data_dir).write_text(metadata.model_dump_json(indent=2))
+        metadata_path_in(obj._base_dir).write_text(metadata.model_dump_json(indent=2))
         return metadata
 
     def to_complete(

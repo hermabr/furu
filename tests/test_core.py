@@ -24,7 +24,6 @@ from furu.result.codec import _default_result_registry
 from furu.serialize import _from_json, to_json
 from furu.storage_layout import (
     compute_lock_path_in,
-    internal_furu_dir_in,
     metadata_path_in,
     result_dir_in,
     result_manifest_path_in,
@@ -81,6 +80,15 @@ class RandomObj(Furu[float]):
         import random
 
         return random.random()
+
+
+class UserDataWritingValue(Furu[str]):
+    name: str
+
+    def create(self) -> str:
+        payload_path = self.data_dir / "payload.txt"
+        payload_path.write_text(self.name, encoding="utf-8")
+        return payload_path.read_text(encoding="utf-8")
 
 
 class Fruit(Enum):  # TODO: test enums at some point
@@ -355,8 +363,8 @@ class MetadataTimingValue(Furu[str]):
         type(self).create_events.append(
             (
                 self.key,
-                metadata_path_in(self.data_dir).exists(),
-                metadata_path_in(sibling.data_dir).exists(),
+                metadata_path_in(self._base_dir).exists(),
+                metadata_path_in(sibling._base_dir).exists(),
             )
         )
         return f"timed:{self.key}"
@@ -990,7 +998,7 @@ def test_furu_from_artifact_returns_furu_object():
     )
 
     loaded = NodePair.from_artifact(artifact)
-    raw_metadata = json.loads(metadata_path_in(obj.data_dir).read_text())
+    raw_metadata = json.loads(metadata_path_in(obj._base_dir).read_text())
 
     assert artifact.object_id == obj.object_id
     assert artifact.schema_data == obj.schema_data
@@ -1012,7 +1020,7 @@ def test_furu_from_artifact_returns_furu_object():
 
 
 def _dependency_object_ids(obj: Furu) -> list[str]:
-    metadata = json.loads(metadata_path_in(obj.data_dir).read_text())
+    metadata = json.loads(metadata_path_in(obj._base_dir).read_text())
     return metadata["observed_dependencies"]
 
 
@@ -1072,7 +1080,7 @@ def test_try_load_inside_create_is_recorded_even_on_missing_result() -> None:
 
     assert parent.load_or_create() == "missing"
 
-    metadata = json.loads(metadata_path_in(parent.data_dir).read_text())
+    metadata = json.loads(metadata_path_in(parent._base_dir).read_text())
     assert metadata["observed_dependencies"] == [Node(name="optional").object_id]
 
 
@@ -1137,7 +1145,7 @@ def test_furu_from_artifact_infers_furu_object_type():
 def test_furu_from_artifact_accepts_loaded_metadata_artifact():
     obj = Node(name="x")
     obj.load_or_create()
-    metadata = json.loads(metadata_path_in(obj.data_dir).read_text())
+    metadata = json.loads(metadata_path_in(obj._base_dir).read_text())
     artifact = ArtifactSpec(**metadata["artifact"])
 
     loaded = Node.from_artifact(artifact)
@@ -1243,19 +1251,21 @@ def test_data_dir():
     node_pair = NodePair(
         name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
     )
-    assert node_pair.data_dir == (
+    assert node_pair._base_dir == (
         get_config().directories.data
         / "test_core"
         / "NodePair"
         / "21733b1febfab88b565c"
         / "685af925669262434640"
     )
+    assert node_pair.data_dir == node_pair._base_dir / "data"
     assert node_pair.data_dir == Path(
         get_config().directories.data
         / "test_core"
         / "NodePair"
         / node_pair.artifact_schema_hash
         / node_pair.artifact_hash
+        / "data"
     )
 
 
@@ -1264,13 +1274,14 @@ def test_storage_root_can_be_overridden_with_cached_property():
 
     assert node.storage_root == Path("custom/data/location")
     assert node.storage_root is node.storage_root
-    assert node.data_dir == (
+    assert node._base_dir == (
         Path("custom/data/location")
         / "test_core"
         / "CustomStorageRootNode"
         / node.artifact_schema_hash
         / node.artifact_hash
     )
+    assert node.data_dir == node._base_dir / "data"
 
 
 def test_data_dir_override_is_rejected():
@@ -1297,11 +1308,22 @@ def test_create_object_and_exists():
     assert replace(node_pair, name="y").status() == "missing"
 
 
+def test_data_dir_is_user_data_subdirectory() -> None:
+    obj = UserDataWritingValue(name="payload")
+
+    assert obj.load_or_create() == "payload"
+
+    assert (obj.data_dir / "payload.txt").read_text(encoding="utf-8") == "payload"
+    assert result_manifest_path_in(obj._base_dir).exists()
+    assert metadata_path_in(obj._base_dir).exists()
+    assert not (obj._base_dir / ".furu").exists()
+
+
 def test_status_is_running_while_compute_lock_is_held() -> None:
     node = Node(name="x")
-    internal_furu_dir_in(node.data_dir).mkdir(parents=True, exist_ok=True)
+    node._base_dir.mkdir(parents=True, exist_ok=True)
 
-    with lock_many([compute_lock_path_in(node.data_dir)]):
+    with lock_many([compute_lock_path_in(node._base_dir)]):
         assert node.status() == "running"
 
 
@@ -1347,13 +1369,13 @@ def test_delete_returns_false_when_missing() -> None:
     assert not Node(name="x").delete(mode="force")
 
 
-def test_log_file_is_written_to_internal_dir() -> None:
+def test_log_file_is_written_to_base_dir() -> None:
     node = LoggedLeaf(name="x")
 
     assert node.load_or_create() == "leaf:x"
 
-    assert run_log_path_in(node.data_dir).parent == internal_furu_dir_in(node.data_dir)
-    log_text = run_log_path_in(node.data_dir).read_text(encoding="utf-8")
+    assert run_log_path_in(node._base_dir).parent == node._base_dir
+    log_text = run_log_path_in(node._base_dir).read_text(encoding="utf-8")
     assert "leaf detail for x" in log_text
 
 
@@ -1363,8 +1385,8 @@ def test_nested_load_or_create_scopes_logs_to_child_file() -> None:
 
     assert parent.load_or_create() == {"child": "leaf:child"}
 
-    parent_log = run_log_path_in(parent.data_dir).read_text(encoding="utf-8")
-    child_log = run_log_path_in(child.data_dir).read_text(encoding="utf-8")
+    parent_log = run_log_path_in(parent._base_dir).read_text(encoding="utf-8")
+    child_log = run_log_path_in(child._base_dir).read_text(encoding="utf-8")
 
     assert "parent before child" in parent_log
     assert f"calling {child._log_label}.load_or_create()" in parent_log
@@ -1546,7 +1568,7 @@ def test_existing_items_are_skipped_before_locking(
     monkeypatch.setattr(execution_module, "lock_many", fake_lock_many)
 
     assert load_or_create([existing, missing]) == ["single:1", "single:2"]
-    assert lock_calls == [[compute_lock_path_in(missing.data_dir)]]
+    assert lock_calls == [[compute_lock_path_in(missing._base_dir)]]
 
 
 def test_pending_items_are_rechecked_after_lock_acquisition(
@@ -1556,10 +1578,10 @@ def test_pending_items_are_rechecked_after_lock_acquisition(
 
     @contextmanager
     def fake_lock_many(lock_paths: list[Path], **_: object):
-        assert lock_paths == [compute_lock_path_in(pending.data_dir)]
+        assert lock_paths == [compute_lock_path_in(pending._base_dir)]
         save_result_bundle(
             "single:5",
-            result_dir_in(pending.data_dir),
+            result_dir_in(pending._base_dir),
             registry=_default_result_registry(),
         )
         yield lambda: True
@@ -1619,8 +1641,8 @@ def test_worker_load_or_create_reports_all_missing_dependencies(
     assert exc.call_kind == "load_or_create"
     assert exc.dependencies == (first, second)
     assert ObjectIdStorageRootValue.create_calls == []
-    assert not result_manifest_path_in(first.data_dir).exists()
-    assert not result_manifest_path_in(second.data_dir).exists()
+    assert not result_manifest_path_in(first._base_dir).exists()
+    assert not result_manifest_path_in(second._base_dir).exists()
 
 
 def test_worker_try_load_reports_missing_dependency(tmp_path: Path) -> None:
@@ -1690,10 +1712,10 @@ def test_batched_compute_writes_result_layout_per_object() -> None:
     assert load_or_create(objs) == ["batch:1", "batch:2"]
 
     for obj, expected in zip(objs, ["batch:1", "batch:2"], strict=True):
-        assert result_manifest_path_in(obj.data_dir).exists()
-        assert metadata_path_in(obj.data_dir).exists()
-        assert run_log_path_in(obj.data_dir).exists()
-        assert load_result_bundle(result_dir_in(obj.data_dir)) == expected
+        assert result_manifest_path_in(obj._base_dir).exists()
+        assert metadata_path_in(obj._base_dir).exists()
+        assert run_log_path_in(obj._base_dir).exists()
+        assert load_result_bundle(result_dir_in(obj._base_dir)) == expected
 
 
 def test_batched_compute_writes_shared_logs_to_every_participant() -> None:
@@ -1702,11 +1724,11 @@ def test_batched_compute_writes_shared_logs_to_every_participant() -> None:
     assert load_or_create(objs) == ["logged-batch:1", "logged-batch:2"]
 
     for obj in objs:
-        log_text = run_log_path_in(obj.data_dir).read_text(encoding="utf-8")
+        log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
         assert "batched detail for 1,2" in log_text
         for persisted_obj in objs:
             assert (
-                f"stored result bundle at {result_dir_in(persisted_obj.data_dir)}"
+                f"stored result bundle at {result_dir_in(persisted_obj._base_dir)}"
                 in log_text
             )
 
@@ -1717,12 +1739,12 @@ def test_sequential_group_compute_writes_shared_logs_to_every_participant() -> N
     assert load_or_create(objs) == ["logged-single:1", "logged-single:2"]
 
     for obj in objs:
-        log_text = run_log_path_in(obj.data_dir).read_text(encoding="utf-8")
+        log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
         assert "single detail for 1" in log_text
         assert "single detail for 2" in log_text
         for persisted_obj in objs:
             assert (
-                f"stored result bundle at {result_dir_in(persisted_obj.data_dir)}"
+                f"stored result bundle at {result_dir_in(persisted_obj._base_dir)}"
                 in log_text
             )
 
@@ -1736,11 +1758,11 @@ def test_batched_failure_writes_error_details_to_run_log_for_every_participant()
         load_or_create(objs)
 
     for obj in objs:
-        log_text = run_log_path_in(obj.data_dir).read_text(encoding="utf-8")
+        log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
         assert "load_or_create failed" in log_text
         assert "failed batch for [1, 2]" in log_text
         assert "=== Debug Details (with locals) ===" in log_text
-        assert list(internal_furu_dir_in(obj.data_dir).glob("error-*.log")) == []
+        assert list(obj._base_dir.glob("error-*.log")) == []
 
 
 def test_base_exception_does_not_log_as_load_failure() -> None:
@@ -1749,7 +1771,7 @@ def test_base_exception_does_not_log_as_load_failure() -> None:
     with pytest.raises(KeyboardInterrupt):
         obj.load_or_create()
 
-    log_text = run_log_path_in(obj.data_dir).read_text(encoding="utf-8")
+    log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
     assert "load_or_create failed" not in log_text
     assert "=== Debug Details (with locals) ===" not in log_text
 
@@ -1773,8 +1795,8 @@ def test_partial_persistence_leaves_already_written_objects_completed(
     with pytest.raises(RuntimeError, match="stop after first store"):
         load_or_create(objs)
 
-    assert result_manifest_path_in(objs[0].data_dir).exists()
-    assert not result_manifest_path_in(objs[1].data_dir).exists()
+    assert result_manifest_path_in(objs[0]._base_dir).exists()
+    assert not result_manifest_path_in(objs[1]._base_dir).exists()
 
 
 def test_create_cannot_be_called_directly() -> None:

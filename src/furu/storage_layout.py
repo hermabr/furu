@@ -1,33 +1,38 @@
 from pathlib import Path
 
 
-def result_dir_in(data_dir: Path) -> Path:
-    return data_dir / "result"
+def data_dir_in(base_dir: Path) -> Path:
+    return base_dir / "data"
 
 
-def result_manifest_path_in(data_dir: Path) -> Path:
-    return result_dir_in(data_dir) / "manifest.json"
+def result_dir_in(base_dir: Path) -> Path:
+    return base_dir / "result"
 
 
-def internal_furu_dir_in(data_dir: Path) -> Path:
-    return data_dir / ".furu"
+def result_manifest_path_in(base_dir: Path) -> Path:
+    return result_dir_in(base_dir) / "manifest.json"
 
 
-def metadata_path_in(data_dir: Path) -> Path:
-    return internal_furu_dir_in(data_dir) / "metadata.json"
+def ensure_object_dirs_in(base_dir: Path) -> None:
+    base_dir.mkdir(parents=True, exist_ok=True)
+    data_dir_in(base_dir).mkdir(parents=True, exist_ok=True)
 
 
-def run_log_path_in(data_dir: Path) -> Path:
-    return internal_furu_dir_in(data_dir) / "run.log"
+def metadata_path_in(base_dir: Path) -> Path:
+    return base_dir / "metadata.json"
+
+
+def run_log_path_in(base_dir: Path) -> Path:
+    return base_dir / "run.log"
 
 
 def manager_log_path_in(executor_dir: Path) -> Path:
     return executor_dir / "manager.log"
 
 
-def compute_lock_path_in(data_dir: Path) -> Path:
-    return internal_furu_dir_in(data_dir) / "compute.lock"
+def compute_lock_path_in(base_dir: Path) -> Path:
+    return base_dir / "compute.lock"
 
 
-def result_link_path_in(data_dir: Path) -> Path:
-    return internal_furu_dir_in(data_dir) / "result-link.json"
+def result_link_path_in(base_dir: Path) -> Path:
+    return base_dir / "result-link.json"
