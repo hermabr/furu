@@ -59,6 +59,7 @@ class SlurmWorkerBackend:
     n_workers: int
     resources: SlurmResources
     advertised_host: str
+    manager_bind_host: str = "0.0.0.0"
     job_name: str = "furu-worker"
     poll_interval: float = 10.0
 

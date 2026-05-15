@@ -244,6 +244,8 @@ def test_manager_job_result_failed_finishes_with_error() -> None:
 
 def test_manager_run_uses_worker_backend() -> None:
     class RecordingBackend:
+        manager_bind_host = "0.0.0.0"
+
         def __init__(self) -> None:
             self.server_urls: list[str] = []
             self.auth_tokens: list[str] = []
@@ -271,13 +273,15 @@ def test_manager_run_uses_worker_backend() -> None:
     assert leaf.status() == "completed"
     assert leaf.load_or_create() == 11
     assert len(backend.server_urls) == 1
-    assert backend.server_urls[0].startswith("http://127.0.0.1:")
+    assert backend.server_urls[0].startswith("http://0.0.0.0:")
     assert len(backend.auth_tokens) == 1
     assert backend.auth_tokens[0]
 
 
 def test_manager_run_passes_executor_dir_to_worker_backend() -> None:
     class RecordingBackend:
+        manager_bind_host = "127.0.0.1"
+
         def __init__(self) -> None:
             self.executor_dirs: list[Path] = []
 
@@ -347,6 +351,8 @@ def test_manager_run_waits_using_worker_pool_health_check_interval() -> None:
             self.join_timeouts.append(timeout)
 
     class RecordingBackend:
+        manager_bind_host = "127.0.0.1"
+
         def __init__(self, pool: RecordingPool) -> None:
             self.pool = pool
 
@@ -367,13 +373,52 @@ def test_manager_run_waits_using_worker_pool_health_check_interval() -> None:
     _run_until_done(
         manager,
         worker_backend=RecordingBackend(pool),
-        bind_host="127.0.0.1",
         port=0,
     )
 
     assert done.timeouts == [2.5]
     assert pool.health_checks == 0
     assert pool.join_timeouts == [5]
+
+
+def test_run_until_done_uses_worker_backend_manager_bind_host() -> None:
+    class RecordingDone:
+        def wait(self, timeout: float | None = None) -> bool:
+            return True
+
+    class RecordingPool:
+        health_check_interval = 1.0
+
+        def is_healthy(self) -> bool:
+            return True
+
+        def join(self, *, timeout: float) -> None:
+            pass
+
+    class RecordingBackend:
+        manager_bind_host = "127.0.0.1"
+
+        def __init__(self) -> None:
+            self.server_urls: list[str] = []
+
+        def start_pool(
+            self,
+            *,
+            server_url: str,
+            auth_token: str,
+            executor_dir: Path,
+        ) -> RecordingPool:
+            self.server_urls.append(server_url)
+            return RecordingPool()
+
+    manager = Manager([ManagerLeaf(value=15)])
+    backend = RecordingBackend()
+    cast(Any, manager).done = RecordingDone()
+
+    _run_until_done(manager, worker_backend=backend, port=0)
+
+    assert len(backend.server_urls) == 1
+    assert backend.server_urls[0].startswith("http://127.0.0.1:")
 
 
 def test_manager_server_exposes_bound_host_and_port() -> None:

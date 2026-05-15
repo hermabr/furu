@@ -5,6 +5,8 @@ from typing import Protocol
 
 
 class WorkerBackend(Protocol):
+    manager_bind_host: str
+
     def start_pool(
         self,
         *,

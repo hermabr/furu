@@ -86,7 +86,6 @@ def _run_until_done(
     manager: Manager,
     *,
     worker_backend: WorkerBackend,
-    bind_host: str,
     port: int,
 ) -> None:
     with manager.log_context():
@@ -97,7 +96,11 @@ def _run_until_done(
             len(manager.ready),
             len(manager.blocked),
         )
-        with manager_server(manager, bind_host=bind_host, port=port) as server:
+        with manager_server(
+            manager,
+            bind_host=worker_backend.manager_bind_host,
+            port=port,
+        ) as server:
             logger.info(
                 "manager server listening: server_url=%s",
                 server.server_url,

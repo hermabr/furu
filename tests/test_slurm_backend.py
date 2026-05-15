@@ -273,6 +273,7 @@ def test_slurm_backend_uses_default_poll_interval() -> None:
     )
 
     assert backend.poll_interval == 10.0
+    assert backend.manager_bind_host == "0.0.0.0"
 
 
 def _install_fake_slurm(
