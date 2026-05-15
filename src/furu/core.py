@@ -74,7 +74,6 @@ class Furu[T](_FuruDataclassTransform, ABC):
         cls._furu_create_mode = _resolve_create_mode(cls)
         _install_create_guards(cls)
 
-    # Subclass hooks.
     def create(self) -> T:
         raise NotImplementedError("TODO")
 
@@ -105,7 +104,6 @@ class Furu[T](_FuruDataclassTransform, ABC):
         data_dir.mkdir(parents=True, exist_ok=True)
         return data_dir
 
-    # Framework operations.
     @final
     def load_or_create(self, use_lock: bool = True) -> T:
         from furu.execution import load_or_create
@@ -195,7 +193,6 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
         return _from_artifact(artifact, cls)
 
-    # Derived identity and storage layout.
     @final
     @cached_property
     def _artifact_data(  # TODO: make sure this doesn't prevent garbage collection
