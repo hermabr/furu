@@ -8,6 +8,12 @@ from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
+from furu._storage_layout import (
+    compute_lock_path_in,
+    data_dir_in,
+    result_link_path_in,
+    result_manifest_path_in,
+)
 from furu.config import get_config
 from furu.locking import lock_many
 from furu.logging import get_logger
@@ -15,12 +21,6 @@ from furu.result import load_result_bundle
 from furu.result.codec import ResultRegistry, _default_result_registry
 from furu.schema import schema_type as _schema_type
 from furu.serialize import to_json as _to_json
-from furu._storage_layout import (
-    compute_lock_path_in,
-    data_dir_in,
-    result_link_path_in,
-    result_manifest_path_in,
-)
 from furu.utils import (
     JsonValue,
     _hash_dict_deterministically,
@@ -98,7 +98,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
     ]:  # TODO: add queued/waiting state?
         if result_manifest_path_in(self._base_dir).exists():
             return "completed"
-        if self.is_migrated():
+        if self.is_migrated():  # TODO: check if the migrated object is in correct state
             return "completed"
         if compute_lock_path_in(self._base_dir).exists():
             return "running"
