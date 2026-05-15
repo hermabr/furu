@@ -217,7 +217,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     @cached_property
     def storage_root(self) -> Path:
-        return get_config().directories.data
+        return get_config().directories.objects
 
     @cached_property
     def _base_dir(self) -> Path:

@@ -1254,7 +1254,7 @@ def test_data_dir():
         name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
     )
     assert node_pair._base_dir == (
-        get_config().directories.data
+        get_config().directories.objects
         / "test_core"
         / "NodePair"
         / "21733b1febfab88b565c"
@@ -1262,7 +1262,7 @@ def test_data_dir():
     )
     assert node_pair.data_dir == node_pair._base_dir / "data"
     assert node_pair.data_dir == Path(
-        get_config().directories.data
+        get_config().directories.objects
         / "test_core"
         / "NodePair"
         / node_pair.artifact_schema_hash
