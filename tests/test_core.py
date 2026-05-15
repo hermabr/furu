@@ -1286,15 +1286,6 @@ def test_storage_root_can_be_overridden_with_cached_property():
     assert node.data_dir == node._base_dir / "data"
 
 
-def test_data_dir_override_is_rejected():
-    with pytest.raises(TypeError, match="must not override data_dir"):
-
-        class CustomDataDirNode(Node):
-            @cached_property
-            def data_dir(self) -> Path:
-                return Path("custom/data/location")
-
-
 def test_create_object_and_exists():
     node_pair = NodePair(
         name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)

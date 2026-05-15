@@ -6,7 +6,7 @@ from abc import ABC
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast, final
 
 from furu._storage_layout import (
     compute_lock_path_in,
@@ -55,12 +55,6 @@ class Furu[T](_FuruDataclassTransform, ABC):
         super().__init_subclass__(**kwargs)
         if cls is Furu:
             return
-
-        if "data_dir" in cls.__dict__:
-            raise TypeError(
-                f"{cls.__name__} must not override data_dir; override storage_root "
-                "instead"
-            )
 
         annotations = getattr(cls, "__annotations__", {})
         for name, value in cls.__dict__.items():
@@ -228,6 +222,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
             / self.artifact_hash
         )
 
+    @final
     @cached_property
     def data_dir(self) -> Path:
         data_dir = data_dir_in(self._base_dir)
