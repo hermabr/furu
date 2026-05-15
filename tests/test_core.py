@@ -674,23 +674,23 @@ def test_hashes_and_data_dir():
     assert (
         NodePair(
             name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
-        ).artifact_hash
+        )._artifact_hash
         == "685af925669262434640"
     )
 
     assert (
         NodePair(
             name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
-        ).artifact_hash
+        )._artifact_hash
         != NodePair(
             name="z", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
-        ).artifact_hash
+        )._artifact_hash
     )
 
     assert (
         NodePair(
             name="y", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
-        ).artifact_schema_hash
+        )._artifact_schema_hash
         == "21733b1febfab88b565c"
     )
 
@@ -714,13 +714,13 @@ def test_hashes_and_data_dir():
     assert (
         B(
             a=A(x=1, z="123", w=[6, 7]), y={"hey": 123, True: 1}, t=("123", 12)
-        ).artifact_schema_hash
+        )._artifact_schema_hash
         != B_priv(
             a=A(x=1, z="123", w=[6, 7]),
             y={"hey": 123, True: 1},
             t=("123", 12),
             _h=1,
-        ).artifact_schema_hash
+        )._artifact_schema_hash
     )
 
     def qualname_alias(cls: type[Furu[object]], *, ret_typ: type) -> type[Furu[object]]:
@@ -739,13 +739,13 @@ def test_hashes_and_data_dir():
     assert (
         B(
             a=A(x=1, z="123", w=[6, 7]), y={"ney": 123, True: 1}, t=("123", 12)
-        ).artifact_schema_hash
+        )._artifact_schema_hash
         != B_priv_as_B(
             a=A(x=1, z="123", w=[6, 7]),
             y={"hey": 123, "ney": 1},
             t=("123", 12),
             _h=1,
-        ).artifact_schema_hash
+        )._artifact_schema_hash
     )
 
 
@@ -872,7 +872,7 @@ def expected_schema_for_B_like(
     ],
 )
 def test_schema(make: Callable[[], Furu], expected):
-    assert make().schema_data == expected
+    assert make()._schema_data == expected
 
 
 def test_to_json():
@@ -897,8 +897,8 @@ def test_to_json():
         },
     }
     assert to_json(node_pair) == expected
-    assert to_json(node_pair) == node_pair.artifact_data
-    assert node_pair.artifact_data == expected
+    assert to_json(node_pair) == node_pair._artifact_data
+    assert node_pair._artifact_data == expected
 
 
 def test_to_json_with_none_field():
@@ -931,12 +931,12 @@ def test_to_json_with_class_field_value():
     obj = UsesClassValue(node_cls=Node)
 
     assert to_json(Node) == {"|kind": "type_ref", "|class": "test_core.Node"}
-    assert obj.artifact_data == {
+    assert obj._artifact_data == {
         "|kind": "instance",
         "|class": "test_core.UsesClassValue",
         "|fields": {"node_cls": {"|kind": "type_ref", "|class": "test_core.Node"}},
     }
-    assert isinstance(obj.artifact_hash, str)
+    assert isinstance(obj._artifact_hash, str)
 
 
 def test_to_json_with_pydantic_field_value():
@@ -955,8 +955,8 @@ def test_to_json_with_pydantic_field_value():
     }
 
     assert to_json(obj) == expected
-    assert obj.artifact_data == expected
-    assert isinstance(obj.artifact_hash, str)
+    assert obj._artifact_data == expected
+    assert isinstance(obj._artifact_hash, str)
 
 
 def test_furu_object_round_trips_from_json_artifact():
@@ -966,7 +966,7 @@ def test_furu_object_round_trips_from_json_artifact():
         node2=WeightedNode(name="z", weight=1),
     )
 
-    loaded = _from_json(obj.artifact_data)
+    loaded = _from_json(obj._artifact_data)
 
     assert loaded == obj
     assert isinstance(loaded, NodePair)
@@ -977,9 +977,9 @@ def test_furu_object_with_typed_fields_round_trips_from_json_artifact():
     path_obj = UsesPath(path=Path("/tmp/out"))
     class_obj = UsesClassValue(node_cls=Node)
 
-    assert _from_json(path_obj.artifact_data) == path_obj
-    assert _from_json(class_obj.artifact_data) == class_obj
-    assert isinstance(cast(UsesPath, _from_json(path_obj.artifact_data)).path, Path)
+    assert _from_json(path_obj._artifact_data) == path_obj
+    assert _from_json(class_obj._artifact_data) == class_obj
+    assert isinstance(cast(UsesPath, _from_json(path_obj._artifact_data)).path, Path)
 
 
 def test_furu_from_artifact_returns_furu_object():
@@ -991,17 +991,17 @@ def test_furu_from_artifact_returns_furu_object():
     obj.load_or_create()
     artifact = ArtifactSpec(
         fully_qualified_name=obj._fully_qualified_name,
-        artifact_data=obj.artifact_data,
-        artifact_hash=obj.artifact_hash,
-        schema_data=obj.schema_data,
-        schema_hash=obj.artifact_schema_hash,
+        artifact_data=obj._artifact_data,
+        artifact_hash=obj._artifact_hash,
+        schema_data=obj._schema_data,
+        schema_hash=obj._artifact_schema_hash,
     )
 
     loaded = NodePair.from_artifact(artifact)
     raw_metadata = json.loads(metadata_path_in(obj._base_dir).read_text())
 
     assert artifact.object_id == obj.object_id
-    assert artifact.schema_data == obj.schema_data
+    assert artifact.schema_data == obj._schema_data
     assert "schema_data" in type(artifact).model_fields
     assert loaded == obj
     assert isinstance(loaded, NodePair)
@@ -1011,10 +1011,10 @@ def test_furu_from_artifact_returns_furu_object():
     assert "data_path" not in raw_metadata
     assert raw_metadata["artifact"] == {
         "fully_qualified_name": obj._fully_qualified_name,
-        "artifact_data": obj.artifact_data,
-        "artifact_hash": obj.artifact_hash,
-        "schema_data": obj.schema_data,
-        "schema_hash": obj.artifact_schema_hash,
+        "artifact_data": obj._artifact_data,
+        "artifact_hash": obj._artifact_hash,
+        "schema_data": obj._schema_data,
+        "schema_hash": obj._artifact_schema_hash,
     }
     assert "hash" not in raw_metadata["artifact"]
     assert "artifact_schema" not in raw_metadata
@@ -1131,10 +1131,10 @@ def test_furu_from_artifact_infers_furu_object_type():
     obj.load_or_create()
     artifact = ArtifactSpec(
         fully_qualified_name=obj._fully_qualified_name,
-        artifact_data=obj.artifact_data,
-        artifact_hash=obj.artifact_hash,
-        schema_data=obj.schema_data,
-        schema_hash=obj.artifact_schema_hash,
+        artifact_data=obj._artifact_data,
+        artifact_hash=obj._artifact_hash,
+        schema_data=obj._schema_data,
+        schema_hash=obj._artifact_schema_hash,
     )
 
     loaded = Furu.from_artifact(artifact)
@@ -1161,10 +1161,10 @@ def test_furu_from_artifact_accepts_artifact_spec():
     obj = Node(name="x")
     artifact = ArtifactSpec(
         fully_qualified_name=obj._fully_qualified_name,
-        artifact_data=obj.artifact_data,
-        artifact_hash=obj.artifact_hash,
-        schema_data=obj.schema_data,
-        schema_hash=obj.artifact_schema_hash,
+        artifact_data=obj._artifact_data,
+        artifact_hash=obj._artifact_hash,
+        schema_data=obj._schema_data,
+        schema_hash=obj._artifact_schema_hash,
     )
 
     loaded = Node.from_artifact(artifact)
@@ -1178,10 +1178,10 @@ def test_furu_from_artifact_type_mismatch_names_expected_and_loaded_type():
     obj = WeightedNode(name="x", weight=1)
     artifact = ArtifactSpec(
         fully_qualified_name=obj._fully_qualified_name,
-        artifact_data=obj.artifact_data,
-        artifact_hash=obj.artifact_hash,
-        schema_data=obj.schema_data,
-        schema_hash=obj.artifact_schema_hash,
+        artifact_data=obj._artifact_data,
+        artifact_hash=obj._artifact_hash,
+        schema_data=obj._schema_data,
+        schema_hash=obj._artifact_schema_hash,
     )
 
     with pytest.raises(
@@ -1199,17 +1199,17 @@ def test_furu_from_artifact_rejects_artifact_spec_hash_mismatch():
     bad_hash = "wrong-artifact-hash"
     artifact = ArtifactSpec(
         fully_qualified_name=obj._fully_qualified_name,
-        artifact_data=obj.artifact_data,
+        artifact_data=obj._artifact_data,
         artifact_hash=bad_hash,
-        schema_data=obj.schema_data,
-        schema_hash=obj.artifact_schema_hash,
+        schema_data=obj._schema_data,
+        schema_hash=obj._artifact_schema_hash,
     )
 
     with pytest.raises(
         ValueError,
         match=(
             "Artifact hash did not match loaded object: "
-            + f"artifact={bad_hash[:5]}, loaded={obj.artifact_hash[:5]}"
+            + f"artifact={bad_hash[:5]}, loaded={obj._artifact_hash[:5]}"
         ),
     ):
         Node.from_artifact(artifact)
@@ -1220,9 +1220,9 @@ def test_furu_from_artifact_rejects_artifact_spec_schema_hash_mismatch():
     bad_schema_hash = "wrong-schema-hash"
     artifact = ArtifactSpec(
         fully_qualified_name=obj._fully_qualified_name,
-        artifact_data=obj.artifact_data,
-        artifact_hash=obj.artifact_hash,
-        schema_data=obj.schema_data,
+        artifact_data=obj._artifact_data,
+        artifact_hash=obj._artifact_hash,
+        schema_data=obj._schema_data,
         schema_hash=bad_schema_hash,
     )
 
@@ -1231,14 +1231,14 @@ def test_furu_from_artifact_rejects_artifact_spec_schema_hash_mismatch():
         match=(
             "Artifact schema hash did not match loaded object: "
             + f"artifact={bad_schema_hash[:5]}, "
-            + f"loaded={obj.artifact_schema_hash[:5]}"
+            + f"loaded={obj._artifact_schema_hash[:5]}"
         ),
     ):
         Node.from_artifact(artifact)
 
 
 def test_schema_with_ellipsis_type_arg():
-    assert VariadicTuple(t=(1, 2, 3)).schema_data == {
+    assert VariadicTuple(t=(1, 2, 3))._schema_data == {
         "|class": "test_core.VariadicTuple",
         "|fields": {
             "t": {
@@ -1265,8 +1265,8 @@ def test_data_dir():
         get_config().directories.objects
         / "test_core"
         / "NodePair"
-        / node_pair.artifact_schema_hash
-        / node_pair.artifact_hash
+        / node_pair._artifact_schema_hash
+        / node_pair._artifact_hash
         / "data"
     )
 
@@ -1280,8 +1280,8 @@ def test_storage_root_can_be_overridden_with_cached_property():
         Path("custom/data/location")
         / "test_core"
         / "CustomStorageRootNode"
-        / node.artifact_schema_hash
-        / node.artifact_hash
+        / node._artifact_schema_hash
+        / node._artifact_hash
     )
     assert node.data_dir == node._base_dir / "data"
 

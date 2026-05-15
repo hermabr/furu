@@ -98,6 +98,13 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def logger(self) -> logging.Logger:
         return get_logger()
 
+    @final
+    @cached_property
+    def data_dir(self) -> Path:
+        data_dir = data_dir_in(self._base_dir)
+        data_dir.mkdir(parents=True, exist_ok=True)
+        return data_dir
+
     # Framework operations.
     @final
     def load_or_create(self, use_lock: bool = True) -> T:
@@ -191,29 +198,29 @@ class Furu[T](_FuruDataclassTransform, ABC):
     # Derived identity and storage layout.
     @final
     @cached_property
-    def artifact_data(  # TODO: make sure this doesn't prevent garbage collection
+    def _artifact_data(  # TODO: make sure this doesn't prevent garbage collection
         self,
     ) -> dict[str, JsonValue]:
         return _to_json(self)  # ty:ignore[invalid-return-type] # TODO: check this or make _to_json return dict[str, JsonValue] or typed value
 
     @final
     @cached_property
-    def artifact_hash(  # TODO: should this be __hash__?
+    def _artifact_hash(  # TODO: should this be __hash__?
         self,
     ) -> str:
-        return _hash_dict_deterministically(self.artifact_data)
+        return _hash_dict_deterministically(self._artifact_data)
 
     @final
     @cached_property
-    def schema_data(
+    def _schema_data(
         self,
     ) -> JsonValue:
         return _schema_type(type(self), set())
 
     @final
     @cached_property
-    def artifact_schema_hash(self) -> str:
-        return _hash_dict_deterministically(self.schema_data)
+    def _artifact_schema_hash(self) -> str:
+        return _hash_dict_deterministically(self._schema_data)
 
     @final
     @cached_property
@@ -225,8 +232,8 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def object_id(self) -> str:
         return object_id_from_parts(
             fully_qualified_name=self._fully_qualified_name,
-            schema_hash=self.artifact_schema_hash,
-            artifact_hash=self.artifact_hash,
+            schema_hash=self._artifact_schema_hash,
+            artifact_hash=self._artifact_hash,
         )
 
     @final
@@ -235,22 +242,15 @@ class Furu[T](_FuruDataclassTransform, ABC):
         return (
             self.storage_root
             / Path(*self._fully_qualified_name.split("."))
-            / self.artifact_schema_hash
-            / self.artifact_hash
+            / self._artifact_schema_hash
+            / self._artifact_hash
         )
-
-    @final
-    @cached_property
-    def data_dir(self) -> Path:
-        data_dir = data_dir_in(self._base_dir)
-        data_dir.mkdir(parents=True, exist_ok=True)
-        return data_dir
 
     @final
     @cached_property
     def _log_label(self) -> str:
         return (
             f"{type(self).__name__}:"
-            + f"{self.artifact_schema_hash[:5]}:"
-            + f"{self.artifact_hash[:5]}"
+            + f"{self._artifact_schema_hash[:5]}:"
+            + f"{self._artifact_hash[:5]}"
         )

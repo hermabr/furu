@@ -103,9 +103,9 @@ def migrate[T](obj: Furu[T]) -> bool:
 
     target_node = (
         fully_qualified_name(type(obj)),
-        obj.artifact_schema_hash,
+        obj._artifact_schema_hash,
     )
-    target_fields = cast(JsonFields, obj.artifact_data[FIELDSMARKER])
+    target_fields = cast(JsonFields, obj._artifact_data[FIELDSMARKER])
 
     by_target: defaultdict[_Node, list[Migration]] = defaultdict(list)
     for migration in migrations:
@@ -185,8 +185,8 @@ def migrate[T](obj: Furu[T]) -> bool:
             result_link = _ResultLink(
                 current=_ResultLinkCurrent(
                     fully_qualified_name=fully_qualified_name(type(obj)),
-                    schema_hash=obj.artifact_schema_hash,
-                    artifact_hash=obj.artifact_hash,
+                    schema_hash=obj._artifact_schema_hash,
+                    artifact_hash=obj._artifact_hash,
                     fields=target_fields,
                 ),
                 source=source_link.source,

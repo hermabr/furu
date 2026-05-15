@@ -130,16 +130,16 @@ def _from_artifact[T: "Furu"](artifact: ArtifactSpec, expected_type: type[T]) ->
             + f"{type(furu_obj).__module__}.{type(furu_obj).__qualname__}, "
             + f"expected {expected_type.__module__}.{expected_type.__qualname__}"
         )
-    if artifact.artifact_hash != furu_obj.artifact_hash:
+    if artifact.artifact_hash != furu_obj._artifact_hash:
         raise ValueError(
             "Artifact hash did not match loaded object: "
             + f"artifact={artifact.artifact_hash[:5]}, "
-            + f"loaded={furu_obj.artifact_hash[:5]}"
+            + f"loaded={furu_obj._artifact_hash[:5]}"
         )
-    if artifact.schema_hash != furu_obj.artifact_schema_hash:
+    if artifact.schema_hash != furu_obj._artifact_schema_hash:
         raise ValueError(
             "Artifact schema hash did not match loaded object: "
             + f"artifact={artifact.schema_hash[:5]}, "
-            + f"loaded={furu_obj.artifact_schema_hash[:5]}"
+            + f"loaded={furu_obj._artifact_schema_hash[:5]}"
         )
     return furu_obj

@@ -39,10 +39,10 @@ class ArtifactSpec(BaseModel):
     def from_furu[TFuru: Furu](cls, obj: TFuru) -> ArtifactSpec:
         return cls(
             fully_qualified_name=obj._fully_qualified_name,
-            artifact_data=obj.artifact_data,
-            artifact_hash=obj.artifact_hash,
-            schema_data=obj.schema_data,
-            schema_hash=obj.artifact_schema_hash,
+            artifact_data=obj._artifact_data,
+            artifact_hash=obj._artifact_hash,
+            schema_data=obj._schema_data,
+            schema_hash=obj._artifact_schema_hash,
         )
 
     @cached_property

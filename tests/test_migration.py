@@ -56,11 +56,11 @@ class _NewRun(Furu[dict[str, str]]):
         return (
             furu.Migration(
                 old_fully_qualified_name=old._fully_qualified_name,
-                old_schema_hash=old.artifact_schema_hash,
+                old_schema_hash=old._artifact_schema_hash,
                 new_fully_qualified_name=cls(
                     dataset="ignored", lr=0.0
                 )._fully_qualified_name,
-                new_schema_hash=cls(dataset="ignored", lr=0.0).artifact_schema_hash,
+                new_schema_hash=cls(dataset="ignored", lr=0.0)._artifact_schema_hash,
                 transform_fn=_from_old_run,
             ),
         )
@@ -102,13 +102,13 @@ def test_migrate_with_matching_old_artifact_writes_result_link() -> None:
     link_path = result_link_path_in(new._base_dir)
     link = json.loads(link_path.read_text())
     assert link["current"]["fully_qualified_name"] == new._fully_qualified_name
-    assert link["current"]["schema_hash"] == new.artifact_schema_hash
-    assert link["current"]["artifact_hash"] == new.artifact_hash
+    assert link["current"]["schema_hash"] == new._artifact_schema_hash
+    assert link["current"]["artifact_hash"] == new._artifact_hash
     assert link["source"]["base_dir"] == str(old._base_dir)
-    assert link["source"]["schema_hash"] == old.artifact_schema_hash
-    assert link["source"]["artifact_hash"] == old.artifact_hash
-    assert link["migration_path"][0]["old_schema_hash"] == old.artifact_schema_hash
-    assert link["migration_path"][0]["new_schema_hash"] == new.artifact_schema_hash
+    assert link["source"]["schema_hash"] == old._artifact_schema_hash
+    assert link["source"]["artifact_hash"] == old._artifact_hash
+    assert link["migration_path"][0]["old_schema_hash"] == old._artifact_schema_hash
+    assert link["migration_path"][0]["new_schema_hash"] == new._artifact_schema_hash
 
 
 def test_migrate_loads_result_through_link() -> None:
@@ -204,9 +204,9 @@ class _MidRun(Furu[dict[str, str]]):
         return (
             furu.Migration(
                 old_fully_qualified_name=old._fully_qualified_name,
-                old_schema_hash=old.artifact_schema_hash,
+                old_schema_hash=old._artifact_schema_hash,
                 new_fully_qualified_name=mid._fully_qualified_name,
-                new_schema_hash=mid.artifact_schema_hash,
+                new_schema_hash=mid._artifact_schema_hash,
                 transform_fn=_old_to_mid,
             ),
         )
@@ -232,16 +232,16 @@ class _FinalRun(Furu[dict[str, str]]):
         return (
             furu.Migration(
                 old_fully_qualified_name=old._fully_qualified_name,
-                old_schema_hash=old.artifact_schema_hash,
+                old_schema_hash=old._artifact_schema_hash,
                 new_fully_qualified_name=mid._fully_qualified_name,
-                new_schema_hash=mid.artifact_schema_hash,
+                new_schema_hash=mid._artifact_schema_hash,
                 transform_fn=_old_to_mid,
             ),
             furu.Migration(
                 old_fully_qualified_name=mid._fully_qualified_name,
-                old_schema_hash=mid.artifact_schema_hash,
+                old_schema_hash=mid._artifact_schema_hash,
                 new_fully_qualified_name=final._fully_qualified_name,
-                new_schema_hash=final.artifact_schema_hash,
+                new_schema_hash=final._artifact_schema_hash,
                 transform_fn=_mid_to_final,
             ),
         )
@@ -273,8 +273,8 @@ def test_multi_hop_migration_points_directly_at_ultimate_source() -> None:
     assert link["source"]["base_dir"] == str(old._base_dir)
     assert link["source"]["fully_qualified_name"] == old._fully_qualified_name
     assert [hop["new_schema_hash"] for hop in link["migration_path"]] == [
-        mid.artifact_schema_hash,
-        final.artifact_schema_hash,
+        mid._artifact_schema_hash,
+        final._artifact_schema_hash,
     ]
 
     assert final.load_or_create() == {
@@ -293,8 +293,8 @@ def test_multi_hop_works_without_intermediate_migrate() -> None:
     link = json.loads(result_link_path_in(final._base_dir).read_text())
     assert link["source"]["base_dir"] == str(old._base_dir)
     assert [hop["new_schema_hash"] for hop in link["migration_path"]] == [
-        _MidRun(dataset="cifar10", lr=0.001).artifact_schema_hash,
-        final.artifact_schema_hash,
+        _MidRun(dataset="cifar10", lr=0.001)._artifact_schema_hash,
+        final._artifact_schema_hash,
     ]
 
 
