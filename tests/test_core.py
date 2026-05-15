@@ -1330,14 +1330,14 @@ def test_unused_data_dir_is_not_created_by_load_or_create() -> None:
     assert not user_data_path.exists()
 
 
-def test_data_dir_property_creates_user_data_subdirectory_without_failure() -> None:
+def test_data_dir_property_creates_user_data_subdirectory() -> None:
     node = Node(name="manual-data")
     user_data_path = node._base_dir / "data"
 
     assert not user_data_path.exists()
     assert node.data_dir == user_data_path
     assert user_data_path.exists()
-    assert node.status() == "missing"
+    assert node.status() == "failed"
 
 
 def test_status_is_running_while_compute_lock_is_held() -> None:

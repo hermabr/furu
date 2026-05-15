@@ -18,11 +18,8 @@ from furu.serialize import to_json as _to_json
 from furu._storage_layout import (
     compute_lock_path_in,
     data_dir_in,
-    ensure_base_dir_in,
-    metadata_path_in,
     result_link_path_in,
     result_manifest_path_in,
-    run_log_path_in,
 )
 from furu.utils import (
     JsonValue,
@@ -105,10 +102,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
             return "completed"
         if compute_lock_path_in(self._base_dir).exists():
             return "running"
-        if (
-            metadata_path_in(self._base_dir).exists()
-            or run_log_path_in(self._base_dir).exists()
-        ):
+        if self._base_dir.exists():
             return "failed"
         return "missing"
 
@@ -148,7 +142,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
         if not self._base_dir.exists():
             return False
 
-        ensure_base_dir_in(self._base_dir)
+        self._base_dir.mkdir(parents=True, exist_ok=True)
 
         tombstone_path: Path | None = None
         try:
