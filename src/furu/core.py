@@ -140,8 +140,10 @@ class Furu[T](_FuruDataclassTransform, ABC):
                 dependencies=[self],
                 call_kind="try_load",
             )
-        raise NotImplementedError(
-            "TODO: decide if i should throw or return error value"
+        raise RuntimeError(
+            f"{self._log_label}.try_load() could not find a result. "
+            "try_load() only loads existing results; use load_or_create() to "
+            "compute missing results."
         )
 
     @final

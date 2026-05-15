@@ -433,7 +433,7 @@ class TryLoadDependencyParent(Furu[str]):
     def create(self) -> str:
         try:
             Node(name=self.name).try_load()
-        except NotImplementedError:
+        except RuntimeError:
             return "missing"
         return "loaded"
 
@@ -1084,6 +1084,18 @@ def test_try_load_inside_create_is_recorded_even_on_missing_result() -> None:
 
     metadata = json.loads(metadata_path_in(parent._base_dir).read_text())
     assert metadata["observed_dependencies"] == [Node(name="optional").object_id]
+
+
+def test_try_load_missing_result_explains_how_to_compute() -> None:
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            r"Node:[a-f0-9]{5}:[a-f0-9]{5}\.try_load\(\) could not find a result\. "
+            r"try_load\(\) only loads existing results; use load_or_create\(\) to "
+            r"compute missing results\."
+        ),
+    ):
+        Node(name="missing").try_load()
 
 
 def test_furu_objects_block_nested_eager_traversal_but_direct_runtime_loads_are_recorded() -> (
