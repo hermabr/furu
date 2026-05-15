@@ -74,34 +74,36 @@ class Furu[T](_FuruDataclassTransform, ABC):
         cls._furu_create_mode = _resolve_create_mode(cls)
         _install_create_guards(cls)
 
+    # Subclass hooks.
+    def create(self) -> T:
+        raise NotImplementedError("TODO")
+
+    @classmethod
+    def create_batched[TFuru: Furu](cls: type[TFuru], objs: list[TFuru]) -> list[T]:
+        raise NotImplementedError("TODO")
+
+    @classmethod
+    def migrations(cls) -> tuple[Migration, ...]:
+        return ()
+
+    @cached_property
+    def storage_root(self) -> Path:
+        return get_config().directories.objects
+
+    @property
+    def result_registry(self) -> ResultRegistry:
+        return _default_result_registry()
+
+    @property
+    def logger(self) -> logging.Logger:
+        return get_logger()
+
+    # Framework operations.
     @final
     def load_or_create(self, use_lock: bool = True) -> T:
         from furu.execution import load_or_create
 
         return load_or_create(self, use_lock=use_lock)
-
-    @final
-    @classmethod
-    def from_artifact[TFuru: Furu](cls: type[TFuru], artifact: ArtifactSpec) -> TFuru:
-        from furu.serialize import _from_artifact
-
-        return _from_artifact(artifact, cls)
-
-    @final
-    def status(
-        self,
-    ) -> Literal[
-        "completed", "missing", "running", "failed"
-    ]:  # TODO: add queued/waiting state?
-        if result_manifest_path_in(self._base_dir).exists():
-            return "completed"
-        if self.is_migrated():  # TODO: check if the migrated object is in correct state
-            return "completed"
-        if compute_lock_path_in(self._base_dir).exists():
-            return "running"
-        if self._base_dir.exists():
-            return "failed"
-        return "missing"
 
     @final
     def try_load(self) -> T:  # TODO: make a better name for this
@@ -124,19 +126,21 @@ class Furu[T](_FuruDataclassTransform, ABC):
             "TODO: decide if i should throw or return error value"
         )
 
-    @classmethod
-    def migrations(cls) -> tuple[Migration, ...]:
-        return ()
-
     @final
-    def migrate(self) -> bool:
-        from furu.migration import migrate
-
-        return migrate(self)
-
-    @final
-    def is_migrated(self) -> bool:
-        return result_link_path_in(self._base_dir).exists()
+    def status(
+        self,
+    ) -> Literal[
+        "completed", "missing", "running", "failed"
+    ]:  # TODO: add queued/waiting state?
+        if result_manifest_path_in(self._base_dir).exists():
+            return "completed"
+        if self.is_migrated():  # TODO: check if the migrated object is in correct state
+            return "completed"
+        if compute_lock_path_in(self._base_dir).exists():
+            return "running"
+        if self._base_dir.exists():
+            return "failed"
+        return "missing"
 
     @final
     def delete(self, mode: Literal["prompt", "force"] = "prompt") -> bool:
@@ -167,21 +171,24 @@ class Furu[T](_FuruDataclassTransform, ABC):
         shutil.rmtree(tombstone_path)
         return True
 
-    @property
-    def logger(self) -> logging.Logger:
-        return get_logger()
+    @final
+    def migrate(self) -> bool:
+        from furu.migration import migrate
 
-    @property
-    def result_registry(self) -> ResultRegistry:
-        return _default_result_registry()
+        return migrate(self)
 
-    def create(self) -> T:
-        raise NotImplementedError("TODO")
+    @final
+    def is_migrated(self) -> bool:
+        return result_link_path_in(self._base_dir).exists()
 
+    @final
     @classmethod
-    def create_batched[TFuru: Furu](cls: type[TFuru], objs: list[TFuru]) -> list[T]:
-        raise NotImplementedError("TODO")
+    def from_artifact[TFuru: Furu](cls: type[TFuru], artifact: ArtifactSpec) -> TFuru:
+        from furu.serialize import _from_artifact
 
+        return _from_artifact(artifact, cls)
+
+    # Derived identity and storage layout.
     @final
     @cached_property
     def artifact_data(  # TODO: make sure this doesn't prevent garbage collection
@@ -221,10 +228,6 @@ class Furu[T](_FuruDataclassTransform, ABC):
             schema_hash=self.artifact_schema_hash,
             artifact_hash=self.artifact_hash,
         )
-
-    @cached_property
-    def storage_root(self) -> Path:
-        return get_config().directories.objects
 
     @final
     @cached_property
