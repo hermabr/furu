@@ -1007,6 +1007,8 @@ def test_furu_from_artifact_returns_furu_object():
     assert isinstance(loaded, NodePair)
     assert loaded.data_dir == obj.data_dir
     assert raw_metadata["kind"] == "completed"
+    assert raw_metadata["base_path"] == str(obj._base_dir)
+    assert "data_path" not in raw_metadata
     assert raw_metadata["artifact"] == {
         "fully_qualified_name": obj._fully_qualified_name,
         "artifact_data": obj.artifact_data,

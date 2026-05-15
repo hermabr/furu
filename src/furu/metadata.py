@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from furu._storage_layout import data_dir_in, metadata_path_in
+from furu._storage_layout import metadata_path_in
 from furu.utils import JsonValue, object_id_from_parts
 
 if TYPE_CHECKING:
@@ -63,7 +63,7 @@ class RunningMetadata(BaseModel):
     kind: Literal["running"] = "running"
     # python_def: str
     artifact: ArtifactSpec
-    data_path: Path
+    base_path: Path
     # git: GitData | None
     started_at: datetime
     # command: list[str] # TODO: find/decide what the most elegant approach is here
@@ -83,7 +83,7 @@ class RunningMetadata(BaseModel):
     ) -> RunningMetadata:
         metadata = cls(
             artifact=ArtifactSpec.from_furu(obj),
-            data_path=data_dir_in(obj._base_dir),
+            base_path=obj._base_dir,
             started_at=datetime.now(timezone.utc),
         )
         metadata_path_in(obj._base_dir).write_text(metadata.model_dump_json(indent=2))
@@ -96,7 +96,7 @@ class RunningMetadata(BaseModel):
     ) -> CompletedMetadata:
         return CompletedMetadata(
             artifact=self.artifact,
-            data_path=self.data_path,
+            base_path=self.base_path,
             started_at=self.started_at,
             completed_at=datetime.now(timezone.utc),
             observed_dependencies=observed_dependencies,
@@ -112,7 +112,7 @@ class CompletedMetadata(BaseModel):
     kind: Literal["completed"] = "completed"
     # python_def: str
     artifact: ArtifactSpec
-    data_path: Path
+    base_path: Path
     # git: GitData | None
     started_at: datetime
     # traced_function_hashes: list[
