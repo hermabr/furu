@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from furu.storage_layout import metadata_path_in
+from furu._storage_layout import metadata_path_in
 from furu.utils import JsonValue, object_id_from_parts
 
 if TYPE_CHECKING:

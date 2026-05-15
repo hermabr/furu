@@ -24,7 +24,7 @@ from furu.result.codec import (
     ResultRegistry,
     _default_result_registry,
 )
-from furu.storage_layout import result_dir_in, result_manifest_path_in
+from furu._storage_layout import result_dir_in, result_manifest_path_in
 
 np = pytest.importorskip("numpy")
 pl = pytest.importorskip("polars")

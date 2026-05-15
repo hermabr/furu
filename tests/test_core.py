@@ -22,7 +22,7 @@ from furu.metadata import ArtifactSpec
 from furu.result import load_result_bundle, save_result_bundle
 from furu.result.codec import _default_result_registry
 from furu.serialize import _from_json, to_json
-from furu.storage_layout import (
+from furu._storage_layout import (
     compute_lock_path_in,
     metadata_path_in,
     result_dir_in,

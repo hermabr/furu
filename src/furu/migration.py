@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, cast
 from pydantic import BaseModel, ConfigDict
 
 from furu.constants import FIELDSMARKER
-from furu.storage_layout import (
+from furu._storage_layout import (
     ensure_object_dirs_in,
     metadata_path_in,
     result_dir_in,

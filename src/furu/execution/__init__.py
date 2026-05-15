@@ -23,7 +23,7 @@ from furu.metadata import RunningMetadata
 from furu.migration import result_dir_for_loading
 from furu.result import load_result_bundle, save_result_bundle
 from furu.result.save_as import _unwrap_save_as
-from furu.storage_layout import (
+from furu._storage_layout import (
     compute_lock_path_in,
     ensure_object_dirs_in,
     metadata_path_in,

@@ -15,7 +15,7 @@ from furu.result import load_result_bundle
 from furu.result.codec import ResultRegistry, _default_result_registry
 from furu.schema import schema_type as _schema_type
 from furu.serialize import to_json as _to_json
-from furu.storage_layout import (
+from furu._storage_layout import (
     compute_lock_path_in,
     data_dir_in,
     ensure_object_dirs_in,

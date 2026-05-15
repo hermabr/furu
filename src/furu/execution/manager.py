@@ -14,7 +14,7 @@ from furu.core import Furu
 from furu.dag import DagNode, _add_to_dag, _update_dag_blocking_dependencies
 from furu.logging import _scoped_log_files, get_logger
 from furu.metadata import ArtifactSpec
-from furu.storage_layout import manager_log_path_in
+from furu._storage_layout import manager_log_path_in
 from furu.worker.protocol import (
     Job,
     JobBlockedResult,

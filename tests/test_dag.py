@@ -7,7 +7,7 @@ import furu
 from furu import Furu
 from furu.dag import DagNode
 from furu.execution.manager import Manager
-from furu.storage_layout import (
+from furu._storage_layout import (
     compute_lock_path_in,
     run_log_path_in,
 )

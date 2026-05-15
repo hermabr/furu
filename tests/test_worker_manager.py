@@ -19,7 +19,7 @@ from furu.execution.manager import (
 )
 from furu.execution.server import _run_until_done, manager_server
 from furu.metadata import ArtifactSpec
-from furu.storage_layout import manager_log_path_in
+from furu._storage_layout import manager_log_path_in
 from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
 from furu.worker.loop import worker_loop
 from furu.worker.protocol import (

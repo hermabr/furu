@@ -7,7 +7,7 @@ import pytest
 import furu
 import furu.execution as execution_module
 from furu import Furu
-from furu.storage_layout import (
+from furu._storage_layout import (
     compute_lock_path_in,
     result_link_path_in,
     result_manifest_path_in,
