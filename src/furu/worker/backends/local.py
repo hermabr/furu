@@ -8,7 +8,7 @@ from pathlib import Path
 @dataclass(frozen=True, slots=True)
 class LocalThreadWorkerBackend:
     n_workers: int = 1
-    manager_bind_host: str = "127.0.0.1"
+    manager_listen_host: str = "127.0.0.1"
 
     def start_pool(
         self, *, server_url: str, auth_token: str, executor_dir: Path

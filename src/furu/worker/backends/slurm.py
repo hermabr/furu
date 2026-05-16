@@ -12,7 +12,7 @@ from furu.utils import write_private_file
 
 
 @dataclass(frozen=True, slots=True)
-class Mem:
+class MemoryPerNode:
     value: str
 
     def to_sbatch_arg(self) -> str:
@@ -20,7 +20,7 @@ class Mem:
 
 
 @dataclass(frozen=True, slots=True)
-class MemPerCpu:
+class MemoryPerCpu:
     value: str
 
     def to_sbatch_arg(self) -> str:
@@ -28,14 +28,31 @@ class MemPerCpu:
 
 
 @dataclass(frozen=True, slots=True)
-class MemPerGpu:
+class MemoryPerGpu:
     value: str
 
     def to_sbatch_arg(self) -> str:
         return f"--mem-per-gpu={self.value}"
 
 
-type SlurmMemory = Mem | MemPerCpu | MemPerGpu
+type SlurmMemory = MemoryPerNode | MemoryPerCpu | MemoryPerGpu
+
+
+@dataclass(frozen=True, slots=True)
+class Gpus:
+    count: int
+    kind: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.count < 1:
+            raise ValueError("gpu count must be at least 1")
+        if self.kind == "":
+            raise ValueError("gpu kind must be non-empty")
+
+    def to_sbatch_arg(self) -> str:
+        if self.kind is None:
+            return f"--gpus={self.count}"
+        return f"--gpus={self.kind}:{self.count}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,11 +61,9 @@ class SlurmResources:
     partition: str | None = None
     qos: str | None = None
     time_limit: str | None = None
-    nodes: int | None = None
-    ntasks: int | None = None
-    cpus_per_task: int | None = None
+    cpus_per_worker: int | None = None
     memory: SlurmMemory | None = None
-    gres: str | None = None
+    gpus: Gpus | None = None
     constraint: str | None = None
     extra_sbatch_args: tuple[str, ...] = ()
 
@@ -62,16 +77,12 @@ class SlurmResources:
             args.append(f"--qos={self.qos}")
         if self.time_limit is not None:
             args.append(f"--time={self.time_limit}")
-        if self.nodes is not None:
-            args.append(f"--nodes={self.nodes}")
-        if self.ntasks is not None:
-            args.append(f"--ntasks={self.ntasks}")
-        if self.cpus_per_task is not None:
-            args.append(f"--cpus-per-task={self.cpus_per_task}")
+        if self.cpus_per_worker is not None:
+            args.append(f"--cpus-per-task={self.cpus_per_worker}")
         if self.memory is not None:
             args.append(self.memory.to_sbatch_arg())
-        if self.gres is not None:
-            args.append(f"--gres={self.gres}")
+        if self.gpus is not None:
+            args.append(self.gpus.to_sbatch_arg())
         if self.constraint is not None:
             args.append(f"--constraint={self.constraint}")
         args.extend(self.extra_sbatch_args)
@@ -82,8 +93,8 @@ class SlurmResources:
 class SlurmWorkerBackend:
     n_workers: int
     resources: SlurmResources
-    advertised_host: str
-    manager_bind_host: str = "0.0.0.0"
+    worker_connect_host: str
+    manager_listen_host: str = "0.0.0.0"
     job_name: str = "furu-worker"
     poll_interval: float = 10.0
 
@@ -96,7 +107,7 @@ class SlurmWorkerBackend:
     ) -> SlurmWorkerPool:
         scheme, rest = server_url.split("://", maxsplit=1)
         server_url = (
-            f"{scheme}://{self.advertised_host}:{rest.rsplit(':', maxsplit=1)[1]}"
+            f"{scheme}://{self.worker_connect_host}:{rest.rsplit(':', maxsplit=1)[1]}"
         )
 
         chdir = Path.cwd().resolve()

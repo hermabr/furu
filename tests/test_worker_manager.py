@@ -244,7 +244,7 @@ def test_manager_job_result_failed_finishes_with_error() -> None:
 
 def test_manager_run_uses_worker_backend() -> None:
     class RecordingBackend:
-        manager_bind_host = "0.0.0.0"
+        manager_listen_host = "0.0.0.0"
 
         def __init__(self) -> None:
             self.server_urls: list[str] = []
@@ -280,7 +280,7 @@ def test_manager_run_uses_worker_backend() -> None:
 
 def test_manager_run_passes_executor_dir_to_worker_backend() -> None:
     class RecordingBackend:
-        manager_bind_host = "127.0.0.1"
+        manager_listen_host = "127.0.0.1"
 
         def __init__(self) -> None:
             self.executor_dirs: list[Path] = []
@@ -351,7 +351,7 @@ def test_manager_run_waits_using_worker_pool_health_check_interval() -> None:
             self.join_timeouts.append(timeout)
 
     class RecordingBackend:
-        manager_bind_host = "127.0.0.1"
+        manager_listen_host = "127.0.0.1"
 
         def __init__(self, pool: RecordingPool) -> None:
             self.pool = pool
@@ -381,7 +381,7 @@ def test_manager_run_waits_using_worker_pool_health_check_interval() -> None:
     assert pool.join_timeouts == [5]
 
 
-def test_run_until_done_uses_worker_backend_manager_bind_host() -> None:
+def test_run_until_done_uses_worker_backend_manager_listen_host() -> None:
     class RecordingDone:
         def wait(self, timeout: float | None = None) -> bool:
             return True
@@ -396,7 +396,7 @@ def test_run_until_done_uses_worker_backend_manager_bind_host() -> None:
             pass
 
     class RecordingBackend:
-        manager_bind_host = "127.0.0.1"
+        manager_listen_host = "127.0.0.1"
 
         def __init__(self) -> None:
             self.server_urls: list[str] = []
