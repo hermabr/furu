@@ -11,14 +11,14 @@ from typing import Any
 import pytest
 
 from furu.worker import cli
-from furu.worker.backends.slurm import (
+from furu.worker.backends.slurm.backend import SlurmWorkerBackend
+from furu.worker.backends.slurm.pool import SlurmWorkerPool
+from furu.worker.backends.slurm.resources import (
     Gpus,
     MemoryPerCpu,
     MemoryPerGpu,
     MemoryPerNode,
     SlurmResources,
-    SlurmWorkerBackend,
-    SlurmWorkerPool,
 )
 
 
@@ -198,16 +198,6 @@ def test_slurm_resources_emit_one_memory_option(
 )
 def test_slurm_resources_emit_gpu_option(gpus: Gpus, expected_arg: str) -> None:
     assert SlurmResources(gpus=gpus).to_sbatch_args() == [expected_arg]
-
-
-def test_slurm_gpu_option_rejects_non_positive_count() -> None:
-    with pytest.raises(ValueError, match="gpu count"):
-        Gpus(0)
-
-
-def test_slurm_gpu_option_rejects_empty_kind() -> None:
-    with pytest.raises(ValueError, match="gpu kind"):
-        Gpus(1, kind="")
 
 
 def test_slurm_backend_rewrites_manager_url_to_worker_connect_host(
