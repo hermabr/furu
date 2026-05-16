@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict
 
 import furu
 import furu.execution as execution_module
-from furu import Furu, load_or_create, validate
+from furu import Furu, ResourceRequirements, load_or_create, validate
 from furu.config import get_config
 from furu.dependencies import collect_declared_refs
 from furu.locking import lock_many
@@ -1281,6 +1281,27 @@ def test_data_dir():
         / node_pair._artifact_hash
         / "data"
     )
+
+
+def test_resource_requirements_defaults_to_none():
+    assert Node(name="x").resource_requirements is None
+
+
+def test_resource_requirements_can_be_overridden_with_property():
+    class HeavyNode(Furu[str]):
+        name: str
+
+        @property
+        def resource_requirements(self) -> ResourceRequirements | None:
+            return ResourceRequirements(cpus=(4, 8), gpus=(1, None))
+
+        def create(self) -> str:
+            return self.name
+
+    rr = HeavyNode(name="x").resource_requirements
+    assert rr == ResourceRequirements(cpus=(4, 8), gpus=(1, None))
+    assert rr is not None
+    assert rr.memory is None
 
 
 def test_storage_root_can_be_overridden_with_cached_property():
