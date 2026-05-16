@@ -1,10 +1,10 @@
 from dataclasses import dataclass
 
-type Bounds = tuple[int | None, int | None]
+type ResourceRange = tuple[int | None, int | None]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ResourceRequirements:
-    cpus: Bounds | None = None
-    memory: Bounds | None = None
-    gpus: Bounds | None = None
+    cpus: ResourceRange | None = None
+    memory: ResourceRange | None = None
+    gpus: ResourceRange | None = None
