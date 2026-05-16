@@ -98,7 +98,7 @@ def _run_until_done(
         )
         with manager_server(
             manager,
-            bind_host=worker_backend.manager_bind_host,
+            bind_host=worker_backend.manager_listen_host,
             port=port,
         ) as server:
             logger.info(

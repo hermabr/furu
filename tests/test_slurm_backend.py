@@ -11,10 +11,14 @@ from typing import Any
 import pytest
 
 from furu.worker import cli
-from furu.worker.backends.slurm import (
+from furu.worker.backends.slurm.backend import SlurmWorkerBackend
+from furu.worker.backends.slurm.pool import SlurmWorkerPool
+from furu.worker.backends.slurm.resources import (
+    Gpus,
+    MemoryPerCpu,
+    MemoryPerGpu,
+    MemoryPerNode,
     SlurmResources,
-    SlurmWorkerBackend,
-    SlurmWorkerPool,
 )
 
 
@@ -107,11 +111,12 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
         n_workers=2,
         resources=SlurmResources(
             partition="debug",
-            cpus_per_task=4,
-            mem="8G",
+            cpus_per_worker=4,
+            memory=MemoryPerNode("8G"),
+            gpus=Gpus(1, kind="a100"),
             extra_sbatch_args=("--exclusive",),
         ),
-        advertised_host="manager.cluster",
+        worker_connect_host="manager.cluster",
         poll_interval=1.5,
     )
 
@@ -142,6 +147,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert "--partition=debug" in argv
     assert "--cpus-per-task=4" in argv
     assert "--mem=8G" in argv
+    assert "--gpus=a100:1" in argv
     assert "--exclusive" in argv
     assert "secret-token" not in " ".join(argv)
 
@@ -168,7 +174,33 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert all(token_file.exists() for token_file in token_files)
 
 
-def test_slurm_backend_rewrites_manager_url_to_advertised_host(
+@pytest.mark.parametrize(
+    ("memory", "expected_arg"),
+    [
+        (MemoryPerNode("8G"), "--mem=8G"),
+        (MemoryPerCpu("2G"), "--mem-per-cpu=2G"),
+        (MemoryPerGpu("16G"), "--mem-per-gpu=16G"),
+    ],
+)
+def test_slurm_resources_emit_one_memory_option(
+    memory: MemoryPerNode | MemoryPerCpu | MemoryPerGpu,
+    expected_arg: str,
+) -> None:
+    assert SlurmResources(memory=memory).to_sbatch_args() == [expected_arg]
+
+
+@pytest.mark.parametrize(
+    ("gpus", "expected_arg"),
+    [
+        (Gpus(1), "--gpus=1"),
+        (Gpus(2, kind="a100"), "--gpus=a100:2"),
+    ],
+)
+def test_slurm_resources_emit_gpu_option(gpus: Gpus, expected_arg: str) -> None:
+    assert SlurmResources(gpus=gpus).to_sbatch_args() == [expected_arg]
+
+
+def test_slurm_backend_rewrites_manager_url_to_worker_connect_host(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -176,7 +208,7 @@ def test_slurm_backend_rewrites_manager_url_to_advertised_host(
     backend = SlurmWorkerBackend(
         n_workers=1,
         resources=SlurmResources(),
-        advertised_host="manager.cluster",
+        worker_connect_host="manager.cluster",
     )
 
     pool = backend.start_pool(
@@ -205,7 +237,7 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
     backend = SlurmWorkerBackend(
         n_workers=2,
         resources=SlurmResources(),
-        advertised_host="manager.cluster",
+        worker_connect_host="manager.cluster",
         poll_interval=0,
     )
     pool = backend.start_pool(
@@ -237,7 +269,7 @@ def test_slurm_backend_requires_explicit_executor_dir() -> None:
     backend = SlurmWorkerBackend(
         n_workers=1,
         resources=SlurmResources(),
-        advertised_host="manager.cluster",
+        worker_connect_host="manager.cluster",
     )
 
     with pytest.raises(TypeError, match="executor_dir"):
@@ -269,11 +301,11 @@ def test_slurm_backend_uses_default_poll_interval() -> None:
     backend = SlurmWorkerBackend(
         n_workers=1,
         resources=SlurmResources(),
-        advertised_host="manager.cluster",
+        worker_connect_host="manager.cluster",
     )
 
     assert backend.poll_interval == 10.0
-    assert backend.manager_bind_host == "0.0.0.0"
+    assert backend.manager_listen_host == "0.0.0.0"
 
 
 def _install_fake_slurm(
