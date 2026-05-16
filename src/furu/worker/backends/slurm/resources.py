@@ -27,9 +27,6 @@ class MemoryPerGpu:
         return f"--mem-per-gpu={self.value}"
 
 
-type SlurmMemory = MemoryPerNode | MemoryPerCpu | MemoryPerGpu
-
-
 @dataclass(frozen=True, slots=True)
 class Gpus:
     count: int
@@ -48,7 +45,7 @@ class SlurmResources:
     qos: str | None = None
     time_limit: str | None = None
     cpus_per_worker: int | None = None
-    memory: SlurmMemory | None = None
+    memory: MemoryPerNode | MemoryPerCpu | MemoryPerGpu | None = None
     gpus: Gpus | None = None
     constraint: str | None = None
     extra_sbatch_args: tuple[str, ...] = ()
