@@ -28,7 +28,7 @@ def _fake_manager_capacity(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         slurm_backend_module.ManagerApiClient,
         "count_satisfiable_ready_jobs",
-        lambda self, resource_request, *, max_workers: max_workers,
+        lambda self, request: request.max_workers,
     )
 
 

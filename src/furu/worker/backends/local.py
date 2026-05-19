@@ -4,7 +4,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from furu.execution.api import ManagerApiClient
+from furu.execution.api import ManagerApiClient, ReadyJobCountRequest
 from furu.resources import ResourceRequest
 
 
@@ -20,8 +20,10 @@ class LocalThreadWorkerBackend:
             server_url,
             auth_token=auth_token,
         ).count_satisfiable_ready_jobs(
-            ResourceRequest(memory=0),
-            max_workers=self.n_workers,
+            ReadyJobCountRequest(
+                resource_request=ResourceRequest(memory=0),
+                max_workers=self.n_workers,
+            )
         )
         return LocalThreadWorkerPool(
             server_url=server_url,

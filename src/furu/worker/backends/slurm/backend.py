@@ -7,7 +7,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from furu.execution.api import ManagerApiClient
+from furu.execution.api import ManagerApiClient, ReadyJobCountRequest
 from furu.resources import ResourceRequest
 from furu.utils import write_private_file
 from furu.worker.backends.slurm.pool import SlurmWorkerPool
@@ -34,12 +34,14 @@ class SlurmWorkerBackend:
             server_url,
             auth_token=auth_token,
         ).count_satisfiable_ready_jobs(
-            ResourceRequest(
-                cpus=self.resources.cpus_per_worker or 1,
-                gpus=self.resources.gpus.count if self.resources.gpus else 0,
-                memory=0,
-            ),
-            max_workers=self.n_workers,
+            ReadyJobCountRequest(
+                resource_request=ResourceRequest(
+                    cpus=self.resources.cpus_per_worker or 1,
+                    gpus=self.resources.gpus.count if self.resources.gpus else 0,
+                    memory=0,
+                ),
+                max_workers=self.n_workers,
+            )
         )
         if n_workers == 0:
             return SlurmWorkerPool(

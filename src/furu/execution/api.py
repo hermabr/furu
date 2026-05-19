@@ -32,14 +32,8 @@ class ManagerApiClient:
 
     def count_satisfiable_ready_jobs(
         self,
-        resource_request: ResourceRequest,
-        *,
-        max_workers: int,
+        request: ReadyJobCountRequest,
     ) -> int:
-        request = ReadyJobCountRequest(
-            resource_request=resource_request,
-            max_workers=max_workers,
-        )
         response = self._request_json(
             "/count_satisfiable_ready_jobs",
             method="POST",
