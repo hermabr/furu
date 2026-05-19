@@ -6,7 +6,6 @@ from typing import Protocol
 
 class WorkerBackend(Protocol):
     manager_listen_host: str
-    max_workers: int
 
     def start_pool(
         self,
