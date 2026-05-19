@@ -376,7 +376,7 @@ def test_manager_run_waits_using_worker_pool_health_check_interval() -> None:
         port=0,
     )
 
-    assert done.timeouts == [2.5]
+    assert done.timeouts == [pytest.approx(2.5, abs=0.5)]
     assert pool.health_checks == 0
     assert pool.join_timeouts == [5]
 

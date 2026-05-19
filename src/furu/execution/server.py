@@ -115,22 +115,28 @@ def _run_until_done(
                     type(backend).__name__,
                     pool.health_check_interval,
                 )
-            health_check_interval = min(
-                pool.health_check_interval for _, pool in worker_pools
-            )
-            while not manager.done.wait(timeout=health_check_interval):
-                unhealthy = [
-                    type(backend).__name__
-                    for backend, pool in worker_pools
-                    if not pool.is_healthy()
-                ]
+            next_check_at = [
+                time.monotonic() + pool.health_check_interval
+                for _, pool in worker_pools
+            ]
+            while not manager.done.wait(
+                timeout=max(0.0, min(next_check_at) - time.monotonic())
+            ):
+                now = time.monotonic()
+                unhealthy: list[str] = []
+                for idx, (backend, pool) in enumerate(worker_pools):
+                    if now < next_check_at[idx]:
+                        continue
+                    if not pool.is_healthy():
+                        unhealthy.append(type(backend).__name__)
+                    next_check_at[idx] = now + pool.health_check_interval
                 if unhealthy:
                     manager.fail(
                         "worker backend(s) became unhealthy before manager "
                         f"run completed: {', '.join(unhealthy)}"
                     )
                     break
-            for _, pool in worker_pools:
+            for backend, pool in worker_pools:
                 pool.join(timeout=5)
-            logger.debug("worker pools joined")
+                logger.debug("worker pool joined: backend=%s", type(backend).__name__)
     manager.raise_for_failure()
