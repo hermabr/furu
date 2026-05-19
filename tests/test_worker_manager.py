@@ -260,14 +260,20 @@ def test_count_satisfiable_jobs_caps_at_max_workers_and_filters_by_requirements(
     manager = Manager([ManagerLeaf(value=1), ManagerLeaf(value=2), GpuLeaf(value=3)])
 
     assert (
-        manager.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=10) == 2
-    )
-    assert (
-        manager.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=1) == 1
+        manager.count_satisfiable_jobs(
+            resources=ResourceRequest(memory=0), max_workers=10
+        )
+        == 2
     )
     assert (
         manager.count_satisfiable_jobs(
-            resources=ResourceRequest(gpus=1), max_workers=10
+            resources=ResourceRequest(memory=0), max_workers=1
+        )
+        == 1
+    )
+    assert (
+        manager.count_satisfiable_jobs(
+            resources=ResourceRequest(memory=0, gpus=1), max_workers=10
         )
         == 3
     )
@@ -277,7 +283,7 @@ def test_manager_run_uses_worker_backend() -> None:
     class RecordingBackend:
         manager_listen_host = "0.0.0.0"
         max_workers = 1
-        resource_request = ResourceRequest()
+        resource_request = ResourceRequest(memory=0)
 
         def __init__(self) -> None:
             self.server_urls: list[str] = []
@@ -316,7 +322,7 @@ def test_manager_run_passes_executor_dir_to_worker_backend() -> None:
     class RecordingBackend:
         manager_listen_host = "127.0.0.1"
         max_workers = 1
-        resource_request = ResourceRequest()
+        resource_request = ResourceRequest(memory=0)
 
         def __init__(self) -> None:
             self.executor_dirs: list[Path] = []
@@ -390,7 +396,7 @@ def test_manager_run_waits_using_worker_pool_health_check_interval() -> None:
     class RecordingBackend:
         manager_listen_host = "127.0.0.1"
         max_workers = 1
-        resource_request = ResourceRequest()
+        resource_request = ResourceRequest(memory=0)
 
         def __init__(self, pool: RecordingPool) -> None:
             self.pool = pool
@@ -438,7 +444,7 @@ def test_run_until_done_uses_worker_backend_manager_listen_host() -> None:
     class RecordingBackend:
         manager_listen_host = "127.0.0.1"
         max_workers = 1
-        resource_request = ResourceRequest()
+        resource_request = ResourceRequest(memory=0)
 
         def __init__(self) -> None:
             self.server_urls: list[str] = []

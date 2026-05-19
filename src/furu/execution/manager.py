@@ -120,8 +120,8 @@ class Manager:
     def count_satisfiable_jobs(
         self, *, resources: ResourceRequest, max_workers: int
     ) -> int:
-        def matches(value: int | None, constraint: ResourceConstraint) -> bool:
-            if constraint is None or value is None:
+        def matches(value: int, constraint: ResourceConstraint) -> bool:
+            if constraint is None:
                 return True
             lo, hi = constraint
             return (lo is None or value >= lo) and (hi is None or value <= hi)

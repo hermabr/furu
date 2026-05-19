@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,7 +11,9 @@ from furu.resources import ResourceRequest
 @dataclass(frozen=True, slots=True)
 class LocalThreadWorkerBackend:
     max_workers: int = 1
-    resource_request: ResourceRequest = field(default_factory=ResourceRequest)
+    resource_request: ResourceRequest = field(
+        default_factory=lambda: ResourceRequest(memory=sys.maxsize)
+    )
     manager_listen_host: str = "127.0.0.1"
 
     def start_pool(

@@ -12,6 +12,6 @@ class ResourceRequirements:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ResourceRequest:
+    memory: int
     cpus: int = 1
     gpus: int = 0
-    memory: int | None = None

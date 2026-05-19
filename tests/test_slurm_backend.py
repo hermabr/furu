@@ -117,7 +117,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
             gpus=Gpus(1, kind="a100"),
             extra_sbatch_args=("--exclusive",),
         ),
-        resource_request=ResourceRequest(cpus=4, gpus=1),
+        resource_request=ResourceRequest(memory=0, cpus=4, gpus=1),
         worker_connect_host="manager.cluster",
         poll_interval=1.5,
     )
@@ -211,7 +211,7 @@ def test_slurm_backend_rewrites_manager_url_to_worker_connect_host(
     backend = SlurmWorkerBackend(
         max_workers=1,
         resources=SlurmResources(),
-        resource_request=ResourceRequest(),
+        resource_request=ResourceRequest(memory=0),
         worker_connect_host="manager.cluster",
     )
 
@@ -242,7 +242,7 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
     backend = SlurmWorkerBackend(
         max_workers=2,
         resources=SlurmResources(),
-        resource_request=ResourceRequest(),
+        resource_request=ResourceRequest(memory=0),
         worker_connect_host="manager.cluster",
         poll_interval=0,
     )
@@ -276,7 +276,7 @@ def test_slurm_backend_requires_explicit_executor_dir() -> None:
     backend = SlurmWorkerBackend(
         max_workers=1,
         resources=SlurmResources(),
-        resource_request=ResourceRequest(),
+        resource_request=ResourceRequest(memory=0),
         worker_connect_host="manager.cluster",
     )
 
@@ -310,7 +310,7 @@ def test_slurm_backend_uses_default_poll_interval() -> None:
     backend = SlurmWorkerBackend(
         max_workers=1,
         resources=SlurmResources(),
-        resource_request=ResourceRequest(),
+        resource_request=ResourceRequest(memory=0),
         worker_connect_host="manager.cluster",
     )
 
