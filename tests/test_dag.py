@@ -304,7 +304,7 @@ def _reset_tracking() -> None:
 def test_manager_run_runs_single_zero_dependency_node():
     leaf = TrackingLeaf(n=3)
 
-    Manager([leaf]).run(worker_backend=LocalThreadWorkerBackend())
+    Manager([leaf]).run(worker_backends=(LocalThreadWorkerBackend(),))
 
     assert TrackingLeaf.create_calls == [3]
     assert leaf.status() == "completed"
@@ -315,7 +315,7 @@ def test_manager_run_runs_static_dependencies_in_order():
     leaf = TrackingLeaf(n=4)
     mid = TrackingMid(label="m", child=leaf)
 
-    Manager([mid]).run(worker_backend=LocalThreadWorkerBackend())
+    Manager([mid]).run(worker_backends=(LocalThreadWorkerBackend(),))
 
     assert TrackingLeaf.create_calls == [4]
     assert TrackingMid.create_calls == ["m"]
@@ -327,7 +327,7 @@ def test_manager_run_handles_shared_dependency_only_once():
     left = TrackingMid(label="L", child=shared)
     right = TrackingMid(label="R", child=shared)
 
-    Manager([left, right]).run(worker_backend=LocalThreadWorkerBackend())
+    Manager([left, right]).run(worker_backends=(LocalThreadWorkerBackend(),))
 
     assert TrackingLeaf.create_calls == [5]
     assert sorted(TrackingMid.create_calls) == ["L", "R"]
@@ -336,7 +336,7 @@ def test_manager_run_handles_shared_dependency_only_once():
 def test_manager_run_with_multiple_workers_runs_independent_nodes():
     leaves = [TrackingLeaf(n=i) for i in range(8)]
 
-    Manager(leaves).run(worker_backend=LocalThreadWorkerBackend(n_workers=4))
+    Manager(leaves).run(worker_backends=(LocalThreadWorkerBackend(n_workers=4),))
 
     assert sorted(TrackingLeaf.create_calls) == list(range(8))
     for leaf in leaves:
@@ -346,7 +346,7 @@ def test_manager_run_with_multiple_workers_runs_independent_nodes():
 def test_manager_run_discovers_lazy_dependencies_and_reruns_parent():
     parent = LazyChildLoader(base=7)
 
-    Manager([parent]).run(worker_backend=LocalThreadWorkerBackend())
+    Manager([parent]).run(worker_backends=(LocalThreadWorkerBackend(),))
 
     assert TrackingLeaf.create_calls == [7]
     # Parent's create() is called once to discover the lazy dep (raising
@@ -368,7 +368,7 @@ def test_manager_run_skips_already_completed_objects():
     TrackingLeaf.create_calls.clear()
     mid = TrackingMid(label="cached-child", child=leaf)
 
-    Manager([mid]).run(worker_backend=LocalThreadWorkerBackend())
+    Manager([mid]).run(worker_backends=(LocalThreadWorkerBackend(),))
 
     assert TrackingLeaf.create_calls == []
     assert TrackingMid.create_calls == ["cached-child"]
@@ -380,7 +380,7 @@ def test_manager_run_records_worker_failures_and_blocked_dependents():
     manager = Manager([parent])
 
     with pytest.raises(RuntimeError, match="failed jobs"):
-        manager.run(worker_backend=LocalThreadWorkerBackend())
+        manager.run(worker_backends=(LocalThreadWorkerBackend(),))
 
     assert failing.object_id in manager.failed
     assert "intentional failure: boom" in manager.failed[failing.object_id].error

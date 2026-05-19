@@ -13,8 +13,7 @@ import uvicorn
 from furu.execution.api import create_manager_api_app
 from furu.execution.manager import Manager
 from furu.logging import get_logger
-from furu.worker.backends import WorkerBackend
-
+from furu.worker.backends import WorkerBackend, WorkerPool
 
 logger = get_logger()
 
@@ -85,9 +84,11 @@ def manager_server(
 def _run_until_done(
     manager: Manager,
     *,
-    worker_backend: WorkerBackend,
+    worker_backends: tuple[WorkerBackend, ...],
     port: int,
 ) -> None:
+    (bind_host,) = {backend.manager_listen_host for backend in worker_backends}
+
     with manager.log_context():
         logger.info(
             "starting furu manager: executor_id=%s executor_dir=%s ready=%d blocked=%d",
@@ -96,31 +97,46 @@ def _run_until_done(
             len(manager.ready),
             len(manager.blocked),
         )
-        with manager_server(
-            manager,
-            bind_host=worker_backend.manager_listen_host,
-            port=port,
-        ) as server:
+        with manager_server(manager, bind_host=bind_host, port=port) as server:
             logger.info(
                 "manager server listening: server_url=%s",
                 server.server_url,
             )
-            worker_pool = worker_backend.start_pool(
-                server_url=server.server_url,
-                auth_token=server.auth_token,
-                executor_dir=manager.executor_dir,
-            )
-            logger.info(
-                "worker pool started: backend=%s health_check_interval=%s",
-                type(worker_backend).__name__,
-                worker_pool.health_check_interval,
-            )
-            while not manager.done.wait(timeout=worker_pool.health_check_interval):
-                if not worker_pool.is_healthy():
+            worker_pools: list[tuple[WorkerBackend, WorkerPool]] = []
+            for backend in worker_backends:
+                pool = backend.start_pool(
+                    server_url=server.server_url,
+                    auth_token=server.auth_token,
+                    executor_dir=manager.executor_dir,
+                )
+                worker_pools.append((backend, pool))
+                logger.info(
+                    "worker pool started: backend=%s health_check_interval=%s",
+                    type(backend).__name__,
+                    pool.health_check_interval,
+                )
+            next_check_at = [
+                time.monotonic() + pool.health_check_interval
+                for _, pool in worker_pools
+            ]
+            while not manager.done.wait(
+                timeout=max(0.0, min(next_check_at) - time.monotonic())
+            ):
+                now = time.monotonic()
+                unhealthy: list[str] = []
+                for idx, (backend, pool) in enumerate(worker_pools):
+                    if now < next_check_at[idx]:
+                        continue
+                    if not pool.is_healthy():
+                        unhealthy.append(type(backend).__name__)
+                    next_check_at[idx] = now + pool.health_check_interval
+                if unhealthy:
                     manager.fail(
-                        "worker backend became unhealthy before manager run completed"
+                        "worker backend(s) became unhealthy before manager "
+                        f"run completed: {', '.join(unhealthy)}"
                     )
                     break
-            worker_pool.join(timeout=5)
-            logger.debug("worker pool joined")
+            for backend, pool in worker_pools:
+                pool.join(timeout=5)
+                logger.debug("worker pool joined: backend=%s", type(backend).__name__)
     manager.raise_for_failure()
