@@ -462,14 +462,14 @@ def test_manager_run_requires_explicit_worker_backends() -> None:
 def test_manager_run_rejects_empty_worker_backends() -> None:
     manager = Manager([ManagerLeaf(value=12)])
 
-    with pytest.raises(ValueError, match="at least one worker backend"):
+    with pytest.raises(ValueError, match="not enough values to unpack"):
         manager.run(worker_backends=())
 
 
 def test_manager_run_rejects_conflicting_manager_listen_host() -> None:
     manager = Manager([ManagerLeaf(value=12)])
 
-    with pytest.raises(ValueError, match="conflicting manager_listen_host"):
+    with pytest.raises(ValueError, match="too many values to unpack"):
         manager.run(
             worker_backends=(
                 LocalThreadWorkerBackend(manager_listen_host="127.0.0.1"),

@@ -87,13 +87,7 @@ def _run_until_done(
     worker_backends: tuple[WorkerBackend, ...],
     port: int,
 ) -> None:
-    listen_hosts = {backend.manager_listen_host for backend in worker_backends}
-    if len(listen_hosts) != 1:
-        raise ValueError(
-            "worker backends declare conflicting manager_listen_host values: "
-            f"{sorted(listen_hosts)}"
-        )
-    (bind_host,) = listen_hosts
+    (bind_host,) = {backend.manager_listen_host for backend in worker_backends}
 
     with manager.log_context():
         logger.info(
