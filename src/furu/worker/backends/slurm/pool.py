@@ -8,7 +8,7 @@ class SlurmWorkerPool:
     def __init__(
         self,
         *,
-        array_job_id: str,
+        array_job_id: str | None,
         n_workers: int,
         poll_interval: float,
     ) -> None:
@@ -21,9 +21,13 @@ class SlurmWorkerPool:
         return self._poll_interval
 
     def is_healthy(self) -> bool:
+        if self.array_job_id is None:
+            return True
         return self._unfinished_task_ids() == set(range(self.n_workers))
 
     def join(self, *, timeout: float) -> None:
+        if self.array_job_id is None:
+            return
         deadline = time.monotonic() + timeout
         while self._unfinished_task_ids() and time.monotonic() < deadline:
             time.sleep(min(self._poll_interval, deadline - time.monotonic()))
@@ -36,6 +40,9 @@ class SlurmWorkerPool:
             )
 
     def _unfinished_task_ids(self) -> set[int]:
+        if self.array_job_id is None:
+            return set()
+
         result = subprocess.run(
             [
                 "sacct",

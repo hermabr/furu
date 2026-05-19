@@ -8,7 +8,10 @@ from fastapi import Depends, FastAPI, Header, HTTPException, status
 from pydantic import TypeAdapter
 
 from furu.execution.manager import Manager
+from furu.resources import ResourceRequest
 from furu.worker.protocol import (
+    CountSatisfiableReadyJobsRequest,
+    CountSatisfiableReadyJobsResponse,
     LeaseJobResponse,
     JobResultRequest,
     OkResponse,
@@ -23,6 +26,23 @@ class ManagerApiClient:
     def lease_job(self) -> LeaseJobResponse:
         response = self._request_json("/lease_job", method="POST")
         return TypeAdapter(LeaseJobResponse).validate_python(response)
+
+    def count_satisfiable_ready_jobs(
+        self,
+        resource_request: ResourceRequest,
+        *,
+        max_workers: int,
+    ) -> int:
+        request = CountSatisfiableReadyJobsRequest(
+            resource_request=resource_request,
+            max_workers=max_workers,
+        )
+        response = self._request_json(
+            "/count_satisfiable_ready_jobs",
+            method="POST",
+            payload=request.model_dump(mode="json"),
+        )
+        return CountSatisfiableReadyJobsResponse.model_validate(response).count
 
     def job_result(self, lease_id: str, request: JobResultRequest) -> None:
         response = self._request_json(
@@ -78,6 +98,21 @@ def create_manager_api_app(manager: Manager, *, auth_token: str) -> FastAPI:
     )
     def lease_job() -> LeaseJobResponse:
         return manager.lease_job()
+
+    @app.post(
+        "/count_satisfiable_ready_jobs",
+        response_model=CountSatisfiableReadyJobsResponse,
+        dependencies=[auth_dependency],
+    )
+    def count_satisfiable_ready_jobs(
+        request: CountSatisfiableReadyJobsRequest,
+    ) -> CountSatisfiableReadyJobsResponse:
+        return CountSatisfiableReadyJobsResponse(
+            count=manager.count_satisfiable_ready_jobs(
+                request.resource_request,
+                max_workers=request.max_workers,
+            )
+        )
 
     @app.post(
         "/job_result/{lease_id}",

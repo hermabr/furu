@@ -111,10 +111,17 @@ def _run_until_done(
                 )
                 worker_pools.append((backend, pool))
                 logger.info(
-                    "worker pool started: backend=%s health_check_interval=%s",
+                    "worker pool started: backend=%s n_workers=%d health_check_interval=%s",
                     type(backend).__name__,
+                    pool.n_workers,
                     pool.health_check_interval,
                 )
+            if (
+                worker_pools
+                and not manager.done.is_set()
+                and all(pool.n_workers == 0 for _, pool in worker_pools)
+            ):
+                manager.fail("no worker backend launched workers for ready jobs")
             next_check_at = [
                 time.monotonic() + pool.health_check_interval
                 for _, pool in worker_pools

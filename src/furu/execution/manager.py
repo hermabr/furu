@@ -14,6 +14,7 @@ from furu.core import Furu
 from furu.dag import DagNode, _add_to_dag, _update_dag_blocking_dependencies
 from furu.logging import _scoped_log_files, get_logger
 from furu.metadata import ArtifactSpec
+from furu.resources import ResourceRequest, satisfies_resource_requirements
 from furu._storage_layout import manager_log_path_in
 from furu.worker.protocol import (
     Job,
@@ -115,6 +116,40 @@ class Manager:
                 lease_id=lease_id,
                 artifact=ArtifactSpec.from_furu(node.obj),
             )
+
+    def count_satisfiable_ready_jobs(
+        self,
+        resource_request: ResourceRequest,
+        *,
+        max_workers: int,
+    ) -> int:
+        if max_workers < 0:
+            raise ValueError("max_workers must be greater than or equal to 0")
+
+        with self.log_context(), self.lock:
+            self._maybe_finish_locked()
+            if self.done.is_set():
+                return 0
+
+            satisfiable_jobs = sum(
+                1
+                for node in self.ready.values()
+                if satisfies_resource_requirements(
+                    node.obj.resource_requirements,
+                    resource_request,
+                )
+            )
+            count = min(max_workers, satisfiable_jobs)
+            logger.debug(
+                "counted satisfiable ready jobs: count=%d max_workers=%d ready=%d cpus=%d gpus=%d memory=%s",
+                count,
+                max_workers,
+                len(self.ready),
+                resource_request.cpus,
+                resource_request.gpus,
+                resource_request.memory,
+            )
+            return count
 
     def job_result(self, lease_id: str, request: JobResultRequest) -> None:
         with self.log_context(), self.lock:

@@ -10,7 +10,9 @@ from typing import Any
 
 import pytest
 
+from furu.resources import ResourceRequest
 from furu.worker import cli
+import furu.worker.backends.slurm.backend as slurm_backend_module
 from furu.worker.backends.slurm.backend import SlurmWorkerBackend
 from furu.worker.backends.slurm.pool import SlurmWorkerPool
 from furu.worker.backends.slurm.resources import (
@@ -100,6 +102,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    capacity_calls = _install_fake_manager_capacity(monkeypatch, count=2)
     work_dir = tmp_path / "work"
     work_dir.mkdir()
     executor_dir = tmp_path / "furu" / "executions" / "executor-1"
@@ -129,6 +132,14 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert pool.array_job_id == "100"
     assert pool.n_workers == 2
     assert pool.health_check_interval == 1.5
+    assert capacity_calls == [
+        (
+            "http://manager.cluster:1234",
+            "secret-token",
+            ResourceRequest(cpus=4, gpus=1, memory=None),
+            2,
+        )
+    ]
     assert log_dir.is_dir()
 
     records = _read_records(record_file)
@@ -205,6 +216,7 @@ def test_slurm_backend_rewrites_manager_url_to_worker_connect_host(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    _install_fake_manager_capacity(monkeypatch, count=1)
     backend = SlurmWorkerBackend(
         n_workers=1,
         resources=SlurmResources(),
@@ -229,11 +241,70 @@ def test_slurm_backend_rewrites_manager_url_to_worker_connect_host(
     assert "http://0.0.0.0:4321" not in script
 
 
+def test_slurm_backend_uses_manager_worker_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    capacity_calls = _install_fake_manager_capacity(monkeypatch, count=2)
+    resource_request = ResourceRequest(cpus=8, gpus=1, memory=64)
+    backend = SlurmWorkerBackend(
+        n_workers=5,
+        resources=SlurmResources(cpus_per_worker=4),
+        worker_connect_host="manager.cluster",
+        resource_request=resource_request,
+    )
+
+    pool = backend.start_pool(
+        server_url="http://0.0.0.0:4321",
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+    )
+
+    assert pool.array_job_id == "100"
+    assert pool.n_workers == 2
+    assert capacity_calls == [
+        ("http://0.0.0.0:4321", "secret-token", resource_request, 5)
+    ]
+    records = _read_records(record_file)
+    sbatch_record = next(
+        record for record in records if record["executable"] == "sbatch"
+    )
+    assert "--array=0-1" in sbatch_record["argv"]
+    assert "--array=0-4" not in sbatch_record["argv"]
+
+
+def test_slurm_backend_skips_sbatch_when_manager_returns_zero_workers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    _install_fake_manager_capacity(monkeypatch, count=0)
+    backend = SlurmWorkerBackend(
+        n_workers=5,
+        resources=SlurmResources(),
+        worker_connect_host="manager.cluster",
+    )
+
+    pool = backend.start_pool(
+        server_url="http://0.0.0.0:4321",
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+    )
+
+    assert pool.array_job_id is None
+    assert pool.n_workers == 0
+    assert pool.is_healthy()
+    pool.join(timeout=0)
+    assert [record["executable"] for record in _read_records(record_file)] == []
+
+
 def test_slurm_worker_pool_health_tracks_sacct_jobs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    _install_fake_manager_capacity(monkeypatch, count=2)
     backend = SlurmWorkerBackend(
         n_workers=2,
         resources=SlurmResources(),
@@ -306,6 +377,33 @@ def test_slurm_backend_uses_default_poll_interval() -> None:
 
     assert backend.poll_interval == 10.0
     assert backend.manager_listen_host == "0.0.0.0"
+
+
+def _install_fake_manager_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    count: int,
+) -> list[tuple[str, str, ResourceRequest, int]]:
+    calls: list[tuple[str, str, ResourceRequest, int]] = []
+
+    class FakeManagerApiClient:
+        def __init__(self, server_url: str, *, auth_token: str) -> None:
+            self.server_url = server_url
+            self.auth_token = auth_token
+
+        def count_satisfiable_ready_jobs(
+            self,
+            resource_request: ResourceRequest,
+            *,
+            max_workers: int,
+        ) -> int:
+            calls.append(
+                (self.server_url, self.auth_token, resource_request, max_workers)
+            )
+            return count
+
+    monkeypatch.setattr(slurm_backend_module, "ManagerApiClient", FakeManagerApiClient)
+    return calls
 
 
 def _install_fake_slurm(

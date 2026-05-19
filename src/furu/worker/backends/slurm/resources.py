@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from furu.resources import ResourceRequest
+
 
 @dataclass(frozen=True, slots=True)
 class MemoryPerNode:
@@ -70,3 +72,10 @@ class SlurmResources:
             args.append(f"--constraint={self.constraint}")
         args.extend(self.extra_sbatch_args)
         return args
+
+    def to_resource_request(self) -> ResourceRequest:
+        return ResourceRequest(
+            cpus=self.cpus_per_worker if self.cpus_per_worker is not None else 1,
+            gpus=self.gpus.count if self.gpus is not None else 0,
+            memory=None,
+        )
