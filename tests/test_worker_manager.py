@@ -295,14 +295,13 @@ def test_manager_run_uses_worker_backend() -> None:
             server_url: str,
             auth_token: str,
             executor_dir: Path,
-            n_workers: int,
         ) -> LocalThreadWorkerPool:
             self.server_urls.append(server_url)
             self.auth_tokens.append(auth_token)
             return LocalThreadWorkerPool(
                 server_url=server_url,
                 auth_token=auth_token,
-                n_workers=n_workers,
+                n_workers=1,
             )
 
     leaf = ManagerLeaf(value=11)
@@ -333,13 +332,12 @@ def test_manager_run_passes_executor_dir_to_worker_backend() -> None:
             server_url: str,
             auth_token: str,
             executor_dir: Path,
-            n_workers: int,
         ) -> LocalThreadWorkerPool:
             self.executor_dirs.append(executor_dir)
             return LocalThreadWorkerPool(
                 server_url=server_url,
                 auth_token=auth_token,
-                n_workers=n_workers,
+                n_workers=1,
             )
 
     leaf = ManagerLeaf(value=12)
@@ -407,7 +405,6 @@ def test_manager_run_waits_using_worker_pool_health_check_interval() -> None:
             server_url: str,
             auth_token: str,
             executor_dir: Path,
-            n_workers: int,
         ) -> RecordingPool:
             return self.pool
 
@@ -455,7 +452,6 @@ def test_run_until_done_uses_worker_backend_manager_listen_host() -> None:
             server_url: str,
             auth_token: str,
             executor_dir: Path,
-            n_workers: int,
         ) -> RecordingPool:
             self.server_urls.append(server_url)
             return RecordingPool()

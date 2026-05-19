@@ -29,8 +29,14 @@ class SlurmWorkerBackend:
         server_url: str,
         auth_token: str,
         executor_dir: Path,
-        n_workers: int,
     ) -> SlurmWorkerPool:
+        from furu.execution.api import ManagerApiClient
+
+        client = ManagerApiClient(server_url, auth_token=auth_token)
+        n_workers = client.count_satisfiable_jobs(
+            resources=self.resource_request, max_workers=self.max_workers
+        )
+
         scheme, rest = server_url.split("://", maxsplit=1)
         server_url = (
             f"{scheme}://{self.worker_connect_host}:{rest.rsplit(':', maxsplit=1)[1]}"

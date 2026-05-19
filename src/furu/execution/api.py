@@ -8,7 +8,9 @@ from fastapi import Depends, FastAPI, Header, HTTPException, status
 from pydantic import TypeAdapter
 
 from furu.execution.manager import Manager
+from furu.resources import ResourceRequest
 from furu.worker.protocol import (
+    CountSatisfiableJobsRequest,
     LeaseJobResponse,
     JobResultRequest,
     OkResponse,
@@ -31,6 +33,21 @@ class ManagerApiClient:
             payload=request.model_dump(mode="json"),
         )
         OkResponse.model_validate(response)
+
+    def count_satisfiable_jobs(
+        self, *, resources: ResourceRequest, max_workers: int
+    ) -> int:
+        response = self._request_json(
+            "/count_satisfiable_jobs",
+            method="POST",
+            payload=CountSatisfiableJobsRequest(
+                memory=resources.memory,
+                cpus=resources.cpus,
+                gpus=resources.gpus,
+                max_workers=max_workers,
+            ).model_dump(mode="json"),
+        )
+        return int(response)
 
     def _request_json(
         self,
@@ -87,5 +104,17 @@ def create_manager_api_app(manager: Manager, *, auth_token: str) -> FastAPI:
     def job_result(lease_id: str, request: JobResultRequest) -> OkResponse:
         manager.job_result(lease_id, request)
         return OkResponse()
+
+    @app.post(
+        "/count_satisfiable_jobs",
+        dependencies=[auth_dependency],
+    )
+    def count_satisfiable_jobs(request: CountSatisfiableJobsRequest) -> int:
+        return manager.count_satisfiable_jobs(
+            resources=ResourceRequest(
+                memory=request.memory, cpus=request.cpus, gpus=request.gpus
+            ),
+            max_workers=request.max_workers,
+        )
 
     return app

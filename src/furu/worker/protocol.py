@@ -47,3 +47,12 @@ class OkResponse(BaseModel):
 
 
 type LeaseJobResponse = Job | Literal["wait", "stop"]
+
+
+class CountSatisfiableJobsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    memory: int
+    cpus: int
+    gpus: int
+    max_workers: int

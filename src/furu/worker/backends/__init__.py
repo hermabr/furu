@@ -17,7 +17,6 @@ class WorkerBackend(Protocol):
         server_url: str,
         auth_token: str,
         executor_dir: Path,
-        n_workers: int,
     ) -> WorkerPool: ...
 
 
