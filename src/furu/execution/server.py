@@ -127,6 +127,7 @@ def _run_until_done(
                 for idx, (backend, pool) in enumerate(worker_pools):
                     if now < next_check_at[idx]:
                         continue
+                    pool.scale()
                     if not pool.is_healthy():
                         unhealthy.append(type(backend).__name__)
                     next_check_at[idx] = now + pool.health_check_interval

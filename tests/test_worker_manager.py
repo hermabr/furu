@@ -279,6 +279,43 @@ def test_count_satisfiable_jobs_caps_at_max_workers_and_filters_by_requirements(
     )
 
 
+def test_local_pool_scale_spawns_workers_up_to_max_as_satisfiable_count_grows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    counts = iter([0, 2, 10, 10])
+
+    def fake_count(
+        self: api.ManagerApiClient, *, resources: object, max_workers: int
+    ) -> int:
+        return min(next(counts), max_workers)
+
+    monkeypatch.setattr(api.ManagerApiClient, "count_satisfiable_jobs", fake_count)
+    monkeypatch.setattr(
+        worker_loop_module,
+        "worker_loop",
+        lambda *, server_url, auth_token: None,
+    )
+
+    pool = LocalThreadWorkerPool(
+        server_url="http://manager.test",
+        auth_token="secret",
+        max_workers=3,
+        resource_request=ResourceRequest(memory=0),
+    )
+
+    pool.scale()
+    assert pool.n_workers == 0
+
+    pool.scale()
+    assert pool.n_workers == 2
+
+    pool.scale()
+    assert pool.n_workers == 3
+
+    pool.scale()
+    assert pool.n_workers == 3
+
+
 def test_manager_run_uses_worker_backend() -> None:
     class RecordingBackend:
         manager_listen_host = "0.0.0.0"
@@ -296,11 +333,14 @@ def test_manager_run_uses_worker_backend() -> None:
         ) -> LocalThreadWorkerPool:
             self.server_urls.append(server_url)
             self.auth_tokens.append(auth_token)
-            return LocalThreadWorkerPool(
+            pool = LocalThreadWorkerPool(
                 server_url=server_url,
                 auth_token=auth_token,
-                n_workers=1,
+                max_workers=1,
+                resource_request=ResourceRequest(memory=0),
             )
+            pool.scale()
+            return pool
 
     leaf = ManagerLeaf(value=11)
     backend = RecordingBackend()
@@ -330,11 +370,14 @@ def test_manager_run_passes_executor_dir_to_worker_backend() -> None:
             executor_dir: Path,
         ) -> LocalThreadWorkerPool:
             self.executor_dirs.append(executor_dir)
-            return LocalThreadWorkerPool(
+            pool = LocalThreadWorkerPool(
                 server_url=server_url,
                 auth_token=auth_token,
-                n_workers=1,
+                max_workers=1,
+                resource_request=ResourceRequest(memory=0),
             )
+            pool.scale()
+            return pool
 
     leaf = ManagerLeaf(value=12)
     manager = Manager([leaf])
@@ -378,7 +421,11 @@ def test_manager_run_waits_using_worker_pool_health_check_interval() -> None:
 
         def __init__(self) -> None:
             self.health_checks = 0
+            self.scale_calls = 0
             self.join_timeouts: list[float] = []
+
+        def scale(self) -> None:
+            self.scale_calls += 1
 
         def is_healthy(self) -> bool:
             self.health_checks += 1
@@ -425,6 +472,9 @@ def test_run_until_done_uses_worker_backend_manager_listen_host() -> None:
 
     class RecordingPool:
         health_check_interval = 1.0
+
+        def scale(self) -> None:
+            pass
 
         def is_healthy(self) -> bool:
             return True
