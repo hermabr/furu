@@ -9,13 +9,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, assert_never
 from uuid import uuid4
 
+from furu._storage_layout import manager_log_path_in
 from furu.config import get_config
 from furu.core import Furu
 from furu.dag import DagNode, _add_to_dag, _update_dag_blocking_dependencies
 from furu.logging import _scoped_log_files, get_logger
 from furu.metadata import ArtifactSpec
 from furu.resources import ResourceRequest
-from furu._storage_layout import manager_log_path_in
 from furu.worker.protocol import (
     Job,
     JobBlockedResult,
@@ -123,9 +123,6 @@ class Manager:
         *,
         max_workers: int,
     ) -> int:
-        if max_workers <= 0:
-            return 0
-
         def satisfies(value: int | None, bounds: tuple[int | None, int | None] | None):
             if bounds is None:
                 return True
