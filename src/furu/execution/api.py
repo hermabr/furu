@@ -11,6 +11,7 @@ from furu.execution.manager import Manager
 from furu.resources import ResourceRequest
 from furu.worker.protocol import (
     CountSatisfiableJobsRequest,
+    LeaseJobRequest,
     LeaseJobResponse,
     JobResultRequest,
     OkResponse,
@@ -22,8 +23,15 @@ class ManagerApiClient:
         self._server_url = server_url.rstrip("/")
         self._auth_token = auth_token
 
-    def lease_job(self) -> LeaseJobResponse:
-        response = self._request_json("/lease_job", method="POST")
+    def lease_job(
+        self, *, resources: ResourceRequest | None = None
+    ) -> LeaseJobResponse:
+        payload = (
+            None
+            if resources is None
+            else LeaseJobRequest(resources=resources).model_dump(mode="json")
+        )
+        response = self._request_json("/lease_job", method="POST", payload=payload)
         return TypeAdapter(LeaseJobResponse).validate_python(response)
 
     def job_result(self, lease_id: str, request: JobResultRequest) -> None:
@@ -90,8 +98,10 @@ def create_manager_api_app(manager: Manager, *, auth_token: str) -> FastAPI:
         response_model=LeaseJobResponse,
         dependencies=[auth_dependency],
     )
-    def lease_job() -> LeaseJobResponse:
-        return manager.lease_job()
+    def lease_job(request: LeaseJobRequest | None = None) -> LeaseJobResponse:
+        return manager.lease_job(
+            resources=None if request is None else request.resources
+        )
 
     @app.post(
         "/job_result/{lease_id}",

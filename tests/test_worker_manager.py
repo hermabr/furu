@@ -1,6 +1,7 @@
+import sys
 from pathlib import Path
-from typing import Any, cast
-from uuid import UUID
+from typing import Any, ClassVar, cast
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -254,6 +255,72 @@ class GpuLeaf(Furu[int]):
         return self.value
 
 
+class CpuOnlyLeaf(Furu[int]):
+    value: int
+
+    @property
+    def resource_requirements(self) -> ResourceRequirements | None:
+        return ResourceRequirements(gpus=(0, 0))
+
+    def create(self) -> int:
+        return self.value
+
+
+class DynamicCpuSeed(Furu[int]):
+    value: int
+    create_calls: ClassVar[list[int]] = []
+
+    @property
+    def resource_requirements(self) -> ResourceRequirements | None:
+        return ResourceRequirements(gpus=(0, 0))
+
+    def create(self) -> int:
+        type(self).create_calls.append(self.value)
+        return self.value
+
+
+class DynamicGpuAfterSeed(Furu[int]):
+    parent: DynamicCpuSeed
+    value: int
+    create_calls: ClassVar[list[int]] = []
+
+    @property
+    def resource_requirements(self) -> ResourceRequirements | None:
+        return ResourceRequirements(gpus=(1, None))
+
+    def create(self) -> int:
+        type(self).create_calls.append(self.value)
+        return self.parent.load_or_create() + self.value
+
+
+class DynamicCpuAfterGpu(Furu[int]):
+    parent: DynamicGpuAfterSeed
+    value: int
+    create_calls: ClassVar[list[int]] = []
+
+    @property
+    def resource_requirements(self) -> ResourceRequirements | None:
+        return ResourceRequirements(gpus=(0, 0))
+
+    def create(self) -> int:
+        type(self).create_calls.append(self.value)
+        return self.parent.load_or_create() + self.value
+
+
+class DynamicGpuAfterCpu(Furu[int]):
+    parent: DynamicCpuAfterGpu
+    value: int
+    create_calls: ClassVar[list[int]] = []
+
+    @property
+    def resource_requirements(self) -> ResourceRequirements | None:
+        return ResourceRequirements(gpus=(1, None))
+
+    def create(self) -> int:
+        type(self).create_calls.append(self.value)
+        return self.parent.load_or_create() + self.value
+
+
 def test_count_satisfiable_jobs_caps_at_max_workers_and_filters_by_requirements() -> (
     None
 ):
@@ -279,6 +346,63 @@ def test_count_satisfiable_jobs_caps_at_max_workers_and_filters_by_requirements(
     )
 
 
+def test_lease_job_filters_by_worker_resources() -> None:
+    cpu_leaf = CpuOnlyLeaf(value=1)
+    gpu_leaf = GpuLeaf(value=2)
+    manager = Manager([cpu_leaf, gpu_leaf])
+
+    cpu_job = manager.lease_job(resources=ResourceRequest(memory=0, gpus=0))
+    assert isinstance(cpu_job, Job)
+    assert cpu_job.artifact.object_id == cpu_leaf.object_id
+
+    assert manager.lease_job(resources=ResourceRequest(memory=0, gpus=0)) == "wait"
+
+    gpu_job = manager.lease_job(resources=ResourceRequest(memory=0, gpus=1))
+    assert isinstance(gpu_job, Job)
+    assert gpu_job.artifact.object_id == gpu_leaf.object_id
+
+
+def test_manager_run_dynamically_allocates_local_workers_for_later_resource_stages() -> (
+    None
+):
+    for cls in (
+        DynamicCpuSeed,
+        DynamicGpuAfterSeed,
+        DynamicCpuAfterGpu,
+        DynamicGpuAfterCpu,
+    ):
+        cls.create_calls.clear()
+
+    seed_value = uuid4().int
+    seed = DynamicCpuSeed(value=seed_value)
+    first_gpu = DynamicGpuAfterSeed(parent=seed, value=20)
+    second_cpu = DynamicCpuAfterGpu(parent=first_gpu, value=30)
+    final_gpus = [
+        DynamicGpuAfterCpu(parent=second_cpu, value=value) for value in range(4)
+    ]
+
+    Manager(final_gpus).run(
+        worker_backends=(
+            LocalThreadWorkerBackend(
+                max_workers=1,
+                resource_request=ResourceRequest(memory=sys.maxsize, gpus=0),
+            ),
+            LocalThreadWorkerBackend(
+                max_workers=3,
+                resource_request=ResourceRequest(memory=sys.maxsize, gpus=1),
+            ),
+        )
+    )
+
+    assert DynamicCpuSeed.create_calls == [seed_value]
+    assert DynamicGpuAfterSeed.create_calls == [20]
+    assert DynamicCpuAfterGpu.create_calls == [30]
+    assert sorted(DynamicGpuAfterCpu.create_calls) == [0, 1, 2, 3]
+    assert [obj.load_or_create() for obj in final_gpus] == [
+        seed_value + 50 + value for value in range(4)
+    ]
+
+
 def test_manager_run_uses_worker_backend() -> None:
     class RecordingBackend:
         manager_listen_host = "0.0.0.0"
@@ -299,7 +423,8 @@ def test_manager_run_uses_worker_backend() -> None:
             return LocalThreadWorkerPool(
                 server_url=server_url,
                 auth_token=auth_token,
-                n_workers=1,
+                max_workers=1,
+                resource_request=ResourceRequest(memory=sys.maxsize),
             )
 
     leaf = ManagerLeaf(value=11)
@@ -333,7 +458,8 @@ def test_manager_run_passes_executor_dir_to_worker_backend() -> None:
             return LocalThreadWorkerPool(
                 server_url=server_url,
                 auth_token=auth_token,
-                n_workers=1,
+                max_workers=1,
+                resource_request=ResourceRequest(memory=sys.maxsize),
             )
 
     leaf = ManagerLeaf(value=12)
@@ -536,7 +662,11 @@ def test_job_result_request_uses_status_discriminator() -> None:
 
 def test_worker_loop_raises_when_server_is_unavailable() -> None:
     with pytest.raises(httpx.ConnectError):
-        worker_loop(server_url="http://127.0.0.1:1", auth_token="test-token")
+        worker_loop(
+            server_url="http://127.0.0.1:1",
+            auth_token="test-token",
+            resource_request=ResourceRequest(memory=0),
+        )
 
 
 def test_worker_loop_does_not_swallow_keyboard_interrupt(
@@ -547,12 +677,17 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
 
     class TestClient:
         calls: list[str]
+        lease_resources: list[ResourceRequest | None]
 
         def __init__(self, server_url: str, *, auth_token: str) -> None:
             self.calls = []
+            self.lease_resources = []
 
-        def lease_job(self) -> LeaseJobResponse:
+        def lease_job(
+            self, *, resources: ResourceRequest | None = None
+        ) -> LeaseJobResponse:
             self.calls.append("lease_job")
+            self.lease_resources.append(resources)
             return job
 
         def job_result(self, lease_id: str, request: JobResultRequest) -> None:
@@ -572,9 +707,14 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
     )
 
     with pytest.raises(KeyboardInterrupt):
-        worker_loop(server_url="http://worker.test", auth_token="test-token")
+        worker_loop(
+            server_url="http://worker.test",
+            auth_token="test-token",
+            resource_request=ResourceRequest(memory=10, gpus=1),
+        )
 
     assert test_client.calls == ["lease_job"]
+    assert test_client.lease_resources == [ResourceRequest(memory=10, gpus=1)]
 
 
 def test_client_job_result_uses_job_result_endpoint(
@@ -696,6 +836,40 @@ def test_client_lease_job_posts_to_lease_job_endpoint(
             "http://worker.test/lease_job",
             {"Authorization": "Bearer secret-token"},
             None,
+        )
+    ]
+
+
+def test_client_lease_job_posts_resource_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[tuple[str, str, dict[str, str], object | None]] = []
+
+    def request(
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str],
+        json: object | None,
+        timeout: float,
+    ) -> httpx.Response:
+        requests.append((method, url, headers, json))
+        return httpx.Response(200, json="wait", request=httpx.Request(method, url))
+
+    monkeypatch.setattr(httpx, "request", request)
+
+    response = api.ManagerApiClient(
+        "http://worker.test/",
+        auth_token="secret-token",
+    ).lease_job(resources=ResourceRequest(memory=10, cpus=2, gpus=1))
+
+    assert response == "wait"
+    assert requests == [
+        (
+            "POST",
+            "http://worker.test/lease_job",
+            {"Authorization": "Bearer secret-token"},
+            {"resources": {"memory": 10, "cpus": 2, "gpus": 1}},
         )
     ]
 
