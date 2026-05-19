@@ -15,7 +15,6 @@ from furu.execution.manager import Manager
 from furu.logging import get_logger
 from furu.worker.backends import WorkerBackend, WorkerPool
 
-
 logger = get_logger()
 
 
@@ -88,8 +87,6 @@ def _run_until_done(
     worker_backends: tuple[WorkerBackend, ...],
     port: int,
 ) -> None:
-    if not worker_backends:
-        raise ValueError("at least one worker backend is required")
     listen_hosts = {backend.manager_listen_host for backend in worker_backends}
     if len(listen_hosts) != 1:
         raise ValueError(
