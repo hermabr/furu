@@ -5,6 +5,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from furu.metadata import ArtifactSpec
+from furu.resources import ResourceRequest
 
 
 class Job(BaseModel):
@@ -44,6 +45,11 @@ class OkResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     ok: Literal[True] = True
+
+
+class ReadyJobCountRequest(BaseModel):
+    resource_request: ResourceRequest
+    max_workers: int
 
 
 type LeaseJobResponse = Job | Literal["wait", "stop"]

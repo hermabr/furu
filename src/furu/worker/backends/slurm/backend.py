@@ -7,11 +7,12 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from furu.execution.api import ManagerApiClient, ReadyJobCountRequest
+from furu.execution.api import ManagerApiClient
 from furu.resources import ResourceRequest
 from furu.utils import write_private_file
 from furu.worker.backends.slurm.pool import SlurmWorkerPool
 from furu.worker.backends.slurm.resources import SlurmResources
+from furu.worker.protocol import ReadyJobCountRequest
 
 
 @dataclass(frozen=True, slots=True)

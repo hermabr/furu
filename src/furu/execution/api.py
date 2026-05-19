@@ -5,20 +5,15 @@ from typing import Any
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, status
-from pydantic import BaseModel, TypeAdapter
+from pydantic import TypeAdapter
 
 from furu.execution.manager import Manager
-from furu.resources import ResourceRequest
 from furu.worker.protocol import (
     LeaseJobResponse,
     JobResultRequest,
     OkResponse,
+    ReadyJobCountRequest,
 )
-
-
-class ReadyJobCountRequest(BaseModel):
-    resource_request: ResourceRequest
-    max_workers: int
 
 
 class ManagerApiClient:

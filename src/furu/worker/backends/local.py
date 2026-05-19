@@ -4,8 +4,9 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from furu.execution.api import ManagerApiClient, ReadyJobCountRequest
 from furu.resources import ResourceRequest
+from furu.execution.api import ManagerApiClient
+from furu.worker.protocol import ReadyJobCountRequest
 
 
 @dataclass(frozen=True, slots=True)
