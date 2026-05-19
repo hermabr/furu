@@ -71,14 +71,14 @@ class Manager:
     def run(
         self,
         *,
-        worker_backend: WorkerBackend,
+        worker_backends: Sequence[WorkerBackend],
         port: int = 0,
     ) -> None:
         from furu.execution.server import _run_until_done
 
         _run_until_done(
             self,
-            worker_backend=worker_backend,
+            worker_backends=worker_backends,
             port=port,
         )
 

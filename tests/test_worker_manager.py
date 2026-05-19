@@ -268,7 +268,7 @@ def test_manager_run_uses_worker_backend() -> None:
     leaf = ManagerLeaf(value=11)
     backend = RecordingBackend()
 
-    Manager([leaf]).run(worker_backend=backend)
+    Manager([leaf]).run(worker_backends=[backend])
 
     assert leaf.status() == "completed"
     assert leaf.load_or_create() == 11
@@ -303,7 +303,7 @@ def test_manager_run_passes_executor_dir_to_worker_backend() -> None:
     manager = Manager([leaf])
     backend = RecordingBackend()
 
-    manager.run(worker_backend=backend)
+    manager.run(worker_backends=[backend])
 
     assert backend.executor_dirs == [manager.executor_dir]
 
@@ -312,7 +312,7 @@ def test_manager_run_writes_log_to_executor_dir() -> None:
     leaf = ManagerLeaf(value=14)
     manager = Manager([leaf])
 
-    manager.run(worker_backend=LocalThreadWorkerBackend())
+    manager.run(worker_backends=[LocalThreadWorkerBackend()])
 
     log_path = manager_log_path_in(manager.executor_dir)
     assert manager_log_path_in(manager.executor_dir) == log_path
@@ -372,7 +372,7 @@ def test_manager_run_waits_using_worker_pool_health_check_interval() -> None:
 
     _run_until_done(
         manager,
-        worker_backend=RecordingBackend(pool),
+        worker_backends=[RecordingBackend(pool)],
         port=0,
     )
 
@@ -415,7 +415,7 @@ def test_run_until_done_uses_worker_backend_manager_listen_host() -> None:
     backend = RecordingBackend()
     cast(Any, manager).done = RecordingDone()
 
-    _run_until_done(manager, worker_backend=backend, port=0)
+    _run_until_done(manager, worker_backends=[backend], port=0)
 
     assert len(backend.server_urls) == 1
     assert backend.server_urls[0].startswith("http://127.0.0.1:")
@@ -452,11 +452,30 @@ def test_manager_server_rejects_requests_without_auth_token() -> None:
         assert response.status_code == 200
 
 
-def test_manager_run_requires_explicit_worker_backend() -> None:
+def test_manager_run_requires_explicit_worker_backends() -> None:
     manager = Manager([ManagerLeaf(value=12)])
 
-    with pytest.raises(TypeError, match="worker_backend"):
+    with pytest.raises(TypeError, match="worker_backends"):
         manager.run()  # ty: ignore[missing-argument]
+
+
+def test_manager_run_rejects_empty_worker_backends() -> None:
+    manager = Manager([ManagerLeaf(value=12)])
+
+    with pytest.raises(ValueError, match="at least one worker backend"):
+        manager.run(worker_backends=[])
+
+
+def test_manager_run_rejects_conflicting_manager_listen_host() -> None:
+    manager = Manager([ManagerLeaf(value=12)])
+
+    with pytest.raises(ValueError, match="conflicting manager_listen_host"):
+        manager.run(
+            worker_backends=[
+                LocalThreadWorkerBackend(manager_listen_host="127.0.0.1"),
+                LocalThreadWorkerBackend(manager_listen_host="0.0.0.0"),
+            ]
+        )
 
 
 def test_job_result_request_requires_error_for_failed_status() -> None:
