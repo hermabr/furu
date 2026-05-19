@@ -108,6 +108,10 @@ def _run_until_done(
                     server_url=server.server_url,
                     auth_token=server.auth_token,
                     executor_dir=manager.executor_dir,
+                    n_workers=manager.count_satisfiable_jobs(
+                        resources=backend.resource_request,
+                        max_workers=backend.max_workers,
+                    ),
                 )
                 worker_pools.append((backend, pool))
                 logger.info(

@@ -3,9 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol
 
+from furu.resources import ResourceRequest
+
 
 class WorkerBackend(Protocol):
     manager_listen_host: str
+    max_workers: int
+    resource_request: ResourceRequest
 
     def start_pool(
         self,
@@ -13,6 +17,7 @@ class WorkerBackend(Protocol):
         server_url: str,
         auth_token: str,
         executor_dir: Path,
+        n_workers: int,
     ) -> WorkerPool: ...
 
 

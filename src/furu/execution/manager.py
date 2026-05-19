@@ -14,6 +14,7 @@ from furu.core import Furu
 from furu.dag import DagNode, _add_to_dag, _update_dag_blocking_dependencies
 from furu.logging import _scoped_log_files, get_logger
 from furu.metadata import ArtifactSpec
+from furu.resources import ResourceConstraint, ResourceRequest
 from furu._storage_layout import manager_log_path_in
 from furu.worker.protocol import (
     Job,
@@ -115,6 +116,29 @@ class Manager:
                 lease_id=lease_id,
                 artifact=ArtifactSpec.from_furu(node.obj),
             )
+
+    def count_satisfiable_jobs(
+        self, *, resources: ResourceRequest, max_workers: int
+    ) -> int:
+        def matches(value: int | None, constraint: ResourceConstraint) -> bool:
+            if constraint is None or value is None:
+                return True
+            lo, hi = constraint
+            return (lo is None or value >= lo) and (hi is None or value <= hi)
+
+        with self.lock:
+            count = 0
+            for node in self.ready.values():
+                reqs = node.obj.resource_requirements
+                if reqs is None or (
+                    matches(resources.cpus, reqs.cpus)
+                    and matches(resources.gpus, reqs.gpus)
+                    and matches(resources.memory, reqs.memory)
+                ):
+                    count += 1
+                    if count >= max_workers:
+                        return max_workers
+            return count
 
     def job_result(self, lease_id: str, request: JobResultRequest) -> None:
         with self.log_context(), self.lock:

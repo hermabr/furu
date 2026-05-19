@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from furu.resources import ResourceRequest
 from furu.worker import cli
 from furu.worker.backends.slurm.backend import SlurmWorkerBackend
 from furu.worker.backends.slurm.pool import SlurmWorkerPool
@@ -108,7 +109,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     monkeypatch.chdir(work_dir)
 
     backend = SlurmWorkerBackend(
-        n_workers=2,
+        max_workers=2,
         resources=SlurmResources(
             partition="debug",
             cpus_per_worker=4,
@@ -116,6 +117,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
             gpus=Gpus(1, kind="a100"),
             extra_sbatch_args=("--exclusive",),
         ),
+        resource_request=ResourceRequest(cpus=4, gpus=1),
         worker_connect_host="manager.cluster",
         poll_interval=1.5,
     )
@@ -124,6 +126,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
         server_url="http://manager.cluster:1234",
         auth_token="secret-token",
         executor_dir=executor_dir,
+        n_workers=2,
     )
 
     assert pool.array_job_id == "100"
@@ -206,8 +209,9 @@ def test_slurm_backend_rewrites_manager_url_to_worker_connect_host(
 ) -> None:
     record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
     backend = SlurmWorkerBackend(
-        n_workers=1,
+        max_workers=1,
         resources=SlurmResources(),
+        resource_request=ResourceRequest(),
         worker_connect_host="manager.cluster",
     )
 
@@ -215,6 +219,7 @@ def test_slurm_backend_rewrites_manager_url_to_worker_connect_host(
         server_url="http://0.0.0.0:4321",
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
+        n_workers=1,
     )
 
     assert pool.array_job_id == "100"
@@ -235,8 +240,9 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
 ) -> None:
     record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
     backend = SlurmWorkerBackend(
-        n_workers=2,
+        max_workers=2,
         resources=SlurmResources(),
+        resource_request=ResourceRequest(),
         worker_connect_host="manager.cluster",
         poll_interval=0,
     )
@@ -244,6 +250,7 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
         server_url="http://manager.cluster:1234",
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
+        n_workers=2,
     )
 
     assert pool.is_healthy()
@@ -267,8 +274,9 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
 
 def test_slurm_backend_requires_explicit_executor_dir() -> None:
     backend = SlurmWorkerBackend(
-        n_workers=1,
+        max_workers=1,
         resources=SlurmResources(),
+        resource_request=ResourceRequest(),
         worker_connect_host="manager.cluster",
     )
 
@@ -276,6 +284,7 @@ def test_slurm_backend_requires_explicit_executor_dir() -> None:
         backend.start_pool(
             server_url="http://127.0.0.1:1234",
             auth_token="secret-token",
+            n_workers=1,
         )  # ty: ignore[missing-argument]
 
 
@@ -299,8 +308,9 @@ def test_slurm_backend_uses_default_poll_interval() -> None:
         SlurmWorkerBackend()  # ty: ignore[missing-argument]
 
     backend = SlurmWorkerBackend(
-        n_workers=1,
+        max_workers=1,
         resources=SlurmResources(),
+        resource_request=ResourceRequest(),
         worker_connect_host="manager.cluster",
     )
 

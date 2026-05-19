@@ -19,6 +19,7 @@ from furu.execution.manager import (
 )
 from furu.execution.server import _run_until_done, manager_server
 from furu.metadata import ArtifactSpec
+from furu.resources import ResourceRequest, ResourceRequirements
 from furu._storage_layout import manager_log_path_in
 from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
 from furu.worker.loop import worker_loop
@@ -242,9 +243,41 @@ def test_manager_job_result_failed_finishes_with_error() -> None:
         manager.raise_for_failure()
 
 
+class GpuLeaf(Furu[int]):
+    value: int
+
+    @property
+    def resource_requirements(self) -> ResourceRequirements | None:
+        return ResourceRequirements(gpus=(1, None))
+
+    def create(self) -> int:
+        return self.value
+
+
+def test_count_satisfiable_jobs_caps_at_max_workers_and_filters_by_requirements() -> (
+    None
+):
+    manager = Manager([ManagerLeaf(value=1), ManagerLeaf(value=2), GpuLeaf(value=3)])
+
+    assert (
+        manager.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=10) == 2
+    )
+    assert (
+        manager.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=1) == 1
+    )
+    assert (
+        manager.count_satisfiable_jobs(
+            resources=ResourceRequest(gpus=1), max_workers=10
+        )
+        == 3
+    )
+
+
 def test_manager_run_uses_worker_backend() -> None:
     class RecordingBackend:
         manager_listen_host = "0.0.0.0"
+        max_workers = 1
+        resource_request = ResourceRequest()
 
         def __init__(self) -> None:
             self.server_urls: list[str] = []
@@ -256,13 +289,14 @@ def test_manager_run_uses_worker_backend() -> None:
             server_url: str,
             auth_token: str,
             executor_dir: Path,
+            n_workers: int,
         ) -> LocalThreadWorkerPool:
             self.server_urls.append(server_url)
             self.auth_tokens.append(auth_token)
             return LocalThreadWorkerPool(
                 server_url=server_url,
                 auth_token=auth_token,
-                n_workers=1,
+                n_workers=n_workers,
             )
 
     leaf = ManagerLeaf(value=11)
@@ -281,6 +315,8 @@ def test_manager_run_uses_worker_backend() -> None:
 def test_manager_run_passes_executor_dir_to_worker_backend() -> None:
     class RecordingBackend:
         manager_listen_host = "127.0.0.1"
+        max_workers = 1
+        resource_request = ResourceRequest()
 
         def __init__(self) -> None:
             self.executor_dirs: list[Path] = []
@@ -291,12 +327,13 @@ def test_manager_run_passes_executor_dir_to_worker_backend() -> None:
             server_url: str,
             auth_token: str,
             executor_dir: Path,
+            n_workers: int,
         ) -> LocalThreadWorkerPool:
             self.executor_dirs.append(executor_dir)
             return LocalThreadWorkerPool(
                 server_url=server_url,
                 auth_token=auth_token,
-                n_workers=1,
+                n_workers=n_workers,
             )
 
     leaf = ManagerLeaf(value=12)
@@ -352,6 +389,8 @@ def test_manager_run_waits_using_worker_pool_health_check_interval() -> None:
 
     class RecordingBackend:
         manager_listen_host = "127.0.0.1"
+        max_workers = 1
+        resource_request = ResourceRequest()
 
         def __init__(self, pool: RecordingPool) -> None:
             self.pool = pool
@@ -362,6 +401,7 @@ def test_manager_run_waits_using_worker_pool_health_check_interval() -> None:
             server_url: str,
             auth_token: str,
             executor_dir: Path,
+            n_workers: int,
         ) -> RecordingPool:
             return self.pool
 
@@ -397,6 +437,8 @@ def test_run_until_done_uses_worker_backend_manager_listen_host() -> None:
 
     class RecordingBackend:
         manager_listen_host = "127.0.0.1"
+        max_workers = 1
+        resource_request = ResourceRequest()
 
         def __init__(self) -> None:
             self.server_urls: list[str] = []
@@ -407,6 +449,7 @@ def test_run_until_done_uses_worker_backend_manager_listen_host() -> None:
             server_url: str,
             auth_token: str,
             executor_dir: Path,
+            n_workers: int,
         ) -> RecordingPool:
             self.server_urls.append(server_url)
             return RecordingPool()
