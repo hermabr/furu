@@ -41,10 +41,7 @@ class ManagerApiClient:
             "/count_satisfiable_jobs",
             method="POST",
             payload=CountSatisfiableJobsRequest(
-                memory=resources.memory,
-                cpus=resources.cpus,
-                gpus=resources.gpus,
-                max_workers=max_workers,
+                resources=resources, max_workers=max_workers
             ).model_dump(mode="json"),
         )
         return int(response)
@@ -111,10 +108,7 @@ def create_manager_api_app(manager: Manager, *, auth_token: str) -> FastAPI:
     )
     def count_satisfiable_jobs(request: CountSatisfiableJobsRequest) -> int:
         return manager.count_satisfiable_jobs(
-            resources=ResourceRequest(
-                memory=request.memory, cpus=request.cpus, gpus=request.gpus
-            ),
-            max_workers=request.max_workers,
+            resources=request.resources, max_workers=request.max_workers
         )
 
     return app
