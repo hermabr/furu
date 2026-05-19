@@ -1,4 +1,5 @@
 from pathlib import Path
+import threading
 from typing import Any, cast
 from uuid import UUID
 
@@ -278,6 +279,43 @@ def test_manager_run_uses_worker_backend() -> None:
     assert backend.auth_tokens[0]
 
 
+def test_manager_run_uses_worker_backend_list() -> None:
+    class RecordingBackend:
+        manager_listen_host = "127.0.0.1"
+
+        def __init__(self) -> None:
+            self.server_urls: list[str] = []
+            self.auth_tokens: list[str] = []
+
+        def start_pool(
+            self,
+            *,
+            server_url: str,
+            auth_token: str,
+            executor_dir: Path,
+        ) -> LocalThreadWorkerPool:
+            self.server_urls.append(server_url)
+            self.auth_tokens.append(auth_token)
+            return LocalThreadWorkerPool(
+                server_url=server_url,
+                auth_token=auth_token,
+                n_workers=1,
+            )
+
+    leaves = [ManagerLeaf(value=21), ManagerLeaf(value=22)]
+    backends = [RecordingBackend(), RecordingBackend()]
+
+    Manager(leaves).run(worker_backend=backends)
+
+    for leaf in leaves:
+        assert leaf.status() == "completed"
+    for backend in backends:
+        assert len(backend.server_urls) == 1
+        assert backend.server_urls[0].startswith("http://127.0.0.1:")
+        assert len(backend.auth_tokens) == 1
+        assert backend.auth_tokens[0]
+
+
 def test_manager_run_passes_executor_dir_to_worker_backend() -> None:
     class RecordingBackend:
         manager_listen_host = "127.0.0.1"
@@ -421,6 +459,59 @@ def test_run_until_done_uses_worker_backend_manager_listen_host() -> None:
     assert backend.server_urls[0].startswith("http://127.0.0.1:")
 
 
+def test_run_until_done_uses_backend_listen_hosts_for_worker_backend_list() -> None:
+    class RecordingPool:
+        health_check_interval = 1.0
+
+        def __init__(self) -> None:
+            self.join_timeouts: list[float] = []
+
+        def is_healthy(self) -> bool:
+            return True
+
+        def join(self, *, timeout: float) -> None:
+            self.join_timeouts.append(timeout)
+
+    class RecordingBackend:
+        def __init__(self, manager_listen_host: str) -> None:
+            self.manager_listen_host = manager_listen_host
+            self.pool = RecordingPool()
+            self.server_urls: list[str] = []
+            self.auth_tokens: list[str] = []
+
+        def start_pool(
+            self,
+            *,
+            server_url: str,
+            auth_token: str,
+            executor_dir: Path,
+        ) -> RecordingPool:
+            self.server_urls.append(server_url)
+            self.auth_tokens.append(auth_token)
+            return self.pool
+
+    manager = Manager([ManagerLeaf(value=16)])
+    done = threading.Event()
+    done.set()
+    cast(Any, manager).done = done
+    loopback_backend = RecordingBackend("127.0.0.1")
+    wildcard_backend = RecordingBackend("0.0.0.0")
+
+    _run_until_done(
+        manager,
+        worker_backend=[loopback_backend, wildcard_backend],
+        port=0,
+    )
+
+    assert len(loopback_backend.server_urls) == 1
+    assert loopback_backend.server_urls[0].startswith("http://127.0.0.1:")
+    assert len(wildcard_backend.server_urls) == 1
+    assert wildcard_backend.server_urls[0].startswith("http://0.0.0.0:")
+    assert loopback_backend.auth_tokens != wildcard_backend.auth_tokens
+    assert loopback_backend.pool.join_timeouts == [5]
+    assert wildcard_backend.pool.join_timeouts == [5]
+
+
 def test_manager_server_exposes_bound_host_and_port() -> None:
     manager = Manager([ManagerLeaf(value=12)])
 
@@ -457,6 +548,13 @@ def test_manager_run_requires_explicit_worker_backend() -> None:
 
     with pytest.raises(TypeError, match="worker_backend"):
         manager.run()  # ty: ignore[missing-argument]
+
+
+def test_manager_run_rejects_empty_worker_backend_list() -> None:
+    manager = Manager([ManagerLeaf(value=12)])
+
+    with pytest.raises(ValueError, match="at least one worker backend"):
+        manager.run(worker_backend=[])
 
 
 def test_job_result_request_requires_error_for_failed_status() -> None:

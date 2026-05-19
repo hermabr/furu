@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol
 
@@ -23,3 +24,6 @@ class WorkerPool(Protocol):
     def is_healthy(self) -> bool: ...
 
     def join(self, *, timeout: float) -> None: ...
+
+
+type WorkerBackendInput = WorkerBackend | Sequence[WorkerBackend]

@@ -25,7 +25,7 @@ from furu.worker.protocol import (
 )
 
 if TYPE_CHECKING:
-    from furu.worker.backends import WorkerBackend
+    from furu.worker.backends import WorkerBackendInput
 
 
 logger = get_logger()
@@ -71,7 +71,7 @@ class Manager:
     def run(
         self,
         *,
-        worker_backend: WorkerBackend,
+        worker_backend: WorkerBackendInput,
         port: int = 0,
     ) -> None:
         from furu.execution.server import _run_until_done
