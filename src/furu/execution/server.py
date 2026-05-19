@@ -3,7 +3,7 @@ from __future__ import annotations
 import socket
 import threading
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from secrets import token_urlsafe
@@ -85,7 +85,7 @@ def manager_server(
 def _run_until_done(
     manager: Manager,
     *,
-    worker_backends: Sequence[WorkerBackend],
+    worker_backends: tuple[WorkerBackend, ...],
     port: int,
 ) -> None:
     if not worker_backends:
