@@ -14,7 +14,7 @@ from furu.core import Furu
 from furu.dag import DagNode, _add_to_dag, _update_dag_blocking_dependencies
 from furu.logging import _scoped_log_files, get_logger
 from furu.metadata import ArtifactSpec
-from furu.resources import ResourceRequest, satisfies_resource_requirements
+from furu.resources import ResourceRequest
 from furu._storage_layout import manager_log_path_in
 from furu.worker.protocol import (
     Job,
@@ -123,8 +123,18 @@ class Manager:
         *,
         max_workers: int,
     ) -> int:
-        if max_workers < 0:
-            raise ValueError("max_workers must be greater than or equal to 0")
+        if max_workers <= 0:
+            return 0
+
+        def satisfies(value: int | None, bounds: tuple[int | None, int | None] | None):
+            if bounds is None:
+                return True
+            lower, upper = bounds
+            return (
+                value is not None
+                and (lower is None or value >= lower)
+                and (upper is None or value <= upper)
+            )
 
         with self.log_context(), self.lock:
             self._maybe_finish_locked()
@@ -134,21 +144,16 @@ class Manager:
             satisfiable_jobs = sum(
                 1
                 for node in self.ready.values()
-                if satisfies_resource_requirements(
-                    node.obj.resource_requirements,
-                    resource_request,
+                if (
+                    (requirements := node.obj.resource_requirements) is None
+                    or (
+                        satisfies(resource_request.cpus, requirements.cpus)
+                        and satisfies(resource_request.gpus, requirements.gpus)
+                        and satisfies(resource_request.memory, requirements.memory)
+                    )
                 )
             )
             count = min(max_workers, satisfiable_jobs)
-            logger.debug(
-                "counted satisfiable ready jobs: count=%d max_workers=%d ready=%d cpus=%d gpus=%d memory=%s",
-                count,
-                max_workers,
-                len(self.ready),
-                resource_request.cpus,
-                resource_request.gpus,
-                resource_request.memory,
-            )
             return count
 
     def job_result(self, lease_id: str, request: JobResultRequest) -> None:

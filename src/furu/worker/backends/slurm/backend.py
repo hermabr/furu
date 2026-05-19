@@ -22,7 +22,6 @@ class SlurmWorkerBackend:
     manager_listen_host: str = "0.0.0.0"
     job_name: str = "furu-worker"
     poll_interval: float = 10.0
-    resource_request: ResourceRequest | None = None
 
     def start_pool(
         self,
@@ -31,16 +30,14 @@ class SlurmWorkerBackend:
         auth_token: str,
         executor_dir: Path,
     ) -> SlurmWorkerPool:
-        resource_request = (
-            self.resource_request
-            if self.resource_request is not None
-            else self.resources.to_resource_request()
-        )
         n_workers = ManagerApiClient(
             server_url,
             auth_token=auth_token,
         ).count_satisfiable_ready_jobs(
-            resource_request,
+            ResourceRequest(
+                cpus=self.resources.cpus_per_worker or 1,
+                gpus=self.resources.gpus.count if self.resources.gpus else 0,
+            ),
             max_workers=self.n_workers,
         )
         if n_workers == 0:

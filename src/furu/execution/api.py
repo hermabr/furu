@@ -5,17 +5,20 @@ from typing import Any
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, status
-from pydantic import TypeAdapter
+from pydantic import BaseModel, TypeAdapter
 
 from furu.execution.manager import Manager
 from furu.resources import ResourceRequest
 from furu.worker.protocol import (
-    CountSatisfiableReadyJobsRequest,
-    CountSatisfiableReadyJobsResponse,
     LeaseJobResponse,
     JobResultRequest,
     OkResponse,
 )
+
+
+class ReadyJobCountRequest(BaseModel):
+    resource_request: ResourceRequest
+    max_workers: int
 
 
 class ManagerApiClient:
@@ -33,7 +36,7 @@ class ManagerApiClient:
         *,
         max_workers: int,
     ) -> int:
-        request = CountSatisfiableReadyJobsRequest(
+        request = ReadyJobCountRequest(
             resource_request=resource_request,
             max_workers=max_workers,
         )
@@ -42,7 +45,7 @@ class ManagerApiClient:
             method="POST",
             payload=request.model_dump(mode="json"),
         )
-        return CountSatisfiableReadyJobsResponse.model_validate(response).count
+        return TypeAdapter(int).validate_python(response)
 
     def job_result(self, lease_id: str, request: JobResultRequest) -> None:
         response = self._request_json(
@@ -101,17 +104,15 @@ def create_manager_api_app(manager: Manager, *, auth_token: str) -> FastAPI:
 
     @app.post(
         "/count_satisfiable_ready_jobs",
-        response_model=CountSatisfiableReadyJobsResponse,
+        response_model=int,
         dependencies=[auth_dependency],
     )
     def count_satisfiable_ready_jobs(
-        request: CountSatisfiableReadyJobsRequest,
-    ) -> CountSatisfiableReadyJobsResponse:
-        return CountSatisfiableReadyJobsResponse(
-            count=manager.count_satisfiable_ready_jobs(
-                request.resource_request,
-                max_workers=request.max_workers,
-            )
+        request: ReadyJobCountRequest,
+    ) -> int:
+        return manager.count_satisfiable_ready_jobs(
+            request.resource_request,
+            max_workers=request.max_workers,
         )
 
     @app.post(

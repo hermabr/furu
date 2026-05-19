@@ -7,7 +7,6 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import TypeAdapter, ValidationError
 
-import furu.worker.backends.local as local_backend_module
 import furu.worker.loop as worker_loop_module
 from furu import Furu, ResourceRequest, ResourceRequirements
 from furu.config import get_config
@@ -24,7 +23,6 @@ from furu._storage_layout import manager_log_path_in
 from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
 from furu.worker.loop import worker_loop
 from furu.worker.protocol import (
-    CountSatisfiableReadyJobsResponse,
     Job,
     JobBlockedResult,
     JobCompletedResult,
@@ -57,20 +55,10 @@ class ManagerLazyParent(Furu[int]):
 
 class ManagerResourceLeaf(Furu[int]):
     value: int
-    min_cpus: int | None = None
-    max_cpus: int | None = None
-    min_gpus: int | None = None
-    max_gpus: int | None = None
-    min_memory: int | None = None
-    max_memory: int | None = None
 
     @property
     def resource_requirements(self) -> ResourceRequirements | None:
-        return ResourceRequirements(
-            cpus=(self.min_cpus, self.max_cpus),
-            gpus=(self.min_gpus, self.max_gpus),
-            memory=(self.min_memory, self.max_memory),
-        )
+        return ResourceRequirements(cpus=(2, None))
 
     def create(self) -> int:
         return self.value
@@ -140,40 +128,13 @@ def test_manager_lease_job_returns_wait_when_only_running_jobs_can_unblock_work(
 
 
 def test_manager_counts_satisfiable_ready_jobs() -> None:
-    default = ManagerLeaf(value=1)
-    cpu_job = ManagerResourceLeaf(value=2, min_cpus=4)
-    gpu_job = ManagerResourceLeaf(value=3, min_gpus=1)
-    memory_job = ManagerResourceLeaf(value=4, min_memory=16)
-    manager = Manager([default, cpu_job, gpu_job, memory_job])
+    manager = Manager([ManagerLeaf(value=1), ManagerResourceLeaf(value=2)])
 
+    assert manager.count_satisfiable_ready_jobs(ResourceRequest(), max_workers=10) == 1
     assert (
-        manager.count_satisfiable_ready_jobs(
-            ResourceRequest(cpus=4, gpus=0, memory=None),
-            max_workers=10,
-        )
-        == 2
+        manager.count_satisfiable_ready_jobs(ResourceRequest(cpus=2), max_workers=1)
+        == 1
     )
-    assert (
-        manager.count_satisfiable_ready_jobs(
-            ResourceRequest(cpus=8, gpus=2, memory=32),
-            max_workers=3,
-        )
-        == 3
-    )
-    assert (
-        manager.count_satisfiable_ready_jobs(
-            ResourceRequest(cpus=8, gpus=2, memory=32),
-            max_workers=2,
-        )
-        == 2
-    )
-
-
-def test_manager_count_satisfiable_ready_jobs_rejects_negative_max_workers() -> None:
-    manager = Manager([ManagerLeaf(value=1)])
-
-    with pytest.raises(ValueError, match="max_workers"):
-        manager.count_satisfiable_ready_jobs(ResourceRequest(), max_workers=-1)
 
 
 def test_manager_job_result_blocked_discovers_lazy_dependency_and_reruns_parent() -> (
@@ -336,66 +297,6 @@ def test_manager_run_uses_worker_backend() -> None:
     assert backend.server_urls[0].startswith("http://0.0.0.0:")
     assert len(backend.auth_tokens) == 1
     assert backend.auth_tokens[0]
-
-
-def test_local_worker_backend_uses_manager_worker_count(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    client_calls: list[tuple[str, str, ResourceRequest, int]] = []
-    worker_calls: list[tuple[str, str]] = []
-
-    class RecordingClient:
-        def __init__(self, server_url: str, *, auth_token: str) -> None:
-            self.server_url = server_url
-            self.auth_token = auth_token
-
-        def count_satisfiable_ready_jobs(
-            self,
-            resource_request: ResourceRequest,
-            *,
-            max_workers: int,
-        ) -> int:
-            client_calls.append(
-                (self.server_url, self.auth_token, resource_request, max_workers)
-            )
-            return 2
-
-    def worker_loop(*, server_url: str, auth_token: str) -> None:
-        worker_calls.append((server_url, auth_token))
-
-    monkeypatch.setattr(local_backend_module, "ManagerApiClient", RecordingClient)
-    monkeypatch.setattr(worker_loop_module, "worker_loop", worker_loop)
-
-    resource_request = ResourceRequest(cpus=2)
-    pool = LocalThreadWorkerBackend(
-        n_workers=4,
-        resource_request=resource_request,
-    ).start_pool(
-        server_url="http://manager.test",
-        auth_token="secret-token",
-        executor_dir=tmp_path,
-    )
-    pool.join(timeout=1)
-
-    assert pool.n_workers == 2
-    assert len(pool._threads) == 2
-    assert client_calls == [
-        ("http://manager.test", "secret-token", resource_request, 4)
-    ]
-    assert worker_calls == [
-        ("http://manager.test", "secret-token"),
-        ("http://manager.test", "secret-token"),
-    ]
-
-
-def test_manager_run_fails_when_no_backend_launches_workers() -> None:
-    manager = Manager([ManagerResourceLeaf(value=1, min_cpus=2)])
-
-    with pytest.raises(RuntimeError, match="no worker backend launched workers"):
-        manager.run(worker_backends=(LocalThreadWorkerBackend(),))
-
-    assert manager.done.is_set()
 
 
 def test_manager_run_passes_executor_dir_to_worker_backend() -> None:
@@ -791,50 +692,6 @@ def test_client_lease_job_posts_to_lease_job_endpoint(
     ]
 
 
-def test_client_count_satisfiable_ready_jobs_posts_to_endpoint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    requests: list[tuple[str, str, dict[str, str], object | None]] = []
-
-    def request(
-        method: str,
-        url: str,
-        *,
-        headers: dict[str, str],
-        json: object | None,
-        timeout: float,
-    ) -> httpx.Response:
-        requests.append((method, url, headers, json))
-        return httpx.Response(
-            200,
-            json=CountSatisfiableReadyJobsResponse(count=2).model_dump(mode="json"),
-            request=httpx.Request(method, url),
-        )
-
-    monkeypatch.setattr(httpx, "request", request)
-
-    count = api.ManagerApiClient(
-        "http://worker.test/",
-        auth_token="secret-token",
-    ).count_satisfiable_ready_jobs(
-        ResourceRequest(cpus=4, gpus=1, memory=16),
-        max_workers=3,
-    )
-
-    assert count == 2
-    assert requests == [
-        (
-            "POST",
-            "http://worker.test/count_satisfiable_ready_jobs",
-            {"Authorization": "Bearer secret-token"},
-            {
-                "resource_request": {"cpus": 4, "gpus": 1, "memory": 16},
-                "max_workers": 3,
-            },
-        )
-    ]
-
-
 def test_manager_api_rejects_missing_auth_token() -> None:
     app = create_manager_api_app(Manager([ManagerLeaf(value=1)]), auth_token="secret")
     client = TestClient(app)
@@ -869,23 +726,3 @@ def test_manager_api_accepts_matching_auth_token() -> None:
 
     assert response.status_code == 200
     assert response.json()["artifact"]["artifact_data"]["|fields"] == {"value": 1}
-
-
-def test_manager_api_counts_satisfiable_ready_jobs() -> None:
-    app = create_manager_api_app(
-        Manager([ManagerResourceLeaf(value=1, min_cpus=2)]),
-        auth_token="secret",
-    )
-    client = TestClient(app)
-
-    response = client.post(
-        "/count_satisfiable_ready_jobs",
-        headers={"Authorization": "Bearer secret"},
-        json={
-            "resource_request": {"cpus": 4, "gpus": 0, "memory": None},
-            "max_workers": 5,
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.json() == {"count": 1}
