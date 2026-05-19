@@ -8,7 +8,7 @@ type ResourceConstraint = tuple[int | None, int | None] | None
 class ResourceRequest(BaseModel):
     cpus: int = 1
     gpus: int = 0
-    memory: int | None = None
+    memory: int
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

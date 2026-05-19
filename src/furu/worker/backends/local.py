@@ -20,7 +20,7 @@ class LocalThreadWorkerBackend:
             server_url,
             auth_token=auth_token,
         ).count_satisfiable_ready_jobs(
-            ResourceRequest(),
+            ResourceRequest(memory=0),
             max_workers=self.n_workers,
         )
         return LocalThreadWorkerPool(

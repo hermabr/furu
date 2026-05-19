@@ -130,9 +130,14 @@ def test_manager_lease_job_returns_wait_when_only_running_jobs_can_unblock_work(
 def test_manager_counts_satisfiable_ready_jobs() -> None:
     manager = Manager([ManagerLeaf(value=1), ManagerResourceLeaf(value=2)])
 
-    assert manager.count_satisfiable_ready_jobs(ResourceRequest(), max_workers=10) == 1
     assert (
-        manager.count_satisfiable_ready_jobs(ResourceRequest(cpus=2), max_workers=1)
+        manager.count_satisfiable_ready_jobs(ResourceRequest(memory=0), max_workers=10)
+        == 1
+    )
+    assert (
+        manager.count_satisfiable_ready_jobs(
+            ResourceRequest(cpus=2, memory=0), max_workers=1
+        )
         == 1
     )
 

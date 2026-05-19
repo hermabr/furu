@@ -37,6 +37,7 @@ class SlurmWorkerBackend:
             ResourceRequest(
                 cpus=self.resources.cpus_per_worker or 1,
                 gpus=self.resources.gpus.count if self.resources.gpus else 0,
+                memory=0,
             ),
             max_workers=self.n_workers,
         )
