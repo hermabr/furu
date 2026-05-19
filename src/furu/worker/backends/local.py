@@ -5,7 +5,9 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from furu.execution.api import ManagerApiClient
 from furu.resources import ResourceRequest
+from furu.worker.backends import count_workers_to_launch
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,35 +25,58 @@ class LocalThreadWorkerBackend:
         auth_token: str,
         executor_dir: Path,
     ) -> LocalThreadWorkerPool:
-        from furu.execution.api import ManagerApiClient
-
-        client = ManagerApiClient(server_url, auth_token=auth_token)
-        n_workers = client.count_satisfiable_jobs(
-            resources=self.resource_request, max_workers=self.max_workers
-        )
-        return LocalThreadWorkerPool(
+        pool = LocalThreadWorkerPool(
             server_url=server_url,
             auth_token=auth_token,
-            n_workers=n_workers,
+            max_workers=self.max_workers,
+            resource_request=self.resource_request,
         )
+        pool.scale()
+        return pool
 
 
 class LocalThreadWorkerPool:
     health_check_interval = 0.1
 
-    def __init__(self, *, server_url: str, auth_token: str, n_workers: int) -> None:
+    def __init__(
+        self,
+        *,
+        server_url: str,
+        auth_token: str,
+        max_workers: int,
+        resource_request: ResourceRequest,
+    ) -> None:
+        self._server_url = server_url
+        self._auth_token = auth_token
+        self._max_workers = max_workers
+        self._resource_request = resource_request
+        self._client = ManagerApiClient(server_url, auth_token=auth_token)
+        self._threads: list[threading.Thread] = []
+
+    @property
+    def n_workers(self) -> int:
+        return len(self._threads)
+
+    def scale(self) -> None:
+        to_spawn = count_workers_to_launch(
+            self._client,
+            current_workers=len(self._threads),
+            max_workers=self._max_workers,
+            resource_request=self._resource_request,
+        )
         from furu.worker.loop import worker_loop
 
-        self._threads = [
-            threading.Thread(
+        for _ in range(to_spawn):
+            thread = threading.Thread(
                 target=worker_loop,
-                kwargs={"server_url": server_url, "auth_token": auth_token},
-                name=f"furu-worker-{idx}",
+                kwargs={
+                    "server_url": self._server_url,
+                    "auth_token": self._auth_token,
+                },
+                name=f"furu-worker-{len(self._threads)}",
             )
-            for idx in range(n_workers)
-        ]
-        for worker in self._threads:
-            worker.start()
+            self._threads.append(thread)
+            thread.start()
 
     def is_healthy(self) -> bool:
         return all(worker.is_alive() for worker in self._threads)
