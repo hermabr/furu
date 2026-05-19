@@ -15,3 +15,22 @@ class ResourceRequest:
     memory: int
     cpus: int = 1
     gpus: int = 0
+
+
+def resource_request_satisfies(
+    request: ResourceRequest, requirements: ResourceRequirements | None
+) -> bool:
+    if requirements is None:
+        return True
+    return (
+        _matches_constraint(request.cpus, requirements.cpus)
+        and _matches_constraint(request.gpus, requirements.gpus)
+        and _matches_constraint(request.memory, requirements.memory)
+    )
+
+
+def _matches_constraint(value: int, constraint: ResourceConstraint) -> bool:
+    if constraint is None:
+        return True
+    lo, hi = constraint
+    return (lo is None or value >= lo) and (hi is None or value <= hi)

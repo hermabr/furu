@@ -7,6 +7,7 @@ from typing import assert_never
 from furu.core import Furu
 from furu.execution import _ensure_single_result, api
 from furu.metadata import ArtifactSpec
+from furu.resources import ResourceRequest
 from furu.worker.context import _DependencyNotReady, worker_execution_context
 from furu.worker.protocol import (
     Job,
@@ -20,11 +21,12 @@ def worker_loop(
     *,
     server_url: str,
     auth_token: str,
+    resource_request: ResourceRequest,
 ) -> None:
     client = api.ManagerApiClient(server_url, auth_token=auth_token)
 
     while True:
-        match client.lease_job():
+        match client.lease_job(resources=resource_request):
             case "stop":
                 return
             case "wait":

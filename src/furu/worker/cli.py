@@ -1,7 +1,9 @@
 import argparse
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from furu.resources import ResourceRequest
 from furu.worker.loop import worker_loop
 
 
@@ -18,11 +20,34 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=Path,
         help="path to a file containing the manager auth token",
     )
+    parser.add_argument(
+        "--resource-cpus",
+        type=int,
+        default=1,
+        help="CPU count available to this worker",
+    )
+    parser.add_argument(
+        "--resource-gpus",
+        type=int,
+        default=0,
+        help="GPU count available to this worker",
+    )
+    parser.add_argument(
+        "--resource-memory",
+        type=int,
+        default=sys.maxsize,
+        help="memory available to this worker",
+    )
     args = parser.parse_args(argv)
 
     worker_loop(
         server_url=args.server_url,
         auth_token=args.auth_token_file.read_text(encoding="utf-8").rstrip(),
+        resource_request=ResourceRequest(
+            cpus=args.resource_cpus,
+            gpus=args.resource_gpus,
+            memory=args.resource_memory,
+        ),
     )
     return 0
 
