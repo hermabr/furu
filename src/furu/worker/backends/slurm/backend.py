@@ -10,14 +10,13 @@ from pathlib import Path
 from furu.resources import ResourceRequest
 from furu.utils import write_private_file
 from furu.worker.backends.slurm.pool import SlurmWorkerPool
-from furu.worker.backends.slurm.resources import SlurmResources
+from furu.worker.backends.slurm.resources import Gpus, SlurmResources
 
 
 @dataclass(frozen=True, slots=True)
 class SlurmWorkerBackend:
     max_workers: int
     resources: SlurmResources
-    resource_request: ResourceRequest
     worker_connect_host: str
     manager_listen_host: str = "0.0.0.0"
     job_name: str = "furu-worker"
@@ -34,7 +33,14 @@ class SlurmWorkerBackend:
 
         client = ManagerApiClient(server_url, auth_token=auth_token)
         n_workers = client.count_satisfiable_jobs(
-            resources=self.resource_request, max_workers=self.max_workers
+            resources=ResourceRequest(
+                cpus=self.resources.cpus_per_worker,
+                gpus=self.resources.gpus.count
+                if isinstance(self.resources.gpus, Gpus)
+                else self.resources.gpus,
+                memory=sys.maxsize,
+            ),
+            max_workers=self.max_workers,
         )
 
         scheme, rest = server_url.split("://", maxsplit=1)

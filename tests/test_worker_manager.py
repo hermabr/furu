@@ -283,7 +283,6 @@ def test_manager_run_uses_worker_backend() -> None:
     class RecordingBackend:
         manager_listen_host = "0.0.0.0"
         max_workers = 1
-        resource_request = ResourceRequest(memory=0)
 
         def __init__(self) -> None:
             self.server_urls: list[str] = []
@@ -321,7 +320,6 @@ def test_manager_run_passes_executor_dir_to_worker_backend() -> None:
     class RecordingBackend:
         manager_listen_host = "127.0.0.1"
         max_workers = 1
-        resource_request = ResourceRequest(memory=0)
 
         def __init__(self) -> None:
             self.executor_dirs: list[Path] = []
@@ -394,7 +392,6 @@ def test_manager_run_waits_using_worker_pool_health_check_interval() -> None:
     class RecordingBackend:
         manager_listen_host = "127.0.0.1"
         max_workers = 1
-        resource_request = ResourceRequest(memory=0)
 
         def __init__(self, pool: RecordingPool) -> None:
             self.pool = pool
@@ -441,7 +438,6 @@ def test_run_until_done_uses_worker_backend_manager_listen_host() -> None:
     class RecordingBackend:
         manager_listen_host = "127.0.0.1"
         max_workers = 1
-        resource_request = ResourceRequest(memory=0)
 
         def __init__(self) -> None:
             self.server_urls: list[str] = []
