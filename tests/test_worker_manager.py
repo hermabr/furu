@@ -19,6 +19,7 @@ from furu.execution.manager import (
 )
 from furu.execution.server import _run_until_done, manager_server
 from furu.metadata import ArtifactSpec
+from furu.resources import ResourceRequest, ResourceRequirements
 from furu._storage_layout import manager_log_path_in
 from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
 from furu.worker.loop import worker_loop
@@ -240,6 +241,42 @@ def test_manager_job_result_failed_finishes_with_error() -> None:
     assert "furu manager finished with error" in log_text
     with pytest.raises(RuntimeError, match="failed jobs"):
         manager.raise_for_failure()
+
+
+class GpuLeaf(Furu[int]):
+    value: int
+
+    @property
+    def resource_requirements(self) -> ResourceRequirements | None:
+        return ResourceRequirements(gpus=(1, None))
+
+    def create(self) -> int:
+        return self.value
+
+
+def test_count_satisfiable_jobs_caps_at_max_workers_and_filters_by_requirements() -> (
+    None
+):
+    manager = Manager([ManagerLeaf(value=1), ManagerLeaf(value=2), GpuLeaf(value=3)])
+
+    assert (
+        manager.count_satisfiable_jobs(
+            resources=ResourceRequest(memory=0), max_workers=10
+        )
+        == 2
+    )
+    assert (
+        manager.count_satisfiable_jobs(
+            resources=ResourceRequest(memory=0), max_workers=1
+        )
+        == 1
+    )
+    assert (
+        manager.count_satisfiable_jobs(
+            resources=ResourceRequest(memory=0, gpus=1), max_workers=10
+        )
+        == 3
+    )
 
 
 def test_manager_run_uses_worker_backend() -> None:

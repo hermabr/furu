@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from furu.execution.api import ManagerApiClient
 from furu.worker import cli
 from furu.worker.backends.slurm.backend import SlurmWorkerBackend
 from furu.worker.backends.slurm.pool import SlurmWorkerPool
@@ -20,6 +21,14 @@ from furu.worker.backends.slurm.resources import (
     MemoryPerNode,
     SlurmResources,
 )
+
+
+def _stub_count_satisfiable_jobs(monkeypatch: pytest.MonkeyPatch, count: int) -> None:
+    monkeypatch.setattr(
+        ManagerApiClient,
+        "count_satisfiable_jobs",
+        lambda self, *, resources, max_workers: count,
+    )
 
 
 def test_worker_cli_reads_auth_token_file(
@@ -100,6 +109,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    _stub_count_satisfiable_jobs(monkeypatch, 2)
     work_dir = tmp_path / "work"
     work_dir.mkdir()
     executor_dir = tmp_path / "furu" / "executions" / "executor-1"
@@ -108,7 +118,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     monkeypatch.chdir(work_dir)
 
     backend = SlurmWorkerBackend(
-        n_workers=2,
+        max_workers=2,
         resources=SlurmResources(
             partition="debug",
             cpus_per_worker=4,
@@ -186,18 +196,28 @@ def test_slurm_resources_emit_one_memory_option(
     memory: MemoryPerNode | MemoryPerCpu | MemoryPerGpu,
     expected_arg: str,
 ) -> None:
-    assert SlurmResources(memory=memory).to_sbatch_args() == [expected_arg]
+    assert SlurmResources(cpus_per_worker=1, memory=memory).to_sbatch_args() == [
+        "--cpus-per-task=1",
+        expected_arg,
+    ]
 
 
 @pytest.mark.parametrize(
-    ("gpus", "expected_arg"),
+    ("gpus", "expected_args"),
     [
-        (Gpus(1), "--gpus=1"),
-        (Gpus(2, kind="a100"), "--gpus=a100:2"),
+        (0, []),
+        (3, ["--gpus=3"]),
+        (Gpus(1), ["--gpus=1"]),
+        (Gpus(2, kind="a100"), ["--gpus=a100:2"]),
     ],
 )
-def test_slurm_resources_emit_gpu_option(gpus: Gpus, expected_arg: str) -> None:
-    assert SlurmResources(gpus=gpus).to_sbatch_args() == [expected_arg]
+def test_slurm_resources_emit_gpu_option(
+    gpus: Gpus | int, expected_args: list[str]
+) -> None:
+    assert SlurmResources(cpus_per_worker=1, gpus=gpus).to_sbatch_args() == [
+        "--cpus-per-task=1",
+        *expected_args,
+    ]
 
 
 def test_slurm_backend_rewrites_manager_url_to_worker_connect_host(
@@ -205,9 +225,10 @@ def test_slurm_backend_rewrites_manager_url_to_worker_connect_host(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    _stub_count_satisfiable_jobs(monkeypatch, 1)
     backend = SlurmWorkerBackend(
-        n_workers=1,
-        resources=SlurmResources(),
+        max_workers=1,
+        resources=SlurmResources(cpus_per_worker=1),
         worker_connect_host="manager.cluster",
     )
 
@@ -234,9 +255,10 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    _stub_count_satisfiable_jobs(monkeypatch, 2)
     backend = SlurmWorkerBackend(
-        n_workers=2,
-        resources=SlurmResources(),
+        max_workers=2,
+        resources=SlurmResources(cpus_per_worker=1),
         worker_connect_host="manager.cluster",
         poll_interval=0,
     )
@@ -267,8 +289,8 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
 
 def test_slurm_backend_requires_explicit_executor_dir() -> None:
     backend = SlurmWorkerBackend(
-        n_workers=1,
-        resources=SlurmResources(),
+        max_workers=1,
+        resources=SlurmResources(cpus_per_worker=1),
         worker_connect_host="manager.cluster",
     )
 
@@ -299,8 +321,8 @@ def test_slurm_backend_uses_default_poll_interval() -> None:
         SlurmWorkerBackend()  # ty: ignore[missing-argument]
 
     backend = SlurmWorkerBackend(
-        n_workers=1,
-        resources=SlurmResources(),
+        max_workers=1,
+        resources=SlurmResources(cpus_per_worker=1),
         worker_connect_host="manager.cluster",
     )
 

@@ -1,22 +1,38 @@
 from __future__ import annotations
 
+import sys
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+
+from furu.resources import ResourceRequest
 
 
 @dataclass(frozen=True, slots=True)
 class LocalThreadWorkerBackend:
-    n_workers: int = 1
+    max_workers: int = 1
+    resource_request: ResourceRequest = field(
+        default_factory=lambda: ResourceRequest(memory=sys.maxsize)
+    )
     manager_listen_host: str = "127.0.0.1"
 
     def start_pool(
-        self, *, server_url: str, auth_token: str, executor_dir: Path
+        self,
+        *,
+        server_url: str,
+        auth_token: str,
+        executor_dir: Path,
     ) -> LocalThreadWorkerPool:
+        from furu.execution.api import ManagerApiClient
+
+        client = ManagerApiClient(server_url, auth_token=auth_token)
+        n_workers = client.count_satisfiable_jobs(
+            resources=self.resource_request, max_workers=self.max_workers
+        )
         return LocalThreadWorkerPool(
             server_url=server_url,
             auth_token=auth_token,
-            n_workers=self.n_workers,
+            n_workers=n_workers,
         )
 
 
