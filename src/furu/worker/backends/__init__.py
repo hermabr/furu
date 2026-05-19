@@ -17,6 +17,8 @@ class WorkerBackend(Protocol):
 
 
 class WorkerPool(Protocol):
+    n_workers: int
+
     @property
     def health_check_interval(self) -> float: ...
 

@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from pydantic import TypeAdapter, ValidationError
 
 import furu.worker.loop as worker_loop_module
-from furu import Furu
+from furu import Furu, ResourceRequest, ResourceRequirements
 from furu.config import get_config
 from furu.execution import api
 from furu.execution.api import create_manager_api_app
@@ -51,6 +51,17 @@ class ManagerLazyParent(Furu[int]):
 
     def create(self) -> int:
         return ManagerLeaf(value=self.value).load_or_create() + 1
+
+
+class ManagerResourceLeaf(Furu[int]):
+    value: int
+
+    @property
+    def resource_requirements(self) -> ResourceRequirements | None:
+        return ResourceRequirements(cpus=(2, None))
+
+    def create(self) -> int:
+        return self.value
 
 
 def test_manager_init_partitions_ready_and_blocked() -> None:
@@ -114,6 +125,21 @@ def test_manager_lease_job_returns_wait_when_only_running_jobs_can_unblock_work(
 
     assert manager.lease_job() == "wait"
     assert not manager.done.is_set()
+
+
+def test_manager_counts_satisfiable_ready_jobs() -> None:
+    manager = Manager([ManagerLeaf(value=1), ManagerResourceLeaf(value=2)])
+
+    assert (
+        manager.count_satisfiable_ready_jobs(ResourceRequest(memory=0), max_workers=10)
+        == 1
+    )
+    assert (
+        manager.count_satisfiable_ready_jobs(
+            ResourceRequest(cpus=2, memory=0), max_workers=1
+        )
+        == 1
+    )
 
 
 def test_manager_job_result_blocked_discovers_lazy_dependency_and_reruns_parent() -> (
@@ -336,7 +362,11 @@ def test_manager_run_waits_using_worker_pool_health_check_interval() -> None:
             self.timeouts.append(timeout)
             return True
 
+        def is_set(self) -> bool:
+            return False
+
     class RecordingPool:
+        n_workers = 1
         health_check_interval = 2.5
 
         def __init__(self) -> None:
@@ -386,7 +416,11 @@ def test_run_until_done_uses_worker_backend_manager_listen_host() -> None:
         def wait(self, timeout: float | None = None) -> bool:
             return True
 
+        def is_set(self) -> bool:
+            return False
+
     class RecordingPool:
+        n_workers = 1
         health_check_interval = 1.0
 
         def is_healthy(self) -> bool:

@@ -8,6 +8,7 @@ import textwrap
 from pathlib import Path
 from typing import Any
 
+import furu.worker.backends.slurm.backend as slurm_backend_module
 import pytest
 
 from furu.worker import cli
@@ -20,6 +21,15 @@ from furu.worker.backends.slurm.resources import (
     MemoryPerNode,
     SlurmResources,
 )
+
+
+@pytest.fixture(autouse=True)
+def _fake_manager_capacity(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        slurm_backend_module.ManagerApiClient,
+        "count_satisfiable_ready_jobs",
+        lambda self, request: request.max_workers,
+    )
 
 
 def test_worker_cli_reads_auth_token_file(

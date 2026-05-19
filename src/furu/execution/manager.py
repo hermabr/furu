@@ -9,12 +9,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, assert_never
 from uuid import uuid4
 
+from furu._storage_layout import manager_log_path_in
 from furu.config import get_config
 from furu.core import Furu
 from furu.dag import DagNode, _add_to_dag, _update_dag_blocking_dependencies
 from furu.logging import _scoped_log_files, get_logger
 from furu.metadata import ArtifactSpec
-from furu._storage_layout import manager_log_path_in
+from furu.resources import ResourceRequest
 from furu.worker.protocol import (
     Job,
     JobBlockedResult,
@@ -115,6 +116,45 @@ class Manager:
                 lease_id=lease_id,
                 artifact=ArtifactSpec.from_furu(node.obj),
             )
+
+    def count_satisfiable_ready_jobs(
+        self,
+        resource_request: ResourceRequest,
+        *,
+        max_workers: int,
+    ) -> int:
+        def satisfies(value: int | None, bounds: tuple[int | None, int | None] | None):
+            if bounds is None:
+                return True
+            lower, upper = bounds
+            return (
+                value is not None
+                and (lower is None or value >= lower)
+                and (upper is None or value <= upper)
+            )
+
+        with self.log_context(), self.lock:
+            self._maybe_finish_locked()
+            if self.done.is_set():
+                return 0
+
+            count = 0
+            for node in self.ready.values():
+                if not (
+                    (requirements := node.obj.resource_requirements) is None
+                    or (
+                        satisfies(resource_request.cpus, requirements.cpus)
+                        and satisfies(resource_request.gpus, requirements.gpus)
+                        and satisfies(resource_request.memory, requirements.memory)
+                    )
+                ):
+                    continue
+
+                count += 1
+                if count == max_workers:
+                    return count
+
+            return count
 
     def job_result(self, lease_id: str, request: JobResultRequest) -> None:
         with self.log_context(), self.lock:

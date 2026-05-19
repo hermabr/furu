@@ -7,9 +7,12 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from furu.execution.api import ManagerApiClient
+from furu.resources import ResourceRequest
 from furu.utils import write_private_file
 from furu.worker.backends.slurm.pool import SlurmWorkerPool
 from furu.worker.backends.slurm.resources import SlurmResources
+from furu.worker.protocol import ReadyJobCountRequest
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +31,26 @@ class SlurmWorkerBackend:
         auth_token: str,
         executor_dir: Path,
     ) -> SlurmWorkerPool:
+        n_workers = ManagerApiClient(
+            server_url,
+            auth_token=auth_token,
+        ).count_satisfiable_ready_jobs(
+            ReadyJobCountRequest(
+                resource_request=ResourceRequest(
+                    cpus=self.resources.cpus_per_worker or 1,
+                    gpus=self.resources.gpus.count if self.resources.gpus else 0,
+                    memory=0,
+                ),
+                max_workers=self.n_workers,
+            )
+        )
+        if n_workers == 0:
+            return SlurmWorkerPool(
+                array_job_id=None,
+                n_workers=0,
+                poll_interval=self.poll_interval,
+            )
+
         scheme, rest = server_url.split("://", maxsplit=1)
         server_url = (
             f"{scheme}://{self.worker_connect_host}:{rest.rsplit(':', maxsplit=1)[1]}"
@@ -45,16 +68,22 @@ class SlurmWorkerBackend:
             token_file=token_file,
             worker_dir=worker_dir,
             server_url=server_url,
+            n_workers=n_workers,
         )
 
         return SlurmWorkerPool(
             array_job_id=array_job_id,
-            n_workers=self.n_workers,
+            n_workers=n_workers,
             poll_interval=self.poll_interval,
         )
 
     def _launch_jobs(
-        self, chdir: Path, token_file: Path, worker_dir: Path, server_url: str
+        self,
+        chdir: Path,
+        token_file: Path,
+        worker_dir: Path,
+        server_url: str,
+        n_workers: int,
     ) -> str:
         script_path = self._write_sbatch_script(
             worker_dir=worker_dir, token_file=token_file, server_url=server_url
@@ -70,7 +99,7 @@ class SlurmWorkerBackend:
                 f"--output={log_dir / 'furu-worker-%A-%a.out'}",
                 f"--error={log_dir / 'furu-worker-%A-%a.err'}",
                 f"--job-name={self.job_name}",
-                f"--array=0-{self.n_workers - 1}",
+                f"--array=0-{n_workers - 1}",
                 *self.resources.to_sbatch_args(),
                 "--export=NIL",
                 str(script_path),

@@ -111,8 +111,9 @@ def _run_until_done(
                 )
                 worker_pools.append((backend, pool))
                 logger.info(
-                    "worker pool started: backend=%s health_check_interval=%s",
+                    "worker pool started: backend=%s n_workers=%d health_check_interval=%s",
                     type(backend).__name__,
+                    pool.n_workers,
                     pool.health_check_interval,
                 )
             next_check_at = [
