@@ -141,19 +141,22 @@ class Manager:
             if self.done.is_set():
                 return 0
 
-            satisfiable_jobs = sum(
-                1
-                for node in self.ready.values()
-                if (
+            count = 0
+            for node in self.ready.values():
+                if not (
                     (requirements := node.obj.resource_requirements) is None
                     or (
                         satisfies(resource_request.cpus, requirements.cpus)
                         and satisfies(resource_request.gpus, requirements.gpus)
                         and satisfies(resource_request.memory, requirements.memory)
                     )
-                )
-            )
-            count = min(max_workers, satisfiable_jobs)
+                ):
+                    continue
+
+                count += 1
+                if count == max_workers:
+                    return count
+
             return count
 
     def job_result(self, lease_id: str, request: JobResultRequest) -> None:
