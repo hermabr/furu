@@ -88,9 +88,7 @@ class Manager:
         with _scoped_log_files((manager_log_path_in(self.executor_dir),)):
             yield
 
-    def lease_job(
-        self, *, resources: ResourceRequest | None = None
-    ) -> LeaseJobResponse:
+    def lease_job(self, *, resources: ResourceRequest) -> LeaseJobResponse:
         with self.log_context(), self.lock:
             self._maybe_finish_locked()
             if self.done.is_set():
@@ -138,12 +136,10 @@ class Manager:
             return count
 
     def _next_satisfiable_ready_object_id_locked(
-        self, *, resources: ResourceRequest | None
+        self, *, resources: ResourceRequest
     ) -> str | None:
         for object_id, node in self.ready.items():
-            if resources is None or resource_request_satisfies(
-                resources, node.obj.resource_requirements
-            ):
+            if resource_request_satisfies(resources, node.obj.resource_requirements):
                 return object_id
         return None
 

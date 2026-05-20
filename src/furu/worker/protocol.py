@@ -53,7 +53,7 @@ type LeaseJobResponse = Job | Literal["wait", "stop"]
 class LeaseJobRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    resources: ResourceRequest | None = None
+    resources: ResourceRequest
 
 
 class CountSatisfiableJobsRequest(BaseModel):

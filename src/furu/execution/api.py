@@ -23,15 +23,12 @@ class ManagerApiClient:
         self._server_url = server_url.rstrip("/")
         self._auth_token = auth_token
 
-    def lease_job(
-        self, *, resources: ResourceRequest | None = None
-    ) -> LeaseJobResponse:
-        payload = (
-            None
-            if resources is None
-            else LeaseJobRequest(resources=resources).model_dump(mode="json")
+    def lease_job(self, *, resources: ResourceRequest) -> LeaseJobResponse:
+        response = self._request_json(
+            "/lease_job",
+            method="POST",
+            payload=LeaseJobRequest(resources=resources).model_dump(mode="json"),
         )
-        response = self._request_json("/lease_job", method="POST", payload=payload)
         return TypeAdapter(LeaseJobResponse).validate_python(response)
 
     def job_result(self, lease_id: str, request: JobResultRequest) -> None:
@@ -98,10 +95,8 @@ def create_manager_api_app(manager: Manager, *, auth_token: str) -> FastAPI:
         response_model=LeaseJobResponse,
         dependencies=[auth_dependency],
     )
-    def lease_job(request: LeaseJobRequest | None = None) -> LeaseJobResponse:
-        return manager.lease_job(
-            resources=None if request is None else request.resources
-        )
+    def lease_job(request: LeaseJobRequest) -> LeaseJobResponse:
+        return manager.lease_job(resources=request.resources)
 
     @app.post(
         "/job_result/{lease_id}",

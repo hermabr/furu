@@ -34,6 +34,9 @@ from furu.worker.protocol import (
 )
 
 
+ANY_RESOURCES = ResourceRequest(memory=0)
+
+
 class ManagerLeaf(Furu[int]):
     value: int
 
@@ -87,7 +90,7 @@ def test_manager_job_result_completed_moves_dependents_to_ready() -> None:
     parent = ManagerParent(child=leaf)
     manager = Manager([parent])
 
-    job = manager.lease_job()
+    job = manager.lease_job(resources=ANY_RESOURCES)
     assert isinstance(job, Job)
     assert job.lease_id != leaf.object_id
     assert UUID(job.lease_id).version == 4
@@ -111,10 +114,10 @@ def test_manager_lease_job_returns_wait_when_only_running_jobs_can_unblock_work(
     parent = ManagerParent(child=leaf)
     manager = Manager([parent])
 
-    job = manager.lease_job()
+    job = manager.lease_job(resources=ANY_RESOURCES)
     assert isinstance(job, Job)
 
-    assert manager.lease_job() == "wait"
+    assert manager.lease_job(resources=ANY_RESOURCES) == "wait"
     assert not manager.done.is_set()
 
 
@@ -125,7 +128,7 @@ def test_manager_job_result_blocked_discovers_lazy_dependency_and_reruns_parent(
     dependency = ManagerLeaf(value=2)
     manager = Manager([parent])
 
-    parent_job = manager.lease_job()
+    parent_job = manager.lease_job(resources=ANY_RESOURCES)
     assert isinstance(parent_job, Job)
     assert parent_job.lease_id != parent.object_id
 
@@ -137,7 +140,7 @@ def test_manager_job_result_blocked_discovers_lazy_dependency_and_reruns_parent(
     assert set(manager.ready) == {dependency.object_id}
     assert set(manager.blocked) == {parent.object_id}
 
-    dependency_job = manager.lease_job()
+    dependency_job = manager.lease_job(resources=ANY_RESOURCES)
     assert isinstance(dependency_job, Job)
     manager.job_result(dependency_job.lease_id, JobCompletedResult())
 
@@ -151,7 +154,7 @@ def test_manager_job_result_blocked_ignores_completed_lazy_dependency() -> None:
     dependency.load_or_create()
     manager = Manager([parent])
 
-    parent_job = manager.lease_job()
+    parent_job = manager.lease_job(resources=ANY_RESOURCES)
     assert isinstance(parent_job, Job)
 
     manager.job_result(
@@ -171,7 +174,7 @@ def test_manager_job_result_blocked_discovers_multiple_lazy_dependencies_togethe
     dependencies = [ManagerLeaf(value=2), ManagerLeaf(value=3)]
     manager = Manager([parent])
 
-    parent_job = manager.lease_job()
+    parent_job = manager.lease_job(resources=ANY_RESOURCES)
     assert isinstance(parent_job, Job)
 
     manager.job_result(
@@ -200,7 +203,7 @@ def test_manager_uses_new_lease_when_blocked_job_is_released() -> None:
     dependency = ManagerLeaf(value=2)
     manager = Manager([parent])
 
-    first_parent_job = manager.lease_job()
+    first_parent_job = manager.lease_job(resources=ANY_RESOURCES)
     assert isinstance(first_parent_job, Job)
 
     manager.job_result(
@@ -208,11 +211,11 @@ def test_manager_uses_new_lease_when_blocked_job_is_released() -> None:
         JobBlockedResult(dependencies=[ArtifactSpec.from_furu(dependency)]),
     )
 
-    dependency_job = manager.lease_job()
+    dependency_job = manager.lease_job(resources=ANY_RESOURCES)
     assert isinstance(dependency_job, Job)
     manager.job_result(dependency_job.lease_id, JobCompletedResult())
 
-    second_parent_job = manager.lease_job()
+    second_parent_job = manager.lease_job(resources=ANY_RESOURCES)
     assert isinstance(second_parent_job, Job)
     assert second_parent_job.lease_id != first_parent_job.lease_id
     assert second_parent_job.artifact.object_id == parent.object_id
@@ -224,7 +227,7 @@ def test_manager_uses_new_lease_when_blocked_job_is_released() -> None:
 def test_manager_job_result_failed_finishes_with_error() -> None:
     leaf = ManagerLeaf(value=1)
     manager = Manager([leaf])
-    job = manager.lease_job()
+    job = manager.lease_job(resources=ANY_RESOURCES)
     assert isinstance(job, Job)
 
     manager.job_result(job.lease_id, JobFailedResult(error="boom"))
@@ -659,6 +662,7 @@ def test_manager_server_rejects_requests_without_auth_token() -> None:
         response = httpx.post(
             f"{server.server_url}/lease_job",
             headers={"Authorization": f"Bearer {server.auth_token}"},
+            json={"resources": {"memory": 0, "cpus": 1, "gpus": 0}},
         )
         assert response.status_code == 200
 
@@ -725,15 +729,13 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
 
     class TestClient:
         calls: list[str]
-        lease_resources: list[ResourceRequest | None]
+        lease_resources: list[ResourceRequest]
 
         def __init__(self, server_url: str, *, auth_token: str) -> None:
             self.calls = []
             self.lease_resources = []
 
-        def lease_job(
-            self, *, resources: ResourceRequest | None = None
-        ) -> LeaseJobResponse:
+        def lease_job(self, *, resources: ResourceRequest) -> LeaseJobResponse:
             self.calls.append("lease_job")
             self.lease_resources.append(resources)
             return job
@@ -841,12 +843,12 @@ def test_client_lease_job_rejects_empty_response(
     monkeypatch.setattr(httpx, "request", request)
 
     with pytest.raises(RuntimeError, match="returned an empty response"):
-        api.ManagerApiClient(
-            "http://worker.test", auth_token="secret-token"
-        ).lease_job()
+        api.ManagerApiClient("http://worker.test", auth_token="secret-token").lease_job(
+            resources=ANY_RESOURCES
+        )
 
 
-def test_client_lease_job_posts_to_lease_job_endpoint(
+def test_client_lease_job_posts_resource_request_to_lease_job_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     leaf = ManagerLeaf(value=1)
@@ -875,43 +877,9 @@ def test_client_lease_job_posts_to_lease_job_endpoint(
     job = api.ManagerApiClient(
         "http://worker.test/",
         auth_token="secret-token",
-    ).lease_job()
-
-    assert isinstance(job, Job)
-    assert requests == [
-        (
-            "POST",
-            "http://worker.test/lease_job",
-            {"Authorization": "Bearer secret-token"},
-            None,
-        )
-    ]
-
-
-def test_client_lease_job_posts_resource_request(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    requests: list[tuple[str, str, dict[str, str], object | None]] = []
-
-    def request(
-        method: str,
-        url: str,
-        *,
-        headers: dict[str, str],
-        json: object | None,
-        timeout: float,
-    ) -> httpx.Response:
-        requests.append((method, url, headers, json))
-        return httpx.Response(200, json="wait", request=httpx.Request(method, url))
-
-    monkeypatch.setattr(httpx, "request", request)
-
-    response = api.ManagerApiClient(
-        "http://worker.test/",
-        auth_token="secret-token",
     ).lease_job(resources=ResourceRequest(memory=10, cpus=2, gpus=1))
 
-    assert response == "wait"
+    assert isinstance(job, Job)
     assert requests == [
         (
             "POST",
@@ -952,6 +920,7 @@ def test_manager_api_accepts_matching_auth_token() -> None:
     response = client.post(
         "/lease_job",
         headers={"Authorization": "Bearer secret"},
+        json={"resources": {"memory": 0, "cpus": 1, "gpus": 0}},
     )
 
     assert response.status_code == 200
