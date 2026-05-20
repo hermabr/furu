@@ -14,7 +14,7 @@ from furu.core import Furu
 from furu.dag import DagNode, _add_to_dag, _update_dag_blocking_dependencies
 from furu.logging import _scoped_log_files, get_logger
 from furu.metadata import ArtifactSpec
-from furu.resources import ResourceConstraint, ResourceRequest
+from furu.resources import ResourceRequest, resource_request_satisfies
 from furu._storage_layout import manager_log_path_in
 from furu.worker.protocol import (
     Job,
@@ -88,7 +88,9 @@ class Manager:
         with _scoped_log_files((manager_log_path_in(self.executor_dir),)):
             yield
 
-    def lease_job(self) -> LeaseJobResponse:
+    def lease_job(
+        self, *, resources: ResourceRequest | None = None
+    ) -> LeaseJobResponse:
         with self.log_context(), self.lock:
             self._maybe_finish_locked()
             if self.done.is_set():
@@ -96,7 +98,11 @@ class Manager:
             if not self.ready:
                 return "wait"
 
-            object_id = next(iter(self.ready))
+            object_id = self._next_satisfiable_ready_object_id_locked(
+                resources=resources
+            )
+            if object_id is None:
+                return "wait"
             node = self.ready.pop(object_id)
             lease_id = str(uuid4())
             if lease_id in self.running:
@@ -120,25 +126,26 @@ class Manager:
     def count_satisfiable_jobs(
         self, *, resources: ResourceRequest, max_workers: int
     ) -> int:
-        def matches(value: int, constraint: ResourceConstraint) -> bool:
-            if constraint is None:
-                return True
-            lo, hi = constraint
-            return (lo is None or value >= lo) and (hi is None or value <= hi)
-
         with self.lock:
             count = 0
             for node in self.ready.values():
-                reqs = node.obj.resource_requirements
-                if reqs is None or (
-                    matches(resources.cpus, reqs.cpus)
-                    and matches(resources.gpus, reqs.gpus)
-                    and matches(resources.memory, reqs.memory)
+                if resource_request_satisfies(
+                    resources, node.obj.resource_requirements
                 ):
                     count += 1
                     if count >= max_workers:
                         return max_workers
             return count
+
+    def _next_satisfiable_ready_object_id_locked(
+        self, *, resources: ResourceRequest | None
+    ) -> str | None:
+        for object_id, node in self.ready.items():
+            if resources is None or resource_request_satisfies(
+                resources, node.obj.resource_requirements
+            ):
+                return object_id
+        return None
 
     def job_result(self, lease_id: str, request: JobResultRequest) -> None:
         with self.log_context(), self.lock:

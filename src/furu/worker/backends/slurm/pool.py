@@ -65,8 +65,9 @@ class SlurmWorkerPool:
         self._array_jobs.append((array_job_id, to_spawn))
 
     def is_healthy(self) -> bool:
+        unfinished_task_ids = self._unfinished_task_ids()
         return all(
-            self._unfinished_task_ids(array_job_id) == set(range(n_tasks))
+            unfinished_task_ids[array_job_id] == set(range(n_tasks))
             for array_job_id, n_tasks in self._array_jobs
         )
 
@@ -75,21 +76,23 @@ class SlurmWorkerPool:
         while self._has_unfinished() and time.monotonic() < deadline:
             time.sleep(min(self._poll_interval, deadline - time.monotonic()))
         if self._has_unfinished():
-            for array_job_id, _ in self._array_jobs:
-                subprocess.run(
-                    ["scancel", array_job_id],
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                )
+            subprocess.run(
+                ["scancel", *self.array_job_ids],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
 
     def _has_unfinished(self) -> bool:
-        return any(
-            self._unfinished_task_ids(array_job_id)
-            for array_job_id, _ in self._array_jobs
-        )
+        return any(self._unfinished_task_ids().values())
 
-    def _unfinished_task_ids(self, array_job_id: str) -> set[int]:
+    def _unfinished_task_ids(self) -> dict[str, set[int]]:
+        unfinished_task_ids: dict[str, set[int]] = {
+            array_job_id: set() for array_job_id, _ in self._array_jobs
+        }
+        if not self._array_jobs:
+            return unfinished_task_ids
+
         result = subprocess.run(
             [
                 "sacct",
@@ -97,21 +100,20 @@ class SlurmWorkerPool:
                 "JobID,State,NodeList",
                 "--parsable2",
                 "-j",
-                array_job_id,
+                ",".join(self.array_job_ids),
             ],
             check=True,
             capture_output=True,
             text=True,
         )
-        unfinished_task_ids: set[int] = set()
         for line in result.stdout.splitlines()[1:]:
             job_id, state, _node_list = line.split("|")
             if "." in job_id:
                 raise RuntimeError(
                     f"Unexpected Slurm job step in sacct output: {job_id}"
                 )
-            line_array_job_id, separator, task_id = job_id.partition("_")
-            if line_array_job_id != array_job_id or not separator:
+            array_job_id, separator, task_id = job_id.partition("_")
+            if array_job_id not in unfinished_task_ids or not separator:
                 raise ValueError(f"unexpected Slurm job id: {job_id!r}")
             if not task_id.isdecimal():
                 raise RuntimeError(
@@ -126,5 +128,5 @@ class SlurmWorkerPool:
                 "RUNNING",
                 "UNKNOWN",
             }:
-                unfinished_task_ids.add(int(task_id))
+                unfinished_task_ids[array_job_id].add(int(task_id))
         return unfinished_task_ids

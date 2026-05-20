@@ -72,6 +72,7 @@ class LocalThreadWorkerPool:
                 kwargs={
                     "server_url": self._server_url,
                     "auth_token": self._auth_token,
+                    "resource_request": self._resource_request,
                 },
                 name=f"furu-worker-{len(self._threads)}",
             )

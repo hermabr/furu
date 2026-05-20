@@ -41,8 +41,19 @@ class SlurmWorkerBackend:
         token_file = worker_dir / f"worker-{secrets.token_hex(16)}.token"
         write_private_file(token_file, auth_token, mode=0o600)
 
+        resource_request = ResourceRequest(
+            cpus=self.resources.cpus_per_worker,
+            gpus=self.resources.gpus.count
+            if isinstance(self.resources.gpus, Gpus)
+            else self.resources.gpus,
+            memory=sys.maxsize,
+        )
+
         script_path = self._write_sbatch_script(
-            worker_dir=worker_dir, token_file=token_file, server_url=server_url
+            worker_dir=worker_dir,
+            token_file=token_file,
+            server_url=server_url,
+            resource_request=resource_request,
         )
 
         log_dir = worker_dir / "logs"
@@ -61,13 +72,7 @@ class SlurmWorkerBackend:
             sbatch_base_args=sbatch_base_args,
             script_path=script_path,
             max_workers=self.max_workers,
-            resource_request=ResourceRequest(
-                cpus=self.resources.cpus_per_worker,
-                gpus=self.resources.gpus.count
-                if isinstance(self.resources.gpus, Gpus)
-                else self.resources.gpus,
-                memory=sys.maxsize,
-            ),
+            resource_request=resource_request,
             client=ManagerApiClient(server_url, auth_token=auth_token),
             poll_interval=self.poll_interval,
         )
@@ -75,7 +80,12 @@ class SlurmWorkerBackend:
         return pool
 
     def _write_sbatch_script(
-        self, *, worker_dir: Path, token_file: Path, server_url: str
+        self,
+        *,
+        worker_dir: Path,
+        token_file: Path,
+        server_url: str,
+        resource_request: ResourceRequest,
     ) -> Path:
         scripts_dir = worker_dir / "scripts"
         scripts_dir.mkdir(parents=True, exist_ok=True)
@@ -88,7 +98,10 @@ class SlurmWorkerBackend:
                 "\n"
                 f"exec {shlex.quote(sys.executable)} -m furu.worker.cli \\\n"
                 f"    --server-url {shlex.quote(server_url)} \\\n"
-                f"    --auth-token-file {shlex.quote(str(token_file))}\n"
+                f"    --auth-token-file {shlex.quote(str(token_file))} \\\n"
+                f"    --resource-cpus {resource_request.cpus} \\\n"
+                f"    --resource-gpus {resource_request.gpus} \\\n"
+                f"    --resource-memory {resource_request.memory}\n"
             ),
             mode=0o700,
         )
