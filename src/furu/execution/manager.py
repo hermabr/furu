@@ -9,13 +9,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, assert_never
 from uuid import uuid4
 
+from furu._storage_layout import manager_log_path_in
 from furu.config import get_config
 from furu.core import Furu
 from furu.dag import DagNode, _add_to_dag, _update_dag_blocking_dependencies
 from furu.logging import _scoped_log_files, get_logger
 from furu.metadata import ArtifactSpec
 from furu.resources import ResourceRequest, resource_request_satisfies
-from furu._storage_layout import manager_log_path_in
 from furu.worker.protocol import (
     Job,
     JobBlockedResult,
@@ -96,11 +96,19 @@ class Manager:
             if not self.ready:
                 return "wait"
 
-            object_id = self._next_satisfiable_ready_object_id_locked(
-                resources=resources
+            object_id = next(
+                (
+                    object_id
+                    for object_id, node in self.ready.items()
+                    if resource_request_satisfies(
+                        resources, node.obj.resource_requirements
+                    )
+                ),
+                None,
             )
             if object_id is None:
                 return "wait"
+
             node = self.ready.pop(object_id)
             lease_id = str(uuid4())
             if lease_id in self.running:
@@ -134,14 +142,6 @@ class Manager:
                     if count >= max_workers:
                         return max_workers
             return count
-
-    def _next_satisfiable_ready_object_id_locked(
-        self, *, resources: ResourceRequest
-    ) -> str | None:
-        for object_id, node in self.ready.items():
-            if resource_request_satisfies(resources, node.obj.resource_requirements):
-                return object_id
-        return None
 
     def job_result(self, lease_id: str, request: JobResultRequest) -> None:
         with self.log_context(), self.lock:
