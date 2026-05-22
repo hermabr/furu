@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from furu.execution.api import ManagerApiClient
+from furu.execution.api import PoolApiClient
 from furu.resources import ResourceRequest
 from furu.worker import cli
 from furu.worker.backends.slurm.backend import SlurmWorkerBackend
@@ -25,7 +25,7 @@ from furu.worker.backends.slurm.resources import (
 
 def _stub_count_satisfiable_jobs(monkeypatch: pytest.MonkeyPatch, count: int) -> None:
     monkeypatch.setattr(
-        ManagerApiClient,
+        PoolApiClient,
         "count_satisfiable_jobs",
         lambda self, *, resources, max_workers: count,
     )
@@ -343,7 +343,7 @@ def test_slurm_pool_scale_submits_additional_arrays_as_satisfiable_count_grows(
     record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
     counts = iter([0, 2, 10, 10])
     monkeypatch.setattr(
-        ManagerApiClient,
+        PoolApiClient,
         "count_satisfiable_jobs",
         lambda self, *, resources, max_workers: min(next(counts), max_workers),
     )

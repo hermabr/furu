@@ -412,11 +412,11 @@ def test_local_pool_scale_spawns_workers_up_to_max_as_satisfiable_count_grows(
     counts = iter([0, 2, 10, 10])
 
     def fake_count(
-        self: api.ManagerApiClient, *, resources: object, max_workers: int
+        self: api.PoolApiClient, *, resources: object, max_workers: int
     ) -> int:
         return min(next(counts), max_workers)
 
-    monkeypatch.setattr(api.ManagerApiClient, "count_satisfiable_jobs", fake_count)
+    monkeypatch.setattr(api.PoolApiClient, "count_satisfiable_jobs", fake_count)
     monkeypatch.setattr(
         worker_loop_module,
         "worker_loop",
@@ -664,19 +664,19 @@ def test_manager_server_rejects_requests_without_auth_token() -> None:
     manager = Manager([ManagerLeaf(value=12)])
 
     with manager_server(manager, bind_host="127.0.0.1", port=0) as server:
-        response = httpx.post(f"{server.server_url}/lease_job")
+        response = httpx.post(f"{server.server_url}/worker/lease_job")
         assert response.status_code == 401
         assert response.json() == {"detail": "invalid furu manager auth token"}
 
         response = httpx.post(
-            f"{server.server_url}/lease_job",
+            f"{server.server_url}/worker/lease_job",
             headers={"Authorization": "Bearer wrong"},
         )
         assert response.status_code == 401
         assert response.json() == {"detail": "invalid furu manager auth token"}
 
         response = httpx.post(
-            f"{server.server_url}/lease_job",
+            f"{server.server_url}/worker/lease_job",
             headers={"Authorization": f"Bearer {server.auth_token}"},
             json={"resources": {"memory": 0, "cpus": 1, "gpus": 0}},
         )
@@ -765,7 +765,7 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
     test_client = TestClient("http://worker.test", auth_token="test-token")
     monkeypatch.setattr(
         api,
-        "ManagerApiClient",
+        "WorkerApiClient",
         lambda server_url, *, auth_token: test_client,
     )
     monkeypatch.setattr(
@@ -803,14 +803,14 @@ def test_client_job_result_uses_job_result_endpoint(
 
     monkeypatch.setattr(httpx, "request", request)
 
-    api.ManagerApiClient("http://worker.test/", auth_token="secret-token").job_result(
+    api.WorkerApiClient("http://worker.test/", auth_token="secret-token").job_result(
         "lease-1", JobBlockedResult(dependencies=[])
     )
 
     assert requests == [
         (
             "POST",
-            "http://worker.test/job_result/lease-1",
+            "http://worker.test/worker/job_result/lease-1",
             {"Authorization": "Bearer secret-token"},
             {"status": "blocked", "dependencies": []},
         )
@@ -835,9 +835,7 @@ def test_client_job_result_rejects_non_ok_response(
     monkeypatch.setattr(httpx, "request", request)
 
     with pytest.raises(ValidationError, match="Input should be True"):
-        api.ManagerApiClient(
-            "http://worker.test", auth_token="secret-token"
-        ).job_result(
+        api.WorkerApiClient("http://worker.test", auth_token="secret-token").job_result(
             "lease-1",
             JobCompletedResult(),
         )
@@ -859,7 +857,7 @@ def test_client_lease_job_rejects_empty_response(
     monkeypatch.setattr(httpx, "request", request)
 
     with pytest.raises(RuntimeError, match="returned an empty response"):
-        api.ManagerApiClient("http://worker.test", auth_token="secret-token").lease_job(
+        api.WorkerApiClient("http://worker.test", auth_token="secret-token").lease_job(
             resources=ANY_RESOURCES
         )
 
@@ -890,7 +888,7 @@ def test_client_lease_job_posts_resource_request_to_lease_job_endpoint(
 
     monkeypatch.setattr(httpx, "request", request)
 
-    job = api.ManagerApiClient(
+    job = api.WorkerApiClient(
         "http://worker.test/",
         auth_token="secret-token",
     ).lease_job(resources=ResourceRequest(memory=10, cpus=2, gpus=1))
@@ -899,7 +897,7 @@ def test_client_lease_job_posts_resource_request_to_lease_job_endpoint(
     assert requests == [
         (
             "POST",
-            "http://worker.test/lease_job",
+            "http://worker.test/worker/lease_job",
             {"Authorization": "Bearer secret-token"},
             {"resources": {"memory": 10, "cpus": 2, "gpus": 1}},
         )
@@ -910,7 +908,7 @@ def test_manager_api_rejects_missing_auth_token() -> None:
     app = create_manager_api_app(Manager([ManagerLeaf(value=1)]), auth_token="secret")
     client = TestClient(app)
 
-    response = client.post("/lease_job")
+    response = client.post("/worker/lease_job")
 
     assert response.status_code == 401
     assert response.json() == {"detail": "invalid furu manager auth token"}
@@ -921,7 +919,7 @@ def test_manager_api_rejects_wrong_auth_token() -> None:
     client = TestClient(app)
 
     response = client.post(
-        "/lease_job",
+        "/worker/lease_job",
         headers={"Authorization": "Bearer wrong"},
     )
 
@@ -935,7 +933,7 @@ def test_manager_api_fail_endpoint_sets_finish_error_and_done() -> None:
     client = TestClient(app)
 
     response = client.post(
-        "/fail",
+        "/pool/fail",
         headers={"Authorization": "Bearer secret"},
         json={"message": "pool broke"},
     )
@@ -952,7 +950,7 @@ def test_manager_api_accepts_matching_auth_token() -> None:
     client = TestClient(app)
 
     response = client.post(
-        "/lease_job",
+        "/worker/lease_job",
         headers={"Authorization": "Bearer secret"},
         json={"resources": {"memory": 0, "cpus": 1, "gpus": 0}},
     )

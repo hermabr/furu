@@ -4,7 +4,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from furu.execution.api import ManagerApiClient
+from furu.execution.api import PoolApiClient
 from furu.resources import ResourceRequest
 from furu.worker.backends import _SelfScalingWorkerPool, count_workers_to_launch
 
@@ -30,7 +30,7 @@ class SlurmWorkerPool(_SelfScalingWorkerPool):
         script_path: Path,
         max_workers: int,
         resource_request: ResourceRequest,
-        client: ManagerApiClient,
+        client: PoolApiClient,
         poll_interval: float,
     ) -> None:
         super().__init__(

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Protocol
 from furu.logging import get_logger
 
 if TYPE_CHECKING:
-    from furu.execution.api import ManagerApiClient
+    from furu.execution.api import PoolApiClient
     from furu.resources import ResourceRequest
 
 
@@ -47,7 +47,7 @@ class _SelfScalingWorkerPool:
     def __init__(
         self,
         *,
-        client: ManagerApiClient,
+        client: PoolApiClient,
         scale_interval: float,
         description: str,
     ) -> None:
@@ -104,7 +104,7 @@ class _SelfScalingWorkerPool:
 
 
 def count_workers_to_launch(
-    client: ManagerApiClient,
+    client: PoolApiClient,
     *,
     current_workers: int,
     max_workers: int,

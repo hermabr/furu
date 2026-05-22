@@ -5,7 +5,7 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from furu.execution.api import ManagerApiClient
+from furu.execution.api import PoolApiClient
 from furu.logging import get_logger
 from furu.resources import ResourceRequest
 from furu.worker.backends import _SelfScalingWorkerPool, count_workers_to_launch
@@ -49,7 +49,7 @@ class LocalThreadWorkerPool(_SelfScalingWorkerPool):
         scale_interval: float = 0.1,
     ) -> None:
         super().__init__(
-            client=ManagerApiClient(server_url, auth_token=auth_token),
+            client=PoolApiClient(server_url, auth_token=auth_token),
             scale_interval=scale_interval,
             description="local worker pool",
         )
