@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import subprocess
+import threading
 import time
 from pathlib import Path
 
-from furu.execution.api import ManagerApiClient
+from furu.execution.api import PoolApiClient
 from furu.resources import ResourceRequest
-from furu.worker.backends import count_workers_to_launch
+from furu.worker.backends import count_workers_to_launch, run_pool_management_loop
 
 
 class SlurmWorkerPool:
@@ -17,7 +18,7 @@ class SlurmWorkerPool:
         script_path: Path,
         max_workers: int,
         resource_request: ResourceRequest,
-        client: ManagerApiClient,
+        client: PoolApiClient,
         poll_interval: float,
     ) -> None:
         self._sbatch_base_args = sbatch_base_args
@@ -27,10 +28,8 @@ class SlurmWorkerPool:
         self._client = client
         self._poll_interval = poll_interval
         self._array_jobs: list[tuple[str, int]] = []
-
-    @property
-    def health_check_interval(self) -> float:
-        return self._poll_interval
+        self._stop_event = threading.Event()
+        self._management_thread: threading.Thread | None = None
 
     @property
     def n_workers(self) -> int:
@@ -71,8 +70,28 @@ class SlurmWorkerPool:
             for array_job_id, n_tasks in self._array_jobs
         )
 
+    def start(self) -> None:
+        if self._management_thread is not None:
+            raise RuntimeError("SlurmWorkerPool already started")
+        self._management_thread = threading.Thread(
+            target=run_pool_management_loop,
+            kwargs={
+                "scale": self.scale,
+                "is_healthy": self.is_healthy,
+                "interval": self._poll_interval,
+                "stop_event": self._stop_event,
+                "client": self._client,
+                "pool_name": type(self).__name__,
+            },
+            name="furu-slurm-pool-manager",
+        )
+        self._management_thread.start()
+
     def join(self, *, timeout: float) -> None:
+        self._stop_event.set()
         deadline = time.monotonic() + timeout
+        if self._management_thread is not None:
+            self._management_thread.join(timeout=max(0.0, deadline - time.monotonic()))
         while self._has_unfinished() and time.monotonic() < deadline:
             time.sleep(min(self._poll_interval, deadline - time.monotonic()))
         if self._has_unfinished():

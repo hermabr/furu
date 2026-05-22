@@ -1,4 +1,5 @@
 import sys
+import threading
 from pathlib import Path
 from typing import Any, ClassVar, cast
 from uuid import UUID, uuid4
@@ -412,11 +413,11 @@ def test_local_pool_scale_spawns_workers_up_to_max_as_satisfiable_count_grows(
     counts = iter([0, 2, 10, 10])
 
     def fake_count(
-        self: api.ManagerApiClient, *, resources: object, max_workers: int
+        self: api.PoolApiClient, *, resources: object, max_workers: int
     ) -> int:
         return min(next(counts), max_workers)
 
-    monkeypatch.setattr(api.ManagerApiClient, "count_satisfiable_jobs", fake_count)
+    monkeypatch.setattr(api.PoolApiClient, "count_satisfiable_jobs", fake_count)
     monkeypatch.setattr(
         worker_loop_module,
         "worker_loop",
@@ -534,29 +535,14 @@ def test_manager_run_writes_log_to_executor_dir() -> None:
     assert "furu manager finished successfully" in log_text
 
 
-def test_manager_run_waits_using_worker_pool_health_check_interval() -> None:
-    class RecordingDone:
-        def __init__(self) -> None:
-            self.timeouts: list[float | None] = []
-
-        def wait(self, timeout: float | None = None) -> bool:
-            self.timeouts.append(timeout)
-            return True
-
+def test_run_until_done_starts_and_joins_pool() -> None:
     class RecordingPool:
-        health_check_interval = 2.5
-
         def __init__(self) -> None:
-            self.health_checks = 0
-            self.scale_calls = 0
+            self.start_calls = 0
             self.join_timeouts: list[float] = []
 
-        def scale(self) -> None:
-            self.scale_calls += 1
-
-        def is_healthy(self) -> bool:
-            self.health_checks += 1
-            return True
+        def start(self) -> None:
+            self.start_calls += 1
 
         def join(self, *, timeout: float) -> None:
             self.join_timeouts.append(timeout)
@@ -577,9 +563,10 @@ def test_manager_run_waits_using_worker_pool_health_check_interval() -> None:
             return self.pool
 
     manager = Manager([ManagerLeaf(value=13)])
-    done = RecordingDone()
     pool = RecordingPool()
-    cast(Any, manager).done = done
+    done_event = threading.Event()
+    done_event.set()
+    cast(Any, manager).done = done_event
 
     _run_until_done(
         manager,
@@ -587,24 +574,23 @@ def test_manager_run_waits_using_worker_pool_health_check_interval() -> None:
         port=0,
     )
 
-    assert done.timeouts == [pytest.approx(2.5, abs=0.5)]
-    assert pool.health_checks == 0
+    assert pool.start_calls == 1
     assert pool.join_timeouts == [5]
 
 
+def test_report_pool_unhealthy_endpoint_fails_manager() -> None:
+    manager = Manager([ManagerLeaf(value=14)])
+    with manager_server(manager, bind_host="127.0.0.1", port=0) as server:
+        client = api.PoolApiClient(server.server_url, auth_token=server.auth_token)
+        client.report_unhealthy(reason="worker died")
+    with pytest.raises(RuntimeError, match="worker died"):
+        manager.raise_for_failure()
+
+
 def test_run_until_done_uses_worker_backend_manager_listen_host() -> None:
-    class RecordingDone:
-        def wait(self, timeout: float | None = None) -> bool:
-            return True
-
     class RecordingPool:
-        health_check_interval = 1.0
-
-        def scale(self) -> None:
+        def start(self) -> None:
             pass
-
-        def is_healthy(self) -> bool:
-            return True
 
         def join(self, *, timeout: float) -> None:
             pass
@@ -627,7 +613,9 @@ def test_run_until_done_uses_worker_backend_manager_listen_host() -> None:
 
     manager = Manager([ManagerLeaf(value=15)])
     backend = RecordingBackend()
-    cast(Any, manager).done = RecordingDone()
+    done_event = threading.Event()
+    done_event.set()
+    cast(Any, manager).done = done_event
 
     _run_until_done(manager, worker_backends=(backend,), port=0)
 
@@ -648,19 +636,19 @@ def test_manager_server_rejects_requests_without_auth_token() -> None:
     manager = Manager([ManagerLeaf(value=12)])
 
     with manager_server(manager, bind_host="127.0.0.1", port=0) as server:
-        response = httpx.post(f"{server.server_url}/lease_job")
+        response = httpx.post(f"{server.server_url}/worker/lease_job")
         assert response.status_code == 401
         assert response.json() == {"detail": "invalid furu manager auth token"}
 
         response = httpx.post(
-            f"{server.server_url}/lease_job",
+            f"{server.server_url}/worker/lease_job",
             headers={"Authorization": "Bearer wrong"},
         )
         assert response.status_code == 401
         assert response.json() == {"detail": "invalid furu manager auth token"}
 
         response = httpx.post(
-            f"{server.server_url}/lease_job",
+            f"{server.server_url}/worker/lease_job",
             headers={"Authorization": f"Bearer {server.auth_token}"},
             json={"resources": {"memory": 0, "cpus": 1, "gpus": 0}},
         )
@@ -749,7 +737,7 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
     test_client = TestClient("http://worker.test", auth_token="test-token")
     monkeypatch.setattr(
         api,
-        "ManagerApiClient",
+        "WorkerApiClient",
         lambda server_url, *, auth_token: test_client,
     )
     monkeypatch.setattr(
@@ -787,14 +775,14 @@ def test_client_job_result_uses_job_result_endpoint(
 
     monkeypatch.setattr(httpx, "request", request)
 
-    api.ManagerApiClient("http://worker.test/", auth_token="secret-token").job_result(
+    api.WorkerApiClient("http://worker.test/", auth_token="secret-token").job_result(
         "lease-1", JobBlockedResult(dependencies=[])
     )
 
     assert requests == [
         (
             "POST",
-            "http://worker.test/job_result/lease-1",
+            "http://worker.test/worker/job_result/lease-1",
             {"Authorization": "Bearer secret-token"},
             {"status": "blocked", "dependencies": []},
         )
@@ -819,9 +807,7 @@ def test_client_job_result_rejects_non_ok_response(
     monkeypatch.setattr(httpx, "request", request)
 
     with pytest.raises(ValidationError, match="Input should be True"):
-        api.ManagerApiClient(
-            "http://worker.test", auth_token="secret-token"
-        ).job_result(
+        api.WorkerApiClient("http://worker.test", auth_token="secret-token").job_result(
             "lease-1",
             JobCompletedResult(),
         )
@@ -843,7 +829,7 @@ def test_client_lease_job_rejects_empty_response(
     monkeypatch.setattr(httpx, "request", request)
 
     with pytest.raises(RuntimeError, match="returned an empty response"):
-        api.ManagerApiClient("http://worker.test", auth_token="secret-token").lease_job(
+        api.WorkerApiClient("http://worker.test", auth_token="secret-token").lease_job(
             resources=ANY_RESOURCES
         )
 
@@ -874,7 +860,7 @@ def test_client_lease_job_posts_resource_request_to_lease_job_endpoint(
 
     monkeypatch.setattr(httpx, "request", request)
 
-    job = api.ManagerApiClient(
+    job = api.WorkerApiClient(
         "http://worker.test/",
         auth_token="secret-token",
     ).lease_job(resources=ResourceRequest(memory=10, cpus=2, gpus=1))
@@ -883,7 +869,7 @@ def test_client_lease_job_posts_resource_request_to_lease_job_endpoint(
     assert requests == [
         (
             "POST",
-            "http://worker.test/lease_job",
+            "http://worker.test/worker/lease_job",
             {"Authorization": "Bearer secret-token"},
             {"resources": {"memory": 10, "cpus": 2, "gpus": 1}},
         )
@@ -894,7 +880,7 @@ def test_manager_api_rejects_missing_auth_token() -> None:
     app = create_manager_api_app(Manager([ManagerLeaf(value=1)]), auth_token="secret")
     client = TestClient(app)
 
-    response = client.post("/lease_job")
+    response = client.post("/worker/lease_job")
 
     assert response.status_code == 401
     assert response.json() == {"detail": "invalid furu manager auth token"}
@@ -905,7 +891,7 @@ def test_manager_api_rejects_wrong_auth_token() -> None:
     client = TestClient(app)
 
     response = client.post(
-        "/lease_job",
+        "/worker/lease_job",
         headers={"Authorization": "Bearer wrong"},
     )
 
@@ -918,7 +904,7 @@ def test_manager_api_accepts_matching_auth_token() -> None:
     client = TestClient(app)
 
     response = client.post(
-        "/lease_job",
+        "/worker/lease_job",
         headers={"Authorization": "Bearer secret"},
         json={"resources": {"memory": 0, "cpus": 1, "gpus": 0}},
     )

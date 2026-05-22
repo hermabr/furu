@@ -210,6 +210,9 @@ class Manager:
             logger.error("furu manager finished with error: %s", message)
             self.done.set()
 
+    def report_pool_unhealthy(self, reason: str) -> None:
+        self.fail(f"worker pool became unhealthy: {reason}")
+
     def _maybe_finish_locked(self) -> None:
         if self.done.is_set() or self.ready or self.running:
             return
