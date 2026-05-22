@@ -49,7 +49,7 @@ class LocalThreadWorkerPool(_SelfScalingWorkerPool):
         scale_interval: float = 0.1,
     ) -> None:
         super().__init__(
-            client=PoolApiClient(server_url, auth_token=auth_token),
+            client=PoolApiClient(server_url=server_url, auth_token=auth_token),
             scale_interval=scale_interval,
             description="local worker pool",
         )
@@ -65,8 +65,7 @@ class LocalThreadWorkerPool(_SelfScalingWorkerPool):
     def n_workers(self) -> int:
         return len(self._threads)
 
-    def join(self, *, timeout: float) -> None:
-        self._join_scale_loop(timeout=timeout)
+    def _stop_workers(self, *, timeout: float) -> None:
         for worker in self._threads:
             worker.join(timeout=timeout)
 

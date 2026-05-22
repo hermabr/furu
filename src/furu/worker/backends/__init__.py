@@ -30,9 +30,7 @@ class WorkerBackend(Protocol):
 class WorkerPool(Protocol):
     def start(self) -> None: ...
 
-    def stop(self) -> None: ...
-
-    def join(self, *, timeout: float) -> None: ...
+    def stop(self, *, timeout: float) -> None: ...
 
 
 class _SelfScalingWorkerPool:
@@ -73,12 +71,14 @@ class _SelfScalingWorkerPool:
         )
         self._scale_thread.start()
 
-    def stop(self) -> None:
+    def stop(self, *, timeout: float) -> None:
         self._stop_event.set()
-
-    def _join_scale_loop(self, *, timeout: float) -> None:
         if self._scale_thread is not None:
             self._scale_thread.join(timeout=timeout)
+        self._stop_workers(timeout=timeout)
+
+    def _stop_workers(self, *, timeout: float) -> None:
+        raise NotImplementedError
 
     def _scale_loop(self) -> None:
         try:

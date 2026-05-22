@@ -4,6 +4,7 @@ import socket
 import threading
 import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 from secrets import token_urlsafe
@@ -102,7 +103,7 @@ def _run_until_done(
                 "manager server listening: server_url=%s",
                 server.server_url,
             )
-            worker_pools: list[tuple[WorkerBackend, WorkerPool]] = []
+            pools: list[WorkerPool] = []
             for backend in worker_backends:
                 pool = backend.start_pool(
                     server_url=server.server_url,
@@ -110,15 +111,11 @@ def _run_until_done(
                     executor_dir=manager.executor_dir,
                 )
                 pool.start()
-                worker_pools.append((backend, pool))
-                logger.info(
-                    "worker pool started: backend=%s",
-                    type(backend).__name__,
-                )
+                pools.append(pool)
+                logger.info("worker pool started: backend=%s", type(backend).__name__)
             manager.done.wait()
-            for _, pool in worker_pools:
-                pool.stop()
-            for backend, pool in worker_pools:
-                pool.join(timeout=5)
-                logger.debug("worker pool joined: backend=%s", type(backend).__name__)
+
+            with ThreadPoolExecutor(max_workers=len(pools)) as executor:
+                for pool in pools:
+                    executor.submit(pool.stop, timeout=5)
     manager.raise_for_failure()

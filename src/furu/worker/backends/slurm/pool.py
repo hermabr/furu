@@ -53,9 +53,8 @@ class SlurmWorkerPool(_SelfScalingWorkerPool):
     def array_job_ids(self) -> tuple[str, ...]:
         return tuple(array_job_id for array_job_id, _ in self._array_jobs)
 
-    def join(self, *, timeout: float) -> None:
+    def _stop_workers(self, *, timeout: float) -> None:
         deadline = time.monotonic() + timeout
-        self._join_scale_loop(timeout=timeout)
         while self._has_unfinished() and time.monotonic() < deadline:
             time.sleep(min(self._poll_interval, max(0.0, deadline - time.monotonic())))
         if self._has_unfinished():

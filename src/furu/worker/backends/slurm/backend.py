@@ -73,7 +73,7 @@ class SlurmWorkerBackend:
             script_path=script_path,
             max_workers=self.max_workers,
             resource_request=resource_request,
-            client=PoolApiClient(server_url, auth_token=auth_token),
+            client=PoolApiClient(server_url=server_url, auth_token=auth_token),
             poll_interval=self.poll_interval,
         )
 

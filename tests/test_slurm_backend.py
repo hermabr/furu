@@ -422,7 +422,7 @@ def test_slurm_worker_pool_join_cancels_jobs_left_after_timeout(
     )
     pool._scale_once()
 
-    pool.join(timeout=0)
+    pool.stop(timeout=0)
 
     assert active_file.read_text() == ""
     records = _read_records(record_file)

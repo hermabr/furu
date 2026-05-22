@@ -567,17 +567,14 @@ def test_manager_run_starts_pool_and_stops_and_joins_when_done() -> None:
     class RecordingPool:
         def __init__(self) -> None:
             self.events: list[str] = []
-            self.join_timeouts: list[float] = []
+            self.stop_timeouts: list[float] = []
 
         def start(self) -> None:
             self.events.append("start")
 
-        def stop(self) -> None:
+        def stop(self, *, timeout: float) -> None:
             self.events.append("stop")
-
-        def join(self, *, timeout: float) -> None:
-            self.events.append("join")
-            self.join_timeouts.append(timeout)
+            self.stop_timeouts.append(timeout)
 
     class RecordingBackend:
         manager_listen_host = "127.0.0.1"
@@ -606,8 +603,8 @@ def test_manager_run_starts_pool_and_stops_and_joins_when_done() -> None:
     )
 
     assert done.wait_calls == 1
-    assert pool.events == ["start", "stop", "join"]
-    assert pool.join_timeouts == [5]
+    assert pool.events == ["start", "stop"]
+    assert pool.stop_timeouts == [5]
 
 
 def test_run_until_done_uses_worker_backend_manager_listen_host() -> None:
@@ -619,10 +616,7 @@ def test_run_until_done_uses_worker_backend_manager_listen_host() -> None:
         def start(self) -> None:
             pass
 
-        def stop(self) -> None:
-            pass
-
-        def join(self, *, timeout: float) -> None:
+        def stop(self, *, timeout: float) -> None:
             pass
 
     class RecordingBackend:
@@ -803,9 +797,9 @@ def test_client_job_result_uses_job_result_endpoint(
 
     monkeypatch.setattr(httpx, "request", request)
 
-    api.WorkerApiClient("http://worker.test/", auth_token="secret-token").job_result(
-        "lease-1", JobBlockedResult(dependencies=[])
-    )
+    api.WorkerApiClient(
+        server_url="http://worker.test/", auth_token="secret-token"
+    ).job_result("lease-1", JobBlockedResult(dependencies=[]))
 
     assert requests == [
         (
@@ -835,10 +829,9 @@ def test_client_job_result_rejects_non_ok_response(
     monkeypatch.setattr(httpx, "request", request)
 
     with pytest.raises(ValidationError, match="Input should be True"):
-        api.WorkerApiClient("http://worker.test", auth_token="secret-token").job_result(
-            "lease-1",
-            JobCompletedResult(),
-        )
+        api.WorkerApiClient(
+            server_url="http://worker.test", auth_token="secret-token"
+        ).job_result("lease-1", JobCompletedResult())
 
 
 def test_client_lease_job_rejects_empty_response(
@@ -857,9 +850,9 @@ def test_client_lease_job_rejects_empty_response(
     monkeypatch.setattr(httpx, "request", request)
 
     with pytest.raises(RuntimeError, match="returned an empty response"):
-        api.WorkerApiClient("http://worker.test", auth_token="secret-token").lease_job(
-            resources=ANY_RESOURCES
-        )
+        api.WorkerApiClient(
+            server_url="http://worker.test", auth_token="secret-token"
+        ).lease_job(resources=ANY_RESOURCES)
 
 
 def test_client_lease_job_posts_resource_request_to_lease_job_endpoint(
@@ -889,7 +882,7 @@ def test_client_lease_job_posts_resource_request_to_lease_job_endpoint(
     monkeypatch.setattr(httpx, "request", request)
 
     job = api.WorkerApiClient(
-        "http://worker.test/",
+        server_url="http://worker.test/",
         auth_token="secret-token",
     ).lease_job(resources=ResourceRequest(memory=10, cpus=2, gpus=1))
 

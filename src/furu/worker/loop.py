@@ -23,7 +23,7 @@ def worker_loop(
     auth_token: str,
     resource_request: ResourceRequest,
 ) -> None:
-    client = api.WorkerApiClient(server_url, auth_token=auth_token)
+    client = api.WorkerApiClient(server_url=server_url, auth_token=auth_token)
 
     while True:
         match client.lease_job(resources=resource_request):
