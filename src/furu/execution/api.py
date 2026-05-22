@@ -13,14 +13,14 @@ from furu.resources import ResourceRequest
 from furu.worker.protocol import (
     CountSatisfiableJobsRequest,
     FailRequest,
+    JobResultRequest,
     LeaseJobRequest,
     LeaseJobResponse,
-    JobResultRequest,
     OkResponse,
 )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class _ManagerApiClientBase:
     server_url: str
     auth_token: str
