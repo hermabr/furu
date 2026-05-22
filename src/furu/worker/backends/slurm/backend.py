@@ -68,7 +68,7 @@ class SlurmWorkerBackend:
             "--export=NIL",
         )
 
-        pool = SlurmWorkerPool(
+        return SlurmWorkerPool(
             sbatch_base_args=sbatch_base_args,
             script_path=script_path,
             max_workers=self.max_workers,
@@ -76,8 +76,6 @@ class SlurmWorkerBackend:
             client=ManagerApiClient(server_url, auth_token=auth_token),
             poll_interval=self.poll_interval,
         )
-        pool.scale()
-        return pool
 
     def _write_sbatch_script(
         self,

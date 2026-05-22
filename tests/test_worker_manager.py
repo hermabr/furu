@@ -430,17 +430,42 @@ def test_local_pool_scale_spawns_workers_up_to_max_as_satisfiable_count_grows(
         resource_request=ResourceRequest(memory=0),
     )
 
-    pool.scale()
+    pool._scale_once()
     assert pool.n_workers == 0
 
-    pool.scale()
+    pool._scale_once()
     assert pool.n_workers == 2
 
-    pool.scale()
+    pool._scale_once()
     assert pool.n_workers == 3
 
-    pool.scale()
+    pool._scale_once()
     assert pool.n_workers == 3
+
+
+def test_manager_run_fails_when_worker_pool_reports_unhealthy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def crashing_worker_loop(
+        *, server_url: str, auth_token: str, resource_request: ResourceRequest
+    ) -> None:
+        raise RuntimeError("worker boom")
+
+    monkeypatch.setattr(worker_loop_module, "worker_loop", crashing_worker_loop)
+
+    leaf = ManagerLeaf(value=42)
+    manager = Manager([leaf])
+
+    with pytest.raises(RuntimeError, match="local worker pool became unhealthy"):
+        manager.run(
+            worker_backends=(
+                LocalThreadWorkerBackend(
+                    max_workers=1,
+                    resource_request=ResourceRequest(memory=0),
+                    scale_interval=0.05,
+                ),
+            )
+        )
 
 
 def test_manager_run_uses_worker_backend() -> None:
@@ -460,14 +485,12 @@ def test_manager_run_uses_worker_backend() -> None:
         ) -> LocalThreadWorkerPool:
             self.server_urls.append(server_url)
             self.auth_tokens.append(auth_token)
-            pool = LocalThreadWorkerPool(
+            return LocalThreadWorkerPool(
                 server_url=server_url,
                 auth_token=auth_token,
                 max_workers=1,
                 resource_request=ResourceRequest(memory=0),
             )
-            pool.scale()
-            return pool
 
     leaf = ManagerLeaf(value=11)
     backend = RecordingBackend()
@@ -497,14 +520,12 @@ def test_manager_run_passes_executor_dir_to_worker_backend() -> None:
             executor_dir: Path,
         ) -> LocalThreadWorkerPool:
             self.executor_dirs.append(executor_dir)
-            pool = LocalThreadWorkerPool(
+            return LocalThreadWorkerPool(
                 server_url=server_url,
                 auth_token=auth_token,
                 max_workers=1,
                 resource_request=ResourceRequest(memory=0),
             )
-            pool.scale()
-            return pool
 
     leaf = ManagerLeaf(value=12)
     manager = Manager([leaf])
@@ -534,31 +555,28 @@ def test_manager_run_writes_log_to_executor_dir() -> None:
     assert "furu manager finished successfully" in log_text
 
 
-def test_manager_run_waits_using_worker_pool_health_check_interval() -> None:
+def test_manager_run_starts_pool_and_stops_and_joins_when_done() -> None:
     class RecordingDone:
         def __init__(self) -> None:
-            self.timeouts: list[float | None] = []
+            self.wait_calls = 0
 
         def wait(self, timeout: float | None = None) -> bool:
-            self.timeouts.append(timeout)
+            self.wait_calls += 1
             return True
 
     class RecordingPool:
-        health_check_interval = 2.5
-
         def __init__(self) -> None:
-            self.health_checks = 0
-            self.scale_calls = 0
+            self.events: list[str] = []
             self.join_timeouts: list[float] = []
 
-        def scale(self) -> None:
-            self.scale_calls += 1
+        def start(self) -> None:
+            self.events.append("start")
 
-        def is_healthy(self) -> bool:
-            self.health_checks += 1
-            return True
+        def stop(self) -> None:
+            self.events.append("stop")
 
         def join(self, *, timeout: float) -> None:
+            self.events.append("join")
             self.join_timeouts.append(timeout)
 
     class RecordingBackend:
@@ -587,8 +605,8 @@ def test_manager_run_waits_using_worker_pool_health_check_interval() -> None:
         port=0,
     )
 
-    assert done.timeouts == [pytest.approx(2.5, abs=0.5)]
-    assert pool.health_checks == 0
+    assert done.wait_calls == 1
+    assert pool.events == ["start", "stop", "join"]
     assert pool.join_timeouts == [5]
 
 
@@ -598,13 +616,11 @@ def test_run_until_done_uses_worker_backend_manager_listen_host() -> None:
             return True
 
     class RecordingPool:
-        health_check_interval = 1.0
-
-        def scale(self) -> None:
+        def start(self) -> None:
             pass
 
-        def is_healthy(self) -> bool:
-            return True
+        def stop(self) -> None:
+            pass
 
         def join(self, *, timeout: float) -> None:
             pass
@@ -911,6 +927,24 @@ def test_manager_api_rejects_wrong_auth_token() -> None:
 
     assert response.status_code == 401
     assert response.json() == {"detail": "invalid furu manager auth token"}
+
+
+def test_manager_api_fail_endpoint_sets_finish_error_and_done() -> None:
+    manager = Manager([ManagerLeaf(value=1)])
+    app = create_manager_api_app(manager, auth_token="secret")
+    client = TestClient(app)
+
+    response = client.post(
+        "/fail",
+        headers={"Authorization": "Bearer secret"},
+        json={"message": "pool broke"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    assert manager.done.is_set()
+    with pytest.raises(RuntimeError, match="pool broke"):
+        manager.raise_for_failure()
 
 
 def test_manager_api_accepts_matching_auth_token() -> None:

@@ -6,10 +6,23 @@ from pathlib import Path
 
 from furu.execution.api import ManagerApiClient
 from furu.resources import ResourceRequest
-from furu.worker.backends import count_workers_to_launch
+from furu.worker.backends import _SelfScalingWorkerPool, count_workers_to_launch
+
+_UNFINISHED_STATES = frozenset(
+    {
+        "COMPLETING",
+        "PENDING",
+        "PREEMPTED",
+        "READY",
+        "REQUEUED",
+        "RUNNING",
+        "UNKNOWN",
+    }
+)
+_HEALTHY_FINISHED_STATES = frozenset({"COMPLETED"})
 
 
-class SlurmWorkerPool:
+class SlurmWorkerPool(_SelfScalingWorkerPool):
     def __init__(
         self,
         *,
@@ -20,17 +33,17 @@ class SlurmWorkerPool:
         client: ManagerApiClient,
         poll_interval: float,
     ) -> None:
+        super().__init__(
+            client=client,
+            scale_interval=poll_interval,
+            description="slurm worker pool",
+        )
         self._sbatch_base_args = sbatch_base_args
         self._script_path = script_path
         self._max_workers = max_workers
         self._resource_request = resource_request
-        self._client = client
         self._poll_interval = poll_interval
         self._array_jobs: list[tuple[str, int]] = []
-
-    @property
-    def health_check_interval(self) -> float:
-        return self._poll_interval
 
     @property
     def n_workers(self) -> int:
@@ -40,7 +53,20 @@ class SlurmWorkerPool:
     def array_job_ids(self) -> tuple[str, ...]:
         return tuple(array_job_id for array_job_id, _ in self._array_jobs)
 
-    def scale(self) -> None:
+    def join(self, *, timeout: float) -> None:
+        deadline = time.monotonic() + timeout
+        self._join_scale_loop(timeout=timeout)
+        while self._has_unfinished() and time.monotonic() < deadline:
+            time.sleep(min(self._poll_interval, max(0.0, deadline - time.monotonic())))
+        if self._has_unfinished():
+            subprocess.run(
+                ["scancel", *self.array_job_ids],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+    def _scale_once(self) -> None:
         to_spawn = count_workers_to_launch(
             self._client,
             current_workers=self.n_workers,
@@ -64,35 +90,22 @@ class SlurmWorkerPool:
         array_job_id = result.stdout.strip().split(";", maxsplit=1)[0]
         self._array_jobs.append((array_job_id, to_spawn))
 
-    def is_healthy(self) -> bool:
-        unfinished_task_ids = self._unfinished_task_ids()
-        return all(
-            unfinished_task_ids[array_job_id] == set(range(n_tasks))
-            for array_job_id, n_tasks in self._array_jobs
+    def _workers_healthy(self) -> bool:
+        return not any(
+            state not in _UNFINISHED_STATES and state not in _HEALTHY_FINISHED_STATES
+            for state in self._task_states().values()
         )
 
-    def join(self, *, timeout: float) -> None:
-        deadline = time.monotonic() + timeout
-        while self._has_unfinished() and time.monotonic() < deadline:
-            time.sleep(min(self._poll_interval, deadline - time.monotonic()))
-        if self._has_unfinished():
-            subprocess.run(
-                ["scancel", *self.array_job_ids],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-
     def _has_unfinished(self) -> bool:
-        return any(self._unfinished_task_ids().values())
+        return any(
+            state in _UNFINISHED_STATES for state in self._task_states().values()
+        )
 
-    def _unfinished_task_ids(self) -> dict[str, set[int]]:
-        unfinished_task_ids: dict[str, set[int]] = {
-            array_job_id: set() for array_job_id, _ in self._array_jobs
-        }
+    def _task_states(self) -> dict[tuple[str, int], str]:
         if not self._array_jobs:
-            return unfinished_task_ids
+            return {}
 
+        known_array_job_ids = {array_job_id for array_job_id, _ in self._array_jobs}
         result = subprocess.run(
             [
                 "sacct",
@@ -106,6 +119,7 @@ class SlurmWorkerPool:
             capture_output=True,
             text=True,
         )
+        states: dict[tuple[str, int], str] = {}
         for line in result.stdout.splitlines()[1:]:
             job_id, state, _node_list = line.split("|")
             if "." in job_id:
@@ -113,20 +127,11 @@ class SlurmWorkerPool:
                     f"Unexpected Slurm job step in sacct output: {job_id}"
                 )
             array_job_id, separator, task_id = job_id.partition("_")
-            if array_job_id not in unfinished_task_ids or not separator:
+            if array_job_id not in known_array_job_ids or not separator:
                 raise ValueError(f"unexpected Slurm job id: {job_id!r}")
             if not task_id.isdecimal():
                 raise RuntimeError(
                     f"Unexpected Slurm job step in sacct output: {line!r}"
                 )
-            if state.upper() in {
-                "COMPLETING",
-                "PENDING",
-                "PREEMPTED",
-                "READY",
-                "REQUEUED",
-                "RUNNING",
-                "UNKNOWN",
-            }:
-                unfinished_task_ids[array_job_id].add(int(task_id))
-        return unfinished_task_ids
+            states[(array_job_id, int(task_id))] = state.upper()
+        return states

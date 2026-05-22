@@ -11,6 +11,7 @@ from furu.execution.manager import Manager
 from furu.resources import ResourceRequest
 from furu.worker.protocol import (
     CountSatisfiableJobsRequest,
+    FailRequest,
     LeaseJobRequest,
     LeaseJobResponse,
     JobResultRequest,
@@ -50,6 +51,14 @@ class ManagerApiClient:
             ).model_dump(mode="json"),
         )
         return int(response)
+
+    def fail(self, *, message: str) -> None:
+        response = self._request_json(
+            "/fail",
+            method="POST",
+            payload=FailRequest(message=message).model_dump(mode="json"),
+        )
+        OkResponse.model_validate(response)
 
     def _request_json(
         self,
@@ -115,5 +124,14 @@ def create_manager_api_app(manager: Manager, *, auth_token: str) -> FastAPI:
         return manager.count_satisfiable_jobs(
             resources=request.resources, max_workers=request.max_workers
         )
+
+    @app.post(
+        "/fail",
+        response_model=OkResponse,
+        dependencies=[auth_dependency],
+    )
+    def fail(request: FailRequest) -> OkResponse:
+        manager.fail(request.message)
+        return OkResponse()
 
     return app

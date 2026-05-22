@@ -179,10 +179,10 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
         auth_token="secret-token",
         executor_dir=executor_dir,
     )
+    pool._scale_once()
 
     assert pool.array_job_ids == ("100",)
     assert pool.n_workers == 2
-    assert pool.health_check_interval == 1.5
     assert log_dir.is_dir()
 
     records = _read_records(record_file)
@@ -284,6 +284,7 @@ def test_slurm_backend_rewrites_manager_url_to_worker_connect_host(
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
     )
+    pool._scale_once()
 
     assert pool.array_job_ids == ("100",)
 
@@ -314,12 +315,13 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
     )
+    pool._scale_once()
 
-    assert pool.is_healthy()
+    assert pool._workers_healthy()
 
     active_file.write_text("100_0\n100_1 FAILED\n")
 
-    assert not pool.is_healthy()
+    assert not pool._workers_healthy()
     sacct_records = [
         record
         for record in _read_records(record_file)
@@ -361,15 +363,19 @@ def test_slurm_pool_scale_submits_additional_arrays_as_satisfiable_count_grows(
     assert pool.array_job_ids == ()
     assert pool.n_workers == 0
 
-    pool.scale()
+    pool._scale_once()
+    assert pool.array_job_ids == ()
+    assert pool.n_workers == 0
+
+    pool._scale_once()
     assert pool.array_job_ids == ("100",)
     assert pool.n_workers == 2
 
-    pool.scale()
+    pool._scale_once()
     assert pool.array_job_ids == ("100", "101")
     assert pool.n_workers == 3
 
-    pool.scale()
+    pool._scale_once()
     assert pool.array_job_ids == ("100", "101")
     assert pool.n_workers == 3
 
@@ -414,6 +420,7 @@ def test_slurm_worker_pool_join_cancels_jobs_left_after_timeout(
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
     )
+    pool._scale_once()
 
     pool.join(timeout=0)
 
