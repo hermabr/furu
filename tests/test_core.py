@@ -1301,7 +1301,6 @@ def test_resource_requirements_can_be_overridden_with_property():
     rr = HeavyNode(name="x").resource_requirements
     assert rr == ResourceRequirements(cpus=(4, 8), gpus=(1, None))
     assert rr is not None
-    assert rr.memory is None
 
 
 def test_storage_root_can_be_overridden_with_cached_property():

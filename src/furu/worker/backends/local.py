@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,9 +15,7 @@ logger = get_logger()
 @dataclass(frozen=True, slots=True)
 class LocalThreadWorkerBackend:
     max_workers: int = 1
-    resource_request: ResourceRequest = field(
-        default_factory=lambda: ResourceRequest(memory=sys.maxsize)
-    )
+    resource_request: ResourceRequest = field(default_factory=ResourceRequest)
     manager_listen_host: str = "127.0.0.1"
     scale_interval: float = 0.1
 

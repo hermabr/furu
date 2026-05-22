@@ -1,4 +1,3 @@
-import sys
 from pathlib import Path
 from typing import Any, ClassVar, cast
 from uuid import UUID, uuid4
@@ -34,7 +33,7 @@ from furu.worker.protocol import (
 )
 
 
-ANY_RESOURCES = ResourceRequest(memory=0)
+ANY_RESOURCES = ResourceRequest()
 
 
 class ManagerLeaf(Furu[int]):
@@ -330,20 +329,14 @@ def test_count_satisfiable_jobs_caps_at_max_workers_and_filters_by_requirements(
     manager = Manager([ManagerLeaf(value=1), ManagerLeaf(value=2), GpuLeaf(value=3)])
 
     assert (
-        manager.count_satisfiable_jobs(
-            resources=ResourceRequest(memory=0), max_workers=10
-        )
-        == 2
+        manager.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=10) == 2
+    )
+    assert (
+        manager.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=1) == 1
     )
     assert (
         manager.count_satisfiable_jobs(
-            resources=ResourceRequest(memory=0), max_workers=1
-        )
-        == 1
-    )
-    assert (
-        manager.count_satisfiable_jobs(
-            resources=ResourceRequest(memory=0, gpus=1), max_workers=10
+            resources=ResourceRequest(gpus=1), max_workers=10
         )
         == 3
     )
@@ -354,13 +347,13 @@ def test_lease_job_filters_by_worker_resources() -> None:
     gpu_leaf = GpuLeaf(value=2)
     manager = Manager([cpu_leaf, gpu_leaf])
 
-    cpu_job = manager.lease_job(resources=ResourceRequest(memory=0, gpus=0))
+    cpu_job = manager.lease_job(resources=ResourceRequest(gpus=0))
     assert isinstance(cpu_job, Job)
     assert cpu_job.artifact.object_id == cpu_leaf.object_id
 
-    assert manager.lease_job(resources=ResourceRequest(memory=0, gpus=0)) == "wait"
+    assert manager.lease_job(resources=ResourceRequest(gpus=0)) == "wait"
 
-    gpu_job = manager.lease_job(resources=ResourceRequest(memory=0, gpus=1))
+    gpu_job = manager.lease_job(resources=ResourceRequest(gpus=1))
     assert isinstance(gpu_job, Job)
     assert gpu_job.artifact.object_id == gpu_leaf.object_id
 
@@ -388,11 +381,11 @@ def test_manager_run_dynamically_allocates_local_workers_for_later_resource_stag
         worker_backends=(
             LocalThreadWorkerBackend(
                 max_workers=1,
-                resource_request=ResourceRequest(memory=sys.maxsize, gpus=0),
+                resource_request=ResourceRequest(gpus=0),
             ),
             LocalThreadWorkerBackend(
                 max_workers=3,
-                resource_request=ResourceRequest(memory=sys.maxsize, gpus=1),
+                resource_request=ResourceRequest(gpus=1),
             ),
         )
     )
@@ -427,7 +420,7 @@ def test_local_pool_scale_spawns_workers_up_to_max_as_satisfiable_count_grows(
         server_url="http://manager.test",
         auth_token="secret",
         max_workers=3,
-        resource_request=ResourceRequest(memory=0),
+        resource_request=ResourceRequest(),
     )
 
     pool._scale_once()
@@ -461,7 +454,7 @@ def test_manager_run_fails_when_worker_pool_reports_unhealthy(
             worker_backends=(
                 LocalThreadWorkerBackend(
                     max_workers=1,
-                    resource_request=ResourceRequest(memory=0),
+                    resource_request=ResourceRequest(),
                     scale_interval=0.05,
                 ),
             )
@@ -489,7 +482,7 @@ def test_manager_run_uses_worker_backend() -> None:
                 server_url=server_url,
                 auth_token=auth_token,
                 max_workers=1,
-                resource_request=ResourceRequest(memory=0),
+                resource_request=ResourceRequest(),
             )
 
     leaf = ManagerLeaf(value=11)
@@ -524,7 +517,7 @@ def test_manager_run_passes_executor_dir_to_worker_backend() -> None:
                 server_url=server_url,
                 auth_token=auth_token,
                 max_workers=1,
-                resource_request=ResourceRequest(memory=0),
+                resource_request=ResourceRequest(),
             )
 
     leaf = ManagerLeaf(value=12)
@@ -672,7 +665,7 @@ def test_manager_server_rejects_requests_without_auth_token() -> None:
         response = httpx.post(
             f"{server.server_url}/worker/lease_job",
             headers={"Authorization": f"Bearer {server.auth_token}"},
-            json={"resources": {"memory": 0, "cpus": 1, "gpus": 0}},
+            json={"resources": {"cpus": 1, "gpus": 0}},
         )
         assert response.status_code == 200
 
@@ -727,7 +720,7 @@ def test_worker_loop_raises_when_server_is_unavailable() -> None:
         worker_loop(
             server_url="http://127.0.0.1:1",
             auth_token="test-token",
-            resource_request=ResourceRequest(memory=0),
+            resource_request=ResourceRequest(),
         )
 
 
@@ -770,11 +763,11 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
         worker_loop(
             server_url="http://worker.test",
             auth_token="test-token",
-            resource_request=ResourceRequest(memory=10, gpus=1),
+            resource_request=ResourceRequest(gpus=1),
         )
 
     assert test_client.calls == ["lease_job"]
-    assert test_client.lease_resources == [ResourceRequest(memory=10, gpus=1)]
+    assert test_client.lease_resources == [ResourceRequest(gpus=1)]
 
 
 def test_client_job_result_uses_job_result_endpoint(
@@ -884,7 +877,7 @@ def test_client_lease_job_posts_resource_request_to_lease_job_endpoint(
     job = api.WorkerApiClient(
         server_url="http://worker.test/",
         auth_token="secret-token",
-    ).lease_job(resources=ResourceRequest(memory=10, cpus=2, gpus=1))
+    ).lease_job(resources=ResourceRequest(cpus=2, gpus=1))
 
     assert isinstance(job, Job)
     assert requests == [
@@ -892,7 +885,7 @@ def test_client_lease_job_posts_resource_request_to_lease_job_endpoint(
             "POST",
             "http://worker.test/worker/lease_job",
             {"Authorization": "Bearer secret-token"},
-            {"resources": {"memory": 10, "cpus": 2, "gpus": 1}},
+            {"resources": {"cpus": 2, "gpus": 1}},
         )
     ]
 
@@ -945,7 +938,7 @@ def test_manager_api_accepts_matching_auth_token() -> None:
     response = client.post(
         "/worker/lease_job",
         headers={"Authorization": "Bearer secret"},
-        json={"resources": {"memory": 0, "cpus": 1, "gpus": 0}},
+        json={"resources": {"cpus": 1, "gpus": 0}},
     )
 
     assert response.status_code == 200

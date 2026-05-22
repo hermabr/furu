@@ -58,9 +58,7 @@ def test_worker_cli_reads_auth_token_file(
         == 0
     )
 
-    assert calls == [
-        ("http://manager.test", "secret", ResourceRequest(memory=sys.maxsize))
-    ]
+    assert calls == [("http://manager.test", "secret", ResourceRequest())]
     assert token_file.exists()
 
 
@@ -90,14 +88,12 @@ def test_worker_cli_reads_resource_request(
                 "4",
                 "--resource-gpus",
                 "1",
-                "--resource-memory",
-                "1024",
             ]
         )
         == 0
     )
 
-    assert calls == [ResourceRequest(memory=1024, cpus=4, gpus=1)]
+    assert calls == [ResourceRequest(cpus=4, gpus=1)]
 
 
 def test_worker_cli_requires_auth_token_file(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -214,7 +210,6 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert "--server-url http://manager.cluster:1234" in script
     assert "--resource-cpus 4" in script
     assert "--resource-gpus 1" in script
-    assert f"--resource-memory {sys.maxsize}" in script
 
     assert not (worker_dir / "secrets").exists()
     token_files = sorted(worker_dir.glob("worker-*.token"))

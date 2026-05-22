@@ -1,5 +1,4 @@
 import argparse
-import sys
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -32,12 +31,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=0,
         help="GPU count available to this worker",
     )
-    parser.add_argument(
-        "--resource-memory",
-        type=int,
-        default=sys.maxsize,
-        help="memory available to this worker",
-    )
     args = parser.parse_args(argv)
 
     worker_loop(
@@ -46,7 +39,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         resource_request=ResourceRequest(
             cpus=args.resource_cpus,
             gpus=args.resource_gpus,
-            memory=args.resource_memory,
         ),
     )
     return 0

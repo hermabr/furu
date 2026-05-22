@@ -46,7 +46,6 @@ class SlurmWorkerBackend:
             gpus=self.resources.gpus.count
             if isinstance(self.resources.gpus, Gpus)
             else self.resources.gpus,
-            memory=sys.maxsize,
         )
 
         script_path = self._write_sbatch_script(
@@ -98,8 +97,7 @@ class SlurmWorkerBackend:
                 f"    --server-url {shlex.quote(server_url)} \\\n"
                 f"    --auth-token-file {shlex.quote(str(token_file))} \\\n"
                 f"    --resource-cpus {resource_request.cpus} \\\n"
-                f"    --resource-gpus {resource_request.gpus} \\\n"
-                f"    --resource-memory {resource_request.memory}\n"
+                f"    --resource-gpus {resource_request.gpus}\n"
             ),
             mode=0o700,
         )
