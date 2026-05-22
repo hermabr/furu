@@ -93,7 +93,7 @@ class SlurmWorkerBackend:
                 "#!/bin/bash\n"
                 "set -euo pipefail\n"
                 "\n"
-                f"exec {shlex.quote(sys.executable)} -m furu.worker.cli \\\n"
+                f"exec {shlex.quote(sys.executable)} -m furu.worker._cli \\\n"
                 f"    --server-url {shlex.quote(server_url)} \\\n"
                 f"    --auth-token-file {shlex.quote(str(token_file))} \\\n"
                 f"    --resource-cpus {resource_request.cpus} \\\n"

@@ -12,7 +12,7 @@ import pytest
 
 from furu.execution.api import PoolApiClient
 from furu.resources import ResourceRequest
-from furu.worker import cli
+from furu.worker import _cli
 from furu.worker.backends.slurm.backend import SlurmWorkerBackend
 from furu.worker.backends.slurm.resources import (
     Gpus,
@@ -44,10 +44,10 @@ def test_worker_cli_reads_auth_token_file(
     ) -> None:
         calls.append((server_url, auth_token, resource_request))
 
-    monkeypatch.setattr(cli, "worker_loop", worker_loop)
+    monkeypatch.setattr(_cli, "worker_loop", worker_loop)
 
     assert (
-        cli.main(
+        _cli.main(
             [
                 "--server-url",
                 "http://manager.test",
@@ -75,10 +75,10 @@ def test_worker_cli_reads_resource_request(
     ) -> None:
         calls.append(resource_request)
 
-    monkeypatch.setattr(cli, "worker_loop", worker_loop)
+    monkeypatch.setattr(_cli, "worker_loop", worker_loop)
 
     assert (
-        cli.main(
+        _cli.main(
             [
                 "--server-url",
                 "http://manager.test",
@@ -104,10 +104,10 @@ def test_worker_cli_requires_auth_token_file(monkeypatch: pytest.MonkeyPatch) ->
     ) -> None:
         calls.append((server_url, auth_token))
 
-    monkeypatch.setattr(cli, "worker_loop", worker_loop)
+    monkeypatch.setattr(_cli, "worker_loop", worker_loop)
 
     with pytest.raises(SystemExit) as exc_info:
-        cli.main(["--server-url", "http://manager.test"])
+        _cli.main(["--server-url", "http://manager.test"])
 
     assert exc_info.value.code == 2
     assert calls == []
@@ -126,10 +126,10 @@ def test_worker_cli_rejects_auth_token_argument(
     ) -> None:
         calls.append((server_url, auth_token))
 
-    monkeypatch.setattr(cli, "worker_loop", worker_loop)
+    monkeypatch.setattr(_cli, "worker_loop", worker_loop)
 
     with pytest.raises(SystemExit) as exc_info:
-        cli.main(
+        _cli.main(
             [
                 "--server-url",
                 "http://manager.test",
@@ -206,7 +206,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert "--auth-token-file" in script
     assert "--auth-token " not in script
     assert "secret-token" not in script
-    assert f"exec {sys.executable} -m furu.worker.cli" in script
+    assert f"exec {sys.executable} -m furu.worker._cli" in script
     assert "--server-url http://manager.cluster:1234" in script
     assert "--resource-cpus 4" in script
     assert "--resource-gpus 1" in script
