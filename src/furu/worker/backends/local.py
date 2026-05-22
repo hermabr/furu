@@ -17,7 +17,7 @@ class LocalThreadWorkerBackend:
     max_workers: int = 1
     resource_request: ResourceRequest = field(default_factory=ResourceRequest)
     manager_listen_host: str = "127.0.0.1"
-    scale_interval: float = 0.1
+    scale_interval: float = 1.0
 
     def start_pool(
         self,
@@ -43,7 +43,7 @@ class LocalThreadWorkerPool:
         auth_token: str,
         max_workers: int,
         resource_request: ResourceRequest,
-        scale_interval: float = 0.1,
+        scale_interval: float,
     ) -> None:
         self._client = PoolApiClient(server_url=server_url, auth_token=auth_token)
         self._server_url = server_url
