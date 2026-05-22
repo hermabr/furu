@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from hmac import compare_digest
 from typing import Any
 
@@ -19,10 +20,10 @@ from furu.worker.protocol import (
 )
 
 
+@dataclass(frozen=True, slots=True)
 class _ManagerApiClientBase:
-    def __init__(self, server_url: str, *, auth_token: str) -> None:
-        self._server_url = server_url.rstrip("/")
-        self._auth_token = auth_token
+    server_url: str
+    auth_token: str
 
     def _request_json(
         self,
@@ -31,12 +32,12 @@ class _ManagerApiClientBase:
         method: str = "GET",
         payload: object | None = None,
     ) -> Any:
-        url = f"{self._server_url}{path}"
+        url = f"{self.server_url.rstrip('/')}{path}"
         try:
             response = httpx.request(
                 method,
                 url,
-                headers={"Authorization": f"Bearer {self._auth_token}"},
+                headers={"Authorization": f"Bearer {self.auth_token}"},
                 json=payload,
                 timeout=10.0,
             )
