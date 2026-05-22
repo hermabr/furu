@@ -9,7 +9,7 @@ from pathlib import Path
 from furu.resources import ResourceRequest
 from furu.utils import write_private_file
 from furu.worker.backends.slurm.pool import SlurmWorkerPool
-from furu.worker.backends.slurm.resources import Gpus, SlurmResources
+from furu.worker.backends.slurm.resources import SlurmResources
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,9 +42,7 @@ class SlurmWorkerBackend:
 
         resource_request = ResourceRequest(
             cpus=self.resources.cpus_per_worker,
-            gpus=self.resources.gpus.count
-            if isinstance(self.resources.gpus, Gpus)
-            else self.resources.gpus,
+            gpus=self.resources.gpus,
         )
 
         script_path = self._write_sbatch_script(

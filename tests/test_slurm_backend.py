@@ -15,7 +15,6 @@ from furu.resources import ResourceRequest
 from furu.worker import _cli
 from furu.worker.backends.slurm.backend import SlurmWorkerBackend
 from furu.worker.backends.slurm.resources import (
-    Gpus,
     MemoryPerCpu,
     MemoryPerGpu,
     MemoryPerNode,
@@ -53,6 +52,10 @@ def test_worker_cli_reads_auth_token_file(
                 "http://manager.test",
                 "--auth-token-file",
                 str(token_file),
+                "--resource-cpus",
+                "1",
+                "--resource-gpus",
+                "0",
             ]
         )
         == 0
@@ -94,6 +97,35 @@ def test_worker_cli_reads_resource_request(
     )
 
     assert calls == [ResourceRequest(cpus=4, gpus=1)]
+
+
+def test_worker_cli_requires_resource_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[ResourceRequest] = []
+    token_file = tmp_path / "worker.token"
+    token_file.write_text("secret")
+
+    def worker_loop(
+        *, server_url: str, auth_token: str, resource_request: ResourceRequest
+    ) -> None:
+        calls.append(resource_request)
+
+    monkeypatch.setattr(_cli, "worker_loop", worker_loop)
+
+    with pytest.raises(SystemExit) as exc_info:
+        _cli.main(
+            [
+                "--server-url",
+                "http://manager.test",
+                "--auth-token-file",
+                str(token_file),
+            ]
+        )
+
+    assert exc_info.value.code == 2
+    assert calls == []
 
 
 def test_worker_cli_requires_auth_token_file(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -163,7 +195,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
             partition="debug",
             cpus_per_worker=4,
             memory=MemoryPerNode("8G"),
-            gpus=Gpus(1, kind="a100"),
+            gpus=1,
             extra_sbatch_args=("--exclusive",),
         ),
         worker_connect_host="manager.cluster",
@@ -197,7 +229,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert "--partition=debug" in argv
     assert "--cpus-per-task=4" in argv
     assert "--mem=8G" in argv
-    assert "--gpus=a100:1" in argv
+    assert "--gpus=1" in argv
     assert "--exclusive" in argv
     assert "secret-token" not in " ".join(argv)
 
@@ -249,13 +281,9 @@ def test_slurm_resources_emit_one_memory_option(
     [
         (0, []),
         (3, ["--gpus=3"]),
-        (Gpus(1), ["--gpus=1"]),
-        (Gpus(2, kind="a100"), ["--gpus=a100:2"]),
     ],
 )
-def test_slurm_resources_emit_gpu_option(
-    gpus: Gpus | int, expected_args: list[str]
-) -> None:
+def test_slurm_resources_emit_gpu_option(gpus: int, expected_args: list[str]) -> None:
     assert SlurmResources(cpus_per_worker=1, gpus=gpus).to_sbatch_args() == [
         "--cpus-per-task=1",
         *expected_args,
