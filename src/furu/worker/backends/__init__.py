@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from furu.execution.api import ManagerApiClient
+    from furu.execution.api import WorkerPoolApiClient
     from furu.resources import ResourceRequest
 
 
@@ -24,15 +24,13 @@ class WorkerPool(Protocol):
     @property
     def health_check_interval(self) -> float: ...
 
-    def scale(self) -> None: ...
-
     def is_healthy(self) -> bool: ...
 
     def join(self, *, timeout: float) -> None: ...
 
 
 def count_workers_to_launch(
-    client: ManagerApiClient,
+    client: WorkerPoolApiClient,
     *,
     current_workers: int,
     max_workers: int,

@@ -61,3 +61,9 @@ class CountSatisfiableJobsRequest(BaseModel):
 
     resources: ResourceRequest
     max_workers: int
+
+
+class PoolFailureRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    message: str

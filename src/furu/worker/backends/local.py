@@ -5,9 +5,10 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from furu.execution.api import ManagerApiClient
+from furu.execution.api import WorkerPoolApiClient
 from furu.resources import ResourceRequest
 from furu.worker.backends import count_workers_to_launch
+from furu.worker.backends.scaling import PeriodicScaler
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,7 +32,7 @@ class LocalThreadWorkerBackend:
             max_workers=self.max_workers,
             resource_request=self.resource_request,
         )
-        pool.scale()
+        pool.start()
         return pool
 
 
@@ -50,38 +51,55 @@ class LocalThreadWorkerPool:
         self._auth_token = auth_token
         self._max_workers = max_workers
         self._resource_request = resource_request
-        self._client = ManagerApiClient(server_url, auth_token=auth_token)
+        self._client = WorkerPoolApiClient(server_url, auth_token=auth_token)
         self._threads: list[threading.Thread] = []
+        self._lock = threading.Lock()
+        self._scaler = PeriodicScaler(
+            interval=self.health_check_interval,
+            scale_once=self.scale,
+            report_failure=lambda message: self._client.fail(message=message),
+            thread_name="furu-local-worker-pool-scaler",
+        )
 
     @property
     def n_workers(self) -> int:
-        return len(self._threads)
+        with self._lock:
+            return len(self._threads)
+
+    def start(self) -> None:
+        self._scaler.start()
 
     def scale(self) -> None:
-        to_spawn = count_workers_to_launch(
-            self._client,
-            current_workers=len(self._threads),
-            max_workers=self._max_workers,
-            resource_request=self._resource_request,
-        )
         from furu.worker.loop import worker_loop
 
-        for _ in range(to_spawn):
-            thread = threading.Thread(
-                target=worker_loop,
-                kwargs={
-                    "server_url": self._server_url,
-                    "auth_token": self._auth_token,
-                    "resource_request": self._resource_request,
-                },
-                name=f"furu-worker-{len(self._threads)}",
+        with self._lock:
+            to_spawn = count_workers_to_launch(
+                self._client,
+                current_workers=len(self._threads),
+                max_workers=self._max_workers,
+                resource_request=self._resource_request,
             )
-            self._threads.append(thread)
-            thread.start()
+            for _ in range(to_spawn):
+                thread = threading.Thread(
+                    target=worker_loop,
+                    kwargs={
+                        "server_url": self._server_url,
+                        "auth_token": self._auth_token,
+                        "resource_request": self._resource_request,
+                    },
+                    name=f"furu-worker-{len(self._threads)}",
+                )
+                self._threads.append(thread)
+                thread.start()
 
     def is_healthy(self) -> bool:
-        return all(worker.is_alive() for worker in self._threads)
+        with self._lock:
+            workers_healthy = all(worker.is_alive() for worker in self._threads)
+        return self._scaler.is_healthy() and workers_healthy
 
     def join(self, *, timeout: float) -> None:
-        for worker in self._threads:
+        self._scaler.stop(timeout=timeout)
+        with self._lock:
+            threads = tuple(self._threads)
+        for worker in threads:
             worker.join(timeout=timeout)

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import subprocess
+import threading
 import time
 from pathlib import Path
 
-from furu.execution.api import ManagerApiClient
+from furu.execution.api import WorkerPoolApiClient
 from furu.resources import ResourceRequest
 from furu.worker.backends import count_workers_to_launch
+from furu.worker.backends.scaling import PeriodicScaler
 
 
 class SlurmWorkerPool:
@@ -17,7 +19,7 @@ class SlurmWorkerPool:
         script_path: Path,
         max_workers: int,
         resource_request: ResourceRequest,
-        client: ManagerApiClient,
+        client: WorkerPoolApiClient,
         poll_interval: float,
     ) -> None:
         self._sbatch_base_args = sbatch_base_args
@@ -27,6 +29,13 @@ class SlurmWorkerPool:
         self._client = client
         self._poll_interval = poll_interval
         self._array_jobs: list[tuple[str, int]] = []
+        self._lock = threading.Lock()
+        self._scaler = PeriodicScaler(
+            interval=poll_interval,
+            scale_once=self.scale,
+            report_failure=lambda message: self._client.fail(message=message),
+            thread_name="furu-slurm-worker-pool-scaler",
+        )
 
     @property
     def health_check_interval(self) -> float:
@@ -34,47 +43,59 @@ class SlurmWorkerPool:
 
     @property
     def n_workers(self) -> int:
-        return sum(n for _, n in self._array_jobs)
+        with self._lock:
+            return sum(n for _, n in self._array_jobs)
 
     @property
     def array_job_ids(self) -> tuple[str, ...]:
-        return tuple(array_job_id for array_job_id, _ in self._array_jobs)
+        with self._lock:
+            return tuple(array_job_id for array_job_id, _ in self._array_jobs)
+
+    def start(self) -> None:
+        self._scaler.start()
 
     def scale(self) -> None:
-        to_spawn = count_workers_to_launch(
-            self._client,
-            current_workers=self.n_workers,
-            max_workers=self._max_workers,
-            resource_request=self._resource_request,
-        )
-        if to_spawn == 0:
-            return
-        result = subprocess.run(
-            [
-                "sbatch",
-                "--parsable",
-                *self._sbatch_base_args,
-                f"--array=0-{to_spawn - 1}",
-                str(self._script_path),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        array_job_id = result.stdout.strip().split(";", maxsplit=1)[0]
-        self._array_jobs.append((array_job_id, to_spawn))
+        with self._lock:
+            to_spawn = count_workers_to_launch(
+                self._client,
+                current_workers=sum(n for _, n in self._array_jobs),
+                max_workers=self._max_workers,
+                resource_request=self._resource_request,
+            )
+            if to_spawn == 0:
+                return
+            result = subprocess.run(
+                [
+                    "sbatch",
+                    "--parsable",
+                    *self._sbatch_base_args,
+                    f"--array=0-{to_spawn - 1}",
+                    str(self._script_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            array_job_id = result.stdout.strip().split(";", maxsplit=1)[0]
+            self._array_jobs.append((array_job_id, to_spawn))
 
     def is_healthy(self) -> bool:
-        unfinished_task_ids = self._unfinished_task_ids()
-        return all(
-            unfinished_task_ids[array_job_id] == set(range(n_tasks))
-            for array_job_id, n_tasks in self._array_jobs
+        array_jobs = self._array_jobs_snapshot()
+        unfinished_task_ids = self._unfinished_task_ids(array_jobs)
+        return (
+            all(
+                unfinished_task_ids[array_job_id] == set(range(n_tasks))
+                for array_job_id, n_tasks in array_jobs
+            )
+            and self._scaler.is_healthy()
         )
 
     def join(self, *, timeout: float) -> None:
+        self._scaler.stop(timeout=timeout)
         deadline = time.monotonic() + timeout
         while self._has_unfinished() and time.monotonic() < deadline:
-            time.sleep(min(self._poll_interval, deadline - time.monotonic()))
+            poll_interval = self._poll_interval if self._poll_interval > 0 else 0.1
+            time.sleep(min(poll_interval, deadline - time.monotonic()))
         if self._has_unfinished():
             subprocess.run(
                 ["scancel", *self.array_job_ids],
@@ -84,13 +105,19 @@ class SlurmWorkerPool:
             )
 
     def _has_unfinished(self) -> bool:
-        return any(self._unfinished_task_ids().values())
+        return any(self._unfinished_task_ids(self._array_jobs_snapshot()).values())
 
-    def _unfinished_task_ids(self) -> dict[str, set[int]]:
+    def _array_jobs_snapshot(self) -> tuple[tuple[str, int], ...]:
+        with self._lock:
+            return tuple(self._array_jobs)
+
+    def _unfinished_task_ids(
+        self, array_jobs: tuple[tuple[str, int], ...]
+    ) -> dict[str, set[int]]:
         unfinished_task_ids: dict[str, set[int]] = {
-            array_job_id: set() for array_job_id, _ in self._array_jobs
+            array_job_id: set() for array_job_id, _ in array_jobs
         }
-        if not self._array_jobs:
+        if not array_jobs:
             return unfinished_task_ids
 
         result = subprocess.run(
@@ -100,7 +127,7 @@ class SlurmWorkerPool:
                 "JobID,State,NodeList",
                 "--parsable2",
                 "-j",
-                ",".join(self.array_job_ids),
+                ",".join(array_job_id for array_job_id, _ in array_jobs),
             ],
             check=True,
             capture_output=True,

@@ -10,7 +10,7 @@ from secrets import token_urlsafe
 
 import uvicorn
 
-from furu.execution.api import create_manager_api_app
+from furu.execution.api import WorkerPoolApiClient, create_manager_api_app
 from furu.execution.manager import Manager
 from furu.logging import get_logger
 from furu.worker.backends import WorkerBackend, WorkerPool
@@ -98,6 +98,9 @@ def _run_until_done(
             len(manager.blocked),
         )
         with manager_server(manager, bind_host=bind_host, port=port) as server:
+            manager_client = WorkerPoolApiClient(
+                server.server_url, auth_token=server.auth_token
+            )
             logger.info(
                 "manager server listening: server_url=%s",
                 server.server_url,
@@ -127,14 +130,15 @@ def _run_until_done(
                 for idx, (backend, pool) in enumerate(worker_pools):
                     if now < next_check_at[idx]:
                         continue
-                    pool.scale()
                     if not pool.is_healthy():
                         unhealthy.append(type(backend).__name__)
                     next_check_at[idx] = now + pool.health_check_interval
                 if unhealthy:
-                    manager.fail(
-                        "worker backend(s) became unhealthy before manager "
-                        f"run completed: {', '.join(unhealthy)}"
+                    manager_client.fail(
+                        message=(
+                            "worker backend(s) became unhealthy before manager "
+                            f"run completed: {', '.join(unhealthy)}"
+                        )
                     )
                     break
             for backend, pool in worker_pools:

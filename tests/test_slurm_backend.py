@@ -5,12 +5,13 @@ import os
 import stat
 import sys
 import textwrap
+import time
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from furu.execution.api import ManagerApiClient
+from furu.execution.api import WorkerPoolApiClient
 from furu.resources import ResourceRequest
 from furu.worker import cli
 from furu.worker.backends.slurm.backend import SlurmWorkerBackend
@@ -25,7 +26,7 @@ from furu.worker.backends.slurm.resources import (
 
 def _stub_count_satisfiable_jobs(monkeypatch: pytest.MonkeyPatch, count: int) -> None:
     monkeypatch.setattr(
-        ManagerApiClient,
+        WorkerPoolApiClient,
         "count_satisfiable_jobs",
         lambda self, *, resources, max_workers: count,
     )
@@ -171,7 +172,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
             extra_sbatch_args=("--exclusive",),
         ),
         worker_connect_host="manager.cluster",
-        poll_interval=1.5,
+        poll_interval=0,
     )
 
     pool = backend.start_pool(
@@ -182,7 +183,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
 
     assert pool.array_job_ids == ("100",)
     assert pool.n_workers == 2
-    assert pool.health_check_interval == 1.5
+    assert pool.health_check_interval == 0
     assert log_dir.is_dir()
 
     records = _read_records(record_file)
@@ -277,6 +278,7 @@ def test_slurm_backend_rewrites_manager_url_to_worker_connect_host(
         max_workers=1,
         resources=SlurmResources(cpus_per_worker=1),
         worker_connect_host="manager.cluster",
+        poll_interval=0,
     )
 
     pool = backend.start_pool(
@@ -341,7 +343,7 @@ def test_slurm_pool_scale_submits_additional_arrays_as_satisfiable_count_grows(
     record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
     counts = iter([0, 2, 10, 10])
     monkeypatch.setattr(
-        ManagerApiClient,
+        WorkerPoolApiClient,
         "count_satisfiable_jobs",
         lambda self, *, resources, max_workers: min(next(counts), max_workers),
     )
@@ -381,6 +383,60 @@ def test_slurm_pool_scale_submits_additional_arrays_as_satisfiable_count_grows(
     assert len(sbatch_records) == 2
     assert "--array=0-1" in sbatch_records[0]["argv"]
     assert "--array=0-0" in sbatch_records[1]["argv"]
+
+
+def test_slurm_pool_start_scales_periodically_until_join(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    counts = iter([0, 2])
+    count_calls = 0
+
+    def count_satisfiable_jobs(
+        self: WorkerPoolApiClient, *, resources: ResourceRequest, max_workers: int
+    ) -> int:
+        nonlocal count_calls
+        count_calls += 1
+        return min(next(counts, 0), max_workers)
+
+    monkeypatch.setattr(
+        WorkerPoolApiClient,
+        "count_satisfiable_jobs",
+        count_satisfiable_jobs,
+    )
+
+    backend = SlurmWorkerBackend(
+        max_workers=2,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="manager.cluster",
+        poll_interval=0.01,
+    )
+    pool = backend.start_pool(
+        server_url="http://manager.cluster:1234",
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+    )
+
+    try:
+        deadline = time.monotonic() + 1
+        while pool.n_workers < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        assert pool.array_job_ids == ("100",)
+        assert pool.n_workers == 2
+        assert count_calls >= 2
+
+        sbatch_records = [
+            record
+            for record in _read_records(record_file)
+            if record["executable"] == "sbatch"
+        ]
+        assert len(sbatch_records) == 1
+        assert "--array=0-1" in sbatch_records[0]["argv"]
+    finally:
+        active_file.write_text("")
+        pool.join(timeout=1)
 
 
 def test_slurm_backend_requires_explicit_executor_dir() -> None:
