@@ -22,13 +22,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--resource-cpus",
         type=int,
-        default=1,
         help="CPU count available to this worker",
     )
     parser.add_argument(
         "--resource-gpus",
         type=int,
-        default=0,
         help="GPU count available to this worker",
     )
     args = parser.parse_args(argv)
