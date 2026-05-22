@@ -6,7 +6,6 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from furu.execution.api import PoolApiClient
 from furu.resources import ResourceRequest
 from furu.utils import write_private_file
 from furu.worker.backends.slurm.pool import SlurmWorkerPool
@@ -72,7 +71,8 @@ class SlurmWorkerBackend:
             script_path=script_path,
             max_workers=self.max_workers,
             resource_request=resource_request,
-            client=PoolApiClient(server_url=server_url, auth_token=auth_token),
+            server_url=server_url,
+            auth_token=auth_token,
             poll_interval=self.poll_interval,
         )
 

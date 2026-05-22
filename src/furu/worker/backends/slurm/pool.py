@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import subprocess
+import threading
 import time
+import traceback
 from pathlib import Path
 
 from furu.execution.api import PoolApiClient
+from furu.logging import get_logger
 from furu.resources import ResourceRequest
-from furu.worker.backends import _SelfScalingWorkerPool, count_workers_to_launch
+
+logger = get_logger()
 
 _UNFINISHED_STATES = frozenset(
     {
@@ -22,7 +26,7 @@ _UNFINISHED_STATES = frozenset(
 _HEALTHY_FINISHED_STATES = frozenset({"COMPLETED"})
 
 
-class SlurmWorkerPool(_SelfScalingWorkerPool):
+class SlurmWorkerPool:
     def __init__(
         self,
         *,
@@ -30,19 +34,18 @@ class SlurmWorkerPool(_SelfScalingWorkerPool):
         script_path: Path,
         max_workers: int,
         resource_request: ResourceRequest,
-        client: PoolApiClient,
+        server_url: str,
+        auth_token: str,
         poll_interval: float,
     ) -> None:
-        super().__init__(
-            client=client,
-            scale_interval=poll_interval,
-            description="slurm worker pool",
-        )
         self._sbatch_base_args = sbatch_base_args
         self._script_path = script_path
         self._max_workers = max_workers
         self._resource_request = resource_request
+        self._client = PoolApiClient(server_url=server_url, auth_token=auth_token)
         self._poll_interval = poll_interval
+        self._stop_event = threading.Event()
+        self._scale_thread: threading.Thread | None = None
         self._array_jobs: list[tuple[str, int]] = []
 
     @property
@@ -53,7 +56,22 @@ class SlurmWorkerPool(_SelfScalingWorkerPool):
     def array_job_ids(self) -> tuple[str, ...]:
         return tuple(array_job_id for array_job_id, _ in self._array_jobs)
 
-    def _stop_workers(self, *, timeout: float) -> None:
+    def start(self) -> None:
+        if self._scale_thread is not None:
+            raise RuntimeError("slurm worker pool already started")
+
+        self._scale_once()
+        self._scale_thread = threading.Thread(
+            target=self._scale_loop,
+            name="furu-slurm-worker-pool-scale",
+        )
+        self._scale_thread.start()
+
+    def stop(self, *, timeout: float) -> None:
+        self._stop_event.set()
+        if self._scale_thread is not None:
+            self._scale_thread.join(timeout=timeout)
+
         deadline = time.monotonic() + timeout
         while self._has_unfinished() and time.monotonic() < deadline:
             time.sleep(min(self._poll_interval, max(0.0, deadline - time.monotonic())))
@@ -66,11 +84,12 @@ class SlurmWorkerPool(_SelfScalingWorkerPool):
             )
 
     def _scale_once(self) -> None:
-        to_spawn = count_workers_to_launch(
-            self._client,
-            current_workers=self.n_workers,
-            max_workers=self._max_workers,
-            resource_request=self._resource_request,
+        if self.n_workers >= self._max_workers:
+            return
+
+        to_spawn = self._client.count_satisfiable_jobs(
+            resources=self._resource_request,
+            max_workers=self._max_workers - self.n_workers,
         )
         if to_spawn == 0:
             return
@@ -134,3 +153,23 @@ class SlurmWorkerPool(_SelfScalingWorkerPool):
                 )
             states[(array_job_id, int(task_id))] = state.upper()
         return states
+
+    def _scale_loop(self) -> None:
+        try:
+            while not self._stop_event.wait(timeout=self._poll_interval):
+                self._scale_once()
+                if not self._workers_healthy():
+                    self._report_failure("slurm worker pool became unhealthy")
+                    return
+        except Exception as exc:
+            self._report_failure(
+                "slurm worker pool scale loop crashed: "
+                + "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+            )
+
+    def _report_failure(self, message: str) -> None:
+        logger.error("slurm worker pool failure: %s", message)
+        try:
+            self._client.fail(message=message)
+        except Exception:
+            logger.exception("failed to report slurm worker pool failure to manager")
