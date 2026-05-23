@@ -48,10 +48,6 @@ class SlurmWorkerPool:
         self._scale_thread: threading.Thread | None = None
         self._job_ids: list[str] = []
 
-    @property
-    def job_ids(self) -> tuple[str, ...]:
-        return tuple(self._job_ids)
-
     def start(self) -> None:
         if self._scale_thread is not None:
             raise RuntimeError("slurm worker pool already started")

@@ -209,7 +209,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     )
     pool._scale_once()
 
-    assert pool.job_ids == ("100", "101")
+    assert pool._job_ids == ["100", "101"]
     assert log_dir.is_dir()
 
     records = _read_records(record_file)
@@ -308,7 +308,7 @@ def test_slurm_backend_rewrites_manager_url_to_worker_connect_host(
     )
     pool._scale_once()
 
-    assert pool.job_ids == ("100",)
+    assert pool._job_ids == ["100"]
 
     records = _read_records(record_file)
     sbatch_records = [record for record in records if record["executable"] == "sbatch"]
@@ -382,19 +382,19 @@ def test_slurm_pool_scale_submits_additional_workers_as_satisfiable_count_grows(
         executor_dir=tmp_path / "executor",
     )
 
-    assert pool.job_ids == ()
+    assert pool._job_ids == []
 
     pool._scale_once()
-    assert pool.job_ids == ()
+    assert pool._job_ids == []
 
     pool._scale_once()
-    assert pool.job_ids == ("100", "101")
+    assert pool._job_ids == ["100", "101"]
 
     pool._scale_once()
-    assert pool.job_ids == ("100", "101", "102")
+    assert pool._job_ids == ["100", "101", "102"]
 
     pool._scale_once()
-    assert pool.job_ids == ("100", "101", "102")
+    assert pool._job_ids == ["100", "101", "102"]
 
     sbatch_records = [
         record
