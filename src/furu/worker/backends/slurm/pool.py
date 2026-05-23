@@ -49,10 +49,6 @@ class SlurmWorkerPool:
         self._array_jobs: list[tuple[str, int]] = []
 
     @property
-    def n_workers(self) -> int:
-        return sum(n for _, n in self._array_jobs)
-
-    @property
     def array_job_ids(self) -> tuple[str, ...]:
         return tuple(array_job_id for array_job_id, _ in self._array_jobs)
 
@@ -83,12 +79,13 @@ class SlurmWorkerPool:
             )
 
     def _scale_once(self) -> None:
-        if self.n_workers >= self._max_workers:
+        n_workers = sum(n for _, n in self._array_jobs)
+        if n_workers >= self._max_workers:
             return
 
         to_spawn = self._client.count_satisfiable_jobs(
             resources=self._resource_request,
-            max_workers=self._max_workers - self.n_workers,
+            max_workers=self._max_workers - n_workers,
         )
         if to_spawn == 0:
             return

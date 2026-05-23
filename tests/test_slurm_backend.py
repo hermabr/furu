@@ -210,7 +210,6 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     pool._scale_once()
 
     assert pool.array_job_ids == ("100",)
-    assert pool.n_workers == 2
     assert log_dir.is_dir()
 
     records = _read_records(record_file)
@@ -384,23 +383,18 @@ def test_slurm_pool_scale_submits_additional_arrays_as_satisfiable_count_grows(
     )
 
     assert pool.array_job_ids == ()
-    assert pool.n_workers == 0
 
     pool._scale_once()
     assert pool.array_job_ids == ()
-    assert pool.n_workers == 0
 
     pool._scale_once()
     assert pool.array_job_ids == ("100",)
-    assert pool.n_workers == 2
 
     pool._scale_once()
     assert pool.array_job_ids == ("100", "101")
-    assert pool.n_workers == 3
 
     pool._scale_once()
     assert pool.array_job_ids == ("100", "101")
-    assert pool.n_workers == 3
 
     sbatch_records = [
         record
