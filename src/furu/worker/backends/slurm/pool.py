@@ -60,7 +60,6 @@ class SlurmWorkerPool:
         if self._scale_thread is not None:
             raise RuntimeError("slurm worker pool already started")
 
-        self._scale_once()
         self._scale_thread = threading.Thread(
             target=self._scale_loop,
             name="furu-slurm-worker-pool-scale",
@@ -156,6 +155,9 @@ class SlurmWorkerPool:
 
     def _scale_loop(self) -> None:
         try:
+            if self._stop_event.is_set():
+                return
+            self._scale_once()
             while not self._stop_event.wait(timeout=self._poll_interval):
                 self._scale_once()
                 if not self._workers_healthy():

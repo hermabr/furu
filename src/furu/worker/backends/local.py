@@ -52,20 +52,14 @@ class LocalThreadWorkerPool:
         self._resource_request = resource_request
         self._scale_interval = scale_interval
         self._stop_event = threading.Event()
+        self._unhealthy_event = threading.Event()
         self._scale_thread: threading.Thread | None = None
         self._threads: list[threading.Thread] = []
-        self._crashed_workers: list[BaseException] = []
-        self._crash_lock = threading.Lock()
-
-    @property
-    def n_workers(self) -> int:
-        return len(self._threads)
 
     def start(self) -> None:
         if self._scale_thread is not None:
             raise RuntimeError("local worker pool already started")
 
-        self._scale_once()
         self._scale_thread = threading.Thread(
             target=self._scale_loop,
             name="furu-local-worker-pool-scale",
@@ -74,12 +68,14 @@ class LocalThreadWorkerPool:
 
     def stop(self, *, timeout: float) -> None:
         self._stop_event.set()
-        if self._scale_thread is not None:
-            self._scale_thread.join(timeout=timeout)
+        if self._scale_thread is None:
+            raise RuntimeError("local worker pool stop called before start")
+        self._scale_thread.join(timeout=timeout)
         for worker in self._threads:
             worker.join(timeout=timeout)
 
     def _scale_once(self) -> None:
+        self._threads = [thread for thread in self._threads if thread.is_alive()]
         if len(self._threads) >= self._max_workers:
             return
 
@@ -88,10 +84,8 @@ class LocalThreadWorkerPool:
             max_workers=self._max_workers - len(self._threads),
         )
         for _ in range(to_spawn):
-            thread = threading.Thread(
-                target=self._run_worker,
-                name=f"furu-worker-{len(self._threads)}",
-            )
+            thread = threading.Thread(target=self._run_worker)
+            thread.name = f"furu-worker-{id(thread)}"
             self._threads.append(thread)
             thread.start()
 
@@ -104,31 +98,24 @@ class LocalThreadWorkerPool:
                 auth_token=self._auth_token,
                 resource_request=self._resource_request,
             )
-        except BaseException as exc:
-            with self._crash_lock:
-                self._crashed_workers.append(exc)
+        except Exception:
+            self._unhealthy_event.set()
             logger.exception("local worker thread crashed")
-
-    def _workers_healthy(self) -> bool:
-        with self._crash_lock:
-            return not self._crashed_workers
 
     def _scale_loop(self) -> None:
         try:
-            while not self._stop_event.wait(timeout=self._scale_interval):
+            while not self._stop_event.is_set():
                 self._scale_once()
-                if not self._workers_healthy():
-                    self._report_failure("local worker pool became unhealthy")
+
+                if self._unhealthy_event.is_set():
+                    self._client.fail(message="local worker pool became unhealthy")
                     return
+
+                if self._stop_event.wait(timeout=self._scale_interval):
+                    return
+
         except Exception as exc:
-            self._report_failure(
-                "local worker pool scale loop crashed: "
+            self._client.fail(
+                message="local worker pool scale loop crashed: "
                 + "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
             )
-
-    def _report_failure(self, message: str) -> None:
-        logger.error("local worker pool failure: %s", message)
-        try:
-            self._client.fail(message=message)
-        except Exception:
-            logger.exception("failed to report local worker pool failure to manager")

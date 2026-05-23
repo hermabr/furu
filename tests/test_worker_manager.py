@@ -1,3 +1,4 @@
+import threading
 from pathlib import Path
 from typing import Any, ClassVar, cast
 from uuid import UUID, uuid4
@@ -421,19 +422,70 @@ def test_local_pool_scale_spawns_workers_up_to_max_as_satisfiable_count_grows(
         auth_token="secret",
         max_workers=3,
         resource_request=ResourceRequest(),
+        scale_interval=1.0,
     )
 
     pool._scale_once()
-    assert pool.n_workers == 0
+    assert len(pool._threads) == 0
 
     pool._scale_once()
-    assert pool.n_workers == 2
+    assert len(pool._threads) == 2
 
     pool._scale_once()
-    assert pool.n_workers == 3
+    assert len(pool._threads) == 3
 
     pool._scale_once()
-    assert pool.n_workers == 3
+    assert len(pool._threads) == 3
+
+
+def test_local_pool_scale_uses_unique_worker_names_after_worker_exits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker_started = threading.Semaphore(0)
+    release_workers = threading.Event()
+    calls = 0
+
+    def fake_count(
+        self: api.PoolApiClient, *, resources: object, max_workers: int
+    ) -> int:
+        return max_workers
+
+    def worker_loop(
+        *, server_url: str, auth_token: str, resource_request: ResourceRequest
+    ) -> None:
+        nonlocal calls
+        calls += 1
+        worker_started.release()
+        if calls > 1:
+            release_workers.wait(timeout=5)
+
+    monkeypatch.setattr(api.PoolApiClient, "count_satisfiable_jobs", fake_count)
+    monkeypatch.setattr(worker_loop_module, "worker_loop", worker_loop)
+
+    pool = LocalThreadWorkerPool(
+        server_url="http://manager.test",
+        auth_token="secret",
+        max_workers=3,
+        resource_request=ResourceRequest(),
+        scale_interval=1.0,
+    )
+
+    try:
+        pool._scale_once()
+        for _ in range(3):
+            assert worker_started.acquire(timeout=5)
+        pool._threads[0].join(timeout=5)
+
+        pool._scale_once()
+        assert worker_started.acquire(timeout=5)
+
+        worker_names = [thread.name for thread in pool._threads]
+        assert len(set(worker_names)) == 3
+        assert all(name.startswith("furu-worker-") for name in worker_names)
+    finally:
+        release_workers.set()
+        for thread in pool._threads:
+            thread.join(timeout=5)
 
 
 def test_manager_run_fails_when_worker_pool_reports_unhealthy(
@@ -483,6 +535,7 @@ def test_manager_run_uses_worker_backend() -> None:
                 auth_token=auth_token,
                 max_workers=1,
                 resource_request=ResourceRequest(),
+                scale_interval=1.0,
             )
 
     leaf = ManagerLeaf(value=11)
@@ -518,6 +571,7 @@ def test_manager_run_passes_executor_dir_to_worker_backend() -> None:
                 auth_token=auth_token,
                 max_workers=1,
                 resource_request=ResourceRequest(),
+                scale_interval=1.0,
             )
 
     leaf = ManagerLeaf(value=12)
