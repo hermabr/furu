@@ -209,20 +209,20 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     )
     pool._scale_once()
 
-    assert pool.array_job_ids == ("100",)
+    assert pool.job_ids == ("100", "101")
     assert log_dir.is_dir()
 
     records = _read_records(record_file)
     sbatch_records = [record for record in records if record["executable"] == "sbatch"]
-    assert len(sbatch_records) == 1
+    assert len(sbatch_records) == 2
 
     argv = sbatch_records[0]["argv"]
     assert "--parsable" in argv
     assert f"--chdir={work_dir.resolve()}" in argv
-    assert f"--output={log_dir.resolve() / 'furu-worker-%A-%a.out'}" in argv
-    assert f"--error={log_dir.resolve() / 'furu-worker-%A-%a.err'}" in argv
+    assert f"--output={log_dir.resolve() / 'furu-worker-%j.out'}" in argv
+    assert f"--error={log_dir.resolve() / 'furu-worker-%j.err'}" in argv
     assert "--job-name=furu-worker" in argv
-    assert "--array=0-1" in argv
+    assert not any(arg.startswith("--array") for arg in argv)
     assert "--export=NIL" in argv
     assert not any(arg.startswith("--wrap") for arg in argv)
     assert "--partition=debug" in argv
@@ -308,7 +308,7 @@ def test_slurm_backend_rewrites_manager_url_to_worker_connect_host(
     )
     pool._scale_once()
 
-    assert pool.array_job_ids == ("100",)
+    assert pool.job_ids == ("100",)
 
     records = _read_records(record_file)
     sbatch_records = [record for record in records if record["executable"] == "sbatch"]
@@ -341,7 +341,7 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
 
     assert pool._workers_healthy()
 
-    active_file.write_text("100_0\n100_1 FAILED\n")
+    active_file.write_text("100\n101 FAILED\n")
 
     assert not pool._workers_healthy()
     sacct_records = [
@@ -354,11 +354,11 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
         "JobID,State,NodeList",
         "--parsable2",
         "-j",
-        "100",
+        "100,101",
     ]
 
 
-def test_slurm_pool_scale_submits_additional_arrays_as_satisfiable_count_grows(
+def test_slurm_pool_scale_submits_additional_workers_as_satisfiable_count_grows(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -382,28 +382,29 @@ def test_slurm_pool_scale_submits_additional_arrays_as_satisfiable_count_grows(
         executor_dir=tmp_path / "executor",
     )
 
-    assert pool.array_job_ids == ()
+    assert pool.job_ids == ()
 
     pool._scale_once()
-    assert pool.array_job_ids == ()
+    assert pool.job_ids == ()
 
     pool._scale_once()
-    assert pool.array_job_ids == ("100",)
+    assert pool.job_ids == ("100", "101")
 
     pool._scale_once()
-    assert pool.array_job_ids == ("100", "101")
+    assert pool.job_ids == ("100", "101", "102")
 
     pool._scale_once()
-    assert pool.array_job_ids == ("100", "101")
+    assert pool.job_ids == ("100", "101", "102")
 
     sbatch_records = [
         record
         for record in _read_records(record_file)
         if record["executable"] == "sbatch"
     ]
-    assert len(sbatch_records) == 2
-    assert "--array=0-1" in sbatch_records[0]["argv"]
-    assert "--array=0-0" in sbatch_records[1]["argv"]
+    assert len(sbatch_records) == 3
+    assert not any(
+        arg.startswith("--array") for record in sbatch_records for arg in record["argv"]
+    )
 
 
 def test_slurm_backend_requires_explicit_executor_dir() -> None:
@@ -443,7 +444,7 @@ def test_slurm_worker_pool_join_cancels_jobs_left_after_timeout(
 
     assert active_file.read_text() == ""
     records = _read_records(record_file)
-    assert records[-1] == {"executable": "scancel", "argv": ["100"]}
+    assert records[-1] == {"executable": "scancel", "argv": ["100", "101"]}
 
 
 def test_slurm_backend_uses_default_poll_interval() -> None:
@@ -512,17 +513,9 @@ def _install_fake_slurm(
             job_id = int(file.read())
         with open(counter_file, "w", encoding="utf-8") as file:
             file.write(str(job_id + 1))
-        array_arg = next(
-            (arg.removeprefix("--array=") for arg in sys.argv[1:] if arg.startswith("--array=")),
-            "0",
-        )
-        start_text, separator, end_text = array_arg.partition("-")
-        start = int(start_text)
-        end = int(end_text if separator else start_text)
 
         with open(active_file, "a", encoding="utf-8") as file:
-            for task_id in range(start, end + 1):
-                file.write(f"{job_id}_{task_id}\\n")
+            file.write(f"{job_id}\\n")
 
         print(f"{job_id};cluster")
         """,

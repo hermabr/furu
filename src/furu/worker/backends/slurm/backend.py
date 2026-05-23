@@ -57,8 +57,8 @@ class SlurmWorkerBackend:
 
         sbatch_base_args = (
             f"--chdir={chdir}",
-            f"--output={log_dir / 'furu-worker-%A-%a.out'}",
-            f"--error={log_dir / 'furu-worker-%A-%a.err'}",
+            f"--output={log_dir / 'furu-worker-%j.out'}",
+            f"--error={log_dir / 'furu-worker-%j.err'}",
             f"--job-name={self.job_name}",
             *self.resources.to_sbatch_args(),
             "--export=NIL",
