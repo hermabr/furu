@@ -10,11 +10,12 @@ from typing import Any
 
 import pytest
 
+import furu.worker.backends.slurm.backend as slurm_backend_module
 from furu.execution.api import PoolApiClient
 from furu.resources import ResourceRequest
 from furu.worker import _cli
-import furu.worker.backends.slurm.backend as slurm_backend_module
 from furu.worker.backends.slurm.backend import SlurmWorkerBackend
+from furu.worker.backends.slurm.pool import _UNFINISHED_STATES
 from furu.worker.backends.slurm.resources import (
     MemoryPerCpu,
     MemoryPerGpu,
@@ -359,11 +360,17 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
     )
     pool._scale_once()
 
-    assert pool._workers_healthy()
+    assert not any(
+        state not in _UNFINISHED_STATES and state not in frozenset({"COMPLETED"})
+        for state in pool._task_states().values()
+    )
 
     active_file.write_text("100\n101 FAILED\n")
 
-    assert not pool._workers_healthy()
+    assert any(
+        state not in _UNFINISHED_STATES and state not in frozenset({"COMPLETED"})
+        for state in pool._task_states().values()
+    )
     sacct_records = [
         record
         for record in _read_records(record_file)
