@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import socket
+import sys
 import uuid
 from enum import Enum
 from pathlib import Path
@@ -22,6 +23,28 @@ def fully_qualified_name(tp: type) -> str:
         raise ValueError("TODO: msg")
     elif "." in qualname:
         raise ValueError("TODO: msg")
+    elif mod == "__main__":
+        main_file = getattr(sys.modules.get("__main__"), "__file__", None)
+        if main_file is None:
+            raise ValueError(
+                "Cannot resolve __main__ module name: __main__.__file__ is not set"
+            )
+        try:
+            cwd = Path.cwd().resolve()
+            path = Path(main_file).resolve().relative_to(cwd)
+        except ValueError:
+            raise ValueError(
+                f"Cannot resolve __main__ module name: {main_file!r} is outside "
+                f"the current working directory {cwd}"
+            ) from None
+        parts = path.with_suffix("").parts
+        if parts[:1] == ("src",):
+            parts = parts[1:]
+        if not parts or not all(part.isidentifier() for part in parts):
+            raise ValueError(
+                f"Cannot resolve __main__ module name: {path} is not a valid module path"
+            )
+        mod = ".".join(parts)
     elif (isinstance(tp, type) and issubclass(tp, Enum)) or isinstance(tp, Enum):
         raise ValueError(
             "TODO: support this in the future"

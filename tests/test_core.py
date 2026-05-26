@@ -1003,6 +1003,7 @@ class Data(Furu[int]):
 
 
 if __name__ == "__main__":
+    print(f"FQN:{Data()._fully_qualified_name}")
     print(f"RESULT:{Data().load_or_create()}")
 """.lstrip(),
         encoding="utf-8",
@@ -1030,7 +1031,45 @@ if __name__ == "__main__":
     )
 
     lines = completed.stdout.splitlines()
+    assert "FQN:my_lib.data.Data" in lines
     assert "RESULT:7" in lines
+
+
+def test_main_module_name_error_when_file_is_missing(monkeypatch: pytest.MonkeyPatch):
+    cls = type("ScriptClass", (), {"__module__": "__main__"})
+
+    monkeypatch.delattr(sys.modules["__main__"], "__file__", raising=False)
+
+    with pytest.raises(ValueError, match=r"__main__\.__file__ is not set"):
+        fully_qualified_name(cls)
+
+
+def test_main_module_name_error_when_file_is_outside_cwd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    cls = type("ScriptClass", (), {"__module__": "__main__"})
+    cwd = tmp_path / "project"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    monkeypatch.setattr(sys.modules["__main__"], "__file__", str(tmp_path / "run.py"))
+
+    with pytest.raises(ValueError, match="outside the current working directory"):
+        fully_qualified_name(cls)
+
+
+def test_main_module_name_error_when_file_is_not_a_valid_module_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    cls = type("ScriptClass", (), {"__module__": "__main__"})
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        sys.modules["__main__"], "__file__", str(tmp_path / "bad-name.py")
+    )
+
+    with pytest.raises(ValueError, match="not a valid module path"):
+        fully_qualified_name(cls)
 
 
 def test_furu_from_artifact_returns_furu_object():
