@@ -22,36 +22,40 @@ class _UncachedDependency[T](property):
 
 
 @overload
-def dependency[T](func: Callable[[Any], T], /) -> _CachedDependency[T]: ...
+def dependency[TFuru: Furu[Any], T](
+    func: Callable[[TFuru], T], /
+) -> _CachedDependency[T]: ...
 
 
 @overload
-def dependency[T](
+def dependency[TFuru: Furu[Any], T](
     *, cached: Literal[True] = True
-) -> Callable[[Callable[[Any], T]], _CachedDependency[T]]: ...
+) -> Callable[[Callable[[TFuru], T]], _CachedDependency[T]]: ...
 
 
 @overload
-def dependency[T](
+def dependency[TFuru: Furu[Any], T](
     *, cached: Literal[False]
-) -> Callable[[Callable[[Any], T]], _UncachedDependency[T]]: ...
+) -> Callable[[Callable[[TFuru], T]], _UncachedDependency[T]]: ...
 
 
 @overload
-def dependency[T](
+def dependency[TFuru: Furu[Any], T](
     *, cached: bool
-) -> Callable[[Callable[[Any], T]], _CachedDependency[T] | _UncachedDependency[T]]: ...
+) -> Callable[
+    [Callable[[TFuru], T]], _CachedDependency[T] | _UncachedDependency[T]
+]: ...
 
 
-def dependency[T](
-    func: Callable[[Any], T] | None = None, /, *, cached: bool = True
+def dependency[TFuru: Furu[Any], T](
+    func: Callable[[TFuru], T] | None = None, /, *, cached: bool = True
 ) -> (
     _CachedDependency[T]
     | _UncachedDependency[T]
-    | Callable[[Callable[[Any], T]], _CachedDependency[T] | _UncachedDependency[T]]
+    | Callable[[Callable[[TFuru], T]], _CachedDependency[T] | _UncachedDependency[T]]
 ):
     def decorate(
-        func: Callable[[Any], T],
+        func: Callable[[TFuru], T],
     ) -> _CachedDependency[T] | _UncachedDependency[T]:
         if cached:
             return _CachedDependency(func)
