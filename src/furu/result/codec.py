@@ -113,14 +113,6 @@ class ResultRegistry:
 
 
 @cache
-def resolve_result_codec(codec_id: str) -> type[ResultCodec]:
-    codec = fully_qualified_name(codec_id)
-    if not isinstance(codec, type) or not issubclass(codec, ResultCodec):
-        raise TypeError(f"{codec_id} is not a ResultCodec")
-    return codec
-
-
-@cache
 def _default_result_registry() -> ResultRegistry:
     return ResultRegistry(
         codecs=tuple(
