@@ -1,3 +1,4 @@
+import importlib.machinery
 import json
 import os
 import subprocess
@@ -995,6 +996,7 @@ def test_furu_object_defined_in_direct_src_script_can_load_or_create(
     (package / "data.py").write_text(
         """
 from furu import Furu
+from furu.metadata import ArtifactSpec
 
 
 class Data(Furu[int]):
@@ -1003,8 +1005,11 @@ class Data(Furu[int]):
 
 
 if __name__ == "__main__":
-    print(f"FQN:{Data()._fully_qualified_name}")
-    print(f"RESULT:{Data().load_or_create()}")
+    obj = Data()
+    artifact = ArtifactSpec.from_furu(obj)
+    print(f"FQN:{obj._fully_qualified_name}")
+    print(f"RESULT:{obj.load_or_create()}")
+    print(f"ROUND_TRIP:{type(Data.from_artifact(artifact)) is Data}")
 """.lstrip(),
         encoding="utf-8",
     )
@@ -1033,11 +1038,30 @@ if __name__ == "__main__":
     lines = completed.stdout.splitlines()
     assert "FQN:my_lib.data.Data" in lines
     assert "RESULT:7" in lines
+    assert "ROUND_TRIP:True" in lines
+
+
+def test_main_module_name_uses_spec_name_and_aliases_module(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    module_name = "_furu_test_main_spec.data"
+    main_module = types.ModuleType("__main__")
+    cls = type("ScriptClass", (), {"__module__": "__main__"})
+    main_module.__spec__ = importlib.machinery.ModuleSpec(module_name, loader=None)
+    main_module.__file__ = str(tmp_path / "outside.py")
+
+    monkeypatch.setitem(sys.modules, "__main__", main_module)
+    monkeypatch.setitem(sys.modules, module_name, types.ModuleType(module_name))
+
+    assert fully_qualified_name(cls) == f"{module_name}.ScriptClass"
+    assert sys.modules[module_name] is main_module
 
 
 def test_main_module_name_error_when_file_is_missing(monkeypatch: pytest.MonkeyPatch):
     cls = type("ScriptClass", (), {"__module__": "__main__"})
 
+    monkeypatch.setattr(sys.modules["__main__"], "__spec__", None, raising=False)
     monkeypatch.delattr(sys.modules["__main__"], "__file__", raising=False)
 
     with pytest.raises(ValueError, match=r"__main__\.__file__ is not set"):
@@ -1052,6 +1076,7 @@ def test_main_module_name_error_when_file_is_outside_cwd(
     cwd = tmp_path / "project"
     cwd.mkdir()
     monkeypatch.chdir(cwd)
+    monkeypatch.setattr(sys.modules["__main__"], "__spec__", None, raising=False)
     monkeypatch.setattr(sys.modules["__main__"], "__file__", str(tmp_path / "run.py"))
 
     with pytest.raises(ValueError, match="outside the current working directory"):
@@ -1064,6 +1089,7 @@ def test_main_module_name_error_when_file_is_not_a_valid_module_path(
 ):
     cls = type("ScriptClass", (), {"__module__": "__main__"})
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys.modules["__main__"], "__spec__", None, raising=False)
     monkeypatch.setattr(
         sys.modules["__main__"], "__file__", str(tmp_path / "bad-name.py")
     )
