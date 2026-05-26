@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import secrets
 import shlex
-import subprocess
 import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
+from furu.execution.api import PoolApiClient
+from furu.resources import ResourceRequest
 from furu.utils import write_private_file
 from furu.worker.backends.slurm.pool import SlurmWorkerPool
 from furu.worker.backends.slurm.resources import SlurmResources
@@ -14,7 +16,7 @@ from furu.worker.backends.slurm.resources import SlurmResources
 
 @dataclass(frozen=True, slots=True)
 class SlurmWorkerBackend:
-    n_workers: int
+    max_workers: int
     resources: SlurmResources
     worker_connect_host: str
     manager_listen_host: str = "0.0.0.0"
@@ -40,51 +42,11 @@ class SlurmWorkerBackend:
         token_file = worker_dir / f"worker-{secrets.token_hex(16)}.token"
         write_private_file(token_file, auth_token, mode=0o600)
 
-        array_job_id = self._launch_jobs(
-            chdir=chdir,
-            token_file=token_file,
-            worker_dir=worker_dir,
-            server_url=server_url,
+        resource_request = ResourceRequest(
+            cpus=self.resources.cpus_per_worker,
+            gpus=self.resources.gpus,
         )
 
-        return SlurmWorkerPool(
-            array_job_id=array_job_id,
-            n_workers=self.n_workers,
-            poll_interval=self.poll_interval,
-        )
-
-    def _launch_jobs(
-        self, chdir: Path, token_file: Path, worker_dir: Path, server_url: str
-    ) -> str:
-        script_path = self._write_sbatch_script(
-            worker_dir=worker_dir, token_file=token_file, server_url=server_url
-        )
-
-        log_dir = worker_dir / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        result = subprocess.run(
-            [
-                "sbatch",
-                "--parsable",
-                f"--chdir={chdir}",
-                f"--output={log_dir / 'furu-worker-%A-%a.out'}",
-                f"--error={log_dir / 'furu-worker-%A-%a.err'}",
-                f"--job-name={self.job_name}",
-                f"--array=0-{self.n_workers - 1}",
-                *self.resources.to_sbatch_args(),
-                "--export=NIL",
-                str(script_path),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        array_job_id = result.stdout.strip().split(";", maxsplit=1)[0]
-        return array_job_id
-
-    def _write_sbatch_script(
-        self, *, worker_dir: Path, token_file: Path, server_url: str
-    ) -> Path:
         scripts_dir = worker_dir / "scripts"
         scripts_dir.mkdir(parents=True, exist_ok=True)
         script_path = scripts_dir / f"worker-{secrets.token_hex(16)}.sh"
@@ -94,10 +56,44 @@ class SlurmWorkerBackend:
                 "#!/bin/bash\n"
                 "set -euo pipefail\n"
                 "\n"
-                f"exec {shlex.quote(sys.executable)} -m furu.worker.cli \\\n"
+                f"exec {shlex.quote(sys.executable)} -m furu.worker._cli \\\n"
                 f"    --server-url {shlex.quote(server_url)} \\\n"
-                f"    --auth-token-file {shlex.quote(str(token_file))}\n"
+                f"    --auth-token-file {shlex.quote(str(token_file))} \\\n"
+                f"    --resource-cpus {resource_request.cpus} \\\n"
+                f"    --resource-gpus {resource_request.gpus}\n"
             ),
             mode=0o700,
         )
-        return script_path
+
+        log_dir = worker_dir / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        sbatch_base_args = (
+            f"--chdir={chdir}",
+            f"--output={log_dir / 'furu-worker-%j.out'}",
+            f"--error={log_dir / 'furu-worker-%j.err'}",
+            f"--job-name={self.job_name}",
+            *self.resources.to_sbatch_args(),
+            "--export=NIL",
+        )
+
+        pool_holder: list[SlurmWorkerPool] = []
+        pool = SlurmWorkerPool(
+            _sbatch_base_args=sbatch_base_args,
+            _script_path=script_path,
+            _max_workers=self.max_workers,
+            _resource_request=resource_request,
+            _server_url=server_url,
+            _auth_token=auth_token,
+            _poll_interval=self.poll_interval,
+            _client=PoolApiClient(server_url=server_url, auth_token=auth_token),
+            _stop_event=threading.Event(),
+            _scale_thread=threading.Thread(
+                target=lambda: pool_holder[0]._scale_loop(),
+                name="furu-slurm-worker-pool-scale",
+            ),
+            _job_ids=[],
+        )
+        pool_holder.append(pool)
+        pool._scale_thread.start()
+        return pool

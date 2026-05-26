@@ -1,6 +1,7 @@
+import threading
 from pathlib import Path
-from typing import Any, cast
-from uuid import UUID
+from typing import Any, ClassVar, cast
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -19,6 +20,7 @@ from furu.execution.manager import (
 )
 from furu.execution.server import _run_until_done, manager_server
 from furu.metadata import ArtifactSpec
+from furu.resources import ResourceRequest, ResourceRequirements
 from furu._storage_layout import manager_log_path_in
 from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
 from furu.worker.loop import worker_loop
@@ -30,6 +32,37 @@ from furu.worker.protocol import (
     JobResultRequest,
     LeaseJobResponse,
 )
+
+
+ANY_RESOURCES = ResourceRequest()
+
+
+def _new_local_pool(
+    *,
+    server_url: str = "http://manager.test",
+    auth_token: str = "secret",
+    max_workers: int = 1,
+    resource_request: ResourceRequest | None = None,
+    scale_interval: float = 1.0,
+) -> LocalThreadWorkerPool:
+    pool_holder: list[LocalThreadWorkerPool] = []
+    pool = LocalThreadWorkerPool(
+        _server_url=server_url,
+        _auth_token=auth_token,
+        _max_workers=max_workers,
+        _resource_request=resource_request or ResourceRequest(),
+        _scale_interval=scale_interval,
+        _client=api.PoolApiClient(server_url=server_url, auth_token=auth_token),
+        _stop_event=threading.Event(),
+        _unhealthy_event=threading.Event(),
+        _scale_thread=threading.Thread(
+            target=lambda: pool_holder[0]._scale_loop(),
+            name="furu-local-worker-pool-scale",
+        ),
+        _threads=[],
+    )
+    pool_holder.append(pool)
+    return pool
 
 
 class ManagerLeaf(Furu[int]):
@@ -85,7 +118,7 @@ def test_manager_job_result_completed_moves_dependents_to_ready() -> None:
     parent = ManagerParent(child=leaf)
     manager = Manager([parent])
 
-    job = manager.lease_job()
+    job = manager.lease_job(resources=ANY_RESOURCES)
     assert isinstance(job, Job)
     assert job.lease_id != leaf.object_id
     assert UUID(job.lease_id).version == 4
@@ -109,10 +142,10 @@ def test_manager_lease_job_returns_wait_when_only_running_jobs_can_unblock_work(
     parent = ManagerParent(child=leaf)
     manager = Manager([parent])
 
-    job = manager.lease_job()
+    job = manager.lease_job(resources=ANY_RESOURCES)
     assert isinstance(job, Job)
 
-    assert manager.lease_job() == "wait"
+    assert manager.lease_job(resources=ANY_RESOURCES) == "wait"
     assert not manager.done.is_set()
 
 
@@ -123,7 +156,7 @@ def test_manager_job_result_blocked_discovers_lazy_dependency_and_reruns_parent(
     dependency = ManagerLeaf(value=2)
     manager = Manager([parent])
 
-    parent_job = manager.lease_job()
+    parent_job = manager.lease_job(resources=ANY_RESOURCES)
     assert isinstance(parent_job, Job)
     assert parent_job.lease_id != parent.object_id
 
@@ -135,7 +168,7 @@ def test_manager_job_result_blocked_discovers_lazy_dependency_and_reruns_parent(
     assert set(manager.ready) == {dependency.object_id}
     assert set(manager.blocked) == {parent.object_id}
 
-    dependency_job = manager.lease_job()
+    dependency_job = manager.lease_job(resources=ANY_RESOURCES)
     assert isinstance(dependency_job, Job)
     manager.job_result(dependency_job.lease_id, JobCompletedResult())
 
@@ -149,7 +182,7 @@ def test_manager_job_result_blocked_ignores_completed_lazy_dependency() -> None:
     dependency.load_or_create()
     manager = Manager([parent])
 
-    parent_job = manager.lease_job()
+    parent_job = manager.lease_job(resources=ANY_RESOURCES)
     assert isinstance(parent_job, Job)
 
     manager.job_result(
@@ -169,7 +202,7 @@ def test_manager_job_result_blocked_discovers_multiple_lazy_dependencies_togethe
     dependencies = [ManagerLeaf(value=2), ManagerLeaf(value=3)]
     manager = Manager([parent])
 
-    parent_job = manager.lease_job()
+    parent_job = manager.lease_job(resources=ANY_RESOURCES)
     assert isinstance(parent_job, Job)
 
     manager.job_result(
@@ -198,7 +231,7 @@ def test_manager_uses_new_lease_when_blocked_job_is_released() -> None:
     dependency = ManagerLeaf(value=2)
     manager = Manager([parent])
 
-    first_parent_job = manager.lease_job()
+    first_parent_job = manager.lease_job(resources=ANY_RESOURCES)
     assert isinstance(first_parent_job, Job)
 
     manager.job_result(
@@ -206,11 +239,11 @@ def test_manager_uses_new_lease_when_blocked_job_is_released() -> None:
         JobBlockedResult(dependencies=[ArtifactSpec.from_furu(dependency)]),
     )
 
-    dependency_job = manager.lease_job()
+    dependency_job = manager.lease_job(resources=ANY_RESOURCES)
     assert isinstance(dependency_job, Job)
     manager.job_result(dependency_job.lease_id, JobCompletedResult())
 
-    second_parent_job = manager.lease_job()
+    second_parent_job = manager.lease_job(resources=ANY_RESOURCES)
     assert isinstance(second_parent_job, Job)
     assert second_parent_job.lease_id != first_parent_job.lease_id
     assert second_parent_job.artifact.object_id == parent.object_id
@@ -222,7 +255,7 @@ def test_manager_uses_new_lease_when_blocked_job_is_released() -> None:
 def test_manager_job_result_failed_finishes_with_error() -> None:
     leaf = ManagerLeaf(value=1)
     manager = Manager([leaf])
-    job = manager.lease_job()
+    job = manager.lease_job(resources=ANY_RESOURCES)
     assert isinstance(job, Job)
 
     manager.job_result(job.lease_id, JobFailedResult(error="boom"))
@@ -242,6 +275,260 @@ def test_manager_job_result_failed_finishes_with_error() -> None:
         manager.raise_for_failure()
 
 
+class GpuLeaf(Furu[int]):
+    value: int
+
+    @property
+    def resource_requirements(self) -> ResourceRequirements | None:
+        return ResourceRequirements(gpus=(1, None))
+
+    def create(self) -> int:
+        return self.value
+
+
+class CpuOnlyLeaf(Furu[int]):
+    value: int
+
+    @property
+    def resource_requirements(self) -> ResourceRequirements | None:
+        return ResourceRequirements(gpus=(0, 0))
+
+    def create(self) -> int:
+        return self.value
+
+
+class DynamicCpuSeed(Furu[int]):
+    value: int
+    create_calls: ClassVar[list[int]] = []
+
+    @property
+    def resource_requirements(self) -> ResourceRequirements | None:
+        return ResourceRequirements(gpus=(0, 0))
+
+    def create(self) -> int:
+        type(self).create_calls.append(self.value)
+        return self.value
+
+
+class DynamicGpuAfterSeed(Furu[int]):
+    parent: DynamicCpuSeed
+    value: int
+    create_calls: ClassVar[list[int]] = []
+
+    @property
+    def resource_requirements(self) -> ResourceRequirements | None:
+        return ResourceRequirements(gpus=(1, None))
+
+    def create(self) -> int:
+        type(self).create_calls.append(self.value)
+        return self.parent.load_or_create() + self.value
+
+
+class DynamicCpuAfterGpu(Furu[int]):
+    parent: DynamicGpuAfterSeed
+    value: int
+    create_calls: ClassVar[list[int]] = []
+
+    @property
+    def resource_requirements(self) -> ResourceRequirements | None:
+        return ResourceRequirements(gpus=(0, 0))
+
+    def create(self) -> int:
+        type(self).create_calls.append(self.value)
+        return self.parent.load_or_create() + self.value
+
+
+class DynamicGpuAfterCpu(Furu[int]):
+    parent: DynamicCpuAfterGpu
+    value: int
+    create_calls: ClassVar[list[int]] = []
+
+    @property
+    def resource_requirements(self) -> ResourceRequirements | None:
+        return ResourceRequirements(gpus=(1, None))
+
+    def create(self) -> int:
+        type(self).create_calls.append(self.value)
+        return self.parent.load_or_create() + self.value
+
+
+def test_count_satisfiable_jobs_caps_at_max_workers_and_filters_by_requirements() -> (
+    None
+):
+    manager = Manager([ManagerLeaf(value=1), ManagerLeaf(value=2), GpuLeaf(value=3)])
+
+    assert (
+        manager.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=10) == 2
+    )
+    assert (
+        manager.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=1) == 1
+    )
+    assert (
+        manager.count_satisfiable_jobs(
+            resources=ResourceRequest(gpus=1), max_workers=10
+        )
+        == 3
+    )
+
+
+def test_lease_job_filters_by_worker_resources() -> None:
+    cpu_leaf = CpuOnlyLeaf(value=1)
+    gpu_leaf = GpuLeaf(value=2)
+    manager = Manager([cpu_leaf, gpu_leaf])
+
+    cpu_job = manager.lease_job(resources=ResourceRequest(gpus=0))
+    assert isinstance(cpu_job, Job)
+    assert cpu_job.artifact.object_id == cpu_leaf.object_id
+
+    assert manager.lease_job(resources=ResourceRequest(gpus=0)) == "wait"
+
+    gpu_job = manager.lease_job(resources=ResourceRequest(gpus=1))
+    assert isinstance(gpu_job, Job)
+    assert gpu_job.artifact.object_id == gpu_leaf.object_id
+
+
+def test_manager_run_dynamically_allocates_local_workers_for_later_resource_stages() -> (
+    None
+):
+    for cls in (
+        DynamicCpuSeed,
+        DynamicGpuAfterSeed,
+        DynamicCpuAfterGpu,
+        DynamicGpuAfterCpu,
+    ):
+        cls.create_calls.clear()
+
+    seed_value = uuid4().int
+    seed = DynamicCpuSeed(value=seed_value)
+    first_gpu = DynamicGpuAfterSeed(parent=seed, value=20)
+    second_cpu = DynamicCpuAfterGpu(parent=first_gpu, value=30)
+    final_gpus = [
+        DynamicGpuAfterCpu(parent=second_cpu, value=value) for value in range(4)
+    ]
+
+    Manager(final_gpus).run(
+        worker_backends=(
+            LocalThreadWorkerBackend(
+                max_workers=1,
+                resource_request=ResourceRequest(gpus=0),
+            ),
+            LocalThreadWorkerBackend(
+                max_workers=3,
+                resource_request=ResourceRequest(gpus=1),
+            ),
+        )
+    )
+
+    assert DynamicCpuSeed.create_calls == [seed_value]
+    assert DynamicGpuAfterSeed.create_calls == [20]
+    assert DynamicCpuAfterGpu.create_calls == [30]
+    assert sorted(DynamicGpuAfterCpu.create_calls) == [0, 1, 2, 3]
+    assert [obj.load_or_create() for obj in final_gpus] == [
+        seed_value + 50 + value for value in range(4)
+    ]
+
+
+def test_local_pool_scale_spawns_workers_up_to_max_as_satisfiable_count_grows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    counts = iter([0, 2, 10, 10])
+
+    def fake_count(
+        self: api.PoolApiClient, *, resources: object, max_workers: int
+    ) -> int:
+        return min(next(counts), max_workers)
+
+    monkeypatch.setattr(api.PoolApiClient, "count_satisfiable_jobs", fake_count)
+    monkeypatch.setattr(
+        worker_loop_module,
+        "worker_loop",
+        lambda *, server_url, auth_token, resource_request: None,
+    )
+
+    pool = _new_local_pool(max_workers=3)
+
+    pool._scale_once()
+    assert len(pool._threads) == 0
+
+    pool._scale_once()
+    assert len(pool._threads) == 2
+
+    pool._scale_once()
+    assert len(pool._threads) == 3
+
+    pool._scale_once()
+    assert len(pool._threads) == 3
+
+
+def test_local_pool_scale_uses_unique_worker_names_after_worker_exits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker_started = threading.Semaphore(0)
+    release_workers = threading.Event()
+    calls = 0
+
+    def fake_count(
+        self: api.PoolApiClient, *, resources: object, max_workers: int
+    ) -> int:
+        return max_workers
+
+    def worker_loop(
+        *, server_url: str, auth_token: str, resource_request: ResourceRequest
+    ) -> None:
+        nonlocal calls
+        calls += 1
+        worker_started.release()
+        if calls > 1:
+            release_workers.wait(timeout=5)
+
+    monkeypatch.setattr(api.PoolApiClient, "count_satisfiable_jobs", fake_count)
+    monkeypatch.setattr(worker_loop_module, "worker_loop", worker_loop)
+
+    pool = _new_local_pool(max_workers=3)
+
+    try:
+        pool._scale_once()
+        for _ in range(3):
+            assert worker_started.acquire(timeout=5)
+        pool._threads[0].join(timeout=5)
+
+        pool._scale_once()
+        assert worker_started.acquire(timeout=5)
+
+        worker_names = [thread.name for thread in pool._threads]
+        assert len(set(worker_names)) == 3
+        assert all(name.startswith("furu-worker-") for name in worker_names)
+    finally:
+        release_workers.set()
+        for thread in pool._threads:
+            thread.join(timeout=5)
+
+
+def test_manager_run_fails_when_worker_pool_reports_unhealthy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def crashing_worker_loop(
+        *, server_url: str, auth_token: str, resource_request: ResourceRequest
+    ) -> None:
+        raise RuntimeError("worker boom")
+
+    monkeypatch.setattr(worker_loop_module, "worker_loop", crashing_worker_loop)
+
+    leaf = ManagerLeaf(value=42)
+    manager = Manager([leaf])
+
+    with pytest.raises(RuntimeError, match="local worker pool became unhealthy"):
+        manager.run(
+            worker_backends=(
+                LocalThreadWorkerBackend(
+                    max_workers=1,
+                    resource_request=ResourceRequest(),
+                    scale_interval=0.05,
+                ),
+            )
+        )
+
+
 def test_manager_run_uses_worker_backend() -> None:
     class RecordingBackend:
         manager_listen_host = "0.0.0.0"
@@ -259,10 +546,14 @@ def test_manager_run_uses_worker_backend() -> None:
         ) -> LocalThreadWorkerPool:
             self.server_urls.append(server_url)
             self.auth_tokens.append(auth_token)
-            return LocalThreadWorkerPool(
+            return LocalThreadWorkerBackend(
+                max_workers=1,
+                resource_request=ResourceRequest(),
+                scale_interval=1.0,
+            ).start_pool(
                 server_url=server_url,
                 auth_token=auth_token,
-                n_workers=1,
+                executor_dir=executor_dir,
             )
 
     leaf = ManagerLeaf(value=11)
@@ -293,10 +584,14 @@ def test_manager_run_passes_executor_dir_to_worker_backend() -> None:
             executor_dir: Path,
         ) -> LocalThreadWorkerPool:
             self.executor_dirs.append(executor_dir)
-            return LocalThreadWorkerPool(
+            return LocalThreadWorkerBackend(
+                max_workers=1,
+                resource_request=ResourceRequest(),
+                scale_interval=1.0,
+            ).start_pool(
                 server_url=server_url,
                 auth_token=auth_token,
-                n_workers=1,
+                executor_dir=executor_dir,
             )
 
     leaf = ManagerLeaf(value=12)
@@ -327,28 +622,23 @@ def test_manager_run_writes_log_to_executor_dir() -> None:
     assert "furu manager finished successfully" in log_text
 
 
-def test_manager_run_waits_using_worker_pool_health_check_interval() -> None:
+def test_manager_run_starts_backend_pool_and_stops_and_joins_when_done() -> None:
     class RecordingDone:
         def __init__(self) -> None:
-            self.timeouts: list[float | None] = []
+            self.wait_calls = 0
 
         def wait(self, timeout: float | None = None) -> bool:
-            self.timeouts.append(timeout)
+            self.wait_calls += 1
             return True
 
     class RecordingPool:
-        health_check_interval = 2.5
-
         def __init__(self) -> None:
-            self.health_checks = 0
-            self.join_timeouts: list[float] = []
+            self.events: list[str] = []
+            self.stop_timeouts: list[float] = []
 
-        def is_healthy(self) -> bool:
-            self.health_checks += 1
-            return True
-
-        def join(self, *, timeout: float) -> None:
-            self.join_timeouts.append(timeout)
+        def stop(self, *, timeout: float) -> None:
+            self.events.append("stop")
+            self.stop_timeouts.append(timeout)
 
     class RecordingBackend:
         manager_listen_host = "127.0.0.1"
@@ -363,6 +653,7 @@ def test_manager_run_waits_using_worker_pool_health_check_interval() -> None:
             auth_token: str,
             executor_dir: Path,
         ) -> RecordingPool:
+            self.pool.events.append("start_pool")
             return self.pool
 
     manager = Manager([ManagerLeaf(value=13)])
@@ -376,9 +667,9 @@ def test_manager_run_waits_using_worker_pool_health_check_interval() -> None:
         port=0,
     )
 
-    assert done.timeouts == [pytest.approx(2.5, abs=0.5)]
-    assert pool.health_checks == 0
-    assert pool.join_timeouts == [5]
+    assert done.wait_calls == 1
+    assert pool.events == ["start_pool", "stop"]
+    assert pool.stop_timeouts == [5]
 
 
 def test_run_until_done_uses_worker_backend_manager_listen_host() -> None:
@@ -387,12 +678,7 @@ def test_run_until_done_uses_worker_backend_manager_listen_host() -> None:
             return True
 
     class RecordingPool:
-        health_check_interval = 1.0
-
-        def is_healthy(self) -> bool:
-            return True
-
-        def join(self, *, timeout: float) -> None:
+        def stop(self, *, timeout: float) -> None:
             pass
 
     class RecordingBackend:
@@ -434,20 +720,21 @@ def test_manager_server_rejects_requests_without_auth_token() -> None:
     manager = Manager([ManagerLeaf(value=12)])
 
     with manager_server(manager, bind_host="127.0.0.1", port=0) as server:
-        response = httpx.post(f"{server.server_url}/lease_job")
+        response = httpx.post(f"{server.server_url}/worker/lease_job")
         assert response.status_code == 401
         assert response.json() == {"detail": "invalid furu manager auth token"}
 
         response = httpx.post(
-            f"{server.server_url}/lease_job",
+            f"{server.server_url}/worker/lease_job",
             headers={"Authorization": "Bearer wrong"},
         )
         assert response.status_code == 401
         assert response.json() == {"detail": "invalid furu manager auth token"}
 
         response = httpx.post(
-            f"{server.server_url}/lease_job",
+            f"{server.server_url}/worker/lease_job",
             headers={"Authorization": f"Bearer {server.auth_token}"},
+            json={"resources": {"cpus": 1, "gpus": 0}},
         )
         assert response.status_code == 200
 
@@ -499,7 +786,11 @@ def test_job_result_request_uses_status_discriminator() -> None:
 
 def test_worker_loop_raises_when_server_is_unavailable() -> None:
     with pytest.raises(httpx.ConnectError):
-        worker_loop(server_url="http://127.0.0.1:1", auth_token="test-token")
+        worker_loop(
+            server_url="http://127.0.0.1:1",
+            auth_token="test-token",
+            resource_request=ResourceRequest(),
+        )
 
 
 def test_worker_loop_does_not_swallow_keyboard_interrupt(
@@ -510,12 +801,15 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
 
     class TestClient:
         calls: list[str]
+        lease_resources: list[ResourceRequest]
 
         def __init__(self, server_url: str, *, auth_token: str) -> None:
             self.calls = []
+            self.lease_resources = []
 
-        def lease_job(self) -> LeaseJobResponse:
+        def lease_job(self, *, resources: ResourceRequest) -> LeaseJobResponse:
             self.calls.append("lease_job")
+            self.lease_resources.append(resources)
             return job
 
         def job_result(self, lease_id: str, request: JobResultRequest) -> None:
@@ -527,7 +821,7 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
     test_client = TestClient("http://worker.test", auth_token="test-token")
     monkeypatch.setattr(
         api,
-        "ManagerApiClient",
+        "WorkerApiClient",
         lambda server_url, *, auth_token: test_client,
     )
     monkeypatch.setattr(
@@ -535,9 +829,14 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
     )
 
     with pytest.raises(KeyboardInterrupt):
-        worker_loop(server_url="http://worker.test", auth_token="test-token")
+        worker_loop(
+            server_url="http://worker.test",
+            auth_token="test-token",
+            resource_request=ResourceRequest(gpus=1),
+        )
 
     assert test_client.calls == ["lease_job"]
+    assert test_client.lease_resources == [ResourceRequest(gpus=1)]
 
 
 def test_client_job_result_uses_job_result_endpoint(
@@ -560,14 +859,14 @@ def test_client_job_result_uses_job_result_endpoint(
 
     monkeypatch.setattr(httpx, "request", request)
 
-    api.ManagerApiClient("http://worker.test/", auth_token="secret-token").job_result(
-        "lease-1", JobBlockedResult(dependencies=[])
-    )
+    api.WorkerApiClient(
+        server_url="http://worker.test/", auth_token="secret-token"
+    ).job_result("lease-1", JobBlockedResult(dependencies=[]))
 
     assert requests == [
         (
             "POST",
-            "http://worker.test/job_result/lease-1",
+            "http://worker.test/worker/job_result/lease-1",
             {"Authorization": "Bearer secret-token"},
             {"status": "blocked", "dependencies": []},
         )
@@ -592,12 +891,9 @@ def test_client_job_result_rejects_non_ok_response(
     monkeypatch.setattr(httpx, "request", request)
 
     with pytest.raises(ValidationError, match="Input should be True"):
-        api.ManagerApiClient(
-            "http://worker.test", auth_token="secret-token"
-        ).job_result(
-            "lease-1",
-            JobCompletedResult(),
-        )
+        api.WorkerApiClient(
+            server_url="http://worker.test", auth_token="secret-token"
+        ).job_result("lease-1", JobCompletedResult())
 
 
 def test_client_lease_job_rejects_empty_response(
@@ -616,12 +912,12 @@ def test_client_lease_job_rejects_empty_response(
     monkeypatch.setattr(httpx, "request", request)
 
     with pytest.raises(RuntimeError, match="returned an empty response"):
-        api.ManagerApiClient(
-            "http://worker.test", auth_token="secret-token"
-        ).lease_job()
+        api.WorkerApiClient(
+            server_url="http://worker.test", auth_token="secret-token"
+        ).lease_job(resources=ANY_RESOURCES)
 
 
-def test_client_lease_job_posts_to_lease_job_endpoint(
+def test_client_lease_job_posts_resource_request_to_lease_job_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     leaf = ManagerLeaf(value=1)
@@ -647,18 +943,18 @@ def test_client_lease_job_posts_to_lease_job_endpoint(
 
     monkeypatch.setattr(httpx, "request", request)
 
-    job = api.ManagerApiClient(
-        "http://worker.test/",
+    job = api.WorkerApiClient(
+        server_url="http://worker.test/",
         auth_token="secret-token",
-    ).lease_job()
+    ).lease_job(resources=ResourceRequest(cpus=2, gpus=1))
 
     assert isinstance(job, Job)
     assert requests == [
         (
             "POST",
-            "http://worker.test/lease_job",
+            "http://worker.test/worker/lease_job",
             {"Authorization": "Bearer secret-token"},
-            None,
+            {"resources": {"cpus": 2, "gpus": 1}},
         )
     ]
 
@@ -667,7 +963,7 @@ def test_manager_api_rejects_missing_auth_token() -> None:
     app = create_manager_api_app(Manager([ManagerLeaf(value=1)]), auth_token="secret")
     client = TestClient(app)
 
-    response = client.post("/lease_job")
+    response = client.post("/worker/lease_job")
 
     assert response.status_code == 401
     assert response.json() == {"detail": "invalid furu manager auth token"}
@@ -678,7 +974,7 @@ def test_manager_api_rejects_wrong_auth_token() -> None:
     client = TestClient(app)
 
     response = client.post(
-        "/lease_job",
+        "/worker/lease_job",
         headers={"Authorization": "Bearer wrong"},
     )
 
@@ -686,13 +982,32 @@ def test_manager_api_rejects_wrong_auth_token() -> None:
     assert response.json() == {"detail": "invalid furu manager auth token"}
 
 
+def test_manager_api_fail_endpoint_sets_finish_error_and_done() -> None:
+    manager = Manager([ManagerLeaf(value=1)])
+    app = create_manager_api_app(manager, auth_token="secret")
+    client = TestClient(app)
+
+    response = client.post(
+        "/pool/fail",
+        headers={"Authorization": "Bearer secret"},
+        json={"message": "pool broke"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    assert manager.done.is_set()
+    with pytest.raises(RuntimeError, match="pool broke"):
+        manager.raise_for_failure()
+
+
 def test_manager_api_accepts_matching_auth_token() -> None:
     app = create_manager_api_app(Manager([ManagerLeaf(value=1)]), auth_token="secret")
     client = TestClient(app)
 
     response = client.post(
-        "/lease_job",
+        "/worker/lease_job",
         headers={"Authorization": "Bearer secret"},
+        json={"resources": {"cpus": 1, "gpus": 0}},
     )
 
     assert response.status_code == 200

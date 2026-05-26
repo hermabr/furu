@@ -1,41 +1,91 @@
 from __future__ import annotations
 
 import subprocess
+import threading
 import time
+import traceback
+from dataclasses import dataclass
+from pathlib import Path
+
+from furu.execution.api import PoolApiClient
+from furu.logging import get_logger
+from furu.resources import ResourceRequest
+
+logger = get_logger()
+
+_UNFINISHED_STATES = frozenset(
+    {
+        "COMPLETING",
+        "PENDING",
+        "PREEMPTED",
+        "READY",
+        "REQUEUED",
+        "RUNNING",
+        "UNKNOWN",
+    }
+)
 
 
+@dataclass(frozen=True, slots=True)
 class SlurmWorkerPool:
-    def __init__(
-        self,
-        *,
-        array_job_id: str,
-        n_workers: int,
-        poll_interval: float,
-    ) -> None:
-        self.array_job_id = array_job_id
-        self.n_workers = n_workers
-        self._poll_interval = poll_interval
+    _sbatch_base_args: tuple[str, ...]
+    _script_path: Path
+    _max_workers: int
+    _resource_request: ResourceRequest
+    _server_url: str
+    _auth_token: str
+    _poll_interval: float
+    _client: PoolApiClient
+    _stop_event: threading.Event
+    _scale_thread: threading.Thread
+    _job_ids: list[str]
 
-    @property
-    def health_check_interval(self) -> float:
-        return self._poll_interval
+    def stop(self, *, timeout: float) -> None:
+        self._stop_event.set()
+        self._scale_thread.join(timeout=timeout)
 
-    def is_healthy(self) -> bool:
-        return self._unfinished_task_ids() == set(range(self.n_workers))
-
-    def join(self, *, timeout: float) -> None:
         deadline = time.monotonic() + timeout
-        while self._unfinished_task_ids() and time.monotonic() < deadline:
-            time.sleep(min(self._poll_interval, deadline - time.monotonic()))
-        if self._unfinished_task_ids():
+        has_unfinished = any(
+            state in _UNFINISHED_STATES for state in self._task_states().values()
+        )
+        while has_unfinished and time.monotonic() < deadline:
+            time.sleep(min(self._poll_interval, max(0.0, deadline - time.monotonic())))
+        if has_unfinished:
             subprocess.run(
-                ["scancel", self.array_job_id],
+                ["scancel", *self._job_ids],
                 check=False,
                 capture_output=True,
                 text=True,
             )
 
-    def _unfinished_task_ids(self) -> set[int]:
+    def _scale_once(self) -> None:
+        if len(self._job_ids) >= self._max_workers:
+            return
+
+        to_spawn = self._client.count_satisfiable_jobs(
+            resources=self._resource_request,
+            max_workers=self._max_workers - len(self._job_ids),
+        )
+        for _ in range(to_spawn):
+            result = subprocess.run(
+                [
+                    "sbatch",
+                    "--parsable",
+                    *self._sbatch_base_args,
+                    str(self._script_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            job_id = result.stdout.strip().split(";", maxsplit=1)[0]
+            self._job_ids.append(job_id)
+
+    def _task_states(self) -> dict[str, str]:
+        if not self._job_ids:
+            return {}
+
+        known_job_ids = set(self._job_ids)
         result = subprocess.run(
             [
                 "sacct",
@@ -43,34 +93,47 @@ class SlurmWorkerPool:
                 "JobID,State,NodeList",
                 "--parsable2",
                 "-j",
-                self.array_job_id,
+                ",".join(self._job_ids),
             ],
             check=True,
             capture_output=True,
             text=True,
         )
-        unfinished_task_ids: set[int] = set()
+        states: dict[str, str] = {}
         for line in result.stdout.splitlines()[1:]:
             job_id, state, _node_list = line.split("|")
-            if "." in job_id:
+            if "." in job_id or "_" in job_id:
                 raise RuntimeError(
                     f"Unexpected Slurm job step in sacct output: {job_id}"
                 )
-            array_job_id, separator, task_id = job_id.partition("_")
-            if array_job_id != self.array_job_id or not separator:
+            if job_id not in known_job_ids:
                 raise ValueError(f"unexpected Slurm job id: {job_id!r}")
-            if not task_id.isdecimal():
-                raise RuntimeError(
-                    f"Unexpected Slurm job step in sacct output: {line!r}"
-                )
-            if state.upper() in {
-                "COMPLETING",
-                "PENDING",
-                "PREEMPTED",
-                "READY",
-                "REQUEUED",
-                "RUNNING",
-                "UNKNOWN",
-            }:
-                unfinished_task_ids.add(int(task_id))
-        return unfinished_task_ids
+            states[job_id] = state.upper()
+        return states
+
+    def _scale_loop(self) -> None:
+        try:
+            if self._stop_event.is_set():
+                return
+            self._scale_once()
+            while not self._stop_event.wait(timeout=self._poll_interval):
+                self._scale_once()
+                if any(
+                    state not in _UNFINISHED_STATES
+                    and state not in frozenset({"COMPLETED"})
+                    for state in self._task_states().values()
+                ):
+                    self._report_failure("slurm worker pool became unhealthy")
+                    return
+        except Exception as exc:
+            self._report_failure(
+                "slurm worker pool scale loop crashed: "
+                + "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+            )
+
+    def _report_failure(self, message: str) -> None:
+        logger.error("slurm worker pool failure: %s", message)
+        try:
+            self._client.fail(message=message)
+        except Exception:
+            logger.exception("failed to report slurm worker pool failure to manager")

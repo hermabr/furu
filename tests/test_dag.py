@@ -336,7 +336,7 @@ def test_manager_run_handles_shared_dependency_only_once():
 def test_manager_run_with_multiple_workers_runs_independent_nodes():
     leaves = [TrackingLeaf(n=i) for i in range(8)]
 
-    Manager(leaves).run(worker_backends=(LocalThreadWorkerBackend(n_workers=4),))
+    Manager(leaves).run(worker_backends=(LocalThreadWorkerBackend(max_workers=4),))
 
     assert sorted(TrackingLeaf.create_calls) == list(range(8))
     for leaf in leaves:

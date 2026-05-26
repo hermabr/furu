@@ -28,25 +28,14 @@ class MemoryPerGpu:
 
 
 @dataclass(frozen=True, slots=True)
-class Gpus:
-    count: int
-    kind: str | None = None
-
-    def to_sbatch_arg(self) -> str:
-        if self.kind is None:
-            return f"--gpus={self.count}"
-        return f"--gpus={self.kind}:{self.count}"
-
-
-@dataclass(frozen=True, slots=True)
 class SlurmResources:
+    cpus_per_worker: int
     account: str | None = None
     partition: str | None = None
     qos: str | None = None
     time_limit: str | None = None
-    cpus_per_worker: int | None = None
     memory: MemoryPerNode | MemoryPerCpu | MemoryPerGpu | None = None
-    gpus: Gpus | None = None
+    gpus: int = 0
     constraint: str | None = None
     extra_sbatch_args: tuple[str, ...] = ()
 
@@ -60,12 +49,11 @@ class SlurmResources:
             args.append(f"--qos={self.qos}")
         if self.time_limit is not None:
             args.append(f"--time={self.time_limit}")
-        if self.cpus_per_worker is not None:
-            args.append(f"--cpus-per-task={self.cpus_per_worker}")
+        args.append(f"--cpus-per-task={self.cpus_per_worker}")
         if self.memory is not None:
             args.append(self.memory.to_sbatch_arg())
-        if self.gpus is not None:
-            args.append(self.gpus.to_sbatch_arg())
+        if self.gpus > 0:
+            args.append(f"--gpus={self.gpus}")
         if self.constraint is not None:
             args.append(f"--constraint={self.constraint}")
         args.extend(self.extra_sbatch_args)

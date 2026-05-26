@@ -4,6 +4,7 @@ import socket
 import threading
 import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 from secrets import token_urlsafe
@@ -102,41 +103,18 @@ def _run_until_done(
                 "manager server listening: server_url=%s",
                 server.server_url,
             )
-            worker_pools: list[tuple[WorkerBackend, WorkerPool]] = []
+            pools: list[WorkerPool] = []
             for backend in worker_backends:
                 pool = backend.start_pool(
                     server_url=server.server_url,
                     auth_token=server.auth_token,
                     executor_dir=manager.executor_dir,
                 )
-                worker_pools.append((backend, pool))
-                logger.info(
-                    "worker pool started: backend=%s health_check_interval=%s",
-                    type(backend).__name__,
-                    pool.health_check_interval,
-                )
-            next_check_at = [
-                time.monotonic() + pool.health_check_interval
-                for _, pool in worker_pools
-            ]
-            while not manager.done.wait(
-                timeout=max(0.0, min(next_check_at) - time.monotonic())
-            ):
-                now = time.monotonic()
-                unhealthy: list[str] = []
-                for idx, (backend, pool) in enumerate(worker_pools):
-                    if now < next_check_at[idx]:
-                        continue
-                    if not pool.is_healthy():
-                        unhealthy.append(type(backend).__name__)
-                    next_check_at[idx] = now + pool.health_check_interval
-                if unhealthy:
-                    manager.fail(
-                        "worker backend(s) became unhealthy before manager "
-                        f"run completed: {', '.join(unhealthy)}"
-                    )
-                    break
-            for backend, pool in worker_pools:
-                pool.join(timeout=5)
-                logger.debug("worker pool joined: backend=%s", type(backend).__name__)
+                pools.append(pool)
+                logger.info("worker pool started: backend=%s", type(backend).__name__)
+            manager.done.wait()
+
+            with ThreadPoolExecutor(max_workers=len(pools)) as executor:
+                for pool in pools:
+                    executor.submit(pool.stop, timeout=5)
     manager.raise_for_failure()
