@@ -46,13 +46,12 @@ def fully_qualified_name(value: object) -> str:
         )  # return f"{mod}.{qualname}.{obj.name}"
 
     if mod == "__main__":
-        main_module_name = _running_main_module_name()
-        if main_module_name is None:
+        mod = _running_main_module_name()
+        if mod is None:
             raise ValueError(
                 "Cannot serialize objects from __main__ module. "
                 "Run the file as `python -m package.module`."
             )
-        mod = main_module_name
 
     return f"{mod}.{qualname}"
 
