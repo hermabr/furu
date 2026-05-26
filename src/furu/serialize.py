@@ -1,5 +1,4 @@
 import enum
-import importlib
 from dataclasses import fields, is_dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, get_args, get_origin, get_type_hints
@@ -8,7 +7,7 @@ from pydantic import BaseModel as PydanticBaseModel
 
 from furu.constants import CLASSMARKER, FIELDSMARKER, KINDMARKER
 from furu.metadata import ArtifactSpec
-from furu.utils import JsonValue, fully_qualified_name
+from furu.utils import JsonValue, fully_qualified_name, resolve_fully_qualified_name
 
 if TYPE_CHECKING:
     from furu.core import Furu
@@ -64,18 +63,6 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
             raise ValueError("unexpected item", obj)  # TODO: explain the error more
 
 
-def _load_type(qualified_name: str) -> type[Any]:
-    module_name, _, class_name = qualified_name.rpartition(".")
-    if not module_name or not class_name:
-        raise ValueError(f"Expected fully qualified class name, got {qualified_name!r}")
-
-    module = importlib.import_module(module_name)
-    value = getattr(module, class_name)
-    if not isinstance(value, type):
-        raise TypeError(f"{qualified_name!r} resolved to a non-type value")
-    return value
-
-
 def _from_json_field(value: JsonValue, expected_type: Any) -> Any:
     if isinstance(value, dict) and KINDMARKER in value:
         return _from_json(value)
@@ -104,13 +91,18 @@ def _from_json(value: JsonValue) -> Any:
             class_name = value.get(CLASSMARKER)
             field_values = value.get(FIELDSMARKER)
             if value.get(KINDMARKER) == "type_ref" and isinstance(class_name, str):
-                return _load_type(class_name)
+                value = resolve_fully_qualified_name(class_name)
+                if not isinstance(value, type):
+                    raise TypeError(f"{class_name!r} resolved to a non-type value")
+                return value
             if (
                 value.get(KINDMARKER) == "instance"
                 and isinstance(class_name, str)
                 and isinstance(field_values, dict)
             ):
-                cls = _load_type(class_name)
+                cls = resolve_fully_qualified_name(class_name)
+                if not isinstance(cls, type):
+                    raise TypeError(f"{class_name!r} resolved to a non-type value")
                 hints = get_type_hints(cls, include_extras=True)
                 converted_fields = {
                     name: _from_json_field(field_value, hints.get(name, Any))

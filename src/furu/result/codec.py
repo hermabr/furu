@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib
 import importlib.util
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -111,18 +110,6 @@ class ResultRegistry:
             if codec.matches(value):
                 return codec
         return None
-
-
-@cache
-def resolve_result_codec(codec_id: str) -> type[ResultCodec]:
-    module_name, _, attr_name = codec_id.rpartition(".")
-    if not module_name:
-        raise KeyError(codec_id)
-
-    codec = getattr(importlib.import_module(module_name), attr_name)
-    if not issubclass(codec, ResultCodec):
-        raise TypeError(f"{codec_id} is not a ResultCodec")
-    return codec
 
 
 @cache

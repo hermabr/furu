@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import dataclasses
-import importlib
-import importlib.util
 import json
 from functools import partial
 from pathlib import Path
@@ -21,11 +19,11 @@ from typing import (
 import pydantic
 
 from furu.constants import FIELDSMARKER, KINDMARKER, TYPEMARKER
-from furu.result.codec import ResultCodec, ResultRegistry, resolve_result_codec
+from furu.result.codec import ResultCodec, ResultRegistry
 from furu.result.lazy import LazyResult
 from furu.result.save_as import _SaveAs
 from furu.result.save_as import save_as as save_as
-from furu.utils import JsonValue, fully_qualified_name
+from furu.utils import JsonValue, fully_qualified_name, resolve_fully_qualified_name
 
 WRAPPER_KEY: Final = "$furu"
 ARTIFACTS_DIR_NAME: Final = "artifacts"
@@ -315,11 +313,6 @@ def _dump_external(
     }
 
 
-def _import_type(qualified_name: str) -> Any:
-    module_name, _, attr_name = qualified_name.rpartition(".")
-    return getattr(importlib.import_module(module_name), attr_name)
-
-
 def _load_value(
     node: JsonValue,
     *,
@@ -419,7 +412,11 @@ def _load_wrapper(
                     f"external wrapper artifact directory missing: {artifact_dir}"
                 )
 
-            return resolve_result_codec(body["codec"]).load(artifact_dir=artifact_dir)
+            codec_id = body["codec"]
+            codec = resolve_fully_qualified_name(codec_id)
+            if not isinstance(codec, type) or not issubclass(codec, ResultCodec):
+                raise TypeError(f"{codec_id} is not a ResultCodec")
+            return codec.load(artifact_dir=artifact_dir)
         case "lazy":
             if (nested_rel := Path(body["path"])).is_absolute():
                 raise ValueError(f"lazy wrapper path must be relative: {nested_rel}")
@@ -443,7 +440,7 @@ def _load_wrapper(
                 )
             )
         case "dataclass":
-            cls = _import_type(body[TYPEMARKER])
+            cls = resolve_fully_qualified_name(body[TYPEMARKER])
             if not dataclasses.is_dataclass(cls):
                 raise ValueError(
                     f"Cannot load dataclass at {_value_path_display(value_path)}: "
@@ -502,7 +499,7 @@ def _load_wrapper(
                 for i, child in enumerate(body["items"])
             )
         case "pydantic":
-            cls = _import_type(body[TYPEMARKER])
+            cls = resolve_fully_qualified_name(body[TYPEMARKER])
             if not issubclass(cls, pydantic.BaseModel):
                 raise ValueError(
                     f"Cannot load pydantic model at {_value_path_display(value_path)}: "
