@@ -23,15 +23,20 @@ def _main_module_name() -> str:
         raise ValueError("Cannot serialize objects from __main__ module")
 
     path = Path(main_file).resolve()
-    src_root = next((parent for parent in path.parents if parent.name == "src"), None)
-    if src_root is None:
+    for src_root in path.parents:
+        if src_root.name == "src":
+            break
+    else:
         raise ValueError("Cannot serialize objects from __main__ module")
 
-    relative = path.relative_to(src_root).with_suffix("")
-    parts = relative.parts[:-1] if relative.name == "__init__" else relative.parts
-    module_name = ".".join(parts)
-    if str(src_root) not in sys.path:
-        sys.path.insert(0, str(src_root))
+    module_path = path.relative_to(src_root).with_suffix("")
+    if module_path.name == "__init__":
+        module_path = module_path.parent
+    module_name = ".".join(module_path.parts)
+
+    src_root_str = str(src_root)
+    if src_root_str not in sys.path:
+        sys.path.insert(0, src_root_str)
     if main_module is not None:
         sys.modules.setdefault(module_name, main_module)
     return module_name
