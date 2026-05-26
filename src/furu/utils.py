@@ -7,7 +7,7 @@ import sys
 import uuid
 from enum import Enum
 from pathlib import Path
-from typing import Any, overload
+from typing import Any
 
 from pydantic import JsonValue
 
@@ -18,7 +18,7 @@ def class_label(cls: type) -> str:
     return f"{cls.__module__}.{cls.__qualname__}"
 
 
-def fully_qualified_name(value: object) -> Any:
+def fully_qualified_name(value: object) -> Any:  # TODO: clean up this method
     main = sys.modules.get("__main__")
     main_module_name = None
     if main is not None:
