@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import dataclasses
-import importlib
-import importlib.util
 import json
 from functools import partial
 from pathlib import Path
@@ -25,7 +23,7 @@ from furu.result.codec import ResultCodec, ResultRegistry, resolve_result_codec
 from furu.result.lazy import LazyResult
 from furu.result.save_as import _SaveAs
 from furu.result.save_as import save_as as save_as
-from furu.utils import JsonValue, fully_qualified_name
+from furu.utils import JsonValue, fully_qualified_name, resolve_qualified_name
 
 WRAPPER_KEY: Final = "$furu"
 ARTIFACTS_DIR_NAME: Final = "artifacts"
@@ -316,8 +314,7 @@ def _dump_external(
 
 
 def _import_type(qualified_name: str) -> Any:
-    module_name, _, attr_name = qualified_name.rpartition(".")
-    return getattr(importlib.import_module(module_name), attr_name)
+    return resolve_qualified_name(qualified_name)
 
 
 def _load_value(
