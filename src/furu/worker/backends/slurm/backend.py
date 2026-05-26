@@ -47,11 +47,22 @@ class SlurmWorkerBackend:
             gpus=self.resources.gpus,
         )
 
-        script_path = self._write_sbatch_script(
-            worker_dir=worker_dir,
-            token_file=token_file,
-            server_url=server_url,
-            resource_request=resource_request,
+        scripts_dir = worker_dir / "scripts"
+        scripts_dir.mkdir(parents=True, exist_ok=True)
+        script_path = scripts_dir / f"worker-{secrets.token_hex(16)}.sh"
+        write_private_file(
+            script_path,
+            (
+                "#!/bin/bash\n"
+                "set -euo pipefail\n"
+                "\n"
+                f"exec {shlex.quote(sys.executable)} -m furu.worker._cli \\\n"
+                f"    --server-url {shlex.quote(server_url)} \\\n"
+                f"    --auth-token-file {shlex.quote(str(token_file))} \\\n"
+                f"    --resource-cpus {resource_request.cpus} \\\n"
+                f"    --resource-gpus {resource_request.gpus}\n"
+            ),
+            mode=0o700,
         )
 
         log_dir = worker_dir / "logs"
@@ -86,30 +97,3 @@ class SlurmWorkerBackend:
         pool_holder.append(pool)
         pool._scale_thread.start()
         return pool
-
-    def _write_sbatch_script(
-        self,
-        *,
-        worker_dir: Path,
-        token_file: Path,
-        server_url: str,
-        resource_request: ResourceRequest,
-    ) -> Path:
-        scripts_dir = worker_dir / "scripts"
-        scripts_dir.mkdir(parents=True, exist_ok=True)
-        script_path = scripts_dir / f"worker-{secrets.token_hex(16)}.sh"
-        write_private_file(
-            script_path,
-            (
-                "#!/bin/bash\n"
-                "set -euo pipefail\n"
-                "\n"
-                f"exec {shlex.quote(sys.executable)} -m furu.worker._cli \\\n"
-                f"    --server-url {shlex.quote(server_url)} \\\n"
-                f"    --auth-token-file {shlex.quote(str(token_file))} \\\n"
-                f"    --resource-cpus {resource_request.cpus} \\\n"
-                f"    --resource-gpus {resource_request.gpus}\n"
-            ),
-            mode=0o700,
-        )
-        return script_path
