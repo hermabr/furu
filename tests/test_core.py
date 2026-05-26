@@ -1,4 +1,8 @@
 import json
+import os
+import subprocess
+import sys
+import textwrap
 import types
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -1281,6 +1285,111 @@ def test_data_dir():
         / node_pair._artifact_hash
         / "data"
     )
+
+
+def test_direct_src_script_uses_importable_module_identity(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    package_dir = project / "src" / "my_lib"
+    package_dir.mkdir(parents=True)
+    script = package_dir / "data.py"
+    script.write_text(
+        textwrap.dedent(
+            """
+            import json
+            from pathlib import Path
+
+            from furu import Furu
+            from furu.metadata import ArtifactSpec
+
+
+            class Data(Furu[int]):
+                def create(self) -> int:
+                    counter = Path("create-count.txt")
+                    count = int(counter.read_text()) if counter.exists() else 0
+                    counter.write_text(str(count + 1), encoding="utf-8")
+                    return 7
+
+
+            if __name__ == "__main__":
+                obj = Data()
+                result = obj.load_or_create()
+                loaded = Data.from_artifact(ArtifactSpec.from_furu(obj))
+                Path("direct.json").write_text(
+                    json.dumps(
+                        {
+                            "fqn": obj._fully_qualified_name,
+                            "object_id": obj.object_id,
+                            "result": result,
+                            "loaded_same_type": type(loaded) is Data,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    repo_src = Path(__file__).parents[1] / "src"
+    env["PYTHONPATH"] = os.pathsep.join(
+        part for part in (str(repo_src), env.get("PYTHONPATH", "")) if part
+    )
+    env["FURU_DIRECTORIES__OBJECTS"] = str(project / "objects")
+    env["FURU_DIRECTORIES__EXECUTIONS"] = str(project / "executions")
+
+    def run_python(args: list[str]) -> None:
+        completed = subprocess.run(
+            [sys.executable, *args],
+            cwd=project,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+
+    run_python([str(script)])
+    run_python(
+        [
+            "-c",
+            textwrap.dedent(
+                """
+                import json
+                import sys
+                from pathlib import Path
+
+                sys.path.insert(0, str(Path("src").resolve()))
+                from my_lib.data import Data
+
+                obj = Data()
+                Path("imported.json").write_text(
+                    json.dumps(
+                        {
+                            "fqn": obj._fully_qualified_name,
+                            "object_id": obj.object_id,
+                            "result": obj.load_or_create(),
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                """
+            ),
+        ]
+    )
+
+    direct = json.loads((project / "direct.json").read_text(encoding="utf-8"))
+    imported = json.loads((project / "imported.json").read_text(encoding="utf-8"))
+
+    assert direct == {
+        "fqn": "my_lib.data.Data",
+        "object_id": imported["object_id"],
+        "result": 7,
+        "loaded_same_type": True,
+    }
+    assert imported["fqn"] == "my_lib.data.Data"
+    assert imported["result"] == 7
+    assert (project / "create-count.txt").read_text(encoding="utf-8") == "1"
 
 
 def test_resource_requirements_defaults_to_none():
