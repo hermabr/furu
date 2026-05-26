@@ -110,7 +110,6 @@ def _run_until_done(
                     auth_token=server.auth_token,
                     executor_dir=manager.executor_dir,
                 )
-                pool.start()
                 pools.append(pool)
                 logger.info("worker pool started: backend=%s", type(backend).__name__)
             manager.done.wait()

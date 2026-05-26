@@ -26,7 +26,7 @@ class LocalThreadWorkerBackend:
         auth_token: str,
         executor_dir: Path,
     ) -> LocalThreadWorkerPool:
-        return LocalThreadWorkerPool(
+        return LocalThreadWorkerPool.start(
             server_url=server_url,
             auth_token=auth_token,
             max_workers=self.max_workers,
@@ -35,41 +35,51 @@ class LocalThreadWorkerBackend:
         )
 
 
+@dataclass(slots=True)
 class LocalThreadWorkerPool:
-    def __init__(
-        self,
+    _server_url: str
+    _auth_token: str
+    _max_workers: int
+    _resource_request: ResourceRequest
+    _scale_interval: float
+    _client: PoolApiClient
+    _stop_event: threading.Event
+    _unhealthy_event: threading.Event
+    _scale_thread: threading.Thread
+    _threads: list[threading.Thread]
+
+    @classmethod
+    def start(
+        cls,
         *,
         server_url: str,
         auth_token: str,
         max_workers: int,
         resource_request: ResourceRequest,
         scale_interval: float,
-    ) -> None:
-        self._client = PoolApiClient(server_url=server_url, auth_token=auth_token)
-        self._server_url = server_url
-        self._auth_token = auth_token
-        self._max_workers = max_workers
-        self._resource_request = resource_request
-        self._scale_interval = scale_interval
-        self._stop_event = threading.Event()
-        self._unhealthy_event = threading.Event()
-        self._scale_thread: threading.Thread | None = None
-        self._threads: list[threading.Thread] = []
-
-    def start(self) -> None:
-        if self._scale_thread is not None:
-            raise RuntimeError("local worker pool already started")
-
-        self._scale_thread = threading.Thread(
-            target=self._scale_loop,
-            name="furu-local-worker-pool-scale",
+    ) -> LocalThreadWorkerPool:
+        pool_holder: list[LocalThreadWorkerPool] = []
+        pool = cls(
+            _server_url=server_url,
+            _auth_token=auth_token,
+            _max_workers=max_workers,
+            _resource_request=resource_request,
+            _scale_interval=scale_interval,
+            _client=PoolApiClient(server_url=server_url, auth_token=auth_token),
+            _stop_event=threading.Event(),
+            _unhealthy_event=threading.Event(),
+            _scale_thread=threading.Thread(
+                target=lambda: pool_holder[0]._scale_loop(),
+                name="furu-local-worker-pool-scale",
+            ),
+            _threads=[],
         )
-        self._scale_thread.start()
+        pool_holder.append(pool)
+        pool._scale_thread.start()
+        return pool
 
     def stop(self, *, timeout: float) -> None:
         self._stop_event.set()
-        if self._scale_thread is None:
-            raise RuntimeError("local worker pool stop called before start")
         self._scale_thread.join(timeout=timeout)
         for worker in self._threads:
             worker.join(timeout=timeout)

@@ -4,6 +4,7 @@ import json
 import os
 import stat
 import sys
+import threading
 import textwrap
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ from furu.execution.api import PoolApiClient
 from furu.resources import ResourceRequest
 from furu.worker import _cli
 from furu.worker.backends.slurm.backend import SlurmWorkerBackend
+from furu.worker.backends.slurm.pool import SlurmWorkerPool
 from furu.worker.backends.slurm.resources import (
     MemoryPerCpu,
     MemoryPerGpu,
@@ -28,6 +30,43 @@ def _stub_count_satisfiable_jobs(monkeypatch: pytest.MonkeyPatch, count: int) ->
         "count_satisfiable_jobs",
         lambda self, *, resources, max_workers: count,
     )
+
+
+def _construct_slurm_pool_without_starting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def start(
+        cls: type[SlurmWorkerPool],
+        *,
+        sbatch_base_args: tuple[str, ...],
+        script_path: Path,
+        max_workers: int,
+        resource_request: ResourceRequest,
+        server_url: str,
+        auth_token: str,
+        poll_interval: float,
+    ) -> SlurmWorkerPool:
+        pool_holder: list[SlurmWorkerPool] = []
+        pool = cls(
+            _sbatch_base_args=sbatch_base_args,
+            _script_path=script_path,
+            _max_workers=max_workers,
+            _resource_request=resource_request,
+            _server_url=server_url,
+            _auth_token=auth_token,
+            _poll_interval=poll_interval,
+            _client=PoolApiClient(server_url=server_url, auth_token=auth_token),
+            _stop_event=threading.Event(),
+            _scale_thread=threading.Thread(
+                target=lambda: pool_holder[0]._scale_loop(),
+                name="furu-slurm-worker-pool-scale",
+            ),
+            _job_ids=[],
+        )
+        pool_holder.append(pool)
+        return pool
+
+    monkeypatch.setattr(SlurmWorkerPool, "start", classmethod(start))
 
 
 def test_worker_cli_reads_auth_token_file(
@@ -180,6 +219,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _construct_slurm_pool_without_starting(monkeypatch)
     record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
     _stub_count_satisfiable_jobs(monkeypatch, 2)
     work_dir = tmp_path / "work"
@@ -293,6 +333,7 @@ def test_slurm_backend_rewrites_manager_url_to_worker_connect_host(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _construct_slurm_pool_without_starting(monkeypatch)
     record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
     _stub_count_satisfiable_jobs(monkeypatch, 1)
     backend = SlurmWorkerBackend(
@@ -324,6 +365,7 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _construct_slurm_pool_without_starting(monkeypatch)
     record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
     _stub_count_satisfiable_jobs(monkeypatch, 2)
     backend = SlurmWorkerBackend(
@@ -362,6 +404,7 @@ def test_slurm_pool_scale_submits_additional_workers_as_satisfiable_count_grows(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _construct_slurm_pool_without_starting(monkeypatch)
     record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
     counts = iter([0, 2, 10, 10])
     monkeypatch.setattr(
@@ -425,6 +468,7 @@ def test_slurm_worker_pool_join_cancels_jobs_left_after_timeout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _construct_slurm_pool_without_starting(monkeypatch)
     record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
     _stub_count_satisfiable_jobs(monkeypatch, 2)
     backend = SlurmWorkerBackend(
@@ -439,6 +483,9 @@ def test_slurm_worker_pool_join_cancels_jobs_left_after_timeout(
         executor_dir=tmp_path / "executor",
     )
     pool._scale_once()
+    pool._stop_event.set()
+    pool._scale_thread.start()
+    pool._scale_thread.join(timeout=5)
 
     pool.stop(timeout=0)
 

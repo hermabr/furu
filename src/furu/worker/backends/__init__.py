@@ -17,6 +17,4 @@ class WorkerBackend(Protocol):
 
 
 class WorkerPool(Protocol):
-    def start(self) -> None: ...
-
     def stop(self, *, timeout: float) -> None: ...

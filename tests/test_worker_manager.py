@@ -37,6 +37,34 @@ from furu.worker.protocol import (
 ANY_RESOURCES = ResourceRequest()
 
 
+def _new_local_pool(
+    *,
+    server_url: str = "http://manager.test",
+    auth_token: str = "secret",
+    max_workers: int = 1,
+    resource_request: ResourceRequest | None = None,
+    scale_interval: float = 1.0,
+) -> LocalThreadWorkerPool:
+    pool_holder: list[LocalThreadWorkerPool] = []
+    pool = LocalThreadWorkerPool(
+        _server_url=server_url,
+        _auth_token=auth_token,
+        _max_workers=max_workers,
+        _resource_request=resource_request or ResourceRequest(),
+        _scale_interval=scale_interval,
+        _client=api.PoolApiClient(server_url=server_url, auth_token=auth_token),
+        _stop_event=threading.Event(),
+        _unhealthy_event=threading.Event(),
+        _scale_thread=threading.Thread(
+            target=lambda: pool_holder[0]._scale_loop(),
+            name="furu-local-worker-pool-scale",
+        ),
+        _threads=[],
+    )
+    pool_holder.append(pool)
+    return pool
+
+
 class ManagerLeaf(Furu[int]):
     value: int
 
@@ -417,13 +445,7 @@ def test_local_pool_scale_spawns_workers_up_to_max_as_satisfiable_count_grows(
         lambda *, server_url, auth_token, resource_request: None,
     )
 
-    pool = LocalThreadWorkerPool(
-        server_url="http://manager.test",
-        auth_token="secret",
-        max_workers=3,
-        resource_request=ResourceRequest(),
-        scale_interval=1.0,
-    )
+    pool = _new_local_pool(max_workers=3)
 
     pool._scale_once()
     assert len(pool._threads) == 0
@@ -462,13 +484,7 @@ def test_local_pool_scale_uses_unique_worker_names_after_worker_exits(
     monkeypatch.setattr(api.PoolApiClient, "count_satisfiable_jobs", fake_count)
     monkeypatch.setattr(worker_loop_module, "worker_loop", worker_loop)
 
-    pool = LocalThreadWorkerPool(
-        server_url="http://manager.test",
-        auth_token="secret",
-        max_workers=3,
-        resource_request=ResourceRequest(),
-        scale_interval=1.0,
-    )
+    pool = _new_local_pool(max_workers=3)
 
     try:
         pool._scale_once()
@@ -530,7 +546,7 @@ def test_manager_run_uses_worker_backend() -> None:
         ) -> LocalThreadWorkerPool:
             self.server_urls.append(server_url)
             self.auth_tokens.append(auth_token)
-            return LocalThreadWorkerPool(
+            return LocalThreadWorkerPool.start(
                 server_url=server_url,
                 auth_token=auth_token,
                 max_workers=1,
@@ -566,7 +582,7 @@ def test_manager_run_passes_executor_dir_to_worker_backend() -> None:
             executor_dir: Path,
         ) -> LocalThreadWorkerPool:
             self.executor_dirs.append(executor_dir)
-            return LocalThreadWorkerPool(
+            return LocalThreadWorkerPool.start(
                 server_url=server_url,
                 auth_token=auth_token,
                 max_workers=1,
@@ -602,7 +618,7 @@ def test_manager_run_writes_log_to_executor_dir() -> None:
     assert "furu manager finished successfully" in log_text
 
 
-def test_manager_run_starts_pool_and_stops_and_joins_when_done() -> None:
+def test_manager_run_starts_backend_pool_and_stops_and_joins_when_done() -> None:
     class RecordingDone:
         def __init__(self) -> None:
             self.wait_calls = 0
@@ -615,9 +631,6 @@ def test_manager_run_starts_pool_and_stops_and_joins_when_done() -> None:
         def __init__(self) -> None:
             self.events: list[str] = []
             self.stop_timeouts: list[float] = []
-
-        def start(self) -> None:
-            self.events.append("start")
 
         def stop(self, *, timeout: float) -> None:
             self.events.append("stop")
@@ -636,6 +649,7 @@ def test_manager_run_starts_pool_and_stops_and_joins_when_done() -> None:
             auth_token: str,
             executor_dir: Path,
         ) -> RecordingPool:
+            self.pool.events.append("start_pool")
             return self.pool
 
     manager = Manager([ManagerLeaf(value=13)])
@@ -650,7 +664,7 @@ def test_manager_run_starts_pool_and_stops_and_joins_when_done() -> None:
     )
 
     assert done.wait_calls == 1
-    assert pool.events == ["start", "stop"]
+    assert pool.events == ["start_pool", "stop"]
     assert pool.stop_timeouts == [5]
 
 
@@ -660,9 +674,6 @@ def test_run_until_done_uses_worker_backend_manager_listen_host() -> None:
             return True
 
     class RecordingPool:
-        def start(self) -> None:
-            pass
-
         def stop(self, *, timeout: float) -> None:
             pass
 

@@ -64,7 +64,7 @@ class SlurmWorkerBackend:
             "--export=NIL",
         )
 
-        return SlurmWorkerPool(
+        return SlurmWorkerPool.start(
             sbatch_base_args=sbatch_base_args,
             script_path=script_path,
             max_workers=self.max_workers,

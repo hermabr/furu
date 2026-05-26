@@ -4,6 +4,7 @@ import subprocess
 import threading
 import time
 import traceback
+from dataclasses import dataclass
 from pathlib import Path
 
 from furu.execution.api import PoolApiClient
@@ -26,9 +27,23 @@ _UNFINISHED_STATES = frozenset(
 _HEALTHY_FINISHED_STATES = frozenset({"COMPLETED"})
 
 
+@dataclass(slots=True)
 class SlurmWorkerPool:
-    def __init__(
-        self,
+    _sbatch_base_args: tuple[str, ...]
+    _script_path: Path
+    _max_workers: int
+    _resource_request: ResourceRequest
+    _server_url: str
+    _auth_token: str
+    _poll_interval: float
+    _client: PoolApiClient
+    _stop_event: threading.Event
+    _scale_thread: threading.Thread
+    _job_ids: list[str]
+
+    @classmethod
+    def start(
+        cls,
         *,
         sbatch_base_args: tuple[str, ...],
         script_path: Path,
@@ -37,31 +52,31 @@ class SlurmWorkerPool:
         server_url: str,
         auth_token: str,
         poll_interval: float,
-    ) -> None:
-        self._sbatch_base_args = sbatch_base_args
-        self._script_path = script_path
-        self._max_workers = max_workers
-        self._resource_request = resource_request
-        self._client = PoolApiClient(server_url=server_url, auth_token=auth_token)
-        self._poll_interval = poll_interval
-        self._stop_event = threading.Event()
-        self._scale_thread: threading.Thread | None = None
-        self._job_ids: list[str] = []
-
-    def start(self) -> None:
-        if self._scale_thread is not None:
-            raise RuntimeError("slurm worker pool already started")
-
-        self._scale_thread = threading.Thread(
-            target=self._scale_loop,
-            name="furu-slurm-worker-pool-scale",
+    ) -> SlurmWorkerPool:
+        pool_holder: list[SlurmWorkerPool] = []
+        pool = cls(
+            _sbatch_base_args=sbatch_base_args,
+            _script_path=script_path,
+            _max_workers=max_workers,
+            _resource_request=resource_request,
+            _server_url=server_url,
+            _auth_token=auth_token,
+            _poll_interval=poll_interval,
+            _client=PoolApiClient(server_url=server_url, auth_token=auth_token),
+            _stop_event=threading.Event(),
+            _scale_thread=threading.Thread(
+                target=lambda: pool_holder[0]._scale_loop(),
+                name="furu-slurm-worker-pool-scale",
+            ),
+            _job_ids=[],
         )
-        self._scale_thread.start()
+        pool_holder.append(pool)
+        pool._scale_thread.start()
+        return pool
 
     def stop(self, *, timeout: float) -> None:
         self._stop_event.set()
-        if self._scale_thread is not None:
-            self._scale_thread.join(timeout=timeout)
+        self._scale_thread.join(timeout=timeout)
 
         deadline = time.monotonic() + timeout
         while self._has_unfinished() and time.monotonic() < deadline:
