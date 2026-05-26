@@ -18,32 +18,23 @@ def class_label(cls: type) -> str:
     return f"{cls.__module__}.{cls.__qualname__}"
 
 
-def fully_qualified_name(value: object) -> Any:  # TODO: clean up this method
+def _running_main_module_name() -> str | None:
     main = sys.modules.get("__main__")
-    main_module_name = None
-    if main is not None:
-        spec = getattr(main, "__spec__", None)
-        spec_name = getattr(spec, "name", None)
-        if isinstance(spec_name, str) and spec_name and spec_name != "__main__":
-            main_module_name = spec_name
+    if main is None:
+        return None
 
-    if isinstance(value, str):
-        module_name, _, attr_name = value.rpartition(".")
-        if not module_name or not attr_name:
-            raise ValueError(f"Expected fully qualified name, got {value!r}")
+    spec = getattr(main, "__spec__", None)
+    spec_name = getattr(spec, "name", None)
+    if isinstance(spec_name, str) and spec_name and spec_name != "__main__":
+        return spec_name
+    return None
 
-        if module_name == main_module_name:
-            if main is not None and hasattr(main, attr_name):
-                return getattr(main, attr_name)
 
-        return getattr(importlib.import_module(module_name), attr_name)
-
+def fully_qualified_name(value: object) -> str:
     mod = getattr(value, "__module__", None)
     qualname = getattr(value, "__qualname__", None)
     if not isinstance(mod, str) or not isinstance(qualname, str):
-        raise TypeError(
-            f"Expected a fully qualified name or nameable object, got {value!r}"
-        )
+        raise TypeError(f"Expected a nameable object, got {value!r}")
 
     if "<locals>" in qualname:
         raise ValueError("Cannot serialize local classes")
@@ -55,6 +46,7 @@ def fully_qualified_name(value: object) -> Any:  # TODO: clean up this method
         )  # return f"{mod}.{qualname}.{obj.name}"
 
     if mod == "__main__":
+        main_module_name = _running_main_module_name()
         if main_module_name is None:
             raise ValueError(
                 "Cannot serialize objects from __main__ module. "
@@ -63,6 +55,19 @@ def fully_qualified_name(value: object) -> Any:  # TODO: clean up this method
         mod = main_module_name
 
     return f"{mod}.{qualname}"
+
+
+def resolve_fully_qualified_name(name: str) -> Any:
+    module_name, _, attr_name = name.rpartition(".")
+    if not module_name or not attr_name:
+        raise ValueError(f"Expected fully qualified name, got {name!r}")
+
+    if module_name == _running_main_module_name():
+        main = sys.modules.get("__main__")
+        if main is not None and hasattr(main, attr_name):
+            return getattr(main, attr_name)
+
+    return getattr(importlib.import_module(module_name), attr_name)
 
 
 def object_id_from_parts(

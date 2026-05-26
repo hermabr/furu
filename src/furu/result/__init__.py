@@ -23,7 +23,7 @@ from furu.result.codec import ResultCodec, ResultRegistry
 from furu.result.lazy import LazyResult
 from furu.result.save_as import _SaveAs
 from furu.result.save_as import save_as as save_as
-from furu.utils import JsonValue, fully_qualified_name
+from furu.utils import JsonValue, fully_qualified_name, resolve_fully_qualified_name
 
 WRAPPER_KEY: Final = "$furu"
 ARTIFACTS_DIR_NAME: Final = "artifacts"
@@ -413,7 +413,7 @@ def _load_wrapper(
                 )
 
             codec_id = body["codec"]
-            codec = fully_qualified_name(codec_id)
+            codec = resolve_fully_qualified_name(codec_id)
             if not isinstance(codec, type) or not issubclass(codec, ResultCodec):
                 raise TypeError(f"{codec_id} is not a ResultCodec")
             return codec.load(artifact_dir=artifact_dir)
@@ -440,7 +440,7 @@ def _load_wrapper(
                 )
             )
         case "dataclass":
-            cls = fully_qualified_name(body[TYPEMARKER])
+            cls = resolve_fully_qualified_name(body[TYPEMARKER])
             if not dataclasses.is_dataclass(cls):
                 raise ValueError(
                     f"Cannot load dataclass at {_value_path_display(value_path)}: "
@@ -499,7 +499,7 @@ def _load_wrapper(
                 for i, child in enumerate(body["items"])
             )
         case "pydantic":
-            cls = fully_qualified_name(body[TYPEMARKER])
+            cls = resolve_fully_qualified_name(body[TYPEMARKER])
             if not issubclass(cls, pydantic.BaseModel):
                 raise ValueError(
                     f"Cannot load pydantic model at {_value_path_display(value_path)}: "
