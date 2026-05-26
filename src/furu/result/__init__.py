@@ -313,10 +313,6 @@ def _dump_external(
     }
 
 
-def _import_type(name: str) -> Any:
-    return fully_qualified_name(name)
-
-
 def _load_value(
     node: JsonValue,
     *,
@@ -440,7 +436,7 @@ def _load_wrapper(
                 )
             )
         case "dataclass":
-            cls = _import_type(body[TYPEMARKER])
+            cls = fully_qualified_name(body[TYPEMARKER])
             if not dataclasses.is_dataclass(cls):
                 raise ValueError(
                     f"Cannot load dataclass at {_value_path_display(value_path)}: "
@@ -499,7 +495,7 @@ def _load_wrapper(
                 for i, child in enumerate(body["items"])
             )
         case "pydantic":
-            cls = _import_type(body[TYPEMARKER])
+            cls = fully_qualified_name(body[TYPEMARKER])
             if not issubclass(cls, pydantic.BaseModel):
                 raise ValueError(
                     f"Cannot load pydantic model at {_value_path_display(value_path)}: "
