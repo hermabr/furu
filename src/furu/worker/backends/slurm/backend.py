@@ -3,9 +3,11 @@ from __future__ import annotations
 import secrets
 import shlex
 import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
+from furu.execution.api import PoolApiClient
 from furu.resources import ResourceRequest
 from furu.utils import write_private_file
 from furu.worker.backends.slurm.pool import SlurmWorkerPool
@@ -64,15 +66,26 @@ class SlurmWorkerBackend:
             "--export=NIL",
         )
 
-        return SlurmWorkerPool.start(
-            sbatch_base_args=sbatch_base_args,
-            script_path=script_path,
-            max_workers=self.max_workers,
-            resource_request=resource_request,
-            server_url=server_url,
-            auth_token=auth_token,
-            poll_interval=self.poll_interval,
+        pool_holder: list[SlurmWorkerPool] = []
+        pool = SlurmWorkerPool(
+            _sbatch_base_args=sbatch_base_args,
+            _script_path=script_path,
+            _max_workers=self.max_workers,
+            _resource_request=resource_request,
+            _server_url=server_url,
+            _auth_token=auth_token,
+            _poll_interval=self.poll_interval,
+            _client=PoolApiClient(server_url=server_url, auth_token=auth_token),
+            _stop_event=threading.Event(),
+            _scale_thread=threading.Thread(
+                target=lambda: pool_holder[0]._scale_loop(),
+                name="furu-slurm-worker-pool-scale",
+            ),
+            _job_ids=[],
         )
+        pool_holder.append(pool)
+        pool._scale_thread.start()
+        return pool
 
     def _write_sbatch_script(
         self,

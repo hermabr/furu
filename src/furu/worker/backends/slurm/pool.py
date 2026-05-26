@@ -27,7 +27,7 @@ _UNFINISHED_STATES = frozenset(
 _HEALTHY_FINISHED_STATES = frozenset({"COMPLETED"})
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class SlurmWorkerPool:
     _sbatch_base_args: tuple[str, ...]
     _script_path: Path
@@ -40,39 +40,6 @@ class SlurmWorkerPool:
     _stop_event: threading.Event
     _scale_thread: threading.Thread
     _job_ids: list[str]
-
-    @classmethod
-    def start(
-        cls,
-        *,
-        sbatch_base_args: tuple[str, ...],
-        script_path: Path,
-        max_workers: int,
-        resource_request: ResourceRequest,
-        server_url: str,
-        auth_token: str,
-        poll_interval: float,
-    ) -> SlurmWorkerPool:
-        pool_holder: list[SlurmWorkerPool] = []
-        pool = cls(
-            _sbatch_base_args=sbatch_base_args,
-            _script_path=script_path,
-            _max_workers=max_workers,
-            _resource_request=resource_request,
-            _server_url=server_url,
-            _auth_token=auth_token,
-            _poll_interval=poll_interval,
-            _client=PoolApiClient(server_url=server_url, auth_token=auth_token),
-            _stop_event=threading.Event(),
-            _scale_thread=threading.Thread(
-                target=lambda: pool_holder[0]._scale_loop(),
-                name="furu-slurm-worker-pool-scale",
-            ),
-            _job_ids=[],
-        )
-        pool_holder.append(pool)
-        pool._scale_thread.start()
-        return pool
 
     def stop(self, *, timeout: float) -> None:
         self._stop_event.set()

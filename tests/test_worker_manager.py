@@ -546,12 +546,14 @@ def test_manager_run_uses_worker_backend() -> None:
         ) -> LocalThreadWorkerPool:
             self.server_urls.append(server_url)
             self.auth_tokens.append(auth_token)
-            return LocalThreadWorkerPool.start(
-                server_url=server_url,
-                auth_token=auth_token,
+            return LocalThreadWorkerBackend(
                 max_workers=1,
                 resource_request=ResourceRequest(),
                 scale_interval=1.0,
+            ).start_pool(
+                server_url=server_url,
+                auth_token=auth_token,
+                executor_dir=executor_dir,
             )
 
     leaf = ManagerLeaf(value=11)
@@ -582,12 +584,14 @@ def test_manager_run_passes_executor_dir_to_worker_backend() -> None:
             executor_dir: Path,
         ) -> LocalThreadWorkerPool:
             self.executor_dirs.append(executor_dir)
-            return LocalThreadWorkerPool.start(
-                server_url=server_url,
-                auth_token=auth_token,
+            return LocalThreadWorkerBackend(
                 max_workers=1,
                 resource_request=ResourceRequest(),
                 scale_interval=1.0,
+            ).start_pool(
+                server_url=server_url,
+                auth_token=auth_token,
+                executor_dir=executor_dir,
             )
 
     leaf = ManagerLeaf(value=12)

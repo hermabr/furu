@@ -26,45 +26,13 @@ class LocalThreadWorkerBackend:
         auth_token: str,
         executor_dir: Path,
     ) -> LocalThreadWorkerPool:
-        return LocalThreadWorkerPool.start(
-            server_url=server_url,
-            auth_token=auth_token,
-            max_workers=self.max_workers,
-            resource_request=self.resource_request,
-            scale_interval=self.scale_interval,
-        )
-
-
-@dataclass(slots=True)
-class LocalThreadWorkerPool:
-    _server_url: str
-    _auth_token: str
-    _max_workers: int
-    _resource_request: ResourceRequest
-    _scale_interval: float
-    _client: PoolApiClient
-    _stop_event: threading.Event
-    _unhealthy_event: threading.Event
-    _scale_thread: threading.Thread
-    _threads: list[threading.Thread]
-
-    @classmethod
-    def start(
-        cls,
-        *,
-        server_url: str,
-        auth_token: str,
-        max_workers: int,
-        resource_request: ResourceRequest,
-        scale_interval: float,
-    ) -> LocalThreadWorkerPool:
         pool_holder: list[LocalThreadWorkerPool] = []
-        pool = cls(
+        pool = LocalThreadWorkerPool(
             _server_url=server_url,
             _auth_token=auth_token,
-            _max_workers=max_workers,
-            _resource_request=resource_request,
-            _scale_interval=scale_interval,
+            _max_workers=self.max_workers,
+            _resource_request=self.resource_request,
+            _scale_interval=self.scale_interval,
             _client=PoolApiClient(server_url=server_url, auth_token=auth_token),
             _stop_event=threading.Event(),
             _unhealthy_event=threading.Event(),
@@ -78,6 +46,20 @@ class LocalThreadWorkerPool:
         pool._scale_thread.start()
         return pool
 
+
+@dataclass(frozen=True, slots=True)
+class LocalThreadWorkerPool:
+    _server_url: str
+    _auth_token: str
+    _max_workers: int
+    _resource_request: ResourceRequest
+    _scale_interval: float
+    _client: PoolApiClient
+    _stop_event: threading.Event
+    _unhealthy_event: threading.Event
+    _scale_thread: threading.Thread
+    _threads: list[threading.Thread]
+
     def stop(self, *, timeout: float) -> None:
         self._stop_event.set()
         self._scale_thread.join(timeout=timeout)
@@ -85,7 +67,7 @@ class LocalThreadWorkerPool:
             worker.join(timeout=timeout)
 
     def _scale_once(self) -> None:
-        self._threads = [thread for thread in self._threads if thread.is_alive()]
+        self._threads[:] = [thread for thread in self._threads if thread.is_alive()]
         if len(self._threads) >= self._max_workers:
             return
 
