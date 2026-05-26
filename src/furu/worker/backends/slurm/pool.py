@@ -24,7 +24,6 @@ _UNFINISHED_STATES = frozenset(
         "UNKNOWN",
     }
 )
-_HEALTHY_FINISHED_STATES = frozenset({"COMPLETED"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,9 +45,12 @@ class SlurmWorkerPool:
         self._scale_thread.join(timeout=timeout)
 
         deadline = time.monotonic() + timeout
-        while self._has_unfinished() and time.monotonic() < deadline:
+        has_unfinished = any(
+            state in _UNFINISHED_STATES for state in self._task_states().values()
+        )
+        while has_unfinished and time.monotonic() < deadline:
             time.sleep(min(self._poll_interval, max(0.0, deadline - time.monotonic())))
-        if self._has_unfinished():
+        if has_unfinished:
             subprocess.run(
                 ["scancel", *self._job_ids],
                 check=False,
@@ -78,17 +80,6 @@ class SlurmWorkerPool:
             )
             job_id = result.stdout.strip().split(";", maxsplit=1)[0]
             self._job_ids.append(job_id)
-
-    def _workers_healthy(self) -> bool:
-        return not any(
-            state not in _UNFINISHED_STATES and state not in _HEALTHY_FINISHED_STATES
-            for state in self._task_states().values()
-        )
-
-    def _has_unfinished(self) -> bool:
-        return any(
-            state in _UNFINISHED_STATES for state in self._task_states().values()
-        )
 
     def _task_states(self) -> dict[str, str]:
         if not self._job_ids:
@@ -127,7 +118,11 @@ class SlurmWorkerPool:
             self._scale_once()
             while not self._stop_event.wait(timeout=self._poll_interval):
                 self._scale_once()
-                if not self._workers_healthy():
+                if any(
+                    state not in _UNFINISHED_STATES
+                    and state not in frozenset({"COMPLETED"})
+                    for state in self._task_states().values()
+                ):
                     self._report_failure("slurm worker pool became unhealthy")
                     return
         except Exception as exc:
