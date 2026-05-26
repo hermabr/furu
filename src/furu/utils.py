@@ -18,34 +18,21 @@ def class_label(cls: type) -> str:
     return f"{cls.__module__}.{cls.__qualname__}"
 
 
-def _running_main_module_name() -> str | None:
-    main = sys.modules.get("__main__")
-    if main is None:
-        return None
-
-    spec = getattr(main, "__spec__", None)
-    spec_name = getattr(spec, "name", None)
-    if isinstance(spec_name, str) and spec_name and spec_name != "__main__":
-        return spec_name
-    return None
-
-
-@overload
-def fully_qualified_name(value: str) -> Any: ...
-
-
-@overload
-def fully_qualified_name(value: object) -> str: ...
-
-
 def fully_qualified_name(value: object) -> Any:
+    main = sys.modules.get("__main__")
+    main_module_name = None
+    if main is not None:
+        spec = getattr(main, "__spec__", None)
+        spec_name = getattr(spec, "name", None)
+        if isinstance(spec_name, str) and spec_name and spec_name != "__main__":
+            main_module_name = spec_name
+
     if isinstance(value, str):
         module_name, _, attr_name = value.rpartition(".")
         if not module_name or not attr_name:
             raise ValueError(f"Expected fully qualified name, got {value!r}")
 
-        if module_name == _running_main_module_name():
-            main = sys.modules.get("__main__")
+        if module_name == main_module_name:
             if main is not None and hasattr(main, attr_name):
                 return getattr(main, attr_name)
 
@@ -68,7 +55,6 @@ def fully_qualified_name(value: object) -> Any:
         )  # return f"{mod}.{qualname}.{obj.name}"
 
     if mod == "__main__":
-        main_module_name = _running_main_module_name()
         if main_module_name is None:
             raise ValueError(
                 "Cannot serialize objects from __main__ module. "
