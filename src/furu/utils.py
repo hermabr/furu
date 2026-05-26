@@ -2,7 +2,6 @@ import hashlib
 import json
 import os
 import socket
-import sys
 import uuid
 from enum import Enum
 from pathlib import Path
@@ -16,68 +15,11 @@ def class_label(cls: type) -> str:
     return f"{cls.__module__}.{cls.__qualname__}"
 
 
-def _module_name_from_src_path(path: Path) -> tuple[str, Path] | None:
-    for parent in path.parents:
-        if parent.name != "src":
-            continue
-
-        parts = list(path.relative_to(parent).with_suffix("").parts)
-        if parts[-1] == "__init__":
-            parts.pop()
-        if parts and all(part.isidentifier() for part in parts):
-            return ".".join(parts), parent
-    return None
-
-
-def _module_name_from_package_path(path: Path) -> tuple[str, Path] | None:
-    if path.suffix != ".py":
-        return None
-
-    parts = [] if path.name == "__init__.py" else [path.stem]
-    current = path.parent
-    while (current / "__init__.py").is_file():
-        parts.insert(0, current.name)
-        current = current.parent
-
-    if parts:
-        return ".".join(parts), current
-    return _module_name_from_src_path(path)
-
-
-def _main_module_name_for(tp: type) -> str:
-    main_module = sys.modules.get("__main__")
-    if main_module is None or getattr(main_module, tp.__qualname__, None) is not tp:
-        raise ValueError("Cannot serialize objects from __main__ module")
-
-    spec = getattr(main_module, "__spec__", None)
-    spec_name = getattr(spec, "name", None)
-    if isinstance(spec_name, str) and spec_name != "__main__":
-        sys.modules.setdefault(spec_name, main_module)
-        return spec_name
-
-    main_file = getattr(main_module, "__file__", None)
-    if main_file is None:
-        raise ValueError("Cannot serialize objects from __main__ module")
-
-    resolved = _module_name_from_package_path(Path(main_file).resolve())
-    if resolved is None:
-        raise ValueError("Cannot serialize objects from __main__ module")
-
-    module_name, import_root = resolved
-    import_root_str = str(import_root)
-    if import_root_str not in sys.path:
-        sys.path.insert(0, import_root_str)
-    sys.modules.setdefault(module_name, main_module)
-    return module_name
-
-
 def fully_qualified_name(tp: type) -> str:
     mod = tp.__module__
     qualname = tp.__qualname__
     if "<locals>" in qualname:  # TODO: allow overwriting
         raise ValueError("TODO: msg")
-    elif mod == "__main__":
-        mod = _main_module_name_for(tp)
     elif "." in qualname:
         raise ValueError("TODO: msg")
     elif (isinstance(tp, type) and issubclass(tp, Enum)) or isinstance(tp, Enum):

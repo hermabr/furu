@@ -995,7 +995,6 @@ def test_furu_object_defined_in_direct_src_script_can_load_or_create(
     (package / "data.py").write_text(
         """
 from furu import Furu
-from furu.metadata import ArtifactSpec
 
 
 class Data(Furu[int]):
@@ -1004,11 +1003,7 @@ class Data(Furu[int]):
 
 
 if __name__ == "__main__":
-    obj = Data()
-    artifact = ArtifactSpec.from_furu(obj)
-    print(f"FQN:{obj._fully_qualified_name}")
-    print(f"RESULT:{obj.load_or_create()}")
-    print(f"ROUND_TRIP:{Data.from_artifact(artifact) == obj}")
+    print(f"RESULT:{Data().load_or_create()}")
 """.lstrip(),
         encoding="utf-8",
     )
@@ -1035,9 +1030,7 @@ if __name__ == "__main__":
     )
 
     lines = completed.stdout.splitlines()
-    assert "FQN:my_lib.data.Data" in lines
     assert "RESULT:7" in lines
-    assert "ROUND_TRIP:True" in lines
 
 
 def test_furu_from_artifact_returns_furu_object():
