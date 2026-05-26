@@ -1,5 +1,4 @@
 import enum
-import importlib
 from dataclasses import fields, is_dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, get_args, get_origin, get_type_hints
@@ -8,7 +7,7 @@ from pydantic import BaseModel as PydanticBaseModel
 
 from furu.constants import CLASSMARKER, FIELDSMARKER, KINDMARKER
 from furu.metadata import ArtifactSpec
-from furu.utils import JsonValue, fully_qualified_name
+from furu.utils import JsonValue, fully_qualified_name, resolve_qualified_name
 
 if TYPE_CHECKING:
     from furu.core import Furu
@@ -65,12 +64,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
 
 
 def _load_type(qualified_name: str) -> type[Any]:
-    module_name, _, class_name = qualified_name.rpartition(".")
-    if not module_name or not class_name:
-        raise ValueError(f"Expected fully qualified class name, got {qualified_name!r}")
-
-    module = importlib.import_module(module_name)
-    value = getattr(module, class_name)
+    value = resolve_qualified_name(qualified_name)
     if not isinstance(value, type):
         raise TypeError(f"{qualified_name!r} resolved to a non-type value")
     return value

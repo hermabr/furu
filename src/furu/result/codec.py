@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib
 import importlib.util
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -8,7 +7,7 @@ from functools import cache
 from pathlib import Path
 from typing import Self, cast
 
-from furu.utils import fully_qualified_name
+from furu.utils import fully_qualified_name, resolve_qualified_name
 
 
 class ResultCodec(ABC):
@@ -115,12 +114,8 @@ class ResultRegistry:
 
 @cache
 def resolve_result_codec(codec_id: str) -> type[ResultCodec]:
-    module_name, _, attr_name = codec_id.rpartition(".")
-    if not module_name:
-        raise KeyError(codec_id)
-
-    codec = getattr(importlib.import_module(module_name), attr_name)
-    if not issubclass(codec, ResultCodec):
+    codec = resolve_qualified_name(codec_id)
+    if not isinstance(codec, type) or not issubclass(codec, ResultCodec):
         raise TypeError(f"{codec_id} is not a ResultCodec")
     return codec
 

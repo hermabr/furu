@@ -8,6 +8,7 @@ from furu.migration import Migration
 from furu.resources import ResourceRequirements
 from furu.result import LazyResult, save_as
 from furu.result.codec import ResultCodec, ResultRegistry
+from furu.utils import set_main_module
 from furu.validate import validate
 
 __version__ = version("furu")
@@ -24,5 +25,6 @@ __all__ = [
     "get_logger",
     "load_or_create",
     "save_as",
+    "set_main_module",
     "validate",
 ]
