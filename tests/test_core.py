@@ -1,4 +1,7 @@
 import json
+import os
+import subprocess
+import sys
 import types
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -980,6 +983,61 @@ def test_furu_object_with_typed_fields_round_trips_from_json_artifact():
     assert _from_json(path_obj._artifact_data) == path_obj
     assert _from_json(class_obj._artifact_data) == class_obj
     assert isinstance(cast(UsesPath, _from_json(path_obj._artifact_data)).path, Path)
+
+
+def test_furu_object_defined_in_direct_src_script_can_load_or_create(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    package = project / "src" / "my_lib"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "data.py").write_text(
+        """
+from furu import Furu
+from furu.metadata import ArtifactSpec
+
+
+class Data(Furu[int]):
+    def create(self) -> int:
+        return 7
+
+
+if __name__ == "__main__":
+    obj = Data()
+    artifact = ArtifactSpec.from_furu(obj)
+    print(f"FQN:{obj._fully_qualified_name}")
+    print(f"RESULT:{obj.load_or_create()}")
+    print(f"ROUND_TRIP:{Data.from_artifact(artifact) == obj}")
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    env = {
+        **os.environ,
+        "FURU_DIRECTORIES__OBJECTS": str(tmp_path / "objects"),
+        "FURU_DIRECTORIES__EXECUTIONS": str(tmp_path / "executions"),
+        "PYTHONPATH": os.pathsep.join(
+            [
+                str(Path.cwd() / "src"),
+                str(project / "src"),
+                os.environ.get("PYTHONPATH", ""),
+            ]
+        ),
+    }
+    completed = subprocess.run(
+        [sys.executable, "src/my_lib/data.py"],
+        cwd=project,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    lines = completed.stdout.splitlines()
+    assert "FQN:my_lib.data.Data" in lines
+    assert "RESULT:7" in lines
+    assert "ROUND_TRIP:True" in lines
 
 
 def test_furu_from_artifact_returns_furu_object():
