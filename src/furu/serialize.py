@@ -7,7 +7,7 @@ from pydantic import BaseModel as PydanticBaseModel
 
 from furu.constants import CLASSMARKER, FIELDSMARKER, KINDMARKER
 from furu.metadata import ArtifactSpec
-from furu.utils import JsonValue, fully_qualified_name, resolve_qualified_name
+from furu.utils import JsonValue, fully_qualified_name
 
 if TYPE_CHECKING:
     from furu.core import Furu
@@ -63,10 +63,10 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
             raise ValueError("unexpected item", obj)  # TODO: explain the error more
 
 
-def _load_type(qualified_name: str) -> type[Any]:
-    value = resolve_qualified_name(qualified_name)
+def _load_type(name: str) -> type[Any]:
+    value = fully_qualified_name(name)
     if not isinstance(value, type):
-        raise TypeError(f"{qualified_name!r} resolved to a non-type value")
+        raise TypeError(f"{name!r} resolved to a non-type value")
     return value
 
 

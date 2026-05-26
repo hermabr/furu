@@ -7,7 +7,7 @@ import sys
 import uuid
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, overload
 
 from pydantic import JsonValue
 
@@ -30,14 +30,39 @@ def _running_main_module_name() -> str | None:
     return None
 
 
-def fully_qualified_name(tp: type) -> str:
-    mod = tp.__module__
-    qualname = tp.__qualname__
+@overload
+def fully_qualified_name(value: str) -> Any: ...
+
+
+@overload
+def fully_qualified_name(value: object) -> str: ...
+
+
+def fully_qualified_name(value: object) -> Any:
+    if isinstance(value, str):
+        module_name, _, attr_name = value.rpartition(".")
+        if not module_name or not attr_name:
+            raise ValueError(f"Expected fully qualified name, got {value!r}")
+
+        if module_name == _running_main_module_name():
+            main = sys.modules.get("__main__")
+            if main is not None and hasattr(main, attr_name):
+                return getattr(main, attr_name)
+
+        return getattr(importlib.import_module(module_name), attr_name)
+
+    mod = getattr(value, "__module__", None)
+    qualname = getattr(value, "__qualname__", None)
+    if not isinstance(mod, str) or not isinstance(qualname, str):
+        raise TypeError(
+            f"Expected a fully qualified name or nameable object, got {value!r}"
+        )
+
     if "<locals>" in qualname:
         raise ValueError("Cannot serialize local classes")
     elif "." in qualname:
         raise ValueError("Cannot serialize nested classes")
-    elif (isinstance(tp, type) and issubclass(tp, Enum)) or isinstance(tp, Enum):
+    elif isinstance(value, type) and issubclass(value, Enum):
         raise ValueError(
             "TODO: support this in the future"
         )  # return f"{mod}.{qualname}.{obj.name}"
@@ -52,19 +77,6 @@ def fully_qualified_name(tp: type) -> str:
         mod = main_module_name
 
     return f"{mod}.{qualname}"
-
-
-def resolve_qualified_name(qualified_name: str) -> Any:
-    module_name, _, attr_name = qualified_name.rpartition(".")
-    if not module_name or not attr_name:
-        raise ValueError(f"Expected fully qualified name, got {qualified_name!r}")
-
-    if module_name == _running_main_module_name():
-        main = sys.modules.get("__main__")
-        if main is not None and hasattr(main, attr_name):
-            return getattr(main, attr_name)
-
-    return getattr(importlib.import_module(module_name), attr_name)
 
 
 def object_id_from_parts(

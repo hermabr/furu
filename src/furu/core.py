@@ -25,9 +25,9 @@ from furu.serialize import to_json as _to_json
 from furu.utils import (
     JsonValue,
     _hash_dict_deterministically,
-    fully_qualified_name,
     nfs_safe_unique_name,
     object_id_from_parts,
+    fully_qualified_name,
 )
 from furu.validate import validate_cls
 

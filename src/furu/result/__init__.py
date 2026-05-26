@@ -23,7 +23,7 @@ from furu.result.codec import ResultCodec, ResultRegistry, resolve_result_codec
 from furu.result.lazy import LazyResult
 from furu.result.save_as import _SaveAs
 from furu.result.save_as import save_as as save_as
-from furu.utils import JsonValue, fully_qualified_name, resolve_qualified_name
+from furu.utils import JsonValue, fully_qualified_name
 
 WRAPPER_KEY: Final = "$furu"
 ARTIFACTS_DIR_NAME: Final = "artifacts"
@@ -313,8 +313,8 @@ def _dump_external(
     }
 
 
-def _import_type(qualified_name: str) -> Any:
-    return resolve_qualified_name(qualified_name)
+def _import_type(name: str) -> Any:
+    return fully_qualified_name(name)
 
 
 def _load_value(

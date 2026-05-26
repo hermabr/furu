@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from furu.utils import fully_qualified_name, resolve_qualified_name
+from furu.utils import fully_qualified_name
 
 
 def test_fully_qualified_name_uses_main_spec_name(
@@ -27,7 +27,7 @@ def test_fully_qualified_name_uses_main_spec_name(
     monkeypatch.setattr(main, "MainThing", main_type, raising=False)
 
     assert fully_qualified_name(main_type) == "my_lib.data.MainThing"
-    assert resolve_qualified_name("my_lib.data.MainThing") is main_type
+    assert fully_qualified_name("my_lib.data.MainThing") is main_type
 
 
 def test_main_without_spec_name_is_not_serializable(
