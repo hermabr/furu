@@ -541,7 +541,7 @@ def _result_node_requires_reload_after_dump(node: JsonValue) -> bool:
                         codec, ResultCodec
                     ):
                         raise TypeError(f"{codec_id} is not a ResultCodec")
-                    return codec.reload_after_dump()
+                    return codec.reload_after_dump
                 case "lazy":
                     return False
                 case "dataclass" | "pydantic":

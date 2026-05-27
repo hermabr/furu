@@ -298,9 +298,7 @@ class _OtherCountingCodec(ResultCodec):
 
 
 class _MemmapNumpyNpyCodec(NumpyNpyCodec):
-    @classmethod
-    def reload_after_dump(cls) -> bool:
-        return True
+    reload_after_dump = True
 
     @classmethod
     def load(cls, *, artifact_dir: Path) -> object:
