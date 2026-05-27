@@ -36,6 +36,11 @@ type WrapperKind = Literal[
 ]
 
 
+@dataclasses.dataclass
+class _DumpState:
+    should_load_after_dump: bool = False
+
+
 def _strip_annotated_declared_type(declared_type: object) -> object:
     if get_origin(declared_type) is Annotated:
         return get_args(declared_type)[0]
@@ -103,6 +108,7 @@ def _dump_value(
     value_path: ValuePath,
     bundle_dir: Path,
     registry: ResultRegistry,
+    dump_state: _DumpState,
 ) -> JsonValue:
     annotated_codec: type[ResultCodec] | None = None
     if get_origin(declared_type) is Annotated:
@@ -125,6 +131,7 @@ def _dump_value(
                 codec=runtime_codec,
                 value_path=value_path,
                 bundle_dir=bundle_dir,
+                dump_state=dump_state,
             )
         case _, annotated_codec if annotated_codec is not None:
             return _dump_external(
@@ -132,6 +139,7 @@ def _dump_value(
                 codec=annotated_codec,
                 value_path=value_path,
                 bundle_dir=bundle_dir,
+                dump_state=dump_state,
             )
 
     match value:
@@ -146,6 +154,7 @@ def _dump_value(
                     value_path=(*value_path, f"{i:0{width}d}"),
                     bundle_dir=bundle_dir,
                     registry=registry,
+                    dump_state=dump_state,
                 )
                 for i, item in enumerate(value)
             ]
@@ -161,6 +170,7 @@ def _dump_value(
                             value_path=(*value_path, f"{i:0{width}d}"),
                             bundle_dir=bundle_dir,
                             registry=registry,
+                            dump_state=dump_state,
                         )
                         for i, item in enumerate(value)
                     ],
@@ -187,6 +197,7 @@ def _dump_value(
                             value_path=(*value_path, f"{i:0{width}d}"),
                             bundle_dir=bundle_dir,
                             registry=registry,
+                            dump_state=dump_state,
                         )
                         for i, item in enumerate(items)
                     ],
@@ -205,6 +216,7 @@ def _dump_value(
                     value_path=(*value_path, key),
                     bundle_dir=bundle_dir,
                     registry=registry,
+                    dump_state=dump_state,
                 )
             return out
         case Path():
@@ -227,6 +239,7 @@ def _dump_value(
                     value_path=(*value_path, name),
                     bundle_dir=bundle_dir,
                     registry=registry,
+                    dump_state=dump_state,
                 )
             return {
                 WRAPPER_KEY: {
@@ -248,6 +261,7 @@ def _dump_value(
                     value_path=(*value_path, name),
                     bundle_dir=bundle_dir,
                     registry=registry,
+                    dump_state=dump_state,
                 )
             return {
                 WRAPPER_KEY: {
@@ -266,12 +280,13 @@ def _dump_value(
                     lazy_declared_type = lazy_declared_args[0]
             else:
                 lazy_declared_type = Any
-            save_result_bundle(
+            if _save_result_bundle(
                 value.load(),
                 nested_bundle_dir,
                 declared_type=lazy_declared_type,
                 registry=registry,
-            )
+            ):
+                dump_state.should_load_after_dump = True
             return {
                 WRAPPER_KEY: {
                     KINDMARKER: "lazy",
@@ -285,6 +300,7 @@ def _dump_value(
                     codec=codec,
                     value_path=value_path,
                     bundle_dir=bundle_dir,
+                    dump_state=dump_state,
                 )
 
     raise ValueError(
@@ -299,11 +315,14 @@ def _dump_external(
     codec: type[ResultCodec],
     value_path: ValuePath,
     bundle_dir: Path,
+    dump_state: _DumpState,
 ) -> JsonValue:
     artifact_rel = Path(ARTIFACTS_DIR_NAME, *(value_path or (_ROOT_ARTIFACT_NAME,)))
     artifact_dir = bundle_dir / artifact_rel
     artifact_dir.mkdir(parents=True, exist_ok=False)
     codec.dump(value, artifact_dir=artifact_dir)
+    if codec.load_after_dump:
+        dump_state.should_load_after_dump = True
     return {
         WRAPPER_KEY: {
             KINDMARKER: "external",
@@ -524,6 +543,31 @@ def _load_wrapper(
             raise ValueError(f"unknown wrapper kind: {kind!r}")
 
 
+def _save_result_bundle(
+    value: object,
+    bundle_dir: Path,
+    *,
+    declared_type: object = Any,
+    registry: ResultRegistry,
+) -> bool:
+    bundle_dir.mkdir(parents=True, exist_ok=False)
+
+    dump_state = _DumpState()
+    manifest = _dump_value(
+        value,
+        declared_type=declared_type,
+        value_path=(),
+        bundle_dir=bundle_dir,
+        registry=registry,
+        dump_state=dump_state,
+    )
+    (bundle_dir / MANIFEST_FILE_NAME).write_text(
+        json.dumps(manifest, indent=2),
+        encoding="utf-8",
+    )
+    return dump_state.should_load_after_dump
+
+
 def save_result_bundle(
     value: object,
     bundle_dir: Path,
@@ -531,18 +575,11 @@ def save_result_bundle(
     declared_type: object = Any,
     registry: ResultRegistry,
 ) -> None:
-    bundle_dir.mkdir(parents=True, exist_ok=False)
-
-    manifest = _dump_value(
+    _save_result_bundle(
         value,
+        bundle_dir,
         declared_type=declared_type,
-        value_path=(),
-        bundle_dir=bundle_dir,
         registry=registry,
-    )
-    (bundle_dir / MANIFEST_FILE_NAME).write_text(
-        json.dumps(manifest, indent=2),
-        encoding="utf-8",
     )
 
 

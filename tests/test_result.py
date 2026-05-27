@@ -811,6 +811,19 @@ class NumpyResult(Furu[dict[str, object]]):
         return {"weights": np.arange(10, dtype=np.float32)}
 
 
+class _MemmapNumpyNpyCodec(NumpyNpyCodec):
+    load_after_dump: ClassVar[bool] = True
+
+    @classmethod
+    def load(cls, *, artifact_dir: Path) -> object:
+        return np.load(artifact_dir / "data.npy", allow_pickle=False, mmap_mode="r")
+
+
+class MemmapNumpyResult(Furu[Annotated[Any, _MemmapNumpyNpyCodec]]):
+    def create(self) -> np.ndarray[Any, Any]:
+        return np.arange(10, dtype=np.float32)
+
+
 def test_numpy_array_round_trips() -> None:
     obj = NumpyResult()
     loaded = obj.load_or_create()
@@ -829,6 +842,21 @@ def test_numpy_array_round_trips() -> None:
         f"{NumpyNpyCodec.__module__}.{NumpyNpyCodec.__qualname__}"
     )
     assert manifest["weights"]["$furu"]["path"] == "artifacts/weights"
+
+
+def test_codec_can_force_load_after_dump_for_cache_miss_consistency() -> None:
+    obj = MemmapNumpyResult()
+    expected_file = result_dir_in(obj._base_dir) / "artifacts" / "root" / "data.npy"
+
+    first = obj.load_or_create()
+    second = obj.load_or_create()
+
+    assert isinstance(first, np.memmap)
+    assert isinstance(second, np.memmap)
+    assert Path(first.filename).resolve() == expected_file.resolve()
+    assert Path(second.filename).resolve() == expected_file.resolve()
+    assert np.array_equal(first, np.arange(10, dtype=np.float32))
+    assert np.array_equal(second, np.arange(10, dtype=np.float32))
 
 
 class PolarsResult(Furu[dict[str, object]]):

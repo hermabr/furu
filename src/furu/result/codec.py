@@ -5,12 +5,14 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
-from typing import Self, cast
+from typing import ClassVar, Self, cast
 
 from furu.utils import fully_qualified_name
 
 
 class ResultCodec(ABC):
+    load_after_dump: ClassVar[bool] = False
+
     @classmethod
     def _codec_id(cls) -> str:
         return fully_qualified_name(cls)
