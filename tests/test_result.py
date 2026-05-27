@@ -297,6 +297,33 @@ class _OtherCountingCodec(ResultCodec):
         return _CountingValue(0)
 
 
+class _MemmapNumpyNpyCodec(NumpyNpyCodec):
+    @classmethod
+    def reload_after_dump(cls) -> bool:
+        return True
+
+    @classmethod
+    def load(cls, *, artifact_dir: Path) -> object:
+        return np.load(artifact_dir / "data.npy", allow_pickle=False, mmap_mode="r")
+
+
+class MemmapArrayResult(Furu[Annotated[Any, _MemmapNumpyNpyCodec]]):
+    def create(self) -> np.ndarray[Any, Any]:
+        return np.arange(4, dtype=np.int64)
+
+
+def test_load_or_create_returns_codec_loaded_value_after_create() -> None:
+    obj = MemmapArrayResult()
+
+    loaded = obj.load_or_create()
+    loaded_again = obj.load_or_create()
+
+    assert isinstance(loaded, np.memmap)
+    assert isinstance(loaded_again, np.memmap)
+    assert np.array_equal(loaded, np.arange(4, dtype=np.int64))
+    assert np.array_equal(loaded_again, np.arange(4, dtype=np.int64))
+
+
 def test_codec_id_is_derived_from_class_identity() -> None:
     assert _CountingCodec._codec_id() == (
         f"{_CountingCodec.__module__}.{_CountingCodec.__qualname__}"

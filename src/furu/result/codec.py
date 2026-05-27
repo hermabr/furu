@@ -16,6 +16,10 @@ class ResultCodec(ABC):
         return fully_qualified_name(cls)
 
     @classmethod
+    def reload_after_dump(cls) -> bool:
+        return False
+
+    @classmethod
     def dependencies_available(cls) -> bool:
         return True
 

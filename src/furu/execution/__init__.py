@@ -113,7 +113,7 @@ def _store_result[T](
     metadata: RunningMetadata,
     observed_dependencies: tuple[str, ...],
     has_lock: HasLock,
-) -> None:
+) -> bool:
     lock_path = compute_lock_path_in(obj._base_dir)
     result_dir = result_dir_in(obj._base_dir)
     if not has_lock():
@@ -138,7 +138,7 @@ def _store_result[T](
             f"{type(obj).__name__} must declare its concrete result type directly as Furu[...]"
         )
 
-    save_result_bundle(
+    reload_after_dump = save_result_bundle(
         result,
         tmp_result_dir,
         declared_type=declared_type,
@@ -156,6 +156,7 @@ def _store_result[T](
     metadata_path_in(obj._base_dir).write_text(metadata_text)
 
     obj.logger.debug("stored result bundle at %s", result_dir)
+    return reload_after_dump
 
 
 def _format_error_debug_details(exc: BaseException) -> str:
@@ -391,14 +392,19 @@ def _create_and_store_group[T](
                 metadata,
                 strict=True,
             ):
-                _store_result(
+                reload_after_dump = _store_result(
                     obj,
                     result,
                     metadata=obj_metadata,
                     observed_dependencies=observed_dependency_ids,
                     has_lock=has_lock,
                 )
-                results_by_object_id[obj.object_id] = _unwrap_save_as(result)
+                if reload_after_dump:
+                    results_by_object_id[obj.object_id] = cast(
+                        T, load_result_bundle(result_dir_in(obj._base_dir))
+                    )
+                else:
+                    results_by_object_id[obj.object_id] = _unwrap_save_as(result)
 
             logger.debug("load_or_create complete")
         except _DependencyNotReady as exc:

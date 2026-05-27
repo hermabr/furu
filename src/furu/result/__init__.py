@@ -524,13 +524,56 @@ def _load_wrapper(
             raise ValueError(f"unknown wrapper kind: {kind!r}")
 
 
+def _result_node_requires_reload_after_dump(node: JsonValue) -> bool:
+    match node:
+        case None | bool() | int() | float() | str():
+            return False
+        case list():
+            return any(_result_node_requires_reload_after_dump(child) for child in node)
+        case dict() if WRAPPER_KEY in node:
+            body = cast(dict[str, Any], node[WRAPPER_KEY])
+            kind: WrapperKind = body[KINDMARKER]
+            match kind:
+                case "external":
+                    codec_id = body["codec"]
+                    codec = resolve_fully_qualified_name(codec_id)
+                    if not isinstance(codec, type) or not issubclass(
+                        codec, ResultCodec
+                    ):
+                        raise TypeError(f"{codec_id} is not a ResultCodec")
+                    return codec.reload_after_dump()
+                case "lazy":
+                    return False
+                case "dataclass" | "pydantic":
+                    return any(
+                        _result_node_requires_reload_after_dump(child)
+                        for child in body[FIELDSMARKER].values()
+                    )
+                case "tuple" | "set" | "frozenset":
+                    return any(
+                        _result_node_requires_reload_after_dump(child)
+                        for child in body["items"]
+                    )
+                case "path":
+                    return False
+                case _:
+                    raise ValueError(f"unknown wrapper kind: {kind!r}")
+        case dict():
+            return any(
+                _result_node_requires_reload_after_dump(child)
+                for child in node.values()
+            )
+        case _:
+            assert_never(node)
+
+
 def save_result_bundle(
     value: object,
     bundle_dir: Path,
     *,
     declared_type: object = Any,
     registry: ResultRegistry,
-) -> None:
+) -> bool:
     bundle_dir.mkdir(parents=True, exist_ok=False)
 
     manifest = _dump_value(
@@ -544,6 +587,7 @@ def save_result_bundle(
         json.dumps(manifest, indent=2),
         encoding="utf-8",
     )
+    return _result_node_requires_reload_after_dump(manifest)
 
 
 def load_result_bundle(bundle_dir: Path) -> object:
