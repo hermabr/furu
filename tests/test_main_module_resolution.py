@@ -63,7 +63,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from furu import Furu
-from furu.result import load_result_bundle, save_result_bundle
+from furu.result import load_result_bundle, _save_result_bundle
 from furu.result.codec import ResultCodec, ResultRegistry
 from furu.serialize import _from_json
 
@@ -109,11 +109,11 @@ if __name__ == "__main__":
     second = obj.load_or_create()
 
     payload_bundle = Path("payload-bundle")
-    save_result_bundle(Payload(9), payload_bundle, registry=ResultRegistry())
+    _save_result_bundle(Payload(9), payload_bundle, registry=ResultRegistry())
     payload_loaded = load_result_bundle(payload_bundle)
 
     codec_bundle = Path("codec-bundle")
-    save_result_bundle(
+    _save_result_bundle(
         b"abc",
         codec_bundle,
         registry=ResultRegistry(codecs=(MainCodec,)),

@@ -19,7 +19,7 @@ from furu.config import get_config
 from furu.dependencies import collect_declared_refs
 from furu.locking import lock_many
 from furu.metadata import ArtifactSpec
-from furu.result import load_result_bundle, save_result_bundle
+from furu.result import load_result_bundle, _save_result_bundle
 from furu.result.codec import _default_result_registry
 from furu.serialize import _from_json, to_json
 from furu._storage_layout import (
@@ -1623,7 +1623,7 @@ def test_pending_items_are_rechecked_after_lock_acquisition(
     @contextmanager
     def fake_lock_many(lock_paths: list[Path], **_: object):
         assert lock_paths == [compute_lock_path_in(pending._base_dir)]
-        save_result_bundle(
+        _save_result_bundle(
             "single:5",
             result_dir_in(pending._base_dir),
             registry=_default_result_registry(),

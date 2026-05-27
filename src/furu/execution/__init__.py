@@ -21,7 +21,7 @@ from furu.locking import lock_many
 from furu.logging import _scoped_log_files
 from furu.metadata import RunningMetadata
 from furu.migration import result_dir_for_loading
-from furu.result import load_result_bundle, save_result_bundle
+from furu.result import _save_result_bundle, load_result_bundle
 from furu.result.save_as import _unwrap_save_as
 from furu._storage_layout import (
     compute_lock_path_in,
@@ -113,7 +113,7 @@ def _store_result[T](
     metadata: RunningMetadata,
     observed_dependencies: tuple[str, ...],
     has_lock: HasLock,
-) -> None:
+) -> T:
     lock_path = compute_lock_path_in(obj._base_dir)
     result_dir = result_dir_in(obj._base_dir)
     if not has_lock():
@@ -138,7 +138,7 @@ def _store_result[T](
             f"{type(obj).__name__} must declare its concrete result type directly as Furu[...]"
         )
 
-    save_result_bundle(
+    should_load_after_dump = _save_result_bundle(
         result,
         tmp_result_dir,
         declared_type=declared_type,
@@ -156,6 +156,9 @@ def _store_result[T](
     metadata_path_in(obj._base_dir).write_text(metadata_text)
 
     obj.logger.debug("stored result bundle at %s", result_dir)
+    if should_load_after_dump:
+        return cast(T, load_result_bundle(result_dir))
+    return _unwrap_save_as(result)
 
 
 def _format_error_debug_details(exc: BaseException) -> str:
@@ -391,14 +394,13 @@ def _create_and_store_group[T](
                 metadata,
                 strict=True,
             ):
-                _store_result(
+                results_by_object_id[obj.object_id] = _store_result(
                     obj,
                     result,
                     metadata=obj_metadata,
                     observed_dependencies=observed_dependency_ids,
                     has_lock=has_lock,
                 )
-                results_by_object_id[obj.object_id] = _unwrap_save_as(result)
 
             logger.debug("load_or_create complete")
         except _DependencyNotReady as exc:
