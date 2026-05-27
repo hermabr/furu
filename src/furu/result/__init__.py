@@ -568,21 +568,6 @@ def _save_result_bundle(
     return dump_state.should_load_after_dump
 
 
-def save_result_bundle(
-    value: object,
-    bundle_dir: Path,
-    *,
-    declared_type: object = Any,
-    registry: ResultRegistry,
-) -> None:
-    _save_result_bundle(
-        value,
-        bundle_dir,
-        declared_type=declared_type,
-        registry=registry,
-    )
-
-
 def load_result_bundle(bundle_dir: Path) -> object:
     manifest_path = bundle_dir / MANIFEST_FILE_NAME
     raw = json.loads(manifest_path.read_text(encoding="utf-8"))
