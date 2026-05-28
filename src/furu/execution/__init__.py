@@ -101,8 +101,13 @@ def _resolve_create_mode[T](cls: type[Furu[T]]) -> FuruCreateMode:
         return "single"
     if defines_batched:
         return "batched"
-    raise TypeError(
-        f"{class_label(cls)} must define exactly one create hook in its inheritance chain"
+    return None
+
+
+def _missing_create_hook_error(cls: type[Furu[Any]]) -> TypeError:
+    return TypeError(
+        f"{class_label(cls)} cannot create missing results because it does not "
+        "define create() or create_batched()"
     )
 
 
@@ -379,6 +384,8 @@ def _create_and_store_group[T](
                             results.append(obj.create())
                         observed_dependencies.append(recorder.finalize())
                     logger.debug("sequential create() fallback returned")
+                case None:
+                    raise _missing_create_hook_error(type(group[0]))
                 case _:
                     assert_never(group[0]._furu_create_mode)
 

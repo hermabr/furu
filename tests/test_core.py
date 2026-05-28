@@ -269,6 +269,10 @@ class ObjectIdStorageRootValue(Furu[str]):
         return f"object-id:{self.key}"
 
 
+class NoCreateHookValue(Furu[str]):
+    key: int
+
+
 class BatchOnlyValue(Furu[str]):
     key: int
     batch_calls: ClassVar[list[tuple[int, ...]]] = []
@@ -1514,13 +1518,54 @@ def test_resolved_create_mode_validation() -> None:
             def create_batched(cls, objs) -> list[str]:
                 return [obj.label for obj in objs]
 
+    class NoCreateHook(Furu[int]):
+        value: int
+
+    assert NoCreateHook._furu_create_mode is None
+
+
+def test_no_create_hook_loads_cached_result() -> None:
+    obj = NoCreateHookValue(key=1)
+    _save_result_bundle(
+        "cached:1",
+        result_dir_in(obj._base_dir),
+        declared_type=str,
+        registry=_default_result_registry(),
+    )
+
+    assert obj.load_or_create() == "cached:1"
+
+
+def test_no_create_hook_raises_only_for_missing_result() -> None:
     with pytest.raises(
         TypeError,
-        match="must define exactly one create hook in its inheritance chain",
+        match=(
+            "NoCreateHookValue cannot create missing results because it does not define "
+            r"create\(\) or create_batched\(\)"
+        ),
     ):
+        NoCreateHookValue(key=2).load_or_create()
 
-        class InvalidNone(Furu[int]):
-            pass
+
+def test_no_create_hook_uses_post_lock_cache_recheck(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    obj = NoCreateHookValue(key=3)
+
+    @contextmanager
+    def fake_lock_many(lock_paths: list[Path], **_: object):
+        assert lock_paths == [compute_lock_path_in(obj._base_dir)]
+        _save_result_bundle(
+            "cached-after-lock:1",
+            result_dir_in(obj._base_dir),
+            declared_type=str,
+            registry=_default_result_registry(),
+        )
+        yield lambda: True
+
+    monkeypatch.setattr(execution_module, "lock_many", fake_lock_many)
+
+    assert obj.load_or_create() == "cached-after-lock:1"
 
 
 def test_single_object_on_batch_only_class_uses_create_batched() -> None:
