@@ -248,7 +248,7 @@ class _CountingValue:
         self.value = value
 
 
-class _CountingCodec(ResultCodec):
+class _CountingCodec(ResultCodec[_CountingValue]):
     dump_calls: ClassVar[int] = 0
     load_calls: ClassVar[int] = 0
 
@@ -259,25 +259,25 @@ class _CountingCodec(ResultCodec):
     @classmethod
     def dump(
         cls,
-        value: object,
+        value: _CountingValue,
         *,
         artifact_dir: Path,
     ) -> None:
         cls.dump_calls += 1
         artifact_dir.joinpath("value.txt").write_text(
-            str(cast(_CountingValue, value).value),
+            str(value.value),
             encoding="utf-8",
         )
 
     @classmethod
-    def load(cls, *, artifact_dir: Path) -> object:
+    def load(cls, *, artifact_dir: Path) -> _CountingValue:
         cls.load_calls += 1
         return _CountingValue(
             int(artifact_dir.joinpath("value.txt").read_text(encoding="utf-8"))
         )
 
 
-class _OtherCountingCodec(ResultCodec):
+class _OtherCountingCodec(ResultCodec[_CountingValue]):
     @classmethod
     def matches(cls, value: object) -> bool:
         return isinstance(value, _CountingValue)
@@ -285,14 +285,14 @@ class _OtherCountingCodec(ResultCodec):
     @classmethod
     def dump(
         cls,
-        value: object,
+        value: _CountingValue,
         *,
         artifact_dir: Path,
     ) -> None:
         artifact_dir.joinpath("other.txt").write_text("x", encoding="utf-8")
 
     @classmethod
-    def load(cls, *, artifact_dir: Path) -> object:
+    def load(cls, *, artifact_dir: Path) -> _CountingValue:
         artifact_dir.joinpath("other.txt").read_text(encoding="utf-8")
         return _CountingValue(0)
 
@@ -817,7 +817,7 @@ class _MemmapNumpyNpyCodec(NumpyNpyCodec):
     load_after_dump: ClassVar[bool] = True
 
     @classmethod
-    def load(cls, *, artifact_dir: Path) -> object:
+    def load(cls, *, artifact_dir: Path) -> np.ndarray[Any, Any]:
         return np.load(artifact_dir / "data.npy", allow_pickle=False, mmap_mode="r")
 
 

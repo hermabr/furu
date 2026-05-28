@@ -73,19 +73,17 @@ class Payload:
     value: int
 
 
-class MainCodec(ResultCodec):
+class MainCodec(ResultCodec[bytes]):
     @classmethod
     def matches(cls, value: object) -> bool:
         return isinstance(value, bytes)
 
     @classmethod
-    def dump(cls, value: object, *, artifact_dir: Path) -> None:
-        if not isinstance(value, bytes):
-            raise TypeError(type(value).__name__)
+    def dump(cls, value: bytes, *, artifact_dir: Path) -> None:
         (artifact_dir / "data.bin").write_bytes(value)
 
     @classmethod
-    def load(cls, *, artifact_dir: Path) -> object:
+    def load(cls, *, artifact_dir: Path) -> bytes:
         return (artifact_dir / "data.bin").read_bytes()
 
 
