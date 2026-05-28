@@ -99,9 +99,7 @@ class NumpyNpyCodec(ResultCodec["np.ndarray[Any, Any]"]):
     def load(cls, *, artifact_dir: Path) -> np.ndarray[Any, Any]:
         import numpy as np
 
-        return cast(
-            np.ndarray[Any, Any], np.load(artifact_dir / "data.npy", allow_pickle=False)
-        )
+        return np.load(artifact_dir / "data.npy", allow_pickle=False)
 
 
 @dataclass(frozen=True)
