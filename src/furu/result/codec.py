@@ -5,12 +5,16 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
-from typing import ClassVar, Self, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Self, cast
+
+if TYPE_CHECKING:
+    import numpy as np
+    import polars as pl
 
 from furu.utils import fully_qualified_name
 
 
-class ResultCodec(ABC):
+class ResultCodec[T](ABC):
     load_after_dump: ClassVar[bool] = False
 
     @classmethod
@@ -30,7 +34,7 @@ class ResultCodec(ABC):
     @abstractmethod
     def dump(
         cls,
-        value: object,
+        value: T,
         *,
         artifact_dir: Path,
     ) -> None:
@@ -38,11 +42,11 @@ class ResultCodec(ABC):
 
     @classmethod
     @abstractmethod
-    def load(cls, *, artifact_dir: Path) -> object:
+    def load(cls, *, artifact_dir: Path) -> T:
         pass
 
 
-class PolarsParquetCodec(ResultCodec):
+class PolarsParquetCodec(ResultCodec["pl.DataFrame"]):
     @classmethod
     def dependencies_available(cls) -> bool:
         return importlib.util.find_spec("polars") is not None
@@ -56,22 +60,20 @@ class PolarsParquetCodec(ResultCodec):
     @classmethod
     def dump(
         cls,
-        value: object,
+        value: pl.DataFrame,
         *,
         artifact_dir: Path,
     ) -> None:
-        import polars as pl
-
-        cast(pl.DataFrame, value).write_parquet(artifact_dir / "data.parquet")
+        value.write_parquet(artifact_dir / "data.parquet")
 
     @classmethod
-    def load(cls, *, artifact_dir: Path) -> object:
+    def load(cls, *, artifact_dir: Path) -> pl.DataFrame:
         import polars as pl
 
         return pl.read_parquet(artifact_dir / "data.parquet")
 
 
-class NumpyNpyCodec(ResultCodec):
+class NumpyNpyCodec(ResultCodec["np.ndarray[Any, Any]"]):
     @classmethod
     def dependencies_available(cls) -> bool:
         return importlib.util.find_spec("numpy") is not None
@@ -85,19 +87,21 @@ class NumpyNpyCodec(ResultCodec):
     @classmethod
     def dump(
         cls,
-        value: object,
+        value: np.ndarray[Any, Any],
         *,
         artifact_dir: Path,
     ) -> None:
         import numpy as np
 
-        np.save(artifact_dir / "data.npy", cast(np.ndarray, value), allow_pickle=False)
+        np.save(artifact_dir / "data.npy", value, allow_pickle=False)
 
     @classmethod
-    def load(cls, *, artifact_dir: Path) -> object:
+    def load(cls, *, artifact_dir: Path) -> np.ndarray[Any, Any]:
         import numpy as np
 
-        return np.load(artifact_dir / "data.npy", allow_pickle=False)
+        return cast(
+            np.ndarray[Any, Any], np.load(artifact_dir / "data.npy", allow_pickle=False)
+        )
 
 
 @dataclass(frozen=True)
