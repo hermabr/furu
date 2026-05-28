@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Self, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Self, final
 
 if TYPE_CHECKING:
     import numpy as np
@@ -17,6 +17,7 @@ from furu.utils import fully_qualified_name
 class ResultCodec[T](ABC):
     load_after_dump: ClassVar[bool] = False
 
+    @final
     @classmethod
     def _codec_id(cls) -> str:
         return fully_qualified_name(cls)
