@@ -7,7 +7,7 @@ import furu.config as furu_config
 from furu.config import (
     _FuruConfig,
     _FuruDirectories,
-    _JSON_CONFIG_FILE_ENV_VAR,
+    _WORKER_JSON_CONFIG_FILE_ENV_VAR,
     get_config,
 )
 
@@ -120,7 +120,7 @@ def test_config_reads_json_config_file(tmp_path, monkeypatch) -> None:
 """,
         encoding="utf-8",
     )
-    monkeypatch.setenv(_JSON_CONFIG_FILE_ENV_VAR, str(config_file))
+    monkeypatch.setenv(_WORKER_JSON_CONFIG_FILE_ENV_VAR, str(config_file))
     monkeypatch.setenv("FURU_DEBUG_MODE", "false")
     monkeypatch.setenv("FURU_WORKER_IDLE_TIMEOUT_SECONDS", "12.5")
 

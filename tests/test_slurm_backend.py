@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 import furu.worker.backends.slurm.backend as slurm_backend_module
-from furu.config import _FuruConfig, _JSON_CONFIG_FILE_ENV_VAR, get_config
+from furu.config import _FuruConfig, _WORKER_JSON_CONFIG_FILE_ENV_VAR, get_config
 from furu.execution.api import PoolApiClient
 from furu.resources import ResourceRequest
 from furu.worker import _cli
@@ -409,7 +409,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
             _FuruConfig.model_validate_json(config_file.read_text(encoding="utf-8"))
             == get_config()
         )
-        assert f"export {_JSON_CONFIG_FILE_ENV_VAR}={config_file}" in script
+        assert f"export {_WORKER_JSON_CONFIG_FILE_ENV_VAR}={config_file}" in script
 
     assert not sbatch_records[0]["has_manager_environment"]
 

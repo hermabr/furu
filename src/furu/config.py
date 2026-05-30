@@ -11,7 +11,7 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 
-_JSON_CONFIG_FILE_ENV_VAR = "_FURU_JSON_CONFIG_FILE"
+_WORKER_JSON_CONFIG_FILE_ENV_VAR = "_FURU_WORKER_JSON_CONFIG_FILE"
 
 
 class _FuruDirectories(BaseSettings):
@@ -58,7 +58,7 @@ class _FuruConfig(BaseSettings):
             init_settings,
             JsonConfigSettingsSource(
                 settings_cls,
-                json_file=os.environ.get(_JSON_CONFIG_FILE_ENV_VAR),
+                json_file=os.environ.get(_WORKER_JSON_CONFIG_FILE_ENV_VAR),
                 json_file_encoding="utf-8",
             ),
             env_settings,

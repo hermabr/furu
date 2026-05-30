@@ -7,7 +7,7 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from furu.config import _JSON_CONFIG_FILE_ENV_VAR, get_config
+from furu.config import _WORKER_JSON_CONFIG_FILE_ENV_VAR, get_config
 from furu.execution.api import PoolApiClient
 from furu.resources import ResourceRequest
 from furu.utils import write_private_file
@@ -69,7 +69,7 @@ class SlurmWorkerBackend:
                 "set -euo pipefail\n"
                 "\n"
                 "export "
-                f"{_JSON_CONFIG_FILE_ENV_VAR}={shlex.quote(str(config_file))}\n"
+                f"{_WORKER_JSON_CONFIG_FILE_ENV_VAR}={shlex.quote(str(config_file))}\n"
                 "\n"
                 f"exec {shlex.quote(sys.executable)} -m furu.worker._cli \\\n"
                 f"    --server-url {shlex.quote(server_url)} \\\n"
