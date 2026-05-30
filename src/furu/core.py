@@ -46,7 +46,7 @@ else:
         pass
 
 
-type FuruCreateMode = Literal["single", "batched"]
+type FuruCreateMode = Literal["single", "batched"] | None
 
 
 class Furu[T](_FuruDataclassTransform, ABC):
