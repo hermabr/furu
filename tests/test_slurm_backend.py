@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 import furu.worker.backends.slurm.backend as slurm_backend_module
-from furu.config import get_config
+from furu.config import _FuruConfig, _JSON_CONFIG_FILE_ENV_VAR, get_config
 from furu.execution.api import PoolApiClient
 from furu.resources import ResourceRequest
 from furu.worker import _cli
@@ -390,10 +390,8 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert "--idle-timeout 0.25" in script
     assert "--resource-cpus 4" in script
     assert "--resource-gpus 1" in script
-    assert f"FURU_DIRECTORIES__OBJECTS={get_config().directories.objects}" in script
-    assert (
-        f"FURU_DIRECTORIES__EXECUTIONS={get_config().directories.executions}" in script
-    )
+    assert "FURU_DIRECTORIES__OBJECTS" not in script
+    assert "FURU_DIRECTORIES__EXECUTIONS" not in script
 
     assert not (worker_dir / "secrets").exists()
     token_files = sorted(worker_dir.glob("worker-*.token"))
@@ -403,11 +401,22 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
         assert token_file.read_text() == "secret-token"
         assert str(token_file) in script
 
+    config_files = sorted(worker_dir.glob("worker-*.config.json"))
+    assert len(config_files) == 1
+    for config_file in config_files:
+        assert _mode(config_file) == 0o600
+        assert (
+            _FuruConfig.model_validate_json(config_file.read_text(encoding="utf-8"))
+            == get_config()
+        )
+        assert f"export {_JSON_CONFIG_FILE_ENV_VAR}={config_file}" in script
+
     assert not sbatch_records[0]["has_manager_environment"]
 
     assert "secret-token" not in record_file.read_text()
 
     assert all(token_file.exists() for token_file in token_files)
+    assert all(config_file.exists() for config_file in config_files)
 
 
 @pytest.mark.parametrize(

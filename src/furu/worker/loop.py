@@ -37,7 +37,7 @@ def worker_loop(
                     idle_started_at = now
                 if now - idle_started_at >= idle_timeout:
                     return
-                time.sleep(0.1)
+                time.sleep(0.1)  # TODO: make the wait poll interval configurable.
                 continue
             case Job() as job:
                 idle_started_at = None

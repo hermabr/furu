@@ -1,13 +1,17 @@
+import os
 from pathlib import Path
 from typing import Self
 
 from pydantic import ConfigDict, Field
 from pydantic_settings import (
     BaseSettings,
+    JsonConfigSettingsSource,
     PydanticBaseSettingsSource,
     PyprojectTomlConfigSettingsSource,
     SettingsConfigDict,
 )
+
+_JSON_CONFIG_FILE_ENV_VAR = "_FURU_JSON_CONFIG_FILE"
 
 
 class _FuruDirectories(BaseSettings):
@@ -52,6 +56,11 @@ class _FuruConfig(BaseSettings):
     ) -> tuple[PydanticBaseSettingsSource, ...]:
         return (
             init_settings,
+            JsonConfigSettingsSource(
+                settings_cls,
+                json_file=os.environ.get(_JSON_CONFIG_FILE_ENV_VAR),
+                json_file_encoding="utf-8",
+            ),
             env_settings,
             dotenv_settings,
             PyprojectTomlConfigSettingsSource(settings_cls),
