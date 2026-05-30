@@ -79,12 +79,21 @@ def test_worker_cli_reads_auth_token_file(
                 "1",
                 "--resource-gpus",
                 "0",
+                "--idle-timeout",
+                "60",
             ]
         )
         == 0
     )
 
-    assert calls == [("http://manager.test", "secret", ResourceRequest(), None)]
+    assert calls == [
+        (
+            "http://manager.test",
+            "secret",
+            ResourceRequest(),
+            60.0,
+        )
+    ]
     assert token_file.exists()
 
 
@@ -118,12 +127,14 @@ def test_worker_cli_reads_resource_request(
                 "4",
                 "--resource-gpus",
                 "1",
+                "--idle-timeout",
+                "30",
             ]
         )
         == 0
     )
 
-    assert calls == [(ResourceRequest(cpus=4, gpus=1), None)]
+    assert calls == [(ResourceRequest(cpus=4, gpus=1), 30.0)]
 
 
 def test_worker_cli_reads_idle_timeout(
@@ -192,6 +203,8 @@ def test_worker_cli_requires_resource_request(
                 "http://manager.test",
                 "--auth-token-file",
                 str(token_file),
+                "--idle-timeout",
+                "60",
             ]
         )
 
@@ -214,7 +227,55 @@ def test_worker_cli_requires_auth_token_file(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(_cli, "worker_loop", worker_loop)
 
     with pytest.raises(SystemExit) as exc_info:
-        _cli.main(["--server-url", "http://manager.test"])
+        _cli.main(
+            [
+                "--server-url",
+                "http://manager.test",
+                "--resource-cpus",
+                "1",
+                "--resource-gpus",
+                "0",
+                "--idle-timeout",
+                "60",
+            ]
+        )
+
+    assert exc_info.value.code == 2
+    assert calls == []
+
+
+def test_worker_cli_requires_idle_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[float | None] = []
+    token_file = tmp_path / "worker.token"
+    token_file.write_text("secret")
+
+    def worker_loop(
+        *,
+        server_url: str,
+        auth_token: str,
+        resource_request: ResourceRequest,
+        idle_timeout: float | None,
+    ) -> None:
+        calls.append(idle_timeout)
+
+    monkeypatch.setattr(_cli, "worker_loop", worker_loop)
+
+    with pytest.raises(SystemExit) as exc_info:
+        _cli.main(
+            [
+                "--server-url",
+                "http://manager.test",
+                "--auth-token-file",
+                str(token_file),
+                "--resource-cpus",
+                "1",
+                "--resource-gpus",
+                "0",
+            ]
+        )
 
     assert exc_info.value.code == 2
     assert calls == []
@@ -246,6 +307,12 @@ def test_worker_cli_rejects_auth_token_argument(
                 "http://manager.test",
                 "--auth-token-file",
                 str(token_file),
+                "--resource-cpus",
+                "1",
+                "--resource-gpus",
+                "0",
+                "--idle-timeout",
+                "60",
                 "--auth-token",
                 "secret",
             ]
@@ -404,6 +471,7 @@ def test_slurm_backend_rewrites_manager_url_to_worker_connect_host(
     script_path = Path(sbatch_records[0]["argv"][-1])
     script = script_path.read_text()
     assert "--server-url http://manager.cluster:4321" in script
+    assert f"--idle-timeout {get_config().worker_idle_timeout_seconds}" in script
     assert "http://0.0.0.0:4321" not in script
 
 
@@ -558,6 +626,7 @@ def test_slurm_backend_uses_default_poll_interval() -> None:
 
     assert backend.poll_interval == 10.0
     assert backend.manager_listen_host == "0.0.0.0"
+    assert backend.worker_idle_timeout == get_config().worker_idle_timeout_seconds
 
 
 def _install_fake_slurm(

@@ -22,7 +22,7 @@ def worker_loop(
     server_url: str,
     auth_token: str,
     resource_request: ResourceRequest,
-    idle_timeout: float | None = None,
+    idle_timeout: float,
 ) -> None:
     client = api.WorkerApiClient(server_url=server_url, auth_token=auth_token)
     idle_started_at: float | None = None
@@ -32,12 +32,11 @@ def worker_loop(
             case "stop":
                 return
             case "wait":
-                if idle_timeout is not None:
-                    now = time.monotonic()
-                    if idle_started_at is None:
-                        idle_started_at = now
-                    if now - idle_started_at >= idle_timeout:
-                        return
+                now = time.monotonic()
+                if idle_started_at is None:
+                    idle_started_at = now
+                if now - idle_started_at >= idle_timeout:
+                    return
                 time.sleep(0.1)
                 continue
             case Job() as job:

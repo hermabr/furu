@@ -15,6 +15,7 @@ def test_config_reads_environment(monkeypatch) -> None:
     monkeypatch.setenv("FURU_DEBUG_MODE", "true")
     monkeypatch.setenv("FURU_DIRECTORIES__OBJECTS", "/tmp/furu-objects")
     monkeypatch.setenv("FURU_DIRECTORIES__EXECUTIONS", "/tmp/furu-executions")
+    monkeypatch.setenv("FURU_WORKER_IDLE_TIMEOUT_SECONDS", "12.5")
 
     config = _FuruConfig()
 
@@ -23,6 +24,7 @@ def test_config_reads_environment(monkeypatch) -> None:
         objects=Path("/tmp/furu-objects"),
         executions=Path("/tmp/furu-executions"),
     )
+    assert config.worker_idle_timeout_seconds == 12.5
 
 
 def test_config_reads_pyproject_toml(tmp_path, monkeypatch) -> None:
@@ -31,6 +33,7 @@ def test_config_reads_pyproject_toml(tmp_path, monkeypatch) -> None:
         """
 [tool.furu]
 debug_mode = true
+worker_idle_timeout_seconds = 7.5
 
 [tool.furu.directories]
 objects = "/tmp/furu-pyproject-objects"
@@ -47,6 +50,7 @@ executions = "/tmp/furu-pyproject-executions"
         objects=Path("/tmp/furu-pyproject-objects"),
         executions=Path("/tmp/furu-pyproject-executions"),
     )
+    assert config.worker_idle_timeout_seconds == 7.5
 
 
 def test_config_discovers_pyproject_toml_in_parent_directory(

@@ -4,7 +4,7 @@ import secrets
 import shlex
 import sys
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from furu.config import get_config
@@ -23,7 +23,9 @@ class SlurmWorkerBackend:
     manager_listen_host: str = "0.0.0.0"
     job_name: str = "furu-worker"
     poll_interval: float = 10.0
-    worker_idle_timeout: float | None = None
+    worker_idle_timeout: float = field(
+        default_factory=lambda: get_config().worker_idle_timeout_seconds
+    )
 
     def start_pool(
         self,
@@ -52,11 +54,6 @@ class SlurmWorkerBackend:
         scripts_dir = worker_dir / "scripts"
         scripts_dir.mkdir(parents=True, exist_ok=True)
         script_path = scripts_dir / f"worker-{secrets.token_hex(16)}.sh"
-        idle_timeout_arg = (
-            ""
-            if self.worker_idle_timeout is None
-            else f"    --idle-timeout {self.worker_idle_timeout} \\\n"
-        )
         write_private_file(
             script_path,
             (
@@ -71,7 +68,7 @@ class SlurmWorkerBackend:
                 f"exec {shlex.quote(sys.executable)} -m furu.worker._cli \\\n"
                 f"    --server-url {shlex.quote(server_url)} \\\n"
                 f"    --auth-token-file {shlex.quote(str(token_file))} \\\n"
-                f"{idle_timeout_arg}"
+                f"    --idle-timeout {self.worker_idle_timeout} \\\n"
                 f"    --resource-cpus {resource_request.cpus} \\\n"
                 f"    --resource-gpus {resource_request.gpus}\n"
             ),

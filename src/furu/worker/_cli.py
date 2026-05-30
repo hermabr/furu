@@ -33,8 +33,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--idle-timeout",
+        required=True,
         type=float,
-        default=None,
         help="seconds to wait without a lease before this worker exits",
     )
     args = parser.parse_args(argv)

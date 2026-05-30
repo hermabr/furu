@@ -39,6 +39,7 @@ class _FuruConfig(BaseSettings):
 
     debug_mode: bool = False
     directories: _FuruDirectories = Field(default_factory=_FuruDirectories.default)
+    worker_idle_timeout_seconds: float = 60.0
 
     @classmethod
     def settings_customise_sources(

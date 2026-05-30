@@ -14,6 +14,8 @@ type SlurmTaskKind = Literal["a_only", "b_only", "shared"]
 class SlurmWorkloadTask(Furu[dict[str, object]]):
     task_id: str
     kind: SlurmTaskKind
+    scenario_id: str
+    duration_seconds: float
     parents: tuple[Furu[Any], ...] = ()
 
     @property
@@ -30,14 +32,16 @@ class SlurmWorkloadTask(Furu[dict[str, object]]):
         parent_results = [
             cast(dict[str, object], parent.load_or_create()) for parent in self.parents
         ]
-        time.sleep(0.1)
+        time.sleep(self.duration_seconds)
 
         return {
             "cwd": str(Path.cwd().resolve()),
+            "duration_seconds": self.duration_seconds,
             "kind": self.kind,
             "parent_task_ids": [
                 str(parent_result["task_id"]) for parent_result in parent_results
             ],
+            "scenario_id": self.scenario_id,
             "slurm_cpus_per_task": int(os.environ["SLURM_CPUS_PER_TASK"]),
             "slurm_job_id": os.environ["SLURM_JOB_ID"],
             "slurm_job_name": os.environ["SLURM_JOB_NAME"],
