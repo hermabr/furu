@@ -15,6 +15,12 @@ from typing import (
     overload,
 )
 
+from furu._storage_layout import (
+    compute_lock_path_in,
+    metadata_path_in,
+    result_dir_in,
+    run_log_path_in,
+)
 from furu.core import Furu, FuruCreateMode
 from furu.dependencies import dependency_recorder, record_dependency_call
 from furu.locking import lock_many
@@ -23,12 +29,6 @@ from furu.metadata import RunningMetadata
 from furu.migration import result_dir_for_loading
 from furu.result import _save_result_bundle, load_result_bundle
 from furu.result.save_as import _unwrap_save_as
-from furu._storage_layout import (
-    compute_lock_path_in,
-    metadata_path_in,
-    result_dir_in,
-    run_log_path_in,
-)
 from furu.utils import class_label, nfs_safe_unique_name
 from furu.worker.context import (
     _DependencyNotReady,
@@ -102,13 +102,6 @@ def _resolve_create_mode[T](cls: type[Furu[T]]) -> FuruCreateMode:
     if defines_batched:
         return "batched"
     return None
-
-
-def _missing_create_hook_error(cls: type[Furu[Any]]) -> TypeError:
-    return TypeError(
-        f"{class_label(cls)} cannot create missing results because it does not "
-        "define create() or create_batched()"
-    )
 
 
 def _store_result[T](
@@ -385,7 +378,10 @@ def _create_and_store_group[T](
                         observed_dependencies.append(recorder.finalize())
                     logger.debug("sequential create() fallback returned")
                 case None:
-                    raise _missing_create_hook_error(type(group[0]))
+                    raise TypeError(
+                        f"{class_label(type(group[0]))} cannot create missing results because it does not "
+                        "define create() or create_batched()"
+                    )
                 case _:
                     assert_never(group[0]._furu_create_mode)
 
