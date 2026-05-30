@@ -521,6 +521,7 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
         if record["executable"] == "sacct"
     ]
     assert sacct_records[-1]["argv"] == [
+        "-X",
         "-o",
         "JobID,State,NodeList",
         "--parsable2",

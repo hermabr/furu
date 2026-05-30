@@ -45,12 +45,9 @@ class SlurmWorkerPool:
         self._scale_thread.join(timeout=timeout)
 
         deadline = time.monotonic() + timeout
-        has_unfinished = any(
-            state in _UNFINISHED_STATES for state in self._task_states().values()
-        )
-        while has_unfinished and time.monotonic() < deadline:
+        while self._active_job_ids() and time.monotonic() < deadline:
             time.sleep(min(self._poll_interval, max(0.0, deadline - time.monotonic())))
-        if has_unfinished:
+        if self._active_job_ids():
             subprocess.run(
                 ["scancel", *self._job_ids],
                 check=False,
@@ -59,11 +56,12 @@ class SlurmWorkerPool:
             )
 
     def _scale_once(self) -> None:
+        active_job_ids = self._active_job_ids()
         states = self._task_states()
         self._job_ids[:] = [
             job_id
             for job_id in self._job_ids
-            if states.get(job_id) not in (None, "COMPLETED")
+            if job_id in active_job_ids or states.get(job_id) not in (None, "COMPLETED")
         ]
         if len(self._job_ids) >= self._max_workers:
             return
@@ -87,6 +85,28 @@ class SlurmWorkerPool:
             job_id = result.stdout.strip().split(";", maxsplit=1)[0]
             self._job_ids.append(job_id)
 
+    def _active_job_ids(self) -> set[str]:
+        if not self._job_ids:
+            return set()
+
+        result = subprocess.run(
+            [
+                "squeue",
+                "--noheader",
+                "--jobs",
+                ",".join(self._job_ids),
+                "--format=%A",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return {
+            line.strip().split(maxsplit=1)[0]
+            for line in result.stdout.splitlines()
+            if line.strip()
+        }
+
     def _task_states(self) -> dict[str, str]:
         if not self._job_ids:
             return {}
@@ -95,16 +115,21 @@ class SlurmWorkerPool:
         result = subprocess.run(
             [
                 "sacct",
+                "-X",
                 "-o",
                 "JobID,State,NodeList",
                 "--parsable2",
                 "-j",
                 ",".join(self._job_ids),
             ],
-            check=True,
+            check=False,
             capture_output=True,
             text=True,
         )
+        if result.returncode != 0:
+            logger.debug("sacct failed while checking slurm jobs: %s", result.stderr)
+            return {}
+
         states: dict[str, str] = {}
         for line in result.stdout.splitlines()[1:]:
             job_id, state, _node_list = line.split("|")
