@@ -32,3 +32,8 @@ dev = [
     "ruff>=0.15.12",
     "ty>=0.0.35",
 ]
+
+[tool.pytest.ini_options]
+markers = [
+    "slurm_integration: opt-in Docker-backed tests that run against a real local Slurm daemon",
+]

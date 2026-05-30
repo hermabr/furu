@@ -1,0 +1,16 @@
+services:
+  slurm-test:
+    build:
+      context: ../..
+      dockerfile: tests/slurm/Dockerfile
+    hostname: furu-slurm
+    init: true
+    privileged: true
+    environment:
+      FURU_SLURM_INTEGRATION: "1"
+      PYTHONUNBUFFERED: "1"
+      UV_CACHE_DIR: /tmp/uv-cache
+      UV_PROJECT_ENVIRONMENT: /tmp/furu-venv
+    volumes:
+      - ../..:/workspace
+    working_dir: /workspace

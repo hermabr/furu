@@ -793,6 +793,36 @@ def test_worker_loop_raises_when_server_is_unavailable() -> None:
         )
 
 
+def test_worker_loop_exits_after_idle_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class TestClient:
+        lease_calls = 0
+
+        def __init__(self, server_url: str, *, auth_token: str) -> None:
+            pass
+
+        def lease_job(self, *, resources: ResourceRequest) -> LeaseJobResponse:
+            self.lease_calls += 1
+            return "wait"
+
+    test_client = TestClient("http://worker.test", auth_token="test-token")
+    monkeypatch.setattr(
+        api,
+        "WorkerApiClient",
+        lambda server_url, *, auth_token: test_client,
+    )
+
+    worker_loop(
+        server_url="http://worker.test",
+        auth_token="test-token",
+        resource_request=ResourceRequest(),
+        idle_timeout=0,
+    )
+
+    assert test_client.lease_calls == 1
+
+
 def test_worker_loop_does_not_swallow_keyboard_interrupt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
