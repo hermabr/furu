@@ -31,6 +31,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=int,
         help="GPU count available to this worker",
     )
+    parser.add_argument(
+        "--idle-timeout",
+        required=True,
+        type=float,
+        help="seconds to wait without a lease before this worker exits",
+    )
     args = parser.parse_args(argv)
 
     worker_loop(
@@ -40,6 +46,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             cpus=args.resource_cpus,
             gpus=args.resource_gpus,
         ),
+        idle_timeout=args.idle_timeout,
     )
     return 0
 

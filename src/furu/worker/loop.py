@@ -22,17 +22,25 @@ def worker_loop(
     server_url: str,
     auth_token: str,
     resource_request: ResourceRequest,
+    idle_timeout: float,
 ) -> None:
     client = api.WorkerApiClient(server_url=server_url, auth_token=auth_token)
+    idle_started_at: float | None = None
 
     while True:
         match client.lease_job(resources=resource_request):
             case "stop":
                 return
             case "wait":
-                time.sleep(0.1)
+                now = time.monotonic()
+                if idle_started_at is None:
+                    idle_started_at = now
+                if now - idle_started_at >= idle_timeout:
+                    return
+                time.sleep(0.1)  # TODO: make the wait poll interval configurable.
                 continue
             case Job() as job:
+                idle_started_at = None
                 try:
                     obj = Furu.from_artifact(job.artifact)
                     with worker_execution_context(lease_id=job.lease_id):

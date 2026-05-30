@@ -7,6 +7,7 @@ import furu.config as furu_config
 from furu.config import (
     _FuruConfig,
     _FuruDirectories,
+    _WORKER_JSON_CONFIG_FILE_ENV_VAR,
     get_config,
 )
 
@@ -15,6 +16,7 @@ def test_config_reads_environment(monkeypatch) -> None:
     monkeypatch.setenv("FURU_DEBUG_MODE", "true")
     monkeypatch.setenv("FURU_DIRECTORIES__OBJECTS", "/tmp/furu-objects")
     monkeypatch.setenv("FURU_DIRECTORIES__EXECUTIONS", "/tmp/furu-executions")
+    monkeypatch.setenv("FURU_WORKER_IDLE_TIMEOUT_SECONDS", "12.5")
 
     config = _FuruConfig()
 
@@ -23,6 +25,7 @@ def test_config_reads_environment(monkeypatch) -> None:
         objects=Path("/tmp/furu-objects"),
         executions=Path("/tmp/furu-executions"),
     )
+    assert config.worker_idle_timeout_seconds == 12.5
 
 
 def test_config_reads_pyproject_toml(tmp_path, monkeypatch) -> None:
@@ -31,6 +34,7 @@ def test_config_reads_pyproject_toml(tmp_path, monkeypatch) -> None:
         """
 [tool.furu]
 debug_mode = true
+worker_idle_timeout_seconds = 7.5
 
 [tool.furu.directories]
 objects = "/tmp/furu-pyproject-objects"
@@ -47,6 +51,7 @@ executions = "/tmp/furu-pyproject-executions"
         objects=Path("/tmp/furu-pyproject-objects"),
         executions=Path("/tmp/furu-pyproject-executions"),
     )
+    assert config.worker_idle_timeout_seconds == 7.5
 
 
 def test_config_discovers_pyproject_toml_in_parent_directory(
@@ -98,6 +103,35 @@ executions = "/tmp/furu-pyproject-executions"
         objects=Path("/tmp/furu-env-objects"),
         executions=Path("/tmp/furu-env-executions"),
     )
+
+
+def test_config_reads_json_config_file(tmp_path, monkeypatch) -> None:
+    config_file = tmp_path / "furu-config.json"
+    config_file.write_text(
+        """
+{
+  "debug_mode": true,
+  "directories": {
+    "objects": "/tmp/furu-json-objects",
+    "executions": "/tmp/furu-json-executions"
+  },
+  "worker_idle_timeout_seconds": 9.5
+}
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(_WORKER_JSON_CONFIG_FILE_ENV_VAR, str(config_file))
+    monkeypatch.setenv("FURU_DEBUG_MODE", "false")
+    monkeypatch.setenv("FURU_WORKER_IDLE_TIMEOUT_SECONDS", "12.5")
+
+    config = _FuruConfig()
+
+    assert config.debug_mode is True
+    assert config.directories == _FuruDirectories(
+        objects=Path("/tmp/furu-json-objects"),
+        executions=Path("/tmp/furu-json-executions"),
+    )
+    assert config.worker_idle_timeout_seconds == 9.5
 
 
 def test_config_is_frozen() -> None:

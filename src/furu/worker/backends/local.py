@@ -5,6 +5,7 @@ import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from furu.config import get_config
 from furu.execution.api import PoolApiClient
 from furu.logging import get_logger
 from furu.resources import ResourceRequest
@@ -18,6 +19,9 @@ class LocalThreadWorkerBackend:
     resource_request: ResourceRequest = field(default_factory=ResourceRequest)
     manager_listen_host: str = "127.0.0.1"
     scale_interval: float = 1.0
+    worker_idle_timeout: float = field(
+        default_factory=lambda: get_config().worker_idle_timeout_seconds
+    )
 
     def start_pool(
         self,
@@ -33,6 +37,7 @@ class LocalThreadWorkerBackend:
             _max_workers=self.max_workers,
             _resource_request=self.resource_request,
             _scale_interval=self.scale_interval,
+            _worker_idle_timeout=self.worker_idle_timeout,
             _client=PoolApiClient(server_url=server_url, auth_token=auth_token),
             _stop_event=threading.Event(),
             _unhealthy_event=threading.Event(),
@@ -54,6 +59,7 @@ class LocalThreadWorkerPool:
     _max_workers: int
     _resource_request: ResourceRequest
     _scale_interval: float
+    _worker_idle_timeout: float
     _client: PoolApiClient
     _stop_event: threading.Event
     _unhealthy_event: threading.Event
@@ -89,6 +95,7 @@ class LocalThreadWorkerPool:
                 server_url=self._server_url,
                 auth_token=self._auth_token,
                 resource_request=self._resource_request,
+                idle_timeout=self._worker_idle_timeout,
             )
         except Exception:
             self._unhealthy_event.set()

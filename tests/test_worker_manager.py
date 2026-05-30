@@ -52,6 +52,7 @@ def _new_local_pool(
         _max_workers=max_workers,
         _resource_request=resource_request or ResourceRequest(),
         _scale_interval=scale_interval,
+        _worker_idle_timeout=get_config().worker_idle_timeout_seconds,
         _client=api.PoolApiClient(server_url=server_url, auth_token=auth_token),
         _stop_event=threading.Event(),
         _unhealthy_event=threading.Event(),
@@ -442,7 +443,7 @@ def test_local_pool_scale_spawns_workers_up_to_max_as_satisfiable_count_grows(
     monkeypatch.setattr(
         worker_loop_module,
         "worker_loop",
-        lambda *, server_url, auth_token, resource_request: None,
+        lambda *, server_url, auth_token, resource_request, idle_timeout: None,
     )
 
     pool = _new_local_pool(max_workers=3)
@@ -473,7 +474,11 @@ def test_local_pool_scale_uses_unique_worker_names_after_worker_exits(
         return max_workers
 
     def worker_loop(
-        *, server_url: str, auth_token: str, resource_request: ResourceRequest
+        *,
+        server_url: str,
+        auth_token: str,
+        resource_request: ResourceRequest,
+        idle_timeout: float,
     ) -> None:
         nonlocal calls
         calls += 1
@@ -508,7 +513,11 @@ def test_manager_run_fails_when_worker_pool_reports_unhealthy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def crashing_worker_loop(
-        *, server_url: str, auth_token: str, resource_request: ResourceRequest
+        *,
+        server_url: str,
+        auth_token: str,
+        resource_request: ResourceRequest,
+        idle_timeout: float,
     ) -> None:
         raise RuntimeError("worker boom")
 
@@ -790,7 +799,38 @@ def test_worker_loop_raises_when_server_is_unavailable() -> None:
             server_url="http://127.0.0.1:1",
             auth_token="test-token",
             resource_request=ResourceRequest(),
+            idle_timeout=get_config().worker_idle_timeout_seconds,
         )
+
+
+def test_worker_loop_exits_after_idle_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class TestClient:
+        lease_calls = 0
+
+        def __init__(self, server_url: str, *, auth_token: str) -> None:
+            pass
+
+        def lease_job(self, *, resources: ResourceRequest) -> LeaseJobResponse:
+            self.lease_calls += 1
+            return "wait"
+
+    test_client = TestClient("http://worker.test", auth_token="test-token")
+    monkeypatch.setattr(
+        api,
+        "WorkerApiClient",
+        lambda server_url, *, auth_token: test_client,
+    )
+
+    worker_loop(
+        server_url="http://worker.test",
+        auth_token="test-token",
+        resource_request=ResourceRequest(),
+        idle_timeout=0,
+    )
+
+    assert test_client.lease_calls == 1
 
 
 def test_worker_loop_does_not_swallow_keyboard_interrupt(
@@ -833,6 +873,7 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
             server_url="http://worker.test",
             auth_token="test-token",
             resource_request=ResourceRequest(gpus=1),
+            idle_timeout=get_config().worker_idle_timeout_seconds,
         )
 
     assert test_client.calls == ["lease_job"]

@@ -1,13 +1,17 @@
+import os
 from pathlib import Path
 from typing import Self
 
 from pydantic import ConfigDict, Field
 from pydantic_settings import (
     BaseSettings,
+    JsonConfigSettingsSource,
     PydanticBaseSettingsSource,
     PyprojectTomlConfigSettingsSource,
     SettingsConfigDict,
 )
+
+_WORKER_JSON_CONFIG_FILE_ENV_VAR = "_FURU_WORKER_JSON_CONFIG_FILE"
 
 
 class _FuruDirectories(BaseSettings):
@@ -39,6 +43,7 @@ class _FuruConfig(BaseSettings):
 
     debug_mode: bool = False
     directories: _FuruDirectories = Field(default_factory=_FuruDirectories.default)
+    worker_idle_timeout_seconds: float = 60.0
 
     @classmethod
     def settings_customise_sources(
@@ -51,6 +56,11 @@ class _FuruConfig(BaseSettings):
     ) -> tuple[PydanticBaseSettingsSource, ...]:
         return (
             init_settings,
+            JsonConfigSettingsSource(
+                settings_cls,
+                json_file=os.environ.get(_WORKER_JSON_CONFIG_FILE_ENV_VAR),
+                json_file_encoding="utf-8",
+            ),
             env_settings,
             dotenv_settings,
             PyprojectTomlConfigSettingsSource(settings_cls),

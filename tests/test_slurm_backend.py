@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 import furu.worker.backends.slurm.backend as slurm_backend_module
+from furu.config import _FuruConfig, _WORKER_JSON_CONFIG_FILE_ENV_VAR, get_config
 from furu.execution.api import PoolApiClient
 from furu.resources import ResourceRequest
 from furu.worker import _cli
@@ -52,14 +53,18 @@ def test_worker_cli_reads_auth_token_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[str, str, ResourceRequest]] = []
+    calls: list[tuple[str, str, ResourceRequest, float | None]] = []
     token_file = tmp_path / "worker.token"
     token_file.write_text("secret\n\n")
 
     def worker_loop(
-        *, server_url: str, auth_token: str, resource_request: ResourceRequest
+        *,
+        server_url: str,
+        auth_token: str,
+        resource_request: ResourceRequest,
+        idle_timeout: float | None,
     ) -> None:
-        calls.append((server_url, auth_token, resource_request))
+        calls.append((server_url, auth_token, resource_request, idle_timeout))
 
     monkeypatch.setattr(_cli, "worker_loop", worker_loop)
 
@@ -74,12 +79,21 @@ def test_worker_cli_reads_auth_token_file(
                 "1",
                 "--resource-gpus",
                 "0",
+                "--idle-timeout",
+                "60",
             ]
         )
         == 0
     )
 
-    assert calls == [("http://manager.test", "secret", ResourceRequest())]
+    assert calls == [
+        (
+            "http://manager.test",
+            "secret",
+            ResourceRequest(),
+            60.0,
+        )
+    ]
     assert token_file.exists()
 
 
@@ -87,14 +101,18 @@ def test_worker_cli_reads_resource_request(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[ResourceRequest] = []
+    calls: list[tuple[ResourceRequest, float | None]] = []
     token_file = tmp_path / "worker.token"
     token_file.write_text("secret")
 
     def worker_loop(
-        *, server_url: str, auth_token: str, resource_request: ResourceRequest
+        *,
+        server_url: str,
+        auth_token: str,
+        resource_request: ResourceRequest,
+        idle_timeout: float | None,
     ) -> None:
-        calls.append(resource_request)
+        calls.append((resource_request, idle_timeout))
 
     monkeypatch.setattr(_cli, "worker_loop", worker_loop)
 
@@ -109,12 +127,54 @@ def test_worker_cli_reads_resource_request(
                 "4",
                 "--resource-gpus",
                 "1",
+                "--idle-timeout",
+                "30",
             ]
         )
         == 0
     )
 
-    assert calls == [ResourceRequest(cpus=4, gpus=1)]
+    assert calls == [(ResourceRequest(cpus=4, gpus=1), 30.0)]
+
+
+def test_worker_cli_reads_idle_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[float | None] = []
+    token_file = tmp_path / "worker.token"
+    token_file.write_text("secret")
+
+    def worker_loop(
+        *,
+        server_url: str,
+        auth_token: str,
+        resource_request: ResourceRequest,
+        idle_timeout: float | None,
+    ) -> None:
+        calls.append(idle_timeout)
+
+    monkeypatch.setattr(_cli, "worker_loop", worker_loop)
+
+    assert (
+        _cli.main(
+            [
+                "--server-url",
+                "http://manager.test",
+                "--auth-token-file",
+                str(token_file),
+                "--resource-cpus",
+                "4",
+                "--resource-gpus",
+                "1",
+                "--idle-timeout",
+                "0.25",
+            ]
+        )
+        == 0
+    )
+
+    assert calls == [0.25]
 
 
 def test_worker_cli_requires_resource_request(
@@ -126,7 +186,11 @@ def test_worker_cli_requires_resource_request(
     token_file.write_text("secret")
 
     def worker_loop(
-        *, server_url: str, auth_token: str, resource_request: ResourceRequest
+        *,
+        server_url: str,
+        auth_token: str,
+        resource_request: ResourceRequest,
+        idle_timeout: float | None,
     ) -> None:
         calls.append(resource_request)
 
@@ -139,6 +203,8 @@ def test_worker_cli_requires_resource_request(
                 "http://manager.test",
                 "--auth-token-file",
                 str(token_file),
+                "--idle-timeout",
+                "60",
             ]
         )
 
@@ -150,14 +216,66 @@ def test_worker_cli_requires_auth_token_file(monkeypatch: pytest.MonkeyPatch) ->
     calls: list[tuple[str, str]] = []
 
     def worker_loop(
-        *, server_url: str, auth_token: str, resource_request: ResourceRequest
+        *,
+        server_url: str,
+        auth_token: str,
+        resource_request: ResourceRequest,
+        idle_timeout: float | None,
     ) -> None:
         calls.append((server_url, auth_token))
 
     monkeypatch.setattr(_cli, "worker_loop", worker_loop)
 
     with pytest.raises(SystemExit) as exc_info:
-        _cli.main(["--server-url", "http://manager.test"])
+        _cli.main(
+            [
+                "--server-url",
+                "http://manager.test",
+                "--resource-cpus",
+                "1",
+                "--resource-gpus",
+                "0",
+                "--idle-timeout",
+                "60",
+            ]
+        )
+
+    assert exc_info.value.code == 2
+    assert calls == []
+
+
+def test_worker_cli_requires_idle_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[float | None] = []
+    token_file = tmp_path / "worker.token"
+    token_file.write_text("secret")
+
+    def worker_loop(
+        *,
+        server_url: str,
+        auth_token: str,
+        resource_request: ResourceRequest,
+        idle_timeout: float | None,
+    ) -> None:
+        calls.append(idle_timeout)
+
+    monkeypatch.setattr(_cli, "worker_loop", worker_loop)
+
+    with pytest.raises(SystemExit) as exc_info:
+        _cli.main(
+            [
+                "--server-url",
+                "http://manager.test",
+                "--auth-token-file",
+                str(token_file),
+                "--resource-cpus",
+                "1",
+                "--resource-gpus",
+                "0",
+            ]
+        )
 
     assert exc_info.value.code == 2
     assert calls == []
@@ -172,7 +290,11 @@ def test_worker_cli_rejects_auth_token_argument(
     token_file.write_text("secret")
 
     def worker_loop(
-        *, server_url: str, auth_token: str, resource_request: ResourceRequest
+        *,
+        server_url: str,
+        auth_token: str,
+        resource_request: ResourceRequest,
+        idle_timeout: float | None,
     ) -> None:
         calls.append((server_url, auth_token))
 
@@ -185,6 +307,12 @@ def test_worker_cli_rejects_auth_token_argument(
                 "http://manager.test",
                 "--auth-token-file",
                 str(token_file),
+                "--resource-cpus",
+                "1",
+                "--resource-gpus",
+                "0",
+                "--idle-timeout",
+                "60",
                 "--auth-token",
                 "secret",
             ]
@@ -219,6 +347,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
         ),
         worker_connect_host="manager.cluster",
         poll_interval=1.5,
+        worker_idle_timeout=0.25,
     )
 
     pool = backend.start_pool(
@@ -258,8 +387,11 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert "secret-token" not in script
     assert f"exec {sys.executable} -m furu.worker._cli" in script
     assert "--server-url http://manager.cluster:1234" in script
+    assert "--idle-timeout 0.25" in script
     assert "--resource-cpus 4" in script
     assert "--resource-gpus 1" in script
+    assert "FURU_DIRECTORIES__OBJECTS" not in script
+    assert "FURU_DIRECTORIES__EXECUTIONS" not in script
 
     assert not (worker_dir / "secrets").exists()
     token_files = sorted(worker_dir.glob("worker-*.token"))
@@ -269,11 +401,22 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
         assert token_file.read_text() == "secret-token"
         assert str(token_file) in script
 
+    config_files = sorted(worker_dir.glob("worker-*.config.json"))
+    assert len(config_files) == 1
+    for config_file in config_files:
+        assert _mode(config_file) == 0o600
+        assert (
+            _FuruConfig.model_validate_json(config_file.read_text(encoding="utf-8"))
+            == get_config()
+        )
+        assert f"export {_WORKER_JSON_CONFIG_FILE_ENV_VAR}={config_file}" in script
+
     assert not sbatch_records[0]["has_manager_environment"]
 
     assert "secret-token" not in record_file.read_text()
 
     assert all(token_file.exists() for token_file in token_files)
+    assert all(config_file.exists() for config_file in config_files)
 
 
 @pytest.mark.parametrize(
@@ -337,6 +480,7 @@ def test_slurm_backend_rewrites_manager_url_to_worker_connect_host(
     script_path = Path(sbatch_records[0]["argv"][-1])
     script = script_path.read_text()
     assert "--server-url http://manager.cluster:4321" in script
+    assert f"--idle-timeout {get_config().worker_idle_timeout_seconds}" in script
     assert "http://0.0.0.0:4321" not in script
 
 
@@ -377,6 +521,7 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
         if record["executable"] == "sacct"
     ]
     assert sacct_records[-1]["argv"] == [
+        "-X",
         "-o",
         "JobID,State,NodeList",
         "--parsable2",
@@ -435,6 +580,45 @@ def test_slurm_pool_scale_submits_additional_workers_as_satisfiable_count_grows(
     )
 
 
+def test_slurm_pool_scale_submits_replacement_workers_after_existing_workers_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        PoolApiClient,
+        "count_satisfiable_jobs",
+        lambda self, *, resources, max_workers: max_workers,
+    )
+
+    backend = SlurmWorkerBackend(
+        max_workers=3,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="manager.cluster",
+        poll_interval=0,
+    )
+    pool = backend.start_pool(
+        server_url="http://manager.cluster:1234",
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+    )
+
+    pool._scale_once()
+    assert pool._job_ids == ["100", "101", "102"]
+
+    active_file.write_text("100\n101\n")
+    pool._scale_once()
+
+    assert pool._job_ids == ["100", "101", "103"]
+    sbatch_records = [
+        record
+        for record in _read_records(record_file)
+        if record["executable"] == "sbatch"
+    ]
+    assert len(sbatch_records) == 4
+
+
 def test_slurm_backend_requires_explicit_executor_dir() -> None:
     backend = SlurmWorkerBackend(
         max_workers=1,
@@ -491,6 +675,7 @@ def test_slurm_backend_uses_default_poll_interval() -> None:
 
     assert backend.poll_interval == 10.0
     assert backend.manager_listen_host == "0.0.0.0"
+    assert backend.worker_idle_timeout == get_config().worker_idle_timeout_seconds
 
 
 def _install_fake_slurm(

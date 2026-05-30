@@ -4,9 +4,10 @@ import secrets
 import shlex
 import sys
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
+from furu.config import _WORKER_JSON_CONFIG_FILE_ENV_VAR, get_config
 from furu.execution.api import PoolApiClient
 from furu.resources import ResourceRequest
 from furu.utils import write_private_file
@@ -22,6 +23,9 @@ class SlurmWorkerBackend:
     manager_listen_host: str = "0.0.0.0"
     job_name: str = "furu-worker"
     poll_interval: float = 10.0
+    worker_idle_timeout: float = field(
+        default_factory=lambda: get_config().worker_idle_timeout_seconds
+    )
 
     def start_pool(
         self,
@@ -42,6 +46,14 @@ class SlurmWorkerBackend:
         token_file = worker_dir / f"worker-{secrets.token_hex(16)}.token"
         write_private_file(token_file, auth_token, mode=0o600)
 
+        config = get_config()
+        config_file = worker_dir / f"worker-{secrets.token_hex(16)}.config.json"
+        write_private_file(
+            config_file,
+            config.model_dump_json(indent=2) + "\n",
+            mode=0o600,
+        )
+
         resource_request = ResourceRequest(
             cpus=self.resources.cpus_per_worker,
             gpus=self.resources.gpus,
@@ -56,9 +68,13 @@ class SlurmWorkerBackend:
                 "#!/bin/bash\n"
                 "set -euo pipefail\n"
                 "\n"
+                "export "
+                f"{_WORKER_JSON_CONFIG_FILE_ENV_VAR}={shlex.quote(str(config_file))}\n"
+                "\n"
                 f"exec {shlex.quote(sys.executable)} -m furu.worker._cli \\\n"
                 f"    --server-url {shlex.quote(server_url)} \\\n"
                 f"    --auth-token-file {shlex.quote(str(token_file))} \\\n"
+                f"    --idle-timeout {self.worker_idle_timeout} \\\n"
                 f"    --resource-cpus {resource_request.cpus} \\\n"
                 f"    --resource-gpus {resource_request.gpus}\n"
             ),
