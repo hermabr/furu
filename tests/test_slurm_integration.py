@@ -18,6 +18,7 @@ from slurm_objects import SlurmTaskKind, SlurmWorkloadTask
 A_WORKER_COUNT = 2
 B_WORKER_COUNT = 3
 TASK_DURATION_SECONDS = 0.2
+FINAL_SHARED_COUNT = 12
 
 pytestmark = [
     pytest.mark.slurm_integration,
@@ -93,11 +94,11 @@ def test_slurm_backend_runs_worker_job_end_to_end(
 
     results = {task.task_id: task.try_load() for task in all_tasks}
 
-    assert len(all_tasks) == 54
+    assert len(all_tasks) == 50 + FINAL_SHARED_COUNT
     assert Counter(task.kind for task in all_tasks) == {
         "a_only": 16,
         "b_only": 20,
-        "shared": 18,
+        "shared": 14 + FINAL_SHARED_COUNT,
     }
     assert all(task.status() == "completed" for task in all_tasks)
 
@@ -165,6 +166,7 @@ def test_slurm_backend_runs_worker_job_end_to_end(
         assert len(stage2_jobs - narrow_jobs) >= 3
         assert (stage2_jobs - narrow_jobs).isdisjoint(final_shared_jobs)
         assert narrow_jobs <= final_shared_jobs
+        assert final_shared_jobs - narrow_jobs
     else:
         assert len(a_worker_jobs) == A_WORKER_COUNT
         assert len(b_worker_jobs) == B_WORKER_COUNT
@@ -251,12 +253,12 @@ def _build_workload(
             index,
             "shared",
             *narrow_shared,
-            stage2_a[index],
-            stage2_b[index],
-            stage2_b[index + 4],
-            stage2_shared[index],
+            stage2_a[index % len(stage2_a)],
+            stage2_b[index % len(stage2_b)],
+            stage2_b[(index + 4) % len(stage2_b)],
+            stage2_shared[index % len(stage2_shared)],
         )
-        for index in range(4)
+        for index in range(FINAL_SHARED_COUNT)
     ]
 
     all_tasks = [
