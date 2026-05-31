@@ -480,7 +480,7 @@ def test_slurm_backend_rewrites_manager_url_to_worker_connect_host(
     script_path = Path(sbatch_records[0]["argv"][-1])
     script = script_path.read_text()
     assert "--server-url http://manager.cluster:4321" in script
-    assert f"--idle-timeout {get_config().worker_idle_timeout_seconds}" in script
+    assert f"--idle-timeout {get_config().worker.idle_timeout_seconds}" in script
     assert "http://0.0.0.0:4321" not in script
 
 
@@ -619,6 +619,51 @@ def test_slurm_pool_scale_submits_replacement_workers_after_existing_workers_exi
     assert len(sbatch_records) == 4
 
 
+def test_slurm_pool_scale_does_not_count_completed_jobs_as_restarts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        PoolApiClient,
+        "count_satisfiable_jobs",
+        lambda self, *, resources, max_workers: max_workers,
+    )
+
+    backend = SlurmWorkerBackend(
+        max_workers=1,
+        max_failed_restarts=0,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="manager.cluster",
+        poll_interval=0,
+    )
+    pool = backend.start_pool(
+        server_url="http://manager.cluster:1234",
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+    )
+
+    pool._scale_once()
+    active_file.write_text("")
+    pool._scale_once()
+    active_file.write_text("")
+    pool._scale_once()
+
+    assert pool._job_ids == ["102"]
+    assert pool._failed_job_ids == []
+    assert (
+        len(
+            [
+                record
+                for record in _read_records(record_file)
+                if record["executable"] == "sbatch"
+            ]
+        )
+        == 3
+    )
+
+
 def test_slurm_backend_requires_explicit_executor_dir() -> None:
     backend = SlurmWorkerBackend(
         max_workers=1,
@@ -675,7 +720,8 @@ def test_slurm_backend_uses_default_poll_interval() -> None:
 
     assert backend.poll_interval == 10.0
     assert backend.manager_listen_host == "0.0.0.0"
-    assert backend.worker_idle_timeout == get_config().worker_idle_timeout_seconds
+    assert backend.worker_idle_timeout == get_config().worker.idle_timeout_seconds
+    assert backend.max_failed_restarts == get_config().worker.max_failed_restarts
 
 
 def _install_fake_slurm(

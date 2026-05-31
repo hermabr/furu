@@ -29,6 +29,13 @@ class _FuruDirectories(BaseSettings):
         return cls(objects=objects_dir, executions=executions_dir)
 
 
+class _FuruWorkerConfig(BaseSettings):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    idle_timeout_seconds: float = 60.0
+    max_failed_restarts: int = 16
+
+
 class _FuruConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="FURU_",
@@ -43,7 +50,7 @@ class _FuruConfig(BaseSettings):
 
     debug_mode: bool = False
     directories: _FuruDirectories = Field(default_factory=_FuruDirectories.default)
-    worker_idle_timeout_seconds: float = 60.0
+    worker: _FuruWorkerConfig = Field(default_factory=_FuruWorkerConfig)
 
     @classmethod
     def settings_customise_sources(
