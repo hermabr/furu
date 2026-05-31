@@ -5,8 +5,9 @@ import pytest
 
 import furu
 from furu import Furu
-from furu.dag import DagNode
+from furu.dag import DagNode, _update_dag_blocking_dependencies
 from furu.execution.manager import Manager
+from furu.metadata import ArtifactSpec
 from furu._storage_layout import (
     compute_lock_path_in,
     run_log_path_in,
@@ -77,6 +78,8 @@ def test_add_to_dag_single_object_no_dependencies():
     assert root.obj is leaf
     assert root.dependencies == []
     assert root.dependents == []
+    assert root.declared_dependency_ids == set()
+    assert root.runtime_dependency_ids == set()
 
     assert manager.nodes_by_id == {leaf.object_id: root}
     assert manager.blocked == {}
@@ -112,12 +115,21 @@ def test_add_to_dag_traverses_declared_refs_recursively():
 
     assert leaf_a_node.dependencies == []
     assert leaf_a_node.dependents == [mid_left_node]
+    assert leaf_a_node.declared_dependency_ids == set()
+    assert leaf_a_node.runtime_dependency_ids == set()
     assert mid_left_node.dependencies == [leaf_a_node]
     assert mid_left_node.dependents == [top_node]
+    assert mid_left_node.declared_dependency_ids == {leaf_a.object_id}
+    assert mid_left_node.runtime_dependency_ids == set()
     assert {dep.obj.object_id for dep in top_node.dependencies} == {
         mid_left.object_id,
         mid_right.object_id,
     }
+    assert top_node.declared_dependency_ids == {
+        mid_left.object_id,
+        mid_right.object_id,
+    }
+    assert top_node.runtime_dependency_ids == set()
     assert top_node.dependents == []
 
 
@@ -240,9 +252,33 @@ def test_add_to_dag_walks_computed_dependencies():
     (child_root,) = manager.ready.values()
     assert child_root.obj.object_id == parent.computed_child.object_id
     assert {n.obj.object_id for n in child_root.dependents} == {parent.object_id}
+    parent_node = manager.nodes_by_id[parent.object_id]
+    assert parent_node.declared_dependency_ids == {parent.computed_child.object_id}
+    assert parent_node.runtime_dependency_ids == set()
     assert set(manager.nodes_by_id) == {
         parent.object_id,
         parent.computed_child.object_id,
+    }
+
+
+def test_update_dag_blocking_dependencies_tracks_runtime_source_separately():
+    declared = Leaf(name="declared")
+    runtime = Leaf(name="runtime")
+    parent = Mid(label="m", child=declared)
+    manager = Manager([parent])
+    parent_node = manager.nodes_by_id[parent.object_id]
+
+    _update_dag_blocking_dependencies(
+        manager,
+        parent_node,
+        [ArtifactSpec.from_furu(runtime)],
+    )
+
+    assert parent_node.declared_dependency_ids == {declared.object_id}
+    assert parent_node.runtime_dependency_ids == {runtime.object_id}
+    assert {node.obj.object_id for node in parent_node.dependencies} == {
+        declared.object_id,
+        runtime.object_id,
     }
 
 

@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import TypeAdapter, ValidationError
 
+import furu
 import furu.worker.loop as worker_loop_module
 from furu import Furu
 from furu.config import get_config
@@ -88,6 +89,18 @@ class ManagerLazyParent(Furu[int]):
 
     def create(self) -> int:
         return ManagerLeaf(value=self.value).load_or_create() + 1
+
+
+class DynamicDeclaredParent(Furu[list[int]]):
+    prefix: str
+    count: ClassVar[int] = 0
+
+    @furu.dependency(recheck_interval=0)
+    def children(self) -> list[ManagerLeaf]:
+        return [ManagerLeaf(value=i) for i in range(type(self).count)]
+
+    def create(self) -> list[int]:
+        return [child.load_or_create() for child in self.children]
 
 
 def test_manager_init_partitions_ready_and_blocked() -> None:
@@ -178,6 +191,119 @@ def test_manager_job_result_blocked_discovers_lazy_dependency_and_reruns_parent(
 
     assert set(manager.ready) == {parent.object_id}
     assert manager.blocked == {}
+
+
+def test_dynamic_declared_refresh_adds_new_dependency_before_parent_runs() -> None:
+    DynamicDeclaredParent.count = 1
+    parent = DynamicDeclaredParent(prefix="adds")
+    child_0 = ManagerLeaf(value=0)
+    child_1 = ManagerLeaf(value=1)
+    manager = Manager([parent])
+
+    assert set(manager.ready) == {child_0.object_id}
+    assert set(manager.blocked) == {parent.object_id}
+
+    child_0_job = manager.lease_job(resources=ANY_RESOURCES)
+    assert isinstance(child_0_job, Job)
+    assert child_0_job.artifact.object_id == child_0.object_id
+    manager.job_result(child_0_job.lease_id, JobCompletedResult())
+
+    DynamicDeclaredParent.count = 2
+    child_1_job = manager.lease_job(resources=ANY_RESOURCES)
+
+    assert isinstance(child_1_job, Job)
+    assert child_1_job.artifact.object_id == child_1.object_id
+    assert set(manager.blocked) == {parent.object_id}
+    assert parent.object_id not in manager.ready
+
+    manager.job_result(child_1_job.lease_id, JobCompletedResult())
+    parent_job = manager.lease_job(resources=ANY_RESOURCES)
+    assert isinstance(parent_job, Job)
+    assert parent_job.artifact.object_id == parent.object_id
+
+
+def test_dynamic_declared_refresh_removes_obsolete_orphan_dependency() -> None:
+    DynamicDeclaredParent.count = 2
+    parent = DynamicDeclaredParent(prefix="removes")
+    child_0 = ManagerLeaf(value=0)
+    child_1 = ManagerLeaf(value=1)
+    manager = Manager([parent])
+
+    DynamicDeclaredParent.count = 1
+    assert manager.count_satisfiable_jobs(resources=ANY_RESOURCES, max_workers=10) == 1
+
+    parent_node = manager.nodes_by_id[parent.object_id]
+    assert parent_node.declared_dependency_ids == {child_0.object_id}
+    assert {node.obj.object_id for node in parent_node.dependencies} == {
+        child_0.object_id
+    }
+    assert child_1.object_id not in manager.nodes_by_id
+    assert child_1.object_id not in manager.ready
+    assert child_1.object_id not in manager.blocked
+
+
+def test_dynamic_declared_refresh_preserves_runtime_dependency() -> None:
+    parent = ManagerLazyParent(value=20)
+    dependency = ManagerLeaf(value=20)
+    manager = Manager([parent])
+
+    parent_job = manager.lease_job(resources=ANY_RESOURCES)
+    assert isinstance(parent_job, Job)
+    manager.job_result(
+        parent_job.lease_id,
+        JobBlockedResult(dependencies=[ArtifactSpec.from_furu(dependency)]),
+    )
+
+    assert manager.count_satisfiable_jobs(resources=ANY_RESOURCES, max_workers=10) == 1
+    assert set(manager.blocked) == {parent.object_id}
+    assert set(manager.ready) == {dependency.object_id}
+
+    dependency_job = manager.lease_job(resources=ANY_RESOURCES)
+    assert isinstance(dependency_job, Job)
+    assert dependency_job.artifact.object_id == dependency.object_id
+
+
+def test_dynamic_declared_refresh_does_not_prune_roots() -> None:
+    DynamicDeclaredParent.count = 2
+    parent = DynamicDeclaredParent(prefix="keeps-root")
+    child_0 = ManagerLeaf(value=0)
+    child_1 = ManagerLeaf(value=1)
+    manager = Manager([parent, child_1])
+
+    DynamicDeclaredParent.count = 1
+    manager.count_satisfiable_jobs(resources=ANY_RESOURCES, max_workers=10)
+
+    parent_node = manager.nodes_by_id[parent.object_id]
+    child_1_node = manager.nodes_by_id[child_1.object_id]
+    assert child_1.object_id not in parent_node.declared_dependency_ids
+    assert child_1_node not in parent_node.dependencies
+    assert child_1.object_id in manager.nodes_by_id
+    assert child_1.object_id in manager.ready
+    assert parent_node.declared_dependency_ids == {child_0.object_id}
+
+
+def test_dynamic_declared_refresh_does_not_prune_running_nodes() -> None:
+    DynamicDeclaredParent.count = 2
+    parent = DynamicDeclaredParent(prefix="keeps-running")
+    manager = Manager([parent])
+
+    running_child_job = manager.lease_job(resources=ANY_RESOURCES)
+    assert isinstance(running_child_job, Job)
+    running_child_id = running_child_job.artifact.object_id
+
+    DynamicDeclaredParent.count = 0
+    manager.count_satisfiable_jobs(resources=ANY_RESOURCES, max_workers=10)
+
+    parent_node = manager.nodes_by_id[parent.object_id]
+    assert parent_node.declared_dependency_ids == set()
+    assert running_child_id in manager.nodes_by_id
+    assert running_child_job.lease_id in manager.running
+    assert all(
+        node.obj.object_id != running_child_id for node in parent_node.dependencies
+    )
+
+    manager.job_result(running_child_job.lease_id, JobCompletedResult())
+    assert running_child_job.lease_id not in manager.running
 
 
 def test_manager_job_result_blocked_ignores_completed_lazy_dependency() -> None:
