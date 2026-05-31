@@ -456,7 +456,8 @@ def _load_wrapper(
                 partial(
                     load_result_bundle,
                     bundle_dir=nested_bundle_dir,
-                )
+                ),
+                path=nested_bundle_dir,
             )
         case "dataclass":
             cls = resolve_fully_qualified_name(body[TYPEMARKER])

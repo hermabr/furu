@@ -1023,6 +1023,8 @@ def test_lazy_result_created_directly_is_loaded() -> None:
     assert lazy.is_loaded
     assert repr(lazy) == "LazyResult(_CountingValue)"
     assert lazy.load() is value
+    with pytest.raises(RuntimeError, match="only available after persistence"):
+        lazy.path
 
 
 def test_root_lazy_result_defers_cache_read_and_memoizes(
@@ -1045,6 +1047,7 @@ def test_root_lazy_result_defers_cache_read_and_memoizes(
 
     assert isinstance(loaded, LazyResult)
     assert not loaded.is_loaded
+    assert loaded.path == bundle_dir / "lazy" / "root"
     assert repr(loaded) == "LazyResult(unloaded)"
     assert _CountingCodec.load_calls == 0
 
