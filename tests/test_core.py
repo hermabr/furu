@@ -13,6 +13,7 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 import furu
+import furu.dependencies as dependencies_module
 import furu.execution as execution_module
 from furu import Furu, ResourceRequirements, load_or_create, validate
 from furu.config import get_config
@@ -402,7 +403,7 @@ class ExplicitCachedDependencyParent(Furu[str]):
     name: str
     calls: ClassVar[int] = 0
 
-    @furu.dependency(cached=True)
+    @furu.dependency(recheck_interval="never")
     def child(self) -> Node:
         type(self).calls += 1
         return Node(name=f"{self.name}-{type(self).calls}")
@@ -415,7 +416,7 @@ class UncachedDependencyParent(Furu[str]):
     name: str
     calls: ClassVar[int] = 0
 
-    @furu.dependency(cached=False)
+    @furu.dependency(recheck_interval=0)
     def child(self) -> Node:
         type(self).calls += 1
         return Node(name=f"{self.name}-{type(self).calls}")
@@ -429,6 +430,19 @@ class LazyDependencyParent(Furu[str]):
 
     def create(self) -> str:
         return Node(name=self.name).load_or_create()
+
+
+class RecheckedDependencyParent(Furu[str]):
+    name: str
+    calls: ClassVar[int] = 0
+
+    @furu.dependency(recheck_interval=60)
+    def child(self) -> Node:
+        type(self).calls += 1
+        return Node(name=f"{self.name}-{type(self).calls}")
+
+    def create(self) -> str:
+        return self.child.load_or_create()
 
 
 class TryLoadDependencyParent(Furu[str]):
@@ -1040,7 +1054,7 @@ def test_field_dependencies_are_eager_but_metadata_stores_only_loaded_objects() 
     assert _dependency_object_ids(parent) == [first.object_id]
 
 
-def test_computed_dependency_is_cached_property_and_eager_loaded_dependency() -> None:
+def test_computed_dependency_is_cached_and_eager_loaded_dependency() -> None:
     parent = ComputedDependencyParent(name="computed")
 
     assert parent.child is parent.child
@@ -1050,7 +1064,7 @@ def test_computed_dependency_is_cached_property_and_eager_loaded_dependency() ->
     assert _dependency_object_ids(parent) == [parent.child.object_id]
 
 
-def test_dependency_accepts_explicit_cached_true() -> None:
+def test_dependency_accepts_explicit_recheck_never() -> None:
     ExplicitCachedDependencyParent.calls = 0
     parent = ExplicitCachedDependencyParent(name="explicit-cached")
 
@@ -1059,7 +1073,7 @@ def test_dependency_accepts_explicit_cached_true() -> None:
     assert ExplicitCachedDependencyParent.calls == 1
 
 
-def test_dependency_can_be_uncached_property() -> None:
+def test_dependency_recheck_interval_zero_recomputes_every_access() -> None:
     UncachedDependencyParent.calls = 0
     parent = UncachedDependencyParent(name="uncached")
     first = parent.child
@@ -1071,6 +1085,35 @@ def test_dependency_can_be_uncached_property() -> None:
     assert len(declared_refs) == 1
     assert declared_refs[0].object_id == Node(name="uncached-3").object_id
     assert UncachedDependencyParent.calls == 3
+
+
+def test_dependency_rechecks_after_interval(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = 0.0
+    monkeypatch.setattr(dependencies_module.time, "monotonic", lambda: now)
+    RecheckedDependencyParent.calls = 0
+    parent = RecheckedDependencyParent(name="rechecked")
+
+    first = parent.child
+    assert parent.child is first
+    assert RecheckedDependencyParent.calls == 1
+
+    now = 59.0
+    assert parent.child is first
+    assert RecheckedDependencyParent.calls == 1
+
+    now = 60.0
+    second = parent.child
+    assert second is not first
+    assert second.object_id == Node(name="rechecked-2").object_id
+    assert RecheckedDependencyParent.calls == 2
+
+
+def test_dependency_rejects_negative_recheck_interval() -> None:
+    def child(self: Furu[object]) -> object:
+        return object()
+
+    with pytest.raises(ValueError, match="recheck_interval must be >= 0"):
+        furu.dependency(recheck_interval=-1)(child)
 
 
 def test_load_or_create_inside_create_is_recorded_and_deduped() -> None:

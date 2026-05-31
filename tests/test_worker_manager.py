@@ -8,6 +8,8 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import TypeAdapter, ValidationError
 
+import furu
+import furu.dependencies as dependencies_module
 import furu.worker.loop as worker_loop_module
 from furu import Furu
 from furu.config import get_config
@@ -88,6 +90,33 @@ class ManagerLazyParent(Furu[int]):
 
     def create(self) -> int:
         return ManagerLeaf(value=self.value).load_or_create() + 1
+
+
+class ManagerGpuDependency(Furu[int]):
+    value: int
+
+    @property
+    def resource_requirements(self) -> ResourceRequirements | None:
+        return ResourceRequirements(gpus=(1, None))
+
+    def create(self) -> int:
+        return self.value
+
+
+class ManagerDynamicDeclaredParent(Furu[int]):
+    value: int
+    dependency_values: ClassVar[tuple[int, ...]] = ()
+    dependency_calls: ClassVar[list[tuple[int, ...]]] = []
+
+    @furu.dependency(recheck_interval=10)
+    def children(self) -> tuple[ManagerGpuDependency, ...]:
+        type(self).dependency_calls.append(type(self).dependency_values)
+        return tuple(
+            ManagerGpuDependency(value=value) for value in type(self).dependency_values
+        )
+
+    def create(self) -> int:
+        return self.value + sum(child.load_or_create() for child in self.children)
 
 
 def test_manager_init_partitions_ready_and_blocked() -> None:
@@ -228,6 +257,64 @@ def test_manager_job_result_blocked_discovers_multiple_lazy_dependencies_togethe
     for dependency in dependencies:
         dependency_node = manager.nodes_by_id[dependency.object_id]
         assert parent_node in dependency_node.dependents
+
+
+def test_manager_recheck_adds_new_declared_dependency_before_leasing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = 0.0
+    monkeypatch.setattr(dependencies_module.time, "monotonic", lambda: now)
+    monkeypatch.setattr(ManagerDynamicDeclaredParent, "dependency_values", ())
+    monkeypatch.setattr(ManagerDynamicDeclaredParent, "dependency_calls", [])
+    parent = ManagerDynamicDeclaredParent(value=1)
+    dependency = ManagerGpuDependency(value=2)
+    manager = Manager([parent])
+
+    assert set(manager.ready) == {parent.object_id}
+    assert manager.blocked == {}
+
+    monkeypatch.setattr(ManagerDynamicDeclaredParent, "dependency_values", (2,))
+    now = 10.0
+
+    job = manager.lease_job(resources=ResourceRequest(gpus=1))
+
+    assert isinstance(job, Job)
+    assert job.artifact.object_id == dependency.object_id
+    assert set(manager.blocked) == {parent.object_id}
+    parent_node = manager.nodes_by_id[parent.object_id]
+    dependency_node = manager.nodes_by_id[dependency.object_id]
+    assert parent_node.dependencies == [dependency_node]
+    assert parent_node in dependency_node.dependents
+    assert ManagerDynamicDeclaredParent.dependency_calls == [(), (2,)]
+
+
+def test_manager_recheck_removes_stale_declared_dependency_before_leasing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = 0.0
+    monkeypatch.setattr(dependencies_module.time, "monotonic", lambda: now)
+    monkeypatch.setattr(ManagerDynamicDeclaredParent, "dependency_values", (2,))
+    monkeypatch.setattr(ManagerDynamicDeclaredParent, "dependency_calls", [])
+    parent = ManagerDynamicDeclaredParent(value=1)
+    dependency = ManagerGpuDependency(value=2)
+    manager = Manager([parent])
+
+    assert set(manager.ready) == {dependency.object_id}
+    assert set(manager.blocked) == {parent.object_id}
+
+    monkeypatch.setattr(ManagerDynamicDeclaredParent, "dependency_values", ())
+    now = 10.0
+
+    job = manager.lease_job(resources=ResourceRequest(gpus=0))
+
+    assert isinstance(job, Job)
+    assert job.artifact.object_id == parent.object_id
+    assert parent.object_id not in manager.blocked
+    parent_node = manager.nodes_by_id[parent.object_id]
+    dependency_node = manager.nodes_by_id[dependency.object_id]
+    assert parent_node.dependencies == []
+    assert parent_node not in dependency_node.dependents
+    assert ManagerDynamicDeclaredParent.dependency_calls == [(2,), ()]
 
 
 def test_manager_uses_new_lease_when_blocked_job_is_released() -> None:

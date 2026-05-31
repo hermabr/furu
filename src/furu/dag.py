@@ -19,6 +19,17 @@ class DagNode:
     dependents: list[DagNode] = field(default_factory=list)
 
 
+def _set_waiting_state(manager: Manager, node: DagNode) -> None:
+    object_id = node.obj.object_id
+
+    if node.dependencies:
+        manager.ready.pop(object_id, None)
+        manager.blocked[object_id] = node
+    else:
+        manager.blocked.pop(object_id, None)
+        manager.ready[object_id] = node
+
+
 def _add_to_dag(manager: Manager, objs: Sequence[Furu]) -> None:
     if any(not isinstance(obj, Furu) for obj in objs):
         # TODO: accept pytrees of Furu objects (e.g. nested lists/dicts/dataclasses)
@@ -59,10 +70,7 @@ def _add_to_dag(manager: Manager, objs: Sequence[Furu]) -> None:
                 dep_node.dependents.append(node)
 
     for node in newly_added:
-        if node.dependencies:
-            manager.blocked[node.obj.object_id] = node
-        else:
-            manager.ready[node.obj.object_id] = node
+        _set_waiting_state(manager, node)
 
 
 def _update_dag_blocking_dependencies(
@@ -99,7 +107,52 @@ def _update_dag_blocking_dependencies(
         if node not in dep_node.dependents:
             dep_node.dependents.append(node)
 
-    if node.dependencies:
-        manager.blocked[node.obj.object_id] = node
-    else:
-        manager.ready[node.obj.object_id] = node
+    _set_waiting_state(manager, node)
+
+
+def _sync_declared_refs(manager: Manager, node: DagNode) -> None:
+    refs_by_id: dict[str, Furu] = {}
+
+    for ref in collect_declared_refs(node.obj):
+        refs_by_id.setdefault(ref.object_id, ref)
+
+    missing_dependencies: list[Furu] = []
+    dependency_ids: list[str] = []
+
+    for object_id, dependency in refs_by_id.items():
+        if object_id in manager.completed:
+            continue
+
+        dep_node = manager.nodes_by_id.get(object_id)
+        if dep_node is not None:
+            if dep_node.obj.status() != "completed":
+                dependency_ids.append(object_id)
+            continue
+
+        if dependency.status() == "completed":
+            continue
+
+        dependency_ids.append(object_id)
+        missing_dependencies.append(dependency)
+
+    blocking_dependency_ids = set(dependency_ids)
+
+    # Remove stale or completed edges. This lets an over-estimate shrink.
+    for dep_node in tuple(node.dependencies):
+        if dep_node.obj.object_id not in blocking_dependency_ids:
+            node.dependencies.remove(dep_node)
+            if node in dep_node.dependents:
+                dep_node.dependents.remove(node)
+
+    _add_to_dag(manager, missing_dependencies)
+
+    for dependency_id in dependency_ids:
+        dep_node = manager.nodes_by_id[dependency_id]
+
+        if dep_node not in node.dependencies:
+            node.dependencies.append(dep_node)
+
+        if node not in dep_node.dependents:
+            dep_node.dependents.append(node)
+
+    _set_waiting_state(manager, node)
