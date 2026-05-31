@@ -12,7 +12,13 @@ from uuid import uuid4
 from furu._storage_layout import manager_log_path_in
 from furu.config import get_config
 from furu.core import Furu
-from furu.dag import DagNode, _add_to_dag, _update_dag_blocking_dependencies
+from furu.dag import (
+    DagNode,
+    _add_to_dag,
+    _sync_declared_refs,
+    _update_dag_blocking_dependencies,
+)
+from furu.dependencies import declared_dependency_recheck_due
 from furu.logging import _scoped_log_files, get_logger
 from furu.metadata import ArtifactSpec
 from furu.resources import ResourceRequest, resource_request_satisfies
@@ -90,6 +96,7 @@ class Manager:
 
     def lease_job(self, *, resources: ResourceRequest) -> LeaseJobResponse:
         with self.log_context(), self.lock:
+            self._maybe_recheck_declared_dependencies_locked()
             self._maybe_finish_locked()
             if self.done.is_set():
                 return "stop"
@@ -196,6 +203,7 @@ class Manager:
                     )
                 case _:
                     assert_never(request)
+            self._maybe_recheck_declared_dependencies_locked()
             self._maybe_finish_locked()
 
     def raise_for_failure(self) -> None:
@@ -234,3 +242,8 @@ class Manager:
         else:
             logger.info("furu manager finished successfully")
         self.done.set()
+
+    def _maybe_recheck_declared_dependencies_locked(self) -> None:
+        for node in tuple(self.blocked.values()) + tuple(self.ready.values()):
+            if declared_dependency_recheck_due(node.obj):
+                _sync_declared_refs(self, node)

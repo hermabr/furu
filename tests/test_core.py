@@ -402,7 +402,7 @@ class ExplicitCachedDependencyParent(Furu[str]):
     name: str
     calls: ClassVar[int] = 0
 
-    @furu.dependency(cached=True)
+    @furu.dependency(recheck_interval="never")
     def child(self) -> Node:
         type(self).calls += 1
         return Node(name=f"{self.name}-{type(self).calls}")
@@ -415,7 +415,7 @@ class UncachedDependencyParent(Furu[str]):
     name: str
     calls: ClassVar[int] = 0
 
-    @furu.dependency(cached=False)
+    @furu.dependency(recheck_interval=0)
     def child(self) -> Node:
         type(self).calls += 1
         return Node(name=f"{self.name}-{type(self).calls}")

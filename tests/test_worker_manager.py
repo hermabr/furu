@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from pydantic import TypeAdapter, ValidationError
 
 import furu.worker.loop as worker_loop_module
+import furu
 from furu import Furu
 from furu.config import get_config
 from furu.execution import api
@@ -88,6 +89,17 @@ class ManagerLazyParent(Furu[int]):
 
     def create(self) -> int:
         return ManagerLeaf(value=self.value).load_or_create() + 1
+
+
+class ManagerRecheckingParent(Furu[int]):
+    deps: ClassVar[tuple[ManagerLeaf, ...]] = ()
+
+    @furu.dependency(recheck_interval=0)
+    def children(self) -> tuple[ManagerLeaf, ...]:
+        return type(self).deps
+
+    def create(self) -> int:
+        return sum(child.load_or_create() for child in self.children)
 
 
 def test_manager_init_partitions_ready_and_blocked() -> None:
@@ -178,6 +190,46 @@ def test_manager_job_result_blocked_discovers_lazy_dependency_and_reruns_parent(
 
     assert set(manager.ready) == {parent.object_id}
     assert manager.blocked == {}
+
+
+def test_manager_rechecks_ready_declared_dependencies_before_leasing() -> None:
+    parent = ManagerRecheckingParent()
+    dependency = ManagerLeaf(value=1)
+    ManagerRecheckingParent.deps = ()
+    manager = Manager([parent])
+
+    assert set(manager.ready) == {parent.object_id}
+
+    ManagerRecheckingParent.deps = (dependency,)
+    job = manager.lease_job(resources=ANY_RESOURCES)
+
+    assert isinstance(job, Job)
+    assert job.artifact.object_id == dependency.object_id
+    assert set(manager.blocked) == {parent.object_id}
+
+
+def test_manager_recheck_removes_stale_declared_dependency_edges() -> None:
+    stale = ManagerLeaf(value=1)
+    current = ManagerLeaf(value=2)
+    parent = ManagerRecheckingParent()
+    ManagerRecheckingParent.deps = (stale, current)
+    manager = Manager([parent])
+
+    assert set(manager.ready) == {stale.object_id, current.object_id}
+    assert set(manager.blocked) == {parent.object_id}
+
+    ManagerRecheckingParent.deps = (current,)
+    job = manager.lease_job(resources=ANY_RESOURCES)
+
+    assert isinstance(job, Job)
+    assert job.artifact.object_id == current.object_id
+    assert set(manager.ready) == {stale.object_id}
+    parent_node = manager.nodes_by_id[parent.object_id]
+    stale_node = manager.nodes_by_id[stale.object_id]
+    assert {node.obj.object_id for node in parent_node.dependencies} == {
+        current.object_id
+    }
+    assert parent_node not in stale_node.dependents
 
 
 def test_manager_job_result_blocked_ignores_completed_lazy_dependency() -> None:
