@@ -1,7 +1,7 @@
 from importlib.metadata import version
 
 from furu.core import Furu
-from furu.dependencies import dependency
+from furu.dependencies import RecheckInterval, dependency
 from furu.execution import load_or_create
 from furu.logging import get_logger
 from furu.migration import Migration
@@ -18,6 +18,7 @@ __all__ = [
     "LazyResult",
     "Migration",
     "ResourceRequirements",
+    "RecheckInterval",
     "dependency",
     "ResultCodec",
     "ResultRegistry",

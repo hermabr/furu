@@ -4,7 +4,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import fields, is_dataclass
-from functools import cached_property
+import time
 from typing import TYPE_CHECKING, Any, Callable, Literal, overload
 
 from pydantic import BaseModel as PydanticBaseModel
@@ -13,53 +13,110 @@ if TYPE_CHECKING:
     from furu.core import Furu
 
 
-class _CachedDependency[T](cached_property):
-    __furu_dependency__ = True
+type RecheckInterval = int | Literal["never"]
+type _DependencyCacheEntry[T] = tuple[float | None, T]
 
 
-class _UncachedDependency[T](property):
+class _Dependency[T](property):
     __furu_dependency__ = True
+
+    def __init__(
+        self,
+        func: Callable[[Any], T],
+        *,
+        recheck_interval: RecheckInterval,
+    ) -> None:
+        if isinstance(recheck_interval, bool):
+            raise TypeError(
+                "recheck_interval must be a non-negative integer or 'never'"
+            )
+        if isinstance(recheck_interval, int):
+            if recheck_interval < 0:
+                raise ValueError("recheck_interval must be non-negative")
+        elif recheck_interval != "never":
+            raise TypeError(
+                "recheck_interval must be a non-negative integer or 'never'"
+            )
+
+        super().__init__(func)
+        self._recheck_interval = recheck_interval
+        func_name = getattr(func, "__name__", type(func).__name__)
+        self._cache_key = f"__furu_dependency_cache_{func_name}"
+
+    def __set_name__(self, owner: type[object], name: str) -> None:
+        self._cache_key = f"__furu_dependency_cache_{name}"
+
+    @overload
+    def __get__(
+        self,
+        obj: None,
+        objtype: type[object] | None = None,
+    ) -> _Dependency[T]: ...
+
+    @overload
+    def __get__(
+        self,
+        obj: object,
+        objtype: type[object] | None = None,
+    ) -> T: ...
+
+    def __get__(
+        self,
+        obj: object | None,
+        objtype: type[object] | None = None,
+    ) -> T | _Dependency[T]:
+        if obj is None:
+            return self
+
+        cached: _DependencyCacheEntry[T] | None = getattr(obj, self._cache_key, None)
+        now: float | None = None
+        if cached is not None:
+            expires_at, value = cached
+            if expires_at is None:
+                return value
+
+            now = time.monotonic()
+            if now < expires_at:
+                return value
+
+        if self.fget is None:
+            raise AttributeError("unreadable dependency")
+
+        recheck_interval = self._recheck_interval
+        if isinstance(recheck_interval, int) and now is None:
+            now = time.monotonic()
+
+        value = self.fget(obj)
+        if recheck_interval == "never":
+            expires_at = None
+        else:
+            assert isinstance(recheck_interval, int)
+            assert now is not None
+            expires_at = now + recheck_interval
+        object.__setattr__(obj, self._cache_key, (expires_at, value))
+        return value
 
 
 @overload
 def dependency[TFuru: Furu[Any], T](
     func: Callable[[TFuru], T], /
-) -> _CachedDependency[T]: ...
+) -> _Dependency[T]: ...
 
 
 @overload
 def dependency[TFuru: Furu[Any], T](
-    *, cached: Literal[True] = True
-) -> Callable[[Callable[[TFuru], T]], _CachedDependency[T]]: ...
-
-
-@overload
-def dependency[TFuru: Furu[Any], T](
-    *, cached: Literal[False]
-) -> Callable[[Callable[[TFuru], T]], _UncachedDependency[T]]: ...
-
-
-@overload
-def dependency[TFuru: Furu[Any], T](
-    *, cached: bool
-) -> Callable[
-    [Callable[[TFuru], T]], _CachedDependency[T] | _UncachedDependency[T]
-]: ...
+    *, recheck_interval: RecheckInterval = "never"
+) -> Callable[[Callable[[TFuru], T]], _Dependency[T]]: ...
 
 
 def dependency[TFuru: Furu[Any], T](
-    func: Callable[[TFuru], T] | None = None, /, *, cached: bool = True
-) -> (
-    _CachedDependency[T]
-    | _UncachedDependency[T]
-    | Callable[[Callable[[TFuru], T]], _CachedDependency[T] | _UncachedDependency[T]]
-):
-    def decorate(
-        func: Callable[[TFuru], T],
-    ) -> _CachedDependency[T] | _UncachedDependency[T]:
-        if cached:
-            return _CachedDependency(func)
-        return _UncachedDependency(func)
+    func: Callable[[TFuru], T] | None = None,
+    /,
+    *,
+    recheck_interval: RecheckInterval = "never",
+) -> _Dependency[T] | Callable[[Callable[[TFuru], T]], _Dependency[T]]:
+    def decorate(func: Callable[[TFuru], T]) -> _Dependency[T]:
+        return _Dependency(func, recheck_interval=recheck_interval)
 
     if func is not None:
         return decorate(func)

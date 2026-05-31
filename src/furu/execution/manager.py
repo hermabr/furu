@@ -12,7 +12,12 @@ from uuid import uuid4
 from furu._storage_layout import manager_log_path_in
 from furu.config import get_config
 from furu.core import Furu
-from furu.dag import DagNode, _add_to_dag, _update_dag_blocking_dependencies
+from furu.dag import (
+    DagNode,
+    _add_to_dag,
+    _refresh_dag_declared_dependencies,
+    _update_dag_blocking_dependencies,
+)
 from furu.logging import _scoped_log_files, get_logger
 from furu.metadata import ArtifactSpec
 from furu.resources import ResourceRequest, resource_request_satisfies
@@ -53,11 +58,13 @@ class Manager:
         self.running: dict[str, RunningJob] = {}
         self.completed: dict[str, DagNode] = {}
         self.failed: dict[str, FailedJob] = {}
+        self.root_ids: set[str] = set()
         self.lock = threading.Lock()
         self.done = threading.Event()
         self._finish_error: str | None = None
 
         _add_to_dag(self, objs)
+        self.root_ids = {obj.object_id for obj in objs}
 
         digest = hashlib.blake2s(digest_size=16)
         for obj in objs:
@@ -90,6 +97,7 @@ class Manager:
 
     def lease_job(self, *, resources: ResourceRequest) -> LeaseJobResponse:
         with self.log_context(), self.lock:
+            _refresh_dag_declared_dependencies(self)
             self._maybe_finish_locked()
             if self.done.is_set():
                 return "stop"
@@ -133,6 +141,11 @@ class Manager:
         self, *, resources: ResourceRequest, max_workers: int
     ) -> int:
         with self.lock:
+            _refresh_dag_declared_dependencies(self)
+            self._maybe_finish_locked()
+            if self.done.is_set():
+                return 0
+
             count = 0
             for node in self.ready.values():
                 if resource_request_satisfies(
@@ -149,9 +162,14 @@ class Manager:
             match request:
                 case JobCompletedResult():
                     self.completed[running_job.node.obj.object_id] = running_job.node
+                    completed_id = running_job.node.obj.object_id
                     for dependent in tuple(running_job.node.dependents):
                         if running_job.node in dependent.dependencies:
                             dependent.dependencies.remove(running_job.node)
+                        if dependent in running_job.node.dependents:
+                            running_job.node.dependents.remove(dependent)
+                        dependent.declared_dependency_ids.discard(completed_id)
+                        dependent.runtime_dependency_ids.discard(completed_id)
 
                         dependent_id = dependent.obj.object_id
                         if not dependent.dependencies and dependent_id in self.blocked:
@@ -196,6 +214,7 @@ class Manager:
                     )
                 case _:
                     assert_never(request)
+            _refresh_dag_declared_dependencies(self)
             self._maybe_finish_locked()
 
     def raise_for_failure(self) -> None:
