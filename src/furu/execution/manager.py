@@ -26,6 +26,7 @@ from furu.worker.protocol import (
 )
 
 if TYPE_CHECKING:
+    from furu.execution.connection import ManagerConnection
     from furu.worker.backends import WorkerBackend
 
 
@@ -74,6 +75,7 @@ class Manager:
         *,
         worker_backends: tuple[WorkerBackend, ...],
         port: int = 0,
+        manager_connection: ManagerConnection | None = None,
     ) -> None:
         from furu.execution.server import _run_until_done
 
@@ -81,6 +83,7 @@ class Manager:
             self,
             worker_backends=worker_backends,
             port=port,
+            manager_connection=manager_connection,
         )
 
     @contextmanager

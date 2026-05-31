@@ -6,9 +6,11 @@ import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from furu.config import _WORKER_JSON_CONFIG_FILE_ENV_VAR, get_config
 from furu.execution.api import PoolApiClient
+from furu.execution.connection import CloudflareQuickTunnel, ManagerConnection
 from furu.resources import ResourceRequest
 from furu.utils import write_private_file
 from furu.worker.backends.slurm.pool import SlurmWorkerPool
@@ -19,16 +21,30 @@ from furu.worker.backends.slurm.resources import SlurmResources
 class SlurmWorkerBackend:
     max_workers: int
     resources: SlurmResources
-    worker_connect_host: str
+    worker_connect_host: str | None = None
     max_failed_restarts: int = field(
         default_factory=lambda: get_config().worker.max_failed_restarts
     )
-    manager_listen_host: str = "0.0.0.0"
+    manager_listen_host: str = ""
     job_name: str = "furu-worker"
     poll_interval: float = 10.0
     worker_idle_timeout: float = field(
         default_factory=lambda: get_config().worker.idle_timeout_seconds
     )
+
+    def __post_init__(self) -> None:
+        if self.manager_listen_host:
+            return
+
+        if self.worker_connect_host is None:
+            object.__setattr__(self, "manager_listen_host", "127.0.0.1")
+        else:
+            object.__setattr__(self, "manager_listen_host", "0.0.0.0")
+
+    def manager_connection(self) -> ManagerConnection | None:
+        if self.worker_connect_host is None:
+            return CloudflareQuickTunnel()
+        return None
 
     def start_pool(
         self,
@@ -37,10 +53,7 @@ class SlurmWorkerBackend:
         auth_token: str,
         executor_dir: Path,
     ) -> SlurmWorkerPool:
-        scheme, rest = server_url.split("://", maxsplit=1)
-        server_url = (
-            f"{scheme}://{self.worker_connect_host}:{rest.rsplit(':', maxsplit=1)[1]}"
-        )
+        server_url = self._worker_server_url(server_url)
 
         chdir = Path.cwd().resolve()
         worker_dir = executor_dir.resolve() / "workers"
@@ -118,3 +131,17 @@ class SlurmWorkerBackend:
         pool_holder.append(pool)
         pool._scale_thread.start()
         return pool
+
+    def _worker_server_url(self, manager_server_url: str) -> str:
+        if self.worker_connect_host is None:
+            return manager_server_url
+
+        parts = urlsplit(manager_server_url)
+        if parts.port is None:
+            netloc = self.worker_connect_host
+        else:
+            netloc = f"{self.worker_connect_host}:{parts.port}"
+
+        return urlunsplit(
+            (parts.scheme, netloc, parts.path, parts.query, parts.fragment)
+        )

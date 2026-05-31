@@ -13,6 +13,7 @@ import pytest
 import furu.worker.backends.slurm.backend as slurm_backend_module
 from furu.config import _FuruConfig, _WORKER_JSON_CONFIG_FILE_ENV_VAR, get_config
 from furu.execution.api import PoolApiClient
+from furu.execution.connection import CloudflareQuickTunnel
 from furu.resources import ResourceRequest
 from furu.worker import _cli
 from furu.worker.backends.slurm.backend import SlurmWorkerBackend
@@ -451,6 +452,71 @@ def test_slurm_resources_emit_gpu_option(gpus: int, expected_args: list[str]) ->
     ]
 
 
+def test_slurm_backend_defaults_to_cloudflare_connection() -> None:
+    backend = SlurmWorkerBackend(
+        max_workers=1,
+        resources=SlurmResources(cpus_per_worker=1),
+    )
+
+    assert backend.worker_connect_host is None
+    assert backend.manager_listen_host == "127.0.0.1"
+    assert isinstance(backend.manager_connection(), CloudflareQuickTunnel)
+
+
+def test_slurm_backend_worker_connect_host_preserves_legacy_listen_host() -> None:
+    backend = SlurmWorkerBackend(
+        max_workers=1,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="manager.cluster",
+    )
+
+    assert backend.manager_listen_host == "0.0.0.0"
+    assert backend.manager_connection() is None
+
+
+def test_slurm_backend_explicit_manager_listen_host_wins() -> None:
+    backend = SlurmWorkerBackend(
+        max_workers=1,
+        resources=SlurmResources(cpus_per_worker=1),
+        manager_listen_host="0.0.0.0",
+    )
+
+    assert backend.manager_listen_host == "0.0.0.0"
+
+
+def test_slurm_backend_keeps_cloudflare_advertised_url(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    _stub_count_satisfiable_jobs(monkeypatch, 1)
+    backend = SlurmWorkerBackend(
+        max_workers=1,
+        resources=SlurmResources(cpus_per_worker=1),
+    )
+
+    pool = backend.start_pool(
+        server_url="https://furu-test.trycloudflare.com",
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+    )
+    pool._scale_once()
+
+    assert pool._job_ids == ["100"]
+    assert pool._server_url == "https://furu-test.trycloudflare.com"
+
+    records = _read_records(record_file)
+    sbatch_records = [record for record in records if record["executable"] == "sbatch"]
+    assert len(sbatch_records) == 1
+
+    script_path = Path(sbatch_records[0]["argv"][-1])
+    script = script_path.read_text()
+    assert "--server-url https://furu-test.trycloudflare.com" in script
+    assert "127.0.0.1" not in script
+    assert "0.0.0.0" not in script
+
+
 def test_slurm_backend_rewrites_manager_url_to_worker_connect_host(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -472,6 +538,7 @@ def test_slurm_backend_rewrites_manager_url_to_worker_connect_host(
     pool._scale_once()
 
     assert pool._job_ids == ["100"]
+    assert pool._server_url == "http://manager.cluster:4321"
 
     records = _read_records(record_file)
     sbatch_records = [record for record in records if record["executable"] == "sbatch"]
