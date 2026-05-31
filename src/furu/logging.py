@@ -43,7 +43,7 @@ def _base_logger() -> logging.Logger:
     )
 
     stdout_handler = logging.StreamHandler(sys.stdout)
-    stdout_handler.setLevel(logging.INFO)
+    stdout_handler.setLevel(logging.DEBUG if get_config().debug_mode else logging.INFO)
     stdout_handler.setFormatter(formatter)
     logger.addHandler(stdout_handler)
 

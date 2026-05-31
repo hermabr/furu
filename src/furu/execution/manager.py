@@ -196,6 +196,15 @@ class Manager:
                     )
                 case _:
                     assert_never(request)
+            logger.info(
+                "manager progress: completed=%d/%d failed=%d running=%d ready=%d blocked=%d",
+                len(self.completed),
+                len(self.nodes_by_id),
+                len(self.failed),
+                len(self.running),
+                len(self.ready),
+                len(self.blocked),
+            )
             self._maybe_finish_locked()
 
     def raise_for_failure(self) -> None:

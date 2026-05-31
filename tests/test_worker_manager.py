@@ -708,6 +708,10 @@ def test_manager_run_writes_log_to_executor_dir() -> None:
     assert "leased job:" in log_text
     assert leaf.object_id in log_text
     assert "job completed:" in log_text
+    assert (
+        "manager progress: completed=1/1 failed=0 running=0 ready=0 blocked=0"
+        in log_text
+    )
     assert "furu manager finished successfully" in log_text
 
 
