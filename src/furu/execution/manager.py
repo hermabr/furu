@@ -196,6 +196,7 @@ class Manager:
                     )
                 case _:
                     assert_never(request)
+            self._log_progress_locked()
             self._maybe_finish_locked()
 
     def raise_for_failure(self) -> None:
@@ -234,3 +235,14 @@ class Manager:
         else:
             logger.info("furu manager finished successfully")
         self.done.set()
+
+    def _log_progress_locked(self) -> None:
+        logger.info(
+            "manager progress: completed=%d/%d failed=%d running=%d ready=%d blocked=%d",
+            len(self.completed),
+            len(self.nodes_by_id),
+            len(self.failed),
+            len(self.running),
+            len(self.ready),
+            len(self.blocked),
+        )
