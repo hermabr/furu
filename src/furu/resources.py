@@ -1,6 +1,7 @@
 from dataclasses import dataclass
+from typing import TypeAlias
 
-type ResourceConstraint = tuple[int | None, int | None] | None
+ResourceConstraint: TypeAlias = tuple[int | None, int | None] | None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
