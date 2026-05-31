@@ -1023,6 +1023,8 @@ def test_lazy_result_created_directly_is_loaded() -> None:
     assert lazy.is_loaded
     assert repr(lazy) == "LazyResult(_CountingValue)"
     assert lazy.load() is value
+    with pytest.raises(RuntimeError, match="only available after persistence"):
+        lazy.path
 
 
 def test_root_lazy_result_defers_cache_read_and_memoizes(
@@ -1045,6 +1047,7 @@ def test_root_lazy_result_defers_cache_read_and_memoizes(
 
     assert isinstance(loaded, LazyResult)
     assert not loaded.is_loaded
+    assert loaded.path == bundle_dir / "lazy" / "root"
     assert repr(loaded) == "LazyResult(unloaded)"
     assert _CountingCodec.load_calls == 0
 
@@ -1074,6 +1077,23 @@ def test_lazy_result_uses_declared_inner_annotated_codec(tmp_path: Path) -> None
     manifest = json.loads((bundle_dir / "lazy" / "root" / "manifest.json").read_text())
     assert manifest["$furu"]["|kind"] == "external"
     assert manifest["$furu"]["codec"] == NumpyNpyCodec._codec_id()
+
+
+def test_nested_lazy_result_exposes_nested_persisted_path(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "bundle"
+    registry = _default_result_registry().register(_CountingCodec)
+    value = {"outer": {"inner": LazyResult(_CountingValue(12))}}
+
+    _save_result_bundle(value, bundle_dir, registry=registry)
+    loaded = load_result_bundle(bundle_dir)
+
+    assert isinstance(loaded, dict)
+    loaded_dict = cast(dict[str, Any], loaded)
+    outer = cast(dict[str, Any], loaded_dict["outer"])
+    lazy = cast(LazyResult[_CountingValue], outer["inner"])
+    assert lazy.path == bundle_dir / "lazy" / "outer" / "inner"
+    assert lazy.path.joinpath("artifacts", "root", "value.txt").exists()
+    assert lazy.load().value == 12
 
 
 def test_nested_lazy_result_round_trips_inside_supported_structures(

@@ -36,7 +36,10 @@ def _unwrap_save_as[T](value: T) -> T:
             if value.is_loaded:
                 return cast(T, LazyResult(_unwrap_save_as(value.load())))
             return cast(
-                T, LazyResult._from_loader(lambda: _unwrap_save_as(value.load()))
+                T,
+                LazyResult._from_loader(
+                    lambda: _unwrap_save_as(value.load()), path=value.path
+                ),
             )
         case dict():
             return cast(
