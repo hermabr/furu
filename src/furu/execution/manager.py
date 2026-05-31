@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import threading
+import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -12,7 +13,12 @@ from uuid import uuid4
 from furu._storage_layout import manager_log_path_in
 from furu.config import get_config
 from furu.core import Furu
-from furu.dag import DagNode, _add_to_dag, _update_dag_blocking_dependencies
+from furu.dag import (
+    DagNode,
+    _add_to_dag,
+    _recheck_blocked_declared_dependencies,
+    _update_dag_blocking_dependencies,
+)
 from furu.logging import _scoped_log_files, get_logger
 from furu.metadata import ArtifactSpec
 from furu.resources import ResourceRequest, resource_request_satisfies
@@ -90,6 +96,7 @@ class Manager:
 
     def lease_job(self, *, resources: ResourceRequest) -> LeaseJobResponse:
         with self.log_context(), self.lock:
+            _recheck_blocked_declared_dependencies(self, now=time.monotonic())
             self._maybe_finish_locked()
             if self.done.is_set():
                 return "stop"
@@ -212,6 +219,11 @@ class Manager:
 
     def _maybe_finish_locked(self) -> None:
         if self.done.is_set() or self.ready or self.running:
+            return
+        if any(
+            node.next_dependency_recheck_at is not None
+            for node in self.blocked.values()
+        ):
             return
 
         if self.failed or self.blocked:

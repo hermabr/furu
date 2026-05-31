@@ -11,7 +11,13 @@ from furu._storage_layout import (
     compute_lock_path_in,
     run_log_path_in,
 )
+from furu.resources import ResourceRequest
 from furu.worker.backends.local import LocalThreadWorkerBackend
+from furu.worker.protocol import Job, JobBlockedResult
+from furu.metadata import ArtifactSpec
+
+
+ANY_RESOURCES = ResourceRequest()
 
 
 class Leaf(Furu[str]):
@@ -60,6 +66,29 @@ class ComputedParent(Furu[str]):
 
     def create(self) -> str:
         return self.computed_child.load_or_create()
+
+
+class RecheckedDependencyParent(Furu[int]):
+    name: str
+    dependency_count: ClassVar[int] = 3
+
+    @furu.dependency(recheck_interval=0)
+    def children(self) -> tuple["TrackingLeaf", ...]:
+        return tuple(TrackingLeaf(n=i) for i in range(type(self).dependency_count))
+
+    def create(self) -> int:
+        return sum(child.load_or_create() for child in self.children)
+
+
+class RecheckedLazyParent(Furu[int]):
+    name: str
+
+    @furu.dependency(recheck_interval=0)
+    def children(self) -> tuple["TrackingLeaf", ...]:
+        return ()
+
+    def create(self) -> int:
+        return TrackingLeaf(n=99).load_or_create()
 
 
 def mark_running(obj: Furu) -> None:
@@ -360,6 +389,46 @@ def test_manager_run_discovers_lazy_dependencies_and_reruns_parent():
     )
     assert "load_or_create failed" not in parent_log
     assert "=== Debug Details (with locals) ===" not in parent_log
+
+
+def test_manager_rechecks_blocked_declared_dependencies():
+    RecheckedDependencyParent.dependency_count = 3
+    parent = RecheckedDependencyParent(name="dynamic")
+    manager = Manager([parent])
+
+    assert set(manager.ready) == {TrackingLeaf(n=i).object_id for i in range(3)}
+    assert set(manager.blocked) == {parent.object_id}
+
+    RecheckedDependencyParent.dependency_count = 1
+    TrackingLeaf(n=0).load_or_create()
+
+    job = manager.lease_job(resources=ANY_RESOURCES)
+    assert isinstance(job, Job)
+
+    assert parent.object_id in manager.ready
+    assert parent.object_id not in manager.blocked
+
+
+def test_manager_recheck_preserves_lazy_blocking_dependencies():
+    parent = RecheckedLazyParent(name="dynamic-lazy")
+    lazy_dependency = TrackingLeaf(n=99)
+    manager = Manager([parent])
+
+    parent_job = manager.lease_job(resources=ANY_RESOURCES)
+    assert isinstance(parent_job, Job)
+    manager.job_result(
+        parent_job.lease_id,
+        JobBlockedResult(dependencies=[ArtifactSpec.from_furu(lazy_dependency)]),
+    )
+
+    job = manager.lease_job(resources=ANY_RESOURCES)
+    assert isinstance(job, Job)
+
+    assert parent.object_id in manager.blocked
+    assert lazy_dependency.object_id in {
+        dependency.obj.object_id
+        for dependency in manager.nodes_by_id[parent.object_id].dependencies
+    }
 
 
 def test_manager_run_skips_already_completed_objects():

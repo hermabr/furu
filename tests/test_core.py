@@ -398,11 +398,11 @@ class ComputedDependencyParent(Furu[str]):
         return self.child.load_or_create()
 
 
-class ExplicitCachedDependencyParent(Furu[str]):
+class DefaultDependencyParent(Furu[str]):
     name: str
     calls: ClassVar[int] = 0
 
-    @furu.dependency(cached=True)
+    @furu.dependency
     def child(self) -> Node:
         type(self).calls += 1
         return Node(name=f"{self.name}-{type(self).calls}")
@@ -415,7 +415,7 @@ class UncachedDependencyParent(Furu[str]):
     name: str
     calls: ClassVar[int] = 0
 
-    @furu.dependency(cached=False)
+    @furu.dependency(recheck_interval=0)
     def child(self) -> Node:
         type(self).calls += 1
         return Node(name=f"{self.name}-{type(self).calls}")
@@ -1050,13 +1050,13 @@ def test_computed_dependency_is_cached_property_and_eager_loaded_dependency() ->
     assert _dependency_object_ids(parent) == [parent.child.object_id]
 
 
-def test_dependency_accepts_explicit_cached_true() -> None:
-    ExplicitCachedDependencyParent.calls = 0
-    parent = ExplicitCachedDependencyParent(name="explicit-cached")
+def test_dependency_defaults_to_cached_property() -> None:
+    DefaultDependencyParent.calls = 0
+    parent = DefaultDependencyParent(name="default")
 
     assert parent.child is parent.child
     assert collect_declared_refs(parent) == (parent.child,)
-    assert ExplicitCachedDependencyParent.calls == 1
+    assert DefaultDependencyParent.calls == 1
 
 
 def test_dependency_can_be_uncached_property() -> None:

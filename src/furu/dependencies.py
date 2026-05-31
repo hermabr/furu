@@ -12,6 +12,8 @@ from pydantic import BaseModel as PydanticBaseModel
 if TYPE_CHECKING:
     from furu.core import Furu
 
+type DependencyRecheckInterval = float | Literal["never"]
+
 
 class _CachedDependency[T](cached_property):
     __furu_dependency__ = True
@@ -19,6 +21,16 @@ class _CachedDependency[T](cached_property):
 
 class _UncachedDependency[T](property):
     __furu_dependency__ = True
+    __furu_dependency_recheck_interval__: float
+
+    def __init__(
+        self,
+        fget: Callable[[Any], T],
+        *,
+        recheck_interval: float,
+    ) -> None:
+        super().__init__(fget)
+        self.__furu_dependency_recheck_interval__ = recheck_interval
 
 
 @overload
@@ -29,26 +41,29 @@ def dependency[TFuru: Furu[Any], T](
 
 @overload
 def dependency[TFuru: Furu[Any], T](
-    *, cached: Literal[True] = True
+    *, recheck_interval: Literal["never"] = "never"
 ) -> Callable[[Callable[[TFuru], T]], _CachedDependency[T]]: ...
 
 
 @overload
 def dependency[TFuru: Furu[Any], T](
-    *, cached: Literal[False]
+    *, recheck_interval: float
 ) -> Callable[[Callable[[TFuru], T]], _UncachedDependency[T]]: ...
 
 
 @overload
 def dependency[TFuru: Furu[Any], T](
-    *, cached: bool
+    *, recheck_interval: DependencyRecheckInterval
 ) -> Callable[
     [Callable[[TFuru], T]], _CachedDependency[T] | _UncachedDependency[T]
 ]: ...
 
 
 def dependency[TFuru: Furu[Any], T](
-    func: Callable[[TFuru], T] | None = None, /, *, cached: bool = True
+    func: Callable[[TFuru], T] | None = None,
+    /,
+    *,
+    recheck_interval: DependencyRecheckInterval = "never",
 ) -> (
     _CachedDependency[T]
     | _UncachedDependency[T]
@@ -57,13 +72,31 @@ def dependency[TFuru: Furu[Any], T](
     def decorate(
         func: Callable[[TFuru], T],
     ) -> _CachedDependency[T] | _UncachedDependency[T]:
-        if cached:
-            return _CachedDependency(func)
-        return _UncachedDependency(func)
+        if recheck_interval != "never":
+            if recheck_interval < 0:
+                raise ValueError("dependency recheck_interval must be non-negative")
+            return _UncachedDependency(func, recheck_interval=recheck_interval)
+        return _CachedDependency(func)
 
     if func is not None:
         return decorate(func)
     return decorate
+
+
+def dependency_recheck_interval(obj: Furu) -> float | None:
+    interval: float | None = None
+    for base in reversed(type(obj).__mro__):
+        for value in base.__dict__.values():
+            next_interval = getattr(
+                value,
+                "__furu_dependency_recheck_interval__",
+                None,
+            )
+            if next_interval is None:
+                continue
+            if interval is None or next_interval < interval:
+                interval = next_interval
+    return interval
 
 
 def find_nested_furu_objects(value: object) -> Iterator[Furu]:

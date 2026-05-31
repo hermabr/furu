@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, assert_never
 
 from furu.core import Furu
-from furu.dependencies import collect_declared_refs
+from furu.dependencies import collect_declared_refs, dependency_recheck_interval
 from furu.metadata import ArtifactSpec
 
 if TYPE_CHECKING:
@@ -17,6 +18,77 @@ class DagNode:
     obj: Furu
     dependencies: list[DagNode] = field(default_factory=list)
     dependents: list[DagNode] = field(default_factory=list)
+    dependency_recheck_interval: float | None = None
+    next_dependency_recheck_at: float | None = None
+    rechecked_declared_dependency_ids: set[str] = field(default_factory=set)
+
+
+def _schedule_next_dependency_recheck(node: DagNode, *, now: float) -> None:
+    if node.dependency_recheck_interval is None:
+        node.next_dependency_recheck_at = None
+    else:
+        node.next_dependency_recheck_at = now + node.dependency_recheck_interval
+
+
+def _set_node_dependencies(
+    node: DagNode,
+    dependencies: Sequence[DagNode],
+    *,
+    replaceable_dependency_ids: set[str],
+) -> None:
+    dependency_ids = {dependency.obj.object_id for dependency in dependencies}
+
+    for old_dependency in tuple(node.dependencies):
+        if old_dependency.obj.object_id not in replaceable_dependency_ids:
+            continue
+        if old_dependency.obj.object_id in dependency_ids:
+            continue
+        node.dependencies.remove(old_dependency)
+        if node in old_dependency.dependents:
+            old_dependency.dependents.remove(node)
+
+    existing_ids = {dependency.obj.object_id for dependency in node.dependencies}
+    for dependency in dependencies:
+        if dependency.obj.object_id in existing_ids:
+            continue
+        node.dependencies.append(dependency)
+        dependency.dependents.append(node)
+        existing_ids.add(dependency.obj.object_id)
+
+
+def _declared_dependency_nodes(
+    manager: Manager,
+    refs: Sequence[Furu],
+) -> list[DagNode]:
+    dependencies: list[DagNode] = []
+    missing_dependencies: list[Furu] = []
+
+    for ref in refs:
+        if ref.object_id in manager.completed:
+            continue
+
+        dep_node = manager.nodes_by_id.get(ref.object_id)
+        if dep_node is not None:
+            if dep_node.obj.status() != "completed":
+                dependencies.append(dep_node)
+            continue
+
+        if ref.status() == "completed":
+            continue
+
+        missing_dependencies.append(ref)
+
+    _add_to_dag(manager, missing_dependencies)
+
+    for ref in refs:
+        if dep_node := manager.nodes_by_id.get(ref.object_id):
+            if dep_node.obj.status() != "completed":
+                dependencies.append(dep_node)
+
+    deduped: dict[str, DagNode] = {}
+    for dependency in dependencies:
+        deduped.setdefault(dependency.obj.object_id, dependency)
+    return list(deduped.values())
 
 
 def _add_to_dag(manager: Manager, objs: Sequence[Furu]) -> None:
@@ -44,7 +116,9 @@ def _add_to_dag(manager: Manager, objs: Sequence[Furu]) -> None:
                 pass
             case x:
                 assert_never(x)
-        node = DagNode(obj=obj)
+        node = DagNode(
+            obj=obj, dependency_recheck_interval=dependency_recheck_interval(obj)
+        )
         manager.nodes_by_id[obj.object_id] = node
         newly_added.append(node)
         refs = collect_declared_refs(obj)
@@ -57,10 +131,12 @@ def _add_to_dag(manager: Manager, objs: Sequence[Furu]) -> None:
             if dep_node := manager.nodes_by_id.get(ref.object_id):
                 node.dependencies.append(dep_node)
                 dep_node.dependents.append(node)
+                node.rechecked_declared_dependency_ids.add(ref.object_id)
 
     for node in newly_added:
         if node.dependencies:
             manager.blocked[node.obj.object_id] = node
+            _schedule_next_dependency_recheck(node, now=time.monotonic())
         else:
             manager.ready[node.obj.object_id] = node
 
@@ -101,5 +177,31 @@ def _update_dag_blocking_dependencies(
 
     if node.dependencies:
         manager.blocked[node.obj.object_id] = node
+        _schedule_next_dependency_recheck(node, now=time.monotonic())
     else:
         manager.ready[node.obj.object_id] = node
+
+
+def _recheck_blocked_declared_dependencies(manager: Manager, *, now: float) -> None:
+    for node in tuple(manager.blocked.values()):
+        if (
+            node.next_dependency_recheck_at is None
+            or node.next_dependency_recheck_at > now
+        ):
+            continue
+
+        refs = collect_declared_refs(node.obj)
+        dependencies = _declared_dependency_nodes(manager, refs)
+        _set_node_dependencies(
+            node,
+            dependencies,
+            replaceable_dependency_ids=node.rechecked_declared_dependency_ids,
+        )
+        node.rechecked_declared_dependency_ids = {
+            dependency.obj.object_id for dependency in dependencies
+        }
+
+        if node.dependencies:
+            _schedule_next_dependency_recheck(node, now=now)
+        else:
+            manager.ready[node.obj.object_id] = manager.blocked.pop(node.obj.object_id)
