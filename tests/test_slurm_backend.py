@@ -423,24 +423,36 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     ("export", "expected_args"),
     [
         (None, ()),
+        ((), ()),
         ("NIL", ("--export=NIL",)),
         ("ALL", ("--export=ALL",)),
         (("HF_TOKEN", "WANDB_API_KEY"), ("--export=HF_TOKEN,WANDB_API_KEY",)),
     ],
 )
-def test_slurm_backend_export_option_controls_sbatch_export_arg(
+def test_slurm_backend_export_option_controls_sbatch_args(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     export: slurm_backend_module.SlurmExport,
     expected_args: tuple[str, ...],
 ) -> None:
-    assert slurm_backend_module._export_sbatch_arg(export) == expected_args
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    backend = SlurmWorkerBackend(
+        max_workers=1,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="manager.cluster",
+        export=export,
+    )
 
+    pool = backend.start_pool(
+        server_url="http://manager.cluster:1234",
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+    )
 
-@pytest.mark.parametrize("export", ["", "nil", "HF_TOKEN", (), ("HF_TOKEN", "")])
-def test_slurm_backend_rejects_invalid_export_options(
-    export: slurm_backend_module.SlurmExport,
-) -> None:
-    with pytest.raises(ValueError, match="export"):
-        slurm_backend_module._export_sbatch_arg(export)
+    assert (
+        tuple(arg for arg in pool._sbatch_base_args if arg.startswith("--export"))
+        == expected_args
+    )
 
 
 def test_slurm_backend_includes_selected_export_names_in_sbatch_args(
