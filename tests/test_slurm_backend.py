@@ -509,11 +509,13 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
         for state in pool._task_states().values()
     )
 
-    active_file.write_text("100\n101 FAILED\n")
+    active_file.write_text("100\n100.batch COMPLETED\n101 FAILED\n101.extern FAILED\n")
 
+    states = pool._task_states()
+    assert states == {"100": "RUNNING", "101": "FAILED"}
     assert any(
-        state not in _UNFINISHED_STATES and state not in frozenset({"COMPLETED"})
-        for state in pool._task_states().values()
+        state not in _UNFINISHED_STATES and state != "COMPLETED"
+        for state in states.values()
     )
     sacct_records = [
         record
@@ -809,7 +811,8 @@ def _install_fake_slurm(
 
         for active_job in sorted(active_jobs):
             job_id, _, state = active_job.partition(" ")
-            if job_id.partition("_")[0] not in requested_jobs:
+            allocation_job_id = job_id.partition(".")[0].partition("_")[0]
+            if allocation_job_id not in requested_jobs:
                 continue
             print(f"{job_id}|{state or 'RUNNING'}|node-a")
         """,

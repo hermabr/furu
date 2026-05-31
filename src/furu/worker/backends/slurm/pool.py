@@ -149,10 +149,9 @@ class SlurmWorkerPool:
         states: dict[str, str] = {}
         for line in result.stdout.splitlines()[1:]:
             job_id, state, _node_list = line.split("|")
-            if "." in job_id or "_" in job_id:
-                raise RuntimeError(
-                    f"Unexpected Slurm job step in sacct output: {job_id}"
-                )
+            allocation_job_id, separator, _step_id = job_id.partition(".")
+            if separator and allocation_job_id in known_job_ids:
+                continue
             if job_id not in known_job_ids:
                 raise ValueError(f"unexpected Slurm job id: {job_id!r}")
             states[job_id] = state.upper()
