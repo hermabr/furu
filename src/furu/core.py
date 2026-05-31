@@ -64,6 +64,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
                 and name not in annotations
                 and not callable(value)
                 and not isinstance(value, (classmethod, property, cached_property))
+                and not getattr(value, "__furu_dependency__", False)
             ):
                 raise TypeError(f"{cls.__name__}.{name} must have a type annotation")
 
