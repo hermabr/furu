@@ -20,8 +20,8 @@ class SlurmWorkerBackend:
     max_workers: int
     resources: SlurmResources
     worker_connect_host: str
-    max_worker_restarts: int = field(
-        default_factory=lambda: get_config().worker.max_restarts
+    max_failed_restarts: int = field(
+        default_factory=lambda: get_config().worker.max_failed_restarts
     )
     manager_listen_host: str = "0.0.0.0"
     job_name: str = "furu-worker"
@@ -101,7 +101,7 @@ class SlurmWorkerBackend:
             _sbatch_base_args=sbatch_base_args,
             _script_path=script_path,
             _max_workers=self.max_workers,
-            _max_worker_restarts=self.max_worker_restarts,
+            _max_failed_restarts=self.max_failed_restarts,
             _resource_request=resource_request,
             _server_url=server_url,
             _auth_token=auth_token,

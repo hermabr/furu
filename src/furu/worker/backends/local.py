@@ -16,8 +16,8 @@ logger = get_logger()
 @dataclass(frozen=True, slots=True)
 class LocalThreadWorkerBackend:
     max_workers: int = 1
-    max_worker_restarts: int = field(
-        default_factory=lambda: get_config().worker.max_restarts
+    max_failed_restarts: int = field(
+        default_factory=lambda: get_config().worker.max_failed_restarts
     )
     resource_request: ResourceRequest = field(default_factory=ResourceRequest)
     manager_listen_host: str = "127.0.0.1"
@@ -38,7 +38,7 @@ class LocalThreadWorkerBackend:
             _server_url=server_url,
             _auth_token=auth_token,
             _max_workers=self.max_workers,
-            _max_worker_restarts=self.max_worker_restarts,
+            _max_failed_restarts=self.max_failed_restarts,
             _resource_request=self.resource_request,
             _scale_interval=self.scale_interval,
             _worker_idle_timeout=self.worker_idle_timeout,
@@ -62,7 +62,7 @@ class LocalThreadWorkerPool:
     _server_url: str
     _auth_token: str
     _max_workers: int
-    _max_worker_restarts: int
+    _max_failed_restarts: int
     _resource_request: ResourceRequest
     _scale_interval: float
     _worker_idle_timeout: float
@@ -83,7 +83,7 @@ class LocalThreadWorkerPool:
         self._threads[:] = [thread for thread in self._threads if thread.is_alive()]
         remaining_starts = (
             self._max_workers
-            + self._max_worker_restarts
+            + self._max_failed_restarts
             - len(self._failed_threads)
             - len(self._threads)
         )

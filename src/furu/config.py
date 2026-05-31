@@ -33,7 +33,7 @@ class _FuruWorkerConfig(BaseSettings):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     idle_timeout_seconds: float = 60.0
-    max_restarts: int = 16
+    max_failed_restarts: int = 16
 
 
 class _FuruConfig(BaseSettings):

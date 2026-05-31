@@ -18,7 +18,7 @@ def test_config_reads_environment(monkeypatch) -> None:
     monkeypatch.setenv("FURU_DIRECTORIES__OBJECTS", "/tmp/furu-objects")
     monkeypatch.setenv("FURU_DIRECTORIES__EXECUTIONS", "/tmp/furu-executions")
     monkeypatch.setenv("FURU_WORKER__IDLE_TIMEOUT_SECONDS", "12.5")
-    monkeypatch.setenv("FURU_WORKER__MAX_RESTARTS", "7")
+    monkeypatch.setenv("FURU_WORKER__MAX_FAILED_RESTARTS", "7")
 
     config = _FuruConfig()
 
@@ -29,7 +29,7 @@ def test_config_reads_environment(monkeypatch) -> None:
     )
     assert config.worker == _FuruWorkerConfig(
         idle_timeout_seconds=12.5,
-        max_restarts=7,
+        max_failed_restarts=7,
     )
 
 
@@ -46,7 +46,7 @@ executions = "/tmp/furu-pyproject-executions"
 
 [tool.furu.worker]
 idle_timeout_seconds = 7.5
-max_restarts = 7
+max_failed_restarts = 7
 """,
         encoding="utf-8",
     )
@@ -61,7 +61,7 @@ max_restarts = 7
     )
     assert config.worker == _FuruWorkerConfig(
         idle_timeout_seconds=7.5,
-        max_restarts=7,
+        max_failed_restarts=7,
     )
 
 
@@ -128,7 +128,7 @@ def test_config_reads_json_config_file(tmp_path, monkeypatch) -> None:
   },
   "worker": {
     "idle_timeout_seconds": 9.5,
-    "max_restarts": 7
+    "max_failed_restarts": 7
   }
 }
 """,
@@ -147,7 +147,7 @@ def test_config_reads_json_config_file(tmp_path, monkeypatch) -> None:
     )
     assert config.worker == _FuruWorkerConfig(
         idle_timeout_seconds=9.5,
-        max_restarts=7,
+        max_failed_restarts=7,
     )
 
 

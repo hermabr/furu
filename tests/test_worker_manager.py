@@ -42,7 +42,7 @@ def _new_local_pool(
     server_url: str = "http://manager.test",
     auth_token: str = "secret",
     max_workers: int = 1,
-    max_worker_restarts: int = 3,
+    max_failed_restarts: int = 3,
     resource_request: ResourceRequest | None = None,
     scale_interval: float = 1.0,
 ) -> LocalThreadWorkerPool:
@@ -51,7 +51,7 @@ def _new_local_pool(
         _server_url=server_url,
         _auth_token=auth_token,
         _max_workers=max_workers,
-        _max_worker_restarts=max_worker_restarts,
+        _max_failed_restarts=max_failed_restarts,
         _resource_request=resource_request or ResourceRequest(),
         _scale_interval=scale_interval,
         _worker_idle_timeout=get_config().worker.idle_timeout_seconds,
@@ -542,7 +542,7 @@ def test_local_pool_scale_does_not_count_normal_exits_as_restarts(
     )
     monkeypatch.setattr(worker_loop_module, "worker_loop", worker_loop)
 
-    pool = _new_local_pool(max_workers=1, max_worker_restarts=0)
+    pool = _new_local_pool(max_workers=1, max_failed_restarts=0)
 
     for _ in range(3):
         pool._scale_once()
@@ -572,7 +572,7 @@ def test_local_pool_scale_counts_crashes_against_restart_limit(
     )
     monkeypatch.setattr(worker_loop_module, "worker_loop", worker_loop)
 
-    pool = _new_local_pool(max_workers=1, max_worker_restarts=1)
+    pool = _new_local_pool(max_workers=1, max_failed_restarts=1)
 
     pool._scale_once()
     pool._threads[0].join(timeout=5)

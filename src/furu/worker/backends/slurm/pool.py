@@ -31,7 +31,7 @@ class SlurmWorkerPool:
     _sbatch_base_args: tuple[str, ...]
     _script_path: Path
     _max_workers: int
-    _max_worker_restarts: int
+    _max_failed_restarts: int
     _resource_request: ResourceRequest
     _server_url: str
     _auth_token: str
@@ -75,7 +75,7 @@ class SlurmWorkerPool:
         ]
         remaining_starts = (
             self._max_workers
-            + self._max_worker_restarts
+            + self._max_failed_restarts
             - len(self._failed_job_ids)
             - len(self._job_ids)
         )

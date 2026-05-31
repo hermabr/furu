@@ -633,7 +633,7 @@ def test_slurm_pool_scale_does_not_count_completed_jobs_as_restarts(
 
     backend = SlurmWorkerBackend(
         max_workers=1,
-        max_worker_restarts=0,
+        max_failed_restarts=0,
         resources=SlurmResources(cpus_per_worker=1),
         worker_connect_host="manager.cluster",
         poll_interval=0,
@@ -721,7 +721,7 @@ def test_slurm_backend_uses_default_poll_interval() -> None:
     assert backend.poll_interval == 10.0
     assert backend.manager_listen_host == "0.0.0.0"
     assert backend.worker_idle_timeout == get_config().worker.idle_timeout_seconds
-    assert backend.max_worker_restarts == get_config().worker.max_restarts
+    assert backend.max_failed_restarts == get_config().worker.max_failed_restarts
 
 
 def _install_fake_slurm(
