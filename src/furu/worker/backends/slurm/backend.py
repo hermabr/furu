@@ -6,6 +6,7 @@ import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal, TypeAlias, assert_never
 
 from furu.config import _WORKER_JSON_CONFIG_FILE_ENV_VAR, get_config
 from furu.execution.api import PoolApiClient
@@ -13,6 +14,8 @@ from furu.resources import ResourceRequest
 from furu.utils import write_private_file
 from furu.worker.backends.slurm.pool import SlurmWorkerPool
 from furu.worker.backends.slurm.resources import SlurmResources
+
+SlurmExport: TypeAlias = Literal["NIL", "ALL"] | tuple[str, ...] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +32,7 @@ class SlurmWorkerBackend:
     worker_idle_timeout: float = field(
         default_factory=lambda: get_config().worker.idle_timeout_seconds
     )
+    export: SlurmExport = None
 
     def start_pool(
         self,
@@ -87,13 +91,24 @@ class SlurmWorkerBackend:
         log_dir = worker_dir / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
 
+        export_sbatch_arg: tuple[str, ...]
+        match self.export:
+            case None | ():
+                export_sbatch_arg = ()
+            case "NIL" | "ALL":
+                export_sbatch_arg = (f"--export={self.export}",)
+            case (*names,):
+                export_sbatch_arg = (f"--export={','.join(names)}",)
+            case _:
+                assert_never(self.export)
+
         sbatch_base_args = (
             f"--chdir={chdir}",
             f"--output={log_dir / 'furu-worker-%j.out'}",
             f"--error={log_dir / 'furu-worker-%j.err'}",
             f"--job-name={self.job_name}",
             *self.resources.to_sbatch_args(),
-            "--export=NIL",
+            *export_sbatch_arg,
         )
 
         pool_holder: list[SlurmWorkerPool] = []

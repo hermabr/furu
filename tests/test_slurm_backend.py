@@ -371,7 +371,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert f"--error={log_dir.resolve() / 'furu-worker-%j.err'}" in argv
     assert "--job-name=furu-worker" in argv
     assert not any(arg.startswith("--array") for arg in argv)
-    assert "--export=NIL" in argv
+    assert not any(arg.startswith("--export") for arg in argv)
     assert not any(arg.startswith("--wrap") for arg in argv)
     assert "--partition=debug" in argv
     assert "--cpus-per-task=4" in argv
@@ -417,6 +417,57 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
 
     assert all(token_file.exists() for token_file in token_files)
     assert all(config_file.exists() for config_file in config_files)
+
+
+@pytest.mark.parametrize(
+    ("export", "expected_args"),
+    [
+        (None, ()),
+        ("NIL", ("--export=NIL",)),
+        ("ALL", ("--export=ALL",)),
+        (("HF_TOKEN", "WANDB_API_KEY"), ("--export=HF_TOKEN,WANDB_API_KEY",)),
+    ],
+)
+def test_slurm_backend_export_option_controls_sbatch_export_arg(
+    export: slurm_backend_module.SlurmExport,
+    expected_args: tuple[str, ...],
+) -> None:
+    assert slurm_backend_module._export_sbatch_arg(export) == expected_args
+
+
+@pytest.mark.parametrize("export", ["", "nil", "HF_TOKEN", (), ("HF_TOKEN", "")])
+def test_slurm_backend_rejects_invalid_export_options(
+    export: slurm_backend_module.SlurmExport,
+) -> None:
+    with pytest.raises(ValueError, match="export"):
+        slurm_backend_module._export_sbatch_arg(export)
+
+
+def test_slurm_backend_includes_selected_export_names_in_sbatch_args(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    _stub_count_satisfiable_jobs(monkeypatch, 1)
+    backend = SlurmWorkerBackend(
+        max_workers=1,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="manager.cluster",
+        export=("HF_TOKEN",),
+    )
+
+    pool = backend.start_pool(
+        server_url="http://manager.cluster:1234",
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+    )
+    pool._scale_once()
+
+    records = _read_records(record_file)
+    sbatch_records = [record for record in records if record["executable"] == "sbatch"]
+    assert len(sbatch_records) == 1
+    assert "--export=HF_TOKEN" in sbatch_records[0]["argv"]
 
 
 @pytest.mark.parametrize(
