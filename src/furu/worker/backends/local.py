@@ -16,11 +16,14 @@ logger = get_logger()
 @dataclass(frozen=True, slots=True)
 class LocalThreadWorkerBackend:
     max_workers: int = 1
+    max_worker_restarts: int = field(
+        default_factory=lambda: get_config().worker.max_restarts
+    )
     resource_request: ResourceRequest = field(default_factory=ResourceRequest)
     manager_listen_host: str = "127.0.0.1"
     scale_interval: float = 1.0
     worker_idle_timeout: float = field(
-        default_factory=lambda: get_config().worker_idle_timeout_seconds
+        default_factory=lambda: get_config().worker.idle_timeout_seconds
     )
 
     def start_pool(
@@ -35,6 +38,7 @@ class LocalThreadWorkerBackend:
             _server_url=server_url,
             _auth_token=auth_token,
             _max_workers=self.max_workers,
+            _max_worker_restarts=self.max_worker_restarts,
             _resource_request=self.resource_request,
             _scale_interval=self.scale_interval,
             _worker_idle_timeout=self.worker_idle_timeout,
@@ -46,6 +50,7 @@ class LocalThreadWorkerBackend:
                 name="furu-local-worker-pool-scale",
             ),
             _threads=[],
+            _failed_threads=[],
         )
         pool_holder.append(pool)
         pool._scale_thread.start()
@@ -57,6 +62,7 @@ class LocalThreadWorkerPool:
     _server_url: str
     _auth_token: str
     _max_workers: int
+    _max_worker_restarts: int
     _resource_request: ResourceRequest
     _scale_interval: float
     _worker_idle_timeout: float
@@ -65,6 +71,7 @@ class LocalThreadWorkerPool:
     _unhealthy_event: threading.Event
     _scale_thread: threading.Thread
     _threads: list[threading.Thread]
+    _failed_threads: list[threading.Thread]
 
     def stop(self, *, timeout: float) -> None:
         self._stop_event.set()
@@ -74,12 +81,18 @@ class LocalThreadWorkerPool:
 
     def _scale_once(self) -> None:
         self._threads[:] = [thread for thread in self._threads if thread.is_alive()]
-        if len(self._threads) >= self._max_workers:
+        remaining_starts = (
+            self._max_workers
+            + self._max_worker_restarts
+            - len(self._failed_threads)
+            - len(self._threads)
+        )
+        if len(self._threads) >= self._max_workers or remaining_starts <= 0:
             return
 
         to_spawn = self._client.count_satisfiable_jobs(
             resources=self._resource_request,
-            max_workers=self._max_workers - len(self._threads),
+            max_workers=min(self._max_workers - len(self._threads), remaining_starts),
         )
         for _ in range(to_spawn):
             thread = threading.Thread(target=self._run_worker)
@@ -98,6 +111,7 @@ class LocalThreadWorkerPool:
                 idle_timeout=self._worker_idle_timeout,
             )
         except Exception:
+            self._failed_threads.append(threading.current_thread())
             self._unhealthy_event.set()
             logger.exception("local worker thread crashed")
 

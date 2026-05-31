@@ -42,6 +42,7 @@ def _new_local_pool(
     server_url: str = "http://manager.test",
     auth_token: str = "secret",
     max_workers: int = 1,
+    max_worker_restarts: int = 3,
     resource_request: ResourceRequest | None = None,
     scale_interval: float = 1.0,
 ) -> LocalThreadWorkerPool:
@@ -50,9 +51,10 @@ def _new_local_pool(
         _server_url=server_url,
         _auth_token=auth_token,
         _max_workers=max_workers,
+        _max_worker_restarts=max_worker_restarts,
         _resource_request=resource_request or ResourceRequest(),
         _scale_interval=scale_interval,
-        _worker_idle_timeout=get_config().worker_idle_timeout_seconds,
+        _worker_idle_timeout=get_config().worker.idle_timeout_seconds,
         _client=api.PoolApiClient(server_url=server_url, auth_token=auth_token),
         _stop_event=threading.Event(),
         _unhealthy_event=threading.Event(),
@@ -61,6 +63,7 @@ def _new_local_pool(
             name="furu-local-worker-pool-scale",
         ),
         _threads=[],
+        _failed_threads=[],
     )
     pool_holder.append(pool)
     return pool
@@ -433,6 +436,7 @@ def test_local_pool_scale_spawns_workers_up_to_max_as_satisfiable_count_grows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     counts = iter([0, 2, 10, 10])
+    release_workers = threading.Event()
 
     def fake_count(
         self: api.PoolApiClient, *, resources: object, max_workers: int
@@ -443,22 +447,29 @@ def test_local_pool_scale_spawns_workers_up_to_max_as_satisfiable_count_grows(
     monkeypatch.setattr(
         worker_loop_module,
         "worker_loop",
-        lambda *, server_url, auth_token, resource_request, idle_timeout: None,
+        lambda *, server_url, auth_token, resource_request, idle_timeout: (
+            release_workers.wait(timeout=5)
+        ),
     )
 
     pool = _new_local_pool(max_workers=3)
 
-    pool._scale_once()
-    assert len(pool._threads) == 0
+    try:
+        pool._scale_once()
+        assert len(pool._threads) == 0
 
-    pool._scale_once()
-    assert len(pool._threads) == 2
+        pool._scale_once()
+        assert len(pool._threads) == 2
 
-    pool._scale_once()
-    assert len(pool._threads) == 3
+        pool._scale_once()
+        assert len(pool._threads) == 3
 
-    pool._scale_once()
-    assert len(pool._threads) == 3
+        pool._scale_once()
+        assert len(pool._threads) == 3
+    finally:
+        release_workers.set()
+        for thread in pool._threads:
+            thread.join(timeout=5)
 
 
 def test_local_pool_scale_uses_unique_worker_names_after_worker_exits(
@@ -507,6 +518,70 @@ def test_local_pool_scale_uses_unique_worker_names_after_worker_exits(
         release_workers.set()
         for thread in pool._threads:
             thread.join(timeout=5)
+
+
+def test_local_pool_scale_does_not_count_normal_exits_as_restarts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    starts = 0
+
+    def worker_loop(
+        *,
+        server_url: str,
+        auth_token: str,
+        resource_request: ResourceRequest,
+        idle_timeout: float,
+    ) -> None:
+        nonlocal starts
+        starts += 1
+
+    monkeypatch.setattr(
+        api.PoolApiClient,
+        "count_satisfiable_jobs",
+        lambda self, *, resources, max_workers: max_workers,
+    )
+    monkeypatch.setattr(worker_loop_module, "worker_loop", worker_loop)
+
+    pool = _new_local_pool(max_workers=1, max_worker_restarts=0)
+
+    for _ in range(3):
+        pool._scale_once()
+        pool._threads[0].join(timeout=5)
+
+    assert starts == 3
+    assert pool._failed_threads == []
+    assert not any(thread.is_alive() for thread in pool._threads)
+
+
+def test_local_pool_scale_counts_crashes_against_restart_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def worker_loop(
+        *,
+        server_url: str,
+        auth_token: str,
+        resource_request: ResourceRequest,
+        idle_timeout: float,
+    ) -> None:
+        raise RuntimeError("worker boom")
+
+    monkeypatch.setattr(
+        api.PoolApiClient,
+        "count_satisfiable_jobs",
+        lambda self, *, resources, max_workers: max_workers,
+    )
+    monkeypatch.setattr(worker_loop_module, "worker_loop", worker_loop)
+
+    pool = _new_local_pool(max_workers=1, max_worker_restarts=1)
+
+    pool._scale_once()
+    pool._threads[0].join(timeout=5)
+    pool._scale_once()
+    pool._threads[0].join(timeout=5)
+    pool._scale_once()
+
+    assert len(pool._failed_threads) == 2
+    assert pool._threads == []
 
 
 def test_manager_run_fails_when_worker_pool_reports_unhealthy(
@@ -799,7 +874,7 @@ def test_worker_loop_raises_when_server_is_unavailable() -> None:
             server_url="http://127.0.0.1:1",
             auth_token="test-token",
             resource_request=ResourceRequest(),
-            idle_timeout=get_config().worker_idle_timeout_seconds,
+            idle_timeout=get_config().worker.idle_timeout_seconds,
         )
 
 
@@ -873,7 +948,7 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
             server_url="http://worker.test",
             auth_token="test-token",
             resource_request=ResourceRequest(gpus=1),
-            idle_timeout=get_config().worker_idle_timeout_seconds,
+            idle_timeout=get_config().worker.idle_timeout_seconds,
         )
 
     assert test_client.calls == ["lease_job"]

@@ -31,6 +31,7 @@ class SlurmWorkerPool:
     _sbatch_base_args: tuple[str, ...]
     _script_path: Path
     _max_workers: int
+    _max_worker_restarts: int
     _resource_request: ResourceRequest
     _server_url: str
     _auth_token: str
@@ -39,6 +40,7 @@ class SlurmWorkerPool:
     _stop_event: threading.Event
     _scale_thread: threading.Thread
     _job_ids: list[str]
+    _failed_job_ids: list[str]
 
     def stop(self, *, timeout: float) -> None:
         self._stop_event.set()
@@ -58,17 +60,31 @@ class SlurmWorkerPool:
     def _scale_once(self) -> None:
         active_job_ids = self._active_job_ids()
         states = self._task_states()
+        self._failed_job_ids[:] = sorted(
+            set(self._failed_job_ids)
+            | {
+                job_id
+                for job_id, state in states.items()
+                if state not in _UNFINISHED_STATES and state != "COMPLETED"
+            }
+        )
         self._job_ids[:] = [
             job_id
             for job_id in self._job_ids
             if job_id in active_job_ids or states.get(job_id) not in (None, "COMPLETED")
         ]
-        if len(self._job_ids) >= self._max_workers:
+        remaining_starts = (
+            self._max_workers
+            + self._max_worker_restarts
+            - len(self._failed_job_ids)
+            - len(self._job_ids)
+        )
+        if len(self._job_ids) >= self._max_workers or remaining_starts <= 0:
             return
 
         to_spawn = self._client.count_satisfiable_jobs(
             resources=self._resource_request,
-            max_workers=self._max_workers - len(self._job_ids),
+            max_workers=min(self._max_workers - len(self._job_ids), remaining_starts),
         )
         for _ in range(to_spawn):
             result = subprocess.run(
