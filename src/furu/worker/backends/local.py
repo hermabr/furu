@@ -112,7 +112,8 @@ class LocalThreadWorkerPool:
             )
         except Exception:
             self._failed_threads.append(threading.current_thread())
-            self._unhealthy_event.set()
+            if len(self._failed_threads) > self._max_failed_restarts:
+                self._unhealthy_event.set()
             logger.exception("local worker thread crashed")
 
     def _scale_loop(self) -> None:

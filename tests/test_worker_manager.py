@@ -576,8 +576,12 @@ def test_local_pool_scale_counts_crashes_against_restart_limit(
 
     pool._scale_once()
     pool._threads[0].join(timeout=5)
+    assert not pool._unhealthy_event.is_set()
+
     pool._scale_once()
     pool._threads[0].join(timeout=5)
+    assert pool._unhealthy_event.is_set()
+
     pool._scale_once()
 
     assert len(pool._failed_threads) == 2
@@ -606,6 +610,7 @@ def test_manager_run_fails_when_worker_pool_reports_unhealthy(
             worker_backends=(
                 LocalThreadWorkerBackend(
                     max_workers=1,
+                    max_failed_restarts=0,
                     resource_request=ResourceRequest(),
                     scale_interval=0.05,
                 ),
