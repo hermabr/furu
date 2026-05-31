@@ -1,4 +1,6 @@
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, ClassVar, cast
 from uuid import UUID, uuid4
@@ -18,7 +20,13 @@ from furu.execution.manager import (
     Manager,
     RunningJob,
 )
-from furu.execution.server import _run_until_done, manager_server
+from furu.execution.connection import CloudflareQuickTunnel, ManagerConnection
+from furu.execution.server import (
+    ManagerServer,
+    _run_until_done,
+    _select_manager_connection,
+    manager_server,
+)
 from furu.metadata import ArtifactSpec
 from furu.resources import ResourceRequest, ResourceRequirements
 from furu._storage_layout import manager_log_path_in
@@ -35,6 +43,20 @@ from furu.worker.protocol import (
 
 
 ANY_RESOURCES = ResourceRequest()
+
+
+class RecordingConnection:
+    def __init__(
+        self,
+        advertised_url: str = "https://furu-test.trycloudflare.com",
+    ) -> None:
+        self.advertised_url = advertised_url
+        self.local_urls: list[str] = []
+
+    @contextmanager
+    def connect(self, *, local_url: str) -> Iterator[str]:
+        self.local_urls.append(local_url)
+        yield self.advertised_url
 
 
 def _new_local_pool(
@@ -653,7 +675,7 @@ def test_manager_run_uses_worker_backend() -> None:
     assert leaf.status() == "completed"
     assert leaf.load_or_create() == 11
     assert len(backend.server_urls) == 1
-    assert backend.server_urls[0].startswith("http://0.0.0.0:")
+    assert backend.server_urls[0].startswith("http://127.0.0.1:")
     assert len(backend.auth_tokens) == 1
     assert backend.auth_tokens[0]
 
@@ -761,6 +783,91 @@ def test_manager_run_starts_backend_pool_and_stops_and_joins_when_done() -> None
     assert pool.stop_timeouts == [5]
 
 
+def test_run_until_done_passes_advertised_manager_url() -> None:
+    class RecordingDone:
+        def wait(self, timeout: float | None = None) -> bool:
+            return True
+
+    class RecordingPool:
+        def stop(self, *, timeout: float) -> None:
+            pass
+
+    class RecordingBackend:
+        manager_listen_host = "127.0.0.1"
+
+        def __init__(self) -> None:
+            self.server_urls: list[str] = []
+
+        def start_pool(
+            self,
+            *,
+            server_url: str,
+            auth_token: str,
+            executor_dir: Path,
+        ) -> RecordingPool:
+            self.server_urls.append(server_url)
+            return RecordingPool()
+
+    manager = Manager([ManagerLeaf(value=15)])
+    backend = RecordingBackend()
+    connection = RecordingConnection()
+    cast(Any, manager).done = RecordingDone()
+
+    _run_until_done(
+        manager,
+        worker_backends=(backend,),
+        port=0,
+        manager_connection=connection,
+    )
+
+    assert backend.server_urls == ["https://furu-test.trycloudflare.com"]
+    assert len(connection.local_urls) == 1
+    assert connection.local_urls[0].startswith("http://127.0.0.1:")
+
+
+def test_run_until_done_uses_backend_requested_manager_connection() -> None:
+    class RecordingDone:
+        def wait(self, timeout: float | None = None) -> bool:
+            return True
+
+    class RecordingPool:
+        def stop(self, *, timeout: float) -> None:
+            pass
+
+    class RecordingBackend:
+        manager_listen_host = "127.0.0.1"
+
+        def __init__(self, connection: ManagerConnection) -> None:
+            self.connection = connection
+            self.server_urls: list[str] = []
+
+        def manager_connection(self) -> ManagerConnection | None:
+            return self.connection
+
+        def start_pool(
+            self,
+            *,
+            server_url: str,
+            auth_token: str,
+            executor_dir: Path,
+        ) -> RecordingPool:
+            self.server_urls.append(server_url)
+            return RecordingPool()
+
+    manager = Manager([ManagerLeaf(value=15)])
+    connection = RecordingConnection(
+        advertised_url="https://backend-requested.trycloudflare.com"
+    )
+    backend = RecordingBackend(connection)
+    cast(Any, manager).done = RecordingDone()
+
+    _run_until_done(manager, worker_backends=(backend,), port=0)
+
+    assert backend.server_urls == ["https://backend-requested.trycloudflare.com"]
+    assert len(connection.local_urls) == 1
+    assert connection.local_urls[0].startswith("http://127.0.0.1:")
+
+
 def test_run_until_done_uses_worker_backend_manager_listen_host() -> None:
     class RecordingDone:
         def wait(self, timeout: float | None = None) -> bool:
@@ -794,6 +901,59 @@ def test_run_until_done_uses_worker_backend_manager_listen_host() -> None:
 
     assert len(backend.server_urls) == 1
     assert backend.server_urls[0].startswith("http://127.0.0.1:")
+
+
+def test_select_manager_connection_rejects_conflicting_backend_requests() -> None:
+    class RecordingPool:
+        def stop(self, *, timeout: float) -> None:
+            pass
+
+    class ConnectionBackend:
+        manager_listen_host = "127.0.0.1"
+
+        def __init__(self, connection: ManagerConnection) -> None:
+            self.connection = connection
+
+        def manager_connection(self) -> ManagerConnection | None:
+            return self.connection
+
+        def start_pool(
+            self,
+            *,
+            server_url: str,
+            auth_token: str,
+            executor_dir: Path,
+        ) -> RecordingPool:
+            raise AssertionError("start_pool should not be called")
+
+    with pytest.raises(
+        ValueError,
+        match="worker backends requested conflicting manager connections",
+    ):
+        _select_manager_connection(
+            worker_backends=(
+                ConnectionBackend(
+                    CloudflareQuickTunnel(extra_args=("--edge-ip-version", "4"))
+                ),
+                ConnectionBackend(
+                    CloudflareQuickTunnel(extra_args=("--edge-ip-version", "6"))
+                ),
+            )
+        )
+
+
+def test_manager_server_local_origin_url_uses_loopback_for_wildcard_bind() -> None:
+    server = ManagerServer(bound_host="0.0.0.0", bound_port=1234, auth_token="x")
+
+    assert server.server_url == "http://0.0.0.0:1234"
+    assert server.local_origin_url == "http://127.0.0.1:1234"
+
+
+def test_manager_server_local_origin_url_preserves_concrete_bind_host() -> None:
+    server = ManagerServer(bound_host="127.0.0.1", bound_port=1234, auth_token="x")
+
+    assert server.server_url == "http://127.0.0.1:1234"
+    assert server.local_origin_url == "http://127.0.0.1:1234"
 
 
 def test_manager_server_exposes_bound_host_and_port() -> None:
