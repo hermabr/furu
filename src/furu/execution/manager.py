@@ -180,10 +180,8 @@ class Manager:
                     object_id = running_job.node.obj.object_id
                     previous_failed = self.failed.get(object_id)
                     failed_attempts = (
-                        1
-                        if previous_failed is None
-                        else previous_failed.failed_attempts + 1
-                    )
+                        previous_failed.failed_attempts if previous_failed else 0
+                    ) + 1
                     failed_job = FailedJob(
                         failed_attempts=failed_attempts,
                         lease_id=lease_id,
