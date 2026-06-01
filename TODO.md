@@ -16,7 +16,7 @@
     - [ ] database/redis
 - [x] metadata
     - [x] basic metadata
-    - [x] write running/completed metadata during load_or_create
+    - [x] write running/completed metadata during create
     - [x] load from artifact
     - [ ] record git info
     - [ ] think deeply about and add most relevant metadata, such as computer used to run it etc
@@ -62,10 +62,10 @@
     - [ ] reject ambiguous migration graphs where more than one path connects the same source and target schema
     - [ ] allow migration schemas to be provided as either the actual schema dict or a schema hash string
     - [ ] support an explicit "unsupported" migration result for transforms that cannot migrate a matching source
-    - [ ] verify migrated runtime result links are still valid in status/load_or_create/try_load before treating them as completed/cache hits
+    - [ ] verify migrated runtime result links are still valid in status/create/try_load before treating them as completed/cache hits
     - [ ] handle stale migration links whose source artifact or old schema directory has been deleted
 - [ ] executor
-    - [x] local load_or_create execution
+    - [x] local create execution
     - [x] local batched create_batched execution
     - [ ] slurm workers
     - [ ] slurm dag
@@ -73,7 +73,7 @@
     - [ ] dependencies
          - [ ] eager dependencies you define with something like @furu.dependency
          - [ ] lazy dependencies that you can register while running the create fn, such as if you have a variable number of chunks you need to download
-            - [ ] capture any time a .load_or_create is called inside a method and add them to the lazy dependencies
+            - [ ] capture any time .create() is called inside a method and add the target to the lazy dependencies
 - [ ] furu list
     - [ ] decide if i need this
     - [ ] check if i'm able to send the name to this

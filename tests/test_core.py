@@ -15,9 +15,10 @@ from pydantic import BaseModel, ConfigDict
 
 import furu
 import furu.execution as execution_module
-from furu import Furu, ResourceRequirements, load_or_create, validate
+from furu import Furu, ResourceRequirements, validate
 from furu.config import get_config
 from furu.dependencies import collect_declared_refs
+from furu.execution import _load_or_create
 from furu.locking import LockManifest, lock_many
 from furu.metadata import ArtifactSpec
 from furu.result import load_result_bundle, _save_result_bundle
@@ -78,8 +79,8 @@ class NodePair(Furu[dict]):
 
     def create(self) -> dict:
         return {
-            "node1": self.node1.load_or_create(),
-            "node2": self.node2.load_or_create(),
+            "node1": self.node1.create(),
+            "node2": self.node2.create(),
             "name": self.name,
         }
 
@@ -88,7 +89,7 @@ class RandomObj(Furu[float]):
     id: int
 
     def create(self) -> float:
-        # Intentionally non-deterministic to test that load_or_create caches results
+        # Intentionally non-deterministic to test that create caches results
         import random
 
         return random.random()
@@ -206,7 +207,7 @@ class LoggedParent(Furu[dict[str, str]]):
 
     def create(self) -> dict[str, str]:
         self.logger.info("parent before child")
-        child_result = self.child.load_or_create()
+        child_result = self.child.create()
         self.logger.info("parent after child")
         return {"child": child_result}
 
@@ -294,6 +295,12 @@ class BatchOnlyValue(Furu[str]):
         keys = tuple(obj.key for obj in objs)
         cls.batch_calls.append(keys)
         return [f"batch:{obj.key}" for obj in objs]
+
+
+class DelegatingBatchValue(BatchOnlyValue):
+    @classmethod
+    def create_batched(cls, objs) -> list[str]:
+        return BatchOnlyValue.create_batched(objs)
 
 
 class GroupBatchA(Furu[str]):
@@ -396,7 +403,7 @@ class NestedDependencyParent(Furu[str]):
     bundle: DependencyBundle
 
     def create(self) -> str:
-        return self.bundle.first.load_or_create()
+        return self.bundle.first.create()
 
 
 class ComputedDependencyParent(Furu[str]):
@@ -407,7 +414,7 @@ class ComputedDependencyParent(Furu[str]):
         return Node(name=self.name)
 
     def create(self) -> str:
-        return self.child.load_or_create()
+        return self.child.create()
 
 
 class ExplicitCachedDependencyParent(Furu[str]):
@@ -420,7 +427,7 @@ class ExplicitCachedDependencyParent(Furu[str]):
         return Node(name=f"{self.name}-{type(self).calls}")
 
     def create(self) -> str:
-        return self.child.load_or_create()
+        return self.child.create()
 
 
 class UncachedDependencyParent(Furu[str]):
@@ -433,14 +440,14 @@ class UncachedDependencyParent(Furu[str]):
         return Node(name=f"{self.name}-{type(self).calls}")
 
     def create(self) -> str:
-        return self.child.load_or_create()
+        return self.child.create()
 
 
 class LazyDependencyParent(Furu[str]):
     name: str
 
     def create(self) -> str:
-        return Node(name=self.name).load_or_create()
+        return Node(name=self.name).create()
 
 
 class TryLoadDependencyParent(Furu[str]):
@@ -458,7 +465,7 @@ class FuruBoundaryParent(Furu[str]):
     child: NodePair
 
     def create(self) -> str:
-        return self.child.node1.load_or_create()
+        return self.child.node1.create()
 
 
 class BatchDependencyParent(Furu[str]):
@@ -467,8 +474,8 @@ class BatchDependencyParent(Furu[str]):
 
     @classmethod
     def create_batched(cls, objs) -> list[str]:
-        eager_values = [obj.eager.load_or_create() for obj in objs]
-        lazy_value = Node(name="shared-lazy").load_or_create()
+        eager_values = [obj.eager.create() for obj in objs]
+        lazy_value = Node(name="shared-lazy").create()
         return [f"{value}:{lazy_value}" for value in eager_values]
 
 
@@ -508,7 +515,7 @@ def test_frozen_dataclass_inheritance():
 
 
 def test_class_level_validation():
-    assert PositiveValue(value=2).load_or_create() == 2
+    assert PositiveValue(value=2).create() == 2
 
     with pytest.raises(ValueError, match="value must be positive"):
         PositiveValue(value=0)
@@ -1004,7 +1011,7 @@ def test_furu_from_artifact_returns_furu_object():
         node1=Node(name="y"),
         node2=WeightedNode(name="z", weight=1),
     )
-    obj.load_or_create()
+    obj.create()
     artifact = ArtifactSpec(
         fully_qualified_name=obj._fully_qualified_name,
         artifact_data=obj._artifact_data,
@@ -1048,7 +1055,7 @@ def test_field_dependencies_are_eager_but_metadata_stores_only_loaded_objects() 
     parent = NestedDependencyParent(bundle=DependencyBundle(first=first, second=second))
 
     assert collect_declared_refs(parent) == (first, second)
-    assert parent.load_or_create() == "Node(nested)"
+    assert parent.create() == "Node(nested)"
     assert _dependency_object_ids(parent) == [first.object_id]
 
 
@@ -1057,7 +1064,7 @@ def test_computed_dependency_is_cached_property_and_eager_loaded_dependency() ->
 
     assert parent.child is parent.child
     assert collect_declared_refs(parent) == (parent.child,)
-    assert parent.load_or_create() == "Node(computed)"
+    assert parent.create() == "Node(computed)"
 
     assert _dependency_object_ids(parent) == [parent.child.object_id]
 
@@ -1085,10 +1092,10 @@ def test_dependency_can_be_uncached_property() -> None:
     assert UncachedDependencyParent.calls == 3
 
 
-def test_load_or_create_inside_create_is_recorded_and_deduped() -> None:
+def test_create_inside_create_is_recorded_and_deduped() -> None:
     parent = LazyDependencyParent(name="lazy")
 
-    assert parent.load_or_create() == "Node(lazy)"
+    assert parent.create() == "Node(lazy)"
 
     assert _dependency_object_ids(parent) == [Node(name="lazy").object_id]
 
@@ -1096,7 +1103,7 @@ def test_load_or_create_inside_create_is_recorded_and_deduped() -> None:
 def test_try_load_inside_create_is_recorded_even_on_missing_result() -> None:
     parent = TryLoadDependencyParent(name="optional")
 
-    assert parent.load_or_create() == "missing"
+    assert parent.create() == "missing"
 
     metadata = json.loads(metadata_path_in(parent._base_dir).read_text())
     assert metadata["observed_dependencies"] == [Node(name="optional").object_id]
@@ -1107,7 +1114,7 @@ def test_try_load_missing_result_explains_how_to_compute() -> None:
         RuntimeError,
         match=(
             r"Node:[a-f0-9]{5}:[a-f0-9]{5}\.try_load\(\) could not find a result\. "
-            r"try_load\(\) only loads existing results; use load_or_create\(\) to "
+            r"try_load\(\) only loads existing results; use create\(\) to "
             r"compute missing results\."
         ),
     ):
@@ -1122,7 +1129,7 @@ def test_furu_objects_block_nested_eager_traversal_but_direct_runtime_loads_are_
     child = NodePair(node1=node1, node2=node2, name="pair")
     parent = FuruBoundaryParent(child=child)
 
-    assert parent.load_or_create() == "Node(inner)"
+    assert parent.create() == "Node(inner)"
 
     assert collect_declared_refs(parent) == (child,)
     assert _dependency_object_ids(parent) == [node1.object_id]
@@ -1134,7 +1141,7 @@ def test_batched_dependencies_record_all_observed_loads() -> None:
         BatchDependencyParent(key=2, eager=Node(name="eager-2")),
     ]
 
-    assert load_or_create(objs) == [
+    assert _load_or_create(objs) == [
         "Node(eager-1):Node(shared-lazy)",
         "Node(eager-2):Node(shared-lazy)",
     ]
@@ -1156,7 +1163,7 @@ def test_furu_from_artifact_infers_furu_object_type():
         node1=Node(name="y"),
         node2=WeightedNode(name="z", weight=1),
     )
-    obj.load_or_create()
+    obj.create()
     artifact = ArtifactSpec(
         fully_qualified_name=obj._fully_qualified_name,
         artifact_data=obj._artifact_data,
@@ -1174,7 +1181,7 @@ def test_furu_from_artifact_infers_furu_object_type():
 
 def test_furu_from_artifact_accepts_loaded_metadata_artifact():
     obj = Node(name="x")
-    obj.load_or_create()
+    obj.create()
     metadata = json.loads(metadata_path_in(obj._base_dir).read_text())
     artifact = ArtifactSpec(**metadata["artifact"])
 
@@ -1340,7 +1347,7 @@ def test_create_object_and_exists():
     )
     assert node_pair.status() == "missing"
     for _i in range(3):
-        assert node_pair.load_or_create() == {
+        assert node_pair.create() == {
             "node1": "Node(y)",
             "node2": "WNode(z:1)",
             "name": "x",
@@ -1352,7 +1359,7 @@ def test_create_object_and_exists():
 def test_data_dir_is_user_data_subdirectory() -> None:
     obj = UserDataWritingValue(name="payload")
 
-    assert obj.load_or_create() == "payload"
+    assert obj.create() == "payload"
 
     assert (obj.data_dir / "payload.txt").read_text(encoding="utf-8") == "payload"
     assert result_manifest_path_in(obj._base_dir).exists()
@@ -1360,11 +1367,11 @@ def test_data_dir_is_user_data_subdirectory() -> None:
     assert not (obj._base_dir / ".furu").exists()
 
 
-def test_unused_data_dir_is_not_created_by_load_or_create() -> None:
+def test_unused_data_dir_is_not_created_by_create() -> None:
     node = Node(name="unused-data")
     user_data_path = node._base_dir / "data"
 
-    assert node.load_or_create() == "Node(unused-data)"
+    assert node.create() == "Node(unused-data)"
 
     assert not user_data_path.exists()
 
@@ -1410,7 +1417,7 @@ def test_status_is_failed_after_create_error() -> None:
     obj = FailingSingleValue(key=1)
 
     with pytest.raises(RuntimeError, match="failed single for 1"):
-        obj.load_or_create()
+        obj.create()
 
     assert obj.status() == "failed"
 
@@ -1418,7 +1425,7 @@ def test_status_is_failed_after_create_error() -> None:
 def test_creating_and_loading_random_result_furu_obj():
     n_ids = 5
     results = {
-        obj_id: [RandomObj(id=obj_id).load_or_create() for _ in range(3)]
+        obj_id: [RandomObj(id=obj_id).create() for _ in range(3)]
         for obj_id in range(n_ids)
     }
     assert all(len(set(values)) == 1 for values in results.values())
@@ -1428,17 +1435,17 @@ def test_creating_and_loading_random_result_furu_obj():
 def test_delete_force() -> None:
     node = Node(name="x")
 
-    assert node.load_or_create() == "Node(x)"
+    assert node.create() == "Node(x)"
     assert node.data_dir.exists()
     assert node.delete(mode="force")
     assert not node.data_dir.exists()
-    assert node.load_or_create() == "Node(x)"
+    assert node.create() == "Node(x)"
 
 
 def test_delete_prompt_cancel() -> None:
     node = Node(name="x")
 
-    assert node.load_or_create() == "Node(x)"
+    assert node.create() == "Node(x)"
     with patch("builtins.input", return_value="n"):
         assert not node.delete()
     assert node.data_dir.exists()
@@ -1451,45 +1458,45 @@ def test_delete_returns_false_when_missing() -> None:
 def test_log_file_is_written_to_base_dir() -> None:
     node = LoggedLeaf(name="x")
 
-    assert node.load_or_create() == "leaf:x"
+    assert node.create() == "leaf:x"
 
     assert run_log_path_in(node._base_dir).parent == node._base_dir
     log_text = run_log_path_in(node._base_dir).read_text(encoding="utf-8")
     assert "leaf detail for x" in log_text
 
 
-def test_nested_load_or_create_scopes_logs_to_child_file() -> None:
+def test_nested_create_scopes_logs_to_child_file() -> None:
     child = LoggedLeaf(name="child")
     parent = LoggedParent(child=child)
 
-    assert parent.load_or_create() == {"child": "leaf:child"}
+    assert parent.create() == {"child": "leaf:child"}
 
     parent_log = run_log_path_in(parent._base_dir).read_text(encoding="utf-8")
     child_log = run_log_path_in(child._base_dir).read_text(encoding="utf-8")
 
     assert "parent before child" in parent_log
-    assert f"calling {child._log_label}.load_or_create()" in parent_log
-    assert ".load_or_create() returned" in parent_log
+    assert f"calling {child._log_label}.create()" in parent_log
+    assert ".create() returned" in parent_log
     assert "parent after child" in parent_log
     assert "leaf detail for child" not in parent_log
 
     assert "leaf detail for child" in child_log
 
 
-def test_method_load_or_create_delegates_to_shared_executor(
+def test_create_delegates_to_private_loader(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     node = Node(name="delegated")
     calls: list[tuple[Furu[str], bool]] = []
 
-    def fake_load_or_create(obj: Furu[str], *, use_lock: bool = True) -> str:
+    def fake_private_loader(obj: Furu[str], *, use_lock: bool = True) -> str:
         calls.append((obj, use_lock))
         return "delegated"
 
-    monkeypatch.setattr(execution_module, "load_or_create", fake_load_or_create)
+    monkeypatch.setattr(execution_module, "_load_or_create", fake_private_loader)
 
-    assert node.load_or_create(use_lock=False) == "delegated"
-    assert calls == [(node, False)]
+    assert node.create() == "delegated"
+    assert calls == [(node, True)]
 
 
 def test_resolved_create_mode_validation() -> None:
@@ -1564,7 +1571,7 @@ def test_no_create_hook_loads_cached_result() -> None:
         registry=_default_result_registry(),
     )
 
-    assert obj.load_or_create() == "cached:1"
+    assert obj.create() == "cached:1"
 
 
 def test_no_create_hook_raises_only_for_missing_result() -> None:
@@ -1575,7 +1582,7 @@ def test_no_create_hook_raises_only_for_missing_result() -> None:
             r"create\(\) or create_batched\(\)"
         ),
     ):
-        NoCreateHookValue(key=2).load_or_create()
+        NoCreateHookValue(key=2).create()
 
 
 def test_no_create_hook_uses_post_lock_cache_recheck(
@@ -1596,12 +1603,19 @@ def test_no_create_hook_uses_post_lock_cache_recheck(
 
     monkeypatch.setattr(execution_module, "lock_many", fake_lock_many)
 
-    assert obj.load_or_create() == "cached-after-lock:1"
+    assert obj.create() == "cached-after-lock:1"
 
 
 def test_single_object_on_batch_only_class_uses_create_batched() -> None:
-    assert load_or_create(BatchOnlyValue(key=1)) == "batch:1"
+    assert _load_or_create(BatchOnlyValue(key=1)) == "batch:1"
     assert BatchOnlyValue.batch_calls == [(1,)]
+
+
+def test_create_batched_can_delegate_to_base_implementation() -> None:
+    objs = [DelegatingBatchValue(key=1), DelegatingBatchValue(key=2)]
+
+    assert _load_or_create(objs) == ["batch:1", "batch:2"]
+    assert BatchOnlyValue.batch_calls == [(1, 2)]
 
 
 def test_list_input_on_single_only_class_uses_sequential_create() -> None:
@@ -1611,7 +1625,7 @@ def test_list_input_on_single_only_class_uses_sequential_create() -> None:
         CountedSingleValue(key=3),
     ]
 
-    assert load_or_create(objs) == ["single:1", "single:2", "single:3"]
+    assert _load_or_create(objs) == ["single:1", "single:2", "single:3"]
     assert CountedSingleValue.create_calls == [1, 2, 3]
 
 
@@ -1620,7 +1634,7 @@ def test_sequential_fallback_writes_running_metadata_per_object() -> None:
     second = MetadataTimingValue(key=2)
     MetadataTimingValue.siblings_by_key.update({1: first, 2: second})
 
-    assert load_or_create([first, second], use_lock=False) == ["timed:1", "timed:2"]
+    assert _load_or_create([first, second], use_lock=False) == ["timed:1", "timed:2"]
     assert MetadataTimingValue.create_events == [
         (1, True, True),
         (2, True, True),
@@ -1637,7 +1651,7 @@ def test_list_input_on_batch_only_class_calls_create_batched_once_per_concrete_g
         GroupBatchB(key=2),
     ]
 
-    assert load_or_create(objs) == ["group-a:1", "group-b:1", "group-a:2", "group-b:2"]
+    assert _load_or_create(objs) == ["group-a:1", "group-b:1", "group-a:2", "group-b:2"]
     assert GroupBatchA.batch_calls == [(1, 2)]
     assert GroupBatchB.batch_calls == [(1, 2)]
 
@@ -1650,7 +1664,7 @@ def test_duplicate_cache_identities_compute_once_and_preserve_input_order() -> N
         CountedSingleValue(key=1),
     ]
 
-    assert load_or_create(objs) == ["single:1", "single:1", "single:2", "single:1"]
+    assert _load_or_create(objs) == ["single:1", "single:1", "single:2", "single:1"]
     assert CountedSingleValue.create_calls == [1, 2]
 
 
@@ -1666,7 +1680,7 @@ def test_executor_deduplicates_by_object_id_not_data_dir(tmp_path: Path) -> None
     assert first.object_id == second.object_id
     assert first_data_dir != second_data_dir
 
-    assert load_or_create([first, second]) == ["object-id:1", "object-id:1"]
+    assert _load_or_create([first, second]) == ["object-id:1", "object-id:1"]
     assert ObjectIdStorageRootValue.create_calls == [1]
 
 
@@ -1676,7 +1690,7 @@ def test_existing_items_are_skipped_before_locking(
     existing = CountedSingleValue(key=1)
     missing = CountedSingleValue(key=2)
 
-    assert existing.load_or_create() == "single:1"
+    assert existing.create() == "single:1"
 
     lock_calls: list[list[Path]] = []
 
@@ -1687,7 +1701,7 @@ def test_existing_items_are_skipped_before_locking(
 
     monkeypatch.setattr(execution_module, "lock_many", fake_lock_many)
 
-    assert load_or_create([existing, missing]) == ["single:1", "single:2"]
+    assert _load_or_create([existing, missing]) == ["single:1", "single:2"]
     assert lock_calls == [[compute_lock_path_in(missing._base_dir)]]
 
 
@@ -1708,12 +1722,12 @@ def test_pending_items_are_rechecked_after_lock_acquisition(
 
     monkeypatch.setattr(execution_module, "lock_many", fake_lock_many)
 
-    assert load_or_create([pending]) == ["single:5"]
+    assert _load_or_create([pending]) == ["single:5"]
     assert CountedSingleValue.create_calls == []
 
 
 def test_empty_list_returns_empty_list() -> None:
-    assert load_or_create([]) == []
+    assert _load_or_create([]) == []
 
 
 def test_worker_execution_context_is_scoped() -> None:
@@ -1725,24 +1739,24 @@ def test_worker_execution_context_is_scoped() -> None:
     assert _worker_execution_lease_id.get() is None
 
 
-def test_worker_load_or_create_loads_cached_result_without_recomputing(
+def test_worker_create_loads_cached_result_without_recomputing(
     tmp_path: Path,
 ) -> None:
     ObjectIdStorageRootValue.storage_root_override = tmp_path / "data"
     cached = ObjectIdStorageRootValue(key=10)
 
-    assert cached.load_or_create() == "object-id:10"
+    assert cached.create() == "object-id:10"
     ObjectIdStorageRootValue.create_calls.clear()
 
     with worker_execution_context(
         lease_id="lease-1",
     ):
-        assert cached.load_or_create() == "object-id:10"
+        assert cached.create() == "object-id:10"
 
     assert ObjectIdStorageRootValue.create_calls == []
 
 
-def test_worker_load_or_create_reports_all_missing_dependencies(
+def test_worker_create_reports_all_missing_dependencies(
     tmp_path: Path,
 ) -> None:
     ObjectIdStorageRootValue.storage_root_override = tmp_path / "data"
@@ -1755,10 +1769,10 @@ def test_worker_load_or_create_reports_all_missing_dependencies(
         ),
         pytest.raises(_DependencyNotReady) as exc_info,
     ):
-        load_or_create([first, second])
+        _load_or_create([first, second])
 
     exc = exc_info.value
-    assert exc.call_kind == "load_or_create"
+    assert exc.call_kind == "create"
     assert exc.dependencies == (first, second)
     assert ObjectIdStorageRootValue.create_calls == []
     assert not result_manifest_path_in(first._base_dir).exists()
@@ -1810,7 +1824,7 @@ def test_mixed_type_list_follows_documented_grouping_policy() -> None:
         GroupBatchB(key=21),
     ]
 
-    assert load_or_create(objs) == [
+    assert _load_or_create(objs) == [
         "group-a:1",
         "single:10",
         "group-a:2",
@@ -1829,7 +1843,7 @@ def test_mixed_type_list_follows_documented_grouping_policy() -> None:
 def test_batched_compute_writes_result_layout_per_object() -> None:
     objs = [BatchOnlyValue(key=1), BatchOnlyValue(key=2)]
 
-    assert load_or_create(objs) == ["batch:1", "batch:2"]
+    assert _load_or_create(objs) == ["batch:1", "batch:2"]
 
     for obj, expected in zip(objs, ["batch:1", "batch:2"], strict=True):
         assert result_manifest_path_in(obj._base_dir).exists()
@@ -1841,7 +1855,7 @@ def test_batched_compute_writes_result_layout_per_object() -> None:
 def test_batched_compute_writes_shared_logs_to_every_participant() -> None:
     objs = [LoggedBatchValue(key=1), LoggedBatchValue(key=2)]
 
-    assert load_or_create(objs) == ["logged-batch:1", "logged-batch:2"]
+    assert _load_or_create(objs) == ["logged-batch:1", "logged-batch:2"]
 
     for obj in objs:
         log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
@@ -1856,7 +1870,7 @@ def test_batched_compute_writes_shared_logs_to_every_participant() -> None:
 def test_sequential_group_compute_writes_shared_logs_to_every_participant() -> None:
     objs = [LoggedSingleValue(key=1), LoggedSingleValue(key=2)]
 
-    assert load_or_create(objs) == ["logged-single:1", "logged-single:2"]
+    assert _load_or_create(objs) == ["logged-single:1", "logged-single:2"]
 
     for obj in objs:
         log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
@@ -1875,11 +1889,11 @@ def test_batched_failure_writes_error_details_to_run_log_for_every_participant()
     objs = [FailingBatchValue(key=1), FailingBatchValue(key=2)]
 
     with pytest.raises(RuntimeError, match="failed batch"):
-        load_or_create(objs)
+        _load_or_create(objs)
 
     for obj in objs:
         log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
-        assert "load_or_create failed" in log_text
+        assert "create failed" in log_text
         assert "failed batch for [1, 2]" in log_text
         assert "=== Debug Details (with locals) ===" in log_text
         assert list(obj._base_dir.glob("error-*.log")) == []
@@ -1889,10 +1903,10 @@ def test_base_exception_does_not_log_as_load_failure() -> None:
     obj = InterruptingValue(key=1)
 
     with pytest.raises(KeyboardInterrupt):
-        obj.load_or_create()
+        obj.create()
 
     log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
-    assert "load_or_create failed" not in log_text
+    assert "create failed" not in log_text
     assert "=== Debug Details (with locals) ===" not in log_text
 
 
@@ -1913,16 +1927,18 @@ def test_partial_persistence_leaves_already_written_objects_completed(
     monkeypatch.setattr(execution_module, "_store_result", flaky_store_result)
 
     with pytest.raises(RuntimeError, match="stop after first store"):
-        load_or_create(objs)
+        _load_or_create(objs)
 
     assert result_manifest_path_in(objs[0]._base_dir).exists()
     assert not result_manifest_path_in(objs[1]._base_dir).exists()
 
 
-def test_create_cannot_be_called_directly() -> None:
-    obj = Node(name="direct")
-    with pytest.raises(RuntimeError, match="must not be called directly"):
-        obj.create()
+def test_create_publicly_loads_or_computes_result() -> None:
+    obj = CountedSingleValue(key=99)
+
+    assert obj.create() == "single:99"
+    assert obj.create() == "single:99"
+    assert CountedSingleValue.create_calls == [99]
 
 
 def test_create_batched_cannot_be_called_directly() -> None:

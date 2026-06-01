@@ -103,8 +103,8 @@ if __name__ == "__main__":
     obj = Adder(a=1, b=2)
     artifact = obj._artifact_data
     artifact_loaded = _from_json(artifact)
-    first = obj.load_or_create()
-    second = obj.load_or_create()
+    first = obj.create()
+    second = obj.create()
 
     payload_bundle = Path("payload-bundle")
     _save_result_bundle(Payload(9), payload_bundle, registry=ResultRegistry())

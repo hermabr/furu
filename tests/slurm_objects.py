@@ -30,7 +30,7 @@ class SlurmWorkloadTask(Furu[dict[str, object]]):
 
     def create(self) -> dict[str, object]:
         parent_results = [
-            cast(dict[str, object], parent.load_or_create()) for parent in self.parents
+            cast(dict[str, object], parent.create()) for parent in self.parents
         ]
         time.sleep(self.duration_seconds)
 

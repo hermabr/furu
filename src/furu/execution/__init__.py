@@ -36,44 +36,52 @@ from furu.worker.context import (
 )
 
 type HasLock = Callable[[], bool]
+type _DirectCreateTarget = Furu[Any] | type[Furu[Any]]
 
 
-_create_execution_active: ContextVar[bool] = ContextVar(
-    "_furu_create_execution_active", default=False
+_direct_create_target: ContextVar[_DirectCreateTarget | None] = ContextVar(
+    "_furu_direct_create_target", default=None
 )
 
 
 @contextmanager
-def _allow_direct_create() -> Iterator[None]:
-    token = _create_execution_active.set(True)
+def _allow_direct_create(target: _DirectCreateTarget) -> Iterator[None]:
+    token = _direct_create_target.set(target)
     try:
         yield
     finally:
-        _create_execution_active.reset(token)
+        _direct_create_target.reset(token)
 
 
-def _install_create_guards[T](cls: type[Furu[T]]) -> None:
-    for attr in ("create", "create_batched"):
-        if attr not in cls.__dict__:
-            continue
-        is_batched = attr == "create_batched"
-        raw = cls.__dict__[attr]
-        func = raw.__func__ if is_batched else raw
+def _install_create_dispatchers[T](cls: type[Furu[T]]) -> None:
+    if "create" in cls.__dict__:
+        raw_create = cls.__dict__["create"]
+
+        @functools.wraps(raw_create)
+        def create_dispatcher(self: Furu[T], *args: Any, **kwargs: Any) -> T:
+            if _direct_create_target.get() is self:
+                return raw_create(self, *args, **kwargs)
+            return _load_or_create(self, *args, **kwargs)
+
+        setattr(cls, "create", create_dispatcher)
+
+    if "create_batched" in cls.__dict__:
+        raw_create_batched = cls.__dict__["create_batched"]
+        func = raw_create_batched.__func__
 
         @functools.wraps(func)
-        def guarded(first: Any, *args: Any, **kwargs: Any) -> Any:
-            if not _create_execution_active.get():
-                owner = first.__name__ if is_batched else type(first).__name__
-                suggestion = (
-                    "furu.load_or_create()" if is_batched else ".load_or_create()"
-                )
+        def create_batched_guard(
+            owner: type[Furu[T]], *args: Any, **kwargs: Any
+        ) -> list[T]:
+            target = _direct_create_target.get()
+            if not (isinstance(target, type) and issubclass(target, owner)):
                 raise RuntimeError(
-                    f"{owner}.{attr}() must not be called directly; "
-                    f"call {suggestion} instead"
+                    f"{owner.__name__}.create_batched() must not be called directly; "
+                    "call .create() on Furu objects instead"
                 )
-            return func(first, *args, **kwargs)
+            return func(owner, *args, **kwargs)
 
-        setattr(cls, attr, classmethod(guarded) if is_batched else guarded)
+        setattr(cls, "create_batched", classmethod(create_batched_guard))
 
 
 def _resolve_create_mode[T](cls: type[Furu[T]]) -> FuruCreateMode:
@@ -177,14 +185,16 @@ def _format_error_debug_details(exc: BaseException) -> str:
 
 
 @overload
-def load_or_create[T](obj: Furu[T], *, use_lock: bool = True) -> T: ...
+def _load_or_create[T](obj: Furu[T], *, use_lock: bool = True) -> T: ...
 
 
 @overload
-def load_or_create[T](objs: Sequence[Furu[T]], *, use_lock: bool = True) -> list[T]: ...
+def _load_or_create[T](
+    objs: Sequence[Furu[T]], *, use_lock: bool = True
+) -> list[T]: ...
 
 
-def load_or_create[T](
+def _load_or_create[T](
     obj_or_objs: Furu[T] | Sequence[Furu[T]],
     *,
     use_lock: bool = True,
@@ -224,16 +234,16 @@ def _normalize_load_or_create_input[T](
         objs = [obj_or_objs]
         unwrap = True
         record_dependency_call(objs[0])
-        objs[0].logger.info("calling %s.load_or_create()", objs[0]._log_label)
+        objs[0].logger.info("calling %s.create()", objs[0]._log_label)
     else:
         if not isinstance(obj_or_objs, Sequence):
             raise TypeError(
-                "load_or_create() expected a Furu object or a sequence of Furu objects"
+                "_load_or_create() expected a Furu object or a sequence of Furu objects"
             )
         objs = list(obj_or_objs)
         unwrap = False
         if any(not isinstance(obj, Furu) for obj in objs):
-            raise TypeError("load_or_create() expected Furu objects")
+            raise TypeError("_load_or_create() expected Furu objects")
         for obj in objs:
             record_dependency_call(obj)
     return objs, unwrap
@@ -257,13 +267,13 @@ def _load_or_create_worker[T](
     if missing:
         raise _DependencyNotReady(
             dependencies=missing,
-            call_kind="load_or_create",
+            call_kind="create",
         )
 
     if unwrap:
         (obj,) = objs
         (result,) = loaded
-        obj.logger.info("%s.load_or_create() returned", obj._log_label)
+        obj.logger.info("%s.create() returned", obj._log_label)
         return result
     return loaded
 
@@ -334,7 +344,7 @@ def _load_or_create_local[T](
     if unwrap:
         (obj,) = objs
         (output,) = outputs
-        obj.logger.info("%s.load_or_create() returned", obj._log_label)
+        obj.logger.info("%s.create() returned", obj._log_label)
         return output
     return outputs
 
@@ -349,14 +359,17 @@ def _create_and_store_group[T](
 
     metadata = [RunningMetadata.write_for(obj) for obj in group]
 
-    with _scoped_log_files(log_paths), _allow_direct_create():
+    with _scoped_log_files(log_paths):
         logger = group[0].logger
-        logger.debug("load_or_create start")
+        logger.debug("create start")
         try:
             match group[0]._furu_create_mode:
                 case "batched":
                     logger.debug("running create_batched()")
-                    with dependency_recorder() as recorder:
+                    with (
+                        dependency_recorder() as recorder,
+                        _allow_direct_create(type(group[0])),
+                    ):
                         results = type(group[0]).create_batched(group)
                     observed = recorder.finalize()
                     logger.debug("create_batched() returned")
@@ -373,7 +386,10 @@ def _create_and_store_group[T](
                     results = []
                     observed_dependencies = []
                     for obj in group:
-                        with dependency_recorder() as recorder:
+                        with (
+                            dependency_recorder() as recorder,
+                            _allow_direct_create(obj),
+                        ):
                             results.append(obj.create())
                         observed_dependencies.append(recorder.finalize())
                     logger.debug("sequential create() fallback returned")
@@ -405,16 +421,16 @@ def _create_and_store_group[T](
                     has_lock=has_lock,
                 )
 
-            logger.debug("load_or_create complete")
+            logger.debug("create complete")
         except _DependencyNotReady as exc:
             logger.debug(
-                "load_or_create deferred: %s discovered %d missing dependency/dependencies",
+                "create deferred: %s discovered %d missing dependency/dependencies",
                 exc.call_kind,
                 len(exc.dependencies),
             )
             raise
         except Exception as exc:
-            logger.exception("load_or_create failed")
+            logger.exception("create failed")
             logger.error(
                 "debug traceback with locals:\n%s", _format_error_debug_details(exc)
             )
