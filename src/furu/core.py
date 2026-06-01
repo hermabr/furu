@@ -15,7 +15,7 @@ from furu._storage_layout import (
     result_manifest_path_in,
 )
 from furu.config import get_config
-from furu.locking import lock_many
+from furu.locking import is_active_lock, lock_many
 from furu.logging import get_logger
 from furu.resources import ResourceRequirements
 from furu.result import load_result_bundle
@@ -161,7 +161,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
             return "completed"
         if self.is_migrated():  # TODO: check if the migrated object is in correct state
             return "completed"
-        if compute_lock_path_in(self._base_dir).exists():
+        if is_active_lock(compute_lock_path_in(self._base_dir)):
             return "running"
         if self._base_dir.exists():
             return "failed"

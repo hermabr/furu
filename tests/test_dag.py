@@ -1,5 +1,6 @@
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import ClassVar, Iterator
 
 import pytest
 
@@ -7,6 +8,7 @@ import furu
 from furu import Furu
 from furu.dag import DagNode
 from furu.execution.manager import Manager
+from furu.locking import lock_many
 from furu._storage_layout import (
     compute_lock_path_in,
     run_log_path_in,
@@ -62,9 +64,11 @@ class ComputedParent(Furu[str]):
         return self.computed_child.load_or_create()
 
 
-def mark_running(obj: Furu) -> None:
+@contextmanager
+def mark_running(obj: Furu) -> Iterator[None]:
     obj._base_dir.mkdir(parents=True, exist_ok=True)
-    compute_lock_path_in(obj._base_dir).touch()
+    with lock_many([compute_lock_path_in(obj._base_dir)]):
+        yield
 
 
 def test_add_to_dag_single_object_no_dependencies():
@@ -179,21 +183,35 @@ def test_add_to_dag_completed_root_has_no_dependencies():
 
 def test_add_to_dag_rejects_running_root():
     leaf = Leaf(name="running-root")
-    mark_running(leaf)
-    assert leaf.status() == "running"
 
-    with pytest.raises(RuntimeError, match="cannot add running object to DAG"):
-        Manager([leaf])
+    with mark_running(leaf):
+        assert leaf.status() == "running"
+
+        with pytest.raises(RuntimeError, match="cannot add running object to DAG"):
+            Manager([leaf])
 
 
 def test_add_to_dag_rejects_running_dependency():
     leaf = Leaf(name="running-dependency")
     mid = Mid(label="m", child=leaf)
-    mark_running(leaf)
-    assert leaf.status() == "running"
 
-    with pytest.raises(RuntimeError, match="cannot add running object to DAG"):
-        Manager([mid])
+    with mark_running(leaf):
+        assert leaf.status() == "running"
+
+        with pytest.raises(RuntimeError, match="cannot add running object to DAG"):
+            Manager([mid])
+
+
+def test_add_to_dag_does_not_reject_inactive_compute_lock():
+    leaf = Leaf(name="inactive-lock")
+    leaf._base_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = compute_lock_path_in(leaf._base_dir)
+    lock_path.touch()
+
+    assert leaf.status() == "failed"
+    manager = Manager([leaf])
+
+    assert set(manager.ready) == {leaf.object_id}
 
 
 def test_add_to_dag_accepts_a_list_of_inputs():
