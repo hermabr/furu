@@ -37,6 +37,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=float,
         help="seconds to wait without a lease before this worker exits",
     )
+    parser.add_argument(
+        "--max-consecutive-failures",
+        type=int,
+        default=None,
+        help="consecutive failed jobs after which this worker exits",
+    )
     args = parser.parse_args(argv)
 
     worker_loop(
@@ -47,6 +53,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             gpus=args.resource_gpus,
         ),
         idle_timeout=args.idle_timeout,
+        max_consecutive_failures=args.max_consecutive_failures,
     )
     return 0
 

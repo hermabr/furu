@@ -32,6 +32,7 @@ class SlurmWorkerBackend:
     worker_idle_timeout: float = field(
         default_factory=lambda: get_config().worker.idle_timeout_seconds
     )
+    worker_max_consecutive_failures: int | None = None
     export: SlurmExport = None
 
     def start_pool(
@@ -65,6 +66,14 @@ class SlurmWorkerBackend:
             cpus=self.resources.cpus_per_worker,
             gpus=self.resources.gpus,
         )
+        worker_failure_arg = (
+            ""
+            if self.worker_max_consecutive_failures is None
+            else (
+                "    --max-consecutive-failures "
+                f"{self.worker_max_consecutive_failures} \\\n"
+            )
+        )
 
         scripts_dir = worker_dir / "scripts"
         scripts_dir.mkdir(parents=True, exist_ok=True)
@@ -82,6 +91,7 @@ class SlurmWorkerBackend:
                 f"    --server-url {shlex.quote(server_url)} \\\n"
                 f"    --auth-token-file {shlex.quote(str(token_file))} \\\n"
                 f"    --idle-timeout {self.worker_idle_timeout} \\\n"
+                f"{worker_failure_arg}"
                 f"    --resource-cpus {resource_request.cpus} \\\n"
                 f"    --resource-gpus {resource_request.gpus}\n"
             ),

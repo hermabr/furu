@@ -53,7 +53,7 @@ def test_worker_cli_reads_auth_token_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[str, str, ResourceRequest, float | None]] = []
+    calls: list[tuple[str, str, ResourceRequest, float | None, int | None]] = []
     token_file = tmp_path / "worker.token"
     token_file.write_text("secret\n\n")
 
@@ -63,8 +63,17 @@ def test_worker_cli_reads_auth_token_file(
         auth_token: str,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
+        max_consecutive_failures: int | None,
     ) -> None:
-        calls.append((server_url, auth_token, resource_request, idle_timeout))
+        calls.append(
+            (
+                server_url,
+                auth_token,
+                resource_request,
+                idle_timeout,
+                max_consecutive_failures,
+            )
+        )
 
     monkeypatch.setattr(_cli, "worker_loop", worker_loop)
 
@@ -92,6 +101,7 @@ def test_worker_cli_reads_auth_token_file(
             "secret",
             ResourceRequest(),
             60.0,
+            None,
         )
     ]
     assert token_file.exists()
@@ -101,7 +111,7 @@ def test_worker_cli_reads_resource_request(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[ResourceRequest, float | None]] = []
+    calls: list[tuple[ResourceRequest, float | None, int | None]] = []
     token_file = tmp_path / "worker.token"
     token_file.write_text("secret")
 
@@ -111,8 +121,9 @@ def test_worker_cli_reads_resource_request(
         auth_token: str,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
+        max_consecutive_failures: int | None,
     ) -> None:
-        calls.append((resource_request, idle_timeout))
+        calls.append((resource_request, idle_timeout, max_consecutive_failures))
 
     monkeypatch.setattr(_cli, "worker_loop", worker_loop)
 
@@ -134,7 +145,7 @@ def test_worker_cli_reads_resource_request(
         == 0
     )
 
-    assert calls == [(ResourceRequest(cpus=4, gpus=1), 30.0)]
+    assert calls == [(ResourceRequest(cpus=4, gpus=1), 30.0, None)]
 
 
 def test_worker_cli_reads_idle_timeout(
@@ -151,6 +162,7 @@ def test_worker_cli_reads_idle_timeout(
         auth_token: str,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
+        max_consecutive_failures: int | None,
     ) -> None:
         calls.append(idle_timeout)
 
@@ -175,6 +187,49 @@ def test_worker_cli_reads_idle_timeout(
     )
 
     assert calls == [0.25]
+
+
+def test_worker_cli_reads_max_consecutive_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[int | None] = []
+    token_file = tmp_path / "worker.token"
+    token_file.write_text("secret")
+
+    def worker_loop(
+        *,
+        server_url: str,
+        auth_token: str,
+        resource_request: ResourceRequest,
+        idle_timeout: float | None,
+        max_consecutive_failures: int | None,
+    ) -> None:
+        calls.append(max_consecutive_failures)
+
+    monkeypatch.setattr(_cli, "worker_loop", worker_loop)
+
+    assert (
+        _cli.main(
+            [
+                "--server-url",
+                "http://manager.test",
+                "--auth-token-file",
+                str(token_file),
+                "--resource-cpus",
+                "4",
+                "--resource-gpus",
+                "1",
+                "--idle-timeout",
+                "0.25",
+                "--max-consecutive-failures",
+                "3",
+            ]
+        )
+        == 0
+    )
+
+    assert calls == [3]
 
 
 def test_worker_cli_requires_resource_request(
@@ -348,6 +403,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
         worker_connect_host="manager.cluster",
         poll_interval=1.5,
         worker_idle_timeout=0.25,
+        worker_max_consecutive_failures=3,
     )
 
     pool = backend.start_pool(
@@ -388,6 +444,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert f"exec {sys.executable} -m furu.worker._cli" in script
     assert "--server-url http://manager.cluster:1234" in script
     assert "--idle-timeout 0.25" in script
+    assert "--max-consecutive-failures 3" in script
     assert "--resource-cpus 4" in script
     assert "--resource-gpus 1" in script
     assert "FURU_DIRECTORIES__OBJECTS" not in script
@@ -544,6 +601,7 @@ def test_slurm_backend_rewrites_manager_url_to_worker_connect_host(
     script = script_path.read_text()
     assert "--server-url http://manager.cluster:4321" in script
     assert f"--idle-timeout {get_config().worker.idle_timeout_seconds}" in script
+    assert "--max-consecutive-failures" not in script
     assert "http://0.0.0.0:4321" not in script
 
 
@@ -786,6 +844,7 @@ def test_slurm_backend_uses_default_poll_interval() -> None:
     assert backend.poll_interval == 10.0
     assert backend.manager_listen_host == "0.0.0.0"
     assert backend.worker_idle_timeout == get_config().worker.idle_timeout_seconds
+    assert backend.worker_max_consecutive_failures is None
     assert backend.max_failed_restarts == get_config().worker.max_failed_restarts
 
 
