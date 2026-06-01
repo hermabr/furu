@@ -76,14 +76,9 @@ class Furu[T](_FuruDataclassTransform, ABC):
         _install_create_dispatchers(cls)
 
     def create(self) -> T:
-        from furu.execution import _is_direct_create_object, _load_or_create
+        from furu.execution import _load_or_create
 
-        if not _is_direct_create_object(self):
-            return _load_or_create(self)
-
-        raise NotImplementedError(
-            f"{type(self).__name__} must implement create() or create_batched()"
-        )
+        return _load_or_create(self)
 
     @classmethod
     def create_batched[TFuru: Furu](cls: type[TFuru], objs: list[TFuru]) -> list[T]:
