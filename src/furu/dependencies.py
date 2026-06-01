@@ -13,72 +13,73 @@ if TYPE_CHECKING:
     from furu.core import Furu
 
 
-class _CachedDependency[T](cached_property):
+class _CachedDependency[TOwner, T](cached_property):
     __furu_dependency__ = True
 
-    @overload
-    def __get__(self, instance: None, owner: type[Any] | None = None) -> Self: ...
+    if TYPE_CHECKING:
 
-    @overload
-    def __get__(self, instance: object, owner: type[Any] | None = None) -> T: ...
+        @overload
+        def __get__(
+            self, instance: None, owner: type[TOwner] | None = None
+        ) -> Self: ...
 
-    def __get__(
-        self, instance: object | None, owner: type[Any] | None = None
-    ) -> T | Self:
-        return super().__get__(instance, owner)
+        @overload
+        def __get__(self, instance: object, owner: type[Any] | None = None) -> T: ...
 
 
-class _UncachedDependency[T](property):
+class _UncachedDependency[TOwner, T](property):
     __furu_dependency__ = True
 
-    @overload
-    def __get__(self, instance: None, owner: type[Any] | None = None) -> Self: ...
+    if TYPE_CHECKING:
 
-    @overload
-    def __get__(self, instance: object, owner: type[Any] | None = None) -> T: ...
+        @overload
+        def __get__(
+            self, instance: None, owner: type[TOwner] | None = None
+        ) -> Self: ...
 
-    def __get__(
-        self, instance: object | None, owner: type[Any] | None = None
-    ) -> T | Self:
-        return super().__get__(instance, owner)
+        @overload
+        def __get__(self, instance: object, owner: type[Any] | None = None) -> T: ...
 
 
 @overload
 def dependency[TFuru: Furu[Any], T](
     func: Callable[[TFuru], T], /
-) -> _CachedDependency[T]: ...
+) -> _CachedDependency[TFuru, T]: ...
 
 
 @overload
 def dependency[TFuru: Furu[Any], T](
     *, cached: Literal[True] = True
-) -> Callable[[Callable[[TFuru], T]], _CachedDependency[T]]: ...
+) -> Callable[[Callable[[TFuru], T]], _CachedDependency[TFuru, T]]: ...
 
 
 @overload
 def dependency[TFuru: Furu[Any], T](
     *, cached: Literal[False]
-) -> Callable[[Callable[[TFuru], T]], _UncachedDependency[T]]: ...
+) -> Callable[[Callable[[TFuru], T]], _UncachedDependency[TFuru, T]]: ...
 
 
 @overload
 def dependency[TFuru: Furu[Any], T](
     *, cached: bool
 ) -> Callable[
-    [Callable[[TFuru], T]], _CachedDependency[T] | _UncachedDependency[T]
+    [Callable[[TFuru], T]], _CachedDependency[TFuru, T] | _UncachedDependency[TFuru, T]
 ]: ...
 
 
 def dependency[TFuru: Furu[Any], T](
     func: Callable[[TFuru], T] | None = None, /, *, cached: bool = True
 ) -> (
-    _CachedDependency[T]
-    | _UncachedDependency[T]
-    | Callable[[Callable[[TFuru], T]], _CachedDependency[T] | _UncachedDependency[T]]
+    _CachedDependency[TFuru, T]
+    | _UncachedDependency[TFuru, T]
+    | Callable[
+        [Callable[[TFuru], T]],
+        _CachedDependency[TFuru, T] | _UncachedDependency[TFuru, T],
+    ]
 ):
     def decorate(
         func: Callable[[TFuru], T],
-    ) -> _CachedDependency[T] | _UncachedDependency[T]:
+    ) -> _CachedDependency[TFuru, T] | _UncachedDependency[TFuru, T]:
         if cached:
             return _CachedDependency(func)
         return _UncachedDependency(func)
