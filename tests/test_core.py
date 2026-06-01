@@ -1,4 +1,5 @@
 import json
+import os
 import types
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -17,7 +18,7 @@ import furu.execution as execution_module
 from furu import Furu, ResourceRequirements, load_or_create, validate
 from furu.config import get_config
 from furu.dependencies import collect_declared_refs
-from furu.locking import lock_many
+from furu.locking import LockManifest, lock_many
 from furu.metadata import ArtifactSpec
 from furu.result import load_result_bundle, _save_result_bundle
 from furu.result.codec import _default_result_registry
@@ -37,6 +38,17 @@ from furu.worker.context import (
 )
 
 type SOME_TYPE = Literal["a", "b"] | int
+
+
+def write_stale_lock(lock_path: Path) -> None:
+    claim_path = lock_path.with_name(f"{lock_path.name}.claim")
+    manifest = LockManifest(
+        claim_path=claim_path.resolve(strict=False),
+        lock_paths=(lock_path.resolve(strict=False),),
+    )
+    claim_path.write_text(manifest.model_dump_json(indent=2), encoding="utf-8")
+    os.link(claim_path, lock_path)
+    os.utime(claim_path, times=(1, 1))
 
 
 class Node(Furu[str]):
@@ -1373,6 +1385,25 @@ def test_status_is_running_while_compute_lock_is_held() -> None:
 
     with lock_many([compute_lock_path_in(node._base_dir)]):
         assert node.status() == "running"
+
+
+def test_status_is_failed_when_compute_lock_is_not_active() -> None:
+    node = Node(name="inactive-lock")
+    node._base_dir.mkdir(parents=True, exist_ok=True)
+
+    compute_lock_path_in(node._base_dir).touch()
+
+    assert node.status() == "failed"
+
+
+def test_status_is_failed_when_compute_lock_is_stale() -> None:
+    node = Node(name="stale-lock")
+    node._base_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = compute_lock_path_in(node._base_dir)
+
+    write_stale_lock(lock_path)
+
+    assert node.status() == "failed"
 
 
 def test_status_is_failed_after_create_error() -> None:

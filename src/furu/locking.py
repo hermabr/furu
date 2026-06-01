@@ -306,6 +306,21 @@ def break_stale(lock_path: Path, *, lifetime_s: float) -> bool:
         unlink_if_exists(break_path)
 
 
+def is_active_lock(lock_path: Path) -> bool:
+    lock_stat = stat_or_none(lock_path)
+    if lock_stat is None or _is_stale(lock_stat):
+        return False
+
+    try:
+        manifest = read_manifest(lock_path)
+    except RuntimeError:
+        return False
+    if manifest is None:
+        return False
+
+    return owns(manifest.lock_paths, claim_path=manifest.claim_path)
+
+
 def _try_touch_future(path: Path, *, lifetime_s: float) -> bool:
     try:
         touch_future(path, lifetime_s=lifetime_s)
