@@ -182,32 +182,22 @@ class Manager:
                     failed_attempts = (
                         previous_failed.failed_attempts if previous_failed else 0
                     ) + 1
-                    failed_job = FailedJob(
+                    self.failed[object_id] = FailedJob(
                         failed_attempts=failed_attempts,
                         lease_id=lease_id,
                         node=running_job.node,
                         error=error,
                     )
-                    self.failed[object_id] = failed_job
                     if failed_attempts <= self._max_retries_per_object:
                         self.ready[object_id] = running_job.node
-                        logger.debug(
-                            "job failed; retrying: lease_id=%s object_id=%s failed_attempts=%d max_retries=%d error=%s",
-                            lease_id,
-                            object_id,
-                            failed_attempts,
-                            self._max_retries_per_object,
-                            error,
-                        )
-                    else:
-                        logger.debug(
-                            "job failed: lease_id=%s object_id=%s failed_attempts=%d max_retries=%d error=%s",
-                            lease_id,
-                            object_id,
-                            failed_attempts,
-                            self._max_retries_per_object,
-                            error,
-                        )
+                    logger.debug(
+                        "job failed: lease_id=%s object_id=%s failed_attempts=%d max_retries=%d error=%s",
+                        lease_id,
+                        object_id,
+                        failed_attempts,
+                        self._max_retries_per_object,
+                        error,
+                    )
                 case JobBlockedResult(dependencies=dependencies):
                     _update_dag_blocking_dependencies(
                         self, running_job.node, dependencies
