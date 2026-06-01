@@ -44,15 +44,6 @@ _direct_create_target: ContextVar[_DirectCreateTarget | None] = ContextVar(
 )
 
 
-def _is_direct_create_object(obj: Furu[Any]) -> bool:
-    return _direct_create_target.get() is obj
-
-
-def _is_direct_create_batched_owner(owner: type[Furu[Any]]) -> bool:
-    target = _direct_create_target.get()
-    return isinstance(target, type) and issubclass(target, owner)
-
-
 @contextmanager
 def _allow_direct_create(target: _DirectCreateTarget) -> Iterator[None]:
     token = _direct_create_target.set(target)
@@ -68,7 +59,7 @@ def _install_create_dispatchers[T](cls: type[Furu[T]]) -> None:
 
         @functools.wraps(raw_create)
         def create_dispatcher(self: Furu[T], *args: Any, **kwargs: Any) -> T:
-            if _is_direct_create_object(self):
+            if _direct_create_target.get() is self:
                 return raw_create(self, *args, **kwargs)
             return _load_or_create(self, *args, **kwargs)
 
@@ -82,7 +73,8 @@ def _install_create_dispatchers[T](cls: type[Furu[T]]) -> None:
         def create_batched_guard(
             owner: type[Furu[T]], *args: Any, **kwargs: Any
         ) -> list[T]:
-            if not _is_direct_create_batched_owner(owner):
+            target = _direct_create_target.get()
+            if not (isinstance(target, type) and issubclass(target, owner)):
                 raise RuntimeError(
                     f"{owner.__name__}.create_batched() must not be called directly; "
                     "call .create() on Furu objects instead"
