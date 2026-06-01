@@ -297,6 +297,12 @@ class BatchOnlyValue(Furu[str]):
         return [f"batch:{obj.key}" for obj in objs]
 
 
+class DelegatingBatchValue(BatchOnlyValue):
+    @classmethod
+    def create_batched(cls, objs) -> list[str]:
+        return BatchOnlyValue.create_batched(objs)
+
+
 class GroupBatchA(Furu[str]):
     key: int
     batch_calls: ClassVar[list[tuple[int, ...]]] = []
@@ -1603,6 +1609,13 @@ def test_no_create_hook_uses_post_lock_cache_recheck(
 def test_single_object_on_batch_only_class_uses_create_batched() -> None:
     assert _load_or_create(BatchOnlyValue(key=1)) == "batch:1"
     assert BatchOnlyValue.batch_calls == [(1,)]
+
+
+def test_create_batched_can_delegate_to_base_implementation() -> None:
+    objs = [DelegatingBatchValue(key=1), DelegatingBatchValue(key=2)]
+
+    assert _load_or_create(objs) == ["batch:1", "batch:2"]
+    assert BatchOnlyValue.batch_calls == [(1, 2)]
 
 
 def test_list_input_on_single_only_class_uses_sequential_create() -> None:

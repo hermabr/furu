@@ -36,36 +36,30 @@ from furu.worker.context import (
 )
 
 type HasLock = Callable[[], bool]
+type _DirectCreateTarget = Furu[Any] | type[Furu[Any]]
 
 
-_direct_create_object: ContextVar[Furu[Any] | None] = ContextVar(
-    "_furu_direct_create_object", default=None
-)
-_direct_create_batched_owner: ContextVar[type[Furu[Any]] | None] = ContextVar(
-    "_furu_direct_create_batched_owner", default=None
+_direct_create_target: ContextVar[_DirectCreateTarget | None] = ContextVar(
+    "_furu_direct_create_target", default=None
 )
 
 
 def _is_direct_create_object(obj: Furu[Any]) -> bool:
-    return _direct_create_object.get() is obj
+    return _direct_create_target.get() is obj
+
+
+def _is_direct_create_batched_owner(owner: type[Furu[Any]]) -> bool:
+    target = _direct_create_target.get()
+    return isinstance(target, type) and issubclass(target, owner)
 
 
 @contextmanager
-def _allow_direct_create(obj: Furu[Any]) -> Iterator[None]:
-    token = _direct_create_object.set(obj)
+def _allow_direct_create(target: _DirectCreateTarget) -> Iterator[None]:
+    token = _direct_create_target.set(target)
     try:
         yield
     finally:
-        _direct_create_object.reset(token)
-
-
-@contextmanager
-def _allow_direct_create_batched(owner: type[Furu[Any]]) -> Iterator[None]:
-    token = _direct_create_batched_owner.set(owner)
-    try:
-        yield
-    finally:
-        _direct_create_batched_owner.reset(token)
+        _direct_create_target.reset(token)
 
 
 def _install_create_dispatchers[T](cls: type[Furu[T]]) -> None:
@@ -88,7 +82,7 @@ def _install_create_dispatchers[T](cls: type[Furu[T]]) -> None:
         def create_batched_guard(
             owner: type[Furu[T]], *args: Any, **kwargs: Any
         ) -> list[T]:
-            if _direct_create_batched_owner.get() is not owner:
+            if not _is_direct_create_batched_owner(owner):
                 raise RuntimeError(
                     f"{owner.__name__}.create_batched() must not be called directly; "
                     "call .create() on Furu objects instead"
@@ -382,7 +376,7 @@ def _create_and_store_group[T](
                     logger.debug("running create_batched()")
                     with (
                         dependency_recorder() as recorder,
-                        _allow_direct_create_batched(type(group[0])),
+                        _allow_direct_create(type(group[0])),
                     ):
                         results = type(group[0]).create_batched(group)
                     observed = recorder.finalize()
