@@ -32,7 +32,7 @@ class SlurmWorkerBackend:
     worker_idle_timeout: float = field(
         default_factory=lambda: get_config().worker.idle_timeout_seconds
     )
-    worker_max_consecutive_failures: int | None = None
+    worker_max_consecutive_failures: int | None = 5  # TODO: maybe add this to config?
     export: SlurmExport = None
 
     def start_pool(
