@@ -62,7 +62,7 @@
     - [ ] reject ambiguous migration graphs where more than one path connects the same source and target schema
     - [ ] allow migration schemas to be provided as either the actual schema dict or a schema hash string
     - [ ] support an explicit "unsupported" migration result for transforms that cannot migrate a matching source
-    - [ ] verify migrated runtime result links are still valid in status/load_or_create/try_load before treating them as completed/cache hits
+    - [ ] verify migrated runtime result links are still valid in status/load_or_create/load_existing before treating them as completed/cache hits
     - [ ] handle stale migration links whose source artifact or old schema directory has been deleted
 - [ ] executor
     - [x] local load_or_create execution

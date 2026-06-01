@@ -129,7 +129,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
         return load_or_create(self, use_lock=use_lock)
 
     @final
-    def try_load(self) -> T:  # TODO: make a better name for this
+    def load_existing(self) -> T:
         from furu.dependencies import record_dependency_call
         from furu.migration import result_dir_for_loading
         from furu.worker.context import (
@@ -143,11 +143,11 @@ class Furu[T](_FuruDataclassTransform, ABC):
         if _worker_execution_lease_id.get() is not None:
             raise _DependencyNotReady(
                 dependencies=[self],
-                call_kind="try_load",
+                call_kind="load_existing",
             )
         raise RuntimeError(
-            f"{self._log_label}.try_load() could not find a result. "
-            "try_load() only loads existing results; use load_or_create() to "
+            f"{self._log_label}.load_existing() could not find a result. "
+            "load_existing() only loads existing results; use load_or_create() to "
             "compute missing results."
         )
 

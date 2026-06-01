@@ -106,13 +106,13 @@ def test_status_is_completed_after_first_run() -> None:
     assert obj.status() == "completed"
 
 
-def test_try_load_returns_persisted_result() -> None:
+def test_load_existing_returns_persisted_result() -> None:
     JsonResult.create_calls.clear()
     obj = JsonResult()
 
     obj.load_or_create()
 
-    assert obj.try_load() == {
+    assert obj.load_existing() == {
         "metrics": {"loss": 0.12, "ok": True},
         "items": [1, 2, None, "x"],
     }

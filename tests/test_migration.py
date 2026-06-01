@@ -125,7 +125,7 @@ def test_migrate_loads_result_through_link() -> None:
     }
     assert _COUNTER.calls == 0
 
-    assert new.try_load() == {"dataset": "cifar10", "learning_rate": "0.001"}
+    assert new.load_existing() == {"dataset": "cifar10", "learning_rate": "0.001"}
 
 
 def test_migrate_returns_true_when_already_migrated() -> None:
@@ -149,7 +149,7 @@ def test_migrate_raises_when_existing_link_source_is_missing() -> None:
     with pytest.raises(RuntimeError, match="points to a missing result"):
         new.migrate()
     with pytest.raises(RuntimeError, match="points to a missing result"):
-        new.try_load()
+        new.load_existing()
 
 
 def test_migrate_returns_false_when_already_has_direct_result() -> None:
