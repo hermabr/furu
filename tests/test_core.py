@@ -450,12 +450,12 @@ class LazyDependencyParent(Furu[str]):
         return Node(name=self.name).create()
 
 
-class TryLoadDependencyParent(Furu[str]):
+class LoadExistingDependencyParent(Furu[str]):
     name: str
 
     def create(self) -> str:
         try:
-            Node(name=self.name).try_load()
+            Node(name=self.name).load_existing()
         except RuntimeError:
             return "missing"
         return "loaded"
@@ -1100,8 +1100,8 @@ def test_create_inside_create_is_recorded_and_deduped() -> None:
     assert _dependency_object_ids(parent) == [Node(name="lazy").object_id]
 
 
-def test_try_load_inside_create_is_recorded_even_on_missing_result() -> None:
-    parent = TryLoadDependencyParent(name="optional")
+def test_load_existing_inside_create_is_recorded_even_on_missing_result() -> None:
+    parent = LoadExistingDependencyParent(name="optional")
 
     assert parent.create() == "missing"
 
@@ -1109,16 +1109,16 @@ def test_try_load_inside_create_is_recorded_even_on_missing_result() -> None:
     assert metadata["observed_dependencies"] == [Node(name="optional").object_id]
 
 
-def test_try_load_missing_result_explains_how_to_compute() -> None:
+def test_load_existing_missing_result_explains_how_to_compute() -> None:
     with pytest.raises(
         RuntimeError,
         match=(
-            r"Node:[a-f0-9]{5}:[a-f0-9]{5}\.try_load\(\) could not find a result\. "
-            r"try_load\(\) only loads existing results; use create\(\) to "
+            r"Node:[a-f0-9]{5}:[a-f0-9]{5}\.load_existing\(\) could not find a result\. "
+            r"load_existing\(\) only loads existing results; use create\(\) to "
             r"compute missing results\."
         ),
     ):
-        Node(name="missing").try_load()
+        Node(name="missing").load_existing()
 
 
 def test_furu_objects_block_nested_eager_traversal_but_direct_runtime_loads_are_recorded() -> (
@@ -1763,7 +1763,7 @@ def test_worker_create_reports_all_missing_dependencies(
     assert not result_manifest_path_in(second._base_dir).exists()
 
 
-def test_worker_try_load_reports_missing_dependency(tmp_path: Path) -> None:
+def test_worker_load_existing_reports_missing_dependency(tmp_path: Path) -> None:
     ObjectIdStorageRootValue.storage_root_override = tmp_path / "data"
     missing = ObjectIdStorageRootValue(key=13)
 
@@ -1773,10 +1773,10 @@ def test_worker_try_load_reports_missing_dependency(tmp_path: Path) -> None:
         ),
         pytest.raises(_DependencyNotReady) as exc_info,
     ):
-        missing.try_load()
+        missing.load_existing()
 
     exc = exc_info.value
-    assert exc.call_kind == "try_load"
+    assert exc.call_kind == "load_existing"
     assert exc.dependencies == (missing,)
 
 
@@ -1791,7 +1791,7 @@ def test_worker_dependency_not_ready_is_not_caught_as_exception(
             lease_id="lease-1",
         ):
             try:
-                missing.try_load()
+                missing.load_existing()
             except Exception as exc:  # pragma: no cover
                 raise AssertionError(
                     "ordinary Exception handler caught signal"

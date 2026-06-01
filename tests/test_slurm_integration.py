@@ -92,7 +92,7 @@ def test_slurm_backend_runs_worker_job_end_to_end(
         ),
     )
 
-    results = {task.task_id: task.try_load() for task in all_tasks}
+    results = {task.task_id: task.load_existing() for task in all_tasks}
 
     assert len(all_tasks) == 50 + FINAL_SHARED_COUNT
     assert Counter(task.kind for task in all_tasks) == {
