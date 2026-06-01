@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import fields, is_dataclass
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, Callable, Literal, overload
+from typing import TYPE_CHECKING, Any, Callable, Literal, Self, overload
 
 from pydantic import BaseModel as PydanticBaseModel
 
@@ -16,9 +16,31 @@ if TYPE_CHECKING:
 class _CachedDependency[T](cached_property):
     __furu_dependency__ = True
 
+    @overload
+    def __get__(self, instance: None, owner: type[Any] | None = None) -> Self: ...
+
+    @overload
+    def __get__(self, instance: object, owner: type[Any] | None = None) -> T: ...
+
+    def __get__(
+        self, instance: object | None, owner: type[Any] | None = None
+    ) -> T | Self:
+        return super().__get__(instance, owner)
+
 
 class _UncachedDependency[T](property):
     __furu_dependency__ = True
+
+    @overload
+    def __get__(self, instance: None, owner: type[Any] | None = None) -> Self: ...
+
+    @overload
+    def __get__(self, instance: object, owner: type[Any] | None = None) -> T: ...
+
+    def __get__(
+        self, instance: object | None, owner: type[Any] | None = None
+    ) -> T | Self:
+        return super().__get__(instance, owner)
 
 
 @overload
