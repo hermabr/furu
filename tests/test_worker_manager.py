@@ -917,7 +917,7 @@ def test_worker_loop_exits_after_idle_timeout(
     assert test_client.lease_calls == 1
 
 
-def test_worker_loop_exits_after_max_consecutive_failures(
+def test_worker_loop_exits_after_exceeding_max_consecutive_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     leaf = ManagerLeaf(value=1)
@@ -963,10 +963,11 @@ def test_worker_loop_exits_after_max_consecutive_failures(
         max_consecutive_failures=2,
     )
 
-    assert test_client.lease_calls == 2
+    assert test_client.lease_calls == 3
     assert [lease_id for lease_id, _request in test_client.results] == [
         "lease-1",
         "lease-2",
+        "lease-3",
     ]
     assert all(
         isinstance(request, JobFailedResult)

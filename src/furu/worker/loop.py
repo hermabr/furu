@@ -74,7 +74,7 @@ def worker_loop(
                     consecutive_failures += 1
                     if (
                         max_consecutive_failures is not None
-                        and consecutive_failures >= max_consecutive_failures
+                        and consecutive_failures > max_consecutive_failures
                     ):
                         return
             case unexpected:

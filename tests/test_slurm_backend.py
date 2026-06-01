@@ -601,7 +601,7 @@ def test_slurm_backend_rewrites_manager_url_to_worker_connect_host(
     script = script_path.read_text()
     assert "--server-url http://manager.cluster:4321" in script
     assert f"--idle-timeout {get_config().worker.idle_timeout_seconds}" in script
-    assert "--max-consecutive-failures" not in script
+    assert "--max-consecutive-failures 5" in script
     assert "http://0.0.0.0:4321" not in script
 
 
@@ -844,7 +844,7 @@ def test_slurm_backend_uses_default_poll_interval() -> None:
     assert backend.poll_interval == 10.0
     assert backend.manager_listen_host == "0.0.0.0"
     assert backend.worker_idle_timeout == get_config().worker.idle_timeout_seconds
-    assert backend.worker_max_consecutive_failures is None
+    assert backend.worker_max_consecutive_failures == 5
     assert backend.max_failed_restarts == get_config().worker.max_failed_restarts
 
 
