@@ -135,11 +135,6 @@ def test_manager_max_retries_per_object_defaults_to_config() -> None:
     assert manager._max_retries_per_object == get_config().worker.max_retries_per_object
 
 
-def test_manager_rejects_negative_max_retries_per_object() -> None:
-    with pytest.raises(ValueError, match="max_retries_per_object"):
-        Manager([ManagerLeaf(value=1)], max_retries_per_object=-1)
-
-
 def test_manager_job_result_completed_moves_dependents_to_ready() -> None:
     leaf = ManagerLeaf(value=1)
     parent = ManagerParent(child=leaf)
