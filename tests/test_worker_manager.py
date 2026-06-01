@@ -1014,6 +1014,124 @@ def test_worker_loop_exits_after_idle_timeout(
     assert test_client.lease_calls == 1
 
 
+def test_worker_loop_exits_after_exceeding_max_consecutive_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    leaf = ManagerLeaf(value=1)
+    jobs = [
+        Job(lease_id="lease-1", artifact=ArtifactSpec.from_furu(leaf)),
+        Job(lease_id="lease-2", artifact=ArtifactSpec.from_furu(leaf)),
+        Job(lease_id="lease-3", artifact=ArtifactSpec.from_furu(leaf)),
+    ]
+
+    class TestClient:
+        lease_calls: int
+        results: list[tuple[str, JobResultRequest]]
+
+        def __init__(self, server_url: str, *, auth_token: str) -> None:
+            self.lease_calls = 0
+            self.results = []
+
+        def lease_job(self, *, resources: ResourceRequest) -> LeaseJobResponse:
+            self.lease_calls += 1
+            return jobs.pop(0)
+
+        def job_result(self, lease_id: str, request: JobResultRequest) -> None:
+            self.results.append((lease_id, request))
+
+    def ensure_single_result(obj: Furu[object]) -> None:
+        raise RuntimeError("worker task failed")
+
+    test_client = TestClient("http://worker.test", auth_token="test-token")
+    monkeypatch.setattr(
+        api,
+        "WorkerApiClient",
+        lambda server_url, *, auth_token: test_client,
+    )
+    monkeypatch.setattr(
+        worker_loop_module, "_ensure_single_result", ensure_single_result
+    )
+
+    worker_loop(
+        server_url="http://worker.test",
+        auth_token="test-token",
+        resource_request=ResourceRequest(),
+        idle_timeout=get_config().worker.idle_timeout_seconds,
+        max_consecutive_failures=2,
+    )
+
+    assert test_client.lease_calls == 3
+    assert [lease_id for lease_id, _request in test_client.results] == [
+        "lease-1",
+        "lease-2",
+        "lease-3",
+    ]
+    assert all(
+        isinstance(request, JobFailedResult)
+        for _lease_id, request in test_client.results
+    )
+
+
+def test_worker_loop_resets_consecutive_failures_after_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    leaf = ManagerLeaf(value=1)
+    leases: list[LeaseJobResponse] = [
+        Job(lease_id="lease-1", artifact=ArtifactSpec.from_furu(leaf)),
+        Job(lease_id="lease-2", artifact=ArtifactSpec.from_furu(leaf)),
+        Job(lease_id="lease-3", artifact=ArtifactSpec.from_furu(leaf)),
+        "stop",
+    ]
+
+    class TestClient:
+        lease_calls: int
+        results: list[JobResultRequest]
+
+        def __init__(self, server_url: str, *, auth_token: str) -> None:
+            self.lease_calls = 0
+            self.results = []
+
+        def lease_job(self, *, resources: ResourceRequest) -> LeaseJobResponse:
+            self.lease_calls += 1
+            return leases.pop(0)
+
+        def job_result(self, lease_id: str, request: JobResultRequest) -> None:
+            self.results.append(request)
+
+    calls = 0
+
+    def ensure_single_result(obj: Furu[object]) -> None:
+        nonlocal calls
+        calls += 1
+        if calls in (1, 3):
+            raise RuntimeError("worker task failed")
+
+    test_client = TestClient("http://worker.test", auth_token="test-token")
+    monkeypatch.setattr(
+        api,
+        "WorkerApiClient",
+        lambda server_url, *, auth_token: test_client,
+    )
+    monkeypatch.setattr(
+        worker_loop_module, "_ensure_single_result", ensure_single_result
+    )
+
+    worker_loop(
+        server_url="http://worker.test",
+        auth_token="test-token",
+        resource_request=ResourceRequest(),
+        idle_timeout=get_config().worker.idle_timeout_seconds,
+        max_consecutive_failures=2,
+    )
+
+    assert test_client.lease_calls == 4
+    assert [result.status for result in test_client.results] == [
+        "failed",
+        "completed",
+        "failed",
+    ]
+
+
 def test_worker_loop_does_not_swallow_keyboard_interrupt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
