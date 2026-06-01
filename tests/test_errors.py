@@ -14,9 +14,9 @@ class SubtractPositive(Furu[int]):
 
 
 def test_subtract_positive():
-    assert SubtractPositive(a=5, b=3).load_or_create() == 2
+    assert SubtractPositive(a=5, b=3).create() == 2
 
 
 def test_subtract_negative():
     with pytest.raises(AssertionError):
-        SubtractPositive(a=-5, b=3).load_or_create()
+        SubtractPositive(a=-5, b=3).create()

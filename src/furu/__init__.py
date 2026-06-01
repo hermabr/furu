@@ -2,7 +2,6 @@ from importlib.metadata import version
 
 from furu.core import Furu
 from furu.dependencies import dependency
-from furu.execution import load_or_create
 from furu.logging import get_logger
 from furu.migration import Migration
 from furu.resources import ResourceRequirements
@@ -22,7 +21,6 @@ __all__ = [
     "ResultCodec",
     "ResultRegistry",
     "get_logger",
-    "load_or_create",
     "save_as",
     "validate",
 ]

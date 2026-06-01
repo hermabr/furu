@@ -28,7 +28,7 @@ class Mid(Furu[str]):
     child: Leaf
 
     def create(self) -> str:
-        return f"mid:{self.label}:{self.child.load_or_create()}"
+        return f"mid:{self.label}:{self.child.create()}"
 
 
 class Top(Furu[str]):
@@ -50,7 +50,7 @@ class NestedParent(Furu[str]):
     bundle: LeafBundle
 
     def create(self) -> str:
-        return self.bundle.a.load_or_create()
+        return self.bundle.a.create()
 
 
 class ComputedParent(Furu[str]):
@@ -61,7 +61,7 @@ class ComputedParent(Furu[str]):
         return Leaf(name=f"computed-{self.name}")
 
     def create(self) -> str:
-        return self.computed_child.load_or_create()
+        return self.computed_child.create()
 
 
 @contextmanager
@@ -154,7 +154,7 @@ def test_add_to_dag_shared_dependency_has_multiple_dependents():
 def test_add_to_dag_stops_recursion_at_completed_objects():
     leaf = Leaf(name="cached")
     mid = Mid(label="m", child=leaf)
-    leaf.load_or_create()
+    leaf.create()
     assert leaf.status() == "completed"
 
     manager = Manager([mid])
@@ -171,7 +171,7 @@ def test_add_to_dag_stops_recursion_at_completed_objects():
 def test_add_to_dag_completed_root_has_no_dependencies():
     leaf = Leaf(name="root-cached")
     mid = Mid(label="m", child=leaf)
-    mid.load_or_create()
+    mid.create()
     assert mid.status() == "completed"
 
     manager = Manager([mid])
@@ -285,7 +285,7 @@ class TrackingMid(Furu[int]):
 
     def create(self) -> int:
         type(self).create_calls.append(self.label)
-        return self.child.load_or_create() + 1
+        return self.child.create() + 1
 
 
 class LazyChildLoader(Furu[int]):
@@ -294,7 +294,7 @@ class LazyChildLoader(Furu[int]):
 
     def create(self) -> int:
         type(self).create_calls.append(self.base)
-        return self.base + TrackingLeaf(n=self.base).load_or_create()
+        return self.base + TrackingLeaf(n=self.base).create()
 
 
 class AlwaysFails(Furu[int]):
@@ -309,7 +309,7 @@ class DependsOnFailing(Furu[int]):
     child: AlwaysFails
 
     def create(self) -> int:
-        return self.child.load_or_create() + 1
+        return self.child.create() + 1
 
 
 @pytest.fixture(autouse=True)
@@ -326,7 +326,7 @@ def test_manager_run_runs_single_zero_dependency_node():
 
     assert TrackingLeaf.create_calls == [3]
     assert leaf.status() == "completed"
-    assert leaf.load_or_create() == 6
+    assert leaf.create() == 6
 
 
 def test_manager_run_runs_static_dependencies_in_order():
@@ -337,7 +337,7 @@ def test_manager_run_runs_static_dependencies_in_order():
 
     assert TrackingLeaf.create_calls == [4]
     assert TrackingMid.create_calls == ["m"]
-    assert mid.load_or_create() == 9
+    assert mid.create() == 9
 
 
 def test_manager_run_handles_shared_dependency_only_once():
@@ -370,19 +370,19 @@ def test_manager_run_discovers_lazy_dependencies_and_reruns_parent():
     # Parent's create() is called once to discover the lazy dep (raising
     # _DependencyNotReady), then once more after the dep completes.
     assert LazyChildLoader.create_calls == [7, 7]
-    assert parent.load_or_create() == 21
+    assert parent.create() == 21
     parent_log = run_log_path_in(parent._base_dir).read_text(encoding="utf-8")
     assert (
-        "load_or_create deferred: load_or_create discovered 1 missing dependency/dependencies"
+        "create deferred: create discovered 1 missing dependency/dependencies"
         in parent_log
     )
-    assert "load_or_create failed" not in parent_log
+    assert "create failed" not in parent_log
     assert "=== Debug Details (with locals) ===" not in parent_log
 
 
 def test_manager_run_skips_already_completed_objects():
     leaf = TrackingLeaf(n=8)
-    leaf.load_or_create()
+    leaf.create()
     TrackingLeaf.create_calls.clear()
     mid = TrackingMid(label="cached-child", child=leaf)
 

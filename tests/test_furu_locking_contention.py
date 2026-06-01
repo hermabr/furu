@@ -5,9 +5,10 @@ import time
 from multiprocessing import get_context
 from pathlib import Path
 
-from furu import Furu, load_or_create
+from furu import Furu
 import furu.config as furu_config
 from furu.config import _FuruConfig, _FuruDirectories
+from furu.execution import _load_or_create
 from furu.locking import DEFAULT_ACQUIRE_POLL_INTERVAL_S
 from furu.result import load_result_bundle
 
@@ -65,7 +66,7 @@ def _worker(data_dir: str, start_evt, out_q) -> None:
     out_q.put(("ready", os.getpid()))
     start_evt.wait()
     try:
-        value = obj.load_or_create()
+        value = obj.create()
         out_q.put(("ok", os.getpid(), value))
     except RuntimeError as exc:
         out_q.put(("err", os.getpid(), type(exc).__name__))
@@ -77,7 +78,7 @@ def _batch_worker(data_dir: str, keys: list[int], start_evt, out_q) -> None:
     out_q.put(("ready", os.getpid()))
     start_evt.wait()
     try:
-        values = load_or_create(objs)
+        values = _load_or_create(objs)
         out_q.put(("ok", os.getpid(), values))
     except BaseException as exc:
         out_q.put(("err", os.getpid(), type(exc).__name__, str(exc)))
@@ -96,7 +97,7 @@ def _takeover_worker(
         release_path=release_path,
     )
     try:
-        value = obj.load_or_create()
+        value = obj.create()
         out_q.put(("ok", os.getpid(), value))
     except BaseException as exc:
         out_q.put(("err", os.getpid(), type(exc).__name__, str(exc)))
@@ -252,6 +253,6 @@ def test_lock_is_taken_over_mid_create(tmp_path):
     run_logs = list(data_dir.glob("**/run.log"))
     assert len(run_logs) == 1
     log_text = run_logs[0].read_text(encoding="utf-8")
-    assert "load_or_create failed" in log_text
+    assert "create failed" in log_text
     assert "before writing final result" in log_text
     assert "=== Debug Details (with locals) ===" in log_text

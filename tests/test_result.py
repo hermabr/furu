@@ -71,7 +71,7 @@ def test_json_only_bundle_round_trips() -> None:
         "items": [1, 2, None, "x"],
     }
 
-    result = obj.load_or_create()
+    result = obj.create()
     assert result == expected
 
     assert result_manifest_path_in(obj._base_dir).exists()
@@ -92,8 +92,8 @@ def test_json_only_cache_hit_does_not_recompute() -> None:
         "items": [1, 2, None, "x"],
     }
 
-    assert obj.load_or_create() == expected
-    assert obj.load_or_create() == expected
+    assert obj.create() == expected
+    assert obj.create() == expected
     assert len(JsonResult.create_calls) == 1
 
 
@@ -102,7 +102,7 @@ def test_status_is_completed_after_first_run() -> None:
     obj = JsonResult()
 
     assert obj.status() == "missing"
-    obj.load_or_create()
+    obj.create()
     assert obj.status() == "completed"
 
 
@@ -110,7 +110,7 @@ def test_try_load_returns_persisted_result() -> None:
     JsonResult.create_calls.clear()
     obj = JsonResult()
 
-    obj.load_or_create()
+    obj.create()
 
     assert obj.try_load() == {
         "metrics": {"loss": 0.12, "ok": True},
@@ -126,7 +126,7 @@ class ScalarResult(Furu[int]):
 def test_scalar_root_manifest_is_just_the_value() -> None:
     obj = ScalarResult()
 
-    assert obj.load_or_create() == 5
+    assert obj.create() == 5
     text = result_manifest_path_in(obj._base_dir).read_text()
     assert json.loads(text) == 5
 
@@ -142,7 +142,7 @@ class PathResult(Furu[dict[str, Path]]):
 def test_path_values_round_trip() -> None:
     obj = PathResult()
 
-    result = obj.load_or_create()
+    result = obj.create()
 
     assert result == {
         "relative": Path("outputs/model.bin"),
@@ -226,7 +226,7 @@ class NonFiniteFloatResult(Furu[dict[str, float]]):
 
 def test_non_finite_floats_round_trip() -> None:
     obj = NonFiniteFloatResult()
-    result = obj.load_or_create()
+    result = obj.create()
 
     assert math.isnan(result["nan"])
     assert result["pos_inf"] == float("inf")
@@ -409,7 +409,7 @@ class StrictAnnotatedArrayResult(Furu[StrictAnnotatedArrayOutput]):
 
 def test_annotated_codec_selects_external_artifact() -> None:
     obj = AnnotatedArrayResult()
-    loaded = obj.load_or_create()
+    loaded = obj.create()
 
     assert isinstance(loaded, AnnotatedArrayOutput)
     assert np.array_equal(loaded.weights, np.arange(3, dtype=np.int64))
@@ -422,12 +422,12 @@ def test_generic_furu_base_with_annotated_result_codec_is_rejected() -> None:
     obj = GenericAnnotatedArrayResult()
 
     with pytest.raises(TypeError, match="concrete result type directly as Furu"):
-        obj.load_or_create()
+        obj.create()
 
 
 def test_strict_pydantic_annotated_codec_selects_external_artifact() -> None:
     obj = StrictAnnotatedArrayResult()
-    loaded = obj.load_or_create()
+    loaded = obj.create()
 
     assert isinstance(loaded, StrictAnnotatedArrayOutput)
     assert np.array_equal(loaded.weights, np.arange(3, dtype=np.int64))
@@ -435,7 +435,7 @@ def test_strict_pydantic_annotated_codec_selects_external_artifact() -> None:
         result_dir_in(obj._base_dir) / "artifacts" / "weights" / "data.npy"
     ).exists()
 
-    loaded_again = obj.load_or_create()
+    loaded_again = obj.create()
     assert isinstance(loaded_again, StrictAnnotatedArrayOutput)
     assert np.array_equal(loaded_again.weights, np.arange(3, dtype=np.int64))
 
@@ -464,20 +464,20 @@ class LazySaveAsArrayResult(Furu[LazySaveAsOutput]):
 
 def test_save_as_selects_codec_and_does_not_leak_wrapper() -> None:
     obj = SaveAsArrayResult()
-    loaded = obj.load_or_create()
+    loaded = obj.create()
 
     assert isinstance(loaded, SaveAsOutput)
     assert np.array_equal(loaded.weights, np.arange(4))
     assert type(loaded.weights).__name__ != "_SaveAs"
 
-    loaded_again = obj.load_or_create()
+    loaded_again = obj.create()
     assert isinstance(loaded_again, SaveAsOutput)
     assert np.array_equal(loaded_again.weights, np.arange(4))
 
 
 def test_save_as_inside_lazy_result_does_not_leak_wrapper() -> None:
     obj = LazySaveAsArrayResult()
-    loaded = obj.load_or_create()
+    loaded = obj.create()
 
     assert isinstance(loaded, LazySaveAsOutput)
     assert isinstance(loaded.weights, LazyResult)
@@ -485,7 +485,7 @@ def test_save_as_inside_lazy_result_does_not_leak_wrapper() -> None:
     assert np.array_equal(loaded.weights.load(), np.arange(4))
     assert type(loaded.weights.load()).__name__ != "_SaveAs"
 
-    loaded_again = obj.load_or_create()
+    loaded_again = obj.create()
     assert isinstance(loaded_again, LazySaveAsOutput)
     assert isinstance(loaded_again.weights, LazyResult)
     assert not loaded_again.weights.is_loaded
@@ -507,7 +507,7 @@ class ConflictingSaveAsResult(Furu[ConflictingSaveAsOutput]):
 
 def test_save_as_conflicts_with_annotated_codec() -> None:
     with pytest.raises(TypeError, match="Conflicting codecs"):
-        ConflictingSaveAsResult().load_or_create()
+        ConflictingSaveAsResult().create()
 
 
 class RegistryCountingResult(Furu[_CountingValue]):
@@ -524,13 +524,13 @@ def test_task_result_registry_is_used_for_save_inference_only() -> None:
     _CountingCodec.load_calls = 0
     obj = RegistryCountingResult()
 
-    loaded = obj.load_or_create()
+    loaded = obj.create()
     assert isinstance(loaded, _CountingValue)
     assert loaded.value == 8
     assert _CountingCodec.dump_calls == 1
     assert _CountingCodec.load_calls == 0
 
-    loaded_again = obj.load_or_create()
+    loaded_again = obj.create()
     assert isinstance(loaded_again, _CountingValue)
     assert loaded_again.value == 8
     assert _CountingCodec.load_calls == 1
@@ -615,7 +615,7 @@ class DataclassResult(Furu[TrainOutput]):
 
 def test_dataclass_round_trip() -> None:
     obj = DataclassResult()
-    loaded = obj.load_or_create()
+    loaded = obj.create()
     assert isinstance(loaded, TrainOutput)
     assert loaded == TrainOutput(metrics={"loss": 0.12}, values=[1, 2, 3])
 
@@ -713,7 +713,7 @@ class NestedDataclassResult(Furu[NestedOuter]):
 
 def test_nested_dataclass_round_trip() -> None:
     obj = NestedDataclassResult()
-    loaded = obj.load_or_create()
+    loaded = obj.create()
     assert isinstance(loaded, NestedOuter)
     assert isinstance(loaded.inner, NestedInner)
     assert loaded == NestedOuter(inner=NestedInner(value=42), label="root")
@@ -732,7 +732,7 @@ class PydanticResult(Furu[TrainOutputModel]):
 
 def test_pydantic_round_trip() -> None:
     obj = PydanticResult()
-    loaded = obj.load_or_create()
+    loaded = obj.create()
     assert isinstance(loaded, TrainOutputModel)
     assert loaded.metrics == {"loss": 0.12}
     assert loaded.values == [1, 2, 3]
@@ -802,7 +802,7 @@ class NestedPydanticResult(Furu[NestedPydanticOuter]):
 
 def test_pydantic_with_nested_structures_round_trips() -> None:
     obj = NestedPydanticResult()
-    loaded = obj.load_or_create()
+    loaded = obj.create()
     assert isinstance(loaded, NestedPydanticOuter)
     assert loaded.metrics == {"loss": 0.12, "accuracy": 0.94}
     assert loaded.items == [{"v": 1}, {"v": 2}, {"v": 3}]
@@ -828,7 +828,7 @@ class MemmapNumpyResult(Furu[Annotated[Any, _MemmapNumpyNpyCodec]]):
 
 def test_numpy_array_round_trips() -> None:
     obj = NumpyResult()
-    loaded = obj.load_or_create()
+    loaded = obj.create()
 
     assert (
         result_dir_in(obj._base_dir) / "artifacts" / "weights" / "data.npy"
@@ -850,8 +850,8 @@ def test_codec_can_force_load_after_dump_for_cache_miss_consistency() -> None:
     obj = MemmapNumpyResult()
     expected_file = result_dir_in(obj._base_dir) / "artifacts" / "root" / "data.npy"
 
-    first = obj.load_or_create()
-    second = obj.load_or_create()
+    first = obj.create()
+    second = obj.create()
 
     assert isinstance(first, np.memmap)
     assert isinstance(second, np.memmap)
@@ -868,7 +868,7 @@ class PolarsResult(Furu[dict[str, object]]):
 
 def test_polars_dataframe_round_trips() -> None:
     obj = PolarsResult()
-    loaded = obj.load_or_create()
+    loaded = obj.create()
 
     assert (
         result_dir_in(obj._base_dir) / "artifacts" / "frame" / "data.parquet"
@@ -906,7 +906,7 @@ class NestedNumpyResult(Furu[dict[str, list[dict[str, object]]]]):
 
 def test_nested_numpy_paths_use_list_length_padded_indexes() -> None:
     obj = NestedNumpyResult()
-    loaded = obj.load_or_create()
+    loaded = obj.create()
 
     layers_dir = result_dir_in(obj._base_dir) / "artifacts" / "layers"
     for i in range(10):
@@ -966,7 +966,7 @@ class MixedResult(Furu[dict[str, object]]):
 
 def test_mixed_dataclass_external_and_json_round_trip() -> None:
     obj = MixedResult()
-    loaded = obj.load_or_create()
+    loaded = obj.create()
 
     assert isinstance(loaded, dict)
     inner = loaded["result"]

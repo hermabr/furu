@@ -70,12 +70,17 @@ class Furu[T](_FuruDataclassTransform, ABC):
         validate_cls(cls)
         if "__dataclass_params__" not in cls.__dict__:
             dataclass(frozen=True, kw_only=True)(cls)
-        from furu.execution import _install_create_guards, _resolve_create_mode
+        from furu.execution import _install_create_dispatchers, _resolve_create_mode
 
         cls._furu_create_mode = _resolve_create_mode(cls)
-        _install_create_guards(cls)
+        _install_create_dispatchers(cls)
 
     def create(self) -> T:
+        from furu.execution import _is_direct_create_object, _load_or_create
+
+        if not _is_direct_create_object(self):
+            return _load_or_create(self)
+
         raise NotImplementedError(
             f"{type(self).__name__} must implement create() or create_batched()"
         )
@@ -123,10 +128,10 @@ class Furu[T](_FuruDataclassTransform, ABC):
         )
 
     @final
-    def load_or_create(self, use_lock: bool = True) -> T:
-        from furu.execution import load_or_create
+    def _load_or_create(self, use_lock: bool = True) -> T:
+        from furu.execution import _load_or_create
 
-        return load_or_create(self, use_lock=use_lock)
+        return _load_or_create(self, use_lock=use_lock)
 
     @final
     def try_load(self) -> T:  # TODO: make a better name for this
@@ -147,8 +152,8 @@ class Furu[T](_FuruDataclassTransform, ABC):
             )
         raise RuntimeError(
             f"{self._log_label}.try_load() could not find a result. "
-            "try_load() only loads existing results; use load_or_create() to "
-            "compute missing results."
+            "try_load() only loads existing results; use create() to compute "
+            "missing results."
         )
 
     @final

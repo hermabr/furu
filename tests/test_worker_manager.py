@@ -92,14 +92,14 @@ class ManagerParent(Furu[int]):
     child: ManagerLeaf
 
     def create(self) -> int:
-        return self.child.load_or_create() + 1
+        return self.child.create() + 1
 
 
 class ManagerLazyParent(Furu[int]):
     value: int
 
     def create(self) -> int:
-        return ManagerLeaf(value=self.value).load_or_create() + 1
+        return ManagerLeaf(value=self.value).create() + 1
 
 
 def test_manager_init_partitions_ready_and_blocked() -> None:
@@ -201,7 +201,7 @@ def test_manager_job_result_blocked_discovers_lazy_dependency_and_reruns_parent(
 def test_manager_job_result_blocked_ignores_completed_lazy_dependency() -> None:
     parent = ManagerLazyParent(value=2)
     dependency = ManagerLeaf(value=2)
-    dependency.load_or_create()
+    dependency.create()
     manager = Manager([parent])
 
     parent_job = manager.lease_job(resources=ANY_RESOURCES)
@@ -373,7 +373,7 @@ def test_manager_run_retries_failed_worker_result() -> None:
     assert FlakyManagerLeaf.attempts_by_value == {value: 2}
     assert manager.failed == {}
     assert set(manager.completed) == {leaf.object_id}
-    assert leaf.load_or_create() == value
+    assert leaf.create() == value
 
 
 class GpuLeaf(Furu[int]):
@@ -422,7 +422,7 @@ class DynamicGpuAfterSeed(Furu[int]):
 
     def create(self) -> int:
         type(self).create_calls.append(self.value)
-        return self.parent.load_or_create() + self.value
+        return self.parent.create() + self.value
 
 
 class DynamicCpuAfterGpu(Furu[int]):
@@ -436,7 +436,7 @@ class DynamicCpuAfterGpu(Furu[int]):
 
     def create(self) -> int:
         type(self).create_calls.append(self.value)
-        return self.parent.load_or_create() + self.value
+        return self.parent.create() + self.value
 
 
 class DynamicGpuAfterCpu(Furu[int]):
@@ -450,7 +450,7 @@ class DynamicGpuAfterCpu(Furu[int]):
 
     def create(self) -> int:
         type(self).create_calls.append(self.value)
-        return self.parent.load_or_create() + self.value
+        return self.parent.create() + self.value
 
 
 def test_count_satisfiable_jobs_caps_at_max_workers_and_filters_by_requirements() -> (
@@ -524,7 +524,7 @@ def test_manager_run_dynamically_allocates_local_workers_for_later_resource_stag
     assert DynamicGpuAfterSeed.create_calls == [20]
     assert DynamicCpuAfterGpu.create_calls == [30]
     assert sorted(DynamicGpuAfterCpu.create_calls) == [0, 1, 2, 3]
-    assert [obj.load_or_create() for obj in final_gpus] == [
+    assert [obj.create() for obj in final_gpus] == [
         seed_value + 50 + value for value in range(4)
     ]
 
@@ -748,7 +748,7 @@ def test_manager_run_uses_worker_backend() -> None:
     Manager([leaf]).run(worker_backends=(backend,))
 
     assert leaf.status() == "completed"
-    assert leaf.load_or_create() == 11
+    assert leaf.create() == 11
     assert len(backend.server_urls) == 1
     assert backend.server_urls[0].startswith("http://0.0.0.0:")
     assert len(backend.auth_tokens) == 1

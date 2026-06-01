@@ -90,7 +90,7 @@ def test_migrate_no_matching_source_returns_false() -> None:
 
 def test_migrate_with_matching_old_artifact_writes_result_link() -> None:
     old = _OldRun(learning_rate=0.001, dataset="cifar10")
-    assert old.load_or_create() == {"dataset": "cifar10", "learning_rate": "0.001"}
+    assert old.create() == {"dataset": "cifar10", "learning_rate": "0.001"}
 
     new = _NewRun(dataset="cifar10", lr=0.001)
     assert new.is_migrated() is False
@@ -113,13 +113,13 @@ def test_migrate_with_matching_old_artifact_writes_result_link() -> None:
 
 def test_migrate_loads_result_through_link() -> None:
     old = _OldRun(learning_rate=0.001, dataset="cifar10")
-    old.load_or_create()
+    old.create()
     _COUNTER.calls = 0
 
     new = _NewRun(dataset="cifar10", lr=0.001)
     assert new.migrate() is True
 
-    assert new.load_or_create() == {
+    assert new.create() == {
         "dataset": "cifar10",
         "learning_rate": "0.001",
     }
@@ -130,7 +130,7 @@ def test_migrate_loads_result_through_link() -> None:
 
 def test_migrate_returns_true_when_already_migrated() -> None:
     old = _OldRun(learning_rate=0.001, dataset="cifar10")
-    old.load_or_create()
+    old.create()
 
     new = _NewRun(dataset="cifar10", lr=0.001)
     assert new.migrate() is True
@@ -139,7 +139,7 @@ def test_migrate_returns_true_when_already_migrated() -> None:
 
 def test_migrate_raises_when_existing_link_source_is_missing() -> None:
     old = _OldRun(learning_rate=0.001, dataset="cifar10")
-    old.load_or_create()
+    old.create()
 
     new = _NewRun(dataset="cifar10", lr=0.001)
     assert new.migrate() is True
@@ -154,16 +154,16 @@ def test_migrate_raises_when_existing_link_source_is_missing() -> None:
 
 def test_migrate_returns_false_when_already_has_direct_result() -> None:
     new = _NewRun(dataset="cifar10", lr=0.001)
-    new.load_or_create()
+    new.create()
     assert new.migrate() is False
     assert not result_link_path_in(new._base_dir).exists()
 
 
-def test_load_or_create_does_not_call_migrate(
+def test_create_does_not_call_migrate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     old = _OldRun(learning_rate=0.001, dataset="cifar10")
-    old.load_or_create()
+    old.create()
     _COUNTER.calls = 0
 
     migrate_calls = 0
@@ -177,7 +177,7 @@ def test_load_or_create_does_not_call_migrate(
     monkeypatch.setattr(furu.migration, "migrate", spy_migrate)
 
     new = _NewRun(dataset="cifar10", lr=0.001)
-    new.load_or_create()
+    new.create()
     assert migrate_calls == 0
     assert _COUNTER.calls == 1
     assert not result_link_path_in(new._base_dir).exists()
@@ -185,7 +185,7 @@ def test_load_or_create_does_not_call_migrate(
 
 def test_status_treats_migrated_object_as_completed() -> None:
     old = _OldRun(learning_rate=0.001, dataset="cifar10")
-    old.load_or_create()
+    old.create()
 
     new = _NewRun(dataset="cifar10", lr=0.001)
     assert new.status() == "missing"
@@ -260,7 +260,7 @@ def _mid_to_final(fields: dict[str, JsonValue]) -> dict[str, JsonValue]:
 
 def test_multi_hop_migration_points_directly_at_ultimate_source() -> None:
     old = _OldRun(learning_rate=0.001, dataset="cifar10")
-    old.load_or_create()
+    old.create()
 
     mid = _MidRun(dataset="cifar10", lr=0.001)
     assert mid.migrate() is True
@@ -277,7 +277,7 @@ def test_multi_hop_migration_points_directly_at_ultimate_source() -> None:
         final._artifact_schema_hash,
     ]
 
-    assert final.load_or_create() == {
+    assert final.create() == {
         "dataset": "cifar10",
         "learning_rate": "0.001",
     }
@@ -285,7 +285,7 @@ def test_multi_hop_migration_points_directly_at_ultimate_source() -> None:
 
 def test_multi_hop_works_without_intermediate_migrate() -> None:
     old = _OldRun(learning_rate=0.001, dataset="cifar10")
-    old.load_or_create()
+    old.create()
 
     final = _FinalRun(dataset="cifar10", lr=0.001)
     assert final.migrate() is True
@@ -298,14 +298,14 @@ def test_multi_hop_works_without_intermediate_migrate() -> None:
     ]
 
 
-def test_load_or_create_post_lock_check_uses_result_link(
+def test_create_post_lock_check_uses_result_link(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from contextlib import contextmanager
     from pathlib import Path
 
     old = _OldRun(learning_rate=0.001, dataset="cifar10")
-    old.load_or_create()
+    old.create()
 
     new = _NewRun(dataset="cifar10", lr=0.001)
 
@@ -318,5 +318,5 @@ def test_load_or_create_post_lock_check_uses_result_link(
     monkeypatch.setattr(execution_module, "lock_many", fake_lock_many)
 
     _COUNTER.calls = 0
-    assert new.load_or_create() == {"dataset": "cifar10", "learning_rate": "0.001"}
+    assert new.create() == {"dataset": "cifar10", "learning_rate": "0.001"}
     assert _COUNTER.calls == 0
