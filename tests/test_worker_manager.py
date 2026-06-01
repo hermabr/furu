@@ -76,6 +76,18 @@ class ManagerLeaf(Furu[int]):
         return self.value
 
 
+class FlakyManagerLeaf(Furu[int]):
+    value: int
+    attempts_by_value: ClassVar[dict[int, int]] = {}
+
+    def create(self) -> int:
+        attempts = type(self).attempts_by_value.get(self.value, 0) + 1
+        type(self).attempts_by_value[self.value] = attempts
+        if attempts == 1:
+            raise RuntimeError(f"temporary failure: {self.value}")
+        return self.value
+
+
 class ManagerParent(Furu[int]):
     child: ManagerLeaf
 
@@ -115,6 +127,12 @@ def test_manager_executor_id_is_stable_hash_of_root_object_tuple() -> None:
         manager.executor_dir
         == get_config().directories.executions / manager.executor_id
     )
+
+
+def test_manager_max_retries_per_object_defaults_to_config() -> None:
+    manager = Manager([ManagerLeaf(value=1)])
+
+    assert manager._max_retries_per_object == get_config().worker.max_retries_per_object
 
 
 def test_manager_job_result_completed_moves_dependents_to_ready() -> None:
@@ -258,7 +276,7 @@ def test_manager_uses_new_lease_when_blocked_job_is_released() -> None:
 
 def test_manager_job_result_failed_finishes_with_error() -> None:
     leaf = ManagerLeaf(value=1)
-    manager = Manager([leaf])
+    manager = Manager([leaf], max_retries_per_object=0)
     job = manager.lease_job(resources=ANY_RESOURCES)
     assert isinstance(job, Job)
 
@@ -267,6 +285,7 @@ def test_manager_job_result_failed_finishes_with_error() -> None:
     assert manager.running == {}
     assert set(manager.failed) == {leaf.object_id}
     failed_job = manager.failed[leaf.object_id]
+    assert failed_job.failed_attempts == 1
     assert isinstance(failed_job, FailedJob)
     assert failed_job.lease_id == job.lease_id
     assert failed_job.node.obj is leaf
@@ -277,6 +296,84 @@ def test_manager_job_result_failed_finishes_with_error() -> None:
     assert "furu manager finished with error" in log_text
     with pytest.raises(RuntimeError, match="failed jobs"):
         manager.raise_for_failure()
+
+
+def test_manager_job_result_failed_retries_before_finishing() -> None:
+    leaf = ManagerLeaf(value=1)
+    manager = Manager([leaf], max_retries_per_object=2)
+
+    first_job = manager.lease_job(resources=ANY_RESOURCES)
+    assert isinstance(first_job, Job)
+    manager.job_result(first_job.lease_id, JobFailedResult(error="boom 1"))
+
+    assert set(manager.failed) == {leaf.object_id}
+    failed_job = manager.failed[leaf.object_id]
+    assert failed_job.failed_attempts == 1
+    assert failed_job.lease_id == first_job.lease_id
+    assert failed_job.error == "boom 1"
+    assert set(manager.ready) == {leaf.object_id}
+    assert not manager.done.is_set()
+
+    second_job = manager.lease_job(resources=ANY_RESOURCES)
+    assert isinstance(second_job, Job)
+    assert second_job.lease_id != first_job.lease_id
+    manager.job_result(second_job.lease_id, JobFailedResult(error="boom 2"))
+
+    assert set(manager.failed) == {leaf.object_id}
+    failed_job = manager.failed[leaf.object_id]
+    assert failed_job.failed_attempts == 2
+    assert failed_job.lease_id == second_job.lease_id
+    assert failed_job.error == "boom 2"
+    assert set(manager.ready) == {leaf.object_id}
+    assert not manager.done.is_set()
+
+    third_job = manager.lease_job(resources=ANY_RESOURCES)
+    assert isinstance(third_job, Job)
+    manager.job_result(third_job.lease_id, JobFailedResult(error="boom 3"))
+
+    assert manager.running == {}
+    assert manager.ready == {}
+    assert set(manager.failed) == {leaf.object_id}
+    failed_job = manager.failed[leaf.object_id]
+    assert failed_job.failed_attempts == 3
+    assert failed_job.lease_id == third_job.lease_id
+    assert failed_job.error == "boom 3"
+    assert manager.done.is_set()
+
+
+def test_manager_job_result_failed_retry_can_later_complete() -> None:
+    leaf = ManagerLeaf(value=1)
+    manager = Manager([leaf], max_retries_per_object=1)
+
+    first_job = manager.lease_job(resources=ANY_RESOURCES)
+    assert isinstance(first_job, Job)
+    manager.job_result(first_job.lease_id, JobFailedResult(error="boom"))
+
+    failed_job = manager.failed[leaf.object_id]
+    assert failed_job.failed_attempts == 1
+    assert failed_job.lease_id == first_job.lease_id
+
+    retry_job = manager.lease_job(resources=ANY_RESOURCES)
+    assert isinstance(retry_job, Job)
+    manager.job_result(retry_job.lease_id, JobCompletedResult())
+
+    assert manager.failed == {}
+    assert set(manager.completed) == {leaf.object_id}
+    assert manager.done.is_set()
+
+
+def test_manager_run_retries_failed_worker_result() -> None:
+    FlakyManagerLeaf.attempts_by_value.clear()
+    value = uuid4().int
+    leaf = FlakyManagerLeaf(value=value)
+    manager = Manager([leaf], max_retries_per_object=1)
+
+    manager.run(worker_backends=(LocalThreadWorkerBackend(),))
+
+    assert FlakyManagerLeaf.attempts_by_value == {value: 2}
+    assert manager.failed == {}
+    assert set(manager.completed) == {leaf.object_id}
+    assert leaf.load_or_create() == value
 
 
 class GpuLeaf(Furu[int]):

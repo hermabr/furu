@@ -377,12 +377,14 @@ def test_manager_run_skips_already_completed_objects():
 def test_manager_run_records_worker_failures_and_blocked_dependents():
     failing = AlwaysFails(name="boom")
     parent = DependsOnFailing(label="p", child=failing)
-    manager = Manager([parent])
+    manager = Manager([parent], max_retries_per_object=0)
 
     with pytest.raises(RuntimeError, match="failed jobs"):
         manager.run(worker_backends=(LocalThreadWorkerBackend(),))
 
     assert failing.object_id in manager.failed
-    assert "intentional failure: boom" in manager.failed[failing.object_id].error
+    failed_job = manager.failed[failing.object_id]
+    assert failed_job.failed_attempts == 1
+    assert "intentional failure: boom" in failed_job.error
     assert parent.object_id in manager.blocked
     assert manager.done.is_set()

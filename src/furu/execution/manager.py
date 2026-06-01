@@ -40,13 +40,19 @@ class RunningJob:
 
 @dataclass(frozen=True, slots=True)
 class FailedJob:
+    failed_attempts: int
     lease_id: str
     node: DagNode
     error: str
 
 
 class Manager:
-    def __init__(self, objs: Sequence[Furu]) -> None:
+    def __init__(
+        self,
+        objs: Sequence[Furu],
+        *,
+        max_retries_per_object: int = get_config().worker.max_retries_per_object,
+    ) -> None:
         self.nodes_by_id: dict[str, DagNode] = {}
         self.ready: dict[str, DagNode] = {}
         self.blocked: dict[str, DagNode] = {}
@@ -56,6 +62,7 @@ class Manager:
         self.lock = threading.Lock()
         self.done = threading.Event()
         self._finish_error: str | None = None
+        self._max_retries_per_object = max_retries_per_object
 
         _add_to_dag(self, objs)
 
@@ -148,6 +155,7 @@ class Manager:
             running_job = self.running.pop(lease_id)
             match request:
                 case JobCompletedResult():
+                    self.failed.pop(running_job.node.obj.object_id, None)
                     self.completed[running_job.node.obj.object_id] = running_job.node
                     for dependent in tuple(running_job.node.dependents):
                         if running_job.node in dependent.dependencies:
@@ -168,15 +176,25 @@ class Manager:
                     )
 
                 case JobFailedResult(error=error):
-                    self.failed[running_job.node.obj.object_id] = FailedJob(
+                    object_id = running_job.node.obj.object_id
+                    previous_failed = self.failed.get(object_id)
+                    failed_attempts = (
+                        previous_failed.failed_attempts if previous_failed else 0
+                    ) + 1
+                    self.failed[object_id] = FailedJob(
+                        failed_attempts=failed_attempts,
                         lease_id=lease_id,
                         node=running_job.node,
                         error=error,
                     )
+                    if failed_attempts <= self._max_retries_per_object:
+                        self.ready[object_id] = running_job.node
                     logger.debug(
-                        "job failed: lease_id=%s object_id=%s error=%s",
+                        "job failed: lease_id=%s object_id=%s failed_attempts=%d max_retries=%d error=%s",
                         lease_id,
-                        running_job.node.obj.object_id,
+                        object_id,
+                        failed_attempts,
+                        self._max_retries_per_object,
                         error,
                     )
                 case JobBlockedResult(dependencies=dependencies):
@@ -223,19 +241,26 @@ class Manager:
         if self.done.is_set() or self.ready or self.running:
             return
 
-        if self.failed or self.blocked:
+        terminal_failed = {
+            object_id: record
+            for object_id, record in self.failed.items()
+            if record.failed_attempts > self._max_retries_per_object
+        }
+
+        if terminal_failed or self.blocked:
             parts: list[str] = []
-            if self.failed:
-                failed = ", ".join(sorted(self.failed))
+            if terminal_failed:
+                failed = ", ".join(sorted(terminal_failed))
                 parts.append(f"failed jobs: {failed}")
             if self.blocked:
                 blocked = ", ".join(sorted(self.blocked))
                 parts.append(f"blocked jobs: {blocked}")
-            if self.failed:
-                first_object_id = next(iter(sorted(self.failed)))
-                failed_job = self.failed[first_object_id]
+            if terminal_failed:
+                first_object_id = next(iter(sorted(terminal_failed)))
+                failed_job = terminal_failed[first_object_id]
                 parts.append(
                     f"first failure for {first_object_id} "
+                    f"after {failed_job.failed_attempts} failed attempts "
                     f"(lease {failed_job.lease_id}): {failed_job.error}"
                 )
             self._finish_error = "manager run could not complete; " + "; ".join(parts)
