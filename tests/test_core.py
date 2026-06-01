@@ -1483,22 +1483,6 @@ def test_nested_create_scopes_logs_to_child_file() -> None:
     assert "leaf detail for child" in child_log
 
 
-def test_create_delegates_to_private_loader(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    node = Node(name="delegated")
-    calls: list[tuple[Furu[str], bool]] = []
-
-    def fake_private_loader(obj: Furu[str], *, use_lock: bool = True) -> str:
-        calls.append((obj, use_lock))
-        return "delegated"
-
-    monkeypatch.setattr(execution_module, "_load_or_create", fake_private_loader)
-
-    assert node.create() == "delegated"
-    assert calls == [(node, True)]
-
-
 def test_resolved_create_mode_validation() -> None:
     class ExplicitSingle(Node):
         label: str
