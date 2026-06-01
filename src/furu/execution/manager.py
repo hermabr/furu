@@ -155,9 +155,8 @@ class Manager:
             running_job = self.running.pop(lease_id)
             match request:
                 case JobCompletedResult():
-                    object_id = running_job.node.obj.object_id
-                    self.failed.pop(object_id, None)
-                    self.completed[object_id] = running_job.node
+                    self.failed.pop(running_job.node.obj.object_id, None)
+                    self.completed[running_job.node.obj.object_id] = running_job.node
                     for dependent in tuple(running_job.node.dependents):
                         if running_job.node in dependent.dependencies:
                             dependent.dependencies.remove(running_job.node)
