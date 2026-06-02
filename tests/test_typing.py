@@ -31,9 +31,15 @@ class TypingParent(furu.Furu[str]):
         return [TypingChild()]
 
 
+@furu.furu_method
+def typed_letter_count(source: str, letter: str) -> int:
+    return source.count(letter)
+
+
 if TYPE_CHECKING:
     parent = TypingParent()
     assert_type(parent.cached_child, TypingChild)
     assert_type(parent.uncached_child, TypingChild)
     assert_type(parent.children, list[TypingChild])
     assert_type(parent.children[0], TypingChild)
+    assert_type(typed_letter_count(source="banana", letter="a"), furu.Furu[int])
