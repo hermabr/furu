@@ -812,6 +812,39 @@ def test_manager_run_writes_log_to_executor_dir() -> None:
     assert "furu manager finished successfully" in log_text
 
 
+def test_manager_run_returns_when_all_objects_are_already_completed() -> None:
+    class UnexpectedBackend:
+        manager_listen_host = "127.0.0.1"
+
+        def start_pool(
+            self,
+            *,
+            server_url: str,
+            auth_token: str,
+            executor_dir: Path,
+        ) -> LocalThreadWorkerPool:
+            raise AssertionError("manager started workers with no runnable objects")
+
+    leaf = ManagerLeaf(value=15)
+    leaf.create()
+    manager = Manager([leaf])
+
+    assert manager.nodes_by_id == {}
+
+    manager.run(worker_backends=(UnexpectedBackend(),))
+
+    assert manager.done.is_set()
+    assert manager.ready == {}
+    assert manager.blocked == {}
+    assert manager.running == {}
+    assert manager.failed == {}
+
+    log_text = manager_log_path_in(manager.executor_dir).read_text(encoding="utf-8")
+    assert "all objects already exist; no manager work to run" in log_text
+    assert "manager server listening" not in log_text
+    assert "furu manager finished successfully" in log_text
+
+
 def test_manager_run_starts_backend_pool_and_stops_and_joins_when_done() -> None:
     class RecordingDone:
         def __init__(self) -> None:
