@@ -255,27 +255,27 @@ class PydanticFields(Furu[None]):
         return None
 
 
-@furu.furu_method
+@furu.function
 def letter_count(source: str, letter: str) -> int:
     return source.count(letter)
 
 
-@furu.furu_method
+@furu.function
 def letter_count_with_default(source: str, letter: str = "a") -> int:
     return source.count(letter)
 
 
-@furu.furu_method
+@furu.function
 def letter_count_without_return_annotation(source: str, letter: str):
     return source.count(letter)
 
 
-@furu.furu_method
+@furu.function
 def letter_count_with_untyped_source(source, letter: str) -> int:
     return source.count(letter)
 
 
-@furu.furu_method()
+@furu.function()
 def letter_count_with_parentheses(source: str, letter: str) -> int:
     return source.count(letter)
 
@@ -539,7 +539,7 @@ def test_frozen_dataclass_inheritance():
             obj.a = 3  # ty: ignore[invalid-assignment]
 
 
-def test_furu_method_creates_furu_object_from_function_signature():
+def test_function_creates_furu_object_from_function_signature():
     obj = letter_count.as_furu("banana", "a")
 
     assert isinstance(obj, Furu)
@@ -555,7 +555,7 @@ def test_furu_method_creates_furu_object_from_function_signature():
         obj.source = "orange"  # ty: ignore[invalid-assignment]
 
 
-def test_furu_method_supports_defaults_and_artifact_round_trip():
+def test_function_supports_defaults_and_artifact_round_trip():
     obj = letter_count_with_default.as_furu("banana")
 
     assert getattr(obj, "letter") == "a"
@@ -565,12 +565,12 @@ def test_furu_method_supports_defaults_and_artifact_round_trip():
     assert _from_json(obj._artifact_data) == obj
 
 
-def test_furu_method_allows_missing_return_annotation():
+def test_function_allows_missing_return_annotation():
     assert letter_count_without_return_annotation("banana", "n") == 2
     assert letter_count_without_return_annotation.as_furu("banana", "n").create() == 2
 
 
-def test_furu_method_defaults_unannotated_parameters_to_any():
+def test_function_defaults_unannotated_parameters_to_any():
     obj = letter_count_with_untyped_source.as_furu("banana", "a")
 
     assert letter_count_with_untyped_source("banana", "a") == 3
@@ -582,7 +582,7 @@ def test_furu_method_defaults_unannotated_parameters_to_any():
     assert _from_json(obj._artifact_data) == obj
 
 
-def test_furu_method_supports_parenthesized_decorator():
+def test_function_supports_parenthesized_decorator():
     obj = letter_count_with_parentheses.as_furu("banana", "n")
 
     assert isinstance(obj, Furu)
@@ -594,13 +594,13 @@ def test_furu_method_supports_parenthesized_decorator():
     assert _from_json(obj._artifact_data) == obj
 
 
-def test_furu_method_rejects_variadic_parameters():
+def test_function_rejects_variadic_parameters():
     with pytest.raises(
         TypeError,
         match=r"variadic_letter_count\.sources",
     ):
 
-        @furu.furu_method
+        @furu.function
         def variadic_letter_count(*sources: str) -> int:
             return sum(source.count("a") for source in sources)
 

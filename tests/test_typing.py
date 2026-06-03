@@ -31,12 +31,12 @@ class TypingParent(furu.Furu[str]):
         return [TypingChild()]
 
 
-@furu.furu_method
+@furu.function
 def typed_letter_count(source: str, letter: str) -> int:
     return source.count(letter)
 
 
-@furu.furu_method()
+@furu.function()
 def typed_letter_count_with_parentheses(source: str, letter: str) -> int:
     return source.count(letter)
 

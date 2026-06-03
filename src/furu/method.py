@@ -16,25 +16,25 @@ class FuruFunction[**P, T](Protocol):
 
 
 @overload
-def furu_method[**P, T](func: Callable[P, T]) -> FuruFunction[P, T]: ...
+def function[**P, T](func: Callable[P, T]) -> FuruFunction[P, T]: ...
 
 
 @overload
-def furu_method[**P, T]() -> Callable[[Callable[P, T]], FuruFunction[P, T]]: ...
+def function[**P, T]() -> Callable[[Callable[P, T]], FuruFunction[P, T]]: ...
 
 
-def furu_method[**P, T](
+def function[**P, T](
     func: Callable[P, T] | None = None,
 ) -> FuruFunction[P, T] | Callable[[Callable[P, T]], FuruFunction[P, T]]:
     def decorator(inner: Callable[P, T]) -> FuruFunction[P, T]:
-        return _furu_method(inner)
+        return _function(inner)
 
     if func is None:
         return decorator
     return decorator(func)
 
 
-def _furu_method[**P, T](func: Callable[P, T]) -> FuruFunction[P, T]:
+def _function[**P, T](func: Callable[P, T]) -> FuruFunction[P, T]:
     func_name = getattr(func, "__name__", None)
     func_qualname = getattr(func, "__qualname__", None)
     func_module = getattr(func, "__module__", None)
@@ -44,7 +44,7 @@ def _furu_method[**P, T](func: Callable[P, T]) -> FuruFunction[P, T]:
         and isinstance(func_qualname, str)
         and isinstance(func_module, str)
     ):
-        raise TypeError("@furu_method expects a named function")
+        raise TypeError("@furu.function expects a named function")
 
     signature = inspect.signature(func)
     type_hints = get_type_hints(func, include_extras=True)
@@ -60,7 +60,7 @@ def _furu_method[**P, T](func: Callable[P, T]) -> FuruFunction[P, T]:
             inspect.Parameter.VAR_KEYWORD,
         }:
             raise TypeError(
-                f"@furu_method does not support variadic parameter "
+                f"@furu.function does not support variadic parameter "
                 f"{func_qualname}.{parameter.name}"
             )
 

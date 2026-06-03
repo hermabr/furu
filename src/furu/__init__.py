@@ -3,7 +3,7 @@ from importlib.metadata import version
 from furu.core import Furu
 from furu.dependencies import dependency
 from furu.logging import get_logger
-from furu.method import FuruFunction, furu_method
+from furu.method import FuruFunction, function
 from furu.migration import Migration
 from furu.resources import ResourceRequirements
 from furu.result import LazyResult, save_as
@@ -20,7 +20,7 @@ __all__ = [
     "Migration",
     "ResourceRequirements",
     "dependency",
-    "furu_method",
+    "function",
     "ResultCodec",
     "ResultRegistry",
     "get_logger",
