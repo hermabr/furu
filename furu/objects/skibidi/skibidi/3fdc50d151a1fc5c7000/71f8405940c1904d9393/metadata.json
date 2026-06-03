@@ -1,0 +1,27 @@
+{
+  "kind": "completed",
+  "artifact": {
+    "fully_qualified_name": "skibidi.skibidi",
+    "artifact_data": {
+      "|kind": "instance",
+      "|class": "skibidi.skibidi",
+      "|fields": {
+        "a": 33,
+        "b": 34
+      }
+    },
+    "artifact_hash": "71f8405940c1904d9393",
+    "schema_data": {
+      "|class": "skibidi.skibidi",
+      "|fields": {
+        "a": "builtins.int",
+        "b": "builtins.int"
+      }
+    },
+    "schema_hash": "3fdc50d151a1fc5c7000"
+  },
+  "base_path": "furu/objects/skibidi/skibidi/3fdc50d151a1fc5c7000/71f8405940c1904d9393",
+  "started_at": "2026-06-03T00:32:27.205193Z",
+  "completed_at": "2026-06-03T00:32:27.206932Z",
+  "observed_dependencies": []
+}

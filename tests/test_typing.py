@@ -36,6 +36,11 @@ def typed_letter_count(source: str, letter: str) -> int:
     return source.count(letter)
 
 
+@furu.furu_method()
+def typed_letter_count_with_parentheses(source: str, letter: str) -> int:
+    return source.count(letter)
+
+
 if TYPE_CHECKING:
     parent = TypingParent()
     assert_type(parent.cached_child, TypingChild)
@@ -44,3 +49,8 @@ if TYPE_CHECKING:
     assert_type(parent.children[0], TypingChild)
     assert_type(typed_letter_count(source="banana", letter="a"), int)
     assert_type(typed_letter_count.furu(source="banana", letter="a"), furu.Furu[int])
+    assert_type(typed_letter_count_with_parentheses(source="banana", letter="a"), int)
+    assert_type(
+        typed_letter_count_with_parentheses.furu(source="banana", letter="a"),
+        furu.Furu[int],
+    )

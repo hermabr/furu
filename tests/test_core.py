@@ -275,6 +275,11 @@ def letter_count_with_untyped_source(source, letter: str) -> int:
     return source.count(letter)
 
 
+@furu.furu_method()
+def letter_count_with_parentheses(source: str, letter: str) -> int:
+    return source.count(letter)
+
+
 GROUP_EXECUTION_EVENTS: list[tuple[str, tuple[int, ...]]] = []
 
 
@@ -574,6 +579,18 @@ def test_furu_method_defaults_unannotated_parameters_to_any():
         "|class": "test_core.letter_count_with_untyped_source",
         "|fields": {"letter": "builtins.str", "source": "typing.Any"},
     }
+    assert _from_json(obj._artifact_data) == obj
+
+
+def test_furu_method_supports_parenthesized_decorator():
+    obj = letter_count_with_parentheses.furu("banana", "n")
+
+    assert isinstance(obj, Furu)
+    assert getattr(obj, "source") == "banana"
+    assert getattr(obj, "letter") == "n"
+    assert letter_count_with_parentheses("banana", "n") == 2
+    assert obj.create() == 2
+    assert obj._fully_qualified_name == "test_core.letter_count_with_parentheses"
     assert _from_json(obj._artifact_data) == obj
 
 

@@ -4,7 +4,7 @@ import inspect
 import types
 from collections.abc import Callable
 from functools import wraps
-from typing import Any, ClassVar, Protocol, cast, get_type_hints
+from typing import Any, ClassVar, Protocol, cast, get_type_hints, overload
 
 from furu.core import Furu
 
@@ -15,7 +15,26 @@ class FuruFunction[**P, T](Protocol):
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T: ...
 
 
-def furu_method[**P, T](func: Callable[P, T]) -> FuruFunction[P, T]:
+@overload
+def furu_method[**P, T](func: Callable[P, T]) -> FuruFunction[P, T]: ...
+
+
+@overload
+def furu_method[**P, T]() -> Callable[[Callable[P, T]], FuruFunction[P, T]]: ...
+
+
+def furu_method[**P, T](
+    func: Callable[P, T] | None = None,
+) -> FuruFunction[P, T] | Callable[[Callable[P, T]], FuruFunction[P, T]]:
+    def decorator(inner: Callable[P, T]) -> FuruFunction[P, T]:
+        return _furu_method(inner)
+
+    if func is None:
+        return decorator
+    return decorator(func)
+
+
+def _furu_method[**P, T](func: Callable[P, T]) -> FuruFunction[P, T]:
     func_name = getattr(func, "__name__", None)
     func_qualname = getattr(func, "__qualname__", None)
     func_module = getattr(func, "__module__", None)
