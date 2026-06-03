@@ -540,7 +540,7 @@ def test_frozen_dataclass_inheritance():
 
 
 def test_furu_method_creates_furu_object_from_function_signature():
-    obj = letter_count.furu("banana", "a")
+    obj = letter_count.as_furu("banana", "a")
 
     assert isinstance(obj, Furu)
     assert is_dataclass(type(obj))
@@ -549,14 +549,14 @@ def test_furu_method_creates_furu_object_from_function_signature():
     assert getattr(obj, "letter") == "a"
     assert obj.create() == 3
     assert letter_count("banana", "a") == 3
-    assert letter_count.furu(source="banana", letter="a") == obj
+    assert letter_count.as_furu(source="banana", letter="a") == obj
 
     with pytest.raises(FrozenInstanceError):
         obj.source = "orange"  # ty: ignore[invalid-assignment]
 
 
 def test_furu_method_supports_defaults_and_artifact_round_trip():
-    obj = letter_count_with_default.furu("banana")
+    obj = letter_count_with_default.as_furu("banana")
 
     assert getattr(obj, "letter") == "a"
     assert letter_count_with_default("banana") == 3
@@ -567,11 +567,11 @@ def test_furu_method_supports_defaults_and_artifact_round_trip():
 
 def test_furu_method_allows_missing_return_annotation():
     assert letter_count_without_return_annotation("banana", "n") == 2
-    assert letter_count_without_return_annotation.furu("banana", "n").create() == 2
+    assert letter_count_without_return_annotation.as_furu("banana", "n").create() == 2
 
 
 def test_furu_method_defaults_unannotated_parameters_to_any():
-    obj = letter_count_with_untyped_source.furu("banana", "a")
+    obj = letter_count_with_untyped_source.as_furu("banana", "a")
 
     assert letter_count_with_untyped_source("banana", "a") == 3
     assert obj.create() == 3
@@ -583,7 +583,7 @@ def test_furu_method_defaults_unannotated_parameters_to_any():
 
 
 def test_furu_method_supports_parenthesized_decorator():
-    obj = letter_count_with_parentheses.furu("banana", "n")
+    obj = letter_count_with_parentheses.as_furu("banana", "n")
 
     assert isinstance(obj, Furu)
     assert getattr(obj, "source") == "banana"

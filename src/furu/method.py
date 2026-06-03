@@ -10,7 +10,7 @@ from furu.core import Furu
 
 
 class FuruFunction[**P, T](Protocol):
-    furu: Callable[P, Furu[T]]
+    as_furu: Callable[P, Furu[T]]
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T: ...
 
@@ -116,11 +116,11 @@ def _furu_method[**P, T](func: Callable[P, T]) -> FuruFunction[P, T]:
             exec_body=exec_body,
         ),
     )
-    furu_constructor = cast(Callable[P, Furu[T]], cls)
+    as_furu = cast(Callable[P, Furu[T]], cls)
 
     @wraps(func)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
-        return furu_constructor(*args, **kwargs).create()
+        return as_furu(*args, **kwargs).create()
 
-    setattr(wrapper, "furu", furu_constructor)
+    setattr(wrapper, "as_furu", as_furu)
     return cast(FuruFunction[P, T], wrapper)
