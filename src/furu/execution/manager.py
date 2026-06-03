@@ -84,6 +84,13 @@ class Manager:
     ) -> None:
         from furu.execution.server import _run_until_done
 
+        if not self.nodes_by_id:
+            with self.log_context(), self.lock:
+                logger.info("all objects already exist; no manager work to run")
+                self._maybe_finish_locked()
+            self.raise_for_failure()
+            return
+
         _run_until_done(
             self,
             worker_backends=worker_backends,
