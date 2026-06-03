@@ -3,12 +3,19 @@ from __future__ import annotations
 import inspect
 import types
 from collections.abc import Callable
-from typing import Any, ClassVar, cast, get_type_hints
+from functools import wraps
+from typing import Any, ClassVar, Protocol, cast, get_type_hints
 
 from furu.core import Furu
 
 
-def furu_method[**P, T](func: Callable[P, T]) -> Callable[P, Furu[T]]:
+class FuruFunction[**P, T](Protocol):
+    furu: Callable[P, Furu[T]]
+
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T: ...
+
+
+def furu_method[**P, T](func: Callable[P, T]) -> FuruFunction[P, T]:
     func_name = getattr(func, "__name__", None)
     func_qualname = getattr(func, "__qualname__", None)
     func_module = getattr(func, "__module__", None)
@@ -82,9 +89,19 @@ def furu_method[**P, T](func: Callable[P, T]) -> Callable[P, Furu[T]]:
             if parameter.default is not inspect.Parameter.empty:
                 namespace[parameter.name] = parameter.default
 
-    cls = types.new_class(
-        func_name,
-        (Furu[result_type],),
-        exec_body=exec_body,
+    cls = cast(
+        type[Furu[T]],
+        types.new_class(
+            func_name,
+            (Furu[result_type],),
+            exec_body=exec_body,
+        ),
     )
-    return cast(Callable[P, Furu[T]], cls)
+    furu_constructor = cast(Callable[P, Furu[T]], cls)
+
+    @wraps(func)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
+        return furu_constructor(*args, **kwargs).create()
+
+    setattr(wrapper, "furu", furu_constructor)
+    return cast(FuruFunction[P, T], wrapper)

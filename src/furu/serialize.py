@@ -83,6 +83,21 @@ def _from_json_field(value: JsonValue, expected_type: Any) -> Any:
     return value
 
 
+def _resolve_serialized_type(class_name: str) -> type:
+    value = resolve_fully_qualified_name(class_name)
+    if isinstance(value, type):
+        return value
+
+    furu_constructor = getattr(value, "furu", None)
+    if isinstance(furu_constructor, type):
+        from furu.core import Furu
+
+        if issubclass(furu_constructor, Furu):
+            return furu_constructor
+
+    raise TypeError(f"{class_name!r} resolved to a non-type value")
+
+
 def _from_json(value: JsonValue) -> Any:
     match value:
         case list():
@@ -91,18 +106,13 @@ def _from_json(value: JsonValue) -> Any:
             class_name = value.get(CLASSMARKER)
             field_values = value.get(FIELDSMARKER)
             if value.get(KINDMARKER) == "type_ref" and isinstance(class_name, str):
-                value = resolve_fully_qualified_name(class_name)
-                if not isinstance(value, type):
-                    raise TypeError(f"{class_name!r} resolved to a non-type value")
-                return value
+                return _resolve_serialized_type(class_name)
             if (
                 value.get(KINDMARKER) == "instance"
                 and isinstance(class_name, str)
                 and isinstance(field_values, dict)
             ):
-                cls = resolve_fully_qualified_name(class_name)
-                if not isinstance(cls, type):
-                    raise TypeError(f"{class_name!r} resolved to a non-type value")
+                cls = _resolve_serialized_type(class_name)
                 hints = get_type_hints(cls, include_extras=True)
                 converted_fields = {
                     name: _from_json_field(field_value, hints.get(name, Any))

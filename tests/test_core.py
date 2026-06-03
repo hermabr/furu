@@ -535,7 +535,7 @@ def test_frozen_dataclass_inheritance():
 
 
 def test_furu_method_creates_furu_object_from_function_signature():
-    obj = letter_count("banana", "a")
+    obj = letter_count.furu("banana", "a")
 
     assert isinstance(obj, Furu)
     assert is_dataclass(type(obj))
@@ -543,28 +543,32 @@ def test_furu_method_creates_furu_object_from_function_signature():
     assert getattr(obj, "source") == "banana"
     assert getattr(obj, "letter") == "a"
     assert obj.create() == 3
-    assert letter_count(source="banana", letter="a") == obj
+    assert letter_count("banana", "a") == 3
+    assert letter_count.furu(source="banana", letter="a") == obj
 
     with pytest.raises(FrozenInstanceError):
         obj.source = "orange"  # ty: ignore[invalid-assignment]
 
 
 def test_furu_method_supports_defaults_and_artifact_round_trip():
-    obj = letter_count_with_default("banana")
+    obj = letter_count_with_default.furu("banana")
 
     assert getattr(obj, "letter") == "a"
+    assert letter_count_with_default("banana") == 3
     assert obj.create() == 3
     assert obj._fully_qualified_name == "test_core.letter_count_with_default"
     assert _from_json(obj._artifact_data) == obj
 
 
 def test_furu_method_allows_missing_return_annotation():
-    assert letter_count_without_return_annotation("banana", "n").create() == 2
+    assert letter_count_without_return_annotation("banana", "n") == 2
+    assert letter_count_without_return_annotation.furu("banana", "n").create() == 2
 
 
 def test_furu_method_defaults_unannotated_parameters_to_any():
-    obj = letter_count_with_untyped_source("banana", "a")
+    obj = letter_count_with_untyped_source.furu("banana", "a")
 
+    assert letter_count_with_untyped_source("banana", "a") == 3
     assert obj.create() == 3
     assert obj._schema_data == {
         "|class": "test_core.letter_count_with_untyped_source",
