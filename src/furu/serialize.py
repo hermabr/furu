@@ -15,7 +15,6 @@ from furu.constants import (
 )
 from furu.metadata import ArtifactSpec
 from furu.serializer import (
-    ArtifactSerializer,
     ArtifactSerializerRegistry,
     resolve_serializer,
     serializer_for_value,
