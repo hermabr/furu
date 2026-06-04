@@ -803,8 +803,7 @@ def test_manager_run_writes_log_to_executor_dir() -> None:
     assert "starting furu manager" in log_text
     assert "manager server listening" in log_text
     assert (
-        f"executor creating {leaf._log_label}.create() (object_id={leaf.object_id})"
-        in log_text
+        f"executor creating {leaf._log_label} (object_id={leaf.object_id})" in log_text
     )
     assert "leased job:" in log_text
     assert leaf.object_id in log_text
