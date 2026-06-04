@@ -86,7 +86,14 @@ class Manager:
                 manager._maybe_finish_locked()
             return objs
 
-        (bind_host,) = {backend.manager_listen_host for backend in worker_backends}
+        bind_hosts = {backend.manager_listen_host for backend in worker_backends}
+        if not bind_hosts:
+            raise ValueError("worker_backends must include at least one backend")
+        if len(bind_hosts) != 1:
+            raise ValueError(
+                "all worker_backends must use the same manager_listen_host"
+            )
+        (bind_host,) = bind_hosts
 
         from furu.execution.server import manager_server
 
