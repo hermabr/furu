@@ -24,7 +24,6 @@ from furu.constants import (
 from furu.serializer import (
     ArtifactSerializer,
     ArtifactSerializerRegistry,
-    serializer_for_type,
 )
 from furu.utils import JsonValue, _stable_json_dump, fully_qualified_name
 
@@ -89,7 +88,7 @@ def schema_type(
     *,
     registry: ArtifactSerializerRegistry,
 ) -> JsonValue:
-    if serializer := serializer_for_type(tp, registry=registry):
+    if serializer := registry.for_schema(tp):
         return _custom_schema(serializer, tp)
 
     origin = get_origin(tp)

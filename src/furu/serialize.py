@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING, Any, cast, get_args, get_origin, get_type_hint
 
 from pydantic import BaseModel as PydanticBaseModel
 
-from furu import ArtifactSerializer
 from furu._declared_types import child_declared_type, strip_annotated
 from furu.constants import (
     CLASSMARKER,
@@ -16,8 +15,8 @@ from furu.constants import (
 )
 from furu.metadata import ArtifactSpec
 from furu.serializer import (
+    ArtifactSerializer,
     ArtifactSerializerRegistry,
-    serializer_for_value,
 )
 from furu.utils import JsonValue, fully_qualified_name, resolve_fully_qualified_name
 
@@ -49,11 +48,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
             CLASSMARKER: fully_qualified_name(obj),
         }
 
-    if serializer := serializer_for_value(
-        obj,
-        declared_type=declared_type,
-        registry=registry,
-    ):
+    if serializer := registry.for_dump(obj, declared_type=declared_type):
         return {
             KINDMARKER: "custom",
             SERIALIZERMARKER: serializer._serializer_id(),

@@ -81,13 +81,48 @@ class ArtifactSerializerRegistry:
     def register(self, serializer: type[ArtifactSerializer]) -> Self:
         return type(self)(serializers=(serializer, *self.serializers))
 
-    def find_serializer(self, value: object) -> type[ArtifactSerializer] | None:
+    def for_schema(self, declared_type: object) -> type[ArtifactSerializer] | None:
+        if serializer := _annotated_serializer(declared_type):
+            return serializer
+
+        declared_type = strip_annotated(declared_type)
+        if isinstance(declared_type, type):
+            if serializer := _class_serializer(declared_type):
+                return serializer
+
+        origin = get_origin(declared_type)
+        if isinstance(origin, type):
+            if serializer := _class_serializer(origin):
+                return serializer
+
+        return self._configured_for_schema(declared_type)
+
+    def for_dump(
+        self,
+        value: object,
+        *,
+        declared_type: object,
+    ) -> type[ArtifactSerializer] | None:
+        if serializer := _annotated_serializer(declared_type):
+            return serializer
+
+        declared_type = strip_annotated(declared_type)
+        if isinstance(declared_type, type):
+            if serializer := _class_serializer(declared_type):
+                return serializer
+
+        if serializer := _class_serializer(type(value)):
+            return serializer
+
+        return self._configured_for_dump(value)
+
+    def _configured_for_dump(self, value: object) -> type[ArtifactSerializer] | None:
         for serializer in self.serializers:
             if serializer.matches(value):
                 return serializer
         return None
 
-    def find_serializer_for_type(
+    def _configured_for_schema(
         self,
         declared_type: object,
     ) -> type[ArtifactSerializer] | None:
@@ -110,44 +145,3 @@ class ArtifactSerializerRegistry:
             if serializer.dependencies_available():
                 configured_serializers.append(serializer)
         return cls(serializers=tuple(configured_serializers))
-
-
-def serializer_for_type(
-    declared_type: object,
-    *,
-    registry: ArtifactSerializerRegistry,
-) -> type[ArtifactSerializer] | None:
-    if serializer := _annotated_serializer(declared_type):
-        return serializer
-
-    declared_type = strip_annotated(declared_type)
-    if isinstance(declared_type, type):
-        if serializer := _class_serializer(declared_type):
-            return serializer
-
-    origin = get_origin(declared_type)
-    if isinstance(origin, type):
-        if serializer := _class_serializer(origin):
-            return serializer
-
-    return registry.find_serializer_for_type(declared_type)
-
-
-def serializer_for_value(
-    value: object,
-    *,
-    declared_type: object,
-    registry: ArtifactSerializerRegistry,
-) -> type[ArtifactSerializer] | None:
-    if serializer := _annotated_serializer(declared_type):
-        return serializer
-
-    declared_type = strip_annotated(declared_type)
-    if isinstance(declared_type, type):
-        if serializer := _class_serializer(declared_type):
-            return serializer
-
-    if serializer := _class_serializer(type(value)):
-        return serializer
-
-    return registry.find_serializer(value)
