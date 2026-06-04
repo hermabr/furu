@@ -8,7 +8,7 @@ from furu.migration import Migration
 from furu.resources import ResourceRequirements
 from furu.result import LazyResult, save_as
 from furu.result.codec import ResultCodec, ResultRegistry
-from furu.serializer import ArtifactSerializer, ArtifactSerializerRegistry
+from furu.serializer.registry import ArtifactSerializer, ArtifactSerializerRegistry
 from furu.validate import validate
 
 __version__ = version("furu")

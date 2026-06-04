@@ -20,8 +20,8 @@ from furu.logging import get_logger
 from furu.resources import ResourceRequirements
 from furu.result import load_result_bundle
 from furu.result.codec import ResultRegistry
-from furu.serializer import ArtifactSerializerRegistry
 from furu.serializer.artifact import to_json as _to_json
+from furu.serializer.registry import ArtifactSerializerRegistry
 from furu.serializer.schema import schema_type as _schema_type
 from furu.utils import (
     JsonValue,
