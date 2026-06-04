@@ -82,13 +82,19 @@ def manager_server(
         sock.close()
 
 
-def _run_until_done(
+def run_until_done(
     manager: Manager,
     *,
     worker_backends: tuple[WorkerBackend, ...],
     port: int,
 ) -> None:
-    (bind_host,) = {backend.manager_listen_host for backend in worker_backends}
+    if not worker_backends:
+        raise ValueError("worker_backends must contain at least one backend")
+
+    bind_hosts = {backend.manager_listen_host for backend in worker_backends}
+    if len(bind_hosts) != 1:
+        raise ValueError("worker_backends must use the same manager_listen_host")
+    (bind_host,) = bind_hosts
 
     with manager.log_context():
         logger.info(

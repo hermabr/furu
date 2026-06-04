@@ -1,4 +1,6 @@
+import hashlib
 import threading
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, ClassVar, cast
 from uuid import UUID, uuid4
@@ -10,7 +12,9 @@ from pydantic import TypeAdapter, ValidationError
 
 import furu.worker.loop as worker_loop_module
 from furu import Furu
+from furu._storage_layout import manager_log_path_in
 from furu.config import get_config
+from furu.dag import _add_to_dag
 from furu.execution import api
 from furu.execution.api import create_manager_api_app
 from furu.execution.manager import (
@@ -18,10 +22,9 @@ from furu.execution.manager import (
     Manager,
     RunningJob,
 )
-from furu.execution.server import _run_until_done, manager_server
+from furu.execution.server import manager_server, run_until_done
 from furu.metadata import ArtifactSpec
 from furu.resources import ResourceRequest, ResourceRequirements
-from furu._storage_layout import manager_log_path_in
 from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
 from furu.worker.loop import worker_loop
 from furu.worker.protocol import (
@@ -33,8 +36,24 @@ from furu.worker.protocol import (
     LeaseJobResponse,
 )
 
-
 ANY_RESOURCES = ResourceRequest()
+
+
+def _new_manager(
+    objs: Sequence[Furu[Any]],
+    *,
+    max_retries_per_object: int | None = None,
+) -> Manager:
+    if max_retries_per_object is None:
+        max_retries_per_object = get_config().worker.max_retries_per_object
+    manager = Manager(max_retries_per_object=max_retries_per_object)
+    _add_to_dag(manager, objs)
+    digest = hashlib.blake2s(digest_size=16)
+    for obj in objs:
+        digest.update(obj.object_id.encode("utf-8"))
+        digest.update(b"\0")
+    manager.executor_id = digest.hexdigest()
+    return manager
 
 
 def _new_local_pool(
@@ -106,7 +125,7 @@ def test_manager_init_partitions_ready_and_blocked() -> None:
     leaf = ManagerLeaf(value=1)
     parent = ManagerParent(child=leaf)
 
-    manager = Manager([parent])
+    manager = _new_manager([parent])
 
     assert set(manager.ready) == {leaf.object_id}
     assert set(manager.blocked) == {parent.object_id}
@@ -117,12 +136,12 @@ def test_manager_executor_id_is_stable_hash_of_root_object_tuple() -> None:
     left = ManagerLeaf(value=1)
     right = ManagerLeaf(value=2)
 
-    manager = Manager([left, right])
+    manager = _new_manager([left, right])
 
     assert len(manager.executor_id) == 32
     assert int(manager.executor_id, 16) >= 0
-    assert Manager([left, right]).executor_id == manager.executor_id
-    assert Manager([right, left]).executor_id != manager.executor_id
+    assert _new_manager([left, right]).executor_id == manager.executor_id
+    assert _new_manager([right, left]).executor_id != manager.executor_id
     assert (
         manager.executor_dir
         == get_config().directories.executions / manager.executor_id
@@ -130,15 +149,15 @@ def test_manager_executor_id_is_stable_hash_of_root_object_tuple() -> None:
 
 
 def test_manager_max_retries_per_object_defaults_to_config() -> None:
-    manager = Manager([ManagerLeaf(value=1)])
+    manager = _new_manager([ManagerLeaf(value=1)])
 
-    assert manager._max_retries_per_object == get_config().worker.max_retries_per_object
+    assert manager.max_retries_per_object == get_config().worker.max_retries_per_object
 
 
 def test_manager_job_result_completed_moves_dependents_to_ready() -> None:
     leaf = ManagerLeaf(value=1)
     parent = ManagerParent(child=leaf)
-    manager = Manager([parent])
+    manager = _new_manager([parent])
 
     job = manager.lease_job(resources=ANY_RESOURCES)
     assert isinstance(job, Job)
@@ -162,7 +181,7 @@ def test_manager_lease_job_returns_wait_when_only_running_jobs_can_unblock_work(
 ):
     leaf = ManagerLeaf(value=1)
     parent = ManagerParent(child=leaf)
-    manager = Manager([parent])
+    manager = _new_manager([parent])
 
     job = manager.lease_job(resources=ANY_RESOURCES)
     assert isinstance(job, Job)
@@ -176,7 +195,7 @@ def test_manager_job_result_blocked_discovers_lazy_dependency_and_reruns_parent(
 ):
     parent = ManagerLazyParent(value=2)
     dependency = ManagerLeaf(value=2)
-    manager = Manager([parent])
+    manager = _new_manager([parent])
 
     parent_job = manager.lease_job(resources=ANY_RESOURCES)
     assert isinstance(parent_job, Job)
@@ -202,7 +221,7 @@ def test_manager_job_result_blocked_ignores_completed_lazy_dependency() -> None:
     parent = ManagerLazyParent(value=2)
     dependency = ManagerLeaf(value=2)
     dependency.create()
-    manager = Manager([parent])
+    manager = _new_manager([parent])
 
     parent_job = manager.lease_job(resources=ANY_RESOURCES)
     assert isinstance(parent_job, Job)
@@ -222,7 +241,7 @@ def test_manager_job_result_blocked_discovers_multiple_lazy_dependencies_togethe
 ):
     parent = ManagerLazyParent(value=2)
     dependencies = [ManagerLeaf(value=2), ManagerLeaf(value=3)]
-    manager = Manager([parent])
+    manager = _new_manager([parent])
 
     parent_job = manager.lease_job(resources=ANY_RESOURCES)
     assert isinstance(parent_job, Job)
@@ -251,7 +270,7 @@ def test_manager_job_result_blocked_discovers_multiple_lazy_dependencies_togethe
 def test_manager_uses_new_lease_when_blocked_job_is_released() -> None:
     parent = ManagerLazyParent(value=2)
     dependency = ManagerLeaf(value=2)
-    manager = Manager([parent])
+    manager = _new_manager([parent])
 
     first_parent_job = manager.lease_job(resources=ANY_RESOURCES)
     assert isinstance(first_parent_job, Job)
@@ -276,7 +295,7 @@ def test_manager_uses_new_lease_when_blocked_job_is_released() -> None:
 
 def test_manager_job_result_failed_finishes_with_error() -> None:
     leaf = ManagerLeaf(value=1)
-    manager = Manager([leaf], max_retries_per_object=0)
+    manager = _new_manager([leaf], max_retries_per_object=0)
     job = manager.lease_job(resources=ANY_RESOURCES)
     assert isinstance(job, Job)
 
@@ -300,7 +319,7 @@ def test_manager_job_result_failed_finishes_with_error() -> None:
 
 def test_manager_job_result_failed_retries_before_finishing() -> None:
     leaf = ManagerLeaf(value=1)
-    manager = Manager([leaf], max_retries_per_object=2)
+    manager = _new_manager([leaf], max_retries_per_object=2)
 
     first_job = manager.lease_job(resources=ANY_RESOURCES)
     assert isinstance(first_job, Job)
@@ -343,7 +362,7 @@ def test_manager_job_result_failed_retries_before_finishing() -> None:
 
 def test_manager_job_result_failed_retry_can_later_complete() -> None:
     leaf = ManagerLeaf(value=1)
-    manager = Manager([leaf], max_retries_per_object=1)
+    manager = _new_manager([leaf], max_retries_per_object=1)
 
     first_job = manager.lease_job(resources=ANY_RESOURCES)
     assert isinstance(first_job, Job)
@@ -366,13 +385,16 @@ def test_manager_run_retries_failed_worker_result() -> None:
     FlakyManagerLeaf.attempts_by_value.clear()
     value = uuid4().int
     leaf = FlakyManagerLeaf(value=value)
-    manager = Manager([leaf], max_retries_per_object=1)
+    objs = [leaf]
 
-    manager.run(worker_backends=(LocalThreadWorkerBackend(),))
+    returned = Manager.run(
+        objs,
+        max_retries_per_object=1,
+        worker_backends=(LocalThreadWorkerBackend(),),
+    )
 
     assert FlakyManagerLeaf.attempts_by_value == {value: 2}
-    assert manager.failed == {}
-    assert set(manager.completed) == {leaf.object_id}
+    assert returned is objs
     assert leaf.create() == value
 
 
@@ -456,7 +478,9 @@ class DynamicGpuAfterCpu(Furu[int]):
 def test_count_satisfiable_jobs_caps_at_max_workers_and_filters_by_requirements() -> (
     None
 ):
-    manager = Manager([ManagerLeaf(value=1), ManagerLeaf(value=2), GpuLeaf(value=3)])
+    manager = _new_manager(
+        [ManagerLeaf(value=1), ManagerLeaf(value=2), GpuLeaf(value=3)]
+    )
 
     assert (
         manager.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=10) == 2
@@ -475,7 +499,7 @@ def test_count_satisfiable_jobs_caps_at_max_workers_and_filters_by_requirements(
 def test_lease_job_filters_by_worker_resources() -> None:
     cpu_leaf = CpuOnlyLeaf(value=1)
     gpu_leaf = GpuLeaf(value=2)
-    manager = Manager([cpu_leaf, gpu_leaf])
+    manager = _new_manager([cpu_leaf, gpu_leaf])
 
     cpu_job = manager.lease_job(resources=ResourceRequest(gpus=0))
     assert isinstance(cpu_job, Job)
@@ -507,7 +531,8 @@ def test_manager_run_dynamically_allocates_local_workers_for_later_resource_stag
         DynamicGpuAfterCpu(parent=second_cpu, value=value) for value in range(4)
     ]
 
-    Manager(final_gpus).run(
+    Manager.run(
+        final_gpus,
         worker_backends=(
             LocalThreadWorkerBackend(
                 max_workers=1,
@@ -517,7 +542,7 @@ def test_manager_run_dynamically_allocates_local_workers_for_later_resource_stag
                 max_workers=3,
                 resource_request=ResourceRequest(gpus=1),
             ),
-        )
+        ),
     )
 
     assert DynamicCpuSeed.create_calls == [seed_value]
@@ -699,11 +724,9 @@ def test_manager_run_fails_when_worker_pool_reports_unhealthy(
 
     monkeypatch.setattr(worker_loop_module, "worker_loop", crashing_worker_loop)
 
-    leaf = ManagerLeaf(value=42)
-    manager = Manager([leaf])
-
     with pytest.raises(RuntimeError, match="local worker pool became unhealthy"):
-        manager.run(
+        Manager.run(
+            [ManagerLeaf(value=42)],
             worker_backends=(
                 LocalThreadWorkerBackend(
                     max_workers=1,
@@ -711,7 +734,7 @@ def test_manager_run_fails_when_worker_pool_reports_unhealthy(
                     resource_request=ResourceRequest(),
                     scale_interval=0.05,
                 ),
-            )
+            ),
         )
 
 
@@ -743,10 +766,12 @@ def test_manager_run_uses_worker_backend() -> None:
             )
 
     leaf = ManagerLeaf(value=11)
+    objs = [leaf]
     backend = RecordingBackend()
 
-    Manager([leaf]).run(worker_backends=(backend,))
+    returned = Manager.run(objs, worker_backends=(backend,))
 
+    assert returned is objs
     assert leaf.status() == "completed"
     assert leaf.create() == 11
     assert len(backend.server_urls) == 1
@@ -781,19 +806,19 @@ def test_manager_run_passes_executor_dir_to_worker_backend() -> None:
             )
 
     leaf = ManagerLeaf(value=12)
-    manager = Manager([leaf])
+    expected_executor_dir = _new_manager([leaf]).executor_dir
     backend = RecordingBackend()
 
-    manager.run(worker_backends=(backend,))
+    Manager.run([leaf], worker_backends=(backend,))
 
-    assert backend.executor_dirs == [manager.executor_dir]
+    assert backend.executor_dirs == [expected_executor_dir]
 
 
 def test_manager_run_writes_log_to_executor_dir() -> None:
     leaf = ManagerLeaf(value=14)
-    manager = Manager([leaf])
+    manager = _new_manager([leaf])
 
-    manager.run(worker_backends=(LocalThreadWorkerBackend(),))
+    Manager.run([leaf], worker_backends=(LocalThreadWorkerBackend(),))
 
     log_path = manager_log_path_in(manager.executor_dir)
     assert manager_log_path_in(manager.executor_dir) == log_path
@@ -830,18 +855,14 @@ def test_manager_run_returns_when_all_objects_are_already_completed() -> None:
 
     leaf = ManagerLeaf(value=15)
     leaf.create()
-    manager = Manager([leaf])
+    objs = [leaf]
+    manager = _new_manager(objs)
 
     assert manager.nodes_by_id == {}
 
-    manager.run(worker_backends=(UnexpectedBackend(),))
+    returned = Manager.run(objs, worker_backends=(UnexpectedBackend(),))
 
-    assert manager.done.is_set()
-    assert manager.ready == {}
-    assert manager.blocked == {}
-    assert manager.running == {}
-    assert manager.failed == {}
-
+    assert returned is objs
     log_text = manager_log_path_in(manager.executor_dir).read_text(encoding="utf-8")
     assert "all objects already exist; no manager work to run" in log_text
     assert "manager server listening" not in log_text
@@ -882,12 +903,12 @@ def test_manager_run_starts_backend_pool_and_stops_and_joins_when_done() -> None
             self.pool.events.append("start_pool")
             return self.pool
 
-    manager = Manager([ManagerLeaf(value=13)])
+    manager = _new_manager([ManagerLeaf(value=13)])
     done = RecordingDone()
     pool = RecordingPool()
     cast(Any, manager).done = done
 
-    _run_until_done(
+    run_until_done(
         manager,
         worker_backends=(RecordingBackend(pool),),
         port=0,
@@ -923,18 +944,18 @@ def test_run_until_done_uses_worker_backend_manager_listen_host() -> None:
             self.server_urls.append(server_url)
             return RecordingPool()
 
-    manager = Manager([ManagerLeaf(value=15)])
+    manager = _new_manager([ManagerLeaf(value=15)])
     backend = RecordingBackend()
     cast(Any, manager).done = RecordingDone()
 
-    _run_until_done(manager, worker_backends=(backend,), port=0)
+    run_until_done(manager, worker_backends=(backend,), port=0)
 
     assert len(backend.server_urls) == 1
     assert backend.server_urls[0].startswith("http://127.0.0.1:")
 
 
 def test_manager_server_exposes_bound_host_and_port() -> None:
-    manager = Manager([ManagerLeaf(value=12)])
+    manager = _new_manager([ManagerLeaf(value=12)])
 
     with manager_server(manager, bind_host="127.0.0.1", port=0) as server:
         assert server.bound_host == "127.0.0.1"
@@ -943,7 +964,7 @@ def test_manager_server_exposes_bound_host_and_port() -> None:
 
 
 def test_manager_server_rejects_requests_without_auth_token() -> None:
-    manager = Manager([ManagerLeaf(value=12)])
+    manager = _new_manager([ManagerLeaf(value=12)])
 
     with manager_server(manager, bind_host="127.0.0.1", port=0) as server:
         response = httpx.post(f"{server.server_url}/worker/lease_job")
@@ -966,28 +987,23 @@ def test_manager_server_rejects_requests_without_auth_token() -> None:
 
 
 def test_manager_run_requires_explicit_worker_backends() -> None:
-    manager = Manager([ManagerLeaf(value=12)])
-
     with pytest.raises(TypeError, match="worker_backends"):
-        manager.run()  # ty: ignore[missing-argument]
+        Manager.run([ManagerLeaf(value=12)])  # ty: ignore[missing-argument]
 
 
 def test_manager_run_rejects_empty_worker_backends() -> None:
-    manager = Manager([ManagerLeaf(value=12)])
-
-    with pytest.raises(ValueError, match="not enough values to unpack"):
-        manager.run(worker_backends=())
+    with pytest.raises(ValueError, match="at least one backend"):
+        Manager.run([ManagerLeaf(value=12)], worker_backends=())
 
 
 def test_manager_run_rejects_conflicting_manager_listen_host() -> None:
-    manager = Manager([ManagerLeaf(value=12)])
-
-    with pytest.raises(ValueError, match="too many values to unpack"):
-        manager.run(
+    with pytest.raises(ValueError, match="same manager_listen_host"):
+        Manager.run(
+            [ManagerLeaf(value=12)],
             worker_backends=(
                 LocalThreadWorkerBackend(manager_listen_host="127.0.0.1"),
                 LocalThreadWorkerBackend(manager_listen_host="0.0.0.0"),
-            )
+            ),
         )
 
 
@@ -1336,7 +1352,9 @@ def test_client_lease_job_posts_resource_request_to_lease_job_endpoint(
 
 
 def test_manager_api_rejects_missing_auth_token() -> None:
-    app = create_manager_api_app(Manager([ManagerLeaf(value=1)]), auth_token="secret")
+    app = create_manager_api_app(
+        _new_manager([ManagerLeaf(value=1)]), auth_token="secret"
+    )
     client = TestClient(app)
 
     response = client.post("/worker/lease_job")
@@ -1346,7 +1364,9 @@ def test_manager_api_rejects_missing_auth_token() -> None:
 
 
 def test_manager_api_rejects_wrong_auth_token() -> None:
-    app = create_manager_api_app(Manager([ManagerLeaf(value=1)]), auth_token="secret")
+    app = create_manager_api_app(
+        _new_manager([ManagerLeaf(value=1)]), auth_token="secret"
+    )
     client = TestClient(app)
 
     response = client.post(
@@ -1359,7 +1379,7 @@ def test_manager_api_rejects_wrong_auth_token() -> None:
 
 
 def test_manager_api_fail_endpoint_sets_finish_error_and_done() -> None:
-    manager = Manager([ManagerLeaf(value=1)])
+    manager = _new_manager([ManagerLeaf(value=1)])
     app = create_manager_api_app(manager, auth_token="secret")
     client = TestClient(app)
 
@@ -1377,7 +1397,9 @@ def test_manager_api_fail_endpoint_sets_finish_error_and_done() -> None:
 
 
 def test_manager_api_accepts_matching_auth_token() -> None:
-    app = create_manager_api_app(Manager([ManagerLeaf(value=1)]), auth_token="secret")
+    app = create_manager_api_app(
+        _new_manager([ManagerLeaf(value=1)]), auth_token="secret"
+    )
     client = TestClient(app)
 
     response = client.post(
