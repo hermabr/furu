@@ -22,6 +22,10 @@ def test_config_reads_environment(monkeypatch) -> None:
         "FURU_RESULT__CODECS",
         '["env_lib.FirstCodec", "env_lib.SecondCodec"]',
     )
+    monkeypatch.setenv(
+        "FURU_SERIALIZERS",
+        '["env_lib.FirstSerializer", "env_lib.SecondSerializer"]',
+    )
     monkeypatch.setenv("FURU_WORKER__IDLE_TIMEOUT_SECONDS", "12.5")
     monkeypatch.setenv("FURU_WORKER__MAX_FAILED_RESTARTS", "7")
     monkeypatch.setenv("FURU_WORKER__MAX_RETRIES_PER_OBJECT", "3")
@@ -36,6 +40,10 @@ def test_config_reads_environment(monkeypatch) -> None:
     assert config.result == _FuruResultConfig(
         codecs=("env_lib.FirstCodec", "env_lib.SecondCodec")
     )
+    assert config.serializers == (
+        "env_lib.FirstSerializer",
+        "env_lib.SecondSerializer",
+    )
     assert config.worker == _FuruWorkerConfig(
         idle_timeout_seconds=12.5,
         max_failed_restarts=7,
@@ -49,6 +57,7 @@ def test_config_reads_pyproject_toml(tmp_path, monkeypatch) -> None:
         """
 [tool.furu]
 debug_mode = true
+serializers = ["my_lib.SomeSerializer"]
 
 [tool.furu.directories]
 objects = "/tmp/furu-pyproject-objects"
@@ -74,6 +83,7 @@ max_retries_per_object = 3
         executions=Path("/tmp/furu-pyproject-executions"),
     )
     assert config.result == _FuruResultConfig(codecs=("my_lib.my_fn.SomeCodec",))
+    assert config.serializers == ("my_lib.SomeSerializer",)
     assert config.worker == _FuruWorkerConfig(
         idle_timeout_seconds=7.5,
         max_failed_restarts=7,
@@ -138,6 +148,7 @@ def test_config_reads_json_config_file(tmp_path, monkeypatch) -> None:
         """
 {
   "debug_mode": true,
+  "serializers": ["json_lib.SomeSerializer"],
   "directories": {
     "objects": "/tmp/furu-json-objects",
     "executions": "/tmp/furu-json-executions"
@@ -166,6 +177,7 @@ def test_config_reads_json_config_file(tmp_path, monkeypatch) -> None:
         executions=Path("/tmp/furu-json-executions"),
     )
     assert config.result == _FuruResultConfig(codecs=("json_lib.SomeCodec",))
+    assert config.serializers == ("json_lib.SomeSerializer",)
     assert config.worker == _FuruWorkerConfig(
         idle_timeout_seconds=9.5,
         max_failed_restarts=7,

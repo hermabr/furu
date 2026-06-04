@@ -14,10 +14,10 @@ import furu
 import furu.config as furu_config
 from furu import Furu
 from furu._storage_layout import result_dir_in, result_manifest_path_in
+from furu._typing import child_declared_type
 from furu.config import get_config
 from furu.result import (
     LazyResult,
-    _child_declared_type,
     _save_result_bundle,
     load_result_bundle,
 )
@@ -416,7 +416,7 @@ def test_child_declared_type_descends_supported_container_annotations(
         expected_type_expr, _CHILD_DECLARED_TYPE_GLOBALS, _CHILD_DECLARED_TYPE_NAMESPACE
     )
 
-    assert _child_declared_type(declared_type, key) == expected_type
+    assert child_declared_type(declared_type, key) == expected_type
 
 
 @dataclass(frozen=True)
