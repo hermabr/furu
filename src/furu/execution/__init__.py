@@ -44,22 +44,6 @@ _direct_create_target: ContextVar[_DirectCreateTarget | None] = ContextVar(
 )
 
 
-def _log_local_create_start(obj: Furu[Any]) -> None:
-    obj.logger.info(
-        "creating %s.create() (object_id=%s)",
-        obj._log_label,
-        obj.object_id,
-    )
-
-
-def log_executor_create_start(obj: Furu[Any]) -> None:
-    obj.logger.info(
-        "executor creating %s.create() (object_id=%s)",
-        obj._log_label,
-        obj.object_id,
-    )
-
-
 @contextmanager
 def _allow_direct_create(target: _DirectCreateTarget) -> Iterator[None]:
     token = _direct_create_target.set(target)
@@ -345,7 +329,11 @@ def _load_or_create_local[T](
 
         direct_create_started = unwrap and bool(pending)
         if direct_create_started:
-            _log_local_create_start(objs[0])
+            objs[0].logger.info(
+                "creating %s.create() (object_id=%s)",
+                obj._log_label,
+                obj.object_id,
+            )
 
         grouped: dict[type[object], list[Furu[T]]] = {}
         for obj in pending:
