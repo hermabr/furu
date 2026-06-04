@@ -1,5 +1,6 @@
 import errno
 import json
+import logging
 import os
 import threading
 import time
@@ -317,6 +318,43 @@ def test_waits_for_lock_release_before_timeout(tmp_path: Path) -> None:
             assert lock_path.exists()
     finally:
         holder.join(timeout=PROCESS_TIMEOUT_S)
+
+
+def test_lock_logs_when_waiting_for_lock(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "single.lock"
+    furu_logger = logging.getLogger("furu")
+    furu_logger.addHandler(caplog.handler)
+    monkeypatch.setattr(
+        locking_module,
+        "DEFAULT_LOCK_WAIT_LOG_INTERVAL_S",
+        SHORT_HEARTBEAT_INTERVAL_S / 2,
+    )
+
+    try:
+        caplog.set_level(logging.INFO, logger="furu")
+        with lock(
+            lock_path,
+            lifetime_s=SHORT_LIFETIME_S * 4,
+            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+        ):
+            with pytest.raises(RuntimeError, match="could not acquire lock"):
+                with lock(
+                    lock_path,
+                    lifetime_s=SHORT_LIFETIME_S,
+                    heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+                    acquire_timeout_s=SHORT_SLEEP_S,
+                    acquire_poll_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+                ):
+                    pass
+    finally:
+        furu_logger.removeHandler(caplog.handler)
+
+    wait_message = f"waiting for lock at {lock_path.resolve()}"
+    assert caplog.messages.count(wait_message) >= 2
 
 
 def test_stale_break_from_any_member_path_removes_whole_logical_lock_group(
