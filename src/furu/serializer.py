@@ -3,13 +3,11 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import cache
-from typing import Annotated, Self, TypeGuard, final, get_args, get_origin
+from typing import Annotated, Self, final, get_args, get_origin
 
 from furu._declared_types import strip_annotated
 from furu.config import get_config
 from furu.utils import JsonValue, fully_qualified_name, resolve_fully_qualified_name
-
-_SERIALIZER_ATTR = "__furu_serializer__"
 
 
 class ArtifactSerializer[T](ABC):
@@ -48,46 +46,32 @@ class ArtifactSerializer[T](ABC):
         pass
 
 
-def _is_serializer_class(value: object) -> TypeGuard[type[ArtifactSerializer]]:
-    return isinstance(value, type) and issubclass(value, ArtifactSerializer)
-
-
-def _type_label(cls: type) -> str:
-    return f"{cls.__module__}.{cls.__qualname__}"
-
-
-def annotated_serializer(declared_type: object) -> type[ArtifactSerializer] | None:
+def _annotated_serializer(declared_type: object) -> type[ArtifactSerializer] | None:
     if get_origin(declared_type) is not Annotated:
         return None
 
     for metadata in get_args(declared_type)[1:]:
-        if _is_serializer_class(metadata):
+        if isinstance(metadata, type) and issubclass(metadata, ArtifactSerializer):
             return metadata
     return None
 
 
-def class_serializer(cls: type) -> type[ArtifactSerializer] | None:
+def _class_serializer(cls: type) -> type[ArtifactSerializer] | None:
+    _SERIALIZER_ATTR = "__furu_serializer__"
     provider = getattr(cls, _SERIALIZER_ATTR, None)
     if provider is None:
         return None
-    if _is_serializer_class(provider):
+    if isinstance(provider, type) and issubclass(provider, ArtifactSerializer):
         return provider
     if callable(provider):
         serializer = provider()
-        if _is_serializer_class(serializer):
+        if isinstance(serializer, type) and issubclass(serializer, ArtifactSerializer):
             return serializer
 
     raise TypeError(
-        f"{_type_label(cls)}.{_SERIALIZER_ATTR} must be an ArtifactSerializer "
+        f"{cls.__module__}.{cls.__qualname__}.{_SERIALIZER_ATTR} must be an ArtifactSerializer "
         "class or a zero-argument callable returning one"
     )
-
-
-def resolve_serializer(serializer_id: str) -> type[ArtifactSerializer]:
-    serializer = resolve_fully_qualified_name(serializer_id)
-    if not _is_serializer_class(serializer):
-        raise TypeError(f"{serializer_id} is not an ArtifactSerializer")
-    return serializer
 
 
 @dataclass(frozen=True)
@@ -117,7 +101,12 @@ class ArtifactSerializerRegistry:
     def default(cls) -> ArtifactSerializerRegistry:
         configured_serializers: list[type[ArtifactSerializer]] = []
         for serializer_id in get_config().serializers:
-            serializer = resolve_serializer(serializer_id)
+            serializer = resolve_fully_qualified_name(serializer_id)
+            if not (
+                isinstance(serializer, type)
+                and issubclass(serializer, ArtifactSerializer)
+            ):
+                raise TypeError(f"{serializer_id} is not an ArtifactSerializer")
             if serializer.dependencies_available():
                 configured_serializers.append(serializer)
         return cls(serializers=tuple(configured_serializers))
@@ -128,17 +117,17 @@ def serializer_for_type(
     *,
     registry: ArtifactSerializerRegistry,
 ) -> type[ArtifactSerializer] | None:
-    if serializer := annotated_serializer(declared_type):
+    if serializer := _annotated_serializer(declared_type):
         return serializer
 
     declared_type = strip_annotated(declared_type)
     if isinstance(declared_type, type):
-        if serializer := class_serializer(declared_type):
+        if serializer := _class_serializer(declared_type):
             return serializer
 
     origin = get_origin(declared_type)
     if isinstance(origin, type):
-        if serializer := class_serializer(origin):
+        if serializer := _class_serializer(origin):
             return serializer
 
     return registry.find_serializer_for_type(declared_type)
@@ -150,15 +139,15 @@ def serializer_for_value(
     declared_type: object,
     registry: ArtifactSerializerRegistry,
 ) -> type[ArtifactSerializer] | None:
-    if serializer := annotated_serializer(declared_type):
+    if serializer := _annotated_serializer(declared_type):
         return serializer
 
     declared_type = strip_annotated(declared_type)
     if isinstance(declared_type, type):
-        if serializer := class_serializer(declared_type):
+        if serializer := _class_serializer(declared_type):
             return serializer
 
-    if serializer := class_serializer(type(value)):
+    if serializer := _class_serializer(type(value)):
         return serializer
 
     return registry.find_serializer(value)
