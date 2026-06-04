@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any, ClassVar, cast
@@ -321,6 +322,23 @@ class _ConfiguredNumpyCodec(ResultCodec[Any]):
 
 class _RegistryNumpyCodec(_ConfiguredNumpyCodec):
     file_name: ClassVar[str] = "registry.npy"
+
+
+@pytest.fixture
+def configured_numpy_codec(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    result_config = get_config().result.model_copy(
+        update={"codecs": (_ConfiguredNumpyCodec._codec_id(),)}
+    )
+    monkeypatch.setattr(
+        furu_config,
+        "_config",
+        get_config().model_copy(update={"result": result_config}),
+    )
+    ResultRegistry.default.cache_clear()
+    try:
+        yield
+    finally:
+        ResultRegistry.default.cache_clear()
 
 
 def test_codec_id_is_derived_from_class_identity() -> None:
@@ -879,15 +897,8 @@ def test_numpy_array_round_trips() -> None:
     assert manifest["weights"]["$furu"]["path"] == "artifacts/weights"
 
 
-def test_configured_codec_takes_priority_over_builtin_numpy(monkeypatch) -> None:
-    result_config = get_config().result.model_copy(
-        update={"codecs": (_ConfiguredNumpyCodec._codec_id(),)}
-    )
-    monkeypatch.setattr(
-        furu_config,
-        "_config",
-        get_config().model_copy(update={"result": result_config}),
-    )
+@pytest.mark.usefixtures("configured_numpy_codec")
+def test_configured_codec_takes_priority_over_builtin_numpy() -> None:
     obj = NumpyResult()
 
     loaded = obj.create()
@@ -906,15 +917,8 @@ def test_configured_codec_takes_priority_over_builtin_numpy(monkeypatch) -> None
     assert manifest["weights"]["$furu"]["codec"] == _ConfiguredNumpyCodec._codec_id()
 
 
-def test_result_registry_takes_priority_over_configured_codec(monkeypatch) -> None:
-    result_config = get_config().result.model_copy(
-        update={"codecs": (_ConfiguredNumpyCodec._codec_id(),)}
-    )
-    monkeypatch.setattr(
-        furu_config,
-        "_config",
-        get_config().model_copy(update={"result": result_config}),
-    )
+@pytest.mark.usefixtures("configured_numpy_codec")
+def test_result_registry_takes_priority_over_configured_codec() -> None:
     obj = RegistryNumpyResult()
 
     loaded = obj.create()
