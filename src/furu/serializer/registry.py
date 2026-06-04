@@ -97,7 +97,10 @@ class ArtifactSerializerRegistry:
             if serializer := _class_serializer(origin):
                 return serializer
 
-        return self._configured_for_schema(declared_type)
+        for serializer in self.serializers:
+            if serializer.matches_type(declared_type):
+                return serializer
+        return None
 
     def serializer_for_dump(
         self,
@@ -116,20 +119,8 @@ class ArtifactSerializerRegistry:
         if serializer := _class_serializer(type(value)):
             return serializer
 
-        return self._configured_for_dump(value)
-
-    def _configured_for_dump(self, value: object) -> type[ArtifactSerializer] | None:
         for serializer in self.serializers:
             if serializer.matches(value):
-                return serializer
-        return None
-
-    def _configured_for_schema(
-        self,
-        declared_type: object,
-    ) -> type[ArtifactSerializer] | None:
-        for serializer in self.serializers:
-            if serializer.matches_type(declared_type):
                 return serializer
         return None
 
