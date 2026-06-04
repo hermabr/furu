@@ -30,8 +30,7 @@ from furu.utils import JsonValue, _stable_json_dump, fully_qualified_name
 
 
 def _custom_schema(
-    serializer: type[ArtifactSerializer],
-    declared_type: object,
+    serializer: type[ArtifactSerializer], declared_type: object
 ) -> JsonValue:
     return {
         KINDMARKER: "custom",
