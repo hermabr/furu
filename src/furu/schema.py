@@ -87,10 +87,8 @@ def schema_type(
     tp: Any,
     seen: set[type],
     *,
-    registry: ArtifactSerializerRegistry | None = None,
+    registry: ArtifactSerializerRegistry,
 ) -> JsonValue:
-    registry = ArtifactSerializerRegistry.default() if registry is None else registry
-
     if serializer := serializer_for_type(tp, registry=registry):
         return _custom_schema(serializer, tp)
 
