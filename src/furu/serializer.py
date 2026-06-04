@@ -3,9 +3,9 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import cache
-from typing import Self, TypeGuard, final, get_origin
+from typing import Annotated, Self, TypeGuard, final, get_args, get_origin
 
-from furu._declared_types import annotated_metadata, strip_annotated
+from furu._declared_types import strip_annotated
 from furu.config import get_config
 from furu.utils import JsonValue, fully_qualified_name, resolve_fully_qualified_name
 
@@ -57,7 +57,10 @@ def _type_label(cls: type) -> str:
 
 
 def annotated_serializer(declared_type: object) -> type[ArtifactSerializer] | None:
-    for metadata in annotated_metadata(declared_type):
+    if get_origin(declared_type) is not Annotated:
+        return None
+
+    for metadata in get_args(declared_type)[1:]:
         if _is_serializer_class(metadata):
             return metadata
     return None

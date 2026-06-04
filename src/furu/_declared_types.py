@@ -9,12 +9,6 @@ def strip_annotated(declared_type: object) -> object:
     return declared_type
 
 
-def annotated_metadata(declared_type: object) -> tuple[object, ...]:
-    if get_origin(declared_type) is not Annotated:
-        return ()
-    return get_args(declared_type)[1:]
-
-
 def child_declared_type(declared_type: object, key: object) -> object:
     declared_type = strip_annotated(declared_type)
     origin = get_origin(declared_type)
