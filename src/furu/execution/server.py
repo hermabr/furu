@@ -4,7 +4,6 @@ import socket
 import threading
 import time
 from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 from secrets import token_urlsafe
@@ -13,10 +12,6 @@ import uvicorn
 
 from furu.execution.api import create_manager_api_app
 from furu.execution.manager import Manager
-from furu.logging import get_logger
-from furu.worker.backends import WorkerBackend, WorkerPool
-
-logger = get_logger()
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,41 +75,3 @@ def manager_server(
         if thread is not None:
             thread.join(timeout=10)
         sock.close()
-
-
-def _run_until_done(
-    manager: Manager,
-    *,
-    worker_backends: tuple[WorkerBackend, ...],
-    port: int,
-) -> None:
-    (bind_host,) = {backend.manager_listen_host for backend in worker_backends}
-
-    with manager.log_context():
-        logger.info(
-            "starting furu manager: executor_id=%s executor_dir=%s ready=%d blocked=%d",
-            manager.executor_id,
-            manager.executor_dir,
-            len(manager.ready),
-            len(manager.blocked),
-        )
-        with manager_server(manager, bind_host=bind_host, port=port) as server:
-            logger.info(
-                "manager server listening: server_url=%s",
-                server.server_url,
-            )
-            pools: list[WorkerPool] = []
-            for backend in worker_backends:
-                pool = backend.start_pool(
-                    server_url=server.server_url,
-                    auth_token=server.auth_token,
-                    executor_dir=manager.executor_dir,
-                )
-                pools.append(pool)
-                logger.info("worker pool started: backend=%s", type(backend).__name__)
-            manager.done.wait()
-
-            with ThreadPoolExecutor(max_workers=len(pools)) as executor:
-                for pool in pools:
-                    executor.submit(pool.stop, timeout=5)
-    manager.raise_for_failure()

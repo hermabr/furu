@@ -3,10 +3,11 @@ from __future__ import annotations
 import hashlib
 import threading
 from collections.abc import Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, assert_never
+from typing import TYPE_CHECKING, Any, assert_never
 from uuid import uuid4
 
 from furu._storage_layout import manager_log_path_in
@@ -46,56 +47,84 @@ class FailedJob:
     error: str
 
 
+@dataclass(slots=True, kw_only=True)
 class Manager:
-    def __init__(
-        self,
-        objs: Sequence[Furu],
+    max_retries_per_object: int
+    executor_id: str = "not-computed-yet"
+    nodes_by_id: dict[str, DagNode] = field(default_factory=dict)
+    ready: dict[str, DagNode] = field(default_factory=dict)
+    blocked: dict[str, DagNode] = field(default_factory=dict)
+    running: dict[str, RunningJob] = field(default_factory=dict)
+    completed: dict[str, DagNode] = field(default_factory=dict)
+    failed: dict[str, FailedJob] = field(default_factory=dict)
+    lock: Any = field(default_factory=threading.Lock)
+    done: threading.Event = field(default_factory=threading.Event)
+    finish_error: str | None = None
+
+    @classmethod
+    def run[ObjsT: Sequence[Furu]](
+        cls,
+        objs: ObjsT,
         *,
-        max_retries_per_object: int = get_config().worker.max_retries_per_object,
-    ) -> None:
-        self.nodes_by_id: dict[str, DagNode] = {}
-        self.ready: dict[str, DagNode] = {}
-        self.blocked: dict[str, DagNode] = {}
-        self.running: dict[str, RunningJob] = {}
-        self.completed: dict[str, DagNode] = {}
-        self.failed: dict[str, FailedJob] = {}
-        self.lock = threading.Lock()
-        self.done = threading.Event()
-        self._finish_error: str | None = None
-        self._max_retries_per_object = max_retries_per_object
-
-        _add_to_dag(self, objs)
-
+        max_retries_per_object: int | None = None,
+        worker_backends: tuple[WorkerBackend, ...],
+        port: int = 0,
+    ) -> ObjsT:
+        if max_retries_per_object is None:
+            max_retries_per_object = get_config().worker.max_retries_per_object
+        manager = cls(max_retries_per_object=max_retries_per_object)
+        _add_to_dag(manager, objs)
         digest = hashlib.blake2s(digest_size=16)
         for obj in objs:
             digest.update(obj.object_id.encode("utf-8"))
             digest.update(b"\0")
-        self.executor_id = digest.hexdigest()
+        manager.executor_id = digest.hexdigest()
+
+        if not manager.nodes_by_id:
+            with manager.log_context(), manager.lock:
+                logger.info("all objects already exist; no manager work to run")
+                manager._maybe_finish_locked()
+            return objs
+
+        (bind_host,) = {backend.manager_listen_host for backend in worker_backends}
+
+        from furu.execution.server import manager_server
+
+        with manager.log_context():
+            logger.info(
+                "starting furu manager: executor_id=%s executor_dir=%s ready=%d blocked=%d",
+                manager.executor_id,
+                manager.executor_dir,
+                len(manager.ready),
+                len(manager.blocked),
+            )
+            with manager_server(manager, bind_host=bind_host, port=port) as server:
+                logger.info(
+                    "manager server listening: server_url=%s",
+                    server.server_url,
+                )
+                pools = []
+                for backend in worker_backends:
+                    pool = backend.start_pool(
+                        server_url=server.server_url,
+                        auth_token=server.auth_token,
+                        executor_dir=manager.executor_dir,
+                    )
+                    pools.append(pool)
+                    logger.info(
+                        "worker pool started: backend=%s", type(backend).__name__
+                    )
+                manager.done.wait()
+
+                with ThreadPoolExecutor(max_workers=len(pools)) as executor:
+                    for pool in pools:
+                        executor.submit(pool.stop, timeout=5)
+        manager.raise_for_failure()
+        return objs
 
     @property
     def executor_dir(self) -> Path:
         return get_config().directories.executions / self.executor_id
-
-    def run(
-        self,
-        *,
-        worker_backends: tuple[WorkerBackend, ...],
-        port: int = 0,
-    ) -> None:
-        from furu.execution.server import _run_until_done
-
-        if not self.nodes_by_id:
-            with self.log_context(), self.lock:
-                logger.info("all objects already exist; no manager work to run")
-                self._maybe_finish_locked()
-            self.raise_for_failure()
-            return
-
-        _run_until_done(
-            self,
-            worker_backends=worker_backends,
-            port=port,
-        )
 
     @contextmanager
     def log_context(self) -> Iterator[None]:
@@ -199,14 +228,14 @@ class Manager:
                         node=running_job.node,
                         error=error,
                     )
-                    if failed_attempts <= self._max_retries_per_object:
+                    if failed_attempts <= self.max_retries_per_object:
                         self.ready[object_id] = running_job.node
                     logger.info(
                         "job failed: lease_id=%s object_id=%s failed_attempts=%d max_retries=%d error=%s",
                         lease_id,
                         object_id,
                         failed_attempts,
-                        self._max_retries_per_object,
+                        self.max_retries_per_object,
                         error,
                     )
                 case JobBlockedResult(dependencies=dependencies):
@@ -238,14 +267,14 @@ class Manager:
             self._maybe_finish_locked()
 
     def raise_for_failure(self) -> None:
-        if self._finish_error is not None:
-            raise RuntimeError(self._finish_error)
+        if self.finish_error is not None:
+            raise RuntimeError(self.finish_error)
 
     def fail(self, message: str) -> None:
         with self.log_context(), self.lock:
             if self.done.is_set():
                 return
-            self._finish_error = message
+            self.finish_error = message
             logger.error("furu manager finished with error: %s", message)
             self.done.set()
 
@@ -256,7 +285,7 @@ class Manager:
         terminal_failed = {
             object_id: record
             for object_id, record in self.failed.items()
-            if record.failed_attempts > self._max_retries_per_object
+            if record.failed_attempts > self.max_retries_per_object
         }
 
         if terminal_failed or self.blocked:
@@ -275,8 +304,8 @@ class Manager:
                     f"after {failed_job.failed_attempts} failed attempts "
                     f"(lease {failed_job.lease_id}): {failed_job.error}"
                 )
-            self._finish_error = "manager run could not complete; " + "; ".join(parts)
-            logger.error("furu manager finished with error: %s", self._finish_error)
+            self.finish_error = "manager run could not complete; " + "; ".join(parts)
+            logger.error("furu manager finished with error: %s", self.finish_error)
         else:
             logger.info("furu manager finished successfully")
         self.done.set()

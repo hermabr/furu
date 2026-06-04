@@ -1,12 +1,15 @@
+import hashlib
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import ClassVar, Iterator
+from collections.abc import Sequence
+from typing import Any, ClassVar, Iterator
 
 import pytest
 
 import furu
 from furu import Furu
-from furu.dag import DagNode
+from furu.config import get_config
+from furu.dag import DagNode, _add_to_dag
 from furu.execution.manager import Manager
 from furu.locking import lock_many
 from furu._storage_layout import (
@@ -71,9 +74,26 @@ def mark_running(obj: Furu) -> Iterator[None]:
         yield
 
 
+def _new_manager(
+    objs: Sequence[Furu[Any]],
+    *,
+    max_retries_per_object: int | None = None,
+) -> Manager:
+    if max_retries_per_object is None:
+        max_retries_per_object = get_config().worker.max_retries_per_object
+    manager = Manager(max_retries_per_object=max_retries_per_object)
+    _add_to_dag(manager, objs)
+    digest = hashlib.blake2s(digest_size=16)
+    for obj in objs:
+        digest.update(obj.object_id.encode("utf-8"))
+        digest.update(b"\0")
+    manager.executor_id = digest.hexdigest()
+    return manager
+
+
 def test_add_to_dag_single_object_no_dependencies():
     leaf = Leaf(name="x")
-    manager = Manager([leaf])
+    manager = _new_manager([leaf])
 
     assert len(manager.ready) == 1
     (root,) = manager.ready.values()
@@ -93,7 +113,7 @@ def test_add_to_dag_traverses_declared_refs_recursively():
     mid_right = Mid(label="R", child=leaf_b)
     top = Top(name="t", left=mid_left, right=mid_right)
 
-    manager = Manager([top])
+    manager = _new_manager([top])
 
     assert set(manager.ready) == {leaf_a.object_id, leaf_b.object_id}
     assert set(manager.blocked) == {
@@ -131,7 +151,7 @@ def test_add_to_dag_shared_dependency_has_multiple_dependents():
     mid_right = Mid(label="R", child=shared)
     top = Top(name="t", left=mid_left, right=mid_right)
 
-    manager = Manager([top])
+    manager = _new_manager([top])
 
     assert len(manager.ready) == 1
     (shared_root,) = manager.ready.values()
@@ -157,7 +177,7 @@ def test_add_to_dag_stops_recursion_at_completed_objects():
     leaf.create()
     assert leaf.status() == "completed"
 
-    manager = Manager([mid])
+    manager = _new_manager([mid])
 
     assert len(manager.ready) == 1
     (mid_root,) = manager.ready.values()
@@ -174,7 +194,7 @@ def test_add_to_dag_completed_root_has_no_dependencies():
     mid.create()
     assert mid.status() == "completed"
 
-    manager = Manager([mid])
+    manager = _new_manager([mid])
 
     assert manager.ready == {}
     assert manager.nodes_by_id == {}
@@ -188,7 +208,7 @@ def test_add_to_dag_rejects_running_root():
         assert leaf.status() == "running"
 
         with pytest.raises(RuntimeError, match="cannot add running object to DAG"):
-            Manager([leaf])
+            _new_manager([leaf])
 
 
 def test_add_to_dag_rejects_running_dependency():
@@ -199,7 +219,7 @@ def test_add_to_dag_rejects_running_dependency():
         assert leaf.status() == "running"
 
         with pytest.raises(RuntimeError, match="cannot add running object to DAG"):
-            Manager([mid])
+            _new_manager([mid])
 
 
 def test_add_to_dag_does_not_reject_inactive_compute_lock():
@@ -209,7 +229,7 @@ def test_add_to_dag_does_not_reject_inactive_compute_lock():
     lock_path.touch()
 
     assert leaf.status() == "failed"
-    manager = Manager([leaf])
+    manager = _new_manager([leaf])
 
     assert set(manager.ready) == {leaf.object_id}
 
@@ -219,7 +239,7 @@ def test_add_to_dag_accepts_a_list_of_inputs():
     leaf_b = Leaf(name="b")
     mid = Mid(label="m", child=leaf_a)
 
-    manager = Manager([mid, leaf_b])
+    manager = _new_manager([mid, leaf_b])
 
     assert set(manager.ready) == {leaf_a.object_id, leaf_b.object_id}
 
@@ -238,7 +258,7 @@ def test_add_to_dag_handles_nested_dataclass_refs():
     leaf_b = Leaf(name="b")
     parent = NestedParent(bundle=LeafBundle(a=leaf_a, b=leaf_b))
 
-    manager = Manager([parent])
+    manager = _new_manager([parent])
 
     assert set(manager.ready) == {leaf_a.object_id, leaf_b.object_id}
 
@@ -252,7 +272,7 @@ def test_add_to_dag_handles_nested_dataclass_refs():
 def test_add_to_dag_walks_computed_dependencies():
     parent = ComputedParent(name="p")
 
-    manager = Manager([parent])
+    manager = _new_manager([parent])
 
     assert len(manager.ready) == 1
     (child_root,) = manager.ready.values()
@@ -266,7 +286,9 @@ def test_add_to_dag_walks_computed_dependencies():
 
 def test_add_to_dag_rejects_non_furu_values():
     with pytest.raises(TypeError, match="expected Furu objects"):
-        Manager([Leaf(name="ok"), "not-a-furu"])  # ty: ignore[invalid-argument-type]
+        _new_manager(
+            [Leaf(name="ok"), "not-a-furu"]  # ty: ignore[invalid-argument-type]
+        )
 
 
 class TrackingLeaf(Furu[int]):
@@ -322,7 +344,7 @@ def _reset_tracking() -> None:
 def test_manager_run_runs_single_zero_dependency_node():
     leaf = TrackingLeaf(n=3)
 
-    Manager([leaf]).run(worker_backends=(LocalThreadWorkerBackend(),))
+    Manager.run([leaf], worker_backends=(LocalThreadWorkerBackend(),))
 
     assert TrackingLeaf.create_calls == [3]
     assert leaf.status() == "completed"
@@ -333,7 +355,7 @@ def test_manager_run_runs_static_dependencies_in_order():
     leaf = TrackingLeaf(n=4)
     mid = TrackingMid(label="m", child=leaf)
 
-    Manager([mid]).run(worker_backends=(LocalThreadWorkerBackend(),))
+    Manager.run([mid], worker_backends=(LocalThreadWorkerBackend(),))
 
     assert TrackingLeaf.create_calls == [4]
     assert TrackingMid.create_calls == ["m"]
@@ -345,7 +367,7 @@ def test_manager_run_handles_shared_dependency_only_once():
     left = TrackingMid(label="L", child=shared)
     right = TrackingMid(label="R", child=shared)
 
-    Manager([left, right]).run(worker_backends=(LocalThreadWorkerBackend(),))
+    Manager.run([left, right], worker_backends=(LocalThreadWorkerBackend(),))
 
     assert TrackingLeaf.create_calls == [5]
     assert sorted(TrackingMid.create_calls) == ["L", "R"]
@@ -354,7 +376,7 @@ def test_manager_run_handles_shared_dependency_only_once():
 def test_manager_run_with_multiple_workers_runs_independent_nodes():
     leaves = [TrackingLeaf(n=i) for i in range(8)]
 
-    Manager(leaves).run(worker_backends=(LocalThreadWorkerBackend(max_workers=4),))
+    Manager.run(leaves, worker_backends=(LocalThreadWorkerBackend(max_workers=4),))
 
     assert sorted(TrackingLeaf.create_calls) == list(range(8))
     for leaf in leaves:
@@ -364,7 +386,7 @@ def test_manager_run_with_multiple_workers_runs_independent_nodes():
 def test_manager_run_discovers_lazy_dependencies_and_reruns_parent():
     parent = LazyChildLoader(base=7)
 
-    Manager([parent]).run(worker_backends=(LocalThreadWorkerBackend(),))
+    Manager.run([parent], worker_backends=(LocalThreadWorkerBackend(),))
 
     assert TrackingLeaf.create_calls == [7]
     # Parent's create() is called once to discover the lazy dep (raising
@@ -386,23 +408,22 @@ def test_manager_run_skips_already_completed_objects():
     TrackingLeaf.create_calls.clear()
     mid = TrackingMid(label="cached-child", child=leaf)
 
-    Manager([mid]).run(worker_backends=(LocalThreadWorkerBackend(),))
+    Manager.run([mid], worker_backends=(LocalThreadWorkerBackend(),))
 
     assert TrackingLeaf.create_calls == []
     assert TrackingMid.create_calls == ["cached-child"]
 
 
-def test_manager_run_records_worker_failures_and_blocked_dependents():
+def test_manager_run_reports_worker_failures():
     failing = AlwaysFails(name="boom")
     parent = DependsOnFailing(label="p", child=failing)
-    manager = Manager([parent], max_retries_per_object=0)
 
     with pytest.raises(RuntimeError, match="failed jobs"):
-        manager.run(worker_backends=(LocalThreadWorkerBackend(),))
+        Manager.run(
+            [parent],
+            max_retries_per_object=0,
+            worker_backends=(LocalThreadWorkerBackend(),),
+        )
 
-    assert failing.object_id in manager.failed
-    failed_job = manager.failed[failing.object_id]
-    assert failed_job.failed_attempts == 1
-    assert "intentional failure: boom" in failed_job.error
-    assert parent.object_id in manager.blocked
-    assert manager.done.is_set()
+    assert failing.status() == "failed"
+    assert parent.status() == "missing"

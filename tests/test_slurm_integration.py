@@ -61,9 +61,8 @@ def test_slurm_backend_runs_worker_job_end_to_end(
         scenario_id=scenario_id,
         duration_seconds=TASK_DURATION_SECONDS,
     )
-    manager = Manager(final_tasks)
-
-    manager.run(
+    Manager.run(
+        final_tasks,
         worker_backends=(
             SlurmWorkerBackend(
                 max_workers=A_WORKER_COUNT,
