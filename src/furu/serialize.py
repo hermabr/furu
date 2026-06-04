@@ -30,22 +30,6 @@ _RESERVED_DICT_KEYS = frozenset(
 )
 
 
-def _dump_custom(
-    obj: Any,
-    *,
-    serializer: type[ArtifactSerializer],
-    declared_type: object,
-) -> JsonValue:
-    return {
-        KINDMARKER: "custom",
-        SERIALIZERMARKER: serializer._serializer_id(),
-        VALUEMARKER: serializer.dump(
-            obj,
-            declared_type=strip_annotated(declared_type),
-        ),
-    }
-
-
 def to_json(  # TODO: consider caching this (but if i'm going to, I need to figure out how to cache lists and other unhashable objects)
     obj: Any,
     declared_type: object = Any,
@@ -72,7 +56,14 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
         declared_type=declared_type,
         registry=registry,
     ):
-        return _dump_custom(obj, serializer=serializer, declared_type=declared_type)
+        return {
+            KINDMARKER: "custom",
+            SERIALIZERMARKER: serializer._serializer_id(),
+            VALUEMARKER: serializer.dump(
+                obj,
+                declared_type=strip_annotated(declared_type),
+            ),
+        }
 
     match obj:
         case None:
