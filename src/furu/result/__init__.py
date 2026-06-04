@@ -18,7 +18,7 @@ from typing import (
 
 import pydantic
 
-from furu._typing import child_declared_type, strip_annotated
+from furu._declared_types import child_declared_type, strip_annotated
 from furu.constants import FIELDSMARKER, KINDMARKER, TYPEMARKER
 from furu.result.codec import ResultCodec, ResultRegistry
 from furu.result.lazy import LazyResult

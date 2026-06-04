@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any, cast, get_args, get_origin, get_type_hint
 
 from pydantic import BaseModel as PydanticBaseModel
 
-from furu._typing import child_declared_type, strip_annotated
+from furu._declared_types import child_declared_type, strip_annotated
 from furu.constants import (
     CLASSMARKER,
     FIELDSMARKER,

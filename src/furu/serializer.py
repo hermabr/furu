@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from functools import cache
 from typing import Self, TypeGuard, final, get_origin
 
-from furu._typing import annotated_metadata, strip_annotated
+from furu._declared_types import annotated_metadata, strip_annotated
 from furu.config import get_config
 from furu.utils import JsonValue, fully_qualified_name, resolve_fully_qualified_name
 

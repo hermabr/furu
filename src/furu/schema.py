@@ -11,7 +11,7 @@ from typing import (
 
 from pydantic import BaseModel as PydanticBaseModel
 
-from furu._typing import strip_annotated
+from furu._declared_types import strip_annotated
 from furu.constants import (
     ARGSMARKER,
     CLASSMARKER,

@@ -14,7 +14,7 @@ import furu
 import furu.config as furu_config
 from furu import Furu
 from furu._storage_layout import result_dir_in, result_manifest_path_in
-from furu._typing import child_declared_type
+from furu._declared_types import child_declared_type
 from furu.config import get_config
 from furu.result import (
     LazyResult,
