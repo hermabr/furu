@@ -120,7 +120,7 @@ class ResultRegistry:
     @classmethod
     @cache
     def default(cls) -> ResultRegistry:
-        configured_codecs_list: list[type[ResultCodec]] = []
+        configured_codecs: list[type[ResultCodec]] = []
         for codec_id in get_config().result.codecs:
             codec = resolve_fully_qualified_name(codec_id)
             if not isinstance(codec, type) or not issubclass(codec, ResultCodec):
@@ -128,8 +128,7 @@ class ResultRegistry:
                     f"Configured result codec {codec_id!r} is not a ResultCodec"
                 )
             if codec.dependencies_available():
-                configured_codecs_list.append(codec)
-        configured_codecs = tuple(configured_codecs_list)
+                configured_codecs.append(codec)
         built_in_codecs = tuple(
             codec
             for codec in (PolarsParquetCodec, NumpyNpyCodec)
