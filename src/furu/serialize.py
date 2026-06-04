@@ -31,8 +31,8 @@ _RESERVED_DICT_KEYS = frozenset(
 
 def to_json(  # TODO: consider caching this (but if i'm going to, I need to figure out how to cache lists and other unhashable objects)
     obj: Any,
-    declared_type: object = Any,
-    registry: ArtifactSerializerRegistry = ArtifactSerializerRegistry.default(),
+    declared_type: object,
+    registry: ArtifactSerializerRegistry,
 ) -> JsonValue:
     # TODO: when writing this to metadata, make sure to escape strings etc
 
