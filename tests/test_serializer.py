@@ -119,10 +119,7 @@ class _RegistrySecretRun(Furu[int]):
 
     @property
     def serializer_registry(self) -> ArtifactSerializerRegistry:
-        registry = super().serializer_registry
-        return ArtifactSerializerRegistry(
-            serializers=(_RegistrySecretSerializer, *registry.serializers)
-        )
+        return super().serializer_registry.register(_RegistrySecretSerializer)
 
     def create(self) -> int:
         return self.secret.value

@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import cache
-from typing import Annotated, final, get_args, get_origin
+from typing import Annotated, Self, final, get_args, get_origin
 
 from furu._declared_types import strip_annotated
 from furu.config import get_config
@@ -77,6 +77,9 @@ def _class_serializer(cls: type) -> type[ArtifactSerializer] | None:
 @dataclass(frozen=True)
 class ArtifactSerializerRegistry:
     serializers: tuple[type[ArtifactSerializer], ...] = ()
+
+    def register(self, serializer: type[ArtifactSerializer]) -> Self:
+        return type(self)(serializers=(serializer, *self.serializers))
 
     def for_schema(self, declared_type: object) -> type[ArtifactSerializer] | None:
         if serializer := _annotated_serializer(declared_type):
