@@ -19,15 +19,15 @@ from furu.locking import is_active_lock, lock_many
 from furu.logging import get_logger
 from furu.resources import ResourceRequirements
 from furu.result import load_result_bundle
-from furu.result.codec import ResultRegistry, _default_result_registry
+from furu.result.codec import ResultRegistry
 from furu.schema import schema_type as _schema_type
 from furu.serialize import to_json as _to_json
 from furu.utils import (
     JsonValue,
     _hash_dict_deterministically,
+    fully_qualified_name,
     nfs_safe_unique_name,
     object_id_from_parts,
-    fully_qualified_name,
 )
 from furu.validate import validate_cls
 
@@ -96,7 +96,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     @property
     def result_registry(self) -> ResultRegistry:
-        return _default_result_registry()
+        return ResultRegistry.default()
 
     @property
     def resource_requirements(self) -> ResourceRequirements | None:
