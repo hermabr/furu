@@ -11,7 +11,9 @@ if TYPE_CHECKING:
     import numpy as np
     import polars as pl
 
+from furu.config import get_config
 from furu.utils import fully_qualified_name
+from furu.utils import resolve_fully_qualified_name
 
 
 class ResultCodec[T](ABC):
@@ -118,11 +120,48 @@ class ResultRegistry:
 
 
 @cache
-def _default_result_registry() -> ResultRegistry:
-    return ResultRegistry(
-        codecs=tuple(
-            codec
-            for codec in (PolarsParquetCodec, NumpyNpyCodec)
-            if codec.dependencies_available()
-        ),
+def _built_in_result_codecs() -> tuple[type[ResultCodec], ...]:
+    return tuple(
+        codec
+        for codec in (PolarsParquetCodec, NumpyNpyCodec)
+        if codec.dependencies_available()
     )
+
+
+def _resolve_configured_codec(codec_id: str) -> type[ResultCodec]:
+    codec = resolve_fully_qualified_name(codec_id)
+    if not isinstance(codec, type) or not issubclass(codec, ResultCodec):
+        raise TypeError(f"Configured result codec {codec_id!r} is not a ResultCodec")
+    if not codec.dependencies_available():
+        raise ImportError(
+            f"Configured result codec {codec_id!r} has unavailable dependencies"
+        )
+    return codec
+
+
+def _deduplicate_codecs(
+    codecs: tuple[type[ResultCodec], ...],
+) -> tuple[type[ResultCodec], ...]:
+    seen: set[type[ResultCodec]] = set()
+    deduplicated: list[type[ResultCodec]] = []
+    for codec in codecs:
+        if codec not in seen:
+            deduplicated.append(codec)
+            seen.add(codec)
+    return tuple(deduplicated)
+
+
+@cache
+def _result_registry_for_configured_codecs(
+    codec_ids: tuple[str, ...],
+) -> ResultRegistry:
+    configured_codecs = tuple(
+        _resolve_configured_codec(codec_id) for codec_id in codec_ids
+    )
+    return ResultRegistry(
+        codecs=_deduplicate_codecs((*configured_codecs, *_built_in_result_codecs()))
+    )
+
+
+def _default_result_registry() -> ResultRegistry:
+    return _result_registry_for_configured_codecs(get_config().result.codecs)

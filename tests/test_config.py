@@ -7,6 +7,7 @@ import furu.config as furu_config
 from furu.config import (
     _FuruConfig,
     _FuruDirectories,
+    _FuruResultConfig,
     _FuruWorkerConfig,
     _WORKER_JSON_CONFIG_FILE_ENV_VAR,
     get_config,
@@ -46,6 +47,9 @@ debug_mode = true
 objects = "/tmp/furu-pyproject-objects"
 executions = "/tmp/furu-pyproject-executions"
 
+[tool.furu.result]
+codecs = ["project.codecs.ArrayCodec", "project.codecs.FrameCodec"]
+
 [tool.furu.worker]
 idle_timeout_seconds = 7.5
 max_failed_restarts = 7
@@ -61,6 +65,9 @@ max_retries_per_object = 3
     assert config.directories == _FuruDirectories(
         objects=Path("/tmp/furu-pyproject-objects"),
         executions=Path("/tmp/furu-pyproject-executions"),
+    )
+    assert config.result == _FuruResultConfig(
+        codecs=("project.codecs.ArrayCodec", "project.codecs.FrameCodec")
     )
     assert config.worker == _FuruWorkerConfig(
         idle_timeout_seconds=7.5,
@@ -130,6 +137,9 @@ def test_config_reads_json_config_file(tmp_path, monkeypatch) -> None:
     "objects": "/tmp/furu-json-objects",
     "executions": "/tmp/furu-json-executions"
   },
+  "result": {
+    "codecs": ["project.codecs.ArrayCodec"]
+  },
   "worker": {
     "idle_timeout_seconds": 9.5,
     "max_failed_restarts": 7,
@@ -150,6 +160,7 @@ def test_config_reads_json_config_file(tmp_path, monkeypatch) -> None:
         objects=Path("/tmp/furu-json-objects"),
         executions=Path("/tmp/furu-json-executions"),
     )
+    assert config.result == _FuruResultConfig(codecs=("project.codecs.ArrayCodec",))
     assert config.worker == _FuruWorkerConfig(
         idle_timeout_seconds=9.5,
         max_failed_restarts=7,

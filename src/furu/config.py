@@ -37,6 +37,12 @@ class _FuruWorkerConfig(BaseSettings):
     max_retries_per_object: int = 3
 
 
+class _FuruResultConfig(BaseSettings):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    codecs: tuple[str, ...] = ()
+
+
 class _FuruConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="FURU_",
@@ -51,6 +57,7 @@ class _FuruConfig(BaseSettings):
 
     debug_mode: bool = False
     directories: _FuruDirectories = Field(default_factory=_FuruDirectories.default)
+    result: _FuruResultConfig = Field(default_factory=_FuruResultConfig)
     worker: _FuruWorkerConfig = Field(default_factory=_FuruWorkerConfig)
 
     @classmethod

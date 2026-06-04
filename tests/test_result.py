@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import math
 from dataclasses import dataclass, field
@@ -7,10 +8,12 @@ from pathlib import Path
 from typing import Annotated, Any, ClassVar, cast
 
 import furu
+import furu.config as furu_config
 import pytest
 from pydantic import BaseModel, ConfigDict
 
 from furu import Furu
+from furu.config import _FuruConfig
 from furu.result import (
     LazyResult,
     _child_declared_type,
@@ -310,6 +313,64 @@ def test_result_registry_register_is_functional() -> None:
     assert _default_result_registry().find_codec(_CountingValue(1)) is None
     assert first.find_codec(_CountingValue(1)) is _CountingCodec
     assert second.find_codec(_CountingValue(1)) is _OtherCountingCodec
+
+
+def test_default_result_registry_registers_pyproject_codecs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    codec_module_path = tmp_path / "configured_codec.py"
+    codec_module_path.write_text(
+        """
+from pathlib import Path
+
+from furu.result.codec import ResultCodec
+
+
+class PyprojectValue:
+    def __init__(self, value: int) -> None:
+        self.value = value
+
+
+class PyprojectCodec(ResultCodec[PyprojectValue]):
+    @classmethod
+    def matches(cls, value: object) -> bool:
+        return isinstance(value, PyprojectValue)
+
+    @classmethod
+    def dump(cls, value: PyprojectValue, *, artifact_dir: Path) -> None:
+        artifact_dir.joinpath("value.txt").write_text(str(value.value), encoding="utf-8")
+
+    @classmethod
+    def load(cls, *, artifact_dir: Path) -> PyprojectValue:
+        return PyprojectValue(
+            int(artifact_dir.joinpath("value.txt").read_text(encoding="utf-8"))
+        )
+""",
+        encoding="utf-8",
+    )
+    tmp_path.joinpath("pyproject.toml").write_text(
+        """
+[tool.furu.result]
+codecs = ["configured_codec.PyprojectCodec"]
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(furu_config, "_config", _FuruConfig())
+
+    codec_module = importlib.import_module("configured_codec")
+    registry = _default_result_registry()
+    value = codec_module.PyprojectValue(7)
+
+    assert registry.find_codec(value) is codec_module.PyprojectCodec
+
+    bundle_dir = tmp_path / "bundle"
+    _save_result_bundle(value, bundle_dir, registry=registry)
+
+    loaded = load_result_bundle(bundle_dir)
+    assert isinstance(loaded, codec_module.PyprojectValue)
+    assert loaded.value == 7
 
 
 @pytest.mark.parametrize(
