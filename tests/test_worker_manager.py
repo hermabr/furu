@@ -2,7 +2,7 @@ import hashlib
 import threading
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar
 from uuid import UUID, uuid4
 
 import httpx
@@ -22,7 +22,7 @@ from furu.execution.manager import (
     Manager,
     RunningJob,
 )
-from furu.execution.server import manager_server, run_until_done
+from furu.execution.server import manager_server
 from furu.metadata import ArtifactSpec
 from furu.resources import ResourceRequest, ResourceRequirements
 from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
@@ -870,22 +870,17 @@ def test_manager_run_returns_when_all_objects_are_already_completed() -> None:
 
 
 def test_manager_run_starts_backend_pool_and_stops_and_joins_when_done() -> None:
-    class RecordingDone:
-        def __init__(self) -> None:
-            self.wait_calls = 0
-
-        def wait(self, timeout: float | None = None) -> bool:
-            self.wait_calls += 1
-            return True
-
     class RecordingPool:
         def __init__(self) -> None:
             self.events: list[str] = []
             self.stop_timeouts: list[float] = []
+            self.worker_thread: threading.Thread | None = None
 
         def stop(self, *, timeout: float) -> None:
             self.events.append("stop")
             self.stop_timeouts.append(timeout)
+            if self.worker_thread is not None:
+                self.worker_thread.join(timeout=timeout)
 
     class RecordingBackend:
         manager_listen_host = "127.0.0.1"
@@ -901,32 +896,43 @@ def test_manager_run_starts_backend_pool_and_stops_and_joins_when_done() -> None
             executor_dir: Path,
         ) -> RecordingPool:
             self.pool.events.append("start_pool")
+            client = api.WorkerApiClient(server_url=server_url, auth_token=auth_token)
+            failure_client = api.PoolApiClient(
+                server_url=server_url, auth_token=auth_token
+            )
+
+            def complete_job() -> None:
+                try:
+                    job = client.lease_job(resources=ANY_RESOURCES)
+                    if not isinstance(job, Job):
+                        raise AssertionError(f"expected job, got {job!r}")
+                    client.job_result(job.lease_id, JobCompletedResult())
+                except BaseException as exc:
+                    failure_client.fail(message=f"recording backend failed: {exc!r}")
+
+            self.pool.worker_thread = threading.Thread(target=complete_job)
+            self.pool.worker_thread.start()
             return self.pool
 
-    manager = _new_manager([ManagerLeaf(value=13)])
-    done = RecordingDone()
     pool = RecordingPool()
-    cast(Any, manager).done = done
 
-    run_until_done(
-        manager,
+    Manager.run(
+        [ManagerLeaf(value=13)],
         worker_backends=(RecordingBackend(pool),),
         port=0,
     )
 
-    assert done.wait_calls == 1
     assert pool.events == ["start_pool", "stop"]
     assert pool.stop_timeouts == [5]
 
 
-def test_run_until_done_uses_worker_backend_manager_listen_host() -> None:
-    class RecordingDone:
-        def wait(self, timeout: float | None = None) -> bool:
-            return True
-
+def test_manager_run_uses_worker_backend_manager_listen_host() -> None:
     class RecordingPool:
+        worker_thread: threading.Thread | None = None
+
         def stop(self, *, timeout: float) -> None:
-            pass
+            if self.worker_thread is not None:
+                self.worker_thread.join(timeout=timeout)
 
     class RecordingBackend:
         manager_listen_host = "127.0.0.1"
@@ -942,13 +948,28 @@ def test_run_until_done_uses_worker_backend_manager_listen_host() -> None:
             executor_dir: Path,
         ) -> RecordingPool:
             self.server_urls.append(server_url)
-            return RecordingPool()
+            pool = RecordingPool()
+            client = api.WorkerApiClient(server_url=server_url, auth_token=auth_token)
+            failure_client = api.PoolApiClient(
+                server_url=server_url, auth_token=auth_token
+            )
 
-    manager = _new_manager([ManagerLeaf(value=15)])
+            def complete_job() -> None:
+                try:
+                    job = client.lease_job(resources=ANY_RESOURCES)
+                    if not isinstance(job, Job):
+                        raise AssertionError(f"expected job, got {job!r}")
+                    client.job_result(job.lease_id, JobCompletedResult())
+                except BaseException as exc:
+                    failure_client.fail(message=f"recording backend failed: {exc!r}")
+
+            pool.worker_thread = threading.Thread(target=complete_job)
+            pool.worker_thread.start()
+            return pool
+
     backend = RecordingBackend()
-    cast(Any, manager).done = RecordingDone()
 
-    run_until_done(manager, worker_backends=(backend,), port=0)
+    Manager.run([ManagerLeaf(value=15)], worker_backends=(backend,), port=0)
 
     assert len(backend.server_urls) == 1
     assert backend.server_urls[0].startswith("http://127.0.0.1:")

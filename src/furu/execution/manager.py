@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import threading
 from collections.abc import Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -83,16 +84,42 @@ class Manager:
             with manager.log_context(), manager.lock:
                 logger.info("all objects already exist; no manager work to run")
                 manager._maybe_finish_locked()
-            manager.raise_for_failure()
             return objs
 
-        from furu.execution.server import run_until_done
+        (bind_host,) = {backend.manager_listen_host for backend in worker_backends}
 
-        run_until_done(
-            manager,
-            worker_backends=worker_backends,
-            port=port,
-        )
+        from furu.execution.server import manager_server
+
+        with manager.log_context():
+            logger.info(
+                "starting furu manager: executor_id=%s executor_dir=%s ready=%d blocked=%d",
+                manager.executor_id,
+                manager.executor_dir,
+                len(manager.ready),
+                len(manager.blocked),
+            )
+            with manager_server(manager, bind_host=bind_host, port=port) as server:
+                logger.info(
+                    "manager server listening: server_url=%s",
+                    server.server_url,
+                )
+                pools = []
+                for backend in worker_backends:
+                    pool = backend.start_pool(
+                        server_url=server.server_url,
+                        auth_token=server.auth_token,
+                        executor_dir=manager.executor_dir,
+                    )
+                    pools.append(pool)
+                    logger.info(
+                        "worker pool started: backend=%s", type(backend).__name__
+                    )
+                manager.done.wait()
+
+                with ThreadPoolExecutor(max_workers=len(pools)) as executor:
+                    for pool in pools:
+                        executor.submit(pool.stop, timeout=5)
+        manager.raise_for_failure()
         return objs
 
     @property
