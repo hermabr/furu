@@ -78,7 +78,7 @@ def _class_serializer(cls: type) -> type[ArtifactSerializer] | None:
 class ArtifactSerializerRegistry:
     serializers: tuple[type[ArtifactSerializer], ...] = ()
 
-    def register(self, serializer: type[ArtifactSerializer]) -> Self:
+    def with_serializer(self, serializer: type[ArtifactSerializer]) -> Self:
         return type(self)(serializers=(serializer, *self.serializers))
 
     def for_schema(self, declared_type: object) -> type[ArtifactSerializer] | None:

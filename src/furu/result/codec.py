@@ -108,7 +108,7 @@ class NumpyNpyCodec(ResultCodec["np.ndarray[Any, Any]"]):
 class ResultRegistry:
     codecs: tuple[type[ResultCodec], ...] = ()
 
-    def register(self, codec: type[ResultCodec]) -> Self:
+    def with_codec(self, codec: type[ResultCodec]) -> Self:
         return type(self)(codecs=(codec, *self.codecs))
 
     def find_codec(self, value: object) -> type[ResultCodec] | None:
