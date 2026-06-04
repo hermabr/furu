@@ -13,6 +13,7 @@ from furu._storage_layout import manager_log_path_in
 from furu.config import get_config
 from furu.core import Furu
 from furu.dag import DagNode, _add_to_dag, _update_dag_blocking_dependencies
+from furu.execution import log_executor_create_start
 from furu.logging import _scoped_log_files, get_logger
 from furu.metadata import ArtifactSpec
 from furu.resources import ResourceRequest, resource_request_satisfies
@@ -128,6 +129,7 @@ class Manager:
             if lease_id in self.running:
                 raise RuntimeError(f"generated duplicate lease_id: {lease_id}")
             self.running[lease_id] = RunningJob(lease_id=lease_id, node=node)
+            log_executor_create_start(node.obj)
             logger.debug(
                 "leased job: lease_id=%s object_id=%s ready=%d running=%d blocked=%d completed=%d failed=%d",
                 lease_id,

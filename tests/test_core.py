@@ -20,6 +20,7 @@ from furu.config import get_config
 from furu.dependencies import collect_declared_refs
 from furu.execution import _load_or_create
 from furu.locking import LockManifest, lock_many
+from furu.logging import _scoped_log_files
 from furu.metadata import ArtifactSpec
 from furu.result import load_result_bundle, _save_result_bundle
 from furu.result.codec import _default_result_registry
@@ -1566,12 +1567,38 @@ def test_nested_create_scopes_logs_to_child_file() -> None:
     child_log = run_log_path_in(child._base_dir).read_text(encoding="utf-8")
 
     assert "parent before child" in parent_log
-    assert f"calling {child._log_label}.create()" in parent_log
+    assert (
+        f"creating {child._log_label}.create() (object_id={child.object_id})"
+        in parent_log
+    )
     assert ".create() returned" in parent_log
     assert "parent after child" in parent_log
     assert "leaf detail for child" not in parent_log
 
     assert "leaf detail for child" in child_log
+
+
+def test_cached_create_logs_debug_call_and_only_cache_hit_info(
+    tmp_path: Path,
+) -> None:
+    ObjectIdStorageRootValue.storage_root_override = tmp_path / "objects"
+    obj = ObjectIdStorageRootValue(key=1)
+
+    assert obj.create() == "object-id:1"
+
+    log_path = tmp_path / "cached-create.log"
+    with _scoped_log_files((log_path,)):
+        assert obj.create() == "object-id:1"
+
+    log_text = log_path.read_text(encoding="utf-8")
+    assert f".create called for {obj}" in log_text
+    assert f"cache hit for {obj._log_label}" in log_text
+    assert "creating " not in log_text
+    assert ".create() returned" not in log_text
+
+    info_lines = [line for line in log_text.splitlines() if " INFO " in line]
+    assert len(info_lines) == 1
+    assert "cache hit" in info_lines[0]
 
 
 def test_resolved_create_mode_validation() -> None:

@@ -44,6 +44,22 @@ _direct_create_target: ContextVar[_DirectCreateTarget | None] = ContextVar(
 )
 
 
+def _log_local_create_start(obj: Furu[Any]) -> None:
+    obj.logger.info(
+        "creating %s.create() (object_id=%s)",
+        obj._log_label,
+        obj.object_id,
+    )
+
+
+def log_executor_create_start(obj: Furu[Any]) -> None:
+    obj.logger.info(
+        "executor creating %s.create() (object_id=%s)",
+        obj._log_label,
+        obj.object_id,
+    )
+
+
 @contextmanager
 def _allow_direct_create(target: _DirectCreateTarget) -> Iterator[None]:
     token = _direct_create_target.set(target)
@@ -234,7 +250,7 @@ def _normalize_load_or_create_input[T](
         objs = [obj_or_objs]
         unwrap = True
         record_dependency_call(objs[0])
-        objs[0].logger.info("calling %s.create()", objs[0]._log_label)
+        objs[0].logger.debug(".create called for %s", objs[0])
     else:
         if not isinstance(obj_or_objs, Sequence):
             raise TypeError(
@@ -273,7 +289,6 @@ def _load_or_create_worker[T](
     if unwrap:
         (obj,) = objs
         (result,) = loaded
-        obj.logger.info("%s.create() returned", obj._log_label)
         return result
     return loaded
 
@@ -328,6 +343,10 @@ def _load_or_create_local[T](
             else:
                 pending.append(obj)
 
+        direct_create_started = unwrap and bool(pending)
+        if direct_create_started:
+            _log_local_create_start(objs[0])
+
         grouped: dict[type[object], list[Furu[T]]] = {}
         for obj in pending:
             grouped.setdefault(type(obj), []).append(obj)
@@ -344,7 +363,8 @@ def _load_or_create_local[T](
     if unwrap:
         (obj,) = objs
         (output,) = outputs
-        obj.logger.info("%s.create() returned", obj._log_label)
+        if direct_create_started:
+            obj.logger.info("%s.create() returned", obj._log_label)
         return output
     return outputs
 
