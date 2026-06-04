@@ -883,10 +883,13 @@ def test_numpy_array_round_trips() -> None:
 
 
 def test_configured_codec_takes_priority_over_builtin_numpy(monkeypatch) -> None:
+    result_config = get_config().result.model_copy(
+        update={"codecs": (_ConfiguredNumpyCodec._codec_id(),)}
+    )
     monkeypatch.setattr(
         furu_config,
         "_config",
-        get_config().model_copy(update={"codec": (_ConfiguredNumpyCodec._codec_id(),)}),
+        get_config().model_copy(update={"result": result_config}),
     )
     obj = NumpyResult()
 
@@ -907,10 +910,13 @@ def test_configured_codec_takes_priority_over_builtin_numpy(monkeypatch) -> None
 
 
 def test_result_registry_takes_priority_over_configured_codec(monkeypatch) -> None:
+    result_config = get_config().result.model_copy(
+        update={"codecs": (_ConfiguredNumpyCodec._codec_id(),)}
+    )
     monkeypatch.setattr(
         furu_config,
         "_config",
-        get_config().model_copy(update={"codec": (_ConfiguredNumpyCodec._codec_id(),)}),
+        get_config().model_copy(update={"result": result_config}),
     )
     obj = RegistryNumpyResult()
 

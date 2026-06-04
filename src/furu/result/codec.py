@@ -144,4 +144,4 @@ def _result_registry_for_configured_codecs(
 
 
 def _default_result_registry() -> ResultRegistry:
-    return _result_registry_for_configured_codecs(get_config().codec)
+    return _result_registry_for_configured_codecs(get_config().result.codecs)
