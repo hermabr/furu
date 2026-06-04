@@ -15,16 +15,7 @@ from pydantic import BaseModel, ConfigDict
 
 import furu
 import furu.execution as execution_module
-from furu import Furu, ResourceRequirements, validate
-from furu.config import get_config
-from furu.dependencies import collect_declared_refs
-from furu.execution import _load_or_create
-from furu.locking import LockManifest, lock_many
-from furu.logging import _scoped_log_files
-from furu.metadata import ArtifactSpec
-from furu.result import load_result_bundle, _save_result_bundle
-from furu.result.codec import _default_result_registry
-from furu.serialize import _from_json, to_json
+from furu import Furu, ResourceRequirements, ResultRegistry, validate
 from furu._storage_layout import (
     compute_lock_path_in,
     metadata_path_in,
@@ -32,6 +23,14 @@ from furu._storage_layout import (
     result_manifest_path_in,
     run_log_path_in,
 )
+from furu.config import get_config
+from furu.dependencies import collect_declared_refs
+from furu.execution import _load_or_create
+from furu.locking import LockManifest, lock_many
+from furu.logging import _scoped_log_files
+from furu.metadata import ArtifactSpec
+from furu.result import _save_result_bundle, load_result_bundle
+from furu.serialize import _from_json, to_json
 from furu.utils import fully_qualified_name
 from furu.worker.context import (
     _DependencyNotReady,
@@ -1667,7 +1666,7 @@ def test_no_create_hook_loads_cached_result() -> None:
         "cached:1",
         result_dir_in(obj._base_dir),
         declared_type=str,
-        registry=_default_result_registry(),
+        registry=ResultRegistry.default(),
     )
 
     assert obj.create() == "cached:1"
@@ -1696,7 +1695,7 @@ def test_no_create_hook_uses_post_lock_cache_recheck(
             "cached-after-lock:1",
             result_dir_in(obj._base_dir),
             declared_type=str,
-            registry=_default_result_registry(),
+            registry=ResultRegistry.default(),
         )
         yield lambda: True
 
@@ -1815,7 +1814,7 @@ def test_pending_items_are_rechecked_after_lock_acquisition(
         _save_result_bundle(
             "single:5",
             result_dir_in(pending._base_dir),
-            registry=_default_result_registry(),
+            registry=ResultRegistry.default(),
         )
         yield lambda: True
 

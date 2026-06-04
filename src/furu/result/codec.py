@@ -117,22 +117,22 @@ class ResultRegistry:
                 return codec
         return None
 
-
-@cache
-def _default_result_registry() -> ResultRegistry:
-    configured_codecs_list: list[type[ResultCodec]] = []
-    for codec_id in get_config().result.codecs:
-        codec = resolve_fully_qualified_name(codec_id)
-        if not isinstance(codec, type) or not issubclass(codec, ResultCodec):
-            raise TypeError(
-                f"Configured result codec {codec_id!r} is not a ResultCodec"
-            )
-        if codec.dependencies_available():
-            configured_codecs_list.append(codec)
-    configured_codecs = tuple(configured_codecs_list)
-    built_in_codecs = tuple(
-        codec
-        for codec in (PolarsParquetCodec, NumpyNpyCodec)
-        if codec.dependencies_available()
-    )
-    return ResultRegistry(codecs=(*configured_codecs, *built_in_codecs))
+    @classmethod
+    @cache
+    def default(cls) -> ResultRegistry:
+        configured_codecs_list: list[type[ResultCodec]] = []
+        for codec_id in get_config().result.codecs:
+            codec = resolve_fully_qualified_name(codec_id)
+            if not isinstance(codec, type) or not issubclass(codec, ResultCodec):
+                raise TypeError(
+                    f"Configured result codec {codec_id!r} is not a ResultCodec"
+                )
+            if codec.dependencies_available():
+                configured_codecs_list.append(codec)
+        configured_codecs = tuple(configured_codecs_list)
+        built_in_codecs = tuple(
+            codec
+            for codec in (PolarsParquetCodec, NumpyNpyCodec)
+            if codec.dependencies_available()
+        )
+        return cls(codecs=(*configured_codecs, *built_in_codecs))
