@@ -128,6 +128,11 @@ class Manager:
             if lease_id in self.running:
                 raise RuntimeError(f"generated duplicate lease_id: {lease_id}")
             self.running[lease_id] = RunningJob(lease_id=lease_id, node=node)
+            node.obj.logger.info(
+                "executor creating %s (object_id=%s)",
+                node.obj._log_label,
+                node.obj.object_id,
+            )
             logger.debug(
                 "leased job: lease_id=%s object_id=%s ready=%d running=%d blocked=%d completed=%d failed=%d",
                 lease_id,
