@@ -88,7 +88,7 @@ def schema_type(
     *,
     registry: ArtifactSerializerRegistry,
 ) -> JsonValue:
-    if serializer := registry.for_schema(tp):
+    if serializer := registry.serializer_for_schema(tp):
         return _custom_schema(serializer, tp)
 
     origin = get_origin(tp)

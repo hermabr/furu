@@ -81,7 +81,9 @@ class ArtifactSerializerRegistry:
     def with_serializer(self, serializer: type[ArtifactSerializer]) -> Self:
         return type(self)(serializers=(serializer, *self.serializers))
 
-    def for_schema(self, declared_type: object) -> type[ArtifactSerializer] | None:
+    def serializer_for_schema(
+        self, declared_type: object
+    ) -> type[ArtifactSerializer] | None:
         if serializer := _annotated_serializer(declared_type):
             return serializer
 
@@ -97,7 +99,7 @@ class ArtifactSerializerRegistry:
 
         return self._configured_for_schema(declared_type)
 
-    def for_dump(
+    def serializer_for_dump(
         self,
         value: object,
         *,

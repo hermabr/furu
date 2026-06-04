@@ -48,7 +48,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
             CLASSMARKER: fully_qualified_name(obj),
         }
 
-    if serializer := registry.for_dump(obj, declared_type=declared_type):
+    if serializer := registry.serializer_for_dump(obj, declared_type=declared_type):
         return {
             KINDMARKER: "custom",
             SERIALIZERMARKER: serializer._serializer_id(),
