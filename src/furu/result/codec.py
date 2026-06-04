@@ -119,11 +119,9 @@ class ResultRegistry:
 
 
 @cache
-def _result_registry_for_configured_codecs(
-    codec_ids: tuple[str, ...],
-) -> ResultRegistry:
+def _default_result_registry() -> ResultRegistry:
     configured_codecs_list: list[type[ResultCodec]] = []
-    for codec_id in codec_ids:
+    for codec_id in get_config().result.codecs:
         codec = resolve_fully_qualified_name(codec_id)
         if not isinstance(codec, type) or not issubclass(codec, ResultCodec):
             raise TypeError(
@@ -138,7 +136,3 @@ def _result_registry_for_configured_codecs(
         if codec.dependencies_available()
     )
     return ResultRegistry(codecs=(*configured_codecs, *built_in_codecs))
-
-
-def _default_result_registry() -> ResultRegistry:
-    return _result_registry_for_configured_codecs(get_config().result.codecs)
