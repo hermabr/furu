@@ -330,7 +330,7 @@ def _load_or_create_local[T](
         direct_create_started = unwrap and bool(pending)
         if direct_create_started:
             objs[0].logger.info(
-                "creating %s.create() (object_id=%s)",
+                "creating %s (object_id=%s)",
                 obj._log_label,
                 obj.object_id,
             )
@@ -352,7 +352,7 @@ def _load_or_create_local[T](
         (obj,) = objs
         (output,) = outputs
         if direct_create_started:
-            obj.logger.info("%s.create() returned", obj._log_label)
+            obj.logger.info("%s.create() finished", obj._log_label)
         return output
     return outputs
 

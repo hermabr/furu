@@ -129,7 +129,7 @@ class Manager:
                 raise RuntimeError(f"generated duplicate lease_id: {lease_id}")
             self.running[lease_id] = RunningJob(lease_id=lease_id, node=node)
             node.obj.logger.info(
-                "executor creating %s.create() (object_id=%s)",
+                "executor creating %s (object_id=%s)",
                 node.obj._log_label,
                 node.obj.object_id,
             )
