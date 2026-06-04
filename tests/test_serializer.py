@@ -16,7 +16,7 @@ from furu.constants import (
     VALUEMARKER,
 )
 from furu.metadata import ArtifactSpec
-from furu.serialize import _from_json
+from furu.serializer.artifact import _from_json
 from furu.utils import JsonValue
 
 

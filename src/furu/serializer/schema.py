@@ -21,7 +21,7 @@ from furu.constants import (
     SCHEMAMARKER,
     SERIALIZERMARKER,
 )
-from furu.serializer import (
+from furu.serializer.registry import (
     ArtifactSerializer,
     ArtifactSerializerRegistry,
 )

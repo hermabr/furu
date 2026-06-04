@@ -36,7 +36,7 @@ from furu.locking import LockManifest, lock_many
 from furu.logging import _scoped_log_files
 from furu.metadata import ArtifactSpec
 from furu.result import _save_result_bundle, load_result_bundle
-from furu.serialize import _from_json, to_json
+from furu.serializer.artifact import _from_json, to_json
 from furu.utils import fully_qualified_name
 from furu.worker.context import (
     _DependencyNotReady,

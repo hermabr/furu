@@ -20,9 +20,9 @@ from furu.logging import get_logger
 from furu.resources import ResourceRequirements
 from furu.result import load_result_bundle
 from furu.result.codec import ResultRegistry
-from furu.schema import schema_type as _schema_type
 from furu.serializer import ArtifactSerializerRegistry
-from furu.serialize import to_json as _to_json
+from furu.serializer.artifact import to_json as _to_json
+from furu.serializer.schema import schema_type as _schema_type
 from furu.utils import (
     JsonValue,
     _hash_dict_deterministically,
@@ -214,7 +214,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
     @final
     @classmethod
     def from_artifact[TFuru: Furu](cls: type[TFuru], artifact: ArtifactSpec) -> TFuru:
-        from furu.serialize import _from_artifact
+        from furu.serializer.artifact import _from_artifact
 
         return _from_artifact(artifact, cls)
 
