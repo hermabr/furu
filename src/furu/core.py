@@ -21,7 +21,7 @@ from furu.resources import ResourceRequirements
 from furu.result import load_result_bundle
 from furu.result.codec import ResultRegistry
 from furu.schema import schema_type as _schema_type
-from furu.serializer import SerializerRegistry
+from furu.serializer import ArtifactSerializerRegistry
 from furu.serialize import to_json as _to_json
 from furu.utils import (
     JsonValue,
@@ -100,8 +100,8 @@ class Furu[T](_FuruDataclassTransform, ABC):
         return ResultRegistry.default()
 
     @property
-    def serializer_registry(self) -> SerializerRegistry:
-        return SerializerRegistry.default()
+    def serializer_registry(self) -> ArtifactSerializerRegistry:
+        return ArtifactSerializerRegistry.default()
 
     @property
     def resource_requirements(self) -> ResourceRequirements | None:

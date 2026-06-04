@@ -88,7 +88,7 @@ def resolve_serializer(serializer_id: str) -> type[ArtifactSerializer]:
 
 
 @dataclass(frozen=True)
-class SerializerRegistry:
+class ArtifactSerializerRegistry:
     serializers: tuple[type[ArtifactSerializer], ...] = ()
 
     def register(self, serializer: type[ArtifactSerializer]) -> Self:
@@ -111,7 +111,7 @@ class SerializerRegistry:
 
     @classmethod
     @cache
-    def default(cls) -> SerializerRegistry:
+    def default(cls) -> ArtifactSerializerRegistry:
         configured_serializers: list[type[ArtifactSerializer]] = []
         for serializer_id in get_config().serializers:
             serializer = resolve_serializer(serializer_id)
@@ -123,7 +123,7 @@ class SerializerRegistry:
 def serializer_for_type(
     declared_type: object,
     *,
-    registry: SerializerRegistry,
+    registry: ArtifactSerializerRegistry,
 ) -> type[ArtifactSerializer] | None:
     if serializer := annotated_serializer(declared_type):
         return serializer
@@ -145,7 +145,7 @@ def serializer_for_value(
     value: object,
     *,
     declared_type: object,
-    registry: SerializerRegistry,
+    registry: ArtifactSerializerRegistry,
 ) -> type[ArtifactSerializer] | None:
     if serializer := annotated_serializer(declared_type):
         return serializer

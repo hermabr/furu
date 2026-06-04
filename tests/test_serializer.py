@@ -6,7 +6,7 @@ from typing import Annotated, Any
 import pytest
 
 import furu.config as furu_config
-from furu import ArtifactSerializer, Furu, SerializerRegistry
+from furu import ArtifactSerializer, ArtifactSerializerRegistry, Furu
 from furu.config import get_config
 from furu.constants import (
     FIELDSMARKER,
@@ -118,7 +118,7 @@ class _RegistrySecretRun(Furu[int]):
     secret: _Secret
 
     @property
-    def serializer_registry(self) -> SerializerRegistry:
+    def serializer_registry(self) -> ArtifactSerializerRegistry:
         return super().serializer_registry.register(_RegistrySecretSerializer)
 
     def create(self) -> int:
@@ -192,11 +192,11 @@ def configured_decimal_serializer(monkeypatch: pytest.MonkeyPatch) -> Iterator[N
             update={"serializers": (_DecimalSecretSerializer._serializer_id(),)}
         ),
     )
-    SerializerRegistry.default.cache_clear()
+    ArtifactSerializerRegistry.default.cache_clear()
     try:
         yield
     finally:
-        SerializerRegistry.default.cache_clear()
+        ArtifactSerializerRegistry.default.cache_clear()
 
 
 def _custom_schema(
@@ -272,7 +272,9 @@ def test_annotated_serializer_takes_priority_over_configured_serializer() -> Non
 
 
 @pytest.mark.usefixtures("configured_decimal_serializer")
-def test_furu_serializer_registry_takes_priority_over_configured_serializer() -> None:
+def test_furu_artifact_serializer_registry_takes_priority_over_configured_serializer() -> (
+    None
+):
     obj = _RegistrySecretRun(secret=_Secret(42))
 
     assert _field(obj._schema_data, "secret") == _custom_schema(

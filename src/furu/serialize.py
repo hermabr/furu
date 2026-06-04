@@ -16,7 +16,7 @@ from furu.constants import (
 from furu.metadata import ArtifactSpec
 from furu.serializer import (
     ArtifactSerializer,
-    SerializerRegistry,
+    ArtifactSerializerRegistry,
     resolve_serializer,
     serializer_for_value,
 )
@@ -49,9 +49,9 @@ def _dump_custom(
 def to_json(  # TODO: consider caching this (but if i'm going to, I need to figure out how to cache lists and other unhashable objects)
     obj: Any,
     declared_type: object = Any,
-    registry: SerializerRegistry | None = None,
+    registry: ArtifactSerializerRegistry | None = None,
 ) -> JsonValue:
-    registry = SerializerRegistry.default() if registry is None else registry
+    registry = ArtifactSerializerRegistry.default() if registry is None else registry
     # TODO: when writing this to metadata, make sure to escape strings etc
 
     def assert_correct_dict_key(x: Any) -> str:

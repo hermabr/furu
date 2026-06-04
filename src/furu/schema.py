@@ -21,7 +21,11 @@ from furu.constants import (
     SCHEMAMARKER,
     SERIALIZERMARKER,
 )
-from furu.serializer import ArtifactSerializer, SerializerRegistry, serializer_for_type
+from furu.serializer import (
+    ArtifactSerializer,
+    ArtifactSerializerRegistry,
+    serializer_for_type,
+)
 from furu.utils import JsonValue, _stable_json_dump, fully_qualified_name
 
 
@@ -41,7 +45,7 @@ def schema_class(
     field_names: list[str],
     seen: set[type],
     *,
-    registry: SerializerRegistry,
+    registry: ArtifactSerializerRegistry,
 ) -> JsonValue:
     if tp in seen:
         return {CLASSMARKER: fully_qualified_name(tp)}
@@ -61,7 +65,7 @@ def schema_dataclass(
     tp: type,
     seen: set[type],
     *,
-    registry: SerializerRegistry,
+    registry: ArtifactSerializerRegistry,
 ) -> JsonValue:
     return schema_class(
         tp,
@@ -75,7 +79,7 @@ def schema_pydantic_model(
     tp: type[PydanticBaseModel],
     seen: set[type],
     *,
-    registry: SerializerRegistry,
+    registry: ArtifactSerializerRegistry,
 ) -> JsonValue:
     return schema_class(tp, sorted(tp.model_fields), seen, registry=registry)
 
@@ -84,9 +88,9 @@ def schema_type(
     tp: Any,
     seen: set[type],
     *,
-    registry: SerializerRegistry | None = None,
+    registry: ArtifactSerializerRegistry | None = None,
 ) -> JsonValue:
-    registry = SerializerRegistry.default() if registry is None else registry
+    registry = ArtifactSerializerRegistry.default() if registry is None else registry
 
     if serializer := serializer_for_type(tp, registry=registry):
         return _custom_schema(serializer, tp)
