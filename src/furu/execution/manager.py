@@ -133,7 +133,7 @@ class Manager:
                 node.obj._log_label,
                 node.obj.object_id,
             )
-            logger.debug(
+            logger.info(
                 "leased job: lease_id=%s object_id=%s ready=%d running=%d blocked=%d completed=%d failed=%d",
                 lease_id,
                 node.obj.object_id,
@@ -176,7 +176,7 @@ class Manager:
                         dependent_id = dependent.obj.object_id
                         if not dependent.dependencies and dependent_id in self.blocked:
                             self.ready[dependent_id] = self.blocked.pop(dependent_id)
-                    logger.debug(
+                    logger.info(
                         "job completed: lease_id=%s object_id=%s ready=%d running=%d blocked=%d completed=%d failed=%d",
                         lease_id,
                         running_job.node.obj.object_id,
@@ -201,7 +201,7 @@ class Manager:
                     )
                     if failed_attempts <= self._max_retries_per_object:
                         self.ready[object_id] = running_job.node
-                    logger.debug(
+                    logger.info(
                         "job failed: lease_id=%s object_id=%s failed_attempts=%d max_retries=%d error=%s",
                         lease_id,
                         object_id,
@@ -213,7 +213,7 @@ class Manager:
                     _update_dag_blocking_dependencies(
                         self, running_job.node, dependencies
                     )
-                    logger.debug(
+                    logger.info(
                         "job blocked: lease_id=%s object_id=%s dependencies=%d ready=%d running=%d blocked=%d completed=%d failed=%d",
                         lease_id,
                         running_job.node.obj.object_id,
