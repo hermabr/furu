@@ -10,6 +10,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
+from furu.logging import get_logger
 from furu.utils import nfs_safe_unique_name
 
 # TODO: move these to the general config rather than having these be hard coded here, so that the user can override them. also consider if we can remove some of these/simplify
@@ -17,7 +18,10 @@ CLOCK_SLOP_S = 10
 DEFAULT_LIFETIME_S = 35.0
 DEFAULT_HEARTBEAT_INTERVAL_S = 15.0
 DEFAULT_ACQUIRE_POLL_INTERVAL_S = 0.05
+DEFAULT_LOCK_WAIT_LOG_INTERVAL_S = 10.0
 HEARTBEAT_SHUTDOWN_GRACE_S = 0.01
+
+logger = get_logger()
 
 
 class LockManifest(BaseModel):
@@ -381,6 +385,7 @@ def lock_many(
 
     try:
         deadline = time.monotonic() + max(acquire_timeout_s, 0.0)
+        next_wait_log_at = 0.0
 
         while True:
             acquired: list[Path] = []
@@ -407,10 +412,27 @@ def lock_many(
             if broke_stale:
                 continue
 
-            remaining = deadline - time.monotonic()
+            now = time.monotonic()
+            remaining = deadline - now
             if remaining <= 0:
                 raise RuntimeError(_lock_timeout_message(lock_paths, acquire_timeout_s))
-            time.sleep(min(acquire_poll_interval_s, remaining))
+            if now >= next_wait_log_at:
+                if len(lock_paths) == 1:
+                    logger.info("waiting for lock at %s", blocked)
+                else:
+                    logger.info(
+                        "waiting for lock set blocked by %s: %s",
+                        blocked,
+                        ", ".join(str(path) for path in lock_paths),
+                    )
+                next_wait_log_at = now + DEFAULT_LOCK_WAIT_LOG_INTERVAL_S
+            time.sleep(
+                min(
+                    acquire_poll_interval_s,
+                    remaining,
+                    max(next_wait_log_at - now, 0.0),
+                )
+            )
 
         touch_future(claim_path, lifetime_s=lifetime_s)
 
