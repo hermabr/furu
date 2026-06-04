@@ -1,10 +1,13 @@
 import os
+import tomllib
 from pathlib import Path
+from typing import Any
 from typing import Self
 
 from pydantic import ConfigDict, Field
 from pydantic_settings import (
     BaseSettings,
+    InitSettingsSource,
     JsonConfigSettingsSource,
     PydanticBaseSettingsSource,
     PyprojectTomlConfigSettingsSource,
@@ -12,6 +15,29 @@ from pydantic_settings import (
 )
 
 _WORKER_JSON_CONFIG_FILE_ENV_VAR = "_FURU_WORKER_JSON_CONFIG_FILE"
+
+
+class _PyprojectTableConfigSettingsSource(InitSettingsSource):
+    def __init__(
+        self,
+        settings_cls: type[BaseSettings],
+        *,
+        table_header: tuple[str, ...],
+    ) -> None:
+        pyproject_path = PyprojectTomlConfigSettingsSource._pick_pyproject_toml_file(
+            None,
+            settings_cls.model_config.get("pyproject_toml_depth", 0),
+        )
+        data: Any = {}
+        if pyproject_path.is_file():
+            with pyproject_path.open("rb") as file:
+                data = tomllib.load(file)
+            for key in table_header:
+                if not isinstance(data, dict):
+                    data = {}
+                    break
+                data = data.get(key, {})
+        super().__init__(settings_cls, data if isinstance(data, dict) else {})
 
 
 class _FuruDirectories(BaseSettings):
@@ -50,6 +76,7 @@ class _FuruConfig(BaseSettings):
     )
 
     debug_mode: bool = False
+    codec: tuple[str, ...] = ()
     directories: _FuruDirectories = Field(default_factory=_FuruDirectories.default)
     worker: _FuruWorkerConfig = Field(default_factory=_FuruWorkerConfig)
 
@@ -71,6 +98,10 @@ class _FuruConfig(BaseSettings):
             ),
             env_settings,
             dotenv_settings,
+            _PyprojectTableConfigSettingsSource(
+                settings_cls,
+                table_header=("furu",),
+            ),
             PyprojectTomlConfigSettingsSource(settings_cls),
             file_secret_settings,
         )

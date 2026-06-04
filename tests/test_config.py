@@ -69,6 +69,24 @@ max_retries_per_object = 3
     )
 
 
+def test_config_reads_top_level_pyproject_toml(tmp_path, monkeypatch) -> None:
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        """
+[furu]
+debug_mode = true
+codec = ["my_lib.my_fn.SomeCodec"]
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    config = _FuruConfig()
+
+    assert config.debug_mode is True
+    assert config.codec == ("my_lib.my_fn.SomeCodec",)
+
+
 def test_config_discovers_pyproject_toml_in_parent_directory(
     tmp_path, monkeypatch
 ) -> None:

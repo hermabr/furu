@@ -7,10 +7,12 @@ from pathlib import Path
 from typing import Annotated, Any, ClassVar, cast
 
 import furu
+import furu.config as furu_config
 import pytest
 from pydantic import BaseModel, ConfigDict
 
 from furu import Furu
+from furu.config import get_config
 from furu.result import (
     LazyResult,
     _child_declared_type,
@@ -295,6 +297,31 @@ class _OtherCountingCodec(ResultCodec[_CountingValue]):
     def load(cls, *, artifact_dir: Path) -> _CountingValue:
         artifact_dir.joinpath("other.txt").read_text(encoding="utf-8")
         return _CountingValue(0)
+
+
+class _ConfiguredNumpyCodec(ResultCodec[Any]):
+    file_name: ClassVar[str] = "configured.npy"
+
+    @classmethod
+    def matches(cls, value: object) -> bool:
+        return isinstance(value, np.ndarray)
+
+    @classmethod
+    def dump(
+        cls,
+        value: Any,
+        *,
+        artifact_dir: Path,
+    ) -> None:
+        np.save(artifact_dir / cls.file_name, value, allow_pickle=False)
+
+    @classmethod
+    def load(cls, *, artifact_dir: Path) -> Any:
+        return np.load(artifact_dir / cls.file_name, allow_pickle=False)
+
+
+class _RegistryNumpyCodec(_ConfiguredNumpyCodec):
+    file_name: ClassVar[str] = "registry.npy"
 
 
 def test_codec_id_is_derived_from_class_identity() -> None:
@@ -813,6 +840,15 @@ class NumpyResult(Furu[dict[str, object]]):
         return {"weights": np.arange(10, dtype=np.float32)}
 
 
+class RegistryNumpyResult(Furu[Any]):
+    @property
+    def result_registry(self) -> ResultRegistry:
+        return super().result_registry.register(_RegistryNumpyCodec)
+
+    def create(self) -> Any:
+        return np.arange(10, dtype=np.float32)
+
+
 class _MemmapNumpyNpyCodec(NumpyNpyCodec):
     load_after_dump: ClassVar[bool] = True
 
@@ -844,6 +880,50 @@ def test_numpy_array_round_trips() -> None:
         f"{NumpyNpyCodec.__module__}.{NumpyNpyCodec.__qualname__}"
     )
     assert manifest["weights"]["$furu"]["path"] == "artifacts/weights"
+
+
+def test_configured_codec_takes_priority_over_builtin_numpy(monkeypatch) -> None:
+    monkeypatch.setattr(
+        furu_config,
+        "_config",
+        get_config().model_copy(update={"codec": (_ConfiguredNumpyCodec._codec_id(),)}),
+    )
+    obj = NumpyResult()
+
+    loaded = obj.create()
+    loaded_again = obj.create()
+
+    assert isinstance(loaded, dict)
+    assert isinstance(loaded_again, dict)
+    assert np.array_equal(cast(Any, loaded["weights"]), np.arange(10, dtype=np.float32))
+    assert np.array_equal(
+        cast(Any, loaded_again["weights"]), np.arange(10, dtype=np.float32)
+    )
+    artifact_dir = result_dir_in(obj._base_dir) / "artifacts" / "weights"
+    assert (artifact_dir / "configured.npy").exists()
+    assert not (artifact_dir / "data.npy").exists()
+    manifest = json.loads(result_manifest_path_in(obj._base_dir).read_text())
+    assert manifest["weights"]["$furu"]["codec"] == _ConfiguredNumpyCodec._codec_id()
+
+
+def test_result_registry_takes_priority_over_configured_codec(monkeypatch) -> None:
+    monkeypatch.setattr(
+        furu_config,
+        "_config",
+        get_config().model_copy(update={"codec": (_ConfiguredNumpyCodec._codec_id(),)}),
+    )
+    obj = RegistryNumpyResult()
+
+    loaded = obj.create()
+    loaded_again = obj.create()
+
+    assert np.array_equal(loaded, np.arange(10, dtype=np.float32))
+    assert np.array_equal(loaded_again, np.arange(10, dtype=np.float32))
+    artifact_dir = result_dir_in(obj._base_dir) / "artifacts" / "root"
+    assert (artifact_dir / "registry.npy").exists()
+    assert not (artifact_dir / "configured.npy").exists()
+    manifest = json.loads(result_manifest_path_in(obj._base_dir).read_text())
+    assert manifest["$furu"]["codec"] == _RegistryNumpyCodec._codec_id()
 
 
 def test_codec_can_force_load_after_dump_for_cache_miss_consistency() -> None:

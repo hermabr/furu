@@ -11,7 +11,8 @@ if TYPE_CHECKING:
     import numpy as np
     import polars as pl
 
-from furu.utils import fully_qualified_name
+from furu.config import get_config
+from furu.utils import fully_qualified_name, resolve_fully_qualified_name
 
 
 class ResultCodec[T](ABC):
@@ -117,12 +118,30 @@ class ResultRegistry:
         return None
 
 
+_BUILT_IN_CODECS: tuple[type[ResultCodec], ...] = (PolarsParquetCodec, NumpyNpyCodec)
+
+
+def _resolve_configured_codec(codec_id: str) -> type[ResultCodec]:
+    codec = resolve_fully_qualified_name(codec_id)
+    if not isinstance(codec, type) or not issubclass(codec, ResultCodec):
+        raise TypeError(f"Configured result codec {codec_id!r} is not a ResultCodec")
+    return codec
+
+
 @cache
-def _default_result_registry() -> ResultRegistry:
-    return ResultRegistry(
-        codecs=tuple(
-            codec
-            for codec in (PolarsParquetCodec, NumpyNpyCodec)
-            if codec.dependencies_available()
-        ),
+def _result_registry_for_configured_codecs(
+    codec_ids: tuple[str, ...],
+) -> ResultRegistry:
+    configured_codecs = tuple(
+        codec
+        for codec_id in codec_ids
+        if (codec := _resolve_configured_codec(codec_id)).dependencies_available()
     )
+    built_in_codecs = tuple(
+        codec for codec in _BUILT_IN_CODECS if codec.dependencies_available()
+    )
+    return ResultRegistry(codecs=(*configured_codecs, *built_in_codecs))
+
+
+def _default_result_registry() -> ResultRegistry:
+    return _result_registry_for_configured_codecs(get_config().codec)
