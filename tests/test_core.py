@@ -1578,7 +1578,8 @@ def test_nested_create_scopes_logs_to_child_file() -> None:
     child_log = run_log_path_in(child._base_dir).read_text(encoding="utf-8")
 
     assert "parent before child" in parent_log
-    assert f"creating {child._log_label} (object_id={child.object_id})" in parent_log
+    assert f"creating {child._log_label}" in parent_log
+    assert f"(object_id={child.object_id})" not in parent_log
     assert ".create() finished" in parent_log
     assert "parent after child" in parent_log
     assert "leaf detail for child" not in parent_log

@@ -329,11 +329,7 @@ def _load_or_create_local[T](
 
         direct_create_started = unwrap and bool(pending)
         if direct_create_started:
-            objs[0].logger.info(
-                "creating %s (object_id=%s)",
-                obj._log_label,
-                obj.object_id,
-            )
+            objs[0].logger.info("creating %s", obj._log_label)
 
         grouped: dict[type[object], list[Furu[T]]] = {}
         for obj in pending:
