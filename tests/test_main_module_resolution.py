@@ -114,7 +114,7 @@ if __name__ == "__main__":
     _save_result_bundle(
         b"abc",
         codec_bundle,
-        registry=ResultRegistry(codecs=(MainCodec,)),
+        registry=ResultRegistry(explicit_codecs=(MainCodec,)),
     )
     codec_loaded = load_result_bundle(codec_bundle)
 

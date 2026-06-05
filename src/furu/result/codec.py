@@ -147,13 +147,13 @@ class NumpyNpyCodec(ResultCodec["np.ndarray[Any, Any]"]):
 
 @dataclass(frozen=True)
 class ResultRegistry:
-    codecs: tuple[type[ResultCodec], ...] = ()
+    explicit_codecs: tuple[type[ResultCodec], ...] = ()
     auto_registered_codecs: tuple[type[ResultCodec], ...] = ()
     built_in_codecs: tuple[type[ResultCodec], ...] = ()
 
     def with_codec(self, codec: type[ResultCodec]) -> Self:
         return type(self)(
-            codecs=(codec, *self.codecs),
+            explicit_codecs=(codec, *self.explicit_codecs),
             auto_registered_codecs=self.auto_registered_codecs,
             built_in_codecs=self.built_in_codecs,
         )
@@ -161,8 +161,8 @@ class ResultRegistry:
     def find_codec(self, value: object) -> type[ResultCodec] | None:
         if codec := _find_single_codec_match(
             value,
-            self.codecs,
-            layer_name="result registry",
+            self.explicit_codecs,
+            layer_name="explicit codec registry",
         ):
             return codec
         if codec := _find_single_codec_match(

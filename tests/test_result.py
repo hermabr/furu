@@ -462,7 +462,9 @@ def test_result_registry_with_codec_is_functional() -> None:
 
     assert ResultRegistry.default().find_codec(_CountingValue(1)) is None
     assert first.find_codec(_CountingValue(1)) is _CountingCodec
-    with pytest.raises(TypeError, match="result registry matched multiple codecs"):
+    with pytest.raises(
+        TypeError, match="explicit codec registry matched multiple codecs"
+    ):
         second.find_codec(_CountingValue(1))
 
 
@@ -865,7 +867,9 @@ def test_task_result_registry_is_used_for_save_inference_only() -> None:
 
 
 def test_task_result_registry_must_not_be_ambiguous() -> None:
-    with pytest.raises(TypeError, match="result registry matched multiple codecs"):
+    with pytest.raises(
+        TypeError, match="explicit codec registry matched multiple codecs"
+    ):
         AmbiguousRegistryCountingResult().create()
 
 
