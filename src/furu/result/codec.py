@@ -5,7 +5,7 @@ from abc import ABC, ABCMeta, abstractmethod
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
-from threading import RLock
+from threading import Lock
 from typing import TYPE_CHECKING, Any, ClassVar, Self, cast, final
 
 if TYPE_CHECKING:
@@ -16,7 +16,7 @@ from furu.utils import fully_qualified_name
 
 
 _USER_CODECS: tuple[type[ResultCodec], ...] = ()
-_USER_CODECS_LOCK = RLock()
+_USER_CODECS_LOCK = Lock()
 
 
 def _registered_user_codecs() -> tuple[type[ResultCodec], ...]:
