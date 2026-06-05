@@ -64,7 +64,7 @@ class Manager:
     @classmethod
     def run[ObjsT: Sequence[Furu]](
         cls,
-        objs: ObjsT,
+        objs: ObjsT,  # TODO: support pytrees
         *,
         max_retries_per_object: int | None = None,
         worker_backends: tuple[WorkerBackend, ...],
