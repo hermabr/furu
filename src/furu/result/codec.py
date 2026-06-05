@@ -39,10 +39,7 @@ class ResultCodecMeta(ABCMeta):
 
         cls.auto_register = True
         with ResultCodecMeta._auto_registered_codecs_lock:
-            ResultCodecMeta._auto_registered_codecs.insert(
-                0,
-                cast(type[ResultCodec], cls),
-            )
+            ResultCodecMeta._auto_registered_codecs.append(cast(type[ResultCodec], cls))
 
         registry_cls = globals().get("ResultRegistry")
         if registry_cls is not None:
@@ -51,7 +48,7 @@ class ResultCodecMeta(ABCMeta):
     @classmethod
     def auto_registered_codecs(mcls) -> tuple[type[ResultCodec], ...]:
         with mcls._auto_registered_codecs_lock:
-            return tuple(mcls._auto_registered_codecs)
+            return tuple(reversed(mcls._auto_registered_codecs))
 
 
 class ResultCodec[T](ABC, metaclass=ResultCodecMeta):
