@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import importlib.util
-from abc import ABC, abstractmethod
+from abc import ABC, ABCMeta, abstractmethod
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Self, final
+from threading import Lock
+from typing import TYPE_CHECKING, Any, ClassVar, Self, cast, final
 
 if TYPE_CHECKING:
     import numpy as np
@@ -14,7 +15,44 @@ if TYPE_CHECKING:
 from furu.utils import fully_qualified_name
 
 
-class ResultCodec[T](ABC):
+class ResultCodecMeta(ABCMeta):
+    _auto_registered_codecs: list[type[ResultCodec]] = []
+    _auto_registered_codecs_lock = Lock()
+
+    def __init__(
+        cls,
+        name: str,
+        bases: tuple[type[Any], ...],
+        namespace: dict[str, Any],
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(name, bases, namespace, **kwargs)
+        is_root_codec_class = not any(
+            isinstance(base, ResultCodecMeta) for base in bases
+        )
+        if is_root_codec_class:
+            return
+        if not namespace.get("auto_register", True):
+            return
+        if getattr(cls, "__abstractmethods__", None):
+            return
+
+        cls.auto_register = True
+        with ResultCodecMeta._auto_registered_codecs_lock:
+            ResultCodecMeta._auto_registered_codecs.append(cast(type[ResultCodec], cls))
+
+        registry_cls = globals().get("ResultRegistry")
+        if registry_cls is not None:
+            registry_cls.default.cache_clear()
+
+    @classmethod
+    def auto_registered_codecs(mcls) -> tuple[type[ResultCodec], ...]:
+        with mcls._auto_registered_codecs_lock:
+            return tuple(reversed(mcls._auto_registered_codecs))
+
+
+class ResultCodec[T](ABC, metaclass=ResultCodecMeta):
+    auto_register: ClassVar[bool] = True
     load_after_dump: ClassVar[bool] = False
 
     @final
@@ -48,6 +86,8 @@ class ResultCodec[T](ABC):
 
 
 class PolarsParquetCodec(ResultCodec["pl.DataFrame"]):
+    auto_register: ClassVar[bool] = False
+
     @classmethod
     def dependencies_available(cls) -> bool:
         return importlib.util.find_spec("polars") is not None
@@ -75,6 +115,8 @@ class PolarsParquetCodec(ResultCodec["pl.DataFrame"]):
 
 
 class NumpyNpyCodec(ResultCodec["np.ndarray[Any, Any]"]):
+    auto_register: ClassVar[bool] = False
+
     @classmethod
     def dependencies_available(cls) -> bool:
         return importlib.util.find_spec("numpy") is not None
@@ -119,9 +161,14 @@ class ResultRegistry:
     @classmethod
     @cache
     def default(cls) -> ResultRegistry:
+        user_codecs = tuple(
+            codec
+            for codec in ResultCodecMeta.auto_registered_codecs()
+            if codec.dependencies_available()
+        )
         built_in_codecs = tuple(
             codec
             for codec in (PolarsParquetCodec, NumpyNpyCodec)
             if codec.dependencies_available()
         )
-        return cls(codecs=built_in_codecs)
+        return cls(codecs=(*user_codecs, *built_in_codecs))
