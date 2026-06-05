@@ -16,7 +16,7 @@ from furu.constants import (
 from furu.metadata import ArtifactSpec
 from furu.serializer.registry import (
     ArtifactSerializer,
-    ArtifactSerializerRegistry,
+    ArtifactSerializerMeta,
 )
 from furu.utils import JsonValue, fully_qualified_name, resolve_fully_qualified_name
 
@@ -31,7 +31,7 @@ _RESERVED_DICT_KEYS = frozenset(
 def to_json(  # TODO: consider caching this (but if i'm going to, I need to figure out how to cache lists and other unhashable objects)
     obj: Any,
     declared_type: object,
-    registry: ArtifactSerializerRegistry,
+    artifact_serializers: tuple[type[ArtifactSerializer], ...],
 ) -> JsonValue:
     # TODO: when writing this to metadata, make sure to escape strings etc
 
@@ -48,7 +48,11 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
             CLASSMARKER: fully_qualified_name(obj),
         }
 
-    if serializer := registry.serializer_for_dump(obj, declared_type=declared_type):
+    if serializer := ArtifactSerializerMeta.serializer_for_dump(
+        obj,
+        declared_type=declared_type,
+        artifact_serializers=artifact_serializers,
+    ):
         return {
             KINDMARKER: "custom",
             SERIALIZERMARKER: serializer._serializer_id(),
@@ -70,7 +74,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                 to_json(
                     x,
                     declared_type=child_declared_type(declared_type, i),
-                    registry=registry,
+                    artifact_serializers=artifact_serializers,
                 )
                 for i, x in enumerate(obj)
             ]
@@ -80,7 +84,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                     to_json(
                         x,
                         declared_type=child_declared_type(declared_type, i),
-                        registry=registry,
+                        artifact_serializers=artifact_serializers,
                     )
                     for i, x in enumerate(obj)
                 ],
@@ -91,7 +95,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                 assert_correct_dict_key(k): to_json(
                     v,
                     declared_type=child_declared_type(declared_type, k),
-                    registry=registry,
+                    artifact_serializers=artifact_serializers,
                 )
                 for k, v in obj.items()
             }
@@ -104,7 +108,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                     f.name: to_json(
                         getattr(x, f.name),
                         declared_type=hints.get(f.name, Any),
-                        registry=registry,
+                        artifact_serializers=artifact_serializers,
                     )
                     for f in fields(x)
                 },
@@ -120,7 +124,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                     k: to_json(
                         getattr(obj, k),
                         declared_type=hints.get(k, Any),
-                        registry=registry,
+                        artifact_serializers=artifact_serializers,
                     )
                     for k in model_fields
                 },

@@ -16,7 +16,6 @@ from pydantic import BaseModel, ConfigDict
 import furu
 import furu.execution as execution_module
 from furu import (
-    ArtifactSerializerRegistry,
     Furu,
     ResourceRequirements,
     validate,
@@ -61,7 +60,7 @@ def _to_json(obj: Any, declared_type: object) -> Any:
     return to_json(
         obj,
         declared_type=declared_type,
-        registry=ArtifactSerializerRegistry.default(),
+        artifact_serializers=(),
     )
 
 
