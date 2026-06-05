@@ -221,11 +221,14 @@ def _from_json(value: JsonValue) -> Any:
 
 def _from_artifact[T: "Furu"](artifact: ArtifactSpec, expected_type: type[T]) -> T:
     artifact_type = _resolve_serialized_type(artifact.fully_qualified_name)
-    load_expected_type: type[Any] = expected_type
-    if issubclass(artifact_type, expected_type):
-        load_expected_type = artifact_type
+    if not issubclass(artifact_type, expected_type):
+        raise TypeError(
+            "Artifact described "
+            + f"{artifact_type.__module__}.{artifact_type.__qualname__}, "
+            + f"expected {expected_type.__module__}.{expected_type.__qualname__}"
+        )
 
-    furu_obj = _from_json_field(artifact.artifact_data, load_expected_type)
+    furu_obj = _from_json_field(artifact.artifact_data, artifact_type)
     if not isinstance(furu_obj, expected_type):
         raise TypeError(
             "Artifact described "
