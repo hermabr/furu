@@ -220,11 +220,8 @@ def _from_json(value: JsonValue) -> Any:
 
 
 def _from_artifact[T: "Furu"](artifact: ArtifactSpec, expected_type: type[T]) -> T:
+    artifact_type = _resolve_serialized_type(artifact.fully_qualified_name)
     load_expected_type: type[Any] = expected_type
-    try:
-        artifact_type = _resolve_serialized_type(artifact.fully_qualified_name)
-    except Exception:
-        artifact_type = expected_type
     if issubclass(artifact_type, expected_type):
         load_expected_type = artifact_type
 
