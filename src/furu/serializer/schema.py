@@ -23,7 +23,7 @@ from furu.constants import (
 )
 from furu.serializer.registry import (
     ArtifactSerializer,
-    ArtifactSerializerRegistry,
+    ArtifactSerializerMeta,
 )
 from furu.utils import JsonValue, _stable_json_dump, fully_qualified_name
 
@@ -43,7 +43,7 @@ def schema_class(
     field_names: list[str],
     seen: set[type],
     *,
-    registry: ArtifactSerializerRegistry,
+    artifact_serializers: tuple[type[ArtifactSerializer], ...],
 ) -> JsonValue:
     if tp in seen:
         return {CLASSMARKER: fully_qualified_name(tp)}
@@ -53,7 +53,11 @@ def schema_class(
     return {
         CLASSMARKER: fully_qualified_name(tp),
         FIELDSMARKER: {
-            name: schema_type(hints[name], seen, registry=registry)
+            name: schema_type(
+                hints[name],
+                seen,
+                artifact_serializers=artifact_serializers,
+            )
             for name in field_names
         },
     }
@@ -63,13 +67,13 @@ def schema_dataclass(
     tp: type,
     seen: set[type],
     *,
-    registry: ArtifactSerializerRegistry,
+    artifact_serializers: tuple[type[ArtifactSerializer], ...],
 ) -> JsonValue:
     return schema_class(
         tp,
         sorted(f.name for f in fields(tp)),
         seen,
-        registry=registry,
+        artifact_serializers=artifact_serializers,
     )
 
 
@@ -77,41 +81,76 @@ def schema_pydantic_model(
     tp: type[PydanticBaseModel],
     seen: set[type],
     *,
-    registry: ArtifactSerializerRegistry,
+    artifact_serializers: tuple[type[ArtifactSerializer], ...],
 ) -> JsonValue:
-    return schema_class(tp, sorted(tp.model_fields), seen, registry=registry)
+    return schema_class(
+        tp,
+        sorted(tp.model_fields),
+        seen,
+        artifact_serializers=artifact_serializers,
+    )
 
 
 def schema_type(
     tp: Any,
     seen: set[type],
     *,
-    registry: ArtifactSerializerRegistry,
+    artifact_serializers: tuple[type[ArtifactSerializer], ...],
 ) -> JsonValue:
-    if serializer := registry.serializer_for_schema(tp):
+    if serializer := ArtifactSerializerMeta.serializer_for_schema(
+        tp,
+        artifact_serializers,
+    ):
         return _custom_schema(serializer, tp)
 
     origin = get_origin(tp)
 
     if origin is typing.Annotated:
-        return schema_type(get_args(tp)[0], seen, registry=registry)
+        return schema_type(
+            get_args(tp)[0],
+            seen,
+            artifact_serializers=artifact_serializers,
+        )
     if tp is Ellipsis:
         return fully_qualified_name(types.EllipsisType)
     if tp is Any:
         return "typing.Any"
     if isinstance(tp, typing.TypeAliasType):
-        return schema_type(tp.__value__, seen, registry=registry)
+        return schema_type(
+            tp.__value__,
+            seen,
+            artifact_serializers=artifact_serializers,
+        )
 
     if isinstance(tp, type) and is_dataclass(tp):
-        return schema_dataclass(tp, seen, registry=registry)
+        return schema_dataclass(
+            tp,
+            seen,
+            artifact_serializers=artifact_serializers,
+        )
     if origin is not None and is_dataclass(origin):
-        return schema_dataclass(origin, seen, registry=registry)
+        return schema_dataclass(
+            origin,
+            seen,
+            artifact_serializers=artifact_serializers,
+        )
     if isinstance(tp, type) and issubclass(tp, PydanticBaseModel):
-        return schema_pydantic_model(tp, seen, registry=registry)
+        return schema_pydantic_model(
+            tp,
+            seen,
+            artifact_serializers=artifact_serializers,
+        )
 
     if origin in (typing.Union, types.UnionType):
         return sorted(
-            [schema_type(a, seen, registry=registry) for a in get_args(tp)],
+            [
+                schema_type(
+                    a,
+                    seen,
+                    artifact_serializers=artifact_serializers,
+                )
+                for a in get_args(tp)
+            ],
             key=_stable_json_dump,
         )
     elif origin is not None:
@@ -119,7 +158,14 @@ def schema_type(
         return {
             ORIGINMARKER: fully_qualified_name(origin),
             ARGSMARKER: sorted(
-                [schema_type(a, seen, registry=registry) for a in args],
+                [
+                    schema_type(
+                        a,
+                        seen,
+                        artifact_serializers=artifact_serializers,
+                    )
+                    for a in args
+                ],
                 key=_stable_json_dump,
             ),
         }
