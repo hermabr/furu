@@ -49,17 +49,17 @@ class ResultCodecMeta(ABCMeta):
         super().__init__(name, bases, namespace, **kwargs)
         if not any(isinstance(base, ResultCodecMeta) for base in bases):
             return
-        if not namespace.get("_furu_auto_register", True):
+        if not namespace.get("auto_register", True):
             return
         if getattr(cls, "__abstractmethods__", None):
             return
 
-        cls._furu_auto_register = True
+        cls.auto_register = True
         _register_user_codec(cast(type[ResultCodec], cls))
 
 
 class ResultCodec[T](ABC, metaclass=ResultCodecMeta):
-    _furu_auto_register: ClassVar[bool] = True
+    auto_register: ClassVar[bool] = True
     load_after_dump: ClassVar[bool] = False
 
     @final
@@ -93,7 +93,7 @@ class ResultCodec[T](ABC, metaclass=ResultCodecMeta):
 
 
 class PolarsParquetCodec(ResultCodec["pl.DataFrame"]):
-    _furu_auto_register: ClassVar[bool] = False
+    auto_register: ClassVar[bool] = False
 
     @classmethod
     def dependencies_available(cls) -> bool:
@@ -122,7 +122,7 @@ class PolarsParquetCodec(ResultCodec["pl.DataFrame"]):
 
 
 class NumpyNpyCodec(ResultCodec["np.ndarray[Any, Any]"]):
-    _furu_auto_register: ClassVar[bool] = False
+    auto_register: ClassVar[bool] = False
 
     @classmethod
     def dependencies_available(cls) -> bool:

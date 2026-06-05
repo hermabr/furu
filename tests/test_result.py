@@ -248,7 +248,7 @@ class _CountingValue:
 
 
 class _CountingCodec(ResultCodec[_CountingValue]):
-    _furu_auto_register: ClassVar[bool] = False
+    auto_register: ClassVar[bool] = False
     dump_calls: ClassVar[int] = 0
     load_calls: ClassVar[int] = 0
 
@@ -278,7 +278,7 @@ class _CountingCodec(ResultCodec[_CountingValue]):
 
 
 class _OtherCountingCodec(ResultCodec[_CountingValue]):
-    _furu_auto_register: ClassVar[bool] = False
+    auto_register: ClassVar[bool] = False
 
     @classmethod
     def matches(cls, value: object) -> bool:
@@ -300,7 +300,7 @@ class _OtherCountingCodec(ResultCodec[_CountingValue]):
 
 
 class _CustomNumpyCodec(ResultCodec[Any]):
-    _furu_auto_register: ClassVar[bool] = False
+    auto_register: ClassVar[bool] = False
     file_name: ClassVar[str] = "custom.npy"
 
     @classmethod
@@ -322,7 +322,7 @@ class _CustomNumpyCodec(ResultCodec[Any]):
 
 
 class _RegistryNumpyCodec(_CustomNumpyCodec):
-    _furu_auto_register: ClassVar[bool] = False
+    auto_register: ClassVar[bool] = False
     file_name: ClassVar[str] = "registry.npy"
 
 
@@ -356,7 +356,7 @@ class _AutoRegisteredValueCodec(ResultCodec[_AutoRegisteredValue]):
 
 
 class _CoreRegistryAutoValueCodec(ResultCodec[_AutoRegisteredValue]):
-    _furu_auto_register: ClassVar[bool] = False
+    auto_register: ClassVar[bool] = False
 
     @classmethod
     def matches(cls, value: object) -> bool:
@@ -406,6 +406,32 @@ class _AutoRegisteredArrayCodec(ResultCodec[Any]):
     @classmethod
     def load(cls, *, artifact_dir: Path) -> Any:
         return np.load(artifact_dir / "auto.npy", allow_pickle=False)
+
+
+class _OptOutRegisteredValue:
+    pass
+
+
+class _OptOutRegisteredValueCodec(ResultCodec[_OptOutRegisteredValue]):
+    auto_register: ClassVar[bool] = False
+
+    @classmethod
+    def matches(cls, value: object) -> bool:
+        return isinstance(value, _OptOutRegisteredValue)
+
+    @classmethod
+    def dump(
+        cls,
+        value: _OptOutRegisteredValue,
+        *,
+        artifact_dir: Path,
+    ) -> None:
+        artifact_dir.joinpath("manual.txt").write_text("", encoding="utf-8")
+
+    @classmethod
+    def load(cls, *, artifact_dir: Path) -> _OptOutRegisteredValue:
+        artifact_dir.joinpath("manual.txt").read_text(encoding="utf-8")
+        return _OptOutRegisteredValue()
 
 
 class RegistryAutoRegisteredValueResult(Furu[_AutoRegisteredValue]):
@@ -458,6 +484,21 @@ def test_user_defined_codec_is_auto_registered(tmp_path: Path) -> None:
     loaded = load_result_bundle(bundle_dir)
     assert isinstance(loaded, _AutoRegisteredValue)
     assert loaded.value == 3
+
+
+def test_auto_register_false_opts_out_of_default_registry(tmp_path: Path) -> None:
+    assert ResultRegistry.default().find_codec(_OptOutRegisteredValue()) is None
+
+    bundle_dir = tmp_path / "bundle"
+    _save_result_bundle(
+        _OptOutRegisteredValue(),
+        bundle_dir,
+        registry=ResultRegistry.default().with_codec(_OptOutRegisteredValueCodec),
+    )
+
+    assert (bundle_dir / "artifacts" / "root" / "manual.txt").exists()
+    loaded = load_result_bundle(bundle_dir)
+    assert isinstance(loaded, _OptOutRegisteredValue)
 
 
 def test_auto_registered_codec_takes_priority_over_builtin_codec(
@@ -1043,7 +1084,7 @@ class RegistryNumpyResult(Furu[Any]):
 
 
 class _MemmapNumpyNpyCodec(NumpyNpyCodec):
-    _furu_auto_register: ClassVar[bool] = False
+    auto_register: ClassVar[bool] = False
     load_after_dump: ClassVar[bool] = True
 
     @classmethod
