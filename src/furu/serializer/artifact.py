@@ -110,17 +110,19 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                 },
             }
         case PydanticBaseModel():
-            hints = get_type_hints(type(obj), include_extras=True)
+            model_cls = type(obj)
+            model_fields = model_cls.model_fields
+            hints = get_type_hints(model_cls, include_extras=True)
             return {
                 KINDMARKER: "instance",
-                CLASSMARKER: fully_qualified_name(type(obj)),
+                CLASSMARKER: fully_qualified_name(model_cls),
                 FIELDSMARKER: {
                     k: to_json(
                         getattr(obj, k),
                         declared_type=hints.get(k, Any),
                         registry=registry,
                     )
-                    for k in type(obj).model_fields
+                    for k in model_fields
                 },
             }
         case enum.Enum():
