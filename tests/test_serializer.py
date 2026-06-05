@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, ClassVar
 
 from furu import ArtifactSerializer, ArtifactSerializerRegistry, Furu
 from furu.constants import (
@@ -30,6 +30,8 @@ class _ClassHookSecret(_Secret):
 
 
 class _HexSecretSerializer(ArtifactSerializer[_Secret]):
+    auto_register: ClassVar[bool] = False
+
     @classmethod
     def matches(cls, value: object) -> bool:
         return type(value) is _Secret
@@ -56,6 +58,8 @@ class _HexSecretSerializer(ArtifactSerializer[_Secret]):
 
 
 class _DecimalSecretSerializer(ArtifactSerializer[_Secret]):
+    auto_register: ClassVar[bool] = False
+
     @classmethod
     def matches(cls, value: object) -> bool:
         return type(value) is _Secret
@@ -80,6 +84,8 @@ class _DecimalSecretSerializer(ArtifactSerializer[_Secret]):
 
 
 class _RegistrySecretSerializer(_DecimalSecretSerializer):
+    auto_register: ClassVar[bool] = False
+
     @classmethod
     def schema(cls, declared_type: object) -> JsonValue:
         return {"type": "secret", "format": "registry"}
@@ -132,6 +138,8 @@ class _TopLevelSerializedRun(Furu[int]):
 
 
 class _TopLevelRunSerializer(ArtifactSerializer[_TopLevelSerializedRun]):
+    auto_register: ClassVar[bool] = False
+
     @classmethod
     def matches(cls, value: object) -> bool:
         return type(value) is _TopLevelSerializedRun
@@ -169,6 +177,154 @@ class _TopLevelRunSerializer(ArtifactSerializer[_TopLevelSerializedRun]):
             else _TopLevelSerializedRun
         )
         return loaded_type(value=value["doubled"] // 2)
+
+
+class _AutoRegisteredValue:
+    def __init__(self, value: int) -> None:
+        self.value = value
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _AutoRegisteredValue) and self.value == other.value
+
+
+class _AutoRegisteredValueSerializer(ArtifactSerializer[_AutoRegisteredValue]):
+    @classmethod
+    def matches(cls, value: object) -> bool:
+        return isinstance(value, _AutoRegisteredValue)
+
+    @classmethod
+    def matches_type(cls, declared_type: object) -> bool:
+        return declared_type is _AutoRegisteredValue
+
+    @classmethod
+    def schema(cls, declared_type: object) -> JsonValue:
+        return {"type": "auto-value", "format": "auto"}
+
+    @classmethod
+    def dump(
+        cls,
+        value: _AutoRegisteredValue,
+        *,
+        declared_type: object,
+    ) -> JsonValue:
+        return {"auto": value.value}
+
+    @classmethod
+    def load(
+        cls,
+        value: JsonValue,
+        *,
+        declared_type: object,
+    ) -> _AutoRegisteredValue:
+        if not isinstance(value, dict) or not isinstance(value.get("auto"), int):
+            raise ValueError("expected auto value artifact")
+        return _AutoRegisteredValue(value["auto"])
+
+
+class _RegistryAutoRegisteredValueSerializer(ArtifactSerializer[_AutoRegisteredValue]):
+    auto_register: ClassVar[bool] = False
+
+    @classmethod
+    def matches(cls, value: object) -> bool:
+        return isinstance(value, _AutoRegisteredValue)
+
+    @classmethod
+    def matches_type(cls, declared_type: object) -> bool:
+        return declared_type is _AutoRegisteredValue
+
+    @classmethod
+    def schema(cls, declared_type: object) -> JsonValue:
+        return {"type": "auto-value", "format": "registry"}
+
+    @classmethod
+    def dump(
+        cls,
+        value: _AutoRegisteredValue,
+        *,
+        declared_type: object,
+    ) -> JsonValue:
+        return {"registry": value.value}
+
+    @classmethod
+    def load(
+        cls,
+        value: JsonValue,
+        *,
+        declared_type: object,
+    ) -> _AutoRegisteredValue:
+        if not isinstance(value, dict) or not isinstance(value.get("registry"), int):
+            raise ValueError("expected registry auto value artifact")
+        return _AutoRegisteredValue(value["registry"])
+
+
+class _OptOutRegisteredValue:
+    pass
+
+
+class _OptOutRegisteredValueSerializer(ArtifactSerializer[_OptOutRegisteredValue]):
+    auto_register: ClassVar[bool] = False
+
+    @classmethod
+    def matches(cls, value: object) -> bool:
+        return isinstance(value, _OptOutRegisteredValue)
+
+    @classmethod
+    def matches_type(cls, declared_type: object) -> bool:
+        return declared_type is _OptOutRegisteredValue
+
+    @classmethod
+    def schema(cls, declared_type: object) -> JsonValue:
+        return {"type": "opt-out-value"}
+
+    @classmethod
+    def dump(
+        cls,
+        value: _OptOutRegisteredValue,
+        *,
+        declared_type: object,
+    ) -> JsonValue:
+        return {"opt-out": True}
+
+    @classmethod
+    def load(
+        cls,
+        value: JsonValue,
+        *,
+        declared_type: object,
+    ) -> _OptOutRegisteredValue:
+        if not isinstance(value, dict) or value.get("opt-out") is not True:
+            raise ValueError("expected opt-out value artifact")
+        return _OptOutRegisteredValue()
+
+
+class _AutoRegisteredValueRun(Furu[int]):
+    value: _AutoRegisteredValue
+
+    def create(self) -> int:
+        return self.value.value
+
+
+class _RegistryAutoRegisteredValueRun(Furu[int]):
+    value: _AutoRegisteredValue
+
+    @property
+    def serializer_registry(self) -> ArtifactSerializerRegistry:
+        return super().serializer_registry.with_serializer(
+            _RegistryAutoRegisteredValueSerializer
+        )
+
+    def create(self) -> int:
+        return self.value.value
+
+
+class _AnnotatedAutoRegisteredValueRun(Furu[int]):
+    value: Annotated[
+        _AutoRegisteredValue,
+        _RegistryAutoRegisteredValueSerializer,
+    ]
+
+    def create(self) -> int:
+        return self.value.value
 
 
 def _custom_schema(
@@ -258,3 +414,156 @@ def test_furu_class_serializer_hook_can_replace_top_level_artifact() -> None:
     artifact = ArtifactSpec.from_furu(obj)
     assert _TopLevelSerializedRun.from_artifact(artifact) == obj
     assert Furu.from_artifact(artifact) == obj
+
+
+def test_user_defined_serializer_is_auto_registered() -> None:
+    registry = ArtifactSerializerRegistry.default()
+
+    assert (
+        registry.serializer_for_schema(_AutoRegisteredValue)
+        is _AutoRegisteredValueSerializer
+    )
+    assert (
+        registry.serializer_for_dump(
+            _AutoRegisteredValue(1),
+            declared_type=_AutoRegisteredValue,
+        )
+        is _AutoRegisteredValueSerializer
+    )
+
+    obj = _AutoRegisteredValueRun(value=_AutoRegisteredValue(42))
+
+    assert _field(obj._schema_data, "value") == _custom_schema(
+        _AutoRegisteredValueSerializer,
+        {"type": "auto-value", "format": "auto"},
+    )
+    assert _field(obj._artifact_data, "value") == _custom_artifact(
+        _AutoRegisteredValueSerializer,
+        {"auto": 42},
+    )
+    assert _from_json(obj._artifact_data) == obj
+
+
+def test_auto_register_false_opts_out_of_default_serializer_registry() -> None:
+    registry = ArtifactSerializerRegistry.default()
+
+    assert registry.serializer_for_schema(_OptOutRegisteredValue) is None
+    assert (
+        registry.serializer_for_dump(
+            _OptOutRegisteredValue(),
+            declared_type=_OptOutRegisteredValue,
+        )
+        is None
+    )
+
+    manual_registry = registry.with_serializer(_OptOutRegisteredValueSerializer)
+
+    assert (
+        manual_registry.serializer_for_schema(_OptOutRegisteredValue)
+        is _OptOutRegisteredValueSerializer
+    )
+    assert (
+        manual_registry.serializer_for_dump(
+            _OptOutRegisteredValue(),
+            declared_type=_OptOutRegisteredValue,
+        )
+        is _OptOutRegisteredValueSerializer
+    )
+
+
+def test_furu_serializer_registry_takes_priority_over_auto_registered_serializer() -> (
+    None
+):
+    obj = _RegistryAutoRegisteredValueRun(value=_AutoRegisteredValue(42))
+
+    assert _field(obj._schema_data, "value") == _custom_schema(
+        _RegistryAutoRegisteredValueSerializer,
+        {"type": "auto-value", "format": "registry"},
+    )
+    assert _field(obj._artifact_data, "value") == _custom_artifact(
+        _RegistryAutoRegisteredValueSerializer,
+        {"registry": 42},
+    )
+    assert _from_json(obj._artifact_data) == obj
+
+
+def test_annotated_serializer_takes_priority_over_auto_registered_serializer() -> None:
+    obj = _AnnotatedAutoRegisteredValueRun(value=_AutoRegisteredValue(42))
+
+    assert _field(obj._schema_data, "value") == _custom_schema(
+        _RegistryAutoRegisteredValueSerializer,
+        {"type": "auto-value", "format": "registry"},
+    )
+    assert _field(obj._artifact_data, "value") == _custom_artifact(
+        _RegistryAutoRegisteredValueSerializer,
+        {"registry": 42},
+    )
+    assert _from_json(obj._artifact_data) == obj
+
+
+def test_serializer_defined_after_default_cache_is_auto_registered() -> None:
+    class LateAutoRegisteredValue:
+        pass
+
+    assert (
+        ArtifactSerializerRegistry.default().serializer_for_schema(
+            LateAutoRegisteredValue
+        )
+        is None
+    )
+    assert (
+        ArtifactSerializerRegistry.default().serializer_for_dump(
+            LateAutoRegisteredValue(),
+            declared_type=LateAutoRegisteredValue,
+        )
+        is None
+    )
+
+    class LateAutoRegisteredValueSerializer(
+        ArtifactSerializer[LateAutoRegisteredValue]
+    ):
+        @classmethod
+        def matches(cls, value: object) -> bool:
+            return isinstance(value, LateAutoRegisteredValue)
+
+        @classmethod
+        def matches_type(cls, declared_type: object) -> bool:
+            return declared_type is LateAutoRegisteredValue
+
+        @classmethod
+        def schema(cls, declared_type: object) -> JsonValue:
+            return {"type": "late-auto-value"}
+
+        @classmethod
+        def dump(
+            cls,
+            value: LateAutoRegisteredValue,
+            *,
+            declared_type: object,
+        ) -> JsonValue:
+            return {"late": True}
+
+        @classmethod
+        def load(
+            cls,
+            value: JsonValue,
+            *,
+            declared_type: object,
+        ) -> LateAutoRegisteredValue:
+            if not isinstance(value, dict) or value.get("late") is not True:
+                raise ValueError("expected late auto value artifact")
+            return LateAutoRegisteredValue()
+
+    assert (
+        ArtifactSerializerRegistry.default().serializer_for_schema(
+            LateAutoRegisteredValue
+        )
+        is LateAutoRegisteredValueSerializer
+    )
+    assert (
+        ArtifactSerializerRegistry.default().serializer_for_dump(
+            LateAutoRegisteredValue(),
+            declared_type=LateAutoRegisteredValue,
+        )
+        is LateAutoRegisteredValueSerializer
+    )
