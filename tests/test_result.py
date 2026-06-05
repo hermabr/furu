@@ -14,10 +14,10 @@ import furu
 import furu.config as furu_config
 from furu import Furu
 from furu._storage_layout import result_dir_in, result_manifest_path_in
+from furu._declared_types import child_declared_type
 from furu.config import get_config
 from furu.result import (
     LazyResult,
-    _child_declared_type,
     _save_result_bundle,
     load_result_bundle,
 )
@@ -347,9 +347,9 @@ def test_codec_id_is_derived_from_class_identity() -> None:
     )
 
 
-def test_result_registry_register_is_functional() -> None:
-    first = ResultRegistry.default().register(_CountingCodec)
-    second = first.register(_OtherCountingCodec)
+def test_result_registry_with_codec_is_functional() -> None:
+    first = ResultRegistry.default().with_codec(_CountingCodec)
+    second = first.with_codec(_OtherCountingCodec)
 
     assert ResultRegistry.default().find_codec(_CountingValue(1)) is None
     assert first.find_codec(_CountingValue(1)) is _CountingCodec
@@ -416,7 +416,7 @@ def test_child_declared_type_descends_supported_container_annotations(
         expected_type_expr, _CHILD_DECLARED_TYPE_GLOBALS, _CHILD_DECLARED_TYPE_NAMESPACE
     )
 
-    assert _child_declared_type(declared_type, key) == expected_type
+    assert child_declared_type(declared_type, key) == expected_type
 
 
 @dataclass(frozen=True)
@@ -557,7 +557,7 @@ def test_save_as_conflicts_with_annotated_codec() -> None:
 class RegistryCountingResult(Furu[_CountingValue]):
     @property
     def result_registry(self) -> ResultRegistry:
-        return super().result_registry.register(_CountingCodec)
+        return super().result_registry.with_codec(_CountingCodec)
 
     def create(self) -> _CountingValue:
         return _CountingValue(8)
@@ -858,7 +858,7 @@ class NumpyResult(Furu[dict[str, object]]):
 class RegistryNumpyResult(Furu[Any]):
     @property
     def result_registry(self) -> ResultRegistry:
-        return super().result_registry.register(_RegistryNumpyCodec)
+        return super().result_registry.with_codec(_RegistryNumpyCodec)
 
     def create(self) -> Any:
         return np.arange(10, dtype=np.float32)
@@ -1118,7 +1118,7 @@ def test_root_lazy_result_defers_cache_read_and_memoizes(
     tmp_path: Path,
 ) -> None:
     bundle_dir = tmp_path / "bundle"
-    registry = ResultRegistry.default().register(_CountingCodec)
+    registry = ResultRegistry.default().with_codec(_CountingCodec)
     _CountingCodec.dump_calls = 0
     _CountingCodec.load_calls = 0
 
@@ -1168,7 +1168,7 @@ def test_lazy_result_uses_declared_inner_annotated_codec(tmp_path: Path) -> None
 
 def test_nested_lazy_result_exposes_nested_persisted_path(tmp_path: Path) -> None:
     bundle_dir = tmp_path / "bundle"
-    registry = ResultRegistry.default().register(_CountingCodec)
+    registry = ResultRegistry.default().with_codec(_CountingCodec)
     value = {"outer": {"inner": LazyResult(_CountingValue(12))}}
 
     _save_result_bundle(value, bundle_dir, registry=registry)
@@ -1187,7 +1187,7 @@ def test_nested_lazy_result_round_trips_inside_supported_structures(
     tmp_path: Path,
 ) -> None:
     bundle_dir = tmp_path / "bundle"
-    registry = ResultRegistry.default().register(_CountingCodec)
+    registry = ResultRegistry.default().with_codec(_CountingCodec)
     _CountingCodec.load_calls = 0
     value = {
         "items": [

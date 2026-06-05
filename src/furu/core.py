@@ -20,8 +20,9 @@ from furu.logging import get_logger
 from furu.resources import ResourceRequirements
 from furu.result import load_result_bundle
 from furu.result.codec import ResultRegistry
-from furu.schema import schema_type as _schema_type
-from furu.serialize import to_json as _to_json
+from furu.serializer.artifact import to_json as _to_json
+from furu.serializer.registry import ArtifactSerializerRegistry
+from furu.serializer.schema import schema_type as _schema_type
 from furu.utils import (
     JsonValue,
     _hash_dict_deterministically,
@@ -97,6 +98,10 @@ class Furu[T](_FuruDataclassTransform, ABC):
     @property
     def result_registry(self) -> ResultRegistry:
         return ResultRegistry.default()
+
+    @property
+    def serializer_registry(self) -> ArtifactSerializerRegistry:
+        return ArtifactSerializerRegistry.default()
 
     @property
     def resource_requirements(self) -> ResourceRequirements | None:
@@ -209,7 +214,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
     @final
     @classmethod
     def from_artifact[TFuru: Furu](cls: type[TFuru], artifact: ArtifactSpec) -> TFuru:
-        from furu.serialize import _from_artifact
+        from furu.serializer.artifact import _from_artifact
 
         return _from_artifact(artifact, cls)
 
@@ -218,7 +223,11 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def _artifact_data(  # TODO: make sure this doesn't prevent garbage collection
         self,
     ) -> dict[str, JsonValue]:
-        return _to_json(self)  # ty:ignore[invalid-return-type] # TODO: check this or make _to_json return dict[str, JsonValue] or typed value
+        return _to_json(
+            self,
+            declared_type=type(self),
+            registry=self.serializer_registry,
+        )  # ty:ignore[invalid-return-type] # TODO: check this or make _to_json return dict[str, JsonValue] or typed value
 
     @final
     @cached_property
@@ -232,7 +241,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def _schema_data(
         self,
     ) -> JsonValue:
-        return _schema_type(type(self), set())
+        return _schema_type(type(self), set(), registry=self.serializer_registry)
 
     @final
     @cached_property

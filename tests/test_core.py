@@ -15,7 +15,13 @@ from pydantic import BaseModel, ConfigDict
 
 import furu
 import furu.execution as execution_module
-from furu import Furu, ResourceRequirements, ResultRegistry, validate
+from furu import (
+    ArtifactSerializerRegistry,
+    Furu,
+    ResourceRequirements,
+    ResultRegistry,
+    validate,
+)
 from furu._storage_layout import (
     compute_lock_path_in,
     metadata_path_in,
@@ -30,7 +36,7 @@ from furu.locking import LockManifest, lock_many
 from furu.logging import _scoped_log_files
 from furu.metadata import ArtifactSpec
 from furu.result import _save_result_bundle, load_result_bundle
-from furu.serialize import _from_json, to_json
+from furu.serializer.artifact import _from_json, to_json
 from furu.utils import fully_qualified_name
 from furu.worker.context import (
     _DependencyNotReady,
@@ -50,6 +56,14 @@ def write_stale_lock(lock_path: Path) -> None:
     claim_path.write_text(manifest.model_dump_json(indent=2), encoding="utf-8")
     os.link(claim_path, lock_path)
     os.utime(claim_path, times=(1, 1))
+
+
+def _to_json(obj: Any, declared_type: object) -> Any:
+    return to_json(
+        obj,
+        declared_type=declared_type,
+        registry=ArtifactSerializerRegistry.default(),
+    )
 
 
 class Node(Furu[str]):
@@ -1010,8 +1024,8 @@ def test_to_json():
             "name": "x",
         },
     }
-    assert to_json(node_pair) == expected
-    assert to_json(node_pair) == node_pair._artifact_data
+    assert _to_json(node_pair, NodePair) == expected
+    assert _to_json(node_pair, NodePair) == node_pair._artifact_data
     assert node_pair._artifact_data == expected
 
 
@@ -1038,13 +1052,13 @@ def test_to_json_with_none_field():
         },
     }
 
-    assert to_json(obj) == expected
+    assert _to_json(obj, B) == expected
 
 
 def test_to_json_with_class_field_value():
     obj = UsesClassValue(node_cls=Node)
 
-    assert to_json(Node) == {"|kind": "type_ref", "|class": "test_core.Node"}
+    assert _to_json(Node, type) == {"|kind": "type_ref", "|class": "test_core.Node"}
     assert obj._artifact_data == {
         "|kind": "instance",
         "|class": "test_core.UsesClassValue",
@@ -1068,7 +1082,7 @@ def test_to_json_with_pydantic_field_value():
         },
     }
 
-    assert to_json(obj) == expected
+    assert _to_json(obj, PydanticFields) == expected
     assert obj._artifact_data == expected
     assert isinstance(obj._artifact_hash, str)
 

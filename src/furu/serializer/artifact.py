@@ -1,22 +1,37 @@
 import enum
 from dataclasses import fields, is_dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, get_args, get_origin, get_type_hints
+from typing import TYPE_CHECKING, Any, cast, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel as PydanticBaseModel
 
-from furu.constants import CLASSMARKER, FIELDSMARKER, KINDMARKER
+from furu._declared_types import child_declared_type, strip_annotated
+from furu.constants import (
+    CLASSMARKER,
+    FIELDSMARKER,
+    KINDMARKER,
+    SERIALIZERMARKER,
+    VALUEMARKER,
+)
 from furu.metadata import ArtifactSpec
+from furu.serializer.registry import (
+    ArtifactSerializer,
+    ArtifactSerializerRegistry,
+)
 from furu.utils import JsonValue, fully_qualified_name, resolve_fully_qualified_name
 
 if TYPE_CHECKING:
     from furu.core import Furu
 
-_RESERVED_DICT_KEYS = frozenset({CLASSMARKER, FIELDSMARKER, KINDMARKER})
+_RESERVED_DICT_KEYS = frozenset(
+    {CLASSMARKER, FIELDSMARKER, KINDMARKER, SERIALIZERMARKER, VALUEMARKER}
+)
 
 
 def to_json(  # TODO: consider caching this (but if i'm going to, I need to figure out how to cache lists and other unhashable objects)
     obj: Any,
+    declared_type: object,
+    registry: ArtifactSerializerRegistry,
 ) -> JsonValue:
     # TODO: when writing this to metadata, make sure to escape strings etc
 
@@ -27,6 +42,22 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
             raise ValueError("TODO: write error msg")
         return x
 
+    if isinstance(obj, type):
+        return {
+            KINDMARKER: "type_ref",
+            CLASSMARKER: fully_qualified_name(obj),
+        }
+
+    if serializer := registry.serializer_for_dump(obj, declared_type=declared_type):
+        return {
+            KINDMARKER: "custom",
+            SERIALIZERMARKER: serializer._serializer_id(),
+            VALUEMARKER: serializer.dump(
+                obj,
+                declared_type=strip_annotated(declared_type),
+            ),
+        }
+
     match obj:
         case None:
             return None
@@ -35,27 +66,64 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
         case Path():
             return str(obj)
         case list() | tuple():
-            return [to_json(x) for x in obj]
+            return [
+                to_json(
+                    x,
+                    declared_type=child_declared_type(declared_type, i),
+                    registry=registry,
+                )
+                for i, x in enumerate(obj)
+            ]
         case set() | frozenset():
-            return sorted([to_json(x) for x in obj], key=repr)
+            return sorted(
+                [
+                    to_json(
+                        x,
+                        declared_type=child_declared_type(declared_type, i),
+                        registry=registry,
+                    )
+                    for i, x in enumerate(obj)
+                ],
+                key=repr,
+            )
         case dict():
-            return {assert_correct_dict_key(k): to_json(v) for k, v in obj.items()}
-        case type():
             return {
-                KINDMARKER: "type_ref",
-                CLASSMARKER: fully_qualified_name(obj),
+                assert_correct_dict_key(k): to_json(
+                    v,
+                    declared_type=child_declared_type(declared_type, k),
+                    registry=registry,
+                )
+                for k, v in obj.items()
             }
         case x if is_dataclass(x):
+            hints = get_type_hints(type(x), include_extras=True)
             return {
                 KINDMARKER: "instance",
                 CLASSMARKER: fully_qualified_name(type(x)),
-                FIELDSMARKER: {f.name: to_json(getattr(x, f.name)) for f in fields(x)},
+                FIELDSMARKER: {
+                    f.name: to_json(
+                        getattr(x, f.name),
+                        declared_type=hints.get(f.name, Any),
+                        registry=registry,
+                    )
+                    for f in fields(x)
+                },
             }
         case PydanticBaseModel():
+            model_cls = type(obj)
+            model_fields = model_cls.model_fields
+            hints = get_type_hints(model_cls, include_extras=True)
             return {
                 KINDMARKER: "instance",
-                CLASSMARKER: fully_qualified_name(type(obj)),
-                FIELDSMARKER: {k: to_json(v) for k, v in obj.model_dump().items()},
+                CLASSMARKER: fully_qualified_name(model_cls),
+                FIELDSMARKER: {
+                    k: to_json(
+                        getattr(obj, k),
+                        declared_type=hints.get(k, Any),
+                        registry=registry,
+                    )
+                    for k in model_fields
+                },
             }
         case enum.Enum():
             raise NotImplementedError("TODO")  #  return {"__enum__": _type_fqn(obj)}
@@ -64,9 +132,17 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
 
 
 def _from_json_field(value: JsonValue, expected_type: Any) -> Any:
+    if (
+        isinstance(value, dict)
+        and value.get(KINDMARKER) == "custom"
+        and isinstance(value.get(SERIALIZERMARKER), str)
+    ):
+        return _load_custom_value(cast(dict[str, Any], value), expected_type)
+
     if isinstance(value, dict) and KINDMARKER in value:
         return _from_json(value)
 
+    expected_type = strip_annotated(expected_type)
     origin = get_origin(expected_type)
     args = get_args(expected_type)
     if isinstance(value, list):
@@ -81,6 +157,23 @@ def _from_json_field(value: JsonValue, expected_type: Any) -> Any:
     if expected_type is Path and isinstance(value, str):
         return Path(value)
     return value
+
+
+def _load_custom_value(value: dict[str, Any], expected_type: object) -> Any:
+    serializer_id = value[SERIALIZERMARKER]
+    if not isinstance(serializer_id, str):
+        raise TypeError(
+            f"Expected custom serializer id to be a string: {serializer_id}"
+        )
+    serializer = resolve_fully_qualified_name(serializer_id)
+    if not (
+        isinstance(serializer, type) and issubclass(serializer, ArtifactSerializer)
+    ):
+        raise TypeError(f"{serializer_id} is not an ArtifactSerializer")
+    return serializer.load(
+        cast(JsonValue, value[VALUEMARKER]),
+        declared_type=strip_annotated(expected_type),
+    )
 
 
 def _resolve_serialized_type(class_name: str) -> type:
@@ -105,6 +198,10 @@ def _from_json(value: JsonValue) -> Any:
         case dict():
             class_name = value.get(CLASSMARKER)
             field_values = value.get(FIELDSMARKER)
+            if value.get(KINDMARKER) == "custom" and isinstance(
+                value.get(SERIALIZERMARKER), str
+            ):
+                return _load_custom_value(cast(dict[str, Any], value), Any)
             if value.get(KINDMARKER) == "type_ref" and isinstance(class_name, str):
                 return _resolve_serialized_type(class_name)
             if (
@@ -125,7 +222,15 @@ def _from_json(value: JsonValue) -> Any:
 
 
 def _from_artifact[T: "Furu"](artifact: ArtifactSpec, expected_type: type[T]) -> T:
-    furu_obj = _from_json(artifact.artifact_data)
+    artifact_type = _resolve_serialized_type(artifact.fully_qualified_name)
+    if not issubclass(artifact_type, expected_type):
+        raise TypeError(
+            "Artifact described "
+            + f"{artifact_type.__module__}.{artifact_type.__qualname__}, "
+            + f"expected {expected_type.__module__}.{expected_type.__qualname__}"
+        )
+
+    furu_obj = _from_json_field(artifact.artifact_data, artifact_type)
     if not isinstance(furu_obj, expected_type):
         raise TypeError(
             "Artifact described "

@@ -18,6 +18,7 @@ from typing import (
 
 import pydantic
 
+from furu._declared_types import child_declared_type, strip_annotated
 from furu.constants import FIELDSMARKER, KINDMARKER, TYPEMARKER
 from furu.result.codec import ResultCodec, ResultRegistry
 from furu.result.lazy import LazyResult
@@ -39,30 +40,6 @@ type WrapperKind = Literal[
 @dataclasses.dataclass
 class _DumpState:
     should_load_after_dump: bool = False
-
-
-def _strip_annotated_declared_type(declared_type: object) -> object:
-    if get_origin(declared_type) is Annotated:
-        return get_args(declared_type)[0]
-    return declared_type
-
-
-def _child_declared_type(declared_type: object, key: object) -> object:
-    declared_type = _strip_annotated_declared_type(declared_type)
-    origin = get_origin(declared_type)
-    args = get_args(declared_type)
-    if origin is list and args:
-        return args[0]
-    if origin in (set, frozenset) and args:
-        return args[0]
-    if origin is dict and len(args) == 2:
-        return args[1]
-    if origin is tuple and args:
-        if len(args) == 2 and args[1] is Ellipsis:
-            return args[0]
-        if isinstance(key, int) and key < len(args):
-            return args[key]
-    return Any
 
 
 def _value_path_display(value_path: ValuePath) -> str:
@@ -150,7 +127,7 @@ def _dump_value(
             return [
                 _dump_value(
                     item,
-                    declared_type=_child_declared_type(declared_type, i),
+                    declared_type=child_declared_type(declared_type, i),
                     value_path=(*value_path, f"{i:0{width}d}"),
                     bundle_dir=bundle_dir,
                     registry=registry,
@@ -166,7 +143,7 @@ def _dump_value(
                     "items": [
                         _dump_value(
                             item,
-                            declared_type=_child_declared_type(declared_type, i),
+                            declared_type=child_declared_type(declared_type, i),
                             value_path=(*value_path, f"{i:0{width}d}"),
                             bundle_dir=bundle_dir,
                             registry=registry,
@@ -193,7 +170,7 @@ def _dump_value(
                     "items": [
                         _dump_value(
                             item,
-                            declared_type=_child_declared_type(declared_type, i),
+                            declared_type=child_declared_type(declared_type, i),
                             value_path=(*value_path, f"{i:0{width}d}"),
                             bundle_dir=bundle_dir,
                             registry=registry,
@@ -212,7 +189,7 @@ def _dump_value(
                 )
                 out[key] = _dump_value(
                     child,
-                    declared_type=_child_declared_type(declared_type, raw_key),
+                    declared_type=child_declared_type(declared_type, raw_key),
                     value_path=(*value_path, key),
                     bundle_dir=bundle_dir,
                     registry=registry,
@@ -273,7 +250,7 @@ def _dump_value(
         case LazyResult():
             lazy_rel = Path(LAZY_DIR_NAME, *(value_path or (_ROOT_ARTIFACT_NAME,)))
             nested_bundle_dir = bundle_dir / lazy_rel
-            lazy_declared_type = _strip_annotated_declared_type(declared_type)
+            lazy_declared_type = strip_annotated(declared_type)
             if get_origin(lazy_declared_type) is LazyResult:
                 lazy_declared_args = get_args(lazy_declared_type)
                 if lazy_declared_args:

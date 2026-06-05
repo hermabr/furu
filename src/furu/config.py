@@ -56,6 +56,7 @@ class _FuruConfig(BaseSettings):
     )
 
     debug_mode: bool = False
+    serializers: tuple[str, ...] = ()
     directories: _FuruDirectories = Field(default_factory=_FuruDirectories.default)
     result: _FuruResultConfig = Field(default_factory=_FuruResultConfig)
     worker: _FuruWorkerConfig = Field(default_factory=_FuruWorkerConfig)
