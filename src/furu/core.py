@@ -19,7 +19,7 @@ from furu.locking import is_active_lock, lock_many
 from furu.logging import get_logger
 from furu.resources import ResourceRequirements
 from furu.result import load_result_bundle
-from furu.result.codec import ResultRegistry
+from furu.result.codec import ResultCodec
 from furu.serializer.artifact import to_json as _to_json
 from furu.serializer.registry import ArtifactSerializerRegistry
 from furu.serializer.schema import schema_type as _schema_type
@@ -96,8 +96,8 @@ class Furu[T](_FuruDataclassTransform, ABC):
         return get_config().directories.objects
 
     @property
-    def result_registry(self) -> ResultRegistry:
-        return ResultRegistry.default()
+    def result_codecs(self) -> tuple[type[ResultCodec], ...]:
+        return ()
 
     @property
     def serializer_registry(self) -> ArtifactSerializerRegistry:
