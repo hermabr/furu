@@ -41,14 +41,29 @@ class ResultCodecMeta(ABCMeta):
         with ResultCodecMeta._auto_registered_codecs_lock:
             ResultCodecMeta._auto_registered_codecs.append(cast(type[ResultCodec], cls))
 
-        registry_cls = globals().get("ResultRegistry")
-        if registry_cls is not None:
-            registry_cls.default.cache_clear()
+        ResultCodecMeta._default_codec_layers.cache_clear()
 
     @classmethod
     def auto_registered_codecs(mcls) -> tuple[type[ResultCodec], ...]:
         with mcls._auto_registered_codecs_lock:
             return tuple(reversed(mcls._auto_registered_codecs))
+
+    @classmethod
+    @cache
+    def _default_codec_layers(
+        mcls,
+    ) -> tuple[tuple[type[ResultCodec], ...], tuple[type[ResultCodec], ...]]:
+        auto_registered_codecs = tuple(
+            codec
+            for codec in mcls.auto_registered_codecs()
+            if codec.dependencies_available()
+        )
+        built_in_codecs = tuple(
+            codec
+            for codec in (PolarsParquetCodec, NumpyNpyCodec)
+            if codec.dependencies_available()
+        )
+        return auto_registered_codecs, built_in_codecs
 
 
 class ResultCodec[T](ABC, metaclass=ResultCodecMeta):
@@ -148,17 +163,15 @@ class NumpyNpyCodec(ResultCodec["np.ndarray[Any, Any]"]):
 @dataclass(frozen=True)
 class ResultRegistry:
     explicit_codecs: tuple[type[ResultCodec], ...] = ()
-    auto_registered_codecs: tuple[type[ResultCodec], ...] = ()
-    built_in_codecs: tuple[type[ResultCodec], ...] = ()
 
-    def with_codec(self, codec: type[ResultCodec]) -> Self:
-        return type(self)(
-            explicit_codecs=(codec, *self.explicit_codecs),
-            auto_registered_codecs=self.auto_registered_codecs,
-            built_in_codecs=self.built_in_codecs,
-        )
+    @classmethod
+    def new(cls, codecs: list[type[ResultCodec]]) -> Self:
+        return cls(explicit_codecs=tuple(codecs))
 
     def find_codec(self, value: object) -> type[ResultCodec] | None:
+        auto_registered_codecs, built_in_codecs = (
+            ResultCodecMeta._default_codec_layers()
+        )
         if codec := _find_single_codec_match(
             value,
             self.explicit_codecs,
@@ -167,32 +180,14 @@ class ResultRegistry:
             return codec
         if codec := _find_single_codec_match(
             value,
-            self.auto_registered_codecs,
+            auto_registered_codecs,
             layer_name="auto-registered codec registry",
         ):
             return codec
-        for codec in self.built_in_codecs:
+        for codec in built_in_codecs:
             if codec.matches(value):
                 return codec
         return None
-
-    @classmethod
-    @cache
-    def default(cls) -> ResultRegistry:
-        auto_registered_codecs = tuple(
-            codec
-            for codec in ResultCodecMeta.auto_registered_codecs()
-            if codec.dependencies_available()
-        )
-        built_in_codecs = tuple(
-            codec
-            for codec in (PolarsParquetCodec, NumpyNpyCodec)
-            if codec.dependencies_available()
-        )
-        return cls(
-            auto_registered_codecs=auto_registered_codecs,
-            built_in_codecs=built_in_codecs,
-        )
 
 
 def _find_single_codec_match(

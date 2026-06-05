@@ -97,7 +97,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     @property
     def result_registry(self) -> ResultRegistry:
-        return ResultRegistry.default()
+        return ResultRegistry.new([])
 
     @property
     def serializer_registry(self) -> ArtifactSerializerRegistry:

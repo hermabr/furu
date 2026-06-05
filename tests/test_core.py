@@ -1680,7 +1680,7 @@ def test_no_create_hook_loads_cached_result() -> None:
         "cached:1",
         result_dir_in(obj._base_dir),
         declared_type=str,
-        registry=ResultRegistry.default(),
+        registry=ResultRegistry.new([]),
     )
 
     assert obj.create() == "cached:1"
@@ -1709,7 +1709,7 @@ def test_no_create_hook_uses_post_lock_cache_recheck(
             "cached-after-lock:1",
             result_dir_in(obj._base_dir),
             declared_type=str,
-            registry=ResultRegistry.default(),
+            registry=ResultRegistry.new([]),
         )
         yield lambda: True
 
@@ -1828,7 +1828,7 @@ def test_pending_items_are_rechecked_after_lock_acquisition(
         _save_result_bundle(
             "single:5",
             result_dir_in(pending._base_dir),
-            registry=ResultRegistry.default(),
+            registry=ResultRegistry.new([]),
         )
         yield lambda: True
 

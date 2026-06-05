@@ -107,14 +107,14 @@ if __name__ == "__main__":
     second = obj.create()
 
     payload_bundle = Path("payload-bundle")
-    _save_result_bundle(Payload(9), payload_bundle, registry=ResultRegistry())
+    _save_result_bundle(Payload(9), payload_bundle, registry=ResultRegistry.new([]))
     payload_loaded = load_result_bundle(payload_bundle)
 
     codec_bundle = Path("codec-bundle")
     _save_result_bundle(
         b"abc",
         codec_bundle,
-        registry=ResultRegistry(explicit_codecs=(MainCodec,)),
+        registry=ResultRegistry.new([MainCodec]),
     )
     codec_loaded = load_result_bundle(codec_bundle)
 
