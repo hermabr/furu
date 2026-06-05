@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any, ClassVar, cast
@@ -11,11 +10,9 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 import furu
-import furu.config as furu_config
 from furu import Furu
 from furu._storage_layout import result_dir_in, result_manifest_path_in
 from furu._declared_types import child_declared_type
-from furu.config import get_config
 from furu.result import (
     LazyResult,
     _save_result_bundle,
@@ -299,8 +296,8 @@ class _OtherCountingCodec(ResultCodec[_CountingValue]):
         return _CountingValue(0)
 
 
-class _ConfiguredNumpyCodec(ResultCodec[Any]):
-    file_name: ClassVar[str] = "configured.npy"
+class _CustomNumpyCodec(ResultCodec[Any]):
+    file_name: ClassVar[str] = "custom.npy"
 
     @classmethod
     def matches(cls, value: object) -> bool:
@@ -320,25 +317,8 @@ class _ConfiguredNumpyCodec(ResultCodec[Any]):
         return np.load(artifact_dir / cls.file_name, allow_pickle=False)
 
 
-class _RegistryNumpyCodec(_ConfiguredNumpyCodec):
+class _RegistryNumpyCodec(_CustomNumpyCodec):
     file_name: ClassVar[str] = "registry.npy"
-
-
-@pytest.fixture
-def configured_numpy_codec(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    result_config = get_config().result.model_copy(
-        update={"codecs": (_ConfiguredNumpyCodec._codec_id(),)}
-    )
-    monkeypatch.setattr(
-        furu_config,
-        "_config",
-        get_config().model_copy(update={"result": result_config}),
-    )
-    ResultRegistry.default.cache_clear()
-    try:
-        yield
-    finally:
-        ResultRegistry.default.cache_clear()
 
 
 def test_codec_id_is_derived_from_class_identity() -> None:
@@ -897,28 +877,7 @@ def test_numpy_array_round_trips() -> None:
     assert manifest["weights"]["$furu"]["path"] == "artifacts/weights"
 
 
-@pytest.mark.usefixtures("configured_numpy_codec")
-def test_configured_codec_takes_priority_over_builtin_numpy() -> None:
-    obj = NumpyResult()
-
-    loaded = obj.create()
-    loaded_again = obj.create()
-
-    assert isinstance(loaded, dict)
-    assert isinstance(loaded_again, dict)
-    assert np.array_equal(cast(Any, loaded["weights"]), np.arange(10, dtype=np.float32))
-    assert np.array_equal(
-        cast(Any, loaded_again["weights"]), np.arange(10, dtype=np.float32)
-    )
-    artifact_dir = result_dir_in(obj._base_dir) / "artifacts" / "weights"
-    assert (artifact_dir / "configured.npy").exists()
-    assert not (artifact_dir / "data.npy").exists()
-    manifest = json.loads(result_manifest_path_in(obj._base_dir).read_text())
-    assert manifest["weights"]["$furu"]["codec"] == _ConfiguredNumpyCodec._codec_id()
-
-
-@pytest.mark.usefixtures("configured_numpy_codec")
-def test_result_registry_takes_priority_over_configured_codec() -> None:
+def test_result_registry_takes_priority_over_builtin_codec() -> None:
     obj = RegistryNumpyResult()
 
     loaded = obj.create()
@@ -928,7 +887,7 @@ def test_result_registry_takes_priority_over_configured_codec() -> None:
     assert np.array_equal(loaded_again, np.arange(10, dtype=np.float32))
     artifact_dir = result_dir_in(obj._base_dir) / "artifacts" / "root"
     assert (artifact_dir / "registry.npy").exists()
-    assert not (artifact_dir / "configured.npy").exists()
+    assert not (artifact_dir / "data.npy").exists()
     manifest = json.loads(result_manifest_path_in(obj._base_dir).read_text())
     assert manifest["$furu"]["codec"] == _RegistryNumpyCodec._codec_id()
 

@@ -7,7 +7,6 @@ import furu.config as furu_config
 from furu.config import (
     _FuruConfig,
     _FuruDirectories,
-    _FuruResultConfig,
     _FuruWorkerConfig,
     _WORKER_JSON_CONFIG_FILE_ENV_VAR,
     get_config,
@@ -18,14 +17,6 @@ def test_config_reads_environment(monkeypatch) -> None:
     monkeypatch.setenv("FURU_DEBUG_MODE", "true")
     monkeypatch.setenv("FURU_DIRECTORIES__OBJECTS", "/tmp/furu-objects")
     monkeypatch.setenv("FURU_DIRECTORIES__EXECUTIONS", "/tmp/furu-executions")
-    monkeypatch.setenv(
-        "FURU_RESULT__CODECS",
-        '["env_lib.FirstCodec", "env_lib.SecondCodec"]',
-    )
-    monkeypatch.setenv(
-        "FURU_SERIALIZERS",
-        '["env_lib.FirstSerializer", "env_lib.SecondSerializer"]',
-    )
     monkeypatch.setenv("FURU_WORKER__IDLE_TIMEOUT_SECONDS", "12.5")
     monkeypatch.setenv("FURU_WORKER__MAX_FAILED_RESTARTS", "7")
     monkeypatch.setenv("FURU_WORKER__MAX_RETRIES_PER_OBJECT", "3")
@@ -36,13 +27,6 @@ def test_config_reads_environment(monkeypatch) -> None:
     assert config.directories == _FuruDirectories(
         objects=Path("/tmp/furu-objects"),
         executions=Path("/tmp/furu-executions"),
-    )
-    assert config.result == _FuruResultConfig(
-        codecs=("env_lib.FirstCodec", "env_lib.SecondCodec")
-    )
-    assert config.serializers == (
-        "env_lib.FirstSerializer",
-        "env_lib.SecondSerializer",
     )
     assert config.worker == _FuruWorkerConfig(
         idle_timeout_seconds=12.5,
@@ -57,14 +41,10 @@ def test_config_reads_pyproject_toml(tmp_path, monkeypatch) -> None:
         """
 [tool.furu]
 debug_mode = true
-serializers = ["my_lib.SomeSerializer"]
 
 [tool.furu.directories]
 objects = "/tmp/furu-pyproject-objects"
 executions = "/tmp/furu-pyproject-executions"
-
-[tool.furu.result]
-codecs = ["my_lib.my_fn.SomeCodec"]
 
 [tool.furu.worker]
 idle_timeout_seconds = 7.5
@@ -82,8 +62,6 @@ max_retries_per_object = 3
         objects=Path("/tmp/furu-pyproject-objects"),
         executions=Path("/tmp/furu-pyproject-executions"),
     )
-    assert config.result == _FuruResultConfig(codecs=("my_lib.my_fn.SomeCodec",))
-    assert config.serializers == ("my_lib.SomeSerializer",)
     assert config.worker == _FuruWorkerConfig(
         idle_timeout_seconds=7.5,
         max_failed_restarts=7,
@@ -148,13 +126,9 @@ def test_config_reads_json_config_file(tmp_path, monkeypatch) -> None:
         """
 {
   "debug_mode": true,
-  "serializers": ["json_lib.SomeSerializer"],
   "directories": {
     "objects": "/tmp/furu-json-objects",
     "executions": "/tmp/furu-json-executions"
-  },
-  "result": {
-    "codecs": ["json_lib.SomeCodec"]
   },
   "worker": {
     "idle_timeout_seconds": 9.5,
@@ -176,8 +150,6 @@ def test_config_reads_json_config_file(tmp_path, monkeypatch) -> None:
         objects=Path("/tmp/furu-json-objects"),
         executions=Path("/tmp/furu-json-executions"),
     )
-    assert config.result == _FuruResultConfig(codecs=("json_lib.SomeCodec",))
-    assert config.serializers == ("json_lib.SomeSerializer",)
     assert config.worker == _FuruWorkerConfig(
         idle_timeout_seconds=9.5,
         max_failed_restarts=7,
