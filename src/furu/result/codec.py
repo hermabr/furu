@@ -15,30 +15,10 @@ if TYPE_CHECKING:
 from furu.utils import fully_qualified_name
 
 
-_USER_CODECS: tuple[type[ResultCodec], ...] = ()
-_USER_CODECS_LOCK = Lock()
-
-
-def _registered_user_codecs() -> tuple[type[ResultCodec], ...]:
-    with _USER_CODECS_LOCK:
-        return _USER_CODECS
-
-
-def _register_user_codec(codec: type[ResultCodec]) -> None:
-    global _USER_CODECS
-
-    with _USER_CODECS_LOCK:
-        _USER_CODECS = (
-            codec,
-            *(registered for registered in _USER_CODECS if registered is not codec),
-        )
-
-    registry_cls = globals().get("ResultRegistry")
-    if registry_cls is not None:
-        registry_cls.default.cache_clear()
-
-
 class ResultCodecMeta(ABCMeta):
+    _auto_registered_codecs: list[type[ResultCodec]] = []
+    _auto_registered_codecs_lock = Lock()
+
     def __init__(
         cls,
         name: str,
@@ -55,7 +35,20 @@ class ResultCodecMeta(ABCMeta):
             return
 
         cls.auto_register = True
-        _register_user_codec(cast(type[ResultCodec], cls))
+        with ResultCodecMeta._auto_registered_codecs_lock:
+            ResultCodecMeta._auto_registered_codecs.insert(
+                0,
+                cast(type[ResultCodec], cls),
+            )
+
+        registry_cls = globals().get("ResultRegistry")
+        if registry_cls is not None:
+            registry_cls.default.cache_clear()
+
+    @classmethod
+    def auto_registered_codecs(mcls) -> tuple[type[ResultCodec], ...]:
+        with mcls._auto_registered_codecs_lock:
+            return tuple(mcls._auto_registered_codecs)
 
 
 class ResultCodec[T](ABC, metaclass=ResultCodecMeta):
@@ -170,7 +163,7 @@ class ResultRegistry:
     def default(cls) -> ResultRegistry:
         user_codecs = tuple(
             codec
-            for codec in _registered_user_codecs()
+            for codec in ResultCodecMeta.auto_registered_codecs()
             if codec.dependencies_available()
         )
         built_in_codecs = tuple(
