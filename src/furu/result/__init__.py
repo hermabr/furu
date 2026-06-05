@@ -20,7 +20,7 @@ import pydantic
 
 from furu._declared_types import child_declared_type, strip_annotated
 from furu.constants import FIELDSMARKER, KINDMARKER, TYPEMARKER
-from furu.result.codec import ResultCodec, ResultRegistry
+from furu.result.codec import ResultCodec, ResultCodecMeta
 from furu.result.lazy import LazyResult
 from furu.result.save_as import _SaveAs
 from furu.result.save_as import save_as as save_as
@@ -84,7 +84,7 @@ def _dump_value(
     declared_type: object = Any,
     value_path: ValuePath,
     bundle_dir: Path,
-    registry: ResultRegistry,
+    result_codecs: tuple[type[ResultCodec], ...],
     dump_state: _DumpState,
 ) -> JsonValue:
     annotated_codec: type[ResultCodec] | None = None
@@ -130,7 +130,7 @@ def _dump_value(
                     declared_type=child_declared_type(declared_type, i),
                     value_path=(*value_path, f"{i:0{width}d}"),
                     bundle_dir=bundle_dir,
-                    registry=registry,
+                    result_codecs=result_codecs,
                     dump_state=dump_state,
                 )
                 for i, item in enumerate(value)
@@ -146,7 +146,7 @@ def _dump_value(
                             declared_type=child_declared_type(declared_type, i),
                             value_path=(*value_path, f"{i:0{width}d}"),
                             bundle_dir=bundle_dir,
-                            registry=registry,
+                            result_codecs=result_codecs,
                             dump_state=dump_state,
                         )
                         for i, item in enumerate(value)
@@ -173,7 +173,7 @@ def _dump_value(
                             declared_type=child_declared_type(declared_type, i),
                             value_path=(*value_path, f"{i:0{width}d}"),
                             bundle_dir=bundle_dir,
-                            registry=registry,
+                            result_codecs=result_codecs,
                             dump_state=dump_state,
                         )
                         for i, item in enumerate(items)
@@ -192,7 +192,7 @@ def _dump_value(
                     declared_type=child_declared_type(declared_type, raw_key),
                     value_path=(*value_path, key),
                     bundle_dir=bundle_dir,
-                    registry=registry,
+                    result_codecs=result_codecs,
                     dump_state=dump_state,
                 )
             return out
@@ -215,7 +215,7 @@ def _dump_value(
                     declared_type=field_types.get(name, Any),
                     value_path=(*value_path, name),
                     bundle_dir=bundle_dir,
-                    registry=registry,
+                    result_codecs=result_codecs,
                     dump_state=dump_state,
                 )
             return {
@@ -237,7 +237,7 @@ def _dump_value(
                     declared_type=field_types.get(field.name, Any),
                     value_path=(*value_path, name),
                     bundle_dir=bundle_dir,
-                    registry=registry,
+                    result_codecs=result_codecs,
                     dump_state=dump_state,
                 )
             return {
@@ -261,7 +261,7 @@ def _dump_value(
                 value.load(),
                 nested_bundle_dir,
                 declared_type=lazy_declared_type,
-                registry=registry,
+                result_codecs=result_codecs,
             ):
                 dump_state.should_load_after_dump = True
             return {
@@ -271,7 +271,7 @@ def _dump_value(
                 }
             }
         case _:
-            if codec := registry.find_codec(value):
+            if codec := ResultCodecMeta.find_codec(value, result_codecs):
                 return _dump_external(
                     value,
                     codec=codec,
@@ -526,7 +526,7 @@ def _save_result_bundle(
     bundle_dir: Path,
     *,
     declared_type: object = Any,
-    registry: ResultRegistry,
+    result_codecs: tuple[type[ResultCodec], ...],
 ) -> bool:
     bundle_dir.mkdir(parents=True, exist_ok=False)
 
@@ -536,7 +536,7 @@ def _save_result_bundle(
         declared_type=declared_type,
         value_path=(),
         bundle_dir=bundle_dir,
-        registry=registry,
+        result_codecs=result_codecs,
         dump_state=dump_state,
     )
     (bundle_dir / MANIFEST_FILE_NAME).write_text(

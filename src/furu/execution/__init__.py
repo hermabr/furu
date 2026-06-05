@@ -148,7 +148,7 @@ def _store_result[T](
         result,
         tmp_result_dir,
         declared_type=declared_type,
-        registry=obj.result_registry,
+        result_codecs=obj.result_codecs,
     )
 
     if not has_lock():

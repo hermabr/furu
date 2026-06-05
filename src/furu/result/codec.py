@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import importlib.util
 from abc import ABC, ABCMeta, abstractmethod
-from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 from threading import Lock
-from typing import TYPE_CHECKING, Any, ClassVar, Self, cast, final
+from typing import TYPE_CHECKING, Any, ClassVar, cast, final
 
 if TYPE_CHECKING:
     import numpy as np
@@ -64,6 +63,30 @@ class ResultCodecMeta(ABCMeta):
             if codec.dependencies_available()
         )
         return auto_registered_codecs, built_in_codecs
+
+    @classmethod
+    def find_codec(
+        mcls,
+        value: object,
+        result_codecs: tuple[type[ResultCodec], ...],
+    ) -> type[ResultCodec] | None:
+        auto_registered_codecs, built_in_codecs = mcls._default_codec_layers()
+        if codec := _find_single_codec_match(
+            value,
+            result_codecs,
+            layer_name="result codecs",
+        ):
+            return codec
+        if codec := _find_single_codec_match(
+            value,
+            auto_registered_codecs,
+            layer_name="auto-registered codec registry",
+        ):
+            return codec
+        for codec in built_in_codecs:
+            if codec.matches(value):
+                return codec
+        return None
 
 
 class ResultCodec[T](ABC, metaclass=ResultCodecMeta):
@@ -158,36 +181,6 @@ class NumpyNpyCodec(ResultCodec["np.ndarray[Any, Any]"]):
         import numpy as np
 
         return np.load(artifact_dir / "data.npy", allow_pickle=False)
-
-
-@dataclass(frozen=True)
-class ResultRegistry:
-    explicit_codecs: tuple[type[ResultCodec], ...] = ()
-
-    @classmethod
-    def new(cls, codecs: list[type[ResultCodec]]) -> Self:
-        return cls(explicit_codecs=tuple(codecs))
-
-    def find_codec(self, value: object) -> type[ResultCodec] | None:
-        auto_registered_codecs, built_in_codecs = (
-            ResultCodecMeta._default_codec_layers()
-        )
-        if codec := _find_single_codec_match(
-            value,
-            self.explicit_codecs,
-            layer_name="explicit codec registry",
-        ):
-            return codec
-        if codec := _find_single_codec_match(
-            value,
-            auto_registered_codecs,
-            layer_name="auto-registered codec registry",
-        ):
-            return codec
-        for codec in built_in_codecs:
-            if codec.matches(value):
-                return codec
-        return None
 
 
 def _find_single_codec_match(

@@ -64,7 +64,7 @@ from pathlib import Path
 
 from furu import Furu
 from furu.result import load_result_bundle, _save_result_bundle
-from furu.result.codec import ResultCodec, ResultRegistry
+from furu.result.codec import ResultCodec
 from furu.serializer.artifact import _from_json
 
 
@@ -107,15 +107,11 @@ if __name__ == "__main__":
     second = obj.create()
 
     payload_bundle = Path("payload-bundle")
-    _save_result_bundle(Payload(9), payload_bundle, registry=ResultRegistry.new([]))
+    _save_result_bundle(Payload(9), payload_bundle, result_codecs=())
     payload_loaded = load_result_bundle(payload_bundle)
 
     codec_bundle = Path("codec-bundle")
-    _save_result_bundle(
-        b"abc",
-        codec_bundle,
-        registry=ResultRegistry.new([MainCodec]),
-    )
+    _save_result_bundle(b"abc", codec_bundle, result_codecs=(MainCodec,))
     codec_loaded = load_result_bundle(codec_bundle)
 
     print(

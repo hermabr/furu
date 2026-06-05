@@ -22,7 +22,7 @@ from furu.result.codec import (
     NumpyNpyCodec,
     PolarsParquetCodec,
     ResultCodec,
-    ResultRegistry,
+    ResultCodecMeta,
 )
 
 np = pytest.importorskip("numpy")
@@ -169,7 +169,7 @@ def test_path_root_value_round_trips(tmp_path: Path) -> None:
     bundle_dir = tmp_path / "bundle"
     value = Path("outputs/model.bin")
 
-    _save_result_bundle(value, bundle_dir, registry=ResultRegistry.new([]))
+    _save_result_bundle(value, bundle_dir, result_codecs=())
 
     assert load_result_bundle(bundle_dir) == value
 
@@ -182,7 +182,7 @@ def test_tuple_set_and_frozenset_round_trip(tmp_path: Path) -> None:
         "frozenset": frozenset({"b", "a"}),
     }
 
-    _save_result_bundle(value, bundle_dir, registry=ResultRegistry.new([]))
+    _save_result_bundle(value, bundle_dir, result_codecs=())
 
     assert load_result_bundle(bundle_dir) == value
     manifest = json.loads((bundle_dir / "manifest.json").read_text())
@@ -207,7 +207,7 @@ def test_tuple_root_value_uses_furu_wrapper(tmp_path: Path) -> None:
     bundle_dir = tmp_path / "bundle"
     value = (1, 2, 3)
 
-    _save_result_bundle(value, bundle_dir, registry=ResultRegistry.new([]))
+    _save_result_bundle(value, bundle_dir, result_codecs=())
 
     assert load_result_bundle(bundle_dir) == value
     manifest = json.loads((bundle_dir / "manifest.json").read_text())
@@ -436,8 +436,8 @@ class _OptOutRegisteredValueCodec(ResultCodec[_OptOutRegisteredValue]):
 
 class RegistryAutoRegisteredValueResult(Furu[_AutoRegisteredValue]):
     @property
-    def result_registry(self) -> ResultRegistry:
-        return ResultRegistry.new([_CoreRegistryAutoValueCodec])
+    def result_codecs(self) -> tuple[type[ResultCodec], ...]:
+        return (_CoreRegistryAutoValueCodec,)
 
     def create(self) -> _AutoRegisteredValue:
         return _AutoRegisteredValue(10)
@@ -456,21 +456,19 @@ def test_codec_id_is_derived_from_class_identity() -> None:
     )
 
 
-def test_result_registry_new_is_functional() -> None:
-    first = ResultRegistry.new([_CountingCodec])
-    second = ResultRegistry.new([_CountingCodec, _OtherCountingCodec])
+def test_result_codec_meta_find_codec_uses_result_codecs() -> None:
+    first = (_CountingCodec,)
+    second = (_CountingCodec, _OtherCountingCodec)
 
-    assert ResultRegistry.new([]).find_codec(_CountingValue(1)) is None
-    assert first.find_codec(_CountingValue(1)) is _CountingCodec
-    with pytest.raises(
-        TypeError, match="explicit codec registry matched multiple codecs"
-    ):
-        second.find_codec(_CountingValue(1))
+    assert ResultCodecMeta.find_codec(_CountingValue(1), ()) is None
+    assert ResultCodecMeta.find_codec(_CountingValue(1), first) is _CountingCodec
+    with pytest.raises(TypeError, match="result codecs matched multiple codecs"):
+        ResultCodecMeta.find_codec(_CountingValue(1), second)
 
 
 def test_user_defined_codec_is_auto_registered(tmp_path: Path) -> None:
     assert (
-        ResultRegistry.new([]).find_codec(_AutoRegisteredValue(1))
+        ResultCodecMeta.find_codec(_AutoRegisteredValue(1), ())
         is _AutoRegisteredValueCodec
     )
 
@@ -478,7 +476,7 @@ def test_user_defined_codec_is_auto_registered(tmp_path: Path) -> None:
     _save_result_bundle(
         _AutoRegisteredValue(3),
         bundle_dir,
-        registry=ResultRegistry.new([]),
+        result_codecs=(),
     )
 
     artifact_dir = bundle_dir / "artifacts" / "root"
@@ -492,13 +490,13 @@ def test_user_defined_codec_is_auto_registered(tmp_path: Path) -> None:
 def test_auto_register_false_opts_out_of_auto_registered_codecs(
     tmp_path: Path,
 ) -> None:
-    assert ResultRegistry.new([]).find_codec(_OptOutRegisteredValue()) is None
+    assert ResultCodecMeta.find_codec(_OptOutRegisteredValue(), ()) is None
 
     bundle_dir = tmp_path / "bundle"
     _save_result_bundle(
         _OptOutRegisteredValue(),
         bundle_dir,
-        registry=ResultRegistry.new([_OptOutRegisteredValueCodec]),
+        result_codecs=(_OptOutRegisteredValueCodec,),
     )
 
     assert (bundle_dir / "artifacts" / "root" / "manual.txt").exists()
@@ -512,7 +510,7 @@ def test_auto_registered_codec_takes_priority_over_builtin_codec(
     bundle_dir = tmp_path / "bundle"
     value = np.arange(3, dtype=np.int64).view(_AutoRegisteredArray)
 
-    _save_result_bundle(value, bundle_dir, registry=ResultRegistry.new([]))
+    _save_result_bundle(value, bundle_dir, result_codecs=())
 
     artifact_dir = bundle_dir / "artifacts" / "root"
     assert (artifact_dir / "auto.npy").exists()
@@ -521,7 +519,7 @@ def test_auto_registered_codec_takes_priority_over_builtin_codec(
     assert manifest["$furu"]["codec"] == _AutoRegisteredArrayCodec._codec_id()
 
 
-def test_task_result_registry_takes_priority_over_auto_registered_codec() -> None:
+def test_task_result_codecs_take_priority_over_auto_registered_codec() -> None:
     obj = RegistryAutoRegisteredValueResult()
 
     loaded = obj.create()
@@ -553,7 +551,7 @@ def test_codec_defined_after_default_codec_layers_cache_is_auto_registered() -> 
     class LateAutoRegisteredValue:
         pass
 
-    assert ResultRegistry.new([]).find_codec(LateAutoRegisteredValue()) is None
+    assert ResultCodecMeta.find_codec(LateAutoRegisteredValue(), ()) is None
 
     class LateAutoRegisteredCodec(ResultCodec[LateAutoRegisteredValue]):
         @classmethod
@@ -575,7 +573,7 @@ def test_codec_defined_after_default_codec_layers_cache_is_auto_registered() -> 
             return LateAutoRegisteredValue()
 
     assert (
-        ResultRegistry.new([]).find_codec(LateAutoRegisteredValue())
+        ResultCodecMeta.find_codec(LateAutoRegisteredValue(), ())
         is LateAutoRegisteredCodec
     )
 
@@ -584,9 +582,12 @@ def test_explicit_registry_sees_later_auto_registered_codec() -> None:
     class LateExplicitRegistryAutoValue:
         pass
 
-    registry = ResultRegistry.new([_CountingCodec])
+    result_codecs = (_CountingCodec,)
 
-    assert registry.find_codec(LateExplicitRegistryAutoValue()) is None
+    assert (
+        ResultCodecMeta.find_codec(LateExplicitRegistryAutoValue(), result_codecs)
+        is None
+    )
 
     class LateExplicitRegistryAutoCodec(ResultCodec[LateExplicitRegistryAutoValue]):
         @classmethod
@@ -611,7 +612,7 @@ def test_explicit_registry_sees_later_auto_registered_codec() -> None:
             return LateExplicitRegistryAutoValue()
 
     assert (
-        registry.find_codec(LateExplicitRegistryAutoValue())
+        ResultCodecMeta.find_codec(LateExplicitRegistryAutoValue(), result_codecs)
         is LateExplicitRegistryAutoCodec
     )
 
@@ -659,7 +660,7 @@ def test_auto_registered_codecs_must_not_be_ambiguous() -> None:
             return AutoAmbiguousValue()
 
     with pytest.raises(TypeError) as exc_info:
-        ResultRegistry.new([]).find_codec(AutoAmbiguousValue())
+        ResultCodecMeta.find_codec(AutoAmbiguousValue(), ())
 
     message = str(exc_info.value)
     assert "auto-registered codec registry matched multiple codecs" in message
@@ -867,8 +868,8 @@ def test_save_as_conflicts_with_annotated_codec() -> None:
 
 class RegistryCountingResult(Furu[_CountingValue]):
     @property
-    def result_registry(self) -> ResultRegistry:
-        return ResultRegistry.new([_CountingCodec])
+    def result_codecs(self) -> tuple[type[ResultCodec], ...]:
+        return (_CountingCodec,)
 
     def create(self) -> _CountingValue:
         return _CountingValue(8)
@@ -876,14 +877,14 @@ class RegistryCountingResult(Furu[_CountingValue]):
 
 class AmbiguousRegistryCountingResult(Furu[_CountingValue]):
     @property
-    def result_registry(self) -> ResultRegistry:
-        return ResultRegistry.new([_CountingCodec, _OtherCountingCodec])
+    def result_codecs(self) -> tuple[type[ResultCodec], ...]:
+        return (_CountingCodec, _OtherCountingCodec)
 
     def create(self) -> _CountingValue:
         return _CountingValue(8)
 
 
-def test_task_result_registry_is_used_for_save_inference_only() -> None:
+def test_task_result_codecs_are_used_for_save_inference_only() -> None:
     _CountingCodec.dump_calls = 0
     _CountingCodec.load_calls = 0
     obj = RegistryCountingResult()
@@ -900,10 +901,8 @@ def test_task_result_registry_is_used_for_save_inference_only() -> None:
     assert _CountingCodec.load_calls == 1
 
 
-def test_task_result_registry_must_not_be_ambiguous() -> None:
-    with pytest.raises(
-        TypeError, match="explicit codec registry matched multiple codecs"
-    ):
+def test_task_result_codecs_must_not_be_ambiguous() -> None:
+    with pytest.raises(TypeError, match="result codecs matched multiple codecs"):
         AmbiguousRegistryCountingResult().create()
 
 
@@ -915,9 +914,7 @@ class UnsupportedRootResult(Furu[object]):
 def test_unsupported_custom_object_fails_with_root_path(tmp_path) -> None:
     bundle_dir = tmp_path / "bundle"
     with pytest.raises(ValueError) as exc_info:
-        _save_result_bundle(
-            _CustomTensor(), bundle_dir, registry=ResultRegistry.new([])
-        )
+        _save_result_bundle(_CustomTensor(), bundle_dir, result_codecs=())
     msg = str(exc_info.value)
     assert "<root>" in msg
     assert "_CustomTensor" in msg
@@ -929,46 +926,40 @@ def test_unsupported_nested_path_includes_padded_index(tmp_path) -> None:
     layers[3] = {"weights": _CustomTensor()}
 
     with pytest.raises(ValueError) as exc_info:
-        _save_result_bundle(
-            {"layers": layers}, bundle_dir, registry=ResultRegistry.new([])
-        )
+        _save_result_bundle({"layers": layers}, bundle_dir, result_codecs=())
     assert "layers/03/weights" in str(exc_info.value)
 
 
 def test_reserved_furu_dict_key_fails(tmp_path) -> None:
     bundle_dir = tmp_path / "bundle"
     with pytest.raises(ValueError, match="reserved"):
-        _save_result_bundle(
-            {"$furu": "user data"}, bundle_dir, registry=ResultRegistry.new([])
-        )
+        _save_result_bundle({"$furu": "user data"}, bundle_dir, result_codecs=())
 
 
 def test_non_string_dict_key_fails(tmp_path) -> None:
     bundle_dir = tmp_path / "bundle"
     with pytest.raises(ValueError, match="must be strings"):
-        _save_result_bundle({1: "x"}, bundle_dir, registry=ResultRegistry.new([]))
+        _save_result_bundle({1: "x"}, bundle_dir, result_codecs=())
 
 
 def test_unsafe_dict_key_fails(tmp_path) -> None:
     bundle_dir = tmp_path / "bundle"
     with pytest.raises(ValueError) as exc_info:
-        _save_result_bundle(
-            {"bad/key": "x"}, bundle_dir, registry=ResultRegistry.new([])
-        )
+        _save_result_bundle({"bad/key": "x"}, bundle_dir, result_codecs=())
     assert "artifact path segment" in str(exc_info.value)
 
 
 def test_empty_dict_key_fails(tmp_path) -> None:
     bundle_dir = tmp_path / "bundle"
     with pytest.raises(ValueError) as exc_info:
-        _save_result_bundle({"": "x"}, bundle_dir, registry=ResultRegistry.new([]))
+        _save_result_bundle({"": "x"}, bundle_dir, result_codecs=())
     assert "artifact path segment" in str(exc_info.value)
 
 
 def test_dotdot_dict_key_fails(tmp_path) -> None:
     bundle_dir = tmp_path / "bundle"
     with pytest.raises(ValueError, match="artifact path segment"):
-        _save_result_bundle({"..": "x"}, bundle_dir, registry=ResultRegistry.new([]))
+        _save_result_bundle({"..": "x"}, bundle_dir, result_codecs=())
 
 
 @dataclass(frozen=True)
@@ -1010,9 +1001,7 @@ class DataclassWithPostInit:
 
 def test_dataclass_load_uses_constructor(tmp_path: Path) -> None:
     bundle_dir = tmp_path / "bundle"
-    _save_result_bundle(
-        DataclassWithPostInit(value=3), bundle_dir, registry=ResultRegistry.new([])
-    )
+    _save_result_bundle(DataclassWithPostInit(value=3), bundle_dir, result_codecs=())
 
     loaded = load_result_bundle(bundle_dir)
 
@@ -1024,7 +1013,7 @@ def test_dataclass_load_reports_constructor_error_with_path(tmp_path: Path) -> N
     _save_result_bundle(
         {"result": DataclassWithPostInit(value=3)},
         bundle_dir,
-        registry=ResultRegistry.new([]),
+        result_codecs=(),
     )
     manifest_path = bundle_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
@@ -1047,7 +1036,7 @@ def test_dataclass_load_reports_missing_and_extra_fields_with_path(
     _save_result_bundle(
         {"result": TrainOutput(metrics={"loss": 0.12}, values=[1])},
         bundle_dir,
-        registry=ResultRegistry.new([]),
+        result_codecs=(),
     )
     manifest_path = bundle_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
@@ -1116,7 +1105,7 @@ def test_pydantic_load_uses_model_validate(tmp_path: Path) -> None:
     _save_result_bundle(
         ValidatedTrainOutputModel(value=1),
         bundle_dir,
-        registry=ResultRegistry.new([]),
+        result_codecs=(),
     )
     manifest_path = bundle_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
@@ -1139,7 +1128,7 @@ def test_pydantic_load_reports_missing_and_extra_fields_with_path(
     _save_result_bundle(
         {"models": [TrainOutputModel(metrics={}, values=[])]},
         bundle_dir,
-        registry=ResultRegistry.new([]),
+        result_codecs=(),
     )
     manifest_path = bundle_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
@@ -1184,8 +1173,8 @@ class NumpyResult(Furu[dict[str, object]]):
 
 class RegistryNumpyResult(Furu[Any]):
     @property
-    def result_registry(self) -> ResultRegistry:
-        return ResultRegistry.new([_RegistryNumpyCodec])
+    def result_codecs(self) -> tuple[type[ResultCodec], ...]:
+        return (_RegistryNumpyCodec,)
 
     def create(self) -> Any:
         return np.arange(10, dtype=np.float32)
@@ -1225,7 +1214,7 @@ def test_numpy_array_round_trips() -> None:
     assert manifest["weights"]["$furu"]["path"] == "artifacts/weights"
 
 
-def test_result_registry_takes_priority_over_builtin_codec() -> None:
+def test_result_codecs_take_priority_over_builtin_codec() -> None:
     obj = RegistryNumpyResult()
 
     loaded = obj.create()
@@ -1287,7 +1276,7 @@ def test_numpy_object_dtype_is_rejected(tmp_path) -> None:
         _save_result_bundle(
             {"weights": np.array([object()], dtype=object)},
             bundle_dir,
-            registry=ResultRegistry.new([]),
+            result_codecs=(),
         )
 
 
@@ -1320,7 +1309,7 @@ def test_long_list_uses_three_digit_padding(tmp_path) -> None:
     layers = [{"weights": np.arange(0, dtype=np.float32)} for _ in range(100)]
     layers[3] = {"weights": np.arange(3, dtype=np.float32)}
 
-    _save_result_bundle({"layers": layers}, bundle_dir, registry=ResultRegistry.new([]))
+    _save_result_bundle({"layers": layers}, bundle_dir, result_codecs=())
 
     expected = bundle_dir / "artifacts" / "layers" / "003" / "weights" / "data.npy"
     assert expected.exists()
@@ -1328,9 +1317,7 @@ def test_long_list_uses_three_digit_padding(tmp_path) -> None:
 
 def test_numpy_root_value_uses_root_artifact_dir(tmp_path) -> None:
     bundle_dir = tmp_path / "bundle"
-    _save_result_bundle(
-        np.arange(5, dtype=np.int64), bundle_dir, registry=ResultRegistry.new([])
-    )
+    _save_result_bundle(np.arange(5, dtype=np.int64), bundle_dir, result_codecs=())
 
     assert (bundle_dir / "artifacts" / "root" / "data.npy").exists()
     manifest = json.loads((bundle_dir / "manifest.json").read_text())
@@ -1372,7 +1359,7 @@ def test_private_save_result_bundle_refuses_existing_directory(tmp_path) -> None
     bundle_dir = tmp_path / "bundle"
     bundle_dir.mkdir()
     with pytest.raises(FileExistsError):
-        _save_result_bundle({"x": 1}, bundle_dir, registry=ResultRegistry.new([]))
+        _save_result_bundle({"x": 1}, bundle_dir, result_codecs=())
 
 
 def test_private_save_result_bundle_writes_manifest_last(tmp_path) -> None:
@@ -1380,7 +1367,7 @@ def test_private_save_result_bundle_writes_manifest_last(tmp_path) -> None:
     _save_result_bundle(
         {"weights": np.arange(2, dtype=np.float32)},
         bundle_dir,
-        registry=ResultRegistry.new([]),
+        result_codecs=(),
     )
 
     # All three pieces should now be present.
@@ -1423,11 +1410,13 @@ def test_root_lazy_result_defers_cache_read_and_memoizes(
     tmp_path: Path,
 ) -> None:
     bundle_dir = tmp_path / "bundle"
-    registry = ResultRegistry.new([_CountingCodec])
+    result_codecs = (_CountingCodec,)
     _CountingCodec.dump_calls = 0
     _CountingCodec.load_calls = 0
 
-    _save_result_bundle(LazyResult(_CountingValue(9)), bundle_dir, registry=registry)
+    _save_result_bundle(
+        LazyResult(_CountingValue(9)), bundle_dir, result_codecs=result_codecs
+    )
 
     assert _CountingCodec.dump_calls == 1
     assert _CountingCodec.load_calls == 0
@@ -1462,7 +1451,7 @@ def test_lazy_result_uses_declared_inner_annotated_codec(tmp_path: Path) -> None
         value,
         bundle_dir,
         declared_type=LazyResult[Annotated[Any, NumpyNpyCodec]],
-        registry=ResultRegistry.new([]),
+        result_codecs=(),
     )
 
     assert (bundle_dir / "lazy" / "root" / "artifacts" / "root" / "data.npy").exists()
@@ -1473,10 +1462,10 @@ def test_lazy_result_uses_declared_inner_annotated_codec(tmp_path: Path) -> None
 
 def test_nested_lazy_result_exposes_nested_persisted_path(tmp_path: Path) -> None:
     bundle_dir = tmp_path / "bundle"
-    registry = ResultRegistry.new([_CountingCodec])
+    result_codecs = (_CountingCodec,)
     value = {"outer": {"inner": LazyResult(_CountingValue(12))}}
 
-    _save_result_bundle(value, bundle_dir, registry=registry)
+    _save_result_bundle(value, bundle_dir, result_codecs=result_codecs)
     loaded = load_result_bundle(bundle_dir)
 
     assert isinstance(loaded, dict)
@@ -1492,7 +1481,7 @@ def test_nested_lazy_result_round_trips_inside_supported_structures(
     tmp_path: Path,
 ) -> None:
     bundle_dir = tmp_path / "bundle"
-    registry = ResultRegistry.new([_CountingCodec])
+    result_codecs = (_CountingCodec,)
     _CountingCodec.load_calls = 0
     value = {
         "items": [
@@ -1501,7 +1490,7 @@ def test_nested_lazy_result_round_trips_inside_supported_structures(
         ]
     }
 
-    _save_result_bundle(value, bundle_dir, registry=registry)
+    _save_result_bundle(value, bundle_dir, result_codecs=result_codecs)
     loaded = load_result_bundle(bundle_dir)
 
     assert isinstance(loaded, dict)
