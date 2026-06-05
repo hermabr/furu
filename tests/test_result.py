@@ -462,7 +462,8 @@ def test_result_registry_with_codec_is_functional() -> None:
 
     assert ResultRegistry.default().find_codec(_CountingValue(1)) is None
     assert first.find_codec(_CountingValue(1)) is _CountingCodec
-    assert second.find_codec(_CountingValue(1)) is _OtherCountingCodec
+    with pytest.raises(TypeError, match="result registry matched multiple codecs"):
+        second.find_codec(_CountingValue(1))
 
 
 def test_user_defined_codec_is_auto_registered(tmp_path: Path) -> None:
@@ -573,6 +574,57 @@ def test_codec_defined_after_default_cache_is_auto_registered() -> None:
         ResultRegistry.default().find_codec(LateAutoRegisteredValue())
         is LateAutoRegisteredCodec
     )
+
+
+def test_auto_registered_codecs_must_not_be_ambiguous() -> None:
+    class AutoAmbiguousValue:
+        pass
+
+    class FirstAutoAmbiguousCodec(ResultCodec[AutoAmbiguousValue]):
+        @classmethod
+        def matches(cls, value: object) -> bool:
+            return isinstance(value, AutoAmbiguousValue)
+
+        @classmethod
+        def dump(
+            cls,
+            value: AutoAmbiguousValue,
+            *,
+            artifact_dir: Path,
+        ) -> None:
+            artifact_dir.joinpath("first.txt").write_text("", encoding="utf-8")
+
+        @classmethod
+        def load(cls, *, artifact_dir: Path) -> AutoAmbiguousValue:
+            artifact_dir.joinpath("first.txt").read_text(encoding="utf-8")
+            return AutoAmbiguousValue()
+
+    class SecondAutoAmbiguousCodec(ResultCodec[AutoAmbiguousValue]):
+        @classmethod
+        def matches(cls, value: object) -> bool:
+            return isinstance(value, AutoAmbiguousValue)
+
+        @classmethod
+        def dump(
+            cls,
+            value: AutoAmbiguousValue,
+            *,
+            artifact_dir: Path,
+        ) -> None:
+            artifact_dir.joinpath("second.txt").write_text("", encoding="utf-8")
+
+        @classmethod
+        def load(cls, *, artifact_dir: Path) -> AutoAmbiguousValue:
+            artifact_dir.joinpath("second.txt").read_text(encoding="utf-8")
+            return AutoAmbiguousValue()
+
+    with pytest.raises(TypeError) as exc_info:
+        ResultRegistry.default().find_codec(AutoAmbiguousValue())
+
+    message = str(exc_info.value)
+    assert "auto-registered codec registry matched multiple codecs" in message
+    assert "FirstAutoAmbiguousCodec" in message
+    assert "SecondAutoAmbiguousCodec" in message
 
 
 @pytest.mark.parametrize(
@@ -782,6 +834,19 @@ class RegistryCountingResult(Furu[_CountingValue]):
         return _CountingValue(8)
 
 
+class AmbiguousRegistryCountingResult(Furu[_CountingValue]):
+    @property
+    def result_registry(self) -> ResultRegistry:
+        return (
+            super()
+            .result_registry.with_codec(_CountingCodec)
+            .with_codec(_OtherCountingCodec)
+        )
+
+    def create(self) -> _CountingValue:
+        return _CountingValue(8)
+
+
 def test_task_result_registry_is_used_for_save_inference_only() -> None:
     _CountingCodec.dump_calls = 0
     _CountingCodec.load_calls = 0
@@ -797,6 +862,11 @@ def test_task_result_registry_is_used_for_save_inference_only() -> None:
     assert isinstance(loaded_again, _CountingValue)
     assert loaded_again.value == 8
     assert _CountingCodec.load_calls == 1
+
+
+def test_task_result_registry_must_not_be_ambiguous() -> None:
+    with pytest.raises(TypeError, match="result registry matched multiple codecs"):
+        AmbiguousRegistryCountingResult().create()
 
 
 class UnsupportedRootResult(Furu[object]):

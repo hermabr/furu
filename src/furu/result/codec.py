@@ -148,12 +148,30 @@ class NumpyNpyCodec(ResultCodec["np.ndarray[Any, Any]"]):
 @dataclass(frozen=True)
 class ResultRegistry:
     codecs: tuple[type[ResultCodec], ...] = ()
+    auto_registered_codecs: tuple[type[ResultCodec], ...] = ()
+    built_in_codecs: tuple[type[ResultCodec], ...] = ()
 
     def with_codec(self, codec: type[ResultCodec]) -> Self:
-        return type(self)(codecs=(codec, *self.codecs))
+        return type(self)(
+            codecs=(codec, *self.codecs),
+            auto_registered_codecs=self.auto_registered_codecs,
+            built_in_codecs=self.built_in_codecs,
+        )
 
     def find_codec(self, value: object) -> type[ResultCodec] | None:
-        for codec in self.codecs:
+        if codec := _find_single_codec_match(
+            value,
+            self.codecs,
+            layer_name="result registry",
+        ):
+            return codec
+        if codec := _find_single_codec_match(
+            value,
+            self.auto_registered_codecs,
+            layer_name="auto-registered codec registry",
+        ):
+            return codec
+        for codec in self.built_in_codecs:
             if codec.matches(value):
                 return codec
         return None
@@ -161,7 +179,7 @@ class ResultRegistry:
     @classmethod
     @cache
     def default(cls) -> ResultRegistry:
-        user_codecs = tuple(
+        auto_registered_codecs = tuple(
             codec
             for codec in ResultCodecMeta.auto_registered_codecs()
             if codec.dependencies_available()
@@ -171,4 +189,28 @@ class ResultRegistry:
             for codec in (PolarsParquetCodec, NumpyNpyCodec)
             if codec.dependencies_available()
         )
-        return cls(codecs=(*user_codecs, *built_in_codecs))
+        return cls(
+            auto_registered_codecs=auto_registered_codecs,
+            built_in_codecs=built_in_codecs,
+        )
+
+
+def _find_single_codec_match(
+    value: object,
+    codecs: tuple[type[ResultCodec], ...],
+    *,
+    layer_name: str,
+) -> type[ResultCodec] | None:
+    matching_codec: type[ResultCodec] | None = None
+    for codec in codecs:
+        if not codec.matches(value):
+            continue
+        if matching_codec is None:
+            matching_codec = codec
+            continue
+
+        raise TypeError(
+            f"{layer_name} matched multiple codecs: "
+            f"{matching_codec.__name__}, {codec.__name__}"
+        )
+    return matching_codec
