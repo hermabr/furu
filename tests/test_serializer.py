@@ -1,13 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
 from typing import Annotated, Any
 
-import pytest
-
-import furu.config as furu_config
 from furu import ArtifactSerializer, ArtifactSerializerRegistry, Furu
-from furu.config import get_config
 from furu.constants import (
     FIELDSMARKER,
     KINDMARKER,
@@ -107,13 +102,6 @@ class _AnnotatedSecretRun(Furu[int]):
         return self.secret.value
 
 
-class _ConfiguredSecretRun(Furu[int]):
-    secret: _Secret
-
-    def create(self) -> int:
-        return self.secret.value
-
-
 class _RegistrySecretRun(Furu[int]):
     secret: _Secret
 
@@ -183,22 +171,6 @@ class _TopLevelRunSerializer(ArtifactSerializer[_TopLevelSerializedRun]):
         return loaded_type(value=value["doubled"] // 2)
 
 
-@pytest.fixture
-def configured_decimal_serializer(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    monkeypatch.setattr(
-        furu_config,
-        "_config",
-        get_config().model_copy(
-            update={"serializers": (_DecimalSecretSerializer._serializer_id(),)}
-        ),
-    )
-    ArtifactSerializerRegistry.default.cache_clear()
-    try:
-        yield
-    finally:
-        ArtifactSerializerRegistry.default.cache_clear()
-
-
 def _custom_schema(
     serializer: type[ArtifactSerializer],
     schema: JsonValue,
@@ -242,39 +214,7 @@ def test_annotated_serializer_defines_schema_and_artifact() -> None:
     assert _from_json(obj._artifact_data) == obj
 
 
-@pytest.mark.usefixtures("configured_decimal_serializer")
-def test_configured_serializer_defines_schema_and_artifact() -> None:
-    obj = _ConfiguredSecretRun(secret=_Secret(42))
-
-    assert _field(obj._schema_data, "secret") == _custom_schema(
-        _DecimalSecretSerializer,
-        {"type": "secret", "format": "decimal"},
-    )
-    assert _field(obj._artifact_data, "secret") == _custom_artifact(
-        _DecimalSecretSerializer,
-        {"decimal": 42},
-    )
-    assert _ConfiguredSecretRun.from_artifact(ArtifactSpec.from_furu(obj)) == obj
-
-
-@pytest.mark.usefixtures("configured_decimal_serializer")
-def test_annotated_serializer_takes_priority_over_configured_serializer() -> None:
-    obj = _AnnotatedSecretRun(secret=_Secret(42))
-
-    assert _field(obj._schema_data, "secret") == _custom_schema(
-        _HexSecretSerializer,
-        {"type": "secret", "format": "hex"},
-    )
-    assert _field(obj._artifact_data, "secret") == _custom_artifact(
-        _HexSecretSerializer,
-        {"hex": "0x2a"},
-    )
-
-
-@pytest.mark.usefixtures("configured_decimal_serializer")
-def test_furu_artifact_serializer_registry_takes_priority_over_configured_serializer() -> (
-    None
-):
+def test_furu_artifact_serializer_registry_defines_schema_and_artifact() -> None:
     obj = _RegistrySecretRun(secret=_Secret(42))
 
     assert _field(obj._schema_data, "secret") == _custom_schema(

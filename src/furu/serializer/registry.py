@@ -6,8 +6,7 @@ from functools import cache
 from typing import Annotated, Self, final, get_args, get_origin
 
 from furu._declared_types import strip_annotated
-from furu.config import get_config
-from furu.utils import JsonValue, fully_qualified_name, resolve_fully_qualified_name
+from furu.utils import JsonValue, fully_qualified_name
 
 
 class ArtifactSerializer[T](ABC):
@@ -127,14 +126,4 @@ class ArtifactSerializerRegistry:
     @classmethod
     @cache
     def default(cls) -> ArtifactSerializerRegistry:
-        configured_serializers: list[type[ArtifactSerializer]] = []
-        for serializer_id in get_config().serializers:
-            serializer = resolve_fully_qualified_name(serializer_id)
-            if not (
-                isinstance(serializer, type)
-                and issubclass(serializer, ArtifactSerializer)
-            ):
-                raise TypeError(f"{serializer_id} is not an ArtifactSerializer")
-            if serializer.dependencies_available():
-                configured_serializers.append(serializer)
-        return cls(serializers=tuple(configured_serializers))
+        return cls()
