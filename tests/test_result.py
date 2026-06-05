@@ -248,6 +248,7 @@ class _CountingValue:
 
 
 class _CountingCodec(ResultCodec[_CountingValue]):
+    _furu_auto_register: ClassVar[bool] = False
     dump_calls: ClassVar[int] = 0
     load_calls: ClassVar[int] = 0
 
@@ -277,6 +278,8 @@ class _CountingCodec(ResultCodec[_CountingValue]):
 
 
 class _OtherCountingCodec(ResultCodec[_CountingValue]):
+    _furu_auto_register: ClassVar[bool] = False
+
     @classmethod
     def matches(cls, value: object) -> bool:
         return isinstance(value, _CountingValue)
@@ -297,6 +300,7 @@ class _OtherCountingCodec(ResultCodec[_CountingValue]):
 
 
 class _CustomNumpyCodec(ResultCodec[Any]):
+    _furu_auto_register: ClassVar[bool] = False
     file_name: ClassVar[str] = "custom.npy"
 
     @classmethod
@@ -318,7 +322,106 @@ class _CustomNumpyCodec(ResultCodec[Any]):
 
 
 class _RegistryNumpyCodec(_CustomNumpyCodec):
+    _furu_auto_register: ClassVar[bool] = False
     file_name: ClassVar[str] = "registry.npy"
+
+
+class _AutoRegisteredValue:
+    def __init__(self, value: int) -> None:
+        self.value = value
+
+
+class _AutoRegisteredValueCodec(ResultCodec[_AutoRegisteredValue]):
+    @classmethod
+    def matches(cls, value: object) -> bool:
+        return isinstance(value, _AutoRegisteredValue)
+
+    @classmethod
+    def dump(
+        cls,
+        value: _AutoRegisteredValue,
+        *,
+        artifact_dir: Path,
+    ) -> None:
+        artifact_dir.joinpath("auto.txt").write_text(
+            str(value.value),
+            encoding="utf-8",
+        )
+
+    @classmethod
+    def load(cls, *, artifact_dir: Path) -> _AutoRegisteredValue:
+        return _AutoRegisteredValue(
+            int(artifact_dir.joinpath("auto.txt").read_text(encoding="utf-8"))
+        )
+
+
+class _CoreRegistryAutoValueCodec(ResultCodec[_AutoRegisteredValue]):
+    _furu_auto_register: ClassVar[bool] = False
+
+    @classmethod
+    def matches(cls, value: object) -> bool:
+        return isinstance(value, _AutoRegisteredValue)
+
+    @classmethod
+    def dump(
+        cls,
+        value: _AutoRegisteredValue,
+        *,
+        artifact_dir: Path,
+    ) -> None:
+        artifact_dir.joinpath("registry.txt").write_text(
+            str(value.value),
+            encoding="utf-8",
+        )
+
+    @classmethod
+    def load(cls, *, artifact_dir: Path) -> _AutoRegisteredValue:
+        return _AutoRegisteredValue(
+            int(artifact_dir.joinpath("registry.txt").read_text(encoding="utf-8"))
+        )
+
+
+class _AutoRegisteredArray(np.ndarray):
+    pass
+
+
+class _AutoRegisteredArrayCodec(ResultCodec[Any]):
+    @classmethod
+    def matches(cls, value: object) -> bool:
+        return isinstance(value, _AutoRegisteredArray)
+
+    @classmethod
+    def dump(
+        cls,
+        value: Any,
+        *,
+        artifact_dir: Path,
+    ) -> None:
+        np.save(
+            artifact_dir / "auto.npy",
+            value.view(np.ndarray),
+            allow_pickle=False,
+        )
+
+    @classmethod
+    def load(cls, *, artifact_dir: Path) -> Any:
+        return np.load(artifact_dir / "auto.npy", allow_pickle=False)
+
+
+class RegistryAutoRegisteredValueResult(Furu[_AutoRegisteredValue]):
+    @property
+    def result_registry(self) -> ResultRegistry:
+        return super().result_registry.with_codec(_CoreRegistryAutoValueCodec)
+
+    def create(self) -> _AutoRegisteredValue:
+        return _AutoRegisteredValue(10)
+
+
+class AnnotatedAutoRegisteredValueResult(
+    Furu[Annotated[_AutoRegisteredValue, _CoreRegistryAutoValueCodec]]
+):
+    def create(self) -> _AutoRegisteredValue:
+        return _AutoRegisteredValue(11)
 
 
 def test_codec_id_is_derived_from_class_identity() -> None:
@@ -334,6 +437,101 @@ def test_result_registry_with_codec_is_functional() -> None:
     assert ResultRegistry.default().find_codec(_CountingValue(1)) is None
     assert first.find_codec(_CountingValue(1)) is _CountingCodec
     assert second.find_codec(_CountingValue(1)) is _OtherCountingCodec
+
+
+def test_user_defined_codec_is_auto_registered(tmp_path: Path) -> None:
+    assert (
+        ResultRegistry.default().find_codec(_AutoRegisteredValue(1))
+        is _AutoRegisteredValueCodec
+    )
+
+    bundle_dir = tmp_path / "bundle"
+    _save_result_bundle(
+        _AutoRegisteredValue(3),
+        bundle_dir,
+        registry=ResultRegistry.default(),
+    )
+
+    artifact_dir = bundle_dir / "artifacts" / "root"
+    assert (artifact_dir / "auto.txt").exists()
+    assert not (artifact_dir / "registry.txt").exists()
+    loaded = load_result_bundle(bundle_dir)
+    assert isinstance(loaded, _AutoRegisteredValue)
+    assert loaded.value == 3
+
+
+def test_auto_registered_codec_takes_priority_over_builtin_codec(
+    tmp_path: Path,
+) -> None:
+    bundle_dir = tmp_path / "bundle"
+    value = np.arange(3, dtype=np.int64).view(_AutoRegisteredArray)
+
+    _save_result_bundle(value, bundle_dir, registry=ResultRegistry.default())
+
+    artifact_dir = bundle_dir / "artifacts" / "root"
+    assert (artifact_dir / "auto.npy").exists()
+    assert not (artifact_dir / "data.npy").exists()
+    manifest = json.loads((bundle_dir / "manifest.json").read_text())
+    assert manifest["$furu"]["codec"] == _AutoRegisteredArrayCodec._codec_id()
+
+
+def test_task_result_registry_takes_priority_over_auto_registered_codec() -> None:
+    obj = RegistryAutoRegisteredValueResult()
+
+    loaded = obj.create()
+
+    assert isinstance(loaded, _AutoRegisteredValue)
+    assert loaded.value == 10
+    artifact_dir = result_dir_in(obj._base_dir) / "artifacts" / "root"
+    assert (artifact_dir / "registry.txt").exists()
+    assert not (artifact_dir / "auto.txt").exists()
+    manifest = json.loads(result_manifest_path_in(obj._base_dir).read_text())
+    assert manifest["$furu"]["codec"] == _CoreRegistryAutoValueCodec._codec_id()
+
+
+def test_annotated_codec_takes_priority_over_auto_registered_codec() -> None:
+    obj = AnnotatedAutoRegisteredValueResult()
+
+    loaded = obj.create()
+
+    assert isinstance(loaded, _AutoRegisteredValue)
+    assert loaded.value == 11
+    artifact_dir = result_dir_in(obj._base_dir) / "artifacts" / "root"
+    assert (artifact_dir / "registry.txt").exists()
+    assert not (artifact_dir / "auto.txt").exists()
+    manifest = json.loads(result_manifest_path_in(obj._base_dir).read_text())
+    assert manifest["$furu"]["codec"] == _CoreRegistryAutoValueCodec._codec_id()
+
+
+def test_codec_defined_after_default_cache_is_auto_registered() -> None:
+    class LateAutoRegisteredValue:
+        pass
+
+    assert ResultRegistry.default().find_codec(LateAutoRegisteredValue()) is None
+
+    class LateAutoRegisteredCodec(ResultCodec[LateAutoRegisteredValue]):
+        @classmethod
+        def matches(cls, value: object) -> bool:
+            return isinstance(value, LateAutoRegisteredValue)
+
+        @classmethod
+        def dump(
+            cls,
+            value: LateAutoRegisteredValue,
+            *,
+            artifact_dir: Path,
+        ) -> None:
+            artifact_dir.joinpath("late.txt").write_text("", encoding="utf-8")
+
+        @classmethod
+        def load(cls, *, artifact_dir: Path) -> LateAutoRegisteredValue:
+            artifact_dir.joinpath("late.txt").read_text(encoding="utf-8")
+            return LateAutoRegisteredValue()
+
+    assert (
+        ResultRegistry.default().find_codec(LateAutoRegisteredValue())
+        is LateAutoRegisteredCodec
+    )
 
 
 @pytest.mark.parametrize(
@@ -845,6 +1043,7 @@ class RegistryNumpyResult(Furu[Any]):
 
 
 class _MemmapNumpyNpyCodec(NumpyNpyCodec):
+    _furu_auto_register: ClassVar[bool] = False
     load_after_dump: ClassVar[bool] = True
 
     @classmethod
