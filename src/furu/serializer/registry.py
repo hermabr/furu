@@ -1,15 +1,56 @@
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from abc import ABC, ABCMeta, abstractmethod
 from dataclasses import dataclass
 from functools import cache
-from typing import Annotated, Self, final, get_args, get_origin
+from threading import Lock
+from typing import Annotated, Any, ClassVar, Self, cast, final, get_args, get_origin
 
 from furu._declared_types import strip_annotated
 from furu.utils import JsonValue, fully_qualified_name
 
 
-class ArtifactSerializer[T](ABC):
+class ArtifactSerializerMeta(ABCMeta):
+    _auto_registered_serializers: list[type[ArtifactSerializer]] = []
+    _auto_registered_serializers_lock = Lock()
+
+    def __init__(
+        cls,
+        name: str,
+        bases: tuple[type[Any], ...],
+        namespace: dict[str, Any],
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(name, bases, namespace, **kwargs)
+        is_root_serializer_class = not any(
+            isinstance(base, ArtifactSerializerMeta) for base in bases
+        )
+        if is_root_serializer_class:
+            return
+        if not namespace.get("auto_register", True):
+            return
+        if getattr(cls, "__abstractmethods__", None):
+            return
+
+        cls.auto_register = True
+        with ArtifactSerializerMeta._auto_registered_serializers_lock:
+            ArtifactSerializerMeta._auto_registered_serializers.append(
+                cast(type[ArtifactSerializer], cls)
+            )
+
+        registry_cls = globals().get("ArtifactSerializerRegistry")
+        if registry_cls is not None:
+            registry_cls.default.cache_clear()
+
+    @classmethod
+    def auto_registered_serializers(mcls) -> tuple[type[ArtifactSerializer], ...]:
+        with mcls._auto_registered_serializers_lock:
+            return tuple(reversed(mcls._auto_registered_serializers))
+
+
+class ArtifactSerializer[T](ABC, metaclass=ArtifactSerializerMeta):
+    auto_register: ClassVar[bool] = True
+
     @final
     @classmethod
     def _serializer_id(cls) -> str:
@@ -126,4 +167,9 @@ class ArtifactSerializerRegistry:
     @classmethod
     @cache
     def default(cls) -> ArtifactSerializerRegistry:
-        return cls()
+        serializers = tuple(
+            serializer
+            for serializer in ArtifactSerializerMeta.auto_registered_serializers()
+            if serializer.dependencies_available()
+        )
+        return cls(serializers=serializers)
