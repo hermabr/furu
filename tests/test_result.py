@@ -25,6 +25,7 @@ from furu.result.codec import (
     NumpyNpyCodec,
     PolarsParquetCodec,
     ResultCodec,
+    ResultCodecContext,
     ResultRegistry,
 )
 
@@ -250,6 +251,11 @@ class _CountingValue:
         self.value = value
 
 
+class _DataPathReference:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+
 class _CountingCodec(ResultCodec[_CountingValue]):
     dump_calls: ClassVar[int] = 0
     load_calls: ClassVar[int] = 0
@@ -263,19 +269,19 @@ class _CountingCodec(ResultCodec[_CountingValue]):
         cls,
         value: _CountingValue,
         *,
-        artifact_dir: Path,
+        context: ResultCodecContext,
     ) -> None:
         cls.dump_calls += 1
-        artifact_dir.joinpath("value.txt").write_text(
+        context.artifact_dir.joinpath("value.txt").write_text(
             str(value.value),
             encoding="utf-8",
         )
 
     @classmethod
-    def load(cls, *, artifact_dir: Path) -> _CountingValue:
+    def load(cls, *, context: ResultCodecContext) -> _CountingValue:
         cls.load_calls += 1
         return _CountingValue(
-            int(artifact_dir.joinpath("value.txt").read_text(encoding="utf-8"))
+            int(context.artifact_dir.joinpath("value.txt").read_text(encoding="utf-8"))
         )
 
 
@@ -289,13 +295,13 @@ class _OtherCountingCodec(ResultCodec[_CountingValue]):
         cls,
         value: _CountingValue,
         *,
-        artifact_dir: Path,
+        context: ResultCodecContext,
     ) -> None:
-        artifact_dir.joinpath("other.txt").write_text("x", encoding="utf-8")
+        context.artifact_dir.joinpath("other.txt").write_text("x", encoding="utf-8")
 
     @classmethod
-    def load(cls, *, artifact_dir: Path) -> _CountingValue:
-        artifact_dir.joinpath("other.txt").read_text(encoding="utf-8")
+    def load(cls, *, context: ResultCodecContext) -> _CountingValue:
+        context.artifact_dir.joinpath("other.txt").read_text(encoding="utf-8")
         return _CountingValue(0)
 
 
@@ -311,17 +317,43 @@ class _ConfiguredNumpyCodec(ResultCodec[Any]):
         cls,
         value: Any,
         *,
-        artifact_dir: Path,
+        context: ResultCodecContext,
     ) -> None:
-        np.save(artifact_dir / cls.file_name, value, allow_pickle=False)
+        np.save(context.artifact_dir / cls.file_name, value, allow_pickle=False)
 
     @classmethod
-    def load(cls, *, artifact_dir: Path) -> Any:
-        return np.load(artifact_dir / cls.file_name, allow_pickle=False)
+    def load(cls, *, context: ResultCodecContext) -> Any:
+        return np.load(context.artifact_dir / cls.file_name, allow_pickle=False)
 
 
 class _RegistryNumpyCodec(_ConfiguredNumpyCodec):
     file_name: ClassVar[str] = "registry.npy"
+
+
+class _DataPathReferenceCodec(ResultCodec[_DataPathReference]):
+    @classmethod
+    def matches(cls, value: object) -> bool:
+        return isinstance(value, _DataPathReference)
+
+    @classmethod
+    def dump(
+        cls,
+        value: _DataPathReference,
+        *,
+        context: ResultCodecContext,
+    ) -> None:
+        relative_path = context.relative_to_data_dir(value.path)
+        context.artifact_dir.joinpath("metadata.json").write_text(
+            json.dumps({"path": relative_path.as_posix()}, indent=2),
+            encoding="utf-8",
+        )
+
+    @classmethod
+    def load(cls, *, context: ResultCodecContext) -> _DataPathReference:
+        metadata = json.loads(
+            context.artifact_dir.joinpath("metadata.json").read_text(encoding="utf-8")
+        )
+        return _DataPathReference(context.data_dir_path(metadata["path"]))
 
 
 @pytest.fixture
@@ -563,6 +595,28 @@ class RegistryCountingResult(Furu[_CountingValue]):
         return _CountingValue(8)
 
 
+class DataPathReferenceResult(Furu[_DataPathReference]):
+    @property
+    def result_registry(self) -> ResultRegistry:
+        return super().result_registry.with_codec(_DataPathReferenceCodec)
+
+    def create(self) -> _DataPathReference:
+        path = self.data_dir / "data.txt"
+        path.write_text("payload", encoding="utf-8")
+        return _DataPathReference(path)
+
+
+class LazyDataPathReferenceResult(Furu[LazyResult[_DataPathReference]]):
+    @property
+    def result_registry(self) -> ResultRegistry:
+        return super().result_registry.with_codec(_DataPathReferenceCodec)
+
+    def create(self) -> LazyResult[_DataPathReference]:
+        path = self.data_dir / "data.txt"
+        path.write_text("payload", encoding="utf-8")
+        return LazyResult(_DataPathReference(path))
+
+
 def test_task_result_registry_is_used_for_save_inference_only() -> None:
     _CountingCodec.dump_calls = 0
     _CountingCodec.load_calls = 0
@@ -578,6 +632,38 @@ def test_task_result_registry_is_used_for_save_inference_only() -> None:
     assert isinstance(loaded_again, _CountingValue)
     assert loaded_again.value == 8
     assert _CountingCodec.load_calls == 1
+
+
+def test_codec_context_supports_data_relative_paths() -> None:
+    obj = DataPathReferenceResult()
+
+    loaded = obj.create()
+    loaded_again = obj.create()
+
+    expected_path = obj.data_dir / "data.txt"
+    assert loaded.path.resolve() == expected_path.resolve()
+    assert loaded_again.path.resolve() == expected_path.resolve()
+    assert loaded_again.path.read_text(encoding="utf-8") == "payload"
+
+    artifact_dir = result_dir_in(obj._base_dir) / "artifacts" / "root"
+    metadata = json.loads(artifact_dir.joinpath("metadata.json").read_text())
+    assert metadata == {"path": "data.txt"}
+
+
+def test_codec_context_uses_top_level_data_dir_for_lazy_results() -> None:
+    obj = LazyDataPathReferenceResult()
+
+    loaded = obj.create()
+    loaded_again = obj.create()
+
+    expected_path = obj.data_dir / "data.txt"
+    assert loaded.load().path.resolve() == expected_path.resolve()
+    assert loaded_again.load().path.resolve() == expected_path.resolve()
+    assert loaded_again.load().path.read_text(encoding="utf-8") == "payload"
+
+    artifact_dir = result_dir_in(obj._base_dir) / "lazy" / "root" / "artifacts" / "root"
+    metadata = json.loads(artifact_dir.joinpath("metadata.json").read_text())
+    assert metadata == {"path": "data.txt"}
 
 
 class UnsupportedRootResult(Furu[object]):
@@ -868,8 +954,10 @@ class _MemmapNumpyNpyCodec(NumpyNpyCodec):
     load_after_dump: ClassVar[bool] = True
 
     @classmethod
-    def load(cls, *, artifact_dir: Path) -> np.ndarray[Any, Any]:
-        return np.load(artifact_dir / "data.npy", allow_pickle=False, mmap_mode="r")
+    def load(cls, *, context: ResultCodecContext) -> np.ndarray[Any, Any]:
+        return np.load(
+            context.artifact_dir / "data.npy", allow_pickle=False, mmap_mode="r"
+        )
 
 
 class MemmapNumpyResult(Furu[Annotated[Any, _MemmapNumpyNpyCodec]]):

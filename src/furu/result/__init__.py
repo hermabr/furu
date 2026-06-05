@@ -18,9 +18,10 @@ from typing import (
 
 import pydantic
 
+from furu._storage_layout import data_dir_in
 from furu._declared_types import child_declared_type, strip_annotated
 from furu.constants import FIELDSMARKER, KINDMARKER, TYPEMARKER
-from furu.result.codec import ResultCodec, ResultRegistry
+from furu.result.codec import ResultCodec, ResultCodecContext, ResultRegistry
 from furu.result.lazy import LazyResult
 from furu.result.save_as import _SaveAs
 from furu.result.save_as import save_as as save_as
@@ -40,6 +41,12 @@ type WrapperKind = Literal[
 @dataclasses.dataclass
 class _DumpState:
     should_load_after_dump: bool = False
+
+
+def _codec_context(*, artifact_dir: Path, object_dir: Path) -> ResultCodecContext:
+    return ResultCodecContext(
+        artifact_dir=artifact_dir, data_dir=data_dir_in(object_dir)
+    )
 
 
 def _value_path_display(value_path: ValuePath) -> str:
@@ -84,6 +91,7 @@ def _dump_value(
     declared_type: object = Any,
     value_path: ValuePath,
     bundle_dir: Path,
+    object_dir: Path,
     registry: ResultRegistry,
     dump_state: _DumpState,
 ) -> JsonValue:
@@ -108,6 +116,7 @@ def _dump_value(
                 codec=runtime_codec,
                 value_path=value_path,
                 bundle_dir=bundle_dir,
+                object_dir=object_dir,
                 dump_state=dump_state,
             )
         case _, annotated_codec if annotated_codec is not None:
@@ -116,6 +125,7 @@ def _dump_value(
                 codec=annotated_codec,
                 value_path=value_path,
                 bundle_dir=bundle_dir,
+                object_dir=object_dir,
                 dump_state=dump_state,
             )
 
@@ -130,6 +140,7 @@ def _dump_value(
                     declared_type=child_declared_type(declared_type, i),
                     value_path=(*value_path, f"{i:0{width}d}"),
                     bundle_dir=bundle_dir,
+                    object_dir=object_dir,
                     registry=registry,
                     dump_state=dump_state,
                 )
@@ -146,6 +157,7 @@ def _dump_value(
                             declared_type=child_declared_type(declared_type, i),
                             value_path=(*value_path, f"{i:0{width}d}"),
                             bundle_dir=bundle_dir,
+                            object_dir=object_dir,
                             registry=registry,
                             dump_state=dump_state,
                         )
@@ -173,6 +185,7 @@ def _dump_value(
                             declared_type=child_declared_type(declared_type, i),
                             value_path=(*value_path, f"{i:0{width}d}"),
                             bundle_dir=bundle_dir,
+                            object_dir=object_dir,
                             registry=registry,
                             dump_state=dump_state,
                         )
@@ -192,6 +205,7 @@ def _dump_value(
                     declared_type=child_declared_type(declared_type, raw_key),
                     value_path=(*value_path, key),
                     bundle_dir=bundle_dir,
+                    object_dir=object_dir,
                     registry=registry,
                     dump_state=dump_state,
                 )
@@ -215,6 +229,7 @@ def _dump_value(
                     declared_type=field_types.get(name, Any),
                     value_path=(*value_path, name),
                     bundle_dir=bundle_dir,
+                    object_dir=object_dir,
                     registry=registry,
                     dump_state=dump_state,
                 )
@@ -237,6 +252,7 @@ def _dump_value(
                     declared_type=field_types.get(field.name, Any),
                     value_path=(*value_path, name),
                     bundle_dir=bundle_dir,
+                    object_dir=object_dir,
                     registry=registry,
                     dump_state=dump_state,
                 )
@@ -261,6 +277,7 @@ def _dump_value(
                 value.load(),
                 nested_bundle_dir,
                 declared_type=lazy_declared_type,
+                object_dir=object_dir,
                 registry=registry,
             ):
                 dump_state.should_load_after_dump = True
@@ -277,6 +294,7 @@ def _dump_value(
                     codec=codec,
                     value_path=value_path,
                     bundle_dir=bundle_dir,
+                    object_dir=object_dir,
                     dump_state=dump_state,
                 )
 
@@ -292,12 +310,16 @@ def _dump_external(
     codec: type[ResultCodec],
     value_path: ValuePath,
     bundle_dir: Path,
+    object_dir: Path,
     dump_state: _DumpState,
 ) -> JsonValue:
     artifact_rel = Path(ARTIFACTS_DIR_NAME, *(value_path or (_ROOT_ARTIFACT_NAME,)))
     artifact_dir = bundle_dir / artifact_rel
     artifact_dir.mkdir(parents=True, exist_ok=False)
-    codec.dump(value, artifact_dir=artifact_dir)
+    codec.dump(
+        value,
+        context=_codec_context(artifact_dir=artifact_dir, object_dir=object_dir),
+    )
     if codec.load_after_dump:
         dump_state.should_load_after_dump = True
     return {
@@ -313,6 +335,7 @@ def _load_value(
     node: JsonValue,
     *,
     bundle_dir: Path,
+    object_dir: Path,
     value_path: ValuePath,
 ) -> object:
     match node:
@@ -324,6 +347,7 @@ def _load_value(
                 _load_value(
                     child,
                     bundle_dir=bundle_dir,
+                    object_dir=object_dir,
                     value_path=(*value_path, f"{i:0{width}d}"),
                 )
                 for i, child in enumerate(node)
@@ -332,6 +356,7 @@ def _load_value(
             return _load_wrapper(
                 cast(dict[str, Any], node[WRAPPER_KEY]),
                 bundle_dir=bundle_dir,
+                object_dir=object_dir,
                 value_path=value_path,
             )
         case dict():
@@ -339,6 +364,7 @@ def _load_value(
                 key: _load_value(
                     child,
                     bundle_dir=bundle_dir,
+                    object_dir=object_dir,
                     value_path=(*value_path, key),
                 )
                 for key, child in node.items()
@@ -354,6 +380,7 @@ def _load_validated_fields(
     expected: set[str],
     raw_fields: dict[str, JsonValue],
     bundle_dir: Path,
+    object_dir: Path,
     value_path: ValuePath,
 ) -> dict[str, object]:
     actual = set(raw_fields)
@@ -364,6 +391,7 @@ def _load_validated_fields(
             name: _load_value(
                 child,
                 bundle_dir=bundle_dir,
+                object_dir=object_dir,
                 value_path=(*value_path, name),
             )
             for name, child in raw_fields.items()
@@ -385,6 +413,7 @@ def _load_wrapper(
     body: dict[str, Any],
     *,
     bundle_dir: Path,
+    object_dir: Path,
     value_path: ValuePath,
 ) -> object:
     kind: WrapperKind = body[KINDMARKER]
@@ -412,7 +441,9 @@ def _load_wrapper(
             codec = resolve_fully_qualified_name(codec_id)
             if not isinstance(codec, type) or not issubclass(codec, ResultCodec):
                 raise TypeError(f"{codec_id} is not a ResultCodec")
-            return codec.load(artifact_dir=artifact_dir)
+            return codec.load(
+                context=_codec_context(artifact_dir=artifact_dir, object_dir=object_dir)
+            )
         case "lazy":
             if (nested_rel := Path(body["path"])).is_absolute():
                 raise ValueError(f"lazy wrapper path must be relative: {nested_rel}")
@@ -433,6 +464,7 @@ def _load_wrapper(
                 partial(
                     load_result_bundle,
                     bundle_dir=nested_bundle_dir,
+                    object_dir=object_dir,
                 ),
                 path=nested_bundle_dir,
             )
@@ -451,6 +483,7 @@ def _load_wrapper(
                 expected={field.name for field in dataclass_fields},
                 raw_fields=body[FIELDSMARKER],
                 bundle_dir=bundle_dir,
+                object_dir=object_dir,
                 value_path=value_path,
             )
             try:
@@ -473,6 +506,7 @@ def _load_wrapper(
                 _load_value(
                     child,
                     bundle_dir=bundle_dir,
+                    object_dir=object_dir,
                     value_path=(*value_path, str(i)),
                 )
                 for i, child in enumerate(body["items"])
@@ -482,6 +516,7 @@ def _load_wrapper(
                 _load_value(
                     child,
                     bundle_dir=bundle_dir,
+                    object_dir=object_dir,
                     value_path=(*value_path, str(i)),
                 )
                 for i, child in enumerate(body["items"])
@@ -491,6 +526,7 @@ def _load_wrapper(
                 _load_value(
                     child,
                     bundle_dir=bundle_dir,
+                    object_dir=object_dir,
                     value_path=(*value_path, str(i)),
                 )
                 for i, child in enumerate(body["items"])
@@ -508,6 +544,7 @@ def _load_wrapper(
                 expected=set(cls.model_fields),
                 raw_fields=body[FIELDSMARKER],
                 bundle_dir=bundle_dir,
+                object_dir=object_dir,
                 value_path=value_path,
             )
             try:
@@ -526,9 +563,12 @@ def _save_result_bundle(
     bundle_dir: Path,
     *,
     declared_type: object = Any,
+    object_dir: Path | None = None,
     registry: ResultRegistry,
 ) -> bool:
     bundle_dir.mkdir(parents=True, exist_ok=False)
+    if object_dir is None:
+        object_dir = bundle_dir.parent
 
     dump_state = _DumpState()
     manifest = _dump_value(
@@ -536,6 +576,7 @@ def _save_result_bundle(
         declared_type=declared_type,
         value_path=(),
         bundle_dir=bundle_dir,
+        object_dir=object_dir,
         registry=registry,
         dump_state=dump_state,
     )
@@ -546,7 +587,9 @@ def _save_result_bundle(
     return dump_state.should_load_after_dump
 
 
-def load_result_bundle(bundle_dir: Path) -> object:
+def load_result_bundle(bundle_dir: Path, *, object_dir: Path | None = None) -> object:
+    if object_dir is None:
+        object_dir = bundle_dir.parent
     manifest_path = bundle_dir / MANIFEST_FILE_NAME
     raw = json.loads(manifest_path.read_text(encoding="utf-8"))
-    return _load_value(raw, bundle_dir=bundle_dir, value_path=())
+    return _load_value(raw, bundle_dir=bundle_dir, object_dir=object_dir, value_path=())

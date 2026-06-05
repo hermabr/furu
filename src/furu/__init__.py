@@ -7,7 +7,7 @@ from furu.function import function
 from furu.migration import Migration
 from furu.resources import ResourceRequirements
 from furu.result import LazyResult, save_as
-from furu.result.codec import ResultCodec, ResultRegistry
+from furu.result.codec import ResultCodec, ResultCodecContext, ResultRegistry
 from furu.serializer.registry import ArtifactSerializer, ArtifactSerializerRegistry
 from furu.validate import validate
 
@@ -23,6 +23,7 @@ __all__ = [
     "dependency",
     "function",
     "ResultCodec",
+    "ResultCodecContext",
     "ResultRegistry",
     "ArtifactSerializerRegistry",
     "get_logger",

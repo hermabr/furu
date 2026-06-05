@@ -64,7 +64,7 @@ from pathlib import Path
 
 from furu import Furu
 from furu.result import load_result_bundle, _save_result_bundle
-from furu.result.codec import ResultCodec, ResultRegistry
+from furu.result.codec import ResultCodec, ResultCodecContext, ResultRegistry
 from furu.serializer.artifact import _from_json
 
 
@@ -79,12 +79,12 @@ class MainCodec(ResultCodec[bytes]):
         return isinstance(value, bytes)
 
     @classmethod
-    def dump(cls, value: bytes, *, artifact_dir: Path) -> None:
-        (artifact_dir / "data.bin").write_bytes(value)
+    def dump(cls, value: bytes, *, context: ResultCodecContext) -> None:
+        (context.artifact_dir / "data.bin").write_bytes(value)
 
     @classmethod
-    def load(cls, *, artifact_dir: Path) -> bytes:
-        return (artifact_dir / "data.bin").read_bytes()
+    def load(cls, *, context: ResultCodecContext) -> bytes:
+        return (context.artifact_dir / "data.bin").read_bytes()
 
 
 class Adder(Furu[Payload]):

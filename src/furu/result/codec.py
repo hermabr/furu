@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Self, final
@@ -13,6 +13,42 @@ if TYPE_CHECKING:
 
 from furu.config import get_config
 from furu.utils import fully_qualified_name, resolve_fully_qualified_name
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class ResultCodecContext:
+    """Runtime paths and validation helpers available to result codecs."""
+
+    artifact_dir: Path
+    _data_dir: Path = field(repr=False)
+
+    def __init__(self, *, artifact_dir: Path, data_dir: Path) -> None:
+        object.__setattr__(self, "artifact_dir", artifact_dir)
+        object.__setattr__(self, "_data_dir", data_dir)
+
+    def relative_to_data_dir(self, path: Path) -> Path:
+        """Return a data-dir-relative path, rejecting paths outside the data dir."""
+        try:
+            return path.resolve().relative_to(self._data_dir.resolve())
+        except ValueError as exc:
+            raise ValueError(
+                f"result codec path must be inside the Furu data dir: {path}"
+            ) from exc
+
+    def data_dir_path(self, relative_path: str | Path) -> Path:
+        """Resolve a data-dir-relative path, rejecting absolute or escaping paths."""
+        path = Path(relative_path)
+        if path.is_absolute():
+            raise ValueError(
+                f"result codec data-relative path must be relative: {path}"
+            )
+
+        resolved = (self._data_dir / path).resolve()
+        if not resolved.is_relative_to(self._data_dir.resolve()):
+            raise ValueError(
+                f"result codec data-relative path escapes data dir: {path}"
+            )
+        return resolved
 
 
 class ResultCodec[T](ABC):
@@ -38,13 +74,13 @@ class ResultCodec[T](ABC):
         cls,
         value: T,
         *,
-        artifact_dir: Path,
+        context: ResultCodecContext,
     ) -> None:
         pass
 
     @classmethod
     @abstractmethod
-    def load(cls, *, artifact_dir: Path) -> T:
+    def load(cls, *, context: ResultCodecContext) -> T:
         pass
 
 
@@ -64,15 +100,15 @@ class PolarsParquetCodec(ResultCodec["pl.DataFrame"]):
         cls,
         value: pl.DataFrame,
         *,
-        artifact_dir: Path,
+        context: ResultCodecContext,
     ) -> None:
-        value.write_parquet(artifact_dir / "data.parquet")
+        value.write_parquet(context.artifact_dir / "data.parquet")
 
     @classmethod
-    def load(cls, *, artifact_dir: Path) -> pl.DataFrame:
+    def load(cls, *, context: ResultCodecContext) -> pl.DataFrame:
         import polars as pl
 
-        return pl.read_parquet(artifact_dir / "data.parquet")
+        return pl.read_parquet(context.artifact_dir / "data.parquet")
 
 
 class NumpyNpyCodec(ResultCodec["np.ndarray[Any, Any]"]):
@@ -91,17 +127,17 @@ class NumpyNpyCodec(ResultCodec["np.ndarray[Any, Any]"]):
         cls,
         value: np.ndarray[Any, Any],
         *,
-        artifact_dir: Path,
+        context: ResultCodecContext,
     ) -> None:
         import numpy as np
 
-        np.save(artifact_dir / "data.npy", value, allow_pickle=False)
+        np.save(context.artifact_dir / "data.npy", value, allow_pickle=False)
 
     @classmethod
-    def load(cls, *, artifact_dir: Path) -> np.ndarray[Any, Any]:
+    def load(cls, *, context: ResultCodecContext) -> np.ndarray[Any, Any]:
         import numpy as np
 
-        return np.load(artifact_dir / "data.npy", allow_pickle=False)
+        return np.load(context.artifact_dir / "data.npy", allow_pickle=False)
 
 
 @dataclass(frozen=True)
