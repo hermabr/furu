@@ -27,7 +27,10 @@ class ResultCodecMeta(ABCMeta):
         **kwargs: Any,
     ) -> None:
         super().__init__(name, bases, namespace, **kwargs)
-        if not any(isinstance(base, ResultCodecMeta) for base in bases):
+        is_root_codec_class = not any(
+            isinstance(base, ResultCodecMeta) for base in bases
+        )
+        if is_root_codec_class:
             return
         if not namespace.get("auto_register", True):
             return
