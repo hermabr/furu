@@ -12,17 +12,17 @@ from pydantic import TypeAdapter, ValidationError
 
 import furu.worker.loop as worker_loop_module
 from furu import Furu
-from furu._storage_layout import manager_log_path_in
+from furu._storage_layout import execution_coordinator_log_path_in
 from furu.config import get_config
 from furu.dag import _add_to_dag
 from furu.execution import api
-from furu.execution.api import create_manager_api_app
-from furu.execution.manager import (
+from furu.execution.api import create_execution_coordinator_api_app
+from furu.execution.execution_coordinator import (
     FailedJob,
-    Manager,
+    ExecutionCoordinator,
     RunningJob,
 )
-from furu.execution.server import manager_server
+from furu.execution.server import execution_coordinator_server
 from furu.metadata import ArtifactSpec
 from furu.resources import ResourceRequest, ResourceRequirements
 from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
@@ -39,26 +39,26 @@ from furu.worker.protocol import (
 ANY_RESOURCES = ResourceRequest()
 
 
-def _new_manager(
+def _new_execution_coordinator(
     objs: Sequence[Furu[Any]],
     *,
     max_retries_per_object: int | None = None,
-) -> Manager:
+) -> ExecutionCoordinator:
     if max_retries_per_object is None:
         max_retries_per_object = get_config().worker.max_retries_per_object
-    manager = Manager(max_retries_per_object=max_retries_per_object)
-    _add_to_dag(manager, objs)
+    coordinator = ExecutionCoordinator(max_retries_per_object=max_retries_per_object)
+    _add_to_dag(coordinator, objs)
     digest = hashlib.blake2s(digest_size=16)
     for obj in objs:
         digest.update(obj.object_id.encode("utf-8"))
         digest.update(b"\0")
-    manager.executor_id = digest.hexdigest()
-    return manager
+    coordinator.executor_id = digest.hexdigest()
+    return coordinator
 
 
 def _new_local_pool(
     *,
-    server_url: str = "http://manager.test",
+    server_url: str = "http://execution-coordinator.test",
     auth_token: str = "secret",
     max_workers: int = 1,
     max_failed_restarts: int = 3,
@@ -88,14 +88,14 @@ def _new_local_pool(
     return pool
 
 
-class ManagerLeaf(Furu[int]):
+class ExecutionCoordinatorLeaf(Furu[int]):
     value: int
 
     def create(self) -> int:
         return self.value
 
 
-class FlakyManagerLeaf(Furu[int]):
+class FlakyExecutionCoordinatorLeaf(Furu[int]):
     value: int
     attempts_by_value: ClassVar[dict[int, int]] = {}
 
@@ -107,146 +107,159 @@ class FlakyManagerLeaf(Furu[int]):
         return self.value
 
 
-class ManagerParent(Furu[int]):
-    child: ManagerLeaf
+class ExecutionCoordinatorParent(Furu[int]):
+    child: ExecutionCoordinatorLeaf
 
     def create(self) -> int:
         return self.child.create() + 1
 
 
-class ManagerLazyParent(Furu[int]):
+class ExecutionCoordinatorLazyParent(Furu[int]):
     value: int
 
     def create(self) -> int:
-        return ManagerLeaf(value=self.value).create() + 1
+        return ExecutionCoordinatorLeaf(value=self.value).create() + 1
 
 
-def test_manager_init_partitions_ready_and_blocked() -> None:
-    leaf = ManagerLeaf(value=1)
-    parent = ManagerParent(child=leaf)
+def test_execution_coordinator_init_partitions_ready_and_blocked() -> None:
+    leaf = ExecutionCoordinatorLeaf(value=1)
+    parent = ExecutionCoordinatorParent(child=leaf)
 
-    manager = _new_manager([parent])
+    coordinator = _new_execution_coordinator([parent])
 
-    assert set(manager.ready) == {leaf.object_id}
-    assert set(manager.blocked) == {parent.object_id}
-    assert manager.running == {}
+    assert set(coordinator.ready) == {leaf.object_id}
+    assert set(coordinator.blocked) == {parent.object_id}
+    assert coordinator.running == {}
 
 
-def test_manager_executor_id_is_stable_hash_of_root_object_tuple() -> None:
-    left = ManagerLeaf(value=1)
-    right = ManagerLeaf(value=2)
+def test_execution_coordinator_executor_id_is_stable_hash_of_root_object_tuple() -> (
+    None
+):
+    left = ExecutionCoordinatorLeaf(value=1)
+    right = ExecutionCoordinatorLeaf(value=2)
 
-    manager = _new_manager([left, right])
+    coordinator = _new_execution_coordinator([left, right])
 
-    assert len(manager.executor_id) == 32
-    assert int(manager.executor_id, 16) >= 0
-    assert _new_manager([left, right]).executor_id == manager.executor_id
-    assert _new_manager([right, left]).executor_id != manager.executor_id
+    assert len(coordinator.executor_id) == 32
+    assert int(coordinator.executor_id, 16) >= 0
     assert (
-        manager.executor_dir
-        == get_config().directories.executions / manager.executor_id
+        _new_execution_coordinator([left, right]).executor_id == coordinator.executor_id
+    )
+    assert (
+        _new_execution_coordinator([right, left]).executor_id != coordinator.executor_id
+    )
+    assert (
+        coordinator.executor_dir
+        == get_config().directories.executions / coordinator.executor_id
     )
 
 
-def test_manager_max_retries_per_object_defaults_to_config() -> None:
-    manager = _new_manager([ManagerLeaf(value=1)])
+def test_execution_coordinator_max_retries_per_object_defaults_to_config() -> None:
+    coordinator = _new_execution_coordinator([ExecutionCoordinatorLeaf(value=1)])
 
-    assert manager.max_retries_per_object == get_config().worker.max_retries_per_object
+    assert (
+        coordinator.max_retries_per_object == get_config().worker.max_retries_per_object
+    )
 
 
-def test_manager_job_result_completed_moves_dependents_to_ready() -> None:
-    leaf = ManagerLeaf(value=1)
-    parent = ManagerParent(child=leaf)
-    manager = _new_manager([parent])
+def test_execution_coordinator_job_result_completed_moves_dependents_to_ready() -> None:
+    leaf = ExecutionCoordinatorLeaf(value=1)
+    parent = ExecutionCoordinatorParent(child=leaf)
+    coordinator = _new_execution_coordinator([parent])
 
-    job = manager.lease_job(resources=ANY_RESOURCES)
+    job = coordinator.lease_job(resources=ANY_RESOURCES)
     assert isinstance(job, Job)
     assert job.lease_id != leaf.object_id
     assert UUID(job.lease_id).version == 4
-    assert set(manager.running) == {job.lease_id}
-    running_job = manager.running[job.lease_id]
+    assert set(coordinator.running) == {job.lease_id}
+    running_job = coordinator.running[job.lease_id]
     assert isinstance(running_job, RunningJob)
     assert running_job.node.obj is leaf
 
-    manager.job_result(job.lease_id, JobCompletedResult())
+    coordinator.job_result(job.lease_id, JobCompletedResult())
 
-    assert manager.running == {}
-    assert set(manager.completed) == {leaf.object_id}
-    assert set(manager.ready) == {parent.object_id}
-    assert manager.blocked == {}
+    assert coordinator.running == {}
+    assert set(coordinator.completed) == {leaf.object_id}
+    assert set(coordinator.ready) == {parent.object_id}
+    assert coordinator.blocked == {}
 
 
-def test_manager_lease_job_returns_wait_when_only_running_jobs_can_unblock_work() -> (
+def test_execution_coordinator_lease_job_returns_wait_when_only_running_jobs_can_unblock_work() -> (
     None
 ):
-    leaf = ManagerLeaf(value=1)
-    parent = ManagerParent(child=leaf)
-    manager = _new_manager([parent])
+    leaf = ExecutionCoordinatorLeaf(value=1)
+    parent = ExecutionCoordinatorParent(child=leaf)
+    coordinator = _new_execution_coordinator([parent])
 
-    job = manager.lease_job(resources=ANY_RESOURCES)
+    job = coordinator.lease_job(resources=ANY_RESOURCES)
     assert isinstance(job, Job)
 
-    assert manager.lease_job(resources=ANY_RESOURCES) == "wait"
-    assert not manager.done.is_set()
+    assert coordinator.lease_job(resources=ANY_RESOURCES) == "wait"
+    assert not coordinator.done.is_set()
 
 
-def test_manager_job_result_blocked_discovers_lazy_dependency_and_reruns_parent() -> (
+def test_execution_coordinator_job_result_blocked_discovers_lazy_dependency_and_reruns_parent() -> (
     None
 ):
-    parent = ManagerLazyParent(value=2)
-    dependency = ManagerLeaf(value=2)
-    manager = _new_manager([parent])
+    parent = ExecutionCoordinatorLazyParent(value=2)
+    dependency = ExecutionCoordinatorLeaf(value=2)
+    coordinator = _new_execution_coordinator([parent])
 
-    parent_job = manager.lease_job(resources=ANY_RESOURCES)
+    parent_job = coordinator.lease_job(resources=ANY_RESOURCES)
     assert isinstance(parent_job, Job)
     assert parent_job.lease_id != parent.object_id
 
-    manager.job_result(
+    coordinator.job_result(
         parent_job.lease_id,
         JobBlockedResult(dependencies=[ArtifactSpec.from_furu(dependency)]),
     )
 
-    assert set(manager.ready) == {dependency.object_id}
-    assert set(manager.blocked) == {parent.object_id}
+    assert set(coordinator.ready) == {dependency.object_id}
+    assert set(coordinator.blocked) == {parent.object_id}
 
-    dependency_job = manager.lease_job(resources=ANY_RESOURCES)
+    dependency_job = coordinator.lease_job(resources=ANY_RESOURCES)
     assert isinstance(dependency_job, Job)
-    manager.job_result(dependency_job.lease_id, JobCompletedResult())
+    coordinator.job_result(dependency_job.lease_id, JobCompletedResult())
 
-    assert set(manager.ready) == {parent.object_id}
-    assert manager.blocked == {}
-
-
-def test_manager_job_result_blocked_ignores_completed_lazy_dependency() -> None:
-    parent = ManagerLazyParent(value=2)
-    dependency = ManagerLeaf(value=2)
-    dependency.create()
-    manager = _new_manager([parent])
-
-    parent_job = manager.lease_job(resources=ANY_RESOURCES)
-    assert isinstance(parent_job, Job)
-
-    manager.job_result(
-        parent_job.lease_id,
-        JobBlockedResult(dependencies=[ArtifactSpec.from_furu(dependency)]),
-    )
-
-    assert set(manager.ready) == {parent.object_id}
-    assert manager.blocked == {}
-    assert dependency.object_id not in manager.nodes_by_id
+    assert set(coordinator.ready) == {parent.object_id}
+    assert coordinator.blocked == {}
 
 
-def test_manager_job_result_blocked_discovers_multiple_lazy_dependencies_together() -> (
+def test_execution_coordinator_job_result_blocked_ignores_completed_lazy_dependency() -> (
     None
 ):
-    parent = ManagerLazyParent(value=2)
-    dependencies = [ManagerLeaf(value=2), ManagerLeaf(value=3)]
-    manager = _new_manager([parent])
+    parent = ExecutionCoordinatorLazyParent(value=2)
+    dependency = ExecutionCoordinatorLeaf(value=2)
+    dependency.create()
+    coordinator = _new_execution_coordinator([parent])
 
-    parent_job = manager.lease_job(resources=ANY_RESOURCES)
+    parent_job = coordinator.lease_job(resources=ANY_RESOURCES)
     assert isinstance(parent_job, Job)
 
-    manager.job_result(
+    coordinator.job_result(
+        parent_job.lease_id,
+        JobBlockedResult(dependencies=[ArtifactSpec.from_furu(dependency)]),
+    )
+
+    assert set(coordinator.ready) == {parent.object_id}
+    assert coordinator.blocked == {}
+    assert dependency.object_id not in coordinator.nodes_by_id
+
+
+def test_execution_coordinator_job_result_blocked_discovers_multiple_lazy_dependencies_together() -> (
+    None
+):
+    parent = ExecutionCoordinatorLazyParent(value=2)
+    dependencies = [
+        ExecutionCoordinatorLeaf(value=2),
+        ExecutionCoordinatorLeaf(value=3),
+    ]
+    coordinator = _new_execution_coordinator([parent])
+
+    parent_job = coordinator.lease_job(resources=ANY_RESOURCES)
+    assert isinstance(parent_job, Job)
+
+    coordinator.job_result(
         parent_job.lease_id,
         JobBlockedResult(
             dependencies=[
@@ -255,145 +268,149 @@ def test_manager_job_result_blocked_discovers_multiple_lazy_dependencies_togethe
         ),
     )
 
-    assert set(manager.ready) == {dependency.object_id for dependency in dependencies}
-    assert set(manager.blocked) == {parent.object_id}
+    assert set(coordinator.ready) == {
+        dependency.object_id for dependency in dependencies
+    }
+    assert set(coordinator.blocked) == {parent.object_id}
 
-    parent_node = manager.nodes_by_id[parent.object_id]
+    parent_node = coordinator.nodes_by_id[parent.object_id]
     assert {node.obj.object_id for node in parent_node.dependencies} == {
         dependency.object_id for dependency in dependencies
     }
     for dependency in dependencies:
-        dependency_node = manager.nodes_by_id[dependency.object_id]
+        dependency_node = coordinator.nodes_by_id[dependency.object_id]
         assert parent_node in dependency_node.dependents
 
 
-def test_manager_uses_new_lease_when_blocked_job_is_released() -> None:
-    parent = ManagerLazyParent(value=2)
-    dependency = ManagerLeaf(value=2)
-    manager = _new_manager([parent])
+def test_execution_coordinator_uses_new_lease_when_blocked_job_is_released() -> None:
+    parent = ExecutionCoordinatorLazyParent(value=2)
+    dependency = ExecutionCoordinatorLeaf(value=2)
+    coordinator = _new_execution_coordinator([parent])
 
-    first_parent_job = manager.lease_job(resources=ANY_RESOURCES)
+    first_parent_job = coordinator.lease_job(resources=ANY_RESOURCES)
     assert isinstance(first_parent_job, Job)
 
-    manager.job_result(
+    coordinator.job_result(
         first_parent_job.lease_id,
         JobBlockedResult(dependencies=[ArtifactSpec.from_furu(dependency)]),
     )
 
-    dependency_job = manager.lease_job(resources=ANY_RESOURCES)
+    dependency_job = coordinator.lease_job(resources=ANY_RESOURCES)
     assert isinstance(dependency_job, Job)
-    manager.job_result(dependency_job.lease_id, JobCompletedResult())
+    coordinator.job_result(dependency_job.lease_id, JobCompletedResult())
 
-    second_parent_job = manager.lease_job(resources=ANY_RESOURCES)
+    second_parent_job = coordinator.lease_job(resources=ANY_RESOURCES)
     assert isinstance(second_parent_job, Job)
     assert second_parent_job.lease_id != first_parent_job.lease_id
     assert second_parent_job.artifact.object_id == parent.object_id
 
-    assert set(manager.running) == {second_parent_job.lease_id}
-    assert set(manager.completed) == {dependency.object_id}
+    assert set(coordinator.running) == {second_parent_job.lease_id}
+    assert set(coordinator.completed) == {dependency.object_id}
 
 
-def test_manager_job_result_failed_finishes_with_error() -> None:
-    leaf = ManagerLeaf(value=1)
-    manager = _new_manager([leaf], max_retries_per_object=0)
-    job = manager.lease_job(resources=ANY_RESOURCES)
+def test_execution_coordinator_job_result_failed_finishes_with_error() -> None:
+    leaf = ExecutionCoordinatorLeaf(value=1)
+    coordinator = _new_execution_coordinator([leaf], max_retries_per_object=0)
+    job = coordinator.lease_job(resources=ANY_RESOURCES)
     assert isinstance(job, Job)
 
-    manager.job_result(job.lease_id, JobFailedResult(error="boom"))
+    coordinator.job_result(job.lease_id, JobFailedResult(error="boom"))
 
-    assert manager.running == {}
-    assert set(manager.failed) == {leaf.object_id}
-    failed_job = manager.failed[leaf.object_id]
+    assert coordinator.running == {}
+    assert set(coordinator.failed) == {leaf.object_id}
+    failed_job = coordinator.failed[leaf.object_id]
     assert failed_job.failed_attempts == 1
     assert isinstance(failed_job, FailedJob)
     assert failed_job.lease_id == job.lease_id
     assert failed_job.node.obj is leaf
     assert failed_job.error == "boom"
-    log_text = manager_log_path_in(manager.executor_dir).read_text(encoding="utf-8")
+    log_text = execution_coordinator_log_path_in(coordinator.executor_dir).read_text(
+        encoding="utf-8"
+    )
     assert "job failed:" in log_text
     assert "boom" in log_text
-    assert "furu manager finished with error" in log_text
+    assert "furu execution coordinator finished with error" in log_text
     with pytest.raises(RuntimeError, match="failed jobs"):
-        manager.raise_for_failure()
+        coordinator.raise_for_failure()
 
 
-def test_manager_job_result_failed_retries_before_finishing() -> None:
-    leaf = ManagerLeaf(value=1)
-    manager = _new_manager([leaf], max_retries_per_object=2)
+def test_execution_coordinator_job_result_failed_retries_before_finishing() -> None:
+    leaf = ExecutionCoordinatorLeaf(value=1)
+    coordinator = _new_execution_coordinator([leaf], max_retries_per_object=2)
 
-    first_job = manager.lease_job(resources=ANY_RESOURCES)
+    first_job = coordinator.lease_job(resources=ANY_RESOURCES)
     assert isinstance(first_job, Job)
-    manager.job_result(first_job.lease_id, JobFailedResult(error="boom 1"))
+    coordinator.job_result(first_job.lease_id, JobFailedResult(error="boom 1"))
 
-    assert set(manager.failed) == {leaf.object_id}
-    failed_job = manager.failed[leaf.object_id]
+    assert set(coordinator.failed) == {leaf.object_id}
+    failed_job = coordinator.failed[leaf.object_id]
     assert failed_job.failed_attempts == 1
     assert failed_job.lease_id == first_job.lease_id
     assert failed_job.error == "boom 1"
-    assert set(manager.ready) == {leaf.object_id}
-    assert not manager.done.is_set()
+    assert set(coordinator.ready) == {leaf.object_id}
+    assert not coordinator.done.is_set()
 
-    second_job = manager.lease_job(resources=ANY_RESOURCES)
+    second_job = coordinator.lease_job(resources=ANY_RESOURCES)
     assert isinstance(second_job, Job)
     assert second_job.lease_id != first_job.lease_id
-    manager.job_result(second_job.lease_id, JobFailedResult(error="boom 2"))
+    coordinator.job_result(second_job.lease_id, JobFailedResult(error="boom 2"))
 
-    assert set(manager.failed) == {leaf.object_id}
-    failed_job = manager.failed[leaf.object_id]
+    assert set(coordinator.failed) == {leaf.object_id}
+    failed_job = coordinator.failed[leaf.object_id]
     assert failed_job.failed_attempts == 2
     assert failed_job.lease_id == second_job.lease_id
     assert failed_job.error == "boom 2"
-    assert set(manager.ready) == {leaf.object_id}
-    assert not manager.done.is_set()
+    assert set(coordinator.ready) == {leaf.object_id}
+    assert not coordinator.done.is_set()
 
-    third_job = manager.lease_job(resources=ANY_RESOURCES)
+    third_job = coordinator.lease_job(resources=ANY_RESOURCES)
     assert isinstance(third_job, Job)
-    manager.job_result(third_job.lease_id, JobFailedResult(error="boom 3"))
+    coordinator.job_result(third_job.lease_id, JobFailedResult(error="boom 3"))
 
-    assert manager.running == {}
-    assert manager.ready == {}
-    assert set(manager.failed) == {leaf.object_id}
-    failed_job = manager.failed[leaf.object_id]
+    assert coordinator.running == {}
+    assert coordinator.ready == {}
+    assert set(coordinator.failed) == {leaf.object_id}
+    failed_job = coordinator.failed[leaf.object_id]
     assert failed_job.failed_attempts == 3
     assert failed_job.lease_id == third_job.lease_id
     assert failed_job.error == "boom 3"
-    assert manager.done.is_set()
+    assert coordinator.done.is_set()
 
 
-def test_manager_job_result_failed_retry_can_later_complete() -> None:
-    leaf = ManagerLeaf(value=1)
-    manager = _new_manager([leaf], max_retries_per_object=1)
+def test_execution_coordinator_job_result_failed_retry_can_later_complete() -> None:
+    leaf = ExecutionCoordinatorLeaf(value=1)
+    coordinator = _new_execution_coordinator([leaf], max_retries_per_object=1)
 
-    first_job = manager.lease_job(resources=ANY_RESOURCES)
+    first_job = coordinator.lease_job(resources=ANY_RESOURCES)
     assert isinstance(first_job, Job)
-    manager.job_result(first_job.lease_id, JobFailedResult(error="boom"))
+    coordinator.job_result(first_job.lease_id, JobFailedResult(error="boom"))
 
-    failed_job = manager.failed[leaf.object_id]
+    failed_job = coordinator.failed[leaf.object_id]
     assert failed_job.failed_attempts == 1
     assert failed_job.lease_id == first_job.lease_id
 
-    retry_job = manager.lease_job(resources=ANY_RESOURCES)
+    retry_job = coordinator.lease_job(resources=ANY_RESOURCES)
     assert isinstance(retry_job, Job)
-    manager.job_result(retry_job.lease_id, JobCompletedResult())
+    coordinator.job_result(retry_job.lease_id, JobCompletedResult())
 
-    assert manager.failed == {}
-    assert set(manager.completed) == {leaf.object_id}
-    assert manager.done.is_set()
+    assert coordinator.failed == {}
+    assert set(coordinator.completed) == {leaf.object_id}
+    assert coordinator.done.is_set()
 
 
-def test_manager_run_retries_failed_worker_result() -> None:
-    FlakyManagerLeaf.attempts_by_value.clear()
+def test_execution_coordinator_run_retries_failed_worker_result() -> None:
+    FlakyExecutionCoordinatorLeaf.attempts_by_value.clear()
     value = uuid4().int
-    leaf = FlakyManagerLeaf(value=value)
+    leaf = FlakyExecutionCoordinatorLeaf(value=value)
     objs = [leaf]
 
-    returned = Manager.run(
+    returned = ExecutionCoordinator.run(
         objs,
         max_retries_per_object=1,
         worker_backends=(LocalThreadWorkerBackend(),),
     )
 
-    assert FlakyManagerLeaf.attempts_by_value == {value: 2}
+    assert FlakyExecutionCoordinatorLeaf.attempts_by_value == {value: 2}
     assert returned is objs
     assert leaf.create() == value
 
@@ -478,18 +495,24 @@ class DynamicGpuAfterCpu(Furu[int]):
 def test_count_satisfiable_jobs_caps_at_max_workers_and_filters_by_requirements() -> (
     None
 ):
-    manager = _new_manager(
-        [ManagerLeaf(value=1), ManagerLeaf(value=2), GpuLeaf(value=3)]
+    coordinator = _new_execution_coordinator(
+        [
+            ExecutionCoordinatorLeaf(value=1),
+            ExecutionCoordinatorLeaf(value=2),
+            GpuLeaf(value=3),
+        ]
     )
 
     assert (
-        manager.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=10) == 2
+        coordinator.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=10)
+        == 2
     )
     assert (
-        manager.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=1) == 1
+        coordinator.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=1)
+        == 1
     )
     assert (
-        manager.count_satisfiable_jobs(
+        coordinator.count_satisfiable_jobs(
             resources=ResourceRequest(gpus=1), max_workers=10
         )
         == 3
@@ -499,20 +522,20 @@ def test_count_satisfiable_jobs_caps_at_max_workers_and_filters_by_requirements(
 def test_lease_job_filters_by_worker_resources() -> None:
     cpu_leaf = CpuOnlyLeaf(value=1)
     gpu_leaf = GpuLeaf(value=2)
-    manager = _new_manager([cpu_leaf, gpu_leaf])
+    coordinator = _new_execution_coordinator([cpu_leaf, gpu_leaf])
 
-    cpu_job = manager.lease_job(resources=ResourceRequest(gpus=0))
+    cpu_job = coordinator.lease_job(resources=ResourceRequest(gpus=0))
     assert isinstance(cpu_job, Job)
     assert cpu_job.artifact.object_id == cpu_leaf.object_id
 
-    assert manager.lease_job(resources=ResourceRequest(gpus=0)) == "wait"
+    assert coordinator.lease_job(resources=ResourceRequest(gpus=0)) == "wait"
 
-    gpu_job = manager.lease_job(resources=ResourceRequest(gpus=1))
+    gpu_job = coordinator.lease_job(resources=ResourceRequest(gpus=1))
     assert isinstance(gpu_job, Job)
     assert gpu_job.artifact.object_id == gpu_leaf.object_id
 
 
-def test_manager_run_dynamically_allocates_local_workers_for_later_resource_stages() -> (
+def test_execution_coordinator_run_dynamically_allocates_local_workers_for_later_resource_stages() -> (
     None
 ):
     for cls in (
@@ -531,7 +554,7 @@ def test_manager_run_dynamically_allocates_local_workers_for_later_resource_stag
         DynamicGpuAfterCpu(parent=second_cpu, value=value) for value in range(4)
     ]
 
-    Manager.run(
+    ExecutionCoordinator.run(
         final_gpus,
         worker_backends=(
             LocalThreadWorkerBackend(
@@ -710,7 +733,7 @@ def test_local_pool_scale_counts_crashes_against_restart_limit(
     assert pool._threads == []
 
 
-def test_manager_run_fails_when_worker_pool_reports_unhealthy(
+def test_execution_coordinator_run_fails_when_worker_pool_reports_unhealthy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def crashing_worker_loop(
@@ -725,8 +748,8 @@ def test_manager_run_fails_when_worker_pool_reports_unhealthy(
     monkeypatch.setattr(worker_loop_module, "worker_loop", crashing_worker_loop)
 
     with pytest.raises(RuntimeError, match="local worker pool became unhealthy"):
-        Manager.run(
-            [ManagerLeaf(value=42)],
+        ExecutionCoordinator.run(
+            [ExecutionCoordinatorLeaf(value=42)],
             worker_backends=(
                 LocalThreadWorkerBackend(
                     max_workers=1,
@@ -738,9 +761,9 @@ def test_manager_run_fails_when_worker_pool_reports_unhealthy(
         )
 
 
-def test_manager_run_uses_worker_backend() -> None:
+def test_execution_coordinator_run_uses_worker_backend() -> None:
     class RecordingBackend:
-        manager_listen_host = "0.0.0.0"
+        execution_coordinator_listen_host = "0.0.0.0"
 
         def __init__(self) -> None:
             self.server_urls: list[str] = []
@@ -765,11 +788,11 @@ def test_manager_run_uses_worker_backend() -> None:
                 executor_dir=executor_dir,
             )
 
-    leaf = ManagerLeaf(value=11)
+    leaf = ExecutionCoordinatorLeaf(value=11)
     objs = [leaf]
     backend = RecordingBackend()
 
-    returned = Manager.run(objs, worker_backends=(backend,))
+    returned = ExecutionCoordinator.run(objs, worker_backends=(backend,))
 
     assert returned is objs
     assert leaf.status() == "completed"
@@ -780,9 +803,9 @@ def test_manager_run_uses_worker_backend() -> None:
     assert backend.auth_tokens[0]
 
 
-def test_manager_run_passes_executor_dir_to_worker_backend() -> None:
+def test_execution_coordinator_run_passes_executor_dir_to_worker_backend() -> None:
     class RecordingBackend:
-        manager_listen_host = "127.0.0.1"
+        execution_coordinator_listen_host = "127.0.0.1"
 
         def __init__(self) -> None:
             self.executor_dirs: list[Path] = []
@@ -805,43 +828,45 @@ def test_manager_run_passes_executor_dir_to_worker_backend() -> None:
                 executor_dir=executor_dir,
             )
 
-    leaf = ManagerLeaf(value=12)
-    expected_executor_dir = _new_manager([leaf]).executor_dir
+    leaf = ExecutionCoordinatorLeaf(value=12)
+    expected_executor_dir = _new_execution_coordinator([leaf]).executor_dir
     backend = RecordingBackend()
 
-    Manager.run([leaf], worker_backends=(backend,))
+    ExecutionCoordinator.run([leaf], worker_backends=(backend,))
 
     assert backend.executor_dirs == [expected_executor_dir]
 
 
-def test_manager_run_writes_log_to_executor_dir() -> None:
-    leaf = ManagerLeaf(value=14)
-    manager = _new_manager([leaf])
+def test_execution_coordinator_run_writes_log_to_executor_dir() -> None:
+    leaf = ExecutionCoordinatorLeaf(value=14)
+    coordinator = _new_execution_coordinator([leaf])
 
-    Manager.run([leaf], worker_backends=(LocalThreadWorkerBackend(),))
+    ExecutionCoordinator.run([leaf], worker_backends=(LocalThreadWorkerBackend(),))
 
-    log_path = manager_log_path_in(manager.executor_dir)
-    assert manager_log_path_in(manager.executor_dir) == log_path
-    assert log_path.parent == manager.executor_dir
+    log_path = execution_coordinator_log_path_in(coordinator.executor_dir)
+    assert execution_coordinator_log_path_in(coordinator.executor_dir) == log_path
+    assert log_path.parent == coordinator.executor_dir
 
     log_text = log_path.read_text(encoding="utf-8")
-    assert "starting furu manager" in log_text
-    assert "manager server listening" in log_text
+    assert "starting furu execution coordinator" in log_text
+    assert "execution coordinator server listening" in log_text
     assert f"executor creating {leaf._log_label}" in log_text
     assert f"(object_id={leaf.object_id})" not in log_text
     assert "leased job:" in log_text
     assert leaf.object_id in log_text
     assert "job completed:" in log_text
     assert (
-        "manager progress: completed=1/1 failed=0 running=0 ready=0 blocked=0"
+        "execution coordinator progress: completed=1/1 failed=0 running=0 ready=0 blocked=0"
         in log_text
     )
-    assert "furu manager finished successfully" in log_text
+    assert "furu execution coordinator finished successfully" in log_text
 
 
-def test_manager_run_returns_when_all_objects_are_already_completed() -> None:
+def test_execution_coordinator_run_returns_when_all_objects_are_already_completed() -> (
+    None
+):
     class UnexpectedBackend:
-        manager_listen_host = "127.0.0.1"
+        execution_coordinator_listen_host = "127.0.0.1"
 
         def start_pool(
             self,
@@ -850,25 +875,29 @@ def test_manager_run_returns_when_all_objects_are_already_completed() -> None:
             auth_token: str,
             executor_dir: Path,
         ) -> LocalThreadWorkerPool:
-            raise AssertionError("manager started workers with no runnable objects")
+            raise AssertionError("coordinator started workers with no runnable objects")
 
-    leaf = ManagerLeaf(value=15)
+    leaf = ExecutionCoordinatorLeaf(value=15)
     leaf.create()
     objs = [leaf]
-    manager = _new_manager(objs)
+    coordinator = _new_execution_coordinator(objs)
 
-    assert manager.nodes_by_id == {}
+    assert coordinator.nodes_by_id == {}
 
-    returned = Manager.run(objs, worker_backends=(UnexpectedBackend(),))
+    returned = ExecutionCoordinator.run(objs, worker_backends=(UnexpectedBackend(),))
 
     assert returned is objs
-    log_text = manager_log_path_in(manager.executor_dir).read_text(encoding="utf-8")
-    assert "all objects already exist; no manager work to run" in log_text
-    assert "manager server listening" not in log_text
-    assert "furu manager finished successfully" in log_text
+    log_text = execution_coordinator_log_path_in(coordinator.executor_dir).read_text(
+        encoding="utf-8"
+    )
+    assert "all objects already exist; no execution coordinator work to run" in log_text
+    assert "execution coordinator server listening" not in log_text
+    assert "furu execution coordinator finished successfully" in log_text
 
 
-def test_manager_run_starts_backend_pool_and_stops_and_joins_when_done() -> None:
+def test_execution_coordinator_run_starts_backend_pool_and_stops_and_joins_when_done() -> (
+    None
+):
     class RecordingPool:
         def __init__(self) -> None:
             self.events: list[str] = []
@@ -882,7 +911,7 @@ def test_manager_run_starts_backend_pool_and_stops_and_joins_when_done() -> None
                 self.worker_thread.join(timeout=timeout)
 
     class RecordingBackend:
-        manager_listen_host = "127.0.0.1"
+        execution_coordinator_listen_host = "127.0.0.1"
 
         def __init__(self, pool: RecordingPool) -> None:
             self.pool = pool
@@ -915,8 +944,8 @@ def test_manager_run_starts_backend_pool_and_stops_and_joins_when_done() -> None
 
     pool = RecordingPool()
 
-    Manager.run(
-        [ManagerLeaf(value=13)],
+    ExecutionCoordinator.run(
+        [ExecutionCoordinatorLeaf(value=13)],
         worker_backends=(RecordingBackend(pool),),
         port=0,
     )
@@ -925,7 +954,9 @@ def test_manager_run_starts_backend_pool_and_stops_and_joins_when_done() -> None
     assert pool.stop_timeouts == [5]
 
 
-def test_manager_run_uses_worker_backend_manager_listen_host() -> None:
+def test_execution_coordinator_run_uses_worker_backend_execution_coordinator_listen_host() -> (
+    None
+):
     class RecordingPool:
         worker_thread: threading.Thread | None = None
 
@@ -934,7 +965,7 @@ def test_manager_run_uses_worker_backend_manager_listen_host() -> None:
                 self.worker_thread.join(timeout=timeout)
 
     class RecordingBackend:
-        manager_listen_host = "127.0.0.1"
+        execution_coordinator_listen_host = "127.0.0.1"
 
         def __init__(self) -> None:
             self.server_urls: list[str] = []
@@ -968,35 +999,45 @@ def test_manager_run_uses_worker_backend_manager_listen_host() -> None:
 
     backend = RecordingBackend()
 
-    Manager.run([ManagerLeaf(value=15)], worker_backends=(backend,), port=0)
+    ExecutionCoordinator.run(
+        [ExecutionCoordinatorLeaf(value=15)], worker_backends=(backend,), port=0
+    )
 
     assert len(backend.server_urls) == 1
     assert backend.server_urls[0].startswith("http://127.0.0.1:")
 
 
-def test_manager_server_exposes_bound_host_and_port() -> None:
-    manager = _new_manager([ManagerLeaf(value=12)])
+def test_execution_coordinator_server_exposes_bound_host_and_port() -> None:
+    coordinator = _new_execution_coordinator([ExecutionCoordinatorLeaf(value=12)])
 
-    with manager_server(manager, bind_host="127.0.0.1", port=0) as server:
+    with execution_coordinator_server(
+        coordinator, bind_host="127.0.0.1", port=0
+    ) as server:
         assert server.bound_host == "127.0.0.1"
         assert server.bound_port > 0
         assert server.auth_token
 
 
-def test_manager_server_rejects_requests_without_auth_token() -> None:
-    manager = _new_manager([ManagerLeaf(value=12)])
+def test_execution_coordinator_server_rejects_requests_without_auth_token() -> None:
+    coordinator = _new_execution_coordinator([ExecutionCoordinatorLeaf(value=12)])
 
-    with manager_server(manager, bind_host="127.0.0.1", port=0) as server:
+    with execution_coordinator_server(
+        coordinator, bind_host="127.0.0.1", port=0
+    ) as server:
         response = httpx.post(f"{server.server_url}/worker/lease_job")
         assert response.status_code == 401
-        assert response.json() == {"detail": "invalid furu manager auth token"}
+        assert response.json() == {
+            "detail": "invalid furu execution coordinator auth token"
+        }
 
         response = httpx.post(
             f"{server.server_url}/worker/lease_job",
             headers={"Authorization": "Bearer wrong"},
         )
         assert response.status_code == 401
-        assert response.json() == {"detail": "invalid furu manager auth token"}
+        assert response.json() == {
+            "detail": "invalid furu execution coordinator auth token"
+        }
 
         response = httpx.post(
             f"{server.server_url}/worker/lease_job",
@@ -1006,23 +1047,27 @@ def test_manager_server_rejects_requests_without_auth_token() -> None:
         assert response.status_code == 200
 
 
-def test_manager_run_requires_explicit_worker_backends() -> None:
+def test_execution_coordinator_run_requires_explicit_worker_backends() -> None:
     with pytest.raises(TypeError, match="worker_backends"):
-        Manager.run([ManagerLeaf(value=12)])  # ty: ignore[missing-argument]
+        ExecutionCoordinator.run([ExecutionCoordinatorLeaf(value=12)])  # ty: ignore[missing-argument]
 
 
-def test_manager_run_rejects_empty_worker_backends() -> None:
+def test_execution_coordinator_run_rejects_empty_worker_backends() -> None:
     with pytest.raises(ValueError, match="not enough values to unpack"):
-        Manager.run([ManagerLeaf(value=12)], worker_backends=())
+        ExecutionCoordinator.run(
+            [ExecutionCoordinatorLeaf(value=12)], worker_backends=()
+        )
 
 
-def test_manager_run_rejects_conflicting_manager_listen_host() -> None:
+def test_execution_coordinator_run_rejects_conflicting_execution_coordinator_listen_host() -> (
+    None
+):
     with pytest.raises(ValueError, match="too many values to unpack"):
-        Manager.run(
-            [ManagerLeaf(value=12)],
+        ExecutionCoordinator.run(
+            [ExecutionCoordinatorLeaf(value=12)],
             worker_backends=(
-                LocalThreadWorkerBackend(manager_listen_host="127.0.0.1"),
-                LocalThreadWorkerBackend(manager_listen_host="0.0.0.0"),
+                LocalThreadWorkerBackend(execution_coordinator_listen_host="127.0.0.1"),
+                LocalThreadWorkerBackend(execution_coordinator_listen_host="0.0.0.0"),
             ),
         )
 
@@ -1089,7 +1134,7 @@ def test_worker_loop_exits_after_idle_timeout(
 def test_worker_loop_exits_after_exceeding_max_consecutive_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    leaf = ManagerLeaf(value=1)
+    leaf = ExecutionCoordinatorLeaf(value=1)
     jobs = [
         Job(lease_id="lease-1", artifact=ArtifactSpec.from_furu(leaf)),
         Job(lease_id="lease-2", artifact=ArtifactSpec.from_furu(leaf)),
@@ -1147,7 +1192,7 @@ def test_worker_loop_exits_after_exceeding_max_consecutive_failures(
 def test_worker_loop_resets_consecutive_failures_after_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    leaf = ManagerLeaf(value=1)
+    leaf = ExecutionCoordinatorLeaf(value=1)
     leases: list[LeaseJobResponse] = [
         Job(lease_id="lease-1", artifact=ArtifactSpec.from_furu(leaf)),
         Job(lease_id="lease-2", artifact=ArtifactSpec.from_furu(leaf)),
@@ -1207,7 +1252,7 @@ def test_worker_loop_resets_consecutive_failures_after_success(
 def test_worker_loop_does_not_swallow_keyboard_interrupt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    leaf = ManagerLeaf(value=1)
+    leaf = ExecutionCoordinatorLeaf(value=1)
     job = Job(lease_id="lease-1", artifact=ArtifactSpec.from_furu(leaf))
 
     class TestClient:
@@ -1332,7 +1377,7 @@ def test_client_lease_job_rejects_empty_response(
 def test_client_lease_job_posts_resource_request_to_lease_job_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    leaf = ManagerLeaf(value=1)
+    leaf = ExecutionCoordinatorLeaf(value=1)
     requests: list[tuple[str, str, dict[str, str], object | None]] = []
 
     def request(
@@ -1371,21 +1416,25 @@ def test_client_lease_job_posts_resource_request_to_lease_job_endpoint(
     ]
 
 
-def test_manager_api_rejects_missing_auth_token() -> None:
-    app = create_manager_api_app(
-        _new_manager([ManagerLeaf(value=1)]), auth_token="secret"
+def test_execution_coordinator_api_rejects_missing_auth_token() -> None:
+    app = create_execution_coordinator_api_app(
+        _new_execution_coordinator([ExecutionCoordinatorLeaf(value=1)]),
+        auth_token="secret",
     )
     client = TestClient(app)
 
     response = client.post("/worker/lease_job")
 
     assert response.status_code == 401
-    assert response.json() == {"detail": "invalid furu manager auth token"}
+    assert response.json() == {
+        "detail": "invalid furu execution coordinator auth token"
+    }
 
 
-def test_manager_api_rejects_wrong_auth_token() -> None:
-    app = create_manager_api_app(
-        _new_manager([ManagerLeaf(value=1)]), auth_token="secret"
+def test_execution_coordinator_api_rejects_wrong_auth_token() -> None:
+    app = create_execution_coordinator_api_app(
+        _new_execution_coordinator([ExecutionCoordinatorLeaf(value=1)]),
+        auth_token="secret",
     )
     client = TestClient(app)
 
@@ -1395,12 +1444,14 @@ def test_manager_api_rejects_wrong_auth_token() -> None:
     )
 
     assert response.status_code == 401
-    assert response.json() == {"detail": "invalid furu manager auth token"}
+    assert response.json() == {
+        "detail": "invalid furu execution coordinator auth token"
+    }
 
 
-def test_manager_api_fail_endpoint_sets_finish_error_and_done() -> None:
-    manager = _new_manager([ManagerLeaf(value=1)])
-    app = create_manager_api_app(manager, auth_token="secret")
+def test_execution_coordinator_api_fail_endpoint_sets_finish_error_and_done() -> None:
+    coordinator = _new_execution_coordinator([ExecutionCoordinatorLeaf(value=1)])
+    app = create_execution_coordinator_api_app(coordinator, auth_token="secret")
     client = TestClient(app)
 
     response = client.post(
@@ -1411,14 +1462,15 @@ def test_manager_api_fail_endpoint_sets_finish_error_and_done() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"ok": True}
-    assert manager.done.is_set()
+    assert coordinator.done.is_set()
     with pytest.raises(RuntimeError, match="pool broke"):
-        manager.raise_for_failure()
+        coordinator.raise_for_failure()
 
 
-def test_manager_api_accepts_matching_auth_token() -> None:
-    app = create_manager_api_app(
-        _new_manager([ManagerLeaf(value=1)]), auth_token="secret"
+def test_execution_coordinator_api_accepts_matching_auth_token() -> None:
+    app = create_execution_coordinator_api_app(
+        _new_execution_coordinator([ExecutionCoordinatorLeaf(value=1)]),
+        auth_token="secret",
     )
     client = TestClient(app)
 

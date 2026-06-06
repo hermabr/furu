@@ -21,8 +21,8 @@ def run_log_path_in(base_dir: Path) -> Path:
     return base_dir / "run.log"
 
 
-def manager_log_path_in(executor_dir: Path) -> Path:
-    return executor_dir / "manager.log"
+def execution_coordinator_log_path_in(executor_dir: Path) -> Path:
+    return executor_dir / "execution_coordinator.log"
 
 
 def compute_lock_path_in(base_dir: Path) -> Path:
