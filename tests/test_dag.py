@@ -10,7 +10,7 @@ import furu
 from furu import Furu
 from furu.config import get_config
 from furu.dag import DagNode, _add_to_dag
-from furu.execution.manager import Manager
+from furu.execution.execution_coordinator import ExecutionCoordinator
 from furu.locking import lock_many
 from furu._storage_layout import (
     compute_lock_path_in,
@@ -74,36 +74,36 @@ def mark_running(obj: Furu) -> Iterator[None]:
         yield
 
 
-def _new_manager(
+def _new_execution_coordinator(
     objs: Sequence[Furu[Any]],
     *,
     max_retries_per_object: int | None = None,
-) -> Manager:
+) -> ExecutionCoordinator:
     if max_retries_per_object is None:
         max_retries_per_object = get_config().worker.max_retries_per_object
-    manager = Manager(max_retries_per_object=max_retries_per_object)
-    _add_to_dag(manager, objs)
+    coordinator = ExecutionCoordinator(max_retries_per_object=max_retries_per_object)
+    _add_to_dag(coordinator, objs)
     digest = hashlib.blake2s(digest_size=16)
     for obj in objs:
         digest.update(obj.object_id.encode("utf-8"))
         digest.update(b"\0")
-    manager.executor_id = digest.hexdigest()
-    return manager
+    coordinator.executor_id = digest.hexdigest()
+    return coordinator
 
 
 def test_add_to_dag_single_object_no_dependencies():
     leaf = Leaf(name="x")
-    manager = _new_manager([leaf])
+    coordinator = _new_execution_coordinator([leaf])
 
-    assert len(manager.ready) == 1
-    (root,) = manager.ready.values()
+    assert len(coordinator.ready) == 1
+    (root,) = coordinator.ready.values()
     assert isinstance(root, DagNode)
     assert root.obj is leaf
     assert root.dependencies == []
     assert root.dependents == []
 
-    assert manager.nodes_by_id == {leaf.object_id: root}
-    assert manager.blocked == {}
+    assert coordinator.nodes_by_id == {leaf.object_id: root}
+    assert coordinator.blocked == {}
 
 
 def test_add_to_dag_traverses_declared_refs_recursively():
@@ -113,16 +113,16 @@ def test_add_to_dag_traverses_declared_refs_recursively():
     mid_right = Mid(label="R", child=leaf_b)
     top = Top(name="t", left=mid_left, right=mid_right)
 
-    manager = _new_manager([top])
+    coordinator = _new_execution_coordinator([top])
 
-    assert set(manager.ready) == {leaf_a.object_id, leaf_b.object_id}
-    assert set(manager.blocked) == {
+    assert set(coordinator.ready) == {leaf_a.object_id, leaf_b.object_id}
+    assert set(coordinator.blocked) == {
         mid_left.object_id,
         mid_right.object_id,
         top.object_id,
     }
 
-    assert set(manager.nodes_by_id) == {
+    assert set(coordinator.nodes_by_id) == {
         leaf_a.object_id,
         leaf_b.object_id,
         mid_left.object_id,
@@ -130,9 +130,9 @@ def test_add_to_dag_traverses_declared_refs_recursively():
         top.object_id,
     }
 
-    leaf_a_node = manager.nodes_by_id[leaf_a.object_id]
-    mid_left_node = manager.nodes_by_id[mid_left.object_id]
-    top_node = manager.nodes_by_id[top.object_id]
+    leaf_a_node = coordinator.nodes_by_id[leaf_a.object_id]
+    mid_left_node = coordinator.nodes_by_id[mid_left.object_id]
+    top_node = coordinator.nodes_by_id[top.object_id]
 
     assert leaf_a_node.dependencies == []
     assert leaf_a_node.dependents == [mid_left_node]
@@ -151,10 +151,10 @@ def test_add_to_dag_shared_dependency_has_multiple_dependents():
     mid_right = Mid(label="R", child=shared)
     top = Top(name="t", left=mid_left, right=mid_right)
 
-    manager = _new_manager([top])
+    coordinator = _new_execution_coordinator([top])
 
-    assert len(manager.ready) == 1
-    (shared_root,) = manager.ready.values()
+    assert len(coordinator.ready) == 1
+    (shared_root,) = coordinator.ready.values()
     assert shared_root.obj is shared
     assert shared_root.dependencies == []
     assert {n.obj.object_id for n in shared_root.dependents} == {
@@ -162,13 +162,13 @@ def test_add_to_dag_shared_dependency_has_multiple_dependents():
         mid_right.object_id,
     }
 
-    assert set(manager.nodes_by_id) == {
+    assert set(coordinator.nodes_by_id) == {
         shared.object_id,
         mid_left.object_id,
         mid_right.object_id,
         top.object_id,
     }
-    assert manager.nodes_by_id[shared.object_id] is shared_root
+    assert coordinator.nodes_by_id[shared.object_id] is shared_root
 
 
 def test_add_to_dag_stops_recursion_at_completed_objects():
@@ -177,14 +177,14 @@ def test_add_to_dag_stops_recursion_at_completed_objects():
     leaf.create()
     assert leaf.status() == "completed"
 
-    manager = _new_manager([mid])
+    coordinator = _new_execution_coordinator([mid])
 
-    assert len(manager.ready) == 1
-    (mid_root,) = manager.ready.values()
+    assert len(coordinator.ready) == 1
+    (mid_root,) = coordinator.ready.values()
     assert mid_root.obj is mid
     assert mid_root.dependencies == []
 
-    assert set(manager.nodes_by_id) == {mid.object_id}
+    assert set(coordinator.nodes_by_id) == {mid.object_id}
     assert mid_root.dependents == []
 
 
@@ -194,11 +194,11 @@ def test_add_to_dag_completed_root_has_no_dependencies():
     mid.create()
     assert mid.status() == "completed"
 
-    manager = _new_manager([mid])
+    coordinator = _new_execution_coordinator([mid])
 
-    assert manager.ready == {}
-    assert manager.nodes_by_id == {}
-    assert manager.blocked == {}
+    assert coordinator.ready == {}
+    assert coordinator.nodes_by_id == {}
+    assert coordinator.blocked == {}
 
 
 def test_add_to_dag_rejects_running_root():
@@ -208,7 +208,7 @@ def test_add_to_dag_rejects_running_root():
         assert leaf.status() == "running"
 
         with pytest.raises(RuntimeError, match="cannot add running object to DAG"):
-            _new_manager([leaf])
+            _new_execution_coordinator([leaf])
 
 
 def test_add_to_dag_rejects_running_dependency():
@@ -219,7 +219,7 @@ def test_add_to_dag_rejects_running_dependency():
         assert leaf.status() == "running"
 
         with pytest.raises(RuntimeError, match="cannot add running object to DAG"):
-            _new_manager([mid])
+            _new_execution_coordinator([mid])
 
 
 def test_add_to_dag_does_not_reject_inactive_compute_lock():
@@ -229,9 +229,9 @@ def test_add_to_dag_does_not_reject_inactive_compute_lock():
     lock_path.touch()
 
     assert leaf.status() == "failed"
-    manager = _new_manager([leaf])
+    coordinator = _new_execution_coordinator([leaf])
 
-    assert set(manager.ready) == {leaf.object_id}
+    assert set(coordinator.ready) == {leaf.object_id}
 
 
 def test_add_to_dag_accepts_a_list_of_inputs():
@@ -239,17 +239,17 @@ def test_add_to_dag_accepts_a_list_of_inputs():
     leaf_b = Leaf(name="b")
     mid = Mid(label="m", child=leaf_a)
 
-    manager = _new_manager([mid, leaf_b])
+    coordinator = _new_execution_coordinator([mid, leaf_b])
 
-    assert set(manager.ready) == {leaf_a.object_id, leaf_b.object_id}
+    assert set(coordinator.ready) == {leaf_a.object_id, leaf_b.object_id}
 
-    assert set(manager.nodes_by_id) == {
+    assert set(coordinator.nodes_by_id) == {
         leaf_a.object_id,
         leaf_b.object_id,
         mid.object_id,
     }
 
-    leaf_b_node = manager.nodes_by_id[leaf_b.object_id]
+    leaf_b_node = coordinator.nodes_by_id[leaf_b.object_id]
     assert leaf_b_node.dependents == []
 
 
@@ -258,11 +258,11 @@ def test_add_to_dag_handles_nested_dataclass_refs():
     leaf_b = Leaf(name="b")
     parent = NestedParent(bundle=LeafBundle(a=leaf_a, b=leaf_b))
 
-    manager = _new_manager([parent])
+    coordinator = _new_execution_coordinator([parent])
 
-    assert set(manager.ready) == {leaf_a.object_id, leaf_b.object_id}
+    assert set(coordinator.ready) == {leaf_a.object_id, leaf_b.object_id}
 
-    assert set(manager.nodes_by_id) == {
+    assert set(coordinator.nodes_by_id) == {
         leaf_a.object_id,
         leaf_b.object_id,
         parent.object_id,
@@ -272,13 +272,13 @@ def test_add_to_dag_handles_nested_dataclass_refs():
 def test_add_to_dag_walks_computed_dependencies():
     parent = ComputedParent(name="p")
 
-    manager = _new_manager([parent])
+    coordinator = _new_execution_coordinator([parent])
 
-    assert len(manager.ready) == 1
-    (child_root,) = manager.ready.values()
+    assert len(coordinator.ready) == 1
+    (child_root,) = coordinator.ready.values()
     assert child_root.obj.object_id == parent.computed_child.object_id
     assert {n.obj.object_id for n in child_root.dependents} == {parent.object_id}
-    assert set(manager.nodes_by_id) == {
+    assert set(coordinator.nodes_by_id) == {
         parent.object_id,
         parent.computed_child.object_id,
     }
@@ -286,7 +286,7 @@ def test_add_to_dag_walks_computed_dependencies():
 
 def test_add_to_dag_rejects_non_furu_values():
     with pytest.raises(TypeError, match="expected Furu objects"):
-        _new_manager(
+        _new_execution_coordinator(
             [Leaf(name="ok"), "not-a-furu"]  # ty: ignore[invalid-argument-type]
         )
 
@@ -341,52 +341,56 @@ def _reset_tracking() -> None:
     LazyChildLoader.create_calls.clear()
 
 
-def test_manager_run_runs_single_zero_dependency_node():
+def test_execution_coordinator_run_runs_single_zero_dependency_node():
     leaf = TrackingLeaf(n=3)
 
-    Manager.run([leaf], worker_backends=(LocalThreadWorkerBackend(),))
+    ExecutionCoordinator.run([leaf], worker_backends=(LocalThreadWorkerBackend(),))
 
     assert TrackingLeaf.create_calls == [3]
     assert leaf.status() == "completed"
     assert leaf.create() == 6
 
 
-def test_manager_run_runs_static_dependencies_in_order():
+def test_execution_coordinator_run_runs_static_dependencies_in_order():
     leaf = TrackingLeaf(n=4)
     mid = TrackingMid(label="m", child=leaf)
 
-    Manager.run([mid], worker_backends=(LocalThreadWorkerBackend(),))
+    ExecutionCoordinator.run([mid], worker_backends=(LocalThreadWorkerBackend(),))
 
     assert TrackingLeaf.create_calls == [4]
     assert TrackingMid.create_calls == ["m"]
     assert mid.create() == 9
 
 
-def test_manager_run_handles_shared_dependency_only_once():
+def test_execution_coordinator_run_handles_shared_dependency_only_once():
     shared = TrackingLeaf(n=5)
     left = TrackingMid(label="L", child=shared)
     right = TrackingMid(label="R", child=shared)
 
-    Manager.run([left, right], worker_backends=(LocalThreadWorkerBackend(),))
+    ExecutionCoordinator.run(
+        [left, right], worker_backends=(LocalThreadWorkerBackend(),)
+    )
 
     assert TrackingLeaf.create_calls == [5]
     assert sorted(TrackingMid.create_calls) == ["L", "R"]
 
 
-def test_manager_run_with_multiple_workers_runs_independent_nodes():
+def test_execution_coordinator_run_with_multiple_workers_runs_independent_nodes():
     leaves = [TrackingLeaf(n=i) for i in range(8)]
 
-    Manager.run(leaves, worker_backends=(LocalThreadWorkerBackend(max_workers=4),))
+    ExecutionCoordinator.run(
+        leaves, worker_backends=(LocalThreadWorkerBackend(max_workers=4),)
+    )
 
     assert sorted(TrackingLeaf.create_calls) == list(range(8))
     for leaf in leaves:
         assert leaf.status() == "completed"
 
 
-def test_manager_run_discovers_lazy_dependencies_and_reruns_parent():
+def test_execution_coordinator_run_discovers_lazy_dependencies_and_reruns_parent():
     parent = LazyChildLoader(base=7)
 
-    Manager.run([parent], worker_backends=(LocalThreadWorkerBackend(),))
+    ExecutionCoordinator.run([parent], worker_backends=(LocalThreadWorkerBackend(),))
 
     assert TrackingLeaf.create_calls == [7]
     # Parent's create() is called once to discover the lazy dep (raising
@@ -402,24 +406,24 @@ def test_manager_run_discovers_lazy_dependencies_and_reruns_parent():
     assert "=== Debug Details (with locals) ===" not in parent_log
 
 
-def test_manager_run_skips_already_completed_objects():
+def test_execution_coordinator_run_skips_already_completed_objects():
     leaf = TrackingLeaf(n=8)
     leaf.create()
     TrackingLeaf.create_calls.clear()
     mid = TrackingMid(label="cached-child", child=leaf)
 
-    Manager.run([mid], worker_backends=(LocalThreadWorkerBackend(),))
+    ExecutionCoordinator.run([mid], worker_backends=(LocalThreadWorkerBackend(),))
 
     assert TrackingLeaf.create_calls == []
     assert TrackingMid.create_calls == ["cached-child"]
 
 
-def test_manager_run_reports_worker_failures():
+def test_execution_coordinator_run_reports_worker_failures():
     failing = AlwaysFails(name="boom")
     parent = DependsOnFailing(label="p", child=failing)
 
     with pytest.raises(RuntimeError, match="failed jobs"):
-        Manager.run(
+        ExecutionCoordinator.run(
             [parent],
             max_retries_per_object=0,
             worker_backends=(LocalThreadWorkerBackend(),),

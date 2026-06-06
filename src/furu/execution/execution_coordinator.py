@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, assert_never
 from uuid import uuid4
 
-from furu._storage_layout import manager_log_path_in
+from furu._storage_layout import execution_coordinator_log_path_in
 from furu.config import get_config
 from furu.core import Furu
 from furu.dag import DagNode, _add_to_dag, _update_dag_blocking_dependencies
@@ -48,7 +48,7 @@ class FailedJob:
 
 
 @dataclass(slots=True, kw_only=True)
-class Manager:
+class ExecutionCoordinator:
     max_retries_per_object: int
     executor_id: str = "not-computed-yet"
     nodes_by_id: dict[str, DagNode] = field(default_factory=dict)
@@ -72,35 +72,42 @@ class Manager:
     ) -> ObjsT:
         if max_retries_per_object is None:
             max_retries_per_object = get_config().worker.max_retries_per_object
-        manager = cls(max_retries_per_object=max_retries_per_object)
-        _add_to_dag(manager, objs)
+        coordinator = cls(max_retries_per_object=max_retries_per_object)
+        _add_to_dag(coordinator, objs)
         digest = hashlib.blake2s(digest_size=16)
         for obj in objs:
             digest.update(obj.object_id.encode("utf-8"))
             digest.update(b"\0")
-        manager.executor_id = digest.hexdigest()
+        coordinator.executor_id = digest.hexdigest()
 
-        if not manager.nodes_by_id:
-            with manager.log_context(), manager.lock:
-                logger.info("all objects already exist; no manager work to run")
-                manager._maybe_finish_locked()
+        if not coordinator.nodes_by_id:
+            with coordinator.log_context(), coordinator.lock:
+                logger.info(
+                    "all objects already exist; no execution coordinator work to run"
+                )
+                coordinator._maybe_finish_locked()
             return objs
 
-        (bind_host,) = {backend.manager_listen_host for backend in worker_backends}
+        (bind_host,) = {
+            backend.execution_coordinator_listen_host for backend in worker_backends
+        }
 
-        from furu.execution.server import manager_server
+        from furu.execution.server import execution_coordinator_server
 
-        with manager.log_context():
+        with coordinator.log_context():
             logger.info(
-                "starting furu manager: executor_id=%s executor_dir=%s ready=%d blocked=%d",
-                manager.executor_id,
-                manager.executor_dir,
-                len(manager.ready),
-                len(manager.blocked),
+                "starting furu execution coordinator: executor_id=%s executor_dir=%s "
+                "ready=%d blocked=%d",
+                coordinator.executor_id,
+                coordinator.executor_dir,
+                len(coordinator.ready),
+                len(coordinator.blocked),
             )
-            with manager_server(manager, bind_host=bind_host, port=port) as server:
+            with execution_coordinator_server(
+                coordinator, bind_host=bind_host, port=port
+            ) as server:
                 logger.info(
-                    "manager server listening: server_url=%s",
+                    "execution coordinator server listening: server_url=%s",
                     server.server_url,
                 )
                 pools = []
@@ -108,18 +115,18 @@ class Manager:
                     pool = backend.start_pool(
                         server_url=server.server_url,
                         auth_token=server.auth_token,
-                        executor_dir=manager.executor_dir,
+                        executor_dir=coordinator.executor_dir,
                     )
                     pools.append(pool)
                     logger.info(
                         "worker pool started: backend=%s", type(backend).__name__
                     )
-                manager.done.wait()
+                coordinator.done.wait()
 
                 with ThreadPoolExecutor(max_workers=len(pools)) as executor:
                     for pool in pools:
                         executor.submit(pool.stop, timeout=5)
-        manager.raise_for_failure()
+        coordinator.raise_for_failure()
         return objs
 
     @property
@@ -128,7 +135,7 @@ class Manager:
 
     @contextmanager
     def log_context(self) -> Iterator[None]:
-        with _scoped_log_files((manager_log_path_in(self.executor_dir),)):
+        with _scoped_log_files((execution_coordinator_log_path_in(self.executor_dir),)):
             yield
 
     def lease_job(self, *, resources: ResourceRequest) -> LeaseJobResponse:
@@ -255,7 +262,8 @@ class Manager:
                 case _:
                     assert_never(request)
             logger.info(
-                "manager progress: completed=%d/%d failed=%d running=%d ready=%d blocked=%d",
+                "execution coordinator progress: completed=%d/%d failed=%d "
+                "running=%d ready=%d blocked=%d",
                 len(self.completed),
                 len(self.nodes_by_id),
                 len(self.failed),
@@ -274,7 +282,7 @@ class Manager:
             if self.done.is_set():
                 return
             self.finish_error = message
-            logger.error("furu manager finished with error: %s", message)
+            logger.error("furu execution coordinator finished with error: %s", message)
             self.done.set()
 
     def _maybe_finish_locked(self) -> None:
@@ -303,8 +311,13 @@ class Manager:
                     f"after {failed_job.failed_attempts} failed attempts "
                     f"(lease {failed_job.lease_id}): {failed_job.error}"
                 )
-            self.finish_error = "manager run could not complete; " + "; ".join(parts)
-            logger.error("furu manager finished with error: %s", self.finish_error)
+            self.finish_error = (
+                "execution coordinator run could not complete; " + "; ".join(parts)
+            )
+            logger.error(
+                "furu execution coordinator finished with error: %s",
+                self.finish_error,
+            )
         else:
-            logger.info("furu manager finished successfully")
+            logger.info("furu execution coordinator finished successfully")
         self.done.set()
