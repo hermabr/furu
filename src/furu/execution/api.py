@@ -8,7 +8,7 @@ import httpx
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, status
 from pydantic import TypeAdapter
 
-from furu.execution.manager import Manager
+from furu.execution.coordinator import ExecutionCoordinator
 from furu.resources import ResourceRequest
 from furu.worker.protocol import (
     CountSatisfiableJobsRequest,
@@ -21,7 +21,7 @@ from furu.worker.protocol import (
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class _ManagerApiClientBase:
+class _ExecutionCoordinatorApiClientBase:
     server_url: str
     auth_token: str
 
@@ -52,7 +52,7 @@ class _ManagerApiClientBase:
             ) from exc
 
 
-class WorkerApiClient(_ManagerApiClientBase):
+class WorkerApiClient(_ExecutionCoordinatorApiClientBase):
     def lease_job(self, *, resources: ResourceRequest) -> LeaseJobResponse:
         response = self._request_json(
             "/worker/lease_job",
@@ -70,7 +70,7 @@ class WorkerApiClient(_ManagerApiClientBase):
         OkResponse.model_validate(response)
 
 
-class PoolApiClient(_ManagerApiClientBase):
+class PoolApiClient(_ExecutionCoordinatorApiClientBase):
     def count_satisfiable_jobs(
         self, *, resources: ResourceRequest, max_workers: int
     ) -> int:
@@ -92,13 +92,15 @@ class PoolApiClient(_ManagerApiClientBase):
         OkResponse.model_validate(response)
 
 
-def create_manager_api_app(manager: Manager, *, auth_token: str) -> FastAPI:
+def create_execution_coordinator_api_app(
+    coordinator: ExecutionCoordinator, *, auth_token: str
+) -> FastAPI:
     def require_auth(authorization: str = Header(default="")) -> None:
         scheme, _, token = authorization.partition(" ")
         if scheme.lower() != "bearer" or not compare_digest(token, auth_token):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="invalid furu manager auth token",
+                detail="invalid furu execution coordinator auth token",
             )
 
     app = FastAPI()
@@ -108,24 +110,24 @@ def create_manager_api_app(manager: Manager, *, auth_token: str) -> FastAPI:
 
     @worker_router.post("/lease_job", response_model=LeaseJobResponse)
     def lease_job(request: LeaseJobRequest) -> LeaseJobResponse:
-        return manager.lease_job(resources=request.resources)
+        return coordinator.lease_job(resources=request.resources)
 
     @worker_router.post("/job_result/{lease_id}", response_model=OkResponse)
     def job_result(lease_id: str, request: JobResultRequest) -> OkResponse:
-        manager.job_result(lease_id, request)
+        coordinator.job_result(lease_id, request)
         return OkResponse()
 
     pool_router = APIRouter(prefix="/pool", dependencies=[auth_dependency])
 
     @pool_router.post("/count_satisfiable_jobs")
     def count_satisfiable_jobs(request: CountSatisfiableJobsRequest) -> int:
-        return manager.count_satisfiable_jobs(
+        return coordinator.count_satisfiable_jobs(
             resources=request.resources, max_workers=request.max_workers
         )
 
     @pool_router.post("/fail", response_model=OkResponse)
     def fail(request: FailRequest) -> OkResponse:
-        manager.fail(request.message)
+        coordinator.fail(request.message)
         return OkResponse()
 
     app.include_router(worker_router)

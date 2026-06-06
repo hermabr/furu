@@ -81,7 +81,7 @@ def test_worker_cli_reads_auth_token_file(
         _cli.main(
             [
                 "--server-url",
-                "http://manager.test",
+                "http://coordinator.test",
                 "--auth-token-file",
                 str(token_file),
                 "--resource-cpus",
@@ -97,7 +97,7 @@ def test_worker_cli_reads_auth_token_file(
 
     assert calls == [
         (
-            "http://manager.test",
+            "http://coordinator.test",
             "secret",
             ResourceRequest(),
             60.0,
@@ -131,7 +131,7 @@ def test_worker_cli_reads_resource_request(
         _cli.main(
             [
                 "--server-url",
-                "http://manager.test",
+                "http://coordinator.test",
                 "--auth-token-file",
                 str(token_file),
                 "--resource-cpus",
@@ -172,7 +172,7 @@ def test_worker_cli_reads_idle_timeout(
         _cli.main(
             [
                 "--server-url",
-                "http://manager.test",
+                "http://coordinator.test",
                 "--auth-token-file",
                 str(token_file),
                 "--resource-cpus",
@@ -213,7 +213,7 @@ def test_worker_cli_reads_max_consecutive_failures(
         _cli.main(
             [
                 "--server-url",
-                "http://manager.test",
+                "http://coordinator.test",
                 "--auth-token-file",
                 str(token_file),
                 "--resource-cpus",
@@ -255,7 +255,7 @@ def test_worker_cli_requires_resource_request(
         _cli.main(
             [
                 "--server-url",
-                "http://manager.test",
+                "http://coordinator.test",
                 "--auth-token-file",
                 str(token_file),
                 "--idle-timeout",
@@ -285,7 +285,7 @@ def test_worker_cli_requires_auth_token_file(monkeypatch: pytest.MonkeyPatch) ->
         _cli.main(
             [
                 "--server-url",
-                "http://manager.test",
+                "http://coordinator.test",
                 "--resource-cpus",
                 "1",
                 "--resource-gpus",
@@ -322,7 +322,7 @@ def test_worker_cli_requires_idle_timeout(
         _cli.main(
             [
                 "--server-url",
-                "http://manager.test",
+                "http://coordinator.test",
                 "--auth-token-file",
                 str(token_file),
                 "--resource-cpus",
@@ -359,7 +359,7 @@ def test_worker_cli_rejects_auth_token_argument(
         _cli.main(
             [
                 "--server-url",
-                "http://manager.test",
+                "http://coordinator.test",
                 "--auth-token-file",
                 str(token_file),
                 "--resource-cpus",
@@ -400,14 +400,14 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
             gpus=1,
             extra_sbatch_args=("--exclusive",),
         ),
-        worker_connect_host="manager.cluster",
+        worker_connect_host="coordinator.cluster",
         poll_interval=1.5,
         worker_idle_timeout=0.25,
         worker_max_consecutive_failures=3,
     )
 
     pool = backend.start_pool(
-        server_url="http://manager.cluster:1234",
+        server_url="http://coordinator.cluster:1234",
         auth_token="secret-token",
         executor_dir=executor_dir,
     )
@@ -442,7 +442,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert "--auth-token " not in script
     assert "secret-token" not in script
     assert f"exec {sys.executable} -m furu.worker._cli" in script
-    assert "--server-url http://manager.cluster:1234" in script
+    assert "--server-url http://coordinator.cluster:1234" in script
     assert "--idle-timeout 0.25" in script
     assert "--max-consecutive-failures 3" in script
     assert "--resource-cpus 4" in script
@@ -468,7 +468,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
         )
         assert f"export {_WORKER_JSON_CONFIG_FILE_ENV_VAR}={config_file}" in script
 
-    assert not sbatch_records[0]["has_manager_environment"]
+    assert not sbatch_records[0]["has_coordinator_environment"]
 
     assert "secret-token" not in record_file.read_text()
 
@@ -496,12 +496,12 @@ def test_slurm_backend_export_option_controls_sbatch_args(
     backend = SlurmWorkerBackend(
         max_workers=1,
         resources=SlurmResources(cpus_per_worker=1),
-        worker_connect_host="manager.cluster",
+        worker_connect_host="coordinator.cluster",
         export=export,
     )
 
     pool = backend.start_pool(
-        server_url="http://manager.cluster:1234",
+        server_url="http://coordinator.cluster:1234",
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
     )
@@ -522,12 +522,12 @@ def test_slurm_backend_includes_selected_export_names_in_sbatch_args(
     backend = SlurmWorkerBackend(
         max_workers=1,
         resources=SlurmResources(cpus_per_worker=1),
-        worker_connect_host="manager.cluster",
+        worker_connect_host="coordinator.cluster",
         export=("HF_TOKEN",),
     )
 
     pool = backend.start_pool(
-        server_url="http://manager.cluster:1234",
+        server_url="http://coordinator.cluster:1234",
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
     )
@@ -571,7 +571,7 @@ def test_slurm_resources_emit_gpu_option(gpus: int, expected_args: list[str]) ->
     ]
 
 
-def test_slurm_backend_rewrites_manager_url_to_worker_connect_host(
+def test_slurm_backend_rewrites_coordinator_url_to_worker_connect_host(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -581,7 +581,7 @@ def test_slurm_backend_rewrites_manager_url_to_worker_connect_host(
     backend = SlurmWorkerBackend(
         max_workers=1,
         resources=SlurmResources(cpus_per_worker=1),
-        worker_connect_host="manager.cluster",
+        worker_connect_host="coordinator.cluster",
     )
 
     pool = backend.start_pool(
@@ -599,7 +599,7 @@ def test_slurm_backend_rewrites_manager_url_to_worker_connect_host(
 
     script_path = Path(sbatch_records[0]["argv"][-1])
     script = script_path.read_text()
-    assert "--server-url http://manager.cluster:4321" in script
+    assert "--server-url http://coordinator.cluster:4321" in script
     assert f"--idle-timeout {get_config().worker.idle_timeout_seconds}" in script
     assert "--max-consecutive-failures 5" in script
     assert "http://0.0.0.0:4321" not in script
@@ -615,11 +615,11 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
     backend = SlurmWorkerBackend(
         max_workers=2,
         resources=SlurmResources(cpus_per_worker=1),
-        worker_connect_host="manager.cluster",
+        worker_connect_host="coordinator.cluster",
         poll_interval=0,
     )
     pool = backend.start_pool(
-        server_url="http://manager.cluster:1234",
+        server_url="http://coordinator.cluster:1234",
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
     )
@@ -669,11 +669,11 @@ def test_slurm_pool_scale_submits_additional_workers_as_satisfiable_count_grows(
     backend = SlurmWorkerBackend(
         max_workers=3,
         resources=SlurmResources(cpus_per_worker=1),
-        worker_connect_host="manager.cluster",
+        worker_connect_host="coordinator.cluster",
         poll_interval=0,
     )
     pool = backend.start_pool(
-        server_url="http://manager.cluster:1234",
+        server_url="http://coordinator.cluster:1234",
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
     )
@@ -718,11 +718,11 @@ def test_slurm_pool_scale_submits_replacement_workers_after_existing_workers_exi
     backend = SlurmWorkerBackend(
         max_workers=3,
         resources=SlurmResources(cpus_per_worker=1),
-        worker_connect_host="manager.cluster",
+        worker_connect_host="coordinator.cluster",
         poll_interval=0,
     )
     pool = backend.start_pool(
-        server_url="http://manager.cluster:1234",
+        server_url="http://coordinator.cluster:1234",
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
     )
@@ -758,11 +758,11 @@ def test_slurm_pool_scale_does_not_count_completed_jobs_as_restarts(
         max_workers=1,
         max_failed_restarts=0,
         resources=SlurmResources(cpus_per_worker=1),
-        worker_connect_host="manager.cluster",
+        worker_connect_host="coordinator.cluster",
         poll_interval=0,
     )
     pool = backend.start_pool(
-        server_url="http://manager.cluster:1234",
+        server_url="http://coordinator.cluster:1234",
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
     )
@@ -791,7 +791,7 @@ def test_slurm_backend_requires_explicit_executor_dir() -> None:
     backend = SlurmWorkerBackend(
         max_workers=1,
         resources=SlurmResources(cpus_per_worker=1),
-        worker_connect_host="manager.cluster",
+        worker_connect_host="coordinator.cluster",
     )
 
     with pytest.raises(TypeError, match="executor_dir"):
@@ -811,11 +811,11 @@ def test_slurm_worker_pool_join_cancels_jobs_left_after_timeout(
     backend = SlurmWorkerBackend(
         max_workers=2,
         resources=SlurmResources(cpus_per_worker=1),
-        worker_connect_host="manager.cluster",
+        worker_connect_host="coordinator.cluster",
         poll_interval=0,
     )
     pool = backend.start_pool(
-        server_url="http://manager.cluster:1234",
+        server_url="http://coordinator.cluster:1234",
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
     )
@@ -838,11 +838,11 @@ def test_slurm_backend_uses_default_poll_interval() -> None:
     backend = SlurmWorkerBackend(
         max_workers=1,
         resources=SlurmResources(cpus_per_worker=1),
-        worker_connect_host="manager.cluster",
+        worker_connect_host="coordinator.cluster",
     )
 
     assert backend.poll_interval == 10.0
-    assert backend.manager_listen_host == "0.0.0.0"
+    assert backend.coordinator_listen_host == "0.0.0.0"
     assert backend.worker_idle_timeout == get_config().worker.idle_timeout_seconds
     assert backend.worker_max_consecutive_failures == 5
     assert backend.max_failed_restarts == get_config().worker.max_failed_restarts
@@ -860,8 +860,8 @@ def _install_fake_slurm(
     active_file.write_text("")
     counter_file.write_text("100")
 
-    monkeypatch.delenv("FURU_MANAGER_SERVER_URL", raising=False)
-    monkeypatch.delenv("FURU_MANAGER_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("FURU_COORDINATOR_SERVER_URL", raising=False)
+    monkeypatch.delenv("FURU_COORDINATOR_AUTH_TOKEN", raising=False)
     monkeypatch.setenv("FURU_FAKE_SLURM_RECORD_FILE", str(record_file))
     monkeypatch.setenv("FURU_FAKE_SLURM_ACTIVE_FILE", str(active_file))
     monkeypatch.setenv("FURU_FAKE_SLURM_COUNTER_FILE", str(counter_file))
@@ -887,9 +887,9 @@ def _install_fake_slurm(
                     {
                         "executable": "sbatch",
                         "argv": sys.argv[1:],
-                        "has_manager_environment": (
-                            "FURU_MANAGER_SERVER_URL" in os.environ
-                            or "FURU_MANAGER_AUTH_TOKEN" in os.environ
+                        "has_coordinator_environment": (
+                            "FURU_COORDINATOR_SERVER_URL" in os.environ
+                            or "FURU_COORDINATOR_AUTH_TOKEN" in os.environ
                         ),
                     }
                 )

@@ -182,4 +182,6 @@ class SlurmWorkerPool:
         try:
             self._client.fail(message=message)
         except Exception:
-            logger.exception("failed to report slurm worker pool failure to manager")
+            logger.exception(
+                "failed to report slurm worker pool failure to coordinator"
+            )

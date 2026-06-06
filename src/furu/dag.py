@@ -9,7 +9,7 @@ from furu.dependencies import collect_declared_refs
 from furu.metadata import ArtifactSpec
 
 if TYPE_CHECKING:
-    from furu.execution.manager import Manager
+    from furu.execution.coordinator import ExecutionCoordinator
 
 
 @dataclass(eq=False)
@@ -19,7 +19,7 @@ class DagNode:
     dependents: list[DagNode] = field(default_factory=list)
 
 
-def _add_to_dag(manager: Manager, objs: Sequence[Furu]) -> None:
+def _add_to_dag(coordinator: ExecutionCoordinator, objs: Sequence[Furu]) -> None:
     if any(not isinstance(obj, Furu) for obj in objs):
         # TODO: accept pytrees of Furu objects (e.g. nested lists/dicts/dataclasses)
         # and flatten them before walking dependencies.
@@ -32,7 +32,7 @@ def _add_to_dag(manager: Manager, objs: Sequence[Furu]) -> None:
 
     while pending:
         obj = pending.pop()
-        if obj.object_id in manager.nodes_by_id:
+        if obj.object_id in coordinator.nodes_by_id:
             continue
         match obj.status():
             case "completed":
@@ -45,28 +45,28 @@ def _add_to_dag(manager: Manager, objs: Sequence[Furu]) -> None:
             case x:
                 assert_never(x)
         node = DagNode(obj=obj)
-        manager.nodes_by_id[obj.object_id] = node
+        coordinator.nodes_by_id[obj.object_id] = node
         newly_added.append(node)
         refs = collect_declared_refs(obj)
         refs_by_id[obj.object_id] = refs
         pending.extend(refs)
 
     for obj_id, refs in refs_by_id.items():
-        node = manager.nodes_by_id[obj_id]
+        node = coordinator.nodes_by_id[obj_id]
         for ref in refs:
-            if dep_node := manager.nodes_by_id.get(ref.object_id):
+            if dep_node := coordinator.nodes_by_id.get(ref.object_id):
                 node.dependencies.append(dep_node)
                 dep_node.dependents.append(node)
 
     for node in newly_added:
         if node.dependencies:
-            manager.blocked[node.obj.object_id] = node
+            coordinator.blocked[node.obj.object_id] = node
         else:
-            manager.ready[node.obj.object_id] = node
+            coordinator.ready[node.obj.object_id] = node
 
 
 def _update_dag_blocking_dependencies(
-    manager: Manager,
+    coordinator: ExecutionCoordinator,
     node: DagNode,
     dependencies: Sequence[ArtifactSpec],
 ) -> None:
@@ -74,10 +74,10 @@ def _update_dag_blocking_dependencies(
     missing_dependencies: list[Furu] = []
     for artifact in dependencies:
         object_id = artifact.object_id
-        if object_id in manager.completed or object_id in dependency_ids:
+        if object_id in coordinator.completed or object_id in dependency_ids:
             continue
 
-        dep_node = manager.nodes_by_id.get(object_id)
+        dep_node = coordinator.nodes_by_id.get(object_id)
         if dep_node is not None:
             if dep_node.obj.status() != "completed":
                 dependency_ids[object_id] = None
@@ -90,16 +90,16 @@ def _update_dag_blocking_dependencies(
         dependency_ids[object_id] = None
         missing_dependencies.append(dependency)
 
-    _add_to_dag(manager, missing_dependencies)
+    _add_to_dag(coordinator, missing_dependencies)
 
     for dependency_id in dependency_ids:
-        dep_node = manager.nodes_by_id[dependency_id]
+        dep_node = coordinator.nodes_by_id[dependency_id]
         if dep_node not in node.dependencies:
             node.dependencies.append(dep_node)
         if node not in dep_node.dependents:
             dep_node.dependents.append(node)
 
     if node.dependencies:
-        manager.blocked[node.obj.object_id] = node
+        coordinator.blocked[node.obj.object_id] = node
     else:
-        manager.ready[node.obj.object_id] = node
+        coordinator.ready[node.obj.object_id] = node

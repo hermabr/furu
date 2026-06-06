@@ -26,7 +26,7 @@ class SlurmWorkerBackend:
     max_failed_restarts: int = field(
         default_factory=lambda: get_config().worker.max_failed_restarts
     )
-    manager_listen_host: str = "0.0.0.0"
+    coordinator_listen_host: str = "0.0.0.0"
     job_name: str = "furu-worker"
     poll_interval: float = 10.0
     worker_idle_timeout: float = field(

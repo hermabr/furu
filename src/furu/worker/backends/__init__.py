@@ -5,7 +5,7 @@ from typing import Protocol
 
 
 class WorkerBackend(Protocol):
-    manager_listen_host: str
+    coordinator_listen_host: str
 
     def start_pool(
         self,

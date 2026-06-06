@@ -9,7 +9,7 @@ from typing import cast
 
 import pytest
 
-from furu.execution.manager import Manager
+from furu.execution.coordinator import ExecutionCoordinator
 from furu.worker.backends.slurm.backend import SlurmWorkerBackend
 from furu.worker.backends.slurm.resources import SlurmResources
 from slurm_objects import SlurmTaskKind, SlurmWorkloadTask
@@ -61,7 +61,7 @@ def test_slurm_backend_runs_worker_job_end_to_end(
         scenario_id=scenario_id,
         duration_seconds=TASK_DURATION_SECONDS,
     )
-    Manager.run(
+    ExecutionCoordinator.run(
         final_tasks,
         worker_backends=(
             SlurmWorkerBackend(
@@ -71,7 +71,7 @@ def test_slurm_backend_runs_worker_job_end_to_end(
                     cpus_per_worker=1,
                 ),
                 worker_connect_host="127.0.0.1",
-                manager_listen_host="0.0.0.0",
+                coordinator_listen_host="0.0.0.0",
                 job_name="furu-worker-a",
                 poll_interval=0.1,
                 worker_idle_timeout=worker_idle_timeout,
@@ -83,7 +83,7 @@ def test_slurm_backend_runs_worker_job_end_to_end(
                     cpus_per_worker=2,
                 ),
                 worker_connect_host="127.0.0.1",
-                manager_listen_host="0.0.0.0",
+                coordinator_listen_host="0.0.0.0",
                 job_name="furu-worker-b",
                 poll_interval=0.1,
                 worker_idle_timeout=worker_idle_timeout,

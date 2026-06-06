@@ -20,7 +20,7 @@ class LocalThreadWorkerBackend:
         default_factory=lambda: get_config().worker.max_failed_restarts
     )
     resource_request: ResourceRequest = field(default_factory=ResourceRequest)
-    manager_listen_host: str = "127.0.0.1"
+    coordinator_listen_host: str = "127.0.0.1"
     scale_interval: float = 1.0
     worker_idle_timeout: float = field(
         default_factory=lambda: get_config().worker.idle_timeout_seconds

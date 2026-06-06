@@ -11,13 +11,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--server-url",
         required=True,
-        help="manager API URL",
+        help="execution coordinator API URL",
     )
     parser.add_argument(
         "--auth-token-file",
         required=True,
         type=Path,
-        help="path to a file containing the manager auth token",
+        help="path to a file containing the execution coordinator auth token",
     )
     parser.add_argument(
         "--resource-cpus",
