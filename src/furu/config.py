@@ -1,6 +1,5 @@
 import os
 from pathlib import Path
-from typing import Self
 
 from pydantic import ConfigDict, Field
 from pydantic_settings import (
@@ -17,30 +16,9 @@ _WORKER_JSON_CONFIG_FILE_ENV_VAR = "_FURU_WORKER_JSON_CONFIG_FILE"
 class _FuruDirectories(BaseSettings):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    objects: Path
-    executions: Path
+    objects: Path = Path("furu") / "objects"
+    executions: Path = Path("furu") / "executions"
     debug: Path = Path("furu") / "debug"
-
-    @classmethod
-    def from_base_dir(cls, base_dir: Path) -> Self:
-        return cls(
-            objects=base_dir / "objects",
-            executions=base_dir / "executions",
-            debug=base_dir / "debug",
-        )
-
-    @classmethod
-    def from_debug_dir(cls, debug_dir: Path) -> Self:
-        return cls(
-            objects=debug_dir / "objects",
-            executions=debug_dir / "executions",
-            debug=debug_dir,
-        )
-
-    @classmethod
-    def default(cls) -> Self:
-        # TODO: make sure this location is deterministic/more predictable, such as by finding the next .git or pyproject.toml or furu directory
-        return cls.from_base_dir(Path("furu"))
 
 
 class _FuruWorkerConfig(BaseSettings):
@@ -64,13 +42,17 @@ class _FuruConfig(BaseSettings):
     )
 
     debug_mode: bool = False
-    directories: _FuruDirectories = Field(default_factory=_FuruDirectories.default)
+    directories: _FuruDirectories = Field(default_factory=_FuruDirectories)
     worker: _FuruWorkerConfig = Field(default_factory=_FuruWorkerConfig)
 
     @property
     def run_directories(self) -> _FuruDirectories:
         if self.debug_mode:
-            return _FuruDirectories.from_debug_dir(self.directories.debug)
+            return _FuruDirectories(
+                objects=self.directories.debug / "objects",
+                executions=self.directories.debug / "executions",
+                debug=self.directories.debug,
+            )
         return self.directories
 
     @classmethod
