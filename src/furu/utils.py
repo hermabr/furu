@@ -48,10 +48,14 @@ def fully_qualified_name(value: object) -> str:
     if mod == "__main__":
         mod = _running_main_module_name()
         if mod is None:
-            raise ValueError(
-                "Cannot serialize objects from __main__ module. "
-                "Run the file as `python -m package.module`."
-            )
+            from furu.config import get_config
+
+            if not get_config().debug_mode:
+                raise ValueError(
+                    "Cannot serialize objects from __main__ module. "
+                    "Run the file as `python -m package.module`."
+                )
+            mod = "__main__"
 
     return f"{mod}.{qualname}"
 

@@ -42,6 +42,79 @@ def test_main_without_spec_name_is_not_serializable(
         fully_qualified_name(main_type)
 
 
+def test_direct_script_main_objects_work_in_debug_mode(tmp_path: Path) -> None:
+    script = tmp_path / "debug_script.py"
+    script.write_text(
+        """
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from furu import Furu
+
+
+class Adder(Furu[int]):
+    a: int
+    b: int
+
+    @property
+    def storage_root(self) -> Path:
+        return Path("store")
+
+    def create(self) -> int:
+        return self.a + self.b
+
+
+if __name__ == "__main__":
+    obj = Adder(a=1, b=2)
+    first = obj.create()
+    second = obj.create()
+
+    print(
+        json.dumps(
+            {
+                "base_dir_uses_debug": str(obj._base_dir).startswith(
+                    "furu/debug/objects/__main__/Adder/"
+                ),
+                "first": first,
+                "fqn": obj._fully_qualified_name,
+                "object_id_startswith_fqn": obj.object_id.startswith("__main__.Adder:"),
+                "second": second,
+            },
+            sort_keys=True,
+        )
+    )
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    pythonpath = [str(Path(__file__).resolve().parents[1] / "src")]
+    if existing := env.get("PYTHONPATH"):
+        pythonpath.append(existing)
+    env["FURU_DEBUG_MODE"] = "true"
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath)
+
+    result = subprocess.run(
+        [sys.executable, str(script)],
+        cwd=tmp_path,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    output = json.loads(result.stdout.strip().splitlines()[-1])
+    assert output == {
+        "base_dir_uses_debug": True,
+        "first": 3,
+        "fqn": "__main__.Adder",
+        "object_id_startswith_fqn": True,
+        "second": 3,
+    }
+
+
 def test_fully_qualified_name_rejects_local_classes() -> None:
     class LocalThing:
         pass
