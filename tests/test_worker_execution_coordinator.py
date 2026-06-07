@@ -150,7 +150,7 @@ def test_execution_coordinator_executor_id_is_stable_hash_of_root_object_tuple()
     )
     assert (
         coordinator.executor_dir
-        == get_config().directories.executions / coordinator.executor_id
+        == get_config().run_directories.executions / coordinator.executor_id
     )
 
 

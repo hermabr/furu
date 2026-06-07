@@ -128,7 +128,7 @@ def migrate[T](obj: Furu[T]) -> bool:
     for migration_path in visit(target_node, (), frozenset({target_node})):
         first = migration_path[0]
         schema_dir = (
-            obj.storage_root
+            obj._storage_root
             / Path(*first.old_fully_qualified_name.split("."))
             / first.old_schema_hash
         )

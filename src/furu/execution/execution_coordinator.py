@@ -131,7 +131,7 @@ class ExecutionCoordinator:
 
     @property
     def executor_dir(self) -> Path:
-        return get_config().directories.executions / self.executor_id
+        return get_config().run_directories.executions / self.executor_id
 
     @contextmanager
     def log_context(self) -> Iterator[None]:

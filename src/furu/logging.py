@@ -21,7 +21,7 @@ class _ScopedFileHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         log_paths = _CURRENT_LOG_PATHS.get()
         if not log_paths:
-            log_paths = (get_config().directories.objects / "fallback.log",)
+            log_paths = (get_config().run_directories.objects / "fallback.log",)
 
         try:
             rendered = self.format(record)

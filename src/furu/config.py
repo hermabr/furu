@@ -1,6 +1,5 @@
 import os
 from pathlib import Path
-from typing import Self
 
 from pydantic import ConfigDict, Field
 from pydantic_settings import (
@@ -17,16 +16,9 @@ _WORKER_JSON_CONFIG_FILE_ENV_VAR = "_FURU_WORKER_JSON_CONFIG_FILE"
 class _FuruDirectories(BaseSettings):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    objects: Path
-    executions: Path
-
-    @classmethod
-    def default(cls) -> Self:
-        # TODO: make sure this location is deterministic/more predictable, such as by finding the next .git or pyproject.toml or furu directory
-        base_dir = Path("furu")
-        objects_dir = base_dir / "objects"
-        executions_dir = base_dir / "executions"
-        return cls(objects=objects_dir, executions=executions_dir)
+    objects: Path = Path("furu") / "objects"
+    executions: Path = Path("furu") / "executions"
+    debug: Path = Path("furu") / "debug"
 
 
 class _FuruWorkerConfig(BaseSettings):
@@ -50,8 +42,18 @@ class _FuruConfig(BaseSettings):
     )
 
     debug_mode: bool = False
-    directories: _FuruDirectories = Field(default_factory=_FuruDirectories.default)
+    directories: _FuruDirectories = Field(default_factory=_FuruDirectories)
     worker: _FuruWorkerConfig = Field(default_factory=_FuruWorkerConfig)
+
+    @property
+    def run_directories(self) -> _FuruDirectories:
+        if self.debug_mode:
+            return _FuruDirectories(
+                objects=self.directories.debug / "objects",
+                executions=self.directories.debug / "executions",
+                debug=self.directories.debug,
+            )
+        return self.directories
 
     @classmethod
     def settings_customise_sources(
