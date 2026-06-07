@@ -21,12 +21,20 @@ class _FuruDirectories(BaseSettings):
     executions: Path
 
     @classmethod
+    def from_base_dir(cls, base_dir: Path) -> Self:
+        return cls(
+            objects=base_dir / "objects",
+            executions=base_dir / "executions",
+        )
+
+    @classmethod
     def default(cls) -> Self:
         # TODO: make sure this location is deterministic/more predictable, such as by finding the next .git or pyproject.toml or furu directory
-        base_dir = Path("furu")
-        objects_dir = base_dir / "objects"
-        executions_dir = base_dir / "executions"
-        return cls(objects=objects_dir, executions=executions_dir)
+        return cls.from_base_dir(Path("furu"))
+
+    @classmethod
+    def debug_default(cls) -> Self:
+        return cls.from_base_dir(Path("furu") / "debug")
 
 
 class _FuruWorkerConfig(BaseSettings):
@@ -50,8 +58,19 @@ class _FuruConfig(BaseSettings):
     )
 
     debug_mode: bool = False
+    debug_use_main_directories: bool = False
     directories: _FuruDirectories = Field(default_factory=_FuruDirectories.default)
     worker: _FuruWorkerConfig = Field(default_factory=_FuruWorkerConfig)
+
+    @property
+    def uses_debug_directories(self) -> bool:
+        return self.debug_mode and not self.debug_use_main_directories
+
+    @property
+    def run_directories(self) -> _FuruDirectories:
+        if self.uses_debug_directories:
+            return _FuruDirectories.debug_default()
+        return self.directories
 
     @classmethod
     def settings_customise_sources(

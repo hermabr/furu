@@ -17,6 +17,7 @@ def test_config_reads_environment(monkeypatch) -> None:
     monkeypatch.setenv("FURU_DEBUG_MODE", "true")
     monkeypatch.setenv("FURU_DIRECTORIES__OBJECTS", "/tmp/furu-objects")
     monkeypatch.setenv("FURU_DIRECTORIES__EXECUTIONS", "/tmp/furu-executions")
+    monkeypatch.setenv("FURU_DEBUG_USE_MAIN_DIRECTORIES", "false")
     monkeypatch.setenv("FURU_WORKER__IDLE_TIMEOUT_SECONDS", "12.5")
     monkeypatch.setenv("FURU_WORKER__MAX_FAILED_RESTARTS", "7")
     monkeypatch.setenv("FURU_WORKER__MAX_RETRIES_PER_OBJECT", "3")
@@ -24,15 +25,40 @@ def test_config_reads_environment(monkeypatch) -> None:
     config = _FuruConfig()
 
     assert config.debug_mode is True
+    assert config.debug_use_main_directories is False
     assert config.directories == _FuruDirectories(
         objects=Path("/tmp/furu-objects"),
         executions=Path("/tmp/furu-executions"),
     )
+    assert config.run_directories == _FuruDirectories.debug_default()
     assert config.worker == _FuruWorkerConfig(
         idle_timeout_seconds=12.5,
         max_failed_restarts=7,
         max_retries_per_object=3,
     )
+
+
+def test_debug_mode_can_use_main_directories(monkeypatch) -> None:
+    monkeypatch.setenv("FURU_DEBUG_MODE", "true")
+    monkeypatch.setenv("FURU_DEBUG_USE_MAIN_DIRECTORIES", "true")
+    monkeypatch.setenv("FURU_DIRECTORIES__OBJECTS", "/tmp/furu-main-objects")
+    monkeypatch.setenv("FURU_DIRECTORIES__EXECUTIONS", "/tmp/furu-main-executions")
+
+    config = _FuruConfig()
+
+    assert config.debug_mode is True
+    assert config.debug_use_main_directories is True
+    assert config.run_directories == _FuruDirectories(
+        objects=Path("/tmp/furu-main-objects"),
+        executions=Path("/tmp/furu-main-executions"),
+    )
+
+
+def test_config_uses_main_directories_by_default() -> None:
+    config = _FuruConfig()
+
+    assert config.debug_mode is False
+    assert config.run_directories == config.directories
 
 
 def test_config_reads_pyproject_toml(tmp_path, monkeypatch) -> None:
@@ -62,6 +88,7 @@ max_retries_per_object = 3
         objects=Path("/tmp/furu-pyproject-objects"),
         executions=Path("/tmp/furu-pyproject-executions"),
     )
+    assert config.run_directories == _FuruDirectories.debug_default()
     assert config.worker == _FuruWorkerConfig(
         idle_timeout_seconds=7.5,
         max_failed_restarts=7,
@@ -118,6 +145,7 @@ executions = "/tmp/furu-pyproject-executions"
         objects=Path("/tmp/furu-env-objects"),
         executions=Path("/tmp/furu-env-executions"),
     )
+    assert config.run_directories == _FuruDirectories.debug_default()
 
 
 def test_config_reads_json_config_file(tmp_path, monkeypatch) -> None:
@@ -150,6 +178,7 @@ def test_config_reads_json_config_file(tmp_path, monkeypatch) -> None:
         objects=Path("/tmp/furu-json-objects"),
         executions=Path("/tmp/furu-json-executions"),
     )
+    assert config.run_directories == _FuruDirectories.debug_default()
     assert config.worker == _FuruWorkerConfig(
         idle_timeout_seconds=9.5,
         max_failed_restarts=7,

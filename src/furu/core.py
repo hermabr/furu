@@ -93,7 +93,15 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     @cached_property
     def storage_root(self) -> Path:
-        return get_config().directories.objects
+        return get_config().run_directories.objects
+
+    @final
+    @cached_property
+    def _storage_root(self) -> Path:
+        config = get_config()
+        if config.uses_debug_directories:
+            return config.run_directories.objects
+        return self.storage_root
 
     @property
     def result_codecs(self) -> tuple[type[ResultCodec], ...]:
@@ -261,7 +269,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
     @cached_property
     def _base_dir(self) -> Path:
         return (
-            self.storage_root
+            self._storage_root
             / Path(*self._fully_qualified_name.split("."))
             / self._artifact_schema_hash
             / self._artifact_hash
