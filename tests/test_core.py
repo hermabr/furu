@@ -28,7 +28,7 @@ from furu._storage_layout import (
     result_manifest_path_in,
     run_log_path_in,
 )
-from furu.config import _FuruConfig, get_config
+from furu.config import _FuruConfig, _FuruDirectories, get_config
 from furu.dependencies import collect_declared_refs
 from furu.execution import _load_or_create
 from furu.locking import LockManifest, lock_many
@@ -1463,19 +1463,27 @@ def test_debug_mode_ignores_storage_root_override(
     )
 
 
-def test_debug_mode_can_run_in_main_with_storage_root_override(
+def test_debug_mode_uses_configured_debug_directory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
         furu_config,
         "_config",
-        _FuruConfig(debug_mode=True, debug_use_main_directories=True),
+        _FuruConfig(
+            debug_mode=True,
+            directories=_FuruDirectories(
+                objects=Path("main/objects"),
+                executions=Path("main/executions"),
+                debug=Path("custom/debug"),
+            ),
+        ),
     )
     node = CustomStorageRootNode(name="x")
 
     assert node.storage_root == Path("custom/data/location")
     assert node._base_dir == (
-        Path("custom/data/location")
+        Path("custom/debug")
+        / "objects"
         / "test_core"
         / "CustomStorageRootNode"
         / node._artifact_schema_hash

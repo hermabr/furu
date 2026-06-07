@@ -57,6 +57,7 @@ def pytest_configure(config: pytest.Config) -> None:
         _FuruDirectories(
             objects=run_base_directory / "objects",
             executions=run_base_directory / "executions",
+            debug=run_base_directory / "debug",
         ),
     )
 
@@ -87,6 +88,7 @@ def pytest_unconfigure(config: pytest.Config) -> None:
     else:
         print(f"kept furu objects at {state.run_config.directories.objects}")
         print(f"kept furu executions at {state.run_config.directories.executions}")
+        print(f"kept furu debug at {state.run_config.directories.debug}")
 
 
 @pytest.fixture(autouse=True)
@@ -110,6 +112,7 @@ def _furu_per_test_base_directory(
         _FuruDirectories(
             objects=test_objects_directory,
             executions=test_executions_directory,
+            debug=state.run_config.directories.debug / test_id,
         ),
     )
     try:

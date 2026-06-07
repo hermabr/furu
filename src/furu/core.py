@@ -99,7 +99,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
     @cached_property
     def _storage_root(self) -> Path:
         config = get_config()
-        if config.uses_debug_directories:
+        if config.debug_mode:
             return config.run_directories.objects
         return self.storage_root
 

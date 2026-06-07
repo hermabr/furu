@@ -19,22 +19,28 @@ class _FuruDirectories(BaseSettings):
 
     objects: Path
     executions: Path
+    debug: Path = Path("furu") / "debug"
 
     @classmethod
     def from_base_dir(cls, base_dir: Path) -> Self:
         return cls(
             objects=base_dir / "objects",
             executions=base_dir / "executions",
+            debug=base_dir / "debug",
+        )
+
+    @classmethod
+    def from_debug_dir(cls, debug_dir: Path) -> Self:
+        return cls(
+            objects=debug_dir / "objects",
+            executions=debug_dir / "executions",
+            debug=debug_dir,
         )
 
     @classmethod
     def default(cls) -> Self:
         # TODO: make sure this location is deterministic/more predictable, such as by finding the next .git or pyproject.toml or furu directory
         return cls.from_base_dir(Path("furu"))
-
-    @classmethod
-    def debug_default(cls) -> Self:
-        return cls.from_base_dir(Path("furu") / "debug")
 
 
 class _FuruWorkerConfig(BaseSettings):
@@ -58,18 +64,13 @@ class _FuruConfig(BaseSettings):
     )
 
     debug_mode: bool = False
-    debug_use_main_directories: bool = False
     directories: _FuruDirectories = Field(default_factory=_FuruDirectories.default)
     worker: _FuruWorkerConfig = Field(default_factory=_FuruWorkerConfig)
 
     @property
-    def uses_debug_directories(self) -> bool:
-        return self.debug_mode and not self.debug_use_main_directories
-
-    @property
     def run_directories(self) -> _FuruDirectories:
-        if self.uses_debug_directories:
-            return _FuruDirectories.debug_default()
+        if self.debug_mode:
+            return _FuruDirectories.from_debug_dir(self.directories.debug)
         return self.directories
 
     @classmethod
