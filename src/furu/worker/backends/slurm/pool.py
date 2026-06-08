@@ -73,18 +73,24 @@ class SlurmWorkerPool:
             for job_id in self._job_ids
             if job_id in active_job_ids or states.get(job_id) not in (None, "COMPLETED")
         ]
+        current_workers = len(self._job_ids)
         remaining_starts = (
             self._max_workers
             + self._max_failed_restarts
             - len(self._failed_job_ids)
-            - len(self._job_ids)
+            - current_workers
         )
-        if len(self._job_ids) >= self._max_workers or remaining_starts <= 0:
+        if current_workers >= self._max_workers or remaining_starts <= 0:
             return
 
-        to_spawn = self._client.count_satisfiable_jobs(
+        satisfiable_jobs = self._client.count_satisfiable_jobs(
             resources=self._resource_request,
-            max_workers=min(self._max_workers - len(self._job_ids), remaining_starts),
+            max_workers=self._max_workers,
+        )
+        to_spawn = min(
+            max(0, satisfiable_jobs - current_workers),
+            self._max_workers - current_workers,
+            remaining_starts,
         )
         for _ in range(to_spawn):
             result = subprocess.run(

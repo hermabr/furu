@@ -81,18 +81,24 @@ class LocalThreadWorkerPool:
 
     def _scale_once(self) -> None:
         self._threads[:] = [thread for thread in self._threads if thread.is_alive()]
+        current_workers = len(self._threads)
         remaining_starts = (
             self._max_workers
             + self._max_failed_restarts
             - len(self._failed_threads)
-            - len(self._threads)
+            - current_workers
         )
-        if len(self._threads) >= self._max_workers or remaining_starts <= 0:
+        if current_workers >= self._max_workers or remaining_starts <= 0:
             return
 
-        to_spawn = self._client.count_satisfiable_jobs(
+        satisfiable_jobs = self._client.count_satisfiable_jobs(
             resources=self._resource_request,
-            max_workers=min(self._max_workers - len(self._threads), remaining_starts),
+            max_workers=self._max_workers,
+        )
+        to_spawn = min(
+            max(0, satisfiable_jobs - current_workers),
+            self._max_workers - current_workers,
+            remaining_starts,
         )
         for _ in range(to_spawn):
             thread = threading.Thread(target=self._run_worker)

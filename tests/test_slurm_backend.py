@@ -713,6 +713,39 @@ def test_slurm_pool_scale_submits_additional_workers_as_satisfiable_count_grows(
     )
 
 
+def test_slurm_pool_scale_does_not_resubmit_for_already_tracked_viable_job(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    _stub_count_satisfiable_jobs(monkeypatch, 1)
+
+    backend = SlurmWorkerBackend(
+        max_workers=5,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="execution-coordinator.cluster",
+        poll_interval=0,
+    )
+    pool = backend.start_pool(
+        server_url="http://execution-coordinator.cluster:1234",
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+    )
+
+    pool._scale_once()
+    pool._scale_once()
+    pool._scale_once()
+
+    assert pool._job_ids == ["100"]
+    sbatch_records = [
+        record
+        for record in _read_records(record_file)
+        if record["executable"] == "sbatch"
+    ]
+    assert len(sbatch_records) == 1
+
+
 def test_slurm_pool_scale_submits_replacement_workers_after_existing_workers_exit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
