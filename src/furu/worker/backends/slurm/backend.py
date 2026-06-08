@@ -33,6 +33,7 @@ class SlurmWorkerBackend:
         default_factory=lambda: get_config().worker.idle_timeout_seconds
     )
     worker_max_consecutive_failures: int | None = 5  # TODO: maybe add this to config?
+    pre_worker_commands: tuple[str, ...] = ()
     export: SlurmExport = None
 
     def start_pool(
@@ -74,6 +75,11 @@ class SlurmWorkerBackend:
                 f"{self.worker_max_consecutive_failures} \\\n"
             )
         )
+        pre_worker_script = "".join(
+            f"{command}\n" for command in self.pre_worker_commands
+        )
+        if pre_worker_script:
+            pre_worker_script += "\n"
 
         scripts_dir = worker_dir / "scripts"
         scripts_dir.mkdir(parents=True, exist_ok=True)
@@ -87,6 +93,7 @@ class SlurmWorkerBackend:
                 "export "
                 f"{_WORKER_JSON_CONFIG_FILE_ENV_VAR}={shlex.quote(str(config_file))}\n"
                 "\n"
+                f"{pre_worker_script}"
                 f"exec {shlex.quote(sys.executable)} -m furu.worker._cli \\\n"
                 f"    --server-url {shlex.quote(server_url)} \\\n"
                 f"    --auth-token-file {shlex.quote(str(token_file))} \\\n"
