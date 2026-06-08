@@ -404,6 +404,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
         poll_interval=1.5,
         worker_idle_timeout=0.25,
         worker_max_consecutive_failures=3,
+        pre_worker_commands=('echo "Hello" > /tmp/hey',),
     )
 
     pool = backend.start_pool(
@@ -442,6 +443,9 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert "--auth-token-file" in script
     assert "--auth-token " not in script
     assert "secret-token" not in script
+    assert script.index('echo "Hello" > /tmp/hey') < script.index(
+        f"exec {sys.executable} -m furu.worker._cli"
+    )
     assert f"exec {sys.executable} -m furu.worker._cli" in script
     assert "--server-url http://execution-coordinator.cluster:1234" in script
     assert "--idle-timeout 0.25" in script
