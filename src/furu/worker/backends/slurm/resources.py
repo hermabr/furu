@@ -30,6 +30,7 @@ class MemoryPerGpu:
 @dataclass(frozen=True, slots=True)
 class SlurmResources:
     cpus_per_worker: int
+    nodes: int = 1
     account: str | None = None
     partition: str | None = None
     qos: str | None = None
@@ -49,6 +50,7 @@ class SlurmResources:
             args.append(f"--qos={self.qos}")
         if self.time_limit is not None:
             args.append(f"--time={self.time_limit}")
+        args.append(f"--nodes={self.nodes}")
         args.append(f"--cpus-per-task={self.cpus_per_worker}")
         if self.memory is not None:
             args.append(self.memory.to_sbatch_arg())
