@@ -430,6 +430,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert not any(arg.startswith("--export") for arg in argv)
     assert not any(arg.startswith("--wrap") for arg in argv)
     assert "--partition=debug" in argv
+    assert "--nodes=1" in argv
     assert "--cpus-per-task=4" in argv
     assert "--mem=8G" in argv
     assert "--gpus=1" in argv
@@ -552,6 +553,7 @@ def test_slurm_resources_emit_one_memory_option(
     expected_arg: str,
 ) -> None:
     assert SlurmResources(cpus_per_worker=1, memory=memory).to_sbatch_args() == [
+        "--nodes=1",
         "--cpus-per-task=1",
         expected_arg,
     ]
@@ -566,8 +568,16 @@ def test_slurm_resources_emit_one_memory_option(
 )
 def test_slurm_resources_emit_gpu_option(gpus: int, expected_args: list[str]) -> None:
     assert SlurmResources(cpus_per_worker=1, gpus=gpus).to_sbatch_args() == [
+        "--nodes=1",
         "--cpus-per-task=1",
         *expected_args,
+    ]
+
+
+def test_slurm_resources_emit_node_count() -> None:
+    assert SlurmResources(cpus_per_worker=1, nodes=3).to_sbatch_args() == [
+        "--nodes=3",
+        "--cpus-per-task=1",
     ]
 
 
