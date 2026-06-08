@@ -82,9 +82,16 @@ class SlurmWorkerPool:
         if len(self._job_ids) >= self._max_workers or remaining_starts <= 0:
             return
 
-        to_spawn = self._client.count_satisfiable_jobs(
-            resources=self._resource_request,
-            max_workers=min(self._max_workers - len(self._job_ids), remaining_starts),
+        to_spawn = min(
+            max(
+                0,
+                self._client.count_satisfiable_jobs(
+                    resources=self._resource_request,
+                    max_workers=self._max_workers,
+                )
+                - len(self._job_ids),
+            ),
+            remaining_starts,
         )
         for _ in range(to_spawn):
             result = subprocess.run(
