@@ -61,6 +61,13 @@ class ExecutionCoordinator:
     done: threading.Event = field(default_factory=threading.Event)
     finish_error: str | None = None
 
+    def _failed_counts(self) -> tuple[int, int]:
+        failed_retry = sum(
+            record.failed_attempts <= self.max_retries_per_object
+            for record in self.failed.values()
+        )
+        return failed_retry, len(self.failed) - failed_retry
+
     @classmethod
     def run[ObjsT: Sequence[Furu]](
         cls,
@@ -168,15 +175,17 @@ class ExecutionCoordinator:
                 "executor creating %s",
                 node.obj._log_label,
             )
+            failed_retry, failed = self._failed_counts()
             logger.info(
-                "leased job: lease_id=%s object_id=%s ready=%d running=%d blocked=%d completed=%d failed=%d",
+                "leased job: lease_id=%s object_id=%s ready=%d running=%d blocked=%d completed=%d failed_retry=%d failed=%d",
                 lease_id,
                 node.obj.object_id,
                 len(self.ready),
                 len(self.running),
                 len(self.blocked),
                 len(self.completed),
-                len(self.failed),
+                failed_retry,
+                failed,
             )
             return Job(
                 lease_id=lease_id,
@@ -211,15 +220,17 @@ class ExecutionCoordinator:
                         dependent_id = dependent.obj.object_id
                         if not dependent.dependencies and dependent_id in self.blocked:
                             self.ready[dependent_id] = self.blocked.pop(dependent_id)
+                    failed_retry, failed = self._failed_counts()
                     logger.info(
-                        "job completed: lease_id=%s object_id=%s ready=%d running=%d blocked=%d completed=%d failed=%d",
+                        "job completed: lease_id=%s object_id=%s ready=%d running=%d blocked=%d completed=%d failed_retry=%d failed=%d",
                         lease_id,
                         running_job.node.obj.object_id,
                         len(self.ready),
                         len(self.running),
                         len(self.blocked),
                         len(self.completed),
-                        len(self.failed),
+                        failed_retry,
+                        failed,
                     )
 
                 case JobFailedResult(error=error):
@@ -234,10 +245,12 @@ class ExecutionCoordinator:
                         node=running_job.node,
                         error=error,
                     )
-                    if failed_attempts <= self.max_retries_per_object:
+                    will_retry = failed_attempts <= self.max_retries_per_object
+                    if will_retry:
                         self.ready[object_id] = running_job.node
                     logger.info(
-                        "job failed: lease_id=%s object_id=%s failed_attempts=%d max_retries=%d error=%s",
+                        "job %s: lease_id=%s object_id=%s failed_attempts=%d max_retries=%d error=%s",
+                        "failed (retry)" if will_retry else "failed",
                         lease_id,
                         object_id,
                         failed_attempts,
@@ -248,8 +261,9 @@ class ExecutionCoordinator:
                     _update_dag_blocking_dependencies(
                         self, running_job.node, dependencies
                     )
+                    failed_retry, failed = self._failed_counts()
                     logger.info(
-                        "job blocked: lease_id=%s object_id=%s dependencies=%d ready=%d running=%d blocked=%d completed=%d failed=%d",
+                        "job blocked: lease_id=%s object_id=%s dependencies=%d ready=%d running=%d blocked=%d completed=%d failed_retry=%d failed=%d",
                         lease_id,
                         running_job.node.obj.object_id,
                         len(dependencies),
@@ -257,16 +271,19 @@ class ExecutionCoordinator:
                         len(self.running),
                         len(self.blocked),
                         len(self.completed),
-                        len(self.failed),
+                        failed_retry,
+                        failed,
                     )
                 case _:
                     assert_never(request)
+            failed_retry, failed = self._failed_counts()
             logger.info(
-                "execution coordinator progress: completed=%d/%d failed=%d "
+                "execution coordinator progress: completed=%d/%d failed_retry=%d failed=%d "
                 "running=%d ready=%d blocked=%d",
                 len(self.completed),
                 len(self.nodes_by_id),
-                len(self.failed),
+                failed_retry,
+                failed,
                 len(self.running),
                 len(self.ready),
                 len(self.blocked),

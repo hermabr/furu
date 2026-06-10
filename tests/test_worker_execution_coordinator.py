@@ -341,6 +341,7 @@ def test_execution_coordinator_job_result_failed_finishes_with_error() -> None:
         encoding="utf-8"
     )
     assert "job failed:" in log_text
+    assert "job failed (retry):" not in log_text
     assert "boom" in log_text
     assert "furu execution coordinator finished with error" in log_text
     with pytest.raises(RuntimeError, match="failed jobs"):
@@ -388,6 +389,13 @@ def test_execution_coordinator_job_result_failed_retries_before_finishing() -> N
     assert failed_job.lease_id == third_job.lease_id
     assert failed_job.error == "boom 3"
     assert coordinator.done.is_set()
+    log_text = execution_coordinator_log_path_in(coordinator.executor_dir).read_text(
+        encoding="utf-8"
+    )
+    assert log_text.count("job failed (retry):") == 2
+    assert f"job failed: lease_id={third_job.lease_id}" in log_text
+    assert "failed_retry=1 failed=0" in log_text
+    assert "failed_retry=0 failed=1" in log_text
 
 
 def test_execution_coordinator_job_result_failed_retry_can_later_complete() -> None:
@@ -869,7 +877,7 @@ def test_execution_coordinator_run_writes_log_to_executor_dir() -> None:
     assert leaf.object_id in log_text
     assert "job completed:" in log_text
     assert (
-        "execution coordinator progress: completed=1/1 failed=0 running=0 ready=0 blocked=0"
+        "execution coordinator progress: completed=1/1 failed_retry=0 failed=0 running=0 ready=0 blocked=0"
         in log_text
     )
     assert "furu execution coordinator finished successfully" in log_text
