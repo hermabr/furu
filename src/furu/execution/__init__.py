@@ -175,9 +175,9 @@ def _format_error_debug_details(exc: BaseException) -> str:
         )
     )
     parts.extend(traceback.format_exception_only(type(exc), exc))
-    parts.append("\n=== Debug Details (with locals) ===\n")
+    parts.append("\n=== Debug Traceback ===\n")
     parts.extend(
-        traceback.TracebackException.from_exception(exc, capture_locals=True).format(
+        traceback.TracebackException.from_exception(exc, capture_locals=False).format(
             chain=True
         )
     )
@@ -435,7 +435,5 @@ def _create_and_store_group[T](
             raise
         except Exception as exc:
             logger.exception("create failed")
-            logger.error(
-                "debug traceback with locals:\n%s", _format_error_debug_details(exc)
-            )
+            logger.error("debug traceback:\n%s", _format_error_debug_details(exc))
             raise
