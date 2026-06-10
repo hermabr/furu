@@ -198,6 +198,31 @@ def test_execution_coordinator_lease_job_returns_wait_when_only_running_jobs_can
     assert not coordinator.done.is_set()
 
 
+def test_execution_coordinator_lease_job_logs_each_worker_task_request() -> None:
+    leaf = ExecutionCoordinatorLeaf(value=1)
+    coordinator = _new_execution_coordinator([leaf])
+    resources = ResourceRequest(cpus=2, gpus=1)
+
+    job = coordinator.lease_job(resources=resources)
+    assert isinstance(job, Job)
+    assert coordinator.lease_job(resources=resources) == "wait"
+
+    coordinator.job_result(job.lease_id, JobCompletedResult())
+    assert coordinator.lease_job(resources=resources) == "stop"
+
+    log_text = execution_coordinator_log_path_in(coordinator.executor_dir).read_text(
+        encoding="utf-8"
+    )
+    assert log_text.count("worker requested task:") == 3
+    assert "worker received task:" in log_text
+    assert f"lease_id={job.lease_id}" in log_text
+    assert f"object_id={leaf.object_id}" in log_text
+    assert f"task={leaf._log_label}" in log_text
+    assert "worker received no task: response=wait reason=no-ready-tasks" in log_text
+    assert "worker received no task: response=stop reason=coordinator-done" in log_text
+    assert "resource_cpus=2 resource_gpus=1" in log_text
+
+
 def test_execution_coordinator_job_result_blocked_discovers_lazy_dependency_and_reruns_parent() -> (
     None
 ):

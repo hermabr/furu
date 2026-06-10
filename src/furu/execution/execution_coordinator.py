@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, assert_never
+from typing import TYPE_CHECKING, Any, Literal, assert_never
 from uuid import uuid4
 
 from furu._storage_layout import execution_coordinator_log_path_in
@@ -140,10 +140,21 @@ class ExecutionCoordinator:
 
     def lease_job(self, *, resources: ResourceRequest) -> LeaseJobResponse:
         with self.log_context(), self.lock:
+            self._log_worker_task_request_locked(resources=resources)
             self._maybe_finish_locked()
             if self.done.is_set():
+                self._log_worker_received_no_task_locked(
+                    resources=resources,
+                    response="stop",
+                    reason="coordinator-done",
+                )
                 return "stop"
             if not self.ready:
+                self._log_worker_received_no_task_locked(
+                    resources=resources,
+                    response="wait",
+                    reason="no-ready-tasks",
+                )
                 return "wait"
 
             object_id = next(
@@ -157,6 +168,11 @@ class ExecutionCoordinator:
                 None,
             )
             if object_id is None:
+                self._log_worker_received_no_task_locked(
+                    resources=resources,
+                    response="wait",
+                    reason="no-satisfiable-tasks",
+                )
                 return "wait"
 
             node = self.ready.pop(object_id)
@@ -167,6 +183,9 @@ class ExecutionCoordinator:
             node.obj.logger.info(
                 "executor creating %s",
                 node.obj._log_label,
+            )
+            self._log_worker_received_task_locked(
+                resources=resources, lease_id=lease_id, node=node
             )
             logger.info(
                 "leased job: lease_id=%s object_id=%s ready=%d running=%d blocked=%d completed=%d failed=%d",
@@ -182,6 +201,63 @@ class ExecutionCoordinator:
                 lease_id=lease_id,
                 artifact=ArtifactSpec.from_furu(node.obj),
             )
+
+    def _log_worker_task_request_locked(self, *, resources: ResourceRequest) -> None:
+        logger.info(
+            "worker requested task: resource_cpus=%d resource_gpus=%d "
+            "ready=%d running=%d blocked=%d completed=%d failed=%d done=%s",
+            resources.cpus,
+            resources.gpus,
+            len(self.ready),
+            len(self.running),
+            len(self.blocked),
+            len(self.completed),
+            len(self.failed),
+            self.done.is_set(),
+        )
+
+    def _log_worker_received_no_task_locked(
+        self,
+        *,
+        resources: ResourceRequest,
+        response: Literal["wait", "stop"],
+        reason: str,
+    ) -> None:
+        logger.info(
+            "worker received no task: response=%s reason=%s "
+            "resource_cpus=%d resource_gpus=%d ready=%d running=%d blocked=%d "
+            "completed=%d failed=%d done=%s",
+            response,
+            reason,
+            resources.cpus,
+            resources.gpus,
+            len(self.ready),
+            len(self.running),
+            len(self.blocked),
+            len(self.completed),
+            len(self.failed),
+            self.done.is_set(),
+        )
+
+    def _log_worker_received_task_locked(
+        self, *, resources: ResourceRequest, lease_id: str, node: DagNode
+    ) -> None:
+        logger.info(
+            "worker received task: lease_id=%s object_id=%s task=%s "
+            "resource_cpus=%d resource_gpus=%d ready=%d running=%d blocked=%d "
+            "completed=%d failed=%d done=%s",
+            lease_id,
+            node.obj.object_id,
+            node.obj._log_label,
+            resources.cpus,
+            resources.gpus,
+            len(self.ready),
+            len(self.running),
+            len(self.blocked),
+            len(self.completed),
+            len(self.failed),
+            self.done.is_set(),
+        )
 
     def count_satisfiable_jobs(
         self, *, resources: ResourceRequest, max_workers: int
