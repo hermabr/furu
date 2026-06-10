@@ -35,7 +35,7 @@ from furu.validate import validate_cls
 if TYPE_CHECKING:
     from typing_extensions import dataclass_transform
 
-    from furu.metadata import ArtifactSpec
+    from furu.metadata import ArtifactSource
     from furu.migration import Migration
 
     @dataclass_transform(kw_only_default=True, frozen_default=True)
@@ -221,10 +221,11 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     @final
     @classmethod
-    def from_artifact[TFuru: Furu](cls: type[TFuru], artifact: ArtifactSpec) -> TFuru:
+    def from_artifact[TFuru: Furu](cls: type[TFuru], artifact: ArtifactSource) -> TFuru:
+        from furu.metadata import artifact_spec_from
         from furu.serializer.artifact import _from_artifact
 
-        return _from_artifact(artifact, cls)
+        return _from_artifact(artifact_spec_from(artifact), cls)
 
     @final
     @cached_property
