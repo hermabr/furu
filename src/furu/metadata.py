@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from functools import cached_property
-from os import PathLike
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field
 
 from furu._storage_layout import metadata_path_in
 from furu.utils import JsonValue, object_id_from_parts
@@ -127,25 +126,3 @@ class CompletedMetadata(BaseModel):
 type Metadata = Annotated[
     RunningMetadata | CompletedMetadata, Field(discriminator="kind")
 ]
-_METADATA_ADAPTER = TypeAdapter(Metadata)
-
-type ArtifactSource = ArtifactSpec | str | PathLike[str]
-
-
-def metadata_path_from(path: str | PathLike[str]) -> Path:
-    metadata_path = Path(path)
-    if metadata_path.name == "metadata.json":
-        return metadata_path
-    return metadata_path_in(metadata_path)
-
-
-def load_metadata(path: str | PathLike[str]) -> Metadata:
-    return _METADATA_ADAPTER.validate_json(
-        metadata_path_from(path).read_text(encoding="utf-8")
-    )
-
-
-def artifact_spec_from(source: ArtifactSource) -> ArtifactSpec:
-    if isinstance(source, ArtifactSpec):
-        return source
-    return load_metadata(source).artifact

@@ -1296,26 +1296,6 @@ def test_furu_from_artifact_accepts_loaded_metadata_artifact():
     assert isinstance(loaded, Node)
 
 
-def test_furu_from_artifact_accepts_artifact_base_path():
-    obj = Node(name="x")
-    obj.create()
-
-    loaded = Node.from_artifact(obj._base_dir)
-
-    assert loaded == obj
-    assert isinstance(loaded, Node)
-
-
-def test_furu_from_artifact_accepts_metadata_path_and_infers_type():
-    obj = Node(name="x")
-    obj.create()
-
-    loaded = Furu.from_artifact(metadata_path_in(obj._base_dir))
-
-    assert loaded == obj
-    assert isinstance(loaded, Node)
-
-
 def test_furu_from_artifact_accepts_artifact_spec():
     obj = Node(name="x")
     artifact = ArtifactSpec(

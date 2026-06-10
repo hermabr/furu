@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 from abc import ABC
@@ -11,12 +12,14 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast, final
 from furu._storage_layout import (
     compute_lock_path_in,
     data_dir_in,
+    metadata_path_in,
     result_link_path_in,
     result_manifest_path_in,
 )
 from furu.config import get_config
 from furu.locking import is_active_lock, lock_many
 from furu.logging import get_logger
+from furu.metadata import ArtifactSpec
 from furu.resources import ResourceRequirements
 from furu.result import load_result_bundle
 from furu.result.codec import ResultCodec
@@ -35,7 +38,6 @@ from furu.validate import validate_cls
 if TYPE_CHECKING:
     from typing_extensions import dataclass_transform
 
-    from furu.metadata import ArtifactSource
     from furu.migration import Migration
 
     @dataclass_transform(kw_only_default=True, frozen_default=True)
@@ -221,11 +223,18 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     @final
     @classmethod
-    def from_artifact[TFuru: Furu](cls: type[TFuru], artifact: ArtifactSource) -> TFuru:
-        from furu.metadata import artifact_spec_from
+    def from_artifact[TFuru: Furu](
+        cls: type[TFuru], artifact: ArtifactSpec | Path
+    ) -> TFuru:
         from furu.serializer.artifact import _from_artifact
 
-        return _from_artifact(artifact_spec_from(artifact), cls)
+        if not isinstance(artifact, ArtifactSpec):
+            artifact = ArtifactSpec.model_validate(
+                json.loads(metadata_path_in(artifact).read_text(encoding="utf-8"))[
+                    "artifact"
+                ]
+            )
+        return _from_artifact(artifact, cls)
 
     @final
     @cached_property
