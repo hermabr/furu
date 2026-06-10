@@ -1,6 +1,8 @@
 import hashlib
+import logging
 import threading
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, ClassVar
 from uuid import UUID, uuid4
@@ -37,6 +39,17 @@ from furu.worker.protocol import (
 )
 
 ANY_RESOURCES = ResourceRequest()
+
+
+@contextmanager
+def _captured_furu_logs(caplog: pytest.LogCaptureFixture) -> Iterator[None]:
+    furu_logger = logging.getLogger("furu")
+    furu_logger.addHandler(caplog.handler)
+    try:
+        caplog.set_level(logging.INFO, logger="furu")
+        yield
+    finally:
+        furu_logger.removeHandler(caplog.handler)
 
 
 def _new_execution_coordinator(
@@ -1129,6 +1142,89 @@ def test_worker_loop_exits_after_idle_timeout(
     )
 
     assert test_client.lease_calls == 1
+
+
+def test_worker_loop_logs_task_requests_and_received_task(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    leaf = ExecutionCoordinatorLeaf(value=1)
+    job = Job(lease_id="lease-1", artifact=ArtifactSpec.from_furu(leaf))
+    leases: list[LeaseJobResponse] = [job, "stop"]
+
+    class TestClient:
+        def __init__(self, server_url: str, *, auth_token: str) -> None:
+            pass
+
+        def lease_job(self, *, resources: ResourceRequest) -> LeaseJobResponse:
+            return leases.pop(0)
+
+        def job_result(self, lease_id: str, request: JobResultRequest) -> None:
+            pass
+
+    def ensure_single_result(obj: Furu[object]) -> None:
+        pass
+
+    test_client = TestClient("http://worker.test", auth_token="test-token")
+    monkeypatch.setattr(
+        api,
+        "WorkerApiClient",
+        lambda server_url, *, auth_token: test_client,
+    )
+    monkeypatch.setattr(
+        worker_loop_module, "_ensure_single_result", ensure_single_result
+    )
+
+    with _captured_furu_logs(caplog):
+        worker_loop(
+            server_url="http://worker.test",
+            auth_token="test-token",
+            resource_request=ResourceRequest(),
+            idle_timeout=get_config().worker.idle_timeout_seconds,
+        )
+
+    assert caplog.messages.count("worker requesting new task from server") == 2
+    assert (
+        f"worker received task: lease_id={job.lease_id} task={leaf._log_label}"
+    ) in caplog.messages
+    assert (
+        "worker finished task: "
+        f"lease_id={job.lease_id} task={leaf._log_label} status=completed"
+    ) in caplog.messages
+
+
+def test_worker_loop_logs_stop_and_first_wait(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    leases: list[LeaseJobResponse] = ["wait", "wait", "stop"]
+
+    class TestClient:
+        def __init__(self, server_url: str, *, auth_token: str) -> None:
+            pass
+
+        def lease_job(self, *, resources: ResourceRequest) -> LeaseJobResponse:
+            return leases.pop(0)
+
+    test_client = TestClient("http://worker.test", auth_token="test-token")
+    monkeypatch.setattr(
+        api,
+        "WorkerApiClient",
+        lambda server_url, *, auth_token: test_client,
+    )
+    monkeypatch.setattr(worker_loop_module.time, "sleep", lambda seconds: None)
+
+    with _captured_furu_logs(caplog):
+        worker_loop(
+            server_url="http://worker.test",
+            auth_token="test-token",
+            resource_request=ResourceRequest(),
+            idle_timeout=get_config().worker.idle_timeout_seconds,
+        )
+
+    assert caplog.messages.count("worker requesting new task from server") == 3
+    assert caplog.messages.count("worker told to wait") == 1
+    assert "worker told to stop" in caplog.messages
 
 
 def test_worker_loop_exits_after_exceeding_max_consecutive_failures(
