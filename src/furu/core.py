@@ -229,11 +229,8 @@ class Furu[T](_FuruDataclassTransform, ABC):
         from furu.serializer.artifact import _from_artifact
 
         if not isinstance(artifact, ArtifactSpec):
-            artifact = ArtifactSpec.model_validate(
-                json.loads(metadata_path_in(artifact).read_text(encoding="utf-8"))[
-                    "artifact"
-                ]
-            )
+            with metadata_path_in(artifact).open(encoding="utf-8") as f:
+                artifact = ArtifactSpec.model_validate(json.load(f)["artifact"])
         return _from_artifact(artifact, cls)
 
     @final
