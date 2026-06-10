@@ -6,6 +6,7 @@ from typing import assert_never
 
 from furu.core import Furu
 from furu.execution import _ensure_single_result, api
+from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
 from furu.resources import ResourceRequest
 from furu.worker.context import _DependencyNotReady, worker_execution_context
@@ -15,6 +16,8 @@ from furu.worker.protocol import (
     JobCompletedResult,
     JobFailedResult,
 )
+
+logger = get_logger("worker.loop")
 
 
 def worker_loop(
@@ -30,24 +33,39 @@ def worker_loop(
     consecutive_failures = 0
 
     while True:
+        logger.info("worker requesting new task from server")
         match client.lease_job(resources=resource_request):
             case "stop":
+                logger.info("worker told to stop")
                 return
             case "wait":
                 now = time.monotonic()
                 if idle_started_at is None:
                     idle_started_at = now
+                    logger.info("worker told to wait")
                 if now - idle_started_at >= idle_timeout:
                     return
                 time.sleep(0.1)  # TODO: make the wait poll interval configurable.
                 continue
             case Job() as job:
                 idle_started_at = None
+                task_label: str | None = None
                 try:
                     obj = Furu.from_artifact(job.artifact)
+                    task_label = obj._log_label
+                    logger.info(
+                        "worker received task: lease_id=%s task=%s",
+                        job.lease_id,
+                        task_label,
+                    )
                     with worker_execution_context(lease_id=job.lease_id):
                         _ensure_single_result(obj)
                     client.job_result(job.lease_id, JobCompletedResult())
+                    logger.info(
+                        "worker finished task: lease_id=%s task=%s status=completed",
+                        job.lease_id,
+                        task_label,
+                    )
                     consecutive_failures = 0
                 except _DependencyNotReady as exc:
                     dependencies = [
@@ -57,6 +75,17 @@ def worker_loop(
                         job.lease_id,
                         JobBlockedResult(dependencies=dependencies),
                     )
+                    if task_label is None:
+                        logger.info(
+                            "worker finished task: lease_id=%s status=blocked",
+                            job.lease_id,
+                        )
+                    else:
+                        logger.info(
+                            "worker finished task: lease_id=%s task=%s status=blocked",
+                            job.lease_id,
+                            task_label,
+                        )
                     consecutive_failures = 0
                 except Exception as exc:
                     client.job_result(
@@ -71,6 +100,17 @@ def worker_loop(
                             ),
                         ),
                     )
+                    if task_label is None:
+                        logger.info(
+                            "worker finished task: lease_id=%s status=failed",
+                            job.lease_id,
+                        )
+                    else:
+                        logger.info(
+                            "worker finished task: lease_id=%s task=%s status=failed",
+                            job.lease_id,
+                            task_label,
+                        )
                     consecutive_failures += 1
                     if (
                         max_consecutive_failures is not None
