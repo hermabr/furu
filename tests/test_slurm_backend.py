@@ -16,7 +16,7 @@ from furu.execution.api import PoolApiClient
 from furu.resources import ResourceRequest
 from furu.worker import _cli
 from furu.worker.backends.slurm.backend import SlurmWorkerBackend
-from furu.worker.backends.slurm.pool import _is_failed_job_state
+from furu.worker.backends.slurm.pool import _UNFINISHED_STATES
 from furu.worker.backends.slurm.resources import (
     MemoryPerCpu,
     MemoryPerGpu,
@@ -640,14 +640,18 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
     pool._scale_once()
 
     assert not any(
-        _is_failed_job_state(state) for state in pool._task_states().values()
+        state not in _UNFINISHED_STATES and state not in frozenset({"COMPLETED"})
+        for state in pool._task_states().values()
     )
 
     active_file.write_text("100\n100.batch COMPLETED\n101 FAILED\n101.extern FAILED\n")
 
     states = pool._task_states()
     assert states == {"100": "RUNNING", "101": "FAILED"}
-    assert any(_is_failed_job_state(state) for state in states.values())
+    assert any(
+        state not in _UNFINISHED_STATES and state != "COMPLETED"
+        for state in states.values()
+    )
     sacct_records = [
         record
         for record in _read_records(record_file)
@@ -857,10 +861,7 @@ def test_slurm_pool_scale_does_not_count_cancelled_jobs_as_restarts(
 
     pool._scale_once()
     active_file.write_text("100 CANCELLED by 12345\n")
-    assert pool._task_states() == {"100": "CANCELLED BY 12345"}
-    assert not any(
-        _is_failed_job_state(state) for state in pool._task_states().values()
-    )
+    assert pool._task_states() == {"100": "CANCELLED"}
 
     pool._scale_once()
 
@@ -1052,27 +1053,15 @@ def _install_fake_slurm(
 
         show_array_tasks = "--array" in sys.argv[1:]
 
-        unfinished_states = {
-            "COMPLETING",
-            "PENDING",
-            "PREEMPTED",
-            "READY",
-            "REQUEUED",
-            "RUNNING",
-            "UNKNOWN",
-        }
+        active_jobs = set()
         with open(active_file, encoding="utf-8") as file:
-            active_jobs = file.read().splitlines()
+            for line in file:
+                active_job, _, state = line.strip().partition(" ")
+                if active_job and not state.upper().startswith("CANCELLED"):
+                    active_jobs.add(active_job)
 
         for active_job in sorted(active_jobs):
-            slurm_job_id, _, state = active_job.partition(" ")
-            if "." in slurm_job_id:
-                continue
-            if state:
-                state_name = state.upper().split(maxsplit=1)[0].removesuffix("+")
-                if state_name not in unfinished_states:
-                    continue
-            job_id, separator, task_id = slurm_job_id.partition("_")
+            job_id, separator, task_id = active_job.partition("_")
             if job_id not in requested_jobs:
                 continue
             if show_array_tasks and separator:
