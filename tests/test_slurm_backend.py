@@ -16,7 +16,7 @@ from furu.execution.api import PoolApiClient
 from furu.resources import ResourceRequest
 from furu.worker import _cli
 from furu.worker.backends.slurm.backend import SlurmWorkerBackend
-from furu.worker.backends.slurm.pool import _UNFINISHED_STATES
+from furu.worker.backends.slurm.pool import _is_failed_job_state
 from furu.worker.backends.slurm.resources import (
     MemoryPerCpu,
     MemoryPerGpu,
@@ -640,18 +640,14 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
     pool._scale_once()
 
     assert not any(
-        state not in _UNFINISHED_STATES and state not in frozenset({"COMPLETED"})
-        for state in pool._task_states().values()
+        _is_failed_job_state(state) for state in pool._task_states().values()
     )
 
     active_file.write_text("100\n100.batch COMPLETED\n101 FAILED\n101.extern FAILED\n")
 
     states = pool._task_states()
     assert states == {"100": "RUNNING", "101": "FAILED"}
-    assert any(
-        state not in _UNFINISHED_STATES and state != "COMPLETED"
-        for state in states.values()
-    )
+    assert any(_is_failed_job_state(state) for state in states.values())
     sacct_records = [
         record
         for record in _read_records(record_file)
@@ -834,6 +830,54 @@ def test_slurm_pool_scale_does_not_count_completed_jobs_as_restarts(
     )
 
 
+def test_slurm_pool_scale_does_not_count_cancelled_jobs_as_restarts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        PoolApiClient,
+        "count_satisfiable_jobs",
+        lambda self, *, resources, max_workers: max_workers,
+    )
+
+    backend = SlurmWorkerBackend(
+        max_workers=1,
+        max_failed_restarts=0,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="execution-coordinator.cluster",
+        poll_interval=0,
+    )
+    pool = backend.start_pool(
+        server_url="http://execution-coordinator.cluster:1234",
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+    )
+
+    pool._scale_once()
+    active_file.write_text("100 CANCELLED by 12345\n")
+    assert pool._task_states() == {"100": "CANCELLED BY 12345"}
+    assert not any(
+        _is_failed_job_state(state) for state in pool._task_states().values()
+    )
+
+    pool._scale_once()
+
+    assert pool._job_ids == ["101"]
+    assert pool._failed_job_ids == []
+    assert (
+        len(
+            [
+                record
+                for record in _read_records(record_file)
+                if record["executable"] == "sbatch"
+            ]
+        )
+        == 2
+    )
+
+
 def test_slurm_backend_requires_explicit_executor_dir() -> None:
     backend = SlurmWorkerBackend(
         max_workers=1,
@@ -1008,11 +1052,27 @@ def _install_fake_slurm(
 
         show_array_tasks = "--array" in sys.argv[1:]
 
+        unfinished_states = {
+            "COMPLETING",
+            "PENDING",
+            "PREEMPTED",
+            "READY",
+            "REQUEUED",
+            "RUNNING",
+            "UNKNOWN",
+        }
         with open(active_file, encoding="utf-8") as file:
-            active_jobs = set(file.read().split())
+            active_jobs = file.read().splitlines()
 
         for active_job in sorted(active_jobs):
-            job_id, separator, task_id = active_job.partition("_")
+            slurm_job_id, _, state = active_job.partition(" ")
+            if "." in slurm_job_id:
+                continue
+            if state:
+                state_name = state.upper().split(maxsplit=1)[0].removesuffix("+")
+                if state_name not in unfinished_states:
+                    continue
+            job_id, separator, task_id = slurm_job_id.partition("_")
             if job_id not in requested_jobs:
                 continue
             if show_array_tasks and separator:

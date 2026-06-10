@@ -24,6 +24,26 @@ _UNFINISHED_STATES = frozenset(
         "UNKNOWN",
     }
 )
+_SUCCESSFUL_TERMINAL_STATES = frozenset({"CANCELLED", "COMPLETED"})
+
+
+def _state_name(state: str) -> str:
+    parts = state.upper().split(maxsplit=1)
+    if not parts:
+        return "UNKNOWN"
+    return parts[0].removesuffix("+")
+
+
+def _is_failed_job_state(state: str) -> bool:
+    state_name = _state_name(state)
+    return (
+        state_name not in _UNFINISHED_STATES
+        and state_name not in _SUCCESSFUL_TERMINAL_STATES
+    )
+
+
+def _is_prunable_job_state(state: str | None) -> bool:
+    return state is None or _state_name(state) in _SUCCESSFUL_TERMINAL_STATES
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,13 +85,14 @@ class SlurmWorkerPool:
             | {
                 job_id
                 for job_id, state in states.items()
-                if state not in _UNFINISHED_STATES and state != "COMPLETED"
+                if _is_failed_job_state(state)
             }
         )
         self._job_ids[:] = [
             job_id
             for job_id in self._job_ids
-            if job_id in active_job_ids or states.get(job_id) not in (None, "COMPLETED")
+            if job_id in active_job_ids
+            or not _is_prunable_job_state(states.get(job_id))
         ]
         remaining_starts = (
             self._max_workers
@@ -172,8 +193,7 @@ class SlurmWorkerPool:
             while not self._stop_event.wait(timeout=self._poll_interval):
                 self._scale_once()
                 if any(
-                    state not in _UNFINISHED_STATES
-                    and state not in frozenset({"COMPLETED"})
+                    _is_failed_job_state(state)
                     for state in self._task_states().values()
                 ):
                     self._report_failure("slurm worker pool became unhealthy")
