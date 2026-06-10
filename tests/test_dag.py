@@ -403,7 +403,7 @@ def test_execution_coordinator_run_discovers_lazy_dependencies_and_reruns_parent
         in parent_log
     )
     assert "create failed" not in parent_log
-    assert "=== Debug Details (with locals) ===" not in parent_log
+    assert "=== Debug Traceback ===" not in parent_log
 
 
 def test_execution_coordinator_run_skips_already_completed_objects():

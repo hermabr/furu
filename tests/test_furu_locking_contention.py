@@ -255,4 +255,4 @@ def test_lock_is_taken_over_mid_create(tmp_path):
     log_text = run_logs[0].read_text(encoding="utf-8")
     assert "create failed" in log_text
     assert "before writing final result" in log_text
-    assert "=== Debug Details (with locals) ===" in log_text
+    assert "=== Debug Traceback ===" in log_text

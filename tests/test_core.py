@@ -388,6 +388,7 @@ class FailingBatchValue(Furu[str]):
 
     @classmethod
     def create_batched(cls, objs) -> list[str]:
+        _local_debug_value = "furu-local-debug-value-should-not-leak"
         raise RuntimeError(f"failed batch for {[obj.key for obj in objs]}")
 
 
@@ -2053,7 +2054,8 @@ def test_batched_failure_writes_error_details_to_run_log_for_every_participant()
         log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
         assert "create failed" in log_text
         assert "failed batch for [1, 2]" in log_text
-        assert "=== Debug Details (with locals) ===" in log_text
+        assert "=== Debug Traceback ===" in log_text
+        assert "furu-local-debug-value-should-not-leak" not in log_text
         assert list(obj._base_dir.glob("error-*.log")) == []
 
 
@@ -2065,7 +2067,7 @@ def test_base_exception_does_not_log_as_load_failure() -> None:
 
     log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
     assert "create failed" not in log_text
-    assert "=== Debug Details (with locals) ===" not in log_text
+    assert "=== Debug Traceback ===" not in log_text
 
 
 def test_partial_persistence_leaves_already_written_objects_completed(
