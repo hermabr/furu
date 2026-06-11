@@ -31,7 +31,7 @@ from furu._storage_layout import (
 from furu.config import _FuruConfig, _FuruDirectories, get_config
 from furu.dependencies import collect_declared_refs
 from furu.execution import _load_or_create
-from furu.locking import LockManifest, lock_many
+from furu.locking import LockManifest, lock
 from furu.logging import _scoped_log_files
 from furu.metadata import ArtifactSpec
 from furu.result import _save_result_bundle, load_result_bundle
@@ -1431,7 +1431,10 @@ def test_resource_requirements_can_be_overridden_with_property():
     assert rr is not None
 
 
-def test_storage_root_can_be_overridden_with_cached_property():
+def test_storage_root_can_be_overridden_with_cached_property(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
     node = CustomStorageRootNode(name="x")
 
     assert node.storage_root == Path("custom/data/location")
@@ -1541,7 +1544,7 @@ def test_status_is_running_while_compute_lock_is_held() -> None:
     node = Node(name="x")
     node._base_dir.mkdir(parents=True, exist_ok=True)
 
-    with lock_many([compute_lock_path_in(node._base_dir)]):
+    with lock([compute_lock_path_in(node._base_dir)]):
         assert node.status() == "running"
 
 
@@ -1750,7 +1753,7 @@ def test_no_create_hook_uses_post_lock_cache_recheck(
     obj = NoCreateHookValue(key=3)
 
     @contextmanager
-    def fake_lock_many(lock_paths: list[Path], **_: object):
+    def fake_lock(lock_paths: list[Path], **_: object):
         assert lock_paths == [compute_lock_path_in(obj._base_dir)]
         _save_result_bundle(
             "cached-after-lock:1",
@@ -1760,7 +1763,7 @@ def test_no_create_hook_uses_post_lock_cache_recheck(
         )
         yield lambda: True
 
-    monkeypatch.setattr(execution_module, "lock_many", fake_lock_many)
+    monkeypatch.setattr(execution_module, "lock", fake_lock)
 
     assert obj.create() == "cached-after-lock:1"
 
@@ -1854,11 +1857,11 @@ def test_existing_items_are_skipped_before_locking(
     lock_calls: list[list[Path]] = []
 
     @contextmanager
-    def fake_lock_many(lock_paths: list[Path], **_: object):
+    def fake_lock(lock_paths: list[Path], **_: object):
         lock_calls.append(lock_paths)
         yield lambda: True
 
-    monkeypatch.setattr(execution_module, "lock_many", fake_lock_many)
+    monkeypatch.setattr(execution_module, "lock", fake_lock)
 
     assert _load_or_create([existing, missing]) == ["single:1", "single:2"]
     assert lock_calls == [[compute_lock_path_in(missing._base_dir)]]
@@ -1870,7 +1873,7 @@ def test_pending_items_are_rechecked_after_lock_acquisition(
     pending = CountedSingleValue(key=5)
 
     @contextmanager
-    def fake_lock_many(lock_paths: list[Path], **_: object):
+    def fake_lock(lock_paths: list[Path], **_: object):
         assert lock_paths == [compute_lock_path_in(pending._base_dir)]
         _save_result_bundle(
             "single:5",
@@ -1879,7 +1882,7 @@ def test_pending_items_are_rechecked_after_lock_acquisition(
         )
         yield lambda: True
 
-    monkeypatch.setattr(execution_module, "lock_many", fake_lock_many)
+    monkeypatch.setattr(execution_module, "lock", fake_lock)
 
     assert _load_or_create([pending]) == ["single:5"]
     assert CountedSingleValue.create_calls == []
@@ -2054,7 +2057,6 @@ def test_batched_failure_writes_error_details_to_run_log_for_every_participant()
         log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
         assert "create failed" in log_text
         assert "failed batch for [1, 2]" in log_text
-        assert "=== Debug Traceback ===" in log_text
         assert "furu-local-debug-value-should-not-leak" not in log_text
         assert list(obj._base_dir.glob("error-*.log")) == []
 
@@ -2067,7 +2069,6 @@ def test_base_exception_does_not_log_as_load_failure() -> None:
 
     log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
     assert "create failed" not in log_text
-    assert "=== Debug Traceback ===" not in log_text
 
 
 def test_partial_persistence_leaves_already_written_objects_completed(

@@ -310,12 +310,12 @@ def test_create_post_lock_check_uses_result_link(
     new = _NewRun(dataset="cifar10", lr=0.001)
 
     @contextmanager
-    def fake_lock_many(lock_paths: list[Path], **_: object):
+    def fake_lock(lock_paths: list[Path], **_: object):
         assert lock_paths == [compute_lock_path_in(new._base_dir)]
         new.migrate()
         yield lambda: True
 
-    monkeypatch.setattr(execution_module, "lock_many", fake_lock_many)
+    monkeypatch.setattr(execution_module, "lock", fake_lock)
 
     _COUNTER.calls = 0
     assert new.create() == {"dataset": "cifar10", "learning_rate": "0.001"}

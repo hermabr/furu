@@ -17,7 +17,7 @@ from furu._storage_layout import (
     result_manifest_path_in,
 )
 from furu.config import get_config
-from furu.locking import is_active_lock, lock_many
+from furu.locking import is_active_lock, lock
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
 from furu.resources import ResourceRequirements
@@ -189,7 +189,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
         tombstone_path: Path | None = None
         try:
-            with lock_many([compute_lock_path_in(self._base_dir)]):
+            with lock(compute_lock_path_in(self._base_dir)):
                 if not self._base_dir.exists():
                     return False
 
