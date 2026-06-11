@@ -154,7 +154,11 @@ def schema_type(
             key=_stable_json_dump,
         )
     elif origin is not None:
-        assert (args := get_args(tp))  # TODO: maybe i need to remove this?
+        args = get_args(tp)
+        if not args:
+            raise TypeError(
+                f"Unsupported parameterized type without arguments in schema: {tp!r}"
+            )
         return {
             ORIGINMARKER: fully_qualified_name(origin),
             ARGSMARKER: sorted(
@@ -186,4 +190,4 @@ def schema_type(
         return fully_qualified_name(tp)
     elif isinstance(tp, type):
         return fully_qualified_name(tp)
-    assert False, f"TODO: unexpected type value {tp=}"
+    raise TypeError(f"Unsupported type in Furu schema: {tp!r}")

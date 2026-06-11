@@ -1,7 +1,7 @@
 import enum
 from dataclasses import fields, is_dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast, get_args, get_origin, get_type_hints
+from typing import TYPE_CHECKING, Any, cast, get_type_hints
 
 from pydantic import BaseModel as PydanticBaseModel
 
@@ -18,7 +18,12 @@ from furu.serializer.registry import (
     ArtifactSerializer,
     ArtifactSerializerMeta,
 )
-from furu.utils import JsonValue, fully_qualified_name, resolve_fully_qualified_name
+from furu.utils import (
+    JsonValue,
+    _stable_json_dump,
+    fully_qualified_name,
+    resolve_fully_qualified_name,
+)
 
 if TYPE_CHECKING:
     from furu.core import Furu
@@ -37,9 +42,15 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
 
     def assert_correct_dict_key(x: Any) -> str:
         if not isinstance(x, str):
-            raise ValueError("TODO")
+            raise TypeError(
+                f"Cannot serialize dict key {x!r} of type {type(x).__name__!r}: "
+                "artifact dict keys must be strings"
+            )
         if x in _RESERVED_DICT_KEYS:
-            raise ValueError("TODO: write error msg")
+            raise ValueError(
+                f"Cannot serialize dict key {x!r}: "
+                "it is reserved by Furu artifact serialization"
+            )
         return x
 
     if isinstance(obj, type):
@@ -68,8 +79,8 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
         case int() | str() | float() | bool():
             return obj
         case Path():
-            return str(obj)
-        case list() | tuple():
+            return {KINDMARKER: "path", VALUEMARKER: str(obj)}
+        case list():
             return [
                 to_json(
                     x,
@@ -78,9 +89,10 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                 )
                 for i, x in enumerate(obj)
             ]
-        case set() | frozenset():
-            return sorted(
-                [
+        case tuple():
+            return {
+                KINDMARKER: "tuple",
+                VALUEMARKER: [
                     to_json(
                         x,
                         declared_type=child_declared_type(declared_type, i),
@@ -88,8 +100,23 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                     )
                     for i, x in enumerate(obj)
                 ],
-                key=repr,
-            )
+            }
+        case set() | frozenset():
+            element_type = child_declared_type(declared_type, 0)
+            return {
+                KINDMARKER: "set" if isinstance(obj, set) else "frozenset",
+                VALUEMARKER: sorted(
+                    (
+                        to_json(
+                            x,
+                            declared_type=element_type,
+                            artifact_serializers=artifact_serializers,
+                        )
+                        for x in obj
+                    ),
+                    key=_stable_json_dump,
+                ),
+            }
         case dict():
             return {
                 assert_correct_dict_key(k): to_json(
@@ -130,9 +157,15 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                 },
             }
         case enum.Enum():
-            raise NotImplementedError("TODO")  #  return {"__enum__": _type_fqn(obj)}
+            raise TypeError(
+                f"Cannot serialize enum value {obj!r}: enums are not supported "
+                "in Furu artifacts yet"
+            )
         case _:
-            raise ValueError("unexpected item", obj)  # TODO: explain the error more
+            raise TypeError(
+                f"Cannot serialize value {obj!r} of type {type(obj).__name__!r} "
+                "into a Furu artifact; register an ArtifactSerializer for this type"
+            )
 
 
 def _from_json_field(value: JsonValue, expected_type: Any) -> Any:
@@ -143,23 +176,39 @@ def _from_json_field(value: JsonValue, expected_type: Any) -> Any:
     ):
         return _load_custom_value(cast(dict[str, Any], value), expected_type)
 
+    if isinstance(value, dict) and value.get(KINDMARKER) == "path":
+        return Path(cast(str, value[VALUEMARKER]))
+
+    if isinstance(value, dict) and value.get(KINDMARKER) in (
+        "tuple",
+        "set",
+        "frozenset",
+    ):
+        items = [
+            _from_json_field(item, child_declared_type(expected_type, i))
+            for i, item in enumerate(cast(list[JsonValue], value[VALUEMARKER]))
+        ]
+        match value[KINDMARKER]:
+            case "tuple":
+                return tuple(items)
+            case "set":
+                return set(items)
+            case _:
+                return frozenset(items)
+
     if isinstance(value, dict) and KINDMARKER in value:
         return _from_json(value)
 
-    expected_type = strip_annotated(expected_type)
-    origin = get_origin(expected_type)
-    args = get_args(expected_type)
     if isinstance(value, list):
-        item_type = args[0] if args and args[0] is not Ellipsis else Any
-        items = [_from_json_field(item, item_type) for item in value]
-        return tuple(items) if origin is tuple else items
+        return [
+            _from_json_field(item, child_declared_type(expected_type, i))
+            for i, item in enumerate(value)
+        ]
     if isinstance(value, dict):
-        value_type = args[1] if origin is dict and len(args) == 2 else Any
         return {
-            key: _from_json_field(child, value_type) for key, child in value.items()
+            key: _from_json_field(child, child_declared_type(expected_type, key))
+            for key, child in value.items()
         }
-    if expected_type is Path and isinstance(value, str):
-        return Path(value)
     return value
 
 
@@ -206,6 +255,8 @@ def _from_json(value: JsonValue) -> Any:
                 value.get(SERIALIZERMARKER), str
             ):
                 return _load_custom_value(cast(dict[str, Any], value), Any)
+            if value.get(KINDMARKER) in ("path", "tuple", "set", "frozenset"):
+                return _from_json_field(value, Any)
             if value.get(KINDMARKER) == "type_ref" and isinstance(class_name, str):
                 return _resolve_serialized_type(class_name)
             if (
