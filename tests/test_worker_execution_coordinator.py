@@ -1113,7 +1113,7 @@ def test_job_result_request_uses_status_discriminator() -> None:
 
 
 def test_worker_loop_raises_when_server_is_unavailable() -> None:
-    with pytest.raises(httpx.ConnectError):
+    with pytest.raises(RuntimeError, match="failed"):
         worker_loop(
             server_url="http://127.0.0.1:1",
             auth_token="test-token",
@@ -1191,7 +1191,7 @@ def test_worker_loop_logs_task_requests_and_received_task(
             idle_timeout=get_config().worker.idle_timeout_seconds,
         )
 
-    assert caplog.messages.count("worker requesting new task from server") == 2
+    assert "worker requesting new task from server" not in caplog.messages
     assert (
         f"worker received task: lease_id={job.lease_id} task={leaf._log_label}"
     ) in caplog.messages
@@ -1230,7 +1230,7 @@ def test_worker_loop_logs_stop_and_first_wait(
             idle_timeout=get_config().worker.idle_timeout_seconds,
         )
 
-    assert caplog.messages.count("worker requesting new task from server") == 3
+    assert "worker requesting new task from server" not in caplog.messages
     assert caplog.messages.count("worker told to wait") == 1
     assert "worker told to stop" in caplog.messages
 

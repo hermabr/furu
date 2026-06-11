@@ -24,12 +24,13 @@ from furu.worker.protocol import (
 class _ExecutionCoordinatorApiClientBase:
     server_url: str
     auth_token: str
+    request_timeout_s: float = 10.0
 
     def _request_json(
         self,
         path: str,
         *,
-        method: str = "GET",
+        method: str,
         payload: object | None = None,
     ) -> Any:
         url = f"{self.server_url.rstrip('/')}{path}"
@@ -39,7 +40,7 @@ class _ExecutionCoordinatorApiClientBase:
                 url,
                 headers={"Authorization": f"Bearer {self.auth_token}"},
                 json=payload,
-                timeout=10.0,
+                timeout=self.request_timeout_s,
             )
             response.raise_for_status()
             if not response.content:
@@ -50,6 +51,8 @@ class _ExecutionCoordinatorApiClientBase:
                 f"{method} {url} failed with HTTP "
                 f"{exc.response.status_code}: {exc.response.text}"
             ) from exc
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"{method} {url} failed: {exc}") from exc
 
 
 class WorkerApiClient(_ExecutionCoordinatorApiClientBase):

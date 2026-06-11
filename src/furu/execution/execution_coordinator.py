@@ -131,8 +131,16 @@ class ExecutionCoordinator:
                 coordinator.done.wait()
 
                 with ThreadPoolExecutor(max_workers=len(pools)) as executor:
-                    for pool in pools:
-                        executor.submit(pool.stop, timeout=5)
+                    stop_futures = [
+                        executor.submit(pool.stop, timeout=5) for pool in pools
+                    ]
+                for pool, future in zip(pools, stop_futures, strict=True):
+                    if (exc := future.exception()) is not None:
+                        logger.error(
+                            "worker pool stop failed: pool=%s error=%s",
+                            type(pool).__name__,
+                            exc,
+                        )
         coordinator.raise_for_failure()
         return objs
 
@@ -206,7 +214,12 @@ class ExecutionCoordinator:
 
     def job_result(self, lease_id: str, request: JobResultRequest) -> None:
         with self.log_context(), self.lock:
-            running_job = self.running.pop(lease_id)
+            running_job = self.running.pop(lease_id, None)
+            if running_job is None:
+                logger.info(
+                    "ignoring job result for unknown lease: lease_id=%s", lease_id
+                )
+                return
             match request:
                 case JobCompletedResult():
                     self.failed.pop(running_job.node.obj.object_id, None)
