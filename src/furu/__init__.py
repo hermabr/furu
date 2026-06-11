@@ -9,7 +9,10 @@ from furu.resources import ResourceRequirements
 from furu.result import LazyResult, save_as
 from furu.result.codec import ResultCodec
 from furu.serializer.registry import ArtifactSerializer
+from furu.utils import _install_main_module_alias
 from furu.validate import validate
+
+_install_main_module_alias()
 
 __version__ = version("furu")
 
