@@ -15,6 +15,7 @@ from typing import (
 )
 
 from furu._storage_layout import (
+    completed_result_dir_in,
     compute_lock_path_in,
     metadata_path_in,
     result_dir_in,
@@ -25,7 +26,6 @@ from furu.dependencies import dependency_recorder, record_dependency_call
 from furu.locking import lock, lock_many
 from furu.logging import _scoped_log_files
 from furu.metadata import RunningMetadata
-from furu.migration import result_dir_for_loading
 from furu.result import _save_result_bundle, load_result_bundle
 from furu.result.save_as import _unwrap_save_as
 from furu.utils import class_label, nfs_safe_unique_name
@@ -187,14 +187,14 @@ def _load_or_create[T](
 
 
 def _ensure_single_result[T](obj: Furu[T]) -> None:
-    if (cached_result_dir := result_dir_for_loading(obj)) is not None:
+    if (cached_result_dir := completed_result_dir_in(obj._base_dir)) is not None:
         obj.logger.info("cache hit for %s at %s", obj._log_label, cached_result_dir)
         return
 
     obj._base_dir.mkdir(parents=True, exist_ok=True)
 
     with lock(compute_lock_path_in(obj._base_dir)) as has_lock:
-        if (cached_result_dir := result_dir_for_loading(obj)) is not None:
+        if (cached_result_dir := completed_result_dir_in(obj._base_dir)) is not None:
             obj.logger.info(
                 "cache hit for %s after waiting at %s",
                 obj._log_label,
@@ -240,7 +240,7 @@ def _load_or_create_worker[T](
     missing: list[Furu[T]] = []
 
     for obj in objs:
-        if (cached_result_dir := result_dir_for_loading(obj)) is not None:
+        if (cached_result_dir := completed_result_dir_in(obj._base_dir)) is not None:
             obj.logger.info("cache hit for %s at %s", obj._log_label, cached_result_dir)
             loaded.append(cast(T, load_result_bundle(cached_result_dir)))
         else:
@@ -278,7 +278,7 @@ def _load_or_create_local[T](
     missing: list[Furu[T]] = []
 
     for obj in unique:
-        if (cached_result_dir := result_dir_for_loading(obj)) is not None:
+        if (cached_result_dir := completed_result_dir_in(obj._base_dir)) is not None:
             obj.logger.info("cache hit for %s at %s", obj._log_label, cached_result_dir)
             results_by_object_id[obj.object_id] = cast(
                 T, load_result_bundle(cached_result_dir)
@@ -297,7 +297,9 @@ def _load_or_create_local[T](
         has_lock = maybe_has_lock or (lambda: True)
         pending: list[Furu[T]] = []
         for obj in missing:
-            if (cached_result_dir := result_dir_for_loading(obj)) is not None:
+            if (
+                cached_result_dir := completed_result_dir_in(obj._base_dir)
+            ) is not None:
                 obj.logger.info(
                     "cache hit for %s after waiting at %s",
                     obj._log_label,

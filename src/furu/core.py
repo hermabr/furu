@@ -10,10 +10,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast, final
 
 from furu._storage_layout import (
+    completed_result_dir_in,
     compute_lock_path_in,
     data_dir_in,
     metadata_path_in,
-    result_link_path_in,
     result_manifest_path_in,
 )
 from furu.config import get_config
@@ -37,8 +37,6 @@ from furu.validate import validate_cls
 
 if TYPE_CHECKING:
     from typing_extensions import dataclass_transform
-
-    from furu.migration import Migration
 
     @dataclass_transform(kw_only_default=True, frozen_default=True)
     class _FuruDataclassTransform:
@@ -88,10 +86,6 @@ class Furu[T](_FuruDataclassTransform, ABC):
         raise NotImplementedError(
             f"{cls.__name__} must implement create() or create_batched()"
         )
-
-    @classmethod
-    def migrations(cls) -> tuple[Migration, ...]:
-        return ()
 
     @cached_property
     def storage_root(self) -> Path:
@@ -146,14 +140,13 @@ class Furu[T](_FuruDataclassTransform, ABC):
     @final
     def load_existing(self) -> T:
         from furu.dependencies import record_dependency_call
-        from furu.migration import result_dir_for_loading
         from furu.worker.context import (
             _DependencyNotReady,
             _worker_execution_lease_id,
         )
 
         record_dependency_call(self)
-        if (result_dir := result_dir_for_loading(self)) is not None:
+        if (result_dir := completed_result_dir_in(self._base_dir)) is not None:
             return cast(T, load_result_bundle(result_dir))
         if _worker_execution_lease_id.get() is not None:
             raise _DependencyNotReady(
@@ -173,8 +166,6 @@ class Furu[T](_FuruDataclassTransform, ABC):
         "completed", "missing", "running", "failed"
     ]:  # TODO: add queued/waiting state?
         if result_manifest_path_in(self._base_dir).exists():
-            return "completed"
-        if self.is_migrated():  # TODO: check if the migrated object is in correct state
             return "completed"
         if is_active_lock(compute_lock_path_in(self._base_dir)):
             return "running"
@@ -210,16 +201,6 @@ class Furu[T](_FuruDataclassTransform, ABC):
         assert tombstone_path is not None
         shutil.rmtree(tombstone_path)
         return True
-
-    @final
-    def migrate(self) -> bool:
-        from furu.migration import migrate
-
-        return migrate(self)
-
-    @final
-    def is_migrated(self) -> bool:
-        return result_link_path_in(self._base_dir).exists()
 
     @final
     @classmethod

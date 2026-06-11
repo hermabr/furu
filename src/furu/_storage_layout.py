@@ -29,5 +29,7 @@ def compute_lock_path_in(base_dir: Path) -> Path:
     return base_dir / "compute.lock"
 
 
-def result_link_path_in(base_dir: Path) -> Path:
-    return base_dir / "result-link.json"
+def completed_result_dir_in(base_dir: Path) -> Path | None:
+    if result_manifest_path_in(base_dir).exists():
+        return result_dir_in(base_dir)
+    return None

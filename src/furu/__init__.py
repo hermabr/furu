@@ -4,7 +4,6 @@ from furu.core import Furu
 from furu.dependencies import dependency
 from furu.logging import get_logger
 from furu.function import function
-from furu.migration import Migration
 from furu.resources import ResourceRequirements
 from furu.result import LazyResult, save_as
 from furu.result.codec import ResultCodec
@@ -18,7 +17,6 @@ __all__ = [
     "Furu",
     "ArtifactSerializer",
     "LazyResult",
-    "Migration",
     "ResourceRequirements",
     "dependency",
     "function",
