@@ -13,6 +13,7 @@ import pytest
 
 import furu.locking as locking_module
 from furu.locking import (
+    LockError,
     LockManifest,
     lock,
 )
@@ -173,7 +174,7 @@ def test_lock_normalizes_paths_and_shares_one_claim_manifest(
 def test_has_lock_returns_false_when_lock_is_lost(tmp_path: Path) -> None:
     lock_path = tmp_path / "single.lock"
 
-    with pytest.raises(RuntimeError, match="lost lock"):
+    with pytest.raises(LockError, match="lost lock"):
         with lock(
             lock_path,
             lifetime_s=SHORT_LIFETIME_S,
@@ -186,7 +187,7 @@ def test_has_lock_returns_false_when_lock_is_lost(tmp_path: Path) -> None:
 def test_has_lock_returns_false_when_any_batch_link_is_lost(tmp_path: Path) -> None:
     lock_paths = [tmp_path / "a.lock", tmp_path / "b.lock", tmp_path / "c.lock"]
 
-    with pytest.raises(RuntimeError, match="lost lock"):
+    with pytest.raises(LockError, match="lost lock"):
         with lock(
             lock_paths,
             lifetime_s=SHORT_LIFETIME_S,
@@ -201,7 +202,7 @@ def test_exit_raises_lock_lost_error_when_lock_is_lost_mid_block(
 ) -> None:
     lock_path = tmp_path / "single.lock"
 
-    with pytest.raises(RuntimeError, match="lost lock"):
+    with pytest.raises(LockError, match="lost lock"):
         with lock(
             lock_path,
             lifetime_s=SHORT_LIFETIME_S,
@@ -222,7 +223,7 @@ def test_refresh_extends_expiration(tmp_path: Path) -> None:
         assert has_lock()
         time.sleep(SHORT_LIFETIME_S * 4)
 
-        with pytest.raises(RuntimeError, match="could not acquire lock"):
+        with pytest.raises(LockError, match="could not acquire lock"):
             with lock(
                 lock_path,
                 lifetime_s=SHORT_LIFETIME_S,
@@ -246,7 +247,7 @@ def test_lock_starts_heartbeat_thread(tmp_path: Path) -> None:
         _, heartbeat_name = thread_queue.get(timeout=PROCESS_TIMEOUT_S)
         assert heartbeat_name == f"lock-heartbeat:{lock_path.name}"
 
-        with pytest.raises(RuntimeError, match="could not acquire lock"):
+        with pytest.raises(LockError, match="could not acquire lock"):
             with lock(
                 lock_path,
                 lifetime_s=SHORT_LIFETIME_S,
@@ -272,7 +273,7 @@ def test_timeout_when_lock_is_held(tmp_path: Path) -> None:
     try:
         holder_queue.get(timeout=PROCESS_TIMEOUT_S)
         started_at = time.monotonic()
-        with pytest.raises(RuntimeError, match="could not acquire lock"):
+        with pytest.raises(LockError, match="could not acquire lock"):
             with lock(
                 lock_path,
                 lifetime_s=SHORT_LIFETIME_S,
@@ -329,7 +330,7 @@ def test_lock_logs_when_waiting_for_lock(
             lifetime_s=SHORT_LIFETIME_S * 4,
             heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
         ):
-            with pytest.raises(RuntimeError, match="could not acquire lock"):
+            with pytest.raises(LockError, match="could not acquire lock"):
                 with lock(
                     lock_path,
                     lifetime_s=SHORT_LIFETIME_S,
@@ -410,7 +411,7 @@ def test_release_cleanup_removes_member_links_when_claim_file_is_missing(
 ) -> None:
     lock_paths = [tmp_path / "a.lock", tmp_path / "b.lock", tmp_path / "c.lock"]
 
-    with pytest.raises(RuntimeError, match="lost lock"):
+    with pytest.raises(LockError, match="lost lock"):
         with lock(
             lock_paths,
             lifetime_s=SHORT_LIFETIME_S,
@@ -470,7 +471,7 @@ def test_lock_raises_if_stale_break_would_remove_reacquired_lock(
         side_effect=reacquire_before_break,
     ):
         with pytest.raises(
-            RuntimeError, match="changed owners while breaking a stale lock"
+            LockError, match="changed owners while breaking a stale lock"
         ):
             with lock(
                 lock_path,
@@ -509,7 +510,7 @@ def test_cross_filesystem_lock_requests_raise_clear_error(
 
     monkeypatch.setattr(type(lock_paths[0].parent), "stat", fake_stat)
 
-    with pytest.raises(RuntimeError, match="same filesystem device"):
+    with pytest.raises(LockError, match="same filesystem device"):
         with lock(lock_paths):
             pass
 
@@ -523,7 +524,7 @@ def test_partial_acquire_rollback_releases_subset_under_overlap(tmp_path: Path) 
         lifetime_s=SHORT_LIFETIME_S,
         heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
     ):
-        with pytest.raises(RuntimeError, match="could not acquire lock"):
+        with pytest.raises(LockError, match="could not acquire lock"):
             with lock(
                 [first_lock, blocked_lock],
                 lifetime_s=SHORT_LIFETIME_S,
@@ -546,7 +547,7 @@ def test_does_not_break_lock_within_clock_slop(tmp_path: Path) -> None:
         almost_stale = time.time() - locking_module.CLOCK_SLOP_S + SHORT_SLEEP_S / 2
         os.utime(lock_path, (almost_stale, almost_stale))
 
-        with pytest.raises(RuntimeError, match="could not acquire lock"):
+        with pytest.raises(LockError, match="could not acquire lock"):
             with lock(
                 lock_path,
                 lifetime_s=SHORT_LIFETIME_S,
@@ -562,7 +563,7 @@ def test_stale_break_refuses_malformed_manifest(tmp_path: Path) -> None:
     stale_time = time.time() - locking_module.CLOCK_SLOP_S - SHORT_SLEEP_S
     os.utime(lock_path, (stale_time, stale_time))
 
-    with pytest.raises(RuntimeError, match="malformed lock manifest"):
+    with pytest.raises(LockError, match="malformed lock manifest"):
         with lock(
             lock_path,
             lifetime_s=SHORT_LIFETIME_S,
@@ -622,7 +623,7 @@ def test_release_raises_lock_lost_for_estale_unlink_error(tmp_path: Path) -> Non
         return original_unlink(path, *args, **kwargs)
 
     with patch("os.unlink", side_effect=flaky_unlink):
-        with pytest.raises(RuntimeError, match="lost lock"):
+        with pytest.raises(LockError, match="lost lock"):
             with lock(
                 lock_path,
                 lifetime_s=SHORT_LIFETIME_S,
@@ -668,7 +669,7 @@ def test_process_exit_without_cleanup_allows_reclaim_after_expiry(
         first_owner = owner_path.read_text(encoding="utf-8").strip()
         assert lock_path.exists()
 
-        with pytest.raises(RuntimeError, match="could not acquire lock"):
+        with pytest.raises(LockError, match="could not acquire lock"):
             with lock(
                 lock_path,
                 lifetime_s=SHORT_LIFETIME_S,
