@@ -3,7 +3,7 @@ import os
 import types
 from collections.abc import Callable
 from contextlib import contextmanager
-from dataclasses import FrozenInstanceError, dataclass, is_dataclass, replace
+from dataclasses import FrozenInstanceError, InitVar, dataclass, is_dataclass, replace
 from enum import Enum
 from functools import cached_property, partial
 from pathlib import Path
@@ -717,6 +717,28 @@ def test_post_init_can_transform_values_before_validation():
 
     with pytest.raises(ValueError, match="value must be positive"):
         PostInitValidated(raw_value="0")
+
+
+def test_post_init_with_init_var_and_validators_both_run():
+    class InitVarValidated(Furu[int]):
+        scale: InitVar[int]
+        value: int = 0
+
+        def __post_init__(self, scale: int) -> None:
+            object.__setattr__(self, "value", self.value * scale)
+
+        @validate
+        def _validate_positive(self) -> None:
+            if self.value <= 0:
+                raise ValueError("value must be positive")
+
+        def create(self) -> int:
+            return self.value
+
+    assert InitVarValidated(scale=3, value=2).value == 6
+
+    with pytest.raises(ValueError, match="value must be positive"):
+        InitVarValidated(scale=0, value=2)
 
 
 def test_post_init_and_inherited_validators_both_run():
