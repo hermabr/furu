@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -35,7 +35,7 @@ class JobBlockedResult(BaseModel):
     dependencies: list[ArtifactSpec]
 
 
-type JobResultRequest = Annotated[
+JobResultRequest: TypeAlias = Annotated[
     JobCompletedResult | JobFailedResult | JobBlockedResult,
     Field(discriminator="status"),
 ]
@@ -47,7 +47,7 @@ class OkResponse(BaseModel):
     ok: Literal[True] = True
 
 
-type LeaseJobResponse = Job | Literal["wait", "stop"]
+LeaseJobResponse: TypeAlias = Job | Literal["wait", "stop"]
 
 
 class LeaseJobRequest(BaseModel):

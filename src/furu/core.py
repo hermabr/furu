@@ -7,7 +7,7 @@ from abc import ABC
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast, final
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeAlias, cast, final
 
 from furu._storage_layout import (
     compute_lock_path_in,
@@ -49,7 +49,7 @@ else:
         pass
 
 
-type FuruCreateMode = Literal["single", "batched"] | None
+FuruCreateMode: TypeAlias = Literal["single", "batched"] | None
 
 
 class Furu[T](_FuruDataclassTransform, ABC):

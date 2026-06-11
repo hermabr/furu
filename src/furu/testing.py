@@ -87,10 +87,6 @@ def pytest_unconfigure(config: pytest.Config) -> None:
     if not _keep_furu_data():
         for field_name in type(state.run_config.directories).model_fields:
             path = getattr(state.run_config.directories, field_name)
-            if not isinstance(path, Path):
-                raise TypeError(
-                    f"Expected Path for run directory '{field_name}', got {type(path).__name__}"
-                )
             shutil.rmtree(path, ignore_errors=True)
     else:
         print(f"kept furu objects at {state.run_config.directories.objects}")

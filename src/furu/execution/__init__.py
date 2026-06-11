@@ -6,6 +6,7 @@ from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from typing import (
     Any,
+    TypeAlias,
     TypeVar,
     assert_never,
     cast,
@@ -28,14 +29,14 @@ from furu.metadata import RunningMetadata
 from furu.migration import result_dir_for_loading
 from furu.result import _save_result_bundle, load_result_bundle
 from furu.result.save_as import _unwrap_save_as
-from furu.utils import class_label, nfs_safe_unique_name
+from furu.utils import nfs_safe_unique_name
 from furu.worker.context import (
     _DependencyNotReady,
     _worker_execution_lease_id,
 )
 
-type HasLock = Callable[[], bool]
-type _DirectCreateTarget = Furu[Any] | type[Furu[Any]]
+HasLock: TypeAlias = Callable[[], bool]
+_DirectCreateTarget: TypeAlias = Furu[Any] | type[Furu[Any]]
 
 
 _direct_create_target: ContextVar[_DirectCreateTarget | None] = ContextVar(
@@ -96,13 +97,13 @@ def _resolve_create_mode[T](cls: type[Furu[T]]) -> FuruCreateMode:
         if "create_batched" in base.__dict__:
             if not isinstance(base.__dict__["create_batched"], classmethod):
                 raise TypeError(
-                    f"{class_label(base)}.create_batched must be a @classmethod"
+                    f"{base.__qualname__}.create_batched must be a @classmethod"
                 )
             defines_batched = True
 
     if defines_single and defines_batched:
         raise TypeError(
-            f"{class_label(cls)} must define exactly one of create or create_batched"
+            f"{cls.__qualname__} must define exactly one of create or create_batched"
         )
     if defines_single:
         return "single"
@@ -253,7 +254,6 @@ def _load_or_create_worker[T](
         )
 
     if unwrap:
-        (obj,) = objs
         (result,) = loaded
         return result
     return loaded
@@ -311,7 +311,7 @@ def _load_or_create_local[T](
 
         direct_create_started = unwrap and bool(pending)
         if direct_create_started:
-            objs[0].logger.info("creating %s", obj._log_label)
+            objs[0].logger.info("creating %s", objs[0]._log_label)
 
         grouped: dict[type[object], list[Furu[T]]] = {}
         for obj in pending:
@@ -381,7 +381,7 @@ def _create_and_store_group[T](
                     logger.debug("sequential create() fallback returned")
                 case None:
                     raise TypeError(
-                        f"{class_label(type(group[0]))} cannot create missing results because it does not "
+                        f"{type(group[0]).__qualname__} cannot create missing results because it does not "
                         "define create() or create_batched()"
                     )
                 case _:
