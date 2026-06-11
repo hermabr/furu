@@ -155,6 +155,14 @@ def _dump_value(
             }
         case set() | frozenset():
             kind = "frozenset" if isinstance(value, frozenset) else "set"
+            for item in value:
+                if type(item).__repr__ is object.__repr__:
+                    raise ValueError(
+                        f"Unsupported result value at {_value_path_display(value_path)}:\n"
+                        f"set members of type {type(item).__name__!r} have no "
+                        "value-based repr, so their order cannot be made "
+                        "deterministic; use a list or implement __repr__."
+                    )
             items = sorted(
                 value,
                 key=lambda item: (

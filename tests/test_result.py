@@ -203,6 +203,18 @@ def test_tuple_set_and_frozenset_round_trip(tmp_path: Path) -> None:
     }
 
 
+def test_set_of_values_without_value_based_repr_is_rejected(tmp_path: Path) -> None:
+    class AddressRepr:
+        __hash__ = object.__hash__
+
+    bundle_dir = tmp_path / "bundle"
+
+    with pytest.raises(ValueError, match="no value-based repr"):
+        _save_result_bundle(
+            {AddressRepr(), AddressRepr()}, bundle_dir, result_codecs=()
+        )
+
+
 def test_tuple_root_value_uses_furu_wrapper(tmp_path: Path) -> None:
     bundle_dir = tmp_path / "bundle"
     value = (1, 2, 3)
