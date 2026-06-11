@@ -27,15 +27,6 @@ def _running_main_module_name() -> str | None:
 
 
 def _install_main_module_alias() -> None:
-    """Register the running ``__main__`` module under its spec name.
-
-    When a file is executed as ``python -m pkg.mod``, classes defined in it
-    live only in ``__main__``; a real ``import pkg.mod`` elsewhere in the
-    process would re-execute the file and create duplicate classes with the
-    same names but different identities. Aliasing ``sys.modules["pkg.mod"]``
-    to the running module makes every import return the running module
-    instead.
-    """
     spec_name = _running_main_module_name()
     if spec_name is None or spec_name in sys.modules:
         return
