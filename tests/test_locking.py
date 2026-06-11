@@ -4,7 +4,6 @@ import logging
 import os
 import threading
 import time
-from contextlib import contextmanager
 from contextlib import suppress
 from multiprocessing import Process, Queue
 from pathlib import Path
@@ -16,7 +15,6 @@ import furu.locking as locking_module
 from furu.locking import (
     LockManifest,
     lock,
-    lock_many,
 )
 
 TEST_TIMING_SCALE = 4.0 if os.environ.get("GITHUB_ACTIONS") == "true" else 1.0
@@ -62,7 +60,7 @@ def _child_hold_lock(
 
 
 def _child_acquire_batch_then_exit(lock_paths: list[Path], manifest_out: str) -> None:
-    with lock_many(
+    with lock(
         lock_paths,
         lifetime_s=SHORT_LIFETIME_S,
         heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
@@ -115,10 +113,12 @@ def _drop_current_lock(lock_path: Path) -> None:
     claim_path.unlink()
 
 
-def test_lock_many_produces_hardlinks_to_one_manifest_inode(tmp_path: Path) -> None:
+def test_lock_with_many_paths_produces_hardlinks_to_one_manifest_inode(
+    tmp_path: Path,
+) -> None:
     lock_paths = [tmp_path / "a.lock", tmp_path / "b.lock", tmp_path / "c.lock"]
 
-    with lock_many(
+    with lock(
         lock_paths,
         lifetime_s=SHORT_LIFETIME_S,
         heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
@@ -135,28 +135,16 @@ def test_lock_many_produces_hardlinks_to_one_manifest_inode(tmp_path: Path) -> N
             assert os.path.samestat(lock_path.stat(), claim_stat)
 
 
-def test_lock_wrapper_delegates_to_lock_many(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    calls: list[tuple[list[Path], float | None]] = []
+def test_lock_accepts_a_single_path(tmp_path: Path) -> None:
+    lock_path = tmp_path / "single.lock"
 
-    @contextmanager
-    def fake_lock_many(
-        lock_paths: list[Path],
-        *,
-        acquire_timeout_s: float | None = None,
-        **_: object,
-    ):
-        calls.append((lock_paths, acquire_timeout_s))
-        yield lambda: True
-
-    monkeypatch.setattr(locking_module, "lock_many", fake_lock_many)
-
-    with lock(tmp_path / "single.lock", acquire_timeout_s=1.0) as has_lock:
+    with lock(lock_path, acquire_timeout_s=1.0) as has_lock:
         assert has_lock()
 
-    assert calls == [([tmp_path / "single.lock"], 1.0)]
+        manifest = _read_manifest(lock_path)
+        assert manifest["lock_paths"] == [str(lock_path.resolve())]
+
+    assert not lock_path.exists()
 
 
 def test_lock_uses_default_arguments(tmp_path: Path) -> None:
@@ -164,13 +152,13 @@ def test_lock_uses_default_arguments(tmp_path: Path) -> None:
         assert has_lock()
 
 
-def test_lock_many_normalizes_paths_and_shares_one_claim_manifest(
+def test_lock_normalizes_paths_and_shares_one_claim_manifest(
     tmp_path: Path,
 ) -> None:
     lock_a = tmp_path / "a.lock"
     lock_b = tmp_path / "b.lock"
 
-    with lock_many([lock_b, lock_a, lock_a]) as has_lock:
+    with lock([lock_b, lock_a, lock_a]) as has_lock:
         manifest_a = _read_manifest(lock_a)
         manifest_b = _read_manifest(lock_b)
 
@@ -199,7 +187,7 @@ def test_has_lock_returns_false_when_any_batch_link_is_lost(tmp_path: Path) -> N
     lock_paths = [tmp_path / "a.lock", tmp_path / "b.lock", tmp_path / "c.lock"]
 
     with pytest.raises(RuntimeError, match="lost lock"):
-        with lock_many(
+        with lock(
             lock_paths,
             lifetime_s=SHORT_LIFETIME_S,
             heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
@@ -423,7 +411,7 @@ def test_release_cleanup_removes_member_links_when_claim_file_is_missing(
     lock_paths = [tmp_path / "a.lock", tmp_path / "b.lock", tmp_path / "c.lock"]
 
     with pytest.raises(RuntimeError, match="lost lock"):
-        with lock_many(
+        with lock(
             lock_paths,
             lifetime_s=SHORT_LIFETIME_S,
             heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
@@ -522,7 +510,7 @@ def test_cross_filesystem_lock_requests_raise_clear_error(
     monkeypatch.setattr(type(lock_paths[0].parent), "stat", fake_stat)
 
     with pytest.raises(RuntimeError, match="same filesystem device"):
-        with lock_many(lock_paths):
+        with lock(lock_paths):
             pass
 
 
@@ -536,7 +524,7 @@ def test_partial_acquire_rollback_releases_subset_under_overlap(tmp_path: Path) 
         heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
     ):
         with pytest.raises(RuntimeError, match="could not acquire lock"):
-            with lock_many(
+            with lock(
                 [first_lock, blocked_lock],
                 lifetime_s=SHORT_LIFETIME_S,
                 heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,

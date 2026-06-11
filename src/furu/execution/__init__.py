@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import functools
-import traceback
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
@@ -23,7 +22,7 @@ from furu._storage_layout import (
 )
 from furu.core import Furu, FuruCreateMode
 from furu.dependencies import dependency_recorder, record_dependency_call
-from furu.locking import lock_many
+from furu.locking import lock
 from furu.logging import _scoped_log_files
 from furu.metadata import RunningMetadata
 from furu.migration import result_dir_for_loading
@@ -167,23 +166,6 @@ def _store_result[T](
     return _unwrap_save_as(result)
 
 
-def _format_error_debug_details(exc: BaseException) -> str:
-    parts = ["Traceback (most recent call last):\n"]
-    parts.extend(
-        traceback.format_list(
-            traceback.extract_stack()[:-2] + traceback.extract_tb(exc.__traceback__)
-        )
-    )
-    parts.extend(traceback.format_exception_only(type(exc), exc))
-    parts.append("\n=== Debug Traceback ===\n")
-    parts.extend(
-        traceback.TracebackException.from_exception(exc, capture_locals=False).format(
-            chain=True
-        )
-    )
-    return "".join(parts)
-
-
 @overload
 def _load_or_create[T](obj: Furu[T], *, use_lock: bool = True) -> T: ...
 
@@ -211,7 +193,7 @@ def _ensure_single_result[T](obj: Furu[T]) -> None:
 
     obj._base_dir.mkdir(parents=True, exist_ok=True)
 
-    with lock_many([compute_lock_path_in(obj._base_dir)]) as has_lock:
+    with lock(compute_lock_path_in(obj._base_dir)) as has_lock:
         if (cached_result_dir := result_dir_for_loading(obj)) is not None:
             obj.logger.info(
                 "cache hit for %s after waiting at %s",
@@ -306,7 +288,7 @@ def _load_or_create_local[T](
             missing.append(obj)
 
     lock_ctx = (
-        lock_many([compute_lock_path_in(obj._base_dir) for obj in missing])
+        lock([compute_lock_path_in(obj._base_dir) for obj in missing])
         if use_lock and missing
         else nullcontext()
     )
@@ -433,7 +415,6 @@ def _create_and_store_group[T](
                 len(exc.dependencies),
             )
             raise
-        except Exception as exc:
+        except Exception:
             logger.exception("create failed")
-            logger.error("debug traceback:\n%s", _format_error_debug_details(exc))
             raise

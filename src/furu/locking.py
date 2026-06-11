@@ -125,7 +125,7 @@ def normalize_lock_paths(lock_paths: Iterable[Path]) -> list[Path]:
         key=lambda path: os.fspath(path),
     )
     if not normalized:
-        raise ValueError("lock_many() requires at least one lock path")
+        raise ValueError("at least one lock path is required")
     return normalized
 
 
@@ -356,14 +356,16 @@ def heartbeat_loop(
 
 
 @contextmanager
-def lock_many(
-    lock_paths: Iterable[Path],
+def lock(
+    lock_paths: Path | Iterable[Path],
     *,
     lifetime_s: float = DEFAULT_LIFETIME_S,
     heartbeat_interval_s: float = DEFAULT_HEARTBEAT_INTERVAL_S,
     acquire_timeout_s: float | None = None,
     acquire_poll_interval_s: float | None = None,
 ) -> Iterator[Callable[[], bool]]:
+    if isinstance(lock_paths, Path):
+        lock_paths = [lock_paths]
     lock_paths = normalize_lock_paths(lock_paths)
     assert_same_filesystem(lock_paths)
 
@@ -472,22 +474,3 @@ def lock_many(
                 raise RuntimeError(_lock_lost_message(lock_paths))
     finally:
         unlink_if_exists(claim_path)
-
-
-@contextmanager
-def lock(
-    lock_path: Path,
-    *,
-    lifetime_s: float = DEFAULT_LIFETIME_S,
-    heartbeat_interval_s: float = DEFAULT_HEARTBEAT_INTERVAL_S,
-    acquire_timeout_s: float | None = None,
-    acquire_poll_interval_s: float | None = None,
-) -> Iterator[Callable[[], bool]]:
-    with lock_many(
-        [lock_path],
-        lifetime_s=lifetime_s,
-        heartbeat_interval_s=heartbeat_interval_s,
-        acquire_timeout_s=acquire_timeout_s,
-        acquire_poll_interval_s=acquire_poll_interval_s,
-    ) as has_lock:
-        yield has_lock

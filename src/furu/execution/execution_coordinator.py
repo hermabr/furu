@@ -168,8 +168,6 @@ class ExecutionCoordinator:
 
             node = self.ready.pop(object_id)
             lease_id = str(uuid4())
-            if lease_id in self.running:
-                raise RuntimeError(f"generated duplicate lease_id: {lease_id}")
             self.running[lease_id] = RunningJob(lease_id=lease_id, node=node)
             node.obj.logger.info(
                 "executor creating %s",
