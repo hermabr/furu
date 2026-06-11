@@ -17,7 +17,7 @@ from furu._storage_layout import (
     result_manifest_path_in,
 )
 from furu.config import get_config
-from furu.locking import is_active_lock, lock
+from furu.locking import LockError, is_active_lock, lock
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
 from furu.resources import ResourceRequirements
@@ -203,11 +203,12 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
                 tombstone_path = nfs_safe_unique_name(self._base_dir, name="deleting")
                 self._base_dir.rename(tombstone_path)
-        except RuntimeError:
+        except LockError:
             if tombstone_path is None:
                 raise
 
-        assert tombstone_path is not None
+        if tombstone_path is None:
+            return False
         shutil.rmtree(tombstone_path)
         return True
 
