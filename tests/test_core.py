@@ -200,6 +200,17 @@ class UsesClassValue(Furu[None]):
         return None
 
 
+class UsesContainers(Furu[None]):
+    ints: set[int]
+    frozen: frozenset[str]
+    pair: tuple[Path, int]
+    maybe_path: Path | None
+    untyped: dict[str, Any]
+
+    def create(self) -> None:
+        return None
+
+
 class UsesFalseLiteral(Furu[None]):
     tie_word_embeddings: Literal[False]
 
@@ -1047,7 +1058,7 @@ def test_to_json_with_none_field():
                 "|fields": {"x": 1, "z": "123", "w": [6, 7], "some_obj": "a"},
             },
             "y": {"hey": 123, "ney": 1},
-            "t": ["123", 12],
+            "t": {"|kind": "tuple", "|value": ["123", 12]},
             "maybe_val": None,
         },
     }
@@ -1108,6 +1119,49 @@ def test_furu_object_with_typed_fields_round_trips_from_json_artifact():
     assert _from_json(path_obj._artifact_data) == path_obj
     assert _from_json(class_obj._artifact_data) == class_obj
     assert isinstance(cast(UsesPath, _from_json(path_obj._artifact_data)).path, Path)
+
+
+def test_container_fields_round_trip_with_exact_types():
+    obj = UsesContainers(
+        ints={3, 1, 2},
+        frozen=frozenset({"b", "a"}),
+        pair=(Path("/tmp/out"), 7),
+        maybe_path=Path("/tmp/maybe"),
+        untyped={"tup": (1, 2), "nested": {4, 5}},
+    )
+
+    loaded = cast(UsesContainers, _from_json(obj._artifact_data))
+
+    assert loaded == obj
+    assert loaded.ints == {1, 2, 3}
+    assert isinstance(loaded.ints, set)
+    assert isinstance(loaded.frozen, frozenset)
+    assert loaded.pair == (Path("/tmp/out"), 7)
+    assert isinstance(loaded.pair, tuple)
+    assert isinstance(loaded.pair[0], Path)
+    assert isinstance(loaded.maybe_path, Path)
+    assert loaded.untyped == {"tup": (1, 2), "nested": {4, 5}}
+    assert loaded.object_id == obj.object_id
+
+
+def test_set_artifact_data_is_deterministic():
+    first = UsesContainers(
+        ints={1, 2, 3},
+        frozen=frozenset({"a", "b"}),
+        pair=(Path("/tmp/out"), 7),
+        maybe_path=None,
+        untyped={},
+    )
+    second = UsesContainers(
+        ints={3, 2, 1},
+        frozen=frozenset({"b", "a"}),
+        pair=(Path("/tmp/out"), 7),
+        maybe_path=None,
+        untyped={},
+    )
+
+    assert first._artifact_data == second._artifact_data
+    assert first._artifact_hash == second._artifact_hash
 
 
 def test_furu_from_artifact_returns_furu_object():
