@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from pydantic import ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import (
     BaseSettings,
     JsonConfigSettingsSource,
@@ -13,7 +13,7 @@ from pydantic_settings import (
 _WORKER_JSON_CONFIG_FILE_ENV_VAR = "_FURU_WORKER_JSON_CONFIG_FILE"
 
 
-class _FuruDirectories(BaseSettings):
+class _FuruDirectories(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     objects: Path = Path("furu") / "objects"
@@ -21,7 +21,7 @@ class _FuruDirectories(BaseSettings):
     debug: Path = Path("furu") / "debug"
 
 
-class _FuruWorkerConfig(BaseSettings):
+class _FuruWorkerConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     idle_timeout_seconds: float = 60.0
@@ -83,3 +83,8 @@ _config = _FuruConfig()
 
 def get_config() -> _FuruConfig:
     return _config
+
+
+def _set_config(config: _FuruConfig) -> None:
+    global _config
+    _config = config

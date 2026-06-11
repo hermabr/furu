@@ -14,7 +14,6 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 import furu
-import furu.config as furu_config
 import furu.execution as execution_module
 from furu import (
     Furu,
@@ -29,6 +28,7 @@ from furu._storage_layout import (
     run_log_path_in,
 )
 from furu.config import _FuruConfig, _FuruDirectories, get_config
+from furu.testing import override_config
 from furu.dependencies import collect_declared_refs
 from furu.execution import _load_or_create
 from furu.locking import LockManifest, lock
@@ -1525,50 +1525,43 @@ def test_storage_root_can_be_overridden_with_cached_property(
     assert node.data_dir == node._base_dir / "data"
 
 
-def test_debug_mode_ignores_storage_root_override(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(furu_config, "_config", _FuruConfig(debug_mode=True))
-    node = CustomStorageRootNode(name="x")
+def test_debug_mode_ignores_storage_root_override() -> None:
+    with override_config(_FuruConfig(debug_mode=True)):
+        node = CustomStorageRootNode(name="x")
 
-    assert node.storage_root == Path("custom/data/location")
-    assert node._base_dir == (
-        Path("furu")
-        / "debug"
-        / "objects"
-        / "test_core"
-        / "CustomStorageRootNode"
-        / node._artifact_schema_hash
-        / node._artifact_hash
-    )
+        assert node.storage_root == Path("custom/data/location")
+        assert node._base_dir == (
+            Path("furu")
+            / "debug"
+            / "objects"
+            / "test_core"
+            / "CustomStorageRootNode"
+            / node._artifact_schema_hash
+            / node._artifact_hash
+        )
 
 
-def test_debug_mode_uses_configured_debug_directory(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        furu_config,
-        "_config",
-        _FuruConfig(
-            debug_mode=True,
-            directories=_FuruDirectories(
-                objects=Path("main/objects"),
-                executions=Path("main/executions"),
-                debug=Path("custom/debug"),
-            ),
+def test_debug_mode_uses_configured_debug_directory() -> None:
+    config = _FuruConfig(
+        debug_mode=True,
+        directories=_FuruDirectories(
+            objects=Path("main/objects"),
+            executions=Path("main/executions"),
+            debug=Path("custom/debug"),
         ),
     )
-    node = CustomStorageRootNode(name="x")
+    with override_config(config):
+        node = CustomStorageRootNode(name="x")
 
-    assert node.storage_root == Path("custom/data/location")
-    assert node._base_dir == (
-        Path("custom/debug")
-        / "objects"
-        / "test_core"
-        / "CustomStorageRootNode"
-        / node._artifact_schema_hash
-        / node._artifact_hash
-    )
+        assert node.storage_root == Path("custom/data/location")
+        assert node._base_dir == (
+            Path("custom/debug")
+            / "objects"
+            / "test_core"
+            / "CustomStorageRootNode"
+            / node._artifact_schema_hash
+            / node._artifact_hash
+        )
 
 
 def test_create_object_and_exists():
