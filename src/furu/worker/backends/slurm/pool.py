@@ -13,17 +13,24 @@ from furu.resources import ResourceRequest
 
 logger = get_logger()
 
+_SLURM_COMMAND_TIMEOUT_S = 60.0
+
 _UNFINISHED_STATES = frozenset(
     {
         "COMPLETING",
         "PENDING",
         "PREEMPTED",
-        "READY",
         "REQUEUED",
         "RUNNING",
         "UNKNOWN",
     }
 )
+
+_PRUNABLE_STATES = ("CANCELLED", "COMPLETED")
+
+
+def _is_failed_state(state: str) -> bool:
+    return state not in _UNFINISHED_STATES and state not in _PRUNABLE_STATES
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,33 +54,40 @@ class SlurmWorkerPool:
         self._scale_thread.join(timeout=timeout)
 
         deadline = time.monotonic() + timeout
-        while self._active_job_ids() and time.monotonic() < deadline:
+        while time.monotonic() < deadline:
+            active_job_ids = self._active_job_ids()
+            if active_job_ids is not None and not active_job_ids:
+                return
             time.sleep(min(self._poll_interval, max(0.0, deadline - time.monotonic())))
-        if self._active_job_ids():
-            subprocess.run(
-                ["scancel", *self._job_ids],
-                check=False,
-                capture_output=True,
-                text=True,
+
+        if not self._job_ids:
+            return
+        result = subprocess.run(
+            ["scancel", *self._job_ids],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=_SLURM_COMMAND_TIMEOUT_S,
+        )
+        if result.returncode != 0:
+            logger.error(
+                "scancel failed for slurm worker jobs %s: %s",
+                ",".join(self._job_ids),
+                result.stderr.strip(),
             )
 
-    def _scale_once(self) -> None:
+    def _scale_once(self) -> dict[str, str]:
         active_job_ids = self._active_job_ids()
         states = self._task_states()
         self._failed_job_ids[:] = sorted(
             set(self._failed_job_ids)
-            | {
-                job_id
-                for job_id, state in states.items()
-                if state not in _UNFINISHED_STATES
-                and state not in ("CANCELLED", "COMPLETED")
-            }
+            | {job_id for job_id, state in states.items() if _is_failed_state(state)}
         )
         self._job_ids[:] = [
             job_id
             for job_id in self._job_ids
-            if job_id in active_job_ids
-            or states.get(job_id) not in (None, "CANCELLED", "COMPLETED")
+            if (active_job_ids is not None and job_id in active_job_ids)
+            or states.get(job_id) not in (None, *_PRUNABLE_STATES)
         ]
         remaining_starts = (
             self._max_workers
@@ -82,7 +96,7 @@ class SlurmWorkerPool:
             - len(self._job_ids)
         )
         if len(self._job_ids) >= self._max_workers or remaining_starts <= 0:
-            return
+            return states
 
         to_spawn = min(
             max(
@@ -96,6 +110,8 @@ class SlurmWorkerPool:
             remaining_starts,
         )
         for _ in range(to_spawn):
+            if self._stop_event.is_set():
+                return states
             result = subprocess.run(
                 [
                     "sbatch",
@@ -103,29 +119,48 @@ class SlurmWorkerPool:
                     *self._sbatch_base_args,
                     str(self._script_path),
                 ],
-                check=True,
+                check=False,
                 capture_output=True,
                 text=True,
+                timeout=_SLURM_COMMAND_TIMEOUT_S,
             )
+            if result.returncode != 0:
+                logger.warning(
+                    "sbatch failed; retrying on the next scale tick: %s",
+                    result.stderr.strip(),
+                )
+                return states
             job_id = result.stdout.strip().split(";", maxsplit=1)[0]
             self._job_ids.append(job_id)
+        return states
 
-    def _active_job_ids(self) -> set[str]:
+    def _active_job_ids(self) -> set[str] | None:
+        """Job ids currently known to squeue, or None when squeue gave no answer."""
         if not self._job_ids:
             return set()
 
-        result = subprocess.run(
-            [
-                "squeue",
-                "--noheader",
-                "--jobs",
-                ",".join(self._job_ids),
-                "--format=%A",
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+        try:
+            result = subprocess.run(
+                [
+                    "squeue",
+                    "--noheader",
+                    "--jobs",
+                    ",".join(self._job_ids),
+                    "--format=%A",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=_SLURM_COMMAND_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            logger.debug("squeue timed out while checking slurm jobs")
+            return None
+        if result.returncode != 0:
+            # squeue rejects job ids that have already left the queue, so a
+            # nonzero exit is expected on long runs and means "no info".
+            logger.debug("squeue failed while checking slurm jobs: %s", result.stderr)
+            return None
         return {
             line.strip().split(maxsplit=1)[0]
             for line in result.stdout.splitlines()
@@ -137,32 +172,45 @@ class SlurmWorkerPool:
             return {}
 
         known_job_ids = set(self._job_ids)
-        result = subprocess.run(
-            [
-                "sacct",
-                "-X",
-                "-o",
-                "JobID,State,NodeList",
-                "--parsable2",
-                "-j",
-                ",".join(self._job_ids),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
+        try:
+            result = subprocess.run(
+                [
+                    "sacct",
+                    "-X",
+                    "--noheader",
+                    "-o",
+                    "JobID,State",
+                    "--parsable2",
+                    "-j",
+                    ",".join(self._job_ids),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=_SLURM_COMMAND_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            logger.debug("sacct timed out while checking slurm jobs")
+            return {}
         if result.returncode != 0:
             logger.debug("sacct failed while checking slurm jobs: %s", result.stderr)
             return {}
 
         states: dict[str, str] = {}
-        for line in result.stdout.splitlines()[1:]:
-            job_id, state, _node_list = line.split("|")
+        for line in result.stdout.splitlines():
+            if not line.strip():
+                continue
+            parts = line.split("|")
+            if len(parts) < 2:
+                logger.debug("ignoring malformed sacct line: %r", line)
+                continue
+            job_id, state = parts[0], parts[1]
             allocation_job_id, separator, _step_id = job_id.partition(".")
             if separator and allocation_job_id in known_job_ids:
                 continue
             if job_id not in known_job_ids:
-                raise ValueError(f"unexpected Slurm job id: {job_id!r}")
+                logger.debug("ignoring unexpected slurm job id from sacct: %r", job_id)
+                continue
             states[job_id] = state.upper().split(maxsplit=1)[0].removesuffix("+")
         return states
 
@@ -172,12 +220,8 @@ class SlurmWorkerPool:
                 return
             self._scale_once()
             while not self._stop_event.wait(timeout=self._poll_interval):
-                self._scale_once()
-                if any(
-                    state not in _UNFINISHED_STATES
-                    and state not in ("CANCELLED", "COMPLETED")
-                    for state in self._task_states().values()
-                ):
+                states = self._scale_once()
+                if any(_is_failed_state(state) for state in states.values()):
                     self._report_failure("slurm worker pool became unhealthy")
                     return
         except Exception as exc:

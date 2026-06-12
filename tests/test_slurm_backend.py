@@ -659,8 +659,9 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
     ]
     assert sacct_records[-1]["argv"] == [
         "-X",
+        "--noheader",
         "-o",
-        "JobID,State,NodeList",
+        "JobID,State",
         "--parsable2",
         "-j",
         "100,101",
