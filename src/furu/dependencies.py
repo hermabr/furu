@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import fields, is_dataclass
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, Callable, Literal, Self, overload
+from typing import TYPE_CHECKING, Any, Literal, Self, overload
 
 from pydantic import BaseModel as PydanticBaseModel
 

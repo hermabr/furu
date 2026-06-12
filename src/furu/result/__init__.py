@@ -9,6 +9,7 @@ from typing import (
     Any,
     Final,
     Literal,
+    TypeAlias,
     assert_never,
     cast,
     get_args,
@@ -31,8 +32,8 @@ ARTIFACTS_DIR_NAME: Final = "artifacts"
 LAZY_DIR_NAME: Final = "lazy"
 MANIFEST_FILE_NAME: Final = "manifest.json"
 _ROOT_ARTIFACT_NAME: Final = "root"
-type ValuePath = tuple[str, ...]
-type WrapperKind = Literal[
+ValuePath: TypeAlias = tuple[str, ...]
+WrapperKind: TypeAlias = Literal[
     "external", "dataclass", "path", "pydantic", "tuple", "set", "frozenset", "lazy"
 ]
 

@@ -1,7 +1,7 @@
 [project]
 name = "furu"
 version = "0.0.49"
-description = "Add your description here"
+description = "Reproducible experiments in plain Python: cached results and dependency-aware execution."
 readme = "README.md"
 authors = [
     { name = "Herman Brunborg", email = "herman@brunborg.com" }
@@ -14,6 +14,9 @@ dependencies = [
     "pydantic-settings>=2.14.1",
     "uvicorn>=0.46.0",
 ]
+
+[project.urls]
+Repository = "https://github.com/hermabr/furu"
 
 [project.entry-points.pytest11]
 furu = "furu.testing"
