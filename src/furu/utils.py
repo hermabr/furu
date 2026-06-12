@@ -26,6 +26,20 @@ def _running_main_module_name() -> str | None:
     return None
 
 
+def _install_main_module_alias() -> None:
+    spec_name = _running_main_module_name()
+    if spec_name is None or spec_name in sys.modules:
+        return
+
+    main = sys.modules["__main__"]
+    sys.modules[spec_name] = main
+    parent_name, _, child_name = spec_name.rpartition(".")
+    if parent_name:
+        parent = sys.modules.get(parent_name)
+        if parent is not None and not hasattr(parent, child_name):
+            setattr(parent, child_name, main)
+
+
 def fully_qualified_name(value: object) -> str:
     mod = getattr(value, "__module__", None)
     qualname = getattr(value, "__qualname__", None)
@@ -48,8 +62,10 @@ def fully_qualified_name(value: object) -> str:
 
             if not get_config().debug_mode:
                 raise ValueError(
-                    "Cannot serialize objects from __main__ module. "
-                    "Run the file as `python -m package.module`."
+                    "Cannot serialize objects from the __main__ module. "
+                    "Run the file as `python -m package.module`, or re-import "
+                    "the class from its own module inside the "
+                    '`if __name__ == "__main__":` block.'
                 )
             mod = "__main__"
 
@@ -60,11 +76,6 @@ def resolve_fully_qualified_name(name: str) -> Any:
     module_name, _, attr_name = name.rpartition(".")
     if not module_name or not attr_name:
         raise ValueError(f"Expected fully qualified name, got {name!r}")
-
-    if module_name == _running_main_module_name():
-        main = sys.modules.get("__main__")
-        if main is not None and hasattr(main, attr_name):
-            return getattr(main, attr_name)
 
     return getattr(importlib.import_module(module_name), attr_name)
 
