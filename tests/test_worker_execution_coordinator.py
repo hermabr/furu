@@ -1113,7 +1113,7 @@ def test_job_result_request_uses_status_discriminator() -> None:
 
 
 def test_worker_loop_raises_when_server_is_unavailable() -> None:
-    with pytest.raises(httpx.ConnectError):
+    with pytest.raises(RuntimeError, match="failed"):
         worker_loop(
             server_url="http://127.0.0.1:1",
             auth_token="test-token",
