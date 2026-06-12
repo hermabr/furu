@@ -15,6 +15,7 @@ from furu.worker.protocol import (
     JobBlockedResult,
     JobCompletedResult,
     JobFailedResult,
+    JobResultRequest,
 )
 
 logger = get_logger("worker.loop")
@@ -33,7 +34,7 @@ def worker_loop(
     consecutive_failures = 0
 
     while True:
-        logger.info("worker requesting new task from server")
+        logger.debug("worker requesting new task from server")
         match client.lease_job(resources=resource_request):
             case "stop":
                 logger.info("worker told to stop")
@@ -50,6 +51,7 @@ def worker_loop(
             case Job() as job:
                 idle_started_at = None
                 task_label: str | None = None
+                job_result: JobResultRequest
                 try:
                     obj = Furu.from_artifact(job.artifact)
                     task_label = obj._log_label
@@ -60,62 +62,57 @@ def worker_loop(
                     )
                     with worker_execution_context(lease_id=job.lease_id):
                         _ensure_single_result(obj)
-                    client.job_result(job.lease_id, JobCompletedResult())
-                    logger.info(
-                        "worker finished task: lease_id=%s task=%s status=completed",
-                        job.lease_id,
-                        task_label,
-                    )
-                    consecutive_failures = 0
+                    job_result = JobCompletedResult()
                 except _DependencyNotReady as exc:
-                    dependencies = [
-                        ArtifactSpec.from_furu(dep) for dep in exc.dependencies
-                    ]
-                    client.job_result(
-                        job.lease_id,
-                        JobBlockedResult(dependencies=dependencies),
+                    job_result = JobBlockedResult(
+                        dependencies=[
+                            ArtifactSpec.from_furu(dep) for dep in exc.dependencies
+                        ]
                     )
-                    if task_label is None:
-                        logger.info(
-                            "worker finished task: lease_id=%s status=blocked",
-                            job.lease_id,
-                        )
-                    else:
-                        logger.info(
-                            "worker finished task: lease_id=%s task=%s status=blocked",
-                            job.lease_id,
-                            task_label,
-                        )
-                    consecutive_failures = 0
                 except Exception as exc:
-                    client.job_result(
-                        job.lease_id,
-                        JobFailedResult(
-                            error="".join(
-                                traceback.format_exception(
-                                    type(exc),
-                                    exc,
-                                    exc.__traceback__,
-                                )
-                            ),
+                    job_result = JobFailedResult(
+                        error="".join(
+                            traceback.format_exception(
+                                type(exc),
+                                exc,
+                                exc.__traceback__,
+                            )
                         ),
                     )
-                    if task_label is None:
-                        logger.info(
-                            "worker finished task: lease_id=%s status=failed",
-                            job.lease_id,
-                        )
-                    else:
-                        logger.info(
-                            "worker finished task: lease_id=%s task=%s status=failed",
-                            job.lease_id,
-                            task_label,
-                        )
-                    consecutive_failures += 1
-                    if (
-                        max_consecutive_failures is not None
-                        and consecutive_failures > max_consecutive_failures
-                    ):
-                        return
+
+                client.job_result(job.lease_id, job_result)
+
+                match job_result:
+                    case JobCompletedResult():
+                        status = "completed"
+                        consecutive_failures = 0
+                    case JobBlockedResult():
+                        status = "blocked"
+                        consecutive_failures = 0
+                    case JobFailedResult():
+                        status = "failed"
+                        consecutive_failures += 1
+                    case unexpected_result:
+                        assert_never(unexpected_result)
+
+                if task_label is None:
+                    logger.info(
+                        "worker finished task: lease_id=%s status=%s",
+                        job.lease_id,
+                        status,
+                    )
+                else:
+                    logger.info(
+                        "worker finished task: lease_id=%s task=%s status=%s",
+                        job.lease_id,
+                        task_label,
+                        status,
+                    )
+
+                if (
+                    max_consecutive_failures is not None
+                    and consecutive_failures > max_consecutive_failures
+                ):
+                    return
             case unexpected:
                 assert_never(unexpected)
