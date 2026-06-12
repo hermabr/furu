@@ -4,16 +4,24 @@ import secrets
 import shutil
 import tempfile
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 import pytest
 
-import furu.config as furu_config
-from furu.config import _FuruConfig
-from furu.config import _FuruDirectories
-from furu.config import get_config
+from furu.config import _FuruConfig, _FuruDirectories, _set_config, get_config
+
+
+@contextmanager
+def override_config(config: _FuruConfig) -> Iterator[None]:
+    previous = get_config()
+    _set_config(config)
+    try:
+        yield
+    finally:
+        _set_config(previous)
 
 
 @dataclass(slots=True)
@@ -50,7 +58,6 @@ def pytest_configure(config: pytest.Config) -> None:
         Path(tempfile.gettempdir())
         / f"furu-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(4)}"
     )
-    # run_base_directory.mkdir(parents=True, exist_ok=True)
 
     run_config = _replace_config_directories(
         get_config(),
@@ -65,7 +72,7 @@ def pytest_configure(config: pytest.Config) -> None:
         original_config=get_config(),
         run_config=run_config,
     )
-    furu_config._config = run_config
+    _set_config(run_config)
     config.stash[_STATE_KEY] = state
 
 
@@ -75,7 +82,7 @@ def pytest_unconfigure(config: pytest.Config) -> None:
 
     state = config.stash[_STATE_KEY]
 
-    furu_config._config = state.original_config
+    _set_config(state.original_config)
 
     if not _keep_furu_data():
         for field_name in type(state.run_config.directories).model_fields:
@@ -107,15 +114,17 @@ def _furu_per_test_base_directory(
     test_objects_directory = state.run_config.directories.objects / test_id
     test_executions_directory = state.run_config.directories.executions / test_id
 
-    furu_config._config = _replace_config_directories(
-        previous_config,
-        _FuruDirectories(
-            objects=test_objects_directory,
-            executions=test_executions_directory,
-            debug=state.run_config.directories.debug / test_id,
-        ),
+    _set_config(
+        _replace_config_directories(
+            previous_config,
+            _FuruDirectories(
+                objects=test_objects_directory,
+                executions=test_executions_directory,
+                debug=state.run_config.directories.debug / test_id,
+            ),
+        )
     )
     try:
         yield
     finally:
-        furu_config._config = previous_config
+        _set_config(previous_config)

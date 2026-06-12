@@ -3,14 +3,15 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-import furu.config as furu_config
 from furu.config import (
     _FuruConfig,
     _FuruDirectories,
     _FuruWorkerConfig,
     _WORKER_JSON_CONFIG_FILE_ENV_VAR,
+    _set_config,
     get_config,
 )
+from furu.testing import override_config
 
 
 def test_config_reads_environment(monkeypatch) -> None:
@@ -220,7 +221,8 @@ def test_config_is_frozen() -> None:
         )
 
 
-def test_private_config_module_value_can_be_replaced(monkeypatch) -> None:
+def test_set_config_replaces_active_config() -> None:
+    original_config = get_config()
     replacement_config = _FuruConfig(
         directories=_FuruDirectories(
             objects=Path("/tmp/context-furu-objects"),
@@ -228,6 +230,24 @@ def test_private_config_module_value_can_be_replaced(monkeypatch) -> None:
         ),
     )
 
-    monkeypatch.setattr(furu_config, "_config", replacement_config)
+    _set_config(replacement_config)
+    try:
+        assert get_config() is replacement_config
+    finally:
+        _set_config(original_config)
 
-    assert get_config() is replacement_config
+    assert get_config() is original_config
+
+
+def test_override_config_restores_previous_config_on_exit() -> None:
+    original_config = get_config()
+    replacement_config = _FuruConfig(debug_mode=True)
+
+    with override_config(replacement_config):
+        assert get_config() is replacement_config
+    assert get_config() is original_config
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with override_config(replacement_config):
+            raise RuntimeError("boom")
+    assert get_config() is original_config

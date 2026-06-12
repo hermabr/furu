@@ -3,9 +3,8 @@ from collections.abc import Iterator
 
 import pytest
 
-import furu.config as furu_config
 import furu.logging as furu_logging
-from furu.config import get_config
+from furu.config import _set_config, get_config
 
 
 def _reset_furu_logger() -> None:
@@ -23,7 +22,7 @@ def isolated_furu_logger() -> Iterator[None]:
     try:
         yield
     finally:
-        furu_config._config = original_config
+        _set_config(original_config)
         _reset_furu_logger()
         furu_logging.get_logger()
 
@@ -40,7 +39,7 @@ def test_stdout_handler_level_tracks_debug_mode(
     debug_mode: bool,
     expected_level: int,
 ) -> None:
-    furu_config._config = get_config().model_copy(update={"debug_mode": debug_mode})
+    _set_config(get_config().model_copy(update={"debug_mode": debug_mode}))
 
     logger = furu_logging.get_logger()
 
