@@ -13,6 +13,8 @@ from furu.resources import ResourceRequest
 
 logger = get_logger()
 
+_SLURM_COMMAND_TIMEOUT_S = 60.0
+
 _UNFINISHED_STATES = frozenset(
     {
         "COMPLETING",
@@ -138,32 +140,45 @@ class SlurmWorkerPool:
             return {}
 
         known_job_ids = set(self._job_ids)
-        result = subprocess.run(
-            [
-                "sacct",
-                "-X",
-                "-o",
-                "JobID,State,NodeList",
-                "--parsable2",
-                "-j",
-                ",".join(self._job_ids),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
+        try:
+            result = subprocess.run(
+                [
+                    "sacct",
+                    "-X",
+                    "--noheader",
+                    "-o",
+                    "JobID,State",
+                    "--parsable2",
+                    "-j",
+                    ",".join(self._job_ids),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=_SLURM_COMMAND_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            logger.debug("sacct timed out while checking slurm jobs")
+            return {}
         if result.returncode != 0:
             logger.debug("sacct failed while checking slurm jobs: %s", result.stderr)
             return {}
 
         states: dict[str, str] = {}
-        for line in result.stdout.splitlines()[1:]:
-            job_id, state, _node_list = line.split("|")
+        for line in result.stdout.splitlines():
+            parts = line.split("|")
+            if len(parts) < 2:
+                logger.warning("ignoring malformed sacct line: %r", line)
+                continue
+            job_id, state = parts[0], parts[1]
             allocation_job_id, separator, _step_id = job_id.partition(".")
             if separator and allocation_job_id in known_job_ids:
                 continue
             if job_id not in known_job_ids:
-                raise ValueError(f"unexpected Slurm job id: {job_id!r}")
+                logger.warning(
+                    "ignoring unexpected slurm job id from sacct: %r", job_id
+                )
+                continue
             states[job_id] = state.upper().split(maxsplit=1)[0].removesuffix("+")
         return states
 
