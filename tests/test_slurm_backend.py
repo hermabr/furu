@@ -11,9 +11,15 @@ from typing import Any
 import pytest
 
 import furu.worker.backends.slurm.backend as slurm_backend_module
-from furu.config import _FuruConfig, _WORKER_JSON_CONFIG_FILE_ENV_VAR, get_config
+from furu.config import (
+    _FuruConfig,
+    _FuruWorkerConfig,
+    _WORKER_JSON_CONFIG_FILE_ENV_VAR,
+    get_config,
+)
 from furu.execution.api import PoolApiClient
 from furu.resources import ResourceRequest
+from furu.testing import override_config
 from furu.worker import _cli
 from furu.worker.backends.slurm.backend import SlurmWorkerBackend
 from furu.worker.backends.slurm.pool import _UNFINISHED_STATES
@@ -617,6 +623,31 @@ def test_slurm_backend_rewrites_execution_coordinator_url_to_worker_connect_host
     assert f"--idle-timeout {get_config().worker.idle_timeout_seconds}" in script
     assert "--max-consecutive-failures 5" in script
     assert "http://0.0.0.0:4321" not in script
+
+
+def test_slurm_backend_worker_connect_host_defaults_to_config() -> None:
+    config = _FuruConfig(worker=_FuruWorkerConfig(connect_host="login01.cluster"))
+    with override_config(config):
+        backend = SlurmWorkerBackend(
+            max_workers=1,
+            resources=SlurmResources(cpus_per_worker=1),
+        )
+
+    assert backend.worker_connect_host == "login01.cluster"
+
+
+def test_slurm_backend_worker_connect_host_falls_back_to_fqdn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        slurm_backend_module.socket, "getfqdn", lambda: "node17.cluster"
+    )
+    backend = SlurmWorkerBackend(
+        max_workers=1,
+        resources=SlurmResources(cpus_per_worker=1),
+    )
+
+    assert backend.worker_connect_host == "node17.cluster"
 
 
 def test_slurm_worker_pool_health_tracks_sacct_jobs(

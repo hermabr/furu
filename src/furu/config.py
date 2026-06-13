@@ -24,6 +24,7 @@ class _FuruDirectories(BaseModel):
 class _FuruWorkerConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    connect_host: str | None = None
     idle_timeout_seconds: float = 60.0
     max_failed_restarts: int = 16
     max_retries_per_object: int = 3

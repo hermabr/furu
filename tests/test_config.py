@@ -19,6 +19,7 @@ def test_config_reads_environment(monkeypatch) -> None:
     monkeypatch.setenv("FURU_DIRECTORIES__OBJECTS", "/tmp/furu-objects")
     monkeypatch.setenv("FURU_DIRECTORIES__EXECUTIONS", "/tmp/furu-executions")
     monkeypatch.setenv("FURU_DIRECTORIES__DEBUG", "/tmp/furu-debug")
+    monkeypatch.setenv("FURU_WORKER__CONNECT_HOST", "login01.cluster")
     monkeypatch.setenv("FURU_WORKER__IDLE_TIMEOUT_SECONDS", "12.5")
     monkeypatch.setenv("FURU_WORKER__MAX_FAILED_RESTARTS", "7")
     monkeypatch.setenv("FURU_WORKER__MAX_RETRIES_PER_OBJECT", "3")
@@ -37,6 +38,7 @@ def test_config_reads_environment(monkeypatch) -> None:
         debug=Path("/tmp/furu-debug"),
     )
     assert config.worker == _FuruWorkerConfig(
+        connect_host="login01.cluster",
         idle_timeout_seconds=12.5,
         max_failed_restarts=7,
         max_retries_per_object=3,

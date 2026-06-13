@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import secrets
 import shlex
+import socket
 import sys
 import threading
 from dataclasses import dataclass, field
@@ -22,7 +23,9 @@ SlurmExport: TypeAlias = Literal["NIL", "ALL"] | tuple[str, ...] | None
 class SlurmWorkerBackend:
     max_workers: int
     resources: SlurmResources
-    worker_connect_host: str
+    worker_connect_host: str = field(
+        default_factory=lambda: get_config().worker.connect_host or socket.getfqdn()
+    )
     max_failed_restarts: int = field(
         default_factory=lambda: get_config().worker.max_failed_restarts
     )
