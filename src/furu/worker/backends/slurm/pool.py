@@ -187,10 +187,10 @@ class SlurmWorkerPool:
                 timeout=_SLURM_COMMAND_TIMEOUT_S,
             )
         except subprocess.TimeoutExpired:
-            logger.debug("sacct timed out while checking slurm jobs")
+            logger.warning("sacct timed out while checking slurm jobs")
             return {}
         if result.returncode != 0:
-            logger.debug("sacct failed while checking slurm jobs: %s", result.stderr)
+            logger.warning("sacct failed while checking slurm jobs: %s", result.stderr)
             return {}
 
         states: dict[str, str] = {}
