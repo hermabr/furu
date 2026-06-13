@@ -624,6 +624,36 @@ def test_slurm_backend_builds_server_url_from_worker_connect_host(
     assert "--max-consecutive-failures 5" in script
 
 
+def test_slurm_backend_worker_connect_port_overrides_bound_port(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    _stub_count_satisfiable_jobs(monkeypatch, 1)
+    backend = SlurmWorkerBackend(
+        max_workers=1,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="execution-coordinator.cluster",
+        worker_connect_port=9000,
+    )
+
+    pool = backend.start_pool(
+        bound_port=4321,
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+    )
+    pool._scale_once()
+
+    records = _read_records(record_file)
+    sbatch_records = [record for record in records if record["executable"] == "sbatch"]
+    assert len(sbatch_records) == 1
+
+    script = Path(sbatch_records[0]["argv"][-1]).read_text()
+    assert "--server-url http://execution-coordinator.cluster:9000" in script
+    assert ":4321" not in script
+
+
 def test_slurm_backend_worker_connect_host_defaults_to_config() -> None:
     config = _FuruConfig(worker=_FuruWorkerConfig(connect_host="login01.cluster"))
     with override_config(config):
