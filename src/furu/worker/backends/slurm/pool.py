@@ -18,12 +18,17 @@ _UNFINISHED_STATES = frozenset(
         "COMPLETING",
         "PENDING",
         "PREEMPTED",
-        "READY",
         "REQUEUED",
         "RUNNING",
         "UNKNOWN",
     }
 )
+
+_PRUNABLE_STATES = ("CANCELLED", "COMPLETED")
+
+
+def _is_failed_state(state: str) -> bool:
+    return state not in _UNFINISHED_STATES and state not in _PRUNABLE_STATES
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,23 +62,18 @@ class SlurmWorkerPool:
                 text=True,
             )
 
-    def _scale_once(self) -> None:
+    def _scale_once(self) -> dict[str, str]:
         active_job_ids = self._active_job_ids()
         states = self._task_states()
         self._failed_job_ids[:] = sorted(
             set(self._failed_job_ids)
-            | {
-                job_id
-                for job_id, state in states.items()
-                if state not in _UNFINISHED_STATES
-                and state not in ("CANCELLED", "COMPLETED")
-            }
+            | {job_id for job_id, state in states.items() if _is_failed_state(state)}
         )
         self._job_ids[:] = [
             job_id
             for job_id in self._job_ids
             if job_id in active_job_ids
-            or states.get(job_id) not in (None, "CANCELLED", "COMPLETED")
+            or states.get(job_id) not in (None, *_PRUNABLE_STATES)
         ]
         remaining_starts = (
             self._max_workers
@@ -82,7 +82,7 @@ class SlurmWorkerPool:
             - len(self._job_ids)
         )
         if len(self._job_ids) >= self._max_workers or remaining_starts <= 0:
-            return
+            return states
 
         to_spawn = min(
             max(
@@ -109,6 +109,7 @@ class SlurmWorkerPool:
             )
             job_id = result.stdout.strip().split(";", maxsplit=1)[0]
             self._job_ids.append(job_id)
+        return states
 
     def _active_job_ids(self) -> set[str]:
         if not self._job_ids:
@@ -172,12 +173,8 @@ class SlurmWorkerPool:
                 return
             self._scale_once()
             while not self._stop_event.wait(timeout=self._poll_interval):
-                self._scale_once()
-                if any(
-                    state not in _UNFINISHED_STATES
-                    and state not in ("CANCELLED", "COMPLETED")
-                    for state in self._task_states().values()
-                ):
+                states = self._scale_once()
+                if any(_is_failed_state(state) for state in states.values()):
                     self._report_failure("slurm worker pool became unhealthy")
                     return
         except Exception as exc:
