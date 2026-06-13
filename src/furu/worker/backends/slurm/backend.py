@@ -42,14 +42,11 @@ class SlurmWorkerBackend:
     def start_pool(
         self,
         *,
-        server_url: str,
+        bound_port: int,
         auth_token: str,
         executor_dir: Path,
     ) -> SlurmWorkerPool:
-        scheme, rest = server_url.split("://", maxsplit=1)
-        server_url = (
-            f"{scheme}://{self.worker_connect_host}:{rest.rsplit(':', maxsplit=1)[1]}"
-        )
+        server_url = f"http://{self.worker_connect_host}:{bound_port}"
 
         chdir = Path.cwd().resolve()
         worker_dir = executor_dir.resolve() / "workers"

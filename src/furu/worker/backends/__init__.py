@@ -10,7 +10,7 @@ class WorkerBackend(Protocol):
     def start_pool(
         self,
         *,
-        server_url: str,
+        bound_port: int,
         auth_token: str,
         executor_dir: Path,
     ) -> WorkerPool: ...
