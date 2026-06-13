@@ -54,15 +54,20 @@ class SlurmWorkerPool:
         self._scale_thread.join(timeout=timeout)
 
         deadline = time.monotonic() + timeout
-        while self._active_job_ids() and time.monotonic() < deadline:
+        while time.monotonic() < deadline:
+            active_job_ids = self._active_job_ids()
+            if active_job_ids is not None and not active_job_ids:
+                return
             time.sleep(min(self._poll_interval, max(0.0, deadline - time.monotonic())))
-        if self._active_job_ids():
-            subprocess.run(
-                ["scancel", *self._job_ids],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
+
+        if not self._job_ids:
+            return
+        subprocess.run(
+            ["scancel", *self._job_ids],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
 
     def _scale_once(self) -> dict[str, str]:
         active_job_ids = self._active_job_ids()
@@ -74,7 +79,7 @@ class SlurmWorkerPool:
         self._job_ids[:] = [
             job_id
             for job_id in self._job_ids
-            if job_id in active_job_ids
+            if (active_job_ids is not None and job_id in active_job_ids)
             or states.get(job_id) not in (None, *_PRUNABLE_STATES)
         ]
         remaining_starts = (
@@ -113,22 +118,30 @@ class SlurmWorkerPool:
             self._job_ids.append(job_id)
         return states
 
-    def _active_job_ids(self) -> set[str]:
+    def _active_job_ids(self) -> set[str] | None:
         if not self._job_ids:
             return set()
 
-        result = subprocess.run(
-            [
-                "squeue",
-                "--noheader",
-                "--jobs",
-                ",".join(self._job_ids),
-                "--format=%A",
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+        try:
+            result = subprocess.run(
+                [
+                    "squeue",
+                    "--noheader",
+                    "--jobs",
+                    ",".join(self._job_ids),
+                    "--format=%A",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=_SLURM_COMMAND_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning("squeue timed out while checking slurm jobs")
+            return None
+        if result.returncode != 0:
+            logger.debug("squeue failed while checking slurm jobs: %s", result.stderr)
+            return None
         return {
             line.strip().split(maxsplit=1)[0]
             for line in result.stdout.splitlines()
