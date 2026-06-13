@@ -787,24 +787,24 @@ def test_execution_coordinator_run_uses_worker_backend() -> None:
         execution_coordinator_listen_host = "0.0.0.0"
 
         def __init__(self) -> None:
-            self.server_urls: list[str] = []
+            self.bound_ports: list[int] = []
             self.auth_tokens: list[str] = []
 
         def start_pool(
             self,
             *,
-            server_url: str,
+            bound_port: int,
             auth_token: str,
             executor_dir: Path,
         ) -> LocalThreadWorkerPool:
-            self.server_urls.append(server_url)
+            self.bound_ports.append(bound_port)
             self.auth_tokens.append(auth_token)
             return LocalThreadWorkerBackend(
                 max_workers=1,
                 resource_request=ResourceRequest(),
                 scale_interval=1.0,
             ).start_pool(
-                server_url=server_url,
+                bound_port=bound_port,
                 auth_token=auth_token,
                 executor_dir=executor_dir,
             )
@@ -818,8 +818,8 @@ def test_execution_coordinator_run_uses_worker_backend() -> None:
     assert returned is objs
     assert leaf.status() == "completed"
     assert leaf.create() == 11
-    assert len(backend.server_urls) == 1
-    assert backend.server_urls[0].startswith("http://0.0.0.0:")
+    assert len(backend.bound_ports) == 1
+    assert backend.bound_ports[0] > 0
     assert len(backend.auth_tokens) == 1
     assert backend.auth_tokens[0]
 
@@ -834,7 +834,7 @@ def test_execution_coordinator_run_passes_executor_dir_to_worker_backend() -> No
         def start_pool(
             self,
             *,
-            server_url: str,
+            bound_port: int,
             auth_token: str,
             executor_dir: Path,
         ) -> LocalThreadWorkerPool:
@@ -844,7 +844,7 @@ def test_execution_coordinator_run_passes_executor_dir_to_worker_backend() -> No
                 resource_request=ResourceRequest(),
                 scale_interval=1.0,
             ).start_pool(
-                server_url=server_url,
+                bound_port=bound_port,
                 auth_token=auth_token,
                 executor_dir=executor_dir,
             )
@@ -892,7 +892,7 @@ def test_execution_coordinator_run_returns_when_all_objects_are_already_complete
         def start_pool(
             self,
             *,
-            server_url: str,
+            bound_port: int,
             auth_token: str,
             executor_dir: Path,
         ) -> LocalThreadWorkerPool:
@@ -940,11 +940,12 @@ def test_execution_coordinator_run_starts_backend_pool_and_stops_and_joins_when_
         def start_pool(
             self,
             *,
-            server_url: str,
+            bound_port: int,
             auth_token: str,
             executor_dir: Path,
         ) -> RecordingPool:
             self.pool.events.append("start_pool")
+            server_url = f"http://127.0.0.1:{bound_port}"
             client = api.WorkerApiClient(server_url=server_url, auth_token=auth_token)
             failure_client = api.PoolApiClient(
                 server_url=server_url, auth_token=auth_token
@@ -994,10 +995,11 @@ def test_execution_coordinator_run_uses_worker_backend_execution_coordinator_lis
         def start_pool(
             self,
             *,
-            server_url: str,
+            bound_port: int,
             auth_token: str,
             executor_dir: Path,
         ) -> RecordingPool:
+            server_url = f"http://{self.execution_coordinator_listen_host}:{bound_port}"
             self.server_urls.append(server_url)
             pool = RecordingPool()
             client = api.WorkerApiClient(server_url=server_url, auth_token=auth_token)

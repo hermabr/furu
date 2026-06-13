@@ -414,7 +414,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     )
 
     pool = backend.start_pool(
-        server_url="http://execution-coordinator.cluster:1234",
+        bound_port=1234,
         auth_token="secret-token",
         executor_dir=executor_dir,
     )
@@ -512,7 +512,7 @@ def test_slurm_backend_export_option_controls_sbatch_args(
     )
 
     pool = backend.start_pool(
-        server_url="http://execution-coordinator.cluster:1234",
+        bound_port=1234,
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
     )
@@ -538,7 +538,7 @@ def test_slurm_backend_includes_selected_export_names_in_sbatch_args(
     )
 
     pool = backend.start_pool(
-        server_url="http://execution-coordinator.cluster:1234",
+        bound_port=1234,
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
     )
@@ -591,7 +591,7 @@ def test_slurm_resources_emit_node_count() -> None:
     ]
 
 
-def test_slurm_backend_rewrites_execution_coordinator_url_to_worker_connect_host(
+def test_slurm_backend_builds_server_url_from_worker_connect_host(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -605,7 +605,7 @@ def test_slurm_backend_rewrites_execution_coordinator_url_to_worker_connect_host
     )
 
     pool = backend.start_pool(
-        server_url="http://0.0.0.0:4321",
+        bound_port=4321,
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
     )
@@ -622,7 +622,6 @@ def test_slurm_backend_rewrites_execution_coordinator_url_to_worker_connect_host
     assert "--server-url http://execution-coordinator.cluster:4321" in script
     assert f"--idle-timeout {get_config().worker.idle_timeout_seconds}" in script
     assert "--max-consecutive-failures 5" in script
-    assert "http://0.0.0.0:4321" not in script
 
 
 def test_slurm_backend_worker_connect_host_defaults_to_config() -> None:
@@ -664,7 +663,7 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
         poll_interval=0,
     )
     pool = backend.start_pool(
-        server_url="http://execution-coordinator.cluster:1234",
+        bound_port=1234,
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
     )
@@ -719,7 +718,7 @@ def test_slurm_pool_scale_submits_additional_workers_as_satisfiable_count_grows(
         poll_interval=0,
     )
     pool = backend.start_pool(
-        server_url="http://execution-coordinator.cluster:1234",
+        bound_port=1234,
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
     )
@@ -764,7 +763,7 @@ def test_slurm_pool_scale_does_not_resubmit_for_already_tracked_viable_job(
         poll_interval=0,
     )
     pool = backend.start_pool(
-        server_url="http://execution-coordinator.cluster:1234",
+        bound_port=1234,
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
     )
@@ -801,7 +800,7 @@ def test_slurm_pool_scale_submits_replacement_workers_after_existing_workers_exi
         poll_interval=0,
     )
     pool = backend.start_pool(
-        server_url="http://execution-coordinator.cluster:1234",
+        bound_port=1234,
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
     )
@@ -841,7 +840,7 @@ def test_slurm_pool_scale_does_not_count_completed_jobs_as_restarts(
         poll_interval=0,
     )
     pool = backend.start_pool(
-        server_url="http://execution-coordinator.cluster:1234",
+        bound_port=1234,
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
     )
@@ -886,7 +885,7 @@ def test_slurm_pool_scale_does_not_count_cancelled_jobs_as_restarts(
         poll_interval=0,
     )
     pool = backend.start_pool(
-        server_url="http://execution-coordinator.cluster:1234",
+        bound_port=1234,
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
     )
@@ -920,7 +919,7 @@ def test_slurm_backend_requires_explicit_executor_dir() -> None:
 
     with pytest.raises(TypeError, match="executor_dir"):
         backend.start_pool(
-            server_url="http://127.0.0.1:1234",
+            bound_port=1234,
             auth_token="secret-token",
         )  # ty: ignore[missing-argument]
 
@@ -939,7 +938,7 @@ def test_slurm_worker_pool_join_cancels_jobs_left_after_timeout(
         poll_interval=0,
     )
     pool = backend.start_pool(
-        server_url="http://execution-coordinator.cluster:1234",
+        bound_port=1234,
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
     )

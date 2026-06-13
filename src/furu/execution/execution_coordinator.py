@@ -120,7 +120,7 @@ class ExecutionCoordinator:
                 pools = []
                 for backend in worker_backends:
                     pool = backend.start_pool(
-                        server_url=server.server_url,
+                        bound_port=server.bound_port,
                         auth_token=server.auth_token,
                         executor_dir=coordinator.executor_dir,
                     )

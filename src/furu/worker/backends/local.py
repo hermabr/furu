@@ -29,10 +29,11 @@ class LocalThreadWorkerBackend:
     def start_pool(
         self,
         *,
-        server_url: str,
+        bound_port: int,
         auth_token: str,
         executor_dir: Path,
     ) -> LocalThreadWorkerPool:
+        server_url = f"http://{self.execution_coordinator_listen_host}:{bound_port}"
         pool_holder: list[LocalThreadWorkerPool] = []
         pool = LocalThreadWorkerPool(
             _server_url=server_url,
