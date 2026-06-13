@@ -62,12 +62,19 @@ class SlurmWorkerPool:
 
         if not self._job_ids:
             return
-        subprocess.run(
+        result = subprocess.run(
             ["scancel", *self._job_ids],
             check=False,
             capture_output=True,
             text=True,
+            timeout=_SLURM_COMMAND_TIMEOUT_S,
         )
+        if result.returncode != 0:
+            logger.error(
+                "scancel failed for slurm worker jobs %s: %s",
+                ",".join(self._job_ids),
+                result.stderr.strip(),
+            )
 
     def _scale_once(self) -> dict[str, str]:
         active_job_ids = self._active_job_ids()
@@ -103,6 +110,8 @@ class SlurmWorkerPool:
             remaining_starts,
         )
         for _ in range(to_spawn):
+            if self._stop_event.is_set():
+                return states
             result = subprocess.run(
                 [
                     "sbatch",
@@ -110,10 +119,17 @@ class SlurmWorkerPool:
                     *self._sbatch_base_args,
                     str(self._script_path),
                 ],
-                check=True,
+                check=False,
                 capture_output=True,
                 text=True,
+                timeout=_SLURM_COMMAND_TIMEOUT_S,
             )
+            if result.returncode != 0:
+                logger.warning(
+                    "sbatch failed; retrying on the next scale tick: %s",
+                    result.stderr.strip(),
+                )
+                return states
             job_id = result.stdout.strip().split(";", maxsplit=1)[0]
             self._job_ids.append(job_id)
         return states
