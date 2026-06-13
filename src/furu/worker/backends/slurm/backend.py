@@ -26,6 +26,7 @@ class SlurmWorkerBackend:
     worker_connect_host: str = field(
         default_factory=lambda: get_config().worker.connect_host or socket.getfqdn()
     )
+    worker_connect_port: int | None = None
     max_failed_restarts: int = field(
         default_factory=lambda: get_config().worker.max_failed_restarts
     )
@@ -46,7 +47,10 @@ class SlurmWorkerBackend:
         auth_token: str,
         executor_dir: Path,
     ) -> SlurmWorkerPool:
-        server_url = f"http://{self.worker_connect_host}:{bound_port}"
+        connect_port = (
+            bound_port if self.worker_connect_port is None else self.worker_connect_port
+        )
+        server_url = f"http://{self.worker_connect_host}:{connect_port}"
 
         chdir = Path.cwd().resolve()
         worker_dir = executor_dir.resolve() / "workers"
