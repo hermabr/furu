@@ -1,12 +1,35 @@
 from __future__ import annotations
 
-from typing import Annotated, Any, get_args, get_origin
+from typing import Annotated, Any, Final, get_args, get_origin
+
+
+class _Skip:
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "furu.skip"
+
+
+skip: Final = _Skip()
+"""Mark a field as excluded from the artifact and schema via ``Annotated[T, furu.skip]``.
+
+Skipped fields stay normal constructor parameters but never reach the artifact or
+schema, so they do not affect an object's hash, ``object_id``, or cached result.
+Because a skipped field is absent from the artifact, it cannot be reconstructed when
+loading from one, so it must declare a default.
+"""
 
 
 def strip_annotated(declared_type: object) -> object:
     if get_origin(declared_type) is Annotated:
         return get_args(declared_type)[0]
     return declared_type
+
+
+def is_skipped(declared_type: object) -> bool:
+    if get_origin(declared_type) is Annotated:
+        return any(metadata is skip for metadata in get_args(declared_type)[1:])
+    return False
 
 
 def child_declared_type(declared_type: object, key: object) -> object:
