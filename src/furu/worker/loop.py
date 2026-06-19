@@ -7,7 +7,7 @@ from typing import assert_never
 from furu.core import Furu
 from furu.execution import _ensure_single_result, api
 from furu.logging import get_logger
-from furu.metadata import ArtifactSpec
+from furu.metadata import FuruSpec
 from furu.resources import ResourceRequest
 from furu.worker.context import _DependencyNotReady, worker_execution_context
 from furu.worker.protocol import (
@@ -53,7 +53,10 @@ def worker_loop(
                 task_label: str | None = None
                 job_result: JobResultRequest
                 try:
-                    obj = Furu.from_artifact(job.artifact)
+                    obj = Furu.from_artifact(
+                        job.artifact,
+                        runtime_data=job.runtime_data,
+                    )
                     task_label = obj._log_label
                     logger.info(
                         "worker received task: lease_id=%s task=%s",
@@ -66,7 +69,7 @@ def worker_loop(
                 except _DependencyNotReady as exc:
                     job_result = JobBlockedResult(
                         dependencies=[
-                            ArtifactSpec.from_furu(dep) for dep in exc.dependencies
+                            FuruSpec.from_furu(dep) for dep in exc.dependencies
                         ]
                     )
                 except Exception as exc:

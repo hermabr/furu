@@ -15,7 +15,6 @@ from furu.config import get_config
 from furu.core import Furu
 from furu.dag import DagNode, _add_to_dag, _update_dag_blocking_dependencies
 from furu.logging import _scoped_log_files, get_logger
-from furu.metadata import ArtifactSpec
 from furu.resources import ResourceRequest, resource_request_satisfies
 from furu.worker.protocol import (
     Job,
@@ -193,10 +192,7 @@ class ExecutionCoordinator:
                 failed_retry,
                 failed,
             )
-            return Job(
-                lease_id=lease_id,
-                artifact=ArtifactSpec.from_furu(node.obj),
-            )
+            return Job.from_furu(lease_id=lease_id, obj=node.obj)
 
     def count_satisfiable_jobs(
         self, *, resources: ResourceRequest, max_workers: int

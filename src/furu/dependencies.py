@@ -3,11 +3,13 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import fields, is_dataclass
+from dataclasses import is_dataclass
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, Literal, Self, overload
 
 from pydantic import BaseModel as PydanticBaseModel
+
+from furu._fields import dataclass_field_specs, pydantic_field_specs
 
 if TYPE_CHECKING:
     from furu.core import Furu
@@ -96,11 +98,11 @@ def find_nested_furu_objects(value: object) -> Iterator[Furu]:
         case Furu():
             yield value
         case _ if is_dataclass(value) and not isinstance(value, type):
-            for field in fields(value):
+            for field in dataclass_field_specs(type(value), include_skiphash=False):
                 yield from find_nested_furu_objects(getattr(value, field.name))
         case PydanticBaseModel():
-            for name in type(value).model_fields:
-                yield from find_nested_furu_objects(getattr(value, name))
+            for field in pydantic_field_specs(type(value), include_skiphash=False):
+                yield from find_nested_furu_objects(getattr(value, field.name))
         case tuple() | list() | set() | frozenset():
             for item in value:
                 yield from find_nested_furu_objects(item)
@@ -112,7 +114,7 @@ def find_nested_furu_objects(value: object) -> Iterator[Furu]:
 def collect_declared_refs(obj: Furu) -> tuple[Furu, ...]:
     refs_by_id: dict[str, Furu] = {}
 
-    for field in fields(obj):
+    for field in dataclass_field_specs(type(obj), include_skiphash=False):
         for ref in find_nested_furu_objects(getattr(obj, field.name)):
             refs_by_id.setdefault(ref.object_id, ref)
 

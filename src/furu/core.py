@@ -9,6 +9,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeAlias, cast, final
 
+from furu._fields import prepare_skiphash_dataclass_fields
 from furu._storage_layout import (
     compute_lock_path_in,
     data_dir_in,
@@ -23,6 +24,7 @@ from furu.metadata import ArtifactSpec
 from furu.resources import ResourceRequirements
 from furu.result import load_result_bundle
 from furu.result.codec import ResultCodec
+from furu.serializer.artifact import runtime_to_json as _runtime_to_json
 from furu.serializer.artifact import to_json as _to_json
 from furu.serializer.registry import ArtifactSerializer
 from furu.serializer.schema import schema_type as _schema_type
@@ -71,6 +73,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
                 raise TypeError(f"{cls.__name__}.{name} must have a type annotation")
 
         validate_cls(cls)
+        prepare_skiphash_dataclass_fields(cls)
         if "__dataclass_params__" not in cls.__dict__:
             dataclass(frozen=True, kw_only=True)(cls)
         from furu.execution import _install_create_dispatchers, _resolve_create_mode
@@ -225,14 +228,17 @@ class Furu[T](_FuruDataclassTransform, ABC):
     @final
     @classmethod
     def from_artifact[TFuru: Furu](
-        cls: type[TFuru], artifact: ArtifactSpec | Path
+        cls: type[TFuru],
+        artifact: ArtifactSpec | Path,
+        *,
+        runtime_data: dict[str, JsonValue] | None = None,
     ) -> TFuru:
         from furu.serializer.artifact import _from_artifact
 
         if not isinstance(artifact, ArtifactSpec):
             with metadata_path_in(artifact).open(encoding="utf-8") as f:
                 artifact = ArtifactSpec.model_validate(json.load(f)["artifact"])
-        return _from_artifact(artifact, cls)
+        return _from_artifact(artifact, cls, runtime_data=runtime_data)
 
     @final
     @cached_property
@@ -251,6 +257,17 @@ class Furu[T](_FuruDataclassTransform, ABC):
         self,
     ) -> str:
         return _hash_dict_deterministically(self._artifact_data)
+
+    @final
+    @cached_property
+    def _runtime_data(
+        self,
+    ) -> dict[str, JsonValue]:
+        return _runtime_to_json(
+            self,
+            declared_type=type(self),
+            artifact_serializers=self.artifact_serializers,
+        )
 
     @final
     @cached_property

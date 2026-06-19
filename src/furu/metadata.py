@@ -5,7 +5,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from furu._storage_layout import metadata_path_in
 from furu.utils import JsonValue, object_id_from_parts
@@ -44,6 +44,28 @@ class ArtifactSpec(BaseModel):
             schema_hash=self.schema_hash,
             artifact_hash=self.artifact_hash,
         )
+
+
+class FuruSpec(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        strict=True,
+    )
+
+    artifact: ArtifactSpec
+    runtime_data: dict[str, JsonValue] = Field(default_factory=dict)
+
+    @classmethod
+    def from_furu[TFuru: Furu](cls, obj: TFuru) -> FuruSpec:
+        return cls(
+            artifact=ArtifactSpec.from_furu(obj),
+            runtime_data=obj._runtime_data,
+        )
+
+    @cached_property
+    def object_id(self) -> str:
+        return self.artifact.object_id
 
 
 class RunningMetadata(BaseModel):

@@ -98,6 +98,22 @@ class NodePair(Furu[dict]):
         }
 
 
+class SkipHashNode(Furu[int]):
+    value: int
+    gpus: furu.skiphash[int]
+
+    def create(self) -> int:
+        return self.value + self.gpus
+
+
+class DefaultSkipHashNode(Furu[int]):
+    value: int
+    gpus: furu.skiphash[int] = 1
+
+    def create(self) -> int:
+        return self.value + self.gpus
+
+
 class RandomObj(Furu[float]):
     id: int
 
@@ -302,6 +318,11 @@ def letter_count_with_untyped_source(source, letter: str) -> int:
 @furu.function()
 def letter_count_with_parentheses(source: str, letter: str) -> int:
     return source.count(letter)
+
+
+@furu.function
+def skiphash_letter_count(source: str, letter: str, gpus: furu.skiphash[int]) -> int:
+    return source.count(letter) + gpus
 
 
 GROUP_EXECUTION_EVENTS: list[tuple[str, tuple[int, ...]]] = []
@@ -619,6 +640,31 @@ def test_function_supports_parenthesized_decorator():
     assert _from_json(obj._artifact_data) == obj
 
 
+def test_function_supports_skiphash_parameters():
+    obj = skiphash_letter_count.as_furu("banana", "a", gpus=2)
+
+    assert obj.create() == 5
+    assert obj._schema_data == {
+        "|class": "test_core.skiphash_letter_count",
+        "|fields": {"letter": "builtins.str", "source": "builtins.str"},
+    }
+    assert obj._artifact_data == {
+        "|kind": "instance",
+        "|class": "test_core.skiphash_letter_count",
+        "|fields": {"source": "banana", "letter": "a"},
+    }
+    assert obj._runtime_data == {"gpus": 2}
+
+    loaded = Furu.from_artifact(
+        ArtifactSpec.from_furu(obj),
+        runtime_data=obj._runtime_data,
+    )
+
+    assert getattr(loaded, "gpus") == 2
+    assert loaded.create() == 5
+    assert skiphash_letter_count.as_furu("banana", "a", gpus=8) == obj
+
+
 def test_function_rejects_variadic_parameters():
     with pytest.raises(
         TypeError,
@@ -908,6 +954,55 @@ def test_hashes_and_data_dir():
             _h=1,
         )._artifact_schema_hash
     )
+
+
+def test_skiphash_field_is_excluded_from_identity_artifact_and_schema():
+    one_gpu = SkipHashNode(value=10, gpus=1)
+    eight_gpus = SkipHashNode(value=10, gpus=8)
+
+    assert one_gpu._schema_data == {
+        "|class": "test_core.SkipHashNode",
+        "|fields": {"value": "builtins.int"},
+    }
+    assert one_gpu._artifact_data == {
+        "|kind": "instance",
+        "|class": "test_core.SkipHashNode",
+        "|fields": {"value": 10},
+    }
+    assert one_gpu._runtime_data == {"gpus": 1}
+    assert eight_gpus._runtime_data == {"gpus": 8}
+    assert one_gpu._artifact_hash == eight_gpus._artifact_hash
+    assert one_gpu._artifact_schema_hash == eight_gpus._artifact_schema_hash
+    assert one_gpu.object_id == eight_gpus.object_id
+    assert one_gpu == eight_gpus
+    assert one_gpu.gpus == 1
+    assert eight_gpus.gpus == 8
+
+
+def test_skiphash_field_round_trips_with_runtime_data():
+    obj = SkipHashNode(value=10, gpus=4)
+    artifact = ArtifactSpec.from_furu(obj)
+
+    loaded = SkipHashNode.from_artifact(artifact, runtime_data=obj._runtime_data)
+
+    assert loaded.value == 10
+    assert loaded.gpus == 4
+    assert loaded._artifact_hash == obj._artifact_hash
+    assert loaded._artifact_schema_hash == obj._artifact_schema_hash
+
+    with pytest.raises(TypeError, match="required skiphash field\\(s\\): gpus"):
+        SkipHashNode.from_artifact(artifact)
+
+
+def test_skiphash_field_with_default_loads_from_artifact_without_runtime_data():
+    obj = DefaultSkipHashNode(value=10, gpus=8)
+
+    loaded = DefaultSkipHashNode.from_artifact(ArtifactSpec.from_furu(obj))
+
+    assert loaded.value == 10
+    assert loaded.gpus == 1
+    assert loaded._artifact_hash == obj._artifact_hash
+    assert loaded._artifact_schema_hash == obj._artifact_schema_hash
 
 
 def expected_schema_for_B_like(

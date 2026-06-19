@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from pydantic import TypeAdapter, ValidationError
 
 import furu.worker.loop as worker_loop_module
-from furu import Furu
+from furu import Furu, skiphash
 from furu._storage_layout import execution_coordinator_log_path_in
 from furu.config import get_config
 from furu.dag import _add_to_dag
@@ -25,7 +25,7 @@ from furu.execution.execution_coordinator import (
     RunningJob,
 )
 from furu.execution.server import execution_coordinator_server
-from furu.metadata import ArtifactSpec
+from furu.metadata import ArtifactSpec, FuruSpec
 from furu.resources import ResourceRequest, ResourceRequirements
 from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
 from furu.worker.loop import worker_loop
@@ -134,6 +134,14 @@ class ExecutionCoordinatorLazyParent(Furu[int]):
         return ExecutionCoordinatorLeaf(value=self.value).create() + 1
 
 
+class SkipHashExecutionCoordinatorLeaf(Furu[int]):
+    value: int
+    gpus: skiphash[int]
+
+    def create(self) -> int:
+        return self.value + self.gpus
+
+
 def test_execution_coordinator_init_partitions_ready_and_blocked() -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
     parent = ExecutionCoordinatorParent(child=leaf)
@@ -224,7 +232,7 @@ def test_execution_coordinator_job_result_blocked_discovers_lazy_dependency_and_
 
     coordinator.job_result(
         parent_job.lease_id,
-        JobBlockedResult(dependencies=[ArtifactSpec.from_furu(dependency)]),
+        JobBlockedResult(dependencies=[FuruSpec.from_furu(dependency)]),
     )
 
     assert set(coordinator.ready) == {dependency.object_id}
@@ -251,7 +259,7 @@ def test_execution_coordinator_job_result_blocked_ignores_completed_lazy_depende
 
     coordinator.job_result(
         parent_job.lease_id,
-        JobBlockedResult(dependencies=[ArtifactSpec.from_furu(dependency)]),
+        JobBlockedResult(dependencies=[FuruSpec.from_furu(dependency)]),
     )
 
     assert set(coordinator.ready) == {parent.object_id}
@@ -275,9 +283,7 @@ def test_execution_coordinator_job_result_blocked_discovers_multiple_lazy_depend
     coordinator.job_result(
         parent_job.lease_id,
         JobBlockedResult(
-            dependencies=[
-                ArtifactSpec.from_furu(dependency) for dependency in dependencies
-            ]
+            dependencies=[FuruSpec.from_furu(dependency) for dependency in dependencies]
         ),
     )
 
@@ -305,7 +311,7 @@ def test_execution_coordinator_uses_new_lease_when_blocked_job_is_released() -> 
 
     coordinator.job_result(
         first_parent_job.lease_id,
-        JobBlockedResult(dependencies=[ArtifactSpec.from_furu(dependency)]),
+        JobBlockedResult(dependencies=[FuruSpec.from_furu(dependency)]),
     )
 
     dependency_job = coordinator.lease_job(resources=ANY_RESOURCES)
@@ -1201,6 +1207,52 @@ def test_worker_loop_logs_task_requests_and_received_task(
         "worker finished task: "
         f"lease_id={job.lease_id} task={leaf._log_label} status=completed"
     ) in caplog.messages
+
+
+def test_worker_loop_reconstructs_job_with_skiphash_runtime_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    leaf = SkipHashExecutionCoordinatorLeaf(value=1, gpus=4)
+    job = Job.from_furu(lease_id="lease-1", obj=leaf)
+    leases: list[LeaseJobResponse] = [job, "stop"]
+    seen_gpus: list[int] = []
+    results: list[tuple[str, JobResultRequest]] = []
+
+    class TestClient:
+        def __init__(self, server_url: str, *, auth_token: str) -> None:
+            pass
+
+        def lease_job(self, *, resources: ResourceRequest) -> LeaseJobResponse:
+            return leases.pop(0)
+
+        def job_result(self, lease_id: str, request: JobResultRequest) -> None:
+            results.append((lease_id, request))
+
+    def ensure_single_result(obj: Furu[object]) -> None:
+        assert isinstance(obj, SkipHashExecutionCoordinatorLeaf)
+        seen_gpus.append(obj.gpus)
+
+    test_client = TestClient("http://worker.test", auth_token="test-token")
+    monkeypatch.setattr(
+        api,
+        "WorkerApiClient",
+        lambda server_url, *, auth_token: test_client,
+    )
+    monkeypatch.setattr(
+        worker_loop_module, "_ensure_single_result", ensure_single_result
+    )
+
+    worker_loop(
+        server_url="http://worker.test",
+        auth_token="test-token",
+        resource_request=ResourceRequest(),
+        idle_timeout=get_config().worker.idle_timeout_seconds,
+    )
+
+    assert job.artifact.artifact_data["|fields"] == {"value": 1}
+    assert job.runtime_data == {"gpus": 4}
+    assert seen_gpus == [4]
+    assert results == [("lease-1", JobCompletedResult())]
 
 
 def test_worker_loop_logs_stop_and_first_wait(

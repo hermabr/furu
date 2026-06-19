@@ -1,16 +1,21 @@
 import enum
 import types
 import typing
-from dataclasses import fields, is_dataclass
+from dataclasses import is_dataclass
 from typing import (
     Any,
     get_args,
     get_origin,
-    get_type_hints,
 )
 
 from pydantic import BaseModel as PydanticBaseModel
 
+from furu._fields import (
+    FieldSpec,
+    dataclass_field_specs,
+    pydantic_field_specs,
+    strip_skiphash,
+)
 from furu._declared_types import strip_annotated
 from furu.constants import (
     ARGSMARKER,
@@ -40,7 +45,7 @@ def _custom_schema(
 
 def schema_class(
     tp: type,
-    field_names: list[str],
+    field_specs: list[FieldSpec],
     seen: set[type],
     *,
     artifact_serializers: tuple[type[ArtifactSerializer], ...],
@@ -49,16 +54,15 @@ def schema_class(
         return {CLASSMARKER: fully_qualified_name(tp)}
     seen.add(tp)
 
-    hints = get_type_hints(tp, include_extras=True)
     return {
         CLASSMARKER: fully_qualified_name(tp),
         FIELDSMARKER: {
-            name: schema_type(
-                hints[name],
+            spec.name: schema_type(
+                spec.identity_type,
                 seen,
                 artifact_serializers=artifact_serializers,
             )
-            for name in field_names
+            for spec in field_specs
         },
     }
 
@@ -71,7 +75,10 @@ def schema_dataclass(
 ) -> JsonValue:
     return schema_class(
         tp,
-        sorted(f.name for f in fields(tp)),
+        sorted(
+            dataclass_field_specs(tp, include_skiphash=False),
+            key=lambda spec: spec.name,
+        ),
         seen,
         artifact_serializers=artifact_serializers,
     )
@@ -85,7 +92,10 @@ def schema_pydantic_model(
 ) -> JsonValue:
     return schema_class(
         tp,
-        sorted(tp.model_fields),
+        sorted(
+            pydantic_field_specs(tp, include_skiphash=False),
+            key=lambda spec: spec.name,
+        ),
         seen,
         artifact_serializers=artifact_serializers,
     )
@@ -97,6 +107,8 @@ def schema_type(
     *,
     artifact_serializers: tuple[type[ArtifactSerializer], ...],
 ) -> JsonValue:
+    tp = strip_skiphash(tp)
+
     if serializer := ArtifactSerializerMeta.serializer_for_schema(
         tp,
         artifact_serializers,
@@ -180,7 +192,7 @@ def schema_type(
         return fully_qualified_name(tp)
     elif isinstance(tp, str):
         return tp
-    elif tp in [list, tuple, dict]:
+    elif tp is list or tp is tuple or tp is dict:
         if get_args(tp) != ():
             raise ValueError(f"Expected bare {tp.__name__}, got parameterized type")
         return fully_qualified_name(tp)

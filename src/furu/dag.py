@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, assert_never
 
 from furu.core import Furu
 from furu.dependencies import collect_declared_refs
-from furu.metadata import ArtifactSpec
+from furu.metadata import FuruSpec
 
 if TYPE_CHECKING:
     from furu.execution.execution_coordinator import ExecutionCoordinator
@@ -68,12 +68,12 @@ def _add_to_dag(coordinator: ExecutionCoordinator, objs: Sequence[Furu]) -> None
 def _update_dag_blocking_dependencies(
     coordinator: ExecutionCoordinator,
     node: DagNode,
-    dependencies: Sequence[ArtifactSpec],
+    dependencies: Sequence[FuruSpec],
 ) -> None:
     dependency_ids: dict[str, None] = {}
     missing_dependencies: list[Furu] = []
-    for artifact in dependencies:
-        object_id = artifact.object_id
+    for dependency_spec in dependencies:
+        object_id = dependency_spec.object_id
         if object_id in coordinator.completed or object_id in dependency_ids:
             continue
 
@@ -83,7 +83,10 @@ def _update_dag_blocking_dependencies(
                 dependency_ids[object_id] = None
             continue
 
-        dependency = Furu.from_artifact(artifact)
+        dependency = Furu.from_artifact(
+            dependency_spec.artifact,
+            runtime_data=dependency_spec.runtime_data,
+        )
         if dependency.status() == "completed":
             continue
 
