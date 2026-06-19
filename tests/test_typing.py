@@ -55,17 +55,15 @@ if TYPE_CHECKING:
     assert_type(parent.children, list[TypingChild])
     assert_type(parent.children[0], TypingChild)
     assert_type(typed_letter_count(source="banana", letter="a"), int)
-    assert_type(
-        typed_letter_count.make_furu_obj(source="banana", letter="a"), furu.Furu[int]
-    )
+    assert_type(typed_letter_count.spec(source="banana", letter="a"), furu.Furu[int])
     assert_type(
         TypingFunctionParent(
-            child=typed_letter_count.make_furu_obj(source="banana", letter="a")
+            child=typed_letter_count.spec(source="banana", letter="a")
         ).child,
         furu.Furu[int],
     )
     assert_type(typed_letter_count_with_parentheses(source="banana", letter="a"), int)
     assert_type(
-        typed_letter_count_with_parentheses.make_furu_obj(source="banana", letter="a"),
+        typed_letter_count_with_parentheses.spec(source="banana", letter="a"),
         furu.Furu[int],
     )

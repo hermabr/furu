@@ -10,7 +10,7 @@ from furu.core import Furu
 
 
 class FuruFunction[**P, T](Protocol):
-    make_furu_obj: Callable[P, Furu[T]]
+    spec: Callable[P, Furu[T]]
     furu_type: TypeAlias = Furu[T]
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T: ...
@@ -118,7 +118,7 @@ def _function_type[**P, T](func: Callable[P, T]) -> type[Furu[T]]:
             exec_body=exec_body,
         ),
     )
-    setattr(cls, "make_furu_obj", cls)
+    setattr(cls, "spec", cls)
     setattr(cls, "furu_type", cls)
     return cls
 
@@ -126,12 +126,12 @@ def _function_type[**P, T](func: Callable[P, T]) -> type[Furu[T]]:
 def _function_wrapper[**P, T](
     func: Callable[P, T], cls: type[Furu[T]]
 ) -> FuruFunction[P, T]:
-    make_furu_obj = cast(Callable[P, Furu[T]], cls)
+    spec = cast(Callable[P, Furu[T]], cls)
 
     @wraps(func)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
-        return make_furu_obj(*args, **kwargs).create()
+        return spec(*args, **kwargs).create()
 
-    setattr(wrapper, "make_furu_obj", make_furu_obj)
+    setattr(wrapper, "spec", spec)
     setattr(wrapper, "furu_type", cls)
     return cast(FuruFunction[P, T], wrapper)
