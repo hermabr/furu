@@ -1727,7 +1727,8 @@ def test_cached_create_logs_debug_call_and_only_cache_hit_info(
 
     info_lines = [line for line in log_text.splitlines() if " INFO " in line]
     assert len(info_lines) == 1
-    assert "cache hit" in info_lines[0]
+    assert info_lines[0].endswith(f"INFO [furu] cache hit for {obj._log_label}")
+    assert " at " not in info_lines[0]
 
 
 def test_resolved_create_mode_validation() -> None:
