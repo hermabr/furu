@@ -634,11 +634,16 @@ def test_function_exposes_furu_type():
 
     assert isinstance(letter_count.furu_type, type)
     assert issubclass(letter_count.furu_type, Furu)
+    assert isinstance(letter_count.make_furu_obj, type)
+    assert issubclass(letter_count.make_furu_obj, Furu)
     assert isinstance(obj, Furu)
     assert type(obj) is letter_count.furu_type
+    assert type(obj) is letter_count.make_furu_obj
     assert getattr(obj, "source") == "banana"
     assert getattr(obj, "letter") == "a"
-    assert getattr(letter_count.furu_type, "make_furu_obj") is letter_count.furu_type
+    assert getattr(letter_count.make_furu_obj, "make_furu_obj") is (
+        letter_count.make_furu_obj
+    )
     assert getattr(letter_count.furu_type, "furu_type") is letter_count.furu_type
     assert obj.create() == 3
     assert obj._fully_qualified_name == "test_core.letter_count"

@@ -11,7 +11,7 @@ from furu.core import Furu
 
 class FuruFunction[**P, T](Protocol):
     make_furu_obj: Callable[P, Furu[T]]
-    furu_type: Any
+    type furu_type = Furu[Any]
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T: ...
 

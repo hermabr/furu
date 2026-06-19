@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, assert_type
+from typing import TYPE_CHECKING, Any, assert_type
 
 import furu
 
@@ -58,11 +58,14 @@ if TYPE_CHECKING:
     assert_type(
         typed_letter_count.make_furu_obj(source="banana", letter="a"), furu.Furu[int]
     )
+    assert_type(
+        TypingFunctionParent(
+            child=typed_letter_count.make_furu_obj(source="banana", letter="a")
+        ).child,
+        furu.Furu[Any],
+    )
     assert_type(typed_letter_count_with_parentheses(source="banana", letter="a"), int)
     assert_type(
         typed_letter_count_with_parentheses.make_furu_obj(source="banana", letter="a"),
         furu.Furu[int],
-    )
-    TypingFunctionParent(
-        child=typed_letter_count.make_furu_obj(source="banana", letter="a")
     )
