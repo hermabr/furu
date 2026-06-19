@@ -188,19 +188,15 @@ def _load_or_create[T](
 
 
 def _ensure_single_result[T](obj: Furu[T]) -> None:
-    if (cached_result_dir := result_dir_for_loading(obj)) is not None:
-        obj.logger.info("cache hit for %s at %s", obj._log_label, cached_result_dir)
+    if result_dir_for_loading(obj) is not None:
+        obj.logger.info("cache hit for %s", obj._log_label)
         return
 
     obj._base_dir.mkdir(parents=True, exist_ok=True)
 
     with lock(compute_lock_path_in(obj._base_dir)) as has_lock:
-        if (cached_result_dir := result_dir_for_loading(obj)) is not None:
-            obj.logger.info(
-                "cache hit for %s after waiting at %s",
-                obj._log_label,
-                cached_result_dir,
-            )
+        if result_dir_for_loading(obj) is not None:
+            obj.logger.info("cache hit for %s", obj._log_label)
             return
 
         _create_and_store_group(
@@ -242,7 +238,7 @@ def _load_or_create_worker[T](
 
     for obj in objs:
         if (cached_result_dir := result_dir_for_loading(obj)) is not None:
-            obj.logger.info("cache hit for %s at %s", obj._log_label, cached_result_dir)
+            obj.logger.info("cache hit for %s", obj._log_label)
             loaded.append(cast(T, load_result_bundle(cached_result_dir)))
         else:
             missing.append(obj)
@@ -279,7 +275,7 @@ def _load_or_create_local[T](
 
     for obj in unique:
         if (cached_result_dir := result_dir_for_loading(obj)) is not None:
-            obj.logger.info("cache hit for %s at %s", obj._log_label, cached_result_dir)
+            obj.logger.info("cache hit for %s", obj._log_label)
             results_by_object_id[obj.object_id] = cast(
                 T, load_result_bundle(cached_result_dir)
             )
@@ -298,11 +294,7 @@ def _load_or_create_local[T](
         pending: list[Furu[T]] = []
         for obj in missing:
             if (cached_result_dir := result_dir_for_loading(obj)) is not None:
-                obj.logger.info(
-                    "cache hit for %s after waiting at %s",
-                    obj._log_label,
-                    cached_result_dir,
-                )
+                obj.logger.info("cache hit for %s", obj._log_label)
                 results_by_object_id[obj.object_id] = cast(
                     T, load_result_bundle(cached_result_dir)
                 )
