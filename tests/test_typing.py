@@ -41,6 +41,13 @@ def typed_letter_count_with_parentheses(source: str, letter: str) -> int:
     return source.count(letter)
 
 
+class TypingFunctionParent(furu.Furu[int]):
+    child: typed_letter_count.furu_type
+
+    def create(self) -> int:
+        return self.child.create()
+
+
 if TYPE_CHECKING:
     parent = TypingParent()
     assert_type(parent.cached_child, TypingChild)
@@ -48,9 +55,14 @@ if TYPE_CHECKING:
     assert_type(parent.children, list[TypingChild])
     assert_type(parent.children[0], TypingChild)
     assert_type(typed_letter_count(source="banana", letter="a"), int)
-    assert_type(typed_letter_count.as_furu(source="banana", letter="a"), furu.Furu[int])
+    assert_type(
+        typed_letter_count.make_furu_obj(source="banana", letter="a"), furu.Furu[int]
+    )
     assert_type(typed_letter_count_with_parentheses(source="banana", letter="a"), int)
     assert_type(
-        typed_letter_count_with_parentheses.as_furu(source="banana", letter="a"),
+        typed_letter_count_with_parentheses.make_furu_obj(source="banana", letter="a"),
         furu.Furu[int],
+    )
+    TypingFunctionParent(
+        child=typed_letter_count.make_furu_obj(source="banana", letter="a")
     )

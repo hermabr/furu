@@ -10,7 +10,8 @@ from furu.core import Furu
 
 
 class FuruFunction[**P, T](Protocol):
-    as_furu: Callable[P, Furu[T]]
+    make_furu_obj: Callable[P, Furu[T]]
+    furu_type: Any
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T: ...
 
@@ -27,14 +28,15 @@ def function[**P, T](
     func: Callable[P, T] | None = None,
 ) -> FuruFunction[P, T] | Callable[[Callable[P, T]], FuruFunction[P, T]]:
     def decorator(inner: Callable[P, T]) -> FuruFunction[P, T]:
-        return _function(inner)
+        cls = _function_type(inner)
+        return _function_wrapper(inner, cls)
 
     if func is None:
         return decorator
     return decorator(func)
 
 
-def _function[**P, T](func: Callable[P, T]) -> FuruFunction[P, T]:
+def _function_type[**P, T](func: Callable[P, T]) -> type[Furu[T]]:
     func_name = getattr(func, "__name__", None)
     func_qualname = getattr(func, "__qualname__", None)
     func_module = getattr(func, "__module__", None)
@@ -116,11 +118,20 @@ def _function[**P, T](func: Callable[P, T]) -> FuruFunction[P, T]:
             exec_body=exec_body,
         ),
     )
-    as_furu = cast(Callable[P, Furu[T]], cls)
+    setattr(cls, "make_furu_obj", cls)
+    setattr(cls, "furu_type", cls)
+    return cls
+
+
+def _function_wrapper[**P, T](
+    func: Callable[P, T], cls: type[Furu[T]]
+) -> FuruFunction[P, T]:
+    make_furu_obj = cast(Callable[P, Furu[T]], cls)
 
     @wraps(func)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
-        return as_furu(*args, **kwargs).create()
+        return make_furu_obj(*args, **kwargs).create()
 
-    setattr(wrapper, "as_furu", as_furu)
+    setattr(wrapper, "make_furu_obj", make_furu_obj)
+    setattr(wrapper, "furu_type", cls)
     return cast(FuruFunction[P, T], wrapper)
