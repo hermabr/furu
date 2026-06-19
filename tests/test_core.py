@@ -572,7 +572,7 @@ def test_frozen_dataclass_inheritance():
 
 
 def test_function_creates_furu_object_from_function_signature():
-    obj = letter_count.make_furu_obj("banana", "a")
+    obj = letter_count.spec("banana", "a")
 
     assert isinstance(obj, Furu)
     assert is_dataclass(type(obj))
@@ -581,14 +581,14 @@ def test_function_creates_furu_object_from_function_signature():
     assert getattr(obj, "letter") == "a"
     assert obj.create() == 3
     assert letter_count("banana", "a") == 3
-    assert letter_count.make_furu_obj(source="banana", letter="a") == obj
+    assert letter_count.spec(source="banana", letter="a") == obj
 
     with pytest.raises(FrozenInstanceError):
         obj.source = "orange"  # ty: ignore[invalid-assignment]
 
 
 def test_function_supports_defaults_and_artifact_round_trip():
-    obj = letter_count_with_default.make_furu_obj("banana")
+    obj = letter_count_with_default.spec("banana")
 
     assert getattr(obj, "letter") == "a"
     assert letter_count_with_default("banana") == 3
@@ -599,14 +599,11 @@ def test_function_supports_defaults_and_artifact_round_trip():
 
 def test_function_allows_missing_return_annotation():
     assert letter_count_without_return_annotation("banana", "n") == 2
-    assert (
-        letter_count_without_return_annotation.make_furu_obj("banana", "n").create()
-        == 2
-    )
+    assert letter_count_without_return_annotation.spec("banana", "n").create() == 2
 
 
 def test_function_defaults_unannotated_parameters_to_any():
-    obj = letter_count_with_untyped_source.make_furu_obj("banana", "a")
+    obj = letter_count_with_untyped_source.spec("banana", "a")
 
     assert letter_count_with_untyped_source("banana", "a") == 3
     assert obj.create() == 3
@@ -618,7 +615,7 @@ def test_function_defaults_unannotated_parameters_to_any():
 
 
 def test_function_supports_parenthesized_decorator():
-    obj = letter_count_with_parentheses.make_furu_obj("banana", "n")
+    obj = letter_count_with_parentheses.spec("banana", "n")
 
     assert isinstance(obj, Furu)
     assert getattr(obj, "source") == "banana"
@@ -630,20 +627,18 @@ def test_function_supports_parenthesized_decorator():
 
 
 def test_function_exposes_furu_type():
-    obj = letter_count.make_furu_obj("banana", "a")
+    obj = letter_count.spec("banana", "a")
 
     assert isinstance(letter_count.furu_type, type)
     assert issubclass(letter_count.furu_type, Furu)
-    assert isinstance(letter_count.make_furu_obj, type)
-    assert issubclass(letter_count.make_furu_obj, Furu)
+    assert isinstance(letter_count.spec, type)
+    assert issubclass(letter_count.spec, Furu)
     assert isinstance(obj, Furu)
     assert type(obj) is letter_count.furu_type
-    assert type(obj) is letter_count.make_furu_obj
+    assert type(obj) is letter_count.spec
     assert getattr(obj, "source") == "banana"
     assert getattr(obj, "letter") == "a"
-    assert getattr(letter_count.make_furu_obj, "make_furu_obj") is (
-        letter_count.make_furu_obj
-    )
+    assert getattr(letter_count.spec, "spec") is (letter_count.spec)
     assert getattr(letter_count.furu_type, "furu_type") is letter_count.furu_type
     assert obj.create() == 3
     assert obj._fully_qualified_name == "test_core.letter_count"
@@ -1334,7 +1329,7 @@ def test_load_existing_missing_result_explains_how_to_compute() -> None:
 
 
 def test_function_type_can_be_declared_field_dependency() -> None:
-    child = letter_count.make_furu_obj("banana", "a")
+    child = letter_count.spec("banana", "a")
     parent = FunctionDependencyParent(child=child)
 
     assert child._schema_data == {
