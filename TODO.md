@@ -1,94 +1,108 @@
-- [x] doing `class MyCls(Furu[int])` should make it a frozen dataclass with named args
-- [x] furu_hash
-    - [ ] add support for adding/hooking in custom items. this means you can define manually how i should walk an object like pydantic, if i didn't already have support for it
-- [x] schema
-    - [x] compute basic schema and schema hash
-    - [x] record current schema for each object so that i know if schema was changed from last time code was used
-    - [ ] add support for adding/hooking in custom items. this means you can define manually how i should walk an object like pydantic, if i didn't already have support for it
+# Furu TODO
+
+## Core object model
+- [x] `class MyCls(Furu[int])` makes a frozen dataclass with named args
+- [x] post_init for validation
+- [x] don't allow users to call create directly (context variable + `__init_subclass__`)
 - [x] furu config
-- [x] file/compute locking
-    - [x] auto make/delete the lock file
-    - [x] don't allow others to run if file is locked
-    - [x] heartbeat and waiting
-    - [x] allow other processes to wait for the worker before they resume their own work
-    - [x] use threading.Thread for heartbeat
-    - [ ] move to zig?
-    - [ ] database/redis
-- [x] metadata
-    - [x] basic metadata
-    - [x] write running/completed metadata during create
-    - [x] load from artifact
-    - [ ] record git info
-    - [ ] think deeply about and add most relevant metadata, such as computer used to run it etc
-    - [ ] support time traveling to a previous experiment
-- [x] pytest plugin
-- [x] save and load results
-    - [x] start with pickle
-    - [x] saves using a pytree-like strategy, with most things in json and some things in custom files
-        - [x] json-native scalars, lists, and dicts
-        - [x] tuple, set, frozenset, pathlib.Path wrappers
-        - [x] dataclass and pydantic model wrappers
-        - [x] numpy array artifact codec
-        - [x] polars dataframe artifact codec
-        - [x] atomic result directory publish through temporary bundle rename
-        - [x] cache hits load persisted results without recomputing
-        - [ ] think hard about other built-in codecs
-        - [ ] lazy saving/loading
-        - [ ] use annotations/infer automatically what codec to use
-        - [ ] allows users to register handlers/codecs
-- [ ] error handling
-    - [x] capture errors
-    - [x] make the errors informative
-    - [x] write traceback and locals to per-run error logs
-    - [ ] use rich tracebacks
+
+## Hashing & schema
+- [x] furu_hash
+- [x] compute basic schema and schema hash
+- [x] record current schema per object to detect when schema changed since last run
+- [x] custom walk hooks: let users define how to walk an unsupported object (e.g. pydantic) for both hashing and schema (extensible `ArtifactSerializer` registry: subclass auto-register, `__furu_serializer__`, `Annotated[T, Serializer]`, or per-object `artifact_serializers`)
+- [ ] allow skipping/ignoring one field
+
+## Serialization (save & load results)
+- [x] start with pickle
+- [x] pytree-like strategy (most things in json, some in custom files)
+    - [x] json-native scalars, lists, and dicts
+    - [x] tuple, set, frozenset, pathlib.Path wrappers
+    - [x] dataclass and pydantic model wrappers
+    - [x] numpy array artifact codec
+    - [x] polars dataframe artifact codec
+    - [x] atomic result directory publish through temporary bundle rename
+    - [x] cache hits load persisted results without recomputing
+- [x] lazy saving/loading
+- [x] let users register handlers/codecs
+- [ ] more built-in codecs (think hard about which)
+- [ ] infer codec automatically from bare type hints (`save_as` and `Annotated[T, Codec]` already work)
+
+## Storage
+- [x] per-object `_storage_path` override (same pattern as executor)
+
+## Locking (file / compute)
+- [x] auto make/delete the lock file
+- [x] don't allow others to run while file is locked
+- [x] heartbeat and waiting
+- [x] allow other processes to wait for the worker before resuming their own work
+- [x] use threading.Thread for heartbeat
+- [ ] move to zig?
+- [ ] database/redis backend
+
+## Metadata
+- [x] basic metadata
+- [x] write running/completed metadata during create
+- [x] load from artifact
+- [ ] record git info
+- [ ] record machine/host info and other most-relevant metadata; think deeply about what to include
+- [ ] support time traveling to a previous experiment
+
+## Logging
+- [x] log when loading or creating object
+- [x] record run logs in furu_dir
+- [x] scoped file handler for each active furu run
+- [ ] use logging consistently
+- [ ] structured logging
+- [ ] support multiple processes (e.g. torchrun with 8 tasks)
+- [ ] events.log, or rename old logs when starting new runs, to make debugging easier
+
+## Error handling
+- [x] capture errors
+- [x] make the errors informative
+- [x] write traceback and locals to per-run error logs
+- [ ] use rich tracebacks
+
+## Reproducibility / runtime code tracing
 - [ ] trace code at runtime to find all functions and save/hash their ast
-     - [ ] sandbox the code
-     - [ ] detect changes in local files
-     - [ ] detect library versions (only of libraries we import?)
-     - [ ] detect all functions we call
-     - [ ] do not allow create to depend on/be affected by sys.argv
-     - [ ] take inspiration from pytest-cov
-     - [ ] use this information to invalidate loads
-- [ ] logging
-    - [x] log when loading or creating object
-    - [x] record run logs in furu_dir
-    - [x] scoped file handler for each active furu run
-    - [ ] use logging consistently
-    - [ ] structured logging
-    - [ ] support multiple processes, such as torch run with 8 tasks
-    - [ ] have a file like events.log or rename the old logs if i start new runs to make debug easier
-- [ ] migration
-    - [x] support registering and doing basic migrations
-    - [ ] reject ambiguous migration graphs where more than one path connects the same source and target schema
-    - [ ] allow migration schemas to be provided as either the actual schema dict or a schema hash string
-    - [ ] support an explicit "unsupported" migration result for transforms that cannot migrate a matching source
-    - [ ] verify migrated runtime result links are still valid in status/create/load_existing before treating them as completed/cache hits
-    - [ ] handle stale migration links whose source artifact or old schema directory has been deleted
-- [ ] executor
-    - [x] local create execution
-    - [x] local batched create_batched execution
-    - [ ] slurm workers
-    - [ ] slurm dag
-    - [ ] time traveling executor (maybe i need git worktrees for this?)
-    - [ ] dependencies
-         - [ ] eager dependencies you define with something like @furu.dependency
-         - [ ] lazy dependencies that you can register while running the create fn, such as if you have a variable number of chunks you need to download
-            - [ ] capture any time .create() is called inside a method and add the target to the lazy dependencies
-- [ ] furu list
-    - [ ] decide if i need this
-    - [ ] check if i'm able to send the name to this
-- [ ] decide/think about if it is possible to inject information into a class, such as if i have unknown sentences and then i want to also add their translations such as for leap
-- [x] add post_init for validation
-- [x] storage: do the same behavior as for executor, where you override def _storage_path(self): Path("furu/data") for a furu object
-    - [x] per-object storage_root override
+- [ ] sandbox the code
+- [ ] detect changes in local files
+- [ ] detect library versions (only of libraries we import?)
+- [ ] detect all functions we call
+- [ ] do not allow create to depend on/be affected by sys.argv
+- [ ] take inspiration from pytest-cov
+- [ ] use this information to invalidate loads
+
+## Migration
+- [x] support registering and doing basic migrations
+- [ ] reject ambiguous migration graphs where more than one path connects the same source and target schema
+- [ ] allow migration schemas to be provided as either the schema dict or a schema hash string
+- [ ] support an explicit "unsupported" migration result for transforms that cannot migrate a matching source
+- [ ] verify migrated runtime result links in status/create/load_existing before treating them as completed/cache hits (`is_migrated` exists; validation still incomplete)
+- [ ] handle stale migration links whose source artifact or old schema directory was deleted
+
+## Executor & dependencies
+- [x] local create execution
+- [x] local batched create_batched execution
+- [x] slurm workers
+- [x] eager dependencies declared with `@furu.dependency`
+- [x] lazy dependencies captured when `.create()` is called inside a create fn (e.g. variable number of chunks)
+- [ ] slurm dag
+- [ ] time traveling executor (git worktrees?)
+- [ ] tui for execution coordinator
+
+## Tooling & interfaces
 - [ ] querying/filtering
-- [x] don't allow users to call create directly (maybe i need a context variable + __init_subclass__?)
-- [ ] sync support, so that it is easy to say i want these experiments or these objects from one host to a different one
+- [ ] sync support: move experiments/objects easily from one host to another
 - [ ] dashboard
 - [ ] make docs
-- [ ] for the future
-    - [ ] have method for making the raw data so that we have some sort of tracking
-    - [ ] decide if i have too many cached_properties
-    - [ ] decide what should be property vs method
-    - [ ] make sure the public api has very good names
-        - [ ] good names for everything and clear flow of features
+
+## Testing
+- [x] pytest plugin
+
+## Future / misc
+- [ ] decide if it's possible to inject information into a class (e.g. unknown sentences + their translations for leap)
+- [ ] have a method for making the raw data so we have some sort of tracking
+- [ ] decide if I have too many cached_properties
+- [ ] decide what should be property vs method
+- [ ] make sure the public api has very good names, with a clear flow of features
