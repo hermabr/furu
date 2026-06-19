@@ -511,6 +511,13 @@ class LoadExistingDependencyParent(Furu[str]):
         return "loaded"
 
 
+class FunctionDependencyParent(Furu[int]):
+    child: letter_count.furu_type
+
+    def create(self) -> int:
+        return self.child.create()
+
+
 class FuruBoundaryParent(Furu[str]):
     child: NodePair
 
@@ -565,7 +572,7 @@ def test_frozen_dataclass_inheritance():
 
 
 def test_function_creates_furu_object_from_function_signature():
-    obj = letter_count.as_furu("banana", "a")
+    obj = letter_count.make_furu_obj("banana", "a")
 
     assert isinstance(obj, Furu)
     assert is_dataclass(type(obj))
@@ -574,14 +581,14 @@ def test_function_creates_furu_object_from_function_signature():
     assert getattr(obj, "letter") == "a"
     assert obj.create() == 3
     assert letter_count("banana", "a") == 3
-    assert letter_count.as_furu(source="banana", letter="a") == obj
+    assert letter_count.make_furu_obj(source="banana", letter="a") == obj
 
     with pytest.raises(FrozenInstanceError):
         obj.source = "orange"  # ty: ignore[invalid-assignment]
 
 
 def test_function_supports_defaults_and_artifact_round_trip():
-    obj = letter_count_with_default.as_furu("banana")
+    obj = letter_count_with_default.make_furu_obj("banana")
 
     assert getattr(obj, "letter") == "a"
     assert letter_count_with_default("banana") == 3
@@ -592,11 +599,14 @@ def test_function_supports_defaults_and_artifact_round_trip():
 
 def test_function_allows_missing_return_annotation():
     assert letter_count_without_return_annotation("banana", "n") == 2
-    assert letter_count_without_return_annotation.as_furu("banana", "n").create() == 2
+    assert (
+        letter_count_without_return_annotation.make_furu_obj("banana", "n").create()
+        == 2
+    )
 
 
 def test_function_defaults_unannotated_parameters_to_any():
-    obj = letter_count_with_untyped_source.as_furu("banana", "a")
+    obj = letter_count_with_untyped_source.make_furu_obj("banana", "a")
 
     assert letter_count_with_untyped_source("banana", "a") == 3
     assert obj.create() == 3
@@ -608,7 +618,7 @@ def test_function_defaults_unannotated_parameters_to_any():
 
 
 def test_function_supports_parenthesized_decorator():
-    obj = letter_count_with_parentheses.as_furu("banana", "n")
+    obj = letter_count_with_parentheses.make_furu_obj("banana", "n")
 
     assert isinstance(obj, Furu)
     assert getattr(obj, "source") == "banana"
@@ -616,6 +626,27 @@ def test_function_supports_parenthesized_decorator():
     assert letter_count_with_parentheses("banana", "n") == 2
     assert obj.create() == 2
     assert obj._fully_qualified_name == "test_core.letter_count_with_parentheses"
+    assert _from_json(obj._artifact_data) == obj
+
+
+def test_function_exposes_furu_type():
+    obj = letter_count.make_furu_obj("banana", "a")
+
+    assert isinstance(letter_count.furu_type, type)
+    assert issubclass(letter_count.furu_type, Furu)
+    assert isinstance(letter_count.make_furu_obj, type)
+    assert issubclass(letter_count.make_furu_obj, Furu)
+    assert isinstance(obj, Furu)
+    assert type(obj) is letter_count.furu_type
+    assert type(obj) is letter_count.make_furu_obj
+    assert getattr(obj, "source") == "banana"
+    assert getattr(obj, "letter") == "a"
+    assert getattr(letter_count.make_furu_obj, "make_furu_obj") is (
+        letter_count.make_furu_obj
+    )
+    assert getattr(letter_count.furu_type, "furu_type") is letter_count.furu_type
+    assert obj.create() == 3
+    assert obj._fully_qualified_name == "test_core.letter_count"
     assert _from_json(obj._artifact_data) == obj
 
 
@@ -1300,6 +1331,44 @@ def test_load_existing_missing_result_explains_how_to_compute() -> None:
         ),
     ):
         Node(name="missing").load_existing()
+
+
+def test_function_type_can_be_declared_field_dependency() -> None:
+    child = letter_count.make_furu_obj("banana", "a")
+    parent = FunctionDependencyParent(child=child)
+
+    assert child._schema_data == {
+        "|class": "test_core.letter_count",
+        "|fields": {"letter": "builtins.str", "source": "builtins.str"},
+    }
+    assert child._artifact_data == {
+        "|kind": "instance",
+        "|class": "test_core.letter_count",
+        "|fields": {"letter": "a", "source": "banana"},
+    }
+    assert parent._schema_data == {
+        "|class": "test_core.FunctionDependencyParent",
+        "|fields": {
+            "child": {
+                "|class": "test_core.letter_count",
+                "|fields": {"letter": "builtins.str", "source": "builtins.str"},
+            }
+        },
+    }
+    assert parent._artifact_data == {
+        "|kind": "instance",
+        "|class": "test_core.FunctionDependencyParent",
+        "|fields": {
+            "child": {
+                "|kind": "instance",
+                "|class": "test_core.letter_count",
+                "|fields": {"letter": "a", "source": "banana"},
+            }
+        },
+    }
+    assert collect_declared_refs(parent) == (child,)
+    assert parent.create() == 3
+    assert _dependency_object_ids(parent) == [child.object_id]
 
 
 def test_furu_objects_block_nested_eager_traversal_but_direct_runtime_loads_are_recorded() -> (

@@ -234,12 +234,12 @@ def _resolve_serialized_type(class_name: str) -> type:
     if isinstance(value, type):
         return value
 
-    as_furu = getattr(value, "as_furu", None)
-    if isinstance(as_furu, type):
+    furu_type = getattr(value, "furu_type", None)
+    if isinstance(furu_type, type):
         from furu.core import Furu
 
-        if issubclass(as_furu, Furu):
-            return as_furu
+        if issubclass(furu_type, Furu):
+            return furu_type
 
     raise TypeError(f"{class_name!r} resolved to a non-type value")
 
