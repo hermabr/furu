@@ -32,8 +32,8 @@ dev = [
     "numpy>=2.4.4",
     "polars>=1.40.1",
     "pytest>=9.0.2",
-    "ruff>=0.15.12",
-    "ty>=0.0.35",
+    "ruff>=0.15.17",
+    "ty>=0.0.49",
 ]
 
 [tool.pytest.ini_options]

@@ -4,14 +4,14 @@ import inspect
 import types
 from collections.abc import Callable
 from functools import wraps
-from typing import Any, ClassVar, Protocol, cast, get_type_hints, overload
+from typing import Any, ClassVar, Protocol, TypeAlias, cast, get_type_hints, overload
 
 from furu.core import Furu
 
 
 class FuruFunction[**P, T](Protocol):
     make_furu_obj: Callable[P, Furu[T]]
-    type furu_type = Furu[Any]
+    furu_type: TypeAlias = Furu[T]
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T: ...
 
