@@ -32,8 +32,6 @@ _skip_hash_validated_classes: set[type] = set()
 
 
 def validate_skip_hash_fields(cls: type) -> None:
-    # Resolved lazily (not in __init_subclass__) so forward references and
-    # self-referential annotations are defined by the time hints are evaluated.
     if cls in _skip_hash_validated_classes:
         return
     hints = get_type_hints(cls, include_extras=True)
