@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import time
 import traceback
 from typing import assert_never
@@ -29,12 +28,9 @@ def worker_loop(
     auth_token: str,
     resource_request: ResourceRequest,
     idle_timeout: float,
+    component: str,
     max_consecutive_failures: int | None = None,
-    component: str | None = None,
 ) -> None:
-    if component is None:
-        slurm_job_id = os.environ.get("SLURM_JOB_ID")
-        component = f"wkr.{slurm_job_id}" if slurm_job_id else "wkr"
     with _scoped_component(component):
         _worker_loop(
             server_url=server_url,

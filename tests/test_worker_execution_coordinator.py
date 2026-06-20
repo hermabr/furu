@@ -656,7 +656,7 @@ def test_local_pool_scale_uses_unique_worker_names_after_worker_exits(
         auth_token: str,
         resource_request: ResourceRequest,
         idle_timeout: float,
-        component: str | None = None,
+        component: str,
     ) -> None:
         nonlocal calls
         calls += 1
@@ -698,7 +698,7 @@ def test_local_pool_scale_does_not_count_normal_exits_as_restarts(
         auth_token: str,
         resource_request: ResourceRequest,
         idle_timeout: float,
-        component: str | None = None,
+        component: str,
     ) -> None:
         nonlocal starts
         starts += 1
@@ -730,7 +730,7 @@ def test_local_pool_scale_counts_crashes_against_restart_limit(
         auth_token: str,
         resource_request: ResourceRequest,
         idle_timeout: float,
-        component: str | None = None,
+        component: str,
     ) -> None:
         raise RuntimeError("worker boom")
 
@@ -1122,6 +1122,7 @@ def test_worker_loop_raises_when_server_is_unavailable() -> None:
             auth_token="test-token",
             resource_request=ResourceRequest(),
             idle_timeout=get_config().worker.idle_timeout_seconds,
+            component="test-worker",
         )
 
 
@@ -1150,6 +1151,7 @@ def test_worker_loop_exits_after_idle_timeout(
         auth_token="test-token",
         resource_request=ResourceRequest(),
         idle_timeout=0,
+        component="test-worker",
     )
 
     assert test_client.lease_calls == 1
@@ -1192,6 +1194,7 @@ def test_worker_loop_logs_task_requests_and_received_task(
             auth_token="test-token",
             resource_request=ResourceRequest(),
             idle_timeout=get_config().worker.idle_timeout_seconds,
+            component="test-worker",
         )
 
     assert "worker requesting new task from server" not in caplog.messages
@@ -1229,6 +1232,7 @@ def test_worker_loop_logs_stop_and_first_wait(
             auth_token="test-token",
             resource_request=ResourceRequest(),
             idle_timeout=get_config().worker.idle_timeout_seconds,
+            component="test-worker",
         )
 
     assert "worker requesting new task from server" not in caplog.messages
@@ -1280,6 +1284,7 @@ def test_worker_loop_exits_after_exceeding_max_consecutive_failures(
         resource_request=ResourceRequest(),
         idle_timeout=get_config().worker.idle_timeout_seconds,
         max_consecutive_failures=2,
+        component="test-worker",
     )
 
     assert test_client.lease_calls == 3
@@ -1344,6 +1349,7 @@ def test_worker_loop_resets_consecutive_failures_after_success(
         resource_request=ResourceRequest(),
         idle_timeout=get_config().worker.idle_timeout_seconds,
         max_consecutive_failures=2,
+        component="test-worker",
     )
 
     assert test_client.lease_calls == 4
@@ -1395,6 +1401,7 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
             auth_token="test-token",
             resource_request=ResourceRequest(gpus=1),
             idle_timeout=get_config().worker.idle_timeout_seconds,
+            component="test-worker",
         )
 
     assert test_client.calls == ["lease_job"]

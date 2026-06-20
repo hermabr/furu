@@ -70,7 +70,7 @@ def test_worker_cli_reads_auth_token_file(
         resource_request: ResourceRequest,
         idle_timeout: float | None,
         max_consecutive_failures: int | None,
-        component: str | None = None,
+        component: str,
     ) -> None:
         calls.append(
             (
@@ -97,6 +97,8 @@ def test_worker_cli_reads_auth_token_file(
                 "0",
                 "--idle-timeout",
                 "60",
+                "--component",
+                "test-worker",
             ]
         )
         == 0
@@ -129,7 +131,7 @@ def test_worker_cli_reads_resource_request(
         resource_request: ResourceRequest,
         idle_timeout: float | None,
         max_consecutive_failures: int | None,
-        component: str | None = None,
+        component: str,
     ) -> None:
         calls.append((resource_request, idle_timeout, max_consecutive_failures))
 
@@ -148,6 +150,8 @@ def test_worker_cli_reads_resource_request(
                 "1",
                 "--idle-timeout",
                 "30",
+                "--component",
+                "test-worker",
             ]
         )
         == 0
@@ -171,7 +175,7 @@ def test_worker_cli_reads_idle_timeout(
         resource_request: ResourceRequest,
         idle_timeout: float | None,
         max_consecutive_failures: int | None,
-        component: str | None = None,
+        component: str,
     ) -> None:
         calls.append(idle_timeout)
 
@@ -190,6 +194,8 @@ def test_worker_cli_reads_idle_timeout(
                 "1",
                 "--idle-timeout",
                 "0.25",
+                "--component",
+                "test-worker",
             ]
         )
         == 0
@@ -213,7 +219,7 @@ def test_worker_cli_reads_max_consecutive_failures(
         resource_request: ResourceRequest,
         idle_timeout: float | None,
         max_consecutive_failures: int | None,
-        component: str | None = None,
+        component: str,
     ) -> None:
         calls.append(max_consecutive_failures)
 
@@ -232,6 +238,8 @@ def test_worker_cli_reads_max_consecutive_failures(
                 "1",
                 "--idle-timeout",
                 "0.25",
+                "--component",
+                "test-worker",
                 "--max-consecutive-failures",
                 "3",
             ]
@@ -246,8 +254,8 @@ def _run_worker_cli_capturing_component(
     monkeypatch: pytest.MonkeyPatch,
     token_file: Path,
     extra_args: list[str],
-) -> str | None:
-    captured: list[str | None] = []
+) -> str:
+    captured: list[str] = []
 
     def worker_loop(
         *,
@@ -256,7 +264,7 @@ def _run_worker_cli_capturing_component(
         resource_request: ResourceRequest,
         idle_timeout: float | None,
         max_consecutive_failures: int | None,
-        component: str | None = None,
+        component: str,
     ) -> None:
         captured.append(component)
 
@@ -298,32 +306,43 @@ def test_worker_cli_reads_component_override(
     assert component == "worker-a"
 
 
-def test_worker_cli_defaults_component_from_slurm_array_task(
+def test_worker_cli_requires_component(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     token_file = tmp_path / "worker.token"
     token_file.write_text("secret")
-    monkeypatch.delenv("SLURM_JOB_ID", raising=False)
-    monkeypatch.setenv("SLURM_ARRAY_TASK_ID", "7")
 
-    component = _run_worker_cli_capturing_component(monkeypatch, token_file, [])
+    def worker_loop(
+        *,
+        server_url: str,
+        auth_token: str,
+        resource_request: ResourceRequest,
+        idle_timeout: float | None,
+        max_consecutive_failures: int | None,
+        component: str,
+    ) -> None:
+        raise AssertionError("worker_loop should not be called")
 
-    assert component == "wkr.7"
+    monkeypatch.setattr(_cli, "worker_loop", worker_loop)
 
+    with pytest.raises(SystemExit) as exc_info:
+        _cli.main(
+            [
+                "--server-url",
+                "http://execution-coordinator.test",
+                "--auth-token-file",
+                str(token_file),
+                "--resource-cpus",
+                "1",
+                "--resource-gpus",
+                "0",
+                "--idle-timeout",
+                "60",
+            ]
+        )
 
-def test_worker_cli_defaults_component_to_wkr_without_slurm_env(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    token_file = tmp_path / "worker.token"
-    token_file.write_text("secret")
-    monkeypatch.delenv("SLURM_ARRAY_TASK_ID", raising=False)
-    monkeypatch.delenv("SLURM_JOB_ID", raising=False)
-
-    component = _run_worker_cli_capturing_component(monkeypatch, token_file, [])
-
-    assert component == "wkr"
+    assert exc_info.value.code == 2
 
 
 def test_worker_cli_requires_resource_request(
@@ -354,6 +373,8 @@ def test_worker_cli_requires_resource_request(
                 str(token_file),
                 "--idle-timeout",
                 "60",
+                "--component",
+                "test-worker",
             ]
         )
 
@@ -386,6 +407,8 @@ def test_worker_cli_requires_auth_token_file(monkeypatch: pytest.MonkeyPatch) ->
                 "0",
                 "--idle-timeout",
                 "60",
+                "--component",
+                "test-worker",
             ]
         )
 
@@ -462,6 +485,8 @@ def test_worker_cli_rejects_auth_token_argument(
                 "0",
                 "--idle-timeout",
                 "60",
+                "--component",
+                "test-worker",
                 "--auth-token",
                 "secret",
             ]
@@ -542,6 +567,10 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     )
     assert f"exec {sys.executable} -m furu.worker._cli" in script
     assert "--server-url http://execution-coordinator.cluster:1234" in script
+    assert 'if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then' in script
+    assert 'furu_worker_component="sw${SLURM_ARRAY_TASK_ID: -3}"' in script
+    assert 'furu_worker_component="sw${SLURM_JOB_ID: -3}"' in script
+    assert '--component "${furu_worker_component}"' in script
     assert "--idle-timeout 0.25" in script
     assert "--max-consecutive-failures 3" in script
     assert "--resource-cpus 4" in script

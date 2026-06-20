@@ -1,20 +1,9 @@
 import argparse
-import os
 from collections.abc import Sequence
 from pathlib import Path
 
 from furu.resources import ResourceRequest
 from furu.worker.loop import worker_loop
-
-
-def _default_worker_component() -> str:
-    array_task_id = os.environ.get("SLURM_ARRAY_TASK_ID")
-    if array_task_id:
-        return f"sw{array_task_id}"
-    job_id = os.environ.get("SLURM_JOB_ID")
-    if job_id:
-        return f"sw{job_id[-3:]}"
-    return "wkr"
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -56,9 +45,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--component",
-        default=None,  # TODO: consider migrating this to be either w{nums} or `slurm` and only if it is slurm do we take the array id. it might also be possible for the slurm script to give the component name directly from bash
-        help="component label shown in this worker's logs (defaults to the "
-        "Slurm array/job id, or 'wkr')",
+        required=True,
+        help="component label shown in this worker's logs",
     )
     args = parser.parse_args(argv)
 
@@ -71,7 +59,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         idle_timeout=args.idle_timeout,
         max_consecutive_failures=args.max_consecutive_failures,
-        component=args.component or _default_worker_component(),
+        component=args.component,
     )
     return 0
 
