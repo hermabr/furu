@@ -11,7 +11,7 @@
 - [x] compute basic schema and schema hash
 - [x] record current schema per object to detect when schema changed since last run
 - [x] custom walk hooks: let users define how to walk an unsupported object (e.g. pydantic) for both hashing and schema (extensible `ArtifactSerializer` registry: subclass auto-register, `__furu_serializer__`, `Annotated[T, Serializer]`, or per-object `artifact_serializers`)
-- [ ] allow skipping/ignoring one field
+- [x] allow skipping/ignoring one field
 
 ## Serialization (save & load results)
 - [x] start with pickle
@@ -26,7 +26,7 @@
 - [x] lazy saving/loading
 - [x] let users register handlers/codecs
 - [ ] more built-in codecs (think hard about which)
-- [ ] infer codec automatically from bare type hints (`save_as` and `Annotated[T, Codec]` already work)
+- [x] infer codec automatically from bare type hints (`save_as` and `Annotated[T, Codec]` already work)
 
 ## Storage
 - [x] per-object `_storage_path` override (same pattern as executor)
@@ -47,12 +47,13 @@
 - [ ] record git info
 - [ ] record machine/host info and other most-relevant metadata; think deeply about what to include
 - [ ] support time traveling to a previous experiment
+- [ ] metadata from execution environment
 
 ## Logging
 - [x] log when loading or creating object
 - [x] record run logs in furu_dir
 - [x] scoped file handler for each active furu run
-- [ ] use logging consistently
+- [x] use logging consistently
 - [ ] structured logging
 - [ ] support multiple processes (e.g. torchrun with 8 tasks)
 - [ ] events.log, or rename old logs when starting new runs, to make debugging easier
@@ -87,7 +88,11 @@
 - [x] slurm workers
 - [x] eager dependencies declared with `@furu.dependency`
 - [x] lazy dependencies captured when `.create()` is called inside a create fn (e.g. variable number of chunks)
-- [ ] slurm dag
+- [ ] multiple clusters
+- [ ] tags/ways to select
+- [ ] restart behavior, such as no-restart, reload-env, restart-on-new-type
+- [ ] define custom command to run script and custom env variables on the furu objects
+- [ ] better/more dynamic 
 - [ ] time traveling executor (git worktrees?)
 - [ ] tui for execution coordinator
 
