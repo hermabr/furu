@@ -303,9 +303,9 @@ def _render_logfmt(record: logging.LogRecord) -> str:
         parts.append(f"caller={caller}")
 
     line = " ".join(parts)
-    exception = _exception_text(record)
-    if exception:
-        line += "\n" + exception
+    for detail in (_exception_text(record), (record.stack_info or "").rstrip("\n")):
+        if detail:
+            line += "\n" + detail
     return line
 
 

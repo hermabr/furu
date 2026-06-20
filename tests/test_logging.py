@@ -25,6 +25,7 @@ def _record(
     lineno: int = 64,
     detail: dict[str, object] | None = None,
     exc_info: Any = None,
+    stack_info: str | None = None,
 ) -> logging.LogRecord:
     record = logging.LogRecord(
         name="furu",
@@ -34,6 +35,7 @@ def _record(
         msg=msg,
         args=(),
         exc_info=exc_info,
+        sinfo=stack_info,
     )
     if detail is not None:
         setattr(record, furu_logging._DETAIL_ATTR, detail)
@@ -339,6 +341,32 @@ def test_logfmt_appends_exception_after_the_record() -> None:
     assert out.splitlines()[0].endswith('msg="pool stop failed"')
     assert "Traceback (most recent call last):" in out
     assert "ValueError: boom" in out
+
+
+def test_logfmt_appends_stack_info_after_exception() -> None:
+    try:
+        raise ValueError("boom")
+    except ValueError:
+        exc_info = sys.exc_info()
+
+    stack_info = (
+        "Stack (most recent call last):\n"
+        '  File "/tmp/example.py", line 7, in _main\n'
+        "    adder2.create()"
+    )
+    out = furu_logging._render_logfmt(
+        _record(
+            "create failed",
+            level=logging.ERROR,
+            pathname=furu_logging.__file__,
+            exc_info=exc_info,
+            stack_info=stack_info,
+        )
+    )
+
+    assert out.index("ValueError: boom") < out.index("Stack (most recent call last):")
+    assert "in _main" in out
+    assert "adder2.create()" in out
 
 
 @pytest.mark.parametrize(

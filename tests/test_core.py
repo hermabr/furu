@@ -2214,6 +2214,23 @@ def test_batched_failure_writes_error_details_to_run_log_for_every_participant()
         assert list(obj._base_dir.glob("error-*.log")) == []
 
 
+def test_create_failure_run_log_includes_user_create_call_stack() -> None:
+    obj = FailingSingleValue(key=1)
+
+    def _main() -> None:
+        obj.create()
+
+    with pytest.raises(RuntimeError, match="failed single"):
+        _main()
+
+    log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
+    assert "Traceback (most recent call last):" in log_text
+    assert "failed single for 1" in log_text
+    assert "Stack (most recent call last):" in log_text
+    assert "in _main" in log_text
+    assert "obj.create()" in log_text
+
+
 def test_base_exception_does_not_log_as_load_failure() -> None:
     obj = InterruptingValue(key=1)
 

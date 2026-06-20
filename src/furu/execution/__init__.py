@@ -441,5 +441,5 @@ def _create_and_store_group[T](
             )
             raise
         except Exception:
-            logger.exception("create failed for %s", group[0]._log_label)
+            logger.exception("create failed for %s", group[0]._log_label, stack_info=True)
             raise
