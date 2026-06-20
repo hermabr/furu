@@ -70,6 +70,7 @@ def test_worker_cli_reads_auth_token_file(
         resource_request: ResourceRequest,
         idle_timeout: float | None,
         max_consecutive_failures: int | None,
+        component: str | None = None,
     ) -> None:
         calls.append(
             (
@@ -128,6 +129,7 @@ def test_worker_cli_reads_resource_request(
         resource_request: ResourceRequest,
         idle_timeout: float | None,
         max_consecutive_failures: int | None,
+        component: str | None = None,
     ) -> None:
         calls.append((resource_request, idle_timeout, max_consecutive_failures))
 
@@ -169,6 +171,7 @@ def test_worker_cli_reads_idle_timeout(
         resource_request: ResourceRequest,
         idle_timeout: float | None,
         max_consecutive_failures: int | None,
+        component: str | None = None,
     ) -> None:
         calls.append(idle_timeout)
 
@@ -210,6 +213,7 @@ def test_worker_cli_reads_max_consecutive_failures(
         resource_request: ResourceRequest,
         idle_timeout: float | None,
         max_consecutive_failures: int | None,
+        component: str | None = None,
     ) -> None:
         calls.append(max_consecutive_failures)
 
@@ -236,6 +240,90 @@ def test_worker_cli_reads_max_consecutive_failures(
     )
 
     assert calls == [3]
+
+
+def _run_worker_cli_capturing_component(
+    monkeypatch: pytest.MonkeyPatch,
+    token_file: Path,
+    extra_args: list[str],
+) -> str | None:
+    captured: list[str | None] = []
+
+    def worker_loop(
+        *,
+        server_url: str,
+        auth_token: str,
+        resource_request: ResourceRequest,
+        idle_timeout: float | None,
+        max_consecutive_failures: int | None,
+        component: str | None = None,
+    ) -> None:
+        captured.append(component)
+
+    monkeypatch.setattr(_cli, "worker_loop", worker_loop)
+
+    assert (
+        _cli.main(
+            [
+                "--server-url",
+                "http://execution-coordinator.test",
+                "--auth-token-file",
+                str(token_file),
+                "--resource-cpus",
+                "1",
+                "--resource-gpus",
+                "0",
+                "--idle-timeout",
+                "60",
+                *extra_args,
+            ]
+        )
+        == 0
+    )
+    (component,) = captured
+    return component
+
+
+def test_worker_cli_reads_component_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    token_file = tmp_path / "worker.token"
+    token_file.write_text("secret")
+
+    component = _run_worker_cli_capturing_component(
+        monkeypatch, token_file, ["--component", "worker-a"]
+    )
+
+    assert component == "worker-a"
+
+
+def test_worker_cli_defaults_component_from_slurm_array_task(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    token_file = tmp_path / "worker.token"
+    token_file.write_text("secret")
+    monkeypatch.delenv("SLURM_JOB_ID", raising=False)
+    monkeypatch.setenv("SLURM_ARRAY_TASK_ID", "7")
+
+    component = _run_worker_cli_capturing_component(monkeypatch, token_file, [])
+
+    assert component == "wkr.7"
+
+
+def test_worker_cli_defaults_component_to_wkr_without_slurm_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    token_file = tmp_path / "worker.token"
+    token_file.write_text("secret")
+    monkeypatch.delenv("SLURM_ARRAY_TASK_ID", raising=False)
+    monkeypatch.delenv("SLURM_JOB_ID", raising=False)
+
+    component = _run_worker_cli_capturing_component(monkeypatch, token_file, [])
+
+    assert component == "wkr"
 
 
 def test_worker_cli_requires_resource_request(
