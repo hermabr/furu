@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import os
 import time
 import traceback
 from typing import assert_never
 
 from furu.core import Furu
 from furu.execution import _ensure_single_result, api
-from furu.logging import get_logger
+from furu.logging import _scoped_component, format_duration, get_logger, log_detail
 from furu.metadata import ArtifactSpec
 from furu.resources import ResourceRequest
 from furu.worker.context import _DependencyNotReady, worker_execution_context
@@ -28,6 +29,28 @@ def worker_loop(
     resource_request: ResourceRequest,
     idle_timeout: float,
     max_consecutive_failures: int | None = None,
+    component: str | None = None,
+) -> None:
+    if component is None:
+        slurm_job_id = os.environ.get("SLURM_JOB_ID")
+        component = f"wkr.{slurm_job_id}" if slurm_job_id else "wkr"
+    with _scoped_component(component):
+        _worker_loop(
+            server_url=server_url,
+            auth_token=auth_token,
+            resource_request=resource_request,
+            idle_timeout=idle_timeout,
+            max_consecutive_failures=max_consecutive_failures,
+        )
+
+
+def _worker_loop(
+    *,
+    server_url: str,
+    auth_token: str,
+    resource_request: ResourceRequest,
+    idle_timeout: float,
+    max_consecutive_failures: int | None,
 ) -> None:
     client = api.WorkerApiClient(server_url=server_url, auth_token=auth_token)
     idle_started_at: float | None = None
@@ -50,15 +73,16 @@ def worker_loop(
                 continue
             case Job() as job:
                 idle_started_at = None
+                task_started_at = time.monotonic()
                 task_label: str | None = None
                 job_result: JobResultRequest
                 try:
                     obj = Furu.from_artifact(job.artifact)
                     task_label = obj._log_label
                     logger.info(
-                        "worker received task: lease_id=%s task=%s",
-                        job.lease_id,
+                        "received %s",
                         task_label,
+                        extra=log_detail(lease=job.lease_id),
                     )
                     with worker_execution_context(lease_id=job.lease_id):
                         _ensure_single_result(obj)
@@ -95,18 +119,22 @@ def worker_loop(
                     case unexpected_result:
                         assert_never(unexpected_result)
 
+                duration = format_duration(time.monotonic() - task_started_at)
+                status_word = "ok" if status == "completed" else status
                 if task_label is None:
                     logger.info(
-                        "worker finished task: lease_id=%s status=%s",
-                        job.lease_id,
-                        status,
+                        "finished %s · %s",
+                        status_word,
+                        duration,
+                        extra=log_detail(lease=job.lease_id, status=status),
                     )
                 else:
                     logger.info(
-                        "worker finished task: lease_id=%s task=%s status=%s",
-                        job.lease_id,
+                        "finished %s %s · %s",
                         task_label,
-                        status,
+                        status_word,
+                        duration,
+                        extra=log_detail(lease=job.lease_id, status=status),
                     )
 
                 if (
