@@ -7,7 +7,7 @@ from dataclasses import FrozenInstanceError, InitVar, dataclass, is_dataclass, r
 from enum import Enum
 from functools import cached_property, partial
 from pathlib import Path
-from typing import Any, ClassVar, Literal, cast
+from typing import Annotated, Any, ClassVar, Literal, cast
 from unittest.mock import patch
 
 import pytest
@@ -518,6 +518,22 @@ class FunctionDependencyParent(Furu[int]):
         return self.child.create()
 
 
+class SkipHashParent(Furu[str]):
+    stable: str
+    volatile: Annotated[int, furu.skip_hash]
+    child: Annotated[Node, furu.skip_hash]
+
+    def create(self) -> str:
+        return f"{self.stable}:{self.child.create()}:{self.volatile}"
+
+
+class SkipHashSchemaBase(Furu[None]):
+    stable: str
+
+    def create(self) -> None:
+        return None
+
+
 class FuruBoundaryParent(Furu[str]):
     child: NodePair
 
@@ -934,6 +950,81 @@ def test_hashes_and_data_dir():
             _h=1,
         )._artifact_schema_hash
     )
+
+
+def test_skip_hash_fields_are_stored_but_not_hashed() -> None:
+    first = SkipHashParent(stable="same", volatile=1, child=Node(name="first"))
+    second = SkipHashParent(stable="same", volatile=2, child=Node(name="second"))
+    changed = SkipHashParent(stable="changed", volatile=1, child=Node(name="first"))
+
+    assert first._artifact_hash == second._artifact_hash
+    assert first.object_id == second.object_id
+    assert first._artifact_hash != changed._artifact_hash
+
+    artifact_fields = first._artifact_data["|fields"]
+    assert isinstance(artifact_fields, dict)
+    assert artifact_fields["volatile"] == 1
+    assert artifact_fields["child"] == {
+        "|kind": "instance",
+        "|class": "test_core.Node",
+        "|fields": {"name": "first"},
+    }
+
+    schema_data = first._schema_data
+    assert isinstance(schema_data, dict)
+    schema_fields = schema_data["|fields"]
+    assert isinstance(schema_fields, dict)
+    assert schema_fields["volatile"] == "builtins.int"
+    assert schema_fields["child"] == {
+        "|class": "test_core.Node",
+        "|fields": {"name": "builtins.str"},
+    }
+
+    artifact_hash_fields = first._artifact_hash_data["|fields"]
+    assert isinstance(artifact_hash_fields, dict)
+    assert artifact_hash_fields == {"stable": "same"}
+
+    schema_hash_data = first._schema_hash_data
+    assert isinstance(schema_hash_data, dict)
+    schema_hash_fields = schema_hash_data["|fields"]
+    assert isinstance(schema_hash_fields, dict)
+    assert schema_hash_fields == {"stable": "builtins.str"}
+
+    assert collect_declared_refs(first) == (first.child,)
+
+
+def test_skip_hash_field_schema_is_stored_but_not_hashed() -> None:
+    annotations = dict(getattr(SkipHashSchemaBase, "__annotations__", {}))
+    annotations["volatile"] = Annotated[int, furu.skip_hash]
+    namespace = {
+        "__annotations__": annotations,
+        "__module__": SkipHashSchemaBase.__module__,
+    }
+    variant = types.new_class(
+        SkipHashSchemaBase.__name__,
+        (SkipHashSchemaBase,),
+        exec_body=lambda ns: ns.update(namespace),
+    )
+    variant.__qualname__ = SkipHashSchemaBase.__qualname__
+
+    base = SkipHashSchemaBase(stable="same")
+    with_skipped_field = variant(stable="same", volatile=1)
+
+    assert with_skipped_field._artifact_schema_hash == base._artifact_schema_hash
+    assert with_skipped_field._artifact_hash == base._artifact_hash
+    assert with_skipped_field.object_id == base.object_id
+
+    schema_data = with_skipped_field._schema_data
+    assert isinstance(schema_data, dict)
+    schema_fields = schema_data["|fields"]
+    assert isinstance(schema_fields, dict)
+    assert schema_fields["volatile"] == "builtins.int"
+    assert with_skipped_field._schema_data != base._schema_data
+
+    artifact_fields = with_skipped_field._artifact_data["|fields"]
+    assert isinstance(artifact_fields, dict)
+    assert artifact_fields["volatile"] == 1
+    assert with_skipped_field._artifact_data != base._artifact_data
 
 
 def expected_schema_for_B_like(

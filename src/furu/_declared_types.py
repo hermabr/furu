@@ -3,6 +3,22 @@ from __future__ import annotations
 from typing import Annotated, Any, get_args, get_origin
 
 
+class _SkipHashAnnotation:
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "furu.skip_hash"
+
+
+skip_hash = _SkipHashAnnotation()
+
+
+def has_skip_hash(declared_type: object) -> bool:
+    if get_origin(declared_type) is not Annotated:
+        return False
+    return any(metadata is skip_hash for metadata in get_args(declared_type)[1:])
+
+
 def strip_annotated(declared_type: object) -> object:
     if get_origin(declared_type) is Annotated:
         return get_args(declared_type)[0]

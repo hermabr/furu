@@ -250,7 +250,19 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def _artifact_hash(  # TODO: should this be __hash__?
         self,
     ) -> str:
-        return _hash_dict_deterministically(self._artifact_data)
+        return _hash_dict_deterministically(self._artifact_hash_data)
+
+    @final
+    @cached_property
+    def _artifact_hash_data(
+        self,
+    ) -> dict[str, JsonValue]:
+        return _to_json(
+            self,
+            declared_type=type(self),
+            artifact_serializers=self.artifact_serializers,
+            include_hash_skipped_fields=False,
+        )  # ty:ignore[invalid-return-type] # TODO: check this or make _to_json return dict[str, JsonValue] or typed value
 
     @final
     @cached_property
@@ -266,7 +278,19 @@ class Furu[T](_FuruDataclassTransform, ABC):
     @final
     @cached_property
     def _artifact_schema_hash(self) -> str:
-        return _hash_dict_deterministically(self._schema_data)
+        return _hash_dict_deterministically(self._schema_hash_data)
+
+    @final
+    @cached_property
+    def _schema_hash_data(
+        self,
+    ) -> JsonValue:
+        return _schema_type(
+            type(self),
+            set(),
+            artifact_serializers=self.artifact_serializers,
+            include_hash_skipped_fields=False,
+        )
 
     @final
     @cached_property

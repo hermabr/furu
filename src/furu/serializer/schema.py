@@ -11,7 +11,7 @@ from typing import (
 
 from pydantic import BaseModel as PydanticBaseModel
 
-from furu._declared_types import strip_annotated
+from furu._declared_types import has_skip_hash, strip_annotated
 from furu.constants import (
     ARGSMARKER,
     CLASSMARKER,
@@ -44,6 +44,7 @@ def schema_class(
     seen: set[type],
     *,
     artifact_serializers: tuple[type[ArtifactSerializer], ...],
+    include_hash_skipped_fields: bool = True,
 ) -> JsonValue:
     if tp in seen:
         return {CLASSMARKER: fully_qualified_name(tp)}
@@ -57,8 +58,10 @@ def schema_class(
                 hints[name],
                 seen,
                 artifact_serializers=artifact_serializers,
+                include_hash_skipped_fields=include_hash_skipped_fields,
             )
             for name in field_names
+            if include_hash_skipped_fields or not has_skip_hash(hints[name])
         },
     }
 
@@ -68,12 +71,14 @@ def schema_dataclass(
     seen: set[type],
     *,
     artifact_serializers: tuple[type[ArtifactSerializer], ...],
+    include_hash_skipped_fields: bool = True,
 ) -> JsonValue:
     return schema_class(
         tp,
         sorted(f.name for f in fields(tp)),
         seen,
         artifact_serializers=artifact_serializers,
+        include_hash_skipped_fields=include_hash_skipped_fields,
     )
 
 
@@ -82,12 +87,14 @@ def schema_pydantic_model(
     seen: set[type],
     *,
     artifact_serializers: tuple[type[ArtifactSerializer], ...],
+    include_hash_skipped_fields: bool = True,
 ) -> JsonValue:
     return schema_class(
         tp,
         sorted(tp.model_fields),
         seen,
         artifact_serializers=artifact_serializers,
+        include_hash_skipped_fields=include_hash_skipped_fields,
     )
 
 
@@ -96,6 +103,7 @@ def schema_type(
     seen: set[type],
     *,
     artifact_serializers: tuple[type[ArtifactSerializer], ...],
+    include_hash_skipped_fields: bool = True,
 ) -> JsonValue:
     if serializer := ArtifactSerializerMeta.serializer_for_schema(
         tp,
@@ -110,6 +118,7 @@ def schema_type(
             get_args(tp)[0],
             seen,
             artifact_serializers=artifact_serializers,
+            include_hash_skipped_fields=include_hash_skipped_fields,
         )
     if tp is Ellipsis:
         return fully_qualified_name(types.EllipsisType)
@@ -120,6 +129,7 @@ def schema_type(
             tp.__value__,
             seen,
             artifact_serializers=artifact_serializers,
+            include_hash_skipped_fields=include_hash_skipped_fields,
         )
 
     if isinstance(tp, type) and is_dataclass(tp):
@@ -127,18 +137,21 @@ def schema_type(
             tp,
             seen,
             artifact_serializers=artifact_serializers,
+            include_hash_skipped_fields=include_hash_skipped_fields,
         )
     if origin is not None and is_dataclass(origin):
         return schema_dataclass(
             origin,
             seen,
             artifact_serializers=artifact_serializers,
+            include_hash_skipped_fields=include_hash_skipped_fields,
         )
     if isinstance(tp, type) and issubclass(tp, PydanticBaseModel):
         return schema_pydantic_model(
             tp,
             seen,
             artifact_serializers=artifact_serializers,
+            include_hash_skipped_fields=include_hash_skipped_fields,
         )
 
     if origin in (typing.Union, types.UnionType):
@@ -148,6 +161,7 @@ def schema_type(
                     a,
                     seen,
                     artifact_serializers=artifact_serializers,
+                    include_hash_skipped_fields=include_hash_skipped_fields,
                 )
                 for a in get_args(tp)
             ],
@@ -167,6 +181,7 @@ def schema_type(
                         a,
                         seen,
                         artifact_serializers=artifact_serializers,
+                        include_hash_skipped_fields=include_hash_skipped_fields,
                     )
                     for a in args
                 ],

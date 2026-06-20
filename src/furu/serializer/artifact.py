@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any, cast, get_type_hints
 
 from pydantic import BaseModel as PydanticBaseModel
 
-from furu._declared_types import child_declared_type, strip_annotated
+from furu._declared_types import child_declared_type, has_skip_hash, strip_annotated
 from furu.constants import (
     CLASSMARKER,
     FIELDSMARKER,
@@ -37,6 +37,8 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
     obj: Any,
     declared_type: object,
     artifact_serializers: tuple[type[ArtifactSerializer], ...],
+    *,
+    include_hash_skipped_fields: bool = True,
 ) -> JsonValue:
     # TODO: when writing this to metadata, make sure to escape strings etc
 
@@ -86,6 +88,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                     x,
                     declared_type=child_declared_type(declared_type, i),
                     artifact_serializers=artifact_serializers,
+                    include_hash_skipped_fields=include_hash_skipped_fields,
                 )
                 for i, x in enumerate(obj)
             ]
@@ -97,6 +100,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                         x,
                         declared_type=child_declared_type(declared_type, i),
                         artifact_serializers=artifact_serializers,
+                        include_hash_skipped_fields=include_hash_skipped_fields,
                     )
                     for i, x in enumerate(obj)
                 ],
@@ -111,6 +115,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                             x,
                             declared_type=element_type,
                             artifact_serializers=artifact_serializers,
+                            include_hash_skipped_fields=include_hash_skipped_fields,
                         )
                         for x in obj
                     ),
@@ -123,6 +128,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                     v,
                     declared_type=child_declared_type(declared_type, k),
                     artifact_serializers=artifact_serializers,
+                    include_hash_skipped_fields=include_hash_skipped_fields,
                 )
                 for k, v in obj.items()
             }
@@ -136,8 +142,11 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                         getattr(x, f.name),
                         declared_type=hints.get(f.name, Any),
                         artifact_serializers=artifact_serializers,
+                        include_hash_skipped_fields=include_hash_skipped_fields,
                     )
                     for f in fields(x)
+                    if include_hash_skipped_fields
+                    or not has_skip_hash(hints.get(f.name, Any))
                 },
             }
         case PydanticBaseModel():
@@ -152,8 +161,11 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                         getattr(obj, k),
                         declared_type=hints.get(k, Any),
                         artifact_serializers=artifact_serializers,
+                        include_hash_skipped_fields=include_hash_skipped_fields,
                     )
                     for k in model_fields
+                    if include_hash_skipped_fields
+                    or not has_skip_hash(hints.get(k, Any))
                 },
             }
         case enum.Enum():
