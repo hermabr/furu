@@ -31,6 +31,7 @@ dev = [
     "marimo>=0.23.5",
     "numpy>=2.4.4",
     "polars>=1.40.1",
+    "pre-commit>=4.6.0",
     "pytest>=9.0.2",
     "ruff>=0.15.17",
     "ty>=0.0.49",
