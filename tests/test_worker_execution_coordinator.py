@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from pydantic import TypeAdapter, ValidationError
 
 import furu.worker.loop as worker_loop_module
-from furu import Furu, skiphash
+from furu import Furu, skip_hash
 from furu._storage_layout import execution_coordinator_log_path_in
 from furu.config import get_config
 from furu.dag import _add_to_dag
@@ -136,7 +136,7 @@ class ExecutionCoordinatorLazyParent(Furu[int]):
 
 class SkipHashExecutionCoordinatorLeaf(Furu[int]):
     value: int
-    gpus: Annotated[int, skiphash]
+    gpus: Annotated[int, skip_hash]
 
     def create(self) -> int:
         return self.value + self.gpus
@@ -1209,7 +1209,7 @@ def test_worker_loop_logs_task_requests_and_received_task(
     ) in caplog.messages
 
 
-def test_worker_loop_reconstructs_job_with_skiphash_runtime_data(
+def test_worker_loop_reconstructs_job_with_skip_hash_runtime_data(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     leaf = SkipHashExecutionCoordinatorLeaf(value=1, gpus=4)

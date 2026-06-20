@@ -9,7 +9,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeAlias, cast, final
 
-from furu._fields import prepare_skiphash_dataclass_fields
+from furu._fields import prepare_skip_hash_dataclass_fields
 from furu._storage_layout import (
     compute_lock_path_in,
     data_dir_in,
@@ -73,7 +73,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
                 raise TypeError(f"{cls.__name__}.{name} must have a type annotation")
 
         validate_cls(cls)
-        prepare_skiphash_dataclass_fields(cls)
+        prepare_skip_hash_dataclass_fields(cls)
         if "__dataclass_params__" not in cls.__dict__:
             dataclass(frozen=True, kw_only=True)(cls)
         from furu.execution import _install_create_dispatchers, _resolve_create_mode

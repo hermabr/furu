@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import Annotated, Any, get_args, get_origin
 
-from furu._fields import strip_skiphash
+from furu._fields import strip_skip_hash
 
 
 def strip_annotated(declared_type: object) -> object:
-    declared_type = strip_skiphash(declared_type)
+    declared_type = strip_skip_hash(declared_type)
     if get_origin(declared_type) is Annotated:
         return get_args(declared_type)[0]
     return declared_type

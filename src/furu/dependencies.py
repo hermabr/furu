@@ -98,10 +98,10 @@ def find_nested_furu_objects(value: object) -> Iterator[Furu]:
         case Furu():
             yield value
         case _ if is_dataclass(value) and not isinstance(value, type):
-            for field in dataclass_field_specs(type(value), include_skiphash=False):
+            for field in dataclass_field_specs(type(value), include_skip_hash=False):
                 yield from find_nested_furu_objects(getattr(value, field.name))
         case PydanticBaseModel():
-            for field in pydantic_field_specs(type(value), include_skiphash=False):
+            for field in pydantic_field_specs(type(value), include_skip_hash=False):
                 yield from find_nested_furu_objects(getattr(value, field.name))
         case tuple() | list() | set() | frozenset():
             for item in value:
@@ -114,7 +114,7 @@ def find_nested_furu_objects(value: object) -> Iterator[Furu]:
 def collect_declared_refs(obj: Furu) -> tuple[Furu, ...]:
     refs_by_id: dict[str, Furu] = {}
 
-    for field in dataclass_field_specs(type(obj), include_skiphash=False):
+    for field in dataclass_field_specs(type(obj), include_skip_hash=False):
         for ref in find_nested_furu_objects(getattr(obj, field.name)):
             refs_by_id.setdefault(ref.object_id, ref)
 

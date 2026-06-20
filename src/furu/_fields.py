@@ -12,7 +12,7 @@ class _SkipHashMarker:
     pass
 
 
-skiphash = _SkipHashMarker()
+skip_hash = _SkipHashMarker()
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,17 +20,17 @@ class FieldSpec:
     name: str
     declared_type: object
     identity_type: object
-    skiphash: bool
+    skip_hash: bool
     dataclass_field: Field[Any] | None = None
 
 
-def _is_skiphash_marker(value: object) -> bool:
+def _is_skip_hash_marker(value: object) -> bool:
     return isinstance(value, _SkipHashMarker)
 
 
-def split_skiphash(declared_type: object) -> tuple[object, bool]:
+def split_skip_hash(declared_type: object) -> tuple[object, bool]:
     if isinstance(declared_type, typing.TypeAliasType):
-        value, skip = split_skiphash(declared_type.__value__)
+        value, skip = split_skip_hash(declared_type.__value__)
         if skip:
             return value, True
         return declared_type, False
@@ -40,7 +40,7 @@ def split_skiphash(declared_type: object) -> tuple[object, bool]:
         kept_metadata = [
             metadata_item
             for metadata_item in metadata
-            if not _is_skiphash_marker(metadata_item)
+            if not _is_skip_hash_marker(metadata_item)
         ]
         if len(kept_metadata) != len(metadata):
             if kept_metadata:
@@ -50,28 +50,28 @@ def split_skiphash(declared_type: object) -> tuple[object, bool]:
     return declared_type, False
 
 
-def strip_skiphash(declared_type: object) -> object:
-    return split_skiphash(declared_type)[0]
+def strip_skip_hash(declared_type: object) -> object:
+    return split_skip_hash(declared_type)[0]
 
 
 def dataclass_field_specs(
     tp: type,
     *,
-    include_skiphash: bool,
+    include_skip_hash: bool,
 ) -> tuple[FieldSpec, ...]:
     hints = get_type_hints(tp, include_extras=True)
     specs: list[FieldSpec] = []
     for field in fields(tp):
         declared_type = hints.get(field.name, Any)
-        identity_type, skip = split_skiphash(declared_type)
-        if skip and not include_skiphash:
+        identity_type, skip = split_skip_hash(declared_type)
+        if skip and not include_skip_hash:
             continue
         specs.append(
             FieldSpec(
                 name=field.name,
                 declared_type=declared_type,
                 identity_type=identity_type,
-                skiphash=skip,
+                skip_hash=skip,
                 dataclass_field=field,
             )
         )
@@ -81,27 +81,27 @@ def dataclass_field_specs(
 def pydantic_field_specs(
     tp: type[PydanticBaseModel],
     *,
-    include_skiphash: bool,
+    include_skip_hash: bool,
 ) -> tuple[FieldSpec, ...]:
     hints = get_type_hints(tp, include_extras=True)
     specs: list[FieldSpec] = []
     for name in tp.model_fields:
         declared_type = hints.get(name, Any)
-        identity_type, skip = split_skiphash(declared_type)
-        if skip and not include_skiphash:
+        identity_type, skip = split_skip_hash(declared_type)
+        if skip and not include_skip_hash:
             continue
         specs.append(
             FieldSpec(
                 name=name,
                 declared_type=declared_type,
                 identity_type=identity_type,
-                skiphash=skip,
+                skip_hash=skip,
             )
         )
     return tuple(specs)
 
 
-def prepare_skiphash_dataclass_fields(cls: type) -> None:
+def prepare_skip_hash_dataclass_fields(cls: type) -> None:
     annotations = getattr(cls, "__annotations__", {})
     if not annotations:
         return
@@ -111,7 +111,7 @@ def prepare_skiphash_dataclass_fields(cls: type) -> None:
     except Exception:
         return
     for name in annotations:
-        _, skip = split_skiphash(hints.get(name, annotations[name]))
+        _, skip = split_skip_hash(hints.get(name, annotations[name]))
         if not skip:
             continue
 

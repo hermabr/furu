@@ -100,7 +100,7 @@ class NodePair(Furu[dict]):
 
 class SkipHashNode(Furu[int]):
     value: int
-    gpus: Annotated[int, furu.skiphash]
+    gpus: Annotated[int, furu.skip_hash]
 
     def create(self) -> int:
         return self.value + self.gpus
@@ -108,7 +108,7 @@ class SkipHashNode(Furu[int]):
 
 class DefaultSkipHashNode(Furu[int]):
     value: int
-    gpus: Annotated[int, furu.skiphash] = 1
+    gpus: Annotated[int, furu.skip_hash] = 1
 
     def create(self) -> int:
         return self.value + self.gpus
@@ -321,8 +321,8 @@ def letter_count_with_parentheses(source: str, letter: str) -> int:
 
 
 @furu.function
-def skiphash_letter_count(
-    source: str, letter: str, gpus: Annotated[int, furu.skiphash]
+def skip_hash_letter_count(
+    source: str, letter: str, gpus: Annotated[int, furu.skip_hash]
 ) -> int:
     return source.count(letter) + gpus
 
@@ -642,17 +642,17 @@ def test_function_supports_parenthesized_decorator():
     assert _from_json(obj._artifact_data) == obj
 
 
-def test_function_supports_skiphash_parameters():
-    obj = skiphash_letter_count.as_furu("banana", "a", gpus=2)
+def test_function_supports_skip_hash_parameters():
+    obj = skip_hash_letter_count.as_furu("banana", "a", gpus=2)
 
     assert obj.create() == 5
     assert obj._schema_data == {
-        "|class": "test_core.skiphash_letter_count",
+        "|class": "test_core.skip_hash_letter_count",
         "|fields": {"letter": "builtins.str", "source": "builtins.str"},
     }
     assert obj._artifact_data == {
         "|kind": "instance",
-        "|class": "test_core.skiphash_letter_count",
+        "|class": "test_core.skip_hash_letter_count",
         "|fields": {"source": "banana", "letter": "a"},
     }
     assert obj._runtime_data == {"gpus": 2}
@@ -664,7 +664,7 @@ def test_function_supports_skiphash_parameters():
 
     assert getattr(loaded, "gpus") == 2
     assert loaded.create() == 5
-    assert skiphash_letter_count.as_furu("banana", "a", gpus=8) == obj
+    assert skip_hash_letter_count.as_furu("banana", "a", gpus=8) == obj
 
 
 def test_function_rejects_variadic_parameters():
@@ -958,7 +958,7 @@ def test_hashes_and_data_dir():
     )
 
 
-def test_skiphash_field_is_excluded_from_identity_artifact_and_schema():
+def test_skip_hash_field_is_excluded_from_identity_artifact_and_schema():
     one_gpu = SkipHashNode(value=10, gpus=1)
     eight_gpus = SkipHashNode(value=10, gpus=8)
 
@@ -981,7 +981,7 @@ def test_skiphash_field_is_excluded_from_identity_artifact_and_schema():
     assert eight_gpus.gpus == 8
 
 
-def test_skiphash_field_round_trips_with_runtime_data():
+def test_skip_hash_field_round_trips_with_runtime_data():
     obj = SkipHashNode(value=10, gpus=4)
     artifact = ArtifactSpec.from_furu(obj)
 
@@ -992,11 +992,11 @@ def test_skiphash_field_round_trips_with_runtime_data():
     assert loaded._artifact_hash == obj._artifact_hash
     assert loaded._artifact_schema_hash == obj._artifact_schema_hash
 
-    with pytest.raises(TypeError, match="required skiphash field\\(s\\): gpus"):
+    with pytest.raises(TypeError, match="required skip_hash field\\(s\\): gpus"):
         SkipHashNode.from_artifact(artifact)
 
 
-def test_skiphash_field_with_default_loads_from_artifact_without_runtime_data():
+def test_skip_hash_field_with_default_loads_from_artifact_without_runtime_data():
     obj = DefaultSkipHashNode(value=10, gpus=8)
 
     loaded = DefaultSkipHashNode.from_artifact(ArtifactSpec.from_furu(obj))

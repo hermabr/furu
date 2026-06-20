@@ -14,7 +14,7 @@ from furu._fields import (
     FieldSpec,
     dataclass_field_specs,
     pydantic_field_specs,
-    strip_skiphash,
+    strip_skip_hash,
 )
 from furu._declared_types import strip_annotated
 from furu.constants import (
@@ -76,7 +76,7 @@ def schema_dataclass(
     return schema_class(
         tp,
         sorted(
-            dataclass_field_specs(tp, include_skiphash=False),
+            dataclass_field_specs(tp, include_skip_hash=False),
             key=lambda spec: spec.name,
         ),
         seen,
@@ -93,7 +93,7 @@ def schema_pydantic_model(
     return schema_class(
         tp,
         sorted(
-            pydantic_field_specs(tp, include_skiphash=False),
+            pydantic_field_specs(tp, include_skip_hash=False),
             key=lambda spec: spec.name,
         ),
         seen,
@@ -107,7 +107,7 @@ def schema_type(
     *,
     artifact_serializers: tuple[type[ArtifactSerializer], ...],
 ) -> JsonValue:
-    tp = strip_skiphash(tp)
+    tp = strip_skip_hash(tp)
 
     if serializer := ArtifactSerializerMeta.serializer_for_schema(
         tp,

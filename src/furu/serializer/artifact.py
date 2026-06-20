@@ -8,8 +8,8 @@ from pydantic import BaseModel as PydanticBaseModel
 from furu._fields import (
     dataclass_field_specs,
     pydantic_field_specs,
-    split_skiphash,
-    strip_skiphash,
+    split_skip_hash,
+    strip_skip_hash,
 )
 from furu._declared_types import child_declared_type, strip_annotated
 from furu.constants import (
@@ -44,10 +44,10 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
     declared_type: object,
     artifact_serializers: tuple[type[ArtifactSerializer], ...],
     *,
-    include_skiphash: bool = False,
+    include_skip_hash: bool = False,
 ) -> JsonValue:
     # TODO: when writing this to metadata, make sure to escape strings etc
-    declared_type = strip_skiphash(declared_type)
+    declared_type = strip_skip_hash(declared_type)
 
     def assert_correct_dict_key(x: Any) -> str:
         if not isinstance(x, str):
@@ -95,7 +95,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                     x,
                     declared_type=child_declared_type(declared_type, i),
                     artifact_serializers=artifact_serializers,
-                    include_skiphash=include_skiphash,
+                    include_skip_hash=include_skip_hash,
                 )
                 for i, x in enumerate(obj)
             ]
@@ -107,7 +107,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                         x,
                         declared_type=child_declared_type(declared_type, i),
                         artifact_serializers=artifact_serializers,
-                        include_skiphash=include_skiphash,
+                        include_skip_hash=include_skip_hash,
                     )
                     for i, x in enumerate(obj)
                 ],
@@ -122,7 +122,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                             x,
                             declared_type=element_type,
                             artifact_serializers=artifact_serializers,
-                            include_skiphash=include_skiphash,
+                            include_skip_hash=include_skip_hash,
                         )
                         for x in obj
                     ),
@@ -135,7 +135,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                     v,
                     declared_type=child_declared_type(declared_type, k),
                     artifact_serializers=artifact_serializers,
-                    include_skiphash=include_skiphash,
+                    include_skip_hash=include_skip_hash,
                 )
                 for k, v in obj.items()
             }
@@ -148,10 +148,10 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                         getattr(x, field.name),
                         declared_type=field.identity_type,
                         artifact_serializers=artifact_serializers,
-                        include_skiphash=include_skiphash,
+                        include_skip_hash=include_skip_hash,
                     )
                     for field in dataclass_field_specs(
-                        type(x), include_skiphash=include_skiphash
+                        type(x), include_skip_hash=include_skip_hash
                     )
                 },
             }
@@ -165,10 +165,10 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                         getattr(obj, field.name),
                         declared_type=field.identity_type,
                         artifact_serializers=artifact_serializers,
-                        include_skiphash=include_skiphash,
+                        include_skip_hash=include_skip_hash,
                     )
                     for field in pydantic_field_specs(
-                        model_cls, include_skiphash=include_skiphash
+                        model_cls, include_skip_hash=include_skip_hash
                     )
                 },
             }
@@ -208,27 +208,27 @@ def _runtime_to_json(
     declared_type: object,
     artifact_serializers: tuple[type[ArtifactSerializer], ...],
 ) -> JsonValue | object:
-    identity_type, skip = split_skiphash(declared_type)
+    identity_type, skip = split_skip_hash(declared_type)
     if skip:
         return to_json(
             obj,
             declared_type=identity_type,
             artifact_serializers=artifact_serializers,
-            include_skiphash=True,
+            include_skip_hash=True,
         )
 
-    declared_type = strip_skiphash(declared_type)
+    declared_type = strip_skip_hash(declared_type)
 
     if is_dataclass(obj) and not isinstance(obj, type):
         field_values: dict[str, JsonValue] = {}
-        for field in dataclass_field_specs(type(obj), include_skiphash=True):
+        for field in dataclass_field_specs(type(obj), include_skip_hash=True):
             value = getattr(obj, field.name)
-            if field.skiphash:
+            if field.skip_hash:
                 field_values[field.name] = to_json(
                     value,
                     declared_type=field.identity_type,
                     artifact_serializers=artifact_serializers,
-                    include_skiphash=True,
+                    include_skip_hash=True,
                 )
                 continue
 
@@ -245,14 +245,14 @@ def _runtime_to_json(
 
     if isinstance(obj, PydanticBaseModel):
         field_values: dict[str, JsonValue] = {}
-        for field in pydantic_field_specs(type(obj), include_skiphash=True):
+        for field in pydantic_field_specs(type(obj), include_skip_hash=True):
             value = getattr(obj, field.name)
-            if field.skiphash:
+            if field.skip_hash:
                 field_values[field.name] = to_json(
                     value,
                     declared_type=field.identity_type,
                     artifact_serializers=artifact_serializers,
-                    include_skiphash=True,
+                    include_skip_hash=True,
                 )
                 continue
 
@@ -348,7 +348,7 @@ def _from_json_field(
     *,
     runtime_data: JsonValue | None = None,
 ) -> Any:
-    expected_type = strip_skiphash(expected_type)
+    expected_type = strip_skip_hash(expected_type)
     if (
         isinstance(value, dict)
         and value.get(KINDMARKER) == "custom"
@@ -439,15 +439,15 @@ def _resolve_serialized_type(class_name: str) -> type:
     raise TypeError(f"{class_name!r} resolved to a non-type value")
 
 
-def _raise_for_missing_required_skiphash_fields(
+def _raise_for_missing_required_skip_hash_fields(
     cls: type, converted_fields: dict[str, Any]
 ) -> None:
     missing: list[str] = []
     if is_dataclass(cls):
-        for field in dataclass_field_specs(cls, include_skiphash=True):
+        for field in dataclass_field_specs(cls, include_skip_hash=True):
             dataclass_field = field.dataclass_field
             if (
-                not field.skiphash
+                not field.skip_hash
                 or field.name in converted_fields
                 or dataclass_field is None
                 or not dataclass_field.init
@@ -457,9 +457,9 @@ def _raise_for_missing_required_skiphash_fields(
                 continue
             missing.append(field.name)
     elif issubclass(cls, PydanticBaseModel):
-        for field in pydantic_field_specs(cls, include_skiphash=True):
+        for field in pydantic_field_specs(cls, include_skip_hash=True):
             if (
-                field.skiphash
+                field.skip_hash
                 and field.name not in converted_fields
                 and cls.model_fields[field.name].is_required()
             ):
@@ -471,7 +471,7 @@ def _raise_for_missing_required_skiphash_fields(
     fields_text = ", ".join(missing)
     raise TypeError(
         f"Cannot load {cls.__module__}.{cls.__qualname__} from an artifact without "
-        f"runtime data for required skiphash field(s): {fields_text}"
+        f"runtime data for required skip_hash field(s): {fields_text}"
     )
 
 
@@ -517,7 +517,7 @@ def _from_json(value: JsonValue, *, runtime_data: JsonValue | None = None) -> An
                         field_value,
                         hints.get(name, Any),
                     )
-                _raise_for_missing_required_skiphash_fields(cls, converted_fields)
+                _raise_for_missing_required_skip_hash_fields(cls, converted_fields)
                 return cls(**converted_fields)
             return {
                 key: _from_json(child, runtime_data=runtime_fields.get(key))
