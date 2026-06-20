@@ -7,9 +7,10 @@ from typing import assert_never
 
 from furu.core import Furu
 from furu.execution import _ensure_single_result, api
-from furu.logging import _scoped_component, format_duration, get_logger, log_detail
+from furu.logging import _scoped_component, get_logger, log_detail
 from furu.metadata import ArtifactSpec
 from furu.resources import ResourceRequest
+from furu.utils import format_duration
 from furu.worker.context import _DependencyNotReady, worker_execution_context
 from furu.worker.protocol import (
     Job,

@@ -25,12 +25,12 @@ from furu._storage_layout import (
 from furu.core import Furu, FuruCreateMode
 from furu.dependencies import dependency_recorder, record_dependency_call
 from furu.locking import lock
-from furu.logging import _scoped_log_files, format_duration
+from furu.logging import _scoped_log_files
 from furu.metadata import RunningMetadata
 from furu.migration import result_dir_for_loading
 from furu.result import _save_result_bundle, load_result_bundle
 from furu.result.save_as import _unwrap_save_as
-from furu.utils import nfs_safe_unique_name
+from furu.utils import format_duration, nfs_safe_unique_name
 from furu.worker.context import (
     _DependencyNotReady,
     _worker_execution_lease_id,

@@ -115,6 +115,10 @@ def _console_mode(stream: object) -> tuple[bool, bool]:
 def _caller_tag(record: logging.LogRecord) -> str | None:
     """`file:line` for user code, or None for furu-internal call sites."""
     pathname = record.pathname
+    # `<stdin>`, `<string>`, `<frozen ...>` and similar synthetic paths are not
+    # real files; tagging them as "your code" would print a misleading file:line.
+    if pathname.startswith("<"):
+        return None
     try:
         resolved = str(Path(pathname).resolve())
     except OSError:
@@ -380,15 +384,6 @@ def log_detail(**fields: object) -> dict[str, dict[str, object]]:
     logfmt file record, which keeps full ids for later inspection.
     """
     return {_DETAIL_ATTR: fields}
-
-
-def format_duration(seconds: float) -> str:
-    if seconds < 1:
-        return f"{seconds * 1000:.0f}ms"
-    if seconds < 60:
-        return f"{seconds:.1f}s"
-    minutes, secs = divmod(int(seconds), 60)
-    return f"{minutes}m{secs:02d}s"
 
 
 @contextmanager

@@ -18,12 +18,12 @@ from furu.dag import DagNode, _add_to_dag, _update_dag_blocking_dependencies
 from furu.logging import (
     _scoped_component,
     _scoped_log_files,
-    format_duration,
     get_logger,
     log_detail,
 )
 from furu.metadata import ArtifactSpec
 from furu.resources import ResourceRequest, resource_request_satisfies
+from furu.utils import format_duration
 from furu.worker.protocol import (
     Job,
     JobBlockedResult,
