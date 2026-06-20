@@ -223,7 +223,7 @@ def test_console_user_warning_body_orange_with_level_letter_severity() -> None:
     assert "\x1b[33;1m" in out  # the W letter still carries the warning colour
 
 
-def test_console_renders_traceback_below_entry() -> None:
+def test_console_leaves_traceback_to_default_error_output() -> None:
     try:
         raise ValueError("boom")
     except ValueError:
@@ -240,8 +240,8 @@ def test_console_renders_traceback_below_entry() -> None:
     )
 
     assert "failed it" in out
-    assert "Traceback (most recent call last):" in out
-    assert "ValueError: boom" in out
+    assert "Traceback (most recent call last):" not in out
+    assert "ValueError: boom" not in out
 
 
 def test_console_wraps_long_message_with_hanging_indent(

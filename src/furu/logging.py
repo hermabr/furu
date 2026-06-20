@@ -242,26 +242,7 @@ def _render_console(record: logging.LogRecord, *, color: bool) -> str:
         else:
             out_lines.append(indent + decorated)
 
-    exception = _render_exception_console(record, palette, indent)
-    if exception:
-        out_lines.append(exception)
     return "\n".join(out_lines)
-
-
-def _render_exception_console(
-    record: logging.LogRecord, palette: _Palette, indent: str
-) -> str:
-    text = _exception_text(record)
-    if not text:
-        return ""
-    rendered: list[str] = []
-    for line in text.split("\n"):
-        is_frame = line.startswith((" ", "\t")) or line.startswith(
-            ("Traceback", "During handling", "The above")
-        )
-        style = _DIM if is_frame else f"{_RED};1"
-        rendered.append(indent + palette.paint(line, style))
-    return "\n".join(rendered)
 
 
 # --- logfmt renderer -----------------------------------------------------------
