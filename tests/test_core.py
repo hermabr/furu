@@ -1785,13 +1785,33 @@ def test_cached_create_logs_debug_call_and_only_cache_hit_info(
 
     log_text = log_path.read_text(encoding="utf-8")
     assert f".create called for {obj}" in log_text
-    assert "1 cached, 0 to build" in log_text
+    assert f"{obj._log_label} cached" in log_text
+    assert "to build" not in log_text
     assert "creating " not in log_text
     assert "finished " not in log_text
 
     info_lines = [line for line in log_text.splitlines() if "level=info" in line]
     assert len(info_lines) == 1
-    assert info_lines[0].endswith('msg="1 cached, 0 to build"')
+    assert info_lines[0].endswith(f'msg="{obj._log_label} cached"')
+
+
+def test_small_cache_summary_logs_labels_for_cached_and_missing_items(
+    tmp_path: Path,
+) -> None:
+    ObjectIdStorageRootValue.storage_root_override = tmp_path / "objects"
+    cached = ObjectIdStorageRootValue(key=1)
+    missing = ObjectIdStorageRootValue(key=2)
+
+    assert cached.create() == "object-id:1"
+
+    log_path = tmp_path / "mixed-create.log"
+    with _scoped_log_files((log_path,)):
+        assert _load_or_create([cached, missing]) == ["object-id:1", "object-id:2"]
+
+    assert (
+        f"{cached._log_label} cached, {missing._log_label} to build"
+        in log_path.read_text(encoding="utf-8")
+    )
 
 
 def test_resolved_create_mode_validation() -> None:
