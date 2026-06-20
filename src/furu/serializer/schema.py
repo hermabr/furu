@@ -11,7 +11,7 @@ from typing import (
 
 from pydantic import BaseModel as PydanticBaseModel
 
-from furu._declared_types import is_skipped, strip_annotated
+from furu._declared_types import is_skip_hash, strip_annotated
 from furu.constants import (
     ARGSMARKER,
     CLASSMARKER,
@@ -59,7 +59,7 @@ def schema_class(
                 artifact_serializers=artifact_serializers,
             )
             for name in field_names
-            if not is_skipped(hints[name])
+            if not is_skip_hash(hints[name])
         },
     }
 

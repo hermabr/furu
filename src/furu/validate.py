@@ -1,7 +1,7 @@
 from dataclasses import MISSING, fields
 from typing import Any, Callable, get_type_hints, overload
 
-from furu._declared_types import is_skipped
+from furu._declared_types import is_skip_hash
 
 _VALIDATOR_MARKER = "__furu_validator__"
 _POST_INIT_WRAPPER_MARKER = "__furu_post_init_wrapper__"
@@ -28,25 +28,25 @@ def validate(
     return decorator(fn)
 
 
-_skip_validated_classes: set[type] = set()
+_skip_hash_validated_classes: set[type] = set()
 
 
-def validate_skipped_fields(cls: type) -> None:
+def validate_skip_hash_fields(cls: type) -> None:
     # Resolved lazily (not in __init_subclass__) so forward references and
     # self-referential annotations are defined by the time hints are evaluated.
-    if cls in _skip_validated_classes:
+    if cls in _skip_hash_validated_classes:
         return
     hints = get_type_hints(cls, include_extras=True)
     for field in fields(cls):
-        if not is_skipped(hints.get(field.name)):
+        if not is_skip_hash(hints.get(field.name)):
             continue
         if field.default is MISSING and field.default_factory is MISSING:
             raise TypeError(
-                f"{cls.__name__}.{field.name} is marked furu.skip and must declare a "
-                "default; skipped fields are absent from the artifact and cannot be "
+                f"{cls.__name__}.{field.name} is marked furu.skip_hash and must declare "
+                "a default; skip_hash fields are absent from the artifact and cannot be "
                 "reconstructed when loading from it"
             )
-    _skip_validated_classes.add(cls)
+    _skip_hash_validated_classes.add(cls)
 
 
 def validate_cls(cls: type) -> None:

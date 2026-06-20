@@ -21,33 +21,33 @@ def _fields(node: JsonValue) -> dict[str, Any]:
 
 class _Run(Furu[int]):
     value: int
-    gpus: Annotated[int, furu.skip] = 1
+    gpus: Annotated[int, furu.skip_hash] = 1
 
     def create(self) -> int:
         return self.value
 
 
 class _BadSkip(Furu[int]):
-    gpus: Annotated[int, furu.skip]
+    gpus: Annotated[int, furu.skip_hash]
 
     def create(self) -> int:
         return self.gpus
 
 
 @furu.function
-def _skip_param_run(value: int, gpus: Annotated[int, furu.skip] = 1) -> int:
+def _skip_param_run(value: int, gpus: Annotated[int, furu.skip_hash] = 1) -> int:
     return value
 
 
 @furu.function
-def _skip_param_no_default(value: int, gpus: Annotated[int, furu.skip]) -> int:
+def _skip_param_no_default(value: int, gpus: Annotated[int, furu.skip_hash]) -> int:
     return value
 
 
 @dataclass(frozen=True)
 class _Cfg:
     lr: float
-    gpus: Annotated[int, furu.skip] = 1
+    gpus: Annotated[int, furu.skip_hash] = 1
 
 
 class _NestedRun(Furu[float]):

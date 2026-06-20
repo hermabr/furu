@@ -33,7 +33,7 @@ from furu.utils import (
     nfs_safe_unique_name,
     object_id_from_parts,
 )
-from furu.validate import validate_cls, validate_skipped_fields
+from furu.validate import validate_cls, validate_skip_hash_fields
 
 if TYPE_CHECKING:
     from typing_extensions import dataclass_transform
@@ -239,7 +239,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def _artifact_data(  # TODO: make sure this doesn't prevent garbage collection
         self,
     ) -> dict[str, JsonValue]:
-        validate_skipped_fields(type(self))
+        validate_skip_hash_fields(type(self))
         return _to_json(
             self,
             declared_type=type(self),
@@ -258,7 +258,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def _schema_data(
         self,
     ) -> JsonValue:
-        validate_skipped_fields(type(self))
+        validate_skip_hash_fields(type(self))
         return _schema_type(
             type(self),
             set(),

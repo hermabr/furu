@@ -11,7 +11,7 @@
 - [x] compute basic schema and schema hash
 - [x] record current schema per object to detect when schema changed since last run
 - [x] custom walk hooks: let users define how to walk an unsupported object (e.g. pydantic) for both hashing and schema (extensible `ArtifactSerializer` registry: subclass auto-register, `__furu_serializer__`, `Annotated[T, Serializer]`, or per-object `artifact_serializers`)
-- [x] allow skipping/ignoring one field (`Annotated[T, furu.skip]`)
+- [x] allow skipping/ignoring one field (`Annotated[T, furu.skip_hash]`)
 
 ## Serialization (save & load results)
 - [x] start with pickle

@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any, cast, get_type_hints
 
 from pydantic import BaseModel as PydanticBaseModel
 
-from furu._declared_types import child_declared_type, is_skipped, strip_annotated
+from furu._declared_types import child_declared_type, is_skip_hash, strip_annotated
 from furu.constants import (
     CLASSMARKER,
     FIELDSMARKER,
@@ -138,7 +138,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                         artifact_serializers=artifact_serializers,
                     )
                     for f in fields(x)
-                    if not is_skipped(hints.get(f.name))
+                    if not is_skip_hash(hints.get(f.name))
                 },
             }
         case PydanticBaseModel():
@@ -155,7 +155,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                         artifact_serializers=artifact_serializers,
                     )
                     for k in model_fields
-                    if not is_skipped(hints.get(k))
+                    if not is_skip_hash(hints.get(k))
                 },
             }
         case enum.Enum():
