@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import functools
+import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
@@ -29,7 +30,7 @@ from furu.metadata import RunningMetadata
 from furu.migration import result_dir_for_loading
 from furu.result import _save_result_bundle, load_result_bundle
 from furu.result.save_as import _unwrap_save_as
-from furu.utils import nfs_safe_unique_name
+from furu.utils import format_duration, nfs_safe_unique_name
 from furu.worker.context import (
     _DependencyNotReady,
     _worker_execution_lease_id,
@@ -275,7 +276,6 @@ def _load_or_create_local[T](
 
     for obj in unique:
         if (cached_result_dir := result_dir_for_loading(obj)) is not None:
-            obj.logger.info("cache hit for %s", obj._log_label)
             results_by_object_id[obj.object_id] = cast(
                 T, load_result_bundle(cached_result_dir)
             )
@@ -294,37 +294,73 @@ def _load_or_create_local[T](
         pending: list[Furu[T]] = []
         for obj in missing:
             if (cached_result_dir := result_dir_for_loading(obj)) is not None:
-                obj.logger.info("cache hit for %s", obj._log_label)
                 results_by_object_id[obj.object_id] = cast(
                     T, load_result_bundle(cached_result_dir)
                 )
             else:
                 pending.append(obj)
 
-        direct_create_started = unwrap and bool(pending)
-        if direct_create_started:
-            objs[0].logger.info("creating %s", objs[0]._log_label)
+        _log_local_plan(unique, pending, unwrap=unwrap)
 
         grouped: dict[type[object], list[Furu[T]]] = {}
         for obj in pending:
             grouped.setdefault(type(obj), []).append(obj)
 
-        for group in grouped.values():
-            _create_and_store_group(
-                group,
-                has_lock=has_lock,
-                results_by_object_id=results_by_object_id,
+        started_at = time.monotonic()
+        try:
+            for group in grouped.values():
+                _create_and_store_group(
+                    group,
+                    has_lock=has_lock,
+                    results_by_object_id=results_by_object_id,
+                )
+        except Exception:
+            if unwrap and pending:
+                objs[0].logger.error("failed %s", objs[0]._log_label, exc_info=True)
+            raise
+
+        if unwrap and pending:
+            objs[0].logger.info(
+                "finished %s ok · %s",
+                objs[0]._log_label,
+                format_duration(time.monotonic() - started_at),
             )
 
     outputs = [results_by_object_id[obj.object_id] for obj in objs]
 
     if unwrap:
-        (obj,) = objs
         (output,) = outputs
-        if direct_create_started:
-            obj.logger.info("%s.create() finished", obj._log_label)
         return output
     return outputs
+
+
+def _log_local_plan(
+    unique: Sequence[Furu[Any]],
+    pending: Sequence[Furu[Any]],
+    *,
+    unwrap: bool,
+) -> None:
+    """Announce what a local run is about to do — ``creating``/``cache hit`` for
+    a single ``.create()``, or a collapsed ``N cached · M to build`` summary for
+    a batch instead of one line per cached object."""
+    if unwrap:
+        if pending:
+            pending[0].logger.info("creating %s", pending[0]._log_label)
+        elif unique:
+            unique[0].logger.info("cache hit for %s", unique[0]._log_label)
+        return
+
+    if len(unique) <= 1:
+        return
+
+    cached = len(unique) - len(pending)
+    parts: list[str] = []
+    if cached:
+        parts.append(f"{cached} cached")
+    if pending:
+        parts.append(f"{len(pending)} to build")
+    if parts:
+        unique[0].logger.info(" · ".join(parts))
 
 
 def _create_and_store_group[T](

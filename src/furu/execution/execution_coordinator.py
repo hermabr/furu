@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import threading
+import time
 from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -14,9 +15,10 @@ from furu._storage_layout import execution_coordinator_log_path_in
 from furu.config import get_config
 from furu.core import Furu
 from furu.dag import DagNode, _add_to_dag, _update_dag_blocking_dependencies
-from furu.logging import _scoped_log_files, get_logger
+from furu.logging import _log_component, _scoped_log_files, get_logger
 from furu.metadata import ArtifactSpec
 from furu.resources import ResourceRequest, resource_request_satisfies
+from furu.utils import format_duration
 from furu.worker.protocol import (
     Job,
     JobBlockedResult,
@@ -31,6 +33,8 @@ if TYPE_CHECKING:
 
 
 logger = get_logger()
+
+_PROGRESS_THROTTLE_S = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +64,8 @@ class ExecutionCoordinator:
     lock: Any = field(default_factory=threading.Lock)
     done: threading.Event = field(default_factory=threading.Event)
     finish_error: str | None = None
+    started_at: float = field(default_factory=time.monotonic)
+    _last_progress_at: float = 0.0
 
     def _failed_counts(self) -> tuple[int, int]:
         failed_retry = sum(
@@ -80,6 +86,7 @@ class ExecutionCoordinator:
         if max_retries_per_object is None:
             max_retries_per_object = get_config().worker.max_retries_per_object
         coordinator = cls(max_retries_per_object=max_retries_per_object)
+        coordinator.started_at = time.monotonic()
         _add_to_dag(coordinator, objs)
         digest = hashlib.blake2s(digest_size=16)
         for obj in objs:
@@ -103,20 +110,21 @@ class ExecutionCoordinator:
 
         with coordinator.log_context():
             logger.info(
-                "starting furu execution coordinator: executor_id=%s executor_dir=%s "
-                "ready=%d blocked=%d",
-                coordinator.executor_id,
-                coordinator.executor_dir,
+                "starting exec=%s · %d ready · %d blocked",
+                coordinator.executor_id[:5],
                 len(coordinator.ready),
                 len(coordinator.blocked),
+                extra={
+                    "furu_fields": {
+                        "executor_id": coordinator.executor_id,
+                        "executor_dir": coordinator.executor_dir,
+                    }
+                },
             )
             with execution_coordinator_server(
                 coordinator, bind_host=bind_host, port=port
             ) as server:
-                logger.info(
-                    "execution coordinator server listening: server_url=%s",
-                    server.server_url,
-                )
+                logger.debug("server listening %s", server.server_url)
                 pools = []
                 for backend in worker_backends:
                     pool = backend.start_pool(
@@ -125,9 +133,7 @@ class ExecutionCoordinator:
                         executor_dir=coordinator.executor_dir,
                     )
                     pools.append(pool)
-                    logger.info(
-                        "worker pool started: backend=%s", type(backend).__name__
-                    )
+                    logger.debug("worker pool started %s", type(backend).__name__)
                 coordinator.done.wait()
 
                 with ThreadPoolExecutor(max_workers=len(pools)) as executor:
@@ -136,10 +142,15 @@ class ExecutionCoordinator:
                     ]
                 for pool, future in zip(pools, stop_futures, strict=True):
                     if (exc := future.exception()) is not None:
+                        pool_label = (
+                            type(pool).__name__.removesuffix("WorkerPool").lower()
+                            or type(pool).__name__
+                        )
                         logger.error(
-                            "worker pool stop failed: pool=%s error=%s",
-                            type(pool).__name__,
-                            exc,
+                            "pool stop failed %s",
+                            pool_label,
+                            exc_info=(type(exc), exc, exc.__traceback__),
+                            extra={"furu_fields": {"pool": type(pool).__name__}},
                         )
         coordinator.raise_for_failure()
         return objs
@@ -150,8 +161,42 @@ class ExecutionCoordinator:
 
     @contextmanager
     def log_context(self) -> Iterator[None]:
-        with _scoped_log_files((execution_coordinator_log_path_in(self.executor_dir),)):
+        with (
+            _scoped_log_files((execution_coordinator_log_path_in(self.executor_dir),)),
+            _log_component("coord"),
+        ):
             yield
+
+    def _log_progress_locked(self, *, force: bool = False) -> None:
+        now = time.monotonic()
+        if not force and now - self._last_progress_at < _PROGRESS_THROTTLE_S:
+            return
+        self._last_progress_at = now
+        failed_retry, failed = self._failed_counts()
+        message = "progress %d/%d · %d running"
+        args: list[object] = [
+            len(self.completed),
+            len(self.nodes_by_id),
+            len(self.running),
+        ]
+        if failed:
+            message += " · %d failed"
+            args.append(failed)
+        logger.info(
+            message,
+            *args,
+            extra={
+                "furu_fields": {
+                    "ready": len(self.ready),
+                    "running": len(self.running),
+                    "blocked": len(self.blocked),
+                    "completed": len(self.completed),
+                    "total": len(self.nodes_by_id),
+                    "failed_retry": failed_retry,
+                    "failed": failed,
+                }
+            },
+        )
 
     def lease_job(self, *, resources: ResourceRequest) -> LeaseJobResponse:
         with self.log_context(), self.lock:
@@ -177,21 +222,22 @@ class ExecutionCoordinator:
             node = self.ready.pop(object_id)
             lease_id = str(uuid4())
             self.running[lease_id] = RunningJob(lease_id=lease_id, node=node)
-            node.obj.logger.info(
-                "executor creating %s",
-                node.obj._log_label,
-            )
             failed_retry, failed = self._failed_counts()
             logger.info(
-                "leased job: lease_id=%s object_id=%s ready=%d running=%d blocked=%d completed=%d failed_retry=%d failed=%d",
-                lease_id,
-                node.obj.object_id,
-                len(self.ready),
-                len(self.running),
-                len(self.blocked),
-                len(self.completed),
-                failed_retry,
-                failed,
+                "leased %s",
+                node.obj._log_label,
+                extra={
+                    "furu_fields": {
+                        "lease": lease_id,
+                        "object_id": node.obj.object_id,
+                        "ready": len(self.ready),
+                        "running": len(self.running),
+                        "blocked": len(self.blocked),
+                        "completed": len(self.completed),
+                        "failed_retry": failed_retry,
+                        "failed": failed,
+                    }
+                },
             )
             return Job(
                 lease_id=lease_id,
@@ -220,6 +266,7 @@ class ExecutionCoordinator:
                     "ignoring job result for unknown lease: lease_id=%s", lease_id
                 )
                 return
+            reached_terminal = False
             match request:
                 case JobCompletedResult():
                     self.failed.pop(running_job.node.obj.object_id, None)
@@ -231,18 +278,7 @@ class ExecutionCoordinator:
                         dependent_id = dependent.obj.object_id
                         if not dependent.dependencies and dependent_id in self.blocked:
                             self.ready[dependent_id] = self.blocked.pop(dependent_id)
-                    failed_retry, failed = self._failed_counts()
-                    logger.info(
-                        "job completed: lease_id=%s object_id=%s ready=%d running=%d blocked=%d completed=%d failed_retry=%d failed=%d",
-                        lease_id,
-                        running_job.node.obj.object_id,
-                        len(self.ready),
-                        len(self.running),
-                        len(self.blocked),
-                        len(self.completed),
-                        failed_retry,
-                        failed,
-                    )
+                    reached_terminal = len(self.completed) == len(self.nodes_by_id)
 
                 case JobFailedResult(error=error):
                     object_id = running_job.node.obj.object_id
@@ -259,46 +295,30 @@ class ExecutionCoordinator:
                     will_retry = failed_attempts <= self.max_retries_per_object
                     if will_retry:
                         self.ready[object_id] = running_job.node
+                    failed_retry, failed = self._failed_counts()
                     logger.info(
-                        "job %s: lease_id=%s object_id=%s failed_attempts=%d max_retries=%d error=%s",
-                        "failed (retry)" if will_retry else "failed",
-                        lease_id,
-                        object_id,
-                        failed_attempts,
-                        self.max_retries_per_object,
-                        error,
+                        "job failed%s %s",
+                        " (retry)" if will_retry else "",
+                        running_job.node.obj._log_label,
+                        extra={
+                            "furu_fields": {
+                                "lease": lease_id,
+                                "object_id": object_id,
+                                "failed_attempts": failed_attempts,
+                                "max_retries": self.max_retries_per_object,
+                                "failed_retry": failed_retry,
+                                "failed": failed,
+                                "error": error,
+                            }
+                        },
                     )
                 case JobBlockedResult(dependencies=dependencies):
                     _update_dag_blocking_dependencies(
                         self, running_job.node, dependencies
                     )
-                    failed_retry, failed = self._failed_counts()
-                    logger.info(
-                        "job blocked: lease_id=%s object_id=%s dependencies=%d ready=%d running=%d blocked=%d completed=%d failed_retry=%d failed=%d",
-                        lease_id,
-                        running_job.node.obj.object_id,
-                        len(dependencies),
-                        len(self.ready),
-                        len(self.running),
-                        len(self.blocked),
-                        len(self.completed),
-                        failed_retry,
-                        failed,
-                    )
                 case _:
                     assert_never(request)
-            failed_retry, failed = self._failed_counts()
-            logger.info(
-                "execution coordinator progress: completed=%d/%d failed_retry=%d failed=%d "
-                "running=%d ready=%d blocked=%d",
-                len(self.completed),
-                len(self.nodes_by_id),
-                failed_retry,
-                failed,
-                len(self.running),
-                len(self.ready),
-                len(self.blocked),
-            )
+            self._log_progress_locked(force=reached_terminal)
             self._maybe_finish_locked()
 
     def raise_for_failure(self) -> None:
@@ -310,7 +330,7 @@ class ExecutionCoordinator:
             if self.done.is_set():
                 return
             self.finish_error = message
-            logger.error("furu execution coordinator finished with error: %s", message)
+            logger.error("run failed: %s", message)
             self.done.set()
 
     def _maybe_finish_locked(self) -> None:
@@ -342,10 +362,12 @@ class ExecutionCoordinator:
             self.finish_error = (
                 "execution coordinator run could not complete; " + "; ".join(parts)
             )
-            logger.error(
-                "furu execution coordinator finished with error: %s",
-                self.finish_error,
-            )
+            logger.error("run failed: %s", self.finish_error)
         else:
-            logger.info("furu execution coordinator finished successfully")
+            logger.info(
+                "done %d/%d · %s",
+                len(self.completed),
+                len(self.nodes_by_id),
+                format_duration(time.monotonic() - self.started_at),
+            )
         self.done.set()

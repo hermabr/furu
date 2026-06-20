@@ -70,6 +70,7 @@ def test_worker_cli_reads_auth_token_file(
         resource_request: ResourceRequest,
         idle_timeout: float | None,
         max_consecutive_failures: int | None,
+        component: str = "wkr",
     ) -> None:
         calls.append(
             (
@@ -128,6 +129,7 @@ def test_worker_cli_reads_resource_request(
         resource_request: ResourceRequest,
         idle_timeout: float | None,
         max_consecutive_failures: int | None,
+        component: str = "wkr",
     ) -> None:
         calls.append((resource_request, idle_timeout, max_consecutive_failures))
 
@@ -169,6 +171,7 @@ def test_worker_cli_reads_idle_timeout(
         resource_request: ResourceRequest,
         idle_timeout: float | None,
         max_consecutive_failures: int | None,
+        component: str = "wkr",
     ) -> None:
         calls.append(idle_timeout)
 
@@ -210,6 +213,7 @@ def test_worker_cli_reads_max_consecutive_failures(
         resource_request: ResourceRequest,
         idle_timeout: float | None,
         max_consecutive_failures: int | None,
+        component: str = "wkr",
     ) -> None:
         calls.append(max_consecutive_failures)
 
@@ -252,6 +256,7 @@ def test_worker_cli_requires_resource_request(
         auth_token: str,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
+        component: str = "wkr",
     ) -> None:
         calls.append(resource_request)
 
@@ -282,6 +287,7 @@ def test_worker_cli_requires_auth_token_file(monkeypatch: pytest.MonkeyPatch) ->
         auth_token: str,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
+        component: str = "wkr",
     ) -> None:
         calls.append((server_url, auth_token))
 
@@ -319,6 +325,7 @@ def test_worker_cli_requires_idle_timeout(
         auth_token: str,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
+        component: str = "wkr",
     ) -> None:
         calls.append(idle_timeout)
 
@@ -356,6 +363,7 @@ def test_worker_cli_rejects_auth_token_argument(
         auth_token: str,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
+        component: str = "wkr",
     ) -> None:
         calls.append((server_url, auth_token))
 

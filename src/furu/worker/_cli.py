@@ -43,6 +43,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help="consecutive failed jobs after which this worker exits",
     )
+    parser.add_argument(
+        "--component",
+        default="wkr",
+        help="component label shown in this worker's logs",
+    )
     args = parser.parse_args(argv)
 
     worker_loop(
@@ -54,6 +59,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         idle_timeout=args.idle_timeout,
         max_consecutive_failures=args.max_consecutive_failures,
+        component=args.component,
     )
     return 0
 

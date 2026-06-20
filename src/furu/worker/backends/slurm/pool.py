@@ -8,10 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from furu.execution.api import PoolApiClient
-from furu.logging import get_logger
+from furu.logging import _log_component, get_logger
 from furu.resources import ResourceRequest
 
 logger = get_logger()
+
+_COMPONENT = "slurm"
 
 _SLURM_COMMAND_TIMEOUT_S = 60.0
 
@@ -50,6 +52,10 @@ class SlurmWorkerPool:
     _failed_job_ids: list[str]
 
     def stop(self, *, timeout: float) -> None:
+        with _log_component(_COMPONENT):
+            self._stop(timeout=timeout)
+
+    def _stop(self, *, timeout: float) -> None:
         self._stop_event.set()
         self._scale_thread.join(timeout=timeout)
 
@@ -71,9 +77,9 @@ class SlurmWorkerPool:
         )
         if result.returncode != 0:
             logger.error(
-                "scancel failed for slurm worker jobs %s: %s",
-                ",".join(self._job_ids),
+                "scancel failed · %s",
                 result.stderr.strip(),
+                extra={"furu_fields": {"jobs": ",".join(self._job_ids)}},
             )
 
     def _scale_once(self) -> dict[str, str]:
@@ -125,10 +131,7 @@ class SlurmWorkerPool:
                 timeout=_SLURM_COMMAND_TIMEOUT_S,
             )
             if result.returncode != 0:
-                logger.warning(
-                    "sbatch failed; retrying on the next scale tick: %s",
-                    result.stderr.strip(),
-                )
+                logger.warning("sbatch failed · %s", result.stderr.strip())
                 return states
             job_id = result.stdout.strip().split(";", maxsplit=1)[0]
             self._job_ids.append(job_id)
@@ -153,10 +156,10 @@ class SlurmWorkerPool:
                 timeout=_SLURM_COMMAND_TIMEOUT_S,
             )
         except subprocess.TimeoutExpired:
-            logger.warning("squeue timed out while checking slurm jobs")
+            logger.warning("squeue timeout")
             return None
         if result.returncode != 0:
-            logger.debug("squeue failed while checking slurm jobs: %s", result.stderr)
+            logger.debug("squeue failed · %s", result.stderr)
             return None
         return {
             line.strip().split(maxsplit=1)[0]
@@ -187,10 +190,10 @@ class SlurmWorkerPool:
                 timeout=_SLURM_COMMAND_TIMEOUT_S,
             )
         except subprocess.TimeoutExpired:
-            logger.warning("sacct timed out while checking slurm jobs")
+            logger.warning("sacct timeout")
             return {}
         if result.returncode != 0:
-            logger.warning("sacct failed while checking slurm jobs: %s", result.stderr)
+            logger.warning("sacct failed · %s", result.stderr)
             return {}
 
         states: dict[str, str] = {}
@@ -212,26 +215,27 @@ class SlurmWorkerPool:
         return states
 
     def _scale_loop(self) -> None:
-        try:
-            if self._stop_event.is_set():
-                return
-            self._scale_once()
-            while not self._stop_event.wait(timeout=self._poll_interval):
-                states = self._scale_once()
-                if any(_is_failed_state(state) for state in states.values()):
-                    self._report_failure("slurm worker pool became unhealthy")
+        with _log_component(_COMPONENT):
+            try:
+                if self._stop_event.is_set():
                     return
-        except Exception as exc:
-            self._report_failure(
-                "slurm worker pool scale loop crashed: "
-                + "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-            )
+                self._scale_once()
+                while not self._stop_event.wait(timeout=self._poll_interval):
+                    states = self._scale_once()
+                    if any(_is_failed_state(state) for state in states.values()):
+                        self._report_failure("slurm worker pool became unhealthy")
+                        return
+            except Exception as exc:
+                self._report_failure(
+                    "slurm worker pool scale loop crashed: "
+                    + "".join(
+                        traceback.format_exception(type(exc), exc, exc.__traceback__)
+                    )
+                )
 
     def _report_failure(self, message: str) -> None:
-        logger.error("slurm worker pool failure: %s", message)
+        logger.error("pool failure · %s", message)
         try:
             self._client.fail(message=message)
         except Exception:
-            logger.exception(
-                "failed to report slurm worker pool failure to execution coordinator"
-            )
+            logger.exception("failed to report pool failure to coordinator")

@@ -89,6 +89,18 @@ def object_id_from_parts(
     return f"{fully_qualified_name}:{schema_hash}:{artifact_hash}"
 
 
+def format_duration(seconds: float) -> str:
+    """Compact human duration for log lines: 3.2s, 1m35s, 3h12m."""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    if seconds < 3600:
+        minutes, secs = divmod(int(seconds), 60)
+        return f"{minutes}m{secs:02d}s"
+    hours, remainder = divmod(int(seconds), 3600)
+    minutes = remainder // 60
+    return f"{hours}h{minutes:02d}m"
+
+
 def _stable_json_dump(x: JsonValue) -> str:
     return json.dumps(x, sort_keys=True, separators=(",", ":"))
 

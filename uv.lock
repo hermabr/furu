@@ -7,6 +7,8 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P3D"
 
 [options.exclude-newer-package]
+ty = { timestamp = "0001-01-01T00:00:00Z", span = "PT5H" }
+ruff = { timestamp = "0001-01-01T00:00:00Z", span = "PT5H" }
 furu = { timestamp = "0001-01-01T00:00:00Z", span = "PT1S" }
 
 [[package]]
