@@ -250,7 +250,14 @@ class Furu[T](_FuruDataclassTransform, ABC):
     def _artifact_hash(  # TODO: should this be __hash__?
         self,
     ) -> str:
-        return _hash_dict_deterministically(self._artifact_data)
+        return _hash_dict_deterministically(
+            _to_json(
+                self,
+                declared_type=type(self),
+                artifact_serializers=self.artifact_serializers,
+                for_hash=True,
+            )
+        )
 
     @final
     @cached_property
@@ -266,7 +273,14 @@ class Furu[T](_FuruDataclassTransform, ABC):
     @final
     @cached_property
     def _artifact_schema_hash(self) -> str:
-        return _hash_dict_deterministically(self._schema_data)
+        return _hash_dict_deterministically(
+            _schema_type(
+                type(self),
+                set(),
+                artifact_serializers=self.artifact_serializers,
+                for_hash=True,
+            )
+        )
 
     @final
     @cached_property
