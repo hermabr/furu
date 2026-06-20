@@ -114,7 +114,7 @@ class LocalThreadWorkerPool:
     def _run_worker(self, index: int) -> None:
         from furu.worker.loop import worker_loop
 
-        component = f"w{index}"
+        component = f"lw{index}"
         try:
             worker_loop(
                 server_url=self._server_url,
