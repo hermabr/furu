@@ -1,6 +1,6 @@
 [project]
 name = "furu"
-version = "0.0.49"
+version = "0.0.50"
 description = "Reproducible experiments in plain Python: cached results and dependency-aware execution."
 readme = "README.md"
 authors = [
