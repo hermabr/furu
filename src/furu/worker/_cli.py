@@ -8,17 +8,12 @@ from furu.worker.loop import worker_loop
 
 
 def _default_worker_component() -> str:
-    """Best-effort component label for a CLI-launched (e.g. Slurm) worker.
-
-    Prefers the array task id so each task in an array shows a distinct label,
-    then falls back to a short slice of the job id, then a bare ``wkr``.
-    """
     array_task_id = os.environ.get("SLURM_ARRAY_TASK_ID")
     if array_task_id:
-        return f"wkr.{array_task_id}"
+        return f"sw{array_task_id}"
     job_id = os.environ.get("SLURM_JOB_ID")
     if job_id:
-        return f"wkr.{job_id[-4:]}"
+        return f"sw{job_id[-3:]}"
     return "wkr"
 
 
@@ -56,12 +51,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--max-consecutive-failures",
         type=int,
-        default=None,
+        default=None,  # TODO: this should not be default
         help="consecutive failed jobs after which this worker exits",
     )
     parser.add_argument(
         "--component",
-        default=None,
+        default=None,  # TODO: consider migrating this to be either w{nums} or `slurm` and only if it is slurm do we take the array id. it might also be possible for the slurm script to give the component name directly from bash
         help="component label shown in this worker's logs (defaults to the "
         "Slurm array/job id, or 'wkr')",
     )
