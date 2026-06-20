@@ -229,22 +229,34 @@ def _normalize_load_or_create_input[T](
     return objs, unwrap
 
 
+def _cached_to_build_msg(cached: list[Furu[Any]], to_build: list[Furu[Any]]) -> str:
+    def fmt(objs: list[Furu[Any]]) -> str:
+        if len(cached) + len(to_build) > 5:
+            return str(len(objs))
+        return ", ".join(o._log_label for o in objs)
+
+    msg = f"{fmt(cached)} cached"
+    return f"{msg}, {fmt(to_build)} to build" if to_build else msg
+
+
 def _load_or_create_worker[T](
     obj_or_objs: Furu[T] | Sequence[Furu[T]],
 ) -> T | list[T]:
     objs, unwrap = _normalize_load_or_create_input(obj_or_objs)
 
     loaded: list[T] = []
+    cached: list[Furu[T]] = []
     missing: list[Furu[T]] = []
 
     for obj in objs:
         if (cached_result_dir := result_dir_for_loading(obj)) is not None:
             loaded.append(cast(T, load_result_bundle(cached_result_dir)))
+            cached.append(obj)
         else:
             missing.append(obj)
 
     if loaded:
-        objs[0].logger.info("%d cached, %d to build", len(loaded), len(missing))
+        objs[0].logger.info("%s", _cached_to_build_msg(cached, missing))
 
     if missing:
         raise _DependencyNotReady(
@@ -286,9 +298,8 @@ def _load_or_create_local[T](
             missing.append(obj)
 
     if results_by_object_id:
-        unique[0].logger.info(
-            "%d cached, %d to build", len(results_by_object_id), len(missing)
-        )
+        cached = [o for o in unique if o.object_id in results_by_object_id]
+        unique[0].logger.info("%s", _cached_to_build_msg(cached, missing))
 
     lock_ctx = (
         lock([compute_lock_path_in(obj._base_dir) for obj in missing])
