@@ -353,6 +353,10 @@ def test_logfmt_appends_exception_after_the_record() -> None:
         ("a\nb", '"a\\nb"'),
         ("a\tb", '"a\\tb"'),
         ("a\x01b", '"a\\x01b"'),
+        ("a\x7fb", '"a\\x7fb"'),  # DEL
+        ("a\x85b", '"a\\x85b"'),  # C1 NEL — splits a record if left raw
+        ("a\x9bb", '"a\\x9bb"'),  # C1 CSI
+        ("a\xa0b", "a\xa0b"),  # NBSP (>= 0xa0) is printable, left untouched
     ],
 )
 def test_logfmt_value_escaping(value: str, expected: str) -> None:

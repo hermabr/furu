@@ -287,7 +287,10 @@ def _logfmt_value(value: str) -> str:
         elif ch == "\t":
             chars.append("\\t")
             needs_quote = True
-        elif ch < " " or ch == "\x7f":
+        elif ch < " " or "\x7f" <= ch <= "\x9f":
+            # C0 (< 0x20), DEL (0x7f) and C1 (0x80-0x9f) controls. C1 matters
+            # because some tools treat 0x85 (NEL) as a line terminator, which
+            # would split a logfmt record across physical lines.
             chars.append(f"\\x{ord(ch):02x}")
             needs_quote = True
         else:
