@@ -1785,14 +1785,14 @@ def test_cached_create_logs_debug_call_and_only_cache_hit_info(
 
     log_text = log_path.read_text(encoding="utf-8")
     assert f".create called for {obj}" in log_text
-    assert f"{obj._log_label} cached" in log_text
-    assert "to build" not in log_text
+    assert f"cached {obj._log_label}" in log_text
+    assert "building" not in log_text
     assert "creating " not in log_text
     assert "finished " not in log_text
 
     info_lines = [line for line in log_text.splitlines() if "level=info" in line]
     assert len(info_lines) == 1
-    assert info_lines[0].endswith(f'msg="{obj._log_label} cached"')
+    assert info_lines[0].endswith(f'msg="cached {obj._log_label}"')
 
 
 def test_small_cache_summary_logs_labels_for_cached_and_missing_items(
@@ -1809,7 +1809,7 @@ def test_small_cache_summary_logs_labels_for_cached_and_missing_items(
         assert _load_or_create([cached, missing]) == ["object-id:1", "object-id:2"]
 
     assert (
-        f"{cached._log_label} cached, {missing._log_label} to build"
+        f"building {missing._log_label}, cached {cached._log_label}"
         in log_path.read_text(encoding="utf-8")
     )
 

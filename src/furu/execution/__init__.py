@@ -235,8 +235,8 @@ def _cached_to_build_msg(cached: list[Furu[Any]], to_build: list[Furu[Any]]) -> 
             return str(len(objs))
         return ", ".join(o._log_label for o in objs)
 
-    msg = f"{fmt(cached)} cached"
-    return f"{msg}, {fmt(to_build)} to build" if to_build else msg
+    msg = f"cached {fmt(cached)}"
+    return f"building {fmt(to_build)}, {msg}" if to_build else msg
 
 
 def _load_or_create_worker[T](
