@@ -11,13 +11,6 @@ class _SkipHash:
 
 
 skip_hash: Final = _SkipHash()
-"""Exclude a field from the hash via ``Annotated[T, furu.skip_hash]``.
-
-The field stays an ordinary constructor parameter but is dropped from the artifact and
-schema, so it does not affect an object's hash, ``object_id``, or cached result. Because
-it is absent from the artifact, it cannot be reconstructed when loading from one, so it
-must declare a default.
-"""
 
 
 def strip_annotated(declared_type: object) -> object:
