@@ -76,19 +76,6 @@ class ExecutionCoordinator:
         )
         return failed_retry, len(self.failed) - failed_retry
 
-    def _progress_summary(self) -> str:
-        failed_retry, failed = self._failed_counts()
-        parts = [f"{len(self.running)} running"]
-        if self.ready:
-            parts.append(f"{len(self.ready)} ready")
-        if self.blocked:
-            parts.append(f"{len(self.blocked)} blocked")
-        if failed:
-            parts.append(f"{failed} failed")
-        if failed_retry:
-            parts.append(f"{failed_retry} retrying")
-        return f"{len(self.completed)}/{len(self.nodes_by_id)} · " + " · ".join(parts)
-
     def _counts_detail(self) -> dict[str, object]:
         failed_retry, failed = self._failed_counts()
         return {
@@ -329,9 +316,19 @@ class ExecutionCoordinator:
                     )
                 case _:
                     assert_never(request)
+            failed_retry, failed = self._failed_counts()
+            parts = [f"{len(self.running)} running"]
+            if self.ready:
+                parts.append(f"{len(self.ready)} ready")
+            if self.blocked:
+                parts.append(f"{len(self.blocked)} blocked")
+            if failed:
+                parts.append(f"{failed} failed")
+            if failed_retry:
+                parts.append(f"{failed_retry} retrying")
             logger.info(
                 "progress %s",
-                self._progress_summary(),
+                f"{len(self.completed)}/{len(self.nodes_by_id)} · " + " · ".join(parts),
                 extra=log_detail(**self._counts_detail()),
             )
             self._maybe_finish_locked()
