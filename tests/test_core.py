@@ -7,7 +7,7 @@ from dataclasses import FrozenInstanceError, InitVar, dataclass, is_dataclass, r
 from enum import Enum
 from functools import cached_property, partial
 from pathlib import Path
-from typing import Any, ClassVar, Literal, cast
+from typing import Annotated, Any, ClassVar, Literal, cast
 from unittest.mock import patch
 
 import pytest
@@ -100,7 +100,7 @@ class NodePair(Furu[dict]):
 
 class SkipHashNode(Furu[int]):
     value: int
-    gpus: furu.skiphash[int]
+    gpus: Annotated[int, furu.skiphash]
 
     def create(self) -> int:
         return self.value + self.gpus
@@ -108,7 +108,7 @@ class SkipHashNode(Furu[int]):
 
 class DefaultSkipHashNode(Furu[int]):
     value: int
-    gpus: furu.skiphash[int] = 1
+    gpus: Annotated[int, furu.skiphash] = 1
 
     def create(self) -> int:
         return self.value + self.gpus
@@ -321,7 +321,9 @@ def letter_count_with_parentheses(source: str, letter: str) -> int:
 
 
 @furu.function
-def skiphash_letter_count(source: str, letter: str, gpus: furu.skiphash[int]) -> int:
+def skiphash_letter_count(
+    source: str, letter: str, gpus: Annotated[int, furu.skiphash]
+) -> int:
     return source.count(letter) + gpus
 
 

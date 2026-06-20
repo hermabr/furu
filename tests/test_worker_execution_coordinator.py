@@ -4,7 +4,7 @@ import threading
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Annotated, Any, ClassVar
 from uuid import UUID, uuid4
 
 import httpx
@@ -136,7 +136,7 @@ class ExecutionCoordinatorLazyParent(Furu[int]):
 
 class SkipHashExecutionCoordinatorLeaf(Furu[int]):
     value: int
-    gpus: skiphash[int]
+    gpus: Annotated[int, skiphash]
 
     def create(self) -> int:
         return self.value + self.gpus

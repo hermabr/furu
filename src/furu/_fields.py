@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import typing
 from dataclasses import MISSING, Field, dataclass, field as dataclass_field, fields
-from typing import TYPE_CHECKING, Annotated, Any, get_args, get_origin, get_type_hints
+from typing import Annotated, Any, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel as PydanticBaseModel
 
@@ -12,19 +12,7 @@ class _SkipHashMarker:
     pass
 
 
-_SKIPHASH_MARKER = _SkipHashMarker()
-
-
-if TYPE_CHECKING:
-    type skiphash[T] = T
-else:
-
-    class skiphash:
-        def __new__(cls, *args: object, **kwargs: object) -> skiphash:
-            raise TypeError("furu.skiphash is a type annotation, not a value")
-
-        def __class_getitem__(cls, item: object) -> object:
-            return Annotated[item, _SKIPHASH_MARKER]
+skiphash = _SkipHashMarker()
 
 
 @dataclass(frozen=True, slots=True)
