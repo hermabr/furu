@@ -1,5 +1,6 @@
 import logging
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
@@ -50,3 +51,84 @@ def test_stdout_handler_level_tracks_debug_mode(
     ]
     assert len(stdout_handlers) == 1
     assert stdout_handlers[0].level == expected_level
+
+
+def test_scoped_file_handler_writes_logfmt_with_user_caller(
+    isolated_furu_logger: None,
+    tmp_path: Path,
+) -> None:
+    log_path = tmp_path / "run.log"
+    logger = furu_logging.get_logger()
+
+    with furu_logging._scoped_log_files((log_path,)):
+        logger.info("hello %s", "world")
+
+    (line,) = log_path.read_text(encoding="utf-8").splitlines()
+    assert line.startswith("20")
+    assert " level=info " in line
+    assert 'msg="hello world"' in line
+    assert "caller=test_logging.py:" in line
+
+
+def test_structured_log_extra_writes_component_and_fields(
+    isolated_furu_logger: None,
+    tmp_path: Path,
+) -> None:
+    log_path = tmp_path / "run.log"
+    logger = furu_logging.get_logger()
+
+    with (
+        furu_logging._scoped_log_files((log_path,)),
+        furu_logging._scoped_log_component("coord"),
+    ):
+        logger.info(
+            "leased job: lease_id=lease-1 object_id=demo.Task:abcde:12345",
+            extra=furu_logging._log_extra(
+                event="leased",
+                task="Task:abcde:12345",
+                fields={
+                    "lease": "lease-1",
+                    "object_id": "demo.Task:abcde:12345",
+                    "ready": 2,
+                    "running": 1,
+                },
+            ),
+        )
+
+    (line,) = log_path.read_text(encoding="utf-8").splitlines()
+    assert "comp=coord" in line
+    assert "msg=leased" in line
+    assert "task=Task:abcde:12345" in line
+    assert "lease=lease-1" in line
+    assert "object_id=demo.Task:abcde:12345" in line
+    assert "ready=2 running=1" in line
+
+
+def test_tty_formatter_uses_compact_colored_layout() -> None:
+    class TtyStream:
+        def isatty(self) -> bool:
+            return True
+
+    formatter = furu_logging._FuruConsoleFormatter(TtyStream())
+    record = logging.LogRecord(
+        "furu",
+        logging.INFO,
+        __file__,
+        123,
+        "creating %s",
+        ("Task:abcde:12345",),
+        None,
+    )
+    for key, value in furu_logging._log_extra(
+        event="creating",
+        task="Task:abcde:12345",
+    ).items():
+        setattr(record, key, value)
+
+    rendered = formatter.format(record)
+
+    assert "\033[" in rendered
+    assert "I" in rendered
+    assert "creating" in rendered
+    assert "Task:abcde:12345" in rendered
+    assert "test_logging.py:123" in rendered

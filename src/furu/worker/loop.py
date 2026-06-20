@@ -6,7 +6,7 @@ from typing import assert_never
 
 from furu.core import Furu
 from furu.execution import _ensure_single_result, api
-from furu.logging import get_logger
+from furu.logging import _log_extra, get_logger
 from furu.metadata import ArtifactSpec
 from furu.resources import ResourceRequest
 from furu.worker.context import _DependencyNotReady, worker_execution_context
@@ -37,18 +37,19 @@ def worker_loop(
         logger.debug("worker requesting new task from server")
         match client.lease_job(resources=resource_request):
             case "stop":
-                logger.info("worker told to stop")
+                logger.info("worker told to stop", extra=_log_extra(event="stop"))
                 return
             case "wait":
                 now = time.monotonic()
                 if idle_started_at is None:
                     idle_started_at = now
-                    logger.info("worker told to wait")
+                    logger.info("worker told to wait", extra=_log_extra(event="wait"))
                 if now - idle_started_at >= idle_timeout:
                     return
                 time.sleep(0.1)  # TODO: make the wait poll interval configurable.
                 continue
             case Job() as job:
+                job_started_at = time.monotonic()
                 idle_started_at = None
                 task_label: str | None = None
                 job_result: JobResultRequest
@@ -59,6 +60,14 @@ def worker_loop(
                         "worker received task: lease_id=%s task=%s",
                         job.lease_id,
                         task_label,
+                        extra=_log_extra(
+                            event="received",
+                            task=task_label,
+                            fields={
+                                "lease": job.lease_id,
+                                "object_id": obj.object_id,
+                            },
+                        ),
                     )
                     with worker_execution_context(lease_id=job.lease_id):
                         _ensure_single_result(obj)
@@ -100,6 +109,12 @@ def worker_loop(
                         "worker finished task: lease_id=%s status=%s",
                         job.lease_id,
                         status,
+                        extra=_log_extra(
+                            event="finished",
+                            status=status,
+                            duration_s=time.monotonic() - job_started_at,
+                            fields={"lease": job.lease_id},
+                        ),
                     )
                 else:
                     logger.info(
@@ -107,6 +122,13 @@ def worker_loop(
                         job.lease_id,
                         task_label,
                         status,
+                        extra=_log_extra(
+                            event="finished",
+                            task=task_label,
+                            status="ok" if status == "completed" else status,
+                            duration_s=time.monotonic() - job_started_at,
+                            fields={"lease": job.lease_id, "status": status},
+                        ),
                     )
 
                 if (

@@ -8,10 +8,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from furu.execution.api import PoolApiClient
-from furu.logging import get_logger
+from furu.logging import _log_extra, get_logger
 from furu.resources import ResourceRequest
 
-logger = get_logger()
+logger = get_logger("worker.backends.slurm.pool")
 
 _SLURM_COMMAND_TIMEOUT_S = 60.0
 
@@ -74,6 +74,13 @@ class SlurmWorkerPool:
                 "scancel failed for slurm worker jobs %s: %s",
                 ",".join(self._job_ids),
                 result.stderr.strip(),
+                extra=_log_extra(
+                    event="scancel failed",
+                    fields={
+                        "jobs": ",".join(self._job_ids),
+                        "error": result.stderr.strip(),
+                    },
+                ),
             )
 
     def _scale_once(self) -> dict[str, str]:
@@ -128,6 +135,10 @@ class SlurmWorkerPool:
                 logger.warning(
                     "sbatch failed; retrying on the next scale tick: %s",
                     result.stderr.strip(),
+                    extra=_log_extra(
+                        event="sbatch failed",
+                        fields={"error": result.stderr.strip()},
+                    ),
                 )
                 return states
             job_id = result.stdout.strip().split(";", maxsplit=1)[0]
@@ -153,10 +164,20 @@ class SlurmWorkerPool:
                 timeout=_SLURM_COMMAND_TIMEOUT_S,
             )
         except subprocess.TimeoutExpired:
-            logger.warning("squeue timed out while checking slurm jobs")
+            logger.warning(
+                "squeue timed out while checking slurm jobs",
+                extra=_log_extra(event="squeue timeout"),
+            )
             return None
         if result.returncode != 0:
-            logger.debug("squeue failed while checking slurm jobs: %s", result.stderr)
+            logger.debug(
+                "squeue failed while checking slurm jobs: %s",
+                result.stderr,
+                extra=_log_extra(
+                    event="squeue failed",
+                    fields={"error": result.stderr},
+                ),
+            )
             return None
         return {
             line.strip().split(maxsplit=1)[0]
@@ -187,17 +208,34 @@ class SlurmWorkerPool:
                 timeout=_SLURM_COMMAND_TIMEOUT_S,
             )
         except subprocess.TimeoutExpired:
-            logger.warning("sacct timed out while checking slurm jobs")
+            logger.warning(
+                "sacct timed out while checking slurm jobs",
+                extra=_log_extra(event="sacct timeout"),
+            )
             return {}
         if result.returncode != 0:
-            logger.warning("sacct failed while checking slurm jobs: %s", result.stderr)
+            logger.warning(
+                "sacct failed while checking slurm jobs: %s",
+                result.stderr,
+                extra=_log_extra(
+                    event="sacct failed",
+                    fields={"error": result.stderr},
+                ),
+            )
             return {}
 
         states: dict[str, str] = {}
         for line in result.stdout.splitlines():
             parts = line.split("|")
             if len(parts) < 2:
-                logger.warning("ignoring malformed sacct line: %r", line)
+                logger.warning(
+                    "ignoring malformed sacct line: %r",
+                    line,
+                    extra=_log_extra(
+                        event="ignored sacct line",
+                        fields={"line": line},
+                    ),
+                )
                 continue
             job_id, state = parts[0], parts[1]
             allocation_job_id, separator, _step_id = job_id.partition(".")
@@ -205,7 +243,12 @@ class SlurmWorkerPool:
                 continue
             if job_id not in known_job_ids:
                 logger.warning(
-                    "ignoring unexpected slurm job id from sacct: %r", job_id
+                    "ignoring unexpected slurm job id from sacct: %r",
+                    job_id,
+                    extra=_log_extra(
+                        event="ignored slurm job",
+                        fields={"job": job_id},
+                    ),
                 )
                 continue
             states[job_id] = state.upper().split(maxsplit=1)[0].removesuffix("+")
@@ -228,10 +271,15 @@ class SlurmWorkerPool:
             )
 
     def _report_failure(self, message: str) -> None:
-        logger.error("slurm worker pool failure: %s", message)
+        logger.error(
+            "slurm worker pool failure: %s",
+            message,
+            extra=_log_extra(event="pool failed", fields={"error": message}),
+        )
         try:
             self._client.fail(message=message)
         except Exception:
             logger.exception(
-                "failed to report slurm worker pool failure to execution coordinator"
+                "failed to report slurm worker pool failure to execution coordinator",
+                extra=_log_extra(event="report failure failed"),
             )
