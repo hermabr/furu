@@ -5,8 +5,11 @@ from typing import TYPE_CHECKING, Any, cast, get_type_hints
 
 from pydantic import BaseModel as PydanticBaseModel
 
-from furu._declared_types import child_declared_type, strip_annotated
-from furu.annotations import has_skip_hash
+from furu._declared_types import (
+    child_declared_type,
+    has_skip_hash,
+    strip_annotated,
+)
 from furu.constants import (
     CLASSMARKER,
     FIELDSMARKER,

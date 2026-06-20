@@ -1,6 +1,6 @@
 from importlib.metadata import version
 
-from furu.annotations import skip_hash
+from furu._declared_types import skip_hash
 from furu.core import Furu
 from furu.dependencies import dependency
 from furu.logging import get_logger
