@@ -52,6 +52,7 @@ class LocalThreadWorkerBackend:
             ),
             _threads=[],
             _failed_threads=[],
+            _worker_counter=[0],
         )
         pool_holder.append(pool)
         pool._scale_thread.start()
@@ -73,6 +74,7 @@ class LocalThreadWorkerPool:
     _scale_thread: threading.Thread
     _threads: list[threading.Thread]
     _failed_threads: list[threading.Thread]
+    _worker_counter: list[int] = field(default_factory=lambda: [0])
 
     def stop(self, *, timeout: float) -> None:
         self._stop_event.set()
@@ -103,12 +105,14 @@ class LocalThreadWorkerPool:
             remaining_starts,
         )
         for _ in range(to_spawn):
-            thread = threading.Thread(target=self._run_worker)
-            thread.name = f"furu-worker-{id(thread)}"
+            self._worker_counter[0] += 1
+            worker_index = self._worker_counter[0]
+            thread = threading.Thread(target=self._run_worker, args=(worker_index,))
+            thread.name = f"furu-worker-{worker_index}"
             self._threads.append(thread)
             thread.start()
 
-    def _run_worker(self) -> None:
+    def _run_worker(self, worker_index: int) -> None:
         from furu.worker.loop import worker_loop
 
         try:
@@ -117,6 +121,7 @@ class LocalThreadWorkerPool:
                 auth_token=self._auth_token,
                 resource_request=self._resource_request,
                 idle_timeout=self._worker_idle_timeout,
+                component=f"wkr·{worker_index}",
             )
         except Exception:
             self._failed_threads.append(threading.current_thread())

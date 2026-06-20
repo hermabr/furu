@@ -70,6 +70,7 @@ def test_worker_cli_reads_auth_token_file(
         resource_request: ResourceRequest,
         idle_timeout: float | None,
         max_consecutive_failures: int | None,
+        component: str | None = None,
     ) -> None:
         calls.append(
             (
@@ -128,6 +129,7 @@ def test_worker_cli_reads_resource_request(
         resource_request: ResourceRequest,
         idle_timeout: float | None,
         max_consecutive_failures: int | None,
+        component: str | None = None,
     ) -> None:
         calls.append((resource_request, idle_timeout, max_consecutive_failures))
 
@@ -169,6 +171,7 @@ def test_worker_cli_reads_idle_timeout(
         resource_request: ResourceRequest,
         idle_timeout: float | None,
         max_consecutive_failures: int | None,
+        component: str | None = None,
     ) -> None:
         calls.append(idle_timeout)
 
@@ -210,6 +213,7 @@ def test_worker_cli_reads_max_consecutive_failures(
         resource_request: ResourceRequest,
         idle_timeout: float | None,
         max_consecutive_failures: int | None,
+        component: str | None = None,
     ) -> None:
         calls.append(max_consecutive_failures)
 

@@ -1762,9 +1762,9 @@ def test_nested_create_scopes_logs_to_child_file() -> None:
     child_log = run_log_path_in(child._base_dir).read_text(encoding="utf-8")
 
     assert "parent before child" in parent_log
-    assert f"creating {child._log_label}" in parent_log
+    assert f"msg=creating id={child._log_label}" in parent_log
     assert f"(object_id={child.object_id})" not in parent_log
-    assert ".create() finished" in parent_log
+    assert f"msg=finished id={child._log_label}" in parent_log
     assert "parent after child" in parent_log
     assert "leaf detail for child" not in parent_log
 
@@ -1785,14 +1785,14 @@ def test_cached_create_logs_debug_call_and_only_cache_hit_info(
 
     log_text = log_path.read_text(encoding="utf-8")
     assert f".create called for {obj}" in log_text
-    assert f"cache hit for {obj._log_label}" in log_text
-    assert "creating " not in log_text
-    assert ".create() finished" not in log_text
+    assert f'msg="cache hit" id={obj._log_label}' in log_text
+    assert "msg=creating" not in log_text
+    assert "msg=finished" not in log_text
 
-    info_lines = [line for line in log_text.splitlines() if " INFO " in line]
+    info_lines = [line for line in log_text.splitlines() if "level=info" in line]
     assert len(info_lines) == 1
-    assert info_lines[0].endswith(f"INFO [furu] cache hit for {obj._log_label}")
-    assert " at " not in info_lines[0]
+    assert info_lines[0].endswith(f"id={obj._log_label}")
+    assert "caller=" not in info_lines[0]
 
 
 def test_resolved_create_mode_validation() -> None:
@@ -2189,7 +2189,7 @@ def test_batched_failure_writes_error_details_to_run_log_for_every_participant()
 
     for obj in objs:
         log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
-        assert "create failed" in log_text
+        assert "msg=failed" in log_text
         assert "failed batch for [1, 2]" in log_text
         assert "furu-local-debug-value-should-not-leak" not in log_text
         assert list(obj._base_dir.glob("error-*.log")) == []

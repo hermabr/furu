@@ -340,10 +340,10 @@ def test_execution_coordinator_job_result_failed_finishes_with_error() -> None:
     log_text = execution_coordinator_log_path_in(coordinator.executor_dir).read_text(
         encoding="utf-8"
     )
-    assert "job failed:" in log_text
-    assert "job failed (retry):" not in log_text
+    assert "msg=failed" in log_text
+    assert 'msg="failed (retry)"' not in log_text
     assert "boom" in log_text
-    assert "furu execution coordinator finished with error" in log_text
+    assert "could not complete" in log_text
     with pytest.raises(RuntimeError, match="failed jobs"):
         coordinator.raise_for_failure()
 
@@ -392,8 +392,9 @@ def test_execution_coordinator_job_result_failed_retries_before_finishing() -> N
     log_text = execution_coordinator_log_path_in(coordinator.executor_dir).read_text(
         encoding="utf-8"
     )
-    assert log_text.count("job failed (retry):") == 2
-    assert f"job failed: lease_id={third_job.lease_id}" in log_text
+    assert log_text.count('msg="failed (retry)"') == 2
+    assert "failed_attempts=3" in log_text
+    assert f"lease={third_job.lease_id}" in log_text
     assert "failed_retry=1 failed=0" in log_text
     assert "failed_retry=0 failed=1" in log_text
 
@@ -656,6 +657,7 @@ def test_local_pool_scale_uses_unique_worker_names_after_worker_exits(
         auth_token: str,
         resource_request: ResourceRequest,
         idle_timeout: float,
+        component: str | None = None,
     ) -> None:
         nonlocal calls
         calls += 1
@@ -697,6 +699,7 @@ def test_local_pool_scale_does_not_count_normal_exits_as_restarts(
         auth_token: str,
         resource_request: ResourceRequest,
         idle_timeout: float,
+        component: str | None = None,
     ) -> None:
         nonlocal starts
         starts += 1
@@ -728,6 +731,7 @@ def test_local_pool_scale_counts_crashes_against_restart_limit(
         auth_token: str,
         resource_request: ResourceRequest,
         idle_timeout: float,
+        component: str | None = None,
     ) -> None:
         raise RuntimeError("worker boom")
 
@@ -763,6 +767,7 @@ def test_execution_coordinator_run_fails_when_worker_pool_reports_unhealthy(
         auth_token: str,
         resource_request: ResourceRequest,
         idle_timeout: float,
+        component: str | None = None,
     ) -> None:
         raise RuntimeError("worker boom")
 
@@ -869,18 +874,16 @@ def test_execution_coordinator_run_writes_log_to_executor_dir() -> None:
     assert log_path.parent == coordinator.executor_dir
 
     log_text = log_path.read_text(encoding="utf-8")
-    assert "starting furu execution coordinator" in log_text
-    assert "execution coordinator server listening" in log_text
-    assert f"executor creating {leaf._log_label}" in log_text
+    assert "comp=coord" in log_text
+    assert "msg=starting" in log_text
+    assert "msg=listening" in log_text
+    assert f"msg=leased id={leaf._log_label}" in log_text
     assert f"(object_id={leaf.object_id})" not in log_text
-    assert "leased job:" in log_text
     assert leaf.object_id in log_text
-    assert "job completed:" in log_text
-    assert (
-        "execution coordinator progress: completed=1/1 failed_retry=0 failed=0 running=0 ready=0 blocked=0"
-        in log_text
-    )
-    assert "furu execution coordinator finished successfully" in log_text
+    assert "msg=completed" in log_text
+    assert "msg=progress" in log_text
+    assert "completed=1 total=1 failed_retry=0 failed=0" in log_text
+    assert "msg=done" in log_text
 
 
 def test_execution_coordinator_run_returns_when_all_objects_are_already_completed() -> (
@@ -912,8 +915,8 @@ def test_execution_coordinator_run_returns_when_all_objects_are_already_complete
         encoding="utf-8"
     )
     assert "all objects already exist; no execution coordinator work to run" in log_text
-    assert "execution coordinator server listening" not in log_text
-    assert "furu execution coordinator finished successfully" in log_text
+    assert "msg=listening" not in log_text
+    assert "msg=done" in log_text
 
 
 def test_execution_coordinator_run_starts_backend_pool_and_stops_and_joins_when_done() -> (

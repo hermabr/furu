@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import functools
+import logging
+import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
@@ -24,7 +26,7 @@ from furu._storage_layout import (
 from furu.core import Furu, FuruCreateMode
 from furu.dependencies import dependency_recorder, record_dependency_call
 from furu.locking import lock
-from furu.logging import _scoped_log_files
+from furu.logging import _scoped_log_files, log_event
 from furu.metadata import RunningMetadata
 from furu.migration import result_dir_for_loading
 from furu.result import _save_result_bundle, load_result_bundle
@@ -189,14 +191,28 @@ def _load_or_create[T](
 
 def _ensure_single_result[T](obj: Furu[T]) -> None:
     if result_dir_for_loading(obj) is not None:
-        obj.logger.info("cache hit for %s", obj._log_label)
+        log_event(
+            obj.logger,
+            logging.INFO,
+            "cache hit for %s",
+            obj._log_label,
+            event="cache hit",
+            label=obj._log_label,
+        )
         return
 
     obj._base_dir.mkdir(parents=True, exist_ok=True)
 
     with lock(compute_lock_path_in(obj._base_dir)) as has_lock:
         if result_dir_for_loading(obj) is not None:
-            obj.logger.info("cache hit for %s", obj._log_label)
+            log_event(
+                obj.logger,
+                logging.INFO,
+                "cache hit for %s",
+                obj._log_label,
+                event="cache hit",
+                label=obj._log_label,
+            )
             return
 
         _create_and_store_group(
@@ -238,7 +254,14 @@ def _load_or_create_worker[T](
 
     for obj in objs:
         if (cached_result_dir := result_dir_for_loading(obj)) is not None:
-            obj.logger.info("cache hit for %s", obj._log_label)
+            log_event(
+                obj.logger,
+                logging.INFO,
+                "cache hit for %s",
+                obj._log_label,
+                event="cache hit",
+                label=obj._log_label,
+            )
             loaded.append(cast(T, load_result_bundle(cached_result_dir)))
         else:
             missing.append(obj)
@@ -275,7 +298,14 @@ def _load_or_create_local[T](
 
     for obj in unique:
         if (cached_result_dir := result_dir_for_loading(obj)) is not None:
-            obj.logger.info("cache hit for %s", obj._log_label)
+            log_event(
+                obj.logger,
+                logging.INFO,
+                "cache hit for %s",
+                obj._log_label,
+                event="cache hit",
+                label=obj._log_label,
+            )
             results_by_object_id[obj.object_id] = cast(
                 T, load_result_bundle(cached_result_dir)
             )
@@ -294,7 +324,14 @@ def _load_or_create_local[T](
         pending: list[Furu[T]] = []
         for obj in missing:
             if (cached_result_dir := result_dir_for_loading(obj)) is not None:
-                obj.logger.info("cache hit for %s", obj._log_label)
+                log_event(
+                    obj.logger,
+                    logging.INFO,
+                    "cache hit for %s",
+                    obj._log_label,
+                    event="cache hit",
+                    label=obj._log_label,
+                )
                 results_by_object_id[obj.object_id] = cast(
                     T, load_result_bundle(cached_result_dir)
                 )
@@ -302,8 +339,17 @@ def _load_or_create_local[T](
                 pending.append(obj)
 
         direct_create_started = unwrap and bool(pending)
+        create_started_at = 0.0
         if direct_create_started:
-            objs[0].logger.info("creating %s", objs[0]._log_label)
+            create_started_at = time.monotonic()
+            log_event(
+                objs[0].logger,
+                logging.INFO,
+                "creating %s",
+                objs[0]._log_label,
+                event="creating",
+                label=objs[0]._log_label,
+            )
 
         grouped: dict[type[object], list[Furu[T]]] = {}
         for obj in pending:
@@ -322,7 +368,16 @@ def _load_or_create_local[T](
         (obj,) = objs
         (output,) = outputs
         if direct_create_started:
-            obj.logger.info("%s.create() finished", obj._log_label)
+            log_event(
+                obj.logger,
+                logging.INFO,
+                "%s.create() finished",
+                obj._log_label,
+                event="finished",
+                label=obj._log_label,
+                status="ok",
+                duration=time.monotonic() - create_started_at,
+            )
         return output
     return outputs
 
@@ -407,6 +462,15 @@ def _create_and_store_group[T](
                 len(exc.dependencies),
             )
             raise
-        except Exception:
-            logger.exception("create failed")
+        except Exception as exc:
+            log_event(
+                logger,
+                logging.ERROR,
+                "create failed",
+                event="failed",
+                label=group[0]._log_label,
+                detail=f"{type(exc).__name__}: {exc}",
+                status="error",
+                exc_info=True,
+            )
             raise

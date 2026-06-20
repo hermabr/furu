@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from furu.execution.api import PoolApiClient
-from furu.logging import get_logger
+from furu.logging import get_logger, log_component
 from furu.resources import ResourceRequest
 
 logger = get_logger()
@@ -50,31 +50,34 @@ class SlurmWorkerPool:
     _failed_job_ids: list[str]
 
     def stop(self, *, timeout: float) -> None:
-        self._stop_event.set()
-        self._scale_thread.join(timeout=timeout)
+        with log_component("slurm"):
+            self._stop_event.set()
+            self._scale_thread.join(timeout=timeout)
 
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            active_job_ids = self._active_job_ids()
-            if active_job_ids is not None and not active_job_ids:
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                active_job_ids = self._active_job_ids()
+                if active_job_ids is not None and not active_job_ids:
+                    return
+                time.sleep(
+                    min(self._poll_interval, max(0.0, deadline - time.monotonic()))
+                )
+
+            if not self._job_ids:
                 return
-            time.sleep(min(self._poll_interval, max(0.0, deadline - time.monotonic())))
-
-        if not self._job_ids:
-            return
-        result = subprocess.run(
-            ["scancel", *self._job_ids],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=_SLURM_COMMAND_TIMEOUT_S,
-        )
-        if result.returncode != 0:
-            logger.error(
-                "scancel failed for slurm worker jobs %s: %s",
-                ",".join(self._job_ids),
-                result.stderr.strip(),
+            result = subprocess.run(
+                ["scancel", *self._job_ids],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=_SLURM_COMMAND_TIMEOUT_S,
             )
+            if result.returncode != 0:
+                logger.error(
+                    "scancel failed for slurm worker jobs %s: %s",
+                    ",".join(self._job_ids),
+                    result.stderr.strip(),
+                )
 
     def _scale_once(self) -> dict[str, str]:
         active_job_ids = self._active_job_ids()
@@ -212,20 +215,23 @@ class SlurmWorkerPool:
         return states
 
     def _scale_loop(self) -> None:
-        try:
-            if self._stop_event.is_set():
-                return
-            self._scale_once()
-            while not self._stop_event.wait(timeout=self._poll_interval):
-                states = self._scale_once()
-                if any(_is_failed_state(state) for state in states.values()):
-                    self._report_failure("slurm worker pool became unhealthy")
+        with log_component("slurm"):
+            try:
+                if self._stop_event.is_set():
                     return
-        except Exception as exc:
-            self._report_failure(
-                "slurm worker pool scale loop crashed: "
-                + "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-            )
+                self._scale_once()
+                while not self._stop_event.wait(timeout=self._poll_interval):
+                    states = self._scale_once()
+                    if any(_is_failed_state(state) for state in states.values()):
+                        self._report_failure("slurm worker pool became unhealthy")
+                        return
+            except Exception as exc:
+                self._report_failure(
+                    "slurm worker pool scale loop crashed: "
+                    + "".join(
+                        traceback.format_exception(type(exc), exc, exc.__traceback__)
+                    )
+                )
 
     def _report_failure(self, message: str) -> None:
         logger.error("slurm worker pool failure: %s", message)
