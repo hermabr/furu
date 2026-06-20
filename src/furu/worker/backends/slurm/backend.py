@@ -97,11 +97,8 @@ class SlurmWorkerBackend:
                 "export "
                 f"{_WORKER_JSON_CONFIG_FILE_ENV_VAR}={shlex.quote(str(config_file))}\n"
                 "\n"
-                'if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then\n'
-                '    furu_worker_component="sw${SLURM_ARRAY_TASK_ID: -3}"\n'
-                'else\n'
-                '    furu_worker_component="sw${SLURM_JOB_ID: -3}"\n'
-                "fi\n"
+                'furu_worker_component="s${SLURM_JOB_ID:$(('
+                " ${#SLURM_JOB_ID} > 4 ? ${#SLURM_JOB_ID} - 4 : 0 ))}\"\n"
                 "\n"
                 f"{pre_worker_script}"
                 f"exec {shlex.quote(sys.executable)} -m furu.worker._cli \\\n"
