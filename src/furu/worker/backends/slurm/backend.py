@@ -97,10 +97,14 @@ class SlurmWorkerBackend:
                 "export "
                 f"{_WORKER_JSON_CONFIG_FILE_ENV_VAR}={shlex.quote(str(config_file))}\n"
                 "\n"
+                'furu_worker_component="s${SLURM_JOB_ID:$(('
+                " ${#SLURM_JOB_ID} > 4 ? ${#SLURM_JOB_ID} - 4 : 0 ))}\"\n"
+                "\n"
                 f"{pre_worker_script}"
                 f"exec {shlex.quote(sys.executable)} -m furu.worker._cli \\\n"
                 f"    --server-url {shlex.quote(server_url)} \\\n"
                 f"    --auth-token-file {shlex.quote(str(token_file))} \\\n"
+                '    --component "${furu_worker_component}" \\\n'
                 f"    --idle-timeout {self.worker_idle_timeout} \\\n"
                 f"{worker_failure_arg}"
                 f"    --resource-cpus {resource_request.cpus} \\\n"

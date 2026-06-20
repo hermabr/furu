@@ -340,8 +340,8 @@ def test_execution_coordinator_job_result_failed_finishes_with_error() -> None:
     log_text = execution_coordinator_log_path_in(coordinator.executor_dir).read_text(
         encoding="utf-8"
     )
-    assert "job failed:" in log_text
-    assert "job failed (retry):" not in log_text
+    assert f"failed {leaf._log_label}" in log_text
+    assert "will retry" not in log_text
     assert "boom" in log_text
     assert "furu execution coordinator finished with error" in log_text
     with pytest.raises(RuntimeError, match="failed jobs"):
@@ -392,8 +392,8 @@ def test_execution_coordinator_job_result_failed_retries_before_finishing() -> N
     log_text = execution_coordinator_log_path_in(coordinator.executor_dir).read_text(
         encoding="utf-8"
     )
-    assert log_text.count("job failed (retry):") == 2
-    assert f"job failed: lease_id={third_job.lease_id}" in log_text
+    assert log_text.count("will retry") == 2
+    assert f"lease={third_job.lease_id}" in log_text
     assert "failed_retry=1 failed=0" in log_text
     assert "failed_retry=0 failed=1" in log_text
 
@@ -656,6 +656,7 @@ def test_local_pool_scale_uses_unique_worker_names_after_worker_exits(
         auth_token: str,
         resource_request: ResourceRequest,
         idle_timeout: float,
+        component: str,
     ) -> None:
         nonlocal calls
         calls += 1
@@ -697,6 +698,7 @@ def test_local_pool_scale_does_not_count_normal_exits_as_restarts(
         auth_token: str,
         resource_request: ResourceRequest,
         idle_timeout: float,
+        component: str,
     ) -> None:
         nonlocal starts
         starts += 1
@@ -728,6 +730,7 @@ def test_local_pool_scale_counts_crashes_against_restart_limit(
         auth_token: str,
         resource_request: ResourceRequest,
         idle_timeout: float,
+        component: str,
     ) -> None:
         raise RuntimeError("worker boom")
 
@@ -869,17 +872,15 @@ def test_execution_coordinator_run_writes_log_to_executor_dir() -> None:
     assert log_path.parent == coordinator.executor_dir
 
     log_text = log_path.read_text(encoding="utf-8")
-    assert "starting furu execution coordinator" in log_text
-    assert "execution coordinator server listening" in log_text
-    assert f"executor creating {leaf._log_label}" in log_text
+    assert "starting exec=" in log_text
+    assert "server listening on " in log_text
+    assert f"creating {leaf._log_label}" in log_text
     assert f"(object_id={leaf.object_id})" not in log_text
-    assert "leased job:" in log_text
+    assert f"leased {leaf._log_label}" in log_text
     assert leaf.object_id in log_text
-    assert "job completed:" in log_text
-    assert (
-        "execution coordinator progress: completed=1/1 failed_retry=0 failed=0 running=0 ready=0 blocked=0"
-        in log_text
-    )
+    assert f"completed {leaf._log_label} ok" in log_text
+    assert "progress 1/1 · 0 running" in log_text
+    assert "failed_retry=0 failed=0" in log_text
     assert "furu execution coordinator finished successfully" in log_text
 
 
@@ -912,7 +913,7 @@ def test_execution_coordinator_run_returns_when_all_objects_are_already_complete
         encoding="utf-8"
     )
     assert "all objects already exist; no execution coordinator work to run" in log_text
-    assert "execution coordinator server listening" not in log_text
+    assert "server listening on " not in log_text
     assert "furu execution coordinator finished successfully" in log_text
 
 
@@ -1121,6 +1122,7 @@ def test_worker_loop_raises_when_server_is_unavailable() -> None:
             auth_token="test-token",
             resource_request=ResourceRequest(),
             idle_timeout=get_config().worker.idle_timeout_seconds,
+            component="test-worker",
         )
 
 
@@ -1149,6 +1151,7 @@ def test_worker_loop_exits_after_idle_timeout(
         auth_token="test-token",
         resource_request=ResourceRequest(),
         idle_timeout=0,
+        component="test-worker",
     )
 
     assert test_client.lease_calls == 1
@@ -1191,16 +1194,15 @@ def test_worker_loop_logs_task_requests_and_received_task(
             auth_token="test-token",
             resource_request=ResourceRequest(),
             idle_timeout=get_config().worker.idle_timeout_seconds,
+            component="test-worker",
         )
 
     assert "worker requesting new task from server" not in caplog.messages
-    assert (
-        f"worker received task: lease_id={job.lease_id} task={leaf._log_label}"
-    ) in caplog.messages
-    assert (
-        "worker finished task: "
-        f"lease_id={job.lease_id} task={leaf._log_label} status=completed"
-    ) in caplog.messages
+    assert f"received {leaf._log_label}" in caplog.messages
+    assert any(
+        message.startswith(f"finished {leaf._log_label} ok ·")
+        for message in caplog.messages
+    )
 
 
 def test_worker_loop_logs_stop_and_first_wait(
@@ -1230,6 +1232,7 @@ def test_worker_loop_logs_stop_and_first_wait(
             auth_token="test-token",
             resource_request=ResourceRequest(),
             idle_timeout=get_config().worker.idle_timeout_seconds,
+            component="test-worker",
         )
 
     assert "worker requesting new task from server" not in caplog.messages
@@ -1281,6 +1284,7 @@ def test_worker_loop_exits_after_exceeding_max_consecutive_failures(
         resource_request=ResourceRequest(),
         idle_timeout=get_config().worker.idle_timeout_seconds,
         max_consecutive_failures=2,
+        component="test-worker",
     )
 
     assert test_client.lease_calls == 3
@@ -1345,6 +1349,7 @@ def test_worker_loop_resets_consecutive_failures_after_success(
         resource_request=ResourceRequest(),
         idle_timeout=get_config().worker.idle_timeout_seconds,
         max_consecutive_failures=2,
+        component="test-worker",
     )
 
     assert test_client.lease_calls == 4
@@ -1396,6 +1401,7 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
             auth_token="test-token",
             resource_request=ResourceRequest(gpus=1),
             idle_timeout=get_config().worker.idle_timeout_seconds,
+            component="test-worker",
         )
 
     assert test_client.calls == ["lease_job"]

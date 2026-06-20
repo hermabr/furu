@@ -7,7 +7,7 @@ from pathlib import Path
 
 from furu.config import get_config
 from furu.execution.api import PoolApiClient
-from furu.logging import get_logger
+from furu.logging import _scoped_component, get_logger
 from furu.resources import ResourceRequest
 
 logger = get_logger()
@@ -73,6 +73,7 @@ class LocalThreadWorkerPool:
     _scale_thread: threading.Thread
     _threads: list[threading.Thread]
     _failed_threads: list[threading.Thread]
+    _spawn_count: list[int] = field(default_factory=lambda: [0])
 
     def stop(self, *, timeout: float) -> None:
         self._stop_event.set()
@@ -103,26 +104,31 @@ class LocalThreadWorkerPool:
             remaining_starts,
         )
         for _ in range(to_spawn):
-            thread = threading.Thread(target=self._run_worker)
-            thread.name = f"furu-worker-{id(thread)}"
+            index = self._spawn_count[0]
+            self._spawn_count[0] += 1
+            thread = threading.Thread(target=lambda i=index: self._run_worker(i))
+            thread.name = f"furu-worker-{index}"
             self._threads.append(thread)
             thread.start()
 
-    def _run_worker(self) -> None:
+    def _run_worker(self, index: int) -> None:
         from furu.worker.loop import worker_loop
 
+        component = f"l{index}"
         try:
             worker_loop(
                 server_url=self._server_url,
                 auth_token=self._auth_token,
                 resource_request=self._resource_request,
                 idle_timeout=self._worker_idle_timeout,
+                component=component,
             )
         except Exception:
             self._failed_threads.append(threading.current_thread())
             if len(self._failed_threads) > self._max_failed_restarts:
                 self._unhealthy_event.set()
-            logger.exception("local worker thread crashed")
+            with _scoped_component(component):
+                logger.exception("local worker thread crashed")
 
     def _scale_loop(self) -> None:
         try:

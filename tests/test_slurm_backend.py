@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
+import subprocess
 import sys
 import textwrap
 from pathlib import Path
@@ -70,6 +72,7 @@ def test_worker_cli_reads_auth_token_file(
         resource_request: ResourceRequest,
         idle_timeout: float | None,
         max_consecutive_failures: int | None,
+        component: str,
     ) -> None:
         calls.append(
             (
@@ -96,6 +99,8 @@ def test_worker_cli_reads_auth_token_file(
                 "0",
                 "--idle-timeout",
                 "60",
+                "--component",
+                "test-worker",
             ]
         )
         == 0
@@ -128,6 +133,7 @@ def test_worker_cli_reads_resource_request(
         resource_request: ResourceRequest,
         idle_timeout: float | None,
         max_consecutive_failures: int | None,
+        component: str,
     ) -> None:
         calls.append((resource_request, idle_timeout, max_consecutive_failures))
 
@@ -146,6 +152,8 @@ def test_worker_cli_reads_resource_request(
                 "1",
                 "--idle-timeout",
                 "30",
+                "--component",
+                "test-worker",
             ]
         )
         == 0
@@ -169,6 +177,7 @@ def test_worker_cli_reads_idle_timeout(
         resource_request: ResourceRequest,
         idle_timeout: float | None,
         max_consecutive_failures: int | None,
+        component: str,
     ) -> None:
         calls.append(idle_timeout)
 
@@ -187,6 +196,8 @@ def test_worker_cli_reads_idle_timeout(
                 "1",
                 "--idle-timeout",
                 "0.25",
+                "--component",
+                "test-worker",
             ]
         )
         == 0
@@ -210,6 +221,7 @@ def test_worker_cli_reads_max_consecutive_failures(
         resource_request: ResourceRequest,
         idle_timeout: float | None,
         max_consecutive_failures: int | None,
+        component: str,
     ) -> None:
         calls.append(max_consecutive_failures)
 
@@ -228,6 +240,8 @@ def test_worker_cli_reads_max_consecutive_failures(
                 "1",
                 "--idle-timeout",
                 "0.25",
+                "--component",
+                "test-worker",
                 "--max-consecutive-failures",
                 "3",
             ]
@@ -236,6 +250,101 @@ def test_worker_cli_reads_max_consecutive_failures(
     )
 
     assert calls == [3]
+
+
+def _run_worker_cli_capturing_component(
+    monkeypatch: pytest.MonkeyPatch,
+    token_file: Path,
+    extra_args: list[str],
+) -> str:
+    captured: list[str] = []
+
+    def worker_loop(
+        *,
+        server_url: str,
+        auth_token: str,
+        resource_request: ResourceRequest,
+        idle_timeout: float | None,
+        max_consecutive_failures: int | None,
+        component: str,
+    ) -> None:
+        captured.append(component)
+
+    monkeypatch.setattr(_cli, "worker_loop", worker_loop)
+
+    assert (
+        _cli.main(
+            [
+                "--server-url",
+                "http://execution-coordinator.test",
+                "--auth-token-file",
+                str(token_file),
+                "--resource-cpus",
+                "1",
+                "--resource-gpus",
+                "0",
+                "--idle-timeout",
+                "60",
+                *extra_args,
+            ]
+        )
+        == 0
+    )
+    (component,) = captured
+    return component
+
+
+def test_worker_cli_reads_component_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    token_file = tmp_path / "worker.token"
+    token_file.write_text("secret")
+
+    component = _run_worker_cli_capturing_component(
+        monkeypatch, token_file, ["--component", "worker-a"]
+    )
+
+    assert component == "worker-a"
+
+
+def test_worker_cli_requires_component(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    token_file = tmp_path / "worker.token"
+    token_file.write_text("secret")
+
+    def worker_loop(
+        *,
+        server_url: str,
+        auth_token: str,
+        resource_request: ResourceRequest,
+        idle_timeout: float | None,
+        max_consecutive_failures: int | None,
+        component: str,
+    ) -> None:
+        raise AssertionError("worker_loop should not be called")
+
+    monkeypatch.setattr(_cli, "worker_loop", worker_loop)
+
+    with pytest.raises(SystemExit) as exc_info:
+        _cli.main(
+            [
+                "--server-url",
+                "http://execution-coordinator.test",
+                "--auth-token-file",
+                str(token_file),
+                "--resource-cpus",
+                "1",
+                "--resource-gpus",
+                "0",
+                "--idle-timeout",
+                "60",
+            ]
+        )
+
+    assert exc_info.value.code == 2
 
 
 def test_worker_cli_requires_resource_request(
@@ -266,6 +375,8 @@ def test_worker_cli_requires_resource_request(
                 str(token_file),
                 "--idle-timeout",
                 "60",
+                "--component",
+                "test-worker",
             ]
         )
 
@@ -298,6 +409,8 @@ def test_worker_cli_requires_auth_token_file(monkeypatch: pytest.MonkeyPatch) ->
                 "0",
                 "--idle-timeout",
                 "60",
+                "--component",
+                "test-worker",
             ]
         )
 
@@ -374,6 +487,8 @@ def test_worker_cli_rejects_auth_token_argument(
                 "0",
                 "--idle-timeout",
                 "60",
+                "--component",
+                "test-worker",
                 "--auth-token",
                 "secret",
             ]
@@ -454,6 +569,13 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     )
     assert f"exec {sys.executable} -m furu.worker._cli" in script
     assert "--server-url http://execution-coordinator.cluster:1234" in script
+    assert "SLURM_ARRAY_TASK_ID" not in script
+    assert (
+        'furu_worker_component="s${SLURM_JOB_ID:$(('
+        " ${#SLURM_JOB_ID} > 4 ? ${#SLURM_JOB_ID} - 4 : 0 ))}\""
+        in script
+    )
+    assert '--component "${furu_worker_component}"' in script
     assert "--idle-timeout 0.25" in script
     assert "--max-consecutive-failures 3" in script
     assert "--resource-cpus 4" in script
@@ -485,6 +607,59 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
 
     assert all(token_file.exists() for token_file in token_files)
     assert all(config_file.exists() for config_file in config_files)
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="requires bash")
+@pytest.mark.parametrize(
+    ("job_id", "expected"),
+    [
+        ("7", "s7"),
+        ("42", "s42"),
+        ("999", "s999"),
+        ("1000", "s1000"),
+        ("12345", "s2345"),
+        ("1234567", "s4567"),
+    ],
+)
+def test_slurm_worker_component_label_derivation_under_bash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    job_id: str,
+    expected: str,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    backend = SlurmWorkerBackend(
+        max_workers=1,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="execution-coordinator.cluster",
+    )
+    pool = backend.start_pool(
+        bound_port=1234,
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+    )
+    script_text = pool._script_path.read_text()
+    component_line = next(
+        line
+        for line in script_text.splitlines()
+        if line.startswith("furu_worker_component=")
+    )
+    script = (
+        "set -euo pipefail\n"
+        + component_line
+        + "\n"
+        + 'printf "%s" "$furu_worker_component"'
+    )
+    result = subprocess.run(
+        ["bash", "-c", script],
+        env={**os.environ, "SLURM_JOB_ID": job_id},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert result.stdout == expected
+    assert len(result.stdout) <= 5
 
 
 @pytest.mark.parametrize(

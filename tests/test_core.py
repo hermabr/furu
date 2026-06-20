@@ -1764,7 +1764,7 @@ def test_nested_create_scopes_logs_to_child_file() -> None:
     assert "parent before child" in parent_log
     assert f"creating {child._log_label}" in parent_log
     assert f"(object_id={child.object_id})" not in parent_log
-    assert ".create() finished" in parent_log
+    assert f"finished {child._log_label} ok" in parent_log
     assert "parent after child" in parent_log
     assert "leaf detail for child" not in parent_log
 
@@ -1785,14 +1785,13 @@ def test_cached_create_logs_debug_call_and_only_cache_hit_info(
 
     log_text = log_path.read_text(encoding="utf-8")
     assert f".create called for {obj}" in log_text
-    assert f"cache hit for {obj._log_label}" in log_text
+    assert "1 cached, 0 to build" in log_text
     assert "creating " not in log_text
-    assert ".create() finished" not in log_text
+    assert "finished " not in log_text
 
-    info_lines = [line for line in log_text.splitlines() if " INFO " in line]
+    info_lines = [line for line in log_text.splitlines() if "level=info" in line]
     assert len(info_lines) == 1
-    assert info_lines[0].endswith(f"INFO [furu] cache hit for {obj._log_label}")
-    assert " at " not in info_lines[0]
+    assert info_lines[0].endswith('msg="1 cached, 0 to build"')
 
 
 def test_resolved_create_mode_validation() -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import functools
+import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
@@ -29,7 +30,7 @@ from furu.metadata import RunningMetadata
 from furu.migration import result_dir_for_loading
 from furu.result import _save_result_bundle, load_result_bundle
 from furu.result.save_as import _unwrap_save_as
-from furu.utils import nfs_safe_unique_name
+from furu.utils import format_duration, nfs_safe_unique_name
 from furu.worker.context import (
     _DependencyNotReady,
     _worker_execution_lease_id,
@@ -238,10 +239,12 @@ def _load_or_create_worker[T](
 
     for obj in objs:
         if (cached_result_dir := result_dir_for_loading(obj)) is not None:
-            obj.logger.info("cache hit for %s", obj._log_label)
             loaded.append(cast(T, load_result_bundle(cached_result_dir)))
         else:
             missing.append(obj)
+
+    if loaded:
+        objs[0].logger.info("%d cached, %d to build", len(loaded), len(missing))
 
     if missing:
         raise _DependencyNotReady(
@@ -275,13 +278,17 @@ def _load_or_create_local[T](
 
     for obj in unique:
         if (cached_result_dir := result_dir_for_loading(obj)) is not None:
-            obj.logger.info("cache hit for %s", obj._log_label)
             results_by_object_id[obj.object_id] = cast(
                 T, load_result_bundle(cached_result_dir)
             )
         else:
             obj._base_dir.mkdir(parents=True, exist_ok=True)
             missing.append(obj)
+
+    if results_by_object_id:
+        unique[0].logger.info(
+            "%d cached, %d to build", len(results_by_object_id), len(missing)
+        )
 
     lock_ctx = (
         lock([compute_lock_path_in(obj._base_dir) for obj in missing])
@@ -292,16 +299,23 @@ def _load_or_create_local[T](
     with lock_ctx as maybe_has_lock:
         has_lock = maybe_has_lock or (lambda: True)
         pending: list[Furu[T]] = []
+        late_hits = 0
         for obj in missing:
             if (cached_result_dir := result_dir_for_loading(obj)) is not None:
-                obj.logger.info("cache hit for %s", obj._log_label)
+                late_hits += 1
                 results_by_object_id[obj.object_id] = cast(
                     T, load_result_bundle(cached_result_dir)
                 )
             else:
                 pending.append(obj)
 
+        if late_hits:
+            objs[0].logger.info(
+                "%d became ready while waiting, %d to build", late_hits, len(pending)
+            )
+
         direct_create_started = unwrap and bool(pending)
+        create_started_at = time.monotonic()
         if direct_create_started:
             objs[0].logger.info("creating %s", objs[0]._log_label)
 
@@ -322,7 +336,11 @@ def _load_or_create_local[T](
         (obj,) = objs
         (output,) = outputs
         if direct_create_started:
-            obj.logger.info("%s.create() finished", obj._log_label)
+            obj.logger.info(
+                "finished %s ok · %s",
+                obj._log_label,
+                format_duration(time.monotonic() - create_started_at),
+            )
         return output
     return outputs
 
@@ -340,6 +358,7 @@ def _create_and_store_group[T](
     with _scoped_log_files(log_paths):
         logger = group[0].logger
         logger.debug("create start")
+        group_started_at = time.monotonic()
         try:
             match group[0]._furu_create_mode:
                 case "batched":
@@ -399,7 +418,10 @@ def _create_and_store_group[T](
                     has_lock=has_lock,
                 )
 
-            logger.debug("create complete")
+            logger.debug(
+                "create complete · %s",
+                format_duration(time.monotonic() - group_started_at),
+            )
         except _DependencyNotReady as exc:
             logger.debug(
                 "create deferred: %s discovered %d missing dependency/dependencies",
@@ -408,5 +430,5 @@ def _create_and_store_group[T](
             )
             raise
         except Exception:
-            logger.exception("create failed")
+            logger.exception("create failed for %s", group[0]._log_label)
             raise
