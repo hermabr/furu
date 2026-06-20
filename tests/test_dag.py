@@ -402,7 +402,7 @@ def test_execution_coordinator_run_discovers_lazy_dependencies_and_reruns_parent
         "create deferred: create discovered 1 missing dependency/dependencies"
         in parent_log
     )
-    assert "create failed" not in parent_log
+    assert "msg=failed" not in parent_log
     assert "=== Debug Traceback ===" not in parent_log
 
 

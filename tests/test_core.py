@@ -1762,9 +1762,11 @@ def test_nested_create_scopes_logs_to_child_file() -> None:
     child_log = run_log_path_in(child._base_dir).read_text(encoding="utf-8")
 
     assert "parent before child" in parent_log
-    assert f"creating {child._log_label}" in parent_log
-    assert f"(object_id={child.object_id})" not in parent_log
-    assert ".create() finished" in parent_log
+    assert "msg=creating" in parent_log
+    assert f"task={child._log_label}" in parent_log
+    assert f"object_id={child.object_id}" in parent_log
+    assert "msg=finished" in parent_log
+    assert "status=ok" in parent_log
     assert "parent after child" in parent_log
     assert "leaf detail for child" not in parent_log
 
@@ -1785,13 +1787,15 @@ def test_cached_create_logs_debug_call_and_only_cache_hit_info(
 
     log_text = log_path.read_text(encoding="utf-8")
     assert f".create called for {obj}" in log_text
-    assert f"cache hit for {obj._log_label}" in log_text
-    assert "creating " not in log_text
-    assert ".create() finished" not in log_text
+    assert "msg=cached" in log_text
+    assert f"task={obj._log_label}" in log_text
+    assert "msg=creating" not in log_text
+    assert "msg=finished" not in log_text
 
-    info_lines = [line for line in log_text.splitlines() if " INFO " in line]
+    info_lines = [line for line in log_text.splitlines() if " level=info " in line]
     assert len(info_lines) == 1
-    assert info_lines[0].endswith(f"INFO [furu] cache hit for {obj._log_label}")
+    assert "msg=cached" in info_lines[0]
+    assert f"task={obj._log_label}" in info_lines[0]
     assert " at " not in info_lines[0]
 
 
@@ -2189,7 +2193,7 @@ def test_batched_failure_writes_error_details_to_run_log_for_every_participant()
 
     for obj in objs:
         log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
-        assert "create failed" in log_text
+        assert "msg=failed" in log_text
         assert "failed batch for [1, 2]" in log_text
         assert "furu-local-debug-value-should-not-leak" not in log_text
         assert list(obj._base_dir.glob("error-*.log")) == []
@@ -2202,7 +2206,7 @@ def test_base_exception_does_not_log_as_load_failure() -> None:
         obj.create()
 
     log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
-    assert "create failed" not in log_text
+    assert "msg=failed" not in log_text
 
 
 def test_partial_persistence_leaves_already_written_objects_completed(

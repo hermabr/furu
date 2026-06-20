@@ -1,9 +1,20 @@
 import argparse
+import os
 from collections.abc import Sequence
 from pathlib import Path
 
 from furu.resources import ResourceRequest
 from furu.worker.loop import worker_loop
+
+
+def _default_worker_component() -> str:
+    array_task_id = os.environ.get("SLURM_ARRAY_TASK_ID")
+    if array_task_id:
+        return f"wkr.{array_task_id}"
+    job_id = os.environ.get("SLURM_JOB_ID")
+    if job_id:
+        return f"wkr.{job_id[-4:]}"
+    return "wkr"
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -43,6 +54,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help="consecutive failed jobs after which this worker exits",
     )
+    parser.add_argument(
+        "--component",
+        default=None,
+        help="component label shown in this worker's logs",
+    )
     args = parser.parse_args(argv)
 
     worker_loop(
@@ -54,6 +70,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         idle_timeout=args.idle_timeout,
         max_consecutive_failures=args.max_consecutive_failures,
+        component=args.component or _default_worker_component(),
     )
     return 0
 

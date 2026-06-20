@@ -252,5 +252,5 @@ def test_lock_is_taken_over_mid_create(tmp_path):
     run_logs = list(data_dir.glob("**/run.log"))
     assert len(run_logs) == 1
     log_text = run_logs[0].read_text(encoding="utf-8")
-    assert "create failed" in log_text
+    assert "msg=failed" in log_text
     assert "before writing final result" in log_text

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import functools
+import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
@@ -24,7 +25,7 @@ from furu._storage_layout import (
 from furu.core import Furu, FuruCreateMode
 from furu.dependencies import dependency_recorder, record_dependency_call
 from furu.locking import lock
-from furu.logging import _scoped_log_files
+from furu.logging import log_extra, _scoped_log_files
 from furu.metadata import RunningMetadata
 from furu.migration import result_dir_for_loading
 from furu.result import _save_result_bundle, load_result_bundle
@@ -187,16 +188,48 @@ def _load_or_create[T](
     return _load_or_create_local(obj_or_objs, use_lock=use_lock)
 
 
+def _log_cache_hits(objs: Sequence[Furu[Any]], *, to_build: int = 0) -> None:
+    if not objs:
+        return
+    if len(objs) == 1:
+        (obj,) = objs
+        obj.logger.info(
+            "cache hit for %s",
+            obj._log_label,
+            extra=log_extra(
+                event="cached",
+                task=obj._log_label,
+                fields={"object_id": obj.object_id},
+            ),
+        )
+        return
+
+    objs[0].logger.info(
+        "cache hits: cached=%d to_build=%d",
+        len(objs),
+        to_build,
+        extra=log_extra(
+            event="cached",
+            fields={
+                "cached": len(objs),
+                "to_build": to_build,
+                "tasks": ",".join(obj._log_label for obj in objs),
+                "object_ids": ",".join(obj.object_id for obj in objs),
+            },
+        ),
+    )
+
+
 def _ensure_single_result[T](obj: Furu[T]) -> None:
     if result_dir_for_loading(obj) is not None:
-        obj.logger.info("cache hit for %s", obj._log_label)
+        _log_cache_hits([obj])
         return
 
     obj._base_dir.mkdir(parents=True, exist_ok=True)
 
     with lock(compute_lock_path_in(obj._base_dir)) as has_lock:
         if result_dir_for_loading(obj) is not None:
-            obj.logger.info("cache hit for %s", obj._log_label)
+            _log_cache_hits([obj])
             return
 
         _create_and_store_group(
@@ -234,14 +267,17 @@ def _load_or_create_worker[T](
     objs, unwrap = _normalize_load_or_create_input(obj_or_objs)
 
     loaded: list[T] = []
+    cached: list[Furu[T]] = []
     missing: list[Furu[T]] = []
 
     for obj in objs:
         if (cached_result_dir := result_dir_for_loading(obj)) is not None:
-            obj.logger.info("cache hit for %s", obj._log_label)
+            cached.append(obj)
             loaded.append(cast(T, load_result_bundle(cached_result_dir)))
         else:
             missing.append(obj)
+
+    _log_cache_hits(cached, to_build=len(missing))
 
     if missing:
         raise _DependencyNotReady(
@@ -271,17 +307,20 @@ def _load_or_create_local[T](
     unique = list(unique_by_object_id.values())
 
     results_by_object_id: dict[str, T] = {}
+    cached: list[Furu[T]] = []
     missing: list[Furu[T]] = []
 
     for obj in unique:
         if (cached_result_dir := result_dir_for_loading(obj)) is not None:
-            obj.logger.info("cache hit for %s", obj._log_label)
+            cached.append(obj)
             results_by_object_id[obj.object_id] = cast(
                 T, load_result_bundle(cached_result_dir)
             )
         else:
             obj._base_dir.mkdir(parents=True, exist_ok=True)
             missing.append(obj)
+
+    _log_cache_hits(cached, to_build=len(missing))
 
     lock_ctx = (
         lock([compute_lock_path_in(obj._base_dir) for obj in missing])
@@ -291,19 +330,32 @@ def _load_or_create_local[T](
 
     with lock_ctx as maybe_has_lock:
         has_lock = maybe_has_lock or (lambda: True)
+        locked_cache_hits: list[Furu[T]] = []
         pending: list[Furu[T]] = []
         for obj in missing:
             if (cached_result_dir := result_dir_for_loading(obj)) is not None:
-                obj.logger.info("cache hit for %s", obj._log_label)
+                locked_cache_hits.append(obj)
                 results_by_object_id[obj.object_id] = cast(
                     T, load_result_bundle(cached_result_dir)
                 )
             else:
                 pending.append(obj)
 
+        _log_cache_hits(locked_cache_hits, to_build=len(pending))
+
         direct_create_started = unwrap and bool(pending)
+        direct_create_started_at: float | None = None
         if direct_create_started:
-            objs[0].logger.info("creating %s", objs[0]._log_label)
+            direct_create_started_at = time.monotonic()
+            objs[0].logger.info(
+                "creating %s",
+                objs[0]._log_label,
+                extra=log_extra(
+                    event="creating",
+                    task=objs[0]._log_label,
+                    fields={"object_id": objs[0].object_id},
+                ),
+            )
 
         grouped: dict[type[object], list[Furu[T]]] = {}
         for obj in pending:
@@ -322,7 +374,18 @@ def _load_or_create_local[T](
         (obj,) = objs
         (output,) = outputs
         if direct_create_started:
-            obj.logger.info("%s.create() finished", obj._log_label)
+            assert direct_create_started_at is not None
+            obj.logger.info(
+                "%s.create() finished",
+                obj._log_label,
+                extra=log_extra(
+                    event="finished",
+                    task=obj._log_label,
+                    status="ok",
+                    duration_s=time.monotonic() - direct_create_started_at,
+                    fields={"object_id": obj.object_id},
+                ),
+            )
         return output
     return outputs
 
@@ -408,5 +471,16 @@ def _create_and_store_group[T](
             )
             raise
         except Exception:
-            logger.exception("create failed")
+            first_obj = group[0]
+            logger.exception(
+                "create failed",
+                extra=log_extra(
+                    event="failed",
+                    task=first_obj._log_label if len(group) == 1 else None,
+                    fields={
+                        "object_id": first_obj.object_id if len(group) == 1 else None,
+                        "tasks": ",".join(obj._log_label for obj in group),
+                    },
+                ),
+            )
             raise
