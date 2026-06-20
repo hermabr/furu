@@ -570,7 +570,11 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert f"exec {sys.executable} -m furu.worker._cli" in script
     assert "--server-url http://execution-coordinator.cluster:1234" in script
     assert "SLURM_ARRAY_TASK_ID" not in script
-    assert slurm_backend_module._WORKER_COMPONENT_SCRIPT in script
+    assert (
+        'furu_worker_component="s${SLURM_JOB_ID:$(('
+        " ${#SLURM_JOB_ID} > 4 ? ${#SLURM_JOB_ID} - 4 : 0 ))}\""
+        in script
+    )
     assert '--component "${furu_worker_component}"' in script
     assert "--idle-timeout 0.25" in script
     assert "--max-consecutive-failures 3" in script
@@ -618,16 +622,32 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     ],
 )
 def test_slurm_worker_component_label_derivation_under_bash(
-    job_id: str, expected: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    job_id: str,
+    expected: str,
 ) -> None:
-    # The sbatch script derives --component in bash; execute the real derivation
-    # (not just match its source text) so a wrong shell expansion is caught. It
-    # must be "s" + the last up to 4 chars of the job id and never empty — a
-    # regression guard for the old ${var: -3} form, which collapsed to a bare
-    # suffix for short ids.
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    backend = SlurmWorkerBackend(
+        max_workers=1,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="execution-coordinator.cluster",
+    )
+    pool = backend.start_pool(
+        bound_port=1234,
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+    )
+    script_text = pool._script_path.read_text()
+    component_line = next(
+        line
+        for line in script_text.splitlines()
+        if line.startswith("furu_worker_component=")
+    )
     script = (
         "set -euo pipefail\n"
-        + slurm_backend_module._WORKER_COMPONENT_SCRIPT
+        + component_line
+        + "\n"
         + 'printf "%s" "$furu_worker_component"'
     )
     result = subprocess.run(
