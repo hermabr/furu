@@ -11,8 +11,6 @@ class _SkipHash:
 
 
 skip_hash: Final = _SkipHash()
-"""Mark a field so it is kept in the schema and artifact data but excluded from
-the schema and artifact hashes (and therefore from the object identity)."""
 
 
 def has_skip_hash(declared_type: object) -> bool:
