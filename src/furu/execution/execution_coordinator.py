@@ -154,9 +154,9 @@ class ExecutionCoordinator:
                 for pool, future in zip(pools, stop_futures, strict=True):
                     if (exc := future.exception()) is not None:
                         logger.error(
-                            "pool stop failed · %s",
+                            "pool stop failed · %s · %s",
                             type(pool).__name__,
-                            extra=log_detail(error=exc),
+                            exc,
                         )
         coordinator.raise_for_failure()
         return objs
