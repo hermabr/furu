@@ -54,6 +54,9 @@ _GREEN = "32"
 _YELLOW = "33"
 _CYAN = "36"
 _MAGENTA = "35"
+# 256-colour orange, reserved for your own (non-furu) log message bodies so they
+# read as "your code" at a glance; the level letter still carries severity.
+_ORANGE = "38;5;208"
 
 _LEVEL_LETTER = {
     logging.DEBUG: "D",
@@ -159,9 +162,16 @@ def _exception_text(record: logging.LogRecord) -> str:
 # --- console renderer ----------------------------------------------------------
 
 
-def _decorate_message(message: str, levelno: int, palette: _Palette) -> str:
+def _decorate_message(
+    message: str, levelno: int, palette: _Palette, *, is_user: bool
+) -> str:
     if not palette.enabled:
         return message
+    if is_user and levelno < logging.ERROR:
+        # Your own log message: render the body in the user colour and let the
+        # level letter carry severity. Errors still go red below so a failure
+        # never hides in orange.
+        return palette.paint(message, _ORANGE)
     if levelno >= logging.ERROR:
         return palette.paint(message, _RED)
     if levelno >= logging.WARNING:
@@ -217,9 +227,10 @@ def _render_console(record: logging.LogRecord, *, color: bool) -> str:
             ) or [""]
         visual_lines.extend(wrapped)
 
+    is_user = caller is not None
     out_lines: list[str] = []
     for index, line in enumerate(visual_lines):
-        decorated = _decorate_message(line, record.levelno, palette)
+        decorated = _decorate_message(line, record.levelno, palette, is_user=is_user)
         if index == 0:
             first = colored_prefix + decorated
             if caller:

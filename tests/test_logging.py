@@ -190,6 +190,39 @@ def test_console_colours_error_message_red() -> None:
     assert "\x1b[31m" in out  # red message body (distinct from the level letter)
 
 
+def test_console_colours_user_message_body_orange() -> None:
+    out = furu_logging._render_console(
+        _record("loaded 1,000 rows", pathname="/home/user/datasets.py", lineno=64),
+        color=True,
+    )
+
+    assert "\x1b[38;5;208m" in out  # your own message body rendered in orange
+
+
+def test_console_does_not_colour_furu_internal_message_orange() -> None:
+    out = furu_logging._render_console(
+        _record("leased RawData:9f2a1:8c3d2", pathname=furu_logging.__file__),
+        color=True,
+    )
+
+    assert "\x1b[38;5;208m" not in out  # furu lines keep the default treatment
+
+
+def test_console_user_warning_body_orange_with_level_letter_severity() -> None:
+    out = furu_logging._render_console(
+        _record(
+            "validation AUC 0.81 below target",
+            level=logging.WARNING,
+            pathname="/home/user/models.py",
+            lineno=155,
+        ),
+        color=True,
+    )
+
+    assert "\x1b[38;5;208m" in out  # body stays in the user colour at WARNING
+    assert "\x1b[33;1m" in out  # the W letter still carries the warning colour
+
+
 def test_console_renders_traceback_below_entry() -> None:
     try:
         raise ValueError("boom")

@@ -117,10 +117,13 @@ def write_private_file(path: Path, contents: str, *, mode: int) -> None:
 
 
 def format_duration(seconds: float) -> str:
-    """Compact human duration for log lines: 850ms, 3.2s, 2m05s."""
+    """Compact human duration for log lines: 850ms, 3.2s, 2m05s, 1h05m."""
     if seconds < 1:
         return f"{seconds * 1000:.0f}ms"
     if seconds < 60:
         return f"{seconds:.1f}s"
     minutes, secs = divmod(int(seconds), 60)
-    return f"{minutes}m{secs:02d}s"
+    if minutes < 60:
+        return f"{minutes}m{secs:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m"
