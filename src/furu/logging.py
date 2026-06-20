@@ -35,11 +35,12 @@ _DETAIL_ATTR = "_furu_detail"
 _CURRENT_LOG_PATHS: ContextVar[tuple[Path, ...]] = ContextVar(
     "furu_current_log_paths", default=()
 )
-# The component label (e.g. "coord", "wkr.7", "slurm") for the current execution
-# context, or None for a plain local run. Set near each process/thread entry
-# point via `_scoped_component`; read by the renderers. Like the log-path
-# context above, it does not cross into threads spawned later, so each pool /
-# worker thread sets its own.
+# The component label for the current execution context, or None for a plain
+# local run: "coord" for the coordinator, "l<n>" for a local worker, "s<n>" for
+# a slurm worker, and "slurm" for the slurm pool thread. Set near each
+# process/thread entry point via `_scoped_component`; read by the renderers.
+# Like the log-path context above, it does not cross into threads spawned later,
+# so each pool / worker thread sets its own.
 _CURRENT_COMPONENT: ContextVar[str | None] = ContextVar(
     "furu_current_component", default=None
 )
