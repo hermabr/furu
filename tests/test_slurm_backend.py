@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
+import subprocess
 import sys
 import textwrap
 from pathlib import Path
@@ -567,9 +569,8 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     )
     assert f"exec {sys.executable} -m furu.worker._cli" in script
     assert "--server-url http://execution-coordinator.cluster:1234" in script
-    assert 'if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then' in script
-    assert 'furu_worker_component="sw${SLURM_ARRAY_TASK_ID: -3}"' in script
-    assert 'furu_worker_component="sw${SLURM_JOB_ID: -3}"' in script
+    assert "SLURM_ARRAY_TASK_ID" not in script
+    assert slurm_backend_module._WORKER_COMPONENT_SCRIPT in script
     assert '--component "${furu_worker_component}"' in script
     assert "--idle-timeout 0.25" in script
     assert "--max-consecutive-failures 3" in script
@@ -602,6 +603,43 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
 
     assert all(token_file.exists() for token_file in token_files)
     assert all(config_file.exists() for config_file in config_files)
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="requires bash")
+@pytest.mark.parametrize(
+    ("job_id", "expected"),
+    [
+        ("7", "s7"),
+        ("42", "s42"),
+        ("999", "s999"),
+        ("1000", "s1000"),
+        ("12345", "s2345"),
+        ("1234567", "s4567"),
+    ],
+)
+def test_slurm_worker_component_label_derivation_under_bash(
+    job_id: str, expected: str
+) -> None:
+    # The sbatch script derives --component in bash; execute the real derivation
+    # (not just match its source text) so a wrong shell expansion is caught. It
+    # must be "s" + the last up to 4 chars of the job id and never empty — a
+    # regression guard for the old ${var: -3} form, which collapsed to a bare
+    # suffix for short ids.
+    script = (
+        "set -euo pipefail\n"
+        + slurm_backend_module._WORKER_COMPONENT_SCRIPT
+        + 'printf "%s" "$furu_worker_component"'
+    )
+    result = subprocess.run(
+        ["bash", "-c", script],
+        env={**os.environ, "SLURM_JOB_ID": job_id},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert result.stdout == expected
+    assert len(result.stdout) <= 5
 
 
 @pytest.mark.parametrize(

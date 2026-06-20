@@ -18,6 +18,16 @@ from furu.worker.backends.slurm.resources import SlurmResources
 
 SlurmExport: TypeAlias = Literal["NIL", "ALL"] | tuple[str, ...] | None
 
+# Worker component label for logs: "s" followed by the last (up to) 4 characters
+# of the slurm job id (e.g. SLURM_JOB_ID=1234567 -> "s4567"; max 5 chars). The
+# arithmetic offset reproduces Python's SLURM_JOB_ID[-4:]; bash's plain
+# ${SLURM_JOB_ID: -4} collapses to an empty suffix for ids shorter than 4
+# characters, giving every such worker the indistinguishable label "s".
+_WORKER_COMPONENT_SCRIPT = (
+    'furu_worker_component="s${SLURM_JOB_ID:$(('
+    " ${#SLURM_JOB_ID} > 4 ? ${#SLURM_JOB_ID} - 4 : 0 ))}\"\n"
+)
+
 
 @dataclass(frozen=True, slots=True)
 class SlurmWorkerBackend:
@@ -97,11 +107,7 @@ class SlurmWorkerBackend:
                 "export "
                 f"{_WORKER_JSON_CONFIG_FILE_ENV_VAR}={shlex.quote(str(config_file))}\n"
                 "\n"
-                'if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then\n'
-                '    furu_worker_component="sw${SLURM_ARRAY_TASK_ID: -3}"\n'
-                'else\n'
-                '    furu_worker_component="sw${SLURM_JOB_ID: -3}"\n'
-                "fi\n"
+                f"{_WORKER_COMPONENT_SCRIPT}"
                 "\n"
                 f"{pre_worker_script}"
                 f"exec {shlex.quote(sys.executable)} -m furu.worker._cli \\\n"
