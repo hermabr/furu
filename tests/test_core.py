@@ -72,6 +72,14 @@ class Node(Furu[str]):
         return f"Node({self.name})"
 
 
+class MaxWorkersIdentityNode(Furu[str]):
+    name: str
+    max_workers: ClassVar[int | None] = 1
+
+    def create(self) -> str:
+        return self.name
+
+
 class WeightedNode(Node):
     weight: float
 
@@ -1568,6 +1576,24 @@ def test_max_workers_can_be_overridden_with_classvar():
             return self.name
 
     assert LimitedNode(name="x").max_workers == 5
+
+
+def test_max_workers_does_not_affect_schema_or_object_identity():
+    original_max_workers = MaxWorkersIdentityNode.max_workers
+    before = MaxWorkersIdentityNode(name="x")
+    before_schema_hash = before._artifact_schema_hash
+    before_artifact_hash = before._artifact_hash
+    before_object_id = before.object_id
+
+    try:
+        MaxWorkersIdentityNode.max_workers = 5
+        after = MaxWorkersIdentityNode(name="x")
+    finally:
+        MaxWorkersIdentityNode.max_workers = original_max_workers
+
+    assert after._artifact_schema_hash == before_schema_hash
+    assert after._artifact_hash == before_artifact_hash
+    assert after.object_id == before_object_id
 
 
 def test_resource_requirements_can_be_overridden_with_property():
