@@ -3,7 +3,14 @@ import os
 import types
 from collections.abc import Callable
 from contextlib import contextmanager
-from dataclasses import FrozenInstanceError, InitVar, dataclass, is_dataclass, replace
+from dataclasses import (
+    FrozenInstanceError,
+    InitVar,
+    dataclass,
+    fields,
+    is_dataclass,
+    replace,
+)
 from enum import Enum
 from functools import cached_property, partial
 from pathlib import Path
@@ -70,6 +77,14 @@ class Node(Furu[str]):
 
     def create(self) -> str:
         return f"Node({self.name})"
+
+
+class MaxWorkersIdentityNode(Furu[str]):
+    name: str
+    max_workers = 1
+
+    def create(self) -> str:
+        return self.name
 
 
 class WeightedNode(Node):
@@ -1553,6 +1568,51 @@ def test_data_dir():
 
 def test_resource_requirements_defaults_to_none():
     assert Node(name="x").resource_requirements is None
+
+
+def test_max_workers_defaults_to_none():
+    assert Node(name="x").max_workers is None
+
+
+def test_max_workers_can_be_overridden_as_class_option():
+    class LimitedNode(Furu[str]):
+        name: str
+        max_workers = 5
+
+        def create(self) -> str:
+            return self.name
+
+    assert LimitedNode(name="x").max_workers == 5
+    assert "max_workers" not in {field.name for field in fields(LimitedNode)}
+
+
+def test_max_workers_can_be_overridden_with_classvar():
+    class LimitedNode(Furu[str]):
+        name: str
+        max_workers: ClassVar[int | None] = 5
+
+        def create(self) -> str:
+            return self.name
+
+    assert LimitedNode(name="x").max_workers == 5
+
+
+def test_max_workers_does_not_affect_schema_or_object_identity():
+    original_max_workers = MaxWorkersIdentityNode.max_workers
+    before = MaxWorkersIdentityNode(name="x")
+    before_schema_hash = before._artifact_schema_hash
+    before_artifact_hash = before._artifact_hash
+    before_object_id = before.object_id
+
+    try:
+        MaxWorkersIdentityNode.max_workers = 5
+        after = MaxWorkersIdentityNode(name="x")
+    finally:
+        MaxWorkersIdentityNode.max_workers = original_max_workers
+
+    assert after._artifact_schema_hash == before_schema_hash
+    assert after._artifact_hash == before_artifact_hash
+    assert after.object_id == before_object_id
 
 
 def test_resource_requirements_can_be_overridden_with_property():

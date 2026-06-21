@@ -50,20 +50,30 @@ else:
 
 
 FuruCreateMode: TypeAlias = Literal["single", "batched"] | None
+_FURU_CLASS_OPTIONS = frozenset({"max_workers"})
 
 
 class Furu[T](_FuruDataclassTransform, ABC):
     _furu_create_mode: ClassVar[FuruCreateMode]
+    max_workers: ClassVar[int | None] = None
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
         if cls is Furu:
             return
 
-        annotations = getattr(cls, "__annotations__", {})
+        annotations = cls.__dict__.get("__annotations__", {})
+        if _FURU_CLASS_OPTIONS & annotations.keys():
+            annotations = {
+                name: value
+                for name, value in annotations.items()
+                if name not in _FURU_CLASS_OPTIONS
+            }
+            cls.__annotations__ = annotations
         for name, value in cls.__dict__.items():
             if (
                 not (name.startswith("__") and name.endswith("__"))
+                and name not in _FURU_CLASS_OPTIONS
                 and name not in annotations
                 and not callable(value)
                 and not isinstance(value, (classmethod, property, cached_property))
