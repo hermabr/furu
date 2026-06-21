@@ -91,7 +91,7 @@ class ResultCodecMeta(ABCMeta):
 
 class ResultCodec[T](ABC, metaclass=ResultCodecMeta):
     auto_register: ClassVar[bool] = True
-    load_after_dump: ClassVar[bool] = False
+    reload_value_after_dump: ClassVar[bool] = False
 
     @final
     @classmethod

@@ -1194,7 +1194,7 @@ class RegistryNumpyResult(Furu[Any]):
 
 class _MemmapNumpyNpyCodec(NumpyNpyCodec):
     auto_register: ClassVar[bool] = False
-    load_after_dump: ClassVar[bool] = True
+    reload_value_after_dump: ClassVar[bool] = True
 
     @classmethod
     def load(cls, *, artifact_dir: Path) -> np.ndarray[Any, Any]:
@@ -1241,7 +1241,7 @@ def test_result_codecs_take_priority_over_builtin_codec() -> None:
     assert manifest["$furu"]["codec"] == _RegistryNumpyCodec._codec_id()
 
 
-def test_codec_can_force_load_after_dump_for_cache_miss_consistency() -> None:
+def test_codec_can_reload_value_after_dump_for_cache_miss_consistency() -> None:
     obj = MemmapNumpyResult()
     expected_file = result_dir_in(obj._base_dir) / "artifacts" / "root" / "data.npy"
 

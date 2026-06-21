@@ -145,7 +145,7 @@ def _store_result[T](
             f"{type(obj).__name__} must declare its concrete result type directly as Furu[...]"
         )
 
-    should_load_after_dump = _save_result_bundle(
+    should_reload_value_after_dump = _save_result_bundle(
         result,
         tmp_result_dir,
         declared_type=declared_type,
@@ -163,7 +163,7 @@ def _store_result[T](
     metadata_path_in(obj._base_dir).write_text(metadata_text)
 
     obj.logger.debug("stored result bundle at %s", result_dir)
-    if should_load_after_dump:
+    if should_reload_value_after_dump:
         return cast(T, load_result_bundle(result_dir))
     return _unwrap_save_as(result)
 
