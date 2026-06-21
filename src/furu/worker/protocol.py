@@ -54,6 +54,7 @@ class LeaseJobRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     resources: ResourceRequest
+    worker: str | None = None
 
 
 class CountSatisfiableJobsRequest(BaseModel):

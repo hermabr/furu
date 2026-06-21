@@ -173,7 +173,9 @@ class ExecutionCoordinator:
         ):
             yield
 
-    def lease_job(self, *, resources: ResourceRequest) -> LeaseJobResponse:
+    def lease_job(
+        self, *, resources: ResourceRequest, worker: str | None = None
+    ) -> LeaseJobResponse:
         with self.log_context(), self.lock:
             self._maybe_finish_locked()
             if self.done.is_set():
@@ -199,13 +201,14 @@ class ExecutionCoordinator:
             self.running[lease_id] = RunningJob(
                 lease_id=lease_id, node=node, started_at=time.monotonic()
             )
-            node.obj.logger.info("creating %s", node.obj._log_label)
             logger.info(
-                "leased %s",
+                "leased %s%s",
                 node.obj._log_label,
+                f" to {worker}" if worker is not None else "",
                 extra=log_detail(
                     lease=lease_id,
                     object_id=node.obj.object_id,
+                    **({"worker": worker} if worker is not None else {}),
                     **self._counts_detail(),
                 ),
             )
