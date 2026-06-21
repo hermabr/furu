@@ -73,6 +73,7 @@ class LocalThreadWorkerPool:
     _scale_thread: threading.Thread
     _threads: list[threading.Thread]
     _failed_threads: list[threading.Thread]
+    _unhealthy_reason: list[str] = field(default_factory=list)
     _spawn_count: list[int] = field(default_factory=lambda: [0])
 
     def stop(self, *, timeout: float) -> None:
@@ -123,9 +124,12 @@ class LocalThreadWorkerPool:
                 idle_timeout=self._worker_idle_timeout,
                 component=component,
             )
-        except Exception:
+        except Exception as exc:
             self._failed_threads.append(threading.current_thread())
             if len(self._failed_threads) > self._max_failed_restarts:
+                self._unhealthy_reason[:] = [
+                    traceback.format_exception_only(type(exc), exc)[-1].strip()
+                ]
                 self._unhealthy_event.set()
             with _scoped_component(component):
                 logger.exception("local worker thread crashed")
@@ -136,7 +140,14 @@ class LocalThreadWorkerPool:
                 self._scale_once()
 
                 if self._unhealthy_event.is_set():
-                    self._client.fail(message="local worker pool became unhealthy")
+                    reason = (
+                        f": {self._unhealthy_reason[-1]}"
+                        if self._unhealthy_reason
+                        else ""
+                    )
+                    self._client.fail(
+                        message=f"local worker pool became unhealthy{reason}"
+                    )
                     return
 
                 if self._stop_event.wait(timeout=self._scale_interval):

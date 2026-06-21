@@ -572,8 +572,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert "SLURM_ARRAY_TASK_ID" not in script
     assert (
         'furu_worker_component="s${SLURM_JOB_ID:$(('
-        " ${#SLURM_JOB_ID} > 4 ? ${#SLURM_JOB_ID} - 4 : 0 ))}\""
-        in script
+        ' ${#SLURM_JOB_ID} > 4 ? ${#SLURM_JOB_ID} - 4 : 0 ))}"' in script
     )
     assert '--component "${furu_worker_component}"' in script
     assert "--idle-timeout 0.25" in script
@@ -901,6 +900,36 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
         "-j",
         "100,101",
     ]
+
+
+def test_slurm_worker_pool_unhealthy_report_includes_failed_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    _record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    reports: list[str] = []
+    monkeypatch.setattr(
+        PoolApiClient, "fail", lambda self, *, message: reports.append(message)
+    )
+    backend = SlurmWorkerBackend(
+        max_workers=1,
+        max_failed_restarts=0,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="execution-coordinator.cluster",
+        poll_interval=0,
+    )
+    pool = backend.start_pool(
+        bound_port=1234,
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+    )
+    pool._job_ids[:] = ["100"]
+    active_file.write_text("100 FAILED\n")
+
+    pool._scale_loop()
+
+    assert reports == ["slurm worker pool became unhealthy: 100 FAILED"]
 
 
 def test_slurm_pool_scale_submits_additional_workers_as_satisfiable_count_grows(
