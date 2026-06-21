@@ -246,12 +246,9 @@ class ExecutionCoordinator:
     def _can_start_node_locked(
         self, node: DagNode, running_counts: dict[type[Furu], int]
     ) -> bool:
-        max_workers = node.obj.max_workers
-        if max_workers is not None and max_workers < 1:
-            raise ValueError(f"{node.obj._log_label}.max_workers must be at least 1")
-        if max_workers is None:
+        if node.obj.max_workers is None:
             return True
-        return running_counts.get(type(node.obj), 0) < max_workers
+        return running_counts.get(type(node.obj), 0) < node.obj.max_workers
 
     def job_result(self, lease_id: str, request: JobResultRequest) -> None:
         with self.log_context(), self.lock:
