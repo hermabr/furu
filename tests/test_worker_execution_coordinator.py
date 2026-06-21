@@ -766,12 +766,16 @@ def test_execution_coordinator_run_fails_when_worker_pool_reports_unhealthy(
         auth_token: str,
         resource_request: ResourceRequest,
         idle_timeout: float,
+        component: str,
     ) -> None:
         raise RuntimeError("worker boom")
 
     monkeypatch.setattr(worker_loop_module, "worker_loop", crashing_worker_loop)
 
-    with pytest.raises(RuntimeError, match="local worker pool became unhealthy"):
+    with pytest.raises(
+        RuntimeError,
+        match="local worker pool became unhealthy: RuntimeError: worker boom",
+    ):
         ExecutionCoordinator.run(
             [ExecutionCoordinatorLeaf(value=42)],
             worker_backends=(

@@ -222,8 +222,18 @@ class SlurmWorkerPool:
                 self._scale_once()
                 while not self._stop_event.wait(timeout=self._poll_interval):
                     states = self._scale_once()
-                    if any(_is_failed_state(state) for state in states.values()):
-                        self._report_failure("slurm worker pool became unhealthy")
+                    if failed_states := {
+                        job_id: state
+                        for job_id, state in states.items()
+                        if _is_failed_state(state)
+                    }:
+                        self._report_failure(
+                            "slurm worker pool became unhealthy: "
+                            + ", ".join(
+                                f"{job_id} {state}"
+                                for job_id, state in sorted(failed_states.items())
+                            )
+                        )
                         return
             except Exception as exc:
                 self._report_failure(
