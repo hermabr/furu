@@ -3,7 +3,14 @@ import os
 import types
 from collections.abc import Callable
 from contextlib import contextmanager
-from dataclasses import FrozenInstanceError, InitVar, dataclass, is_dataclass, replace
+from dataclasses import (
+    FrozenInstanceError,
+    InitVar,
+    dataclass,
+    fields,
+    is_dataclass,
+    replace,
+)
 from enum import Enum
 from functools import cached_property, partial
 from pathlib import Path
@@ -74,7 +81,7 @@ class Node(Furu[str]):
 
 class MaxWorkersIdentityNode(Furu[str]):
     name: str
-    max_workers: ClassVar[int | None] = 1
+    max_workers = 1
 
     def create(self) -> str:
         return self.name
@@ -1565,6 +1572,18 @@ def test_resource_requirements_defaults_to_none():
 
 def test_max_workers_defaults_to_none():
     assert Node(name="x").max_workers is None
+
+
+def test_max_workers_can_be_overridden_as_class_option():
+    class LimitedNode(Furu[str]):
+        name: str
+        max_workers = 5
+
+        def create(self) -> str:
+            return self.name
+
+    assert LimitedNode(name="x").max_workers == 5
+    assert "max_workers" not in {field.name for field in fields(LimitedNode)}
 
 
 def test_max_workers_can_be_overridden_with_classvar():
