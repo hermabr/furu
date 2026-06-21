@@ -416,6 +416,7 @@ def lock(
                 release_acquired_subset(acquired, claim_path=claim_path)
 
             if broke_stale:
+                logger.info("broke stale lock at %s", blocked)
                 continue
 
             now = time.monotonic()
