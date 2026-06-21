@@ -51,11 +51,11 @@ def test_debug_mode_uses_default_debug_directory(monkeypatch) -> None:
     config = _FuruConfig()
 
     assert config.debug_mode is True
-    assert config.directories.debug == Path("furu") / "debug"
+    assert config.directories.debug == Path("furu-data") / "debug"
     assert config.run_directories == _FuruDirectories(
-        objects=Path("furu") / "debug" / "objects",
-        executions=Path("furu") / "debug" / "executions",
-        debug=Path("furu") / "debug",
+        objects=Path("furu-data") / "debug" / "objects",
+        executions=Path("furu-data") / "debug" / "executions",
+        debug=Path("furu-data") / "debug",
     )
 
 
@@ -63,7 +63,7 @@ def test_config_uses_main_directories_by_default() -> None:
     config = _FuruConfig()
 
     assert config.debug_mode is False
-    assert config.directories.debug == Path("furu") / "debug"
+    assert config.directories.debug == Path("furu-data") / "debug"
     assert config.run_directories == config.directories
 
 

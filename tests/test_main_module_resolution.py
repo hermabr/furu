@@ -127,7 +127,7 @@ if __name__ == "__main__":
         json.dumps(
             {
                 "base_dir_uses_debug": str(obj._base_dir).startswith(
-                    "furu/debug/objects/__main__/Adder/"
+                    "furu-data/debug/objects/__main__/Adder/"
                 ),
                 "first": first,
                 "fqn": obj._fully_qualified_name,
