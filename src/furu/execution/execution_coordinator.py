@@ -183,6 +183,7 @@ class ExecutionCoordinator:
             if not self.ready:
                 return "wait"
 
+            running_counts = self._running_counts()
             object_id = next(
                 (
                     object_id
@@ -190,6 +191,7 @@ class ExecutionCoordinator:
                     if resource_request_satisfies(
                         resources, node.obj.resource_requirements
                     )
+                    and self._can_start_node_locked(node, running_counts)
                 ),
                 None,
             )
@@ -222,14 +224,34 @@ class ExecutionCoordinator:
     ) -> int:
         with self.lock:
             count = 0
+            running_counts = self._running_counts()
             for node in self.ready.values():
                 if resource_request_satisfies(
                     resources, node.obj.resource_requirements
-                ):
+                ) and self._can_start_node_locked(node, running_counts):
                     count += 1
+                    running_counts[type(node.obj)] = (
+                        running_counts.get(type(node.obj), 0) + 1
+                    )
                     if count >= max_workers:
                         return max_workers
             return count
+
+    def _running_counts(self) -> dict[type[Furu], int]:
+        counts: dict[type[Furu], int] = {}
+        for job in self.running.values():
+            counts[type(job.node.obj)] = counts.get(type(job.node.obj), 0) + 1
+        return counts
+
+    def _can_start_node_locked(
+        self, node: DagNode, running_counts: dict[type[Furu], int]
+    ) -> bool:
+        max_workers = node.obj.max_workers
+        if max_workers is not None and max_workers < 1:
+            raise ValueError(f"{node.obj._log_label}.max_workers must be at least 1")
+        if max_workers is None:
+            return True
+        return running_counts.get(type(node.obj), 0) < max_workers
 
     def job_result(self, lease_id: str, request: JobResultRequest) -> None:
         with self.log_context(), self.lock:

@@ -1555,6 +1555,21 @@ def test_resource_requirements_defaults_to_none():
     assert Node(name="x").resource_requirements is None
 
 
+def test_max_workers_defaults_to_none():
+    assert Node(name="x").max_workers is None
+
+
+def test_max_workers_can_be_overridden_with_classvar():
+    class LimitedNode(Furu[str]):
+        name: str
+        max_workers: ClassVar[int | None] = 5
+
+        def create(self) -> str:
+            return self.name
+
+    assert LimitedNode(name="x").max_workers == 5
+
+
 def test_resource_requirements_can_be_overridden_with_property():
     class HeavyNode(Furu[str]):
         name: str

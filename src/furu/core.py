@@ -54,6 +54,7 @@ FuruCreateMode: TypeAlias = Literal["single", "batched"] | None
 
 class Furu[T](_FuruDataclassTransform, ABC):
     _furu_create_mode: ClassVar[FuruCreateMode]
+    max_workers: ClassVar[int | None] = None
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)

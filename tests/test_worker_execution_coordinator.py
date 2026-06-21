@@ -120,6 +120,14 @@ class FlakyExecutionCoordinatorLeaf(Furu[int]):
         return self.value
 
 
+class LimitedExecutionCoordinatorLeaf(Furu[int]):
+    value: int
+    max_workers: ClassVar[int | None] = 2
+
+    def create(self) -> int:
+        return self.value
+
+
 class ExecutionCoordinatorParent(Furu[int]):
     child: ExecutionCoordinatorLeaf
 
@@ -538,6 +546,40 @@ def test_count_satisfiable_jobs_caps_at_max_workers_and_filters_by_requirements(
         )
         == 3
     )
+
+
+def test_worker_cap_limits_satisfiable_jobs_and_leases() -> None:
+    limited = [LimitedExecutionCoordinatorLeaf(value=value) for value in range(3)]
+    uncapped = ExecutionCoordinatorLeaf(value=10)
+    coordinator = _new_execution_coordinator([uncapped, *limited])
+
+    assert (
+        coordinator.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=10)
+        == 3
+    )
+
+    first = coordinator.lease_job(resources=ResourceRequest())
+    second = coordinator.lease_job(resources=ResourceRequest())
+    third = coordinator.lease_job(resources=ResourceRequest())
+
+    assert isinstance(first, Job)
+    assert isinstance(second, Job)
+    assert isinstance(third, Job)
+    limited_ids = {obj.object_id for obj in limited}
+    leased_limited_ids = {first.artifact.object_id, second.artifact.object_id}
+    assert leased_limited_ids < limited_ids
+    assert third.artifact.object_id == uncapped.object_id
+    assert (
+        coordinator.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=10)
+        == 0
+    )
+    assert coordinator.lease_job(resources=ResourceRequest()) == "wait"
+
+    coordinator.job_result(first.lease_id, JobCompletedResult())
+    fourth = coordinator.lease_job(resources=ResourceRequest())
+
+    assert isinstance(fourth, Job)
+    assert fourth.artifact.object_id in limited_ids - leased_limited_ids
 
 
 def test_lease_job_filters_by_worker_resources() -> None:
