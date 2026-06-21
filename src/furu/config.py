@@ -16,9 +16,9 @@ _WORKER_JSON_CONFIG_FILE_ENV_VAR = "_FURU_WORKER_JSON_CONFIG_FILE"
 class _FuruDirectories(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    objects: Path = Path("furu") / "objects"
-    executions: Path = Path("furu") / "executions"
-    debug: Path = Path("furu") / "debug"
+    objects: Path = Path("furu-data") / "objects"
+    executions: Path = Path("furu-data") / "executions"
+    debug: Path = Path("furu-data") / "debug"
 
 
 class _FuruWorkerConfig(BaseModel):

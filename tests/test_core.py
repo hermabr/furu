@@ -1595,7 +1595,7 @@ def test_debug_mode_ignores_storage_root_override() -> None:
 
         assert node.storage_root == Path("custom/data/location")
         assert node._base_dir == (
-            Path("furu")
+            Path("furu-data")
             / "debug"
             / "objects"
             / "test_core"
