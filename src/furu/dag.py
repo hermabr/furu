@@ -28,7 +28,7 @@ def _add_to_dag(coordinator: ExecutionCoordinator, objs: Sequence[Furu]) -> None
     refs_by_id: dict[str, tuple[Furu, ...]] = {}
     newly_added: list[DagNode] = []
     # TODO: detect cycles and raise a clear error
-    pending = list(objs)
+    pending = list(reversed(objs))
 
     while pending:
         obj = pending.pop()
