@@ -40,7 +40,7 @@ WrapperKind: TypeAlias = Literal[
 
 @dataclasses.dataclass
 class _DumpState:
-    should_load_after_dump: bool = False
+    should_reload_value_after_dump: bool = False
 
 
 def _value_path_display(value_path: ValuePath) -> str:
@@ -272,7 +272,7 @@ def _dump_value(
                 declared_type=lazy_declared_type,
                 result_codecs=result_codecs,
             ):
-                dump_state.should_load_after_dump = True
+                dump_state.should_reload_value_after_dump = True
             return {
                 WRAPPER_KEY: {
                     KINDMARKER: "lazy",
@@ -307,8 +307,8 @@ def _dump_external(
     artifact_dir = bundle_dir / artifact_rel
     artifact_dir.mkdir(parents=True, exist_ok=False)
     codec.dump(value, artifact_dir=artifact_dir)
-    if codec.load_after_dump:
-        dump_state.should_load_after_dump = True
+    if codec.reload_value_after_dump:
+        dump_state.should_reload_value_after_dump = True
     return {
         WRAPPER_KEY: {
             KINDMARKER: "external",
@@ -552,7 +552,7 @@ def _save_result_bundle(
         json.dumps(manifest, indent=2),
         encoding="utf-8",
     )
-    return dump_state.should_load_after_dump
+    return dump_state.should_reload_value_after_dump
 
 
 def load_result_bundle(bundle_dir: Path) -> object:
