@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, status
 from pydantic import TypeAdapter
 
 from furu.execution.execution_coordinator import ExecutionCoordinator
+from furu.logging import _CURRENT_COMPONENT
 from furu.resources import ResourceRequest
 from furu.worker.protocol import (
     CountSatisfiableJobsRequest,
@@ -60,7 +61,9 @@ class WorkerApiClient(_ExecutionCoordinatorApiClientBase):
         response = self._request_json(
             "/worker/lease_job",
             method="POST",
-            payload=LeaseJobRequest(resources=resources).model_dump(mode="json"),
+            payload=LeaseJobRequest(
+                resources=resources, worker=_CURRENT_COMPONENT.get()
+            ).model_dump(mode="json", exclude_none=True),
         )
         return TypeAdapter(LeaseJobResponse).validate_python(response)
 
@@ -113,7 +116,7 @@ def create_execution_coordinator_api_app(
 
     @worker_router.post("/lease_job", response_model=LeaseJobResponse)
     def lease_job(request: LeaseJobRequest) -> LeaseJobResponse:
-        return coordinator.lease_job(resources=request.resources)
+        return coordinator.lease_job(resources=request.resources, worker=request.worker)
 
     @worker_router.post("/job_result/{lease_id}", response_model=OkResponse)
     def job_result(lease_id: str, request: JobResultRequest) -> OkResponse:

@@ -874,9 +874,10 @@ def test_execution_coordinator_run_writes_log_to_executor_dir() -> None:
     log_text = log_path.read_text(encoding="utf-8")
     assert "starting exec=" in log_text
     assert "server listening on " in log_text
-    assert f"creating {leaf._log_label}" in log_text
+    assert f"creating {leaf._log_label}" not in log_text
     assert f"(object_id={leaf.object_id})" not in log_text
-    assert f"leased {leaf._log_label}" in log_text
+    assert f"leased {leaf._log_label} to l0" in log_text
+    assert "worker=l0" in log_text
     assert leaf.object_id in log_text
     assert f"completed {leaf._log_label} ok" in log_text
     assert "progress 1/1 · 0 running" in log_text
