@@ -36,6 +36,7 @@ class SlurmResources:
     qos: str | None = None
     time_limit: str | None = None
     memory: MemoryPerNode | MemoryPerCpu | MemoryPerGpu | None = None
+    memory_gb: int = 0
     gpus: int = 0
     constraint: str | None = None
     extra_sbatch_args: tuple[str, ...] = ()

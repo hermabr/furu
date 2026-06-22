@@ -70,6 +70,7 @@ class SlurmWorkerBackend:
         resource_request = ResourceRequest(
             cpus=self.resources.cpus_per_worker,
             gpus=self.resources.gpus,
+            memory_gb=self.resources.memory_gb,
         )
         worker_failure_arg = (
             ""
@@ -98,7 +99,7 @@ class SlurmWorkerBackend:
                 f"{_WORKER_JSON_CONFIG_FILE_ENV_VAR}={shlex.quote(str(config_file))}\n"
                 "\n"
                 'furu_worker_component="s${SLURM_JOB_ID:$(('
-                " ${#SLURM_JOB_ID} > 4 ? ${#SLURM_JOB_ID} - 4 : 0 ))}\"\n"
+                ' ${#SLURM_JOB_ID} > 4 ? ${#SLURM_JOB_ID} - 4 : 0 ))}"\n'
                 "\n"
                 f"{pre_worker_script}"
                 f"exec {shlex.quote(sys.executable)} -m furu.worker._cli \\\n"
@@ -108,7 +109,8 @@ class SlurmWorkerBackend:
                 f"    --idle-timeout {self.worker_idle_timeout} \\\n"
                 f"{worker_failure_arg}"
                 f"    --resource-cpus {resource_request.cpus} \\\n"
-                f"    --resource-gpus {resource_request.gpus}\n"
+                f"    --resource-gpus {resource_request.gpus} \\\n"
+                f"    --resource-memory-gb {resource_request.memory_gb}\n"
             ),
             mode=0o700,
         )

@@ -97,6 +97,8 @@ def test_worker_cli_reads_auth_token_file(
                 "1",
                 "--resource-gpus",
                 "0",
+                "--resource-memory-gb",
+                "0",
                 "--idle-timeout",
                 "60",
                 "--component",
@@ -150,6 +152,8 @@ def test_worker_cli_reads_resource_request(
                 "4",
                 "--resource-gpus",
                 "1",
+                "--resource-memory-gb",
+                "16",
                 "--idle-timeout",
                 "30",
                 "--component",
@@ -159,7 +163,7 @@ def test_worker_cli_reads_resource_request(
         == 0
     )
 
-    assert calls == [(ResourceRequest(cpus=4, gpus=1), 30.0, None)]
+    assert calls == [(ResourceRequest(cpus=4, gpus=1, memory_gb=16), 30.0, None)]
 
 
 def test_worker_cli_reads_idle_timeout(
@@ -194,6 +198,8 @@ def test_worker_cli_reads_idle_timeout(
                 "4",
                 "--resource-gpus",
                 "1",
+                "--resource-memory-gb",
+                "0",
                 "--idle-timeout",
                 "0.25",
                 "--component",
@@ -238,6 +244,8 @@ def test_worker_cli_reads_max_consecutive_failures(
                 "4",
                 "--resource-gpus",
                 "1",
+                "--resource-memory-gb",
+                "0",
                 "--idle-timeout",
                 "0.25",
                 "--component",
@@ -282,6 +290,8 @@ def _run_worker_cli_capturing_component(
                 "--resource-cpus",
                 "1",
                 "--resource-gpus",
+                "0",
+                "--resource-memory-gb",
                 "0",
                 "--idle-timeout",
                 "60",
@@ -338,6 +348,8 @@ def test_worker_cli_requires_component(
                 "--resource-cpus",
                 "1",
                 "--resource-gpus",
+                "0",
+                "--resource-memory-gb",
                 "0",
                 "--idle-timeout",
                 "60",
@@ -407,6 +419,8 @@ def test_worker_cli_requires_auth_token_file(monkeypatch: pytest.MonkeyPatch) ->
                 "1",
                 "--resource-gpus",
                 "0",
+                "--resource-memory-gb",
+                "0",
                 "--idle-timeout",
                 "60",
                 "--component",
@@ -448,6 +462,8 @@ def test_worker_cli_requires_idle_timeout(
                 "1",
                 "--resource-gpus",
                 "0",
+                "--resource-memory-gb",
+                "0",
             ]
         )
 
@@ -485,6 +501,8 @@ def test_worker_cli_rejects_auth_token_argument(
                 "1",
                 "--resource-gpus",
                 "0",
+                "--resource-memory-gb",
+                "0",
                 "--idle-timeout",
                 "60",
                 "--component",
@@ -518,6 +536,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
             partition="debug",
             cpus_per_worker=4,
             memory=MemoryPerNode("8G"),
+            memory_gb=8,
             gpus=1,
             extra_sbatch_args=("--exclusive",),
         ),
@@ -579,6 +598,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert "--max-consecutive-failures 3" in script
     assert "--resource-cpus 4" in script
     assert "--resource-gpus 1" in script
+    assert "--resource-memory-gb 8" in script
     assert "FURU_DIRECTORIES__OBJECTS" not in script
     assert "FURU_DIRECTORIES__EXECUTIONS" not in script
 
