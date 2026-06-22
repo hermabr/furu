@@ -551,7 +551,7 @@ def test_count_satisfiable_jobs_caps_at_max_workers_and_filters_by_requirements(
 def test_worker_cap_limits_satisfiable_jobs_and_leases() -> None:
     limited = [LimitedExecutionCoordinatorLeaf(value=value) for value in range(3)]
     uncapped = ExecutionCoordinatorLeaf(value=10)
-    coordinator = _new_execution_coordinator([uncapped, *limited])
+    coordinator = _new_execution_coordinator([*limited, uncapped])
 
     assert (
         coordinator.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=10)
