@@ -6,6 +6,7 @@ import shutil
 from abc import ABC
 from dataclasses import dataclass
 from functools import cached_property
+from inspect import get_annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeAlias, cast, final
 
@@ -62,7 +63,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
         if cls is Furu:
             return
 
-        annotations = cls.__dict__.get("__annotations__", {})
+        annotations = get_annotations(cls, eval_str=False)
         if _FURU_CLASS_OPTIONS & annotations.keys():
             annotations = {
                 name: value
