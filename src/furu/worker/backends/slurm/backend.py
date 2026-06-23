@@ -39,6 +39,7 @@ class SlurmWorkerBackend:
     worker_max_consecutive_failures: int | None = 5  # TODO: maybe add this to config?
     pre_worker_commands: tuple[str, ...] = ()
     export: SlurmExport = None
+    use_job_arrays: bool = True
 
     def start_pool(
         self,
@@ -88,6 +89,13 @@ class SlurmWorkerBackend:
         scripts_dir = worker_dir / "scripts"
         scripts_dir.mkdir(parents=True, exist_ok=True)
         script_path = scripts_dir / f"worker-{secrets.token_hex(16)}.sh"
+        component_suffix = "a${SLURM_ARRAY_TASK_ID}" if self.use_job_arrays else ""
+        component_line = (
+            'furu_worker_component="s${SLURM_JOB_ID:$(('
+            " ${#SLURM_JOB_ID} > 4 ? ${#SLURM_JOB_ID} - 4 : 0 ))}"
+            f'{component_suffix}"\n'
+        )
+
         write_private_file(
             script_path,
             (
@@ -97,8 +105,7 @@ class SlurmWorkerBackend:
                 "export "
                 f"{_WORKER_JSON_CONFIG_FILE_ENV_VAR}={shlex.quote(str(config_file))}\n"
                 "\n"
-                'furu_worker_component="s${SLURM_JOB_ID:$(('
-                " ${#SLURM_JOB_ID} > 4 ? ${#SLURM_JOB_ID} - 4 : 0 ))}\"\n"
+                f"{component_line}"
                 "\n"
                 f"{pre_worker_script}"
                 f"exec {shlex.quote(sys.executable)} -m furu.worker._cli \\\n"
@@ -115,6 +122,7 @@ class SlurmWorkerBackend:
 
         log_dir = worker_dir / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
+        log_name = "furu-worker-%A_%a" if self.use_job_arrays else "furu-worker-%j"
 
         export_sbatch_arg: tuple[str, ...]
         match self.export:
@@ -129,8 +137,8 @@ class SlurmWorkerBackend:
 
         sbatch_base_args = (
             f"--chdir={chdir}",
-            f"--output={log_dir / 'furu-worker-%j.out'}",
-            f"--error={log_dir / 'furu-worker-%j.err'}",
+            f"--output={log_dir / f'{log_name}.out'}",
+            f"--error={log_dir / f'{log_name}.err'}",
             f"--job-name={self.job_name}",
             *self.resources.to_sbatch_args(),
             *export_sbatch_arg,
@@ -148,6 +156,7 @@ class SlurmWorkerBackend:
             _poll_interval=self.poll_interval,
             _client=PoolApiClient(server_url=server_url, auth_token=auth_token),
             _stop_event=threading.Event(),
+            _use_job_arrays=self.use_job_arrays,
             _scale_thread=threading.Thread(
                 target=lambda: pool_holder[0]._scale_loop(),
                 name="furu-slurm-worker-pool-scale",

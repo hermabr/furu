@@ -535,20 +535,20 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     )
     pool._scale_once()
 
-    assert pool._job_ids == ["100", "101"]
+    assert pool._job_ids == ["100_0", "100_1"]
     assert log_dir.is_dir()
 
     records = _read_records(record_file)
     sbatch_records = [record for record in records if record["executable"] == "sbatch"]
-    assert len(sbatch_records) == 2
+    assert len(sbatch_records) == 1
 
     argv = sbatch_records[0]["argv"]
     assert "--parsable" in argv
     assert f"--chdir={work_dir.resolve()}" in argv
-    assert f"--output={log_dir.resolve() / 'furu-worker-%j.out'}" in argv
-    assert f"--error={log_dir.resolve() / 'furu-worker-%j.err'}" in argv
+    assert f"--output={log_dir.resolve() / 'furu-worker-%A_%a.out'}" in argv
+    assert f"--error={log_dir.resolve() / 'furu-worker-%A_%a.err'}" in argv
     assert "--job-name=furu-worker" in argv
-    assert not any(arg.startswith("--array") for arg in argv)
+    assert "--array=0-1" in argv
     assert not any(arg.startswith("--export") for arg in argv)
     assert not any(arg.startswith("--wrap") for arg in argv)
     assert "--partition=debug" in argv
@@ -569,10 +569,11 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     )
     assert f"exec {sys.executable} -m furu.worker._cli" in script
     assert "--server-url http://execution-coordinator.cluster:1234" in script
-    assert "SLURM_ARRAY_TASK_ID" not in script
+    assert "SLURM_ARRAY_TASK_ID" in script
     assert (
         'furu_worker_component="s${SLURM_JOB_ID:$(('
-        ' ${#SLURM_JOB_ID} > 4 ? ${#SLURM_JOB_ID} - 4 : 0 ))}"' in script
+        " ${#SLURM_JOB_ID} > 4 ? ${#SLURM_JOB_ID} - 4 : 0 ))}"
+        'a${SLURM_ARRAY_TASK_ID}"' in script
     )
     assert '--component "${furu_worker_component}"' in script
     assert "--idle-timeout 0.25" in script
@@ -631,6 +632,7 @@ def test_slurm_worker_component_label_derivation_under_bash(
         max_workers=1,
         resources=SlurmResources(cpus_per_worker=1),
         worker_connect_host="execution-coordinator.cluster",
+        use_job_arrays=False,
     )
     pool = backend.start_pool(
         bound_port=1234,
@@ -724,6 +726,121 @@ def test_slurm_backend_includes_selected_export_names_in_sbatch_args(
     assert "--export=HF_TOKEN" in sbatch_records[0]["argv"]
 
 
+def test_slurm_backend_can_submit_workers_as_job_array(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    _stub_count_satisfiable_jobs(monkeypatch, 3)
+    backend = SlurmWorkerBackend(
+        max_workers=3,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="execution-coordinator.cluster",
+        poll_interval=0,
+        use_job_arrays=True,
+    )
+
+    pool = backend.start_pool(
+        bound_port=1234,
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+    )
+    pool._scale_once()
+
+    assert pool._job_ids == ["100_0", "100_1", "100_2"]
+    assert pool._active_job_ids() == {"100_0", "100_1", "100_2"}
+    active_file.write_text("100_0\n100_1 FAILED\n100_2\n")
+    assert pool._task_states() == {
+        "100_0": "RUNNING",
+        "100_1": "FAILED",
+        "100_2": "RUNNING",
+    }
+
+    records = _read_records(record_file)
+    sbatch_records = [record for record in records if record["executable"] == "sbatch"]
+    assert len(sbatch_records) == 1
+    assert "--array=0-2" in sbatch_records[0]["argv"]
+    assert any(
+        arg.endswith("furu-worker-%A_%a.out") for arg in sbatch_records[0]["argv"]
+    )
+    assert any(
+        arg.endswith("furu-worker-%A_%a.err") for arg in sbatch_records[0]["argv"]
+    )
+    assert "SLURM_ARRAY_TASK_ID" in Path(sbatch_records[0]["argv"][-1]).read_text()
+
+
+def test_slurm_pool_submits_replacement_workers_as_job_array(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        PoolApiClient,
+        "count_satisfiable_jobs",
+        lambda self, *, resources, max_workers: max_workers,
+    )
+    backend = SlurmWorkerBackend(
+        max_workers=3,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="execution-coordinator.cluster",
+        poll_interval=0,
+    )
+    pool = backend.start_pool(
+        bound_port=1234,
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+    )
+
+    pool._scale_once()
+    assert pool._job_ids == ["100_0", "100_1", "100_2"]
+
+    active_file.write_text("100_0\n")
+    pool._scale_once()
+
+    assert pool._job_ids == ["100_0", "101_0", "101_1"]
+    sbatch_records = [
+        record
+        for record in _read_records(record_file)
+        if record["executable"] == "sbatch"
+    ]
+    assert [arg for arg in sbatch_records[0]["argv"] if arg.startswith("--array")] == [
+        "--array=0-2"
+    ]
+    assert [arg for arg in sbatch_records[1]["argv"] if arg.startswith("--array")] == [
+        "--array=0-1"
+    ]
+
+
+def test_slurm_worker_pool_stop_cancels_array_tasks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    _stub_count_satisfiable_jobs(monkeypatch, 2)
+    backend = SlurmWorkerBackend(
+        max_workers=2,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="execution-coordinator.cluster",
+        poll_interval=0,
+    )
+    pool = backend.start_pool(
+        bound_port=1234,
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+    )
+    pool._scale_once()
+    assert pool._job_ids == ["100_0", "100_1"]
+
+    pool.stop(timeout=0)
+
+    assert active_file.read_text() == ""
+    records = _read_records(record_file)
+    assert records[-1] == {"executable": "scancel", "argv": ["100_0", "100_1"]}
+
+
 @pytest.mark.parametrize(
     ("memory", "expected_arg"),
     [
@@ -785,7 +902,7 @@ def test_slurm_backend_builds_server_url_from_worker_connect_host(
     )
     pool._scale_once()
 
-    assert pool._job_ids == ["100"]
+    assert pool._job_ids == ["100_0"]
 
     records = _read_records(record_file)
     sbatch_records = [record for record in records if record["executable"] == "sbatch"]
@@ -865,6 +982,7 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
         resources=SlurmResources(cpus_per_worker=1),
         worker_connect_host="execution-coordinator.cluster",
         poll_interval=0,
+        use_job_arrays=False,
     )
     pool = backend.start_pool(
         bound_port=1234,
@@ -918,6 +1036,7 @@ def test_slurm_worker_pool_unhealthy_report_includes_failed_state(
         resources=SlurmResources(cpus_per_worker=1),
         worker_connect_host="execution-coordinator.cluster",
         poll_interval=0,
+        use_job_arrays=False,
     )
     pool = backend.start_pool(
         bound_port=1234,
@@ -950,6 +1069,7 @@ def test_slurm_pool_scale_submits_additional_workers_as_satisfiable_count_grows(
         resources=SlurmResources(cpus_per_worker=1),
         worker_connect_host="execution-coordinator.cluster",
         poll_interval=0,
+        use_job_arrays=False,
     )
     pool = backend.start_pool(
         bound_port=1234,
@@ -995,6 +1115,7 @@ def test_slurm_pool_scale_does_not_resubmit_for_already_tracked_viable_job(
         resources=SlurmResources(cpus_per_worker=1),
         worker_connect_host="execution-coordinator.cluster",
         poll_interval=0,
+        use_job_arrays=False,
     )
     pool = backend.start_pool(
         bound_port=1234,
@@ -1032,6 +1153,7 @@ def test_slurm_pool_scale_submits_replacement_workers_after_existing_workers_exi
         resources=SlurmResources(cpus_per_worker=1),
         worker_connect_host="execution-coordinator.cluster",
         poll_interval=0,
+        use_job_arrays=False,
     )
     pool = backend.start_pool(
         bound_port=1234,
@@ -1072,6 +1194,7 @@ def test_slurm_pool_scale_does_not_count_completed_jobs_as_restarts(
         resources=SlurmResources(cpus_per_worker=1),
         worker_connect_host="execution-coordinator.cluster",
         poll_interval=0,
+        use_job_arrays=False,
     )
     pool = backend.start_pool(
         bound_port=1234,
@@ -1117,6 +1240,7 @@ def test_slurm_pool_scale_does_not_count_cancelled_jobs_as_restarts(
         resources=SlurmResources(cpus_per_worker=1),
         worker_connect_host="execution-coordinator.cluster",
         poll_interval=0,
+        use_job_arrays=False,
     )
     pool = backend.start_pool(
         bound_port=1234,
@@ -1170,6 +1294,7 @@ def test_slurm_worker_pool_join_cancels_jobs_left_after_timeout(
         resources=SlurmResources(cpus_per_worker=1),
         worker_connect_host="execution-coordinator.cluster",
         poll_interval=0,
+        use_job_arrays=False,
     )
     pool = backend.start_pool(
         bound_port=1234,
@@ -1203,6 +1328,7 @@ def test_slurm_backend_uses_default_poll_interval() -> None:
     assert backend.worker_idle_timeout == get_config().worker.idle_timeout_seconds
     assert backend.worker_max_consecutive_failures == 5
     assert backend.max_failed_restarts == get_config().worker.max_failed_restarts
+    assert backend.use_job_arrays is True
 
 
 def _install_fake_slurm(
@@ -1258,8 +1384,14 @@ def _install_fake_slurm(
         with open(counter_file, "w", encoding="utf-8") as file:
             file.write(str(job_id + 1))
 
+        array_args = [arg for arg in sys.argv[1:] if arg.startswith("--array=0-")]
+        array_end = int(array_args[-1].removeprefix("--array=0-")) if array_args else None
+        task_ids = range(array_end + 1) if array_end is not None else [None]
         with open(active_file, "a", encoding="utf-8") as file:
-            file.write(f"{job_id}\\n")
+            for task_id in task_ids:
+                file.write(
+                    f"{job_id}_{task_id}\\n" if task_id is not None else f"{job_id}\\n"
+                )
 
         print(f"{job_id};cluster")
         """,
@@ -1330,7 +1462,7 @@ def _install_fake_slurm(
             if job_id not in requested_jobs:
                 continue
             if show_array_tasks and separator:
-                print(f"{job_id} {task_id}")
+                print(f"{job_id}_{task_id}")
             else:
                 print(job_id)
         """,

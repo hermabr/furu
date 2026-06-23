@@ -45,6 +45,7 @@ class SlurmWorkerPool:
     _poll_interval: float
     _client: PoolApiClient
     _stop_event: threading.Event
+    _use_job_arrays: bool
     _scale_thread: threading.Thread
     _job_ids: list[str]
     _failed_job_ids: list[str]
@@ -112,13 +113,23 @@ class SlurmWorkerPool:
             ),
             remaining_starts,
         )
-        for _ in range(to_spawn):
+        if to_spawn <= 0:
+            return states
+        self._submit_jobs(to_spawn)
+        return states
+
+    def _submit_jobs(self, to_spawn: int) -> None:
+        array_sbatch_args = (
+            (f"--array=0-{to_spawn - 1}",) if self._use_job_arrays else ()
+        )
+        for _ in range(1 if self._use_job_arrays else to_spawn):
             if self._stop_event.is_set():
-                return states
+                return
             result = subprocess.run(
                 [
                     "sbatch",
                     "--parsable",
+                    *array_sbatch_args,
                     *self._sbatch_base_args,
                     str(self._script_path),
                 ],
@@ -132,23 +143,34 @@ class SlurmWorkerPool:
                     "sbatch failed; retrying on the next scale tick: %s",
                     result.stderr.strip(),
                 )
-                return states
+                return
             job_id = result.stdout.strip().split(";", maxsplit=1)[0]
-            self._job_ids.append(job_id)
-        return states
+            if self._use_job_arrays:
+                self._job_ids.extend(
+                    f"{job_id}_{task_index}" for task_index in range(to_spawn)
+                )
+            else:
+                self._job_ids.append(job_id)
 
     def _active_job_ids(self) -> set[str] | None:
         if not self._job_ids:
             return set()
 
+        job_ids_arg = ",".join(
+            sorted({_allocation_job_id(job_id) for job_id in self._job_ids})
+        )
         try:
             result = subprocess.run(
                 [
                     "squeue",
                     "--noheader",
                     "--jobs",
-                    ",".join(self._job_ids),
-                    "--format=%A",
+                    job_ids_arg,
+                    *(
+                        ("--array", "--format=%i")
+                        if self._use_job_arrays
+                        else ("--format=%A",)
+                    ),
                 ],
                 check=False,
                 capture_output=True,
@@ -172,17 +194,21 @@ class SlurmWorkerPool:
             return {}
 
         known_job_ids = set(self._job_ids)
+        known_allocation_job_ids = {
+            _allocation_job_id(job_id) for job_id in known_job_ids
+        }
         try:
             result = subprocess.run(
                 [
                     "sacct",
                     "-X",
+                    *(("--array",) if self._use_job_arrays else ()),
                     "--noheader",
                     "-o",
                     "JobID,State",
                     "--parsable2",
                     "-j",
-                    ",".join(self._job_ids),
+                    ",".join(sorted(known_allocation_job_ids)),
                 ],
                 check=False,
                 capture_output=True,
@@ -205,6 +231,8 @@ class SlurmWorkerPool:
             job_id, state = parts[0], parts[1]
             allocation_job_id, separator, _step_id = job_id.partition(".")
             if separator and allocation_job_id in known_job_ids:
+                continue
+            if self._use_job_arrays and job_id in known_allocation_job_ids:
                 continue
             if job_id not in known_job_ids:
                 logger.warning(
@@ -251,3 +279,7 @@ class SlurmWorkerPool:
             logger.exception(
                 "failed to report slurm worker pool failure to execution coordinator"
             )
+
+
+def _allocation_job_id(job_id: str) -> str:
+    return job_id.partition("_")[0]
