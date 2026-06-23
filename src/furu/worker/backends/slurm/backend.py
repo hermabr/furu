@@ -71,6 +71,7 @@ class SlurmWorkerBackend:
         resource_request = ResourceRequest(
             cpus=self.resources.cpus_per_worker,
             gpus=self.resources.gpus,
+            memory_gib=self.resources.memory_gib,
         )
         worker_failure_arg = (
             ""
@@ -110,7 +111,8 @@ class SlurmWorkerBackend:
                 f"    --idle-timeout {self.worker_idle_timeout} \\\n"
                 f"{worker_failure_arg}"
                 f"    --resource-cpus {resource_request.cpus} \\\n"
-                f"    --resource-gpus {resource_request.gpus}\n"
+                f"    --resource-gpus {resource_request.gpus} \\\n"
+                f"    --resource-memory-gib {resource_request.memory_gib}\n"
             ),
             mode=0o700,
         )

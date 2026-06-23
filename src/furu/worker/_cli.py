@@ -32,6 +32,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="GPU count available to this worker",
     )
     parser.add_argument(
+        "--resource-memory-gib",
+        required=True,
+        type=int,
+        help="memory in GiB available to this worker",
+    )
+    parser.add_argument(
         "--idle-timeout",
         required=True,
         type=float,
@@ -56,6 +62,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         resource_request=ResourceRequest(
             cpus=args.resource_cpus,
             gpus=args.resource_gpus,
+            memory_gib=args.resource_memory_gib,
         ),
         idle_timeout=args.idle_timeout,
         max_consecutive_failures=args.max_consecutive_failures,

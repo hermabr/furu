@@ -8,12 +8,14 @@ ResourceConstraint: TypeAlias = tuple[int | None, int | None] | None
 class ResourceRequirements:
     cpus: ResourceConstraint = None
     gpus: ResourceConstraint = None
+    memory_gib: ResourceConstraint = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ResourceRequest:
     cpus: int = 1
     gpus: int = 0
+    memory_gib: int = 0
 
 
 def resource_request_satisfies(
@@ -28,6 +30,8 @@ def resource_request_satisfies(
         lo, hi = constraint
         return (lo is None or value >= lo) and (hi is None or value <= hi)
 
-    return _matches(request.cpus, requirements.cpus) and _matches(
-        request.gpus, requirements.gpus
+    return (
+        _matches(request.cpus, requirements.cpus)
+        and _matches(request.gpus, requirements.gpus)
+        and _matches(request.memory_gib, requirements.memory_gib)
     )

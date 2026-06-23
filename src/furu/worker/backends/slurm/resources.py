@@ -5,26 +5,26 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class MemoryPerNode:
-    value: str
+    gib: int
 
     def to_sbatch_arg(self) -> str:
-        return f"--mem={self.value}"
+        return f"--mem={self.gib}G"
 
 
 @dataclass(frozen=True, slots=True)
 class MemoryPerCpu:
-    value: str
+    gib: int
 
     def to_sbatch_arg(self) -> str:
-        return f"--mem-per-cpu={self.value}"
+        return f"--mem-per-cpu={self.gib}G"
 
 
 @dataclass(frozen=True, slots=True)
 class MemoryPerGpu:
-    value: str
+    gib: int
 
     def to_sbatch_arg(self) -> str:
-        return f"--mem-per-gpu={self.value}"
+        return f"--mem-per-gpu={self.gib}G"
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +39,18 @@ class SlurmResources:
     gpus: int = 0
     constraint: str | None = None
     extra_sbatch_args: tuple[str, ...] = ()
+
+    @property
+    def memory_gib(self) -> int:
+        match self.memory:
+            case None:
+                return 0
+            case MemoryPerNode(gib=gib):
+                return gib
+            case MemoryPerCpu(gib=gib):
+                return gib * self.cpus_per_worker
+            case MemoryPerGpu(gib=gib):
+                return gib * self.gpus
 
     def to_sbatch_args(self) -> list[str]:
         args: list[str] = []
