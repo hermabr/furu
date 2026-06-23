@@ -198,7 +198,6 @@ class SlurmWorkerPool:
                 [
                     "sacct",
                     "-X",
-                    *(("--array",) if self._use_job_arrays else ()),
                     "--noheader",
                     "-o",
                     "JobID,State",
@@ -231,6 +230,8 @@ class SlurmWorkerPool:
             if self._use_job_arrays and job_id in known_allocation_job_ids:
                 continue
             if job_id not in known_job_ids:
+                if self._use_job_arrays and "[" in job_id:
+                    continue
                 logger.warning(
                     "ignoring unexpected slurm job id from sacct: %r", job_id
                 )
