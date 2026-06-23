@@ -42,6 +42,8 @@ class SlurmWorkloadTask(Furu[dict[str, object]]):
                 str(parent_result["task_id"]) for parent_result in parent_results
             ],
             "scenario_id": self.scenario_id,
+            "slurm_array_job_id": os.environ.get("SLURM_ARRAY_JOB_ID"),
+            "slurm_array_task_id": os.environ.get("SLURM_ARRAY_TASK_ID"),
             "slurm_cpus_per_task": int(os.environ["SLURM_CPUS_PER_TASK"]),
             "slurm_job_id": os.environ["SLURM_JOB_ID"],
             "slurm_job_name": os.environ["SLURM_JOB_NAME"],
