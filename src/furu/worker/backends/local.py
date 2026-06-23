@@ -108,14 +108,14 @@ class LocalThreadWorkerPool:
             index = self._spawn_count[0]
             self._spawn_count[0] += 1
             thread = threading.Thread(target=lambda i=index: self._run_worker(i))
-            thread.name = f"furu-worker-{index}"
+            thread.name = f"local-worker-{index}"
             self._threads.append(thread)
             thread.start()
 
     def _run_worker(self, index: int) -> None:
         from furu.worker.loop import worker_loop
 
-        component = f"l{index}"
+        component = f"local-worker-{index}"
         try:
             worker_loop(
                 server_url=self._server_url,

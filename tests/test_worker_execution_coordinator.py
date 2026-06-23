@@ -722,7 +722,7 @@ def test_local_pool_scale_uses_unique_worker_names_after_worker_exits(
 
         worker_names = [thread.name for thread in pool._threads]
         assert len(set(worker_names)) == 3
-        assert all(name.startswith("furu-worker-") for name in worker_names)
+        assert all(name.startswith("local-worker-") for name in worker_names)
     finally:
         release_workers.set()
         for thread in pool._threads:
@@ -922,8 +922,8 @@ def test_execution_coordinator_run_writes_log_to_executor_dir() -> None:
     assert "server listening on " in log_text
     assert f"creating {leaf._log_label}" not in log_text
     assert f"(object_id={leaf.object_id})" not in log_text
-    assert f"leased {leaf._log_label} to l0" in log_text
-    assert "worker=l0" in log_text
+    assert f"leased {leaf._log_label} to local-worker-0" in log_text
+    assert "worker=local-worker-0" in log_text
     assert leaf.object_id in log_text
     assert f"completed {leaf._log_label} ok" in log_text
     assert "progress 1/1 · 0 running" in log_text

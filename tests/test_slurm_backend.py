@@ -571,9 +571,8 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert "--server-url http://execution-coordinator.cluster:1234" in script
     assert "SLURM_ARRAY_TASK_ID" in script
     assert (
-        'furu_worker_component="s${SLURM_JOB_ID:$(('
-        " ${#SLURM_JOB_ID} > 4 ? ${#SLURM_JOB_ID} - 4 : 0 ))}"
-        'a${SLURM_ARRAY_TASK_ID}"' in script
+        'furu_worker_component="slurm-worker-${SLURM_JOB_ID}a${SLURM_ARRAY_TASK_ID}"'
+        in script
     )
     assert '--component "${furu_worker_component}"' in script
     assert "--idle-timeout 0.25" in script
@@ -613,12 +612,12 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
 @pytest.mark.parametrize(
     ("job_id", "expected"),
     [
-        ("7", "s7"),
-        ("42", "s42"),
-        ("999", "s999"),
-        ("1000", "s1000"),
-        ("12345", "s2345"),
-        ("1234567", "s4567"),
+        ("7", "slurm-worker-7"),
+        ("42", "slurm-worker-42"),
+        ("999", "slurm-worker-999"),
+        ("1000", "slurm-worker-1000"),
+        ("12345", "slurm-worker-12345"),
+        ("1234567", "slurm-worker-1234567"),
     ],
 )
 def test_slurm_worker_component_label_derivation_under_bash(
@@ -660,7 +659,6 @@ def test_slurm_worker_component_label_derivation_under_bash(
     )
 
     assert result.stdout == expected
-    assert len(result.stdout) <= 5
 
 
 @pytest.mark.parametrize(

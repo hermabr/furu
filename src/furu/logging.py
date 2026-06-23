@@ -36,9 +36,10 @@ _CURRENT_LOG_PATHS: ContextVar[tuple[Path, ...]] = ContextVar(
     "furu_current_log_paths", default=()
 )
 # The component label for the current execution context, or None for a plain
-# local run: "coord" for the coordinator, "l<n>" for a local worker, "s<n>" for
-# a slurm worker, and "slurm" for the slurm pool thread. Set near each
-# process/thread entry point via `_scoped_component`; read by the renderers.
+# local run: "coord" for the coordinator, "local-worker-<id>" for a local
+# worker, "slurm-worker-<job_id>a<array_index>" for a slurm worker, and "slurm"
+# for the slurm pool thread. Set near each process/thread entry point via
+# `_scoped_component`; read by the renderers.
 # Like the log-path context above, it does not cross into threads spawned later,
 # so each pool / worker thread sets its own.
 _CURRENT_COMPONENT: ContextVar[str | None] = ContextVar(
@@ -190,6 +191,11 @@ def _render_console(record: logging.LogRecord, *, color: bool) -> str:
     timestamp = datetime.fromtimestamp(record.created).strftime("%H:%M:%S")
     letter = _LEVEL_LETTER.get(record.levelno, "?")
     component = _CURRENT_COMPONENT.get()
+    component = (
+        component
+        if component is None or len(component) <= 5
+        else component[0] + component[-4:]
+    )
     caller = _caller_tag(record)
 
     plain_prefix = f"{timestamp} {letter} " + (f"{component} " if component else "")
