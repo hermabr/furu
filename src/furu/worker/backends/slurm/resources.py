@@ -41,7 +41,7 @@ class SlurmResources:
     extra_sbatch_args: tuple[str, ...] = ()
 
     @property
-    def memory_gb(self) -> int:
+    def memory_gib(self) -> int:
         match self.memory:
             case None:
                 return 0

@@ -471,7 +471,7 @@ class MemoryLeaf(Furu[int]):
 
     @property
     def resource_requirements(self) -> ResourceRequirements | None:
-        return ResourceRequirements(memory_gb=(8, None))
+        return ResourceRequirements(memory_gib=(8, None))
 
     def create(self) -> int:
         return self.value
@@ -609,13 +609,13 @@ def test_lease_job_filters_by_worker_resources() -> None:
     assert gpu_job.artifact.object_id == gpu_leaf.object_id
 
 
-def test_lease_job_filters_by_worker_memory_gb() -> None:
+def test_lease_job_filters_by_worker_memory_gib() -> None:
     memory_leaf = MemoryLeaf(value=1)
     coordinator = _new_execution_coordinator([memory_leaf])
 
-    assert coordinator.lease_job(resources=ResourceRequest(memory_gb=7)) == "wait"
+    assert coordinator.lease_job(resources=ResourceRequest(memory_gib=7)) == "wait"
 
-    memory_job = coordinator.lease_job(resources=ResourceRequest(memory_gb=8))
+    memory_job = coordinator.lease_job(resources=ResourceRequest(memory_gib=8))
     assert isinstance(memory_job, Job)
     assert memory_job.artifact.object_id == memory_leaf.object_id
 
@@ -1135,7 +1135,7 @@ def test_execution_coordinator_server_rejects_requests_without_auth_token() -> N
         response = httpx.post(
             f"{server.server_url}/worker/lease_job",
             headers={"Authorization": f"Bearer {server.auth_token}"},
-            json={"resources": {"cpus": 1, "gpus": 0, "memory_gb": 0}},
+            json={"resources": {"cpus": 1, "gpus": 0, "memory_gib": 0}},
         )
         assert response.status_code == 200
 
@@ -1584,7 +1584,7 @@ def test_client_lease_job_posts_resource_request_to_lease_job_endpoint(
     job = api.WorkerApiClient(
         server_url="http://worker.test/",
         auth_token="secret-token",
-    ).lease_job(resources=ResourceRequest(cpus=2, gpus=1, memory_gb=16))
+    ).lease_job(resources=ResourceRequest(cpus=2, gpus=1, memory_gib=16))
 
     assert isinstance(job, Job)
     assert requests == [
@@ -1592,7 +1592,7 @@ def test_client_lease_job_posts_resource_request_to_lease_job_endpoint(
             "POST",
             "http://worker.test/worker/lease_job",
             {"Authorization": "Bearer secret-token"},
-            {"resources": {"cpus": 2, "gpus": 1, "memory_gb": 16}},
+            {"resources": {"cpus": 2, "gpus": 1, "memory_gib": 16}},
         )
     ]
 
@@ -1658,7 +1658,7 @@ def test_execution_coordinator_api_accepts_matching_auth_token() -> None:
     response = client.post(
         "/worker/lease_job",
         headers={"Authorization": "Bearer secret"},
-        json={"resources": {"cpus": 1, "gpus": 0, "memory_gb": 0}},
+        json={"resources": {"cpus": 1, "gpus": 0, "memory_gib": 0}},
     )
 
     assert response.status_code == 200

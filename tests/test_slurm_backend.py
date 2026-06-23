@@ -97,7 +97,7 @@ def test_worker_cli_reads_auth_token_file(
                 "1",
                 "--resource-gpus",
                 "0",
-                "--resource-memory-gb",
+                "--resource-memory-gib",
                 "0",
                 "--idle-timeout",
                 "60",
@@ -152,7 +152,7 @@ def test_worker_cli_reads_resource_request(
                 "4",
                 "--resource-gpus",
                 "1",
-                "--resource-memory-gb",
+                "--resource-memory-gib",
                 "16",
                 "--idle-timeout",
                 "30",
@@ -163,7 +163,7 @@ def test_worker_cli_reads_resource_request(
         == 0
     )
 
-    assert calls == [(ResourceRequest(cpus=4, gpus=1, memory_gb=16), 30.0, None)]
+    assert calls == [(ResourceRequest(cpus=4, gpus=1, memory_gib=16), 30.0, None)]
 
 
 def test_worker_cli_reads_idle_timeout(
@@ -198,7 +198,7 @@ def test_worker_cli_reads_idle_timeout(
                 "4",
                 "--resource-gpus",
                 "1",
-                "--resource-memory-gb",
+                "--resource-memory-gib",
                 "0",
                 "--idle-timeout",
                 "0.25",
@@ -244,7 +244,7 @@ def test_worker_cli_reads_max_consecutive_failures(
                 "4",
                 "--resource-gpus",
                 "1",
-                "--resource-memory-gb",
+                "--resource-memory-gib",
                 "0",
                 "--idle-timeout",
                 "0.25",
@@ -291,7 +291,7 @@ def _run_worker_cli_capturing_component(
                 "1",
                 "--resource-gpus",
                 "0",
-                "--resource-memory-gb",
+                "--resource-memory-gib",
                 "0",
                 "--idle-timeout",
                 "60",
@@ -349,7 +349,7 @@ def test_worker_cli_requires_component(
                 "1",
                 "--resource-gpus",
                 "0",
-                "--resource-memory-gb",
+                "--resource-memory-gib",
                 "0",
                 "--idle-timeout",
                 "60",
@@ -419,7 +419,7 @@ def test_worker_cli_requires_auth_token_file(monkeypatch: pytest.MonkeyPatch) ->
                 "1",
                 "--resource-gpus",
                 "0",
-                "--resource-memory-gb",
+                "--resource-memory-gib",
                 "0",
                 "--idle-timeout",
                 "60",
@@ -462,7 +462,7 @@ def test_worker_cli_requires_idle_timeout(
                 "1",
                 "--resource-gpus",
                 "0",
-                "--resource-memory-gb",
+                "--resource-memory-gib",
                 "0",
             ]
         )
@@ -501,7 +501,7 @@ def test_worker_cli_rejects_auth_token_argument(
                 "1",
                 "--resource-gpus",
                 "0",
-                "--resource-memory-gb",
+                "--resource-memory-gib",
                 "0",
                 "--idle-timeout",
                 "60",
@@ -598,7 +598,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert "--max-consecutive-failures 3" in script
     assert "--resource-cpus 4" in script
     assert "--resource-gpus 1" in script
-    assert "--resource-memory-gb 8" in script
+    assert "--resource-memory-gib 8" in script
     assert "FURU_DIRECTORIES__OBJECTS" not in script
     assert "FURU_DIRECTORIES__EXECUTIONS" not in script
 
@@ -880,7 +880,7 @@ def test_slurm_resources_emit_one_memory_option(
 
 
 @pytest.mark.parametrize(
-    ("resources", "expected_memory_gb"),
+    ("resources", "expected_memory_gib"),
     [
         (SlurmResources(cpus_per_worker=4), 0),
         (SlurmResources(cpus_per_worker=4, memory=MemoryPerNode(8)), 8),
@@ -888,11 +888,11 @@ def test_slurm_resources_emit_one_memory_option(
         (SlurmResources(cpus_per_worker=4, gpus=2, memory=MemoryPerGpu(16)), 32),
     ],
 )
-def test_slurm_resources_derive_worker_memory_gb(
+def test_slurm_resources_derive_worker_memory_gib(
     resources: SlurmResources,
-    expected_memory_gb: int,
+    expected_memory_gib: int,
 ) -> None:
-    assert resources.memory_gb == expected_memory_gb
+    assert resources.memory_gib == expected_memory_gib
 
 
 @pytest.mark.parametrize(

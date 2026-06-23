@@ -1622,14 +1622,14 @@ def test_resource_requirements_can_be_overridden_with_property():
         @property
         def resource_requirements(self) -> ResourceRequirements | None:
             return ResourceRequirements(
-                cpus=(4, 8), gpus=(1, None), memory_gb=(16, None)
+                cpus=(4, 8), gpus=(1, None), memory_gib=(16, None)
             )
 
         def create(self) -> str:
             return self.name
 
     rr = HeavyNode(name="x").resource_requirements
-    assert rr == ResourceRequirements(cpus=(4, 8), gpus=(1, None), memory_gb=(16, None))
+    assert rr == ResourceRequirements(cpus=(4, 8), gpus=(1, None), memory_gib=(16, None))
     assert rr is not None
 
 
