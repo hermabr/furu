@@ -155,13 +155,13 @@ def test_console_shows_component_only_when_scoped() -> None:
 
 
 def test_console_shortens_long_components_for_display_only() -> None:
-    with furu_logging._scoped_component("slurm-1234567a10"):
+    with furu_logging._scoped_component("slurm-worker-1234567a10"):
         out = furu_logging._render_console(
             _record("leased it", pathname=furu_logging.__file__), color=False
         )
 
     assert re.match(r"^\d{2}:\d{2}:\d{2} I s7a10 ", out)
-    assert "slurm-1234567a10" not in out
+    assert "slurm-worker-1234567a10" not in out
 
 
 def test_console_omits_caller_for_furu_internal_code() -> None:
@@ -309,12 +309,12 @@ def test_logfmt_appends_detail_fields() -> None:
 
 
 def test_logfmt_includes_scoped_component() -> None:
-    with furu_logging._scoped_component("slurm-1234567a10"):
+    with furu_logging._scoped_component("slurm-worker-1234567a10"):
         out = furu_logging._render_logfmt(
             _record("leased it", pathname=furu_logging.__file__)
         )
 
-    assert "comp=slurm-1234567a10" in out
+    assert "comp=slurm-worker-1234567a10" in out
 
 
 def test_logfmt_keeps_caller_for_user_code() -> None:
