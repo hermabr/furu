@@ -535,8 +535,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
         resources=SlurmResources(
             partition="debug",
             cpus_per_worker=4,
-            memory=MemoryPerNode("8G"),
-            memory_gb=8,
+            memory=MemoryPerNode(8),
             gpus=1,
             extra_sbatch_args=("--exclusive",),
         ),
@@ -864,9 +863,9 @@ def test_slurm_worker_pool_stop_cancels_array_tasks(
 @pytest.mark.parametrize(
     ("memory", "expected_arg"),
     [
-        (MemoryPerNode("8G"), "--mem=8G"),
-        (MemoryPerCpu("2G"), "--mem-per-cpu=2G"),
-        (MemoryPerGpu("16G"), "--mem-per-gpu=16G"),
+        (MemoryPerNode(8), "--mem=8G"),
+        (MemoryPerCpu(2), "--mem-per-cpu=2G"),
+        (MemoryPerGpu(16), "--mem-per-gpu=16G"),
     ],
 )
 def test_slurm_resources_emit_one_memory_option(
@@ -878,6 +877,22 @@ def test_slurm_resources_emit_one_memory_option(
         "--cpus-per-task=1",
         expected_arg,
     ]
+
+
+@pytest.mark.parametrize(
+    ("resources", "expected_memory_gb"),
+    [
+        (SlurmResources(cpus_per_worker=4), 0),
+        (SlurmResources(cpus_per_worker=4, memory=MemoryPerNode(8)), 8),
+        (SlurmResources(cpus_per_worker=4, memory=MemoryPerCpu(2)), 8),
+        (SlurmResources(cpus_per_worker=4, gpus=2, memory=MemoryPerGpu(16)), 32),
+    ],
+)
+def test_slurm_resources_derive_worker_memory_gb(
+    resources: SlurmResources,
+    expected_memory_gb: int,
+) -> None:
+    assert resources.memory_gb == expected_memory_gb
 
 
 @pytest.mark.parametrize(

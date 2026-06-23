@@ -5,26 +5,26 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class MemoryPerNode:
-    value: str
+    gb: int
 
     def to_sbatch_arg(self) -> str:
-        return f"--mem={self.value}"
+        return f"--mem={self.gb}G"
 
 
 @dataclass(frozen=True, slots=True)
 class MemoryPerCpu:
-    value: str
+    gb: int
 
     def to_sbatch_arg(self) -> str:
-        return f"--mem-per-cpu={self.value}"
+        return f"--mem-per-cpu={self.gb}G"
 
 
 @dataclass(frozen=True, slots=True)
 class MemoryPerGpu:
-    value: str
+    gb: int
 
     def to_sbatch_arg(self) -> str:
-        return f"--mem-per-gpu={self.value}"
+        return f"--mem-per-gpu={self.gb}G"
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,10 +36,21 @@ class SlurmResources:
     qos: str | None = None
     time_limit: str | None = None
     memory: MemoryPerNode | MemoryPerCpu | MemoryPerGpu | None = None
-    memory_gb: int = 0
     gpus: int = 0
     constraint: str | None = None
     extra_sbatch_args: tuple[str, ...] = ()
+
+    @property
+    def memory_gb(self) -> int:
+        match self.memory:
+            case None:
+                return 0
+            case MemoryPerNode(gb=gb):
+                return gb
+            case MemoryPerCpu(gb=gb):
+                return gb * self.cpus_per_worker
+            case MemoryPerGpu(gb=gb):
+                return gb * self.gpus
 
     def to_sbatch_args(self) -> list[str]:
         args: list[str] = []
