@@ -116,9 +116,6 @@ class SlurmWorkerPool:
         if to_spawn <= 0:
             return states
 
-        array_sbatch_args = (
-            (f"--array=0-{to_spawn - 1}",) if self._use_job_arrays else ()
-        )
         for _ in range(1 if self._use_job_arrays else to_spawn):
             if self._stop_event.is_set():
                 return states
@@ -126,7 +123,7 @@ class SlurmWorkerPool:
                 [
                     "sbatch",
                     "--parsable",
-                    *array_sbatch_args,
+                    *((f"--array=0-{to_spawn - 1}",) if self._use_job_arrays else ()),
                     *self._sbatch_base_args,
                     str(self._script_path),
                 ],
