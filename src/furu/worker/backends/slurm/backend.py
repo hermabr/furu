@@ -91,9 +91,7 @@ class SlurmWorkerBackend:
         script_path = scripts_dir / f"worker-{secrets.token_hex(16)}.sh"
         component_suffix = "a${SLURM_ARRAY_TASK_ID}" if self.use_job_arrays else ""
         component_line = (
-            'furu_worker_component="s${SLURM_JOB_ID:$(('
-            " ${#SLURM_JOB_ID} > 4 ? ${#SLURM_JOB_ID} - 4 : 0 ))}"
-            f'{component_suffix}"\n'
+            f'furu_worker_component="slurm-${{SLURM_JOB_ID}}{component_suffix}"\n'
         )
 
         write_private_file(
