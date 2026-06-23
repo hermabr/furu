@@ -115,16 +115,13 @@ class SlurmWorkerPool:
         )
         if to_spawn <= 0:
             return states
-        self._submit_jobs(to_spawn)
-        return states
 
-    def _submit_jobs(self, to_spawn: int) -> None:
         array_sbatch_args = (
             (f"--array=0-{to_spawn - 1}",) if self._use_job_arrays else ()
         )
         for _ in range(1 if self._use_job_arrays else to_spawn):
             if self._stop_event.is_set():
-                return
+                return states
             result = subprocess.run(
                 [
                     "sbatch",
@@ -143,7 +140,7 @@ class SlurmWorkerPool:
                     "sbatch failed; retrying on the next scale tick: %s",
                     result.stderr.strip(),
                 )
-                return
+                return states
             job_id = result.stdout.strip().split(";", maxsplit=1)[0]
             if self._use_job_arrays:
                 self._job_ids.extend(
@@ -151,6 +148,7 @@ class SlurmWorkerPool:
                 )
             else:
                 self._job_ids.append(job_id)
+        return states
 
     def _active_job_ids(self) -> set[str] | None:
         if not self._job_ids:
