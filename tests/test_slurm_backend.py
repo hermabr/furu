@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import stat
@@ -787,6 +788,51 @@ def test_slurm_backend_can_submit_workers_as_job_array(
     assert "SLURM_ARRAY_TASK_ID" in Path(sbatch_records[0]["argv"][-1]).read_text()
 
 
+def test_slurm_worker_pool_ignores_untracked_array_siblings_from_sacct(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    _record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    _stub_count_satisfiable_jobs(monkeypatch, 3)
+    backend = SlurmWorkerBackend(
+        max_workers=3,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="execution-coordinator.cluster",
+        poll_interval=0,
+        use_job_arrays=True,
+    )
+    pool = backend.start_pool(
+        bound_port=1234,
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+    )
+    pool._scale_once()
+    pool._job_ids[:] = ["100_1"]
+    active_file.write_text(
+        "100 COMPLETED\n"
+        "100_[0-2] COMPLETED\n"
+        "100_0 COMPLETED\n"
+        "100_0.batch COMPLETED\n"
+        "100_1 RUNNING\n"
+        "100_2 COMPLETED\n"
+        "100_2.batch COMPLETED\n"
+    )
+
+    furu_logger = logging.getLogger("furu")
+    furu_logger.addHandler(caplog.handler)
+    try:
+        caplog.set_level(logging.WARNING, logger="furu")
+        assert pool._task_states() == {"100_1": "RUNNING"}
+    finally:
+        furu_logger.removeHandler(caplog.handler)
+    assert not any(
+        "ignoring unexpected slurm job id from sacct" in record.message
+        for record in caplog.records
+    )
+
+
 def test_slurm_pool_submits_replacement_workers_as_job_array(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1449,7 +1495,8 @@ def _install_fake_slurm(
             elif arg.startswith("-j="):
                 requested_jobs.update(arg.removeprefix("-j=").split(","))
 
-        print("JobID|State|NodeList")
+        if "--noheader" not in sys.argv[1:]:
+            print("JobID|State|NodeList")
         with open(active_file, encoding="utf-8") as file:
             active_jobs = file.read().splitlines()
 
