@@ -223,11 +223,15 @@ class SlurmWorkerPool:
             allocation_job_id, separator, _step_id = job_id.partition(".")
             if separator and allocation_job_id in known_job_ids:
                 continue
-            if self._use_job_arrays and job_id in known_allocation_job_ids:
-                continue
             if job_id not in known_job_ids:
-                if self._use_job_arrays and "[" in job_id:
-                    continue
+                if self._use_job_arrays:
+                    array_allocation_job_id = allocation_job_id.partition("_")[0]
+                    if (
+                        "[" in job_id
+                        or job_id in known_allocation_job_ids
+                        or array_allocation_job_id in known_allocation_job_ids
+                    ):
+                        continue
                 logger.warning(
                     "ignoring unexpected slurm job id from sacct: %r", job_id
                 )
