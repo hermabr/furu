@@ -149,16 +149,15 @@ class SlurmWorkerPool:
         if not self._job_ids:
             return set()
 
-        job_ids_arg = ",".join(
-            sorted({job_id.partition("_")[0] for job_id in self._job_ids})
-        )
         try:
             result = subprocess.run(
                 [
                     "squeue",
                     "--noheader",
                     "--jobs",
-                    job_ids_arg,
+                    ",".join(
+                        sorted({job_id.partition("_")[0] for job_id in self._job_ids})
+                    ),
                     *(
                         ("--array", "--format=%i")
                         if self._use_job_arrays
