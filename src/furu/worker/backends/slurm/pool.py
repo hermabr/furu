@@ -155,7 +155,7 @@ class SlurmWorkerPool:
             return set()
 
         job_ids_arg = ",".join(
-            sorted({_allocation_job_id(job_id) for job_id in self._job_ids})
+            sorted({job_id.partition("_")[0] for job_id in self._job_ids})
         )
         try:
             result = subprocess.run(
@@ -193,7 +193,7 @@ class SlurmWorkerPool:
 
         known_job_ids = set(self._job_ids)
         known_allocation_job_ids = {
-            _allocation_job_id(job_id) for job_id in known_job_ids
+            job_id.partition("_")[0] for job_id in known_job_ids
         }
         try:
             result = subprocess.run(
@@ -277,7 +277,3 @@ class SlurmWorkerPool:
             logger.exception(
                 "failed to report slurm worker pool failure to execution coordinator"
             )
-
-
-def _allocation_job_id(job_id: str) -> str:
-    return job_id.partition("_")[0]
