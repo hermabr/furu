@@ -143,9 +143,7 @@ class SlurmWorkerPool:
                 return states
             job_id = result.stdout.strip().split(";", maxsplit=1)[0]
             if self._use_job_arrays:
-                self._job_ids.extend(
-                    f"{job_id}_{task_index}" for task_index in range(to_spawn)
-                )
+                self._job_ids.extend(f"{job_id}_{arr_i}" for arr_i in range(to_spawn))
             else:
                 self._job_ids.append(job_id)
         return states
