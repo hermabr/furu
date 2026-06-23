@@ -356,13 +356,16 @@ def test_execution_coordinator_job_result_failed_finishes_with_error() -> None:
         coordinator.raise_for_failure()
 
 
-def test_execution_coordinator_job_result_failed_retries_before_finishing() -> None:
+def test_execution_coordinator_job_result_failed_retries_before_finishing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
     coordinator = _new_execution_coordinator([leaf], max_retries_per_object=2)
 
     first_job = coordinator.lease_job(resources=ANY_RESOURCES)
     assert isinstance(first_job, Job)
-    coordinator.job_result(first_job.lease_id, JobFailedResult(error="boom 1"))
+    with _captured_furu_logs(caplog):
+        coordinator.job_result(first_job.lease_id, JobFailedResult(error="boom 1"))
 
     assert set(coordinator.failed) == {leaf.object_id}
     failed_job = coordinator.failed[leaf.object_id]
@@ -375,7 +378,8 @@ def test_execution_coordinator_job_result_failed_retries_before_finishing() -> N
     second_job = coordinator.lease_job(resources=ANY_RESOURCES)
     assert isinstance(second_job, Job)
     assert second_job.lease_id != first_job.lease_id
-    coordinator.job_result(second_job.lease_id, JobFailedResult(error="boom 2"))
+    with _captured_furu_logs(caplog):
+        coordinator.job_result(second_job.lease_id, JobFailedResult(error="boom 2"))
 
     assert set(coordinator.failed) == {leaf.object_id}
     failed_job = coordinator.failed[leaf.object_id]
@@ -401,6 +405,12 @@ def test_execution_coordinator_job_result_failed_retries_before_finishing() -> N
         encoding="utf-8"
     )
     assert log_text.count("will retry") == 2
+    assert any(
+        "will retry" in message and "boom 1" in message for message in caplog.messages
+    )
+    assert any(
+        "will retry" in message and "boom 2" in message for message in caplog.messages
+    )
     assert f"lease={third_job.lease_id}" in log_text
     assert "failed_retry=1 failed=0" in log_text
     assert "failed_retry=0 failed=1" in log_text
