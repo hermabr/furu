@@ -305,8 +305,9 @@ class ExecutionCoordinator:
                     )
                     if will_retry:
                         logger.warning(
-                            "failed %s · attempt %d/%d, will retry · %s",
+                            "failed %s: %s · attempt %d/%d, will retry · %s",
                             label,
+                            error,
                             failed_attempts,
                             self.max_retries_per_object,
                             duration,
