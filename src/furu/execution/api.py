@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass
 from hmac import compare_digest
 from typing import Any
@@ -10,7 +9,6 @@ from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, status
 from pydantic import TypeAdapter
 
 from furu.execution.execution_coordinator import ExecutionCoordinator
-from furu.logging import _CURRENT_COMPONENT
 from furu.resources import ResourceRequest
 from furu.worker.protocol import (
     CountSatisfiableJobsRequest,
@@ -19,6 +17,7 @@ from furu.worker.protocol import (
     LeaseJobRequest,
     LeaseJobResponse,
     OkResponse,
+    WorkerLostRequest,
 )
 
 
@@ -58,13 +57,13 @@ class _ExecutionCoordinatorApiClientBase:
 
 
 class WorkerApiClient(_ExecutionCoordinatorApiClientBase):
-    def lease_job(self, *, resources: ResourceRequest) -> LeaseJobResponse:
+    def lease_job(self, *, resources: ResourceRequest, worker: str) -> LeaseJobResponse:
         response = self._request_json(
             "/worker/lease_job",
             method="POST",
-            payload=LeaseJobRequest(
-                resources=resources, worker=_CURRENT_COMPONENT.get()
-            ).model_dump(mode="json", exclude_none=True),
+            payload=LeaseJobRequest(resources=resources, worker=worker).model_dump(
+                mode="json"
+            ),
         )
         return TypeAdapter(LeaseJobResponse).validate_python(response)
 
@@ -83,7 +82,6 @@ class PoolApiClient(_ExecutionCoordinatorApiClientBase):
         *,
         resources: ResourceRequest,
         max_workers: int,
-        lost_workers: Sequence[str] = (),
     ) -> int:
         response = self._request_json(
             "/pool/count_satisfiable_jobs",
@@ -91,7 +89,6 @@ class PoolApiClient(_ExecutionCoordinatorApiClientBase):
             payload=CountSatisfiableJobsRequest(
                 resources=resources,
                 max_workers=max_workers,
-                lost_workers=tuple(lost_workers),
             ).model_dump(mode="json"),
         )
         return int(response)
@@ -101,6 +98,14 @@ class PoolApiClient(_ExecutionCoordinatorApiClientBase):
             "/pool/fail",
             method="POST",
             payload=FailRequest(message=message).model_dump(mode="json"),
+        )
+        OkResponse.model_validate(response)
+
+    def worker_lost(self, *, worker: str) -> None:
+        response = self._request_json(
+            "/pool/worker_lost",
+            method="POST",
+            payload=WorkerLostRequest(worker=worker).model_dump(mode="json"),
         )
         OkResponse.model_validate(response)
 
@@ -137,12 +142,16 @@ def create_execution_coordinator_api_app(
         return coordinator.count_satisfiable_jobs(
             resources=request.resources,
             max_workers=request.max_workers,
-            lost_workers=request.lost_workers,
         )
 
     @pool_router.post("/fail", response_model=OkResponse)
     def fail(request: FailRequest) -> OkResponse:
         coordinator.fail(request.message)
+        return OkResponse()
+
+    @pool_router.post("/worker_lost", response_model=OkResponse)
+    def worker_lost(request: WorkerLostRequest) -> OkResponse:
+        coordinator.worker_lost(request.worker)
         return OkResponse()
 
     app.include_router(worker_router)

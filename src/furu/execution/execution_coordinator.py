@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import threading
 import time
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -45,7 +45,7 @@ class RunningJob:
     lease_id: str
     node: DagNode
     started_at: float
-    worker: str | None = None
+    worker: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,16 +175,11 @@ class ExecutionCoordinator:
         ):
             yield
 
-    def lease_job(
-        self, *, resources: ResourceRequest, worker: str | None = None
-    ) -> LeaseJobResponse:
+    def lease_job(self, *, resources: ResourceRequest, worker: str) -> LeaseJobResponse:
         with self.log_context(), self.lock:
             if self.done.is_set():
                 return "stop"
-            if worker is not None:
-                self._release_worker_locked(
-                    worker, reason="worker requested a new lease"
-                )
+            self._release_worker_locked(worker, reason="worker requested a new lease")
             self._maybe_finish_locked()
             if self.done.is_set():
                 return "stop"
@@ -217,11 +212,11 @@ class ExecutionCoordinator:
             logger.info(
                 "leased %s%s",
                 node.obj._log_label,
-                f" to {worker}" if worker is not None else "",
+                f" to {worker}",
                 extra=log_detail(
                     lease=lease_id,
                     object_id=node.obj.object_id,
-                    **({"worker": worker} if worker is not None else {}),
+                    worker=worker,
                     **self._counts_detail(),
                 ),
             )
@@ -235,13 +230,8 @@ class ExecutionCoordinator:
         *,
         resources: ResourceRequest,
         max_workers: int,
-        lost_workers: Iterable[str] = (),
     ) -> int:
-        with self.log_context(), self.lock:
-            if self.done.is_set():
-                return 0
-            for worker in lost_workers:
-                self._release_worker_locked(worker, reason="worker is no longer active")
+        with self.lock:
             count = 0
             running_counts = self._running_counts()
             for node in self.ready.values():
@@ -255,6 +245,12 @@ class ExecutionCoordinator:
                     if count >= max_workers:
                         return max_workers
             return count
+
+    def worker_lost(self, worker: str) -> None:
+        with self.log_context(), self.lock:
+            if self.done.is_set():
+                return
+            self._release_worker_locked(worker, reason="worker is no longer active")
 
     def _running_counts(self) -> dict[type[Furu], int]:
         counts: dict[type[Furu], int] = {}

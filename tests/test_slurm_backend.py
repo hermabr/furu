@@ -38,7 +38,7 @@ def _stub_count_satisfiable_jobs(monkeypatch: pytest.MonkeyPatch, count: int) ->
     monkeypatch.setattr(
         PoolApiClient,
         "count_satisfiable_jobs",
-        lambda self, *, resources, max_workers, lost_workers=(): count,
+        lambda self, *, resources, max_workers: count,
     )
 
 
@@ -885,22 +885,25 @@ def test_slurm_pool_submits_replacement_workers_as_job_array(
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
     record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    lost_workers_calls: list[tuple[str, ...]] = []
+    lost_workers: list[str] = []
 
     def count_satisfiable_jobs(
         self: PoolApiClient,
         *,
         resources: ResourceRequest,
         max_workers: int,
-        lost_workers: tuple[str, ...] = (),
     ) -> int:
-        lost_workers_calls.append(lost_workers)
         return max_workers
 
     monkeypatch.setattr(
         PoolApiClient,
         "count_satisfiable_jobs",
         count_satisfiable_jobs,
+    )
+    monkeypatch.setattr(
+        PoolApiClient,
+        "worker_lost",
+        lambda self, *, worker: lost_workers.append(worker),
     )
     backend = SlurmWorkerBackend(
         max_workers=3,
@@ -921,10 +924,7 @@ def test_slurm_pool_submits_replacement_workers_as_job_array(
     pool._scale_once()
 
     assert pool._job_ids == ["100_0", "101_0", "101_1"]
-    assert lost_workers_calls == [
-        (),
-        ("slurm-worker-100a1", "slurm-worker-100a2"),
-    ]
+    assert lost_workers == ["slurm-worker-100a1", "slurm-worker-100a2"]
     sbatch_records = [
         record
         for record in _read_records(record_file)
@@ -944,22 +944,25 @@ def test_slurm_pool_releases_requeued_array_workers_missing_from_squeue(
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
     record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    lost_workers_calls: list[tuple[str, ...]] = []
+    lost_workers: list[str] = []
 
     def count_satisfiable_jobs(
         self: PoolApiClient,
         *,
         resources: ResourceRequest,
         max_workers: int,
-        lost_workers: tuple[str, ...] = (),
     ) -> int:
-        lost_workers_calls.append(lost_workers)
         return max_workers
 
     monkeypatch.setattr(
         PoolApiClient,
         "count_satisfiable_jobs",
         count_satisfiable_jobs,
+    )
+    monkeypatch.setattr(
+        PoolApiClient,
+        "worker_lost",
+        lambda self, *, worker: lost_workers.append(worker),
     )
     backend = SlurmWorkerBackend(
         max_workers=3,
@@ -989,10 +992,7 @@ def test_slurm_pool_releases_requeued_array_workers_missing_from_squeue(
     pool._scale_once()
 
     assert pool._job_ids == ["100_0", "101_0", "101_1"]
-    assert lost_workers_calls == [
-        (),
-        ("slurm-worker-100a1", "slurm-worker-100a2"),
-    ]
+    assert lost_workers == ["slurm-worker-100a1", "slurm-worker-100a2"]
     assert pool._failed_job_ids == []
     sbatch_records = [
         record
@@ -1268,9 +1268,7 @@ def test_slurm_pool_scale_submits_additional_workers_as_satisfiable_count_grows(
     monkeypatch.setattr(
         PoolApiClient,
         "count_satisfiable_jobs",
-        lambda self, *, resources, max_workers, lost_workers=(): min(
-            next(counts), max_workers
-        ),
+        lambda self, *, resources, max_workers: min(next(counts), max_workers),
     )
 
     backend = SlurmWorkerBackend(
@@ -1351,22 +1349,25 @@ def test_slurm_pool_scale_submits_replacement_workers_after_existing_workers_exi
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
     record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    lost_workers_calls: list[tuple[str, ...]] = []
+    lost_workers: list[str] = []
 
     def count_satisfiable_jobs(
         self: PoolApiClient,
         *,
         resources: ResourceRequest,
         max_workers: int,
-        lost_workers: tuple[str, ...] = (),
     ) -> int:
-        lost_workers_calls.append(lost_workers)
         return max_workers
 
     monkeypatch.setattr(
         PoolApiClient,
         "count_satisfiable_jobs",
         count_satisfiable_jobs,
+    )
+    monkeypatch.setattr(
+        PoolApiClient,
+        "worker_lost",
+        lambda self, *, worker: lost_workers.append(worker),
     )
 
     backend = SlurmWorkerBackend(
@@ -1389,7 +1390,7 @@ def test_slurm_pool_scale_submits_replacement_workers_after_existing_workers_exi
     pool._scale_once()
 
     assert pool._job_ids == ["100", "101", "103"]
-    assert lost_workers_calls == [(), ("slurm-worker-102",)]
+    assert lost_workers == ["slurm-worker-102"]
     sbatch_records = [
         record
         for record in _read_records(record_file)
@@ -1407,7 +1408,7 @@ def test_slurm_pool_scale_does_not_count_completed_jobs_as_restarts(
     monkeypatch.setattr(
         PoolApiClient,
         "count_satisfiable_jobs",
-        lambda self, *, resources, max_workers, lost_workers=(): max_workers,
+        lambda self, *, resources, max_workers: max_workers,
     )
 
     backend = SlurmWorkerBackend(
@@ -1454,7 +1455,7 @@ def test_slurm_pool_scale_reports_cancelled_jobs_as_failures(
     monkeypatch.setattr(
         PoolApiClient,
         "count_satisfiable_jobs",
-        lambda self, *, resources, max_workers, lost_workers=(): max_workers,
+        lambda self, *, resources, max_workers: max_workers,
     )
     monkeypatch.setattr(
         PoolApiClient, "fail", lambda self, *, message: reports.append(message)
@@ -1572,6 +1573,7 @@ def _install_fake_slurm(
 
     monkeypatch.delenv("FURU_EXECUTION_COORDINATOR_SERVER_URL", raising=False)
     monkeypatch.delenv("FURU_EXECUTION_COORDINATOR_AUTH_TOKEN", raising=False)
+    monkeypatch.setattr(PoolApiClient, "worker_lost", lambda self, *, worker: None)
     monkeypatch.setenv("FURU_FAKE_SLURM_RECORD_FILE", str(record_file))
     monkeypatch.setenv("FURU_FAKE_SLURM_ACTIVE_FILE", str(active_file))
     monkeypatch.setenv("FURU_FAKE_SLURM_COUNTER_FILE", str(counter_file))

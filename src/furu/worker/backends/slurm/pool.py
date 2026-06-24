@@ -121,6 +121,8 @@ class SlurmWorkerPool:
                 or states.get(job_id) not in (None, *_PRUNABLE_STATES)
             )
         ]
+        for worker in lost_workers:
+            self._client.worker_lost(worker=worker)
         remaining_starts = (
             self._max_workers
             + self._max_failed_restarts
@@ -136,7 +138,6 @@ class SlurmWorkerPool:
                 self._client.count_satisfiable_jobs(
                     resources=self._resource_request,
                     max_workers=self._max_workers,
-                    lost_workers=lost_workers,
                 )
                 - len(self._job_ids),
             ),
