@@ -54,7 +54,7 @@ class LeaseJobRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     resources: ResourceRequest
-    worker: str | None = None
+    worker: str
 
 
 class CountSatisfiableJobsRequest(BaseModel):
@@ -68,3 +68,9 @@ class FailRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     message: str
+
+
+class WorkerLostRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    worker: str

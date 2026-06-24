@@ -876,6 +876,44 @@ def test_slurm_pool_submits_replacement_workers_as_job_array(
     ]
 
 
+def test_slurm_pool_reports_preempted_array_worker_lost_and_replaces_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    _record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    lost_workers: list[str] = []
+    monkeypatch.setattr(
+        PoolApiClient,
+        "count_satisfiable_jobs",
+        lambda self, *, resources, max_workers: max_workers,
+    )
+    monkeypatch.setattr(
+        PoolApiClient,
+        "worker_lost",
+        lambda self, *, worker: lost_workers.append(worker),
+    )
+    backend = SlurmWorkerBackend(
+        max_workers=2,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="execution-coordinator.cluster",
+        poll_interval=0,
+        use_job_arrays=True,
+    )
+    pool = backend.start_pool(
+        bound_port=1234,
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+    )
+
+    pool._scale_once()
+    active_file.write_text("100_0 PREEMPTED\n100_1\n")
+    pool._scale_once()
+
+    assert lost_workers == ["slurm-worker-100a0"]
+    assert pool._job_ids == ["100_1", "101_0"]
+
+
 def test_slurm_worker_pool_stop_cancels_array_tasks(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1429,6 +1467,7 @@ def _install_fake_slurm(
 
     monkeypatch.delenv("FURU_EXECUTION_COORDINATOR_SERVER_URL", raising=False)
     monkeypatch.delenv("FURU_EXECUTION_COORDINATOR_AUTH_TOKEN", raising=False)
+    monkeypatch.setattr(PoolApiClient, "worker_lost", lambda self, *, worker: None)
     monkeypatch.setenv("FURU_FAKE_SLURM_RECORD_FILE", str(record_file))
     monkeypatch.setenv("FURU_FAKE_SLURM_ACTIVE_FILE", str(active_file))
     monkeypatch.setenv("FURU_FAKE_SLURM_COUNTER_FILE", str(counter_file))

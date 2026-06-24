@@ -19,18 +19,24 @@ _UNFINISHED_STATES = frozenset(
     {
         "COMPLETING",
         "PENDING",
-        "PREEMPTED",
         "REQUEUED",
         "RUNNING",
         "UNKNOWN",
     }
 )
 
-_PRUNABLE_STATES = ("COMPLETED",)
+_PRUNABLE_STATES = ("COMPLETED", "PREEMPTED")
 
 
 def _is_failed_state(state: str) -> bool:
     return state not in _UNFINISHED_STATES and state not in _PRUNABLE_STATES
+
+
+def _worker_name_for_job_id(job_id: str) -> str:
+    allocation_job_id, separator, array_task_id = job_id.partition("_")
+    if separator:
+        return f"slurm-worker-{allocation_job_id}a{array_task_id}"
+    return f"slurm-worker-{allocation_job_id}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,12 +93,19 @@ class SlurmWorkerPool:
             set(self._failed_job_ids)
             | {job_id for job_id, state in states.items() if _is_failed_state(state)}
         )
+        previous_job_ids = list(self._job_ids)
         self._job_ids[:] = [
             job_id
             for job_id in self._job_ids
-            if (active_job_ids is not None and job_id in active_job_ids)
-            or states.get(job_id) not in (None, *_PRUNABLE_STATES)
+            if states.get(job_id) not in _PRUNABLE_STATES
+            and (
+                (active_job_ids is not None and job_id in active_job_ids)
+                or states.get(job_id) is not None
+            )
         ]
+        for job_id in previous_job_ids:
+            if job_id not in self._job_ids:
+                self._client.worker_lost(worker=_worker_name_for_job_id(job_id))
         remaining_starts = (
             self._max_workers
             + self._max_failed_restarts

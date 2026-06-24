@@ -38,7 +38,7 @@ def worker_loop(
 
         while True:
             logger.debug("worker requesting new task from server")
-            match client.lease_job(resources=resource_request):
+            match client.lease_job(resources=resource_request, worker=component):
                 case "stop":
                     logger.info("worker told to stop")
                     return
