@@ -231,6 +231,17 @@ class ExecutionCoordinator:
                     continue
                 self.running.pop(lease_id)
                 self.ready[running_job.node.obj.object_id] = running_job.node
+                logger.warning(
+                    "released %s from lost worker %s",
+                    running_job.node.obj._log_label,
+                    worker,
+                    extra=log_detail(
+                        lease=lease_id,
+                        object_id=running_job.node.obj.object_id,
+                        worker=worker,
+                        **self._counts_detail(),
+                    ),
+                )
 
     def count_satisfiable_jobs(
         self, *, resources: ResourceRequest, max_workers: int

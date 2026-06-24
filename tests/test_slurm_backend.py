@@ -589,8 +589,9 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert f"exec {sys.executable} -m furu.worker._cli" in script
     assert "--server-url http://execution-coordinator.cluster:1234" in script
     assert "SLURM_ARRAY_TASK_ID" in script
+    assert "SLURM_ARRAY_JOB_ID" in script
     assert (
-        'furu_worker_component="slurm-worker-${SLURM_JOB_ID}a${SLURM_ARRAY_TASK_ID}"'
+        'furu_worker_component="slurm-worker-${SLURM_ARRAY_JOB_ID}a${SLURM_ARRAY_TASK_ID}"'
         in script
     )
     assert '--component "${furu_worker_component}"' in script
@@ -679,6 +680,51 @@ def test_slurm_worker_component_label_derivation_under_bash(
     )
 
     assert result.stdout == expected
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="requires bash")
+def test_slurm_array_worker_component_label_derivation_under_bash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    backend = SlurmWorkerBackend(
+        max_workers=1,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="execution-coordinator.cluster",
+        use_job_arrays=True,
+    )
+    pool = backend.start_pool(
+        bound_port=1234,
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+    )
+    script_text = pool._script_path.read_text()
+    component_line = next(
+        line
+        for line in script_text.splitlines()
+        if line.startswith("furu_worker_component=")
+    )
+    script = (
+        "set -euo pipefail\n"
+        + component_line
+        + "\n"
+        + 'printf "%s" "$furu_worker_component"'
+    )
+    result = subprocess.run(
+        ["bash", "-c", script],
+        env={
+            **os.environ,
+            "SLURM_ARRAY_JOB_ID": "100",
+            "SLURM_ARRAY_TASK_ID": "7",
+            "SLURM_JOB_ID": "999",
+        },
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert result.stdout == "slurm-worker-100a7"
 
 
 @pytest.mark.parametrize(
