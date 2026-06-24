@@ -1301,16 +1301,20 @@ def test_slurm_pool_scale_does_not_count_completed_jobs_as_restarts(
     )
 
 
-def test_slurm_pool_scale_does_not_count_cancelled_jobs_as_restarts(
+def test_slurm_pool_scale_reports_cancelled_jobs_as_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
     record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    reports: list[str] = []
     monkeypatch.setattr(
         PoolApiClient,
         "count_satisfiable_jobs",
         lambda self, *, resources, max_workers: max_workers,
+    )
+    monkeypatch.setattr(
+        PoolApiClient, "fail", lambda self, *, message: reports.append(message)
     )
 
     backend = SlurmWorkerBackend(
@@ -1331,10 +1335,11 @@ def test_slurm_pool_scale_does_not_count_cancelled_jobs_as_restarts(
     active_file.write_text("100 CANCELLED by 12345\n")
     assert pool._task_states() == {"100": "CANCELLED"}
 
-    pool._scale_once()
+    pool._scale_loop()
 
-    assert pool._job_ids == ["101"]
-    assert pool._failed_job_ids == []
+    assert reports == ["slurm worker pool became unhealthy: 100 CANCELLED"]
+    assert pool._job_ids == ["100"]
+    assert pool._failed_job_ids == ["100"]
     assert (
         len(
             [
@@ -1343,7 +1348,7 @@ def test_slurm_pool_scale_does_not_count_cancelled_jobs_as_restarts(
                 if record["executable"] == "sbatch"
             ]
         )
-        == 2
+        == 1
     )
 
 
