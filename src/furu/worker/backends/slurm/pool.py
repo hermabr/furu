@@ -33,6 +33,17 @@ def _is_failed_state(state: str) -> bool:
     return state not in _UNFINISHED_STATES and state not in _PRUNABLE_STATES
 
 
+def _is_lost_state(state: str | None) -> bool:
+    return state is None or not _is_failed_state(state)
+
+
+def _worker_component_for_job_id(job_id: str, *, use_job_arrays: bool) -> str:
+    if not use_job_arrays:
+        return f"slurm-worker-{job_id}"
+    allocation_job_id, _, array_task_id = job_id.partition("_")
+    return f"slurm-worker-{allocation_job_id}a{array_task_id}"
+
+
 @dataclass(frozen=True, slots=True)
 class SlurmWorkerPool:
     _sbatch_base_args: tuple[str, ...]
@@ -83,6 +94,20 @@ class SlurmWorkerPool:
     def _scale_once(self) -> dict[str, str]:
         active_job_ids = self._active_job_ids()
         states = self._task_states()
+        lost_job_ids = (
+            {
+                job_id
+                for job_id in self._job_ids
+                if job_id not in active_job_ids
+                and _is_lost_state(states.get(job_id))
+            }
+            if active_job_ids is not None
+            else set()
+        )
+        lost_workers = tuple(
+            _worker_component_for_job_id(job_id, use_job_arrays=self._use_job_arrays)
+            for job_id in sorted(lost_job_ids)
+        )
         self._failed_job_ids[:] = sorted(
             set(self._failed_job_ids)
             | {job_id for job_id, state in states.items() if _is_failed_state(state)}
@@ -90,8 +115,11 @@ class SlurmWorkerPool:
         self._job_ids[:] = [
             job_id
             for job_id in self._job_ids
-            if (active_job_ids is not None and job_id in active_job_ids)
-            or states.get(job_id) not in (None, *_PRUNABLE_STATES)
+            if job_id not in lost_job_ids
+            and (
+                (active_job_ids is not None and job_id in active_job_ids)
+                or states.get(job_id) not in (None, *_PRUNABLE_STATES)
+            )
         ]
         remaining_starts = (
             self._max_workers
@@ -108,6 +136,7 @@ class SlurmWorkerPool:
                 self._client.count_satisfiable_jobs(
                     resources=self._resource_request,
                     max_workers=self._max_workers,
+                    lost_workers=lost_workers,
                 )
                 - len(self._job_ids),
             ),

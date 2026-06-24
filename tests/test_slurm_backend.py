@@ -38,7 +38,7 @@ def _stub_count_satisfiable_jobs(monkeypatch: pytest.MonkeyPatch, count: int) ->
     monkeypatch.setattr(
         PoolApiClient,
         "count_satisfiable_jobs",
-        lambda self, *, resources, max_workers: count,
+        lambda self, *, resources, max_workers, lost_workers=(): count,
     )
 
 
@@ -589,10 +589,11 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert f"exec {sys.executable} -m furu.worker._cli" in script
     assert "--server-url http://execution-coordinator.cluster:1234" in script
     assert "SLURM_ARRAY_TASK_ID" in script
-    assert (
-        'furu_worker_component="slurm-worker-${SLURM_JOB_ID}a${SLURM_ARRAY_TASK_ID}"'
-        in script
+    component_assignment = (
+        'furu_worker_component="slurm-worker-${SLURM_ARRAY_JOB_ID}'
+        'a${SLURM_ARRAY_TASK_ID}"'
     )
+    assert component_assignment in script
     assert '--component "${furu_worker_component}"' in script
     assert "--idle-timeout 0.25" in script
     assert "--max-consecutive-failures 3" in script
@@ -679,6 +680,51 @@ def test_slurm_worker_component_label_derivation_under_bash(
     )
 
     assert result.stdout == expected
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="requires bash")
+def test_slurm_array_worker_component_label_derivation_under_bash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    backend = SlurmWorkerBackend(
+        max_workers=1,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="execution-coordinator.cluster",
+        use_job_arrays=True,
+    )
+    pool = backend.start_pool(
+        bound_port=1234,
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+    )
+    script_text = pool._script_path.read_text()
+    component_line = next(
+        line
+        for line in script_text.splitlines()
+        if line.startswith("furu_worker_component=")
+    )
+    script = (
+        "set -euo pipefail\n"
+        + component_line
+        + "\n"
+        + 'printf "%s" "$furu_worker_component"'
+    )
+    result = subprocess.run(
+        ["bash", "-c", script],
+        env={
+            **os.environ,
+            "SLURM_ARRAY_JOB_ID": "100",
+            "SLURM_ARRAY_TASK_ID": "7",
+            "SLURM_JOB_ID": "999",
+        },
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert result.stdout == "slurm-worker-100a7"
 
 
 @pytest.mark.parametrize(
@@ -839,10 +885,22 @@ def test_slurm_pool_submits_replacement_workers_as_job_array(
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
     record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    lost_workers_calls: list[tuple[str, ...]] = []
+
+    def count_satisfiable_jobs(
+        self: PoolApiClient,
+        *,
+        resources: ResourceRequest,
+        max_workers: int,
+        lost_workers: tuple[str, ...] = (),
+    ) -> int:
+        lost_workers_calls.append(lost_workers)
+        return max_workers
+
     monkeypatch.setattr(
         PoolApiClient,
         "count_satisfiable_jobs",
-        lambda self, *, resources, max_workers: max_workers,
+        count_satisfiable_jobs,
     )
     backend = SlurmWorkerBackend(
         max_workers=3,
@@ -863,6 +921,10 @@ def test_slurm_pool_submits_replacement_workers_as_job_array(
     pool._scale_once()
 
     assert pool._job_ids == ["100_0", "101_0", "101_1"]
+    assert lost_workers_calls == [
+        (),
+        ("slurm-worker-100a1", "slurm-worker-100a2"),
+    ]
     sbatch_records = [
         record
         for record in _read_records(record_file)
@@ -870,6 +932,72 @@ def test_slurm_pool_submits_replacement_workers_as_job_array(
     ]
     assert [arg for arg in sbatch_records[0]["argv"] if arg.startswith("--array")] == [
         "--array=0-2"
+    ]
+    assert [arg for arg in sbatch_records[1]["argv"] if arg.startswith("--array")] == [
+        "--array=0-1"
+    ]
+
+
+def test_slurm_pool_releases_requeued_array_workers_missing_from_squeue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    lost_workers_calls: list[tuple[str, ...]] = []
+
+    def count_satisfiable_jobs(
+        self: PoolApiClient,
+        *,
+        resources: ResourceRequest,
+        max_workers: int,
+        lost_workers: tuple[str, ...] = (),
+    ) -> int:
+        lost_workers_calls.append(lost_workers)
+        return max_workers
+
+    monkeypatch.setattr(
+        PoolApiClient,
+        "count_satisfiable_jobs",
+        count_satisfiable_jobs,
+    )
+    backend = SlurmWorkerBackend(
+        max_workers=3,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="execution-coordinator.cluster",
+        poll_interval=0,
+    )
+    pool = backend.start_pool(
+        bound_port=1234,
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+    )
+
+    pool._scale_once()
+    assert pool._job_ids == ["100_0", "100_1", "100_2"]
+
+    monkeypatch.setattr(type(pool), "_active_job_ids", lambda self: {"100_0"})
+    monkeypatch.setattr(
+        type(pool),
+        "_task_states",
+        lambda self: {
+            "100_0": "RUNNING",
+            "100_1": "PREEMPTED",
+            "100_2": "REQUEUED",
+        },
+    )
+    pool._scale_once()
+
+    assert pool._job_ids == ["100_0", "101_0", "101_1"]
+    assert lost_workers_calls == [
+        (),
+        ("slurm-worker-100a1", "slurm-worker-100a2"),
+    ]
+    assert pool._failed_job_ids == []
+    sbatch_records = [
+        record
+        for record in _read_records(record_file)
+        if record["executable"] == "sbatch"
     ]
     assert [arg for arg in sbatch_records[1]["argv"] if arg.startswith("--array")] == [
         "--array=0-1"
@@ -1140,7 +1268,9 @@ def test_slurm_pool_scale_submits_additional_workers_as_satisfiable_count_grows(
     monkeypatch.setattr(
         PoolApiClient,
         "count_satisfiable_jobs",
-        lambda self, *, resources, max_workers: min(next(counts), max_workers),
+        lambda self, *, resources, max_workers, lost_workers=(): min(
+            next(counts), max_workers
+        ),
     )
 
     backend = SlurmWorkerBackend(
@@ -1221,10 +1351,22 @@ def test_slurm_pool_scale_submits_replacement_workers_after_existing_workers_exi
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
     record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    lost_workers_calls: list[tuple[str, ...]] = []
+
+    def count_satisfiable_jobs(
+        self: PoolApiClient,
+        *,
+        resources: ResourceRequest,
+        max_workers: int,
+        lost_workers: tuple[str, ...] = (),
+    ) -> int:
+        lost_workers_calls.append(lost_workers)
+        return max_workers
+
     monkeypatch.setattr(
         PoolApiClient,
         "count_satisfiable_jobs",
-        lambda self, *, resources, max_workers: max_workers,
+        count_satisfiable_jobs,
     )
 
     backend = SlurmWorkerBackend(
@@ -1247,6 +1389,7 @@ def test_slurm_pool_scale_submits_replacement_workers_after_existing_workers_exi
     pool._scale_once()
 
     assert pool._job_ids == ["100", "101", "103"]
+    assert lost_workers_calls == [(), ("slurm-worker-102",)]
     sbatch_records = [
         record
         for record in _read_records(record_file)
@@ -1264,7 +1407,7 @@ def test_slurm_pool_scale_does_not_count_completed_jobs_as_restarts(
     monkeypatch.setattr(
         PoolApiClient,
         "count_satisfiable_jobs",
-        lambda self, *, resources, max_workers: max_workers,
+        lambda self, *, resources, max_workers, lost_workers=(): max_workers,
     )
 
     backend = SlurmWorkerBackend(
@@ -1311,7 +1454,7 @@ def test_slurm_pool_scale_reports_cancelled_jobs_as_failures(
     monkeypatch.setattr(
         PoolApiClient,
         "count_satisfiable_jobs",
-        lambda self, *, resources, max_workers: max_workers,
+        lambda self, *, resources, max_workers, lost_workers=(): max_workers,
     )
     monkeypatch.setattr(
         PoolApiClient, "fail", lambda self, *, message: reports.append(message)

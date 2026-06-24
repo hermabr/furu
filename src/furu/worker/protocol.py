@@ -62,6 +62,7 @@ class CountSatisfiableJobsRequest(BaseModel):
 
     resources: ResourceRequest
     max_workers: int
+    lost_workers: tuple[str, ...] = ()
 
 
 class FailRequest(BaseModel):

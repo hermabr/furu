@@ -196,6 +196,7 @@ def test_execution_coordinator_job_result_completed_moves_dependents_to_ready() 
     running_job = coordinator.running[job.lease_id]
     assert isinstance(running_job, RunningJob)
     assert running_job.node.obj is leaf
+    assert running_job.worker is None
 
     coordinator.job_result(job.lease_id, JobCompletedResult())
 
@@ -601,6 +602,58 @@ def test_worker_cap_limits_satisfiable_jobs_and_leases() -> None:
 
     assert isinstance(fourth, Job)
     assert fourth.artifact.object_id in limited_ids - leased_limited_ids
+
+
+def test_lost_worker_lease_stops_counting_against_worker_cap() -> None:
+    limited = [LimitedExecutionCoordinatorLeaf(value=value) for value in range(3)]
+    coordinator = _new_execution_coordinator(limited)
+
+    first = coordinator.lease_job(
+        resources=ResourceRequest(), worker="slurm-worker-100a0"
+    )
+    second = coordinator.lease_job(
+        resources=ResourceRequest(), worker="slurm-worker-100a1"
+    )
+
+    assert isinstance(first, Job)
+    assert isinstance(second, Job)
+    assert (
+        coordinator.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=10)
+        == 0
+    )
+
+    assert (
+        coordinator.count_satisfiable_jobs(
+            resources=ResourceRequest(),
+            max_workers=10,
+            lost_workers=("slurm-worker-100a0",),
+        )
+        == 1
+    )
+
+    assert set(coordinator.running) == {second.lease_id}
+    assert first.artifact.object_id in coordinator.ready
+    assert coordinator.failed == {}
+
+
+def test_lease_job_releases_previous_lease_from_same_worker() -> None:
+    leaf = ExecutionCoordinatorLeaf(value=1)
+    coordinator = _new_execution_coordinator([leaf])
+
+    first = coordinator.lease_job(
+        resources=ResourceRequest(), worker="slurm-worker-100a0"
+    )
+    second = coordinator.lease_job(
+        resources=ResourceRequest(), worker="slurm-worker-100a0"
+    )
+
+    assert isinstance(first, Job)
+    assert isinstance(second, Job)
+    assert second.lease_id != first.lease_id
+    assert set(coordinator.running) == {second.lease_id}
+    assert coordinator.running[second.lease_id].worker == "slurm-worker-100a0"
+    assert coordinator.ready == {}
+    assert coordinator.failed == {}
 
 
 def test_lease_job_filters_by_worker_resources() -> None:

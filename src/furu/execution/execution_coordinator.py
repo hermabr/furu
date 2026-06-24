@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import threading
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -45,6 +45,7 @@ class RunningJob:
     lease_id: str
     node: DagNode
     started_at: float
+    worker: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +179,12 @@ class ExecutionCoordinator:
         self, *, resources: ResourceRequest, worker: str | None = None
     ) -> LeaseJobResponse:
         with self.log_context(), self.lock:
+            if self.done.is_set():
+                return "stop"
+            if worker is not None:
+                self._release_worker_locked(
+                    worker, reason="worker requested a new lease"
+                )
             self._maybe_finish_locked()
             if self.done.is_set():
                 return "stop"
@@ -202,7 +209,10 @@ class ExecutionCoordinator:
             node = self.ready.pop(object_id)
             lease_id = str(uuid4())
             self.running[lease_id] = RunningJob(
-                lease_id=lease_id, node=node, started_at=time.monotonic()
+                lease_id=lease_id,
+                node=node,
+                started_at=time.monotonic(),
+                worker=worker,
             )
             logger.info(
                 "leased %s%s",
@@ -221,9 +231,17 @@ class ExecutionCoordinator:
             )
 
     def count_satisfiable_jobs(
-        self, *, resources: ResourceRequest, max_workers: int
+        self,
+        *,
+        resources: ResourceRequest,
+        max_workers: int,
+        lost_workers: Iterable[str] = (),
     ) -> int:
-        with self.lock:
+        with self.log_context(), self.lock:
+            if self.done.is_set():
+                return 0
+            for worker in lost_workers:
+                self._release_worker_locked(worker, reason="worker is no longer active")
             count = 0
             running_counts = self._running_counts()
             for node in self.ready.values():
@@ -250,6 +268,26 @@ class ExecutionCoordinator:
         if node.obj.max_workers is None:
             return True
         return running_counts.get(type(node.obj), 0) < node.obj.max_workers
+
+    def _release_worker_locked(self, worker: str, *, reason: str) -> None:
+        for lease_id, job in tuple(self.running.items()):
+            if job.worker != worker:
+                continue
+            self.running.pop(lease_id)
+            object_id = job.node.obj.object_id
+            self.ready.setdefault(object_id, job.node)
+            logger.warning(
+                "released %s from %s · %s",
+                job.node.obj._log_label,
+                worker,
+                reason,
+                extra=log_detail(
+                    lease=lease_id,
+                    object_id=object_id,
+                    worker=worker,
+                    **self._counts_detail(),
+                ),
+            )
 
     def job_result(self, lease_id: str, request: JobResultRequest) -> None:
         with self.log_context(), self.lock:

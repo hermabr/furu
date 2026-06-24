@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from hmac import compare_digest
 from typing import Any
@@ -78,13 +79,19 @@ class WorkerApiClient(_ExecutionCoordinatorApiClientBase):
 
 class PoolApiClient(_ExecutionCoordinatorApiClientBase):
     def count_satisfiable_jobs(
-        self, *, resources: ResourceRequest, max_workers: int
+        self,
+        *,
+        resources: ResourceRequest,
+        max_workers: int,
+        lost_workers: Sequence[str] = (),
     ) -> int:
         response = self._request_json(
             "/pool/count_satisfiable_jobs",
             method="POST",
             payload=CountSatisfiableJobsRequest(
-                resources=resources, max_workers=max_workers
+                resources=resources,
+                max_workers=max_workers,
+                lost_workers=tuple(lost_workers),
             ).model_dump(mode="json"),
         )
         return int(response)
@@ -128,7 +135,9 @@ def create_execution_coordinator_api_app(
     @pool_router.post("/count_satisfiable_jobs")
     def count_satisfiable_jobs(request: CountSatisfiableJobsRequest) -> int:
         return coordinator.count_satisfiable_jobs(
-            resources=request.resources, max_workers=request.max_workers
+            resources=request.resources,
+            max_workers=request.max_workers,
+            lost_workers=request.lost_workers,
         )
 
     @pool_router.post("/fail", response_model=OkResponse)
