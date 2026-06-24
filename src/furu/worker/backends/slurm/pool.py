@@ -26,7 +26,7 @@ _UNFINISHED_STATES = frozenset(
     }
 )
 
-_PRUNABLE_STATES = ("CANCELLED", "COMPLETED")
+_PRUNABLE_STATES = ("COMPLETED",)
 
 
 def _is_failed_state(state: str) -> bool:
