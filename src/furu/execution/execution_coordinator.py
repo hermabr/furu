@@ -145,19 +145,20 @@ class ExecutionCoordinator:
                     )
                     pools.append(pool)
                     logger.info("pool started · %s", type(backend).__name__)
-                coordinator.done.wait()
-
-                with ThreadPoolExecutor(max_workers=len(pools)) as executor:
-                    stop_futures = [
-                        executor.submit(pool.stop, timeout=5) for pool in pools
-                    ]
-                for pool, future in zip(pools, stop_futures, strict=True):
-                    if (exc := future.exception()) is not None:
-                        logger.error(
-                            "pool stop failed · %s · %s",
-                            type(pool).__name__,
-                            exc,
-                        )
+                try:
+                    coordinator.done.wait()
+                finally:
+                    with ThreadPoolExecutor(max_workers=len(pools)) as executor:
+                        stop_futures = [
+                            executor.submit(pool.stop, timeout=5) for pool in pools
+                        ]
+                    for pool, future in zip(pools, stop_futures, strict=True):
+                        if (exc := future.exception()) is not None:
+                            logger.error(
+                                "pool stop failed · %s · %s",
+                                type(pool).__name__,
+                                exc,
+                            )
         coordinator.raise_for_failure()
         return objs
 
