@@ -1056,6 +1056,54 @@ def test_execution_coordinator_run_starts_backend_pool_and_stops_and_joins_when_
     assert pool.stop_timeouts == [5]
 
 
+def test_execution_coordinator_run_stops_backend_pool_when_interrupted() -> None:
+    class InterruptingEvent(threading.Event):
+        def wait(self, timeout: float | None = None) -> bool:
+            raise KeyboardInterrupt
+
+    class InterruptingCoordinator(ExecutionCoordinator):
+        def __init__(self, *, max_retries_per_object: int) -> None:
+            super().__init__(max_retries_per_object=max_retries_per_object)
+            self.done = InterruptingEvent()
+
+    class RecordingPool:
+        def __init__(self) -> None:
+            self.events: list[str] = []
+            self.stop_timeouts: list[float] = []
+
+        def stop(self, *, timeout: float) -> None:
+            self.events.append("stop")
+            self.stop_timeouts.append(timeout)
+
+    class RecordingBackend:
+        execution_coordinator_listen_host = "127.0.0.1"
+
+        def __init__(self, pool: RecordingPool) -> None:
+            self.pool = pool
+
+        def start_pool(
+            self,
+            *,
+            bound_port: int,
+            auth_token: str,
+            executor_dir: Path,
+        ) -> RecordingPool:
+            self.pool.events.append("start_pool")
+            return self.pool
+
+    pool = RecordingPool()
+
+    with pytest.raises(KeyboardInterrupt):
+        InterruptingCoordinator.run(
+            [ExecutionCoordinatorLeaf(value=13013)],
+            worker_backends=(RecordingBackend(pool),),
+            port=0,
+        )
+
+    assert pool.events == ["start_pool", "stop"]
+    assert pool.stop_timeouts == [5]
+
+
 def test_execution_coordinator_run_uses_worker_backend_execution_coordinator_listen_host() -> (
     None
 ):
