@@ -32,13 +32,6 @@ def _is_failed_state(state: str) -> bool:
     return state not in _UNFINISHED_STATES and state not in _PRUNABLE_STATES
 
 
-def _worker_name_for_job_id(job_id: str) -> str:
-    allocation_job_id, separator, array_task_id = job_id.partition("_")
-    if separator:
-        return f"slurm-worker-{allocation_job_id}a{array_task_id}"
-    return f"slurm-worker-{allocation_job_id}"
-
-
 @dataclass(frozen=True, slots=True)
 class SlurmWorkerPool:
     _sbatch_base_args: tuple[str, ...]
@@ -105,7 +98,14 @@ class SlurmWorkerPool:
         ]
         for job_id in previous_job_ids:
             if job_id not in self._job_ids:
-                self._client.worker_lost(worker=_worker_name_for_job_id(job_id))
+                allocation_job_id, separator, array_task_id = job_id.partition("_")
+                self._client.worker_lost(
+                    worker=(
+                        f"slurm-worker-{allocation_job_id}a{array_task_id}"
+                        if separator
+                        else f"slurm-worker-{allocation_job_id}"
+                    )
+                )
         remaining_starts = (
             self._max_workers
             + self._max_failed_restarts
