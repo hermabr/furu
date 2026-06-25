@@ -90,7 +90,10 @@ class SlurmWorkerBackend:
         scripts_dir = worker_dir / "scripts"
         scripts_dir.mkdir(parents=True, exist_ok=True)
         script_path = scripts_dir / f"worker-{secrets.token_hex(16)}.sh"
-        component_line = f'furu_worker_component="slurm-worker-${{SLURM_JOB_ID}}{"a${SLURM_ARRAY_TASK_ID}" if self.use_job_arrays else ""}"\n'
+        if self.use_job_arrays:
+            component_line = 'furu_worker_component="slurm-worker-${SLURM_ARRAY_JOB_ID}a${SLURM_ARRAY_TASK_ID}"\n'
+        else:
+            component_line = 'furu_worker_component="slurm-worker-${SLURM_JOB_ID}"\n'
 
         write_private_file(
             script_path,

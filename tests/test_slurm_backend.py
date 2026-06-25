@@ -589,8 +589,9 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert f"exec {sys.executable} -m furu.worker._cli" in script
     assert "--server-url http://execution-coordinator.cluster:1234" in script
     assert "SLURM_ARRAY_TASK_ID" in script
+    assert "SLURM_ARRAY_JOB_ID" in script
     assert (
-        'furu_worker_component="slurm-worker-${SLURM_JOB_ID}a${SLURM_ARRAY_TASK_ID}"'
+        'furu_worker_component="slurm-worker-${SLURM_ARRAY_JOB_ID}a${SLURM_ARRAY_TASK_ID}"'
         in script
     )
     assert '--component "${furu_worker_component}"' in script
@@ -679,6 +680,51 @@ def test_slurm_worker_component_label_derivation_under_bash(
     )
 
     assert result.stdout == expected
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="requires bash")
+def test_slurm_array_worker_component_label_derivation_under_bash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    backend = SlurmWorkerBackend(
+        max_workers=1,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="execution-coordinator.cluster",
+        use_job_arrays=True,
+    )
+    pool = backend.start_pool(
+        bound_port=1234,
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+    )
+    script_text = pool._script_path.read_text()
+    component_line = next(
+        line
+        for line in script_text.splitlines()
+        if line.startswith("furu_worker_component=")
+    )
+    script = (
+        "set -euo pipefail\n"
+        + component_line
+        + "\n"
+        + 'printf "%s" "$furu_worker_component"'
+    )
+    result = subprocess.run(
+        ["bash", "-c", script],
+        env={
+            **os.environ,
+            "SLURM_ARRAY_JOB_ID": "100",
+            "SLURM_ARRAY_TASK_ID": "7",
+            "SLURM_JOB_ID": "999",
+        },
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert result.stdout == "slurm-worker-100a7"
 
 
 @pytest.mark.parametrize(
@@ -870,6 +916,64 @@ def test_slurm_pool_submits_replacement_workers_as_job_array(
     ]
     assert [arg for arg in sbatch_records[0]["argv"] if arg.startswith("--array")] == [
         "--array=0-2"
+    ]
+    assert [arg for arg in sbatch_records[1]["argv"] if arg.startswith("--array")] == [
+        "--array=0-1"
+    ]
+
+
+def test_slurm_pool_releases_nonfailed_array_workers_missing_from_squeue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    lost_workers: list[str] = []
+    monkeypatch.setattr(
+        PoolApiClient,
+        "count_satisfiable_jobs",
+        lambda self, *, resources, max_workers: max_workers,
+    )
+    monkeypatch.setattr(
+        PoolApiClient,
+        "worker_lost",
+        lambda self, *, worker: lost_workers.append(worker),
+    )
+    backend = SlurmWorkerBackend(
+        max_workers=3,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="execution-coordinator.cluster",
+        poll_interval=0,
+        use_job_arrays=True,
+    )
+    pool = backend.start_pool(
+        bound_port=1234,
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+    )
+
+    pool._scale_once()
+    assert pool._job_ids == ["100_0", "100_1", "100_2"]
+
+    monkeypatch.setattr(type(pool), "_active_job_ids", lambda self: {"100_0"})
+    monkeypatch.setattr(
+        type(pool),
+        "_task_states",
+        lambda self: {
+            "100_0": "RUNNING",
+            "100_1": "PREEMPTED",
+            "100_2": "REQUEUED",
+        },
+    )
+    pool._scale_once()
+
+    assert lost_workers == ["slurm-worker-100a1", "slurm-worker-100a2"]
+    assert pool._job_ids == ["100_0", "101_0", "101_1"]
+    assert pool._failed_job_ids == []
+    sbatch_records = [
+        record
+        for record in _read_records(record_file)
+        if record["executable"] == "sbatch"
     ]
     assert [arg for arg in sbatch_records[1]["argv"] if arg.startswith("--array")] == [
         "--array=0-1"
@@ -1429,6 +1533,7 @@ def _install_fake_slurm(
 
     monkeypatch.delenv("FURU_EXECUTION_COORDINATOR_SERVER_URL", raising=False)
     monkeypatch.delenv("FURU_EXECUTION_COORDINATOR_AUTH_TOKEN", raising=False)
+    monkeypatch.setattr(PoolApiClient, "worker_lost", lambda self, *, worker: None)
     monkeypatch.setenv("FURU_FAKE_SLURM_RECORD_FILE", str(record_file))
     monkeypatch.setenv("FURU_FAKE_SLURM_ACTIVE_FILE", str(active_file))
     monkeypatch.setenv("FURU_FAKE_SLURM_COUNTER_FILE", str(counter_file))

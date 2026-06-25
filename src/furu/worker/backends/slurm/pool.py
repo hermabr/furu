@@ -83,6 +83,13 @@ class SlurmWorkerPool:
     def _scale_once(self) -> dict[str, str]:
         active_job_ids = self._active_job_ids()
         states = self._task_states()
+        lost_job_ids = {
+            job_id
+            for job_id in self._job_ids
+            if active_job_ids is not None
+            and job_id not in active_job_ids
+            and ((state := states.get(job_id)) is None or not _is_failed_state(state))
+        }
         self._failed_job_ids[:] = sorted(
             set(self._failed_job_ids)
             | {job_id for job_id, state in states.items() if _is_failed_state(state)}
@@ -90,9 +97,21 @@ class SlurmWorkerPool:
         self._job_ids[:] = [
             job_id
             for job_id in self._job_ids
-            if (active_job_ids is not None and job_id in active_job_ids)
-            or states.get(job_id) not in (None, *_PRUNABLE_STATES)
+            if job_id not in lost_job_ids
+            and (
+                (active_job_ids is not None and job_id in active_job_ids)
+                or states.get(job_id) not in (None, *_PRUNABLE_STATES)
+            )
         ]
+        for job_id in sorted(lost_job_ids):
+            allocation_job_id, separator, array_task_id = job_id.partition("_")
+            self._client.worker_lost(
+                worker=(
+                    f"slurm-worker-{allocation_job_id}a{array_task_id}"
+                    if separator
+                    else f"slurm-worker-{allocation_job_id}"
+                )
+            )
         remaining_starts = (
             self._max_workers
             + self._max_failed_restarts

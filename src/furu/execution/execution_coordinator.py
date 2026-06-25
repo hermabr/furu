@@ -45,6 +45,7 @@ class RunningJob:
     lease_id: str
     node: DagNode
     started_at: float
+    worker: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,10 +175,11 @@ class ExecutionCoordinator:
         ):
             yield
 
-    def lease_job(
-        self, *, resources: ResourceRequest, worker: str | None = None
-    ) -> LeaseJobResponse:
+    def lease_job(self, *, resources: ResourceRequest, worker: str) -> LeaseJobResponse:
         with self.log_context(), self.lock:
+            if self.done.is_set():
+                return "stop"
+            self._release_worker_locked(worker, reason="worker requested a new lease")
             self._maybe_finish_locked()
             if self.done.is_set():
                 return "stop"
@@ -202,23 +204,26 @@ class ExecutionCoordinator:
             node = self.ready.pop(object_id)
             lease_id = str(uuid4())
             self.running[lease_id] = RunningJob(
-                lease_id=lease_id, node=node, started_at=time.monotonic()
+                lease_id=lease_id, node=node, started_at=time.monotonic(), worker=worker
             )
             logger.info(
-                "leased %s%s",
+                "leased %s to %s",
                 node.obj._log_label,
-                f" to {worker}" if worker is not None else "",
+                worker,
                 extra=log_detail(
                     lease=lease_id,
                     object_id=node.obj.object_id,
-                    **({"worker": worker} if worker is not None else {}),
+                    worker=worker,
                     **self._counts_detail(),
                 ),
             )
-            return Job(
-                lease_id=lease_id,
-                artifact=ArtifactSpec.from_furu(node.obj),
-            )
+            return Job(lease_id=lease_id, artifact=ArtifactSpec.from_furu(node.obj))
+
+    def worker_lost(self, worker: str) -> None:
+        with self.log_context(), self.lock:
+            if self.done.is_set():
+                return
+            self._release_worker_locked(worker, reason="worker is no longer active")
 
     def count_satisfiable_jobs(
         self, *, resources: ResourceRequest, max_workers: int
@@ -250,6 +255,26 @@ class ExecutionCoordinator:
         if node.obj.max_workers is None:
             return True
         return running_counts.get(type(node.obj), 0) < node.obj.max_workers
+
+    def _release_worker_locked(self, worker: str, *, reason: str) -> None:
+        for lease_id, running_job in tuple(self.running.items()):
+            if running_job.worker != worker:
+                continue
+            self.running.pop(lease_id)
+            object_id = running_job.node.obj.object_id
+            self.ready[object_id] = running_job.node
+            logger.warning(
+                "released %s from %s: %s",
+                running_job.node.obj._log_label,
+                worker,
+                reason,
+                extra=log_detail(
+                    lease=lease_id,
+                    object_id=object_id,
+                    worker=worker,
+                    **self._counts_detail(),
+                ),
+            )
 
     def job_result(self, lease_id: str, request: JobResultRequest) -> None:
         with self.log_context(), self.lock:
