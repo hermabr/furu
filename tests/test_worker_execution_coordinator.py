@@ -69,6 +69,12 @@ def _new_execution_coordinator(
     return coordinator
 
 
+def _lease_job(
+    coordinator: ExecutionCoordinator, *, resources: ResourceRequest = ANY_RESOURCES
+) -> LeaseJobResponse:
+    return coordinator.lease_job(resources=resources, worker=f"test-worker-{uuid4()}")
+
+
 def _new_local_pool(
     *,
     server_url: str = "http://execution-coordinator.test",
@@ -212,12 +218,10 @@ def test_execution_coordinator_lease_job_returns_wait_when_only_running_jobs_can
     parent = ExecutionCoordinatorParent(child=leaf)
     coordinator = _new_execution_coordinator([parent])
 
-    job = coordinator.lease_job(resources=ANY_RESOURCES, worker="test-worker")
+    job = _lease_job(coordinator)
     assert isinstance(job, Job)
 
-    assert (
-        coordinator.lease_job(resources=ANY_RESOURCES, worker="test-worker") == "wait"
-    )
+    assert _lease_job(coordinator) == "wait"
     assert not coordinator.done.is_set()
 
 
@@ -589,9 +593,9 @@ def test_worker_cap_limits_satisfiable_jobs_and_leases() -> None:
         == 3
     )
 
-    first = coordinator.lease_job(resources=ResourceRequest(), worker="test-worker")
-    second = coordinator.lease_job(resources=ResourceRequest(), worker="test-worker")
-    third = coordinator.lease_job(resources=ResourceRequest(), worker="test-worker")
+    first = _lease_job(coordinator, resources=ResourceRequest())
+    second = _lease_job(coordinator, resources=ResourceRequest())
+    third = _lease_job(coordinator, resources=ResourceRequest())
 
     assert isinstance(first, Job)
     assert isinstance(second, Job)
@@ -604,24 +608,21 @@ def test_worker_cap_limits_satisfiable_jobs_and_leases() -> None:
         coordinator.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=10)
         == 0
     )
-    assert (
-        coordinator.lease_job(resources=ResourceRequest(), worker="test-worker")
-        == "wait"
-    )
+    assert _lease_job(coordinator, resources=ResourceRequest()) == "wait"
 
     coordinator.job_result(first.lease_id, JobCompletedResult())
-    fourth = coordinator.lease_job(resources=ResourceRequest(), worker="test-worker")
+    fourth = _lease_job(coordinator, resources=ResourceRequest())
 
     assert isinstance(fourth, Job)
     assert fourth.artifact.object_id in limited_ids - leased_limited_ids
 
 
-def test_worker_lost_requeues_running_leases_without_counting_failure() -> None:
+def test_worker_lost_requeues_running_lease_without_counting_failure() -> None:
     objs = [LimitedExecutionCoordinatorLeaf(value=value) for value in range(3)]
     coordinator = _new_execution_coordinator(objs)
 
     first = coordinator.lease_job(resources=ResourceRequest(), worker="worker-1")
-    second = coordinator.lease_job(resources=ResourceRequest(), worker="worker-1")
+    second = coordinator.lease_job(resources=ResourceRequest(), worker="worker-2")
 
     assert isinstance(first, Job)
     assert isinstance(second, Job)
@@ -632,12 +633,12 @@ def test_worker_lost_requeues_running_leases_without_counting_failure() -> None:
 
     coordinator.worker_lost("worker-1")
 
-    assert coordinator.running == {}
-    assert set(coordinator.ready) == {obj.object_id for obj in objs}
+    assert set(coordinator.running) == {second.lease_id}
+    assert first.artifact.object_id in coordinator.ready
     assert coordinator.failed == {}
     assert (
         coordinator.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=10)
-        == 2
+        == 1
     )
 
 
@@ -655,25 +656,34 @@ def test_job_result_after_worker_lost_is_ignored() -> None:
     assert coordinator.completed == {}
 
 
+def test_lease_job_releases_previous_lease_from_same_worker() -> None:
+    leaf = ExecutionCoordinatorLeaf(value=1)
+    coordinator = _new_execution_coordinator([leaf])
+
+    first = coordinator.lease_job(resources=ResourceRequest(), worker="worker-1")
+    second = coordinator.lease_job(resources=ResourceRequest(), worker="worker-1")
+
+    assert isinstance(first, Job)
+    assert isinstance(second, Job)
+    assert second.lease_id != first.lease_id
+    assert set(coordinator.running) == {second.lease_id}
+    assert coordinator.running[second.lease_id].worker == "worker-1"
+    assert coordinator.ready == {}
+    assert coordinator.failed == {}
+
+
 def test_lease_job_filters_by_worker_resources() -> None:
     cpu_leaf = CpuOnlyLeaf(value=1)
     gpu_leaf = GpuLeaf(value=2)
     coordinator = _new_execution_coordinator([cpu_leaf, gpu_leaf])
 
-    cpu_job = coordinator.lease_job(
-        resources=ResourceRequest(gpus=0), worker="test-worker"
-    )
+    cpu_job = _lease_job(coordinator, resources=ResourceRequest(gpus=0))
     assert isinstance(cpu_job, Job)
     assert cpu_job.artifact.object_id == cpu_leaf.object_id
 
-    assert (
-        coordinator.lease_job(resources=ResourceRequest(gpus=0), worker="test-worker")
-        == "wait"
-    )
+    assert _lease_job(coordinator, resources=ResourceRequest(gpus=0)) == "wait"
 
-    gpu_job = coordinator.lease_job(
-        resources=ResourceRequest(gpus=1), worker="test-worker"
-    )
+    gpu_job = _lease_job(coordinator, resources=ResourceRequest(gpus=1))
     assert isinstance(gpu_job, Job)
     assert gpu_job.artifact.object_id == gpu_leaf.object_id
 

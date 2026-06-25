@@ -922,12 +922,12 @@ def test_slurm_pool_submits_replacement_workers_as_job_array(
     ]
 
 
-def test_slurm_pool_reports_preempted_array_worker_lost_and_replaces_it(
+def test_slurm_pool_releases_nonfailed_array_workers_missing_from_squeue(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
-    _record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
     lost_workers: list[str] = []
     monkeypatch.setattr(
         PoolApiClient,
@@ -940,7 +940,7 @@ def test_slurm_pool_reports_preempted_array_worker_lost_and_replaces_it(
         lambda self, *, worker: lost_workers.append(worker),
     )
     backend = SlurmWorkerBackend(
-        max_workers=2,
+        max_workers=3,
         resources=SlurmResources(cpus_per_worker=1),
         worker_connect_host="execution-coordinator.cluster",
         poll_interval=0,
@@ -953,11 +953,31 @@ def test_slurm_pool_reports_preempted_array_worker_lost_and_replaces_it(
     )
 
     pool._scale_once()
-    active_file.write_text("100_0 PREEMPTED\n100_1\n")
+    assert pool._job_ids == ["100_0", "100_1", "100_2"]
+
+    monkeypatch.setattr(type(pool), "_active_job_ids", lambda self: {"100_0"})
+    monkeypatch.setattr(
+        type(pool),
+        "_task_states",
+        lambda self: {
+            "100_0": "RUNNING",
+            "100_1": "PREEMPTED",
+            "100_2": "REQUEUED",
+        },
+    )
     pool._scale_once()
 
-    assert lost_workers == ["slurm-worker-100a0"]
-    assert pool._job_ids == ["100_1", "101_0"]
+    assert lost_workers == ["slurm-worker-100a1", "slurm-worker-100a2"]
+    assert pool._job_ids == ["100_0", "101_0", "101_1"]
+    assert pool._failed_job_ids == []
+    sbatch_records = [
+        record
+        for record in _read_records(record_file)
+        if record["executable"] == "sbatch"
+    ]
+    assert [arg for arg in sbatch_records[1]["argv"] if arg.startswith("--array")] == [
+        "--array=0-1"
+    ]
 
 
 def test_slurm_worker_pool_stop_cancels_array_tasks(

@@ -177,6 +177,9 @@ class ExecutionCoordinator:
 
     def lease_job(self, *, resources: ResourceRequest, worker: str) -> LeaseJobResponse:
         with self.log_context(), self.lock:
+            if self.done.is_set():
+                return "stop"
+            self._release_worker_locked(worker, reason="worker requested a new lease")
             self._maybe_finish_locked()
             if self.done.is_set():
                 return "stop"
@@ -226,22 +229,7 @@ class ExecutionCoordinator:
         with self.log_context(), self.lock:
             if self.done.is_set():
                 return
-            for lease_id, running_job in tuple(self.running.items()):
-                if running_job.worker != worker:
-                    continue
-                self.running.pop(lease_id)
-                self.ready[running_job.node.obj.object_id] = running_job.node
-                logger.warning(
-                    "released %s from lost worker %s",
-                    running_job.node.obj._log_label,
-                    worker,
-                    extra=log_detail(
-                        lease=lease_id,
-                        object_id=running_job.node.obj.object_id,
-                        worker=worker,
-                        **self._counts_detail(),
-                    ),
-                )
+            self._release_worker_locked(worker, reason="worker is no longer active")
 
     def count_satisfiable_jobs(
         self, *, resources: ResourceRequest, max_workers: int
@@ -273,6 +261,26 @@ class ExecutionCoordinator:
         if node.obj.max_workers is None:
             return True
         return running_counts.get(type(node.obj), 0) < node.obj.max_workers
+
+    def _release_worker_locked(self, worker: str, *, reason: str) -> None:
+        for lease_id, running_job in tuple(self.running.items()):
+            if running_job.worker != worker:
+                continue
+            self.running.pop(lease_id)
+            object_id = running_job.node.obj.object_id
+            self.ready[object_id] = running_job.node
+            logger.warning(
+                "released %s from %s: %s",
+                running_job.node.obj._log_label,
+                worker,
+                reason,
+                extra=log_detail(
+                    lease=lease_id,
+                    object_id=object_id,
+                    worker=worker,
+                    **self._counts_detail(),
+                ),
+            )
 
     def job_result(self, lease_id: str, request: JobResultRequest) -> None:
         with self.log_context(), self.lock:
