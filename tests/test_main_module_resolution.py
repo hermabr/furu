@@ -90,7 +90,7 @@ def test_main_without_spec_name_is_not_serializable(
 
     monkeypatch.setattr(main, "__spec__", None, raising=False)
 
-    with pytest.raises(ValueError, match="python -m|re-import"):
+    with pytest.raises(ValueError, match=r"__main__\.ScriptThing.*python -m"):
         fully_qualified_name(main_type)
 
 
