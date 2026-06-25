@@ -62,7 +62,7 @@ def fully_qualified_name(value: object) -> str:
 
             if not get_config().debug_mode:
                 raise ValueError(
-                    "Cannot serialize objects from the __main__ module. "
+                    f"Cannot serialize object __main__.{qualname} from the __main__ module. "
                     "Run the file as `python -m package.module`, or re-import "
                     "the class from its own module inside the "
                     '`if __name__ == "__main__":` block.'
