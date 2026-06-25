@@ -19,13 +19,14 @@ _UNFINISHED_STATES = frozenset(
     {
         "COMPLETING",
         "PENDING",
+        "PREEMPTED",
         "REQUEUED",
         "RUNNING",
         "UNKNOWN",
     }
 )
 
-_PRUNABLE_STATES = ("COMPLETED", "PREEMPTED")
+_PRUNABLE_STATES = ("COMPLETED",)
 
 
 def _is_failed_state(state: str) -> bool:
