@@ -204,10 +204,7 @@ class ExecutionCoordinator:
             node = self.ready.pop(object_id)
             lease_id = str(uuid4())
             self.running[lease_id] = RunningJob(
-                lease_id=lease_id,
-                node=node,
-                started_at=time.monotonic(),
-                worker=worker,
+                lease_id=lease_id, node=node, started_at=time.monotonic(), worker=worker
             )
             logger.info(
                 "leased %s to %s",
@@ -220,10 +217,7 @@ class ExecutionCoordinator:
                     **self._counts_detail(),
                 ),
             )
-            return Job(
-                lease_id=lease_id,
-                artifact=ArtifactSpec.from_furu(node.obj),
-            )
+            return Job(lease_id=lease_id, artifact=ArtifactSpec.from_furu(node.obj))
 
     def worker_lost(self, worker: str) -> None:
         with self.log_context(), self.lock:
