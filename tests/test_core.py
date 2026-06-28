@@ -29,6 +29,7 @@ from furu import (
 )
 from furu._storage_layout import (
     compute_lock_path_in,
+    data_dir_in,
     metadata_path_in,
     result_dir_in,
     result_manifest_path_in,
@@ -1946,6 +1947,7 @@ def test_no_create_hook_loads_cached_result() -> None:
         result_dir_in(obj._base_dir),
         declared_type=str,
         result_codecs=(),
+        data_dir=obj.data_dir,
     )
 
     assert obj.create() == "cached:1"
@@ -1975,6 +1977,7 @@ def test_no_create_hook_uses_post_lock_cache_recheck(
             result_dir_in(obj._base_dir),
             declared_type=str,
             result_codecs=(),
+            data_dir=obj.data_dir,
         )
         yield lambda: True
 
@@ -2094,6 +2097,7 @@ def test_pending_items_are_rechecked_after_lock_acquisition(
             "single:5",
             result_dir_in(pending._base_dir),
             result_codecs=(),
+            data_dir=pending.data_dir,
         )
         yield lambda: True
 
@@ -2226,7 +2230,13 @@ def test_batched_compute_writes_result_layout_per_object() -> None:
         assert result_manifest_path_in(obj._base_dir).exists()
         assert metadata_path_in(obj._base_dir).exists()
         assert run_log_path_in(obj._base_dir).exists()
-        assert load_result_bundle(result_dir_in(obj._base_dir)) == expected
+        assert (
+            load_result_bundle(
+                result_dir_in(obj._base_dir),
+                data_dir=data_dir_in(obj._base_dir),
+            )
+            == expected
+        )
 
 
 def test_batched_compute_writes_shared_logs_to_every_participant() -> None:

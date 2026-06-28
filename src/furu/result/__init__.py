@@ -40,6 +40,7 @@ WrapperKind: TypeAlias = Literal[
 
 @dataclasses.dataclass
 class _DumpState:
+    data_dir: Path
     should_reload_value_after_dump: bool = False
 
 
@@ -271,6 +272,7 @@ def _dump_value(
                 nested_bundle_dir,
                 declared_type=lazy_declared_type,
                 result_codecs=result_codecs,
+                data_dir=dump_state.data_dir,
             ):
                 dump_state.should_reload_value_after_dump = True
             return {
@@ -306,7 +308,14 @@ def _dump_external(
     artifact_rel = Path(ARTIFACTS_DIR_NAME, *(value_path or (_ROOT_ARTIFACT_NAME,)))
     artifact_dir = bundle_dir / artifact_rel
     artifact_dir.mkdir(parents=True, exist_ok=False)
-    codec.dump(value, artifact_dir=artifact_dir)
+
+    codec.dump(
+        value,
+        artifact_dir=artifact_dir,
+        dump_data_path=lambda path: (
+            path.resolve().relative_to(dump_state.data_dir.resolve()).as_posix()
+        ),
+    )
     if codec.reload_value_after_dump:
         dump_state.should_reload_value_after_dump = True
     return {
@@ -322,6 +331,7 @@ def _load_value(
     node: JsonValue,
     *,
     bundle_dir: Path,
+    data_dir: Path,
     value_path: ValuePath,
 ) -> object:
     match node:
@@ -333,6 +343,7 @@ def _load_value(
                 _load_value(
                     child,
                     bundle_dir=bundle_dir,
+                    data_dir=data_dir,
                     value_path=(*value_path, f"{i:0{width}d}"),
                 )
                 for i, child in enumerate(node)
@@ -341,6 +352,7 @@ def _load_value(
             return _load_wrapper(
                 cast(dict[str, Any], node[WRAPPER_KEY]),
                 bundle_dir=bundle_dir,
+                data_dir=data_dir,
                 value_path=value_path,
             )
         case dict():
@@ -348,6 +360,7 @@ def _load_value(
                 key: _load_value(
                     child,
                     bundle_dir=bundle_dir,
+                    data_dir=data_dir,
                     value_path=(*value_path, key),
                 )
                 for key, child in node.items()
@@ -363,6 +376,7 @@ def _load_validated_fields(
     expected: set[str],
     raw_fields: dict[str, JsonValue],
     bundle_dir: Path,
+    data_dir: Path,
     value_path: ValuePath,
 ) -> dict[str, object]:
     actual = set(raw_fields)
@@ -373,6 +387,7 @@ def _load_validated_fields(
             name: _load_value(
                 child,
                 bundle_dir=bundle_dir,
+                data_dir=data_dir,
                 value_path=(*value_path, name),
             )
             for name, child in raw_fields.items()
@@ -394,6 +409,7 @@ def _load_wrapper(
     body: dict[str, Any],
     *,
     bundle_dir: Path,
+    data_dir: Path,
     value_path: ValuePath,
 ) -> object:
     kind: WrapperKind = body[KINDMARKER]
@@ -421,7 +437,25 @@ def _load_wrapper(
             codec = resolve_fully_qualified_name(codec_id)
             if not isinstance(codec, type) or not issubclass(codec, ResultCodec):
                 raise TypeError(f"{codec_id} is not a ResultCodec")
-            return codec.load(artifact_dir=artifact_dir)
+
+            def _load_data_path(path: str) -> Path:
+                rel_path = Path(path)
+                if rel_path.is_absolute():
+                    raise ValueError(
+                        f"data-dir codec path must be relative: {rel_path}"
+                    )
+
+                resolved_path = (data_dir.resolve() / rel_path).resolve()
+                if not resolved_path.is_relative_to(data_dir.resolve()):
+                    raise ValueError(
+                        f"data-dir codec path escapes data dir: {rel_path}"
+                    )
+                return resolved_path
+
+            return codec.load(
+                artifact_dir=artifact_dir,
+                load_data_path=_load_data_path,
+            )
         case "lazy":
             if (nested_rel := Path(body["path"])).is_absolute():
                 raise ValueError(f"lazy wrapper path must be relative: {nested_rel}")
@@ -442,6 +476,7 @@ def _load_wrapper(
                 partial(
                     load_result_bundle,
                     bundle_dir=nested_bundle_dir,
+                    data_dir=data_dir,
                 ),
                 path=nested_bundle_dir,
             )
@@ -460,6 +495,7 @@ def _load_wrapper(
                 expected={field.name for field in dataclass_fields},
                 raw_fields=body[FIELDSMARKER],
                 bundle_dir=bundle_dir,
+                data_dir=data_dir,
                 value_path=value_path,
             )
             try:
@@ -482,6 +518,7 @@ def _load_wrapper(
                 _load_value(
                     child,
                     bundle_dir=bundle_dir,
+                    data_dir=data_dir,
                     value_path=(*value_path, str(i)),
                 )
                 for i, child in enumerate(body["items"])
@@ -491,6 +528,7 @@ def _load_wrapper(
                 _load_value(
                     child,
                     bundle_dir=bundle_dir,
+                    data_dir=data_dir,
                     value_path=(*value_path, str(i)),
                 )
                 for i, child in enumerate(body["items"])
@@ -500,6 +538,7 @@ def _load_wrapper(
                 _load_value(
                     child,
                     bundle_dir=bundle_dir,
+                    data_dir=data_dir,
                     value_path=(*value_path, str(i)),
                 )
                 for i, child in enumerate(body["items"])
@@ -517,6 +556,7 @@ def _load_wrapper(
                 expected=set(cls.model_fields),
                 raw_fields=body[FIELDSMARKER],
                 bundle_dir=bundle_dir,
+                data_dir=data_dir,
                 value_path=value_path,
             )
             try:
@@ -536,10 +576,11 @@ def _save_result_bundle(
     *,
     declared_type: object = Any,
     result_codecs: tuple[type[ResultCodec], ...],
+    data_dir: Path,
 ) -> bool:
     bundle_dir.mkdir(parents=True, exist_ok=False)
 
-    dump_state = _DumpState()
+    dump_state = _DumpState(data_dir=data_dir)
     manifest = _dump_value(
         value,
         declared_type=declared_type,
@@ -555,7 +596,12 @@ def _save_result_bundle(
     return dump_state.should_reload_value_after_dump
 
 
-def load_result_bundle(bundle_dir: Path) -> object:
+def load_result_bundle(bundle_dir: Path, *, data_dir: Path) -> object:
     manifest_path = bundle_dir / MANIFEST_FILE_NAME
     raw = json.loads(manifest_path.read_text(encoding="utf-8"))
-    return _load_value(raw, bundle_dir=bundle_dir, value_path=())
+    return _load_value(
+        raw,
+        bundle_dir=bundle_dir,
+        data_dir=data_dir,
+        value_path=(),
+    )

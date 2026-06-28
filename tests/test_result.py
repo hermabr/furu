@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any, ClassVar, cast
@@ -11,12 +12,12 @@ from pydantic import BaseModel, ConfigDict
 
 import furu
 from furu import Furu
-from furu._storage_layout import result_dir_in, result_manifest_path_in
+from furu._storage_layout import data_dir_in, result_dir_in, result_manifest_path_in
 from furu._declared_types import child_declared_type
 from furu.result import (
     LazyResult,
-    _save_result_bundle,
-    load_result_bundle,
+    _save_result_bundle as _save_result_bundle_impl,
+    load_result_bundle as load_result_bundle_impl,
 )
 from furu.result.codec import (
     NumpyNpyCodec,
@@ -27,6 +28,30 @@ from furu.result.codec import (
 
 np = pytest.importorskip("numpy")
 pl = pytest.importorskip("polars")
+
+
+def _save_result_bundle(
+    value: object,
+    bundle_dir: Path,
+    *,
+    declared_type: object = Any,
+    result_codecs: tuple[type[ResultCodec], ...],
+) -> bool:
+    return _save_result_bundle_impl(
+        value,
+        bundle_dir,
+        declared_type=declared_type,
+        result_codecs=result_codecs,
+        data_dir=data_dir_in(bundle_dir.parent),
+    )
+
+
+def load_result_bundle(bundle_dir: Path) -> object:
+    return load_result_bundle_impl(
+        bundle_dir,
+        data_dir=data_dir_in(bundle_dir.parent),
+    )
+
 
 _CHILD_DECLARED_TYPE_NAMESPACE: dict[str, object] = {
     "Annotated": Annotated,
@@ -274,6 +299,7 @@ class _CountingCodec(ResultCodec[_CountingValue]):
         value: _CountingValue,
         *,
         artifact_dir: Path,
+        dump_data_path: Callable[[Path], str],
     ) -> None:
         cls.dump_calls += 1
         artifact_dir.joinpath("value.txt").write_text(
@@ -282,7 +308,12 @@ class _CountingCodec(ResultCodec[_CountingValue]):
         )
 
     @classmethod
-    def load(cls, *, artifact_dir: Path) -> _CountingValue:
+    def load(
+        cls,
+        *,
+        artifact_dir: Path,
+        load_data_path: Callable[[str], Path],
+    ) -> _CountingValue:
         cls.load_calls += 1
         return _CountingValue(
             int(artifact_dir.joinpath("value.txt").read_text(encoding="utf-8"))
@@ -302,11 +333,17 @@ class _OtherCountingCodec(ResultCodec[_CountingValue]):
         value: _CountingValue,
         *,
         artifact_dir: Path,
+        dump_data_path: Callable[[Path], str],
     ) -> None:
         artifact_dir.joinpath("other.txt").write_text("x", encoding="utf-8")
 
     @classmethod
-    def load(cls, *, artifact_dir: Path) -> _CountingValue:
+    def load(
+        cls,
+        *,
+        artifact_dir: Path,
+        load_data_path: Callable[[str], Path],
+    ) -> _CountingValue:
         artifact_dir.joinpath("other.txt").read_text(encoding="utf-8")
         return _CountingValue(0)
 
@@ -325,11 +362,17 @@ class _CustomNumpyCodec(ResultCodec[Any]):
         value: Any,
         *,
         artifact_dir: Path,
+        dump_data_path: Callable[[Path], str],
     ) -> None:
         np.save(artifact_dir / cls.file_name, value, allow_pickle=False)
 
     @classmethod
-    def load(cls, *, artifact_dir: Path) -> Any:
+    def load(
+        cls,
+        *,
+        artifact_dir: Path,
+        load_data_path: Callable[[str], Path],
+    ) -> Any:
         return np.load(artifact_dir / cls.file_name, allow_pickle=False)
 
 
@@ -354,6 +397,7 @@ class _AutoRegisteredValueCodec(ResultCodec[_AutoRegisteredValue]):
         value: _AutoRegisteredValue,
         *,
         artifact_dir: Path,
+        dump_data_path: Callable[[Path], str],
     ) -> None:
         artifact_dir.joinpath("auto.txt").write_text(
             str(value.value),
@@ -361,7 +405,12 @@ class _AutoRegisteredValueCodec(ResultCodec[_AutoRegisteredValue]):
         )
 
     @classmethod
-    def load(cls, *, artifact_dir: Path) -> _AutoRegisteredValue:
+    def load(
+        cls,
+        *,
+        artifact_dir: Path,
+        load_data_path: Callable[[str], Path],
+    ) -> _AutoRegisteredValue:
         return _AutoRegisteredValue(
             int(artifact_dir.joinpath("auto.txt").read_text(encoding="utf-8"))
         )
@@ -380,6 +429,7 @@ class _CoreRegistryAutoValueCodec(ResultCodec[_AutoRegisteredValue]):
         value: _AutoRegisteredValue,
         *,
         artifact_dir: Path,
+        dump_data_path: Callable[[Path], str],
     ) -> None:
         artifact_dir.joinpath("registry.txt").write_text(
             str(value.value),
@@ -387,7 +437,12 @@ class _CoreRegistryAutoValueCodec(ResultCodec[_AutoRegisteredValue]):
         )
 
     @classmethod
-    def load(cls, *, artifact_dir: Path) -> _AutoRegisteredValue:
+    def load(
+        cls,
+        *,
+        artifact_dir: Path,
+        load_data_path: Callable[[str], Path],
+    ) -> _AutoRegisteredValue:
         return _AutoRegisteredValue(
             int(artifact_dir.joinpath("registry.txt").read_text(encoding="utf-8"))
         )
@@ -408,6 +463,7 @@ class _AutoRegisteredArrayCodec(ResultCodec[Any]):
         value: Any,
         *,
         artifact_dir: Path,
+        dump_data_path: Callable[[Path], str],
     ) -> None:
         np.save(
             artifact_dir / "auto.npy",
@@ -416,7 +472,12 @@ class _AutoRegisteredArrayCodec(ResultCodec[Any]):
         )
 
     @classmethod
-    def load(cls, *, artifact_dir: Path) -> Any:
+    def load(
+        cls,
+        *,
+        artifact_dir: Path,
+        load_data_path: Callable[[str], Path],
+    ) -> Any:
         return np.load(artifact_dir / "auto.npy", allow_pickle=False)
 
 
@@ -437,13 +498,56 @@ class _OptOutRegisteredValueCodec(ResultCodec[_OptOutRegisteredValue]):
         value: _OptOutRegisteredValue,
         *,
         artifact_dir: Path,
+        dump_data_path: Callable[[Path], str],
     ) -> None:
         artifact_dir.joinpath("manual.txt").write_text("", encoding="utf-8")
 
     @classmethod
-    def load(cls, *, artifact_dir: Path) -> _OptOutRegisteredValue:
+    def load(
+        cls,
+        *,
+        artifact_dir: Path,
+        load_data_path: Callable[[str], Path],
+    ) -> _OptOutRegisteredValue:
         artifact_dir.joinpath("manual.txt").read_text(encoding="utf-8")
         return _OptOutRegisteredValue()
+
+
+class _DataDirPathValue:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+
+class _DataDirPathCodec(ResultCodec[_DataDirPathValue]):
+    @classmethod
+    def matches(cls, value: object) -> bool:
+        return isinstance(value, _DataDirPathValue)
+
+    @classmethod
+    def dump(
+        cls,
+        value: _DataDirPathValue,
+        *,
+        artifact_dir: Path,
+        dump_data_path: Callable[[Path], str],
+    ) -> None:
+        artifact_dir.joinpath("path.txt").write_text(
+            dump_data_path(value.path),
+            encoding="utf-8",
+        )
+
+    @classmethod
+    def load(
+        cls,
+        *,
+        artifact_dir: Path,
+        load_data_path: Callable[[str], Path],
+    ) -> _DataDirPathValue:
+        return _DataDirPathValue(
+            load_data_path(
+                artifact_dir.joinpath("path.txt").read_text(encoding="utf-8"),
+            )
+        )
 
 
 class RegistryAutoRegisteredValueResult(Furu[_AutoRegisteredValue]):
@@ -576,11 +680,17 @@ def test_codec_defined_after_default_codec_layers_cache_is_auto_registered() -> 
             value: LateAutoRegisteredValue,
             *,
             artifact_dir: Path,
+            dump_data_path: Callable[[Path], str],
         ) -> None:
             artifact_dir.joinpath("late.txt").write_text("", encoding="utf-8")
 
         @classmethod
-        def load(cls, *, artifact_dir: Path) -> LateAutoRegisteredValue:
+        def load(
+            cls,
+            *,
+            artifact_dir: Path,
+            load_data_path: Callable[[str], Path],
+        ) -> LateAutoRegisteredValue:
             artifact_dir.joinpath("late.txt").read_text(encoding="utf-8")
             return LateAutoRegisteredValue()
 
@@ -612,6 +722,7 @@ def test_explicit_registry_sees_later_auto_registered_codec() -> None:
             value: LateExplicitRegistryAutoValue,
             *,
             artifact_dir: Path,
+            dump_data_path: Callable[[Path], str],
         ) -> None:
             artifact_dir.joinpath("late-explicit.txt").write_text(
                 "",
@@ -619,7 +730,12 @@ def test_explicit_registry_sees_later_auto_registered_codec() -> None:
             )
 
         @classmethod
-        def load(cls, *, artifact_dir: Path) -> LateExplicitRegistryAutoValue:
+        def load(
+            cls,
+            *,
+            artifact_dir: Path,
+            load_data_path: Callable[[str], Path],
+        ) -> LateExplicitRegistryAutoValue:
             artifact_dir.joinpath("late-explicit.txt").read_text(encoding="utf-8")
             return LateExplicitRegistryAutoValue()
 
@@ -644,11 +760,17 @@ def test_auto_registered_codecs_must_not_be_ambiguous() -> None:
             value: AutoAmbiguousValue,
             *,
             artifact_dir: Path,
+            dump_data_path: Callable[[Path], str],
         ) -> None:
             artifact_dir.joinpath("first.txt").write_text("", encoding="utf-8")
 
         @classmethod
-        def load(cls, *, artifact_dir: Path) -> AutoAmbiguousValue:
+        def load(
+            cls,
+            *,
+            artifact_dir: Path,
+            load_data_path: Callable[[str], Path],
+        ) -> AutoAmbiguousValue:
             artifact_dir.joinpath("first.txt").read_text(encoding="utf-8")
             return AutoAmbiguousValue()
 
@@ -663,11 +785,17 @@ def test_auto_registered_codecs_must_not_be_ambiguous() -> None:
             value: AutoAmbiguousValue,
             *,
             artifact_dir: Path,
+            dump_data_path: Callable[[Path], str],
         ) -> None:
             artifact_dir.joinpath("second.txt").write_text("", encoding="utf-8")
 
         @classmethod
-        def load(cls, *, artifact_dir: Path) -> AutoAmbiguousValue:
+        def load(
+            cls,
+            *,
+            artifact_dir: Path,
+            load_data_path: Callable[[str], Path],
+        ) -> AutoAmbiguousValue:
             artifact_dir.joinpath("second.txt").read_text(encoding="utf-8")
             return AutoAmbiguousValue()
 
@@ -830,6 +958,21 @@ class LazySaveAsArrayResult(Furu[LazySaveAsOutput]):
         )
 
 
+class DataDirPathResult(Furu[dict[str, _DataDirPathValue]]):
+    @property
+    def result_codecs(self) -> tuple[type[ResultCodec], ...]:
+        return (_DataDirPathCodec,)
+
+    def create(self) -> dict[str, _DataDirPathValue]:
+        path = self.data_dir / "data.zarr"
+        path.mkdir()
+        value = _DataDirPathValue(path)
+        return {
+            "first": value,
+            "second": furu.save_as(value, codec=_DataDirPathCodec),
+        }
+
+
 def test_save_as_selects_codec_and_does_not_leak_wrapper() -> None:
     obj = SaveAsArrayResult()
     loaded = obj.create()
@@ -876,6 +1019,52 @@ class ConflictingSaveAsResult(Furu[ConflictingSaveAsOutput]):
 def test_save_as_conflicts_with_annotated_codec() -> None:
     with pytest.raises(TypeError, match="Conflicting codecs"):
         ConflictingSaveAsResult().create()
+
+
+def test_data_dir_result_codec_round_trips_shared_data_dir_path() -> None:
+    obj = DataDirPathResult()
+    loaded = obj.create()
+    data_path = obj.data_dir / "data.zarr"
+    artifacts_dir = result_dir_in(obj._base_dir) / "artifacts"
+
+    assert loaded["first"].path.resolve() == data_path.resolve()
+    assert loaded["second"].path.resolve() == data_path.resolve()
+    assert (artifacts_dir / "first" / "path.txt").read_text() == "data.zarr"
+    assert (artifacts_dir / "second" / "path.txt").read_text() == "data.zarr"
+    assert not (artifacts_dir / "first" / "data.zarr").exists()
+
+    loaded_again = obj.load_existing()
+
+    assert loaded_again["first"].path == data_path.resolve()
+    assert loaded_again["second"].path == data_path.resolve()
+
+
+def test_data_dir_result_codec_rejects_load_path_outside_data_dir(
+    tmp_path: Path,
+) -> None:
+    result_dir = tmp_path / "object" / "result"
+    artifact_dir = result_dir / "artifacts" / "root"
+    artifact_dir.mkdir(parents=True)
+    (result_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "$furu": {
+                    "|kind": "external",
+                    "codec": _DataDirPathCodec._codec_id(),
+                    "path": "artifacts/root",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    artifact_dir.joinpath("path.txt").write_text("/tmp/outside", encoding="utf-8")
+    with pytest.raises(ValueError, match="must be relative"):
+        load_result_bundle(result_dir)
+
+    artifact_dir.joinpath("path.txt").write_text("../outside", encoding="utf-8")
+    with pytest.raises(ValueError, match="escapes data dir"):
+        load_result_bundle(result_dir)
 
 
 class RegistryCountingResult(Furu[_CountingValue]):
@@ -1197,7 +1386,12 @@ class _MemmapNumpyNpyCodec(NumpyNpyCodec):
     reload_value_after_dump: ClassVar[bool] = True
 
     @classmethod
-    def load(cls, *, artifact_dir: Path) -> np.ndarray[Any, Any]:
+    def load(
+        cls,
+        *,
+        artifact_dir: Path,
+        load_data_path: Callable[[str], Path],
+    ) -> np.ndarray[Any, Any]:
         return np.load(artifact_dir / "data.npy", allow_pickle=False, mmap_mode="r")
 
 

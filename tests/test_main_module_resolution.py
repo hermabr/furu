@@ -188,6 +188,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from furu import Furu
+from furu._storage_layout import data_dir_in
 from furu.result import load_result_bundle, _save_result_bundle
 from furu.result.codec import ResultCodec
 from furu.serializer.artifact import _from_json
@@ -204,11 +205,22 @@ class MainCodec(ResultCodec[bytes]):
         return isinstance(value, bytes)
 
     @classmethod
-    def dump(cls, value: bytes, *, artifact_dir: Path) -> None:
+    def dump(
+        cls,
+        value: bytes,
+        *,
+        artifact_dir: Path,
+        dump_data_path: object,
+    ) -> None:
         (artifact_dir / "data.bin").write_bytes(value)
 
     @classmethod
-    def load(cls, *, artifact_dir: Path) -> bytes:
+    def load(
+        cls,
+        *,
+        artifact_dir: Path,
+        load_data_path: object,
+    ) -> bytes:
         return (artifact_dir / "data.bin").read_bytes()
 
 
@@ -237,12 +249,28 @@ if __name__ == "__main__":
     second = obj.create()
 
     payload_bundle = Path("payload-bundle")
-    _save_result_bundle(Payload(9), payload_bundle, result_codecs=())
-    payload_loaded = load_result_bundle(payload_bundle)
+    _save_result_bundle(
+        Payload(9),
+        payload_bundle,
+        result_codecs=(),
+        data_dir=data_dir_in(payload_bundle.parent),
+    )
+    payload_loaded = load_result_bundle(
+        payload_bundle,
+        data_dir=data_dir_in(payload_bundle.parent),
+    )
 
     codec_bundle = Path("codec-bundle")
-    _save_result_bundle(b"abc", codec_bundle, result_codecs=(MainCodec,))
-    codec_loaded = load_result_bundle(codec_bundle)
+    _save_result_bundle(
+        b"abc",
+        codec_bundle,
+        result_codecs=(MainCodec,),
+        data_dir=data_dir_in(codec_bundle.parent),
+    )
+    codec_loaded = load_result_bundle(
+        codec_bundle,
+        data_dir=data_dir_in(codec_bundle.parent),
+    )
 
     print(
         json.dumps(

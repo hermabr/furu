@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from abc import ABC, ABCMeta, abstractmethod
+from collections.abc import Callable
 from functools import cache
 from pathlib import Path
 from threading import Lock
@@ -114,12 +115,18 @@ class ResultCodec[T](ABC, metaclass=ResultCodecMeta):
         value: T,
         *,
         artifact_dir: Path,
+        dump_data_path: Callable[[Path], str],
     ) -> None:
         pass
 
     @classmethod
     @abstractmethod
-    def load(cls, *, artifact_dir: Path) -> T:
+    def load(
+        cls,
+        *,
+        artifact_dir: Path,
+        load_data_path: Callable[[str], Path],
+    ) -> T:
         pass
 
 
@@ -142,11 +149,17 @@ class PolarsParquetCodec(ResultCodec["pl.DataFrame"]):
         value: pl.DataFrame,
         *,
         artifact_dir: Path,
+        dump_data_path: Callable[[Path], str],
     ) -> None:
         value.write_parquet(artifact_dir / "data.parquet")
 
     @classmethod
-    def load(cls, *, artifact_dir: Path) -> pl.DataFrame:
+    def load(
+        cls,
+        *,
+        artifact_dir: Path,
+        load_data_path: Callable[[str], Path],
+    ) -> pl.DataFrame:
         import polars as pl
 
         return pl.read_parquet(artifact_dir / "data.parquet")
@@ -171,13 +184,19 @@ class NumpyNpyCodec(ResultCodec["np.ndarray[Any, Any]"]):
         value: np.ndarray[Any, Any],
         *,
         artifact_dir: Path,
+        dump_data_path: Callable[[Path], str],
     ) -> None:
         import numpy as np
 
         np.save(artifact_dir / "data.npy", value, allow_pickle=False)
 
     @classmethod
-    def load(cls, *, artifact_dir: Path) -> np.ndarray[Any, Any]:
+    def load(
+        cls,
+        *,
+        artifact_dir: Path,
+        load_data_path: Callable[[str], Path],
+    ) -> np.ndarray[Any, Any]:
         import numpy as np
 
         return np.load(artifact_dir / "data.npy", allow_pickle=False)

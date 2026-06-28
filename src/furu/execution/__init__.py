@@ -18,6 +18,7 @@ from typing import (
 
 from furu._storage_layout import (
     compute_lock_path_in,
+    data_dir_in,
     metadata_path_in,
     result_dir_in,
     run_log_path_in,
@@ -150,6 +151,7 @@ def _store_result[T](
         tmp_result_dir,
         declared_type=declared_type,
         result_codecs=obj.result_codecs,
+        data_dir=data_dir_in(obj._base_dir),
     )
 
     if not has_lock():
@@ -164,7 +166,10 @@ def _store_result[T](
 
     obj.logger.debug("stored result bundle at %s", result_dir)
     if should_reload_value_after_dump:
-        return cast(T, load_result_bundle(result_dir))
+        return cast(
+            T,
+            load_result_bundle(result_dir, data_dir=data_dir_in(obj._base_dir)),
+        )
     return _unwrap_save_as(result)
 
 
@@ -250,7 +255,15 @@ def _load_or_create_worker[T](
 
     for obj in objs:
         if (cached_result_dir := result_dir_for_loading(obj)) is not None:
-            loaded.append(cast(T, load_result_bundle(cached_result_dir)))
+            loaded.append(
+                cast(
+                    T,
+                    load_result_bundle(
+                        cached_result_dir,
+                        data_dir=data_dir_in(obj._base_dir),
+                    ),
+                )
+            )
             cached.append(obj)
         else:
             missing.append(obj)
@@ -291,7 +304,11 @@ def _load_or_create_local[T](
     for obj in unique:
         if (cached_result_dir := result_dir_for_loading(obj)) is not None:
             results_by_object_id[obj.object_id] = cast(
-                T, load_result_bundle(cached_result_dir)
+                T,
+                load_result_bundle(
+                    cached_result_dir,
+                    data_dir=data_dir_in(obj._base_dir),
+                ),
             )
         else:
             obj._base_dir.mkdir(parents=True, exist_ok=True)
@@ -315,7 +332,11 @@ def _load_or_create_local[T](
             if (cached_result_dir := result_dir_for_loading(obj)) is not None:
                 late_hits += 1
                 results_by_object_id[obj.object_id] = cast(
-                    T, load_result_bundle(cached_result_dir)
+                    T,
+                    load_result_bundle(
+                        cached_result_dir,
+                        data_dir=data_dir_in(obj._base_dir),
+                    ),
                 )
             else:
                 pending.append(obj)

@@ -165,7 +165,10 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
         record_dependency_call(self)
         if (result_dir := result_dir_for_loading(self)) is not None:
-            return cast(T, load_result_bundle(result_dir))
+            return cast(
+                T,
+                load_result_bundle(result_dir, data_dir=data_dir_in(self._base_dir)),
+            )
         if _worker_execution_lease_id.get() is not None:
             raise _DependencyNotReady(
                 dependencies=[self],
