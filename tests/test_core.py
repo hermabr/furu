@@ -29,6 +29,7 @@ from furu import (
 )
 from furu._storage_layout import (
     compute_lock_path_in,
+    data_dir_in,
     metadata_path_in,
     result_dir_in,
     result_manifest_path_in,
@@ -2229,7 +2230,13 @@ def test_batched_compute_writes_result_layout_per_object() -> None:
         assert result_manifest_path_in(obj._base_dir).exists()
         assert metadata_path_in(obj._base_dir).exists()
         assert run_log_path_in(obj._base_dir).exists()
-        assert load_result_bundle(result_dir_in(obj._base_dir)) == expected
+        assert (
+            load_result_bundle(
+                result_dir_in(obj._base_dir),
+                data_dir=data_dir_in(obj._base_dir),
+            )
+            == expected
+        )
 
 
 def test_batched_compute_writes_shared_logs_to_every_participant() -> None:

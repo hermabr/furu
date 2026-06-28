@@ -255,7 +255,10 @@ if __name__ == "__main__":
         result_codecs=(),
         data_dir=data_dir_in(payload_bundle.parent),
     )
-    payload_loaded = load_result_bundle(payload_bundle)
+    payload_loaded = load_result_bundle(
+        payload_bundle,
+        data_dir=data_dir_in(payload_bundle.parent),
+    )
 
     codec_bundle = Path("codec-bundle")
     _save_result_bundle(
@@ -264,7 +267,10 @@ if __name__ == "__main__":
         result_codecs=(MainCodec,),
         data_dir=data_dir_in(codec_bundle.parent),
     )
-    codec_loaded = load_result_bundle(codec_bundle)
+    codec_loaded = load_result_bundle(
+        codec_bundle,
+        data_dir=data_dir_in(codec_bundle.parent),
+    )
 
     print(
         json.dumps(

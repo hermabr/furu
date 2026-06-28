@@ -17,7 +17,7 @@ from furu._declared_types import child_declared_type
 from furu.result import (
     LazyResult,
     _save_result_bundle as _save_result_bundle_impl,
-    load_result_bundle,
+    load_result_bundle as load_result_bundle_impl,
 )
 from furu.result.codec import (
     NumpyNpyCodec,
@@ -42,6 +42,13 @@ def _save_result_bundle(
         bundle_dir,
         declared_type=declared_type,
         result_codecs=result_codecs,
+        data_dir=data_dir_in(bundle_dir.parent),
+    )
+
+
+def load_result_bundle(bundle_dir: Path) -> object:
+    return load_result_bundle_impl(
+        bundle_dir,
         data_dir=data_dir_in(bundle_dir.parent),
     )
 

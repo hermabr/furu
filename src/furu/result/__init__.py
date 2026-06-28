@@ -20,7 +20,6 @@ from typing import (
 import pydantic
 
 from furu._declared_types import child_declared_type, strip_annotated
-from furu._storage_layout import data_dir_in
 from furu.constants import FIELDSMARKER, KINDMARKER, TYPEMARKER
 from furu.result.codec import ResultCodec, ResultCodecMeta
 from furu.result.lazy import LazyResult
@@ -597,12 +596,12 @@ def _save_result_bundle(
     return dump_state.should_reload_value_after_dump
 
 
-def load_result_bundle(bundle_dir: Path, *, data_dir: Path | None = None) -> object:
+def load_result_bundle(bundle_dir: Path, *, data_dir: Path) -> object:
     manifest_path = bundle_dir / MANIFEST_FILE_NAME
     raw = json.loads(manifest_path.read_text(encoding="utf-8"))
     return _load_value(
         raw,
         bundle_dir=bundle_dir,
-        data_dir=data_dir if data_dir is not None else data_dir_in(bundle_dir.parent),
+        data_dir=data_dir,
         value_path=(),
     )
