@@ -12,11 +12,11 @@ from pydantic import BaseModel, ConfigDict
 
 import furu
 from furu import Furu
-from furu._storage_layout import result_dir_in, result_manifest_path_in
+from furu._storage_layout import data_dir_in, result_dir_in, result_manifest_path_in
 from furu._declared_types import child_declared_type
 from furu.result import (
     LazyResult,
-    _save_result_bundle,
+    _save_result_bundle as _save_result_bundle_impl,
     load_result_bundle,
 )
 from furu.result.codec import (
@@ -28,6 +28,23 @@ from furu.result.codec import (
 
 np = pytest.importorskip("numpy")
 pl = pytest.importorskip("polars")
+
+
+def _save_result_bundle(
+    value: object,
+    bundle_dir: Path,
+    *,
+    declared_type: object = Any,
+    result_codecs: tuple[type[ResultCodec], ...],
+) -> bool:
+    return _save_result_bundle_impl(
+        value,
+        bundle_dir,
+        declared_type=declared_type,
+        result_codecs=result_codecs,
+        data_dir=data_dir_in(bundle_dir.parent),
+    )
+
 
 _CHILD_DECLARED_TYPE_NAMESPACE: dict[str, object] = {
     "Annotated": Annotated,

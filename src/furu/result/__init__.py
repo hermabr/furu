@@ -577,13 +577,11 @@ def _save_result_bundle(
     *,
     declared_type: object = Any,
     result_codecs: tuple[type[ResultCodec], ...],
-    data_dir: Path | None = None,
+    data_dir: Path,
 ) -> bool:
     bundle_dir.mkdir(parents=True, exist_ok=False)
 
-    dump_state = _DumpState(
-        data_dir=data_dir if data_dir is not None else data_dir_in(bundle_dir.parent)
-    )
+    dump_state = _DumpState(data_dir=data_dir)
     manifest = _dump_value(
         value,
         declared_type=declared_type,

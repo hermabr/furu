@@ -1946,6 +1946,7 @@ def test_no_create_hook_loads_cached_result() -> None:
         result_dir_in(obj._base_dir),
         declared_type=str,
         result_codecs=(),
+        data_dir=obj.data_dir,
     )
 
     assert obj.create() == "cached:1"
@@ -1975,6 +1976,7 @@ def test_no_create_hook_uses_post_lock_cache_recheck(
             result_dir_in(obj._base_dir),
             declared_type=str,
             result_codecs=(),
+            data_dir=obj.data_dir,
         )
         yield lambda: True
 
@@ -2094,6 +2096,7 @@ def test_pending_items_are_rechecked_after_lock_acquisition(
             "single:5",
             result_dir_in(pending._base_dir),
             result_codecs=(),
+            data_dir=pending.data_dir,
         )
         yield lambda: True
 

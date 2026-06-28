@@ -188,6 +188,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from furu import Furu
+from furu._storage_layout import data_dir_in
 from furu.result import load_result_bundle, _save_result_bundle
 from furu.result.codec import ResultCodec
 from furu.serializer.artifact import _from_json
@@ -248,11 +249,21 @@ if __name__ == "__main__":
     second = obj.create()
 
     payload_bundle = Path("payload-bundle")
-    _save_result_bundle(Payload(9), payload_bundle, result_codecs=())
+    _save_result_bundle(
+        Payload(9),
+        payload_bundle,
+        result_codecs=(),
+        data_dir=data_dir_in(payload_bundle.parent),
+    )
     payload_loaded = load_result_bundle(payload_bundle)
 
     codec_bundle = Path("codec-bundle")
-    _save_result_bundle(b"abc", codec_bundle, result_codecs=(MainCodec,))
+    _save_result_bundle(
+        b"abc",
+        codec_bundle,
+        result_codecs=(MainCodec,),
+        data_dir=data_dir_in(codec_bundle.parent),
+    )
     codec_loaded = load_result_bundle(codec_bundle)
 
     print(

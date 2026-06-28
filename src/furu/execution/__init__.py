@@ -18,6 +18,7 @@ from typing import (
 
 from furu._storage_layout import (
     compute_lock_path_in,
+    data_dir_in,
     metadata_path_in,
     result_dir_in,
     run_log_path_in,
@@ -150,6 +151,7 @@ def _store_result[T](
         tmp_result_dir,
         declared_type=declared_type,
         result_codecs=obj.result_codecs,
+        data_dir=data_dir_in(obj._base_dir),
     )
 
     if not has_lock():
