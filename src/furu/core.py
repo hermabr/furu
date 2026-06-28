@@ -23,7 +23,7 @@ from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
 from furu.resources import ResourceRequirements
 from furu.result import load_result_bundle
-from furu.result.codec import DataDirResultCodec, ResultCodec
+from furu.result.codec import ResultCodec
 from furu.serializer.artifact import to_json as _to_json
 from furu.serializer.registry import ArtifactSerializer
 from furu.serializer.schema import schema_type as _schema_type
@@ -117,9 +117,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
         return self.storage_root
 
     @property
-    def result_codecs(
-        self,
-    ) -> tuple[type[ResultCodec[Any]] | type[DataDirResultCodec[Any]], ...]:
+    def result_codecs(self) -> tuple[type[ResultCodec[Any]], ...]:
         return ()
 
     @property

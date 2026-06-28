@@ -22,11 +22,7 @@ import pydantic
 from furu._storage_layout import data_dir_in
 from furu._declared_types import child_declared_type, strip_annotated
 from furu.constants import FIELDSMARKER, KINDMARKER, TYPEMARKER
-from furu.result.codec import (
-    DataDirResultCodec as DataDirResultCodec,
-    ResultCodec,
-    ResultCodecMeta,
-)
+from furu.result.codec import ResultCodec, ResultCodecMeta
 from furu.result.lazy import LazyResult
 from furu.result.save_as import _SaveAs
 from furu.result.save_as import save_as as save_as
@@ -38,7 +34,6 @@ LAZY_DIR_NAME: Final = "lazy"
 MANIFEST_FILE_NAME: Final = "manifest.json"
 _ROOT_ARTIFACT_NAME: Final = "root"
 ValuePath: TypeAlias = tuple[str, ...]
-_ResultCodecClass: TypeAlias = type[ResultCodec[Any]] | type[DataDirResultCodec[Any]]
 WrapperKind: TypeAlias = Literal[
     "external", "dataclass", "path", "pydantic", "tuple", "set", "frozenset", "lazy"
 ]
@@ -92,15 +87,13 @@ def _dump_value(
     declared_type: object = Any,
     value_path: ValuePath,
     bundle_dir: Path,
-    result_codecs: tuple[_ResultCodecClass, ...],
+    result_codecs: tuple[type[ResultCodec], ...],
     dump_state: _DumpState,
 ) -> JsonValue:
-    annotated_codec: _ResultCodecClass | None = None
+    annotated_codec: type[ResultCodec] | None = None
     if get_origin(declared_type) is Annotated:
         for item in get_args(declared_type)[1:]:
-            if isinstance(item, type) and issubclass(
-                item, (ResultCodec, DataDirResultCodec)
-            ):
+            if isinstance(item, type) and issubclass(item, ResultCodec):
                 annotated_codec = item
                 break
 
@@ -293,7 +286,7 @@ def _dump_value(
             if codec := ResultCodecMeta.find_codec(value, result_codecs):
                 return _dump_external(
                     value,
-                    codec=cast(_ResultCodecClass, codec),
+                    codec=codec,
                     value_path=value_path,
                     bundle_dir=bundle_dir,
                     dump_state=dump_state,
@@ -308,7 +301,7 @@ def _dump_value(
 def _dump_external(
     value: object,
     *,
-    codec: _ResultCodecClass,
+    codec: type[ResultCodec],
     value_path: ValuePath,
     bundle_dir: Path,
     dump_state: _DumpState,
@@ -316,16 +309,13 @@ def _dump_external(
     artifact_rel = Path(ARTIFACTS_DIR_NAME, *(value_path or (_ROOT_ARTIFACT_NAME,)))
     artifact_dir = bundle_dir / artifact_rel
     artifact_dir.mkdir(parents=True, exist_ok=False)
-    if issubclass(codec, DataDirResultCodec):
-        cast(type[DataDirResultCodec[Any]], codec).dump(
-            value,
-            artifact_dir=artifact_dir,
-            path_relative_to_data_dir=partial(
-                _path_relative_to_data_dir, data_dir=dump_state.data_dir
-            ),
-        )
-    else:
-        cast(type[ResultCodec[Any]], codec).dump(value, artifact_dir=artifact_dir)
+    codec.dump(
+        value,
+        artifact_dir=artifact_dir,
+        path_relative_to_data_dir=partial(
+            _path_relative_to_data_dir, data_dir=dump_state.data_dir
+        ),
+    )
     if codec.reload_value_after_dump:
         dump_state.should_reload_value_after_dump = True
     return {
@@ -461,16 +451,12 @@ def _load_wrapper(
 
             codec_id = body["codec"]
             codec = resolve_fully_qualified_name(codec_id)
-            if not isinstance(codec, type) or not issubclass(
-                codec, (ResultCodec, DataDirResultCodec)
-            ):
+            if not isinstance(codec, type) or not issubclass(codec, ResultCodec):
                 raise TypeError(f"{codec_id} is not a ResultCodec")
-            if issubclass(codec, DataDirResultCodec):
-                return codec.load(
-                    artifact_dir=artifact_dir,
-                    path_in_data_dir=partial(_path_in_data_dir, data_dir=data_dir),
-                )
-            return codec.load(artifact_dir=artifact_dir)
+            return codec.load(
+                artifact_dir=artifact_dir,
+                path_in_data_dir=partial(_path_in_data_dir, data_dir=data_dir),
+            )
         case "lazy":
             if (nested_rel := Path(body["path"])).is_absolute():
                 raise ValueError(f"lazy wrapper path must be relative: {nested_rel}")
@@ -590,7 +576,7 @@ def _save_result_bundle(
     bundle_dir: Path,
     *,
     declared_type: object = Any,
-    result_codecs: tuple[_ResultCodecClass, ...],
+    result_codecs: tuple[type[ResultCodec], ...],
     data_dir: Path | None = None,
 ) -> bool:
     bundle_dir.mkdir(parents=True, exist_ok=False)

@@ -6,19 +6,17 @@ from typing import Any, cast
 
 import pydantic
 
-from furu.result.codec import DataDirResultCodec, ResultCodec
+from furu.result.codec import ResultCodec
 from furu.result.lazy import LazyResult
-
-_ResultCodecClass = type[ResultCodec[Any]] | type[DataDirResultCodec[Any]]
 
 
 @dataclass(frozen=True)
 class _SaveAs[T]:
     value: T
-    codec: _ResultCodecClass
+    codec: type[ResultCodec[Any]]
 
 
-def save_as[T](value: T, *, codec: _ResultCodecClass) -> T:
+def save_as[T](value: T, *, codec: type[ResultCodec[Any]]) -> T:
     return cast(T, _SaveAs(value=value, codec=codec))
 
 

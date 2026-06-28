@@ -15,24 +15,6 @@ if TYPE_CHECKING:
 from furu.utils import fully_qualified_name
 
 
-class _ResultCodec[T](ABC):
-    reload_value_after_dump: ClassVar[bool] = False
-
-    @final
-    @classmethod
-    def _codec_id(cls) -> str:
-        return fully_qualified_name(cls)
-
-    @classmethod
-    def dependencies_available(cls) -> bool:
-        return True
-
-    @classmethod
-    @abstractmethod
-    def matches(cls, value: object) -> bool:
-        pass
-
-
 class ResultCodecMeta(ABCMeta):
     _auto_registered_codecs: list[type[ResultCodec]] = []
     _auto_registered_codecs_lock = Lock()
@@ -87,8 +69,8 @@ class ResultCodecMeta(ABCMeta):
     def find_codec(
         mcls,
         value: object,
-        result_codecs: tuple[type[_ResultCodec], ...],
-    ) -> type[_ResultCodec] | None:
+        result_codecs: tuple[type[ResultCodec], ...],
+    ) -> type[ResultCodec] | None:
         auto_registered_codecs, built_in_codecs = mcls._default_codec_layers()
         if codec := _find_single_codec_match(
             value,
@@ -108,26 +90,24 @@ class ResultCodecMeta(ABCMeta):
         return None
 
 
-class ResultCodec[T](_ResultCodec[T], metaclass=ResultCodecMeta):
+class ResultCodec[T](ABC, metaclass=ResultCodecMeta):
     auto_register: ClassVar[bool] = True
+    reload_value_after_dump: ClassVar[bool] = False
+
+    @final
+    @classmethod
+    def _codec_id(cls) -> str:
+        return fully_qualified_name(cls)
+
+    @classmethod
+    def dependencies_available(cls) -> bool:
+        return True
 
     @classmethod
     @abstractmethod
-    def dump(
-        cls,
-        value: T,
-        *,
-        artifact_dir: Path,
-    ) -> None:
+    def matches(cls, value: object) -> bool:
         pass
 
-    @classmethod
-    @abstractmethod
-    def load(cls, *, artifact_dir: Path) -> T:
-        pass
-
-
-class DataDirResultCodec[T](_ResultCodec[T]):
     @classmethod
     @abstractmethod
     def dump(
@@ -169,11 +149,17 @@ class PolarsParquetCodec(ResultCodec["pl.DataFrame"]):
         value: pl.DataFrame,
         *,
         artifact_dir: Path,
+        path_relative_to_data_dir: Callable[[Path], str],
     ) -> None:
         value.write_parquet(artifact_dir / "data.parquet")
 
     @classmethod
-    def load(cls, *, artifact_dir: Path) -> pl.DataFrame:
+    def load(
+        cls,
+        *,
+        artifact_dir: Path,
+        path_in_data_dir: Callable[[str], Path],
+    ) -> pl.DataFrame:
         import polars as pl
 
         return pl.read_parquet(artifact_dir / "data.parquet")
@@ -198,13 +184,19 @@ class NumpyNpyCodec(ResultCodec["np.ndarray[Any, Any]"]):
         value: np.ndarray[Any, Any],
         *,
         artifact_dir: Path,
+        path_relative_to_data_dir: Callable[[Path], str],
     ) -> None:
         import numpy as np
 
         np.save(artifact_dir / "data.npy", value, allow_pickle=False)
 
     @classmethod
-    def load(cls, *, artifact_dir: Path) -> np.ndarray[Any, Any]:
+    def load(
+        cls,
+        *,
+        artifact_dir: Path,
+        path_in_data_dir: Callable[[str], Path],
+    ) -> np.ndarray[Any, Any]:
         import numpy as np
 
         return np.load(artifact_dir / "data.npy", allow_pickle=False)
@@ -212,11 +204,11 @@ class NumpyNpyCodec(ResultCodec["np.ndarray[Any, Any]"]):
 
 def _find_single_codec_match(
     value: object,
-    codecs: tuple[type[_ResultCodec], ...],
+    codecs: tuple[type[ResultCodec], ...],
     *,
     layer_name: str,
-) -> type[_ResultCodec] | None:
-    matching_codec: type[_ResultCodec] | None = None
+) -> type[ResultCodec] | None:
+    matching_codec: type[ResultCodec] | None = None
     for codec in codecs:
         if not codec.matches(value):
             continue

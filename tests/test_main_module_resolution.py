@@ -204,11 +204,22 @@ class MainCodec(ResultCodec[bytes]):
         return isinstance(value, bytes)
 
     @classmethod
-    def dump(cls, value: bytes, *, artifact_dir: Path) -> None:
+    def dump(
+        cls,
+        value: bytes,
+        *,
+        artifact_dir: Path,
+        path_relative_to_data_dir: object,
+    ) -> None:
         (artifact_dir / "data.bin").write_bytes(value)
 
     @classmethod
-    def load(cls, *, artifact_dir: Path) -> bytes:
+    def load(
+        cls,
+        *,
+        artifact_dir: Path,
+        path_in_data_dir: object,
+    ) -> bytes:
         return (artifact_dir / "data.bin").read_bytes()
 
 
