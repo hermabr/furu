@@ -117,7 +117,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
         return self.storage_root
 
     @property
-    def result_codecs(self) -> tuple[type[ResultCodec[Any]], ...]:
+    def result_codecs(self) -> tuple[type[ResultCodec], ...]:
         return ()
 
     @property
