@@ -328,18 +328,6 @@ def _dump_external(
     }
 
 
-def _path_in_data_dir(path: str, *, data_dir: Path) -> Path:
-    rel_path = Path(path)
-    if rel_path.is_absolute():
-        raise ValueError(f"data-dir codec path must be relative: {rel_path}")
-
-    data_dir = data_dir.resolve()
-    resolved_path = (data_dir / rel_path).resolve()
-    if not resolved_path.is_relative_to(data_dir):
-        raise ValueError(f"data-dir codec path escapes data dir: {rel_path}")
-    return resolved_path
-
-
 def _load_value(
     node: JsonValue,
     *,
@@ -450,9 +438,24 @@ def _load_wrapper(
             codec = resolve_fully_qualified_name(codec_id)
             if not isinstance(codec, type) or not issubclass(codec, ResultCodec):
                 raise TypeError(f"{codec_id} is not a ResultCodec")
+
+            def _path_in_data_dir(path: str) -> Path:
+                rel_path = Path(path)
+                if rel_path.is_absolute():
+                    raise ValueError(
+                        f"data-dir codec path must be relative: {rel_path}"
+                    )
+
+                resolved_path = (data_dir.resolve() / rel_path).resolve()
+                if not resolved_path.is_relative_to(data_dir.resolve()):
+                    raise ValueError(
+                        f"data-dir codec path escapes data dir: {rel_path}"
+                    )
+                return resolved_path
+
             return codec.load(
                 artifact_dir=artifact_dir,
-                path_in_data_dir=partial(_path_in_data_dir, data_dir=data_dir),
+                path_in_data_dir=_path_in_data_dir,
             )
         case "lazy":
             if (nested_rel := Path(body["path"])).is_absolute():
