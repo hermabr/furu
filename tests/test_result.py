@@ -467,9 +467,7 @@ class _DataDirPathCodec(DataDirResultCodec[_DataDirPathValue]):
         artifact_dir: Path,
     ) -> None:
         artifact_dir.joinpath("path.txt").write_text(
-            cls.path_relative_to_data_dir(
-                value.path, artifact_dir=artifact_dir
-            ).as_posix(),
+            cls.path_relative_to_data_dir(value.path, artifact_dir=artifact_dir),
             encoding="utf-8",
         )
 
@@ -477,7 +475,7 @@ class _DataDirPathCodec(DataDirResultCodec[_DataDirPathValue]):
     def load(cls, *, artifact_dir: Path) -> _DataDirPathValue:
         return _DataDirPathValue(
             cls.path_in_data_dir(
-                Path(artifact_dir.joinpath("path.txt").read_text(encoding="utf-8")),
+                artifact_dir.joinpath("path.txt").read_text(encoding="utf-8"),
                 artifact_dir=artifact_dir,
             )
         )
@@ -942,6 +940,18 @@ def test_data_dir_result_codec_round_trips_shared_data_dir_path() -> None:
 
     assert loaded_again["first"].path == data_path.resolve()
     assert loaded_again["second"].path == data_path.resolve()
+
+
+def test_data_dir_result_codec_rejects_load_path_outside_data_dir(
+    tmp_path: Path,
+) -> None:
+    artifact_dir = tmp_path / "object" / "result" / "artifacts" / "x"
+    artifact_dir.mkdir(parents=True)
+
+    with pytest.raises(ValueError, match="must be relative"):
+        _DataDirPathCodec.path_in_data_dir("/tmp/outside", artifact_dir=artifact_dir)
+    with pytest.raises(ValueError, match="escapes data dir"):
+        _DataDirPathCodec.path_in_data_dir("../outside", artifact_dir=artifact_dir)
 
 
 class RegistryCountingResult(Furu[_CountingValue]):

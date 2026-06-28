@@ -126,12 +126,24 @@ class ResultCodec[T](ABC, metaclass=ResultCodecMeta):
 
 class DataDirResultCodec[T](ResultCodec[T]):
     @classmethod
-    def path_relative_to_data_dir(cls, path: Path, *, artifact_dir: Path) -> Path:
-        return path.resolve().relative_to(cls._data_dir_for(artifact_dir).resolve())
+    def path_relative_to_data_dir(cls, path: Path, *, artifact_dir: Path) -> str:
+        return (
+            path.resolve()
+            .relative_to(cls._data_dir_for(artifact_dir).resolve())
+            .as_posix()
+        )
 
     @classmethod
-    def path_in_data_dir(cls, path: Path, *, artifact_dir: Path) -> Path:
-        return (cls._data_dir_for(artifact_dir) / path).resolve()
+    def path_in_data_dir(cls, path: str, *, artifact_dir: Path) -> Path:
+        rel_path = Path(path)
+        if rel_path.is_absolute():
+            raise ValueError(f"data-dir codec path must be relative: {rel_path}")
+
+        data_dir = cls._data_dir_for(artifact_dir).resolve()
+        resolved_path = (data_dir / rel_path).resolve()
+        if not resolved_path.is_relative_to(data_dir):
+            raise ValueError(f"data-dir codec path escapes data dir: {rel_path}")
+        return resolved_path
 
     @classmethod
     def _data_dir_for(cls, artifact_dir: Path) -> Path:
