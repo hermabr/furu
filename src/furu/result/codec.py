@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     import numpy as np
     import polars as pl
 
+from furu._storage_layout import data_dir_in
 from furu.utils import fully_qualified_name
 
 
@@ -121,6 +122,27 @@ class ResultCodec[T](ABC, metaclass=ResultCodecMeta):
     @abstractmethod
     def load(cls, *, artifact_dir: Path) -> T:
         pass
+
+
+class DataDirResultCodec[T](ResultCodec[T]):
+    @classmethod
+    def path_relative_to_data_dir(cls, path: Path, *, artifact_dir: Path) -> Path:
+        return path.resolve().relative_to(cls._data_dir_for(artifact_dir).resolve())
+
+    @classmethod
+    def path_in_data_dir(cls, path: Path, *, artifact_dir: Path) -> Path:
+        return (cls._data_dir_for(artifact_dir) / path).resolve()
+
+    @classmethod
+    def _data_dir_for(cls, artifact_dir: Path) -> Path:
+        for parent in artifact_dir.resolve().parents:
+            if parent.name == "result" or (
+                parent.name.startswith("result.") and parent.name.endswith(".tmp")
+            ):
+                return data_dir_in(parent.parent)
+        raise ValueError(
+            f"artifact_dir is not inside a Furu result directory: {artifact_dir}"
+        )
 
 
 class PolarsParquetCodec(ResultCodec["pl.DataFrame"]):

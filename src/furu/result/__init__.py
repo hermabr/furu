@@ -21,7 +21,11 @@ import pydantic
 
 from furu._declared_types import child_declared_type, strip_annotated
 from furu.constants import FIELDSMARKER, KINDMARKER, TYPEMARKER
-from furu.result.codec import ResultCodec, ResultCodecMeta
+from furu.result.codec import (
+    DataDirResultCodec as DataDirResultCodec,
+    ResultCodec,
+    ResultCodecMeta,
+)
 from furu.result.lazy import LazyResult
 from furu.result.save_as import _SaveAs
 from furu.result.save_as import save_as as save_as

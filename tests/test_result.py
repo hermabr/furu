@@ -19,6 +19,7 @@ from furu.result import (
     load_result_bundle,
 )
 from furu.result.codec import (
+    DataDirResultCodec,
     NumpyNpyCodec,
     PolarsParquetCodec,
     ResultCodec,
@@ -446,6 +447,42 @@ class _OptOutRegisteredValueCodec(ResultCodec[_OptOutRegisteredValue]):
         return _OptOutRegisteredValue()
 
 
+@dataclass(frozen=True)
+class _DataDirPathValue:
+    path: Path
+
+
+class _DataDirPathCodec(DataDirResultCodec[_DataDirPathValue]):
+    auto_register: ClassVar[bool] = False
+
+    @classmethod
+    def matches(cls, value: object) -> bool:
+        return isinstance(value, _DataDirPathValue)
+
+    @classmethod
+    def dump(
+        cls,
+        value: _DataDirPathValue,
+        *,
+        artifact_dir: Path,
+    ) -> None:
+        artifact_dir.joinpath("path.txt").write_text(
+            cls.path_relative_to_data_dir(
+                value.path, artifact_dir=artifact_dir
+            ).as_posix(),
+            encoding="utf-8",
+        )
+
+    @classmethod
+    def load(cls, *, artifact_dir: Path) -> _DataDirPathValue:
+        return _DataDirPathValue(
+            cls.path_in_data_dir(
+                Path(artifact_dir.joinpath("path.txt").read_text(encoding="utf-8")),
+                artifact_dir=artifact_dir,
+            )
+        )
+
+
 class RegistryAutoRegisteredValueResult(Furu[_AutoRegisteredValue]):
     @property
     def result_codecs(self) -> tuple[type[ResultCodec], ...]:
@@ -830,6 +867,17 @@ class LazySaveAsArrayResult(Furu[LazySaveAsOutput]):
         )
 
 
+class DataDirPathResult(Furu[dict[str, _DataDirPathValue]]):
+    def create(self) -> dict[str, _DataDirPathValue]:
+        path = self.data_dir / "data.zarr"
+        path.mkdir()
+        value = _DataDirPathValue(path)
+        return {
+            "first": furu.save_as(value, codec=_DataDirPathCodec),
+            "second": furu.save_as(value, codec=_DataDirPathCodec),
+        }
+
+
 def test_save_as_selects_codec_and_does_not_leak_wrapper() -> None:
     obj = SaveAsArrayResult()
     loaded = obj.create()
@@ -876,6 +924,24 @@ class ConflictingSaveAsResult(Furu[ConflictingSaveAsOutput]):
 def test_save_as_conflicts_with_annotated_codec() -> None:
     with pytest.raises(TypeError, match="Conflicting codecs"):
         ConflictingSaveAsResult().create()
+
+
+def test_data_dir_result_codec_round_trips_shared_data_dir_path() -> None:
+    obj = DataDirPathResult()
+    loaded = obj.create()
+    data_path = obj.data_dir / "data.zarr"
+    artifacts_dir = result_dir_in(obj._base_dir) / "artifacts"
+
+    assert loaded["first"].path.resolve() == data_path.resolve()
+    assert loaded["second"].path.resolve() == data_path.resolve()
+    assert (artifacts_dir / "first" / "path.txt").read_text() == "data.zarr"
+    assert (artifacts_dir / "second" / "path.txt").read_text() == "data.zarr"
+    assert not (artifacts_dir / "first" / "data.zarr").exists()
+
+    loaded_again = obj.load_existing()
+
+    assert loaded_again["first"].path == data_path.resolve()
+    assert loaded_again["second"].path == data_path.resolve()
 
 
 class RegistryCountingResult(Furu[_CountingValue]):
