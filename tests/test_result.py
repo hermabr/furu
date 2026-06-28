@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any, ClassVar, cast
@@ -447,14 +448,12 @@ class _OptOutRegisteredValueCodec(ResultCodec[_OptOutRegisteredValue]):
         return _OptOutRegisteredValue()
 
 
-@dataclass(frozen=True)
 class _DataDirPathValue:
-    path: Path
+    def __init__(self, path: Path) -> None:
+        self.path = path
 
 
 class _DataDirPathCodec(DataDirResultCodec[_DataDirPathValue]):
-    auto_register: ClassVar[bool] = False
-
     @classmethod
     def matches(cls, value: object) -> bool:
         return isinstance(value, _DataDirPathValue)
@@ -465,18 +464,23 @@ class _DataDirPathCodec(DataDirResultCodec[_DataDirPathValue]):
         value: _DataDirPathValue,
         *,
         artifact_dir: Path,
+        path_relative_to_data_dir: Callable[[Path], str],
     ) -> None:
         artifact_dir.joinpath("path.txt").write_text(
-            cls.path_relative_to_data_dir(value.path, artifact_dir=artifact_dir),
+            path_relative_to_data_dir(value.path),
             encoding="utf-8",
         )
 
     @classmethod
-    def load(cls, *, artifact_dir: Path) -> _DataDirPathValue:
+    def load(
+        cls,
+        *,
+        artifact_dir: Path,
+        path_in_data_dir: Callable[[str], Path],
+    ) -> _DataDirPathValue:
         return _DataDirPathValue(
-            cls.path_in_data_dir(
+            path_in_data_dir(
                 artifact_dir.joinpath("path.txt").read_text(encoding="utf-8"),
-                artifact_dir=artifact_dir,
             )
         )
 
@@ -866,12 +870,16 @@ class LazySaveAsArrayResult(Furu[LazySaveAsOutput]):
 
 
 class DataDirPathResult(Furu[dict[str, _DataDirPathValue]]):
+    @property
+    def result_codecs(self) -> tuple[type[DataDirResultCodec], ...]:
+        return (_DataDirPathCodec,)
+
     def create(self) -> dict[str, _DataDirPathValue]:
         path = self.data_dir / "data.zarr"
         path.mkdir()
         value = _DataDirPathValue(path)
         return {
-            "first": furu.save_as(value, codec=_DataDirPathCodec),
+            "first": value,
             "second": furu.save_as(value, codec=_DataDirPathCodec),
         }
 
@@ -945,13 +953,29 @@ def test_data_dir_result_codec_round_trips_shared_data_dir_path() -> None:
 def test_data_dir_result_codec_rejects_load_path_outside_data_dir(
     tmp_path: Path,
 ) -> None:
-    artifact_dir = tmp_path / "object" / "result" / "artifacts" / "x"
+    result_dir = tmp_path / "object" / "result"
+    artifact_dir = result_dir / "artifacts" / "root"
     artifact_dir.mkdir(parents=True)
+    (result_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "$furu": {
+                    "|kind": "external",
+                    "codec": _DataDirPathCodec._codec_id(),
+                    "path": "artifacts/root",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
 
+    artifact_dir.joinpath("path.txt").write_text("/tmp/outside", encoding="utf-8")
     with pytest.raises(ValueError, match="must be relative"):
-        _DataDirPathCodec.path_in_data_dir("/tmp/outside", artifact_dir=artifact_dir)
+        load_result_bundle(result_dir)
+
+    artifact_dir.joinpath("path.txt").write_text("../outside", encoding="utf-8")
     with pytest.raises(ValueError, match="escapes data dir"):
-        _DataDirPathCodec.path_in_data_dir("../outside", artifact_dir=artifact_dir)
+        load_result_bundle(result_dir)
 
 
 class RegistryCountingResult(Furu[_CountingValue]):

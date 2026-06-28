@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from abc import ABC, ABCMeta, abstractmethod
+from collections.abc import Callable
 from functools import cache
 from pathlib import Path
 from threading import Lock
@@ -11,8 +12,25 @@ if TYPE_CHECKING:
     import numpy as np
     import polars as pl
 
-from furu._storage_layout import data_dir_in
 from furu.utils import fully_qualified_name
+
+
+class _ResultCodec[T](ABC):
+    reload_value_after_dump: ClassVar[bool] = False
+
+    @final
+    @classmethod
+    def _codec_id(cls) -> str:
+        return fully_qualified_name(cls)
+
+    @classmethod
+    def dependencies_available(cls) -> bool:
+        return True
+
+    @classmethod
+    @abstractmethod
+    def matches(cls, value: object) -> bool:
+        pass
 
 
 class ResultCodecMeta(ABCMeta):
@@ -69,8 +87,8 @@ class ResultCodecMeta(ABCMeta):
     def find_codec(
         mcls,
         value: object,
-        result_codecs: tuple[type[ResultCodec], ...],
-    ) -> type[ResultCodec] | None:
+        result_codecs: tuple[type[_ResultCodec], ...],
+    ) -> type[_ResultCodec] | None:
         auto_registered_codecs, built_in_codecs = mcls._default_codec_layers()
         if codec := _find_single_codec_match(
             value,
@@ -90,23 +108,8 @@ class ResultCodecMeta(ABCMeta):
         return None
 
 
-class ResultCodec[T](ABC, metaclass=ResultCodecMeta):
+class ResultCodec[T](_ResultCodec[T], metaclass=ResultCodecMeta):
     auto_register: ClassVar[bool] = True
-    reload_value_after_dump: ClassVar[bool] = False
-
-    @final
-    @classmethod
-    def _codec_id(cls) -> str:
-        return fully_qualified_name(cls)
-
-    @classmethod
-    def dependencies_available(cls) -> bool:
-        return True
-
-    @classmethod
-    @abstractmethod
-    def matches(cls, value: object) -> bool:
-        pass
 
     @classmethod
     @abstractmethod
@@ -124,37 +127,27 @@ class ResultCodec[T](ABC, metaclass=ResultCodecMeta):
         pass
 
 
-class DataDirResultCodec[T](ResultCodec[T]):
+class DataDirResultCodec[T](_ResultCodec[T]):
     @classmethod
-    def path_relative_to_data_dir(cls, path: Path, *, artifact_dir: Path) -> str:
-        return (
-            path.resolve()
-            .relative_to(cls._data_dir_for(artifact_dir).resolve())
-            .as_posix()
-        )
+    @abstractmethod
+    def dump(
+        cls,
+        value: T,
+        *,
+        artifact_dir: Path,
+        path_relative_to_data_dir: Callable[[Path], str],
+    ) -> None:
+        pass
 
     @classmethod
-    def path_in_data_dir(cls, path: str, *, artifact_dir: Path) -> Path:
-        rel_path = Path(path)
-        if rel_path.is_absolute():
-            raise ValueError(f"data-dir codec path must be relative: {rel_path}")
-
-        data_dir = cls._data_dir_for(artifact_dir).resolve()
-        resolved_path = (data_dir / rel_path).resolve()
-        if not resolved_path.is_relative_to(data_dir):
-            raise ValueError(f"data-dir codec path escapes data dir: {rel_path}")
-        return resolved_path
-
-    @classmethod
-    def _data_dir_for(cls, artifact_dir: Path) -> Path:
-        for parent in artifact_dir.resolve().parents:
-            if parent.name == "result" or (
-                parent.name.startswith("result.") and parent.name.endswith(".tmp")
-            ):
-                return data_dir_in(parent.parent)
-        raise ValueError(
-            f"artifact_dir is not inside a Furu result directory: {artifact_dir}"
-        )
+    @abstractmethod
+    def load(
+        cls,
+        *,
+        artifact_dir: Path,
+        path_in_data_dir: Callable[[str], Path],
+    ) -> T:
+        pass
 
 
 class PolarsParquetCodec(ResultCodec["pl.DataFrame"]):
@@ -219,11 +212,11 @@ class NumpyNpyCodec(ResultCodec["np.ndarray[Any, Any]"]):
 
 def _find_single_codec_match(
     value: object,
-    codecs: tuple[type[ResultCodec], ...],
+    codecs: tuple[type[_ResultCodec], ...],
     *,
     layer_name: str,
-) -> type[ResultCodec] | None:
-    matching_codec: type[ResultCodec] | None = None
+) -> type[_ResultCodec] | None:
+    matching_codec: type[_ResultCodec] | None = None
     for codec in codecs:
         if not codec.matches(value):
             continue
