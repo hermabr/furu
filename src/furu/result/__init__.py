@@ -49,7 +49,6 @@ WrapperKind: TypeAlias = Literal[
 @dataclasses.dataclass
 class _DumpState:
     base_dir: Path
-    data_dir_paths: dict[Path, ValuePath] = dataclasses.field(default_factory=dict)
     should_reload_value_after_dump: bool = False
 
 
@@ -282,7 +281,6 @@ def _dump_value(
                 declared_type=lazy_declared_type,
                 result_codecs=result_codecs,
                 base_dir=dump_state.base_dir,
-                _data_dir_paths=dump_state.data_dir_paths,
             ):
                 dump_state.should_reload_value_after_dump = True
             return {
@@ -347,12 +345,6 @@ def _dump_data_dir(
         )
 
     rel_path = data_dir_path.relative_to(base_dir)
-    if previous := dump_state.data_dir_paths.get(rel_path):
-        raise ValueError(
-            f"data-dir result at {_value_path_display(value_path)} reuses path "
-            f"already claimed at {_value_path_display(previous)}: {rel_path.as_posix()}"
-        )
-    dump_state.data_dir_paths[rel_path] = value_path
     if codec.reload_value_after_dump:
         dump_state.should_reload_value_after_dump = True
     return {
@@ -646,13 +638,11 @@ def _save_result_bundle(
     declared_type: object = Any,
     result_codecs: tuple[type[ResultCodec], ...],
     base_dir: Path | None = None,
-    _data_dir_paths: dict[Path, ValuePath] | None = None,
 ) -> bool:
     bundle_dir.mkdir(parents=True, exist_ok=False)
 
     dump_state = _DumpState(
         base_dir=base_dir if base_dir is not None else bundle_dir.parent,
-        data_dir_paths=_data_dir_paths if _data_dir_paths is not None else {},
     )
     manifest = _dump_value(
         value,

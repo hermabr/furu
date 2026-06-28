@@ -293,7 +293,7 @@ class DataDirCodecResult(Furu[dict[str, _DataDirValue]]):
         return {"train": _DataDirValue(path)}
 
 
-class DuplicateDataDirCodecResult(Furu[dict[str, _DataDirValue]]):
+class SharedDataDirCodecResult(Furu[dict[str, _DataDirValue]]):
     @property
     def result_codecs(self) -> tuple[type[ResultCodec], ...]:
         return (_DataDirValueCodec,)
@@ -328,9 +328,13 @@ def test_data_dir_result_codec_serializes_relative_path() -> None:
     }
 
 
-def test_data_dir_result_codec_rejects_duplicate_path_claims() -> None:
-    with pytest.raises(ValueError, match="reuses path already claimed"):
-        DuplicateDataDirCodecResult().create()
+def test_data_dir_result_codec_allows_shared_paths() -> None:
+    obj = SharedDataDirCodecResult()
+
+    loaded = obj.create()
+
+    assert loaded["train"].path == obj.data_dir / "data.zarr"
+    assert loaded["val"].path == obj.data_dir / "data.zarr"
 
 
 def test_data_dir_result_codec_rejects_path_outside_base_dir(tmp_path: Path) -> None:
