@@ -13,10 +13,10 @@ from furu.result.lazy import LazyResult
 @dataclass(frozen=True)
 class _SaveAs[T]:
     value: T
-    codec: type[ResultCodec[Any]]
+    codec: type[ResultCodec]
 
 
-def save_as[T](value: T, *, codec: type[ResultCodec[Any]]) -> T:
+def save_as[T](value: T, *, codec: type[ResultCodec]) -> T:
     return cast(T, _SaveAs(value=value, codec=codec))
 
 
