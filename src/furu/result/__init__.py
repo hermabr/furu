@@ -19,8 +19,8 @@ from typing import (
 
 import pydantic
 
-from furu._storage_layout import data_dir_in
 from furu._declared_types import child_declared_type, strip_annotated
+from furu._storage_layout import data_dir_in
 from furu.constants import FIELDSMARKER, KINDMARKER, TYPEMARKER
 from furu.result.codec import ResultCodec, ResultCodecMeta
 from furu.result.lazy import LazyResult
@@ -309,11 +309,12 @@ def _dump_external(
     artifact_rel = Path(ARTIFACTS_DIR_NAME, *(value_path or (_ROOT_ARTIFACT_NAME,)))
     artifact_dir = bundle_dir / artifact_rel
     artifact_dir.mkdir(parents=True, exist_ok=False)
+
     codec.dump(
         value,
         artifact_dir=artifact_dir,
-        path_relative_to_data_dir=partial(
-            _path_relative_to_data_dir, data_dir=dump_state.data_dir
+        path_relative_to_data_dir=lambda path: (
+            path.resolve().relative_to(dump_state.data_dir.resolve()).as_posix()
         ),
     )
     if codec.reload_value_after_dump:
@@ -325,10 +326,6 @@ def _dump_external(
             "path": artifact_rel.as_posix(),
         }
     }
-
-
-def _path_relative_to_data_dir(path: Path, *, data_dir: Path) -> str:
-    return path.resolve().relative_to(data_dir.resolve()).as_posix()
 
 
 def _path_in_data_dir(path: str, *, data_dir: Path) -> Path:
