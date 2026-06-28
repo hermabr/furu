@@ -123,6 +123,28 @@ class ResultCodec[T](ABC, metaclass=ResultCodecMeta):
         pass
 
 
+class DataDirResultCodec[T](ResultCodec[T], ABC):
+    @classmethod
+    @abstractmethod
+    def path(cls, value: T) -> Path:
+        pass
+
+    @classmethod
+    @abstractmethod
+    def load_path(cls, path: Path) -> T:
+        pass
+
+    @final
+    @classmethod
+    def dump(cls, value: T, *, artifact_dir: Path) -> None:
+        raise RuntimeError("DataDirResultCodec is handled by Furu")
+
+    @final
+    @classmethod
+    def load(cls, *, artifact_dir: Path) -> T:
+        raise RuntimeError("DataDirResultCodec is handled by Furu")
+
+
 class PolarsParquetCodec(ResultCodec["pl.DataFrame"]):
     auto_register: ClassVar[bool] = False
 

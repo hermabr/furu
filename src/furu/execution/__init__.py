@@ -150,6 +150,7 @@ def _store_result[T](
         tmp_result_dir,
         declared_type=declared_type,
         result_codecs=obj.result_codecs,
+        base_dir=obj._base_dir,
     )
 
     if not has_lock():

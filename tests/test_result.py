@@ -19,6 +19,7 @@ from furu.result import (
     load_result_bundle,
 )
 from furu.result.codec import (
+    DataDirResultCodec,
     NumpyNpyCodec,
     PolarsParquetCodec,
     ResultCodec,
@@ -257,6 +258,94 @@ class _CustomTensor:
 class _CountingValue:
     def __init__(self, value: int) -> None:
         self.value = value
+
+
+class _DataDirValue:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+
+class _DataDirValueCodec(DataDirResultCodec[_DataDirValue]):
+    auto_register: ClassVar[bool] = False
+
+    @classmethod
+    def matches(cls, value: object) -> bool:
+        return isinstance(value, _DataDirValue)
+
+    @classmethod
+    def path(cls, value: _DataDirValue) -> Path:
+        return value.path
+
+    @classmethod
+    def load_path(cls, path: Path) -> _DataDirValue:
+        return _DataDirValue(path)
+
+
+class DataDirCodecResult(Furu[dict[str, _DataDirValue]]):
+    @property
+    def result_codecs(self) -> tuple[type[ResultCodec], ...]:
+        return (_DataDirValueCodec,)
+
+    def create(self) -> dict[str, _DataDirValue]:
+        path = self.data_dir / "data.zarr"
+        path.mkdir()
+        path.joinpath("chunk.txt").write_text("x", encoding="utf-8")
+        return {"train": _DataDirValue(path)}
+
+
+class DuplicateDataDirCodecResult(Furu[dict[str, _DataDirValue]]):
+    @property
+    def result_codecs(self) -> tuple[type[ResultCodec], ...]:
+        return (_DataDirValueCodec,)
+
+    def create(self) -> dict[str, _DataDirValue]:
+        path = self.data_dir / "data.zarr"
+        path.mkdir()
+        return {"train": _DataDirValue(path), "val": _DataDirValue(path)}
+
+
+def test_data_dir_result_codec_serializes_relative_path() -> None:
+    obj = DataDirCodecResult()
+
+    first = obj.create()
+    second = obj.create()
+
+    expected_path = obj.data_dir / "data.zarr"
+    assert first["train"].path == expected_path
+    assert second["train"].path == expected_path
+    assert expected_path.joinpath("chunk.txt").read_text(encoding="utf-8") == "x"
+    assert not (result_dir_in(obj._base_dir) / "artifacts").exists()
+
+    manifest = json.loads(result_manifest_path_in(obj._base_dir).read_text())
+    assert manifest == {
+        "train": {
+            "$furu": {
+                "|kind": "data-dir",
+                "codec": _DataDirValueCodec._codec_id(),
+                "path": "data/data.zarr",
+            }
+        }
+    }
+
+
+def test_data_dir_result_codec_rejects_duplicate_path_claims() -> None:
+    with pytest.raises(ValueError, match="reuses path already claimed"):
+        DuplicateDataDirCodecResult().create()
+
+
+def test_data_dir_result_codec_rejects_path_outside_base_dir(tmp_path: Path) -> None:
+    base_dir = tmp_path / "base"
+    outside = tmp_path / "outside.zarr"
+    base_dir.mkdir()
+    outside.mkdir()
+
+    with pytest.raises(ValueError, match="escapes object directory"):
+        _save_result_bundle(
+            _DataDirValue(outside),
+            base_dir / "result.tmp",
+            result_codecs=(_DataDirValueCodec,),
+            base_dir=base_dir,
+        )
 
 
 class _CountingCodec(ResultCodec[_CountingValue]):
