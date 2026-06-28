@@ -115,7 +115,7 @@ class ResultCodec[T](ABC, metaclass=ResultCodecMeta):
         value: T,
         *,
         artifact_dir: Path,
-        path_relative_to_data_dir: Callable[[Path], str],
+        dump_data_path: Callable[[Path], str],
     ) -> None:
         pass
 
@@ -125,7 +125,7 @@ class ResultCodec[T](ABC, metaclass=ResultCodecMeta):
         cls,
         *,
         artifact_dir: Path,
-        path_in_data_dir: Callable[[str], Path],
+        load_data_path: Callable[[str], Path],
     ) -> T:
         pass
 
@@ -149,7 +149,7 @@ class PolarsParquetCodec(ResultCodec["pl.DataFrame"]):
         value: pl.DataFrame,
         *,
         artifact_dir: Path,
-        path_relative_to_data_dir: Callable[[Path], str],
+        dump_data_path: Callable[[Path], str],
     ) -> None:
         value.write_parquet(artifact_dir / "data.parquet")
 
@@ -158,7 +158,7 @@ class PolarsParquetCodec(ResultCodec["pl.DataFrame"]):
         cls,
         *,
         artifact_dir: Path,
-        path_in_data_dir: Callable[[str], Path],
+        load_data_path: Callable[[str], Path],
     ) -> pl.DataFrame:
         import polars as pl
 
@@ -184,7 +184,7 @@ class NumpyNpyCodec(ResultCodec["np.ndarray[Any, Any]"]):
         value: np.ndarray[Any, Any],
         *,
         artifact_dir: Path,
-        path_relative_to_data_dir: Callable[[Path], str],
+        dump_data_path: Callable[[Path], str],
     ) -> None:
         import numpy as np
 
@@ -195,7 +195,7 @@ class NumpyNpyCodec(ResultCodec["np.ndarray[Any, Any]"]):
         cls,
         *,
         artifact_dir: Path,
-        path_in_data_dir: Callable[[str], Path],
+        load_data_path: Callable[[str], Path],
     ) -> np.ndarray[Any, Any]:
         import numpy as np
 

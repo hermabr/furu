@@ -313,7 +313,7 @@ def _dump_external(
     codec.dump(
         value,
         artifact_dir=artifact_dir,
-        path_relative_to_data_dir=lambda path: (
+        dump_data_path=lambda path: (
             path.resolve().relative_to(dump_state.data_dir.resolve()).as_posix()
         ),
     )
@@ -439,7 +439,7 @@ def _load_wrapper(
             if not isinstance(codec, type) or not issubclass(codec, ResultCodec):
                 raise TypeError(f"{codec_id} is not a ResultCodec")
 
-            def _path_in_data_dir(path: str) -> Path:
+            def _load_data_path(path: str) -> Path:
                 rel_path = Path(path)
                 if rel_path.is_absolute():
                     raise ValueError(
@@ -455,7 +455,7 @@ def _load_wrapper(
 
             return codec.load(
                 artifact_dir=artifact_dir,
-                path_in_data_dir=_path_in_data_dir,
+                load_data_path=_load_data_path,
             )
         case "lazy":
             if (nested_rel := Path(body["path"])).is_absolute():

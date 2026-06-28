@@ -210,7 +210,7 @@ class MainCodec(ResultCodec[bytes]):
         value: bytes,
         *,
         artifact_dir: Path,
-        path_relative_to_data_dir: object,
+        dump_data_path: object,
     ) -> None:
         (artifact_dir / "data.bin").write_bytes(value)
 
@@ -219,7 +219,7 @@ class MainCodec(ResultCodec[bytes]):
         cls,
         *,
         artifact_dir: Path,
-        path_in_data_dir: object,
+        load_data_path: object,
     ) -> bytes:
         return (artifact_dir / "data.bin").read_bytes()
 
