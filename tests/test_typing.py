@@ -54,6 +54,8 @@ if TYPE_CHECKING:
     assert_type(parent.uncached_child, TypingChild)
     assert_type(parent.children, list[TypingChild])
     assert_type(parent.children[0], TypingChild)
+    assert_type(furu.load_existing(parent.cached_child), int)
+    assert_type(furu.load_existing([parent.cached_child]), list[int])
     assert_type(typed_letter_count(source="banana", letter="a"), int)
     assert_type(typed_letter_count.spec(source="banana", letter="a"), furu.Furu[int])
     assert_type(
