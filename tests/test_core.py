@@ -1344,6 +1344,44 @@ def test_load_existing_missing_result_explains_how_to_compute() -> None:
         Node(name="missing").load_existing()
 
 
+def test_top_level_load_existing_accepts_single_furu_object(tmp_path: Path) -> None:
+    node = Node(name="single-load")
+
+    assert node.create() == "Node(single-load)"
+
+    log_path = tmp_path / "single-load-existing.log"
+    with _scoped_log_files((log_path,)):
+        assert furu.load_existing(node) == "Node(single-load)"
+
+    info_lines = [
+        line
+        for line in log_path.read_text(encoding="utf-8").splitlines()
+        if "level=info" in line
+    ]
+    assert len(info_lines) == 1
+    assert info_lines[0].endswith(f'msg="loaded {node._log_label}"')
+
+
+def test_top_level_load_existing_accepts_list_and_logs_once(tmp_path: Path) -> None:
+    nodes = [Node(name="load-a"), Node(name="load-b")]
+
+    assert [node.create() for node in nodes] == ["Node(load-a)", "Node(load-b)"]
+
+    log_path = tmp_path / "load-existing.log"
+    with _scoped_log_files((log_path,)):
+        assert furu.load_existing(nodes) == ["Node(load-a)", "Node(load-b)"]
+
+    info_lines = [
+        line
+        for line in log_path.read_text(encoding="utf-8").splitlines()
+        if "level=info" in line
+    ]
+    assert len(info_lines) == 1
+    assert info_lines[0].endswith(
+        f'msg="loaded 2 furu objects including {nodes[0]._log_label}"'
+    )
+
+
 def test_function_type_can_be_declared_field_dependency() -> None:
     child = letter_count.spec("banana", "a")
     parent = FunctionDependencyParent(child=child)

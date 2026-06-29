@@ -3,6 +3,7 @@ from importlib.metadata import version
 from furu._declared_types import skip_hash
 from furu.core import Furu
 from furu.dependencies import dependency
+from furu.execution import load_existing
 from furu.logging import get_logger
 from furu.function import function
 from furu.migration import Migration
@@ -28,6 +29,7 @@ __all__ = [
     "function",
     "ResultCodec",
     "get_logger",
+    "load_existing",
     "save_as",
     "skip_hash",
     "validate",

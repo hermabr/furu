@@ -26,7 +26,7 @@ from furu._storage_layout import (
 from furu.core import Furu, FuruCreateMode
 from furu.dependencies import dependency_recorder, record_dependency_call
 from furu.locking import lock
-from furu.logging import _scoped_log_files
+from furu.logging import _scoped_log_files, get_logger
 from furu.metadata import RunningMetadata
 from furu.migration import result_dir_for_loading
 from furu.result import _save_result_bundle, load_result_bundle
@@ -232,6 +232,36 @@ def _normalize_load_or_create_input[T](
         for obj in objs:
             record_dependency_call(obj)
     return objs, unwrap
+
+
+@overload
+def load_existing[T](obj: Furu[T]) -> T: ...
+
+
+@overload
+def load_existing[T](objs: Sequence[Furu[T]]) -> list[T]: ...
+
+
+def load_existing[T](obj_or_objs: Furu[T] | Sequence[Furu[T]]) -> T | list[T]:
+    if isinstance(obj_or_objs, Furu):
+        loaded = obj_or_objs.load_existing()
+        get_logger().info("loaded %s", obj_or_objs._log_label)
+        return loaded
+    if not isinstance(obj_or_objs, Sequence):
+        raise TypeError(
+            "load_existing() expected a Furu object or a sequence of Furu objects"
+        )
+    objs = list(obj_or_objs)
+    if any(not isinstance(obj, Furu) for obj in objs):
+        raise TypeError("load_existing() expected Furu objects")
+    loaded = [obj.load_existing() for obj in objs]
+    if objs:
+        get_logger().info(
+            "loaded %d furu objects including %s", len(loaded), objs[0]._log_label
+        )
+    else:
+        get_logger().info("loaded 0 furu objects")
+    return loaded
 
 
 def _cached_to_build_msg(cached: list[Furu[Any]], to_build: list[Furu[Any]]) -> str:
