@@ -236,12 +236,8 @@ def _normalize_load_or_create_input[T](
 
 @overload
 def load_existing[T](obj: Furu[T]) -> T: ...
-
-
 @overload
 def load_existing[T](objs: Sequence[Furu[T]]) -> list[T]: ...
-
-
 def load_existing[T](obj_or_objs: Furu[T] | Sequence[Furu[T]]) -> T | list[T]:
     if isinstance(obj_or_objs, Furu):
         loaded = obj_or_objs.load_existing()
@@ -510,5 +506,7 @@ def _create_and_store_group[T](
             )
             raise
         except Exception:
-            logger.exception("create failed for %s", group[0]._log_label, stack_info=True)
+            logger.exception(
+                "create failed for %s", group[0]._log_label, stack_info=True
+            )
             raise
