@@ -2215,6 +2215,29 @@ def test_worker_load_existing_reports_missing_dependency(tmp_path: Path) -> None
     assert exc.dependencies == (missing,)
 
 
+def test_worker_top_level_load_existing_reports_all_missing_dependencies(
+    tmp_path: Path,
+) -> None:
+    ObjectIdStorageRootValue.storage_root_override = tmp_path / "data"
+    missing_first = ObjectIdStorageRootValue(key=21)
+    ready = ObjectIdStorageRootValue(key=22)
+    missing_second = ObjectIdStorageRootValue(key=23)
+
+    assert ready.create() == "object-id:22"
+
+    with (
+        worker_execution_context(
+            lease_id="lease-1",
+        ),
+        pytest.raises(_DependencyNotReady) as exc_info,
+    ):
+        furu.load_existing([missing_first, ready, missing_second])
+
+    exc = exc_info.value
+    assert exc.call_kind == "load_existing"
+    assert exc.dependencies == (missing_first, missing_second)
+
+
 def test_worker_dependency_not_ready_is_not_caught_as_exception(
     tmp_path: Path,
 ) -> None:

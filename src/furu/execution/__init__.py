@@ -254,7 +254,25 @@ def load_existing[T](obj_or_objs: Furu[T] | Sequence[Furu[T]]) -> T | list[T]:
     objs = list(obj_or_objs)
     if any(not isinstance(obj, Furu) for obj in objs):
         raise TypeError("load_existing() expected Furu objects")
-    loaded = [obj.load_existing() for obj in objs]
+    loaded: list[T] = []
+    missing: list[Furu[T]] = []
+    for obj in objs:
+        record_dependency_call(obj)
+        if (result_dir := result_dir_for_loading(obj)) is None:
+            missing.append(obj)
+            continue
+        loaded.append(
+            cast(T, load_result_bundle(result_dir, data_dir=data_dir_in(obj._base_dir)))
+        )
+    if missing:
+        if _worker_execution_lease_id.get() is not None:
+            raise _DependencyNotReady(dependencies=missing, call_kind="load_existing")
+        first = missing[0]
+        raise RuntimeError(
+            f"{first._log_label}.load_existing() could not find a result. "
+            "load_existing() only loads existing results; use create() to compute "
+            "missing results."
+        )
     if objs:
         get_logger().info(
             "loaded %d furu objects including %s", len(loaded), objs[0]._log_label
