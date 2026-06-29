@@ -927,18 +927,24 @@ def test_slurm_pool_releases_nonfailed_array_workers_missing_from_squeue(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
-    record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
     lost_workers: list[str] = []
     monkeypatch.setattr(
         PoolApiClient,
         "count_satisfiable_jobs",
         lambda self, *, resources, max_workers: max_workers,
     )
-    monkeypatch.setattr(
-        PoolApiClient,
-        "worker_lost",
-        lambda self, *, worker: lost_workers.append(worker),
-    )
+
+    def worker_lost(
+        self: PoolApiClient,
+        *,
+        worker: str,
+        details: dict[str, str],
+        reason: str = "worker is no longer active",
+    ) -> None:
+        lost_workers.append(worker)
+
+    monkeypatch.setattr(PoolApiClient, "worker_lost", worker_lost)
     backend = SlurmWorkerBackend(
         max_workers=3,
         resources=SlurmResources(cpus_per_worker=1),
@@ -956,15 +962,7 @@ def test_slurm_pool_releases_nonfailed_array_workers_missing_from_squeue(
     assert pool._job_ids == ["100_0", "100_1", "100_2"]
 
     monkeypatch.setattr(type(pool), "_active_job_ids", lambda self: {"100_0"})
-    monkeypatch.setattr(
-        type(pool),
-        "_task_states",
-        lambda self: {
-            "100_0": "RUNNING",
-            "100_1": "PREEMPTED",
-            "100_2": "REQUEUED",
-        },
-    )
+    active_file.write_text("100_0\n100_1 PREEMPTED\n100_2 REQUEUED\n")
     pool._scale_once()
 
     assert lost_workers == ["slurm-worker-100a1", "slurm-worker-100a2"]
@@ -978,6 +976,83 @@ def test_slurm_pool_releases_nonfailed_array_workers_missing_from_squeue(
     assert [arg for arg in sbatch_records[1]["argv"] if arg.startswith("--array")] == [
         "--array=0-1"
     ]
+
+
+def test_slurm_pool_releases_worker_when_sacct_restart_count_increases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    lost_workers: list[tuple[str, str, dict[str, str]]] = []
+
+    def count_satisfiable_jobs(
+        self: PoolApiClient, *, resources: ResourceRequest, max_workers: int
+    ) -> int:
+        return max_workers
+
+    monkeypatch.setattr(PoolApiClient, "count_satisfiable_jobs", count_satisfiable_jobs)
+
+    def worker_lost(
+        self: PoolApiClient,
+        *,
+        worker: str,
+        details: dict[str, str],
+        reason: str = "worker is no longer active",
+    ) -> None:
+        lost_workers.append((worker, reason, details))
+
+    monkeypatch.setattr(PoolApiClient, "worker_lost", worker_lost)
+    backend = SlurmWorkerBackend(
+        max_workers=1,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="execution-coordinator.cluster",
+        poll_interval=0,
+        use_job_arrays=False,
+    )
+    pool = backend.start_pool(
+        bound_port=1234,
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+    )
+
+    pool._scale_once()
+    assert pool._job_ids == ["100"]
+
+    active_file.write_text(
+        "100 RUNNING|1|2026-06-28T12:00:00|Unknown|node-b|Preempted\n"
+    )
+    pool._scale_once()
+    pool._scale_once()
+
+    assert lost_workers == [
+        (
+            "slurm-worker-100",
+            "slurm worker died: JobID=100 State=RUNNING Restarts=1 "
+            "Start=2026-06-28T12:00:00 End=Unknown NodeList=node-b "
+            "Reason=Preempted",
+            {
+                "slurm_job_id": "100",
+                "slurm_state": "RUNNING",
+                "slurm_restarts": "1",
+                "slurm_start": "2026-06-28T12:00:00",
+                "slurm_end": "Unknown",
+                "slurm_node_list": "node-b",
+                "slurm_reason": "Preempted",
+            },
+        )
+    ]
+    assert pool._job_ids == ["100"]
+    assert (
+        len(
+            [
+                record
+                for record in _read_records(record_file)
+                if record["executable"] == "sbatch"
+            ]
+        )
+        == 1
+    )
 
 
 def test_slurm_worker_pool_stop_cancels_array_tasks(
@@ -1196,7 +1271,7 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
         "-X",
         "--noheader",
         "-o",
-        "JobID,State",
+        "JobID,State,Restarts,Start,End,NodeList,Reason",
         "--parsable2",
         "-j",
         "100,101",
@@ -1405,18 +1480,30 @@ def test_slurm_pool_scale_does_not_count_completed_jobs_as_restarts(
     )
 
 
-def test_slurm_pool_scale_reports_cancelled_jobs_as_failures(
+def test_slurm_pool_scale_releases_cancelled_jobs_as_lost_workers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
     record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
     reports: list[str] = []
+    lost_workers: list[tuple[str, str, dict[str, str]]] = []
     monkeypatch.setattr(
         PoolApiClient,
         "count_satisfiable_jobs",
         lambda self, *, resources, max_workers: max_workers,
     )
+
+    def worker_lost(
+        self: PoolApiClient,
+        *,
+        worker: str,
+        details: dict[str, str],
+        reason: str = "worker is no longer active",
+    ) -> None:
+        lost_workers.append((worker, reason, details))
+
+    monkeypatch.setattr(PoolApiClient, "worker_lost", worker_lost)
     monkeypatch.setattr(
         PoolApiClient, "fail", lambda self, *, message: reports.append(message)
     )
@@ -1439,11 +1526,27 @@ def test_slurm_pool_scale_reports_cancelled_jobs_as_failures(
     active_file.write_text("100 CANCELLED by 12345\n")
     assert pool._task_states() == {"100": "CANCELLED"}
 
-    pool._scale_loop()
+    pool._scale_once()
 
-    assert reports == ["slurm worker pool became unhealthy: 100 CANCELLED"]
-    assert pool._job_ids == ["100"]
-    assert pool._failed_job_ids == ["100"]
+    assert reports == []
+    assert lost_workers == [
+        (
+            "slurm-worker-100",
+            "slurm worker died: JobID=100 State=CANCELLED Restarts=0 "
+            "Start=Unknown End=Unknown NodeList=node-a Reason=by 12345",
+            {
+                "slurm_job_id": "100",
+                "slurm_state": "CANCELLED",
+                "slurm_restarts": "0",
+                "slurm_start": "Unknown",
+                "slurm_end": "Unknown",
+                "slurm_node_list": "node-a",
+                "slurm_reason": "by 12345",
+            },
+        )
+    ]
+    assert pool._job_ids == ["101"]
+    assert pool._failed_job_ids == []
     assert (
         len(
             [
@@ -1452,7 +1555,7 @@ def test_slurm_pool_scale_reports_cancelled_jobs_as_failures(
                 if record["executable"] == "sbatch"
             ]
         )
-        == 1
+        == 2
     )
 
 
@@ -1533,7 +1636,17 @@ def _install_fake_slurm(
 
     monkeypatch.delenv("FURU_EXECUTION_COORDINATOR_SERVER_URL", raising=False)
     monkeypatch.delenv("FURU_EXECUTION_COORDINATOR_AUTH_TOKEN", raising=False)
-    monkeypatch.setattr(PoolApiClient, "worker_lost", lambda self, *, worker: None)
+
+    def worker_lost(
+        self: PoolApiClient,
+        *,
+        worker: str,
+        details: dict[str, str],
+        reason: str = "worker is no longer active",
+    ) -> None:
+        pass
+
+    monkeypatch.setattr(PoolApiClient, "worker_lost", worker_lost)
     monkeypatch.setenv("FURU_FAKE_SLURM_RECORD_FILE", str(record_file))
     monkeypatch.setenv("FURU_FAKE_SLURM_ACTIVE_FILE", str(active_file))
     monkeypatch.setenv("FURU_FAKE_SLURM_COUNTER_FILE", str(counter_file))
@@ -1606,16 +1719,27 @@ def _install_fake_slurm(
                 requested_jobs.update(arg.removeprefix("-j=").split(","))
 
         if "--noheader" not in sys.argv[1:]:
-            print("JobID|State|NodeList")
+            print("JobID|State|Restarts|Start|End|NodeList|Reason")
         with open(active_file, encoding="utf-8") as file:
             active_jobs = file.read().splitlines()
 
         for active_job in sorted(active_jobs):
-            job_id, _, state = active_job.partition(" ")
+            job_id, _, state_text = active_job.partition(" ")
             allocation_job_id = job_id.partition(".")[0].partition("_")[0]
             if allocation_job_id not in requested_jobs:
                 continue
-            print(f"{job_id}|{state or 'RUNNING'}|node-a")
+            state_text = state_text or "RUNNING"
+            state_field, *fields = state_text.split("|")
+            state, _, state_reason = state_field.partition(" ")
+            restarts = fields[0] if len(fields) > 0 else "0"
+            start = fields[1] if len(fields) > 1 else "Unknown"
+            end = fields[2] if len(fields) > 2 else "Unknown"
+            node_list = fields[3] if len(fields) > 3 else "node-a"
+            reason = fields[4] if len(fields) > 4 else state_reason or "None"
+            print(
+                f"{job_id}|{state or 'RUNNING'}|{restarts}|{start}|{end}|"
+                f"{node_list}|{reason}"
+            )
         """,
     )
     _write_executable(

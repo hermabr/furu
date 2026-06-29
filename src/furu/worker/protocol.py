@@ -74,3 +74,5 @@ class WorkerLostRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     worker: str
+    reason: str = "worker is no longer active"
+    details: dict[str, str]

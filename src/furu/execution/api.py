@@ -97,11 +97,21 @@ class PoolApiClient(_ExecutionCoordinatorApiClientBase):
         )
         OkResponse.model_validate(response)
 
-    def worker_lost(self, *, worker: str) -> None:
+    def worker_lost(
+        self,
+        *,
+        worker: str,
+        details: dict[str, str],
+        reason: str = "worker is no longer active",
+    ) -> None:
         response = self._request_json(
             "/pool/worker_lost",
             method="POST",
-            payload=WorkerLostRequest(worker=worker).model_dump(mode="json"),
+            payload=WorkerLostRequest(
+                worker=worker,
+                reason=reason,
+                details=details,
+            ).model_dump(mode="json", exclude_defaults=True),
         )
         OkResponse.model_validate(response)
 
@@ -146,7 +156,9 @@ def create_execution_coordinator_api_app(
 
     @pool_router.post("/worker_lost", response_model=OkResponse)
     def worker_lost(request: WorkerLostRequest) -> OkResponse:
-        coordinator.worker_lost(request.worker)
+        coordinator.worker_lost(
+            request.worker, reason=request.reason, details=request.details
+        )
         return OkResponse()
 
     app.include_router(worker_router)
