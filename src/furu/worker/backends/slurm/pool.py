@@ -20,8 +20,6 @@ _UNFINISHED_STATES = frozenset(
         "COMPLETING",
         "PENDING",
         "PREEMPTED",
-        "REQUEUE_FED",
-        "REQUEUE_HOLD",
         "REQUEUED",
         "RUNNING",
         "UNKNOWN",
@@ -29,70 +27,10 @@ _UNFINISHED_STATES = frozenset(
 )
 
 _PRUNABLE_STATES = ("COMPLETED",)
-_WORKER_LOST_STATES = frozenset(
-    {
-        "CANCELLED",
-        "PREEMPTED",
-        "REQUEUE_FED",
-        "REQUEUE_HOLD",
-        "REQUEUED",
-    }
-)
-_SACCT_FIELD_NAMES = (
-    "JobID",
-    "State",
-    "Restarts",
-    "Start",
-    "End",
-    "NodeList",
-    "Reason",
-)
 
 
 def _is_failed_state(state: str) -> bool:
-    return (
-        state not in _UNFINISHED_STATES
-        and state not in _PRUNABLE_STATES
-        and state not in _WORKER_LOST_STATES
-    )
-
-
-@dataclass(frozen=True, slots=True)
-class SlurmTaskRecord:
-    job_id: str
-    state: str
-    restarts: str
-    start: str
-    end: str
-    node_list: str
-    reason: str
-
-    @property
-    def details(self) -> dict[str, str]:
-        return {
-            "slurm_job_id": self.job_id,
-            "slurm_state": self.state,
-            "slurm_restarts": self.restarts,
-            "slurm_start": self.start,
-            "slurm_end": self.end,
-            "slurm_node_list": self.node_list,
-            "slurm_reason": self.reason,
-        }
-
-    @property
-    def diagnostic(self) -> str:
-        return (
-            f"JobID={self.job_id} State={self.state} Restarts={self.restarts} "
-            f"Start={self.start} End={self.end} NodeList={self.node_list} "
-            f"Reason={self.reason}"
-        )
-
-
-def _restart_count(restarts: str) -> int:
-    try:
-        return int(restarts)
-    except ValueError:
-        return 0
+    return state not in _UNFINISHED_STATES and state not in _PRUNABLE_STATES
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,7 +49,6 @@ class SlurmWorkerPool:
     _scale_thread: threading.Thread
     _job_ids: list[str]
     _failed_job_ids: list[str]
-    _reported_worker_loss_restarts: dict[str, int]
 
     def stop(self, *, timeout: float) -> None:
         with _scoped_component("slurm"):
@@ -145,14 +82,11 @@ class SlurmWorkerPool:
 
     def _scale_once(self) -> dict[str, str]:
         active_job_ids = self._active_job_ids()
-        records = self._task_records()
-        states = {job_id: record.state for job_id, record in records.items()}
-        worker_loss_records = {
-            job_id: record
-            for job_id, record in records.items()
-            if self._should_report_worker_loss(record)
+        states = self._task_states()
+        preempted_job_ids = {
+            job_id for job_id, state in states.items() if state == "PREEMPTED"
         }
-        lost_job_ids = {
+        lost_job_ids = preempted_job_ids | {
             job_id
             for job_id in self._job_ids
             if active_job_ids is not None
@@ -172,24 +106,19 @@ class SlurmWorkerPool:
                 or states.get(job_id) not in (None, *_PRUNABLE_STATES)
             )
         ]
-        for job_id in sorted(worker_loss_records):
-            record = worker_loss_records[job_id]
-            self._client.worker_lost(
-                worker=self._worker_name(job_id),
-                reason=f"slurm worker died: {record.diagnostic}",
-                details=record.details,
+        for job_id in sorted(lost_job_ids):
+            allocation_job_id, separator, array_task_id = job_id.partition("_")
+            worker = (
+                f"slurm-worker-{allocation_job_id}a{array_task_id}"
+                if separator
+                else f"slurm-worker-{allocation_job_id}"
             )
-        for job_id in sorted(lost_job_ids - worker_loss_records.keys()):
-            record = records.get(job_id)
-            self._client.worker_lost(
-                worker=self._worker_name(job_id),
-                details=record.details if record is not None else {},
-                reason=(
-                    f"slurm worker disappeared: {record.diagnostic}"
-                    if record is not None
-                    else "worker is no longer active"
-                ),
-            )
+            if states.get(job_id) == "PREEMPTED":
+                reason = f"slurm worker {worker} was preempted"
+                logger.warning("%s; reporting worker lost", reason)
+                self._client.worker_lost(worker=worker, reason=reason)
+            else:
+                self._client.worker_lost(worker=worker)
         remaining_starts = (
             self._max_workers
             + self._max_failed_restarts
@@ -278,29 +207,7 @@ class SlurmWorkerPool:
             if line.strip()
         }
 
-    def _worker_name(self, job_id: str) -> str:
-        allocation_job_id, separator, array_task_id = job_id.partition("_")
-        return (
-            f"slurm-worker-{allocation_job_id}a{array_task_id}"
-            if separator
-            else f"slurm-worker-{allocation_job_id}"
-        )
-
-    def _should_report_worker_loss(self, record: SlurmTaskRecord) -> bool:
-        restarts = _restart_count(record.restarts)
-        reported_restarts = self._reported_worker_loss_restarts.get(record.job_id, 0)
-        if restarts > reported_restarts:
-            self._reported_worker_loss_restarts[record.job_id] = restarts
-            return True
-        if record.state in _WORKER_LOST_STATES and reported_restarts == 0:
-            self._reported_worker_loss_restarts[record.job_id] = max(restarts, 1)
-            return True
-        return False
-
     def _task_states(self) -> dict[str, str]:
-        return {job_id: record.state for job_id, record in self._task_records().items()}
-
-    def _task_records(self) -> dict[str, SlurmTaskRecord]:
         if not self._job_ids:
             return {}
 
@@ -315,7 +222,7 @@ class SlurmWorkerPool:
                     "-X",
                     "--noheader",
                     "-o",
-                    ",".join(_SACCT_FIELD_NAMES),
+                    "JobID,State",
                     "--parsable2",
                     "-j",
                     ",".join(sorted(known_allocation_job_ids)),
@@ -332,14 +239,13 @@ class SlurmWorkerPool:
             logger.warning("sacct failed while checking slurm jobs: %s", result.stderr)
             return {}
 
-        records: dict[str, SlurmTaskRecord] = {}
+        states: dict[str, str] = {}
         for line in result.stdout.splitlines():
-            parts = line.split("|", maxsplit=len(_SACCT_FIELD_NAMES) - 1)
+            parts = line.split("|")
             if len(parts) < 2:
                 logger.warning("ignoring malformed sacct line: %r", line)
                 continue
-            parts = [*parts, *([""] * (len(_SACCT_FIELD_NAMES) - len(parts)))]
-            job_id, state, restarts, start, end, node_list, reason = parts
+            job_id, state = parts[0], parts[1]
             allocation_job_id, separator, _step_id = job_id.partition(".")
             if separator and allocation_job_id in known_job_ids:
                 continue
@@ -356,16 +262,8 @@ class SlurmWorkerPool:
                     "ignoring unexpected slurm job id from sacct: %r", job_id
                 )
                 continue
-            records[job_id] = SlurmTaskRecord(
-                job_id=job_id,
-                state=state.upper().split(maxsplit=1)[0].removesuffix("+"),
-                restarts=restarts or "0",
-                start=start or "N/A",
-                end=end or "N/A",
-                node_list=node_list or "N/A",
-                reason=reason or "N/A",
-            )
-        return records
+            states[job_id] = state.upper().split(maxsplit=1)[0].removesuffix("+")
+        return states
 
     def _scale_loop(self) -> None:
         with _scoped_component("slurm"):

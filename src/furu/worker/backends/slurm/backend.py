@@ -163,7 +163,6 @@ class SlurmWorkerBackend:
             ),
             _job_ids=[],
             _failed_job_ids=[],
-            _reported_worker_loss_restarts={},
         )
         pool_holder.append(pool)
         pool._scale_thread.start()

@@ -75,4 +75,3 @@ class WorkerLostRequest(BaseModel):
 
     worker: str
     reason: str = "worker is no longer active"
-    details: dict[str, str]

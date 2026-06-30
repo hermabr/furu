@@ -631,7 +631,7 @@ def test_worker_lost_requeues_running_lease_without_counting_failure() -> None:
         == 0
     )
 
-    coordinator.worker_lost("worker-1", details={})
+    coordinator.worker_lost("worker-1")
 
     assert set(coordinator.running) == {second.lease_id}
     assert first.artifact.object_id in coordinator.ready
@@ -642,7 +642,7 @@ def test_worker_lost_requeues_running_lease_without_counting_failure() -> None:
     )
 
 
-def test_worker_lost_release_log_includes_reason_details_and_avoids_later_stale_warning(
+def test_worker_lost_release_log_includes_reason_and_avoids_later_stale_warning(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     leaf = ExecutionCoordinatorLeaf(value=99_001)
@@ -653,19 +653,7 @@ def test_worker_lost_release_log_includes_reason_details_and_avoids_later_stale_
     with _captured_furu_logs(caplog):
         coordinator.worker_lost(
             "worker-1",
-            reason=(
-                "slurm worker died: JobID=100 State=CANCELLED Restarts=0 "
-                "Start=Unknown End=Unknown NodeList=node-a Reason=by 12345"
-            ),
-            details={
-                "slurm_job_id": "100",
-                "slurm_state": "CANCELLED",
-                "slurm_restarts": "0",
-                "slurm_start": "Unknown",
-                "slurm_end": "Unknown",
-                "slurm_node_list": "node-a",
-                "slurm_reason": "by 12345",
-            },
+            reason="slurm worker slurm-worker-100 was preempted",
         )
         second = coordinator.lease_job(resources=ResourceRequest(), worker="worker-1")
 
@@ -673,7 +661,7 @@ def test_worker_lost_release_log_includes_reason_details_and_avoids_later_stale_
     assert second.lease_id != first.lease_id
     assert any(
         "released " in record.message
-        and "slurm worker died: JobID=100 State=CANCELLED" in record.message
+        and "slurm worker slurm-worker-100 was preempted" in record.message
         for record in caplog.records
     )
     assert not any(
@@ -686,10 +674,6 @@ def test_worker_lost_release_log_includes_reason_details_and_avoids_later_stale_
     detail = getattr(release_record, "_furu_detail")
     assert detail["lease"] == first.lease_id
     assert detail["worker"] == "worker-1"
-    assert detail["slurm_state"] == "CANCELLED"
-    assert detail["slurm_restarts"] == "0"
-    assert detail["slurm_node_list"] == "node-a"
-    assert detail["slurm_reason"] == "by 12345"
 
 
 def test_job_result_after_worker_lost_is_ignored() -> None:
@@ -698,7 +682,7 @@ def test_job_result_after_worker_lost_is_ignored() -> None:
     job = coordinator.lease_job(resources=ResourceRequest(), worker="worker-1")
     assert isinstance(job, Job)
 
-    coordinator.worker_lost("worker-1", details={})
+    coordinator.worker_lost("worker-1")
     coordinator.job_result(job.lease_id, JobCompletedResult())
 
     assert coordinator.running == {}
@@ -1828,14 +1812,20 @@ def test_pool_api_client_worker_lost_uses_worker_lost_endpoint(
 
     api.PoolApiClient(
         server_url="http://pool.test/", auth_token="secret-token"
-    ).worker_lost(worker="slurm-worker-100a1", details={})
+    ).worker_lost(
+        worker="slurm-worker-100a1",
+        reason="slurm worker slurm-worker-100a1 was preempted",
+    )
 
     assert requests == [
         (
             "POST",
             "http://pool.test/pool/worker_lost",
             {"Authorization": "Bearer secret-token"},
-            {"worker": "slurm-worker-100a1", "details": {}},
+            {
+                "worker": "slurm-worker-100a1",
+                "reason": "slurm worker slurm-worker-100a1 was preempted",
+            },
         )
     ]
 
@@ -1902,7 +1892,7 @@ def test_execution_coordinator_api_worker_lost_endpoint_requeues_job() -> None:
     response = client.post(
         "/pool/worker_lost",
         headers={"Authorization": "Bearer secret"},
-        json={"worker": "worker-1", "details": {}},
+        json={"worker": "worker-1"},
     )
 
     assert response.status_code == 200
