@@ -30,7 +30,7 @@ _FURU_PACKAGE_DIR = Path(__file__).resolve().parent
 _DETAIL_ATTR = "_furu_detail"
 
 # TODO: ContextVar state does not propagate to new threads. Logs emitted from
-# worker threads inside create() or create_batched() will use fallback.log
+# worker threads inside create() or create_batched() will use unscoped.log
 # unless the current log path context is propagated explicitly.
 _CURRENT_LOG_PATHS: ContextVar[tuple[Path, ...]] = ContextVar(
     "furu_current_log_paths", default=()
@@ -45,6 +45,8 @@ _CURRENT_LOG_PATHS: ContextVar[tuple[Path, ...]] = ContextVar(
 _CURRENT_COMPONENT: ContextVar[str | None] = ContextVar(
     "furu_current_component", default=None
 )
+
+_UNSCOPED_LOG_MAX_BYTES = 64 * 1024 * 1024
 
 
 # --- ANSI styling --------------------------------------------------------------
@@ -338,16 +340,28 @@ class _FuruFormatter(logging.Formatter):
 class _ScopedFileHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         log_paths = _CURRENT_LOG_PATHS.get()
+        use_unscoped_log = not log_paths
         if not log_paths:
-            log_paths = (get_config().run_directories.objects / "fallback.log",)
+            log_paths = (get_config().run_directories.objects / "unscoped.log",)
 
         try:
             rendered = self.format(record)
+            payload = f"{rendered}\n"
             for log_path in log_paths:
                 log_path.parent.mkdir(parents=True, exist_ok=True)
+                if (
+                    use_unscoped_log
+                    and log_path.exists()
+                    and log_path.stat().st_size >= _UNSCOPED_LOG_MAX_BYTES
+                ):
+                    timestamp = datetime.now(timezone.utc).strftime(
+                        "%Y%m%dT%H%M%S.%fZ"
+                    )
+                    log_path.replace(
+                        log_path.with_name(f"{log_path.stem}-{timestamp}.log")
+                    )
                 with log_path.open("a", encoding="utf-8") as f:
-                    f.write(rendered)
-                    f.write("\n")
+                    f.write(payload)
         except Exception:
             self.handleError(record)
 

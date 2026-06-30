@@ -3,12 +3,13 @@ import os
 import re
 import sys
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 import furu.logging as furu_logging
-from furu.config import _set_config, get_config
+from furu.config import _FuruConfig, _FuruDirectories, _set_config, get_config
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -416,6 +417,38 @@ def test_logfmt_multiline_detail_value_stays_on_one_line() -> None:
     assert "\n" not in out  # no exc_info → the whole record is one line
     assert "error=" in out
     assert "\\n" in out  # embedded newlines escaped, not emitted raw
+
+
+# --- file handler ----------------------------------------------------------
+
+
+def test_unscoped_log_rotates_with_timestamped_name_when_it_reaches_limit(
+    isolated_furu_logger: None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(furu_logging, "_UNSCOPED_LOG_MAX_BYTES", 4)
+    _set_config(
+        _FuruConfig(
+            directories=_FuruDirectories(
+                objects=tmp_path / "objects",
+                executions=tmp_path / "executions",
+                debug=tmp_path / "debug",
+            )
+        )
+    )
+    unscoped_log = tmp_path / "objects" / "unscoped.log"
+    unscoped_log.parent.mkdir(parents=True)
+    unscoped_log.write_text("old\n", encoding="utf-8")
+
+    furu_logging._ScopedFileHandler().emit(
+        _record("new", pathname=furu_logging.__file__)
+    )
+
+    archived_logs = list(unscoped_log.parent.glob("unscoped-*.log"))
+    assert unscoped_log.read_text(encoding="utf-8") == "new\n"
+    assert len(archived_logs) == 1
+    assert archived_logs[0].read_text(encoding="utf-8") == "old\n"
 
 
 # --- helpers ----------------------------------------------------------------
