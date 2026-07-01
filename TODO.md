@@ -100,6 +100,7 @@
 - [x] slurm workers
 - [x] eager dependencies declared with `@furu.dependency`
 - [x] lazy dependencies captured when `.create()` is called inside a create fn (e.g. variable number of chunks)
+- [ ] store only dynamically observed dependencies in metadata; derive static/declared dependencies from the artifact when needed
 - [ ] multiple clusters
 - [ ] tags/ways to select
 - [ ] executor/worker environment and restart policy
