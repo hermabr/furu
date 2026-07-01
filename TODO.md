@@ -44,7 +44,7 @@
 - [x] basic metadata
 - [x] write running/completed metadata during create
 - [x] load from artifact
-- [ ] record git info
+- [ ] record git info, including commit hash
 - [ ] record machine/host info and other most-relevant metadata; think deeply about what to include
 - [ ] support time traveling to a previous experiment
 - [ ] metadata from execution environment
@@ -55,17 +55,24 @@
 - [x] scoped file handler for each active furu run
 - [x] use logging consistently
 - [ ] structured logging
-- [ ] support multiple processes (e.g. torchrun with 8 tasks)
+- [ ] make logs work cleanly with executors and worker processes
+    - [ ] append mode for worker logs
+    - [ ] support multiple processes (e.g. torchrun with 8 tasks)
+    - [ ] avoid writing the same timestamp on every line when unchanged (similar to rich logs)
 - [ ] events.log, or rename old logs when starting new runs, to make debugging easier
 
 ## Error handling
 - [x] capture errors
 - [x] make the errors informative
 - [x] write traceback and locals to per-run error logs
-- [ ] use rich tracebacks
+- [ ] use rich tracebacks matching terminal traceback output
 
 ## Reproducibility / runtime code tracing
 - [ ] trace code at runtime to find all functions and save/hash their ast
+- [ ] support execution restart/custom env per run for reproducibility
+- [ ] run jobs on a copy/snapshot of code
+    - [ ] record git commit hash
+    - [ ] consider uploading the code snapshot to R2
 - [ ] sandbox the code
 - [ ] detect changes in local files
 - [ ] detect library versions (only of libraries we import?)
@@ -81,6 +88,11 @@
 - [ ] support an explicit "unsupported" migration result for transforms that cannot migrate a matching source
 - [ ] verify migrated runtime result links in status/create/load_existing before treating them as completed/cache hits (`is_migrated` exists; validation still incomplete)
 - [ ] handle stale migration links whose source artifact or old schema directory was deleted
+- [ ] default to backwards migrations
+- [ ] warn/block when the current schema changed and no migration path is registered
+    - [ ] support direct/naive migration mode that copies matching fields and fills defaults
+- [ ] cascading migration
+- [ ] consider whether field types should be excluded from schema and only field names should count
 
 ## Executor & dependencies
 - [x] local create execution
@@ -90,20 +102,48 @@
 - [x] lazy dependencies captured when `.create()` is called inside a create fn (e.g. variable number of chunks)
 - [ ] multiple clusters
 - [ ] tags/ways to select
-- [ ] restart behavior, such as no-restart, reload-env, restart-on-new-type
-- [ ] define custom command to run script and custom env variables on the furu objects
-- [ ] better/more dynamic 
+- [ ] executor/worker environment and restart policy
+    - [ ] restart behavior, such as no-restart, reload-env, restart-on-new-type
+    - [ ] allow jobs to require env vars and restart workers into a clean environment with those variables set
+    - [ ] allow workers to fully restart their Python environment between jobs
+    - [ ] define custom command to run script and custom env variables on the furu objects
+- [ ] worker names/ids are stored in full; coordinator display abbreviates as first letter + last up to 4 chars
+- [ ] detect preemption
+    - [ ] handle worker preempted and instantly revived by checking the old lease
+- [ ] allow stronger/more powerful workers to take tasks from less powerful workers when they would otherwise be idle
+- [ ] support create_batched / multiple smaller workers for one queued job
+- [ ] consider folding all running into execution coordinator, including direct `.create()` calls
+- [ ] better/more dynamic scheduling
 - [ ] time traveling executor (git worktrees?)
 - [ ] tui for execution coordinator
+    - [ ] dashboard
+        - [ ] total progress (blocked, queued, running, completed)
+        - [ ] all objects grouped by type (completed, running, queued, blocked)
+        - [ ] all executors (running, queued, idle, blocked)
+        - [ ] progress estimates
+    - [ ] worker view
+    - [ ] detail view
+        - [ ] artifact, schema, data path
+        - [ ] status
+            - [ ] queued/running/blocked/completed
+            - [ ] previous errors
+            - [ ] which worker is running it
+            - [ ] when it started, how long it has been running, and when it became unblocked
+        - [ ] logs
+        - [ ] DAG
 
 ## Tooling & interfaces
 - [ ] querying/filtering
 - [ ] sync support: move experiments/objects easily from one host to another
 - [ ] dashboard
+- [ ] `--dry-run` mode
 - [ ] make docs
 
 ## Testing
 - [x] pytest plugin
+
+## Code organization
+- [ ] remove code logic from `__init__.py` files
 
 ## Future / misc
 - [ ] decide if it's possible to inject information into a class (e.g. unknown sentences + their translations for leap)
