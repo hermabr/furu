@@ -1,11 +1,11 @@
 from importlib.metadata import version
 
 from furu._declared_types import skip_hash
+from furu._function import spec
 from furu.core import Missing, Spec
 from furu.dependencies import dependency
 from furu.execution import create, load_existing
 from furu.logging import get_logger
-from furu._function import spec
 from furu.migration import Migration
 from furu.resources import ResourceRequirements
 from furu.result import LazyResult, save_as

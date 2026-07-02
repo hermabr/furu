@@ -16,6 +16,7 @@ from furu._storage_layout import (
     metadata_path_in,
     result_link_path_in,
     result_manifest_path_in,
+    run_log_path_in,
 )
 from furu.config import get_config
 from furu.locking import LockError, is_active_lock, lock
@@ -74,7 +75,7 @@ _RESERVED_FIELD_NAMES = frozenset(
 
 
 @dataclass(frozen=True)
-class _Directory:
+class SpecDirectory:
     _base_dir: Path
 
     @cached_property
@@ -82,6 +83,10 @@ class _Directory:
         data_dir = data_dir_in(self._base_dir)
         data_dir.mkdir(parents=True, exist_ok=True)
         return data_dir
+
+    @cached_property
+    def run_log(self) -> Path:
+        return run_log_path_in(self._base_dir)
 
 
 class Spec[T](_FuruDataclassTransform, ABC):
@@ -170,8 +175,8 @@ class Spec[T](_FuruDataclassTransform, ABC):
 
     @final
     @cached_property
-    def directory(self) -> _Directory:
-        return _Directory(self._base_dir)
+    def directory(self) -> SpecDirectory:
+        return SpecDirectory(self._base_dir)
 
     @final
     @cached_property
