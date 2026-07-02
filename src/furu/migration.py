@@ -9,13 +9,13 @@ from typing import TYPE_CHECKING, cast
 from pydantic import BaseModel, ConfigDict
 
 from furu.constants import FIELDSMARKER
-from furu._storage_layout import (
+from furu.metadata import CompletedMetadata
+from furu.storage._layout import (
     metadata_path_in,
     result_dir_in,
     result_link_path_in,
     result_manifest_path_in,
 )
-from furu.metadata import CompletedMetadata
 from furu.utils import JsonFields, fully_qualified_name
 
 if TYPE_CHECKING:

@@ -6,7 +6,7 @@ from multiprocessing import get_context
 from pathlib import Path
 
 from furu import Spec
-from furu._storage_layout import data_dir_in
+from furu.storage._layout import data_dir_in
 from furu.config import _FuruConfig, _FuruDirectories, _set_config
 from furu.execution import _load_or_create
 from furu.locking import DEFAULT_ACQUIRE_POLL_INTERVAL_S

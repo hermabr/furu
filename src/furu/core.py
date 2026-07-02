@@ -10,14 +10,6 @@ from inspect import get_annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeAlias, cast, final
 
-from furu._storage_layout import (
-    compute_lock_path_in,
-    data_dir_in,
-    metadata_path_in,
-    result_link_path_in,
-    result_manifest_path_in,
-    run_log_path_in,
-)
 from furu.config import get_config
 from furu.locking import LockError, is_active_lock, lock
 from furu.logging import get_logger
@@ -28,6 +20,14 @@ from furu.result.codec import ResultCodec
 from furu.serializer.artifact import to_json as _to_json
 from furu.serializer.registry import Serializer
 from furu.serializer.schema import schema_type as _schema_type
+from furu.storage._layout import (
+    compute_lock_path_in,
+    data_dir_in,
+    metadata_path_in,
+    result_link_path_in,
+    result_manifest_path_in,
+)
+from furu.storage.directory import SpecDirectory
 from furu.utils import (
     JsonValue,
     _hash_dict_deterministically,
@@ -72,21 +72,6 @@ _RESERVED_FIELD_NAMES = frozenset(
         "provenance",
     }
 )
-
-
-@dataclass(frozen=True)
-class SpecDirectory:
-    _base_dir: Path
-
-    @cached_property
-    def data(self) -> Path:
-        data_dir = data_dir_in(self._base_dir)
-        data_dir.mkdir(parents=True, exist_ok=True)
-        return data_dir
-
-    @cached_property
-    def run_log(self) -> Path:
-        return run_log_path_in(self._base_dir)
 
 
 class Spec[T](_FuruDataclassTransform, ABC):

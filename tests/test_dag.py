@@ -12,7 +12,7 @@ from furu.config import get_config
 from furu.dag import DagNode, _add_to_dag
 from furu.execution.execution_coordinator import ExecutionCoordinator
 from furu.locking import lock
-from furu._storage_layout import (
+from furu.storage._layout import (
     compute_lock_path_in,
     run_log_path_in,
 )

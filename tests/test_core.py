@@ -27,7 +27,7 @@ from furu import (
     Spec,
     validate,
 )
-from furu._storage_layout import (
+from furu.storage._layout import (
     compute_lock_path_in,
     data_dir_in,
     metadata_path_in,

@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict
 
 import furu
 from furu import Spec
-from furu._storage_layout import data_dir_in, result_dir_in, result_manifest_path_in
+from furu.storage._layout import data_dir_in, result_dir_in, result_manifest_path_in
 from furu._declared_types import child_declared_type
 from furu.result import (
     LazyResult,

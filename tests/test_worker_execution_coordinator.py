@@ -15,7 +15,7 @@ from pydantic import TypeAdapter, ValidationError
 import furu
 import furu.worker.loop as worker_loop_module
 from furu import Spec
-from furu._storage_layout import execution_coordinator_log_path_in
+from furu.storage._layout import execution_coordinator_log_path_in
 from furu.config import get_config
 from furu.dag import _add_to_dag
 from furu.execution import api

@@ -188,7 +188,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from furu import Spec
-from furu._storage_layout import data_dir_in
+from furu.storage._layout import data_dir_in
 from furu.result import load_result_bundle, _save_result_bundle
 from furu.result.codec import ResultCodec
 from furu.serializer.artifact import _from_json

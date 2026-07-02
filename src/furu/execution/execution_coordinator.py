@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, assert_never
 from uuid import uuid4
 
-from furu._storage_layout import execution_coordinator_log_path_in
 from furu.config import get_config
 from furu.core import Spec
 from furu.dag import DagNode, _add_to_dag, _update_dag_blocking_dependencies
@@ -23,6 +22,7 @@ from furu.logging import (
 )
 from furu.metadata import ArtifactSpec
 from furu.resources import ResourceRequest, resource_request_satisfies
+from furu.storage._layout import execution_coordinator_log_path_in
 from furu.utils import format_duration
 from furu.worker.protocol import (
     Job,

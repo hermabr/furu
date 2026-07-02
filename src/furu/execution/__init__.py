@@ -17,13 +17,6 @@ from typing import (
     overload,
 )
 
-from furu._storage_layout import (
-    compute_lock_path_in,
-    data_dir_in,
-    metadata_path_in,
-    result_dir_in,
-    run_log_path_in,
-)
 from furu.core import SpecCreateMode, Missing, Spec
 from furu.dependencies import dependency_recorder, record_dependency_call
 from furu.locking import lock
@@ -32,6 +25,13 @@ from furu.metadata import RunningMetadata
 from furu.migration import result_dir_for_loading
 from furu.result import _save_result_bundle, load_result_bundle
 from furu.result.save_as import _unwrap_save_as
+from furu.storage._layout import (
+    compute_lock_path_in,
+    data_dir_in,
+    metadata_path_in,
+    result_dir_in,
+    run_log_path_in,
+)
 from furu.utils import format_duration, nfs_safe_unique_name
 from furu.worker.context import (
     _DependencyNotReady,
