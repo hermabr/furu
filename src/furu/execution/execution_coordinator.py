@@ -34,7 +34,7 @@ from furu.worker.protocol import (
 )
 
 if TYPE_CHECKING:
-    from furu.worker.backends import WorkerBackend
+    from furu.worker.backends.base import WorkerBackend
 
 
 logger = get_logger()

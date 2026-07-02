@@ -21,7 +21,7 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 import furu
-import furu.execution as execution_module
+import furu.execution.create as execution_module
 from furu import (
     ResourceRequirements,
     Spec,
@@ -37,11 +37,11 @@ from furu.storage._layout import (
 )
 from furu.config import _FuruConfig, _FuruDirectories, get_config
 from furu.dependencies import collect_declared_refs
-from furu.execution import _load_or_create
+from furu.execution.create import _load_or_create
 from furu.locking import LockManifest, lock
 from furu.logging import _scoped_log_files
 from furu.metadata import ArtifactSpec
-from furu.result import _save_result_bundle, load_result_bundle
+from furu.result.bundle import _save_result_bundle, load_result_bundle
 from furu.serializer.artifact import _from_json, to_json
 from furu.testing import override_config
 from furu.utils import fully_qualified_name

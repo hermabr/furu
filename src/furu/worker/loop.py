@@ -5,7 +5,8 @@ import traceback
 from typing import assert_never
 
 from furu.core import Spec
-from furu.execution import _ensure_single_result, api
+import furu.execution.api as api
+from furu.execution.create import _ensure_single_result
 from furu.logging import _scoped_component, get_logger, log_detail
 from furu.metadata import ArtifactSpec
 from furu.resources import ResourceRequest

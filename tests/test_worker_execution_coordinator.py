@@ -18,7 +18,7 @@ from furu import Spec
 from furu.storage._layout import execution_coordinator_log_path_in
 from furu.config import get_config
 from furu.dag import _add_to_dag
-from furu.execution import api
+import furu.execution.api as api
 from furu.execution.api import create_execution_coordinator_api_app
 from furu.execution.execution_coordinator import (
     ExecutionCoordinator,
