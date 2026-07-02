@@ -6,6 +6,7 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from typing import (
+    TYPE_CHECKING,
     Any,
     TypeAlias,
     TypeVar,
@@ -23,7 +24,7 @@ from furu._storage_layout import (
     result_dir_in,
     run_log_path_in,
 )
-from furu.core import Furu, FuruCreateMode
+from furu.core import FuruCreateMode, Missing, Spec
 from furu.dependencies import dependency_recorder, record_dependency_call
 from furu.locking import lock
 from furu.logging import _scoped_log_files, get_logger
@@ -37,8 +38,11 @@ from furu.worker.context import (
     _worker_execution_lease_id,
 )
 
+if TYPE_CHECKING:
+    from furu.worker.backends import WorkerBackend
+
 HasLock: TypeAlias = Callable[[], bool]
-_DirectCreateTarget: TypeAlias = Furu[Any] | type[Furu[Any]]
+_DirectCreateTarget: TypeAlias = Spec[Any] | type[Spec[Any]]
 
 
 _direct_create_target: ContextVar[_DirectCreateTarget | None] = ContextVar(
@@ -55,12 +59,12 @@ def _allow_direct_create(target: _DirectCreateTarget) -> Iterator[None]:
         _direct_create_target.reset(token)
 
 
-def _install_create_dispatchers[T](cls: type[Furu[T]]) -> None:
+def _install_create_dispatchers[T](cls: type[Spec[T]]) -> None:
     if "create" in cls.__dict__:
         raw_create = cls.__dict__["create"]
 
         @functools.wraps(raw_create)
-        def create_dispatcher(self: Furu[T], *args: Any, **kwargs: Any) -> T:
+        def create_dispatcher(self: Spec[T], *args: Any, **kwargs: Any) -> T:
             if _direct_create_target.get() is self:
                 return raw_create(self, *args, **kwargs)
             return _load_or_create(self, *args, **kwargs)
@@ -73,25 +77,25 @@ def _install_create_dispatchers[T](cls: type[Furu[T]]) -> None:
 
         @functools.wraps(func)
         def create_batched_guard(
-            owner: type[Furu[T]], *args: Any, **kwargs: Any
+            owner: type[Spec[T]], *args: Any, **kwargs: Any
         ) -> list[T]:
             target = _direct_create_target.get()
             if not (isinstance(target, type) and issubclass(target, owner)):
                 raise RuntimeError(
                     f"{owner.__name__}.create_batched() must not be called directly; "
-                    "call .create() on Furu objects instead"
+                    "call .create() on Spec objects instead"
                 )
             return func(owner, *args, **kwargs)
 
         setattr(cls, "create_batched", classmethod(create_batched_guard))
 
 
-def _resolve_create_mode[T](cls: type[Furu[T]]) -> FuruCreateMode:
+def _resolve_create_mode[T](cls: type[Spec[T]]) -> FuruCreateMode:
     defines_single = False
     defines_batched = False
 
     for base in cls.__mro__:
-        if not issubclass(base, Furu) or base is Furu:
+        if not issubclass(base, Spec) or base is Spec:
             continue
 
         if "create" in base.__dict__:
@@ -115,7 +119,7 @@ def _resolve_create_mode[T](cls: type[Furu[T]]) -> FuruCreateMode:
 
 
 def _store_result[T](
-    obj: Furu[T],
+    obj: Spec[T],
     result: T,
     *,
     metadata: RunningMetadata,
@@ -132,7 +136,7 @@ def _store_result[T](
     declared_type: object = Any
     for cls in type(obj).__mro__:
         for base in getattr(cls, "__orig_bases__", ()):
-            if get_origin(base) is Furu:
+            if get_origin(base) is Spec:
                 declared_type = get_args(base)[0]
                 break
         else:
@@ -143,7 +147,7 @@ def _store_result[T](
         isinstance(arg, TypeVar) for arg in get_args(declared_type)
     ):
         raise TypeError(
-            f"{type(obj).__name__} must declare its concrete result type directly as Furu[...]"
+            f"{type(obj).__name__} must declare its concrete result type directly as Spec[...]"
         )
 
     should_reload_value_after_dump = _save_result_bundle(
@@ -174,17 +178,17 @@ def _store_result[T](
 
 
 @overload
-def _load_or_create[T](obj: Furu[T], *, use_lock: bool = True) -> T: ...
+def _load_or_create[T](obj: Spec[T], *, use_lock: bool = True) -> T: ...
 
 
 @overload
 def _load_or_create[T](
-    objs: Sequence[Furu[T]], *, use_lock: bool = True
+    objs: Sequence[Spec[T]], *, use_lock: bool = True
 ) -> list[T]: ...
 
 
 def _load_or_create[T](
-    obj_or_objs: Furu[T] | Sequence[Furu[T]],
+    obj_or_objs: Spec[T] | Sequence[Spec[T]],
     *,
     use_lock: bool = True,
 ) -> T | list[T]:
@@ -193,7 +197,7 @@ def _load_or_create[T](
     return _load_or_create_local(obj_or_objs, use_lock=use_lock)
 
 
-def _ensure_single_result[T](obj: Furu[T]) -> None:
+def _ensure_single_result[T](obj: Spec[T]) -> None:
     if result_dir_for_loading(obj) is not None:
         obj.logger.info("cache hit for %s", obj._log_label)
         return
@@ -213,9 +217,9 @@ def _ensure_single_result[T](obj: Furu[T]) -> None:
 
 
 def _normalize_load_or_create_input[T](
-    obj_or_objs: Furu[T] | Sequence[Furu[T]],
-) -> tuple[list[Furu[T]], bool]:
-    if isinstance(obj_or_objs, Furu):
+    obj_or_objs: Spec[T] | Sequence[Spec[T]],
+) -> tuple[list[Spec[T]], bool]:
+    if isinstance(obj_or_objs, Spec):
         objs = [obj_or_objs]
         unwrap = True
         record_dependency_call(objs[0])
@@ -223,35 +227,54 @@ def _normalize_load_or_create_input[T](
     else:
         if not isinstance(obj_or_objs, Sequence):
             raise TypeError(
-                "_load_or_create() expected a Furu object or a sequence of Furu objects"
+                "_load_or_create() expected a Spec object or a sequence of Spec objects"
             )
         objs = list(obj_or_objs)
         unwrap = False
-        if any(not isinstance(obj, Furu) for obj in objs):
-            raise TypeError("_load_or_create() expected Furu objects")
+        if any(not isinstance(obj, Spec) for obj in objs):
+            raise TypeError("_load_or_create() expected Spec objects")
         for obj in objs:
             record_dependency_call(obj)
     return objs, unwrap
 
 
 @overload
-def load_existing[T](obj: Furu[T]) -> T: ...
+def create[T](obj: Spec[T], *, on: Sequence[WorkerBackend] | None = None) -> T: ...
 @overload
-def load_existing[T](objs: Sequence[Furu[T]]) -> list[T]: ...
-def load_existing[T](obj_or_objs: Furu[T] | Sequence[Furu[T]]) -> T | list[T]:
-    if isinstance(obj_or_objs, Furu):
+def create[T](
+    objs: Sequence[Spec[T]], *, on: Sequence[WorkerBackend] | None = None
+) -> list[T]: ...
+def create[T](
+    obj_or_objs: Spec[T] | Sequence[Spec[T]],
+    *,
+    on: Sequence[WorkerBackend] | None = None,
+) -> T | list[T]:
+    if on is not None:
+        from furu.execution.execution_coordinator import ExecutionCoordinator
+
+        objs = [obj_or_objs] if isinstance(obj_or_objs, Spec) else list(obj_or_objs)
+        ExecutionCoordinator.run(objs, worker_backends=tuple(on))
+    return _load_or_create(obj_or_objs)
+
+
+@overload
+def load_existing[T](obj: Spec[T]) -> T: ...
+@overload
+def load_existing[T](objs: Sequence[Spec[T]]) -> list[T]: ...
+def load_existing[T](obj_or_objs: Spec[T] | Sequence[Spec[T]]) -> T | list[T]:
+    if isinstance(obj_or_objs, Spec):
         loaded = obj_or_objs.load_existing()
         get_logger().info("loaded %s", obj_or_objs._log_label)
         return loaded
     if not isinstance(obj_or_objs, Sequence):
         raise TypeError(
-            "load_existing() expected a Furu object or a sequence of Furu objects"
+            "load_existing() expected a Spec object or a sequence of Spec objects"
         )
     objs = list(obj_or_objs)
-    if any(not isinstance(obj, Furu) for obj in objs):
-        raise TypeError("load_existing() expected Furu objects")
+    if any(not isinstance(obj, Spec) for obj in objs):
+        raise TypeError("load_existing() expected Spec objects")
     loaded: list[T] = []
-    missing: list[Furu[T]] = []
+    missing: list[Spec[T]] = []
     for obj in objs:
         record_dependency_call(obj)
         if (result_dir := result_dir_for_loading(obj)) is None:
@@ -264,7 +287,7 @@ def load_existing[T](obj_or_objs: Furu[T] | Sequence[Furu[T]]) -> T | list[T]:
         if _worker_execution_lease_id.get() is not None:
             raise _DependencyNotReady(dependencies=missing, call_kind="load_existing")
         first = missing[0]
-        raise RuntimeError(
+        raise Missing(
             f"{first._log_label}.load_existing() could not find a result. "
             "load_existing() only loads existing results; use create() to compute "
             "missing results."
@@ -278,8 +301,8 @@ def load_existing[T](obj_or_objs: Furu[T] | Sequence[Furu[T]]) -> T | list[T]:
     return loaded
 
 
-def _cached_to_build_msg(cached: list[Furu[Any]], to_build: list[Furu[Any]]) -> str:
-    def fmt(objs: list[Furu[Any]]) -> str:
+def _cached_to_build_msg(cached: list[Spec[Any]], to_build: list[Spec[Any]]) -> str:
+    def fmt(objs: list[Spec[Any]]) -> str:
         if len(cached) + len(to_build) > 5:
             return str(len(objs))
         return ", ".join(o._log_label for o in objs)
@@ -289,13 +312,13 @@ def _cached_to_build_msg(cached: list[Furu[Any]], to_build: list[Furu[Any]]) -> 
 
 
 def _load_or_create_worker[T](
-    obj_or_objs: Furu[T] | Sequence[Furu[T]],
+    obj_or_objs: Spec[T] | Sequence[Spec[T]],
 ) -> T | list[T]:
     objs, unwrap = _normalize_load_or_create_input(obj_or_objs)
 
     loaded: list[T] = []
-    cached: list[Furu[T]] = []
-    missing: list[Furu[T]] = []
+    cached: list[Spec[T]] = []
+    missing: list[Spec[T]] = []
 
     for obj in objs:
         if (cached_result_dir := result_dir_for_loading(obj)) is not None:
@@ -328,7 +351,7 @@ def _load_or_create_worker[T](
 
 
 def _load_or_create_local[T](
-    obj_or_objs: Furu[T] | Sequence[Furu[T]],
+    obj_or_objs: Spec[T] | Sequence[Spec[T]],
     *,
     use_lock: bool = True,
 ) -> T | list[T]:
@@ -337,13 +360,13 @@ def _load_or_create_local[T](
     if not objs:
         return []
 
-    unique_by_object_id: dict[str, Furu[T]] = {}
+    unique_by_object_id: dict[str, Spec[T]] = {}
     for obj in objs:
         unique_by_object_id.setdefault(obj.object_id, obj)
     unique = list(unique_by_object_id.values())
 
     results_by_object_id: dict[str, T] = {}
-    missing: list[Furu[T]] = []
+    missing: list[Spec[T]] = []
 
     for obj in unique:
         if (cached_result_dir := result_dir_for_loading(obj)) is not None:
@@ -370,7 +393,7 @@ def _load_or_create_local[T](
 
     with lock_ctx as maybe_has_lock:
         has_lock = maybe_has_lock or (lambda: True)
-        pending: list[Furu[T]] = []
+        pending: list[Spec[T]] = []
         late_hits = 0
         for obj in missing:
             if (cached_result_dir := result_dir_for_loading(obj)) is not None:
@@ -395,7 +418,7 @@ def _load_or_create_local[T](
         if direct_create_started:
             objs[0].logger.info("creating %s", objs[0]._log_label)
 
-        grouped: dict[type[object], list[Furu[T]]] = {}
+        grouped: dict[type[object], list[Spec[T]]] = {}
         for obj in pending:
             grouped.setdefault(type(obj), []).append(obj)
 
@@ -422,7 +445,7 @@ def _load_or_create_local[T](
 
 
 def _create_and_store_group[T](
-    group: list[Furu[T]],
+    group: list[Spec[T]],
     *,
     has_lock: HasLock,
     results_by_object_id: dict[str, T],

@@ -23,7 +23,7 @@ from pydantic import BaseModel, ConfigDict
 import furu
 import furu.execution as execution_module
 from furu import (
-    Furu,
+    Spec,
     ResourceRequirements,
     validate,
 )
@@ -73,14 +73,14 @@ def _to_json(obj: Any, declared_type: object) -> Any:
     )
 
 
-class Node(Furu[str]):
+class Node(Spec[str]):
     name: str
 
     def create(self) -> str:
         return f"Node({self.name})"
 
 
-class MaxWorkersIdentityNode(Furu[str]):
+class MaxWorkersIdentityNode(Spec[str]):
     name: str
     max_workers = 1
 
@@ -101,7 +101,7 @@ class CustomStorageRootNode(Node):
         return Path("custom/data/location")
 
 
-class NodePair(Furu[dict]):
+class NodePair(Spec[dict]):
     node1: Node
     node2: WeightedNode
     name: str | int
@@ -114,7 +114,7 @@ class NodePair(Furu[dict]):
         }
 
 
-class RandomObj(Furu[float]):
+class RandomObj(Spec[float]):
     id: int
 
     def create(self) -> float:
@@ -124,11 +124,11 @@ class RandomObj(Furu[float]):
         return random.random()
 
 
-class UserDataWritingValue(Furu[str]):
+class UserDataWritingValue(Spec[str]):
     name: str
 
     def create(self) -> str:
-        payload_path = self.data_dir / "payload.txt"
+        payload_path = self.directory.data / "payload.txt"
         payload_path.write_text(self.name, encoding="utf-8")
         return payload_path.read_text(encoding="utf-8")
 
@@ -138,7 +138,7 @@ class Fruit(Enum):  # TODO: test enums at some point
     banana = "banana"
 
 
-class A[T](Furu):
+class A[T](Spec):
     x: int | str | list
     z: T
     w: list[int | float]
@@ -148,7 +148,7 @@ class A[T](Furu):
         pass
 
 
-class B[T](Furu):
+class B[T](Spec):
     a: A[T] | int
     y: dict[Literal["ney", "hey"] | bool, int]
     t: tuple[int | str, float]
@@ -195,28 +195,28 @@ class B_priv(B):
         return super().create()
 
 
-class VariadicTuple(Furu[None]):
+class VariadicTuple(Spec[None]):
     t: tuple[int, ...]
 
     def create(self):
         pass
 
 
-class UsesPath(Furu[str]):
+class UsesPath(Spec[str]):
     path: Path
 
     def create(self) -> str:
         return str(self.path)
 
 
-class UsesClassValue(Furu[None]):
+class UsesClassValue(Spec[None]):
     node_cls: type[Node]
 
     def create(self) -> None:
         return None
 
 
-class UsesContainers(Furu[None]):
+class UsesContainers(Spec[None]):
     ints: set[int]
     frozen: frozenset[str]
     pair: tuple[Path, int]
@@ -227,14 +227,14 @@ class UsesContainers(Furu[None]):
         return None
 
 
-class UsesFalseLiteral(Furu[None]):
+class UsesFalseLiteral(Spec[None]):
     tie_word_embeddings: Literal[False]
 
     def create(self) -> None:
         return None
 
 
-class LoggedLeaf(Furu[str]):
+class LoggedLeaf(Spec[str]):
     name: str
 
     def create(self) -> str:
@@ -242,7 +242,7 @@ class LoggedLeaf(Furu[str]):
         return f"leaf:{self.name}"
 
 
-class LoggedParent(Furu[dict[str, str]]):
+class LoggedParent(Spec[dict[str, str]]):
     child: LoggedLeaf
 
     def create(self) -> dict[str, str]:
@@ -252,7 +252,7 @@ class LoggedParent(Furu[dict[str, str]]):
         return {"child": child_result}
 
 
-class PositiveValue(Furu[int]):
+class PositiveValue(Spec[int]):
     value: int
 
     @validate
@@ -288,34 +288,34 @@ class PydanticSubclass(BaseModel):
     field1: int
 
 
-class PydanticFields(Furu[None]):
+class PydanticFields(Spec[None]):
     pydantic_obj: PydanticSubclass
 
     def create(self) -> None:
         return None
 
 
-@furu.function
+@furu.spec
 def letter_count(source: str, letter: str) -> int:
     return source.count(letter)
 
 
-@furu.function
+@furu.spec
 def letter_count_with_default(source: str, letter: str = "a") -> int:
     return source.count(letter)
 
 
-@furu.function
+@furu.spec
 def letter_count_without_return_annotation(source: str, letter: str):
     return source.count(letter)
 
 
-@furu.function
+@furu.spec
 def letter_count_with_untyped_source(source, letter: str) -> int:
     return source.count(letter)
 
 
-@furu.function()
+@furu.spec()
 def letter_count_with_parentheses(source: str, letter: str) -> int:
     return source.count(letter)
 
@@ -323,7 +323,7 @@ def letter_count_with_parentheses(source: str, letter: str) -> int:
 GROUP_EXECUTION_EVENTS: list[tuple[str, tuple[int, ...]]] = []
 
 
-class CountedSingleValue(Furu[str]):
+class CountedSingleValue(Spec[str]):
     key: int
     create_calls: ClassVar[list[int]] = []
 
@@ -333,7 +333,7 @@ class CountedSingleValue(Furu[str]):
         return f"single:{self.key}"
 
 
-class ObjectIdStorageRootValue(Furu[str]):
+class ObjectIdStorageRootValue(Spec[str]):
     key: int
     storage_root_override: ClassVar[Path] = Path("object-id-root")
     create_calls: ClassVar[list[int]] = []
@@ -347,11 +347,11 @@ class ObjectIdStorageRootValue(Furu[str]):
         return f"object-id:{self.key}"
 
 
-class NoCreateHookValue(Furu[str]):
+class NoCreateHookValue(Spec[str]):
     key: int
 
 
-class BatchOnlyValue(Furu[str]):
+class BatchOnlyValue(Spec[str]):
     key: int
     batch_calls: ClassVar[list[tuple[int, ...]]] = []
 
@@ -368,7 +368,7 @@ class DelegatingBatchValue(BatchOnlyValue):
         return BatchOnlyValue.create_batched(objs)
 
 
-class GroupBatchA(Furu[str]):
+class GroupBatchA(Spec[str]):
     key: int
     batch_calls: ClassVar[list[tuple[int, ...]]] = []
 
@@ -380,7 +380,7 @@ class GroupBatchA(Furu[str]):
         return [f"group-a:{obj.key}" for obj in objs]
 
 
-class GroupBatchB(Furu[str]):
+class GroupBatchB(Spec[str]):
     key: int
     batch_calls: ClassVar[list[tuple[int, ...]]] = []
 
@@ -392,7 +392,7 @@ class GroupBatchB(Furu[str]):
         return [f"group-b:{obj.key}" for obj in objs]
 
 
-class LoggedBatchValue(Furu[str]):
+class LoggedBatchValue(Spec[str]):
     key: int
 
     @classmethod
@@ -402,7 +402,7 @@ class LoggedBatchValue(Furu[str]):
         return [f"logged-batch:{obj.key}" for obj in objs]
 
 
-class LoggedSingleValue(Furu[str]):
+class LoggedSingleValue(Spec[str]):
     key: int
 
     def create(self) -> str:
@@ -410,7 +410,7 @@ class LoggedSingleValue(Furu[str]):
         return f"logged-single:{self.key}"
 
 
-class FailingBatchValue(Furu[str]):
+class FailingBatchValue(Spec[str]):
     key: int
 
     @classmethod
@@ -419,21 +419,21 @@ class FailingBatchValue(Furu[str]):
         raise RuntimeError(f"failed batch for {[obj.key for obj in objs]}")
 
 
-class FailingSingleValue(Furu[str]):
+class FailingSingleValue(Spec[str]):
     key: int
 
     def create(self) -> str:
         raise RuntimeError(f"failed single for {self.key}")
 
 
-class InterruptingValue(Furu[str]):
+class InterruptingValue(Spec[str]):
     key: int
 
     def create(self) -> str:
         raise KeyboardInterrupt
 
 
-class PartialBatchValue(Furu[str]):
+class PartialBatchValue(Spec[str]):
     key: int
 
     @classmethod
@@ -441,7 +441,7 @@ class PartialBatchValue(Furu[str]):
         return [f"partial:{obj.key}" for obj in objs]
 
 
-class MetadataTimingValue(Furu[str]):
+class MetadataTimingValue(Spec[str]):
     key: int
     create_events: ClassVar[list[tuple[int, bool, bool]]] = []
     siblings_by_key: ClassVar[dict[int, "MetadataTimingValue"]] = {}
@@ -465,14 +465,14 @@ class DependencyBundle:
     second: WeightedNode
 
 
-class NestedDependencyParent(Furu[str]):
+class NestedDependencyParent(Spec[str]):
     bundle: DependencyBundle
 
     def create(self) -> str:
         return self.bundle.first.create()
 
 
-class ComputedDependencyParent(Furu[str]):
+class ComputedDependencyParent(Spec[str]):
     name: str
 
     @furu.dependency
@@ -483,11 +483,11 @@ class ComputedDependencyParent(Furu[str]):
         return self.child.create()
 
 
-class ExplicitCachedDependencyParent(Furu[str]):
+class CountingDependencyParent(Spec[str]):
     name: str
     calls: ClassVar[int] = 0
 
-    @furu.dependency(cached=True)
+    @furu.dependency
     def child(self) -> Node:
         type(self).calls += 1
         return Node(name=f"{self.name}-{type(self).calls}")
@@ -496,52 +496,39 @@ class ExplicitCachedDependencyParent(Furu[str]):
         return self.child.create()
 
 
-class UncachedDependencyParent(Furu[str]):
-    name: str
-    calls: ClassVar[int] = 0
-
-    @furu.dependency(cached=False)
-    def child(self) -> Node:
-        type(self).calls += 1
-        return Node(name=f"{self.name}-{type(self).calls}")
-
-    def create(self) -> str:
-        return self.child.create()
-
-
-class LazyDependencyParent(Furu[str]):
+class LazyDependencyParent(Spec[str]):
     name: str
 
     def create(self) -> str:
         return Node(name=self.name).create()
 
 
-class LoadExistingDependencyParent(Furu[str]):
+class LoadExistingDependencyParent(Spec[str]):
     name: str
 
     def create(self) -> str:
         try:
             Node(name=self.name).load_existing()
-        except RuntimeError:
+        except furu.Missing:
             return "missing"
         return "loaded"
 
 
-class FunctionDependencyParent(Furu[int]):
-    child: letter_count.furu_type
+class FunctionDependencyParent(Spec[int]):
+    child: letter_count  # ty: ignore[invalid-type-form]
 
     def create(self) -> int:
         return self.child.create()
 
 
-class FuruBoundaryParent(Furu[str]):
+class FuruBoundaryParent(Spec[str]):
     child: NodePair
 
     def create(self) -> str:
         return self.child.node1.create()
 
 
-class BatchDependencyParent(Furu[str]):
+class BatchDependencyParent(Spec[str]):
     key: int
     eager: Node
 
@@ -587,41 +574,37 @@ def test_frozen_dataclass_inheritance():
             obj.a = 3  # ty: ignore[invalid-assignment]
 
 
-def test_function_creates_furu_object_from_function_signature():
-    obj = letter_count.spec("banana", "a")
+def test_spec_function_creates_spec_from_function_signature():
+    obj = letter_count("banana", "a")
 
-    assert isinstance(obj, Furu)
+    assert isinstance(obj, Spec)
     assert is_dataclass(type(obj))
     assert type(obj).__name__ == "letter_count"
     assert getattr(obj, "source") == "banana"
     assert getattr(obj, "letter") == "a"
     assert obj.create() == 3
-    assert letter_count("banana", "a") == 3
-    assert letter_count.spec(source="banana", letter="a") == obj
+    assert letter_count(source="banana", letter="a") == obj
 
     with pytest.raises(FrozenInstanceError):
         obj.source = "orange"  # ty: ignore[invalid-assignment]
 
 
-def test_function_supports_defaults_and_artifact_round_trip():
-    obj = letter_count_with_default.spec("banana")
+def test_spec_function_supports_defaults_and_artifact_round_trip():
+    obj = letter_count_with_default("banana")
 
     assert getattr(obj, "letter") == "a"
-    assert letter_count_with_default("banana") == 3
     assert obj.create() == 3
     assert obj._fully_qualified_name == "test_core.letter_count_with_default"
     assert _from_json(obj._artifact_data) == obj
 
 
-def test_function_allows_missing_return_annotation():
-    assert letter_count_without_return_annotation("banana", "n") == 2
-    assert letter_count_without_return_annotation.spec("banana", "n").create() == 2
+def test_spec_function_allows_missing_return_annotation():
+    assert letter_count_without_return_annotation("banana", "n").create() == 2
 
 
-def test_function_defaults_unannotated_parameters_to_any():
-    obj = letter_count_with_untyped_source.spec("banana", "a")
+def test_spec_function_defaults_unannotated_parameters_to_any():
+    obj = letter_count_with_untyped_source("banana", "a")
 
-    assert letter_count_with_untyped_source("banana", "a") == 3
     assert obj.create() == 3
     assert obj._schema_data == {
         "|class": "test_core.letter_count_with_untyped_source",
@@ -630,44 +613,35 @@ def test_function_defaults_unannotated_parameters_to_any():
     assert _from_json(obj._artifact_data) == obj
 
 
-def test_function_supports_parenthesized_decorator():
-    obj = letter_count_with_parentheses.spec("banana", "n")
+def test_spec_function_supports_parenthesized_decorator():
+    obj = letter_count_with_parentheses("banana", "n")
 
-    assert isinstance(obj, Furu)
+    assert isinstance(obj, Spec)
     assert getattr(obj, "source") == "banana"
     assert getattr(obj, "letter") == "n"
-    assert letter_count_with_parentheses("banana", "n") == 2
     assert obj.create() == 2
     assert obj._fully_qualified_name == "test_core.letter_count_with_parentheses"
     assert _from_json(obj._artifact_data) == obj
 
 
-def test_function_exposes_furu_type():
-    obj = letter_count.spec("banana", "a")
+def test_spec_function_returns_the_spec_type():
+    obj = letter_count("banana", "a")
 
-    assert isinstance(letter_count.furu_type, type)
-    assert issubclass(letter_count.furu_type, Furu)
-    assert isinstance(letter_count.spec, type)
-    assert issubclass(letter_count.spec, Furu)
-    assert isinstance(obj, Furu)
-    assert type(obj) is letter_count.furu_type
-    assert type(obj) is letter_count.spec
-    assert getattr(obj, "source") == "banana"
-    assert getattr(obj, "letter") == "a"
-    assert getattr(letter_count.spec, "spec") is (letter_count.spec)
-    assert getattr(letter_count.furu_type, "furu_type") is letter_count.furu_type
+    assert isinstance(letter_count, type)
+    assert issubclass(cast(type, letter_count), Spec)
+    assert type(obj) is letter_count
     assert obj.create() == 3
     assert obj._fully_qualified_name == "test_core.letter_count"
     assert _from_json(obj._artifact_data) == obj
 
 
-def test_function_rejects_variadic_parameters():
+def test_spec_function_rejects_variadic_parameters():
     with pytest.raises(
         TypeError,
         match=r"variadic_letter_count\.sources",
     ):
 
-        @furu.function
+        @furu.spec
         def variadic_letter_count(*sources: str) -> int:
             return sum(source.count("a") for source in sources)
 
@@ -696,12 +670,40 @@ def test_parent_and_child_validators_both_run():
         ParentAndChildValidated(value=1, child_value=0)
 
 
+def test_reserved_field_name_raises_at_class_creation():
+    with pytest.raises(TypeError) as excinfo:
+
+        class StatusField(Spec[int]):
+            status: str  # ty: ignore[override-of-final-method]
+
+            def create(self) -> int:
+                return 0
+
+    message = str(excinfo.value)
+    assert "StatusField" in message
+    assert "['status']" in message
+    for name in (
+        "create",
+        "create_batched",
+        "metadata",
+        "status",
+        "directory",
+        "explain",
+        "load_existing",
+        "delete",
+        "migrate",
+        "migrations",
+        "provenance",
+    ):
+        assert f"'{name}'" in message
+
+
 def test_unannotated_public_attribute_raises_clear_error():
     with pytest.raises(
         TypeError, match="UnannotatedParameter.a must have a type annotation"
     ):
 
-        class UnannotatedParameter(Furu[int]):
+        class UnannotatedParameter(Spec[int]):
             a = 1
 
             def create(self) -> int:
@@ -713,7 +715,7 @@ def test_unannotated_private_attribute_raises_clear_error():
         TypeError, match="UnannotatedPrivate._a must have a type annotation"
     ):
 
-        class UnannotatedPrivate(Furu[int]):
+        class UnannotatedPrivate(Spec[int]):
             _a = 1
 
             def create(self) -> int:
@@ -721,7 +723,7 @@ def test_unannotated_private_attribute_raises_clear_error():
 
 
 def test_validate_decorator_supports_call_syntax():
-    class CallSyntaxValidated(Furu[int]):
+    class CallSyntaxValidated(Spec[int]):
         value: int
 
         @validate()
@@ -739,7 +741,7 @@ def test_validate_decorator_supports_call_syntax():
 
 
 def test_post_init_can_transform_values_before_validation():
-    class PostInitValidated(Furu[int]):
+    class PostInitValidated(Spec[int]):
         raw_value: int | str
         value: int = 0
 
@@ -762,7 +764,7 @@ def test_post_init_can_transform_values_before_validation():
 
 
 def test_post_init_with_init_var_and_validators_both_run():
-    class InitVarValidated(Furu[int]):
+    class InitVarValidated(Spec[int]):
         scale: InitVar[int]
         value: int = 0
 
@@ -800,7 +802,7 @@ def test_post_init_and_inherited_validators_both_run():
 
 
 def test_inherited_post_init_and_inherited_validators_both_run():
-    class BasePostInitValue(Furu[int]):
+    class BasePostInitValue(Spec[int]):
         raw_value: int | str
         value: int = 0
 
@@ -830,7 +832,7 @@ def test_inherited_post_init_and_inherited_validators_both_run():
 def test_post_init_chain_runs_before_validators_without_duplicate_calls():
     calls: list[str] = []
 
-    class BaseOrderedValue(Furu[int]):
+    class BaseOrderedValue(Spec[int]):
         value: int
 
         def __post_init__(self) -> None:
@@ -926,7 +928,7 @@ def test_hashes_and_data_dir():
         )._artifact_schema_hash
     )
 
-    def qualname_alias(cls: type[Furu[object]], *, ret_typ: type) -> type[Furu[object]]:
+    def qualname_alias(cls: type[Spec[object]], *, ret_typ: type) -> type[Spec[object]]:
         namespace: dict[str, object] = {"__module__": cls.__module__}
         if cls._furu_create_mode == "single":
             namespace["create"] = lambda self: cls.create(self)
@@ -1074,7 +1076,7 @@ def expected_schema_for_B_like(
         ),
     ],
 )
-def test_schema(make: Callable[[], Furu], expected):
+def test_schema(make: Callable[[], Spec], expected):
     assert make()._schema_data == expected
 
 
@@ -1251,7 +1253,7 @@ def test_furu_from_artifact_returns_furu_object():
     assert "schema_data" in type(artifact).model_fields
     assert loaded == obj
     assert isinstance(loaded, NodePair)
-    assert loaded.data_dir == obj.data_dir
+    assert loaded.directory.data == obj.directory.data
     assert raw_metadata["kind"] == "completed"
     assert raw_metadata["base_path"] == str(obj._base_dir)
     assert "data_path" not in raw_metadata
@@ -1267,7 +1269,7 @@ def test_furu_from_artifact_returns_furu_object():
     assert "artifact_schema_hash" not in raw_metadata
 
 
-def _dependency_object_ids(obj: Furu) -> list[str]:
+def _dependency_object_ids(obj: Spec) -> list[str]:
     metadata = json.loads(metadata_path_in(obj._base_dir).read_text())
     return metadata["observed_dependencies"]
 
@@ -1292,27 +1294,13 @@ def test_computed_dependency_is_cached_property_and_eager_loaded_dependency() ->
     assert _dependency_object_ids(parent) == [parent.child.object_id]
 
 
-def test_dependency_accepts_explicit_cached_true() -> None:
-    ExplicitCachedDependencyParent.calls = 0
-    parent = ExplicitCachedDependencyParent(name="explicit-cached")
+def test_dependency_computes_once_per_instance() -> None:
+    CountingDependencyParent.calls = 0
+    parent = CountingDependencyParent(name="counting")
 
     assert parent.child is parent.child
     assert collect_declared_refs(parent) == (parent.child,)
-    assert ExplicitCachedDependencyParent.calls == 1
-
-
-def test_dependency_can_be_uncached_property() -> None:
-    UncachedDependencyParent.calls = 0
-    parent = UncachedDependencyParent(name="uncached")
-    first = parent.child
-    second = parent.child
-
-    assert first is not second
-    assert first.object_id != second.object_id
-    declared_refs = collect_declared_refs(parent)
-    assert len(declared_refs) == 1
-    assert declared_refs[0].object_id == Node(name="uncached-3").object_id
-    assert UncachedDependencyParent.calls == 3
+    assert CountingDependencyParent.calls == 1
 
 
 def test_create_inside_create_is_recorded_and_deduped() -> None:
@@ -1334,7 +1322,7 @@ def test_load_existing_inside_create_is_recorded_even_on_missing_result() -> Non
 
 def test_load_existing_missing_result_explains_how_to_compute() -> None:
     with pytest.raises(
-        RuntimeError,
+        furu.Missing,
         match=(
             r"Node:[a-f0-9]{5}:[a-f0-9]{5}\.load_existing\(\) could not find a result\. "
             r"load_existing\(\) only loads existing results; use create\(\) to "
@@ -1342,6 +1330,14 @@ def test_load_existing_missing_result_explains_how_to_compute() -> None:
         ),
     ):
         Node(name="missing").load_existing()
+
+
+def test_top_level_create_accepts_single_spec_and_sequence() -> None:
+    single = Node(name="top-create-single")
+    assert furu.create(single) == "Node(top-create-single)"
+
+    nodes = [Node(name="top-create-a"), Node(name="top-create-b")]
+    assert furu.create(nodes) == ["Node(top-create-a)", "Node(top-create-b)"]
 
 
 def test_top_level_load_existing_accepts_single_furu_object(tmp_path: Path) -> None:
@@ -1383,7 +1379,7 @@ def test_top_level_load_existing_accepts_list_and_logs_once(tmp_path: Path) -> N
 
 
 def test_function_type_can_be_declared_field_dependency() -> None:
-    child = letter_count.spec("banana", "a")
+    child = letter_count("banana", "a")
     parent = FunctionDependencyParent(child=child)
 
     assert child._schema_data == {
@@ -1471,7 +1467,7 @@ def test_furu_from_artifact_infers_furu_object_type():
         schema_hash=obj._artifact_schema_hash,
     )
 
-    loaded = Furu.from_artifact(artifact)
+    loaded = Spec.from_artifact(artifact)
 
     assert artifact.object_id == obj.object_id
     assert loaded == obj
@@ -1594,8 +1590,8 @@ def test_data_dir():
         / "21733b1febfab88b565c"
         / "685af925669262434640"
     )
-    assert node_pair.data_dir == node_pair._base_dir / "data"
-    assert node_pair.data_dir == Path(
+    assert node_pair.directory.data == node_pair._base_dir / "data"
+    assert node_pair.directory.data == Path(
         get_config().run_directories.objects
         / "test_core"
         / "NodePair"
@@ -1614,7 +1610,7 @@ def test_max_workers_defaults_to_none():
 
 
 def test_max_workers_can_be_overridden_as_class_option():
-    class LimitedNode(Furu[str]):
+    class LimitedNode(Spec[str]):
         name: str
         max_workers = 5
 
@@ -1626,7 +1622,7 @@ def test_max_workers_can_be_overridden_as_class_option():
 
 
 def test_max_workers_can_be_overridden_with_classvar():
-    class LimitedNode(Furu[str]):
+    class LimitedNode(Spec[str]):
         name: str
         max_workers: ClassVar[int | None] = 5
 
@@ -1655,7 +1651,7 @@ def test_max_workers_does_not_affect_schema_or_object_identity():
 
 
 def test_resource_requirements_can_be_overridden_with_property():
-    class HeavyNode(Furu[str]):
+    class HeavyNode(Spec[str]):
         name: str
 
         @property
@@ -1687,7 +1683,7 @@ def test_storage_root_can_be_overridden_with_cached_property(
         / node._artifact_schema_hash
         / node._artifact_hash
     )
-    assert node.data_dir == node._base_dir / "data"
+    assert node.directory.data == node._base_dir / "data"
 
 
 def test_debug_mode_ignores_storage_root_override() -> None:
@@ -1733,15 +1729,15 @@ def test_create_object_and_exists():
     node_pair = NodePair(
         name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
     )
-    assert node_pair.status() == "missing"
+    assert node_pair.status == "missing"
     for _i in range(3):
         assert node_pair.create() == {
             "node1": "Node(y)",
             "node2": "WNode(z:1)",
             "name": "x",
         }
-    assert node_pair.status() == "completed"
-    assert replace(node_pair, name="y").status() == "missing"
+    assert node_pair.status == "done"
+    assert replace(node_pair, name="y").status == "missing"
 
 
 def test_data_dir_is_user_data_subdirectory() -> None:
@@ -1749,7 +1745,7 @@ def test_data_dir_is_user_data_subdirectory() -> None:
 
     assert obj.create() == "payload"
 
-    assert (obj.data_dir / "payload.txt").read_text(encoding="utf-8") == "payload"
+    assert (obj.directory.data / "payload.txt").read_text(encoding="utf-8") == "payload"
     assert result_manifest_path_in(obj._base_dir).exists()
     assert metadata_path_in(obj._base_dir).exists()
     assert not (obj._base_dir / ".furu").exists()
@@ -1769,9 +1765,9 @@ def test_data_dir_property_creates_user_data_subdirectory() -> None:
     user_data_path = node._base_dir / "data"
 
     assert not user_data_path.exists()
-    assert node.data_dir == user_data_path
+    assert node.directory.data == user_data_path
     assert user_data_path.exists()
-    assert node.status() == "failed"
+    assert node.status == "failed"
 
 
 def test_status_is_running_while_compute_lock_is_held() -> None:
@@ -1779,7 +1775,7 @@ def test_status_is_running_while_compute_lock_is_held() -> None:
     node._base_dir.mkdir(parents=True, exist_ok=True)
 
     with lock([compute_lock_path_in(node._base_dir)]):
-        assert node.status() == "running"
+        assert node.status == "running"
 
 
 def test_status_is_failed_when_compute_lock_is_not_active() -> None:
@@ -1788,7 +1784,7 @@ def test_status_is_failed_when_compute_lock_is_not_active() -> None:
 
     compute_lock_path_in(node._base_dir).touch()
 
-    assert node.status() == "failed"
+    assert node.status == "failed"
 
 
 def test_status_is_failed_when_compute_lock_is_stale() -> None:
@@ -1798,7 +1794,7 @@ def test_status_is_failed_when_compute_lock_is_stale() -> None:
 
     write_stale_lock(lock_path)
 
-    assert node.status() == "failed"
+    assert node.status == "failed"
 
 
 def test_status_is_failed_after_create_error() -> None:
@@ -1807,7 +1803,7 @@ def test_status_is_failed_after_create_error() -> None:
     with pytest.raises(RuntimeError, match="failed single for 1"):
         obj.create()
 
-    assert obj.status() == "failed"
+    assert obj.status == "failed"
 
 
 def test_creating_and_loading_random_result_furu_obj():
@@ -1824,9 +1820,9 @@ def test_delete_force() -> None:
     node = Node(name="x")
 
     assert node.create() == "Node(x)"
-    assert node.data_dir.exists()
+    assert node.directory.data.exists()
     assert node.delete(mode="force")
-    assert not node.data_dir.exists()
+    assert not node.directory.data.exists()
     assert node.create() == "Node(x)"
 
 
@@ -1836,7 +1832,7 @@ def test_delete_prompt_cancel() -> None:
     assert node.create() == "Node(x)"
     with patch("builtins.input", return_value="n"):
         assert not node.delete()
-    assert node.data_dir.exists()
+    assert node.directory.data.exists()
 
 
 def test_delete_returns_false_when_missing() -> None:
@@ -1922,7 +1918,7 @@ def test_resolved_create_mode_validation() -> None:
         def create(self) -> str:
             return f"single:{self.label}"
 
-    class ExplicitBatch(Furu[str]):
+    class ExplicitBatch(Spec[str]):
         label: str
 
         @classmethod
@@ -1947,7 +1943,7 @@ def test_resolved_create_mode_validation() -> None:
         TypeError, match="must define exactly one of create or create_batched"
     ):
 
-        class InvalidBoth(Furu[int]):
+        class InvalidBoth(Spec[int]):
             def create(self) -> int:
                 return 1
 
@@ -1957,7 +1953,7 @@ def test_resolved_create_mode_validation() -> None:
 
     with pytest.raises(TypeError, match=r"create_batched must be a @classmethod"):
 
-        class InvalidBatchMethod(Furu[int]):
+        class InvalidBatchMethod(Spec[int]):
             def create_batched(self, objs) -> list[int]:
                 return [1 for _ in objs]
 
@@ -1972,7 +1968,7 @@ def test_resolved_create_mode_validation() -> None:
             def create_batched(cls, objs) -> list[str]:
                 return [obj.label for obj in objs]
 
-    class NoCreateHook(Furu[int]):
+    class NoCreateHook(Spec[int]):
         value: int
 
     assert NoCreateHook._furu_create_mode is None
@@ -1985,7 +1981,7 @@ def test_no_create_hook_loads_cached_result() -> None:
         result_dir_in(obj._base_dir),
         declared_type=str,
         result_codecs=(),
-        data_dir=obj.data_dir,
+        data_dir=obj.directory.data,
     )
 
     assert obj.create() == "cached:1"
@@ -2015,7 +2011,7 @@ def test_no_create_hook_uses_post_lock_cache_recheck(
             result_dir_in(obj._base_dir),
             declared_type=str,
             result_codecs=(),
-            data_dir=obj.data_dir,
+            data_dir=obj.directory.data,
         )
         yield lambda: True
 
@@ -2089,11 +2085,11 @@ def test_duplicate_cache_identities_compute_once_and_preserve_input_order() -> N
 def test_executor_deduplicates_by_object_id_not_data_dir(tmp_path: Path) -> None:
     ObjectIdStorageRootValue.storage_root_override = tmp_path / "first"
     first = ObjectIdStorageRootValue(key=1)
-    first_data_dir = first.data_dir
+    first_data_dir = first.directory.data
 
     ObjectIdStorageRootValue.storage_root_override = tmp_path / "second"
     second = ObjectIdStorageRootValue(key=1)
-    second_data_dir = second.data_dir
+    second_data_dir = second.directory.data
 
     assert first.object_id == second.object_id
     assert first_data_dir != second_data_dir
@@ -2135,7 +2131,7 @@ def test_pending_items_are_rechecked_after_lock_acquisition(
             "single:5",
             result_dir_in(pending._base_dir),
             result_codecs=(),
-            data_dir=pending.data_dir,
+            data_dir=pending.directory.data,
         )
         yield lambda: True
 

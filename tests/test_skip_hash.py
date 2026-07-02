@@ -18,7 +18,7 @@ def _fields(node: Any) -> dict[str, Any]:
     return raw
 
 
-class _SkipScalar(furu.Furu[str]):
+class _SkipScalar(furu.Spec[str]):
     important: str
     debug: Annotated[str, furu.skip_hash]
 
@@ -32,21 +32,21 @@ class _Config:
     debug: Annotated[str, furu.skip_hash]
 
 
-class _NestedSkip(furu.Furu[int]):
+class _NestedSkip(furu.Spec[int]):
     config: _Config
 
     def create(self) -> int:
         return self.config.important
 
 
-class _Dep(furu.Furu[str]):
+class _Dep(furu.Spec[str]):
     value: str
 
     def create(self) -> str:
         return self.value
 
 
-class _SkipDep(furu.Furu[str]):
+class _SkipDep(furu.Spec[str]):
     important: str
     debug_dep: Annotated[_Dep, furu.skip_hash]
 
@@ -54,7 +54,7 @@ class _SkipDep(furu.Furu[str]):
         return self.important
 
 
-@furu.function
+@furu.spec
 def _scaled(value: int, run_id: Annotated[str, furu.skip_hash]) -> int:
     return value * 2
 
@@ -137,8 +137,8 @@ def test_skip_hash_dependency_excluded_from_hash_but_kept_as_dependency() -> Non
 
 
 def test_skip_hash_on_furu_function_parameter() -> None:
-    a = _scaled.spec(2, "run-a")
-    b = _scaled.spec(2, "run-b")
+    a = _scaled(2, "run-a")
+    b = _scaled(2, "run-b")
 
     assert a.object_id == b.object_id
     assert _fields(a._artifact_data)["run_id"] == "run-a"

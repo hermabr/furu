@@ -7,7 +7,7 @@ from typing import Any, ClassVar, Iterator
 import pytest
 
 import furu
-from furu import Furu
+from furu import Spec
 from furu.config import get_config
 from furu.dag import DagNode, _add_to_dag
 from furu.execution.execution_coordinator import ExecutionCoordinator
@@ -19,14 +19,14 @@ from furu._storage_layout import (
 from furu.worker.backends.local import LocalThreadWorkerBackend
 
 
-class Leaf(Furu[str]):
+class Leaf(Spec[str]):
     name: str
 
     def create(self) -> str:
         return f"leaf:{self.name}"
 
 
-class Mid(Furu[str]):
+class Mid(Spec[str]):
     label: str
     child: Leaf
 
@@ -34,7 +34,7 @@ class Mid(Furu[str]):
         return f"mid:{self.label}:{self.child.create()}"
 
 
-class Top(Furu[str]):
+class Top(Spec[str]):
     name: str
     left: Mid
     right: Mid
@@ -49,14 +49,14 @@ class LeafBundle:
     b: Leaf
 
 
-class NestedParent(Furu[str]):
+class NestedParent(Spec[str]):
     bundle: LeafBundle
 
     def create(self) -> str:
         return self.bundle.a.create()
 
 
-class ComputedParent(Furu[str]):
+class ComputedParent(Spec[str]):
     name: str
 
     @furu.dependency
@@ -68,14 +68,14 @@ class ComputedParent(Furu[str]):
 
 
 @contextmanager
-def mark_running(obj: Furu) -> Iterator[None]:
+def mark_running(obj: Spec) -> Iterator[None]:
     obj._base_dir.mkdir(parents=True, exist_ok=True)
     with lock([compute_lock_path_in(obj._base_dir)]):
         yield
 
 
 def _new_execution_coordinator(
-    objs: Sequence[Furu[Any]],
+    objs: Sequence[Spec[Any]],
     *,
     max_retries_per_object: int | None = None,
 ) -> ExecutionCoordinator:
@@ -175,7 +175,7 @@ def test_add_to_dag_stops_recursion_at_completed_objects():
     leaf = Leaf(name="cached")
     mid = Mid(label="m", child=leaf)
     leaf.create()
-    assert leaf.status() == "completed"
+    assert leaf.status == "done"
 
     coordinator = _new_execution_coordinator([mid])
 
@@ -192,7 +192,7 @@ def test_add_to_dag_completed_root_has_no_dependencies():
     leaf = Leaf(name="root-cached")
     mid = Mid(label="m", child=leaf)
     mid.create()
-    assert mid.status() == "completed"
+    assert mid.status == "done"
 
     coordinator = _new_execution_coordinator([mid])
 
@@ -205,7 +205,7 @@ def test_add_to_dag_rejects_running_root():
     leaf = Leaf(name="running-root")
 
     with mark_running(leaf):
-        assert leaf.status() == "running"
+        assert leaf.status == "running"
 
         with pytest.raises(RuntimeError, match="cannot add running object to DAG"):
             _new_execution_coordinator([leaf])
@@ -216,7 +216,7 @@ def test_add_to_dag_rejects_running_dependency():
     mid = Mid(label="m", child=leaf)
 
     with mark_running(leaf):
-        assert leaf.status() == "running"
+        assert leaf.status == "running"
 
         with pytest.raises(RuntimeError, match="cannot add running object to DAG"):
             _new_execution_coordinator([mid])
@@ -228,7 +228,7 @@ def test_add_to_dag_does_not_reject_inactive_compute_lock():
     lock_path = compute_lock_path_in(leaf._base_dir)
     lock_path.touch()
 
-    assert leaf.status() == "failed"
+    assert leaf.status == "failed"
     coordinator = _new_execution_coordinator([leaf])
 
     assert set(coordinator.ready) == {leaf.object_id}
@@ -285,13 +285,13 @@ def test_add_to_dag_walks_computed_dependencies():
 
 
 def test_add_to_dag_rejects_non_furu_values():
-    with pytest.raises(TypeError, match="expected Furu objects"):
+    with pytest.raises(TypeError, match="expected Spec objects"):
         _new_execution_coordinator(
             [Leaf(name="ok"), "not-a-furu"]  # ty: ignore[invalid-argument-type]
         )
 
 
-class TrackingLeaf(Furu[int]):
+class TrackingLeaf(Spec[int]):
     n: int
     create_calls: ClassVar[list[int]] = []
 
@@ -300,7 +300,7 @@ class TrackingLeaf(Furu[int]):
         return self.n * 2
 
 
-class TrackingMid(Furu[int]):
+class TrackingMid(Spec[int]):
     label: str
     child: TrackingLeaf
     create_calls: ClassVar[list[str]] = []
@@ -310,7 +310,7 @@ class TrackingMid(Furu[int]):
         return self.child.create() + 1
 
 
-class LazyChildLoader(Furu[int]):
+class LazyChildLoader(Spec[int]):
     base: int
     create_calls: ClassVar[list[int]] = []
 
@@ -319,14 +319,14 @@ class LazyChildLoader(Furu[int]):
         return self.base + TrackingLeaf(n=self.base).create()
 
 
-class AlwaysFails(Furu[int]):
+class AlwaysFails(Spec[int]):
     name: str
 
     def create(self) -> int:
         raise RuntimeError(f"intentional failure: {self.name}")
 
 
-class DependsOnFailing(Furu[int]):
+class DependsOnFailing(Spec[int]):
     label: str
     child: AlwaysFails
 
@@ -347,7 +347,7 @@ def test_execution_coordinator_run_runs_single_zero_dependency_node():
     ExecutionCoordinator.run([leaf], worker_backends=(LocalThreadWorkerBackend(),))
 
     assert TrackingLeaf.create_calls == [3]
-    assert leaf.status() == "completed"
+    assert leaf.status == "done"
     assert leaf.create() == 6
 
 
@@ -384,7 +384,7 @@ def test_execution_coordinator_run_with_multiple_workers_runs_independent_nodes(
 
     assert sorted(TrackingLeaf.create_calls) == list(range(8))
     for leaf in leaves:
-        assert leaf.status() == "completed"
+        assert leaf.status == "done"
 
 
 def test_execution_coordinator_run_discovers_lazy_dependencies_and_reruns_parent():
@@ -429,5 +429,5 @@ def test_execution_coordinator_run_reports_worker_failures():
             worker_backends=(LocalThreadWorkerBackend(),),
         )
 
-    assert failing.status() == "failed"
-    assert parent.status() == "missing"
+    assert failing.status == "failed"
+    assert parent.status == "missing"

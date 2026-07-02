@@ -78,7 +78,7 @@ _LEVEL_LETTER_STYLE = {
     logging.CRITICAL: f"{_RED};1",
 }
 
-# An artifact id rendered by Furu._log_label: "<ClassName>:<5 chars>:<5 chars>",
+# An artifact id rendered by Spec._log_label: "<ClassName>:<5 chars>:<5 chars>",
 # where each segment is the first 5 chars of a hash. Matching the exact widths
 # keeps unrelated "name:host:port"-style tokens from being highlighted.
 _ARTIFACT_ID_RE = re.compile(

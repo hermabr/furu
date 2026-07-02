@@ -12,8 +12,9 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import TypeAdapter, ValidationError
 
+import furu
 import furu.worker.loop as worker_loop_module
-from furu import Furu
+from furu import Spec
 from furu._storage_layout import execution_coordinator_log_path_in
 from furu.config import get_config
 from furu.dag import _add_to_dag
@@ -53,7 +54,7 @@ def _captured_furu_logs(caplog: pytest.LogCaptureFixture) -> Iterator[None]:
 
 
 def _new_execution_coordinator(
-    objs: Sequence[Furu[Any]],
+    objs: Sequence[Spec[Any]],
     *,
     max_retries_per_object: int | None = None,
 ) -> ExecutionCoordinator:
@@ -107,14 +108,14 @@ def _new_local_pool(
     return pool
 
 
-class ExecutionCoordinatorLeaf(Furu[int]):
+class ExecutionCoordinatorLeaf(Spec[int]):
     value: int
 
     def create(self) -> int:
         return self.value
 
 
-class FlakyExecutionCoordinatorLeaf(Furu[int]):
+class FlakyExecutionCoordinatorLeaf(Spec[int]):
     value: int
     attempts_by_value: ClassVar[dict[int, int]] = {}
 
@@ -126,7 +127,7 @@ class FlakyExecutionCoordinatorLeaf(Furu[int]):
         return self.value
 
 
-class LimitedExecutionCoordinatorLeaf(Furu[int]):
+class LimitedExecutionCoordinatorLeaf(Spec[int]):
     value: int
     max_workers: ClassVar[int | None] = 2
 
@@ -134,14 +135,14 @@ class LimitedExecutionCoordinatorLeaf(Furu[int]):
         return self.value
 
 
-class ExecutionCoordinatorParent(Furu[int]):
+class ExecutionCoordinatorParent(Spec[int]):
     child: ExecutionCoordinatorLeaf
 
     def create(self) -> int:
         return self.child.create() + 1
 
 
-class ExecutionCoordinatorLazyParent(Furu[int]):
+class ExecutionCoordinatorLazyParent(Spec[int]):
     value: int
 
     def create(self) -> int:
@@ -468,7 +469,7 @@ def test_execution_coordinator_run_retries_failed_worker_result() -> None:
     assert leaf.create() == value
 
 
-class GpuLeaf(Furu[int]):
+class GpuLeaf(Spec[int]):
     value: int
 
     @property
@@ -479,7 +480,7 @@ class GpuLeaf(Furu[int]):
         return self.value
 
 
-class CpuOnlyLeaf(Furu[int]):
+class CpuOnlyLeaf(Spec[int]):
     value: int
 
     @property
@@ -490,7 +491,7 @@ class CpuOnlyLeaf(Furu[int]):
         return self.value
 
 
-class MemoryLeaf(Furu[int]):
+class MemoryLeaf(Spec[int]):
     value: int
 
     @property
@@ -501,7 +502,7 @@ class MemoryLeaf(Furu[int]):
         return self.value
 
 
-class DynamicCpuSeed(Furu[int]):
+class DynamicCpuSeed(Spec[int]):
     value: int
     create_calls: ClassVar[list[int]] = []
 
@@ -514,7 +515,7 @@ class DynamicCpuSeed(Furu[int]):
         return self.value
 
 
-class DynamicGpuAfterSeed(Furu[int]):
+class DynamicGpuAfterSeed(Spec[int]):
     parent: DynamicCpuSeed
     value: int
     create_calls: ClassVar[list[int]] = []
@@ -528,7 +529,7 @@ class DynamicGpuAfterSeed(Furu[int]):
         return self.parent.create() + self.value
 
 
-class DynamicCpuAfterGpu(Furu[int]):
+class DynamicCpuAfterGpu(Spec[int]):
     parent: DynamicGpuAfterSeed
     value: int
     create_calls: ClassVar[list[int]] = []
@@ -542,7 +543,7 @@ class DynamicCpuAfterGpu(Furu[int]):
         return self.parent.create() + self.value
 
 
-class DynamicGpuAfterCpu(Furu[int]):
+class DynamicGpuAfterCpu(Spec[int]):
     parent: DynamicCpuAfterGpu
     value: int
     create_calls: ClassVar[list[int]] = []
@@ -973,7 +974,7 @@ def test_execution_coordinator_run_uses_worker_backend() -> None:
     returned = ExecutionCoordinator.run(objs, worker_backends=(backend,))
 
     assert returned is objs
-    assert leaf.status() == "completed"
+    assert leaf.status == "done"
     assert leaf.create() == 11
     assert len(backend.bound_ports) == 1
     assert backend.bound_ports[0] > 0
@@ -1013,6 +1014,14 @@ def test_execution_coordinator_run_passes_executor_dir_to_worker_backend() -> No
     ExecutionCoordinator.run([leaf], worker_backends=(backend,))
 
     assert backend.executor_dirs == [expected_executor_dir]
+
+
+def test_top_level_create_runs_dag_on_worker_backends() -> None:
+    leaf = ExecutionCoordinatorLeaf(value=21)
+
+    assert furu.create(leaf, on=(LocalThreadWorkerBackend(),)) == 21
+    assert leaf.status == "done"
+    assert furu.create([leaf], on=(LocalThreadWorkerBackend(),)) == [21]
 
 
 def test_execution_coordinator_run_writes_log_to_executor_dir() -> None:
@@ -1389,7 +1398,7 @@ def test_worker_loop_logs_task_requests_and_received_task(
         def job_result(self, lease_id: str, request: JobResultRequest) -> None:
             pass
 
-    def ensure_single_result(obj: Furu[object]) -> None:
+    def ensure_single_result(obj: Spec[object]) -> None:
         pass
 
     test_client = TestClient("http://worker.test", auth_token="test-token")
@@ -1483,7 +1492,7 @@ def test_worker_loop_exits_after_exceeding_max_consecutive_failures(
         def job_result(self, lease_id: str, request: JobResultRequest) -> None:
             self.results.append((lease_id, request))
 
-    def ensure_single_result(obj: Furu[object]) -> None:
+    def ensure_single_result(obj: Spec[object]) -> None:
         raise RuntimeError("worker task failed")
 
     test_client = TestClient("http://worker.test", auth_token="test-token")
@@ -1547,7 +1556,7 @@ def test_worker_loop_resets_consecutive_failures_after_success(
 
     calls = 0
 
-    def ensure_single_result(obj: Furu[object]) -> None:
+    def ensure_single_result(obj: Spec[object]) -> None:
         nonlocal calls
         calls += 1
         if calls in (1, 3):
@@ -1604,7 +1613,7 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
         def job_result(self, lease_id: str, request: JobResultRequest) -> None:
             self.calls.append("job_result")
 
-    def ensure_single_result(obj: Furu[object]) -> None:
+    def ensure_single_result(obj: Spec[object]) -> None:
         raise KeyboardInterrupt
 
     test_client = TestClient("http://worker.test", auth_token="test-token")

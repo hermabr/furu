@@ -63,7 +63,7 @@ def _validate_result_path_segment(
     if value == WRAPPER_KEY:
         raise ValueError(
             f"Unsupported result value at {_value_path_display(parent_value_path)}:\n"
-            + f"named {WRAPPER_KEY!r} are reserved by Furu result persistence."
+            + f"named {WRAPPER_KEY!r} are reserved by furu result persistence."
         )
     if (
         value == ""
@@ -293,7 +293,7 @@ def _dump_value(
 
     raise ValueError(
         f"Unsupported result value at {_value_path_display(value_path)}:\n"
-        f"values of type {type(value).__name__!r} are not supported by Furu. Add a custom codec"
+        f"values of type {type(value).__name__!r} are not supported by furu. Add a custom codec"
     )
 
 

@@ -22,14 +22,14 @@ from furu.constants import (
     SERIALIZERMARKER,
 )
 from furu.serializer.registry import (
-    ArtifactSerializer,
-    ArtifactSerializerMeta,
+    Serializer,
+    SerializerMeta,
 )
 from furu.utils import JsonValue, _stable_json_dump, fully_qualified_name
 
 
 def _custom_schema(
-    serializer: type[ArtifactSerializer], declared_type: object
+    serializer: type[Serializer], declared_type: object
 ) -> JsonValue:
     return {
         KINDMARKER: "custom",
@@ -43,7 +43,7 @@ def schema_class(
     field_names: list[str],
     seen: set[type],
     *,
-    artifact_serializers: tuple[type[ArtifactSerializer], ...],
+    artifact_serializers: tuple[type[Serializer], ...],
     for_hash: bool,
 ) -> JsonValue:
     if tp in seen:
@@ -70,7 +70,7 @@ def schema_dataclass(
     tp: type,
     seen: set[type],
     *,
-    artifact_serializers: tuple[type[ArtifactSerializer], ...],
+    artifact_serializers: tuple[type[Serializer], ...],
     for_hash: bool,
 ) -> JsonValue:
     return schema_class(
@@ -86,7 +86,7 @@ def schema_pydantic_model(
     tp: type[PydanticBaseModel],
     seen: set[type],
     *,
-    artifact_serializers: tuple[type[ArtifactSerializer], ...],
+    artifact_serializers: tuple[type[Serializer], ...],
     for_hash: bool,
 ) -> JsonValue:
     return schema_class(
@@ -102,10 +102,10 @@ def schema_type(
     tp: Any,
     seen: set[type],
     *,
-    artifact_serializers: tuple[type[ArtifactSerializer], ...],
+    artifact_serializers: tuple[type[Serializer], ...],
     for_hash: bool = False,
 ) -> JsonValue:
-    if serializer := ArtifactSerializerMeta.serializer_for_schema(
+    if serializer := SerializerMeta.serializer_for_schema(
         tp,
         artifact_serializers,
     ):
@@ -205,4 +205,4 @@ def schema_type(
         return fully_qualified_name(tp)
     elif isinstance(tp, type):
         return fully_qualified_name(tp)
-    raise TypeError(f"Unsupported type in Furu schema: {tp!r}")
+    raise TypeError(f"Unsupported type in furu schema: {tp!r}")
