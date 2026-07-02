@@ -232,9 +232,7 @@ def _load_custom_value(value: dict[str, Any], expected_type: object) -> Any:
             f"Expected custom serializer id to be a string: {serializer_id}"
         )
     serializer = resolve_fully_qualified_name(serializer_id)
-    if not (
-        isinstance(serializer, type) and issubclass(serializer, Serializer)
-    ):
+    if not (isinstance(serializer, type) and issubclass(serializer, Serializer)):
         raise TypeError(f"{serializer_id} is not a Serializer")
     return serializer.load(
         cast(JsonValue, value[VALUEMARKER]),
@@ -281,7 +279,7 @@ def _from_json(value: JsonValue) -> Any:
             return value
 
 
-def _from_artifact[T: "Spec"](artifact: ArtifactSpec, expected_type: type[T]) -> T:
+def _from_artifact[T: Spec](artifact: ArtifactSpec, expected_type: type[T]) -> T:
     artifact_type = _resolve_serialized_type(artifact.fully_qualified_name)
     if not issubclass(artifact_type, expected_type):
         raise TypeError(
