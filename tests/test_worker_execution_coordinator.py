@@ -642,6 +642,40 @@ def test_worker_lost_requeues_running_lease_without_counting_failure() -> None:
     )
 
 
+def test_worker_lost_release_log_includes_reason_and_avoids_later_stale_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    leaf = ExecutionCoordinatorLeaf(value=99_001)
+    coordinator = _new_execution_coordinator([leaf])
+    first = coordinator.lease_job(resources=ResourceRequest(), worker="worker-1")
+    assert isinstance(first, Job)
+
+    with _captured_furu_logs(caplog):
+        coordinator.worker_lost(
+            "worker-1",
+            reason="slurm worker slurm-worker-100 was preempted",
+        )
+        second = coordinator.lease_job(resources=ResourceRequest(), worker="worker-1")
+
+    assert isinstance(second, Job)
+    assert second.lease_id != first.lease_id
+    assert any(
+        "released " in record.message
+        and "slurm worker slurm-worker-100 was preempted" in record.message
+        for record in caplog.records
+    )
+    assert not any(
+        "worker requested a new lease" in message for message in caplog.messages
+    )
+
+    release_record = next(
+        record for record in caplog.records if record.message.startswith("released ")
+    )
+    detail = getattr(release_record, "_furu_detail")
+    assert detail["lease"] == first.lease_id
+    assert detail["worker"] == "worker-1"
+
+
 def test_job_result_after_worker_lost_is_ignored() -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
     coordinator = _new_execution_coordinator([leaf])
@@ -1778,14 +1812,20 @@ def test_pool_api_client_worker_lost_uses_worker_lost_endpoint(
 
     api.PoolApiClient(
         server_url="http://pool.test/", auth_token="secret-token"
-    ).worker_lost(worker="slurm-worker-100a1")
+    ).worker_lost(
+        worker="slurm-worker-100a1",
+        reason="slurm worker slurm-worker-100a1 was preempted",
+    )
 
     assert requests == [
         (
             "POST",
             "http://pool.test/pool/worker_lost",
             {"Authorization": "Bearer secret-token"},
-            {"worker": "slurm-worker-100a1"},
+            {
+                "worker": "slurm-worker-100a1",
+                "reason": "slurm worker slurm-worker-100a1 was preempted",
+            },
         )
     ]
 

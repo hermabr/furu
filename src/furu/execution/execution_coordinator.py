@@ -219,11 +219,16 @@ class ExecutionCoordinator:
             )
             return Job(lease_id=lease_id, artifact=ArtifactSpec.from_furu(node.obj))
 
-    def worker_lost(self, worker: str) -> None:
+    def worker_lost(
+        self,
+        worker: str,
+        *,
+        reason: str = "worker is no longer active",
+    ) -> None:
         with self.log_context(), self.lock:
             if self.done.is_set():
                 return
-            self._release_worker_locked(worker, reason="worker is no longer active")
+            self._release_worker_locked(worker, reason=reason)
 
     def count_satisfiable_jobs(
         self, *, resources: ResourceRequest, max_workers: int

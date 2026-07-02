@@ -934,10 +934,13 @@ def test_slurm_pool_releases_nonfailed_array_workers_missing_from_squeue(
         "count_satisfiable_jobs",
         lambda self, *, resources, max_workers: max_workers,
     )
+
     monkeypatch.setattr(
         PoolApiClient,
         "worker_lost",
-        lambda self, *, worker: lost_workers.append(worker),
+        lambda self, *, worker, reason="worker is no longer active": lost_workers.append(
+            worker
+        ),
     )
     backend = SlurmWorkerBackend(
         max_workers=3,
@@ -978,6 +981,70 @@ def test_slurm_pool_releases_nonfailed_array_workers_missing_from_squeue(
     assert [arg for arg in sbatch_records[1]["argv"] if arg.startswith("--array")] == [
         "--array=0-1"
     ]
+
+
+def test_slurm_pool_reports_preempted_worker_still_in_squeue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    lost_workers: list[tuple[str, str]] = []
+    _stub_count_satisfiable_jobs(monkeypatch, 1)
+
+    def worker_lost(
+        self: PoolApiClient,
+        *,
+        worker: str,
+        reason: str = "worker is no longer active",
+    ) -> None:
+        lost_workers.append((worker, reason))
+
+    monkeypatch.setattr(PoolApiClient, "worker_lost", worker_lost)
+    backend = SlurmWorkerBackend(
+        max_workers=1,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="execution-coordinator.cluster",
+        poll_interval=0,
+        use_job_arrays=False,
+    )
+    pool = backend.start_pool(
+        bound_port=1234,
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+    )
+
+    pool._scale_once()
+    assert pool._job_ids == ["100"]
+
+    active_file.write_text("100 PREEMPTED\n")
+    furu_logger = logging.getLogger("furu")
+    furu_logger.addHandler(caplog.handler)
+    try:
+        caplog.set_level(logging.WARNING, logger="furu")
+        pool._scale_once()
+    finally:
+        furu_logger.removeHandler(caplog.handler)
+
+    assert lost_workers == [
+        ("slurm-worker-100", "slurm worker slurm-worker-100 was preempted")
+    ]
+    assert any(
+        "slurm worker slurm-worker-100 was preempted" in message
+        for message in caplog.messages
+    )
+    assert pool._job_ids == ["101"]
+    assert (
+        len(
+            [
+                record
+                for record in _read_records(record_file)
+                if record["executable"] == "sbatch"
+            ]
+        )
+        == 2
+    )
 
 
 def test_slurm_worker_pool_stop_cancels_array_tasks(
@@ -1533,7 +1600,11 @@ def _install_fake_slurm(
 
     monkeypatch.delenv("FURU_EXECUTION_COORDINATOR_SERVER_URL", raising=False)
     monkeypatch.delenv("FURU_EXECUTION_COORDINATOR_AUTH_TOKEN", raising=False)
-    monkeypatch.setattr(PoolApiClient, "worker_lost", lambda self, *, worker: None)
+    monkeypatch.setattr(
+        PoolApiClient,
+        "worker_lost",
+        lambda self, *, worker, reason="worker is no longer active": None,
+    )
     monkeypatch.setenv("FURU_FAKE_SLURM_RECORD_FILE", str(record_file))
     monkeypatch.setenv("FURU_FAKE_SLURM_ACTIVE_FILE", str(active_file))
     monkeypatch.setenv("FURU_FAKE_SLURM_COUNTER_FILE", str(counter_file))
