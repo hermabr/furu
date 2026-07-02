@@ -19,8 +19,8 @@ from furu.constants import (
 )
 from furu.metadata import ArtifactSpec
 from furu.serializer.registry import (
-    ArtifactSerializer,
-    ArtifactSerializerMeta,
+    Serializer,
+    SerializerMeta,
 )
 from furu.utils import (
     JsonValue,
@@ -30,7 +30,7 @@ from furu.utils import (
 )
 
 if TYPE_CHECKING:
-    from furu.core import Furu
+    from furu.core import Spec
 
 _RESERVED_DICT_KEYS = frozenset(
     {CLASSMARKER, FIELDSMARKER, KINDMARKER, SERIALIZERMARKER, VALUEMARKER}
@@ -40,7 +40,7 @@ _RESERVED_DICT_KEYS = frozenset(
 def to_json(  # TODO: consider caching this (but if i'm going to, I need to figure out how to cache lists and other unhashable objects)
     obj: Any,
     declared_type: object,
-    artifact_serializers: tuple[type[ArtifactSerializer], ...],
+    artifact_serializers: tuple[type[Serializer], ...],
     for_hash: bool = False,
 ) -> JsonValue:
     # TODO: when writing this to metadata, make sure to escape strings etc
@@ -54,7 +54,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
         if x in _RESERVED_DICT_KEYS:
             raise ValueError(
                 f"Cannot serialize dict key {x!r}: "
-                "it is reserved by Furu artifact serialization"
+                "it is reserved by Spec artifact serialization"
             )
         return x
 
@@ -64,7 +64,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
             CLASSMARKER: fully_qualified_name(obj),
         }
 
-    if serializer := ArtifactSerializerMeta.serializer_for_dump(
+    if serializer := SerializerMeta.serializer_for_dump(
         obj,
         declared_type=declared_type,
         artifact_serializers=artifact_serializers,
@@ -172,12 +172,12 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
         case enum.Enum():
             raise TypeError(
                 f"Cannot serialize enum value {obj!r}: enums are not supported "
-                "in Furu artifacts yet"
+                "in Spec artifacts yet"
             )
         case _:
             raise TypeError(
                 f"Cannot serialize value {obj!r} of type {type(obj).__name__!r} "
-                "into a Furu artifact; register an ArtifactSerializer for this type"
+                "into a Spec artifact; register an Serializer for this type"
             )
 
 
@@ -233,9 +233,9 @@ def _load_custom_value(value: dict[str, Any], expected_type: object) -> Any:
         )
     serializer = resolve_fully_qualified_name(serializer_id)
     if not (
-        isinstance(serializer, type) and issubclass(serializer, ArtifactSerializer)
+        isinstance(serializer, type) and issubclass(serializer, Serializer)
     ):
-        raise TypeError(f"{serializer_id} is not an ArtifactSerializer")
+        raise TypeError(f"{serializer_id} is not an Serializer")
     return serializer.load(
         cast(JsonValue, value[VALUEMARKER]),
         declared_type=strip_annotated(expected_type),
@@ -247,12 +247,12 @@ def _resolve_serialized_type(class_name: str) -> type:
     if isinstance(value, type):
         return value
 
-    furu_type = getattr(value, "furu_type", None)
-    if isinstance(furu_type, type):
-        from furu.core import Furu
+    spec_type = getattr(value, "__furu_spec_type__", None)
+    if isinstance(spec_type, type):
+        from furu.core import Spec
 
-        if issubclass(furu_type, Furu):
-            return furu_type
+        if issubclass(spec_type, Spec):
+            return spec_type
 
     raise TypeError(f"{class_name!r} resolved to a non-type value")
 
@@ -289,7 +289,7 @@ def _from_json(value: JsonValue) -> Any:
             return value
 
 
-def _from_artifact[T: "Furu"](artifact: ArtifactSpec, expected_type: type[T]) -> T:
+def _from_artifact[T: "Spec"](artifact: ArtifactSpec, expected_type: type[T]) -> T:
     artifact_type = _resolve_serialized_type(artifact.fully_qualified_name)
     if not issubclass(artifact_type, expected_type):
         raise TypeError(

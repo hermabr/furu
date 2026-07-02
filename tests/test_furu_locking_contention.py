@@ -5,7 +5,7 @@ import time
 from multiprocessing import get_context
 from pathlib import Path
 
-from furu import Furu
+from furu import Spec
 from furu._storage_layout import data_dir_in
 from furu.config import _FuruConfig, _FuruDirectories, _set_config
 from furu.execution import _load_or_create
@@ -20,7 +20,7 @@ MID_CREATE_TIMEOUT_S = 1.0 * TEST_TIMING_SCALE
 WAIT_FOR_LOCK_RESULT_TIMEOUT_S = DEFAULT_ACQUIRE_POLL_INTERVAL_S + PROCESS_TIMEOUT_S
 
 
-class SlowProbe(Furu[int]):
+class SlowProbe(Spec[int]):
     key: int
 
     def create(self) -> int:
@@ -31,7 +31,7 @@ class SlowProbe(Furu[int]):
         return 42
 
 
-class SlowBatchProbe(Furu[int]):
+class SlowBatchProbe(Spec[int]):
     key: int
 
     @classmethod
@@ -46,7 +46,7 @@ class SlowBatchProbe(Furu[int]):
         return [obj.key * 10 for obj in objs]
 
 
-class MidRunTakeoverProbe(Furu[int]):
+class MidRunTakeoverProbe(Spec[int]):
     key: int
     entered_path: str
     release_path: str

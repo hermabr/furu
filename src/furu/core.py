@@ -25,7 +25,7 @@ from furu.resources import ResourceRequirements
 from furu.result import load_result_bundle
 from furu.result.codec import ResultCodec
 from furu.serializer.artifact import to_json as _to_json
-from furu.serializer.registry import ArtifactSerializer
+from furu.serializer.registry import Serializer
 from furu.serializer.schema import schema_type as _schema_type
 from furu.utils import (
     JsonValue,
@@ -50,20 +50,53 @@ else:
         pass
 
 
-FuruCreateMode: TypeAlias = Literal["single", "batched"] | None
+SpecCreateMode: TypeAlias = Literal["single", "batched"] | None
 _FURU_CLASS_OPTIONS = frozenset({"max_workers"})
+_RESERVED_SPEC_NAMES = frozenset(
+    {
+        "create",
+        "create_batched",
+        "metadata",
+        "status",
+        "directory",
+        "explain",
+        "load_existing",
+        "delete",
+        "migrate",
+        "migrations",
+        "provenance",
+    }
+)
 
 
-class Furu[T](_FuruDataclassTransform, ABC):
-    _furu_create_mode: ClassVar[FuruCreateMode]
+class Missing(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class _SpecDirectory:
+    _base_dir: Path
+
+    @property
+    def data(self) -> Path:
+        data_dir = data_dir_in(self._base_dir)
+        data_dir.mkdir(parents=True, exist_ok=True)
+        return data_dir
+
+
+class Spec[T](_FuruDataclassTransform, ABC):
+    _furu_create_mode: ClassVar[SpecCreateMode]
     max_workers: ClassVar[int | None] = None
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        if cls is Furu:
+        if cls is Spec:
             return
 
         annotations = get_annotations(cls, eval_str=False)
+        if _RESERVED_SPEC_NAMES & annotations.keys():
+            names = ", ".join(sorted(_RESERVED_SPEC_NAMES))
+            raise TypeError(f"{cls.__name__} uses reserved Spec field names: {names}")
         if _FURU_CLASS_OPTIONS & annotations.keys():
             annotations = {
                 name: value
@@ -95,7 +128,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
         return _load_or_create(self)
 
     @classmethod
-    def create_batched[TFuru: Furu](cls: type[TFuru], objs: list[TFuru]) -> list[T]:
+    def create_batched[TFuru: Spec](cls: type[TFuru], objs: list[TFuru]) -> list[T]:
         raise NotImplementedError(
             f"{cls.__name__} must implement create() or create_batched()"
         )
@@ -121,7 +154,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
         return ()
 
     @property
-    def artifact_serializers(self) -> tuple[type[ArtifactSerializer], ...]:
+    def artifact_serializers(self) -> tuple[type[Serializer], ...]:
         return ()
 
     @property
@@ -134,10 +167,8 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     @final
     @cached_property
-    def data_dir(self) -> Path:
-        data_dir = data_dir_in(self._base_dir)
-        data_dir.mkdir(parents=True, exist_ok=True)
-        return data_dir
+    def directory(self) -> _SpecDirectory:
+        return _SpecDirectory(self._base_dir)
 
     @final
     @cached_property
@@ -174,22 +205,23 @@ class Furu[T](_FuruDataclassTransform, ABC):
                 dependencies=[self],
                 call_kind="load_existing",
             )
-        raise RuntimeError(
+        raise Missing(
             f"{self._log_label}.load_existing() could not find a result. "
             "load_existing() only loads existing results; use create() to compute "
             "missing results."
         )
 
+    @property
     @final
     def status(
         self,
     ) -> Literal[
-        "completed", "missing", "running", "failed"
+        "done", "missing", "running", "failed"
     ]:  # TODO: add queued/waiting state?
         if result_manifest_path_in(self._base_dir).exists():
-            return "completed"
+            return "done"
         if self.is_migrated():  # TODO: check if the migrated object is in correct state
-            return "completed"
+            return "done"
         if is_active_lock(compute_lock_path_in(self._base_dir)):
             return "running"
         if self._base_dir.exists():
@@ -238,7 +270,7 @@ class Furu[T](_FuruDataclassTransform, ABC):
 
     @final
     @classmethod
-    def from_artifact[TFuru: Furu](
+    def from_artifact[TFuru: Spec](
         cls: type[TFuru], artifact: ArtifactSpec | Path
     ) -> TFuru:
         from furu.serializer.artifact import _from_artifact

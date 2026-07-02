@@ -6,7 +6,7 @@ import pytest
 
 import furu
 import furu.execution as execution_module
-from furu import Furu
+from furu import Spec
 from furu._storage_layout import (
     compute_lock_path_in,
     result_link_path_in,
@@ -28,7 +28,7 @@ def _reset_counter() -> None:
     _COUNTER.calls = 0
 
 
-class _OldRun(Furu[dict[str, str]]):
+class _OldRun(Spec[dict[str, str]]):
     learning_rate: float
     dataset: str
 
@@ -45,7 +45,7 @@ def _from_old_run(fields: dict[str, JsonValue]) -> dict[str, JsonValue]:
     }
 
 
-class _NewRun(Furu[dict[str, str]]):
+class _NewRun(Spec[dict[str, str]]):
     dataset: str
     lr: float
     seed: int = 0
@@ -70,7 +70,7 @@ class _NewRun(Furu[dict[str, str]]):
         return {"dataset": self.dataset, "lr": str(self.lr), "seed": str(self.seed)}
 
 
-class _NoMigrations(Furu[int]):
+class _NoMigrations(Spec[int]):
     n: int
 
     def create(self) -> int:
@@ -85,7 +85,7 @@ def test_migrate_no_matching_source_returns_false() -> None:
     obj = _NewRun(dataset="cifar10", lr=0.001)
     assert obj.migrate() is False
     assert obj.is_migrated() is False
-    assert obj.status() == "missing"
+    assert obj.status == "missing"
 
 
 def test_migrate_with_matching_old_artifact_writes_result_link() -> None:
@@ -97,7 +97,7 @@ def test_migrate_with_matching_old_artifact_writes_result_link() -> None:
 
     assert new.migrate() is True
     assert new.is_migrated() is True
-    assert new.status() == "completed"
+    assert new.status == "done"
 
     link_path = result_link_path_in(new._base_dir)
     link = json.loads(link_path.read_text())
@@ -169,7 +169,7 @@ def test_create_does_not_call_migrate(
     migrate_calls = 0
     real_migrate = furu.migration.migrate
 
-    def spy_migrate(obj: Furu) -> bool:
+    def spy_migrate(obj: Spec) -> bool:
         nonlocal migrate_calls
         migrate_calls += 1
         return real_migrate(obj)
@@ -188,12 +188,12 @@ def test_status_treats_migrated_object_as_completed() -> None:
     old.create()
 
     new = _NewRun(dataset="cifar10", lr=0.001)
-    assert new.status() == "missing"
+    assert new.status == "missing"
     new.migrate()
-    assert new.status() == "completed"
+    assert new.status == "done"
 
 
-class _MidRun(Furu[dict[str, str]]):
+class _MidRun(Spec[dict[str, str]]):
     dataset: str
     lr: float
 
@@ -219,7 +219,7 @@ def _old_to_mid(fields: dict[str, JsonValue]) -> dict[str, JsonValue]:
     return {"dataset": fields["dataset"], "lr": fields["learning_rate"]}
 
 
-class _FinalRun(Furu[dict[str, str]]):
+class _FinalRun(Spec[dict[str, str]]):
     dataset: str
     lr: float
     seed: int = 0

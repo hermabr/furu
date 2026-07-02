@@ -6,7 +6,7 @@ from contextvars import ContextVar
 from typing import Literal, TYPE_CHECKING, TypeAlias
 
 if TYPE_CHECKING:
-    from furu.core import Furu
+    from furu.core import Spec
 
 DependencyCallKind: TypeAlias = Literal["create", "load_existing"]
 
@@ -31,12 +31,12 @@ def worker_execution_context(
 
 
 class _DependencyNotReady(BaseException):
-    dependencies: tuple[Furu, ...]
+    dependencies: tuple[Spec, ...]
     call_kind: DependencyCallKind
 
     def __init__[T](
         self,
-        dependencies: Sequence[Furu[T]],
+        dependencies: Sequence[Spec[T]],
         *,
         call_kind: DependencyCallKind,
     ) -> None:

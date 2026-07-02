@@ -11,7 +11,7 @@ from furu._storage_layout import metadata_path_in
 from furu.utils import JsonValue, object_id_from_parts
 
 if TYPE_CHECKING:
-    from furu.core import Furu
+    from furu.core import Spec
 
 
 class ArtifactSpec(BaseModel):
@@ -28,7 +28,7 @@ class ArtifactSpec(BaseModel):
     schema_hash: str
 
     @classmethod
-    def from_furu[TFuru: Furu](cls, obj: TFuru) -> ArtifactSpec:
+    def from_furu[TFuru: Spec](cls, obj: TFuru) -> ArtifactSpec:
         return cls(
             fully_qualified_name=obj._fully_qualified_name,
             artifact_data=obj._artifact_data,
@@ -60,7 +60,7 @@ class RunningMetadata(BaseModel):
     @classmethod
     def write_for[T](
         cls,
-        obj: Furu[T],
+        obj: Spec[T],
     ) -> RunningMetadata:
         metadata = cls(
             artifact=ArtifactSpec.from_furu(obj),

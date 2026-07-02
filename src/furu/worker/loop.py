@@ -4,7 +4,7 @@ import time
 import traceback
 from typing import assert_never
 
-from furu.core import Furu
+from furu.core import Spec
 from furu.execution import _ensure_single_result, api
 from furu.logging import _scoped_component, get_logger, log_detail
 from furu.metadata import ArtifactSpec
@@ -57,7 +57,7 @@ def worker_loop(
                     task_label: str | None = None
                     job_result: JobResultRequest
                     try:
-                        obj = Furu.from_artifact(job.artifact)
+                        obj = Spec.from_artifact(job.artifact)
                         task_label = obj._log_label
                         logger.info(
                             "received %s",

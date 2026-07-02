@@ -5,12 +5,12 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import fields, is_dataclass
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, Literal, Self, overload
+from typing import TYPE_CHECKING, Any, Self, overload
 
 from pydantic import BaseModel as PydanticBaseModel
 
 if TYPE_CHECKING:
-    from furu.core import Furu
+    from furu.core import Spec
 
 
 class _CachedDependency[TOwner, T](cached_property):
@@ -27,73 +27,36 @@ class _CachedDependency[TOwner, T](cached_property):
         def __get__(self, instance: object, owner: type[Any] | None = None) -> T: ...
 
 
-class _UncachedDependency[TOwner, T](property):
-    __furu_dependency__ = True
-
-    if TYPE_CHECKING:
-
-        @overload
-        def __get__(
-            self, instance: None, owner: type[TOwner] | None = None
-        ) -> Self: ...
-
-        @overload
-        def __get__(self, instance: object, owner: type[Any] | None = None) -> T: ...
-
-
 @overload
-def dependency[TFuru: Furu[Any], T](
+def dependency[TFuru: Spec[Any], T](
     func: Callable[[TFuru], T], /
 ) -> _CachedDependency[TFuru, T]: ...
 
 
 @overload
-def dependency[TFuru: Furu[Any], T](
-    *, cached: Literal[True] = True
+def dependency[TFuru: Spec[Any], T](
 ) -> Callable[[Callable[[TFuru], T]], _CachedDependency[TFuru, T]]: ...
 
 
-@overload
-def dependency[TFuru: Furu[Any], T](
-    *, cached: Literal[False]
-) -> Callable[[Callable[[TFuru], T]], _UncachedDependency[TFuru, T]]: ...
-
-
-@overload
-def dependency[TFuru: Furu[Any], T](
-    *, cached: bool
-) -> Callable[
-    [Callable[[TFuru], T]], _CachedDependency[TFuru, T] | _UncachedDependency[TFuru, T]
-]: ...
-
-
-def dependency[TFuru: Furu[Any], T](
-    func: Callable[[TFuru], T] | None = None, /, *, cached: bool = True
+def dependency[TFuru: Spec[Any], T](
+    func: Callable[[TFuru], T] | None = None, /
 ) -> (
     _CachedDependency[TFuru, T]
-    | _UncachedDependency[TFuru, T]
-    | Callable[
-        [Callable[[TFuru], T]],
-        _CachedDependency[TFuru, T] | _UncachedDependency[TFuru, T],
-    ]
+    | Callable[[Callable[[TFuru], T]], _CachedDependency[TFuru, T]]
 ):
-    def decorate(
-        func: Callable[[TFuru], T],
-    ) -> _CachedDependency[TFuru, T] | _UncachedDependency[TFuru, T]:
-        if cached:
-            return _CachedDependency(func)
-        return _UncachedDependency(func)
+    def decorate(func: Callable[[TFuru], T]) -> _CachedDependency[TFuru, T]:
+        return _CachedDependency(func)
 
     if func is not None:
         return decorate(func)
     return decorate
 
 
-def find_nested_furu_objects(value: object) -> Iterator[Furu]:
-    from furu.core import Furu
+def find_nested_furu_objects(value: object) -> Iterator[Spec]:
+    from furu.core import Spec
 
     match value:
-        case Furu():
+        case Spec():
             yield value
         case _ if is_dataclass(value) and not isinstance(value, type):
             for field in fields(value):
@@ -109,8 +72,8 @@ def find_nested_furu_objects(value: object) -> Iterator[Furu]:
                 yield from find_nested_furu_objects(item)
 
 
-def collect_declared_refs(obj: Furu) -> tuple[Furu, ...]:
-    refs_by_id: dict[str, Furu] = {}
+def collect_declared_refs(obj: Spec) -> tuple[Spec, ...]:
+    refs_by_id: dict[str, Spec] = {}
 
     for field in fields(obj):
         for ref in find_nested_furu_objects(getattr(obj, field.name)):
@@ -135,7 +98,7 @@ class DependencyRecorder:
     def __init__(self) -> None:
         self._observed_ids: set[str] = set()
 
-    def record[T](self, obj: Furu[T]) -> None:
+    def record[T](self, obj: Spec[T]) -> None:
         self._observed_ids.add(obj.object_id)
 
     def finalize(self) -> tuple[str, ...]:
@@ -151,7 +114,7 @@ _active_dependency_recorder: ContextVar[DependencyRecorder | None] = ContextVar(
 )
 
 
-def record_dependency_call[T](obj: Furu[T]) -> None:
+def record_dependency_call[T](obj: Spec[T]) -> None:
     recorder = _active_dependency_recorder.get()
     if recorder is not None:
         recorder.record(obj)
