@@ -14,12 +14,8 @@ class SpecFunction[**P, T](Protocol):
 
 @overload
 def spec[**P, T](func: Callable[P, T]) -> SpecFunction[P, T]: ...
-
-
 @overload
 def spec[**P, T]() -> Callable[[Callable[P, T]], SpecFunction[P, T]]: ...
-
-
 def spec[**P, T](
     func: Callable[P, T] | None = None,
 ) -> SpecFunction[P, T] | Callable[[Callable[P, T]], SpecFunction[P, T]]:
