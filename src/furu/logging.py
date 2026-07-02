@@ -354,9 +354,7 @@ class _ScopedFileHandler(logging.Handler):
                     and log_path.exists()
                     and log_path.stat().st_size >= _UNSCOPED_LOG_MAX_BYTES
                 ):
-                    timestamp = datetime.now(timezone.utc).strftime(
-                        "%Y%m%dT%H%M%S.%fZ"
-                    )
+                    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
                     log_path.replace(
                         log_path.with_name(f"{log_path.stem}-{timestamp}.log")
                     )

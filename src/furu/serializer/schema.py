@@ -28,9 +28,7 @@ from furu.serializer.registry import (
 from furu.utils import JsonValue, _stable_json_dump, fully_qualified_name
 
 
-def _custom_schema(
-    serializer: type[Serializer], declared_type: object
-) -> JsonValue:
+def _custom_schema(serializer: type[Serializer], declared_type: object) -> JsonValue:
     return {
         KINDMARKER: "custom",
         SERIALIZERMARKER: serializer._serializer_id(),

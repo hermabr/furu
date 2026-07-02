@@ -445,9 +445,7 @@ def test_user_defined_serializer_is_auto_registered() -> None:
 
 
 def test_auto_register_false_opts_out_of_auto_registered_serializers() -> None:
-    assert (
-        SerializerMeta.serializer_for_schema(_OptOutRegisteredValue, ()) is None
-    )
+    assert SerializerMeta.serializer_for_schema(_OptOutRegisteredValue, ()) is None
     assert (
         SerializerMeta.serializer_for_dump(
             _OptOutRegisteredValue(),
@@ -536,10 +534,7 @@ def test_serializer_defined_after_default_cache_is_auto_registered() -> None:
     class LateAutoRegisteredValue:
         pass
 
-    assert (
-        SerializerMeta.serializer_for_schema(LateAutoRegisteredValue, ())
-        is None
-    )
+    assert SerializerMeta.serializer_for_schema(LateAutoRegisteredValue, ()) is None
     assert (
         SerializerMeta.serializer_for_dump(
             LateAutoRegisteredValue(),
@@ -549,9 +544,7 @@ def test_serializer_defined_after_default_cache_is_auto_registered() -> None:
         is None
     )
 
-    class LateAutoRegisteredValueSerializer(
-        Serializer[LateAutoRegisteredValue]
-    ):
+    class LateAutoRegisteredValueSerializer(Serializer[LateAutoRegisteredValue]):
         @classmethod
         def matches(cls, value: object) -> bool:
             return isinstance(value, LateAutoRegisteredValue)
