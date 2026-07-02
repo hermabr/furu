@@ -47,7 +47,6 @@ if TYPE_CHECKING:
     assert_type(parent.cached_child, TypingChild)
     assert_type(parent.children, list[TypingChild])
     assert_type(parent.children[0], TypingChild)
-    assert_type(furu.load_existing(parent.cached_child), int)
     assert_type(furu.load_existing([parent.cached_child]), list[int])
     assert_type(furu.create(parent.cached_child), int)
     assert_type(furu.create([parent.cached_child]), list[int])

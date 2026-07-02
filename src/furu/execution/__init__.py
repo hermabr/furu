@@ -257,20 +257,10 @@ def create[T](
     return _load_or_create(obj_or_objs)
 
 
-@overload
-def load_existing[T](obj: Spec[T]) -> T: ...
-@overload
-def load_existing[T](objs: Sequence[Spec[T]]) -> list[T]: ...
-def load_existing[T](obj_or_objs: Spec[T] | Sequence[Spec[T]]) -> T | list[T]:
-    if isinstance(obj_or_objs, Spec):
-        loaded = obj_or_objs.load_existing()
-        get_logger().info("loaded %s", obj_or_objs._log_label)
-        return loaded
-    if not isinstance(obj_or_objs, Sequence):
-        raise TypeError(
-            "load_existing() expected a Spec object or a sequence of Spec objects"
-        )
-    objs = list(obj_or_objs)
+def load_existing[T](objs: Sequence[Spec[T]]) -> list[T]:
+    if not isinstance(objs, Sequence):
+        raise TypeError("load_existing() expected a sequence of Spec objects")
+    objs = list(objs)
     if any(not isinstance(obj, Spec) for obj in objs):
         raise TypeError("load_existing() expected Spec objects")
     loaded: list[T] = []

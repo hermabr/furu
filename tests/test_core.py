@@ -23,8 +23,8 @@ from pydantic import BaseModel, ConfigDict
 import furu
 import furu.execution as execution_module
 from furu import (
-    Spec,
     ResourceRequirements,
+    Spec,
     validate,
 )
 from furu._storage_layout import (
@@ -36,7 +36,6 @@ from furu._storage_layout import (
     run_log_path_in,
 )
 from furu.config import _FuruConfig, _FuruDirectories, get_config
-from furu.testing import override_config
 from furu.dependencies import collect_declared_refs
 from furu.execution import _load_or_create
 from furu.locking import LockManifest, lock
@@ -44,6 +43,7 @@ from furu.logging import _scoped_log_files
 from furu.metadata import ArtifactSpec
 from furu.result import _save_result_bundle, load_result_bundle
 from furu.serializer.artifact import _from_json, to_json
+from furu.testing import override_config
 from furu.utils import fully_qualified_name
 from furu.worker.context import (
     _DependencyNotReady,
@@ -1340,22 +1340,13 @@ def test_top_level_create_accepts_single_spec_and_sequence() -> None:
     assert furu.create(nodes) == ["Node(top-create-a)", "Node(top-create-b)"]
 
 
-def test_top_level_load_existing_accepts_single_furu_object(tmp_path: Path) -> None:
+def test_top_level_load_existing_rejects_single_furu_object() -> None:
     node = Node(name="single-load")
 
     assert node.create() == "Node(single-load)"
 
-    log_path = tmp_path / "single-load-existing.log"
-    with _scoped_log_files((log_path,)):
-        assert furu.load_existing(node) == "Node(single-load)"
-
-    info_lines = [
-        line
-        for line in log_path.read_text(encoding="utf-8").splitlines()
-        if "level=info" in line
-    ]
-    assert len(info_lines) == 1
-    assert info_lines[0].endswith(f'msg="loaded {node._log_label}"')
+    with pytest.raises(TypeError, match="expected a sequence of Spec objects"):
+        furu.load_existing(node)  # ty:ignore[invalid-argument-type]
 
 
 def test_top_level_load_existing_accepts_list_and_logs_once(tmp_path: Path) -> None:
@@ -1664,7 +1655,9 @@ def test_resource_requirements_can_be_overridden_with_property():
             return self.name
 
     rr = HeavyNode(name="x").resource_requirements
-    assert rr == ResourceRequirements(cpus=(4, 8), gpus=(1, None), memory_gib=(16, None))
+    assert rr == ResourceRequirements(
+        cpus=(4, 8), gpus=(1, None), memory_gib=(16, None)
+    )
     assert rr is not None
 
 
