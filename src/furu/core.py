@@ -15,7 +15,7 @@ from furu.locking import LockError, is_active_lock, lock
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
 from furu.resources import ResourceRequirements
-from furu.result import load_result_bundle
+from furu.result.bundle import load_result_bundle
 from furu.result.codec import ResultCodec
 from furu.serializer.artifact import to_json as _to_json
 from furu.serializer.registry import Serializer
@@ -110,13 +110,16 @@ class Spec[T](_FuruDataclassTransform, ABC):
         validate_cls(cls)
         if "__dataclass_params__" not in cls.__dict__:
             dataclass(frozen=True, kw_only=True)(cls)
-        from furu.execution import _install_create_dispatchers, _resolve_create_mode
+        from furu.execution.create import (
+            _install_create_dispatchers,
+            _resolve_create_mode,
+        )
 
         cls._furu_create_mode = _resolve_create_mode(cls)
         _install_create_dispatchers(cls)
 
     def create(self) -> T:
-        from furu.execution import _load_or_create
+        from furu.execution.create import _load_or_create
 
         return _load_or_create(self)
 
@@ -174,7 +177,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
 
     @final
     def _load_or_create(self, use_lock: bool = True) -> T:
-        from furu.execution import _load_or_create
+        from furu.execution.create import _load_or_create
 
         return _load_or_create(self, use_lock=use_lock)
 

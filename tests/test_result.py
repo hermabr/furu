@@ -14,11 +14,11 @@ import furu
 from furu import Spec
 from furu.storage._layout import data_dir_in, result_dir_in, result_manifest_path_in
 from furu._declared_types import child_declared_type
-from furu.result import (
-    LazyResult,
+from furu.result.bundle import (
     _save_result_bundle as _save_result_bundle_impl,
     load_result_bundle as load_result_bundle_impl,
 )
+from furu.result.lazy import LazyResult
 from furu.result.codec import (
     NumpyNpyCodec,
     PolarsParquetCodec,
