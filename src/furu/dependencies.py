@@ -27,10 +27,21 @@ class _CachedDependency[TOwner, T](cached_property):
         def __get__(self, instance: object, owner: type[Any] | None = None) -> T: ...
 
 
+@overload
 def dependency[TSpec: Spec[Any], T](
     func: Callable[[TSpec], T], /
-) -> _CachedDependency[TSpec, T]:
-    return _CachedDependency(func)
+) -> _CachedDependency[TSpec, T]: ...
+@overload
+def dependency[TSpec: Spec[Any], T]() -> Callable[
+    [Callable[[TSpec], T]], _CachedDependency[TSpec, T]
+]: ...
+def dependency[TSpec: Spec[Any], T](
+    func: Callable[[TSpec], T] | None = None, /
+) -> (
+    _CachedDependency[TSpec, T]
+    | Callable[[Callable[[TSpec], T]], _CachedDependency[TSpec, T]]
+):
+    return dependency if func is None else _CachedDependency(func)
 
 
 def find_nested_furu_objects(value: object) -> Iterator[Spec]:

@@ -20,7 +20,7 @@ class TypingParent(furu.Spec[str]):
     def cached_child(self) -> TypingChild:
         return TypingChild()
 
-    @furu.dependency
+    @furu.dependency()
     def children(self) -> list[TypingChild]:
         return [TypingChild()]
 

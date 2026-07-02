@@ -59,7 +59,7 @@ class NestedParent(Spec[str]):
 class ComputedParent(Spec[str]):
     name: str
 
-    @furu.dependency
+    @furu.dependency()
     def computed_child(self) -> Leaf:
         return Leaf(name=f"computed-{self.name}")
 
