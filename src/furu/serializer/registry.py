@@ -10,8 +10,8 @@ from furu._declared_types import strip_annotated
 from furu.utils import JsonValue, fully_qualified_name
 
 
-class ArtifactSerializerMeta(ABCMeta):
-    _auto_registered_serializers: list[type[ArtifactSerializer]] = []
+class SerializerMeta(ABCMeta):
+    _auto_registered_serializers: list[type[Serializer]] = []
     _auto_registered_serializers_lock = Lock()
 
     def __init__(
@@ -23,7 +23,7 @@ class ArtifactSerializerMeta(ABCMeta):
     ) -> None:
         super().__init__(name, bases, namespace, **kwargs)
         is_root_serializer_class = not any(
-            isinstance(base, ArtifactSerializerMeta) for base in bases
+            isinstance(base, SerializerMeta) for base in bases
         )
         if is_root_serializer_class:
             return
@@ -33,21 +33,21 @@ class ArtifactSerializerMeta(ABCMeta):
             return
 
         cls.auto_register = True
-        with ArtifactSerializerMeta._auto_registered_serializers_lock:
-            ArtifactSerializerMeta._auto_registered_serializers.append(
-                cast(type[ArtifactSerializer], cls)
+        with SerializerMeta._auto_registered_serializers_lock:
+            SerializerMeta._auto_registered_serializers.append(
+                cast(type[Serializer], cls)
             )
 
-        ArtifactSerializerMeta._default_serializers.cache_clear()
+        SerializerMeta._default_serializers.cache_clear()
 
     @classmethod
-    def auto_registered_serializers(mcls) -> tuple[type[ArtifactSerializer], ...]:
+    def auto_registered_serializers(mcls) -> tuple[type[Serializer], ...]:
         with mcls._auto_registered_serializers_lock:
             return tuple(reversed(mcls._auto_registered_serializers))
 
     @classmethod
     @cache
-    def _default_serializers(mcls) -> tuple[type[ArtifactSerializer], ...]:
+    def _default_serializers(mcls) -> tuple[type[Serializer], ...]:
         return tuple(
             serializer
             for serializer in mcls.auto_registered_serializers()
@@ -58,8 +58,8 @@ class ArtifactSerializerMeta(ABCMeta):
     def serializer_for_schema(
         mcls,
         declared_type: object,
-        artifact_serializers: tuple[type[ArtifactSerializer], ...],
-    ) -> type[ArtifactSerializer] | None:
+        artifact_serializers: tuple[type[Serializer], ...],
+    ) -> type[Serializer] | None:
         if serializer := _annotated_serializer(declared_type):
             return serializer
 
@@ -93,8 +93,8 @@ class ArtifactSerializerMeta(ABCMeta):
         value: object,
         *,
         declared_type: object,
-        artifact_serializers: tuple[type[ArtifactSerializer], ...],
-    ) -> type[ArtifactSerializer] | None:
+        artifact_serializers: tuple[type[Serializer], ...],
+    ) -> type[Serializer] | None:
         if serializer := _annotated_serializer(declared_type):
             return serializer
 
@@ -121,7 +121,7 @@ class ArtifactSerializerMeta(ABCMeta):
         )
 
 
-class ArtifactSerializer[T](ABC, metaclass=ArtifactSerializerMeta):
+class Serializer[T](ABC, metaclass=SerializerMeta):
     auto_register: ClassVar[bool] = True
 
     @final
@@ -159,42 +159,42 @@ class ArtifactSerializer[T](ABC, metaclass=ArtifactSerializerMeta):
         pass
 
 
-def _annotated_serializer(declared_type: object) -> type[ArtifactSerializer] | None:
+def _annotated_serializer(declared_type: object) -> type[Serializer] | None:
     if get_origin(declared_type) is not Annotated:
         return None
 
     for metadata in get_args(declared_type)[1:]:
-        if isinstance(metadata, type) and issubclass(metadata, ArtifactSerializer):
+        if isinstance(metadata, type) and issubclass(metadata, Serializer):
             return metadata
     return None
 
 
-def _class_serializer(cls: type) -> type[ArtifactSerializer] | None:
+def _class_serializer(cls: type) -> type[Serializer] | None:
     _SERIALIZER_ATTR = "__furu_serializer__"
     provider = getattr(cls, _SERIALIZER_ATTR, None)
     if provider is None:
         return None
-    if isinstance(provider, type) and issubclass(provider, ArtifactSerializer):
+    if isinstance(provider, type) and issubclass(provider, Serializer):
         return provider
     if callable(provider):
         serializer = provider()
-        if isinstance(serializer, type) and issubclass(serializer, ArtifactSerializer):
+        if isinstance(serializer, type) and issubclass(serializer, Serializer):
             return serializer
 
     raise TypeError(
-        f"{cls.__module__}.{cls.__qualname__}.{_SERIALIZER_ATTR} must be an ArtifactSerializer "
+        f"{cls.__module__}.{cls.__qualname__}.{_SERIALIZER_ATTR} must be an Serializer "
         "class or a zero-argument callable returning one"
     )
 
 
 def _find_single_serializer_match(
-    serializers: tuple[type[ArtifactSerializer], ...],
+    serializers: tuple[type[Serializer], ...],
     *,
-    matches: Callable[[type[ArtifactSerializer]], bool],
+    matches: Callable[[type[Serializer]], bool],
     layer_name: str,
     match_kind: str,
-) -> type[ArtifactSerializer] | None:
-    matching_serializer: type[ArtifactSerializer] | None = None
+) -> type[Serializer] | None:
+    matching_serializer: type[Serializer] | None = None
     for serializer in serializers:
         if not matches(serializer):
             continue

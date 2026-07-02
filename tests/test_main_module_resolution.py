@@ -103,10 +103,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from furu import Furu
+from furu import Spec
 
 
-class Adder(Furu[int]):
+class Adder(Spec[int]):
     a: int
     b: int
 
@@ -187,8 +187,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from furu import Furu
-from furu._storage_layout import data_dir_in
+from furu import Spec
+from furu.storage._layout import data_dir_in
 from furu.result import load_result_bundle, _save_result_bundle
 from furu.result.codec import ResultCodec
 from furu.serializer.artifact import _from_json
@@ -224,7 +224,7 @@ class MainCodec(ResultCodec[bytes]):
         return (artifact_dir / "data.bin").read_bytes()
 
 
-class Adder(Furu[Payload]):
+class Adder(Spec[Payload]):
     a: int
     b: int
 

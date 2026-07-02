@@ -11,9 +11,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, assert_never
 from uuid import uuid4
 
-from furu._storage_layout import execution_coordinator_log_path_in
 from furu.config import get_config
-from furu.core import Furu
+from furu.core import Spec
 from furu.dag import DagNode, _add_to_dag, _update_dag_blocking_dependencies
 from furu.logging import (
     _scoped_component,
@@ -23,6 +22,7 @@ from furu.logging import (
 )
 from furu.metadata import ArtifactSpec
 from furu.resources import ResourceRequest, resource_request_satisfies
+from furu.storage._layout import execution_coordinator_log_path_in
 from furu.utils import format_duration
 from furu.worker.protocol import (
     Job,
@@ -90,7 +90,7 @@ class ExecutionCoordinator:
         }
 
     @classmethod
-    def run[ObjsT: Sequence[Furu]](
+    def run[ObjsT: Sequence[Spec]](
         cls,
         objs: ObjsT,  # TODO: support pytrees
         *,
@@ -243,14 +243,14 @@ class ExecutionCoordinator:
                         return max_workers
             return count
 
-    def _running_counts(self) -> dict[type[Furu], int]:
-        counts: dict[type[Furu], int] = {}
+    def _running_counts(self) -> dict[type[Spec], int]:
+        counts: dict[type[Spec], int] = {}
         for job in self.running.values():
             counts[type(job.node.obj)] = counts.get(type(job.node.obj), 0) + 1
         return counts
 
     def _can_start_node_locked(
-        self, node: DagNode, running_counts: dict[type[Furu], int]
+        self, node: DagNode, running_counts: dict[type[Spec], int]
     ) -> bool:
         if node.obj.max_workers is None:
             return True

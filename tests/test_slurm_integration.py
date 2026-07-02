@@ -109,7 +109,7 @@ def test_slurm_backend_runs_worker_job_end_to_end(
         "b_only": 20,
         "shared": 14 + FINAL_SHARED_COUNT,
     }
-    assert all(task.status() == "completed" for task in all_tasks)
+    assert all(task.status == "done" for task in all_tasks)
 
     expected_parent_ids = {task.task_id: _parent_task_ids(task) for task in all_tasks}
     assert {

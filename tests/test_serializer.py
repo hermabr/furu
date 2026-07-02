@@ -4,7 +4,7 @@ from typing import Annotated, Any, ClassVar
 
 import pytest
 
-from furu import ArtifactSerializer, Furu
+from furu import Serializer, Spec
 from furu.constants import (
     FIELDSMARKER,
     KINDMARKER,
@@ -14,7 +14,7 @@ from furu.constants import (
 )
 from furu.metadata import ArtifactSpec
 from furu.serializer.artifact import _from_json
-from furu.serializer.registry import ArtifactSerializerMeta
+from furu.serializer.registry import SerializerMeta
 from furu.utils import JsonValue
 
 
@@ -28,11 +28,11 @@ class _Secret:
 
 class _ClassHookSecret(_Secret):
     @classmethod
-    def __furu_serializer__(cls) -> type[ArtifactSerializer[_Secret]]:
+    def __furu_serializer__(cls) -> type[Serializer[_Secret]]:
         return _HexSecretSerializer
 
 
-class _HexSecretSerializer(ArtifactSerializer[_Secret]):
+class _HexSecretSerializer(Serializer[_Secret]):
     auto_register: ClassVar[bool] = False
 
     @classmethod
@@ -60,7 +60,7 @@ class _HexSecretSerializer(ArtifactSerializer[_Secret]):
         return loaded_type(int(value["hex"], 16))
 
 
-class _DecimalSecretSerializer(ArtifactSerializer[_Secret]):
+class _DecimalSecretSerializer(Serializer[_Secret]):
     auto_register: ClassVar[bool] = False
 
     @classmethod
@@ -104,43 +104,43 @@ class _RegistrySecretSerializer(_DecimalSecretSerializer):
         return _Secret(value["registry"])
 
 
-class _AnnotatedSecretRun(Furu[int]):
+class _AnnotatedSecretRun(Spec[int]):
     secret: Annotated[_Secret, _HexSecretSerializer]
 
     def create(self) -> int:
         return self.secret.value
 
 
-class _RegistrySecretRun(Furu[int]):
+class _RegistrySecretRun(Spec[int]):
     secret: _Secret
 
     @property
-    def artifact_serializers(self) -> tuple[type[ArtifactSerializer], ...]:
+    def artifact_serializers(self) -> tuple[type[Serializer], ...]:
         return (_RegistrySecretSerializer,)
 
     def create(self) -> int:
         return self.secret.value
 
 
-class _ClassHookSecretRun(Furu[int]):
+class _ClassHookSecretRun(Spec[int]):
     secret: _ClassHookSecret
 
     def create(self) -> int:
         return self.secret.value
 
 
-class _TopLevelSerializedRun(Furu[int]):
+class _TopLevelSerializedRun(Spec[int]):
     value: int
 
     @classmethod
-    def __furu_serializer__(cls) -> type[ArtifactSerializer[_TopLevelSerializedRun]]:
+    def __furu_serializer__(cls) -> type[Serializer[_TopLevelSerializedRun]]:
         return _TopLevelRunSerializer
 
     def create(self) -> int:
         return self.value
 
 
-class _TopLevelRunSerializer(ArtifactSerializer[_TopLevelSerializedRun]):
+class _TopLevelRunSerializer(Serializer[_TopLevelSerializedRun]):
     auto_register: ClassVar[bool] = False
 
     @classmethod
@@ -190,7 +190,7 @@ class _AutoRegisteredValue:
         return isinstance(other, _AutoRegisteredValue) and self.value == other.value
 
 
-class _AutoRegisteredValueSerializer(ArtifactSerializer[_AutoRegisteredValue]):
+class _AutoRegisteredValueSerializer(Serializer[_AutoRegisteredValue]):
     @classmethod
     def matches(cls, value: object) -> bool:
         return isinstance(value, _AutoRegisteredValue)
@@ -224,7 +224,7 @@ class _AutoRegisteredValueSerializer(ArtifactSerializer[_AutoRegisteredValue]):
         return _AutoRegisteredValue(value["auto"])
 
 
-class _RegistryAutoRegisteredValueSerializer(ArtifactSerializer[_AutoRegisteredValue]):
+class _RegistryAutoRegisteredValueSerializer(Serializer[_AutoRegisteredValue]):
     auto_register: ClassVar[bool] = False
 
     @classmethod
@@ -264,7 +264,7 @@ class _OptOutRegisteredValue:
     pass
 
 
-class _OptOutRegisteredValueSerializer(ArtifactSerializer[_OptOutRegisteredValue]):
+class _OptOutRegisteredValueSerializer(Serializer[_OptOutRegisteredValue]):
     auto_register: ClassVar[bool] = False
 
     @classmethod
@@ -300,25 +300,25 @@ class _OptOutRegisteredValueSerializer(ArtifactSerializer[_OptOutRegisteredValue
         return _OptOutRegisteredValue()
 
 
-class _AutoRegisteredValueRun(Furu[int]):
+class _AutoRegisteredValueRun(Spec[int]):
     value: _AutoRegisteredValue
 
     def create(self) -> int:
         return self.value.value
 
 
-class _RegistryAutoRegisteredValueRun(Furu[int]):
+class _RegistryAutoRegisteredValueRun(Spec[int]):
     value: _AutoRegisteredValue
 
     @property
-    def artifact_serializers(self) -> tuple[type[ArtifactSerializer], ...]:
+    def artifact_serializers(self) -> tuple[type[Serializer], ...]:
         return (_RegistryAutoRegisteredValueSerializer,)
 
     def create(self) -> int:
         return self.value.value
 
 
-class _AnnotatedAutoRegisteredValueRun(Furu[int]):
+class _AnnotatedAutoRegisteredValueRun(Spec[int]):
     value: Annotated[
         _AutoRegisteredValue,
         _RegistryAutoRegisteredValueSerializer,
@@ -329,7 +329,7 @@ class _AnnotatedAutoRegisteredValueRun(Furu[int]):
 
 
 def _custom_schema(
-    serializer: type[ArtifactSerializer],
+    serializer: type[Serializer],
     schema: JsonValue,
 ) -> JsonValue:
     return {
@@ -340,7 +340,7 @@ def _custom_schema(
 
 
 def _custom_artifact(
-    serializer: type[ArtifactSerializer],
+    serializer: type[Serializer],
     value: JsonValue,
 ) -> JsonValue:
     return {
@@ -414,16 +414,16 @@ def test_furu_class_serializer_hook_can_replace_top_level_artifact() -> None:
     )
     artifact = ArtifactSpec.from_furu(obj)
     assert _TopLevelSerializedRun.from_artifact(artifact) == obj
-    assert Furu.from_artifact(artifact) == obj
+    assert Spec.from_artifact(artifact) == obj
 
 
 def test_user_defined_serializer_is_auto_registered() -> None:
     assert (
-        ArtifactSerializerMeta.serializer_for_schema(_AutoRegisteredValue, ())
+        SerializerMeta.serializer_for_schema(_AutoRegisteredValue, ())
         is _AutoRegisteredValueSerializer
     )
     assert (
-        ArtifactSerializerMeta.serializer_for_dump(
+        SerializerMeta.serializer_for_dump(
             _AutoRegisteredValue(1),
             declared_type=_AutoRegisteredValue,
             artifact_serializers=(),
@@ -445,11 +445,9 @@ def test_user_defined_serializer_is_auto_registered() -> None:
 
 
 def test_auto_register_false_opts_out_of_auto_registered_serializers() -> None:
+    assert SerializerMeta.serializer_for_schema(_OptOutRegisteredValue, ()) is None
     assert (
-        ArtifactSerializerMeta.serializer_for_schema(_OptOutRegisteredValue, ()) is None
-    )
-    assert (
-        ArtifactSerializerMeta.serializer_for_dump(
+        SerializerMeta.serializer_for_dump(
             _OptOutRegisteredValue(),
             declared_type=_OptOutRegisteredValue,
             artifact_serializers=(),
@@ -458,14 +456,14 @@ def test_auto_register_false_opts_out_of_auto_registered_serializers() -> None:
     )
 
     assert (
-        ArtifactSerializerMeta.serializer_for_schema(
+        SerializerMeta.serializer_for_schema(
             _OptOutRegisteredValue,
             (_OptOutRegisteredValueSerializer,),
         )
         is _OptOutRegisteredValueSerializer
     )
     assert (
-        ArtifactSerializerMeta.serializer_for_dump(
+        SerializerMeta.serializer_for_dump(
             _OptOutRegisteredValue(),
             declared_type=_OptOutRegisteredValue,
             artifact_serializers=(_OptOutRegisteredValueSerializer,),
@@ -481,7 +479,7 @@ def test_artifact_serializers_must_not_be_ambiguous() -> None:
         TypeError,
         match="artifact serializers matched multiple serializers for schema",
     ) as schema_error:
-        ArtifactSerializerMeta.serializer_for_schema(_Secret, artifact_serializers)
+        SerializerMeta.serializer_for_schema(_Secret, artifact_serializers)
 
     schema_message = str(schema_error.value)
     assert "_HexSecretSerializer" in schema_message
@@ -491,7 +489,7 @@ def test_artifact_serializers_must_not_be_ambiguous() -> None:
         TypeError,
         match="artifact serializers matched multiple serializers for dump",
     ) as dump_error:
-        ArtifactSerializerMeta.serializer_for_dump(
+        SerializerMeta.serializer_for_dump(
             _Secret(1),
             declared_type=_Secret,
             artifact_serializers=artifact_serializers,
@@ -536,12 +534,9 @@ def test_serializer_defined_after_default_cache_is_auto_registered() -> None:
     class LateAutoRegisteredValue:
         pass
 
+    assert SerializerMeta.serializer_for_schema(LateAutoRegisteredValue, ()) is None
     assert (
-        ArtifactSerializerMeta.serializer_for_schema(LateAutoRegisteredValue, ())
-        is None
-    )
-    assert (
-        ArtifactSerializerMeta.serializer_for_dump(
+        SerializerMeta.serializer_for_dump(
             LateAutoRegisteredValue(),
             declared_type=LateAutoRegisteredValue,
             artifact_serializers=(),
@@ -549,9 +544,7 @@ def test_serializer_defined_after_default_cache_is_auto_registered() -> None:
         is None
     )
 
-    class LateAutoRegisteredValueSerializer(
-        ArtifactSerializer[LateAutoRegisteredValue]
-    ):
+    class LateAutoRegisteredValueSerializer(Serializer[LateAutoRegisteredValue]):
         @classmethod
         def matches(cls, value: object) -> bool:
             return isinstance(value, LateAutoRegisteredValue)
@@ -585,11 +578,11 @@ def test_serializer_defined_after_default_cache_is_auto_registered() -> None:
             return LateAutoRegisteredValue()
 
     assert (
-        ArtifactSerializerMeta.serializer_for_schema(LateAutoRegisteredValue, ())
+        SerializerMeta.serializer_for_schema(LateAutoRegisteredValue, ())
         is LateAutoRegisteredValueSerializer
     )
     assert (
-        ArtifactSerializerMeta.serializer_for_dump(
+        SerializerMeta.serializer_for_dump(
             LateAutoRegisteredValue(),
             declared_type=LateAutoRegisteredValue,
             artifact_serializers=(),
@@ -602,7 +595,7 @@ def test_auto_registered_serializers_must_not_be_ambiguous() -> None:
     class AutoAmbiguousValue:
         pass
 
-    class FirstAutoAmbiguousSerializer(ArtifactSerializer[AutoAmbiguousValue]):
+    class FirstAutoAmbiguousSerializer(Serializer[AutoAmbiguousValue]):
         @classmethod
         def matches(cls, value: object) -> bool:
             return isinstance(value, AutoAmbiguousValue)
@@ -633,7 +626,7 @@ def test_auto_registered_serializers_must_not_be_ambiguous() -> None:
         ) -> AutoAmbiguousValue:
             return AutoAmbiguousValue()
 
-    class SecondAutoAmbiguousSerializer(ArtifactSerializer[AutoAmbiguousValue]):
+    class SecondAutoAmbiguousSerializer(Serializer[AutoAmbiguousValue]):
         @classmethod
         def matches(cls, value: object) -> bool:
             return isinstance(value, AutoAmbiguousValue)
@@ -668,7 +661,7 @@ def test_auto_registered_serializers_must_not_be_ambiguous() -> None:
         TypeError,
         match="auto-registered serializer registry matched multiple serializers for schema",
     ) as schema_error:
-        ArtifactSerializerMeta.serializer_for_schema(AutoAmbiguousValue, ())
+        SerializerMeta.serializer_for_schema(AutoAmbiguousValue, ())
 
     schema_message = str(schema_error.value)
     assert "FirstAutoAmbiguousSerializer" in schema_message
@@ -678,7 +671,7 @@ def test_auto_registered_serializers_must_not_be_ambiguous() -> None:
         TypeError,
         match="auto-registered serializer registry matched multiple serializers for dump",
     ) as dump_error:
-        ArtifactSerializerMeta.serializer_for_dump(
+        SerializerMeta.serializer_for_dump(
             AutoAmbiguousValue(),
             declared_type=AutoAmbiguousValue,
             artifact_serializers=(),

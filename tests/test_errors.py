@@ -1,9 +1,9 @@
 import pytest
 
-from furu import Furu
+from furu import Spec
 
 
-class SubtractPositive(Furu[int]):
+class SubtractPositive(Spec[int]):
     a: int
     b: int
 

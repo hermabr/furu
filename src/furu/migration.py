@@ -9,17 +9,17 @@ from typing import TYPE_CHECKING, cast
 from pydantic import BaseModel, ConfigDict
 
 from furu.constants import FIELDSMARKER
-from furu._storage_layout import (
+from furu.metadata import CompletedMetadata
+from furu.storage._layout import (
     metadata_path_in,
     result_dir_in,
     result_link_path_in,
     result_manifest_path_in,
 )
-from furu.metadata import CompletedMetadata
 from furu.utils import JsonFields, fully_qualified_name
 
 if TYPE_CHECKING:
-    from furu.core import Furu
+    from furu.core import Spec
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -77,7 +77,7 @@ class _ResultLink(BaseModel):
 _Node = tuple[str, str]
 
 
-def result_dir_for_loading[T](obj: Furu[T]) -> Path | None:
+def result_dir_for_loading[T](obj: Spec[T]) -> Path | None:
     if result_manifest_path_in(obj._base_dir).exists():
         return result_dir_in(obj._base_dir)
     link_path = result_link_path_in(obj._base_dir)
@@ -90,7 +90,7 @@ def result_dir_for_loading[T](obj: Furu[T]) -> Path | None:
     return result_dir
 
 
-def migrate[T](obj: Furu[T]) -> bool:
+def migrate[T](obj: Spec[T]) -> bool:
     if result_link_path_in(obj._base_dir).exists():
         result_dir_for_loading(obj)
         return True

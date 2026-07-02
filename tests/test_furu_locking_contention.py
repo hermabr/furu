@@ -5,8 +5,8 @@ import time
 from multiprocessing import get_context
 from pathlib import Path
 
-from furu import Furu
-from furu._storage_layout import data_dir_in
+from furu import Spec
+from furu.storage._layout import data_dir_in
 from furu.config import _FuruConfig, _FuruDirectories, _set_config
 from furu.execution import _load_or_create
 from furu.locking import DEFAULT_ACQUIRE_POLL_INTERVAL_S
@@ -20,7 +20,7 @@ MID_CREATE_TIMEOUT_S = 1.0 * TEST_TIMING_SCALE
 WAIT_FOR_LOCK_RESULT_TIMEOUT_S = DEFAULT_ACQUIRE_POLL_INTERVAL_S + PROCESS_TIMEOUT_S
 
 
-class SlowProbe(Furu[int]):
+class SlowProbe(Spec[int]):
     key: int
 
     def create(self) -> int:
@@ -31,7 +31,7 @@ class SlowProbe(Furu[int]):
         return 42
 
 
-class SlowBatchProbe(Furu[int]):
+class SlowBatchProbe(Spec[int]):
     key: int
 
     @classmethod
@@ -46,7 +46,7 @@ class SlowBatchProbe(Furu[int]):
         return [obj.key * 10 for obj in objs]
 
 
-class MidRunTakeoverProbe(Furu[int]):
+class MidRunTakeoverProbe(Spec[int]):
     key: int
     entered_path: str
     release_path: str
@@ -163,9 +163,7 @@ def test_two_processes_competing_for_same_furu_object(tmp_path):
     manifest_paths = list(data_dir.glob("**/result/manifest.json"))
     assert len(manifest_paths) == 1
     bundle_dir = manifest_paths[0].parent
-    assert (
-        load_result_bundle(bundle_dir, data_dir=data_dir_in(bundle_dir.parent)) == 42
-    )
+    assert load_result_bundle(bundle_dir, data_dir=data_dir_in(bundle_dir.parent)) == 42
     assert list(data_dir.glob("**/result.pkl")) == []
 
 

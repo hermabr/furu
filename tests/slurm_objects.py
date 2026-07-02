@@ -5,18 +5,18 @@ import time
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from furu import Furu
+from furu import Spec
 from furu.resources import ResourceRequirements
 
 type SlurmTaskKind = Literal["a_only", "b_only", "shared"]
 
 
-class SlurmWorkloadTask(Furu[dict[str, object]]):
+class SlurmWorkloadTask(Spec[dict[str, object]]):
     task_id: str
     kind: SlurmTaskKind
     scenario_id: str
     duration_seconds: float
-    parents: tuple[Furu[Any], ...] = ()
+    parents: tuple[Spec[Any], ...] = ()
 
     @property
     def resource_requirements(self) -> ResourceRequirements | None:

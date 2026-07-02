@@ -11,8 +11,8 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 import furu
-from furu import Furu
-from furu._storage_layout import data_dir_in, result_dir_in, result_manifest_path_in
+from furu import Spec
+from furu.storage._layout import data_dir_in, result_dir_in, result_manifest_path_in
 from furu._declared_types import child_declared_type
 from furu.result import (
     LazyResult,
@@ -75,7 +75,7 @@ _CHILD_DECLARED_TYPE_NAMESPACE: dict[str, object] = {
 _CHILD_DECLARED_TYPE_GLOBALS = {"__builtins__": {"__import__": __import__}}
 
 
-class JsonResult(Furu[dict[str, object]]):
+class JsonResult(Spec[dict[str, object]]):
     create_calls: ClassVar[list[int]] = []
 
     def create(self) -> dict[str, object]:
@@ -125,9 +125,9 @@ def test_status_is_completed_after_first_run() -> None:
     JsonResult.create_calls.clear()
     obj = JsonResult()
 
-    assert obj.status() == "missing"
+    assert obj.status == "missing"
     obj.create()
-    assert obj.status() == "completed"
+    assert obj.status == "done"
 
 
 def test_load_existing_returns_persisted_result() -> None:
@@ -142,7 +142,7 @@ def test_load_existing_returns_persisted_result() -> None:
     }
 
 
-class ScalarResult(Furu[int]):
+class ScalarResult(Spec[int]):
     def create(self) -> int:
         return 5
 
@@ -155,7 +155,7 @@ def test_scalar_root_manifest_is_just_the_value() -> None:
     assert json.loads(text) == 5
 
 
-class PathResult(Furu[dict[str, Path]]):
+class PathResult(Spec[dict[str, Path]]):
     def create(self) -> dict[str, Path]:
         return {
             "relative": Path("outputs/model.bin"),
@@ -251,7 +251,7 @@ def test_tuple_root_value_uses_furu_wrapper(tmp_path: Path) -> None:
     assert manifest == {"$furu": {"|kind": "tuple", "items": [1, 2, 3]}}
 
 
-class NonFiniteFloatResult(Furu[dict[str, float]]):
+class NonFiniteFloatResult(Spec[dict[str, float]]):
     def create(self) -> dict[str, float]:
         return {
             "nan": float("nan"),
@@ -550,7 +550,7 @@ class _DataDirPathCodec(ResultCodec[_DataDirPathValue]):
         )
 
 
-class RegistryAutoRegisteredValueResult(Furu[_AutoRegisteredValue]):
+class RegistryAutoRegisteredValueResult(Spec[_AutoRegisteredValue]):
     @property
     def result_codecs(self) -> tuple[type[ResultCodec], ...]:
         return (_CoreRegistryAutoValueCodec,)
@@ -560,7 +560,7 @@ class RegistryAutoRegisteredValueResult(Furu[_AutoRegisteredValue]):
 
 
 class AnnotatedAutoRegisteredValueResult(
-    Furu[Annotated[_AutoRegisteredValue, _CoreRegistryAutoValueCodec]]
+    Spec[Annotated[_AutoRegisteredValue, _CoreRegistryAutoValueCodec]]
 ):
     def create(self) -> _AutoRegisteredValue:
         return _AutoRegisteredValue(11)
@@ -876,12 +876,12 @@ class AnnotatedArrayOutput:
     weights: Annotated[Any, NumpyNpyCodec]
 
 
-class AnnotatedArrayResult(Furu[AnnotatedArrayOutput]):
+class AnnotatedArrayResult(Spec[AnnotatedArrayOutput]):
     def create(self) -> AnnotatedArrayOutput:
         return AnnotatedArrayOutput(weights=np.arange(3, dtype=np.int64))
 
 
-class GenericAnnotatedArrayBase[T](Furu[T]):
+class GenericAnnotatedArrayBase[T](Spec[T]):
     def create(self) -> T:
         return np.arange(3, dtype=np.int64)
 
@@ -898,7 +898,7 @@ class StrictAnnotatedArrayOutput(BaseModel):
     weights: Annotated[np.ndarray[Any, Any], NumpyNpyCodec]
 
 
-class StrictAnnotatedArrayResult(Furu[StrictAnnotatedArrayOutput]):
+class StrictAnnotatedArrayResult(Spec[StrictAnnotatedArrayOutput]):
     def create(self) -> StrictAnnotatedArrayOutput:
         return StrictAnnotatedArrayOutput(weights=np.arange(3, dtype=np.int64))
 
@@ -917,7 +917,7 @@ def test_annotated_codec_selects_external_artifact() -> None:
 def test_generic_furu_base_with_annotated_result_codec_is_rejected() -> None:
     obj = GenericAnnotatedArrayResult()
 
-    with pytest.raises(TypeError, match="concrete result type directly as Furu"):
+    with pytest.raises(TypeError, match="concrete result type directly as Spec"):
         obj.create()
 
 
@@ -941,7 +941,7 @@ class SaveAsOutput:
     weights: Any
 
 
-class SaveAsArrayResult(Furu[SaveAsOutput]):
+class SaveAsArrayResult(Spec[SaveAsOutput]):
     def create(self) -> SaveAsOutput:
         return SaveAsOutput(weights=furu.save_as(np.arange(4), codec=NumpyNpyCodec))
 
@@ -951,20 +951,20 @@ class LazySaveAsOutput:
     weights: LazyResult[Any]
 
 
-class LazySaveAsArrayResult(Furu[LazySaveAsOutput]):
+class LazySaveAsArrayResult(Spec[LazySaveAsOutput]):
     def create(self) -> LazySaveAsOutput:
         return LazySaveAsOutput(
             weights=LazyResult(furu.save_as(np.arange(4), codec=NumpyNpyCodec))
         )
 
 
-class DataDirPathResult(Furu[dict[str, _DataDirPathValue]]):
+class DataDirPathResult(Spec[dict[str, _DataDirPathValue]]):
     @property
     def result_codecs(self) -> tuple[type[ResultCodec], ...]:
         return (_DataDirPathCodec,)
 
     def create(self) -> dict[str, _DataDirPathValue]:
-        path = self.data_dir / "data.zarr"
+        path = self.directory.data / "data.zarr"
         path.mkdir()
         value = _DataDirPathValue(path)
         return {
@@ -1009,7 +1009,7 @@ class ConflictingSaveAsOutput:
     weights: Annotated[Any, NumpyNpyCodec]
 
 
-class ConflictingSaveAsResult(Furu[ConflictingSaveAsOutput]):
+class ConflictingSaveAsResult(Spec[ConflictingSaveAsOutput]):
     def create(self) -> ConflictingSaveAsOutput:
         return ConflictingSaveAsOutput(
             weights=furu.save_as(np.arange(4), codec=_OtherCountingCodec)
@@ -1024,7 +1024,7 @@ def test_save_as_conflicts_with_annotated_codec() -> None:
 def test_data_dir_result_codec_round_trips_shared_data_dir_path() -> None:
     obj = DataDirPathResult()
     loaded = obj.create()
-    data_path = obj.data_dir / "data.zarr"
+    data_path = obj.directory.data / "data.zarr"
     artifacts_dir = result_dir_in(obj._base_dir) / "artifacts"
 
     assert loaded["first"].path.resolve() == data_path.resolve()
@@ -1067,7 +1067,7 @@ def test_data_dir_result_codec_rejects_load_path_outside_data_dir(
         load_result_bundle(result_dir)
 
 
-class RegistryCountingResult(Furu[_CountingValue]):
+class RegistryCountingResult(Spec[_CountingValue]):
     @property
     def result_codecs(self) -> tuple[type[ResultCodec], ...]:
         return (_CountingCodec,)
@@ -1076,7 +1076,7 @@ class RegistryCountingResult(Furu[_CountingValue]):
         return _CountingValue(8)
 
 
-class AmbiguousRegistryCountingResult(Furu[_CountingValue]):
+class AmbiguousRegistryCountingResult(Spec[_CountingValue]):
     @property
     def result_codecs(self) -> tuple[type[ResultCodec], ...]:
         return (_CountingCodec, _OtherCountingCodec)
@@ -1107,7 +1107,7 @@ def test_task_result_codecs_must_not_be_ambiguous() -> None:
         AmbiguousRegistryCountingResult().create()
 
 
-class UnsupportedRootResult(Furu[object]):
+class UnsupportedRootResult(Spec[object]):
     def create(self) -> object:
         return _CustomTensor()
 
@@ -1169,7 +1169,7 @@ class TrainOutput:
     values: list[int]
 
 
-class DataclassResult(Furu[TrainOutput]):
+class DataclassResult(Spec[TrainOutput]):
     def create(self) -> TrainOutput:
         return TrainOutput(metrics={"loss": 0.12}, values=[1, 2, 3])
 
@@ -1265,7 +1265,7 @@ class NestedInner:
     value: int
 
 
-class NestedDataclassResult(Furu[NestedOuter]):
+class NestedDataclassResult(Spec[NestedOuter]):
     def create(self) -> NestedOuter:
         return NestedOuter(inner=NestedInner(value=42), label="root")
 
@@ -1284,7 +1284,7 @@ class TrainOutputModel(BaseModel):
     values: list[int]
 
 
-class PydanticResult(Furu[TrainOutputModel]):
+class PydanticResult(Spec[TrainOutputModel]):
     def create(self) -> TrainOutputModel:
         return TrainOutputModel(metrics={"loss": 0.12}, values=[1, 2, 3])
 
@@ -1351,7 +1351,7 @@ class NestedPydanticOuter(BaseModel):
     items: list[dict[str, int]]
 
 
-class NestedPydanticResult(Furu[NestedPydanticOuter]):
+class NestedPydanticResult(Spec[NestedPydanticOuter]):
     def create(self) -> NestedPydanticOuter:
         return NestedPydanticOuter(
             metrics={"loss": 0.12, "accuracy": 0.94},
@@ -1367,12 +1367,12 @@ def test_pydantic_with_nested_structures_round_trips() -> None:
     assert loaded.items == [{"v": 1}, {"v": 2}, {"v": 3}]
 
 
-class NumpyResult(Furu[dict[str, object]]):
+class NumpyResult(Spec[dict[str, object]]):
     def create(self) -> dict[str, object]:
         return {"weights": np.arange(10, dtype=np.float32)}
 
 
-class RegistryNumpyResult(Furu[Any]):
+class RegistryNumpyResult(Spec[Any]):
     @property
     def result_codecs(self) -> tuple[type[ResultCodec], ...]:
         return (_RegistryNumpyCodec,)
@@ -1395,7 +1395,7 @@ class _MemmapNumpyNpyCodec(NumpyNpyCodec):
         return np.load(artifact_dir / "data.npy", allow_pickle=False, mmap_mode="r")
 
 
-class MemmapNumpyResult(Furu[Annotated[Any, _MemmapNumpyNpyCodec]]):
+class MemmapNumpyResult(Spec[Annotated[Any, _MemmapNumpyNpyCodec]]):
     def create(self) -> np.ndarray[Any, Any]:
         return np.arange(10, dtype=np.float32)
 
@@ -1450,7 +1450,7 @@ def test_codec_can_reload_value_after_dump_for_cache_miss_consistency() -> None:
     assert np.array_equal(second, np.arange(10, dtype=np.float32))
 
 
-class PolarsResult(Furu[dict[str, object]]):
+class PolarsResult(Spec[dict[str, object]]):
     def create(self) -> dict[str, object]:
         return {"frame": pl.DataFrame({"x": [1, 2, 3], "y": ["a", "b", "c"]})}
 
@@ -1486,7 +1486,7 @@ def test_numpy_object_dtype_is_rejected(tmp_path) -> None:
         )
 
 
-class NestedNumpyResult(Furu[dict[str, list[dict[str, object]]]]):
+class NestedNumpyResult(Spec[dict[str, list[dict[str, object]]]]):
     def create(self) -> dict[str, list[dict[str, object]]]:
         return {
             "layers": [{"weights": np.arange(i, dtype=np.float32)} for i in range(10)]
@@ -1540,7 +1540,7 @@ class MixedOutput:
     values: list[int]
 
 
-class MixedResult(Furu[dict[str, object]]):
+class MixedResult(Spec[dict[str, object]]):
     def create(self) -> dict[str, object]:
         return {
             "result": MixedOutput(metrics={"loss": 0.5}, values=[1, 2]),

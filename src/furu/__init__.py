@@ -1,16 +1,16 @@
 from importlib.metadata import version
 
 from furu._declared_types import skip_hash
-from furu.core import Furu
+from furu._function import spec
+from furu.core import Missing, Spec
 from furu.dependencies import dependency
-from furu.execution import load_existing
+from furu.execution import create, load_existing
 from furu.logging import get_logger
-from furu.function import function
 from furu.migration import Migration
 from furu.resources import ResourceRequirements
 from furu.result import LazyResult, save_as
 from furu.result.codec import ResultCodec
-from furu.serializer.registry import ArtifactSerializer
+from furu.serializer.registry import Serializer
 from furu.utils import _install_main_module_alias
 from furu.validate import validate
 
@@ -20,13 +20,15 @@ __version__ = version("furu")
 
 __all__ = [
     "__version__",
-    "Furu",
-    "ArtifactSerializer",
+    "Spec",
+    "Serializer",
     "LazyResult",
     "Migration",
+    "Missing",
     "ResourceRequirements",
+    "create",
     "dependency",
-    "function",
+    "spec",
     "ResultCodec",
     "get_logger",
     "load_existing",
