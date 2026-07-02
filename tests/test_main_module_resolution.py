@@ -189,7 +189,7 @@ from pathlib import Path
 
 from furu import Spec
 from furu.storage._layout import data_dir_in
-from furu.result import load_result_bundle, _save_result_bundle
+from furu.result.bundle import load_result_bundle, _save_result_bundle
 from furu.result.codec import ResultCodec
 from furu.serializer.artifact import _from_json
 

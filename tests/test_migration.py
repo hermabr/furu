@@ -5,7 +5,7 @@ import json
 import pytest
 
 import furu
-import furu.execution as execution_module
+import furu.execution.load_or_create as execution_module
 from furu import Spec
 from furu.storage._layout import (
     compute_lock_path_in,
