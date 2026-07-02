@@ -54,7 +54,7 @@ class Missing(Exception):
     pass
 
 
-FuruCreateMode: TypeAlias = Literal["single", "batched"] | None
+SpecCreateMode: TypeAlias = Literal["single", "batched"] | None
 _FURU_CLASS_OPTIONS = frozenset({"max_workers"})
 _RESERVED_FIELD_NAMES = frozenset(
     {
@@ -85,7 +85,7 @@ class _Directory:
 
 
 class Spec[T](_FuruDataclassTransform, ABC):
-    _furu_create_mode: ClassVar[FuruCreateMode]
+    _furu_create_mode: ClassVar[SpecCreateMode]
     max_workers: ClassVar[int | None] = None
 
     def __init_subclass__(cls, **kwargs: Any) -> None:

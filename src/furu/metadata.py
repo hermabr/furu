@@ -28,7 +28,7 @@ class ArtifactSpec(BaseModel):
     schema_hash: str
 
     @classmethod
-    def from_furu[TFuru: Spec](cls, obj: TFuru) -> ArtifactSpec:
+    def from_furu[TSpec: Spec](cls, obj: TSpec) -> ArtifactSpec:
         return cls(
             fully_qualified_name=obj._fully_qualified_name,
             artifact_data=obj._artifact_data,

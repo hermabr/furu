@@ -24,7 +24,7 @@ from furu._storage_layout import (
     result_dir_in,
     run_log_path_in,
 )
-from furu.core import FuruCreateMode, Missing, Spec
+from furu.core import SpecCreateMode, Missing, Spec
 from furu.dependencies import dependency_recorder, record_dependency_call
 from furu.locking import lock
 from furu.logging import _scoped_log_files, get_logger
@@ -90,7 +90,7 @@ def _install_create_dispatchers[T](cls: type[Spec[T]]) -> None:
         setattr(cls, "create_batched", classmethod(create_batched_guard))
 
 
-def _resolve_create_mode[T](cls: type[Spec[T]]) -> FuruCreateMode:
+def _resolve_create_mode[T](cls: type[Spec[T]]) -> SpecCreateMode:
     defines_single = False
     defines_batched = False
 
