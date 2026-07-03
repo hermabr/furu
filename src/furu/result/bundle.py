@@ -517,11 +517,6 @@ def _load_validated_fields(
     )
 
 
-def _declares_ref(declared_type: object) -> bool:
-    declared = strip_annotated(declared_type)
-    return declared is Ref or get_origin(declared) is Ref
-
-
 def _load_wrapper(
     body: dict[str, Any],
     *,
@@ -566,7 +561,9 @@ def _load_wrapper(
                     f"Codec metadata at {_value_path_display(value_path)} must be a mapping"
                 )
             metadata = cast(dict[str, object], metadata)
-            if _declares_ref(declared_type):
+            if (declared := strip_annotated(declared_type)) is Ref or get_origin(
+                declared
+            ) is Ref:
                 return Ref._from_stored(
                     codec=codec,
                     metadata=metadata,
