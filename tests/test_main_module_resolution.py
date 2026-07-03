@@ -184,13 +184,14 @@ def test_python_m_main_objects_resolve_to_main_identity(tmp_path: Path) -> None:
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 from furu import Spec
 from furu.storage._layout import data_dir_in
 from furu.result.bundle import load_result_bundle, _save_result_bundle
-from furu.result.codec import ResultCodec
+from furu.result.codec import Codec
 from furu.serializer.artifact import _from_json
 
 
@@ -199,27 +200,23 @@ class Payload:
     value: int
 
 
-class MainCodec(ResultCodec[bytes]):
+class MainCodec(Codec[bytes]):
     @classmethod
     def matches(cls, value: object) -> bool:
         return isinstance(value, bytes)
 
-    @classmethod
-    def dump(
-        cls,
+    def save(
+        self,
         value: bytes,
-        *,
         artifact_dir: Path,
-        dump_data_path: object,
-    ) -> None:
+    ) -> dict[str, object]:
         (artifact_dir / "data.bin").write_bytes(value)
+        return {}
 
-    @classmethod
     def load(
-        cls,
-        *,
+        self,
+        metadata: Mapping[str, object],
         artifact_dir: Path,
-        load_data_path: object,
     ) -> bytes:
         return (artifact_dir / "data.bin").read_bytes()
 

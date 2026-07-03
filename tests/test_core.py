@@ -1304,11 +1304,11 @@ def test_dependency_computes_once_per_instance() -> None:
 
 
 def test_create_inside_create_is_recorded_and_deduped() -> None:
-    parent = LazyDependencyParent(name="lazy")
+    parent = LazyDependencyParent(name="deferred")
 
-    assert parent.create() == "Node(lazy)"
+    assert parent.create() == "Node(deferred)"
 
-    assert _dependency_object_ids(parent) == [Node(name="lazy").object_id]
+    assert _dependency_object_ids(parent) == [Node(name="deferred").object_id]
 
 
 def test_load_existing_inside_create_is_recorded_even_on_missing_result() -> None:

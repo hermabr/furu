@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, assert_type
 
 import furu
@@ -42,6 +45,24 @@ class TypingFunctionParent(furu.Spec[int]):
         return self.child.create()
 
 
+class TypingIntCodec(furu.Codec[int]):
+    @classmethod
+    def matches(cls, value: object) -> bool:
+        return isinstance(value, int)
+
+    def save(self, value: int, artifact_dir: Path) -> Mapping[str, object]:
+        (artifact_dir / "value.txt").write_text(str(value), encoding="utf-8")
+        return {}
+
+    def load(self, metadata: Mapping[str, object], artifact_dir: Path) -> int:
+        return int((artifact_dir / "value.txt").read_text(encoding="utf-8"))
+
+
+@dataclass(frozen=True)
+class TypingRefOutput:
+    value: furu.Ref[int]
+
+
 if TYPE_CHECKING:
     parent = TypingParent()
     assert_type(parent.cached_child, TypingChild)
@@ -61,3 +82,8 @@ if TYPE_CHECKING:
         typed_letter_count_with_parentheses(source="banana", letter="a"),
         furu.Spec[int],
     )
+    assert_type(furu.ref(1, codec=TypingIntCodec), furu.Ref[int])
+    assert_type(
+        TypingRefOutput(value=furu.ref(1, codec=TypingIntCodec)).value, furu.Ref[int]
+    )
+    TypingRefOutput(value=1)  # ty: ignore[invalid-argument-type]
