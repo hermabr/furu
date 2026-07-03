@@ -5,10 +5,21 @@ import logging
 import shutil
 from abc import ABC
 from dataclasses import dataclass
-from functools import cached_property
+from functools import cache, cached_property
 from inspect import get_annotations
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeAlias, cast, final
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    Literal,
+    TypeAlias,
+    TypeVar,
+    cast,
+    final,
+    get_args,
+    get_origin,
+)
 
 from furu.config import get_config
 from furu.locking import LockError, is_active_lock, lock
@@ -16,7 +27,7 @@ from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
 from furu.resources import ResourceRequirements
 from furu.result.bundle import load_result_bundle
-from furu.result.codec import ResultCodec
+from furu.result.codec import Codec
 from furu.serializer.artifact import to_json as _to_json
 from furu.serializer.registry import Serializer
 from furu.serializer.schema import schema_type as _schema_type
@@ -146,7 +157,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
         return self.storage_root
 
     @property
-    def result_codecs(self) -> tuple[type[ResultCodec], ...]:
+    def result_codecs(self) -> tuple[type[Codec], ...]:
         return ()
 
     @property
@@ -194,7 +205,11 @@ class Spec[T](_FuruDataclassTransform, ABC):
         if (result_dir := result_dir_for_loading(self)) is not None:
             return cast(
                 T,
-                load_result_bundle(result_dir, data_dir=data_dir_in(self._base_dir)),
+                load_result_bundle(
+                    result_dir,
+                    data_dir=data_dir_in(self._base_dir),
+                    declared_type=_declared_result_type(type(self)),
+                ),
             )
         if _worker_execution_lease_id.get() is not None:
             raise _DependencyNotReady(
@@ -343,3 +358,24 @@ class Spec[T](_FuruDataclassTransform, ABC):
             + f"{self._artifact_schema_hash[:5]}:"
             + f"{self._artifact_hash[:5]}"
         )
+
+
+@cache
+def _declared_result_type(spec_type: type[Spec[Any]]) -> object:
+    declared: object = Any
+    for cls in spec_type.__mro__:
+        for base in getattr(cls, "__orig_bases__", ()):
+            if get_origin(base) is Spec:
+                declared = get_args(base)[0]
+                break
+        else:
+            continue
+        break
+
+    if isinstance(declared, TypeVar) or any(
+        isinstance(arg, TypeVar) for arg in get_args(declared)
+    ):
+        raise TypeError(
+            f"{spec_type.__name__} must declare its concrete result type directly as Spec[...]"
+        )
+    return declared

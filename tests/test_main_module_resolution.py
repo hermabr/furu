@@ -187,10 +187,12 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from collections.abc import Mapping
+
 from furu import Spec
 from furu.storage._layout import data_dir_in
 from furu.result.bundle import load_result_bundle, _save_result_bundle
-from furu.result.codec import ResultCodec
+from furu.result.codec import Codec
 from furu.serializer.artifact import _from_json
 
 
@@ -199,29 +201,19 @@ class Payload:
     value: int
 
 
-class MainCodec(ResultCodec[bytes]):
+class MainCodec(Codec[bytes]):
     @classmethod
     def matches(cls, value: object) -> bool:
         return isinstance(value, bytes)
 
-    @classmethod
-    def dump(
-        cls,
-        value: bytes,
-        *,
-        artifact_dir: Path,
-        dump_data_path: object,
-    ) -> None:
-        (artifact_dir / "data.bin").write_bytes(value)
+    def save(self, value: bytes, artifact_directory: Path) -> Mapping[str, object]:
+        (artifact_directory / "data.bin").write_bytes(value)
+        return {}
 
-    @classmethod
     def load(
-        cls,
-        *,
-        artifact_dir: Path,
-        load_data_path: object,
+        self, metadata: Mapping[str, object], artifact_directory: Path
     ) -> bytes:
-        return (artifact_dir / "data.bin").read_bytes()
+        return (artifact_directory / "data.bin").read_bytes()
 
 
 class Adder(Spec[Payload]):

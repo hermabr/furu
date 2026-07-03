@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, assert_type
 
 import furu
@@ -42,6 +43,11 @@ class TypingFunctionParent(furu.Spec[int]):
         return self.child.create()
 
 
+@dataclass(frozen=True)
+class TypingRefOutput:
+    weights: furu.Ref[list[int]]
+
+
 if TYPE_CHECKING:
     parent = TypingParent()
     assert_type(parent.cached_child, TypingChild)
@@ -61,3 +67,9 @@ if TYPE_CHECKING:
         typed_letter_count_with_parentheses(source="banana", letter="a"),
         furu.Spec[int],
     )
+    typed_ref = furu.ref([1, 2, 3])
+    assert_type(typed_ref, furu.Ref[list[int]])
+    assert_type(typed_ref.load(), list[int])
+    TypingRefOutput(weights=typed_ref)
+    # Populating a Ref[T] field requires furu.ref(); a bare T is a type error.
+    TypingRefOutput(weights=[1, 2, 3])  # ty: ignore[invalid-argument-type]

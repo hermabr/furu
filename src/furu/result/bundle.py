@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from functools import partial
+from collections.abc import Mapping
 from pathlib import Path
 from typing import (
     Annotated,
@@ -21,26 +21,32 @@ import pydantic
 
 from furu._declared_types import child_declared_type, strip_annotated
 from furu.constants import FIELDSMARKER, KINDMARKER, TYPEMARKER
-from furu.result.codec import ResultCodec, ResultCodecMeta
-from furu.result.lazy import LazyResult
-from furu.result.save_as import _SaveAs
+from furu.result.codec import Codec, CodecMeta
+from furu.result.ref import Ref
 from furu.utils import JsonValue, fully_qualified_name, resolve_fully_qualified_name
 
 WRAPPER_KEY: Final = "$furu"
 ARTIFACTS_DIR_NAME: Final = "artifacts"
-LAZY_DIR_NAME: Final = "lazy"
 MANIFEST_FILE_NAME: Final = "manifest.json"
 _ROOT_ARTIFACT_NAME: Final = "root"
 ValuePath: TypeAlias = tuple[str, ...]
 WrapperKind: TypeAlias = Literal[
-    "external", "dataclass", "path", "pydantic", "tuple", "set", "frozenset", "lazy"
+    "artifact", "dataclass", "path", "pydantic", "tuple", "set", "frozenset"
 ]
+
+
+@dataclasses.dataclass
+class _RefBinding:
+    ref: Ref[Any]
+    metadata: Mapping[str, object]
+    artifact_relative_path: Path
 
 
 @dataclasses.dataclass
 class _DumpState:
     data_dir: Path
-    should_reload_value_after_dump: bool = False
+    should_reload_value_after_save: bool = False
+    ref_bindings: list[_RefBinding] = dataclasses.field(default_factory=list)
 
 
 def _value_path_display(value_path: ValuePath) -> str:
@@ -85,34 +91,33 @@ def _dump_value(
     declared_type: object = Any,
     value_path: ValuePath,
     bundle_dir: Path,
-    result_codecs: tuple[type[ResultCodec], ...],
+    result_codecs: tuple[type[Codec], ...],
     dump_state: _DumpState,
 ) -> JsonValue:
-    annotated_codec: type[ResultCodec] | None = None
+    annotated_codec: type[Codec] | None = None
     if get_origin(declared_type) is Annotated:
         for item in get_args(declared_type)[1:]:
-            if isinstance(item, type) and issubclass(item, ResultCodec):
+            if isinstance(item, type) and issubclass(item, Codec):
                 annotated_codec = item
                 break
 
-    match value, annotated_codec:
-        case _SaveAs(codec=runtime_codec), annotated_codec if (
-            annotated_codec is not None and runtime_codec is not annotated_codec
-        ):
-            raise TypeError(
-                "Conflicting codecs: value was wrapped with furu.save_as(...), "
-                "but the field also has an Annotated codec."
-            )
-        case _SaveAs(value=inner_value, codec=runtime_codec), _:
-            return _dump_external(
-                inner_value,
-                codec=runtime_codec,
+    match value:
+        case Ref():
+            if annotated_codec is not None and annotated_codec is not value._codec:
+                raise TypeError(
+                    "Conflicting codecs: the Ref carries a codec from furu.ref(...), "
+                    "but the field also has a different Annotated codec."
+                )
+            return _dump_artifact(
+                value.load(),
+                codec=value._codec,
                 value_path=value_path,
                 bundle_dir=bundle_dir,
                 dump_state=dump_state,
+                ref=value,
             )
-        case _, annotated_codec if annotated_codec is not None:
-            return _dump_external(
+        case _ if annotated_codec is not None:
+            return _dump_artifact(
                 value,
                 codec=annotated_codec,
                 value_path=value_path,
@@ -256,33 +261,9 @@ def _dump_value(
                     FIELDSMARKER: fields_out,
                 }
             }
-        case LazyResult():
-            lazy_rel = Path(LAZY_DIR_NAME, *(value_path or (_ROOT_ARTIFACT_NAME,)))
-            nested_bundle_dir = bundle_dir / lazy_rel
-            lazy_declared_type = strip_annotated(declared_type)
-            if get_origin(lazy_declared_type) is LazyResult:
-                lazy_declared_args = get_args(lazy_declared_type)
-                if lazy_declared_args:
-                    lazy_declared_type = lazy_declared_args[0]
-            else:
-                lazy_declared_type = Any
-            if _save_result_bundle(
-                value.load(),
-                nested_bundle_dir,
-                declared_type=lazy_declared_type,
-                result_codecs=result_codecs,
-                data_dir=dump_state.data_dir,
-            ):
-                dump_state.should_reload_value_after_dump = True
-            return {
-                WRAPPER_KEY: {
-                    KINDMARKER: "lazy",
-                    "path": lazy_rel.as_posix(),
-                }
-            }
         case _:
-            if codec := ResultCodecMeta.find_codec(value, result_codecs):
-                return _dump_external(
+            if codec := CodecMeta.find_codec(value, result_codecs):
+                return _dump_artifact(
                     value,
                     codec=codec,
                     value_path=value_path,
@@ -296,39 +277,166 @@ def _dump_value(
     )
 
 
-def _dump_external(
+def _dump_artifact(
     value: object,
     *,
-    codec: type[ResultCodec],
+    codec: type[Codec],
     value_path: ValuePath,
     bundle_dir: Path,
     dump_state: _DumpState,
+    ref: Ref[Any] | None = None,
 ) -> JsonValue:
     artifact_rel = Path(ARTIFACTS_DIR_NAME, *(value_path or (_ROOT_ARTIFACT_NAME,)))
     artifact_dir = bundle_dir / artifact_rel
     artifact_dir.mkdir(parents=True, exist_ok=False)
 
-    codec.dump(
-        value,
-        artifact_dir=artifact_dir,
-        dump_data_path=lambda path: (
-            path.resolve().relative_to(dump_state.data_dir.resolve()).as_posix()
-        ),
+    codec_metadata = codec().save(value, artifact_dir)
+    encoded_metadata = _encode_codec_metadata(
+        codec_metadata,
+        data_dir=dump_state.data_dir,
+        value_path=value_path,
     )
-    if codec.reload_value_after_dump:
-        dump_state.should_reload_value_after_dump = True
+
+    if ref is not None:
+        dump_state.ref_bindings.append(
+            _RefBinding(
+                ref=ref,
+                metadata=_decode_codec_metadata(
+                    encoded_metadata,
+                    data_dir=dump_state.data_dir,
+                    value_path=value_path,
+                ),
+                artifact_relative_path=artifact_rel,
+            )
+        )
+    elif codec.reload_value_after_save:
+        dump_state.should_reload_value_after_save = True
+
     return {
         WRAPPER_KEY: {
-            KINDMARKER: "external",
+            KINDMARKER: "artifact",
             "codec": codec._codec_id(),
             "path": artifact_rel.as_posix(),
+            "metadata": encoded_metadata,
         }
     }
+
+
+def _encode_codec_metadata(
+    metadata: object,
+    *,
+    data_dir: Path,
+    value_path: ValuePath,
+) -> dict[str, JsonValue]:
+    if not isinstance(metadata, Mapping):
+        raise TypeError(
+            f"Codec save() at {_value_path_display(value_path)} must return a "
+            f"metadata mapping; got {type(metadata).__name__!r}"
+        )
+    encoded = _encode_codec_metadata_value(
+        dict(metadata), data_dir=data_dir, value_path=value_path
+    )
+    return cast(dict[str, JsonValue], encoded)
+
+
+def _encode_codec_metadata_value(
+    value: object,
+    *,
+    data_dir: Path,
+    value_path: ValuePath,
+) -> JsonValue:
+    match value:
+        case None | bool() | int() | float() | str():
+            return value
+        case Path():
+            resolved = value.resolve()
+            data_dir_resolved = data_dir.resolve()
+            if not resolved.is_relative_to(data_dir_resolved):
+                raise ValueError(
+                    f"Codec metadata path at {_value_path_display(value_path)} "
+                    f"must live inside the data dir {data_dir}: {value}"
+                )
+            return {
+                WRAPPER_KEY: {
+                    KINDMARKER: "path",
+                    "value": resolved.relative_to(data_dir_resolved).as_posix(),
+                }
+            }
+        case list() | tuple():
+            return [
+                _encode_codec_metadata_value(
+                    item, data_dir=data_dir, value_path=value_path
+                )
+                for item in value
+            ]
+        case Mapping():
+            out: dict[str, JsonValue] = {}
+            for key, child in value.items():
+                if not isinstance(key, str):
+                    raise TypeError(
+                        f"Codec metadata keys at {_value_path_display(value_path)} "
+                        f"must be strings; got {type(key).__name__} key {key!r}"
+                    )
+                if key == WRAPPER_KEY:
+                    raise ValueError(
+                        f"Codec metadata key {WRAPPER_KEY!r} at "
+                        f"{_value_path_display(value_path)} is reserved by furu"
+                    )
+                out[key] = _encode_codec_metadata_value(
+                    child, data_dir=data_dir, value_path=value_path
+                )
+            return out
+        case _:
+            raise TypeError(
+                f"Unsupported codec metadata value at {_value_path_display(value_path)}: "
+                f"values of type {type(value).__name__!r} cannot be stored; use JSON "
+                "scalars, lists, mappings, or Path"
+            )
+
+
+def _decode_codec_metadata(
+    node: JsonValue,
+    *,
+    data_dir: Path,
+    value_path: ValuePath,
+) -> Mapping[str, object]:
+    decoded = _decode_codec_metadata_value(node, data_dir=data_dir)
+    if not isinstance(decoded, dict):
+        raise ValueError(
+            f"Codec metadata at {_value_path_display(value_path)} must be a mapping"
+        )
+    return cast(dict[str, object], decoded)
+
+
+def _decode_codec_metadata_value(node: JsonValue, *, data_dir: Path) -> object:
+    match node:
+        case dict() if WRAPPER_KEY in node:
+            body = cast(dict[str, Any], node[WRAPPER_KEY])
+            rel_path = Path(body["value"])
+            if rel_path.is_absolute():
+                raise ValueError(f"codec metadata path must be relative: {rel_path}")
+            resolved_path = (data_dir.resolve() / rel_path).resolve()
+            if not resolved_path.is_relative_to(data_dir.resolve()):
+                raise ValueError(f"codec metadata path escapes data dir: {rel_path}")
+            return resolved_path
+        case dict():
+            return {
+                key: _decode_codec_metadata_value(child, data_dir=data_dir)
+                for key, child in node.items()
+            }
+        case list():
+            return [
+                _decode_codec_metadata_value(child, data_dir=data_dir)
+                for child in node
+            ]
+        case _:
+            return node
 
 
 def _load_value(
     node: JsonValue,
     *,
+    declared_type: object = Any,
     bundle_dir: Path,
     data_dir: Path,
     value_path: ValuePath,
@@ -341,6 +449,7 @@ def _load_value(
             return [
                 _load_value(
                     child,
+                    declared_type=child_declared_type(declared_type, i),
                     bundle_dir=bundle_dir,
                     data_dir=data_dir,
                     value_path=(*value_path, f"{i:0{width}d}"),
@@ -350,6 +459,7 @@ def _load_value(
         case dict() if WRAPPER_KEY in node:
             return _load_wrapper(
                 cast(dict[str, Any], node[WRAPPER_KEY]),
+                declared_type=declared_type,
                 bundle_dir=bundle_dir,
                 data_dir=data_dir,
                 value_path=value_path,
@@ -358,6 +468,7 @@ def _load_value(
             return {
                 key: _load_value(
                     child,
+                    declared_type=child_declared_type(declared_type, key),
                     bundle_dir=bundle_dir,
                     data_dir=data_dir,
                     value_path=(*value_path, key),
@@ -382,9 +493,11 @@ def _load_validated_fields(
     missing = expected - actual
     extra = actual - expected
     if not missing and not extra:
+        field_types = get_type_hints(cls, include_extras=True)
         return {
             name: _load_value(
                 child,
+                declared_type=field_types.get(name, Any),
                 bundle_dir=bundle_dir,
                 data_dir=data_dir,
                 value_path=(*value_path, name),
@@ -404,81 +517,57 @@ def _load_validated_fields(
     )
 
 
+def _declares_ref(declared_type: object) -> bool:
+    declared = strip_annotated(declared_type)
+    return declared is Ref or get_origin(declared) is Ref
+
+
 def _load_wrapper(
     body: dict[str, Any],
     *,
+    declared_type: object,
     bundle_dir: Path,
     data_dir: Path,
     value_path: ValuePath,
 ) -> object:
     kind: WrapperKind = body[KINDMARKER]
     match kind:
-        case "external":
+        case "artifact":
             artifact_rel = Path(body["path"])
             if artifact_rel.is_absolute():
                 raise ValueError(
-                    f"external wrapper path must be relative: {artifact_rel}"
+                    f"artifact wrapper path must be relative: {artifact_rel}"
                 )
 
             artifact_dir = (bundle_dir / artifact_rel).resolve()
             artifacts_root = (bundle_dir / ARTIFACTS_DIR_NAME).resolve()
             if not artifact_dir.is_relative_to(artifacts_root):
                 raise ValueError(
-                    f"external wrapper path escapes bundle artifacts dir: {artifact_rel}"
+                    f"artifact wrapper path escapes bundle artifacts dir: {artifact_rel}"
                 )
 
             if not artifact_dir.exists():
                 raise ValueError(
-                    f"external wrapper artifact directory missing: {artifact_dir}"
+                    f"artifact wrapper artifact directory missing: {artifact_dir}"
                 )
 
             codec_id = body["codec"]
             codec = resolve_fully_qualified_name(codec_id)
-            if not isinstance(codec, type) or not issubclass(codec, ResultCodec):
-                raise TypeError(f"{codec_id} is not a ResultCodec")
+            if not isinstance(codec, type) or not issubclass(codec, Codec):
+                raise TypeError(f"{codec_id} is not a furu.Codec")
 
-            def _load_data_path(path: str) -> Path:
-                rel_path = Path(path)
-                if rel_path.is_absolute():
-                    raise ValueError(
-                        f"data-dir codec path must be relative: {rel_path}"
-                    )
-
-                resolved_path = (data_dir.resolve() / rel_path).resolve()
-                if not resolved_path.is_relative_to(data_dir.resolve()):
-                    raise ValueError(
-                        f"data-dir codec path escapes data dir: {rel_path}"
-                    )
-                return resolved_path
-
-            return codec.load(
-                artifact_dir=artifact_dir,
-                load_data_path=_load_data_path,
+            metadata = _decode_codec_metadata(
+                body["metadata"],
+                data_dir=data_dir,
+                value_path=value_path,
             )
-        case "lazy":
-            if (nested_rel := Path(body["path"])).is_absolute():
-                raise ValueError(f"lazy wrapper path must be relative: {nested_rel}")
-
-            nested_bundle_dir = (bundle_dir / nested_rel).resolve()
-            lazy_root = (bundle_dir / LAZY_DIR_NAME).resolve()
-            if not nested_bundle_dir.is_relative_to(lazy_root):
-                raise ValueError(
-                    f"lazy wrapper path escapes bundle lazy dir: {nested_rel}"
+            if _declares_ref(declared_type):
+                return Ref._from_stored(
+                    codec=codec,
+                    metadata=metadata,
+                    artifact_directory=artifact_dir,
                 )
-
-            if not (nested_bundle_dir / MANIFEST_FILE_NAME).exists():
-                raise ValueError(
-                    f"lazy wrapper nested manifest missing: {nested_bundle_dir}"
-                )
-
-            return LazyResult._from_loader(
-                partial(
-                    load_result_bundle,
-                    bundle_dir=nested_bundle_dir,
-                    data_dir=data_dir,
-                ),
-                path=nested_bundle_dir,
-            )
+            return codec().load(metadata, artifact_dir)
         case "dataclass":
             cls = resolve_fully_qualified_name(body[TYPEMARKER])
             if not dataclasses.is_dataclass(cls):
@@ -516,6 +605,7 @@ def _load_wrapper(
             return tuple(
                 _load_value(
                     child,
+                    declared_type=child_declared_type(declared_type, i),
                     bundle_dir=bundle_dir,
                     data_dir=data_dir,
                     value_path=(*value_path, str(i)),
@@ -526,6 +616,7 @@ def _load_wrapper(
             return {
                 _load_value(
                     child,
+                    declared_type=child_declared_type(declared_type, i),
                     bundle_dir=bundle_dir,
                     data_dir=data_dir,
                     value_path=(*value_path, str(i)),
@@ -536,6 +627,7 @@ def _load_wrapper(
             return frozenset(
                 _load_value(
                     child,
+                    declared_type=child_declared_type(declared_type, i),
                     bundle_dir=bundle_dir,
                     data_dir=data_dir,
                     value_path=(*value_path, str(i)),
@@ -574,9 +666,9 @@ def _save_result_bundle(
     bundle_dir: Path,
     *,
     declared_type: object = Any,
-    result_codecs: tuple[type[ResultCodec], ...],
+    result_codecs: tuple[type[Codec], ...],
     data_dir: Path,
-) -> bool:
+) -> _DumpState:
     bundle_dir.mkdir(parents=True, exist_ok=False)
 
     dump_state = _DumpState(data_dir=data_dir)
@@ -592,14 +684,20 @@ def _save_result_bundle(
         json.dumps(manifest, indent=2),
         encoding="utf-8",
     )
-    return dump_state.should_reload_value_after_dump
+    return dump_state
 
 
-def load_result_bundle(bundle_dir: Path, *, data_dir: Path) -> object:
+def load_result_bundle(
+    bundle_dir: Path,
+    *,
+    data_dir: Path,
+    declared_type: object = Any,
+) -> object:
     manifest_path = bundle_dir / MANIFEST_FILE_NAME
     raw = json.loads(manifest_path.read_text(encoding="utf-8"))
     return _load_value(
         raw,
+        declared_type=declared_type,
         bundle_dir=bundle_dir,
         data_dir=data_dir,
         value_path=(),
