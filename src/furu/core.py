@@ -5,7 +5,7 @@ import logging
 import shutil
 from abc import ABC
 from dataclasses import dataclass
-from functools import cache, cached_property
+from functools import cached_property
 from inspect import get_annotations
 from pathlib import Path
 from typing import (
@@ -14,13 +14,11 @@ from typing import (
     ClassVar,
     Literal,
     TypeAlias,
-    TypeVar,
     cast,
     final,
-    get_args,
-    get_origin,
 )
 
+from furu._declared_types import declared_result_type
 from furu.config import get_config
 from furu.locking import LockError, is_active_lock, lock
 from furu.logging import get_logger
@@ -208,7 +206,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
                 load_result_bundle(
                     result_dir,
                     data_dir=data_dir_in(self._base_dir),
-                    declared_type=_declared_result_type(type(self)),
+                    declared_type=declared_result_type(type(self)),
                 ),
             )
         if _worker_execution_lease_id.get() is not None:
@@ -358,24 +356,3 @@ class Spec[T](_FuruDataclassTransform, ABC):
             + f"{self._artifact_schema_hash[:5]}:"
             + f"{self._artifact_hash[:5]}"
         )
-
-
-@cache
-def _declared_result_type(spec_type: type[Spec[Any]]) -> object:
-    declared: object = Any
-    for cls in spec_type.__mro__:
-        for base in getattr(cls, "__orig_bases__", ()):
-            if get_origin(base) is Spec:
-                declared = get_args(base)[0]
-                break
-        else:
-            continue
-        break
-
-    if isinstance(declared, TypeVar) or any(
-        isinstance(arg, TypeVar) for arg in get_args(declared)
-    ):
-        raise TypeError(
-            f"{spec_type.__name__} must declare its concrete result type directly as Spec[...]"
-        )
-    return declared

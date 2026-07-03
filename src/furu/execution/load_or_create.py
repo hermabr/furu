@@ -14,7 +14,8 @@ from typing import (
     overload,
 )
 
-from furu.core import SpecCreateMode, Missing, Spec, _declared_result_type
+from furu._declared_types import declared_result_type
+from furu.core import SpecCreateMode, Missing, Spec
 from furu.dependencies import dependency_recorder, record_dependency_call
 from furu.locking import lock
 from furu.logging import _scoped_log_files, get_logger
@@ -129,7 +130,7 @@ def _store_result[T](
 
     tmp_result_dir = nfs_safe_unique_name(result_dir, name="tmp")
 
-    declared_type = _declared_result_type(type(obj))
+    declared_type = declared_result_type(type(obj))
     data_dir = data_dir_in(obj._base_dir)
 
     dump_state = _save_result_bundle(
@@ -267,7 +268,7 @@ def load_existing[T](objs: Sequence[Spec[T]]) -> list[T]:
                 load_result_bundle(
                     result_dir,
                     data_dir=data_dir_in(obj._base_dir),
-                    declared_type=_declared_result_type(type(obj)),
+                    declared_type=declared_result_type(type(obj)),
                 ),
             )
         )
@@ -316,7 +317,7 @@ def _load_or_create_worker[T](
                     load_result_bundle(
                         cached_result_dir,
                         data_dir=data_dir_in(obj._base_dir),
-                        declared_type=_declared_result_type(type(obj)),
+                        declared_type=declared_result_type(type(obj)),
                     ),
                 )
             )
@@ -364,7 +365,7 @@ def _load_or_create_local[T](
                 load_result_bundle(
                     cached_result_dir,
                     data_dir=data_dir_in(obj._base_dir),
-                    declared_type=_declared_result_type(type(obj)),
+                    declared_type=declared_result_type(type(obj)),
                 ),
             )
         else:
@@ -393,7 +394,7 @@ def _load_or_create_local[T](
                     load_result_bundle(
                         cached_result_dir,
                         data_dir=data_dir_in(obj._base_dir),
-                        declared_type=_declared_result_type(type(obj)),
+                        declared_type=declared_result_type(type(obj)),
                     ),
                 )
             else:
