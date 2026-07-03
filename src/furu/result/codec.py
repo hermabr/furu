@@ -144,10 +144,6 @@ class PolarsParquetCodec(Codec["pl.DataFrame"]):
 
 class NumpyNpyCodec(Codec["np.ndarray[Any, Any]"]):
     auto_register: ClassVar[bool] = False
-    # Arrays at or above this size load memmap-backed, so the creating run and
-    # every cache-hit run see the same storage-backed value.
-    reload_value_after_save: ClassVar[bool] = True
-    memmap_threshold_bytes: ClassVar[int] = 16 * 1024 * 1024
 
     @classmethod
     def dependencies_available(cls) -> bool:
@@ -172,10 +168,7 @@ class NumpyNpyCodec(Codec["np.ndarray[Any, Any]"]):
     ) -> np.ndarray[Any, Any]:
         import numpy as np
 
-        array_path = artifact_directory / "data.npy"
-        if array_path.stat().st_size >= self.memmap_threshold_bytes:
-            return np.load(array_path, allow_pickle=False, mmap_mode="r")
-        return np.load(array_path, allow_pickle=False)
+        return np.load(artifact_directory / "data.npy", allow_pickle=False)
 
 
 def _find_single_codec_match(

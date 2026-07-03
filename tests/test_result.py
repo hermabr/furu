@@ -1315,12 +1315,6 @@ class RegistryNumpyResult(Spec[Any]):
         return np.arange(10, dtype=np.float32)
 
 
-class LargeNumpyResult(Spec[np.ndarray]):
-    def create(self) -> np.ndarray[Any, Any]:
-        length = NumpyNpyCodec.memmap_threshold_bytes // 8 + 1
-        return np.arange(length, dtype=np.float64)
-
-
 def test_numpy_array_round_trips() -> None:
     obj = NumpyResult()
     loaded = obj.create()
@@ -1357,33 +1351,18 @@ def test_result_codecs_take_priority_over_builtin_codec() -> None:
     assert manifest["$furu"]["codec"] == _RegistryNumpyCodec._codec_id()
 
 
-def test_array_over_memmap_threshold_is_memmap_backed_from_the_creating_run() -> None:
-    obj = LargeNumpyResult()
-    expected_file = result_dir_in(obj._base_dir) / "artifacts" / "root" / "data.npy"
-    expected = np.arange(
-        NumpyNpyCodec.memmap_threshold_bytes // 8 + 1, dtype=np.float64
-    )
-
-    first = obj.create()
-    second = obj.load_existing()
-
-    assert isinstance(first, np.ndarray)
-    assert isinstance(first, np.memmap)
-    assert isinstance(second, np.memmap)
-    assert Path(first.filename).resolve() == expected_file.resolve()
-    assert Path(second.filename).resolve() == expected_file.resolve()
-    assert np.array_equal(first, expected)
-    assert np.array_equal(second, expected)
-
-
-def test_array_under_memmap_threshold_reloads_as_plain_array() -> None:
+def test_numpy_array_reloads_as_plain_array() -> None:
     obj = NumpyResult()
 
     created = obj.create()
+    loaded = obj.load_existing()
 
     weights = cast(Any, created["weights"])
+    loaded_weights = cast(Any, loaded["weights"])
     assert isinstance(weights, np.ndarray)
+    assert isinstance(loaded_weights, np.ndarray)
     assert not isinstance(weights, np.memmap)
+    assert not isinstance(loaded_weights, np.memmap)
 
 
 class PolarsResult(Spec[dict[str, object]]):
