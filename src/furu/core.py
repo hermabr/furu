@@ -4,7 +4,7 @@ import json
 import logging
 import shutil
 from abc import ABC
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from functools import cached_property
 from inspect import get_annotations
 from pathlib import Path
@@ -20,6 +20,7 @@ from typing import (
 
 from furu._declared_types import declared_result_type
 from furu.config import get_config
+from furu.explain import ExplainDepth, explain as _explain
 from furu.locking import LockError, is_active_lock, lock
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
@@ -65,7 +66,6 @@ class Missing(Exception):
 
 
 SpecCreateMode: TypeAlias = Literal["single", "batched"] | None
-ExplainDepth: TypeAlias = int | Literal["full"]
 _FURU_CLASS_OPTIONS = frozenset({"max_workers"})
 _RESERVED_FIELD_NAMES = frozenset(
     {
@@ -236,7 +236,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
 
     @final
     def explain(self, depth: ExplainDepth = 0) -> str:
-        return "\n".join(_explain_lines(self, depth=depth))
+        return _explain(self, depth=depth)
 
     @final
     def delete(self, mode: Literal["prompt", "force"] = "prompt") -> bool:
@@ -364,38 +364,3 @@ class Spec[T](_FuruDataclassTransform, ABC):
             + f"{self._artifact_schema_hash[:5]}:"
             + f"{self._artifact_hash[:5]}"
         )
-
-
-def _explain_lines(spec: Spec[Any], *, depth: ExplainDepth) -> list[str]:
-    spec_fields = fields(spec)
-    lines = [
-        f"{type(spec).__name__}"
-        f"  schema={spec._artifact_schema_hash[:5]}"
-        f"  fields={spec._artifact_hash[:5]}"
-    ]
-    if not spec_fields:
-        return lines
-    width = max(len(field.name) for field in spec_fields)
-    for field in spec_fields:
-        value = getattr(spec, field.name)
-        if depth != 0 and isinstance(value, Spec):
-            nested = _explain_lines(
-                value, depth="full" if depth == "full" else depth - 1
-            )
-            lines.append(f"  {field.name:<{width}}  {nested[0]}")
-            lines.extend(f"  {line}" for line in nested[1:])
-        else:
-            lines.append(f"  {field.name:<{width}}  {_format_explain_value(value)}")
-    return lines
-
-
-def _format_explain_value(value: object) -> str:
-    if isinstance(value, Spec):
-        return f"{type(value).__name__} · key={value._artifact_hash[:5]}…"
-    if isinstance(value, str):
-        return json.dumps(value)
-    if isinstance(value, bool):
-        return repr(value)
-    if isinstance(value, int):
-        return f"{value:_}"
-    return repr(value)
