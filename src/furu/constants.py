@@ -1,4 +1,5 @@
 CLASSMARKER = "|class"
+DATAPATHMARKER = "|data_path"
 FIELDSMARKER = "|fields"
 KINDMARKER = "|kind"
 TYPEMARKER = "|type"
