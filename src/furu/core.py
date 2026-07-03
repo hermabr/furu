@@ -20,6 +20,7 @@ from typing import (
 
 from furu._declared_types import declared_result_type
 from furu.config import get_config
+from furu.explain import ExplainDepth, explain as _explain
 from furu.locking import LockError, is_active_lock, lock
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
@@ -234,6 +235,10 @@ class Spec[T](_FuruDataclassTransform, ABC):
         return "missing"
 
     @final
+    def explain(self, depth: ExplainDepth = 0) -> str:
+        return _explain(self, depth=depth)
+
+    @final
     def delete(self, mode: Literal["prompt", "force"] = "prompt") -> bool:
         if not self._base_dir.exists():
             return False
@@ -298,17 +303,20 @@ class Spec[T](_FuruDataclassTransform, ABC):
 
     @final
     @cached_property
+    def _artifact_data_for_hash(self) -> JsonValue:
+        return _to_json(
+            self,
+            declared_type=type(self),
+            artifact_serializers=self.artifact_serializers,
+            for_hash=True,
+        )
+
+    @final
+    @cached_property
     def _artifact_hash(  # TODO: should this be __hash__?
         self,
     ) -> str:
-        return _hash_dict_deterministically(
-            _to_json(
-                self,
-                declared_type=type(self),
-                artifact_serializers=self.artifact_serializers,
-                for_hash=True,
-            )
-        )
+        return _hash_dict_deterministically(self._artifact_data_for_hash)
 
     @final
     @cached_property

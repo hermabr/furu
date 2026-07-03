@@ -4,6 +4,7 @@ from furu._declared_types import skip_hash
 from furu._function import spec
 from furu.core import Missing, Spec
 from furu.dependencies import dependency
+from furu.diff import diff
 from furu.execution.load_or_create import create, load_existing
 from furu.logging import get_logger
 from furu.migration import Migration
@@ -29,6 +30,7 @@ __all__ = [
     "Spec",
     "create",
     "dependency",
+    "diff",
     "get_logger",
     "load_existing",
     "ref",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import functools
+import json
 import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, nullcontext
@@ -28,6 +29,7 @@ from furu.storage._layout import (
     metadata_path_in,
     result_dir_in,
     run_log_path_in,
+    schema_snapshot_path_in,
 )
 from furu.utils import format_duration, nfs_safe_unique_name
 from furu.worker.context import (
@@ -115,6 +117,15 @@ def _resolve_create_mode[T](cls: type[Spec[T]]) -> SpecCreateMode:
     return None
 
 
+def _record_schema_snapshot(obj: Spec[Any]) -> None:
+    schema_path = schema_snapshot_path_in(obj._base_dir)
+    if schema_path.exists():
+        return
+    tmp_path = nfs_safe_unique_name(schema_path, name="tmp")
+    tmp_path.write_text(json.dumps(obj._schema_data, indent=2, sort_keys=True))
+    tmp_path.rename(schema_path)
+
+
 def _store_result[T](
     obj: Spec[T],
     result: T,
@@ -145,6 +156,8 @@ def _store_result[T](
         raise RuntimeError(f"lost lock at {lock_path} after writing temporary result")
 
     tmp_result_dir.rename(result_dir)
+
+    _record_schema_snapshot(obj)
 
     metadata_text = metadata.to_complete(
         observed_dependencies=observed_dependencies
