@@ -83,7 +83,10 @@ class SlurmWorkerPool:
     def _scale_once(self) -> dict[str, str]:
         active_job_ids = self._active_job_ids()
         states = self._task_states()
-        lost_job_ids = {
+        preempted_job_ids = {
+            job_id for job_id, state in states.items() if state == "PREEMPTED"
+        }
+        lost_job_ids = preempted_job_ids | {
             job_id
             for job_id in self._job_ids
             if active_job_ids is not None
@@ -105,13 +108,17 @@ class SlurmWorkerPool:
         ]
         for job_id in sorted(lost_job_ids):
             allocation_job_id, separator, array_task_id = job_id.partition("_")
-            self._client.worker_lost(
-                worker=(
-                    f"slurm-worker-{allocation_job_id}a{array_task_id}"
-                    if separator
-                    else f"slurm-worker-{allocation_job_id}"
-                )
+            worker = (
+                f"slurm-worker-{allocation_job_id}a{array_task_id}"
+                if separator
+                else f"slurm-worker-{allocation_job_id}"
             )
+            if states.get(job_id) == "PREEMPTED":
+                reason = f"slurm worker {worker} was preempted"
+                logger.warning("%s; reporting worker lost", reason)
+                self._client.worker_lost(worker=worker, reason=reason)
+            else:
+                self._client.worker_lost(worker=worker)
         remaining_starts = (
             self._max_workers
             + self._max_failed_restarts
