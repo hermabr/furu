@@ -16,7 +16,7 @@ from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
 from furu.resources import ResourceRequirements
 from furu.result.bundle import load_result_bundle
-from furu.result.codec import ResultCodec
+from furu.result.codec import Codec
 from furu.serializer.artifact import to_json as _to_json
 from furu.serializer.registry import Serializer
 from furu.serializer.schema import schema_type as _schema_type
@@ -146,8 +146,19 @@ class Spec[T](_FuruDataclassTransform, ABC):
         return self.storage_root
 
     @property
-    def result_codecs(self) -> tuple[type[ResultCodec], ...]:
+    def result_codecs(self) -> tuple[type[Codec], ...]:
         return ()
+
+    @final
+    @cached_property
+    def _declared_result_type(self) -> object:
+        from typing import get_args, get_origin
+
+        for cls in type(self).__mro__:
+            for base in getattr(cls, "__orig_bases__", ()):
+                if get_origin(base) is Spec:
+                    return get_args(base)[0]
+        return Any
 
     @property
     def artifact_serializers(self) -> tuple[type[Serializer], ...]:
@@ -194,7 +205,11 @@ class Spec[T](_FuruDataclassTransform, ABC):
         if (result_dir := result_dir_for_loading(self)) is not None:
             return cast(
                 T,
-                load_result_bundle(result_dir, data_dir=data_dir_in(self._base_dir)),
+                load_result_bundle(
+                    result_dir,
+                    data_dir=data_dir_in(self._base_dir),
+                    declared_type=self._declared_result_type,
+                ),
             )
         if _worker_execution_lease_id.get() is not None:
             raise _DependencyNotReady(

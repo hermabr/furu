@@ -13,7 +13,6 @@ from typing import (
     assert_never,
     cast,
     get_args,
-    get_origin,
     overload,
 )
 
@@ -24,7 +23,6 @@ from furu.logging import _scoped_log_files, get_logger
 from furu.metadata import RunningMetadata
 from furu.migration import result_dir_for_loading
 from furu.result.bundle import _save_result_bundle, load_result_bundle
-from furu.result.save_as import _unwrap_save_as
 from furu.storage._layout import (
     compute_lock_path_in,
     data_dir_in,
@@ -133,16 +131,7 @@ def _store_result[T](
 
     tmp_result_dir = nfs_safe_unique_name(result_dir, name="tmp")
 
-    declared_type: object = Any
-    for cls in type(obj).__mro__:
-        for base in getattr(cls, "__orig_bases__", ()):
-            if get_origin(base) is Spec:
-                declared_type = get_args(base)[0]
-                break
-        else:
-            continue
-        break
-
+    declared_type = obj._declared_result_type
     if isinstance(declared_type, TypeVar) or any(
         isinstance(arg, TypeVar) for arg in get_args(declared_type)
     ):
@@ -150,7 +139,7 @@ def _store_result[T](
             f"{type(obj).__name__} must declare its concrete result type directly as Spec[...]"
         )
 
-    should_reload_value_after_dump = _save_result_bundle(
+    dump_state = _save_result_bundle(
         result,
         tmp_result_dir,
         declared_type=declared_type,
@@ -169,12 +158,20 @@ def _store_result[T](
     metadata_path_in(obj._base_dir).write_text(metadata_text)
 
     obj.logger.debug("stored result bundle at %s", result_dir)
-    if should_reload_value_after_dump:
+    if dump_state.should_reload_value_after_save:
         return cast(
             T,
-            load_result_bundle(result_dir, data_dir=data_dir_in(obj._base_dir)),
+            load_result_bundle(
+                result_dir,
+                data_dir=data_dir_in(obj._base_dir),
+                declared_type=declared_type,
+            ),
         )
-    return _unwrap_save_as(result)
+    for dumped in dump_state.dumped_refs:
+        dumped.ref._bind_to_storage(
+            result_dir / dumped.artifact_rel, dumped.codec, dumped.metadata
+        )
+    return result
 
 
 @overload
@@ -271,7 +268,14 @@ def load_existing[T](objs: Sequence[Spec[T]]) -> list[T]:
             missing.append(obj)
             continue
         loaded.append(
-            cast(T, load_result_bundle(result_dir, data_dir=data_dir_in(obj._base_dir)))
+            cast(
+                T,
+                load_result_bundle(
+                    result_dir,
+                    data_dir=data_dir_in(obj._base_dir),
+                    declared_type=obj._declared_result_type,
+                ),
+            )
         )
     if missing:
         if _worker_execution_lease_id.get() is not None:
@@ -318,6 +322,7 @@ def _load_or_create_worker[T](
                     load_result_bundle(
                         cached_result_dir,
                         data_dir=data_dir_in(obj._base_dir),
+                        declared_type=obj._declared_result_type,
                     ),
                 )
             )
@@ -365,6 +370,7 @@ def _load_or_create_local[T](
                 load_result_bundle(
                     cached_result_dir,
                     data_dir=data_dir_in(obj._base_dir),
+                    declared_type=obj._declared_result_type,
                 ),
             )
         else:

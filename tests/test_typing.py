@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, assert_type
 
 import furu
+
+
+@dataclass(frozen=True)
+class RefFieldOutput:
+    blob: furu.Ref[bytes]
 
 
 class TypingChild(furu.Spec[int]):
@@ -61,3 +67,6 @@ if TYPE_CHECKING:
         typed_letter_count_with_parentheses(source="banana", letter="a"),
         furu.Spec[int],
     )
+    assert_type(furu.ref(b"data"), furu.Ref[bytes])
+    RefFieldOutput(blob=furu.ref(b"data"))
+    RefFieldOutput(blob=b"data")  # ty: ignore[invalid-argument-type]

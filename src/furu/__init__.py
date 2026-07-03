@@ -8,9 +8,8 @@ from furu.execution.load_or_create import create, load_existing
 from furu.logging import get_logger
 from furu.migration import Migration
 from furu.resources import ResourceRequirements
-from furu.result.codec import ResultCodec
-from furu.result.lazy import LazyResult
-from furu.result.save_as import save_as
+from furu.result.codec import Codec
+from furu.result.ref import Ref, ref
 from furu.serializer.registry import Serializer
 from furu.utils import _install_main_module_alias
 from furu.validate import validate
@@ -23,17 +22,17 @@ __all__ = [
     "__version__",
     "Spec",
     "Serializer",
-    "LazyResult",
+    "Codec",
+    "Ref",
     "Migration",
     "Missing",
     "ResourceRequirements",
     "create",
     "dependency",
     "spec",
-    "ResultCodec",
+    "ref",
     "get_logger",
     "load_existing",
-    "save_as",
     "skip_hash",
     "validate",
 ]
