@@ -115,7 +115,7 @@ class Codec[T](ABC, metaclass=CodecMeta):
         pass
 
 
-class PolarsParquetCodec(Codec["pl.DataFrame"]):
+class PolarsParquetCodec(Codec[pl.DataFrame]):
     auto_register: ClassVar[bool] = False
 
     @classmethod
@@ -142,7 +142,7 @@ class PolarsParquetCodec(Codec["pl.DataFrame"]):
         return pl.read_parquet(artifact_directory / "data.parquet")
 
 
-class NumpyNpyCodec(Codec["np.ndarray[Any, Any]"]):
+class NumpyNpyCodec(Codec[np.ndarray[Any, Any]]):
     auto_register: ClassVar[bool] = False
 
     @classmethod
