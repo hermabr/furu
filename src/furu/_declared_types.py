@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from typing import Annotated, Any, Final, get_args, get_origin
+from functools import cache
+from typing import TYPE_CHECKING, Annotated, Any, Final, TypeVar, get_args, get_origin
+
+if TYPE_CHECKING:
+    from furu.core import Spec
 
 
 class _SkipHash:
@@ -41,3 +45,26 @@ def child_declared_type(declared_type: object, key: object) -> object:
         if isinstance(key, int) and key < len(args):
             return args[key]
     return Any
+
+
+@cache
+def declared_result_type(spec_type: type[Spec[Any]]) -> object:
+    from furu.core import Spec
+
+    declared: object = Any
+    for cls in spec_type.__mro__:
+        for base in getattr(cls, "__orig_bases__", ()):
+            if get_origin(base) is Spec:
+                declared = get_args(base)[0]
+                break
+        else:
+            continue
+        break
+
+    if isinstance(declared, TypeVar) or any(
+        isinstance(arg, TypeVar) for arg in get_args(declared)
+    ):
+        raise TypeError(
+            f"{spec_type.__name__} must declare its concrete result type directly as Spec[...]"
+        )
+    return declared

@@ -2123,6 +2123,7 @@ def test_pending_items_are_rechecked_after_lock_acquisition(
         _save_result_bundle(
             "single:5",
             result_dir_in(pending._base_dir),
+            declared_type=str,
             result_codecs=(),
             data_dir=pending.directory.data,
         )
@@ -2284,6 +2285,7 @@ def test_batched_compute_writes_result_layout_per_object() -> None:
             load_result_bundle(
                 result_dir_in(obj._base_dir),
                 data_dir=data_dir_in(obj._base_dir),
+                declared_type=str,
             )
             == expected
         )

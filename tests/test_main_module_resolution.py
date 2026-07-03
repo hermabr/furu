@@ -187,10 +187,12 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from collections.abc import Mapping
+
 from furu import Spec
 from furu.storage._layout import data_dir_in
 from furu.result.bundle import load_result_bundle, _save_result_bundle
-from furu.result.codec import ResultCodec
+from furu.result.codec import Codec
 from furu.serializer.artifact import _from_json
 
 
@@ -199,29 +201,21 @@ class Payload:
     value: int
 
 
-class MainCodec(ResultCodec[bytes]):
+class MainCodec(Codec[bytes]):
     @classmethod
     def matches(cls, value: object) -> bool:
         return isinstance(value, bytes)
 
     @classmethod
-    def dump(
-        cls,
-        value: bytes,
-        *,
-        artifact_dir: Path,
-        dump_data_path: object,
-    ) -> None:
-        (artifact_dir / "data.bin").write_bytes(value)
+    def save(cls, value: bytes, artifact_directory: Path) -> Mapping[str, object]:
+        (artifact_directory / "data.bin").write_bytes(value)
+        return {}
 
     @classmethod
     def load(
-        cls,
-        *,
-        artifact_dir: Path,
-        load_data_path: object,
+        cls, metadata: Mapping[str, object], artifact_directory: Path
     ) -> bytes:
-        return (artifact_dir / "data.bin").read_bytes()
+        return (artifact_directory / "data.bin").read_bytes()
 
 
 class Adder(Spec[Payload]):
@@ -252,24 +246,28 @@ if __name__ == "__main__":
     _save_result_bundle(
         Payload(9),
         payload_bundle,
+        declared_type=Payload,
         result_codecs=(),
         data_dir=data_dir_in(payload_bundle.parent),
     )
     payload_loaded = load_result_bundle(
         payload_bundle,
         data_dir=data_dir_in(payload_bundle.parent),
+        declared_type=Payload,
     )
 
     codec_bundle = Path("codec-bundle")
     _save_result_bundle(
         b"abc",
         codec_bundle,
+        declared_type=bytes,
         result_codecs=(MainCodec,),
         data_dir=data_dir_in(codec_bundle.parent),
     )
     codec_loaded = load_result_bundle(
         codec_bundle,
         data_dir=data_dir_in(codec_bundle.parent),
+        declared_type=bytes,
     )
 
     print(
