@@ -305,10 +305,11 @@ def _dump_artifact(
         dump_state.ref_bindings.append(
             _RefBinding(
                 ref=ref,
-                metadata=_decode_codec_metadata(
-                    encoded_metadata,
-                    data_dir=dump_state.data_dir,
-                    value_path=value_path,
+                metadata=cast(
+                    dict[str, object],
+                    _decode_codec_metadata_value(
+                        encoded_metadata, data_dir=dump_state.data_dir
+                    ),
                 ),
                 artifact_relative_path=artifact_rel,
             )
@@ -391,20 +392,6 @@ def _encode_codec_metadata_value(
                 f"values of type {type(value).__name__!r} cannot be stored; use JSON "
                 "scalars, lists, mappings, or Path"
             )
-
-
-def _decode_codec_metadata(
-    node: JsonValue,
-    *,
-    data_dir: Path,
-    value_path: ValuePath,
-) -> Mapping[str, object]:
-    decoded = _decode_codec_metadata_value(node, data_dir=data_dir)
-    if not isinstance(decoded, dict):
-        raise ValueError(
-            f"Codec metadata at {_value_path_display(value_path)} must be a mapping"
-        )
-    return cast(dict[str, object], decoded)
 
 
 def _decode_codec_metadata_value(node: JsonValue, *, data_dir: Path) -> object:
@@ -569,11 +556,16 @@ def _load_wrapper(
             if not isinstance(codec, type) or not issubclass(codec, Codec):
                 raise TypeError(f"{codec_id} is not a furu.Codec")
 
-            metadata = _decode_codec_metadata(
-                body["metadata"],
-                data_dir=data_dir,
-                value_path=value_path,
-            )
+            if not isinstance(
+                metadata := _decode_codec_metadata_value(
+                    body["metadata"], data_dir=data_dir
+                ),
+                dict,
+            ):
+                raise ValueError(
+                    f"Codec metadata at {_value_path_display(value_path)} must be a mapping"
+                )
+            metadata = cast(dict[str, object], metadata)
             if _declares_ref(declared_type):
                 return Ref._from_stored(
                     codec=codec,
