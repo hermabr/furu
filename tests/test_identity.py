@@ -45,11 +45,12 @@ class TrainRun(Spec[str]):
         return self.model
 
 
-class EvalRun(Spec[str]):
-    run: TrainRun
+class OrderSweep(Spec[int]):
+    orders: tuple[SubsetOrder, ...]
+    tags: frozenset[str]
 
-    def create(self) -> str:
-        return self.run.model
+    def create(self) -> int:
+        return len(self.orders)
 
 
 class OptimizerRun(Spec[str]):
@@ -112,39 +113,51 @@ def test_explain_renders_plain_dataclass_field() -> None:
     )
 
 
-def test_explain_full_depth_expands_nested_spec_block() -> None:
+def test_explain_full_depth_expands_nested_dataclass() -> None:
+    corpus = DiffCorpus()
+    assert corpus.explain(depth="full") == (
+        f"DiffCorpus"
+        f"  schema={corpus._artifact_schema_hash[:5]}"
+        f"  fields={corpus._artifact_hash[:5]}\n"
+        '  tokenizer  "bpe"\n'
+        "  order      SubsetOrder\n"
+        "    fraction  1.0\n"
+        '    variant   "global-random-subset"'
+    )
+
+
+def test_explain_full_depth_keeps_dependencies_collapsed() -> None:
     run = TrainRun(corpus=DiffCorpus())
-    assert run.explain(depth="full") == (
-        f"TrainRun"
-        f"  schema={run._artifact_schema_hash[:5]}"
-        f"  fields={run._artifact_hash[:5]}\n"
-        f"  corpus         DiffCorpus"
-        f"  schema={run.corpus._artifact_schema_hash[:5]}"
-        f"  fields={run.corpus._artifact_hash[:5]}\n"
-        '    tokenizer  "bpe"\n'
-        "    order      SubsetOrder\n"
-        "      fraction  1.0\n"
+    assert run.explain(depth="full") == run.explain()
+
+
+def test_explain_full_depth_expands_collections() -> None:
+    sweep = OrderSweep(orders=(SubsetOrder(fraction=0.5),), tags=frozenset({"b", "a"}))
+    assert sweep.explain(depth="full") == (
+        f"OrderSweep"
+        f"  schema={sweep._artifact_schema_hash[:5]}"
+        f"  fields={sweep._artifact_hash[:5]}\n"
+        "  orders  tuple\n"
+        "    0  SubsetOrder\n"
+        "      fraction  0.5\n"
         '      variant   "global-random-subset"\n'
-        '  model          "100m"\n'
-        "  max_tokens     1_000_000_000\n"
-        "  learning_rate  0.0003"
+        "  tags    frozenset\n"
+        '    0  "a"\n'
+        '    1  "b"'
     )
 
 
 def test_explain_integer_depth_limits_expansion() -> None:
-    evaluation = EvalRun(run=TrainRun(corpus=DiffCorpus()))
-    run = evaluation.run
-    assert evaluation.explain(depth=1) == (
-        f"EvalRun"
-        f"  schema={evaluation._artifact_schema_hash[:5]}"
-        f"  fields={evaluation._artifact_hash[:5]}\n"
-        f"  run  TrainRun"
-        f"  schema={run._artifact_schema_hash[:5]}"
-        f"  fields={run._artifact_hash[:5]}\n"
-        f"    corpus         DiffCorpus · key={run.corpus._artifact_hash[:5]}…\n"
-        '    model          "100m"\n'
-        "    max_tokens     1_000_000_000\n"
-        "    learning_rate  0.0003"
+    sweep = OrderSweep(orders=(SubsetOrder(fraction=0.5),), tags=frozenset({"b", "a"}))
+    assert sweep.explain(depth=1) == (
+        f"OrderSweep"
+        f"  schema={sweep._artifact_schema_hash[:5]}"
+        f"  fields={sweep._artifact_hash[:5]}\n"
+        "  orders  tuple\n"
+        "    0  SubsetOrder(fraction=0.5, variant='global-random-subset')\n"
+        "  tags    frozenset\n"
+        '    0  "a"\n'
+        '    1  "b"'
     )
 
 
