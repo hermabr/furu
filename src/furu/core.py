@@ -4,7 +4,7 @@ import json
 import logging
 import shutil
 from abc import ABC
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from functools import cached_property
 from inspect import get_annotations
 from pathlib import Path
@@ -234,6 +234,23 @@ class Spec[T](_FuruDataclassTransform, ABC):
         return "missing"
 
     @final
+    def explain(self) -> str:
+        spec_fields = fields(self)
+        lines = [
+            f"{type(self).__name__}"
+            f"  schema={self._artifact_schema_hash[:5]}"
+            f"  fields={self._artifact_hash[:5]}"
+        ]
+        if spec_fields:
+            width = max(len(field.name) for field in spec_fields)
+            lines.extend(
+                f"  {field.name:<{width}}  "
+                f"{_format_explain_value(getattr(self, field.name))}"
+                for field in spec_fields
+            )
+        return "\n".join(lines)
+
+    @final
     def delete(self, mode: Literal["prompt", "force"] = "prompt") -> bool:
         if not self._base_dir.exists():
             return False
@@ -298,17 +315,20 @@ class Spec[T](_FuruDataclassTransform, ABC):
 
     @final
     @cached_property
+    def _artifact_data_for_hash(self) -> JsonValue:
+        return _to_json(
+            self,
+            declared_type=type(self),
+            artifact_serializers=self.artifact_serializers,
+            for_hash=True,
+        )
+
+    @final
+    @cached_property
     def _artifact_hash(  # TODO: should this be __hash__?
         self,
     ) -> str:
-        return _hash_dict_deterministically(
-            _to_json(
-                self,
-                declared_type=type(self),
-                artifact_serializers=self.artifact_serializers,
-                for_hash=True,
-            )
-        )
+        return _hash_dict_deterministically(self._artifact_data_for_hash)
 
     @final
     @cached_property
@@ -356,3 +376,15 @@ class Spec[T](_FuruDataclassTransform, ABC):
             + f"{self._artifact_schema_hash[:5]}:"
             + f"{self._artifact_hash[:5]}"
         )
+
+
+def _format_explain_value(value: object) -> str:
+    if isinstance(value, Spec):
+        return f"{type(value).__name__} · key={value._artifact_hash[:5]}…"
+    if isinstance(value, str):
+        return json.dumps(value)
+    if isinstance(value, bool):
+        return repr(value)
+    if isinstance(value, int):
+        return f"{value:_}"
+    return repr(value)
