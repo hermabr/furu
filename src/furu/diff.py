@@ -23,13 +23,6 @@ def _as_instance_node(
 
 
 def diff(a: Spec[Any], b: Spec[Any]) -> list[FieldDiff]:
-    """Identity differences between two specs, one FieldDiff per differing field.
-
-    Walks the same serialized data the field hash is computed from, so skip_hash
-    fields are omitted and an empty diff means identical identity. Nested specs
-    and dataclasses recurse into dotted paths; collections diff as whole values;
-    a class mismatch is reported as a single FieldDiff without recursing below it.
-    """
     diffs: list[FieldDiff] = []
     queue: deque[tuple[str, JsonValue, JsonValue]] = deque(
         [("", a._artifact_data_for_hash, b._artifact_data_for_hash)]
