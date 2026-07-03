@@ -206,12 +206,14 @@ class MainCodec(Codec[bytes]):
     def matches(cls, value: object) -> bool:
         return isinstance(value, bytes)
 
-    def save(self, value: bytes, artifact_directory: Path) -> Mapping[str, object]:
+    @classmethod
+    def save(cls, value: bytes, artifact_directory: Path) -> Mapping[str, object]:
         (artifact_directory / "data.bin").write_bytes(value)
         return {}
 
+    @classmethod
     def load(
-        self, metadata: Mapping[str, object], artifact_directory: Path
+        cls, metadata: Mapping[str, object], artifact_directory: Path
     ) -> bytes:
         return (artifact_directory / "data.bin").read_bytes()
 

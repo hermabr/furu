@@ -290,7 +290,7 @@ def _dump_artifact(
     artifact_dir = bundle_dir / artifact_rel
     artifact_dir.mkdir(parents=True, exist_ok=False)
 
-    codec_metadata = codec().save(value, artifact_dir)
+    codec_metadata = codec.save(value, artifact_dir)
     if not isinstance(codec_metadata, Mapping):
         raise TypeError(
             f"Codec save() at {_value_path_display(value_path)} must return a "
@@ -556,7 +556,7 @@ def _load_wrapper(
                     metadata=metadata,
                     artifact_directory=artifact_dir,
                 )
-            return codec().load(metadata, artifact_dir)
+            return codec.load(metadata, artifact_dir)
         case "dataclass":
             cls = resolve_fully_qualified_name(body[TYPEMARKER])
             if not dataclasses.is_dataclass(cls):

@@ -293,20 +293,22 @@ class _CountingCodec(Codec[_CountingValue]):
     def matches(cls, value: object) -> bool:
         return isinstance(value, _CountingValue)
 
+    @classmethod
     def save(
-        self, value: _CountingValue, artifact_directory: Path
+        cls, value: _CountingValue, artifact_directory: Path
     ) -> Mapping[str, object]:
-        type(self).dump_calls += 1
+        cls.dump_calls += 1
         artifact_directory.joinpath("value.txt").write_text(
             str(value.value),
             encoding="utf-8",
         )
         return {}
 
+    @classmethod
     def load(
-        self, metadata: Mapping[str, object], artifact_directory: Path
+        cls, metadata: Mapping[str, object], artifact_directory: Path
     ) -> _CountingValue:
-        type(self).load_calls += 1
+        cls.load_calls += 1
         return _CountingValue(
             int(artifact_directory.joinpath("value.txt").read_text(encoding="utf-8"))
         )
@@ -319,14 +321,16 @@ class _OtherCountingCodec(Codec[_CountingValue]):
     def matches(cls, value: object) -> bool:
         return isinstance(value, _CountingValue)
 
+    @classmethod
     def save(
-        self, value: _CountingValue, artifact_directory: Path
+        cls, value: _CountingValue, artifact_directory: Path
     ) -> Mapping[str, object]:
         artifact_directory.joinpath("other.txt").write_text("x", encoding="utf-8")
         return {}
 
+    @classmethod
     def load(
-        self, metadata: Mapping[str, object], artifact_directory: Path
+        cls, metadata: Mapping[str, object], artifact_directory: Path
     ) -> _CountingValue:
         artifact_directory.joinpath("other.txt").read_text(encoding="utf-8")
         return _CountingValue(0)
@@ -340,12 +344,14 @@ class _CustomNumpyCodec(Codec[Any]):
     def matches(cls, value: object) -> bool:
         return isinstance(value, np.ndarray)
 
-    def save(self, value: Any, artifact_directory: Path) -> Mapping[str, object]:
-        np.save(artifact_directory / self.file_name, value, allow_pickle=False)
+    @classmethod
+    def save(cls, value: Any, artifact_directory: Path) -> Mapping[str, object]:
+        np.save(artifact_directory / cls.file_name, value, allow_pickle=False)
         return {}
 
-    def load(self, metadata: Mapping[str, object], artifact_directory: Path) -> Any:
-        return np.load(artifact_directory / self.file_name, allow_pickle=False)
+    @classmethod
+    def load(cls, metadata: Mapping[str, object], artifact_directory: Path) -> Any:
+        return np.load(artifact_directory / cls.file_name, allow_pickle=False)
 
 
 class _RegistryNumpyCodec(_CustomNumpyCodec):
@@ -363,8 +369,9 @@ class _AutoRegisteredValueCodec(Codec[_AutoRegisteredValue]):
     def matches(cls, value: object) -> bool:
         return isinstance(value, _AutoRegisteredValue)
 
+    @classmethod
     def save(
-        self, value: _AutoRegisteredValue, artifact_directory: Path
+        cls, value: _AutoRegisteredValue, artifact_directory: Path
     ) -> Mapping[str, object]:
         artifact_directory.joinpath("auto.txt").write_text(
             str(value.value),
@@ -372,8 +379,9 @@ class _AutoRegisteredValueCodec(Codec[_AutoRegisteredValue]):
         )
         return {}
 
+    @classmethod
     def load(
-        self, metadata: Mapping[str, object], artifact_directory: Path
+        cls, metadata: Mapping[str, object], artifact_directory: Path
     ) -> _AutoRegisteredValue:
         return _AutoRegisteredValue(
             int(artifact_directory.joinpath("auto.txt").read_text(encoding="utf-8"))
@@ -387,8 +395,9 @@ class _CoreRegistryAutoValueCodec(Codec[_AutoRegisteredValue]):
     def matches(cls, value: object) -> bool:
         return isinstance(value, _AutoRegisteredValue)
 
+    @classmethod
     def save(
-        self, value: _AutoRegisteredValue, artifact_directory: Path
+        cls, value: _AutoRegisteredValue, artifact_directory: Path
     ) -> Mapping[str, object]:
         artifact_directory.joinpath("registry.txt").write_text(
             str(value.value),
@@ -396,8 +405,9 @@ class _CoreRegistryAutoValueCodec(Codec[_AutoRegisteredValue]):
         )
         return {}
 
+    @classmethod
     def load(
-        self, metadata: Mapping[str, object], artifact_directory: Path
+        cls, metadata: Mapping[str, object], artifact_directory: Path
     ) -> _AutoRegisteredValue:
         return _AutoRegisteredValue(
             int(artifact_directory.joinpath("registry.txt").read_text(encoding="utf-8"))
@@ -413,7 +423,8 @@ class _AutoRegisteredArrayCodec(Codec[Any]):
     def matches(cls, value: object) -> bool:
         return isinstance(value, _AutoRegisteredArray)
 
-    def save(self, value: Any, artifact_directory: Path) -> Mapping[str, object]:
+    @classmethod
+    def save(cls, value: Any, artifact_directory: Path) -> Mapping[str, object]:
         np.save(
             artifact_directory / "auto.npy",
             value.view(np.ndarray),
@@ -421,7 +432,8 @@ class _AutoRegisteredArrayCodec(Codec[Any]):
         )
         return {}
 
-    def load(self, metadata: Mapping[str, object], artifact_directory: Path) -> Any:
+    @classmethod
+    def load(cls, metadata: Mapping[str, object], artifact_directory: Path) -> Any:
         return np.load(artifact_directory / "auto.npy", allow_pickle=False)
 
 
@@ -436,14 +448,16 @@ class _OptOutRegisteredValueCodec(Codec[_OptOutRegisteredValue]):
     def matches(cls, value: object) -> bool:
         return isinstance(value, _OptOutRegisteredValue)
 
+    @classmethod
     def save(
-        self, value: _OptOutRegisteredValue, artifact_directory: Path
+        cls, value: _OptOutRegisteredValue, artifact_directory: Path
     ) -> Mapping[str, object]:
         artifact_directory.joinpath("manual.txt").write_text("", encoding="utf-8")
         return {}
 
+    @classmethod
     def load(
-        self, metadata: Mapping[str, object], artifact_directory: Path
+        cls, metadata: Mapping[str, object], artifact_directory: Path
     ) -> _OptOutRegisteredValue:
         artifact_directory.joinpath("manual.txt").read_text(encoding="utf-8")
         return _OptOutRegisteredValue()
@@ -459,13 +473,15 @@ class _DataDirPathCodec(Codec[_DataDirPathValue]):
     def matches(cls, value: object) -> bool:
         return isinstance(value, _DataDirPathValue)
 
+    @classmethod
     def save(
-        self, value: _DataDirPathValue, artifact_directory: Path
+        cls, value: _DataDirPathValue, artifact_directory: Path
     ) -> Mapping[str, object]:
         return {"path": value.path}
 
+    @classmethod
     def load(
-        self, metadata: Mapping[str, object], artifact_directory: Path
+        cls, metadata: Mapping[str, object], artifact_directory: Path
     ) -> _DataDirPathValue:
         return _DataDirPathValue(cast(Path, metadata["path"]))
 
@@ -594,14 +610,16 @@ def test_codec_defined_after_default_codec_layers_cache_is_auto_registered() -> 
         def matches(cls, value: object) -> bool:
             return isinstance(value, LateAutoRegisteredValue)
 
+        @classmethod
         def save(
-            self, value: LateAutoRegisteredValue, artifact_directory: Path
+            cls, value: LateAutoRegisteredValue, artifact_directory: Path
         ) -> Mapping[str, object]:
             artifact_directory.joinpath("late.txt").write_text("", encoding="utf-8")
             return {}
 
+        @classmethod
         def load(
-            self, metadata: Mapping[str, object], artifact_directory: Path
+            cls, metadata: Mapping[str, object], artifact_directory: Path
         ) -> LateAutoRegisteredValue:
             artifact_directory.joinpath("late.txt").read_text(encoding="utf-8")
             return LateAutoRegisteredValue()
@@ -628,8 +646,9 @@ def test_explicit_registry_sees_later_auto_registered_codec() -> None:
         def matches(cls, value: object) -> bool:
             return isinstance(value, LateExplicitRegistryAutoValue)
 
+        @classmethod
         def save(
-            self, value: LateExplicitRegistryAutoValue, artifact_directory: Path
+            cls, value: LateExplicitRegistryAutoValue, artifact_directory: Path
         ) -> Mapping[str, object]:
             artifact_directory.joinpath("late-explicit.txt").write_text(
                 "",
@@ -637,8 +656,9 @@ def test_explicit_registry_sees_later_auto_registered_codec() -> None:
             )
             return {}
 
+        @classmethod
         def load(
-            self, metadata: Mapping[str, object], artifact_directory: Path
+            cls, metadata: Mapping[str, object], artifact_directory: Path
         ) -> LateExplicitRegistryAutoValue:
             artifact_directory.joinpath("late-explicit.txt").read_text(
                 encoding="utf-8"
@@ -660,14 +680,16 @@ def test_auto_registered_codecs_must_not_be_ambiguous() -> None:
         def matches(cls, value: object) -> bool:
             return isinstance(value, AutoAmbiguousValue)
 
+        @classmethod
         def save(
-            self, value: AutoAmbiguousValue, artifact_directory: Path
+            cls, value: AutoAmbiguousValue, artifact_directory: Path
         ) -> Mapping[str, object]:
             artifact_directory.joinpath("first.txt").write_text("", encoding="utf-8")
             return {}
 
+        @classmethod
         def load(
-            self, metadata: Mapping[str, object], artifact_directory: Path
+            cls, metadata: Mapping[str, object], artifact_directory: Path
         ) -> AutoAmbiguousValue:
             artifact_directory.joinpath("first.txt").read_text(encoding="utf-8")
             return AutoAmbiguousValue()
@@ -677,14 +699,16 @@ def test_auto_registered_codecs_must_not_be_ambiguous() -> None:
         def matches(cls, value: object) -> bool:
             return isinstance(value, AutoAmbiguousValue)
 
+        @classmethod
         def save(
-            self, value: AutoAmbiguousValue, artifact_directory: Path
+            cls, value: AutoAmbiguousValue, artifact_directory: Path
         ) -> Mapping[str, object]:
             artifact_directory.joinpath("second.txt").write_text("", encoding="utf-8")
             return {}
 
+        @classmethod
         def load(
-            self, metadata: Mapping[str, object], artifact_directory: Path
+            cls, metadata: Mapping[str, object], artifact_directory: Path
         ) -> AutoAmbiguousValue:
             artifact_directory.joinpath("second.txt").read_text(encoding="utf-8")
             return AutoAmbiguousValue()

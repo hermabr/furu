@@ -106,16 +106,18 @@ class Codec[T](ABC, metaclass=CodecMeta):
     def matches(cls, value: object) -> bool:
         pass
 
+    @classmethod
     @abstractmethod
-    def save(self, value: T, artifact_directory: Path) -> Mapping[str, object]:
+    def save(cls, value: T, artifact_directory: Path) -> Mapping[str, object]:
         pass
 
+    @classmethod
     @abstractmethod
-    def load(self, metadata: Mapping[str, object], artifact_directory: Path) -> T:
+    def load(cls, metadata: Mapping[str, object], artifact_directory: Path) -> T:
         pass
 
 
-class PolarsParquetCodec(Codec[pl.DataFrame]):
+class PolarsParquetCodec(Codec["pl.DataFrame"]):
     auto_register: ClassVar[bool] = False
 
     @classmethod
@@ -128,21 +130,23 @@ class PolarsParquetCodec(Codec[pl.DataFrame]):
 
         return isinstance(value, pl.DataFrame)
 
+    @classmethod
     def save(
-        self, value: pl.DataFrame, artifact_directory: Path
+        cls, value: pl.DataFrame, artifact_directory: Path
     ) -> Mapping[str, object]:
         value.write_parquet(artifact_directory / "data.parquet")
         return {}
 
+    @classmethod
     def load(
-        self, metadata: Mapping[str, object], artifact_directory: Path
+        cls, metadata: Mapping[str, object], artifact_directory: Path
     ) -> pl.DataFrame:
         import polars as pl
 
         return pl.read_parquet(artifact_directory / "data.parquet")
 
 
-class NumpyNpyCodec(Codec[np.ndarray[Any, Any]]):
+class NumpyNpyCodec(Codec["np.ndarray[Any, Any]"]):
     auto_register: ClassVar[bool] = False
 
     @classmethod
@@ -155,16 +159,18 @@ class NumpyNpyCodec(Codec[np.ndarray[Any, Any]]):
 
         return isinstance(value, np.ndarray)
 
+    @classmethod
     def save(
-        self, value: np.ndarray[Any, Any], artifact_directory: Path
+        cls, value: np.ndarray[Any, Any], artifact_directory: Path
     ) -> Mapping[str, object]:
         import numpy as np
 
         np.save(artifact_directory / "data.npy", value, allow_pickle=False)
         return {}
 
+    @classmethod
     def load(
-        self, metadata: Mapping[str, object], artifact_directory: Path
+        cls, metadata: Mapping[str, object], artifact_directory: Path
     ) -> np.ndarray[Any, Any]:
         import numpy as np
 
