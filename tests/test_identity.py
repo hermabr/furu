@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Annotated
 
 import pytest
+from pydantic import BaseModel
 
 import furu
 from furu import Spec
@@ -15,6 +16,11 @@ from furu.utils import fully_qualified_name
 class SubsetOrder:
     fraction: float = 1.0
     variant: str = "global-random-subset"
+
+
+class OptimizerSettings(BaseModel):
+    name: str = "adamw"
+    beta1: float = 0.9
 
 
 class DiffCorpus(Spec[str]):
@@ -44,6 +50,13 @@ class EvalRun(Spec[str]):
 
     def create(self) -> str:
         return self.run.model
+
+
+class OptimizerRun(Spec[str]):
+    optimizer: OptimizerSettings
+
+    def create(self) -> str:
+        return self.optimizer.name
 
 
 class NotedValue(Spec[str]):
@@ -109,7 +122,9 @@ def test_explain_full_depth_expands_nested_spec_block() -> None:
         f"  schema={run.corpus._artifact_schema_hash[:5]}"
         f"  fields={run.corpus._artifact_hash[:5]}\n"
         '    tokenizer  "bpe"\n'
-        "    order      SubsetOrder(fraction=1.0, variant='global-random-subset')\n"
+        "    order      SubsetOrder\n"
+        "      fraction  1.0\n"
+        '      variant   "global-random-subset"\n'
         '  model          "100m"\n'
         "  max_tokens     1_000_000_000\n"
         "  learning_rate  0.0003"
@@ -130,6 +145,18 @@ def test_explain_integer_depth_limits_expansion() -> None:
         '    model          "100m"\n'
         "    max_tokens     1_000_000_000\n"
         "    learning_rate  0.0003"
+    )
+
+
+def test_explain_full_depth_expands_pydantic_model() -> None:
+    run = OptimizerRun(optimizer=OptimizerSettings())
+    assert run.explain(depth="full") == (
+        f"OptimizerRun"
+        f"  schema={run._artifact_schema_hash[:5]}"
+        f"  fields={run._artifact_hash[:5]}\n"
+        "  optimizer  OptimizerSettings\n"
+        '    name   "adamw"\n'
+        "    beta1  0.9"
     )
 
 
