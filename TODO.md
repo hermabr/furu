@@ -26,7 +26,7 @@
 - [x] lazy saving/loading
 - [x] let users register handlers/codecs
 - [ ] more built-in codecs (think hard about which)
-- [x] infer codec automatically from bare type hints (`save_as` and `Annotated[T, Codec]` already work)
+- [x] infer codec automatically from bare type hints (`ref` and `Annotated[T, Codec]` already work)
 
 ## Storage
 - [x] per-object `_storage_path` override (same pattern as executor)

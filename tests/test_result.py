@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Callable
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated, Any, ClassVar, cast
@@ -15,15 +15,15 @@ from furu import Spec
 from furu.storage._layout import data_dir_in, result_dir_in, result_manifest_path_in
 from furu._declared_types import child_declared_type
 from furu.result.bundle import (
+    SavedResultBundle,
     _save_result_bundle as _save_result_bundle_impl,
     load_result_bundle as load_result_bundle_impl,
 )
-from furu.result.lazy import LazyResult
 from furu.result.codec import (
+    Codec,
+    CodecMeta,
     NumpyNpyCodec,
     PolarsParquetCodec,
-    ResultCodec,
-    ResultCodecMeta,
 )
 
 np = pytest.importorskip("numpy")
@@ -35,8 +35,8 @@ def _save_result_bundle(
     bundle_dir: Path,
     *,
     declared_type: object = Any,
-    result_codecs: tuple[type[ResultCodec], ...],
-) -> bool:
+    result_codecs: tuple[type[Codec], ...],
+) -> SavedResultBundle:
     return _save_result_bundle_impl(
         value,
         bundle_dir,
@@ -46,10 +46,11 @@ def _save_result_bundle(
     )
 
 
-def load_result_bundle(bundle_dir: Path) -> object:
+def load_result_bundle(bundle_dir: Path, *, declared_type: object = Any) -> object:
     return load_result_bundle_impl(
         bundle_dir,
         data_dir=data_dir_in(bundle_dir.parent),
+        declared_type=declared_type,
     )
 
 
@@ -57,10 +58,10 @@ _CHILD_DECLARED_TYPE_NAMESPACE: dict[str, object] = {
     "Annotated": Annotated,
     "Any": Any,
     "Ellipsis": Ellipsis,
-    "LazyResult": LazyResult,
     "NumpyNpyCodec": NumpyNpyCodec,
     "Path": Path,
-    "ResultCodec": ResultCodec,
+    "Codec": Codec,
+    "Ref": furu.Ref,
     "bool": bool,
     "dict": dict,
     "float": float,
@@ -284,7 +285,7 @@ class _CountingValue:
         self.value = value
 
 
-class _CountingCodec(ResultCodec[_CountingValue]):
+class _CountingCodec(Codec[_CountingValue]):
     auto_register: ClassVar[bool] = False
     dump_calls: ClassVar[int] = 0
     load_calls: ClassVar[int] = 0
@@ -293,62 +294,54 @@ class _CountingCodec(ResultCodec[_CountingValue]):
     def matches(cls, value: object) -> bool:
         return isinstance(value, _CountingValue)
 
-    @classmethod
-    def dump(
-        cls,
+    def save(
+        self,
         value: _CountingValue,
-        *,
         artifact_dir: Path,
-        dump_data_path: Callable[[Path], str],
-    ) -> None:
-        cls.dump_calls += 1
+    ) -> Mapping[str, object]:
+        type(self).dump_calls += 1
         artifact_dir.joinpath("value.txt").write_text(
             str(value.value),
             encoding="utf-8",
         )
+        return {}
 
-    @classmethod
     def load(
-        cls,
-        *,
+        self,
+        metadata: Mapping[str, object],
         artifact_dir: Path,
-        load_data_path: Callable[[str], Path],
     ) -> _CountingValue:
-        cls.load_calls += 1
+        type(self).load_calls += 1
         return _CountingValue(
             int(artifact_dir.joinpath("value.txt").read_text(encoding="utf-8"))
         )
 
 
-class _OtherCountingCodec(ResultCodec[_CountingValue]):
+class _OtherCountingCodec(Codec[_CountingValue]):
     auto_register: ClassVar[bool] = False
 
     @classmethod
     def matches(cls, value: object) -> bool:
         return isinstance(value, _CountingValue)
 
-    @classmethod
-    def dump(
-        cls,
+    def save(
+        self,
         value: _CountingValue,
-        *,
         artifact_dir: Path,
-        dump_data_path: Callable[[Path], str],
-    ) -> None:
+    ) -> Mapping[str, object]:
         artifact_dir.joinpath("other.txt").write_text("x", encoding="utf-8")
+        return {}
 
-    @classmethod
     def load(
-        cls,
-        *,
+        self,
+        metadata: Mapping[str, object],
         artifact_dir: Path,
-        load_data_path: Callable[[str], Path],
     ) -> _CountingValue:
         artifact_dir.joinpath("other.txt").read_text(encoding="utf-8")
         return _CountingValue(0)
 
 
-class _CustomNumpyCodec(ResultCodec[Any]):
+class _CustomNumpyCodec(Codec[Any]):
     auto_register: ClassVar[bool] = False
     file_name: ClassVar[str] = "custom.npy"
 
@@ -356,24 +349,20 @@ class _CustomNumpyCodec(ResultCodec[Any]):
     def matches(cls, value: object) -> bool:
         return isinstance(value, np.ndarray)
 
-    @classmethod
-    def dump(
-        cls,
+    def save(
+        self,
         value: Any,
-        *,
         artifact_dir: Path,
-        dump_data_path: Callable[[Path], str],
-    ) -> None:
-        np.save(artifact_dir / cls.file_name, value, allow_pickle=False)
+    ) -> Mapping[str, object]:
+        np.save(artifact_dir / type(self).file_name, value, allow_pickle=False)
+        return {}
 
-    @classmethod
     def load(
-        cls,
-        *,
+        self,
+        metadata: Mapping[str, object],
         artifact_dir: Path,
-        load_data_path: Callable[[str], Path],
     ) -> Any:
-        return np.load(artifact_dir / cls.file_name, allow_pickle=False)
+        return np.load(artifact_dir / type(self).file_name, allow_pickle=False)
 
 
 class _RegistryNumpyCodec(_CustomNumpyCodec):
@@ -386,62 +375,54 @@ class _AutoRegisteredValue:
         self.value = value
 
 
-class _AutoRegisteredValueCodec(ResultCodec[_AutoRegisteredValue]):
+class _AutoRegisteredValueCodec(Codec[_AutoRegisteredValue]):
     @classmethod
     def matches(cls, value: object) -> bool:
         return isinstance(value, _AutoRegisteredValue)
 
-    @classmethod
-    def dump(
-        cls,
+    def save(
+        self,
         value: _AutoRegisteredValue,
-        *,
         artifact_dir: Path,
-        dump_data_path: Callable[[Path], str],
-    ) -> None:
+    ) -> Mapping[str, object]:
         artifact_dir.joinpath("auto.txt").write_text(
             str(value.value),
             encoding="utf-8",
         )
+        return {}
 
-    @classmethod
     def load(
-        cls,
-        *,
+        self,
+        metadata: Mapping[str, object],
         artifact_dir: Path,
-        load_data_path: Callable[[str], Path],
     ) -> _AutoRegisteredValue:
         return _AutoRegisteredValue(
             int(artifact_dir.joinpath("auto.txt").read_text(encoding="utf-8"))
         )
 
 
-class _CoreRegistryAutoValueCodec(ResultCodec[_AutoRegisteredValue]):
+class _CoreRegistryAutoValueCodec(Codec[_AutoRegisteredValue]):
     auto_register: ClassVar[bool] = False
 
     @classmethod
     def matches(cls, value: object) -> bool:
         return isinstance(value, _AutoRegisteredValue)
 
-    @classmethod
-    def dump(
-        cls,
+    def save(
+        self,
         value: _AutoRegisteredValue,
-        *,
         artifact_dir: Path,
-        dump_data_path: Callable[[Path], str],
-    ) -> None:
+    ) -> Mapping[str, object]:
         artifact_dir.joinpath("registry.txt").write_text(
             str(value.value),
             encoding="utf-8",
         )
+        return {}
 
-    @classmethod
     def load(
-        cls,
-        *,
+        self,
+        metadata: Mapping[str, object],
         artifact_dir: Path,
-        load_data_path: Callable[[str], Path],
     ) -> _AutoRegisteredValue:
         return _AutoRegisteredValue(
             int(artifact_dir.joinpath("registry.txt").read_text(encoding="utf-8"))
@@ -452,31 +433,27 @@ class _AutoRegisteredArray(np.ndarray):
     pass
 
 
-class _AutoRegisteredArrayCodec(ResultCodec[Any]):
+class _AutoRegisteredArrayCodec(Codec[Any]):
     @classmethod
     def matches(cls, value: object) -> bool:
         return isinstance(value, _AutoRegisteredArray)
 
-    @classmethod
-    def dump(
-        cls,
+    def save(
+        self,
         value: Any,
-        *,
         artifact_dir: Path,
-        dump_data_path: Callable[[Path], str],
-    ) -> None:
+    ) -> Mapping[str, object]:
         np.save(
             artifact_dir / "auto.npy",
             value.view(np.ndarray),
             allow_pickle=False,
         )
+        return {}
 
-    @classmethod
     def load(
-        cls,
-        *,
+        self,
+        metadata: Mapping[str, object],
         artifact_dir: Path,
-        load_data_path: Callable[[str], Path],
     ) -> Any:
         return np.load(artifact_dir / "auto.npy", allow_pickle=False)
 
@@ -485,29 +462,25 @@ class _OptOutRegisteredValue:
     pass
 
 
-class _OptOutRegisteredValueCodec(ResultCodec[_OptOutRegisteredValue]):
+class _OptOutRegisteredValueCodec(Codec[_OptOutRegisteredValue]):
     auto_register: ClassVar[bool] = False
 
     @classmethod
     def matches(cls, value: object) -> bool:
         return isinstance(value, _OptOutRegisteredValue)
 
-    @classmethod
-    def dump(
-        cls,
+    def save(
+        self,
         value: _OptOutRegisteredValue,
-        *,
         artifact_dir: Path,
-        dump_data_path: Callable[[Path], str],
-    ) -> None:
+    ) -> Mapping[str, object]:
         artifact_dir.joinpath("manual.txt").write_text("", encoding="utf-8")
+        return {}
 
-    @classmethod
     def load(
-        cls,
-        *,
+        self,
+        metadata: Mapping[str, object],
         artifact_dir: Path,
-        load_data_path: Callable[[str], Path],
     ) -> _OptOutRegisteredValue:
         artifact_dir.joinpath("manual.txt").read_text(encoding="utf-8")
         return _OptOutRegisteredValue()
@@ -518,41 +491,29 @@ class _DataDirPathValue:
         self.path = path
 
 
-class _DataDirPathCodec(ResultCodec[_DataDirPathValue]):
+class _DataDirPathCodec(Codec[_DataDirPathValue]):
     @classmethod
     def matches(cls, value: object) -> bool:
         return isinstance(value, _DataDirPathValue)
 
-    @classmethod
-    def dump(
-        cls,
+    def save(
+        self,
         value: _DataDirPathValue,
-        *,
         artifact_dir: Path,
-        dump_data_path: Callable[[Path], str],
-    ) -> None:
-        artifact_dir.joinpath("path.txt").write_text(
-            dump_data_path(value.path),
-            encoding="utf-8",
-        )
+    ) -> Mapping[str, object]:
+        return {"path": value.path}
 
-    @classmethod
     def load(
-        cls,
-        *,
+        self,
+        metadata: Mapping[str, object],
         artifact_dir: Path,
-        load_data_path: Callable[[str], Path],
     ) -> _DataDirPathValue:
-        return _DataDirPathValue(
-            load_data_path(
-                artifact_dir.joinpath("path.txt").read_text(encoding="utf-8"),
-            )
-        )
+        return _DataDirPathValue(cast(Path, metadata["path"]))
 
 
 class RegistryAutoRegisteredValueResult(Spec[_AutoRegisteredValue]):
     @property
-    def result_codecs(self) -> tuple[type[ResultCodec], ...]:
+    def result_codecs(self) -> tuple[type[Codec], ...]:
         return (_CoreRegistryAutoValueCodec,)
 
     def create(self) -> _AutoRegisteredValue:
@@ -572,19 +533,19 @@ def test_codec_id_is_derived_from_class_identity() -> None:
     )
 
 
-def test_result_codec_meta_find_codec_uses_result_codecs() -> None:
+def test_codec_meta_find_codec_uses_result_codecs() -> None:
     first = (_CountingCodec,)
     second = (_CountingCodec, _OtherCountingCodec)
 
-    assert ResultCodecMeta.find_codec(_CountingValue(1), ()) is None
-    assert ResultCodecMeta.find_codec(_CountingValue(1), first) is _CountingCodec
+    assert CodecMeta.find_codec(_CountingValue(1), ()) is None
+    assert CodecMeta.find_codec(_CountingValue(1), first) is _CountingCodec
     with pytest.raises(TypeError, match="result codecs matched multiple codecs"):
-        ResultCodecMeta.find_codec(_CountingValue(1), second)
+        CodecMeta.find_codec(_CountingValue(1), second)
 
 
 def test_user_defined_codec_is_auto_registered(tmp_path: Path) -> None:
     assert (
-        ResultCodecMeta.find_codec(_AutoRegisteredValue(1), ())
+        CodecMeta.find_codec(_AutoRegisteredValue(1), ())
         is _AutoRegisteredValueCodec
     )
 
@@ -606,7 +567,7 @@ def test_user_defined_codec_is_auto_registered(tmp_path: Path) -> None:
 def test_auto_register_false_opts_out_of_auto_registered_codecs(
     tmp_path: Path,
 ) -> None:
-    assert ResultCodecMeta.find_codec(_OptOutRegisteredValue(), ()) is None
+    assert CodecMeta.find_codec(_OptOutRegisteredValue(), ()) is None
 
     bundle_dir = tmp_path / "bundle"
     _save_result_bundle(
@@ -667,35 +628,31 @@ def test_codec_defined_after_default_codec_layers_cache_is_auto_registered() -> 
     class LateAutoRegisteredValue:
         pass
 
-    assert ResultCodecMeta.find_codec(LateAutoRegisteredValue(), ()) is None
+    assert CodecMeta.find_codec(LateAutoRegisteredValue(), ()) is None
 
-    class LateAutoRegisteredCodec(ResultCodec[LateAutoRegisteredValue]):
+    class LateAutoRegisteredCodec(Codec[LateAutoRegisteredValue]):
         @classmethod
         def matches(cls, value: object) -> bool:
             return isinstance(value, LateAutoRegisteredValue)
 
-        @classmethod
-        def dump(
-            cls,
+        def save(
+            self,
             value: LateAutoRegisteredValue,
-            *,
             artifact_dir: Path,
-            dump_data_path: Callable[[Path], str],
-        ) -> None:
+        ) -> Mapping[str, object]:
             artifact_dir.joinpath("late.txt").write_text("", encoding="utf-8")
+            return {}
 
-        @classmethod
         def load(
-            cls,
-            *,
+            self,
+            metadata: Mapping[str, object],
             artifact_dir: Path,
-            load_data_path: Callable[[str], Path],
         ) -> LateAutoRegisteredValue:
             artifact_dir.joinpath("late.txt").read_text(encoding="utf-8")
             return LateAutoRegisteredValue()
 
     assert (
-        ResultCodecMeta.find_codec(LateAutoRegisteredValue(), ())
+        CodecMeta.find_codec(LateAutoRegisteredValue(), ())
         is LateAutoRegisteredCodec
     )
 
@@ -707,40 +664,36 @@ def test_explicit_registry_sees_later_auto_registered_codec() -> None:
     result_codecs = (_CountingCodec,)
 
     assert (
-        ResultCodecMeta.find_codec(LateExplicitRegistryAutoValue(), result_codecs)
+        CodecMeta.find_codec(LateExplicitRegistryAutoValue(), result_codecs)
         is None
     )
 
-    class LateExplicitRegistryAutoCodec(ResultCodec[LateExplicitRegistryAutoValue]):
+    class LateExplicitRegistryAutoCodec(Codec[LateExplicitRegistryAutoValue]):
         @classmethod
         def matches(cls, value: object) -> bool:
             return isinstance(value, LateExplicitRegistryAutoValue)
 
-        @classmethod
-        def dump(
-            cls,
+        def save(
+            self,
             value: LateExplicitRegistryAutoValue,
-            *,
             artifact_dir: Path,
-            dump_data_path: Callable[[Path], str],
-        ) -> None:
+        ) -> Mapping[str, object]:
             artifact_dir.joinpath("late-explicit.txt").write_text(
                 "",
                 encoding="utf-8",
             )
+            return {}
 
-        @classmethod
         def load(
-            cls,
-            *,
+            self,
+            metadata: Mapping[str, object],
             artifact_dir: Path,
-            load_data_path: Callable[[str], Path],
         ) -> LateExplicitRegistryAutoValue:
             artifact_dir.joinpath("late-explicit.txt").read_text(encoding="utf-8")
             return LateExplicitRegistryAutoValue()
 
     assert (
-        ResultCodecMeta.find_codec(LateExplicitRegistryAutoValue(), result_codecs)
+        CodecMeta.find_codec(LateExplicitRegistryAutoValue(), result_codecs)
         is LateExplicitRegistryAutoCodec
     )
 
@@ -749,58 +702,50 @@ def test_auto_registered_codecs_must_not_be_ambiguous() -> None:
     class AutoAmbiguousValue:
         pass
 
-    class FirstAutoAmbiguousCodec(ResultCodec[AutoAmbiguousValue]):
+    class FirstAutoAmbiguousCodec(Codec[AutoAmbiguousValue]):
         @classmethod
         def matches(cls, value: object) -> bool:
             return isinstance(value, AutoAmbiguousValue)
 
-        @classmethod
-        def dump(
-            cls,
+        def save(
+            self,
             value: AutoAmbiguousValue,
-            *,
             artifact_dir: Path,
-            dump_data_path: Callable[[Path], str],
-        ) -> None:
+        ) -> Mapping[str, object]:
             artifact_dir.joinpath("first.txt").write_text("", encoding="utf-8")
+            return {}
 
-        @classmethod
         def load(
-            cls,
-            *,
+            self,
+            metadata: Mapping[str, object],
             artifact_dir: Path,
-            load_data_path: Callable[[str], Path],
         ) -> AutoAmbiguousValue:
             artifact_dir.joinpath("first.txt").read_text(encoding="utf-8")
             return AutoAmbiguousValue()
 
-    class SecondAutoAmbiguousCodec(ResultCodec[AutoAmbiguousValue]):
+    class SecondAutoAmbiguousCodec(Codec[AutoAmbiguousValue]):
         @classmethod
         def matches(cls, value: object) -> bool:
             return isinstance(value, AutoAmbiguousValue)
 
-        @classmethod
-        def dump(
-            cls,
+        def save(
+            self,
             value: AutoAmbiguousValue,
-            *,
             artifact_dir: Path,
-            dump_data_path: Callable[[Path], str],
-        ) -> None:
+        ) -> Mapping[str, object]:
             artifact_dir.joinpath("second.txt").write_text("", encoding="utf-8")
+            return {}
 
-        @classmethod
         def load(
-            cls,
-            *,
+            self,
+            metadata: Mapping[str, object],
             artifact_dir: Path,
-            load_data_path: Callable[[str], Path],
         ) -> AutoAmbiguousValue:
             artifact_dir.joinpath("second.txt").read_text(encoding="utf-8")
             return AutoAmbiguousValue()
 
     with pytest.raises(TypeError) as exc_info:
-        ResultCodecMeta.find_codec(AutoAmbiguousValue(), ())
+        CodecMeta.find_codec(AutoAmbiguousValue(), ())
 
     message = str(exc_info.value)
     assert "auto-registered codec registry matched multiple codecs" in message
@@ -903,7 +848,7 @@ class StrictAnnotatedArrayResult(Spec[StrictAnnotatedArrayOutput]):
         return StrictAnnotatedArrayOutput(weights=np.arange(3, dtype=np.int64))
 
 
-def test_annotated_codec_selects_external_artifact() -> None:
+def test_annotated_codec_selects_artifact() -> None:
     obj = AnnotatedArrayResult()
     loaded = obj.create()
 
@@ -921,7 +866,7 @@ def test_generic_furu_base_with_annotated_result_codec_is_rejected() -> None:
         obj.create()
 
 
-def test_strict_pydantic_annotated_codec_selects_external_artifact() -> None:
+def test_strict_pydantic_annotated_codec_selects_artifact() -> None:
     obj = StrictAnnotatedArrayResult()
     loaded = obj.create()
 
@@ -937,30 +882,28 @@ def test_strict_pydantic_annotated_codec_selects_external_artifact() -> None:
 
 
 @dataclass(frozen=True)
-class SaveAsOutput:
-    weights: Any
+class RefOutput:
+    weights: furu.Ref[np.ndarray[Any, Any]]
 
 
-class SaveAsArrayResult(Spec[SaveAsOutput]):
-    def create(self) -> SaveAsOutput:
-        return SaveAsOutput(weights=furu.save_as(np.arange(4), codec=NumpyNpyCodec))
+class RefArrayResult(Spec[RefOutput]):
+    def create(self) -> RefOutput:
+        return RefOutput(weights=furu.ref(np.arange(4), codec=NumpyNpyCodec))
 
 
 @dataclass(frozen=True)
-class LazySaveAsOutput:
-    weights: LazyResult[Any]
+class InvalidRefOutput:
+    weights: furu.Ref[np.ndarray[Any, Any]]
 
 
-class LazySaveAsArrayResult(Spec[LazySaveAsOutput]):
-    def create(self) -> LazySaveAsOutput:
-        return LazySaveAsOutput(
-            weights=LazyResult(furu.save_as(np.arange(4), codec=NumpyNpyCodec))
-        )
+class InvalidRefArrayResult(Spec[InvalidRefOutput]):
+    def create(self) -> InvalidRefOutput:
+        return InvalidRefOutput(weights=object())  # ty: ignore[invalid-argument-type]
 
 
 class DataDirPathResult(Spec[dict[str, _DataDirPathValue]]):
     @property
-    def result_codecs(self) -> tuple[type[ResultCodec], ...]:
+    def result_codecs(self) -> tuple[type[Codec], ...]:
         return (_DataDirPathCodec,)
 
     def create(self) -> dict[str, _DataDirPathValue]:
@@ -969,69 +912,53 @@ class DataDirPathResult(Spec[dict[str, _DataDirPathValue]]):
         value = _DataDirPathValue(path)
         return {
             "first": value,
-            "second": furu.save_as(value, codec=_DataDirPathCodec),
+            "second": value,
         }
 
 
-def test_save_as_selects_codec_and_does_not_leak_wrapper() -> None:
-    obj = SaveAsArrayResult()
+def test_ref_selects_codec_and_rebinds_after_publish() -> None:
+    obj = RefArrayResult()
     loaded = obj.create()
 
-    assert isinstance(loaded, SaveAsOutput)
-    assert np.array_equal(loaded.weights, np.arange(4))
-    assert type(loaded.weights).__name__ != "_SaveAs"
-
-    loaded_again = obj.create()
-    assert isinstance(loaded_again, SaveAsOutput)
-    assert np.array_equal(loaded_again.weights, np.arange(4))
-
-
-def test_save_as_inside_lazy_result_does_not_leak_wrapper() -> None:
-    obj = LazySaveAsArrayResult()
-    loaded = obj.create()
-
-    assert isinstance(loaded, LazySaveAsOutput)
-    assert isinstance(loaded.weights, LazyResult)
-    assert loaded.weights.is_loaded
+    assert isinstance(loaded, RefOutput)
+    assert isinstance(loaded.weights, furu.Ref)
+    assert not loaded.weights.is_loaded
+    assert loaded.weights.path == (
+        result_dir_in(obj._base_dir) / "artifacts" / "weights"
+    ).resolve()
     assert np.array_equal(loaded.weights.load(), np.arange(4))
-    assert type(loaded.weights.load()).__name__ != "_SaveAs"
 
     loaded_again = obj.create()
-    assert isinstance(loaded_again, LazySaveAsOutput)
-    assert isinstance(loaded_again.weights, LazyResult)
+    assert isinstance(loaded_again, RefOutput)
+    assert isinstance(loaded_again.weights, furu.Ref)
     assert not loaded_again.weights.is_loaded
     assert np.array_equal(loaded_again.weights.load(), np.arange(4))
-    assert type(loaded_again.weights.load()).__name__ != "_SaveAs"
 
 
-@dataclass(frozen=True)
-class ConflictingSaveAsOutput:
-    weights: Annotated[Any, NumpyNpyCodec]
+def test_ref_field_rejects_bare_value() -> None:
+    with pytest.raises(TypeError, match="furu.ref"):
+        InvalidRefArrayResult().create()
 
 
-class ConflictingSaveAsResult(Spec[ConflictingSaveAsOutput]):
-    def create(self) -> ConflictingSaveAsOutput:
-        return ConflictingSaveAsOutput(
-            weights=furu.save_as(np.arange(4), codec=_OtherCountingCodec)
-        )
-
-
-def test_save_as_conflicts_with_annotated_codec() -> None:
-    with pytest.raises(TypeError, match="Conflicting codecs"):
-        ConflictingSaveAsResult().create()
+def test_ref_requires_resolvable_codec_at_call_site() -> None:
+    with pytest.raises(TypeError, match="explicit codec"):
+        furu.ref([1, 2, 3])
 
 
 def test_data_dir_result_codec_round_trips_shared_data_dir_path() -> None:
     obj = DataDirPathResult()
     loaded = obj.create()
     data_path = obj.directory.data / "data.zarr"
-    artifacts_dir = result_dir_in(obj._base_dir) / "artifacts"
 
     assert loaded["first"].path.resolve() == data_path.resolve()
     assert loaded["second"].path.resolve() == data_path.resolve()
-    assert (artifacts_dir / "first" / "path.txt").read_text() == "data.zarr"
-    assert (artifacts_dir / "second" / "path.txt").read_text() == "data.zarr"
-    assert not (artifacts_dir / "first" / "data.zarr").exists()
+    manifest = json.loads(result_manifest_path_in(obj._base_dir).read_text())
+    assert manifest["first"]["$furu"]["metadata"]["path"] == {
+        "$furu": {"|kind": "data-path", "path": "data.zarr"}
+    }
+    assert manifest["second"]["$furu"]["metadata"]["path"] == {
+        "$furu": {"|kind": "data-path", "path": "data.zarr"}
+    }
 
     loaded_again = obj.load_existing()
 
@@ -1049,27 +976,33 @@ def test_data_dir_result_codec_rejects_load_path_outside_data_dir(
         json.dumps(
             {
                 "$furu": {
-                    "|kind": "external",
+                    "|kind": "artifact",
                     "codec": _DataDirPathCodec._codec_id(),
                     "path": "artifacts/root",
+                    "metadata": {
+                        "path": {
+                            "$furu": {"|kind": "data-path", "path": "/tmp/outside"}
+                        }
+                    },
                 }
             }
         ),
         encoding="utf-8",
     )
 
-    artifact_dir.joinpath("path.txt").write_text("/tmp/outside", encoding="utf-8")
     with pytest.raises(ValueError, match="must be relative"):
         load_result_bundle(result_dir)
 
-    artifact_dir.joinpath("path.txt").write_text("../outside", encoding="utf-8")
+    manifest = json.loads((result_dir / "manifest.json").read_text(encoding="utf-8"))
+    manifest["$furu"]["metadata"]["path"]["$furu"]["path"] = "../outside"
+    (result_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     with pytest.raises(ValueError, match="escapes data dir"):
         load_result_bundle(result_dir)
 
 
 class RegistryCountingResult(Spec[_CountingValue]):
     @property
-    def result_codecs(self) -> tuple[type[ResultCodec], ...]:
+    def result_codecs(self) -> tuple[type[Codec], ...]:
         return (_CountingCodec,)
 
     def create(self) -> _CountingValue:
@@ -1078,7 +1011,7 @@ class RegistryCountingResult(Spec[_CountingValue]):
 
 class AmbiguousRegistryCountingResult(Spec[_CountingValue]):
     @property
-    def result_codecs(self) -> tuple[type[ResultCodec], ...]:
+    def result_codecs(self) -> tuple[type[Codec], ...]:
         return (_CountingCodec, _OtherCountingCodec)
 
     def create(self) -> _CountingValue:
@@ -1374,7 +1307,7 @@ class NumpyResult(Spec[dict[str, object]]):
 
 class RegistryNumpyResult(Spec[Any]):
     @property
-    def result_codecs(self) -> tuple[type[ResultCodec], ...]:
+    def result_codecs(self) -> tuple[type[Codec], ...]:
         return (_RegistryNumpyCodec,)
 
     def create(self) -> Any:
@@ -1383,14 +1316,12 @@ class RegistryNumpyResult(Spec[Any]):
 
 class _MemmapNumpyNpyCodec(NumpyNpyCodec):
     auto_register: ClassVar[bool] = False
-    reload_value_after_dump: ClassVar[bool] = True
+    reload_value_after_save: ClassVar[bool] = True
 
-    @classmethod
     def load(
-        cls,
-        *,
+        self,
+        metadata: Mapping[str, object],
         artifact_dir: Path,
-        load_data_path: Callable[[str], Path],
     ) -> np.ndarray[Any, Any]:
         return np.load(artifact_dir / "data.npy", allow_pickle=False, mmap_mode="r")
 
@@ -1413,7 +1344,7 @@ def test_numpy_array_round_trips() -> None:
     assert np.array_equal(weights, np.arange(10, dtype=np.float32))
 
     manifest = json.loads(result_manifest_path_in(obj._base_dir).read_text())
-    assert manifest["weights"]["$furu"]["|kind"] == "external"
+    assert manifest["weights"]["$furu"]["|kind"] == "artifact"
     assert manifest["weights"]["$furu"]["codec"] == (
         f"{NumpyNpyCodec.__module__}.{NumpyNpyCodec.__qualname__}"
     )
@@ -1435,7 +1366,7 @@ def test_result_codecs_take_priority_over_builtin_codec() -> None:
     assert manifest["$furu"]["codec"] == _RegistryNumpyCodec._codec_id()
 
 
-def test_codec_can_reload_value_after_dump_for_cache_miss_consistency() -> None:
+def test_codec_can_reload_value_after_save_for_cache_miss_consistency() -> None:
     obj = MemmapNumpyResult()
     expected_file = result_dir_in(obj._base_dir) / "artifacts" / "root" / "data.npy"
 
@@ -1468,7 +1399,7 @@ def test_polars_dataframe_round_trips() -> None:
     assert frame.equals(pl.DataFrame({"x": [1, 2, 3], "y": ["a", "b", "c"]}))
 
     manifest = json.loads(result_manifest_path_in(obj._base_dir).read_text())
-    assert manifest["frame"]["$furu"]["|kind"] == "external"
+    assert manifest["frame"]["$furu"]["|kind"] == "artifact"
     assert manifest["frame"]["$furu"]["codec"] == (
         f"{PolarsParquetCodec.__module__}.{PolarsParquetCodec.__qualname__}"
     )
@@ -1527,7 +1458,7 @@ def test_numpy_root_value_uses_root_artifact_dir(tmp_path) -> None:
 
     assert (bundle_dir / "artifacts" / "root" / "data.npy").exists()
     manifest = json.loads((bundle_dir / "manifest.json").read_text())
-    assert manifest["$furu"]["|kind"] == "external"
+    assert manifest["$furu"]["|kind"] == "artifact"
     assert manifest["$furu"]["path"] == "artifacts/root"
 
     loaded = load_result_bundle(bundle_dir)
@@ -1549,7 +1480,49 @@ class MixedResult(Spec[dict[str, object]]):
         }
 
 
-def test_mixed_dataclass_external_and_json_round_trip() -> None:
+@dataclass(frozen=True)
+class MixedRefOutput:
+    loss: float
+    weights: np.ndarray[Any, Any]
+    checkpoint: furu.Ref[np.ndarray[Any, Any]]
+
+
+class MixedRefResult(Spec[MixedRefOutput]):
+    def create(self) -> MixedRefOutput:
+        return MixedRefOutput(
+            loss=0.25,
+            weights=np.arange(3, dtype=np.float32),
+            checkpoint=furu.ref(np.arange(4, dtype=np.int64), codec=NumpyNpyCodec),
+        )
+
+
+def test_mixed_dataclass_artifact_ref_and_json_round_trip() -> None:
+    obj = MixedRefResult()
+    loaded = obj.create()
+
+    assert isinstance(loaded, MixedRefOutput)
+    assert loaded.loss == 0.25
+    assert np.array_equal(loaded.weights, np.arange(3, dtype=np.float32))
+    assert isinstance(loaded.checkpoint, furu.Ref)
+    assert np.array_equal(loaded.checkpoint.load(), np.arange(4, dtype=np.int64))
+
+    manifest = json.loads(result_manifest_path_in(obj._base_dir).read_text())
+    fields = manifest["$furu"]["|fields"]
+    assert fields["loss"] == 0.25
+    assert fields["weights"]["$furu"]["|kind"] == "artifact"
+    assert fields["checkpoint"]["$furu"]["|kind"] == "artifact"
+
+    loaded_again = obj.load_existing()
+    assert isinstance(loaded_again, MixedRefOutput)
+    assert np.array_equal(loaded_again.weights, np.arange(3, dtype=np.float32))
+    assert isinstance(loaded_again.checkpoint, furu.Ref)
+    assert not loaded_again.checkpoint.is_loaded
+    assert np.array_equal(
+        loaded_again.checkpoint.load(), np.arange(4, dtype=np.int64)
+    )
+
+
+def test_mixed_dataclass_artifact_and_json_round_trip() -> None:
     obj = MixedResult()
     loaded = obj.create()
 
@@ -1589,7 +1562,7 @@ def test_load_result_bundle_rejects_artifacts_path_escape(tmp_path) -> None:
         json.dumps(
             {
                 "$furu": {
-                    "|kind": "external",
+                    "|kind": "artifact",
                     "codec": f"{NumpyNpyCodec.__module__}.{NumpyNpyCodec.__qualname__}",
                     "path": "../../../etc/passwd",
                 }
@@ -1601,41 +1574,49 @@ def test_load_result_bundle_rejects_artifacts_path_escape(tmp_path) -> None:
         load_result_bundle(bundle_dir)
 
 
-def test_lazy_result_created_directly_is_loaded() -> None:
+def test_ref_created_directly_is_loaded() -> None:
     value = _CountingValue(7)
-    lazy = LazyResult(value)
+    ref = furu.ref(value, codec=_CountingCodec)
 
-    assert lazy.is_loaded
-    assert repr(lazy) == "LazyResult(_CountingValue)"
-    assert lazy.load() is value
+    assert ref.is_loaded
+    assert repr(ref) == "Ref(_CountingValue)"
+    assert ref.load() is value
     with pytest.raises(RuntimeError, match="only available after persistence"):
-        lazy.path
+        ref.path
 
 
-def test_root_lazy_result_defers_cache_read_and_memoizes(
-    tmp_path: Path,
-) -> None:
+def test_root_ref_defers_cache_read_and_memoizes(tmp_path: Path) -> None:
     bundle_dir = tmp_path / "bundle"
     result_codecs = (_CountingCodec,)
     _CountingCodec.dump_calls = 0
     _CountingCodec.load_calls = 0
 
-    _save_result_bundle(
-        LazyResult(_CountingValue(9)), bundle_dir, result_codecs=result_codecs
+    saved = _save_result_bundle(
+        furu.ref(_CountingValue(9), codec=_CountingCodec),
+        bundle_dir,
+        declared_type=furu.Ref[_CountingValue],
+        result_codecs=result_codecs,
     )
+    saved.rebind_refs(bundle_dir)
 
     assert _CountingCodec.dump_calls == 1
     assert _CountingCodec.load_calls == 0
     manifest = json.loads((bundle_dir / "manifest.json").read_text())
-    assert manifest == {"$furu": {"|kind": "lazy", "path": "lazy/root"}}
-    assert (bundle_dir / "lazy" / "root" / "manifest.json").exists()
+    assert manifest == {
+        "$furu": {
+            "|kind": "artifact",
+            "codec": _CountingCodec._codec_id(),
+            "path": "artifacts/root",
+            "metadata": {},
+        }
+    }
 
-    loaded = load_result_bundle(bundle_dir)
+    loaded = load_result_bundle(bundle_dir, declared_type=furu.Ref[_CountingValue])
 
-    assert isinstance(loaded, LazyResult)
+    assert isinstance(loaded, furu.Ref)
     assert not loaded.is_loaded
-    assert loaded.path == bundle_dir / "lazy" / "root"
-    assert repr(loaded) == "LazyResult(unloaded)"
+    assert loaded.path == (bundle_dir / "artifacts" / "root").resolve()
+    assert repr(loaded) == "Ref(unloaded)"
     assert _CountingCodec.load_calls == 0
 
     first = loaded.load()
@@ -1645,101 +1626,73 @@ def test_root_lazy_result_defers_cache_read_and_memoizes(
     assert first.value == 9
     assert second is first
     assert loaded.is_loaded
-    assert repr(loaded) == "LazyResult(_CountingValue)"
+    assert repr(loaded) == "Ref(_CountingValue)"
     assert _CountingCodec.load_calls == 1
 
 
-def test_lazy_result_uses_declared_inner_annotated_codec(tmp_path: Path) -> None:
+def test_ref_uses_declared_inner_annotated_codec(tmp_path: Path) -> None:
     bundle_dir = tmp_path / "bundle"
-    value = LazyResult(np.arange(4, dtype=np.int64))
+    value = furu.ref(np.arange(4, dtype=np.int64))
 
     _save_result_bundle(
         value,
         bundle_dir,
-        declared_type=LazyResult[Annotated[Any, NumpyNpyCodec]],
+        declared_type=furu.Ref[Annotated[Any, NumpyNpyCodec]],
         result_codecs=(),
     )
 
-    assert (bundle_dir / "lazy" / "root" / "artifacts" / "root" / "data.npy").exists()
-    manifest = json.loads((bundle_dir / "lazy" / "root" / "manifest.json").read_text())
-    assert manifest["$furu"]["|kind"] == "external"
+    assert (bundle_dir / "artifacts" / "root" / "data.npy").exists()
+    manifest = json.loads((bundle_dir / "manifest.json").read_text())
+    assert manifest["$furu"]["|kind"] == "artifact"
     assert manifest["$furu"]["codec"] == NumpyNpyCodec._codec_id()
 
 
-def test_nested_lazy_result_exposes_nested_persisted_path(tmp_path: Path) -> None:
+def test_nested_ref_exposes_persisted_path(tmp_path: Path) -> None:
     bundle_dir = tmp_path / "bundle"
     result_codecs = (_CountingCodec,)
-    value = {"outer": {"inner": LazyResult(_CountingValue(12))}}
+    value = {"outer": {"inner": furu.ref(_CountingValue(12), codec=_CountingCodec)}}
+    declared_type = dict[str, dict[str, furu.Ref[_CountingValue]]]
 
-    _save_result_bundle(value, bundle_dir, result_codecs=result_codecs)
-    loaded = load_result_bundle(bundle_dir)
+    saved = _save_result_bundle(
+        value,
+        bundle_dir,
+        declared_type=declared_type,
+        result_codecs=result_codecs,
+    )
+    saved.rebind_refs(bundle_dir)
+    loaded = load_result_bundle(bundle_dir, declared_type=declared_type)
 
     assert isinstance(loaded, dict)
     loaded_dict = cast(dict[str, Any], loaded)
     outer = cast(dict[str, Any], loaded_dict["outer"])
-    lazy = cast(LazyResult[_CountingValue], outer["inner"])
-    assert lazy.path == bundle_dir / "lazy" / "outer" / "inner"
-    assert lazy.path.joinpath("artifacts", "root", "value.txt").exists()
-    assert lazy.load().value == 12
+    ref = cast(furu.Ref[_CountingValue], outer["inner"])
+    assert ref.path == (bundle_dir / "artifacts" / "outer" / "inner").resolve()
+    assert ref.path.joinpath("value.txt").exists()
+    assert ref.load().value == 12
 
 
-def test_nested_lazy_result_round_trips_inside_supported_structures(
+def test_ref_and_eager_artifact_spellings_write_identical_bundles(
     tmp_path: Path,
 ) -> None:
-    bundle_dir = tmp_path / "bundle"
-    result_codecs = (_CountingCodec,)
-    _CountingCodec.load_calls = 0
-    value = {
-        "items": [
-            LazyResult(_CountingValue(1)),
-            {"inner": LazyResult((Path("x"), 2))},
-        ]
-    }
+    eager_dir = tmp_path / "eager"
+    ref_dir = tmp_path / "ref"
 
-    _save_result_bundle(value, bundle_dir, result_codecs=result_codecs)
-    loaded = load_result_bundle(bundle_dir)
-
-    assert isinstance(loaded, dict)
-    loaded_dict = cast(dict[str, Any], loaded)
-    items = loaded_dict["items"]
-    assert isinstance(items, list)
-    first = cast(LazyResult[_CountingValue], items[0])
-    second_container = cast(dict[str, Any], items[1])
-    second = cast(LazyResult[tuple[Path, int]], second_container["inner"])
-    assert isinstance(first, LazyResult)
-    assert isinstance(second, LazyResult)
-    assert not first.is_loaded
-    assert not second.is_loaded
-    assert _CountingCodec.load_calls == 0
-
-    assert first.load().value == 1
-    assert second.load() == (Path("x"), 2)
-    assert _CountingCodec.load_calls == 1
-
-
-def test_load_result_bundle_rejects_lazy_path_escape(tmp_path: Path) -> None:
-    bundle_dir = tmp_path / "bundle"
-    bundle_dir.mkdir()
-    (bundle_dir / "lazy").mkdir()
-    (bundle_dir / "manifest.json").write_text(
-        json.dumps({"$furu": {"|kind": "lazy", "path": "../outside"}}),
-        encoding="utf-8",
+    _save_result_bundle(
+        np.arange(4, dtype=np.int64),
+        eager_dir,
+        declared_type=np.ndarray[Any, Any],
+        result_codecs=(),
+    )
+    _save_result_bundle(
+        furu.ref(np.arange(4, dtype=np.int64), codec=NumpyNpyCodec),
+        ref_dir,
+        declared_type=furu.Ref[np.ndarray[Any, Any]],
+        result_codecs=(),
     )
 
-    with pytest.raises(ValueError, match="escapes"):
-        load_result_bundle(bundle_dir)
-
-
-def test_load_result_bundle_rejects_lazy_without_nested_manifest(
-    tmp_path: Path,
-) -> None:
-    bundle_dir = tmp_path / "bundle"
-    nested_dir = bundle_dir / "lazy" / "root"
-    nested_dir.mkdir(parents=True)
-    (bundle_dir / "manifest.json").write_text(
-        json.dumps({"$furu": {"|kind": "lazy", "path": "lazy/root"}}),
-        encoding="utf-8",
+    assert json.loads((eager_dir / "manifest.json").read_text()) == json.loads(
+        (ref_dir / "manifest.json").read_text()
     )
-
-    with pytest.raises(ValueError, match="nested manifest missing"):
-        load_result_bundle(bundle_dir)
+    assert (eager_dir / "artifacts" / "root" / "data.npy").read_bytes() == (
+        ref_dir / "artifacts" / "root" / "data.npy"
+    ).read_bytes()

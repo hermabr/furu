@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from abc import ABC, ABCMeta, abstractmethod
-from collections.abc import Callable
+from collections.abc import Mapping
 from functools import cache
 from pathlib import Path
 from threading import Lock
@@ -15,8 +15,8 @@ if TYPE_CHECKING:
 from furu.utils import fully_qualified_name
 
 
-class ResultCodecMeta(ABCMeta):
-    _auto_registered_codecs: list[type[ResultCodec]] = []
+class CodecMeta(ABCMeta):
+    _auto_registered_codecs: list[type[Codec]] = []
     _auto_registered_codecs_lock = Lock()
 
     def __init__(
@@ -27,9 +27,7 @@ class ResultCodecMeta(ABCMeta):
         **kwargs: Any,
     ) -> None:
         super().__init__(name, bases, namespace, **kwargs)
-        is_root_codec_class = not any(
-            isinstance(base, ResultCodecMeta) for base in bases
-        )
+        is_root_codec_class = not any(isinstance(base, CodecMeta) for base in bases)
         if is_root_codec_class:
             return
         if not namespace.get("auto_register", True):
@@ -38,13 +36,13 @@ class ResultCodecMeta(ABCMeta):
             return
 
         cls.auto_register = True
-        with ResultCodecMeta._auto_registered_codecs_lock:
-            ResultCodecMeta._auto_registered_codecs.append(cast(type[ResultCodec], cls))
+        with CodecMeta._auto_registered_codecs_lock:
+            CodecMeta._auto_registered_codecs.append(cast(type[Codec], cls))
 
-        ResultCodecMeta._default_codec_layers.cache_clear()
+        CodecMeta._default_codec_layers.cache_clear()
 
     @classmethod
-    def auto_registered_codecs(mcls) -> tuple[type[ResultCodec], ...]:
+    def auto_registered_codecs(mcls) -> tuple[type[Codec], ...]:
         with mcls._auto_registered_codecs_lock:
             return tuple(reversed(mcls._auto_registered_codecs))
 
@@ -52,7 +50,7 @@ class ResultCodecMeta(ABCMeta):
     @cache
     def _default_codec_layers(
         mcls,
-    ) -> tuple[tuple[type[ResultCodec], ...], tuple[type[ResultCodec], ...]]:
+    ) -> tuple[tuple[type[Codec], ...], tuple[type[Codec], ...]]:
         auto_registered_codecs = tuple(
             codec
             for codec in mcls.auto_registered_codecs()
@@ -69,8 +67,8 @@ class ResultCodecMeta(ABCMeta):
     def find_codec(
         mcls,
         value: object,
-        result_codecs: tuple[type[ResultCodec], ...],
-    ) -> type[ResultCodec] | None:
+        result_codecs: tuple[type[Codec], ...],
+    ) -> type[Codec] | None:
         auto_registered_codecs, built_in_codecs = mcls._default_codec_layers()
         if codec := _find_single_codec_match(
             value,
@@ -90,9 +88,9 @@ class ResultCodecMeta(ABCMeta):
         return None
 
 
-class ResultCodec[T](ABC, metaclass=ResultCodecMeta):
+class Codec[T](ABC, metaclass=CodecMeta):
     auto_register: ClassVar[bool] = True
-    reload_value_after_dump: ClassVar[bool] = False
+    reload_value_after_save: ClassVar[bool] = False
 
     @final
     @classmethod
@@ -108,29 +106,16 @@ class ResultCodec[T](ABC, metaclass=ResultCodecMeta):
     def matches(cls, value: object) -> bool:
         pass
 
-    @classmethod
     @abstractmethod
-    def dump(
-        cls,
-        value: T,
-        *,
-        artifact_dir: Path,
-        dump_data_path: Callable[[Path], str],
-    ) -> None:
+    def save(self, value: T, artifact_dir: Path) -> Mapping[str, object]:
         pass
 
-    @classmethod
     @abstractmethod
-    def load(
-        cls,
-        *,
-        artifact_dir: Path,
-        load_data_path: Callable[[str], Path],
-    ) -> T:
+    def load(self, metadata: Mapping[str, object], artifact_dir: Path) -> T:
         pass
 
 
-class PolarsParquetCodec(ResultCodec["pl.DataFrame"]):
+class PolarsParquetCodec(Codec["pl.DataFrame"]):
     auto_register: ClassVar[bool] = False
 
     @classmethod
@@ -143,29 +128,25 @@ class PolarsParquetCodec(ResultCodec["pl.DataFrame"]):
 
         return isinstance(value, pl.DataFrame)
 
-    @classmethod
-    def dump(
-        cls,
+    def save(
+        self,
         value: pl.DataFrame,
-        *,
         artifact_dir: Path,
-        dump_data_path: Callable[[Path], str],
-    ) -> None:
+    ) -> Mapping[str, object]:
         value.write_parquet(artifact_dir / "data.parquet")
+        return {}
 
-    @classmethod
     def load(
-        cls,
-        *,
+        self,
+        metadata: Mapping[str, object],
         artifact_dir: Path,
-        load_data_path: Callable[[str], Path],
     ) -> pl.DataFrame:
         import polars as pl
 
         return pl.read_parquet(artifact_dir / "data.parquet")
 
 
-class NumpyNpyCodec(ResultCodec["np.ndarray[Any, Any]"]):
+class NumpyNpyCodec(Codec["np.ndarray[Any, Any]"]):
     auto_register: ClassVar[bool] = False
 
     @classmethod
@@ -178,24 +159,20 @@ class NumpyNpyCodec(ResultCodec["np.ndarray[Any, Any]"]):
 
         return isinstance(value, np.ndarray)
 
-    @classmethod
-    def dump(
-        cls,
+    def save(
+        self,
         value: np.ndarray[Any, Any],
-        *,
         artifact_dir: Path,
-        dump_data_path: Callable[[Path], str],
-    ) -> None:
+    ) -> Mapping[str, object]:
         import numpy as np
 
         np.save(artifact_dir / "data.npy", value, allow_pickle=False)
+        return {}
 
-    @classmethod
     def load(
-        cls,
-        *,
+        self,
+        metadata: Mapping[str, object],
         artifact_dir: Path,
-        load_data_path: Callable[[str], Path],
     ) -> np.ndarray[Any, Any]:
         import numpy as np
 
@@ -204,11 +181,11 @@ class NumpyNpyCodec(ResultCodec["np.ndarray[Any, Any]"]):
 
 def _find_single_codec_match(
     value: object,
-    codecs: tuple[type[ResultCodec], ...],
+    codecs: tuple[type[Codec], ...],
     *,
     layer_name: str,
-) -> type[ResultCodec] | None:
-    matching_codec: type[ResultCodec] | None = None
+) -> type[Codec] | None:
+    matching_codec: type[Codec] | None = None
     for codec in codecs:
         if not codec.matches(value):
             continue
