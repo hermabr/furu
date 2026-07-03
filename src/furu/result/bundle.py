@@ -296,12 +296,10 @@ def _dump_artifact(
             f"Codec save() at {_value_path_display(value_path)} must return a "
             f"metadata mapping; got {type(codec_metadata).__name__!r}"
         )
-    encoded_metadata = cast(
-        dict[str, JsonValue],
-        _encode_codec_metadata_value(
-            dict(codec_metadata), data_dir=dump_state.data_dir, value_path=value_path
-        ),
+    encoded_metadata = _encode_codec_metadata_value(
+        dict(codec_metadata), data_dir=dump_state.data_dir, value_path=value_path
     )
+    assert isinstance(encoded_metadata, dict)
 
     if ref is not None:
         dump_state.ref_bindings.append(
@@ -415,8 +413,7 @@ def _decode_codec_metadata_value(node: JsonValue, *, data_dir: Path) -> object:
             }
         case list():
             return [
-                _decode_codec_metadata_value(child, data_dir=data_dir)
-                for child in node
+                _decode_codec_metadata_value(child, data_dir=data_dir) for child in node
             ]
         case _:
             return node

@@ -69,9 +69,7 @@ class Ref[T]:
             if self._value is _UNLOADED:
                 if self._metadata is None or self._artifact_directory is None:
                     raise RuntimeError("Ref has neither a value nor a stored artifact")
-                self._value = self._codec.load(
-                    self._metadata, self._artifact_directory
-                )
+                self._value = self._codec.load(self._metadata, self._artifact_directory)
             return cast(T, self._value)
 
 

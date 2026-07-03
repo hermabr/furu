@@ -520,8 +520,7 @@ def test_result_codec_meta_find_codec_uses_result_codecs() -> None:
 
 def test_user_defined_codec_is_auto_registered(tmp_path: Path) -> None:
     assert (
-        CodecMeta.find_codec(_AutoRegisteredValue(1), ())
-        is _AutoRegisteredValueCodec
+        CodecMeta.find_codec(_AutoRegisteredValue(1), ()) is _AutoRegisteredValueCodec
     )
 
     bundle_dir = tmp_path / "bundle"
@@ -625,8 +624,7 @@ def test_codec_defined_after_default_codec_layers_cache_is_auto_registered() -> 
             return LateAutoRegisteredValue()
 
     assert (
-        CodecMeta.find_codec(LateAutoRegisteredValue(), ())
-        is LateAutoRegisteredCodec
+        CodecMeta.find_codec(LateAutoRegisteredValue(), ()) is LateAutoRegisteredCodec
     )
 
 
@@ -636,10 +634,7 @@ def test_explicit_registry_sees_later_auto_registered_codec() -> None:
 
     result_codecs = (_CountingCodec,)
 
-    assert (
-        CodecMeta.find_codec(LateExplicitRegistryAutoValue(), result_codecs)
-        is None
-    )
+    assert CodecMeta.find_codec(LateExplicitRegistryAutoValue(), result_codecs) is None
 
     class LateExplicitRegistryAutoCodec(Codec[LateExplicitRegistryAutoValue]):
         @classmethod
@@ -660,9 +655,7 @@ def test_explicit_registry_sees_later_auto_registered_codec() -> None:
         def load(
             cls, metadata: Mapping[str, object], artifact_directory: Path
         ) -> LateExplicitRegistryAutoValue:
-            artifact_directory.joinpath("late-explicit.txt").read_text(
-                encoding="utf-8"
-            )
+            artifact_directory.joinpath("late-explicit.txt").read_text(encoding="utf-8")
             return LateExplicitRegistryAutoValue()
 
     assert (
@@ -883,9 +876,7 @@ class DataDirPathResult(Spec[dict[str, _DataDirPathValue]]):
         value = _DataDirPathValue(path)
         return {
             "first": value,
-            "second": cast(
-                _DataDirPathValue, furu.ref(value, codec=_DataDirPathCodec)
-            ),
+            "second": cast(_DataDirPathValue, furu.ref(value, codec=_DataDirPathCodec)),
         }
 
 
@@ -1604,9 +1595,7 @@ def test_root_ref_defers_cache_read_and_memoizes(
         }
     }
 
-    loaded = load_result_bundle(
-        bundle_dir, declared_type=Ref[_CountingValue]
-    )
+    loaded = load_result_bundle(bundle_dir, declared_type=Ref[_CountingValue])
 
     assert isinstance(loaded, Ref)
     assert repr(loaded) == "Ref(unloaded)"
