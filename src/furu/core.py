@@ -65,6 +65,7 @@ class Missing(Exception):
 
 
 SpecCreateMode: TypeAlias = Literal["single", "batched"] | None
+ExplainDepth: TypeAlias = int | Literal["full"]
 _FURU_CLASS_OPTIONS = frozenset({"max_workers"})
 _RESERVED_FIELD_NAMES = frozenset(
     {
@@ -234,21 +235,8 @@ class Spec[T](_FuruDataclassTransform, ABC):
         return "missing"
 
     @final
-    def explain(self) -> str:
-        spec_fields = fields(self)
-        lines = [
-            f"{type(self).__name__}"
-            f"  schema={self._artifact_schema_hash[:5]}"
-            f"  fields={self._artifact_hash[:5]}"
-        ]
-        if spec_fields:
-            width = max(len(field.name) for field in spec_fields)
-            lines.extend(
-                f"  {field.name:<{width}}  "
-                f"{_format_explain_value(getattr(self, field.name))}"
-                for field in spec_fields
-            )
-        return "\n".join(lines)
+    def explain(self, depth: ExplainDepth = 0) -> str:
+        return "\n".join(_explain_lines(self, depth=depth))
 
     @final
     def delete(self, mode: Literal["prompt", "force"] = "prompt") -> bool:
@@ -376,6 +364,29 @@ class Spec[T](_FuruDataclassTransform, ABC):
             + f"{self._artifact_schema_hash[:5]}:"
             + f"{self._artifact_hash[:5]}"
         )
+
+
+def _explain_lines(spec: Spec[Any], *, depth: ExplainDepth) -> list[str]:
+    spec_fields = fields(spec)
+    lines = [
+        f"{type(spec).__name__}"
+        f"  schema={spec._artifact_schema_hash[:5]}"
+        f"  fields={spec._artifact_hash[:5]}"
+    ]
+    if not spec_fields:
+        return lines
+    width = max(len(field.name) for field in spec_fields)
+    for field in spec_fields:
+        value = getattr(spec, field.name)
+        if depth != 0 and isinstance(value, Spec):
+            nested = _explain_lines(
+                value, depth="full" if depth == "full" else depth - 1
+            )
+            lines.append(f"  {field.name:<{width}}  {nested[0]}")
+            lines.extend(f"  {line}" for line in nested[1:])
+        else:
+            lines.append(f"  {field.name:<{width}}  {_format_explain_value(value)}")
+    return lines
 
 
 def _format_explain_value(value: object) -> str:

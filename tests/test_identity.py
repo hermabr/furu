@@ -39,6 +39,13 @@ class TrainRun(Spec[str]):
         return self.model
 
 
+class EvalRun(Spec[str]):
+    run: TrainRun
+
+    def create(self) -> str:
+        return self.run.model
+
+
 class NotedValue(Spec[str]):
     name: str
     note: Annotated[str, furu.skip_hash] = ""
@@ -89,6 +96,40 @@ def test_explain_renders_plain_dataclass_field() -> None:
         f"  fields={corpus._artifact_hash[:5]}\n"
         '  tokenizer  "bpe"\n'
         "  order      SubsetOrder(fraction=1.0, variant='global-random-subset')"
+    )
+
+
+def test_explain_full_depth_expands_nested_spec_block() -> None:
+    run = TrainRun(corpus=DiffCorpus())
+    assert run.explain(depth="full") == (
+        f"TrainRun"
+        f"  schema={run._artifact_schema_hash[:5]}"
+        f"  fields={run._artifact_hash[:5]}\n"
+        f"  corpus         DiffCorpus"
+        f"  schema={run.corpus._artifact_schema_hash[:5]}"
+        f"  fields={run.corpus._artifact_hash[:5]}\n"
+        '    tokenizer  "bpe"\n'
+        "    order      SubsetOrder(fraction=1.0, variant='global-random-subset')\n"
+        '  model          "100m"\n'
+        "  max_tokens     1_000_000_000\n"
+        "  learning_rate  0.0003"
+    )
+
+
+def test_explain_integer_depth_limits_expansion() -> None:
+    evaluation = EvalRun(run=TrainRun(corpus=DiffCorpus()))
+    run = evaluation.run
+    assert evaluation.explain(depth=1) == (
+        f"EvalRun"
+        f"  schema={evaluation._artifact_schema_hash[:5]}"
+        f"  fields={evaluation._artifact_hash[:5]}\n"
+        f"  run  TrainRun"
+        f"  schema={run._artifact_schema_hash[:5]}"
+        f"  fields={run._artifact_hash[:5]}\n"
+        f"    corpus         DiffCorpus · key={run.corpus._artifact_hash[:5]}…\n"
+        '    model          "100m"\n'
+        "    max_tokens     1_000_000_000\n"
+        "    learning_rate  0.0003"
     )
 
 
