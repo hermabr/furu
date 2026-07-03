@@ -291,10 +291,16 @@ def _dump_artifact(
     artifact_dir.mkdir(parents=True, exist_ok=False)
 
     codec_metadata = codec().save(value, artifact_dir)
-    encoded_metadata = _encode_codec_metadata(
-        codec_metadata,
-        data_dir=dump_state.data_dir,
-        value_path=value_path,
+    if not isinstance(codec_metadata, Mapping):
+        raise TypeError(
+            f"Codec save() at {_value_path_display(value_path)} must return a "
+            f"metadata mapping; got {type(codec_metadata).__name__!r}"
+        )
+    encoded_metadata = cast(
+        dict[str, JsonValue],
+        _encode_codec_metadata_value(
+            dict(codec_metadata), data_dir=dump_state.data_dir, value_path=value_path
+        ),
     )
 
     if ref is not None:
@@ -320,23 +326,6 @@ def _dump_artifact(
             "metadata": encoded_metadata,
         }
     }
-
-
-def _encode_codec_metadata(
-    metadata: object,
-    *,
-    data_dir: Path,
-    value_path: ValuePath,
-) -> dict[str, JsonValue]:
-    if not isinstance(metadata, Mapping):
-        raise TypeError(
-            f"Codec save() at {_value_path_display(value_path)} must return a "
-            f"metadata mapping; got {type(metadata).__name__!r}"
-        )
-    encoded = _encode_codec_metadata_value(
-        dict(metadata), data_dir=data_dir, value_path=value_path
-    )
-    return cast(dict[str, JsonValue], encoded)
 
 
 def _encode_codec_metadata_value(
