@@ -349,13 +349,25 @@ def _encode_codec_metadata_value(
                     "value": resolved.relative_to(data_dir_resolved).as_posix(),
                 }
             }
-        case list() | tuple():
+        case list():
             return [
                 _encode_codec_metadata_value(
                     item, data_dir=data_dir, value_path=value_path
                 )
                 for item in value
             ]
+        case tuple():
+            return {
+                WRAPPER_KEY: {
+                    KINDMARKER: "tuple",
+                    "items": [
+                        _encode_codec_metadata_value(
+                            item, data_dir=data_dir, value_path=value_path
+                        )
+                        for item in value
+                    ],
+                }
+            }
         case Mapping():
             out: dict[str, JsonValue] = {}
             for key, child in value.items():
@@ -399,13 +411,28 @@ def _decode_codec_metadata_value(node: JsonValue, *, data_dir: Path) -> object:
     match node:
         case dict() if WRAPPER_KEY in node:
             body = cast(dict[str, Any], node[WRAPPER_KEY])
-            rel_path = Path(body["value"])
-            if rel_path.is_absolute():
-                raise ValueError(f"codec metadata path must be relative: {rel_path}")
-            resolved_path = (data_dir.resolve() / rel_path).resolve()
-            if not resolved_path.is_relative_to(data_dir.resolve()):
-                raise ValueError(f"codec metadata path escapes data dir: {rel_path}")
-            return resolved_path
+            match body[KINDMARKER]:
+                case "path":
+                    rel_path = Path(body["value"])
+                    if rel_path.is_absolute():
+                        raise ValueError(
+                            f"codec metadata path must be relative: {rel_path}"
+                        )
+                    resolved_path = (data_dir.resolve() / rel_path).resolve()
+                    if not resolved_path.is_relative_to(data_dir.resolve()):
+                        raise ValueError(
+                            f"codec metadata path escapes data dir: {rel_path}"
+                        )
+                    return resolved_path
+                case "tuple":
+                    return tuple(
+                        _decode_codec_metadata_value(child, data_dir=data_dir)
+                        for child in body["items"]
+                    )
+                case _:
+                    raise ValueError(
+                        f"unknown codec metadata wrapper kind: {body[KINDMARKER]!r}"
+                    )
         case dict():
             return {
                 key: _decode_codec_metadata_value(child, data_dir=data_dir)

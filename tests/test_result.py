@@ -486,6 +486,31 @@ class _DataDirPathCodec(Codec[_DataDirPathValue]):
         return _DataDirPathValue(cast(Path, metadata["path"]))
 
 
+class _SequenceMetadataValue:
+    def __init__(self, metadata: Mapping[str, object] | None = None) -> None:
+        self.metadata = metadata or {}
+
+
+class _SequenceMetadataCodec(Codec[_SequenceMetadataValue]):
+    auto_register: ClassVar[bool] = False
+
+    @classmethod
+    def matches(cls, value: object) -> bool:
+        return isinstance(value, _SequenceMetadataValue)
+
+    @classmethod
+    def save(
+        cls, value: _SequenceMetadataValue, artifact_directory: Path
+    ) -> Mapping[str, object]:
+        return {"as_list": [1, 2], "as_tuple": (1, 2)}
+
+    @classmethod
+    def load(
+        cls, metadata: Mapping[str, object], artifact_directory: Path
+    ) -> _SequenceMetadataValue:
+        return _SequenceMetadataValue(metadata)
+
+
 class RegistryAutoRegisteredValueResult(Spec[_AutoRegisteredValue]):
     @property
     def result_codecs(self) -> tuple[type[Codec], ...]:
@@ -969,6 +994,26 @@ def test_codec_metadata_path_round_trips_shared_data_dir_path() -> None:
     # eagerly on read.
     assert isinstance(loaded_again["second"], _DataDirPathValue)
     assert loaded_again["second"].path == data_path.resolve()
+
+
+def test_codec_metadata_tuple_round_trips_distinct_from_list(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "bundle"
+    _save_result_bundle(
+        _SequenceMetadataValue(),
+        bundle_dir,
+        result_codecs=(_SequenceMetadataCodec,),
+    )
+
+    manifest = json.loads((bundle_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["$furu"]["metadata"] == {
+        "as_list": [1, 2],
+        "as_tuple": {"$furu": {"|kind": "tuple", "items": [1, 2]}},
+    }
+
+    loaded = load_result_bundle(bundle_dir)
+
+    assert isinstance(loaded, _SequenceMetadataValue)
+    assert loaded.metadata == {"as_list": [1, 2], "as_tuple": (1, 2)}
 
 
 def test_codec_metadata_path_outside_data_dir_raises_at_save(tmp_path: Path) -> None:
