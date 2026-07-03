@@ -16,12 +16,6 @@ _UNLOADED: Final = _Unloaded()
 
 
 class Ref[T]:
-    """Opt-in lazy handle to a codec-backed artifact.
-
-    Value-backed until its owning result is published, path-backed afterwards
-    and when rehydrated from a stored bundle. Build one with :func:`furu.ref`.
-    """
-
     _value: T | _Unloaded
     _codec: type[Codec[Any]]
     _metadata: Mapping[str, object] | None
