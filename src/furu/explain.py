@@ -18,7 +18,7 @@ def explain(spec: Spec[Any], *, depth: ExplainDepth = 0) -> str:
     header = (
         f"{type(spec).__name__}"
         f"  schema={spec._artifact_schema_hash[:5]}"
-        f"  fields={spec._artifact_hash[:5]}"
+        f"  key={spec._artifact_hash[:5]}…"
     )
     return "\n".join([header, *_rows(_children(spec) or [], depth)])
 
@@ -29,7 +29,7 @@ def _rows(children: list[tuple[str, object]], depth: ExplainDepth) -> list[str]:
     for name, value in children:
         from furu.core import Spec
 
-        if isinstance(value, Spec):
+        if isinstance(value, Spec) and depth == 0:
             rendered = [f"{type(value).__name__} · key={value._artifact_hash[:5]}…"]
         else:
             child_values = _children(value)
@@ -49,7 +49,9 @@ def _rows(children: list[tuple[str, object]], depth: ExplainDepth) -> list[str]:
                 rendered = [repr(value)]
             else:
                 rendered = [
-                    type(value).__name__,
+                    f"{type(value).__name__} · key={value._artifact_hash[:5]}…"
+                    if isinstance(value, Spec)
+                    else type(value).__name__,
                     *_rows(
                         child_values,
                         "full" if depth == "full" else depth - 1,

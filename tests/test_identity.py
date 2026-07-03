@@ -45,6 +45,27 @@ class TrainRun(Spec[str]):
         return self.model
 
 
+class SourceDataset(Spec[str]):
+    name: str = "source"
+
+    def create(self) -> str:
+        return self.name
+
+
+class DerivedCorpus(Spec[str]):
+    source: SourceDataset
+
+    def create(self) -> str:
+        return self.source.name
+
+
+class DeepTrainRun(Spec[str]):
+    corpus: DerivedCorpus
+
+    def create(self) -> str:
+        return self.corpus.source.name
+
+
 class OrderSweep(Spec[int]):
     orders: tuple[SubsetOrder, ...]
     tags: frozenset[str]
@@ -94,7 +115,7 @@ def test_explain_renders_nested_spec_block() -> None:
     assert run.explain() == (
         f"TrainRun"
         f"  schema={run._artifact_schema_hash[:5]}"
-        f"  fields={run._artifact_hash[:5]}\n"
+        f"  key={run._artifact_hash[:5]}…\n"
         f"  corpus         DiffCorpus · key={run.corpus._artifact_hash[:5]}…\n"
         '  model          "100m"\n'
         "  max_tokens     1_000_000_000\n"
@@ -107,7 +128,7 @@ def test_explain_renders_plain_dataclass_field() -> None:
     assert corpus.explain() == (
         f"DiffCorpus"
         f"  schema={corpus._artifact_schema_hash[:5]}"
-        f"  fields={corpus._artifact_hash[:5]}\n"
+        f"  key={corpus._artifact_hash[:5]}…\n"
         '  tokenizer  "bpe"\n'
         "  order      SubsetOrder(fraction=1.0, variant='global-random-subset')"
     )
@@ -118,7 +139,7 @@ def test_explain_full_depth_expands_nested_dataclass() -> None:
     assert corpus.explain(depth="full") == (
         f"DiffCorpus"
         f"  schema={corpus._artifact_schema_hash[:5]}"
-        f"  fields={corpus._artifact_hash[:5]}\n"
+        f"  key={corpus._artifact_hash[:5]}…\n"
         '  tokenizer  "bpe"\n'
         "  order      SubsetOrder\n"
         "    fraction  1.0\n"
@@ -126,9 +147,36 @@ def test_explain_full_depth_expands_nested_dataclass() -> None:
     )
 
 
-def test_explain_full_depth_keeps_dependencies_collapsed() -> None:
+def test_explain_full_depth_expands_nested_spec() -> None:
     run = TrainRun(corpus=DiffCorpus())
-    assert run.explain(depth="full") == run.explain()
+    assert run.explain(depth="full") == (
+        f"TrainRun"
+        f"  schema={run._artifact_schema_hash[:5]}"
+        f"  key={run._artifact_hash[:5]}…\n"
+        f"  corpus         DiffCorpus · key={run.corpus._artifact_hash[:5]}…\n"
+        '    tokenizer  "bpe"\n'
+        "    order      SubsetOrder\n"
+        "      fraction  1.0\n"
+        '      variant   "global-random-subset"\n'
+        '  model          "100m"\n'
+        "  max_tokens     1_000_000_000\n"
+        "  learning_rate  0.0003"
+    )
+
+
+def test_explain_full_depth_expands_deeply_nested_spec() -> None:
+    source = SourceDataset()
+    corpus = DerivedCorpus(source=source)
+    run = DeepTrainRun(corpus=corpus)
+
+    assert run.explain(depth="full") == (
+        f"DeepTrainRun"
+        f"  schema={run._artifact_schema_hash[:5]}"
+        f"  key={run._artifact_hash[:5]}…\n"
+        f"  corpus  DerivedCorpus · key={corpus._artifact_hash[:5]}…\n"
+        f"    source  SourceDataset · key={source._artifact_hash[:5]}…\n"
+        '      name  "source"'
+    )
 
 
 def test_explain_full_depth_expands_collections() -> None:
@@ -136,7 +184,7 @@ def test_explain_full_depth_expands_collections() -> None:
     assert sweep.explain(depth="full") == (
         f"OrderSweep"
         f"  schema={sweep._artifact_schema_hash[:5]}"
-        f"  fields={sweep._artifact_hash[:5]}\n"
+        f"  key={sweep._artifact_hash[:5]}…\n"
         "  orders  tuple\n"
         "    0  SubsetOrder\n"
         "      fraction  0.5\n"
@@ -152,7 +200,7 @@ def test_explain_integer_depth_limits_expansion() -> None:
     assert sweep.explain(depth=1) == (
         f"OrderSweep"
         f"  schema={sweep._artifact_schema_hash[:5]}"
-        f"  fields={sweep._artifact_hash[:5]}\n"
+        f"  key={sweep._artifact_hash[:5]}…\n"
         "  orders  tuple\n"
         "    0  SubsetOrder(fraction=0.5, variant='global-random-subset')\n"
         "  tags    frozenset\n"
@@ -166,7 +214,7 @@ def test_explain_full_depth_expands_pydantic_model() -> None:
     assert run.explain(depth="full") == (
         f"OptimizerRun"
         f"  schema={run._artifact_schema_hash[:5]}"
-        f"  fields={run._artifact_hash[:5]}\n"
+        f"  key={run._artifact_hash[:5]}…\n"
         "  optimizer  OptimizerSettings\n"
         '    name   "adamw"\n'
         "    beta1  0.9"
