@@ -88,7 +88,7 @@ def _validate_result_path_segment(
 def _dump_value(
     value: object,
     *,
-    declared_type: object = Any,
+    declared_type: object,
     value_path: ValuePath,
     bundle_dir: Path,
     result_codecs: tuple[type[Codec], ...],
@@ -436,7 +436,7 @@ def _decode_codec_metadata_value(node: JsonValue, *, data_dir: Path) -> object:
 def _load_value(
     node: JsonValue,
     *,
-    declared_type: object = Any,
+    declared_type: object,
     bundle_dir: Path,
     data_dir: Path,
     value_path: ValuePath,
@@ -670,7 +670,7 @@ def _save_result_bundle(
     value: object,
     bundle_dir: Path,
     *,
-    declared_type: object = Any,
+    declared_type: object,
     result_codecs: tuple[type[Codec], ...],
     data_dir: Path,
 ) -> _DumpState:
@@ -696,7 +696,7 @@ def load_result_bundle(
     bundle_dir: Path,
     *,
     data_dir: Path,
-    declared_type: object = Any,
+    declared_type: object,
 ) -> object:
     manifest_path = bundle_dir / MANIFEST_FILE_NAME
     raw = json.loads(manifest_path.read_text(encoding="utf-8"))
