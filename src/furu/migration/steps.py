@@ -42,11 +42,11 @@ class Rewrite:
 type MigrationStep = Renamed | Added | MovedFrom | Retyped | Rewrite
 
 
-class Stale(Exception):
+class Stale(RuntimeError):
     pass
 
 
-class MigrationError(Exception):
+class MigrationError(RuntimeError):
     pass
 
 
