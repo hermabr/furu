@@ -10,9 +10,9 @@ from typing import Any
 import pytest
 
 import furu
-import furu.migration.scanner as migration_scanner
+import furu.migration.resolution as migration_resolution
 from furu import Added, MovedFrom, Renamed, Retyped, Rewrite, Spec, Stale
-from furu.migration.steps import MigrationError
+from furu.migration import MigrationError
 from furu.storage._layout import (
     result_link_path_in,
     result_manifest_path_in,
@@ -631,13 +631,13 @@ def test_sideways_scan_runs_once_per_class_per_process(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scans: list[Path] = []
-    real_list = migration_scanner._list_schema_directories
+    real_list = migration_resolution._list_schema_directories
 
     def counting(tree_directory: Path) -> list[Path]:
         scans.append(tree_directory)
         return real_list(tree_directory)
 
-    monkeypatch.setattr(migration_scanner, "_list_schema_directories", counting)
+    monkeypatch.setattr(migration_resolution, "_list_schema_directories", counting)
 
     spec = _ScanCounted(n=1)
     assert spec.status == "missing"

@@ -7,8 +7,7 @@ from pydantic import BaseModel, ConfigDict
 
 from furu.constants import FIELDSMARKER
 from furu.metadata import CompletedMetadata
-from furu.migration.field_values import _added_default_fields, _apply_steps
-from furu.migration.scanner import _class_resolution, _ClassResolution
+from furu.migration.resolution import _apply_steps, _class_resolution, _ClassResolution
 from furu.migration.steps import _describe_step
 from furu.storage._layout import (
     metadata_path_in,
@@ -81,7 +80,6 @@ def _find_source(obj: Spec[Any], resolution: _ClassResolution) -> _ResultLink | 
     if not resolution.covered:
         return None
     target_fields = cast(JsonFields, obj._artifact_data[FIELDSMARKER])
-    added_defaults = _added_default_fields(obj, resolution)
     for generation, schema_directory in resolution.covered:
         if not schema_directory.exists():
             continue
@@ -92,7 +90,7 @@ def _find_source(obj: Spec[Any], resolution: _ClassResolution) -> _ResultLink | 
             if source_link is None:
                 continue
             fields = _apply_steps(
-                resolution, generation.start, source_link.current.fields, added_defaults
+                resolution, generation.start, source_link.current.fields
             )
             if fields != target_fields:
                 continue

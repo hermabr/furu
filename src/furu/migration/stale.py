@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from furu.constants import FIELDSMARKER
 from furu.migration.links import _find_source
-from furu.migration.scanner import _class_resolution, _ClassResolution
+from furu.migration.resolution import _class_resolution, _ClassResolution
 from furu.migration.steps import Stale
 from furu.storage._layout import schema_snapshot_path_in_schema_directory
 from furu.utils import JsonValue, _stable_json_dump
@@ -31,6 +31,23 @@ def sideways_status(obj: Spec[Any]) -> Literal["done", "stale", "missing"]:
     if _orphaned_directories(resolution):
         return "stale"
     return "missing"
+
+
+def _schema_field_diff(
+    old_fields: dict[str, JsonValue], new_fields: dict[str, JsonValue]
+) -> list[str]:
+    lines: list[str] = []
+    for name in sorted(old_fields.keys() | new_fields.keys()):
+        if name not in old_fields:
+            lines.append(f"  + {name}: {_stable_json_dump(new_fields[name])}")
+        elif name not in new_fields:
+            lines.append(f"  - {name}: {_stable_json_dump(old_fields[name])}")
+        elif old_fields[name] != new_fields[name]:
+            lines.append(
+                f"  ~ {name}: {_stable_json_dump(old_fields[name])} "
+                f"-> {_stable_json_dump(new_fields[name])}"
+            )
+    return lines
 
 
 def raise_if_stale(obj: Spec[Any]) -> None:
@@ -63,20 +80,3 @@ def raise_if_stale(obj: Spec[Any]) -> None:
         "results by deleting the directory above."
     )
     raise Stale("\n".join(lines))
-
-
-def _schema_field_diff(
-    old_fields: dict[str, JsonValue], new_fields: dict[str, JsonValue]
-) -> list[str]:
-    lines: list[str] = []
-    for name in sorted(old_fields.keys() | new_fields.keys()):
-        if name not in old_fields:
-            lines.append(f"  + {name}: {_stable_json_dump(new_fields[name])}")
-        elif name not in new_fields:
-            lines.append(f"  - {name}: {_stable_json_dump(old_fields[name])}")
-        elif old_fields[name] != new_fields[name]:
-            lines.append(
-                f"  ~ {name}: {_stable_json_dump(old_fields[name])} "
-                f"-> {_stable_json_dump(new_fields[name])}"
-            )
-    return lines

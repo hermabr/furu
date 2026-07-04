@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, assert_never
 from furu.core import Spec
 from furu.dependencies import collect_declared_refs
 from furu.metadata import ArtifactSpec
-from furu.migration.stale import raise_if_stale
+from furu.migration import raise_if_stale
 
 if TYPE_CHECKING:
     from furu.execution.execution_coordinator import ExecutionCoordinator

@@ -21,8 +21,7 @@ from furu.dependencies import dependency_recorder, record_dependency_call
 from furu.locking import lock
 from furu.logging import _scoped_log_files, get_logger
 from furu.metadata import RunningMetadata
-from furu.migration.links import result_dir_for_loading
-from furu.migration.stale import raise_if_stale
+from furu.migration import raise_if_stale, result_dir_for_loading
 from furu.result.bundle import _save_result_bundle, load_result_bundle
 from furu.storage._layout import (
     compute_lock_path_in,
