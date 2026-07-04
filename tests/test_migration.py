@@ -630,14 +630,14 @@ class _ScanCounted(Spec[int]):
 def test_sideways_scan_runs_once_per_class_per_process(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    scans: list[Path] = []
-    real_list = migration_resolution._list_schema_directories
+    scans: list[type] = []
+    real_resolve = migration_resolution._resolve_class
 
-    def counting(tree_directory: Path) -> list[Path]:
-        scans.append(tree_directory)
-        return real_list(tree_directory)
+    def counting(obj: Spec[Any]) -> migration_resolution._ClassResolution:
+        scans.append(type(obj))
+        return real_resolve(obj)
 
-    monkeypatch.setattr(migration_resolution, "_list_schema_directories", counting)
+    monkeypatch.setattr(migration_resolution, "_resolve_class", counting)
 
     spec = _ScanCounted(n=1)
     assert spec.status == "missing"

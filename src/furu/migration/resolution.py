@@ -54,10 +54,19 @@ class _ClassResolution:
     orphaned: tuple[Path, ...]
 
 
-def _list_schema_directories(tree_directory: Path) -> list[Path]:
-    if not tree_directory.exists():
-        return []
-    return sorted(path for path in tree_directory.iterdir() if path.is_dir())
+def _snapshot_matches(snapshot: JsonValue, generation: _Generation) -> bool:
+    if not isinstance(snapshot, dict):
+        return False
+    if snapshot.get(CLASSMARKER) != generation.class_name:
+        return False
+    fields = snapshot.get(FIELDSMARKER)
+    if not isinstance(fields, dict) or set(fields) != set(generation.expectations):
+        return False
+    return all(
+        (kind != "exact" or fields[name] == value)
+        and (kind != "shape" or _shape_of(fields[name]) == value)
+        for name, (kind, value) in generation.expectations.items()
+    )
 
 
 def _added_default_fields(
@@ -95,6 +104,8 @@ def _resolve_class(obj: Spec[Any]) -> _ClassResolution:
         ).items()
     }
 
+    # validate_migration_declaration walked this same chain at class creation,
+    # so the pop()/[] operations below cannot fail on a declared chain.
     expectations = dict(current_fields)
     current_name_of = {name: name for name in expectations}
     added_current_name: dict[int, str] = {}
@@ -155,9 +166,8 @@ def _resolve_class(obj: Spec[Any]) -> _ClassResolution:
         if kind == "any":
             continue
         post_shape = _shape_of(value) if kind == "exact" else value
-        if post_shape == _shape_of(
-            schema_type(step.was, set(), artifact_serializers=obj.artifact_serializers)
-        ):
+        _, was_shape = generations[index].expectations[step.field]
+        if post_shape == was_shape:
             raise MigrationError(
                 f"{cls.__name__}.migrations[{index}] ({_describe_step(step)}) is a "
                 f"dead step: {step.field!r} already has that type, so the step can "
@@ -170,7 +180,11 @@ def _resolve_class(obj: Spec[Any]) -> _ClassResolution:
     trees = {current_class} | {generation.class_name for generation in generations}
     for tree_name in sorted(trees):
         tree_directory = obj._storage_root / Path(*tree_name.split("."))
-        for schema_directory in _list_schema_directories(tree_directory):
+        if not tree_directory.exists():
+            continue
+        for schema_directory in sorted(
+            path for path in tree_directory.iterdir() if path.is_dir()
+        ):
             if (
                 tree_name == current_class
                 and schema_directory.name == obj._artifact_schema_hash
@@ -185,20 +199,7 @@ def _resolve_class(obj: Spec[Any]) -> _ClassResolution:
             matches = [
                 generation
                 for generation in generations
-                if (
-                    isinstance(snapshot, dict)
-                    and snapshot.get(CLASSMARKER) == generation.class_name
-                    and (snapshot_fields := snapshot.get(FIELDSMARKER)) is not None
-                    and isinstance(snapshot_fields, dict)
-                    and set(snapshot_fields) == set(generation.expectations)
-                    and all(
-                        (kind != "exact" or snapshot_fields[name] == value)
-                        and (
-                            kind != "shape" or _shape_of(snapshot_fields[name]) == value
-                        )
-                        for name, (kind, value) in generation.expectations.items()
-                    )
-                )
+                if _snapshot_matches(snapshot, generation)
             ]
             if len(matches) > 1:
                 raise MigrationError(
