@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 from furu.constants import CLASSMARKER, FIELDSMARKER
-from furu.migration._steps import (
+from furu.migration.steps import (
     Added,
     MigrationError,
     MigrationStep,

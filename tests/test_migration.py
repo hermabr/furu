@@ -10,9 +10,9 @@ from typing import Any
 import pytest
 
 import furu
-import furu.migration._resolution as migration_resolution
+import furu.migration.resolution as migration_resolution
 from furu import Added, MovedFrom, Renamed, Retyped, Rewrite, Spec, Stale
-from furu.migration import MigrationError
+from furu.migration.steps import MigrationError
 from furu.storage._layout import (
     result_link_path_in,
     result_manifest_path_in,

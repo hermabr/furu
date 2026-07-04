@@ -10,13 +10,13 @@ from pydantic import BaseModel, ConfigDict
 
 from furu.constants import FIELDSMARKER
 from furu.metadata import CompletedMetadata
-from furu.migration._resolution import (
+from furu.migration.resolution import (
     _ClassResolution,
     _Generation,
     _GenerationDirectory,
     _class_resolution,
 )
-from furu.migration._steps import (
+from furu.migration.steps import (
     Added,
     MigrationError,
     MovedFrom,
