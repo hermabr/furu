@@ -5,7 +5,7 @@ import types
 import typing
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, TypeAlias
+from typing import Any
 
 from furu.utils import JsonValue, fully_qualified_name
 
@@ -39,7 +39,7 @@ class Rewrite:
     transform: Callable[[Mapping[str, JsonValue]], Mapping[str, JsonValue]]
 
 
-MigrationStep: TypeAlias = Renamed | Added | MovedFrom | Retyped | Rewrite
+type MigrationStep = Renamed | Added | MovedFrom | Retyped | Rewrite
 
 
 class Stale(Exception):
