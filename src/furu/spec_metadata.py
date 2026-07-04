@@ -1,8 +1,9 @@
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, order=True)
 class GiB:
     count: int
 
@@ -12,32 +13,32 @@ class GiB:
 
 
 @dataclass(frozen=True, slots=True)
-class Between:
-    low: int
-    high: int | None
+class Between[T]:
+    low: T
+    high: T | None
 
     def __post_init__(self) -> None:
-        if self.low < 0:
+        if isinstance(self.low, int) and self.low < 0:
             raise ValueError(f"range lower bound must be non-negative, got {self.low}")
-        if self.high is not None and self.high < self.low:
+        if self.high is not None and cast(Any, self.high) < self.low:
             raise ValueError(
                 f"range upper bound {self.high} is below lower bound {self.low}"
             )
 
 
-def between(low: int, high: int) -> Between:
+def between[T](low: T, high: T) -> Between[T]:
     return Between(low, high)
 
 
-def at_least(minimum: int) -> Between:
+def at_least[T](minimum: T) -> Between[T]:
     return Between(minimum, None)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Requires:
-    gpus: int | Between = 0
-    cpus: int | Between = 1
-    ram: GiB | None = None
+    gpus: int | Between[int] = 0
+    cpus: int | Between[int] = 1
+    ram: GiB | Between[GiB] | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

@@ -21,14 +21,19 @@ class ResourceRequest:
 
 
 def resource_requirements_from_requires(requires: Requires) -> ResourceRequirements:
-    def _constraint(value: int | Between) -> tuple[int, int | None]:
+    def _constraint(value: int | Between[int]) -> tuple[int, int | None]:
         if isinstance(value, Between):
             return (value.low, value.high)
         return (value, value)
 
-    def _memory_constraint(value: GiB | None) -> ResourceConstraint:
+    def _memory_constraint(value: GiB | Between[GiB] | None) -> ResourceConstraint:
         if value is None:
             return None
+        if isinstance(value, Between):
+            return (
+                value.low.count,
+                value.high.count if value.high is not None else None,
+            )
         return (value.count, None)
 
     return ResourceRequirements(

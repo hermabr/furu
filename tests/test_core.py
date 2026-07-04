@@ -1691,6 +1691,19 @@ def test_metadata_requires_can_depend_on_fields():
     )
 
 
+def test_metadata_requires_accepts_memory_range():
+    class MemoryRangeNode(Spec[str]):
+        def metadata(self) -> Metadata:
+            return Metadata(requires=Requires(ram=between(GiB(16), GiB(64))))
+
+        def create(self) -> str:
+            return "x"
+
+    assert MemoryRangeNode()._resource_requirements == ResourceRequirements(
+        cpus=(1, 1), gpus=(0, 0), memory_gib=(16, 64)
+    )
+
+
 def test_metadata_storage_overrides_base_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
