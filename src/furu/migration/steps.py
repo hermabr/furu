@@ -5,7 +5,7 @@ import types
 import typing
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypeAlias
+from typing import TYPE_CHECKING, Any, TypeAlias, assert_never
 
 from furu.utils import JsonValue, fully_qualified_name
 
@@ -76,7 +76,6 @@ def _describe_step(step: MigrationStep) -> str:
 
 
 def validate_migration_declaration(cls: type[Spec[Any]]) -> None:
-    """Phase one: structural validation at class creation, no storage access."""
     steps = cls.migrations
     if not isinstance(steps, tuple) or not all(
         isinstance(step, MigrationStep) for step in steps
@@ -87,39 +86,46 @@ def validate_migration_declaration(cls: type[Spec[Any]]) -> None:
         )
 
     fields_by_name = {field.name: field for field in dataclasses.fields(cls)}
-    # Walk backward from the current schema, mapping each field's name at that
-    # point in the chain to its current name.
     names = {name: name for name in fields_by_name}
-
-    def fail(index: int, message: str) -> TypeError:
-        return TypeError(
-            f"{cls.__name__}.migrations[{index}] ({_describe_step(steps[index])}): "
-            f"{message}; fields at that point in the chain: {sorted(names)}"
-        )
 
     for index in reversed(range(len(steps))):
         match steps[index]:
             case Renamed(field=field, to=to):
                 if to not in names:
-                    raise fail(index, f"{to!r} is not a field")
+                    raise TypeError(
+                        f"{cls.__name__}.migrations[{index}] ({_describe_step(steps[index])}): "
+                        f"{to!r} is not a field; fields at that point in the chain: {sorted(names)}"
+                    )
                 if field in names:
-                    raise fail(index, f"{field!r} already exists")
+                    raise TypeError(
+                        f"{cls.__name__}.migrations[{index}] ({_describe_step(steps[index])}): "
+                        f"{field!r} already exists; fields at that point in the chain: {sorted(names)}"
+                    )
                 names[field] = names.pop(to)
             case Added(field=field):
                 if field not in names:
-                    raise fail(index, f"{field!r} is not a field")
+                    raise TypeError(
+                        f"{cls.__name__}.migrations[{index}] ({_describe_step(steps[index])}): "
+                        f"{field!r} is not a field; fields at that point in the chain: {sorted(names)}"
+                    )
                 current = fields_by_name[names.pop(field)]
                 if (
                     current.default is dataclasses.MISSING
                     and current.default_factory is dataclasses.MISSING
                 ):
-                    raise fail(
-                        index,
+                    raise TypeError(
+                        f"{cls.__name__}.migrations[{index}] ({_describe_step(steps[index])}): "
                         f"field {current.name!r} has no default; Added can only "
-                        "backfill a field with a default value",
+                        "backfill a field with a default value; fields at that "
+                        f"point in the chain: {sorted(names)}"
                     )
             case Retyped(field=field):
                 if field not in names:
-                    raise fail(index, f"{field!r} is not a field")
+                    raise TypeError(
+                        f"{cls.__name__}.migrations[{index}] ({_describe_step(steps[index])}): "
+                        f"{field!r} is not a field; fields at that point in the chain: {sorted(names)}"
+                    )
             case MovedFrom() | Rewrite():
                 pass
+            case unreachable:
+                assert_never(unreachable)
