@@ -1,6 +1,8 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
+
+from furu.config import get_config
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -50,7 +52,11 @@ class Throttle:
             raise ValueError(f"max_running must be positive, got {self.max_running}")
 
 
+def _default_storage() -> Path:
+    return get_config().run_directories.objects
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Metadata:
-    storage: Path | None = None
+    storage: Path = field(default_factory=_default_storage)
     requires: Requires = Requires()

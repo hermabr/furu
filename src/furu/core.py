@@ -4,7 +4,7 @@ import json
 import logging
 import shutil
 from abc import ABC
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import cached_property
 from inspect import get_annotations
 from pathlib import Path
@@ -69,7 +69,9 @@ class Missing(Exception):
 
 
 SpecCreateMode: TypeAlias = Literal["single", "batched"] | None
-_SPEC_CLASS_ATTRIBUTES = frozenset({"migrations", "throttle"})
+_SPEC_CLASS_ATTRIBUTES = frozenset(
+    {"migrations", "throttle", "result_codecs", "artifact_serializers"}
+)
 _RESERVED_FIELD_NAMES = frozenset(
     {
         "create",
@@ -84,6 +86,8 @@ _RESERVED_FIELD_NAMES = frozenset(
         "migrations",
         "provenance",
         "throttle",
+        "result_codecs",
+        "artifact_serializers",
     }
 )
 
@@ -92,6 +96,8 @@ class Spec[T](_FuruDataclassTransform, ABC):
     _furu_create_mode: ClassVar[SpecCreateMode]
     throttle: ClassVar[Throttle | None] = None
     migrations: ClassVar[tuple[MigrationStep, ...]] = ()
+    result_codecs: ClassVar[tuple[type[Codec], ...]] = ()
+    artifact_serializers: ClassVar[tuple[type[Serializer], ...]] = ()
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -145,24 +151,11 @@ class Spec[T](_FuruDataclassTransform, ABC):
     @final
     @cached_property
     def _metadata(self) -> Metadata:
-        return self.metadata()
-
-    @final
-    @cached_property
-    def _storage_root(self) -> Path:
+        metadata = self.metadata()
         config = get_config()
         if config.debug_mode:
-            return config.run_directories.objects
-        storage = self._metadata.storage
-        return storage if storage is not None else config.run_directories.objects
-
-    @property
-    def result_codecs(self) -> tuple[type[Codec], ...]:
-        return ()
-
-    @property
-    def artifact_serializers(self) -> tuple[type[Serializer], ...]:
-        return ()
+            return replace(metadata, storage=config.run_directories.objects)
+        return metadata
 
     @final
     @cached_property
@@ -342,7 +335,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
     @cached_property
     def _base_dir(self) -> Path:
         return (
-            self._storage_root
+            self._metadata.storage
             / Path(*self._fully_qualified_name.split("."))
             / self._artifact_schema_hash
             / self._artifact_hash

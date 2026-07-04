@@ -1615,7 +1615,7 @@ def test_metadata_defaults_to_project_config_storage_and_no_resource_constraints
 
     assert node.metadata() == Metadata()
     assert node.metadata().requires == Requires(cpus=None, gpus=None, ram=None)
-    assert node._storage_root == get_config().run_directories.objects
+    assert node._metadata.storage == get_config().run_directories.objects
     assert node._resource_requirements == ResourceRequirements(
         cpus=None, gpus=None, memory_gib=None
     )
