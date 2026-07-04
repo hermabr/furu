@@ -36,8 +36,8 @@ def raise_if_stale(obj: Spec[Any]) -> None:
     orphaned = _orphaned_directories(_class_resolution(obj))
     if not orphaned:
         return
-    current_schema = cast("dict[str, JsonValue]", obj._schema_data)
-    current_fields = cast("dict[str, JsonValue]", current_schema[FIELDSMARKER])
+    current_schema = cast(dict[str, JsonValue], obj._schema_data)
+    current_fields = cast(dict[str, JsonValue], current_schema[FIELDSMARKER])
     lines = [
         f"{type(obj).__name__} is stale: the store holds results under "
         f"{len(orphaned)} other schema(s) with no migration chain to the "
@@ -46,11 +46,11 @@ def raise_if_stale(obj: Spec[Any]) -> None:
     for directory in orphaned:
         snapshot_path = schema_snapshot_path_in_schema_directory(directory)
         snapshot = cast(
-            "dict[str, JsonValue]",
+            dict[str, JsonValue],
             json.loads(snapshot_path.read_text(encoding="utf-8")),
         )
         lines.append(f"\norphaned: {directory}")
-        old_fields = cast("dict[str, JsonValue]", snapshot.get(FIELDSMARKER, {}))
+        old_fields = cast(dict[str, JsonValue], snapshot.get(FIELDSMARKER, {}))
         for name in sorted(old_fields.keys() | current_fields.keys()):
             if name not in old_fields:
                 lines.append(f"  + {name}: {_stable_json_dump(current_fields[name])}")
