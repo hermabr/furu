@@ -15,7 +15,7 @@ import pytest
 
 import furu.worker.backends.slurm.backend as slurm_backend_module
 from furu.config import (
-    _FuruConfig,
+    Config,
     _FuruWorkerConfig,
     _WORKER_JSON_CONFIG_FILE_ENV_VAR,
     get_config,
@@ -616,7 +616,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     for config_file in config_files:
         assert _mode(config_file) == 0o600
         assert (
-            _FuruConfig.model_validate_json(config_file.read_text(encoding="utf-8"))
+            Config.model_validate_json(config_file.read_text(encoding="utf-8"))
             == get_config()
         )
         assert f"export {_WORKER_JSON_CONFIG_FILE_ENV_VAR}={config_file}" in script
@@ -1129,7 +1129,7 @@ def test_slurm_backend_worker_connect_port_overrides_bound_port(
 
 
 def test_slurm_backend_worker_connect_host_defaults_to_config() -> None:
-    config = _FuruConfig(worker=_FuruWorkerConfig(connect_host="login01.cluster"))
+    config = Config(worker=_FuruWorkerConfig(connect_host="login01.cluster"))
     with override_config(config):
         backend = SlurmWorkerBackend(
             max_workers=1,

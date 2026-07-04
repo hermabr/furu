@@ -103,16 +103,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from furu import Spec
+from furu import Metadata, Spec
 
 
 class Adder(Spec[int]):
     a: int
     b: int
 
-    @property
-    def storage_root(self) -> Path:
-        return Path("store")
+    def metadata(self) -> Metadata:
+        return Metadata(storage=Path("store"))
 
     def create(self) -> int:
         return self.a + self.b
@@ -189,7 +188,7 @@ from pathlib import Path
 
 from collections.abc import Mapping
 
-from furu import Spec
+from furu import Metadata, Spec
 from furu.storage._layout import data_dir_in
 from furu.result.bundle import load_result_bundle, _save_result_bundle
 from furu.result.codec import Codec
@@ -222,9 +221,8 @@ class Adder(Spec[Payload]):
     a: int
     b: int
 
-    @property
-    def storage_root(self) -> Path:
-        return Path("store")
+    def metadata(self) -> Metadata:
+        return Metadata(storage=Path("store"))
 
     def create(self) -> Payload:
         return Payload(self.a + self.b)

@@ -192,7 +192,7 @@ class ExecutionCoordinator:
                     object_id
                     for object_id, node in self.ready.items()
                     if resource_request_satisfies(
-                        resources, node.obj.resource_requirements
+                        resources, node.obj._resource_requirements
                     )
                     and self._can_start_node_locked(node, running_counts)
                 ),
@@ -233,7 +233,7 @@ class ExecutionCoordinator:
             running_counts = self._running_counts()
             for node in self.ready.values():
                 if resource_request_satisfies(
-                    resources, node.obj.resource_requirements
+                    resources, node.obj._resource_requirements
                 ) and self._can_start_node_locked(node, running_counts):
                     count += 1
                     running_counts[type(node.obj)] = (
@@ -252,9 +252,9 @@ class ExecutionCoordinator:
     def _can_start_node_locked(
         self, node: DagNode, running_counts: dict[type[Spec], int]
     ) -> bool:
-        if node.obj.max_workers is None:
+        if (throttle := node.obj.throttle) is None:
             return True
-        return running_counts.get(type(node.obj), 0) < node.obj.max_workers
+        return running_counts.get(type(node.obj), 0) < throttle.max_running
 
     def _release_worker_locked(self, worker: str, *, reason: str) -> None:
         for lease_id, running_job in tuple(self.running.items()):
