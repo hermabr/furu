@@ -13,21 +13,30 @@ if TYPE_CHECKING:
     from furu.core import Spec
 
 
+_NO_DEFAULT: Any = object()
+
+
 @dataclass(frozen=True, slots=True)
 class Renamed:
     field: str
     _: dataclasses.KW_ONLY
     to: str
+    breaking: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class Added:
     field: str
+    _: dataclasses.KW_ONLY
+    default: Any = _NO_DEFAULT
+    breaking: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class MovedFrom:
     fully_qualified_name: str
+    _: dataclasses.KW_ONLY
+    breaking: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +44,7 @@ class Retyped:
     field: str
     _: dataclasses.KW_ONLY
     was: Any
+    breaking: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +53,10 @@ class Rewrite:
 
 
 MigrationStep: TypeAlias = Renamed | Added | MovedFrom | Retyped | Rewrite
+
+
+def _is_breaking(step: MigrationStep) -> bool:
+    return not isinstance(step, Rewrite) and step.breaking
 
 
 class Stale(RuntimeError):
@@ -64,15 +78,21 @@ def _type_label(tp: object) -> str:
 def _describe_step(step: MigrationStep) -> str:
     match step:
         case Renamed(field=field, to=to):
-            return f"Renamed({field!r}, to={to!r})"
-        case Added(field=field):
-            return f"Added({field!r})"
+            body = f"{field!r}, to={to!r}"
+        case Added(field=field, default=default):
+            body = (
+                f"{field!r}"
+                if default is _NO_DEFAULT
+                else f"{field!r}, default={default!r}"
+            )
         case MovedFrom(fully_qualified_name=name):
-            return f"MovedFrom({name!r})"
+            body = f"{name!r}"
         case Retyped(field=field, was=was):
-            return f"Retyped({field!r}, was={_type_label(was)})"
+            body = f"{field!r}, was={_type_label(was)}"
         case Rewrite(transform=transform):
-            return f"Rewrite({getattr(transform, '__qualname__', repr(transform))})"
+            body = f"{getattr(transform, '__qualname__', repr(transform))}"
+    suffix = ", breaking=True" if _is_breaking(step) else ""
+    return f"{type(step).__name__}({body}{suffix})"
 
 
 def validate_migration_declaration(cls: type[Spec[Any]]) -> None:
@@ -85,8 +105,7 @@ def validate_migration_declaration(cls: type[Spec[Any]]) -> None:
             "Renamed/Added/MovedFrom/Retyped/Rewrite steps"
         )
 
-    fields_by_name = {field.name: field for field in dataclasses.fields(cls)}
-    names = {name: name for name in fields_by_name}
+    names = {field.name: field.name for field in dataclasses.fields(cls)}
 
     for index in reversed(range(len(steps))):
         match steps[index]:
@@ -102,22 +121,25 @@ def validate_migration_declaration(cls: type[Spec[Any]]) -> None:
                         f"{field!r} already exists; fields at that point in the chain: {sorted(names)}"
                     )
                 names[field] = names.pop(to)
-            case Added(field=field):
+            case Added(field=field) as step:
                 if field not in names:
                     raise TypeError(
                         f"{cls.__name__}.migrations[{index}] ({_describe_step(steps[index])}): "
                         f"{field!r} is not a field; fields at that point in the chain: {sorted(names)}"
                     )
-                current = fields_by_name[names.pop(field)]
-                if (
-                    current.default is dataclasses.MISSING
-                    and current.default_factory is dataclasses.MISSING
-                ):
+                del names[field]
+                if step.breaking and step.default is not _NO_DEFAULT:
                     raise TypeError(
                         f"{cls.__name__}.migrations[{index}] ({_describe_step(steps[index])}): "
-                        f"field {current.name!r} has no default; Added can only "
-                        "backfill a field with a default value; fields at that "
-                        f"point in the chain: {sorted(names)}"
+                        "a breaking Added discards old results, so default= can "
+                        "never backfill anything; drop one of the two"
+                    )
+                if not step.breaking and step.default is _NO_DEFAULT:
+                    raise TypeError(
+                        f"{cls.__name__}.migrations[{index}] ({_describe_step(steps[index])}): "
+                        "Added needs default= (the value old runs behaved as, "
+                        "pinned independently of the field's own default), or "
+                        "breaking=True to discard the old results"
                     )
             case Retyped(field=field):
                 if field not in names:
