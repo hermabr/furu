@@ -3,7 +3,7 @@ from __future__ import annotations
 import dataclasses
 from typing import TYPE_CHECKING, Any
 
-from furu.migration.generations import _ANY, _walk_generations, _WalkError
+from furu.migration.generations import _ANY, _walk_generations
 from furu.migration.steps import (
     Added,
     MovedFrom,
@@ -29,16 +29,14 @@ def validate_migration_declaration(cls: type[Spec[Any]]) -> None:
         )
 
     fields_by_name = {field.name: field for field in dataclasses.fields(cls)}
-    try:
-        _, added_current_name = _walk_generations(
-            owner=cls.__name__,
-            steps=steps,
-            class_name="",
-            current_fields=dict.fromkeys(fields_by_name, _ANY),
-            shape_for=lambda step: _ANY,
-        )
-    except _WalkError as error:
-        raise TypeError(str(error)) from None
+    _, added_current_name = _walk_generations(
+        owner=cls.__name__,
+        error_type=TypeError,
+        steps=steps,
+        class_name="",
+        current_fields=dict.fromkeys(fields_by_name, _ANY),
+        shape_for=lambda step: _ANY,
+    )
 
     for index, current_name in added_current_name.items():
         field = fields_by_name[current_name]

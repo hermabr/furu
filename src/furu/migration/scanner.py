@@ -12,7 +12,6 @@ from furu.migration.generations import (
     _shape_of,
     _shape_of_expectation,
     _walk_generations,
-    _WalkError,
 )
 from furu.migration.steps import MigrationError, MigrationStep, Retyped, _describe_step
 from furu.serializer.schema import schema_type
@@ -94,16 +93,14 @@ def _resolve_class(obj: Spec[Any]) -> _ClassResolution:
         )
         return ("shape", _shape_of(schema))
 
-    try:
-        generations, added_current_name = _walk_generations(
-            owner=cls.__name__,
-            steps=steps,
-            class_name=current_class,
-            current_fields=current_fields,
-            shape_for=shape_for,
-        )
-    except _WalkError as error:
-        raise MigrationError(str(error)) from None
+    generations, added_current_name = _walk_generations(
+        owner=cls.__name__,
+        error_type=MigrationError,
+        steps=steps,
+        class_name=current_class,
+        current_fields=current_fields,
+        shape_for=shape_for,
+    )
 
     _reject_ambiguous_chains(cls, generations)
 

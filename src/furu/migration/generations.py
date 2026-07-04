@@ -45,13 +45,10 @@ class _Generation:
     expectations: Mapping[str, _FieldExpectation]
 
 
-class _WalkError(Exception):
-    pass
-
-
 def _walk_generations(
     *,
     owner: str,
+    error_type: type[Exception],
     steps: tuple[MigrationStep, ...],
     class_name: str,
     current_fields: Mapping[str, _FieldExpectation],
@@ -63,8 +60,8 @@ def _walk_generations(
     generations: list[_Generation] = []
     class_at = class_name
 
-    def fail(index: int, message: str) -> _WalkError:
-        return _WalkError(
+    def fail(index: int, message: str) -> Exception:
+        return error_type(
             f"{owner}.migrations[{index}] ({_describe_step(steps[index])}): "
             f"{message}; fields at that point in the chain: {sorted(expectations)}"
         )
