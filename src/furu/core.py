@@ -20,7 +20,8 @@ from typing import (
 
 from furu._declared_types import declared_result_type
 from furu.config import get_config
-from furu.explain import ExplainDepth, explain as _explain
+from furu.explain import ExplainDepth
+from furu.explain import explain as _explain
 from furu.locking import LockError, is_active_lock, lock
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
@@ -72,7 +73,6 @@ class Missing(Exception):
 
 SpecCreateMode: TypeAlias = Literal["single", "batched"] | None
 _FURU_CLASS_OPTIONS = frozenset({"max_workers"})
-# Class attributes a Spec subclass assigns without a type annotation.
 _SPEC_CLASS_ATTRIBUTES = frozenset({"migrations"})
 _RESERVED_FIELD_NAMES = frozenset(
     {
