@@ -30,7 +30,7 @@ class _FuruWorkerConfig(BaseModel):
     max_retries_per_object: int = 3
 
 
-class Config(BaseSettings):
+class _Config(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="FURU_",
         env_nested_delimiter="__",
@@ -79,13 +79,13 @@ class Config(BaseSettings):
         )
 
 
-_config = Config()
+_config = _Config()
 
 
-def get_config() -> Config:
+def get_config() -> _Config:
     return _config
 
 
-def _set_config(config: Config) -> None:
+def _set_config(config: _Config) -> None:
     global _config
     _config = config

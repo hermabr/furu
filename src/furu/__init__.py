@@ -2,7 +2,6 @@ from importlib.metadata import version
 
 from furu._declared_types import skip_hash
 from furu._function import spec
-from furu.config import Config
 from furu.core import Missing, Spec
 from furu.dependencies import dependency
 from furu.diff import diff
@@ -24,7 +23,6 @@ __all__ = [
     "__version__",
     "Added",
     "Codec",
-    "Config",
     "GiB",
     "Metadata",
     "Missing",

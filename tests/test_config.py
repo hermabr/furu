@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from furu.config import (
-    Config,
+    _Config,
     _FuruDirectories,
     _FuruWorkerConfig,
     _WORKER_JSON_CONFIG_FILE_ENV_VAR,
@@ -24,7 +24,7 @@ def test_config_reads_environment(monkeypatch) -> None:
     monkeypatch.setenv("FURU_WORKER__MAX_FAILED_RESTARTS", "7")
     monkeypatch.setenv("FURU_WORKER__MAX_RETRIES_PER_OBJECT", "3")
 
-    config = Config()
+    config = _Config()
 
     assert config.debug_mode is True
     assert config.directories == _FuruDirectories(
@@ -48,7 +48,7 @@ def test_config_reads_environment(monkeypatch) -> None:
 def test_debug_mode_uses_default_debug_directory(monkeypatch) -> None:
     monkeypatch.setenv("FURU_DEBUG_MODE", "true")
 
-    config = Config()
+    config = _Config()
 
     assert config.debug_mode is True
     assert config.directories.debug == Path("furu-data") / "debug"
@@ -60,7 +60,7 @@ def test_debug_mode_uses_default_debug_directory(monkeypatch) -> None:
 
 
 def test_config_uses_main_directories_by_default() -> None:
-    config = Config()
+    config = _Config()
 
     assert config.debug_mode is False
     assert config.directories.debug == Path("furu-data") / "debug"
@@ -88,7 +88,7 @@ max_retries_per_object = 3
     )
     monkeypatch.chdir(tmp_path)
 
-    config = Config()
+    config = _Config()
 
     assert config.debug_mode is True
     assert config.directories == _FuruDirectories(
@@ -125,7 +125,7 @@ debug = "/tmp/furu-parent-pyproject-debug"
     nested_directory.mkdir(parents=True)
     monkeypatch.chdir(nested_directory)
 
-    config = Config()
+    config = _Config()
 
     assert config.directories == _FuruDirectories(
         objects=Path("/tmp/furu-parent-pyproject-objects"),
@@ -154,7 +154,7 @@ debug = "/tmp/furu-pyproject-debug"
     monkeypatch.setenv("FURU_DIRECTORIES__EXECUTIONS", "/tmp/furu-env-executions")
     monkeypatch.setenv("FURU_DIRECTORIES__DEBUG", "/tmp/furu-env-debug")
 
-    config = Config()
+    config = _Config()
 
     assert config.debug_mode is True
     assert config.directories == _FuruDirectories(
@@ -193,7 +193,7 @@ def test_config_reads_json_config_file(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("FURU_DEBUG_MODE", "false")
     monkeypatch.setenv("FURU_WORKER__IDLE_TIMEOUT_SECONDS", "12.5")
 
-    config = Config()
+    config = _Config()
 
     assert config.debug_mode is True
     assert config.directories == _FuruDirectories(
@@ -214,7 +214,7 @@ def test_config_reads_json_config_file(tmp_path, monkeypatch) -> None:
 
 
 def test_config_is_frozen() -> None:
-    config = Config()
+    config = _Config()
 
     with pytest.raises(ValidationError, match="Instance is frozen"):
         config.directories = _FuruDirectories(
@@ -225,7 +225,7 @@ def test_config_is_frozen() -> None:
 
 def test_set_config_replaces_active_config() -> None:
     original_config = get_config()
-    replacement_config = Config(
+    replacement_config = _Config(
         directories=_FuruDirectories(
             objects=Path("/tmp/context-furu-objects"),
             executions=Path("/tmp/context-furu-executions"),
@@ -243,7 +243,7 @@ def test_set_config_replaces_active_config() -> None:
 
 def test_override_config_restores_previous_config_on_exit() -> None:
     original_config = get_config()
-    replacement_config = Config(debug_mode=True)
+    replacement_config = _Config(debug_mode=True)
 
     with override_config(replacement_config):
         assert get_config() is replacement_config

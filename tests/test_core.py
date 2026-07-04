@@ -39,7 +39,7 @@ from furu.storage._layout import (
     result_manifest_path_in,
     run_log_path_in,
 )
-from furu.config import Config, _FuruDirectories, get_config
+from furu.config import _Config, _FuruDirectories, get_config
 from furu.dependencies import collect_declared_refs
 from furu.execution.load_or_create import _load_or_create
 from furu.locking import LockManifest, lock
@@ -1710,7 +1710,7 @@ def test_load_path_reads_metadata_storage_without_touching_requires(
 
 
 def test_debug_mode_ignores_storage_override() -> None:
-    with override_config(Config(debug_mode=True)):
+    with override_config(_Config(debug_mode=True)):
         node = CustomStorageNode(name="x")
 
         assert node.metadata().storage == Path("custom/data/location")
@@ -1726,7 +1726,7 @@ def test_debug_mode_ignores_storage_override() -> None:
 
 
 def test_debug_mode_uses_configured_debug_directory() -> None:
-    config = Config(
+    config = _Config(
         debug_mode=True,
         directories=_FuruDirectories(
             objects=Path("main/objects"),
