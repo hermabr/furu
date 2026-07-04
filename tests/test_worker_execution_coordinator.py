@@ -1382,9 +1382,6 @@ def test_worker_loop_logs_task_requests_and_received_task(
         def job_result(self, lease_id: str, request: JobResultRequest) -> None:
             pass
 
-    def ensure_single_result(obj: Spec[object]) -> None:
-        pass
-
     test_client = TestClient("http://worker.test", auth_token="test-token")
     monkeypatch.setattr(
         api,
@@ -1392,7 +1389,9 @@ def test_worker_loop_logs_task_requests_and_received_task(
         lambda server_url, *, auth_token: test_client,
     )
     monkeypatch.setattr(
-        worker_loop_module, "_ensure_single_result", ensure_single_result
+        worker_loop_module,
+        "execute_job",
+        lambda obj, *, lease_id: JobCompletedResult(),
     )
 
     with _captured_furu_logs(caplog):
@@ -1476,9 +1475,6 @@ def test_worker_loop_exits_after_exceeding_max_consecutive_failures(
         def job_result(self, lease_id: str, request: JobResultRequest) -> None:
             self.results.append((lease_id, request))
 
-    def ensure_single_result(obj: Spec[object]) -> None:
-        raise RuntimeError("worker task failed")
-
     test_client = TestClient("http://worker.test", auth_token="test-token")
     monkeypatch.setattr(
         api,
@@ -1486,7 +1482,9 @@ def test_worker_loop_exits_after_exceeding_max_consecutive_failures(
         lambda server_url, *, auth_token: test_client,
     )
     monkeypatch.setattr(
-        worker_loop_module, "_ensure_single_result", ensure_single_result
+        worker_loop_module,
+        "execute_job",
+        lambda obj, *, lease_id: JobFailedResult(error="worker task failed"),
     )
 
     worker_loop(
@@ -1540,11 +1538,12 @@ def test_worker_loop_resets_consecutive_failures_after_success(
 
     calls = 0
 
-    def ensure_single_result(obj: Spec[object]) -> None:
+    def execute_job(obj: Spec[object], *, lease_id: str) -> JobResultRequest:
         nonlocal calls
         calls += 1
         if calls in (1, 3):
-            raise RuntimeError("worker task failed")
+            return JobFailedResult(error="worker task failed")
+        return JobCompletedResult()
 
     test_client = TestClient("http://worker.test", auth_token="test-token")
     monkeypatch.setattr(
@@ -1552,9 +1551,7 @@ def test_worker_loop_resets_consecutive_failures_after_success(
         "WorkerApiClient",
         lambda server_url, *, auth_token: test_client,
     )
-    monkeypatch.setattr(
-        worker_loop_module, "_ensure_single_result", ensure_single_result
-    )
+    monkeypatch.setattr(worker_loop_module, "execute_job", execute_job)
 
     worker_loop(
         server_url="http://worker.test",
@@ -1597,7 +1594,7 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
         def job_result(self, lease_id: str, request: JobResultRequest) -> None:
             self.calls.append("job_result")
 
-    def ensure_single_result(obj: Spec[object]) -> None:
+    def execute_job(obj: Spec[object], *, lease_id: str) -> JobResultRequest:
         raise KeyboardInterrupt
 
     test_client = TestClient("http://worker.test", auth_token="test-token")
@@ -1606,9 +1603,7 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
         "WorkerApiClient",
         lambda server_url, *, auth_token: test_client,
     )
-    monkeypatch.setattr(
-        worker_loop_module, "_ensure_single_result", ensure_single_result
-    )
+    monkeypatch.setattr(worker_loop_module, "execute_job", execute_job)
 
     with pytest.raises(KeyboardInterrupt):
         worker_loop(
