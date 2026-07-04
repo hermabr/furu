@@ -44,9 +44,6 @@ def _add_to_dag(coordinator: ExecutionCoordinator, objs: Sequence[Spec]) -> None
             case "missing" | "failed":
                 pass
             case "stale":
-                # Raises Stale with the orphaned directories and the field-level
-                # diff; if a racing discard just cleared them, the spec is simply
-                # missing and is admitted below.
                 raise_if_stale(obj)
             case x:
                 assert_never(x)
