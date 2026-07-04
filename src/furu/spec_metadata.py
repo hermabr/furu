@@ -1,13 +1,14 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import NewType
-
-Memory = NewType("Memory", int)
-"""A memory amount in bytes; construct with GiB() so units are never ambiguous."""
 
 
-def GiB(count: int) -> Memory:
-    return Memory(count * 1024**3)
+@dataclass(frozen=True, slots=True)
+class GiB:
+    count: int
+
+    def __post_init__(self) -> None:
+        if self.count < 0:
+            raise ValueError(f"GiB count must be non-negative, got {self.count}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,7 +37,7 @@ def at_least(minimum: int) -> Between:
 class Requires:
     gpus: int | Between = 0
     cpus: int | Between = 1
-    ram: Memory | None = None
+    ram: GiB | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

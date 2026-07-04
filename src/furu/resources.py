@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import TypeAlias
 
-from furu.spec_metadata import Between, Requires
+from furu.spec_metadata import Between, GiB, Requires
 
 ResourceConstraint: TypeAlias = tuple[int | None, int | None] | None
 
@@ -26,12 +26,15 @@ def resource_requirements_from_requires(requires: Requires) -> ResourceRequireme
             return (value.low, value.high)
         return (value, value)
 
+    def _memory_constraint(value: GiB | None) -> ResourceConstraint:
+        if value is None:
+            return None
+        return (value.count, None)
+
     return ResourceRequirements(
         cpus=_constraint(requires.cpus),
         gpus=_constraint(requires.gpus),
-        memory_gib=None
-        if requires.ram is None
-        else (-(-requires.ram // 1024**3), None),
+        memory_gib=_memory_constraint(requires.ram),
     )
 
 

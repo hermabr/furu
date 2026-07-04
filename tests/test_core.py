@@ -1621,6 +1621,17 @@ def test_metadata_defaults_to_project_config_storage_one_cpu_zero_gpus():
     )
 
 
+def test_gib_is_frozen_slots_value_object():
+    memory = GiB(16)
+
+    assert memory.count == 16
+    assert not hasattr(memory, "__dict__")
+    with pytest.raises(FrozenInstanceError):
+        setattr(memory, "count", 32)
+    with pytest.raises(ValueError, match="GiB count must be non-negative"):
+        GiB(-1)
+
+
 def test_throttle_defaults_to_none():
     assert Node(name="x").throttle is None
 
