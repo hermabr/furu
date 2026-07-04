@@ -25,13 +25,9 @@ from furu.explain import explain as _explain
 from furu.locking import LockError, is_active_lock, lock
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
-from furu.migration import (
-    MigrationStep,
-    raise_if_stale,
-    result_dir_for_loading,
-    sideways_status,
-    validate_migration_declaration,
-)
+from furu.migration.links import result_dir_for_loading
+from furu.migration.stale import raise_if_stale, sideways_status
+from furu.migration.steps import MigrationStep, validate_migration_declaration
 from furu.resources import ResourceRequirements
 from furu.result.bundle import load_result_bundle
 from furu.result.codec import Codec

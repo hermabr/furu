@@ -58,7 +58,7 @@ class _Generation:
 @dataclass(frozen=True, slots=True)
 class _ClassResolution:
     steps: tuple[MigrationStep, ...]
-    added_defaults: dict[int, JsonValue]  # Added step index -> default field JSON
+    added_current_name: dict[int, str]
     covered: tuple[tuple[_Generation, Path], ...]  # most recent generation first
     orphaned: tuple[Path, ...]  # schema directories with no chain to current
 
@@ -87,14 +87,14 @@ def _binds(generation: _Generation, snapshot: JsonValue) -> bool:
     return True
 
 
-def _added_defaults(
-    obj: Spec[Any], added_current_name: dict[int, str]
+def _added_default_fields(
+    obj: Spec[Any], resolution: _ClassResolution
 ) -> dict[int, JsonValue]:
-    if not added_current_name:
+    if not resolution.added_current_name:
         return {}
     field_by_name = {field.name: field for field in dataclasses.fields(type(obj))}
     replacements: dict[str, Any] = {}
-    for current_name in set(added_current_name.values()):
+    for current_name in set(resolution.added_current_name.values()):
         field = field_by_name[current_name]
         if field.default is not dataclasses.MISSING:
             replacements[current_name] = field.default
@@ -106,7 +106,7 @@ def _added_defaults(
     fields_json = cast(JsonFields, defaults_obj._artifact_data[FIELDSMARKER])
     return {
         index: fields_json[current_name]
-        for index, current_name in added_current_name.items()
+        for index, current_name in resolution.added_current_name.items()
     }
 
 
@@ -222,7 +222,7 @@ def _resolve_class(obj: Spec[Any]) -> _ClassResolution:
     covered.sort(key=lambda pair: pair[0].start, reverse=True)
     return _ClassResolution(
         steps=steps,
-        added_defaults=_added_defaults(obj, added_current_name),
+        added_current_name=added_current_name,
         covered=tuple(covered),
         orphaned=tuple(orphaned),
     )
@@ -267,7 +267,10 @@ class _SourceFields(Mapping[str, JsonValue]):
 
 
 def _apply_steps(
-    resolution: _ClassResolution, start: int, source_fields: JsonFields
+    resolution: _ClassResolution,
+    start: int,
+    source_fields: JsonFields,
+    added_defaults: dict[int, JsonValue],
 ) -> JsonFields:
     fields = dict(source_fields)
     for index in range(start, len(resolution.steps)):
@@ -282,7 +285,7 @@ def _apply_steps(
                     )
                 fields[to] = fields.pop(field)
             case Added(field=field):
-                fields[field] = resolution.added_defaults[index]
+                fields[field] = added_defaults[index]
             case Retyped() | MovedFrom():
                 pass
             case Rewrite(transform=transform):
