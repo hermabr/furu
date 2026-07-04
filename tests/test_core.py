@@ -1610,14 +1610,14 @@ def test_data_dir():
     )
 
 
-def test_metadata_defaults_to_project_config_storage_one_cpu_zero_gpus():
+def test_metadata_defaults_to_project_config_storage_and_no_resource_constraints():
     node = Node(name="x")
 
     assert node.metadata() == Metadata()
-    assert node.metadata().requires == Requires(gpus=0, cpus=1, ram=None)
+    assert node.metadata().requires == Requires(cpus=None, gpus=None, ram=None)
     assert node._storage_root == get_config().run_directories.objects
     assert node._resource_requirements == ResourceRequirements(
-        cpus=(1, 1), gpus=(0, 0), memory_gib=None
+        cpus=None, gpus=None, memory_gib=None
     )
 
 
@@ -1700,7 +1700,7 @@ def test_metadata_requires_accepts_memory_range():
             return "x"
 
     assert MemoryRangeNode()._resource_requirements == ResourceRequirements(
-        cpus=(1, 1), gpus=(0, 0), memory_gib=(16, 64)
+        cpus=None, gpus=None, memory_gib=(16, 64)
     )
 
 

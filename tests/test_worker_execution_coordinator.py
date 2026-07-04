@@ -564,7 +564,7 @@ def test_count_satisfiable_jobs_caps_at_max_workers_and_filters_by_requirements(
         coordinator.count_satisfiable_jobs(
             resources=ResourceRequest(gpus=1), max_workers=10
         )
-        == 1
+        == 3
     )
 
 
