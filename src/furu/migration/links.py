@@ -128,7 +128,6 @@ def _write_result_link(obj: Spec[Any], link: _ResultLink) -> None:
     tmp_path = nfs_safe_unique_name(link_path, name="tmp")
     tmp_path.write_text(link.model_dump_json(indent=2), encoding="utf-8")
     tmp_path.rename(link_path)
-    # A linked result still marks this schema directory as holding a result.
     _record_schema_snapshot(obj)
 
 
