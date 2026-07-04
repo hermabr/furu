@@ -25,15 +25,11 @@ from furu.utils import JsonFields, JsonValue, _stable_json_dump
 if TYPE_CHECKING:
     from furu.core import Spec
 
-# A field's expected schema at some point in the chain: matched exactly for
-# untouched fields, at shape level (class identity, not internal layout) behind
-# Retyped, and not at all behind Rewrite.
 _FieldExpectation: TypeAlias = tuple[Literal["exact", "shape", "any"], JsonValue]
 _ANY: _FieldExpectation = ("any", None)
 
 
 def _shape_of(schema: JsonValue) -> JsonValue:
-    # Compare class schemas by identity, not by their internal field layout.
     if isinstance(schema, dict):
         if CLASSMARKER in schema:
             return schema[CLASSMARKER]
@@ -43,14 +39,9 @@ def _shape_of(schema: JsonValue) -> JsonValue:
     return schema
 
 
-def _was_shape(obj: Spec[Any], step: Retyped) -> JsonValue:
-    schema = schema_type(step.was, set(), artifact_serializers=obj.artifact_serializers)
-    return _shape_of(schema)
-
-
 @dataclass(frozen=True, slots=True)
 class _Generation:
-    start: int  # steps[start:] lead from this generation to the current schema
+    start: int
     class_name: str
     expectations: Mapping[str, _FieldExpectation]
 
@@ -59,32 +50,14 @@ class _Generation:
 class _ClassResolution:
     steps: tuple[MigrationStep, ...]
     added_current_name: dict[int, str]
-    covered: tuple[tuple[_Generation, Path], ...]  # most recent generation first
-    orphaned: tuple[Path, ...]  # schema directories with no chain to current
+    covered: tuple[tuple[_Generation, Path], ...]
+    orphaned: tuple[Path, ...]
 
 
 def _list_schema_directories(tree_directory: Path) -> list[Path]:
     if not tree_directory.exists():
         return []
     return sorted(path for path in tree_directory.iterdir() if path.is_dir())
-
-
-def _binds(generation: _Generation, snapshot: JsonValue) -> bool:
-    if not isinstance(snapshot, dict):
-        return False
-    if snapshot.get(CLASSMARKER) != generation.class_name:
-        return False
-    snapshot_fields = snapshot.get(FIELDSMARKER)
-    if not isinstance(snapshot_fields, dict):
-        return False
-    if set(snapshot_fields) != set(generation.expectations):
-        return False
-    for name, (kind, value) in generation.expectations.items():
-        if kind == "exact" and snapshot_fields[name] != value:
-            return False
-        if kind == "shape" and _shape_of(snapshot_fields[name]) != value:
-            return False
-    return True
 
 
 def _added_default_fields(
@@ -100,7 +73,7 @@ def _added_default_fields(
             replacements[current_name] = field.default
         else:
             factory = field.default_factory
-            assert callable(factory)  # phase-one validation guarantees a default
+            assert callable(factory)
             replacements[current_name] = factory()
     defaults_obj = dataclasses.replace(obj, **replacements)
     fields_json = cast(JsonFields, defaults_obj._artifact_data[FIELDSMARKER])
@@ -122,9 +95,6 @@ def _resolve_class(obj: Spec[Any]) -> _ClassResolution:
         ).items()
     }
 
-    # Walk backward from the current schema; phase-one validation already
-    # guaranteed the chain is well-formed. generations[i] is the source schema
-    # of the chain steps[i:].
     expectations = dict(current_fields)
     current_name_of = {name: name for name in expectations}
     added_current_name: dict[int, str] = {}
@@ -139,7 +109,16 @@ def _resolve_class(obj: Spec[Any]) -> _ClassResolution:
                 added_current_name[index] = current_name_of.pop(field)
                 del expectations[field]
             case Retyped(field=field) as step:
-                expectations[field] = ("shape", _was_shape(obj, step))
+                expectations[field] = (
+                    "shape",
+                    _shape_of(
+                        schema_type(
+                            step.was,
+                            set(),
+                            artifact_serializers=obj.artifact_serializers,
+                        )
+                    ),
+                )
             case MovedFrom(fully_qualified_name=name):
                 class_at = name
             case Rewrite():
@@ -176,7 +155,9 @@ def _resolve_class(obj: Spec[Any]) -> _ClassResolution:
         if kind == "any":
             continue
         post_shape = _shape_of(value) if kind == "exact" else value
-        if post_shape == _was_shape(obj, step):
+        if post_shape == _shape_of(
+            schema_type(step.was, set(), artifact_serializers=obj.artifact_serializers)
+        ):
             raise MigrationError(
                 f"{cls.__name__}.migrations[{index}] ({_describe_step(step)}) is a "
                 f"dead step: {step.field!r} already has that type, so the step can "
@@ -204,7 +185,20 @@ def _resolve_class(obj: Spec[Any]) -> _ClassResolution:
             matches = [
                 generation
                 for generation in generations
-                if generation.class_name == tree_name and _binds(generation, snapshot)
+                if (
+                    isinstance(snapshot, dict)
+                    and snapshot.get(CLASSMARKER) == generation.class_name
+                    and (snapshot_fields := snapshot.get(FIELDSMARKER)) is not None
+                    and isinstance(snapshot_fields, dict)
+                    and set(snapshot_fields) == set(generation.expectations)
+                    and all(
+                        (kind != "exact" or snapshot_fields[name] == value)
+                        and (
+                            kind != "shape" or _shape_of(snapshot_fields[name]) == value
+                        )
+                        for name, (kind, value) in generation.expectations.items()
+                    )
+                )
             ]
             if len(matches) > 1:
                 raise MigrationError(
@@ -218,7 +212,6 @@ def _resolve_class(obj: Spec[Any]) -> _ClassResolution:
                 covered.append((matches[0], schema_directory))
             else:
                 orphaned.append(schema_directory)
-    # Prefer the most recent generation; every candidate still matches fields exactly.
     covered.sort(key=lambda pair: pair[0].start, reverse=True)
     return _ClassResolution(
         steps=steps,
