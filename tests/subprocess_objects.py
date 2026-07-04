@@ -63,6 +63,35 @@ class OtherSubprocessEnvLeaf(Spec[str]):
         return _pid_and_variable(self.variable_name)
 
 
+class SubprocessRequiredEnvLeaf(Spec[str]):
+    storage_root: str
+    variable_name: str
+    required: bool = True
+    override_environment: bool = False
+    variable_value: str | None = None
+    reuse: Reuse = "same_environment"
+    marker: int = 0
+
+    def metadata(self) -> Metadata:
+        environment = (
+            {self.variable_name: self.variable_value}
+            if self.override_environment
+            else {}
+        )
+        required_environment = (self.variable_name,) if self.required else ()
+        return Metadata(
+            storage=Path(self.storage_root),
+            execution=Subprocess(
+                environment=environment,
+                required_environment=required_environment,
+                reuse=self.reuse,
+            ),
+        )
+
+    def create(self) -> str:
+        return _pid_and_variable(self.variable_name)
+
+
 class SubprocessCrashLeaf(Spec[str]):
     storage_root: str
     marker: int = 0

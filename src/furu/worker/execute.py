@@ -57,6 +57,7 @@ def execute_job(obj: Spec[Any], *, lease_id: str) -> JobResultRequest:
 class _Child:
     process: subprocess.Popen[str]
     environment: dict[str, str | None]
+    process_environment: dict[str, str] = field(repr=False)
     spec_name: str
     stderr_thread: threading.Thread | None = None
     stderr_tail: deque[str] = field(default_factory=deque)
@@ -100,17 +101,29 @@ class ChildSlot:
             return JobCompletedResult()
 
         environment = dict(execution.environment)
+        required_environment = tuple(execution.required_environment)
         child = self._child
         if child is not None and not _reusable(
             child,
             environment=environment,
+            required_environment=required_environment,
             spec_name=obj._fully_qualified_name,
             reuse=execution.reuse,
         ):
             self.close()
             child = None
         if child is None:
-            child = _spawn(environment)
+            process_environment = _process_environment(environment)
+            if missing := _missing_required_environment(
+                process_environment, required_environment
+            ):
+                return JobFailedResult(
+                    error=(
+                        "subprocess missing required environment variables: "
+                        + ", ".join(missing)
+                    )
+                )
+            child = _spawn(environment, process_environment)
             self._child = child
         child.spec_name = obj._fully_qualified_name
 
@@ -147,6 +160,7 @@ def _reusable(
     child: _Child,
     *,
     environment: dict[str, str | None],
+    required_environment: tuple[str, ...],
     spec_name: str,
     reuse: Literal["never", "same_environment", "same_environment_same_spec"],
 ) -> bool:
@@ -156,10 +170,12 @@ def _reusable(
         return False
     if child.environment != environment:
         return False
+    if _missing_required_environment(child.process_environment, required_environment):
+        return False
     return reuse == "same_environment" or child.spec_name == spec_name
 
 
-def _spawn(environment: dict[str, str | None]) -> _Child:
+def _process_environment(environment: dict[str, str | None]) -> dict[str, str]:
     child_environment = dict(os.environ)
     for name, value in environment.items():
         if value is None:
@@ -170,15 +186,36 @@ def _spawn(environment: dict[str, str | None]) -> _Child:
     if (config_file := os.environ.get(_WORKER_JSON_CONFIG_FILE_ENV_VAR)) is not None:
         child_environment[_WORKER_JSON_CONFIG_FILE_ENV_VAR] = config_file
 
+    return child_environment
+
+
+def _missing_required_environment(
+    process_environment: dict[str, str], required_environment: tuple[str, ...]
+) -> tuple[str, ...]:
+    return tuple(
+        name
+        for name in dict.fromkeys(required_environment)
+        if name not in process_environment
+    )
+
+
+def _spawn(
+    environment: dict[str, str | None], process_environment: dict[str, str]
+) -> _Child:
     process = subprocess.Popen(
         [sys.executable, "-m", "furu.worker._child"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        env=child_environment,
+        env=process_environment,
         text=True,
     )
-    child = _Child(process=process, environment=environment, spec_name="")
+    child = _Child(
+        process=process,
+        environment=environment,
+        process_environment=process_environment,
+        spec_name="",
+    )
     child.stderr_thread = threading.Thread(
         target=_forward_stderr,
         args=(child,),

@@ -59,9 +59,13 @@ class Subprocess:
 
     A None value in environment removes the variable from the child, as
     opposed to setting it to the empty string.
+
+    Values in required_environment must exist in the effective child process
+    environment. They are checked by name only; values are never logged.
     """
 
     environment: Mapping[str, str | None] = field(default_factory=dict)
+    required_environment: tuple[str, ...] = ()
     reuse: Literal["never", "same_environment", "same_environment_same_spec"] = (
         "same_environment"
     )
