@@ -50,14 +50,6 @@ class MigrationError(RuntimeError):
     pass
 
 
-def _type_label(tp: object) -> str:
-    if typing.get_origin(tp) in (typing.Union, types.UnionType):
-        return " | ".join(_type_label(a) for a in typing.get_args(tp))
-    if isinstance(tp, type):
-        return fully_qualified_name(tp)
-    return repr(tp)
-
-
 def _describe_step(step: MigrationStep) -> str:
     match step:
         case Renamed(field=field, to=to):
@@ -67,6 +59,14 @@ def _describe_step(step: MigrationStep) -> str:
         case MovedFrom(fully_qualified_name=name):
             return f"MovedFrom({name!r})"
         case Retyped(field=field, was=was):
+
+            def _type_label(tp: object) -> str:
+                if typing.get_origin(tp) in (typing.Union, types.UnionType):
+                    return " | ".join(_type_label(a) for a in typing.get_args(tp))
+                if isinstance(tp, type):
+                    return fully_qualified_name(tp)
+                return repr(tp)
+
             return f"Retyped({field!r}, was={_type_label(was)})"
         case Rewrite(transform=transform):
             return f"Rewrite({getattr(transform, '__qualname__', repr(transform))})"
