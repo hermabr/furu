@@ -1,5 +1,3 @@
-"""Report orphaned schema generations that block recomputation."""
-
 from __future__ import annotations
 
 import json
@@ -8,7 +6,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from furu.constants import FIELDSMARKER
 from furu.migration.links import _find_source
-from furu.migration.scanner import _ClassResolution, _class_resolution
+from furu.migration.scanner import _class_resolution, _ClassResolution
 from furu.migration.steps import Stale
 from furu.storage._layout import schema_snapshot_path_in_schema_directory
 from furu.utils import JsonValue, _stable_json_dump

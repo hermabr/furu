@@ -1,5 +1,3 @@
-"""Transform stored artifact fields through a migration chain."""
-
 from __future__ import annotations
 
 import dataclasses

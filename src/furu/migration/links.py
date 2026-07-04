@@ -1,5 +1,3 @@
-"""Resolve current specs to reusable result links."""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -10,7 +8,7 @@ from pydantic import BaseModel, ConfigDict
 from furu.constants import FIELDSMARKER
 from furu.metadata import CompletedMetadata
 from furu.migration.field_values import _added_default_fields, _apply_steps
-from furu.migration.scanner import _ClassResolution, _class_resolution
+from furu.migration.scanner import _class_resolution, _ClassResolution
 from furu.migration.steps import _describe_step
 from furu.storage._layout import (
     metadata_path_in,

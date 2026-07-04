@@ -1,5 +1,3 @@
-"""Walk migration changelogs into older schema generations."""
-
 from __future__ import annotations
 
 import dataclasses
@@ -17,7 +15,6 @@ from furu.migration.steps import (
     _describe_step,
 )
 from furu.utils import JsonValue, _stable_json_dump
-
 
 _FieldExpectation: TypeAlias = tuple[Literal["exact", "shape", "any"], JsonValue]
 _ANY: _FieldExpectation = ("any", None)

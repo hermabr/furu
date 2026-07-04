@@ -1,11 +1,9 @@
-"""Validate migration declarations at class creation time."""
-
 from __future__ import annotations
 
 import dataclasses
 from typing import TYPE_CHECKING, Any
 
-from furu.migration.generations import _ANY, _WalkError, _walk_generations
+from furu.migration.generations import _ANY, _walk_generations, _WalkError
 from furu.migration.steps import (
     Added,
     MovedFrom,

@@ -1,5 +1,3 @@
-"""Match declared generations against schema snapshots on disk."""
-
 from __future__ import annotations
 
 import dataclasses
@@ -11,10 +9,10 @@ from furu.constants import CLASSMARKER, FIELDSMARKER
 from furu.migration.generations import (
     _FieldExpectation,
     _Generation,
-    _WalkError,
     _shape_of,
     _shape_of_expectation,
     _walk_generations,
+    _WalkError,
 )
 from furu.migration.steps import MigrationError, MigrationStep, Retyped, _describe_step
 from furu.serializer.schema import schema_type
