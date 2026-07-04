@@ -45,7 +45,6 @@ from furu.execution.load_or_create import _load_or_create
 from furu.locking import LockManifest, lock
 from furu.logging import _scoped_log_files
 from furu.metadata import ArtifactSpec
-from furu.resources import ResourceRequirements
 from furu.result.bundle import _save_result_bundle, load_result_bundle
 from furu.serializer.artifact import _from_json, to_json
 from furu.testing import override_config
@@ -1610,15 +1609,12 @@ def test_data_dir():
     )
 
 
-def test_metadata_defaults_to_project_config_storage_and_no_resource_constraints():
+def test_metadata_defaults_to_project_config_storage_and_empty_requires():
     node = Node(name="x")
 
     assert node.metadata() == Metadata()
     assert node.metadata().requires == Requires(cpus=None, gpus=None, ram=None)
     assert node._metadata.storage == get_config().run_directories.objects
-    assert node._resource_requirements == ResourceRequirements(
-        cpus=None, gpus=None, memory_gib=None
-    )
 
 
 def test_gib_is_frozen_slots_value_object():
@@ -1683,11 +1679,11 @@ def test_metadata_requires_can_depend_on_fields():
         def create(self) -> str:
             return self.name
 
-    assert HeavyNode(name="x", big=True)._resource_requirements == (
-        ResourceRequirements(cpus=(4, 4), gpus=(1, 8), memory_gib=(16, None))
+    assert HeavyNode(name="x", big=True)._metadata.requires == (
+        Requires(gpus=between(1, 8), cpus=4, ram=GiB(16))
     )
-    assert HeavyNode(name="x", big=False)._resource_requirements == (
-        ResourceRequirements(cpus=(4, 4), gpus=(0, 0), memory_gib=(16, None))
+    assert HeavyNode(name="x", big=False)._metadata.requires == (
+        Requires(gpus=0, cpus=4, ram=GiB(16))
     )
 
 
@@ -1699,8 +1695,8 @@ def test_metadata_requires_accepts_memory_range():
         def create(self) -> str:
             return "x"
 
-    assert MemoryRangeNode()._resource_requirements == ResourceRequirements(
-        cpus=None, gpus=None, memory_gib=(16, 64)
+    assert MemoryRangeNode()._metadata.requires == Requires(
+        ram=between(GiB(16), GiB(64))
     )
 
 

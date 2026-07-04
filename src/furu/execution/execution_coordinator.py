@@ -192,7 +192,7 @@ class ExecutionCoordinator:
                     object_id
                     for object_id, node in self.ready.items()
                     if resource_request_satisfies(
-                        resources, node.obj._resource_requirements
+                        resources, node.obj._metadata.requires
                     )
                     and self._can_start_node_locked(node, running_counts)
                 ),
@@ -233,7 +233,7 @@ class ExecutionCoordinator:
             running_counts = self._running_counts()
             for node in self.ready.values():
                 if resource_request_satisfies(
-                    resources, node.obj._resource_requirements
+                    resources, node.obj._metadata.requires
                 ) and self._can_start_node_locked(node, running_counts):
                     count += 1
                     running_counts[type(node.obj)] = (

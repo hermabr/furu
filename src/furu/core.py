@@ -28,7 +28,6 @@ from furu.metadata import ArtifactSpec
 from furu.migration.links import result_dir_for_loading
 from furu.migration.stale import raise_if_stale, sideways_status
 from furu.migration.steps import MigrationStep, validate_migration_declaration
-from furu.resources import ResourceRequirements, resource_requirements_from_requires
 from furu.result.bundle import load_result_bundle
 from furu.result.codec import Codec
 from furu.serializer.artifact import to_json as _to_json
@@ -156,11 +155,6 @@ class Spec[T](_FuruDataclassTransform, ABC):
         if config.debug_mode:
             return replace(metadata, storage=config.run_directories.objects)
         return metadata
-
-    @final
-    @cached_property
-    def _resource_requirements(self) -> ResourceRequirements:
-        return resource_requirements_from_requires(self._metadata.requires)
 
     @property
     def logger(self) -> logging.Logger:
