@@ -1,22 +1,22 @@
+"""Match declared generations against schema snapshots on disk."""
+
 from __future__ import annotations
 
 import dataclasses
 import json
-from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from furu.constants import CLASSMARKER, FIELDSMARKER
-from furu.migration.steps import (
-    Added,
-    MigrationError,
-    MigrationStep,
-    MovedFrom,
-    Renamed,
-    Retyped,
-    Rewrite,
-    _describe_step,
+from furu.migration.generations import (
+    _FieldExpectation,
+    _Generation,
+    _WalkError,
+    _shape_of,
+    _shape_of_expectation,
+    _walk_generations,
 )
+from furu.migration.steps import MigrationError, MigrationStep, Retyped, _describe_step
 from furu.serializer.schema import schema_type
 from furu.storage._layout import schema_snapshot_path_in_schema_directory
 from furu.utils import JsonValue, _stable_json_dump
@@ -24,140 +24,11 @@ from furu.utils import JsonValue, _stable_json_dump
 if TYPE_CHECKING:
     from furu.core import Spec
 
-# What a snapshot's field schema must look like to bind: "exact" compares the
-# recorded schema verbatim, "shape" compares after class-internal erasure
-# (Retyped's was= types), "any" accepts everything (fields behind a Rewrite).
-_FieldExpectation: TypeAlias = tuple[Literal["exact", "shape", "any"], JsonValue]
-_ANY: _FieldExpectation = ("any", None)
-
-
-def _shape_of(schema: JsonValue) -> JsonValue:
-    # Erase class internals: a class schema compares by fully qualified name
-    # only, so a later change inside e.g. SGD does not refuse to bind.
-    if isinstance(schema, dict):
-        if CLASSMARKER in schema:
-            return schema[CLASSMARKER]
-        return {key: _shape_of(value) for key, value in schema.items()}
-    if isinstance(schema, list):
-        return sorted((_shape_of(item) for item in schema), key=_stable_json_dump)
-    return schema
-
-
-def _shape_of_expectation(expectation: _FieldExpectation) -> JsonValue | None:
-    kind, value = expectation
-    if kind == "any":
-        return None
-    return _shape_of(value) if kind == "exact" else value
-
-
-@dataclasses.dataclass(frozen=True, slots=True)
-class _Generation:
-    start: int  # steps[start:] lead from this generation to the current schema
-    class_name: str
-    expectations: Mapping[str, _FieldExpectation]
-
-
-class _WalkError(Exception):
-    pass
-
-
-def _walk_generations(
-    *,
-    owner: str,
-    steps: tuple[MigrationStep, ...],
-    class_name: str,
-    current_fields: Mapping[str, _FieldExpectation],
-    shape_for: Callable[[Retyped], _FieldExpectation],
-) -> tuple[list[_Generation], dict[int, str]]:
-    """Walk the changelog newest-first, reconstructing each older generation."""
-    expectations = dict(current_fields)
-    current_name_of = {name: name for name in expectations}
-    added_current_name: dict[int, str] = {}
-    generations: list[_Generation] = []
-    class_at = class_name
-
-    def fail(index: int, message: str) -> _WalkError:
-        return _WalkError(
-            f"{owner}.migrations[{index}] ({_describe_step(steps[index])}): "
-            f"{message}; fields at that point in the chain: {sorted(expectations)}"
-        )
-
-    for index in reversed(range(len(steps))):
-        step = steps[index]
-        match step:
-            case Renamed(field=field, to=to):
-                if to not in expectations:
-                    raise fail(index, f"{to!r} is not a field")
-                if field in expectations:
-                    raise fail(index, f"{field!r} already exists")
-                expectations[field] = expectations.pop(to)
-                current_name_of[field] = current_name_of.pop(to)
-            case Added(field=field):
-                if field not in expectations:
-                    raise fail(index, f"{field!r} is not a field")
-                added_current_name[index] = current_name_of.pop(field)
-                del expectations[field]
-            case Retyped(field=field):
-                if field not in expectations:
-                    raise fail(index, f"{field!r} is not a field")
-                expectations[field] = shape_for(step)
-            case MovedFrom(fully_qualified_name=name):
-                class_at = name
-            case Rewrite():
-                # A rewrite reshapes values within fields; it preserves the
-                # field-name set, so everything else about earlier schemas is
-                # unknown but the names still walk.
-                expectations = dict.fromkeys(expectations, _ANY)
-        generations.append(
-            _Generation(
-                start=index, class_name=class_at, expectations=dict(expectations)
-            )
-        )
-    generations.reverse()
-    return generations, added_current_name
-
-
-def validate_migration_declaration(cls: type[Spec[Any]]) -> None:
-    """Phase one: structural validation at class creation, zero storage access."""
-    steps = cls.migrations
-    if not isinstance(steps, tuple) or not all(
-        isinstance(step, (Renamed, Added, MovedFrom, Retyped, Rewrite))
-        for step in steps
-    ):
-        raise TypeError(
-            f"{cls.__name__}.migrations must be a tuple of "
-            "Renamed/Added/MovedFrom/Retyped/Rewrite steps"
-        )
-
-    fields_by_name = {field.name: field for field in dataclasses.fields(cls)}
-    try:
-        _, added_current_name = _walk_generations(
-            owner=cls.__name__,
-            steps=steps,
-            class_name="",
-            current_fields=dict.fromkeys(fields_by_name, _ANY),
-            shape_for=lambda step: _ANY,
-        )
-    except _WalkError as error:
-        raise TypeError(str(error)) from None
-
-    for index, current_name in added_current_name.items():
-        field = fields_by_name[current_name]
-        if (
-            field.default is dataclasses.MISSING
-            and field.default_factory is dataclasses.MISSING
-        ):
-            raise TypeError(
-                f"{cls.__name__}.migrations[{index}] "
-                f"({_describe_step(steps[index])}): field {current_name!r} has no "
-                "default; Added can only backfill a field with a default value"
-            )
-
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class _ClassResolution:
     steps: tuple[MigrationStep, ...]
-    added_current_name: Mapping[int, str]
+    added_current_name: dict[int, str]
     covered: tuple[tuple[_Generation, Path], ...]  # most recent generation first
     orphaned: tuple[Path, ...]  # schema directories with no chain to current
 
@@ -290,8 +161,7 @@ def _resolve_class(obj: Spec[Any]) -> _ClassResolution:
                 covered.append((matches[0], schema_directory))
             else:
                 orphaned.append(schema_directory)
-    # Prefer the most recent generation when searching for a source; every
-    # candidate must pass the exact per-artifact field match either way.
+    # Prefer the most recent generation; every candidate still matches fields exactly.
     covered.sort(key=lambda pair: pair[0].start, reverse=True)
     return _ClassResolution(
         steps=steps,
