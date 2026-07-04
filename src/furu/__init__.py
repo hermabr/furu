@@ -8,10 +8,10 @@ from furu.diff import diff
 from furu.execution.load_or_create import create, load_existing
 from furu.logging import get_logger
 from furu.migration.steps import Added, MovedFrom, Renamed, Retyped, Rewrite, Stale
-from furu.resources import ResourceRequirements
 from furu.result.codec import Codec
 from furu.result.ref import Ref, ref
 from furu.serializer.registry import Serializer
+from furu.spec_metadata import GiB, Metadata, Requires, Throttle, at_least, between
 from furu.utils import _install_main_module_alias
 from furu.validate import validate
 
@@ -23,16 +23,21 @@ __all__ = [
     "__version__",
     "Added",
     "Codec",
+    "GiB",
+    "Metadata",
     "Missing",
     "MovedFrom",
     "Ref",
     "Renamed",
-    "ResourceRequirements",
+    "Requires",
     "Retyped",
     "Rewrite",
     "Serializer",
     "Spec",
     "Stale",
+    "Throttle",
+    "at_least",
+    "between",
     "create",
     "dependency",
     "diff",

@@ -512,9 +512,7 @@ class _SequenceMetadataCodec(Codec[_SequenceMetadataValue]):
 
 
 class RegistryAutoRegisteredValueResult(Spec[_AutoRegisteredValue]):
-    @property
-    def result_codecs(self) -> tuple[type[Codec], ...]:
-        return (_CoreRegistryAutoValueCodec,)
+    result_codecs = (_CoreRegistryAutoValueCodec,)
 
     def create(self) -> _AutoRegisteredValue:
         return _AutoRegisteredValue(10)
@@ -891,9 +889,7 @@ class RefCountingResult(Spec[RefCountingOutput]):
 
 
 class DataDirPathResult(Spec[dict[str, _DataDirPathValue]]):
-    @property
-    def result_codecs(self) -> tuple[type[Codec], ...]:
-        return (_DataDirPathCodec,)
+    result_codecs = (_DataDirPathCodec,)
 
     def create(self) -> dict[str, _DataDirPathValue]:
         path = self.directory.data / "data.zarr"
@@ -1062,18 +1058,14 @@ def test_codec_metadata_rejects_load_path_outside_data_dir(
 
 
 class RegistryCountingResult(Spec[_CountingValue]):
-    @property
-    def result_codecs(self) -> tuple[type[Codec], ...]:
-        return (_CountingCodec,)
+    result_codecs = (_CountingCodec,)
 
     def create(self) -> _CountingValue:
         return _CountingValue(8)
 
 
 class AmbiguousRegistryCountingResult(Spec[_CountingValue]):
-    @property
-    def result_codecs(self) -> tuple[type[Codec], ...]:
-        return (_CountingCodec, _OtherCountingCodec)
+    result_codecs = (_CountingCodec, _OtherCountingCodec)
 
     def create(self) -> _CountingValue:
         return _CountingValue(8)
@@ -1367,9 +1359,7 @@ class NumpyResult(Spec[dict[str, object]]):
 
 
 class RegistryNumpyResult(Spec[Any]):
-    @property
-    def result_codecs(self) -> tuple[type[Codec], ...]:
-        return (_RegistryNumpyCodec,)
+    result_codecs = (_RegistryNumpyCodec,)
 
     def create(self) -> Any:
         return np.arange(10, dtype=np.float32)

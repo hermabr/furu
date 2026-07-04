@@ -12,7 +12,7 @@ from dataclasses import (
     replace,
 )
 from enum import Enum
-from functools import cached_property, partial
+from functools import partial
 from pathlib import Path
 from typing import Any, ClassVar, Literal, cast
 from unittest.mock import patch
@@ -23,8 +23,12 @@ from pydantic import BaseModel, ConfigDict
 import furu
 import furu.execution.load_or_create as execution_module
 from furu import (
-    ResourceRequirements,
+    GiB,
+    Metadata,
+    Requires,
     Spec,
+    Throttle,
+    between,
     validate,
 )
 from furu.storage._layout import (
@@ -35,7 +39,7 @@ from furu.storage._layout import (
     result_manifest_path_in,
     run_log_path_in,
 )
-from furu.config import _FuruConfig, _FuruDirectories, get_config
+from furu.config import _Config, _FuruDirectories, get_config
 from furu.dependencies import collect_declared_refs
 from furu.execution.load_or_create import _load_or_create
 from furu.locking import LockManifest, lock
@@ -80,9 +84,9 @@ class Node(Spec[str]):
         return f"Node({self.name})"
 
 
-class MaxWorkersIdentityNode(Spec[str]):
+class ThrottleIdentityNode(Spec[str]):
     name: str
-    max_workers = 1
+    throttle = Throttle(max_running=1)
 
     def create(self) -> str:
         return self.name
@@ -95,10 +99,9 @@ class WeightedNode(Node):
         return f"WNode({self.name}:{self.weight})"
 
 
-class CustomStorageRootNode(Node):
-    @cached_property
-    def storage_root(self) -> Path:
-        return Path("custom/data/location")
+class CustomStorageNode(Node):
+    def metadata(self) -> Metadata:
+        return Metadata(storage=Path("custom/data/location"))
 
 
 class NodePair(Spec[dict]):
@@ -333,14 +336,27 @@ class CountedSingleValue(Spec[str]):
         return f"single:{self.key}"
 
 
-class ObjectIdStorageRootValue(Spec[str]):
+class UnsatisfiableRequiresNode(Spec[str]):
+    name: str
+    storage_override: ClassVar[Path] = Path("unsatisfiable-root")
+
+    def metadata(self) -> Metadata:
+        return Metadata(
+            storage=type(self).storage_override,
+            requires=Requires(gpus=between(64, 128), ram=GiB(1024 * 1024)),
+        )
+
+    def create(self) -> str:
+        return self.name
+
+
+class ObjectIdStorageValue(Spec[str]):
     key: int
-    storage_root_override: ClassVar[Path] = Path("object-id-root")
+    storage_override: ClassVar[Path] = Path("object-id-root")
     create_calls: ClassVar[list[int]] = []
 
-    @cached_property
-    def storage_root(self) -> Path:
-        return type(self).storage_root_override
+    def metadata(self) -> Metadata:
+        return Metadata(storage=type(self).storage_override)
 
     def create(self) -> str:
         type(self).create_calls.append(self.key)
@@ -542,8 +558,8 @@ class BatchDependencyParent(Spec[str]):
 @pytest.fixture(autouse=True)
 def _reset_batch_trackers() -> None:
     CountedSingleValue.create_calls.clear()
-    ObjectIdStorageRootValue.storage_root_override = Path("object-id-root")
-    ObjectIdStorageRootValue.create_calls.clear()
+    ObjectIdStorageValue.storage_override = Path("object-id-root")
+    ObjectIdStorageValue.create_calls.clear()
     BatchOnlyValue.batch_calls.clear()
     GroupBatchA.batch_calls.clear()
     GroupBatchB.batch_calls.clear()
@@ -694,6 +710,7 @@ def test_reserved_field_name_raises_at_class_creation():
         "migrate",
         "migrations",
         "provenance",
+        "throttle",
     ):
         assert f"'{name}'" in message
 
@@ -1592,111 +1609,144 @@ def test_data_dir():
     )
 
 
-def test_resource_requirements_defaults_to_none():
-    assert Node(name="x").resource_requirements is None
+def test_metadata_defaults_to_project_config_storage_and_empty_requires():
+    node = Node(name="x")
+
+    assert node.metadata() == Metadata()
+    assert node.metadata().requires == Requires(cpus=None, gpus=None, ram=None)
+    assert node._metadata.storage == get_config().run_directories.objects
 
 
-def test_max_workers_defaults_to_none():
-    assert Node(name="x").max_workers is None
+def test_gib_is_frozen_slots_value_object():
+    memory = GiB(16)
+
+    assert memory.count == 16
+    assert not hasattr(memory, "__dict__")
+    with pytest.raises(FrozenInstanceError):
+        setattr(memory, "count", 32)
+    with pytest.raises(ValueError, match="GiB count must be non-negative"):
+        GiB(-1)
 
 
-def test_max_workers_can_be_overridden_as_class_option():
+def test_throttle_defaults_to_none():
+    assert Node(name="x").throttle is None
+
+
+def test_throttle_can_be_overridden_as_class_attribute():
     class LimitedNode(Spec[str]):
         name: str
-        max_workers = 5
+        throttle = Throttle(max_running=5)
 
         def create(self) -> str:
             return self.name
 
-    assert LimitedNode(name="x").max_workers == 5
-    assert "max_workers" not in {field.name for field in fields(LimitedNode)}
+    assert LimitedNode(name="x").throttle == Throttle(max_running=5)
+    assert "throttle" not in {field.name for field in fields(LimitedNode)}
 
 
-def test_max_workers_can_be_overridden_with_classvar():
-    class LimitedNode(Spec[str]):
-        name: str
-        max_workers: ClassVar[int | None] = 5
-
-        def create(self) -> str:
-            return self.name
-
-    assert LimitedNode(name="x").max_workers == 5
-
-
-def test_max_workers_does_not_affect_schema_or_object_identity():
-    original_max_workers = MaxWorkersIdentityNode.max_workers
-    before = MaxWorkersIdentityNode(name="x")
+def test_throttle_does_not_affect_schema_or_object_identity():
+    original_throttle = ThrottleIdentityNode.throttle
+    before = ThrottleIdentityNode(name="x")
     before_schema_hash = before._artifact_schema_hash
     before_artifact_hash = before._artifact_hash
     before_object_id = before.object_id
 
     try:
-        MaxWorkersIdentityNode.max_workers = 5
-        after = MaxWorkersIdentityNode(name="x")
+        ThrottleIdentityNode.throttle = Throttle(max_running=5)
+        after = ThrottleIdentityNode(name="x")
     finally:
-        MaxWorkersIdentityNode.max_workers = original_max_workers
+        ThrottleIdentityNode.throttle = original_throttle
 
     assert after._artifact_schema_hash == before_schema_hash
     assert after._artifact_hash == before_artifact_hash
     assert after.object_id == before_object_id
 
 
-def test_resource_requirements_can_be_overridden_with_property():
+def test_metadata_requires_can_depend_on_fields():
     class HeavyNode(Spec[str]):
         name: str
+        big: bool
 
-        @property
-        def resource_requirements(self) -> ResourceRequirements | None:
-            return ResourceRequirements(
-                cpus=(4, 8), gpus=(1, None), memory_gib=(16, None)
+        def metadata(self) -> Metadata:
+            return Metadata(
+                requires=Requires(
+                    gpus=between(1, 8) if self.big else 0,
+                    cpus=4,
+                    ram=GiB(16),
+                )
             )
 
         def create(self) -> str:
             return self.name
 
-    rr = HeavyNode(name="x").resource_requirements
-    assert rr == ResourceRequirements(
-        cpus=(4, 8), gpus=(1, None), memory_gib=(16, None)
+    assert HeavyNode(name="x", big=True)._metadata.requires == (
+        Requires(gpus=between(1, 8), cpus=4, ram=GiB(16))
     )
-    assert rr is not None
+    assert HeavyNode(name="x", big=False)._metadata.requires == (
+        Requires(gpus=0, cpus=4, ram=GiB(16))
+    )
 
 
-def test_storage_root_can_be_overridden_with_cached_property(
+def test_metadata_requires_accepts_memory_range():
+    class MemoryRangeNode(Spec[str]):
+        def metadata(self) -> Metadata:
+            return Metadata(requires=Requires(ram=between(GiB(16), GiB(64))))
+
+        def create(self) -> str:
+            return "x"
+
+    assert MemoryRangeNode()._metadata.requires == Requires(
+        ram=between(GiB(16), GiB(64))
+    )
+
+
+def test_metadata_storage_overrides_base_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    node = CustomStorageRootNode(name="x")
+    node = CustomStorageNode(name="x")
 
-    assert node.storage_root == Path("custom/data/location")
-    assert node.storage_root is node.storage_root
     assert node._base_dir == (
         Path("custom/data/location")
         / "test_core"
-        / "CustomStorageRootNode"
+        / "CustomStorageNode"
         / node._artifact_schema_hash
         / node._artifact_hash
     )
     assert node.directory.data == node._base_dir / "data"
 
 
-def test_debug_mode_ignores_storage_root_override() -> None:
-    with override_config(_FuruConfig(debug_mode=True)):
-        node = CustomStorageRootNode(name="x")
+def test_load_path_reads_metadata_storage_without_touching_requires(
+    tmp_path: Path,
+) -> None:
+    UnsatisfiableRequiresNode.storage_override = tmp_path / "store"
+    node = UnsatisfiableRequiresNode(name="x")
 
-        assert node.storage_root == Path("custom/data/location")
+    assert node.status == "missing"
+    node.create()
+    assert node._base_dir.is_relative_to(tmp_path / "store")
+    assert node.status == "done"
+    assert UnsatisfiableRequiresNode(name="x").load_existing() == "x"
+
+
+def test_debug_mode_ignores_storage_override() -> None:
+    with override_config(_Config(debug_mode=True)):
+        node = CustomStorageNode(name="x")
+
+        assert node.metadata().storage == Path("custom/data/location")
         assert node._base_dir == (
             Path("furu-data")
             / "debug"
             / "objects"
             / "test_core"
-            / "CustomStorageRootNode"
+            / "CustomStorageNode"
             / node._artifact_schema_hash
             / node._artifact_hash
         )
 
 
 def test_debug_mode_uses_configured_debug_directory() -> None:
-    config = _FuruConfig(
+    config = _Config(
         debug_mode=True,
         directories=_FuruDirectories(
             objects=Path("main/objects"),
@@ -1705,14 +1755,14 @@ def test_debug_mode_uses_configured_debug_directory() -> None:
         ),
     )
     with override_config(config):
-        node = CustomStorageRootNode(name="x")
+        node = CustomStorageNode(name="x")
 
-        assert node.storage_root == Path("custom/data/location")
+        assert node.metadata().storage == Path("custom/data/location")
         assert node._base_dir == (
             Path("custom/debug")
             / "objects"
             / "test_core"
-            / "CustomStorageRootNode"
+            / "CustomStorageNode"
             / node._artifact_schema_hash
             / node._artifact_hash
         )
@@ -1864,8 +1914,8 @@ def test_nested_create_scopes_logs_to_child_file() -> None:
 def test_cached_create_logs_debug_call_and_only_cache_hit_info(
     tmp_path: Path,
 ) -> None:
-    ObjectIdStorageRootValue.storage_root_override = tmp_path / "objects"
-    obj = ObjectIdStorageRootValue(key=1)
+    ObjectIdStorageValue.storage_override = tmp_path / "objects"
+    obj = ObjectIdStorageValue(key=1)
 
     assert obj.create() == "object-id:1"
 
@@ -1888,9 +1938,9 @@ def test_cached_create_logs_debug_call_and_only_cache_hit_info(
 def test_small_cache_summary_logs_labels_for_cached_and_missing_items(
     tmp_path: Path,
 ) -> None:
-    ObjectIdStorageRootValue.storage_root_override = tmp_path / "objects"
-    cached = ObjectIdStorageRootValue(key=1)
-    missing = ObjectIdStorageRootValue(key=2)
+    ObjectIdStorageValue.storage_override = tmp_path / "objects"
+    cached = ObjectIdStorageValue(key=1)
+    missing = ObjectIdStorageValue(key=2)
 
     assert cached.create() == "object-id:1"
 
@@ -2076,19 +2126,19 @@ def test_duplicate_cache_identities_compute_once_and_preserve_input_order() -> N
 
 
 def test_executor_deduplicates_by_object_id_not_data_dir(tmp_path: Path) -> None:
-    ObjectIdStorageRootValue.storage_root_override = tmp_path / "first"
-    first = ObjectIdStorageRootValue(key=1)
+    ObjectIdStorageValue.storage_override = tmp_path / "first"
+    first = ObjectIdStorageValue(key=1)
     first_data_dir = first.directory.data
 
-    ObjectIdStorageRootValue.storage_root_override = tmp_path / "second"
-    second = ObjectIdStorageRootValue(key=1)
+    ObjectIdStorageValue.storage_override = tmp_path / "second"
+    second = ObjectIdStorageValue(key=1)
     second_data_dir = second.directory.data
 
     assert first.object_id == second.object_id
     assert first_data_dir != second_data_dir
 
     assert _load_or_create([first, second]) == ["object-id:1", "object-id:1"]
-    assert ObjectIdStorageRootValue.create_calls == [1]
+    assert ObjectIdStorageValue.create_calls == [1]
 
 
 def test_existing_items_are_skipped_before_locking(
@@ -2151,26 +2201,26 @@ def test_worker_execution_context_is_scoped() -> None:
 def test_worker_create_loads_cached_result_without_recomputing(
     tmp_path: Path,
 ) -> None:
-    ObjectIdStorageRootValue.storage_root_override = tmp_path / "data"
-    cached = ObjectIdStorageRootValue(key=10)
+    ObjectIdStorageValue.storage_override = tmp_path / "data"
+    cached = ObjectIdStorageValue(key=10)
 
     assert cached.create() == "object-id:10"
-    ObjectIdStorageRootValue.create_calls.clear()
+    ObjectIdStorageValue.create_calls.clear()
 
     with worker_execution_context(
         lease_id="lease-1",
     ):
         assert cached.create() == "object-id:10"
 
-    assert ObjectIdStorageRootValue.create_calls == []
+    assert ObjectIdStorageValue.create_calls == []
 
 
 def test_worker_create_reports_all_missing_dependencies(
     tmp_path: Path,
 ) -> None:
-    ObjectIdStorageRootValue.storage_root_override = tmp_path / "data"
-    first = ObjectIdStorageRootValue(key=11)
-    second = ObjectIdStorageRootValue(key=12)
+    ObjectIdStorageValue.storage_override = tmp_path / "data"
+    first = ObjectIdStorageValue(key=11)
+    second = ObjectIdStorageValue(key=12)
 
     with (
         worker_execution_context(
@@ -2183,14 +2233,14 @@ def test_worker_create_reports_all_missing_dependencies(
     exc = exc_info.value
     assert exc.call_kind == "create"
     assert exc.dependencies == (first, second)
-    assert ObjectIdStorageRootValue.create_calls == []
+    assert ObjectIdStorageValue.create_calls == []
     assert not result_manifest_path_in(first._base_dir).exists()
     assert not result_manifest_path_in(second._base_dir).exists()
 
 
 def test_worker_load_existing_reports_missing_dependency(tmp_path: Path) -> None:
-    ObjectIdStorageRootValue.storage_root_override = tmp_path / "data"
-    missing = ObjectIdStorageRootValue(key=13)
+    ObjectIdStorageValue.storage_override = tmp_path / "data"
+    missing = ObjectIdStorageValue(key=13)
 
     with (
         worker_execution_context(
@@ -2208,10 +2258,10 @@ def test_worker_load_existing_reports_missing_dependency(tmp_path: Path) -> None
 def test_worker_top_level_load_existing_reports_all_missing_dependencies(
     tmp_path: Path,
 ) -> None:
-    ObjectIdStorageRootValue.storage_root_override = tmp_path / "data"
-    missing_first = ObjectIdStorageRootValue(key=21)
-    ready = ObjectIdStorageRootValue(key=22)
-    missing_second = ObjectIdStorageRootValue(key=23)
+    ObjectIdStorageValue.storage_override = tmp_path / "data"
+    missing_first = ObjectIdStorageValue(key=21)
+    ready = ObjectIdStorageValue(key=22)
+    missing_second = ObjectIdStorageValue(key=23)
 
     assert ready.create() == "object-id:22"
 
@@ -2231,8 +2281,8 @@ def test_worker_top_level_load_existing_reports_all_missing_dependencies(
 def test_worker_dependency_not_ready_is_not_caught_as_exception(
     tmp_path: Path,
 ) -> None:
-    ObjectIdStorageRootValue.storage_root_override = tmp_path / "data"
-    missing = ObjectIdStorageRootValue(key=14)
+    ObjectIdStorageValue.storage_override = tmp_path / "data"
+    missing = ObjectIdStorageValue(key=14)
 
     with pytest.raises(_DependencyNotReady):
         with worker_execution_context(

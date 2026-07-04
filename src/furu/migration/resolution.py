@@ -177,7 +177,7 @@ def _resolve_class(obj: Spec[Any]) -> _ClassResolution:
     orphaned: list[Path] = []
     trees = {current_class} | {generation.class_name for generation in generations}
     for tree_name in sorted(trees):
-        tree_directory = obj._storage_root / Path(*tree_name.split("."))
+        tree_directory = obj._metadata.storage / Path(*tree_name.split("."))
         if not tree_directory.exists():
             continue
         for schema_directory in sorted(
@@ -224,7 +224,7 @@ _RESOLUTION_CACHE: dict[tuple[type, Path], _ClassResolution | MigrationError] = 
 
 
 def _class_resolution(obj: Spec[Any]) -> _ClassResolution:
-    key = (type(obj), obj._storage_root)
+    key = (type(obj), obj._metadata.storage)
     cached = _RESOLUTION_CACHE.get(key)
     if cached is None:
         try:

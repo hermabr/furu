@@ -113,10 +113,7 @@ class _AnnotatedSecretRun(Spec[int]):
 
 class _RegistrySecretRun(Spec[int]):
     secret: _Secret
-
-    @property
-    def artifact_serializers(self) -> tuple[type[Serializer], ...]:
-        return (_RegistrySecretSerializer,)
+    artifact_serializers = (_RegistrySecretSerializer,)
 
     def create(self) -> int:
         return self.secret.value
@@ -309,10 +306,7 @@ class _AutoRegisteredValueRun(Spec[int]):
 
 class _RegistryAutoRegisteredValueRun(Spec[int]):
     value: _AutoRegisteredValue
-
-    @property
-    def artifact_serializers(self) -> tuple[type[Serializer], ...]:
-        return (_RegistryAutoRegisteredValueSerializer,)
+    artifact_serializers = (_RegistryAutoRegisteredValueSerializer,)
 
     def create(self) -> int:
         return self.value.value

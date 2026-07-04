@@ -4,7 +4,7 @@ import json
 import logging
 import shutil
 from abc import ABC
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import cached_property
 from inspect import get_annotations
 from pathlib import Path
@@ -28,12 +28,12 @@ from furu.metadata import ArtifactSpec
 from furu.migration.links import result_dir_for_loading
 from furu.migration.stale import raise_if_stale, sideways_status
 from furu.migration.steps import MigrationStep, validate_migration_declaration
-from furu.resources import ResourceRequirements
 from furu.result.bundle import load_result_bundle
 from furu.result.codec import Codec
 from furu.serializer.artifact import to_json as _to_json
 from furu.serializer.registry import Serializer
 from furu.serializer.schema import schema_type as _schema_type
+from furu.spec_metadata import Metadata, Throttle
 from furu.storage._layout import (
     compute_lock_path_in,
     data_dir_in,
@@ -68,8 +68,9 @@ class Missing(Exception):
 
 
 SpecCreateMode: TypeAlias = Literal["single", "batched"] | None
-_FURU_CLASS_OPTIONS = frozenset({"max_workers"})
-_SPEC_CLASS_ATTRIBUTES = frozenset({"migrations"})
+_SPEC_CLASS_ATTRIBUTES = frozenset(
+    {"migrations", "throttle", "result_codecs", "artifact_serializers"}
+)
 _RESERVED_FIELD_NAMES = frozenset(
     {
         "create",
@@ -83,14 +84,19 @@ _RESERVED_FIELD_NAMES = frozenset(
         "migrate",
         "migrations",
         "provenance",
+        "throttle",
+        "result_codecs",
+        "artifact_serializers",
     }
 )
 
 
 class Spec[T](_FuruDataclassTransform, ABC):
     _furu_create_mode: ClassVar[SpecCreateMode]
-    max_workers: ClassVar[int | None] = None
+    throttle: ClassVar[Throttle | None] = None
     migrations: ClassVar[tuple[MigrationStep, ...]] = ()
+    result_codecs: ClassVar[tuple[type[Codec], ...]] = ()
+    artifact_serializers: ClassVar[tuple[type[Serializer], ...]] = ()
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -104,17 +110,9 @@ class Spec[T](_FuruDataclassTransform, ABC):
                 f"the Spec verb surface; reserved names: "
                 f"{sorted(_RESERVED_FIELD_NAMES)}"
             )
-        if _FURU_CLASS_OPTIONS & annotations.keys():
-            annotations = {
-                name: value
-                for name, value in annotations.items()
-                if name not in _FURU_CLASS_OPTIONS
-            }
-            cls.__annotations__ = annotations
         for name, value in cls.__dict__.items():
             if (
                 not (name.startswith("__") and name.endswith("__"))
-                and name not in _FURU_CLASS_OPTIONS
                 and name not in _SPEC_CLASS_ATTRIBUTES
                 and name not in annotations
                 and not callable(value)
@@ -146,29 +144,17 @@ class Spec[T](_FuruDataclassTransform, ABC):
             f"{cls.__name__} must implement create() or create_batched()"
         )
 
-    @cached_property
-    def storage_root(self) -> Path:
-        return get_config().run_directories.objects
+    def metadata(self) -> Metadata:
+        return Metadata()
 
     @final
     @cached_property
-    def _storage_root(self) -> Path:
+    def _metadata(self) -> Metadata:
+        metadata = self.metadata()
         config = get_config()
         if config.debug_mode:
-            return config.run_directories.objects
-        return self.storage_root
-
-    @property
-    def result_codecs(self) -> tuple[type[Codec], ...]:
-        return ()
-
-    @property
-    def artifact_serializers(self) -> tuple[type[Serializer], ...]:
-        return ()
-
-    @property
-    def resource_requirements(self) -> ResourceRequirements | None:
-        return None
+            return replace(metadata, storage=config.run_directories.objects)
+        return metadata
 
     @property
     def logger(self) -> logging.Logger:
@@ -343,7 +329,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
     @cached_property
     def _base_dir(self) -> Path:
         return (
-            self._storage_root
+            self._metadata.storage
             / Path(*self._fully_qualified_name.split("."))
             / self._artifact_schema_hash
             / self._artifact_hash

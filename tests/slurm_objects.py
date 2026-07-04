@@ -5,8 +5,7 @@ import time
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from furu import Spec
-from furu.resources import ResourceRequirements
+from furu import Metadata, Requires, Spec, between
 
 type SlurmTaskKind = Literal["a_only", "b_only", "shared"]
 
@@ -18,15 +17,15 @@ class SlurmWorkloadTask(Spec[dict[str, object]]):
     duration_seconds: float
     parents: tuple[Spec[Any], ...] = ()
 
-    @property
-    def resource_requirements(self) -> ResourceRequirements | None:
+    def metadata(self) -> Metadata:
         match self.kind:
             case "a_only":
-                return ResourceRequirements(cpus=(1, 1))
+                requires = Requires(cpus=1)
             case "b_only":
-                return ResourceRequirements(cpus=(2, 2))
+                requires = Requires(cpus=2)
             case "shared":
-                return ResourceRequirements(cpus=(1, 2))
+                requires = Requires(cpus=between(1, 2))
+        return Metadata(requires=requires)
 
     def create(self) -> dict[str, object]:
         parent_results = [

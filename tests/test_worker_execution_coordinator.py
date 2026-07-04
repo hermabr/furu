@@ -14,7 +14,7 @@ from pydantic import TypeAdapter, ValidationError
 
 import furu
 import furu.worker.loop as worker_loop_module
-from furu import Spec
+from furu import GiB, Metadata, Requires, Spec, Throttle, at_least
 from furu.storage._layout import execution_coordinator_log_path_in
 from furu.config import get_config
 from furu.dag import _add_to_dag
@@ -27,7 +27,7 @@ from furu.execution.execution_coordinator import (
 )
 from furu.execution.server import execution_coordinator_server
 from furu.metadata import ArtifactSpec
-from furu.resources import ResourceRequest, ResourceRequirements
+from furu.resources import ResourceRequest
 from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
 from furu.worker.loop import worker_loop
 from furu.worker.protocol import (
@@ -129,7 +129,7 @@ class FlakyExecutionCoordinatorLeaf(Spec[int]):
 
 class LimitedExecutionCoordinatorLeaf(Spec[int]):
     value: int
-    max_workers: ClassVar[int | None] = 2
+    throttle = Throttle(max_running=2)
 
     def create(self) -> int:
         return self.value
@@ -472,9 +472,8 @@ def test_execution_coordinator_run_retries_failed_worker_result() -> None:
 class GpuLeaf(Spec[int]):
     value: int
 
-    @property
-    def resource_requirements(self) -> ResourceRequirements | None:
-        return ResourceRequirements(gpus=(1, None))
+    def metadata(self) -> Metadata:
+        return Metadata(requires=Requires(gpus=at_least(1)))
 
     def create(self) -> int:
         return self.value
@@ -483,10 +482,6 @@ class GpuLeaf(Spec[int]):
 class CpuOnlyLeaf(Spec[int]):
     value: int
 
-    @property
-    def resource_requirements(self) -> ResourceRequirements | None:
-        return ResourceRequirements(gpus=(0, 0))
-
     def create(self) -> int:
         return self.value
 
@@ -494,9 +489,8 @@ class CpuOnlyLeaf(Spec[int]):
 class MemoryLeaf(Spec[int]):
     value: int
 
-    @property
-    def resource_requirements(self) -> ResourceRequirements | None:
-        return ResourceRequirements(memory_gib=(8, None))
+    def metadata(self) -> Metadata:
+        return Metadata(requires=Requires(ram=GiB(8)))
 
     def create(self) -> int:
         return self.value
@@ -505,10 +499,6 @@ class MemoryLeaf(Spec[int]):
 class DynamicCpuSeed(Spec[int]):
     value: int
     create_calls: ClassVar[list[int]] = []
-
-    @property
-    def resource_requirements(self) -> ResourceRequirements | None:
-        return ResourceRequirements(gpus=(0, 0))
 
     def create(self) -> int:
         type(self).create_calls.append(self.value)
@@ -520,9 +510,8 @@ class DynamicGpuAfterSeed(Spec[int]):
     value: int
     create_calls: ClassVar[list[int]] = []
 
-    @property
-    def resource_requirements(self) -> ResourceRequirements | None:
-        return ResourceRequirements(gpus=(1, None))
+    def metadata(self) -> Metadata:
+        return Metadata(requires=Requires(gpus=at_least(1)))
 
     def create(self) -> int:
         type(self).create_calls.append(self.value)
@@ -534,10 +523,6 @@ class DynamicCpuAfterGpu(Spec[int]):
     value: int
     create_calls: ClassVar[list[int]] = []
 
-    @property
-    def resource_requirements(self) -> ResourceRequirements | None:
-        return ResourceRequirements(gpus=(0, 0))
-
     def create(self) -> int:
         type(self).create_calls.append(self.value)
         return self.parent.create() + self.value
@@ -548,9 +533,8 @@ class DynamicGpuAfterCpu(Spec[int]):
     value: int
     create_calls: ClassVar[list[int]] = []
 
-    @property
-    def resource_requirements(self) -> ResourceRequirements | None:
-        return ResourceRequirements(gpus=(1, None))
+    def metadata(self) -> Metadata:
+        return Metadata(requires=Requires(gpus=at_least(1)))
 
     def create(self) -> int:
         type(self).create_calls.append(self.value)

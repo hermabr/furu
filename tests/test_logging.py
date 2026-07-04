@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 import furu.logging as furu_logging
-from furu.config import _FuruConfig, _FuruDirectories, _set_config, get_config
+from furu.config import _Config, _FuruDirectories, _set_config, get_config
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -429,7 +429,7 @@ def test_unscoped_log_rotates_with_timestamped_name_when_it_reaches_limit(
 ) -> None:
     monkeypatch.setattr(furu_logging, "_UNSCOPED_LOG_MAX_BYTES", 4)
     _set_config(
-        _FuruConfig(
+        _Config(
             directories=_FuruDirectories(
                 objects=tmp_path / "objects",
                 executions=tmp_path / "executions",

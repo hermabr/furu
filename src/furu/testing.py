@@ -11,11 +11,11 @@ from pathlib import Path
 
 import pytest
 
-from furu.config import _FuruConfig, _FuruDirectories, _set_config, get_config
+from furu.config import _Config, _FuruDirectories, _set_config, get_config
 
 
 @contextmanager
-def override_config(config: _FuruConfig) -> Iterator[None]:
+def override_config(config: _Config) -> Iterator[None]:
     previous = get_config()
     _set_config(config)
     try:
@@ -26,8 +26,8 @@ def override_config(config: _FuruConfig) -> Iterator[None]:
 
 @dataclass(slots=True)
 class _FuruPytestState:
-    original_config: _FuruConfig
-    run_config: _FuruConfig
+    original_config: _Config
+    run_config: _Config
 
 
 _STATE_KEY = pytest.StashKey[_FuruPytestState]()
@@ -42,12 +42,12 @@ def _keep_furu_data() -> bool:
 
 
 def _replace_config_directories(
-    config: _FuruConfig,
+    config: _Config,
     directories: _FuruDirectories,
-) -> _FuruConfig:
+) -> _Config:
     data = config.model_dump()
     data["directories"] = directories
-    return _FuruConfig.model_validate(data)
+    return _Config.model_validate(data)
 
 
 def pytest_configure(config: pytest.Config) -> None:

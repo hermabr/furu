@@ -45,7 +45,7 @@ def _transplant_generation(donor: Spec[Any], target_cls: type[Spec[Any]]) -> Pat
     target_name = fully_qualified_name(target_cls)
     source_schema_directory = donor._base_dir.parent
     target_schema_directory = (
-        donor._storage_root
+        donor._metadata.storage
         / Path(*target_name.split("."))
         / source_schema_directory.name
     )
