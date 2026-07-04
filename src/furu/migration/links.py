@@ -59,18 +59,17 @@ def _read_source(artifact_dir: Path) -> _ResultLink | None:
         metadata = CompletedMetadata.model_validate_json(
             metadata_path.read_text(encoding="utf-8")
         )
-        artifact = metadata.artifact
         return _ResultLink(
             current=_ResultLinkCurrent(
-                fully_qualified_name=artifact.fully_qualified_name,
-                schema_hash=artifact.schema_hash,
-                artifact_hash=artifact.artifact_hash,
-                fields=cast(JsonFields, artifact.artifact_data[FIELDSMARKER]),
+                fully_qualified_name=metadata.artifact.fully_qualified_name,
+                schema_hash=metadata.artifact.schema_hash,
+                artifact_hash=metadata.artifact.artifact_hash,
+                fields=cast(JsonFields, metadata.artifact.artifact_data[FIELDSMARKER]),
             ),
             source=_ResultLinkSource(
-                fully_qualified_name=artifact.fully_qualified_name,
-                schema_hash=artifact.schema_hash,
-                artifact_hash=artifact.artifact_hash,
+                fully_qualified_name=metadata.artifact.fully_qualified_name,
+                schema_hash=metadata.artifact.schema_hash,
+                artifact_hash=metadata.artifact.artifact_hash,
                 base_dir=artifact_dir,
             ),
             migration_path=(),
