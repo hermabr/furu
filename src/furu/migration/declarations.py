@@ -5,11 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 from furu.migration.generations import _ANY, _walk_generations
 from furu.migration.steps import (
-    Added,
-    MovedFrom,
-    Renamed,
-    Retyped,
-    Rewrite,
+    MigrationStep,
     _describe_step,
 )
 
@@ -20,8 +16,7 @@ if TYPE_CHECKING:
 def validate_migration_declaration(cls: type[Spec[Any]]) -> None:
     steps = cls.migrations
     if not isinstance(steps, tuple) or not all(
-        isinstance(step, (Renamed, Added, MovedFrom, Retyped, Rewrite))
-        for step in steps
+        isinstance(step, MigrationStep) for step in steps
     ):
         raise TypeError(
             f"{cls.__name__}.migrations must be a tuple of "
