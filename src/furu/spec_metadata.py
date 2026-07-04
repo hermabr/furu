@@ -1,7 +1,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, TypeAlias, cast
+from typing import Any, Literal, cast
 
 from furu.config import get_config
 
@@ -67,15 +67,8 @@ class Subprocess:
     )
 
 
-Execution: TypeAlias = Literal["inline"] | Subprocess
-
-
-def _default_storage() -> Path:
-    return get_config().run_directories.objects
-
-
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Metadata:
-    storage: Path = field(default_factory=_default_storage)
+    storage: Path = field(default_factory=lambda: get_config().run_directories.objects)
     requires: Requires = Requires()
-    execution: Execution = "inline"
+    execution: Literal["inline"] | Subprocess = "inline"
