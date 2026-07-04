@@ -3,9 +3,8 @@ from __future__ import annotations
 import dataclasses
 import json
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeAlias, cast
+from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
 
 from furu.constants import CLASSMARKER, FIELDSMARKER
 from furu.migration.steps import (
@@ -25,23 +24,11 @@ from furu.utils import JsonValue, _stable_json_dump
 if TYPE_CHECKING:
     from furu.core import Spec
 
-
-@dataclass(frozen=True, slots=True)
-class _Exact:
-    schema: JsonValue
-
-
-@dataclass(frozen=True, slots=True)
-class _Shape:
-    shape: JsonValue
-
-
-class _Anything:
-    __slots__ = ()
-
-
-_ANYTHING = _Anything()
-_FieldExpectation: TypeAlias = _Exact | _Shape | _Anything
+# What a snapshot's field schema must look like to bind: "exact" compares the
+# recorded schema verbatim, "shape" compares after class-internal erasure
+# (Retyped's was= types), "any" accepts everything (fields behind a Rewrite).
+_FieldExpectation: TypeAlias = tuple[Literal["exact", "shape", "any"], JsonValue]
+_ANY: _FieldExpectation = ("any", None)
 
 
 def _shape_of(schema: JsonValue) -> JsonValue:
@@ -57,26 +44,13 @@ def _shape_of(schema: JsonValue) -> JsonValue:
 
 
 def _shape_of_expectation(expectation: _FieldExpectation) -> JsonValue | None:
-    match expectation:
-        case _Exact(schema=schema):
-            return _shape_of(schema)
-        case _Shape(shape=shape):
-            return shape
-        case _:
-            return None
+    kind, value = expectation
+    if kind == "any":
+        return None
+    return _shape_of(value) if kind == "exact" else value
 
 
-def _expectation_key(expectation: _FieldExpectation) -> JsonValue:
-    match expectation:
-        case _Exact(schema=schema):
-            return ["exact", schema]
-        case _Shape(shape=shape):
-            return ["shape", shape]
-        case _:
-            return ["any"]
-
-
-@dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, slots=True)
 class _Generation:
     start: int  # steps[start:] lead from this generation to the current schema
     class_name: str
@@ -84,57 +58,48 @@ class _Generation:
 
 
 class _WalkError(Exception):
-    def __init__(self, index: int, step: MigrationStep, message: str) -> None:
-        super().__init__(message)
-        self.index = index
-        self.step = step
-        self.message = message
+    pass
 
 
 def _walk_generations(
     *,
+    owner: str,
     steps: tuple[MigrationStep, ...],
     class_name: str,
     current_fields: Mapping[str, _FieldExpectation],
     shape_for: Callable[[Retyped], _FieldExpectation],
-) -> tuple[dict[int, _Generation], dict[int, str]]:
-    expectations: dict[str, _FieldExpectation] = dict(current_fields)
+) -> tuple[list[_Generation], dict[int, str]]:
+    """Walk the changelog newest-first, reconstructing each older generation."""
+    expectations = dict(current_fields)
     current_name_of = {name: name for name in expectations}
     added_current_name: dict[int, str] = {}
-    generations: dict[int, _Generation] = {}
+    generations: list[_Generation] = []
     class_at = class_name
 
-    def fields_there() -> str:
-        return f"fields at that point in the chain: {sorted(expectations)}"
+    def fail(index: int, message: str) -> _WalkError:
+        return _WalkError(
+            f"{owner}.migrations[{index}] ({_describe_step(steps[index])}): "
+            f"{message}; fields at that point in the chain: {sorted(expectations)}"
+        )
 
-    for index in range(len(steps) - 1, -1, -1):
+    for index in reversed(range(len(steps))):
         step = steps[index]
         match step:
             case Renamed(field=field, to=to):
                 if to not in expectations:
-                    raise _WalkError(
-                        index, step, f"{to!r} is not a field; {fields_there()}"
-                    )
+                    raise fail(index, f"{to!r} is not a field")
                 if field in expectations:
-                    raise _WalkError(
-                        index,
-                        step,
-                        f"{field!r} already exists; {fields_there()}",
-                    )
+                    raise fail(index, f"{field!r} already exists")
                 expectations[field] = expectations.pop(to)
                 current_name_of[field] = current_name_of.pop(to)
             case Added(field=field):
                 if field not in expectations:
-                    raise _WalkError(
-                        index, step, f"{field!r} is not a field; {fields_there()}"
-                    )
+                    raise fail(index, f"{field!r} is not a field")
                 added_current_name[index] = current_name_of.pop(field)
                 del expectations[field]
             case Retyped(field=field):
                 if field not in expectations:
-                    raise _WalkError(
-                        index, step, f"{field!r} is not a field; {fields_there()}"
-                    )
+                    raise fail(index, f"{field!r} is not a field")
                 expectations[field] = shape_for(step)
             case MovedFrom(fully_qualified_name=name):
                 class_at = name
@@ -142,12 +107,13 @@ def _walk_generations(
                 # A rewrite reshapes values within fields; it preserves the
                 # field-name set, so everything else about earlier schemas is
                 # unknown but the names still walk.
-                expectations = dict.fromkeys(expectations, _ANYTHING)
-        generations[index] = _Generation(
-            start=index,
-            class_name=class_at,
-            expectations=dict(expectations),
+                expectations = dict.fromkeys(expectations, _ANY)
+        generations.append(
+            _Generation(
+                start=index, class_name=class_at, expectations=dict(expectations)
+            )
         )
+    generations.reverse()
     return generations, added_current_name
 
 
@@ -166,16 +132,14 @@ def validate_migration_declaration(cls: type[Spec[Any]]) -> None:
     fields_by_name = {field.name: field for field in dataclasses.fields(cls)}
     try:
         _, added_current_name = _walk_generations(
+            owner=cls.__name__,
             steps=steps,
             class_name="",
-            current_fields={name: _ANYTHING for name in fields_by_name},
-            shape_for=lambda step: _ANYTHING,
+            current_fields=dict.fromkeys(fields_by_name, _ANY),
+            shape_for=lambda step: _ANY,
         )
     except _WalkError as error:
-        raise TypeError(
-            f"{cls.__name__}.migrations[{error.index}] "
-            f"({_describe_step(error.step)}): {error.message}"
-        ) from None
+        raise TypeError(str(error)) from None
 
     for index, current_name in added_current_name.items():
         field = fields_by_name[current_name]
@@ -190,19 +154,12 @@ def validate_migration_declaration(cls: type[Spec[Any]]) -> None:
             )
 
 
-@dataclass(frozen=True, slots=True)
-class _GenerationDirectory:
-    schema_directory: Path
-    snapshot_path: Path
-    generation: _Generation | None  # None: orphaned, no chain to current
-
-
-@dataclass(frozen=True, slots=True)
+@dataclasses.dataclass(frozen=True, slots=True)
 class _ClassResolution:
     steps: tuple[MigrationStep, ...]
-    generations: tuple[_Generation, ...]
     added_current_name: Mapping[int, str]
-    directories: tuple[_GenerationDirectory, ...]
+    covered: tuple[tuple[_Generation, Path], ...]  # most recent generation first
+    orphaned: tuple[Path, ...]  # schema directories with no chain to current
 
 
 _RESOLUTION_CACHE: dict[tuple[type, Path], _ClassResolution | MigrationError] = {}
@@ -224,17 +181,30 @@ def _binds(generation: _Generation, snapshot: JsonValue) -> bool:
         return False
     if set(snapshot_fields) != set(generation.expectations):
         return False
-    for name, expectation in generation.expectations.items():
-        match expectation:
-            case _Exact(schema=schema):
-                if snapshot_fields[name] != schema:
-                    return False
-            case _Shape(shape=shape):
-                if _shape_of(snapshot_fields[name]) != shape:
-                    return False
-            case _:
-                pass
+    for name, (kind, value) in generation.expectations.items():
+        if kind == "exact" and snapshot_fields[name] != value:
+            return False
+        if kind == "shape" and _shape_of(snapshot_fields[name]) != value:
+            return False
     return True
+
+
+def _reject_ambiguous_chains(cls: type, generations: list[_Generation]) -> None:
+    described: dict[str, int] = {}
+    for generation in generations:
+        fields_key: dict[str, JsonValue] = {
+            name: [kind, value]
+            for name, (kind, value) in generation.expectations.items()
+        }
+        key = _stable_json_dump({"class": generation.class_name, "fields": fields_key})
+        first = described.setdefault(key, generation.start)
+        if first != generation.start:
+            raise MigrationError(
+                f"{cls.__name__}.migrations is ambiguous: the chains starting at "
+                f"steps[{first}] and steps[{generation.start}] describe the same "
+                "source schema; every source schema must have exactly one chain "
+                "to the current schema"
+            )
 
 
 def _resolve_class(obj: Spec[Any]) -> _ClassResolution:
@@ -242,65 +212,41 @@ def _resolve_class(obj: Spec[Any]) -> _ClassResolution:
     steps = cls.migrations
     current_schema = cast("dict[str, JsonValue]", obj._schema_data)
     current_class = cast(str, current_schema[CLASSMARKER])
-    current_field_schemas = cast("dict[str, JsonValue]", current_schema[FIELDSMARKER])
     current_fields: dict[str, _FieldExpectation] = {
-        name: _Exact(schema) for name, schema in current_field_schemas.items()
+        name: ("exact", schema)
+        for name, schema in cast(
+            "dict[str, JsonValue]", current_schema[FIELDSMARKER]
+        ).items()
     }
 
     def shape_for(step: Retyped) -> _FieldExpectation:
-        return _Shape(
-            _shape_of(
-                schema_type(
-                    step.was, set(), artifact_serializers=obj.artifact_serializers
-                )
-            )
+        schema = schema_type(
+            step.was, set(), artifact_serializers=obj.artifact_serializers
         )
+        return ("shape", _shape_of(schema))
 
     try:
-        generations_by_start, added_current_name = _walk_generations(
+        generations, added_current_name = _walk_generations(
+            owner=cls.__name__,
             steps=steps,
             class_name=current_class,
             current_fields=current_fields,
             shape_for=shape_for,
         )
     except _WalkError as error:
-        raise MigrationError(
-            f"{cls.__name__}.migrations[{error.index}] "
-            f"({_describe_step(error.step)}): {error.message}"
-        ) from None
-    generations = tuple(
-        generations_by_start[index] for index in sorted(generations_by_start)
-    )
+        raise MigrationError(str(error)) from None
 
-    described: dict[str, int] = {}
-    for generation in generations:
-        key = _stable_json_dump(
-            {
-                "class": generation.class_name,
-                "fields": {
-                    name: _expectation_key(expectation)
-                    for name, expectation in generation.expectations.items()
-                },
-            }
-        )
-        if key in described:
-            raise MigrationError(
-                f"{cls.__name__}.migrations is ambiguous: the chains starting at "
-                f"steps[{described[key]}] and steps[{generation.start}] describe "
-                "the same source schema; every source schema must have exactly "
-                "one chain to the current schema"
-            )
-        described[key] = generation.start
+    _reject_ambiguous_chains(cls, generations)
 
     for index, step in enumerate(steps):
         if not isinstance(step, Retyped):
             continue
-        post_side = (
-            generations_by_start[index + 1].expectations
+        post = (
+            generations[index + 1].expectations
             if index + 1 < len(steps)
             else current_fields
         )
-        post_shape = _shape_of_expectation(post_side[step.field])
+        post_shape = _shape_of_expectation(post[step.field])
         was_shape = _shape_of_expectation(shape_for(step))
         if post_shape is not None and post_shape == was_shape:
             raise MigrationError(
@@ -310,8 +256,9 @@ def _resolve_class(obj: Spec[Any]) -> _ClassResolution:
                 "say a field's class itself changed - that is Rewrite's job."
             )
 
+    covered: list[tuple[_Generation, Path]] = []
+    orphaned: list[Path] = []
     trees = {current_class} | {generation.class_name for generation in generations}
-    directories: list[_GenerationDirectory] = []
     for tree_name in sorted(trees):
         tree_directory = obj._storage_root / Path(*tree_name.split("."))
         for schema_directory in _list_schema_directories(tree_directory):
@@ -339,18 +286,18 @@ def _resolve_class(obj: Spec[Any]) -> _ClassResolution:
                     "every source schema must have exactly one chain to the "
                     "current schema"
                 )
-            directories.append(
-                _GenerationDirectory(
-                    schema_directory=schema_directory,
-                    snapshot_path=snapshot_path,
-                    generation=matches[0] if matches else None,
-                )
-            )
+            if matches:
+                covered.append((matches[0], schema_directory))
+            else:
+                orphaned.append(schema_directory)
+    # Prefer the most recent generation when searching for a source; every
+    # candidate must pass the exact per-artifact field match either way.
+    covered.sort(key=lambda pair: pair[0].start, reverse=True)
     return _ClassResolution(
         steps=steps,
-        generations=generations,
         added_current_name=added_current_name,
-        directories=tuple(directories),
+        covered=tuple(covered),
+        orphaned=tuple(orphaned),
     )
 
 

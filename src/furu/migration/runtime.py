@@ -10,12 +10,7 @@ from pydantic import BaseModel, ConfigDict
 
 from furu.constants import FIELDSMARKER
 from furu.metadata import CompletedMetadata
-from furu.migration.resolution import (
-    _ClassResolution,
-    _Generation,
-    _GenerationDirectory,
-    _class_resolution,
-)
+from furu.migration.resolution import _ClassResolution, _class_resolution
 from furu.migration.steps import (
     Added,
     MigrationError,
@@ -31,6 +26,7 @@ from furu.storage._layout import (
     result_dir_in,
     result_link_path_in,
     result_manifest_path_in,
+    schema_snapshot_path_in_schema_directory,
 )
 from furu.utils import JsonFields, JsonValue, _stable_json_dump, nfs_safe_unique_name
 
@@ -168,28 +164,14 @@ def _read_source(artifact_dir: Path) -> _ResultLink | None:
 
 
 def _find_source(obj: Spec[Any], resolution: _ClassResolution) -> _ResultLink | None:
-    if not resolution.generations:
+    if not resolution.covered:
         return None
-    covered = [
-        directory
-        for directory in resolution.directories
-        if directory.generation is not None
-    ]
-    if not covered:
-        return None
-    # Prefer the most recent generation; every candidate must pass the exact
-    # per-artifact field match either way, so any hit is a correct result.
-    covered.sort(
-        key=lambda directory: cast(_Generation, directory.generation).start,
-        reverse=True,
-    )
     target_fields = cast(JsonFields, obj._artifact_data[FIELDSMARKER])
     added_defaults = _added_default_fields(obj, resolution)
-    for directory in covered:
-        generation = cast(_Generation, directory.generation)
-        if not directory.schema_directory.exists():
+    for generation, schema_directory in resolution.covered:
+        if not schema_directory.exists():
             continue
-        for artifact_dir in sorted(directory.schema_directory.iterdir()):
+        for artifact_dir in sorted(schema_directory.iterdir()):
             if not artifact_dir.is_dir():
                 continue
             source_link = _read_source(artifact_dir)
@@ -230,7 +212,7 @@ def _write_result_link(obj: Spec[Any], link: _ResultLink) -> None:
     _record_schema_snapshot(obj)
 
 
-def result_dir_for_loading[T](obj: Spec[T]) -> Path | None:
+def result_dir_for_loading(obj: Spec[Any]) -> Path | None:
     if result_manifest_path_in(obj._base_dir).exists():
         return result_dir_in(obj._base_dir)
     link_path = result_link_path_in(obj._base_dir)
@@ -248,15 +230,13 @@ def result_dir_for_loading[T](obj: Spec[T]) -> Path | None:
     return result_dir_in(link.source.base_dir)
 
 
-def _orphaned_directories(
-    resolution: _ClassResolution,
-) -> list[_GenerationDirectory]:
+def _orphaned_directories(resolution: _ClassResolution) -> list[Path]:
     # Re-stat rather than trusting the memoized scan: discarding old results is
     # directory deletion, and the block must lift the moment the directory is gone.
     return [
         directory
-        for directory in resolution.directories
-        if directory.generation is None and directory.snapshot_path.exists()
+        for directory in resolution.orphaned
+        if schema_snapshot_path_in_schema_directory(directory).exists()
     ]
 
 
@@ -270,8 +250,7 @@ def sideways_status(obj: Spec[Any]) -> Literal["done", "stale", "missing"]:
 
 
 def raise_if_stale(obj: Spec[Any]) -> None:
-    resolution = _class_resolution(obj)
-    orphaned = _orphaned_directories(resolution)
+    orphaned = _orphaned_directories(_class_resolution(obj))
     if not orphaned:
         return
     current_schema = cast("dict[str, JsonValue]", obj._schema_data)
@@ -282,11 +261,12 @@ def raise_if_stale(obj: Spec[Any]) -> None:
         "current schema."
     ]
     for directory in orphaned:
+        snapshot_path = schema_snapshot_path_in_schema_directory(directory)
         snapshot = cast(
             "dict[str, JsonValue]",
-            json.loads(directory.snapshot_path.read_text(encoding="utf-8")),
+            json.loads(snapshot_path.read_text(encoding="utf-8")),
         )
-        lines.append(f"\norphaned: {directory.schema_directory}")
+        lines.append(f"\norphaned: {directory}")
         lines.extend(
             _schema_field_diff(
                 cast("dict[str, JsonValue]", snapshot.get(FIELDSMARKER, {})),
