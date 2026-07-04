@@ -16,7 +16,6 @@ if TYPE_CHECKING:
 
 
 def _orphaned_directories(resolution: _ClassResolution) -> list[Path]:
-    # Re-stat so deleting an orphaned directory immediately lifts the stale block.
     return [
         directory
         for directory in resolution.orphaned
@@ -31,23 +30,6 @@ def sideways_status(obj: Spec[Any]) -> Literal["done", "stale", "missing"]:
     if _orphaned_directories(resolution):
         return "stale"
     return "missing"
-
-
-def _schema_field_diff(
-    old_fields: dict[str, JsonValue], new_fields: dict[str, JsonValue]
-) -> list[str]:
-    lines: list[str] = []
-    for name in sorted(old_fields.keys() | new_fields.keys()):
-        if name not in old_fields:
-            lines.append(f"  + {name}: {_stable_json_dump(new_fields[name])}")
-        elif name not in new_fields:
-            lines.append(f"  - {name}: {_stable_json_dump(old_fields[name])}")
-        elif old_fields[name] != new_fields[name]:
-            lines.append(
-                f"  ~ {name}: {_stable_json_dump(old_fields[name])} "
-                f"-> {_stable_json_dump(new_fields[name])}"
-            )
-    return lines
 
 
 def raise_if_stale(obj: Spec[Any]) -> None:
@@ -68,12 +50,17 @@ def raise_if_stale(obj: Spec[Any]) -> None:
             json.loads(snapshot_path.read_text(encoding="utf-8")),
         )
         lines.append(f"\norphaned: {directory}")
-        lines.extend(
-            _schema_field_diff(
-                cast("dict[str, JsonValue]", snapshot.get(FIELDSMARKER, {})),
-                current_fields,
-            )
-        )
+        old_fields = cast("dict[str, JsonValue]", snapshot.get(FIELDSMARKER, {}))
+        for name in sorted(old_fields.keys() | current_fields.keys()):
+            if name not in old_fields:
+                lines.append(f"  + {name}: {_stable_json_dump(current_fields[name])}")
+            elif name not in current_fields:
+                lines.append(f"  - {name}: {_stable_json_dump(old_fields[name])}")
+            elif old_fields[name] != current_fields[name]:
+                lines.append(
+                    f"  ~ {name}: {_stable_json_dump(old_fields[name])} "
+                    f"-> {_stable_json_dump(current_fields[name])}"
+                )
     lines.append(
         f"\nEither declare a migration chain on {type(obj).__name__}.migrations "
         "(Renamed/Added/MovedFrom/Retyped/Rewrite), or discard the orphaned "
