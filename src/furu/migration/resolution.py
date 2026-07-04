@@ -17,6 +17,7 @@ from furu.migration.steps import (
     Retyped,
     Rewrite,
     _describe_step,
+    _is_breaking,
 )
 from furu.serializer.schema import schema_type
 from furu.storage._layout import schema_snapshot_path_in_schema_directory
@@ -74,16 +75,10 @@ def _added_default_fields(
 ) -> dict[int, JsonValue]:
     if not resolution.added_current_name:
         return {}
-    field_by_name = {field.name: field for field in dataclasses.fields(type(obj))}
-    replacements: dict[str, Any] = {}
-    for current_name in set(resolution.added_current_name.values()):
-        field = field_by_name[current_name]
-        if field.default is not dataclasses.MISSING:
-            replacements[current_name] = field.default
-        else:
-            factory = field.default_factory
-            assert callable(factory)
-            replacements[current_name] = factory()
+    replacements: dict[str, Any] = {
+        current_name: cast(Added, resolution.steps[index]).default
+        for index, current_name in resolution.added_current_name.items()
+    }
     defaults_obj = dataclasses.replace(obj, **replacements)
     fields_json = cast(JsonFields, defaults_obj._artifact_data[FIELDSMARKER])
     return {
@@ -104,8 +99,6 @@ def _resolve_class(obj: Spec[Any]) -> _ClassResolution:
         ).items()
     }
 
-    # validate_migration_declaration walked this same chain at class creation,
-    # so the pop()/[] operations below cannot fail on a declared chain.
     expectations = dict(current_fields)
     current_name_of = {name: name for name in expectations}
     added_current_name: dict[int, str] = {}
@@ -116,8 +109,10 @@ def _resolve_class(obj: Spec[Any]) -> _ClassResolution:
             case Renamed(field=field, to=to):
                 expectations[field] = expectations.pop(to)
                 current_name_of[field] = current_name_of.pop(to)
-            case Added(field=field):
-                added_current_name[index] = current_name_of.pop(field)
+            case Added(field=field) as step:
+                name = current_name_of.pop(field)
+                if not step.breaking:
+                    added_current_name[index] = name
                 del expectations[field]
             case Retyped(field=field) as step:
                 expectations[field] = (
@@ -175,6 +170,9 @@ def _resolve_class(obj: Spec[Any]) -> _ClassResolution:
                 "say a field's class itself changed - that is Rewrite's job."
             )
 
+    last_breaking = max(
+        (index for index, step in enumerate(steps) if _is_breaking(step)), default=-1
+    )
     covered: list[tuple[_Generation, Path]] = []
     orphaned: list[Path] = []
     trees = {current_class} | {generation.class_name for generation in generations}
@@ -209,10 +207,10 @@ def _resolve_class(obj: Spec[Any]) -> _ClassResolution:
                     "every source schema must have exactly one chain to the "
                     "current schema"
                 )
-            if matches:
-                covered.append((matches[0], schema_directory))
-            else:
+            if not matches:
                 orphaned.append(schema_directory)
+            elif matches[0].start > last_breaking:
+                covered.append((matches[0], schema_directory))
     covered.sort(key=lambda pair: pair[0].start, reverse=True)
     return _ClassResolution(
         steps=steps,

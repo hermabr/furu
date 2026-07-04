@@ -75,7 +75,7 @@ class _TrainRun(Spec[dict[str, str]]):
     migrations = (
         MovedFrom(fully_qualified_name(_OldTrainRun)),
         Renamed("learning_rate", to="lr"),
-        Added("seed"),
+        Added("seed", default=0),
     )
 
     def create(self) -> dict[str, str]:
@@ -102,7 +102,7 @@ def test_rename_plus_add_reuses_old_result_through_result_link() -> None:
     assert link["migration_path"] == [
         f"MovedFrom({old._fully_qualified_name!r})",
         "Renamed('learning_rate', to='lr')",
-        "Added('seed')",
+        "Added('seed', default=0)",
     ]
 
     assert new.status == "done"
@@ -114,8 +114,8 @@ def test_added_field_binds_only_the_default_value() -> None:
     _OldTrainRun(learning_rate=0.001, dataset="cifar10").create()
 
     assert _TrainRun(dataset="cifar10", lr=0.001).status == "done"
-    # Old results correspond to the added field's default; any other value is a
-    # different spec whose result genuinely never existed.
+    # Old results correspond to the migration's pinned default; any other value
+    # is a different spec whose result genuinely never existed.
     assert _TrainRun(dataset="cifar10", lr=0.001, seed=7).status == "missing"
 
 
@@ -166,7 +166,7 @@ class _FinalRun(Spec[dict[str, str]]):
 
     migrations = (
         MovedFrom(fully_qualified_name(_MidRun)),
-        Added("seed"),
+        Added("seed", default=0),
     )
 
     def create(self) -> dict[str, str]:
@@ -193,7 +193,7 @@ def test_multi_hop_link_points_directly_at_ultimate_source() -> None:
         f"MovedFrom({old._fully_qualified_name!r})",
         "Renamed('learning_rate', to='lr')",
         f"MovedFrom({mid._fully_qualified_name!r})",
-        "Added('seed')",
+        "Added('seed', default=0)",
     ]
 
 
@@ -528,6 +528,141 @@ def test_rewrite_must_preserve_field_names() -> None:
         _ = _RewriteRenamesRun(dataset="cifar10", version=2).status
 
 
+# --- breaking: old results are superseded, never reused or stale --------------------
+
+
+class _BreakingSeedRun(Spec[dict[str, str]]):
+    dataset: str
+    learning_rate: float
+    seed: int  # no field default needed: old results are void, new runs must choose
+
+    migrations = (Added("seed", breaking=True),)
+
+    def create(self) -> dict[str, str]:
+        _COUNTER.calls += 1
+        return {"dataset": self.dataset, "seed": str(self.seed)}
+
+
+def test_breaking_added_supersedes_old_results() -> None:
+    legacy = _LegacyRun(dataset="cifar10", learning_rate=0.001)
+    legacy.create()
+    old_directory = _transplant_generation(legacy, _BreakingSeedRun)
+    _COUNTER.calls = 0
+
+    spec = _BreakingSeedRun(dataset="cifar10", learning_rate=0.001, seed=1)
+    assert spec.status == "missing"
+    assert spec.create() == {"dataset": "cifar10", "seed": "1"}
+    assert _COUNTER.calls == 1
+    assert not result_link_path_in(spec._base_dir).exists()
+    # Superseded data is never deleted by furu; cleanup stays a deliberate act.
+    assert old_directory.exists()
+
+
+class _PostBreakDonor(Spec[str]):
+    dataset: str
+    learning_rate: float
+    seed: int
+
+    def create(self) -> str:
+        _COUNTER.calls += 1
+        return "post-break-donor"
+
+
+class _PostBreakRun(Spec[str]):
+    dataset: str
+    lr: float
+    seed: int = 0
+
+    migrations = (
+        Added("seed", breaking=True),
+        Renamed("learning_rate", to="lr"),
+    )
+
+    def create(self) -> str:
+        _COUNTER.calls += 1
+        return "recomputed"
+
+
+def test_break_kills_earlier_generations_while_later_steps_migrate() -> None:
+    donor = _PostBreakDonor(dataset="cifar10", learning_rate=0.001, seed=0)
+    donor.create()
+    _transplant_generation(donor, _PostBreakRun)
+    legacy = _LegacyRun(dataset="legacy-only", learning_rate=0.5)
+    legacy.create()
+    _transplant_generation(legacy, _PostBreakRun)
+    _COUNTER.calls = 0
+
+    # The pre-break generation is recognized (so not stale) but its results are
+    # dead: the exact legacy spec recomputes fresh.
+    resurrected = _PostBreakRun(dataset="legacy-only", lr=0.5)
+    assert resurrected.status == "missing"
+    assert resurrected.create() == "recomputed"
+    assert _COUNTER.calls == 1
+
+    # The post-break generation still migrates normally through Renamed.
+    covered = _PostBreakRun(dataset="cifar10", lr=0.001)
+    assert covered.status == "done"
+    assert covered.create() == "post-break-donor"
+    assert _COUNTER.calls == 1
+
+
+class _BreakingRetypedRun(Spec[str]):
+    optimizer: _SGD | _AdamW
+    lr: float
+
+    migrations = (Retyped("optimizer", was=_SGD, breaking=True),)
+
+    def create(self) -> str:
+        _COUNTER.calls += 1
+        return "recomputed"
+
+
+def test_breaking_retyped_supersedes_instead_of_reusing() -> None:
+    gen0 = _WidenGen0(optimizer=_SGD(momentum=0.9), lr=0.1)
+    assert gen0.create() == "gen0"
+    _transplant_generation(gen0, _BreakingRetypedRun)
+    _COUNTER.calls = 0
+
+    spec = _BreakingRetypedRun(optimizer=_SGD(momentum=0.9), lr=0.1)
+    assert spec.status == "missing"
+    assert spec.create() == "recomputed"
+    assert _COUNTER.calls == 1
+
+
+# --- Added binds history to the pinned default, not the field default ---------------
+
+
+class _RetriesDonor(Spec[str]):
+    dataset: str
+
+    def create(self) -> str:
+        _COUNTER.calls += 1
+        return "old-run"
+
+
+class _RetriesRun(Spec[str]):
+    dataset: str
+    num_retries: int = 3  # new runs default to 3; old runs behaved like 1
+
+    migrations = (Added("num_retries", default=1),)
+
+    def create(self) -> str:
+        _COUNTER.calls += 1
+        return "recomputed"
+
+
+def test_added_default_pins_history_independently_of_the_field_default() -> None:
+    donor = _RetriesDonor(dataset="cifar10")
+    donor.create()
+    _transplant_generation(donor, _RetriesRun)
+    _COUNTER.calls = 0
+
+    assert _RetriesRun(dataset="cifar10", num_retries=1).status == "done"
+    assert _RetriesRun(dataset="cifar10", num_retries=1).create() == "old-run"
+    assert _RetriesRun(dataset="cifar10").status == "missing"
+    assert _COUNTER.calls == 0
+
+
 # --- phase one: validation at class creation ---------------------------------------
 
 
@@ -553,19 +688,31 @@ def test_added_typo_fails_at_class_creation() -> None:
         class _BadAdded(Spec[int]):
             seed: int = 0
 
-            migrations = (Added("sed"),)
+            migrations = (Added("sed", default=0),)
 
             def create(self) -> int:
                 return 0
 
 
 def test_added_without_default_fails_at_class_creation() -> None:
-    with pytest.raises(TypeError, match="has no default"):
+    with pytest.raises(TypeError, match="needs default="):
 
         class _AddedNoDefault(Spec[int]):
             seed: int
 
             migrations = (Added("seed"),)
+
+            def create(self) -> int:
+                return 0
+
+
+def test_breaking_added_with_default_fails_at_class_creation() -> None:
+    with pytest.raises(TypeError, match="never backfill"):
+
+        class _BreakingWithDefault(Spec[int]):
+            seed: int = 0
+
+            migrations = (Added("seed", default=0, breaking=True),)
 
             def create(self) -> int:
                 return 0

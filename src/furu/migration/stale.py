@@ -63,7 +63,8 @@ def raise_if_stale(obj: Spec[Any]) -> None:
                 )
     lines.append(
         f"\nEither declare a migration chain on {type(obj).__name__}.migrations "
-        "(Renamed/Added/MovedFrom/Retyped/Rewrite), or discard the orphaned "
+        "(Renamed/Added/MovedFrom/Retyped/Rewrite), mark the change as breaking "
+        "(breaking=True) to recompute instead of reuse, or discard the orphaned "
         "results by deleting the directory above."
     )
     raise Stale("\n".join(lines))
