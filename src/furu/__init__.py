@@ -7,7 +7,7 @@ from furu.dependencies import dependency
 from furu.diff import diff
 from furu.execution.load_or_create import create, load_existing
 from furu.logging import get_logger
-from furu.migration import Migration
+from furu.migration.steps import Added, MovedFrom, Renamed, Retyped, Rewrite, Stale
 from furu.resources import ResourceRequirements
 from furu.result.codec import Codec
 from furu.result.ref import Ref, ref
@@ -21,13 +21,18 @@ __version__ = version("furu")
 
 __all__ = [
     "__version__",
+    "Added",
     "Codec",
-    "Migration",
     "Missing",
+    "MovedFrom",
     "Ref",
+    "Renamed",
     "ResourceRequirements",
+    "Retyped",
+    "Rewrite",
     "Serializer",
     "Spec",
+    "Stale",
     "create",
     "dependency",
     "diff",

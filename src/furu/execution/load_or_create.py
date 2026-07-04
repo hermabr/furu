@@ -21,7 +21,8 @@ from furu.dependencies import dependency_recorder, record_dependency_call
 from furu.locking import lock
 from furu.logging import _scoped_log_files, get_logger
 from furu.metadata import RunningMetadata
-from furu.migration import result_dir_for_loading
+from furu.migration.links import result_dir_for_loading
+from furu.migration.stale import raise_if_stale
 from furu.result.bundle import _save_result_bundle, load_result_bundle
 from furu.storage._layout import (
     compute_lock_path_in,
@@ -207,6 +208,7 @@ def _ensure_single_result[T](obj: Spec[T]) -> None:
         obj.logger.info("cache hit for %s", obj._log_label)
         return
 
+    raise_if_stale(obj)
     obj._base_dir.mkdir(parents=True, exist_ok=True)
 
     with lock(compute_lock_path_in(obj._base_dir)) as has_lock:
@@ -273,6 +275,7 @@ def load_existing[T](objs: Sequence[Spec[T]]) -> list[T]:
     for obj in objs:
         record_dependency_call(obj)
         if (result_dir := result_dir_for_loading(obj)) is None:
+            raise_if_stale(obj)
             missing.append(obj)
             continue
         loaded.append(
@@ -336,6 +339,7 @@ def _load_or_create_worker[T](
             )
             cached.append(obj)
         else:
+            raise_if_stale(obj)
             missing.append(obj)
 
     if loaded:
@@ -382,6 +386,7 @@ def _load_or_create_local[T](
                 ),
             )
         else:
+            raise_if_stale(obj)
             obj._base_dir.mkdir(parents=True, exist_ok=True)
             missing.append(obj)
 

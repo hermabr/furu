@@ -20,10 +20,14 @@ from typing import (
 
 from furu._declared_types import declared_result_type
 from furu.config import get_config
-from furu.explain import ExplainDepth, explain as _explain
+from furu.explain import ExplainDepth
+from furu.explain import explain as _explain
 from furu.locking import LockError, is_active_lock, lock
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
+from furu.migration.links import result_dir_for_loading
+from furu.migration.stale import raise_if_stale, sideways_status
+from furu.migration.steps import MigrationStep, validate_migration_declaration
 from furu.resources import ResourceRequirements
 from furu.result.bundle import load_result_bundle
 from furu.result.codec import Codec
@@ -50,8 +54,6 @@ from furu.validate import validate_cls
 if TYPE_CHECKING:
     from typing_extensions import dataclass_transform
 
-    from furu.migration import Migration
-
     @dataclass_transform(kw_only_default=True, frozen_default=True)
     class _FuruDataclassTransform:
         pass
@@ -67,6 +69,7 @@ class Missing(Exception):
 
 SpecCreateMode: TypeAlias = Literal["single", "batched"] | None
 _FURU_CLASS_OPTIONS = frozenset({"max_workers"})
+_SPEC_CLASS_ATTRIBUTES = frozenset({"migrations"})
 _RESERVED_FIELD_NAMES = frozenset(
     {
         "create",
@@ -87,6 +90,7 @@ _RESERVED_FIELD_NAMES = frozenset(
 class Spec[T](_FuruDataclassTransform, ABC):
     _furu_create_mode: ClassVar[SpecCreateMode]
     max_workers: ClassVar[int | None] = None
+    migrations: ClassVar[tuple[MigrationStep, ...]] = ()
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -111,6 +115,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
             if (
                 not (name.startswith("__") and name.endswith("__"))
                 and name not in _FURU_CLASS_OPTIONS
+                and name not in _SPEC_CLASS_ATTRIBUTES
                 and name not in annotations
                 and not callable(value)
                 and not isinstance(value, (classmethod, property, cached_property))
@@ -120,6 +125,8 @@ class Spec[T](_FuruDataclassTransform, ABC):
         validate_cls(cls)
         if "__dataclass_params__" not in cls.__dict__:
             dataclass(frozen=True, kw_only=True)(cls)
+        if cls.migrations:
+            validate_migration_declaration(cls)
         from furu.execution.load_or_create import (
             _install_create_dispatchers,
             _resolve_create_mode,
@@ -138,10 +145,6 @@ class Spec[T](_FuruDataclassTransform, ABC):
         raise NotImplementedError(
             f"{cls.__name__} must implement create() or create_batched()"
         )
-
-    @classmethod
-    def migrations(cls) -> tuple[Migration, ...]:
-        return ()
 
     @cached_property
     def storage_root(self) -> Path:
@@ -194,7 +197,6 @@ class Spec[T](_FuruDataclassTransform, ABC):
     @final
     def load_existing(self) -> T:
         from furu.dependencies import record_dependency_call
-        from furu.migration import result_dir_for_loading
         from furu.worker.context import (
             _DependencyNotReady,
             _worker_execution_lease_id,
@@ -210,6 +212,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
                     declared_type=declared_result_type(type(self)),
                 ),
             )
+        raise_if_stale(self)
         if _worker_execution_lease_id.get() is not None:
             raise _DependencyNotReady(
                 dependencies=[self],
@@ -223,16 +226,16 @@ class Spec[T](_FuruDataclassTransform, ABC):
 
     @final
     @property
-    def status(self) -> Literal["missing", "running", "failed", "done"]:
+    def status(self) -> Literal["missing", "running", "failed", "done", "stale"]:
         if result_manifest_path_in(self._base_dir).exists():
             return "done"
-        if self.is_migrated():  # TODO: check if the migrated object is in correct state
+        if result_link_path_in(self._base_dir).exists():
             return "done"
         if is_active_lock(compute_lock_path_in(self._base_dir)):
             return "running"
         if self._base_dir.exists():
             return "failed"
-        return "missing"
+        return sideways_status(self)
 
     @final
     def explain(self, depth: ExplainDepth = 0) -> str:
@@ -267,16 +270,6 @@ class Spec[T](_FuruDataclassTransform, ABC):
             return False
         shutil.rmtree(tombstone_path)
         return True
-
-    @final
-    def migrate(self) -> bool:
-        from furu.migration import migrate
-
-        return migrate(self)
-
-    @final
-    def is_migrated(self) -> bool:
-        return result_link_path_in(self._base_dir).exists()
 
     @final
     @classmethod

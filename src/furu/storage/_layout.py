@@ -20,7 +20,11 @@ def metadata_path_in(base_dir: Path) -> Path:
 def schema_snapshot_path_in(base_dir: Path) -> Path:
     # base_dir is {fqn}/{schema_hash}/{artifact_hash}; the snapshot is written
     # once per (class, schema-hash), beside the artifact directories.
-    return base_dir.parent / "schema.json"
+    return schema_snapshot_path_in_schema_directory(base_dir.parent)
+
+
+def schema_snapshot_path_in_schema_directory(schema_directory: Path) -> Path:
+    return schema_directory / "schema.json"
 
 
 def run_log_path_in(base_dir: Path) -> Path:

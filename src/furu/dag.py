@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, assert_never
 from furu.core import Spec
 from furu.dependencies import collect_declared_refs
 from furu.metadata import ArtifactSpec
+from furu.migration.stale import raise_if_stale
 
 if TYPE_CHECKING:
     from furu.execution.execution_coordinator import ExecutionCoordinator
@@ -42,6 +43,8 @@ def _add_to_dag(coordinator: ExecutionCoordinator, objs: Sequence[Spec]) -> None
                 raise RuntimeError(f"cannot add running object to DAG: {obj.object_id}")
             case "missing" | "failed":
                 pass
+            case "stale":
+                raise_if_stale(obj)
             case x:
                 assert_never(x)
         node = DagNode(obj=obj)
