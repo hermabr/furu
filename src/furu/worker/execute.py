@@ -7,7 +7,6 @@ import sys
 import threading
 import traceback
 from collections import deque
-from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, assert_never
 
@@ -79,7 +78,16 @@ class ChildSlot:
             obj.logger.info("cache hit for %s", obj._log_label)
             return JobCompletedResult()
 
-        environment = _resolve_child_environment(execution.environment)
+        environment = dict(os.environ)
+        for name, value in execution.environment.items():
+            if value is None:
+                environment.pop(name, None)
+            else:
+                environment[name] = value
+        # Re-pin last so an override cannot sever the furu config plumbing.
+        if (config_file := os.environ.get(_WORKER_JSON_CONFIG_FILE_ENV_VAR)) is not None:
+            environment[_WORKER_JSON_CONFIG_FILE_ENV_VAR] = config_file
+
         if missing := [
             name for name in execution.required_environment if name not in environment
         ]:
@@ -132,19 +140,6 @@ class ChildSlot:
             child.process.wait()
         child.stderr_thread.join(timeout=_RETIRE_TIMEOUT_SECONDS)
         logger.debug("retired child %d", child.process.pid)
-
-
-def _resolve_child_environment(overrides: Mapping[str, str | None]) -> dict[str, str]:
-    environment = dict(os.environ)
-    for name, value in overrides.items():
-        if value is None:
-            environment.pop(name, None)
-        else:
-            environment[name] = value
-    # Re-pin last so an override cannot sever the furu config plumbing.
-    if (config_file := os.environ.get(_WORKER_JSON_CONFIG_FILE_ENV_VAR)) is not None:
-        environment[_WORKER_JSON_CONFIG_FILE_ENV_VAR] = config_file
-    return environment
 
 
 def _spawn(environment: dict[str, str]) -> _Child:
