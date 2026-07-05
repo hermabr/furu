@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, TypeGuard, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from furu.constants import CLASSMARKER, FIELDSMARKER
 from furu.migration.links import _find_source
@@ -33,10 +33,6 @@ def sideways_status(obj: Spec[Any]) -> Literal["done", "stale", "missing"]:
     return "missing"
 
 
-def _is_class_node(value: JsonValue) -> TypeGuard[dict[str, JsonValue]]:
-    return isinstance(value, dict) and CLASSMARKER in value and FIELDSMARKER in value
-
-
 def _field_diff(
     old_fields: Mapping[str, JsonValue],
     new_fields: Mapping[str, JsonValue],
@@ -53,7 +49,14 @@ def _field_diff(
             yield f"  - {path}: {_stable_json_dump(old_fields[name])}", owner
         elif old_fields[name] != new_fields[name]:
             old, new = old_fields[name], new_fields[name]
-            if _is_class_node(old) and _is_class_node(new):
+            if (
+                isinstance(old, dict)
+                and CLASSMARKER in old
+                and FIELDSMARKER in old
+                and isinstance(new, dict)
+                and CLASSMARKER in new
+                and FIELDSMARKER in new
+            ):
                 # The diff lives inside an embedded class; its innermost owner
                 # is where the migration chain belongs.
                 inner = cast(str, new[CLASSMARKER]).rsplit(".", 1)[-1]
