@@ -89,17 +89,23 @@ class ChildSlot:
             )
 
         child = self._child
-        if child is not None and not (
-            execution.reuse != "never"
-            and child.process.poll() is None
-            and child.environment == environment
-            and (
-                execution.reuse == "same_environment"
-                or child.spec_name == obj._fully_qualified_name
+        if child is not None:
+            same_process_context = (
+                child.process.poll() is None and child.environment == environment
             )
-        ):
-            self.close()
-            child = None
+            match execution.reuse:
+                case "never":
+                    can_reuse = False
+                case "same_environment":
+                    can_reuse = same_process_context
+                case "same_environment_same_spec":
+                    can_reuse = (
+                        same_process_context
+                        and child.spec_name == obj._fully_qualified_name
+                    )
+            if not can_reuse:
+                self.close()
+                child = None
         if child is None:
             child = self._child = _spawn(environment)
         child.spec_name = obj._fully_qualified_name
