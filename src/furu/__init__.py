@@ -7,7 +7,15 @@ from furu.dependencies import dependency
 from furu.diff import diff
 from furu.execution.load_or_create import create, load_existing
 from furu.logging import get_logger
-from furu.migration.steps import Added, MovedFrom, Renamed, Retyped, Rewrite, Stale
+from furu.migration.steps import (
+    Added,
+    MigrationStep,
+    MovedFrom,
+    Renamed,
+    Retyped,
+    Rewrite,
+    Stale,
+)
 from furu.result.codec import Codec
 from furu.result.ref import Ref, ref
 from furu.serializer.registry import Serializer
@@ -33,6 +41,7 @@ __all__ = [
     "Codec",
     "GiB",
     "Metadata",
+    "MigrationStep",
     "Missing",
     "MovedFrom",
     "Ref",

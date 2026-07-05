@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
-from furu.constants import FIELDSMARKER
+from furu.constants import CLASSMARKER, FIELDSMARKER
 from furu.migration.links import _find_source
 from furu.migration.resolution import _class_resolution, _ClassResolution
 from furu.migration.steps import Stale
@@ -32,6 +33,51 @@ def sideways_status(obj: Spec[Any]) -> Literal["done", "stale", "missing"]:
     return "missing"
 
 
+def _field_diff(
+    old_fields: Mapping[str, JsonValue],
+    new_fields: Mapping[str, JsonValue],
+    prefix: str,
+    owner: str | None,
+) -> Iterator[tuple[str, str | None]]:
+    """Yield (diff line, owner) pairs; owner names the embedded class whose
+    migration chain would cover the line, None for the spec's own fields."""
+    for name in sorted(old_fields.keys() | new_fields.keys()):
+        path = f"{prefix}{name}"
+        if name not in old_fields:
+            yield f"  + {path}: {_stable_json_dump(new_fields[name])}", owner
+        elif name not in new_fields:
+            yield f"  - {path}: {_stable_json_dump(old_fields[name])}", owner
+        elif old_fields[name] != new_fields[name]:
+            old, new = old_fields[name], new_fields[name]
+            if (
+                isinstance(old, dict)
+                and CLASSMARKER in old
+                and FIELDSMARKER in old
+                and isinstance(new, dict)
+                and CLASSMARKER in new
+                and FIELDSMARKER in new
+            ):
+                # The diff lives inside an embedded class; its innermost owner
+                # is where the migration chain belongs.
+                inner = cast(str, new[CLASSMARKER]).rsplit(".", 1)[-1]
+                if old[CLASSMARKER] != new[CLASSMARKER]:
+                    yield (
+                        f"  ~ {path}: {old[CLASSMARKER]} -> {new[CLASSMARKER]}",
+                        inner,
+                    )
+                yield from _field_diff(
+                    cast(dict[str, JsonValue], old[FIELDSMARKER]),
+                    cast(dict[str, JsonValue], new[FIELDSMARKER]),
+                    f"{path}.",
+                    inner,
+                )
+            else:
+                yield (
+                    f"  ~ {path}: {_stable_json_dump(old)} -> {_stable_json_dump(new)}",
+                    owner,
+                )
+
+
 def raise_if_stale(obj: Spec[Any]) -> None:
     orphaned = _orphaned_directories(_class_resolution(obj))
     if not orphaned:
@@ -43,6 +89,7 @@ def raise_if_stale(obj: Spec[Any]) -> None:
         f"{len(orphaned)} other schema(s) with no migration chain to the "
         "current schema."
     ]
+    owners: set[str] = set()
     for directory in orphaned:
         snapshot_path = schema_snapshot_path_in_schema_directory(directory)
         snapshot = cast(
@@ -51,16 +98,17 @@ def raise_if_stale(obj: Spec[Any]) -> None:
         )
         lines.append(f"\norphaned: {directory}")
         old_fields = cast(dict[str, JsonValue], snapshot.get(FIELDSMARKER, {}))
-        for name in sorted(old_fields.keys() | current_fields.keys()):
-            if name not in old_fields:
-                lines.append(f"  + {name}: {_stable_json_dump(current_fields[name])}")
-            elif name not in current_fields:
-                lines.append(f"  - {name}: {_stable_json_dump(old_fields[name])}")
-            elif old_fields[name] != current_fields[name]:
-                lines.append(
-                    f"  ~ {name}: {_stable_json_dump(old_fields[name])} "
-                    f"-> {_stable_json_dump(current_fields[name])}"
-                )
+        for line, owner in _field_diff(old_fields, current_fields, "", None):
+            lines.append(line)
+            if owner is not None:
+                owners.add(owner)
+    if owners:
+        named = ", ".join(sorted(owners))
+        chains = " / ".join(f"{name}.migrations" for name in sorted(owners))
+        lines.append(
+            f"\nThe change is inside embedded {named}. Declare the chain once "
+            f"on {chains}; every spec embedding it will pick it up."
+        )
     lines.append(
         f"\nEither declare a migration chain on {type(obj).__name__}.migrations "
         "(Renamed/Added/MovedFrom/Retyped/Rewrite), mark the change as breaking "
