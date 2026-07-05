@@ -100,6 +100,36 @@ def test_subprocess_none_unsets_variable_in_child(
     assert _pid_and_value(leaf)[1] == "None"
 
 
+def test_subprocess_missing_required_environment_fails_before_spawn(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, child_slot: ChildSlot
+) -> None:
+    monkeypatch.delenv("FURU_TEST_REQUIRED", raising=False)
+    leaf = SubprocessEnvLeaf(
+        storage_root=str(tmp_path),
+        variable_name="FURU_TEST_VARIABLE",
+        variable_value="irrelevant",
+        required_environment=("FURU_TEST_REQUIRED",),
+    )
+
+    with pytest.raises(RuntimeError, match="FURU_TEST_REQUIRED"):
+        _run(child_slot, leaf)
+    assert child_slot._child is None
+
+
+def test_subprocess_required_environment_satisfied_by_parent_or_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, child_slot: ChildSlot
+) -> None:
+    monkeypatch.setenv("FURU_TEST_REQUIRED", "from-parent")
+    leaf = SubprocessEnvLeaf(
+        storage_root=str(tmp_path),
+        variable_name="FURU_TEST_VARIABLE",
+        variable_value="from-override",
+        required_environment=("FURU_TEST_REQUIRED", "FURU_TEST_VARIABLE"),
+    )
+
+    assert isinstance(_run(child_slot, leaf), JobCompletedResult)
+
+
 def test_subprocess_child_is_reused_across_jobs_with_same_environment(
     tmp_path: Path, child_slot: ChildSlot
 ) -> None:

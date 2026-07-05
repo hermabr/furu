@@ -59,9 +59,13 @@ class Subprocess:
 
     A None value in environment removes the variable from the child, as
     opposed to setting it to the empty string.
+
+    Variables named in required_environment (e.g. HF_TOKEN) must be set in
+    the child environment; the job fails before spawning otherwise.
     """
 
     environment: Mapping[str, str | None] = field(default_factory=dict)
+    required_environment: tuple[str, ...] = ()
     reuse: Literal["never", "same_environment", "same_environment_same_spec"] = (
         "same_environment"
     )

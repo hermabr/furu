@@ -28,6 +28,7 @@ class SubprocessEnvLeaf(Spec[str]):
     variable_name: str
     variable_value: str | None
     reuse: Reuse = "same_environment"
+    required_environment: tuple[str, ...] = ()
     marker: int = 0
 
     def metadata(self) -> Metadata:
@@ -36,6 +37,7 @@ class SubprocessEnvLeaf(Spec[str]):
             execution=Subprocess(
                 environment={self.variable_name: self.variable_value},
                 reuse=self.reuse,
+                required_environment=self.required_environment,
             ),
         )
 

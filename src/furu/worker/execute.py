@@ -100,6 +100,14 @@ class ChildSlot:
             return JobCompletedResult()
 
         environment = dict(execution.environment)
+        if missing := [
+            name
+            for name in execution.required_environment
+            if environment.get(name, os.environ.get(name)) is None
+        ]:
+            raise RuntimeError(
+                f"required environment variables not set: {', '.join(missing)}"
+            )
         child = self._child
         if child is not None and not _reusable(
             child,
