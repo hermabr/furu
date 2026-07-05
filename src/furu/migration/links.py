@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict
 from furu.constants import FIELDSMARKER
 from furu.metadata import CompletedMetadata
 from furu.migration.resolution import (
-    _added_default_fields,
+    _apply_child_moves,
     _apply_steps,
     _class_resolution,
     _ClassResolution,
@@ -84,22 +84,22 @@ def _find_source(obj: Spec[Any], resolution: _ClassResolution) -> _ResultLink | 
     if not resolution.covered:
         return None
     target_fields = cast(JsonFields, obj._artifact_data[FIELDSMARKER])
-    added_defaults = _added_default_fields(obj, resolution)
-    for generation, schema_directory in resolution.covered:
-        if not schema_directory.exists():
+    for covered in resolution.covered:
+        if not covered.schema_directory.exists():
             continue
-        for artifact_dir in sorted(schema_directory.iterdir()):
+        for artifact_dir in sorted(covered.schema_directory.iterdir()):
             if not artifact_dir.is_dir():
                 continue
             source_link = _read_source(artifact_dir)
             if source_link is None:
                 continue
-            fields = _apply_steps(
-                resolution,
-                generation.start,
-                source_link.current.fields,
-                added_defaults,
-            )
+            fields = source_link.current.fields
+            if covered.child_moves:
+                fields = {
+                    name: _apply_child_moves(value, covered.child_moves)
+                    for name, value in fields.items()
+                }
+            fields = _apply_steps(resolution.own, covered.generation.start, fields)
             if fields != target_fields:
                 continue
             return _ResultLink(
@@ -112,8 +112,13 @@ def _find_source(obj: Spec[Any], resolution: _ClassResolution) -> _ResultLink | 
                 source=source_link.source,
                 migration_path=source_link.migration_path
                 + tuple(
+                    f"{move.chain.label}: {_describe_step(step)}"
+                    for move in covered.child_moves.values()
+                    for step in move.chain.steps[move.start :]
+                )
+                + tuple(
                     _describe_step(step)
-                    for step in resolution.steps[generation.start :]
+                    for step in resolution.own.steps[covered.generation.start :]
                 ),
             )
     return None
@@ -139,8 +144,6 @@ def result_dir_for_loading(obj: Spec[Any]) -> Path | None:
         if not result_manifest_path_in(link.source.base_dir).exists():
             raise RuntimeError(f"{link_path} points to a missing result")
         return result_dir_in(link.source.base_dir)
-    if not type(obj).migrations:
-        return None
     link = _find_source(obj, _class_resolution(obj))
     if link is None:
         return None

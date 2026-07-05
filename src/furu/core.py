@@ -26,6 +26,7 @@ from furu.locking import LockError, is_active_lock, lock
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
 from furu.migration.links import result_dir_for_loading
+from furu.migration.resolution import validate_embedded_migration_declarations
 from furu.migration.stale import raise_if_stale, sideways_status
 from furu.migration.steps import MigrationStep, validate_migration_declaration
 from furu.result.bundle import load_result_bundle
@@ -125,6 +126,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
             dataclass(frozen=True, kw_only=True)(cls)
         if cls.migrations:
             validate_migration_declaration(cls)
+        validate_embedded_migration_declarations(cls)
         from furu.execution.load_or_create import (
             _install_create_dispatchers,
             _resolve_create_mode,

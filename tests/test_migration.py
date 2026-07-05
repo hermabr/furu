@@ -5,7 +5,7 @@ import shutil
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -33,13 +33,18 @@ def _reset_counter() -> None:
     _COUNTER.calls = 0
 
 
-def _transplant_generation(donor: Spec[Any], target_cls: type[Spec[Any]]) -> Path:
+def _transplant_generation(
+    donor: Spec[Any],
+    target_cls: type[Spec[Any]],
+    renames: Mapping[str, str] | None = None,
+) -> Path:
     """Copy the donor's stored schema generation into the target class's tree.
 
     Old generations of a class live under its own fully-qualified-name tree; a
     class's source can only ever hold its current schema, so tests fabricate
     older generations by transplanting a donor class's store and rewriting the
-    class name inside the recorded JSON.
+    class name inside the recorded JSON. Extra ``renames`` map embedded donor
+    class names to their current spelling the same way.
     """
     donor_name = donor._fully_qualified_name
     target_name = fully_qualified_name(target_cls)
@@ -51,7 +56,10 @@ def _transplant_generation(donor: Spec[Any], target_cls: type[Spec[Any]]) -> Pat
     )
     shutil.copytree(source_schema_directory, target_schema_directory)
     for path in target_schema_directory.rglob("*.json"):
-        path.write_text(path.read_text().replace(donor_name, target_name))
+        text = path.read_text()
+        for old, new in {donor_name: target_name, **(renames or {})}.items():
+            text = text.replace(old, new)
+        path.write_text(text)
     return target_schema_directory
 
 
@@ -799,3 +807,532 @@ def test_sideways_scan_runs_once_per_class_per_process(
     assert spec.status == "done"
     assert _ScanCounted(n=1).status == "done"
     assert len(scans) == 1
+
+
+# --- cascading: a child chain carries every spec that embeds it ---------------------
+
+
+class _CascadeTokenizerV0(Spec[dict[str, int]]):
+    vocabulary_size: int
+
+    def create(self) -> dict[str, int]:
+        _COUNTER.calls += 1
+        return {"vocabulary_size": self.vocabulary_size}
+
+
+class _CascadeTokenizer(Spec[dict[str, int]]):
+    vocab_size: int
+
+    migrations = (Renamed("vocabulary_size", to="vocab_size"),)
+
+    def create(self) -> dict[str, int]:
+        _COUNTER.calls += 1
+        return {"vocab_size": self.vocab_size}
+
+
+class _CascadeModelV0(Spec[dict[str, str]]):
+    tokenizer: _CascadeTokenizerV0
+    layers: int
+
+    def create(self) -> dict[str, str]:
+        _COUNTER.calls += 1
+        return {"model": f"layers={self.layers}"}
+
+
+class _CascadeModel(Spec[dict[str, str]]):
+    tokenizer: _CascadeTokenizer  # embedded child - nothing declared here
+    layers: int
+
+    def create(self) -> dict[str, str]:
+        _COUNTER.calls += 1
+        return {"model": f"layers={self.layers}"}
+
+
+def test_child_migration_cascades_to_parent() -> None:
+    old = _CascadeModelV0(
+        tokenizer=_CascadeTokenizerV0(vocabulary_size=32000), layers=12
+    )
+    old.create()
+    old_directory = _transplant_generation(
+        old,
+        _CascadeModel,
+        renames={
+            fully_qualified_name(_CascadeTokenizerV0): fully_qualified_name(
+                _CascadeTokenizer
+            )
+        },
+    )
+    _COUNTER.calls = 0
+
+    model = _CascadeModel(tokenizer=_CascadeTokenizer(vocab_size=32000), layers=12)
+    assert model.status == "done"
+    assert model.create() == {"model": "layers=12"}
+    assert model.load_existing() == {"model": "layers=12"}
+    assert _COUNTER.calls == 0
+
+    link = json.loads(result_link_path_in(model._base_dir).read_text())
+    assert link["source"]["base_dir"] == str(old_directory / old._base_dir.name)
+    assert link["migration_path"] == [
+        "_CascadeTokenizer: Renamed('vocabulary_size', to='vocab_size')",
+    ]
+
+    # A different embedded spec is a different artifact: no accidental reuse.
+    other = _CascadeModel(tokenizer=_CascadeTokenizer(vocab_size=999), layers=12)
+    assert other.status == "missing"
+
+
+class _CascadePipelineV0(Spec[str]):
+    model: _CascadeModelV0
+    benchmark: str
+
+    def create(self) -> str:
+        _COUNTER.calls += 1
+        return "old-eval"
+
+
+class _CascadePipeline(Spec[str]):
+    model: _CascadeModel  # Model embeds Tokenizer embeds the chain
+    benchmark: str
+
+    def create(self) -> str:
+        _COUNTER.calls += 1
+        return "recomputed"
+
+
+def test_cascade_resolves_transitively_through_the_dag() -> None:
+    old = _CascadePipelineV0(
+        model=_CascadeModelV0(
+            tokenizer=_CascadeTokenizerV0(vocabulary_size=32000), layers=12
+        ),
+        benchmark="mmlu",
+    )
+    old.create()
+    _transplant_generation(
+        old,
+        _CascadePipeline,
+        renames={
+            fully_qualified_name(_CascadeModelV0): fully_qualified_name(_CascadeModel),
+            fully_qualified_name(_CascadeTokenizerV0): fully_qualified_name(
+                _CascadeTokenizer
+            ),
+        },
+    )
+    _COUNTER.calls = 0
+
+    pipeline = _CascadePipeline(
+        model=_CascadeModel(tokenizer=_CascadeTokenizer(vocab_size=32000), layers=12),
+        benchmark="mmlu",
+    )
+    assert pipeline.status == "done"
+    assert pipeline.create() == "old-eval"
+    assert _COUNTER.calls == 0
+
+    link = json.loads(result_link_path_in(pipeline._base_dir).read_text())
+    assert link["migration_path"] == [
+        "_CascadeTokenizer: Renamed('vocabulary_size', to='vocab_size')",
+    ]
+
+
+class _CascadeTrainerV0(Spec[str]):
+    tokenizer: _CascadeTokenizerV0
+    learning_rate: float
+
+    def create(self) -> str:
+        _COUNTER.calls += 1
+        return "old-train"
+
+
+class _CascadeTrainer(Spec[str]):
+    tokenizer: _CascadeTokenizer
+    lr: float
+
+    migrations = (Renamed("learning_rate", to="lr"),)
+
+    def create(self) -> str:
+        _COUNTER.calls += 1
+        return "recomputed"
+
+
+def test_child_and_parent_steps_compose_innermost_first() -> None:
+    old = _CascadeTrainerV0(
+        tokenizer=_CascadeTokenizerV0(vocabulary_size=32000), learning_rate=0.1
+    )
+    old.create()
+    _transplant_generation(
+        old,
+        _CascadeTrainer,
+        renames={
+            fully_qualified_name(_CascadeTokenizerV0): fully_qualified_name(
+                _CascadeTokenizer
+            )
+        },
+    )
+    _COUNTER.calls = 0
+
+    trainer = _CascadeTrainer(tokenizer=_CascadeTokenizer(vocab_size=32000), lr=0.1)
+    assert trainer.status == "done"
+    assert trainer.create() == "old-train"
+    assert _COUNTER.calls == 0
+
+    link = json.loads(result_link_path_in(trainer._base_dir).read_text())
+    assert link["migration_path"] == [
+        "_CascadeTokenizer: Renamed('vocabulary_size', to='vocab_size')",
+        "Renamed('learning_rate', to='lr')",
+    ]
+
+
+class _CascadeEnsembleV0(Spec[str]):
+    tokenizers: tuple[_CascadeTokenizerV0, ...]
+
+    def create(self) -> str:
+        _COUNTER.calls += 1
+        return "old-ensemble"
+
+
+class _CascadeEnsemble(Spec[str]):
+    tokenizers: tuple[_CascadeTokenizer, ...]
+
+    def create(self) -> str:
+        _COUNTER.calls += 1
+        return "recomputed"
+
+
+def test_cascade_covers_children_inside_container_fields() -> None:
+    old = _CascadeEnsembleV0(
+        tokenizers=(
+            _CascadeTokenizerV0(vocabulary_size=100),
+            _CascadeTokenizerV0(vocabulary_size=200),
+        )
+    )
+    old.create()
+    _transplant_generation(
+        old,
+        _CascadeEnsemble,
+        renames={
+            fully_qualified_name(_CascadeTokenizerV0): fully_qualified_name(
+                _CascadeTokenizer
+            )
+        },
+    )
+    _COUNTER.calls = 0
+
+    ensemble = _CascadeEnsemble(
+        tokenizers=(
+            _CascadeTokenizer(vocab_size=100),
+            _CascadeTokenizer(vocab_size=200),
+        )
+    )
+    assert ensemble.status == "done"
+    assert ensemble.create() == "old-ensemble"
+    assert _COUNTER.calls == 0
+
+
+class _CascadeBreakTokenizerV0(Spec[int]):
+    vocab_size: int
+
+    def create(self) -> int:
+        return 0
+
+
+class _CascadeBreakTokenizer(Spec[int]):
+    vocab_size: int
+    normalization: str
+
+    migrations = (Added("normalization", breaking=True),)
+
+    def create(self) -> int:
+        return 0
+
+
+class _CascadeBreakModelV0(Spec[str]):
+    tokenizer: _CascadeBreakTokenizerV0
+
+    def create(self) -> str:
+        _COUNTER.calls += 1
+        return "old"
+
+
+class _CascadeBreakModel(Spec[str]):
+    tokenizer: _CascadeBreakTokenizer
+
+    def create(self) -> str:
+        _COUNTER.calls += 1
+        return "recomputed"
+
+
+def test_breaking_child_step_cuts_the_parent_to_recompute() -> None:
+    old = _CascadeBreakModelV0(tokenizer=_CascadeBreakTokenizerV0(vocab_size=100))
+    old.create()
+    old_directory = _transplant_generation(
+        old,
+        _CascadeBreakModel,
+        renames={
+            fully_qualified_name(_CascadeBreakTokenizerV0): fully_qualified_name(
+                _CascadeBreakTokenizer
+            )
+        },
+    )
+    _COUNTER.calls = 0
+
+    model = _CascadeBreakModel(
+        tokenizer=_CascadeBreakTokenizer(vocab_size=100, normalization="nfc")
+    )
+    # The cut propagates: recompute, not a Stale error.
+    assert model.status == "missing"
+    assert model.create() == "recomputed"
+    assert _COUNTER.calls == 1
+    assert not result_link_path_in(model._base_dir).exists()
+    assert old_directory.exists()
+
+
+class _CascadeSeedTokenizerV0(Spec[int]):
+    vocab_size: int
+
+    def create(self) -> int:
+        return 0
+
+
+class _CascadeSeedTokenizer(Spec[int]):
+    vocab_size: int
+    seed: int = 3  # new runs default to 3; old runs behaved like 1
+
+    migrations = (Added("seed", default=1),)
+
+    def create(self) -> int:
+        return 0
+
+
+class _CascadeSeedModelV0(Spec[str]):
+    tokenizer: _CascadeSeedTokenizerV0
+
+    def create(self) -> str:
+        return "old"
+
+
+class _CascadeSeedModel(Spec[str]):
+    tokenizer: _CascadeSeedTokenizer
+
+    def create(self) -> str:
+        return "recomputed"
+
+
+def test_child_added_default_pins_history_through_the_cascade() -> None:
+    old = _CascadeSeedModelV0(tokenizer=_CascadeSeedTokenizerV0(vocab_size=8))
+    old.create()
+    _transplant_generation(
+        old,
+        _CascadeSeedModel,
+        renames={
+            fully_qualified_name(_CascadeSeedTokenizerV0): fully_qualified_name(
+                _CascadeSeedTokenizer
+            )
+        },
+    )
+
+    pinned = _CascadeSeedModel(tokenizer=_CascadeSeedTokenizer(vocab_size=8, seed=1))
+    assert pinned.status == "done"
+    field_default = _CascadeSeedModel(tokenizer=_CascadeSeedTokenizer(vocab_size=8))
+    assert field_default.status == "missing"
+
+
+class _CascadeRelocatedTokenizer(Spec[int]):
+    vocab_size: int
+
+    def create(self) -> int:
+        return 0
+
+
+class _CascadeMovedTokenizer(Spec[int]):
+    vocab_size: int
+
+    migrations = (MovedFrom(fully_qualified_name(_CascadeRelocatedTokenizer)),)
+
+    def create(self) -> int:
+        return 0
+
+
+class _CascadeMovedModelV0(Spec[str]):
+    tokenizer: _CascadeRelocatedTokenizer
+
+    def create(self) -> str:
+        _COUNTER.calls += 1
+        return "old"
+
+
+class _CascadeMovedModel(Spec[str]):
+    tokenizer: _CascadeMovedTokenizer
+
+    def create(self) -> str:
+        _COUNTER.calls += 1
+        return "recomputed"
+
+
+def test_child_movedfrom_rewrites_the_embedded_class_marker() -> None:
+    old = _CascadeMovedModelV0(tokenizer=_CascadeRelocatedTokenizer(vocab_size=100))
+    old.create()
+    # The old class name is genuinely recorded in the snapshot: no rename.
+    _transplant_generation(old, _CascadeMovedModel)
+    _COUNTER.calls = 0
+
+    model = _CascadeMovedModel(tokenizer=_CascadeMovedTokenizer(vocab_size=100))
+    assert model.status == "done"
+    assert model.create() == "old"
+    assert _COUNTER.calls == 0
+
+    link = json.loads(result_link_path_in(model._base_dir).read_text())
+    assert link["migration_path"] == [
+        "_CascadeMovedTokenizer: "
+        f"MovedFrom({fully_qualified_name(_CascadeRelocatedTokenizer)!r})",
+    ]
+
+
+@dataclass(frozen=True)
+class _CascadeOptimizerV0:
+    learning_rate: float
+
+
+@dataclass(frozen=True)
+class _CascadeOptimizer:
+    lr: float
+
+    migrations: ClassVar[tuple[furu.MigrationStep, ...]] = (
+        Renamed("learning_rate", to="lr"),
+    )
+
+
+class _CascadeOptRunV0(Spec[str]):
+    optimizer: _CascadeOptimizerV0
+    epochs: int
+
+    def create(self) -> str:
+        _COUNTER.calls += 1
+        return "old"
+
+
+class _CascadeOptRun(Spec[str]):
+    optimizer: _CascadeOptimizer  # cascades exactly like a Spec field
+    epochs: int
+
+    def create(self) -> str:
+        _COUNTER.calls += 1
+        return "recomputed"
+
+
+def test_plain_dataclass_child_cascades_like_a_spec() -> None:
+    old = _CascadeOptRunV0(optimizer=_CascadeOptimizerV0(learning_rate=0.1), epochs=3)
+    old.create()
+    _transplant_generation(
+        old,
+        _CascadeOptRun,
+        renames={
+            fully_qualified_name(_CascadeOptimizerV0): fully_qualified_name(
+                _CascadeOptimizer
+            )
+        },
+    )
+    _COUNTER.calls = 0
+
+    run = _CascadeOptRun(optimizer=_CascadeOptimizer(lr=0.1), epochs=3)
+    assert run.status == "done"
+    assert run.create() == "old"
+    assert _COUNTER.calls == 0
+
+    link = json.loads(result_link_path_in(run._base_dir).read_text())
+    assert link["migration_path"] == [
+        "_CascadeOptimizer: Renamed('learning_rate', to='lr')",
+    ]
+
+
+class _CascadeSilentTokenizerV0(Spec[int]):
+    vocabulary_size: int
+
+    def create(self) -> int:
+        return 0
+
+
+class _CascadeSilentTokenizer(Spec[int]):
+    vocab_size: int  # renamed without declaring a chain
+
+    def create(self) -> int:
+        return 0
+
+
+class _CascadeSilentModelV0(Spec[str]):
+    tokenizer: _CascadeSilentTokenizerV0
+
+    def create(self) -> str:
+        return "old"
+
+
+class _CascadeSilentModel(Spec[str]):
+    tokenizer: _CascadeSilentTokenizer
+
+    def create(self) -> str:
+        return "recomputed"
+
+
+def test_stale_report_attributes_the_diff_to_the_embedded_class() -> None:
+    old = _CascadeSilentModelV0(tokenizer=_CascadeSilentTokenizerV0(vocabulary_size=8))
+    old.create()
+    _transplant_generation(
+        old,
+        _CascadeSilentModel,
+        renames={
+            fully_qualified_name(_CascadeSilentTokenizerV0): fully_qualified_name(
+                _CascadeSilentTokenizer
+            )
+        },
+    )
+
+    model = _CascadeSilentModel(tokenizer=_CascadeSilentTokenizer(vocab_size=8))
+    assert model.status == "stale"
+    with pytest.raises(Stale) as excinfo:
+        model.create()
+    message = str(excinfo.value)
+    assert "- tokenizer.vocabulary_size" in message
+    assert "+ tokenizer.vocab_size" in message
+    assert "inside embedded _CascadeSilentTokenizer" in message
+    assert "_CascadeSilentTokenizer.migrations" in message
+
+
+class _CascadeAmbiguousTokenizer(Spec[int]):
+    n: int
+
+    migrations = (
+        MovedFrom(fully_qualified_name(_LegacyRun)),
+        MovedFrom(fully_qualified_name(_LegacyRun)),
+    )
+
+    def create(self) -> int:
+        return 0
+
+
+class _CascadeAmbiguousModel(Spec[int]):
+    tokenizer: _CascadeAmbiguousTokenizer
+
+    def create(self) -> int:
+        return 0
+
+
+def test_ambiguous_child_chain_is_rejected_at_parent_resolution() -> None:
+    with pytest.raises(MigrationError, match="ambiguous"):
+        _ = _CascadeAmbiguousModel(tokenizer=_CascadeAmbiguousTokenizer(n=1)).status
+
+
+@dataclass(frozen=True)
+class _CascadeBrokenOptimizer:
+    lr: float
+
+    migrations: ClassVar[tuple[furu.MigrationStep, ...]] = (
+        Renamed("learning_rate", to="lrx"),
+    )
+
+
+def test_embedded_dataclass_chain_is_validated_when_a_spec_embeds_it() -> None:
+    with pytest.raises(TypeError, match="'lrx' is not a field"):
+
+        class _BrokenOptimizerRun(Spec[int]):
+            optimizer: _CascadeBrokenOptimizer
+
+            def create(self) -> int:
+                return 0
