@@ -8,7 +8,7 @@ import threading
 import traceback
 from collections import deque
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, assert_never
 
 from pydantic import TypeAdapter
 
@@ -103,6 +103,8 @@ class ChildSlot:
                         same_process_context
                         and child.spec_name == obj._fully_qualified_name
                     )
+                case unreachable:
+                    assert_never(unreachable)
             if not can_reuse:
                 self.close()
                 child = None
