@@ -7,8 +7,8 @@ import sys
 import threading
 import traceback
 from collections import deque
-from dataclasses import dataclass, field
-from typing import Any, Literal
+from dataclasses import dataclass
+from typing import Any
 
 from pydantic import TypeAdapter
 
@@ -30,6 +30,7 @@ from furu.worker.protocol import (
 
 logger = get_logger("worker.execute")
 
+_STDERR_TAIL_LINES = 200
 _STDERR_TAIL_CHARS = 32 * 1024
 _RETIRE_TIMEOUT_SECONDS = 5.0
 
@@ -58,30 +59,8 @@ class _Child:
     process: subprocess.Popen[str]
     environment: dict[str, str | None]
     spec_name: str
-    stderr_thread: threading.Thread | None = None
-    stderr_tail: deque[str] = field(default_factory=deque)
-    stderr_tail_chars: int = 0
-
-
-def _forward_stderr(child: _Child) -> None:
-    assert child.process.stderr is not None
-    for line in child.process.stderr:
-        child.stderr_tail.append(line)
-        child.stderr_tail_chars += len(line)
-        while (
-            child.stderr_tail_chars > _STDERR_TAIL_CHARS and len(child.stderr_tail) > 1
-        ):
-            child.stderr_tail_chars -= len(child.stderr_tail.popleft())
-        logger.info("child %d: %s", child.process.pid, line.rstrip("\n"))
-
-
-def _describe_exit(returncode: int) -> str:
-    if returncode < 0:
-        try:
-            return f"signal {-returncode} ({signal.Signals(-returncode).name})"
-        except ValueError:
-            return f"signal {-returncode}"
-    return f"exit code {returncode}"
+    stderr_thread: threading.Thread
+    stderr_tail: deque[str]
 
 
 class ChildSlot:
@@ -108,18 +87,21 @@ class ChildSlot:
             raise RuntimeError(
                 f"required environment variables not set: {', '.join(missing)}"
             )
+
         child = self._child
-        if child is not None and not _reusable(
-            child,
-            environment=environment,
-            spec_name=obj._fully_qualified_name,
-            reuse=execution.reuse,
+        if child is not None and not (
+            execution.reuse != "never"
+            and child.process.poll() is None
+            and child.environment == environment
+            and (
+                execution.reuse == "same_environment"
+                or child.spec_name == obj._fully_qualified_name
+            )
         ):
             self.close()
             child = None
         if child is None:
-            child = _spawn(environment)
-            self._child = child
+            child = self._child = _spawn(environment)
         child.spec_name = obj._fully_qualified_name
 
         result = _request(child, job)
@@ -128,8 +110,7 @@ class ChildSlot:
         return result
 
     def close(self) -> None:
-        child = self._child
-        self._child = None
+        child, self._child = self._child, None
         if child is None:
             return
         if child.process.stdin is not None:
@@ -140,31 +121,10 @@ class ChildSlot:
         try:
             child.process.wait(timeout=_RETIRE_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
-            child.process.terminate()
-            try:
-                child.process.wait(timeout=_RETIRE_TIMEOUT_SECONDS)
-            except subprocess.TimeoutExpired:
-                child.process.kill()
-                child.process.wait()
-        if child.stderr_thread is not None:
-            child.stderr_thread.join(timeout=_RETIRE_TIMEOUT_SECONDS)
+            child.process.kill()
+            child.process.wait()
+        child.stderr_thread.join(timeout=_RETIRE_TIMEOUT_SECONDS)
         logger.debug("retired child %d", child.process.pid)
-
-
-def _reusable(
-    child: _Child,
-    *,
-    environment: dict[str, str | None],
-    spec_name: str,
-    reuse: Literal["never", "same_environment", "same_environment_same_spec"],
-) -> bool:
-    if reuse == "never":
-        return False
-    if child.process.poll() is not None:
-        return False
-    if child.environment != environment:
-        return False
-    return reuse == "same_environment" or child.spec_name == spec_name
 
 
 def _spawn(environment: dict[str, str | None]) -> _Child:
@@ -186,16 +146,28 @@ def _spawn(environment: dict[str, str | None]) -> _Child:
         env=child_environment,
         text=True,
     )
-    child = _Child(process=process, environment=environment, spec_name="")
-    child.stderr_thread = threading.Thread(
-        target=_forward_stderr,
-        args=(child,),
+    stderr_tail: deque[str] = deque(maxlen=_STDERR_TAIL_LINES)
+
+    def forward_stderr() -> None:
+        assert process.stderr is not None
+        for line in process.stderr:
+            stderr_tail.append(line)
+            logger.info("child %d: %s", process.pid, line.rstrip("\n"))
+
+    stderr_thread = threading.Thread(
+        target=forward_stderr,
         name=f"furu-child-stderr-{process.pid}",
         daemon=True,
     )
-    child.stderr_thread.start()
+    stderr_thread.start()
     logger.debug("spawned child %d", process.pid)
-    return child
+    return _Child(
+        process=process,
+        environment=environment,
+        spec_name="",
+        stderr_thread=stderr_thread,
+        stderr_tail=stderr_tail,
+    )
 
 
 def _request(child: _Child, job: Job) -> JobResultRequest:
@@ -207,18 +179,20 @@ def _request(child: _Child, job: Job) -> JobResultRequest:
         line = child.process.stdout.readline()
     except OSError:
         line = ""
-    if not line:
-        return _crash_result(child)
-    return _job_result_adapter.validate_json(line)
+    if line:
+        return _job_result_adapter.validate_json(line)
 
-
-def _crash_result(child: _Child) -> JobFailedResult:
     returncode = child.process.wait()
-    if child.stderr_thread is not None:
-        child.stderr_thread.join(timeout=_RETIRE_TIMEOUT_SECONDS)
-    reason = _describe_exit(returncode)
+    child.stderr_thread.join(timeout=_RETIRE_TIMEOUT_SECONDS)
+    if returncode < 0:
+        try:
+            reason = f"signal {-returncode} ({signal.Signals(-returncode).name})"
+        except ValueError:
+            reason = f"signal {-returncode}"
+    else:
+        reason = f"exit code {returncode}"
     logger.warning("child %d died with %s", child.process.pid, reason)
     error = f"subprocess died: {reason}"
-    if tail := "".join(child.stderr_tail):
+    if tail := "".join(child.stderr_tail)[-_STDERR_TAIL_CHARS:]:
         error += f"\nstderr tail:\n{tail}"
     return JobFailedResult(error=error)
