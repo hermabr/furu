@@ -1,6 +1,7 @@
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from furu.config import get_config
 
@@ -52,11 +53,26 @@ class Throttle:
             raise ValueError(f"max_running must be positive, got {self.max_running}")
 
 
-def _default_storage() -> Path:
-    return get_config().run_directories.objects
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Subprocess:
+    """Run create() in a child Python process owned by the worker.
+
+    A None value in environment removes the variable from the child, as
+    opposed to setting it to the empty string.
+
+    Variables named in required_environment (e.g. HF_TOKEN) must be set in
+    the child environment; the job fails before spawning otherwise.
+    """
+
+    environment: Mapping[str, str | None] = field(default_factory=dict)
+    required_environment: tuple[str, ...] = ()
+    reuse: Literal["never", "same_environment", "same_environment_same_spec"] = (
+        "same_environment"
+    )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Metadata:
-    storage: Path = field(default_factory=_default_storage)
+    storage: Path = field(default_factory=lambda: get_config().run_directories.objects)
     requires: Requires = Requires()
+    execution: Literal["inline"] | Subprocess = "inline"

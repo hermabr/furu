@@ -6,12 +6,11 @@ from typing import assert_never
 
 from furu.core import Spec
 from furu.execution import api
-from furu.execution.load_or_create import _ensure_single_result
 from furu.logging import _scoped_component, get_logger, log_detail
-from furu.metadata import ArtifactSpec
 from furu.resources import ResourceRequest
+from furu.spec_metadata import Subprocess
 from furu.utils import format_duration
-from furu.worker.context import _DependencyNotReady, worker_execution_context
+from furu.worker.execute import ChildSlot, execute_job
 from furu.worker.protocol import (
     Job,
     JobBlockedResult,
@@ -36,92 +35,98 @@ def worker_loop(
         client = api.WorkerApiClient(server_url=server_url, auth_token=auth_token)
         idle_started_at: float | None = None
         consecutive_failures = 0
+        child_slot = ChildSlot()
 
-        while True:
-            logger.debug("worker requesting new task from server")
-            match client.lease_job(resources=resource_request, worker=component):
-                case "stop":
-                    logger.info("worker told to stop")
-                    return
-                case "wait":
-                    now = time.monotonic()
-                    if idle_started_at is None:
-                        idle_started_at = now
-                        logger.info("worker told to wait")
-                    if now - idle_started_at >= idle_timeout:
+        try:
+            while True:
+                logger.debug("worker requesting new task from server")
+                match client.lease_job(resources=resource_request, worker=component):
+                    case "stop":
+                        logger.info("worker told to stop")
                         return
-                    time.sleep(0.1)  # TODO: make the wait poll interval configurable.
-                    continue
-                case Job() as job:
-                    idle_started_at = None
-                    task_started_at = time.monotonic()
-                    task_label: str | None = None
-                    job_result: JobResultRequest
-                    try:
-                        obj = Spec.from_artifact(job.artifact)
-                        task_label = obj._log_label
-                        logger.info(
-                            "received %s",
-                            task_label,
-                            extra=log_detail(lease=job.lease_id),
-                        )
-                        with worker_execution_context(lease_id=job.lease_id):
-                            _ensure_single_result(obj)
-                        job_result = JobCompletedResult()
-                    except _DependencyNotReady as exc:
-                        job_result = JobBlockedResult(
-                            dependencies=[
-                                ArtifactSpec.from_furu(dep) for dep in exc.dependencies
-                            ]
-                        )
-                    except Exception as exc:
-                        job_result = JobFailedResult(
-                            error="".join(
-                                traceback.format_exception(
-                                    type(exc),
-                                    exc,
-                                    exc.__traceback__,
-                                )
-                            ),
-                        )
+                    case "wait":
+                        now = time.monotonic()
+                        if idle_started_at is None:
+                            idle_started_at = now
+                            logger.info("worker told to wait")
+                        if now - idle_started_at >= idle_timeout:
+                            return
+                        time.sleep(
+                            0.1
+                        )  # TODO: make the wait poll interval configurable.
+                        continue
+                    case Job() as job:
+                        idle_started_at = None
+                        task_started_at = time.monotonic()
+                        task_label: str | None = None
+                        job_result: JobResultRequest
+                        try:
+                            obj = Spec.from_artifact(job.artifact)
+                            task_label = obj._log_label
+                            logger.info(
+                                "received %s",
+                                task_label,
+                                extra=log_detail(lease=job.lease_id),
+                            )
+                            match obj._metadata.execution:
+                                case "inline":
+                                    job_result = execute_job(obj, lease_id=job.lease_id)
+                                case Subprocess() as execution:
+                                    job_result = child_slot.run(
+                                        obj, job=job, execution=execution
+                                    )
+                                case unexpected_execution:
+                                    assert_never(unexpected_execution)
+                        except Exception as exc:
+                            job_result = JobFailedResult(
+                                error="".join(
+                                    traceback.format_exception(
+                                        type(exc),
+                                        exc,
+                                        exc.__traceback__,
+                                    )
+                                ),
+                            )
 
-                    client.job_result(job.lease_id, job_result)
+                        client.job_result(job.lease_id, job_result)
 
-                    match job_result:
-                        case JobCompletedResult():
-                            status = "completed"
-                            consecutive_failures = 0
-                        case JobBlockedResult():
-                            status = "blocked"
-                            consecutive_failures = 0
-                        case JobFailedResult():
-                            status = "failed"
-                            consecutive_failures += 1
-                        case unexpected_result:
-                            assert_never(unexpected_result)
+                        match job_result:
+                            case JobCompletedResult():
+                                status = "completed"
+                                consecutive_failures = 0
+                            case JobBlockedResult():
+                                status = "blocked"
+                                consecutive_failures = 0
+                            case JobFailedResult():
+                                status = "failed"
+                                consecutive_failures += 1
+                            case unexpected_result:
+                                assert_never(unexpected_result)
 
-                    duration = format_duration(time.monotonic() - task_started_at)
-                    status_word = "ok" if status == "completed" else status
-                    if task_label is None:
-                        logger.info(
-                            "finished %s · %s",
-                            status_word,
-                            duration,
-                            extra=log_detail(lease=job.lease_id, status=status),
-                        )
-                    else:
-                        logger.info(
-                            "finished %s %s · %s",
-                            task_label,
-                            status_word,
-                            duration,
-                            extra=log_detail(lease=job.lease_id, status=status),
-                        )
+                        duration = format_duration(time.monotonic() - task_started_at)
+                        status_word = "ok" if status == "completed" else status
+                        if task_label is None:
+                            logger.info(
+                                "finished %s · %s",
+                                status_word,
+                                duration,
+                                extra=log_detail(lease=job.lease_id, status=status),
+                            )
+                        else:
+                            logger.info(
+                                "finished %s %s · %s",
+                                task_label,
+                                status_word,
+                                duration,
+                                extra=log_detail(lease=job.lease_id, status=status),
+                            )
 
-                    if (
-                        max_consecutive_failures is not None
-                        and consecutive_failures > max_consecutive_failures
-                    ):
-                        return
-                case unexpected:
-                    assert_never(unexpected)
+                        if (
+                            max_consecutive_failures is not None
+                            and consecutive_failures > max_consecutive_failures
+                        ):
+                            return
+                    case unexpected:
+                        assert_never(unexpected)
+        finally:
+            child_slot.close()
