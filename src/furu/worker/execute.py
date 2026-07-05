@@ -7,6 +7,7 @@ import sys
 import threading
 import traceback
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, assert_never
 
@@ -57,7 +58,7 @@ def execute_job(obj: Spec[Any], *, lease_id: str) -> JobResultRequest:
 @dataclass(slots=True)
 class _Child:
     process: subprocess.Popen[str]
-    environment: dict[str, str | None]
+    environment: dict[str, str]
     spec_name: str
     stderr_thread: threading.Thread
     stderr_tail: deque[str]
@@ -78,11 +79,9 @@ class ChildSlot:
             obj.logger.info("cache hit for %s", obj._log_label)
             return JobCompletedResult()
 
-        environment = dict(execution.environment)
+        environment = _resolve_child_environment(execution.environment)
         if missing := [
-            name
-            for name in execution.required_environment
-            if environment.get(name, os.environ.get(name)) is None
+            name for name in execution.required_environment if name not in environment
         ]:
             raise RuntimeError(
                 f"required environment variables not set: {', '.join(missing)}"
@@ -135,23 +134,26 @@ class ChildSlot:
         logger.debug("retired child %d", child.process.pid)
 
 
-def _spawn(environment: dict[str, str | None]) -> _Child:
-    child_environment = dict(os.environ)
-    for name, value in environment.items():
+def _resolve_child_environment(overrides: Mapping[str, str | None]) -> dict[str, str]:
+    environment = dict(os.environ)
+    for name, value in overrides.items():
         if value is None:
-            child_environment.pop(name, None)
+            environment.pop(name, None)
         else:
-            child_environment[name] = value
+            environment[name] = value
     # Re-pin last so an override cannot sever the furu config plumbing.
     if (config_file := os.environ.get(_WORKER_JSON_CONFIG_FILE_ENV_VAR)) is not None:
-        child_environment[_WORKER_JSON_CONFIG_FILE_ENV_VAR] = config_file
+        environment[_WORKER_JSON_CONFIG_FILE_ENV_VAR] = config_file
+    return environment
 
+
+def _spawn(environment: dict[str, str]) -> _Child:
     process = subprocess.Popen(
         [sys.executable, "-m", "furu.worker._child"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        env=child_environment,
+        env=environment,
         text=True,
     )
     stderr_tail: deque[str] = deque(maxlen=_STDERR_TAIL_LINES)
