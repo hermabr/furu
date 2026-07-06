@@ -28,7 +28,6 @@ from furu.provenance import (
 
 EXAMPLE_PROVENANCE_JSON = """
 {
-  "version": 1,
   "git": {
     "commit": "1fd0701e9c41d0a7b31f58c2aa04d6ce8b7712f3",
     "branch": "sweep/lr-ablation",
@@ -92,7 +91,6 @@ def _example_provenance() -> Provenance:
 
 def test_example_provenance_json_parses() -> None:
     prov = _example_provenance()
-    assert prov.version == 1
     assert prov.git is not None
     assert prov.git.dirty is True
     assert prov.submitted.launch_command == (

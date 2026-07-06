@@ -90,7 +90,6 @@ class SubmitProvenance(BaseModel):
 class Provenance(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    version: int = 1
     git: GitIdentity | None
     environment: EnvironmentIdentity
     snapshot_id: str | None
