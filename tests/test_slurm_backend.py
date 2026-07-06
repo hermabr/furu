@@ -21,6 +21,7 @@ from furu.config import (
     get_config,
 )
 from furu.execution.api import PoolApiClient
+from furu.provenance import EnvironmentIdentity
 from furu.resources import ResourceRequest
 from furu.testing import override_config
 from furu.worker import _cli
@@ -74,6 +75,7 @@ def test_worker_cli_reads_auth_token_file(
         idle_timeout: float | None,
         max_consecutive_failures: int | None,
         component: str,
+        backend: str,
     ) -> None:
         calls.append(
             (
@@ -104,6 +106,8 @@ def test_worker_cli_reads_auth_token_file(
                 "60",
                 "--component",
                 "test-worker",
+                "--backend",
+                "slurm",
             ]
         )
         == 0
@@ -137,6 +141,7 @@ def test_worker_cli_reads_resource_request(
         idle_timeout: float | None,
         max_consecutive_failures: int | None,
         component: str,
+        backend: str,
     ) -> None:
         calls.append((resource_request, idle_timeout, max_consecutive_failures))
 
@@ -159,6 +164,8 @@ def test_worker_cli_reads_resource_request(
                 "30",
                 "--component",
                 "test-worker",
+                "--backend",
+                "slurm",
             ]
         )
         == 0
@@ -183,6 +190,7 @@ def test_worker_cli_reads_idle_timeout(
         idle_timeout: float | None,
         max_consecutive_failures: int | None,
         component: str,
+        backend: str,
     ) -> None:
         calls.append(idle_timeout)
 
@@ -205,6 +213,8 @@ def test_worker_cli_reads_idle_timeout(
                 "0.25",
                 "--component",
                 "test-worker",
+                "--backend",
+                "slurm",
             ]
         )
         == 0
@@ -229,6 +239,7 @@ def test_worker_cli_reads_max_consecutive_failures(
         idle_timeout: float | None,
         max_consecutive_failures: int | None,
         component: str,
+        backend: str,
     ) -> None:
         calls.append(max_consecutive_failures)
 
@@ -251,6 +262,8 @@ def test_worker_cli_reads_max_consecutive_failures(
                 "0.25",
                 "--component",
                 "test-worker",
+                "--backend",
+                "slurm",
                 "--max-consecutive-failures",
                 "3",
             ]
@@ -276,6 +289,7 @@ def _run_worker_cli_capturing_component(
         idle_timeout: float | None,
         max_consecutive_failures: int | None,
         component: str,
+        backend: str,
     ) -> None:
         captured.append(component)
 
@@ -296,6 +310,8 @@ def _run_worker_cli_capturing_component(
                 "0",
                 "--idle-timeout",
                 "60",
+                "--backend",
+                "slurm",
                 *extra_args,
             ]
         )
@@ -334,6 +350,7 @@ def test_worker_cli_requires_component(
         idle_timeout: float | None,
         max_consecutive_failures: int | None,
         component: str,
+        backend: str,
     ) -> None:
         raise AssertionError("worker_loop should not be called")
 
@@ -583,10 +600,12 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert "--auth-token-file" in script
     assert "--auth-token " not in script
     assert "secret-token" not in script
-    assert script.index('echo "Hello" > /tmp/hey') < script.index(
-        f"exec {sys.executable} -m furu.worker._cli"
-    )
-    assert f"exec {sys.executable} -m furu.worker._cli" in script
+    project_root = EnvironmentIdentity.capture().project_root
+    assert script.index('echo "Hello" > /tmp/hey') < script.index("exec uv run")
+    assert f"exec uv run --frozen --project {project_root}" in script
+    assert "python -m furu.worker._cli" in script
+    assert sys.executable not in script
+    assert "--backend slurm" in script
     assert "--server-url http://execution-coordinator.cluster:1234" in script
     assert "SLURM_ARRAY_TASK_ID" in script
     assert "SLURM_ARRAY_JOB_ID" in script

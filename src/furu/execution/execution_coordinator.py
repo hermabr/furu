@@ -21,6 +21,7 @@ from furu.logging import (
     log_detail,
 )
 from furu.metadata import ArtifactSpec
+from furu.provenance import SubmitProvenance, capture_submit_provenance
 from furu.resources import ResourceRequest, resource_request_satisfies
 from furu.storage._layout import execution_coordinator_log_path_in
 from furu.utils import format_duration
@@ -69,6 +70,7 @@ class ExecutionCoordinator:
     lock: Any = field(default_factory=threading.Lock)
     done: threading.Event = field(default_factory=threading.Event)
     finish_error: str | None = None
+    submit_provenance: SubmitProvenance | None = None
 
     def _failed_counts(self) -> tuple[int, int]:
         failed_retry = sum(
@@ -115,6 +117,12 @@ class ExecutionCoordinator:
                 )
                 coordinator._maybe_finish_locked()
             return objs
+
+        # One capture (and at most one snapshot build) for the whole batch;
+        # every job carries this same frozen submit half.
+        coordinator.submit_provenance = capture_submit_provenance(
+            snapshot=get_config().provenance.snapshot
+        )
 
         (bind_host,) = {
             backend.execution_coordinator_listen_host for backend in worker_backends
@@ -217,7 +225,12 @@ class ExecutionCoordinator:
                     **self._counts_detail(),
                 ),
             )
-            return Job(lease_id=lease_id, artifact=ArtifactSpec.from_furu(node.obj))
+            assert self.submit_provenance is not None
+            return Job(
+                lease_id=lease_id,
+                artifact=ArtifactSpec.from_furu(node.obj),
+                provenance=self.submit_provenance,
+            )
 
     def worker_lost(self, worker: str) -> None:
         with self.log_context(), self.lock:

@@ -3,7 +3,6 @@ from __future__ import annotations
 import secrets
 import shlex
 import socket
-import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -11,6 +10,7 @@ from typing import Literal, TypeAlias, assert_never
 
 from furu.config import _WORKER_JSON_CONFIG_FILE_ENV_VAR, get_config
 from furu.execution.api import PoolApiClient
+from furu.provenance import EnvironmentIdentity
 from furu.resources import ResourceRequest
 from furu.utils import write_private_file
 from furu.worker.backends.slurm.pool import SlurmWorkerPool
@@ -54,6 +54,7 @@ class SlurmWorkerBackend:
         server_url = f"http://{self.worker_connect_host}:{connect_port}"
 
         chdir = Path.cwd().resolve()
+        project_root = EnvironmentIdentity.capture().project_root
         worker_dir = executor_dir.resolve() / "workers"
         worker_dir.mkdir(parents=True, exist_ok=True)
 
@@ -107,10 +108,15 @@ class SlurmWorkerBackend:
                 f"{component_line}"
                 "\n"
                 f"{pre_worker_script}"
-                f"exec {shlex.quote(sys.executable)} -m furu.worker._cli \\\n"
+                # --frozen forbids silent lock updates on the node; --project
+                # pins the environment regardless of --chdir.
+                "exec uv run --frozen "
+                f"--project {shlex.quote(str(project_root))} \\\n"
+                "    python -m furu.worker._cli \\\n"
                 f"    --server-url {shlex.quote(server_url)} \\\n"
                 f"    --auth-token-file {shlex.quote(str(token_file))} \\\n"
                 '    --component "${furu_worker_component}" \\\n'
+                "    --backend slurm \\\n"
                 f"    --idle-timeout {self.worker_idle_timeout} \\\n"
                 f"{worker_failure_arg}"
                 f"    --resource-cpus {resource_request.cpus} \\\n"

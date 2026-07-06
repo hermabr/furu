@@ -7,6 +7,7 @@ from typing import assert_never
 from furu.core import Spec
 from furu.execution import api
 from furu.logging import _scoped_component, get_logger, log_detail
+from furu.provenance import _worker_backend
 from furu.resources import ResourceRequest
 from furu.spec_metadata import Subprocess
 from furu.utils import format_duration
@@ -29,8 +30,10 @@ def worker_loop(
     resource_request: ResourceRequest,
     idle_timeout: float,
     component: str,
+    backend: str,
     max_consecutive_failures: int | None = None,
 ) -> None:
+    _worker_backend.set(backend)
     with _scoped_component(component):
         client = api.WorkerApiClient(server_url=server_url, auth_token=auth_token)
         idle_started_at: float | None = None
@@ -70,7 +73,7 @@ def worker_loop(
                             )
                             match obj._metadata.execution:
                                 case "inline":
-                                    job_result = execute_job(obj, lease_id=job.lease_id)
+                                    job_result = execute_job(obj, job=job)
                                 case Subprocess() as execution:
                                     job_result = child_slot.run(
                                         obj, job=job, execution=execution

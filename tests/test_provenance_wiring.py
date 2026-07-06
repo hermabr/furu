@@ -8,9 +8,18 @@ import pytest
 import furu
 from furu import Spec
 from furu.config import _Config, get_config
-from furu.provenance import EnvironmentIdentity, Provenance
+from furu.metadata import ArtifactSpec
+from furu.provenance import (
+    EnvironmentIdentity,
+    GitIdentity,
+    Provenance,
+    capture_submit_provenance,
+)
 from furu.storage._layout import metadata_path_in, provenance_path_in
 from furu.testing import override_config
+from furu.worker.backends.local import LocalThreadWorkerBackend
+from furu.worker.execute import execute_job
+from furu.worker.protocol import Job, JobFailedResult
 
 
 @pytest.fixture(autouse=True)
@@ -165,3 +174,66 @@ def test_snapshot_config_applies_to_plain_create(
 def test_provenance_raises_missing_for_missing_result() -> None:
     with pytest.raises(furu.Missing, match="could not find a result"):
         _Node(value=9).provenance()
+
+
+def test_executor_sweep_captures_once_and_stamps_every_job(
+    git_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(git_repo)
+    git_captures: list[Path] = []
+    original_capture = GitIdentity.capture.__func__  # type: ignore[attr-defined]
+
+    def counting_capture(cls: type[GitIdentity], cwd: Path) -> GitIdentity:
+        git_captures.append(cwd)
+        return original_capture(cls, cwd)
+
+    monkeypatch.setattr(GitIdentity, "capture", classmethod(counting_capture))
+    nodes = [_Node(value=value) for value in (20, 21, 22)]
+
+    with override_config(_with_snapshot(True)):
+        assert furu.create(nodes, on=(LocalThreadWorkerBackend(max_workers=2),)) == [
+            21,
+            22,
+            23,
+        ]
+
+    assert len(git_captures) == 1
+    provenances = [node.provenance() for node in nodes]
+    snapshot_ids = {provenance.snapshot_id for provenance in provenances}
+    assert len(snapshot_ids) == 1 and None not in snapshot_ids
+    assert all(
+        provenance.submitted == provenances[0].submitted for provenance in provenances
+    )
+    assert all(
+        provenance.executed.worker_backend == "local-thread"
+        for provenance in provenances
+    )
+
+
+def test_worker_fails_job_on_stale_uv_lock_hash(
+    git_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(git_repo)
+    node = _Node(value=30)
+    submit = capture_submit_provenance(snapshot=False)
+    stale = submit.model_copy(
+        update={
+            "environment": submit.environment.model_copy(
+                update={"uv_lock_hash": "blake2s:stale"}
+            )
+        }
+    )
+    computed = len(_created)
+
+    result = execute_job(
+        node,
+        job=Job(
+            lease_id="lease-1", artifact=ArtifactSpec.from_furu(node), provenance=stale
+        ),
+    )
+
+    assert isinstance(result, JobFailedResult)
+    assert "worker uv.lock does not match the submitted environment" in result.error
+    assert "blake2s:stale" in result.error
+    assert EnvironmentIdentity.capture().uv_lock_hash in result.error
+    assert len(_created) == computed

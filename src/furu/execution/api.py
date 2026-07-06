@@ -34,6 +34,15 @@ class _ExecutionCoordinatorApiClientBase:
         method: str,
         payload: object | None = None,
     ) -> Any:
+        return self._request(path, method=method, payload=payload).json()
+
+    def _request(
+        self,
+        path: str,
+        *,
+        method: str,
+        payload: object | None = None,
+    ) -> httpx.Response:
         url = f"{self.server_url.rstrip('/')}{path}"
         try:
             response = httpx.request(
@@ -46,7 +55,7 @@ class _ExecutionCoordinatorApiClientBase:
             response.raise_for_status()
             if not response.content:
                 raise RuntimeError(f"{method} {url} returned an empty response")
-            return response.json()
+            return response
         except httpx.HTTPStatusError as exc:
             raise RuntimeError(
                 f"{method} {url} failed with HTTP "
@@ -58,14 +67,16 @@ class _ExecutionCoordinatorApiClientBase:
 
 class WorkerApiClient(_ExecutionCoordinatorApiClientBase):
     def lease_job(self, *, resources: ResourceRequest, worker: str) -> LeaseJobResponse:
-        response = self._request_json(
+        # Validate the raw JSON body: Job's strict models accept datetimes and
+        # tuples only in JSON mode, not from an already-parsed dict.
+        response = self._request(
             "/worker/lease_job",
             method="POST",
             payload=LeaseJobRequest(resources=resources, worker=worker).model_dump(
                 mode="json"
             ),
         )
-        return TypeAdapter(LeaseJobResponse).validate_python(response)
+        return TypeAdapter(LeaseJobResponse).validate_json(response.content)
 
     def job_result(self, lease_id: str, request: JobResultRequest) -> None:
         response = self._request_json(

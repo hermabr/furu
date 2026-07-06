@@ -5,6 +5,7 @@ from typing import Annotated, Literal, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field
 
 from furu.metadata import ArtifactSpec
+from furu.provenance import SubmitProvenance
 from furu.resources import ResourceRequest
 
 
@@ -13,6 +14,7 @@ class Job(BaseModel):
 
     lease_id: str
     artifact: ArtifactSpec
+    provenance: SubmitProvenance
 
 
 class JobCompletedResult(BaseModel):

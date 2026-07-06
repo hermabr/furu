@@ -18,6 +18,12 @@ from subprocess_objects import (
 import furu
 from furu import Metadata, Spec, Subprocess
 from furu.metadata import ArtifactSpec
+from furu.provenance import (
+    EnvironmentIdentity,
+    GitIdentity,
+    SubmitContext,
+    SubmitProvenance,
+)
 from furu.worker.backends.local import LocalThreadWorkerBackend
 from furu.worker.execute import ChildSlot
 from furu.worker.protocol import (
@@ -48,12 +54,34 @@ def child_slot() -> Iterator[ChildSlot]:
         slot.close()
 
 
+def _submit_provenance() -> SubmitProvenance:
+    # Real environment identity so the child's lock-hash verification passes;
+    # the git half is a stub.
+    return SubmitProvenance(
+        git=GitIdentity(
+            commit="0" * 40,
+            branch=None,
+            remote=None,
+            repo_root=".",
+            dirty=False,
+            diff_stats=None,
+        ),
+        environment=EnvironmentIdentity.capture(),
+        snapshot_id=None,
+        submitted=SubmitContext.capture(),
+    )
+
+
 def _run(slot: ChildSlot, obj: Spec[Any]) -> JobResultRequest:
     execution = obj._metadata.execution
     assert isinstance(execution, Subprocess)
     return slot.run(
         obj,
-        job=Job(lease_id=str(uuid4()), artifact=ArtifactSpec.from_furu(obj)),
+        job=Job(
+            lease_id=str(uuid4()),
+            artifact=ArtifactSpec.from_furu(obj),
+            provenance=_submit_provenance(),
+        ),
         execution=execution,
     )
 
@@ -82,6 +110,11 @@ def test_subprocess_environment_override_is_visible_in_child(
     pid, value = _pid_and_value(leaf)
     assert value == "from-override"
     assert pid != os.getpid()
+
+    provenance = leaf.provenance()
+    assert provenance.executed.worker_backend == "subprocess"
+    assert provenance.executed.pid == pid
+    assert provenance.submitted.hostname == provenance.executed.hostname
 
 
 def test_subprocess_none_unsets_variable_in_child(
