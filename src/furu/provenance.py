@@ -244,13 +244,14 @@ def _require_uv() -> None:
 _worker_backend: ContextVar[str] = ContextVar("_furu_worker_backend", default="local")
 
 
-def _run_git(args: list[str], *, cwd: Path) -> str:
+def _run_git(args: list[str], *, cwd: Path, input: str | None = None) -> str:
     result = subprocess.run(
         ["git", *args],
         cwd=cwd,
         capture_output=True,
         text=True,
         check=True,
+        input=input,
     )
     return result.stdout.strip()
 
