@@ -90,7 +90,6 @@ def test_snapshot_true_builds_tarball_referenced_by_snapshot_id(
     furu.create(_Node(value=2), snapshot=True)
 
     provenance = _Node(value=2).provenance()
-    assert provenance is not None
     assert provenance.snapshot_id is not None
     assert provenance.snapshot_path is not None
     assert provenance.snapshot_path.is_file()
@@ -117,7 +116,7 @@ def test_cache_hit_performs_no_capture_and_no_writes(
     assert provenance_path_in(node._base_dir).read_text() == original
 
 
-def test_result_without_provenance_loads_and_reads_none(
+def test_result_without_provenance_loads_but_provenance_raises(
     git_repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(git_repo)
@@ -128,7 +127,8 @@ def test_result_without_provenance_loads_and_reads_none(
 
     assert node.create() == 5
     assert len(_created) == computed
-    assert node.provenance() is None
+    with pytest.raises(furu.Missing, match="provenance.json is missing"):
+        node.provenance()
 
 
 def test_outside_git_repo_records_null_git(
@@ -139,7 +139,6 @@ def test_outside_git_repo_records_null_git(
     node.create()
 
     provenance = node.provenance()
-    assert provenance is not None
     assert provenance.git is None
     assert provenance.snapshot_id is None
     assert json.loads(provenance_path_in(node._base_dir).read_text())["git"] is None
@@ -165,7 +164,6 @@ def test_snapshot_default_config_applies_to_plain_create(
         _Node(value=7).create()
 
         provenance = _Node(value=7).provenance()
-        assert provenance is not None
         assert provenance.snapshot_id is not None
         assert provenance.snapshot_path is not None
         assert provenance.snapshot_path.is_file()
@@ -179,9 +177,9 @@ def test_explicit_snapshot_false_overrides_config_default(
         furu.create(_Node(value=8), snapshot=False)
 
         provenance = _Node(value=8).provenance()
-        assert provenance is not None
         assert provenance.snapshot_id is None
 
 
-def test_provenance_returns_none_for_missing_result() -> None:
-    assert _Node(value=9).provenance() is None
+def test_provenance_raises_missing_for_missing_result() -> None:
+    with pytest.raises(furu.Missing, match="could not find a result"):
+        _Node(value=9).provenance()

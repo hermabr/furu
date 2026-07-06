@@ -215,18 +215,27 @@ class Spec[T](_FuruDataclassTransform, ABC):
         )
 
     @final
-    def provenance(self) -> Provenance | None:
-        """Provenance of the run that produced this result, if recorded.
+    def provenance(self) -> Provenance:
+        """Provenance of the run that produced this result.
 
         Follows result links, so a migrated result reads the provenance
         written beside its original result directory.
         """
         result_dir = result_dir_for_loading(self)
         if result_dir is None:
-            return None
+            raise Missing(
+                f"{self._log_label}.provenance() could not find a result. "
+                "Provenance is recorded when a result is computed; use create() "
+                "to compute it first."
+            )
         path = provenance_path_in(result_dir.parent)
         if not path.exists():
-            return None
+            raise Missing(
+                f"{self._log_label}.provenance(): the result exists but "
+                f"{path.name} is missing beside it. Every stored result should "
+                "have one; this indicates the result directory was tampered "
+                "with or written by a furu version without provenance capture."
+            )
         return Provenance.model_validate_json(path.read_text(encoding="utf-8"))
 
     @final
