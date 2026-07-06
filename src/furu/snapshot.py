@@ -1,11 +1,3 @@
-"""Content-addressed worktree snapshots.
-
-Git's index defines "the code": the manifest is every tracked file plus
-untracked-but-not-ignored files, at worktree state. The snapshot id is a hash
-of the (path -> blob hash) map, so identical worktree states dedup to a single
-shared directory under the configured snapshots root.
-"""
-
 from __future__ import annotations
 
 import gzip
