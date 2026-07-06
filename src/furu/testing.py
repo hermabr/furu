@@ -56,11 +56,9 @@ def pytest_configure(config: pytest.Config) -> None:
     if not _is_furu_pytest_mode_enabled():
         return
 
-    # Tests may run under non-uv interpreters (CI images) and chdir freely, so
-    # exempt the interpreter check and prime the per-process environment
-    # capture while cwd is still the project root. Recording is never skipped;
-    # a missing project surfaces at the first create() with the real error.
-    provenance._interpreter_check_exempt = True
+    # Tests chdir freely, so prime the per-process environment capture while
+    # cwd is still the project root. Recording is never skipped; a missing
+    # project surfaces at the first create() with the real error.
     with contextlib.suppress(RuntimeError):
         provenance.EnvironmentIdentity.capture()
 
@@ -90,7 +88,6 @@ def pytest_unconfigure(config: pytest.Config) -> None:
     if not _is_furu_pytest_mode_enabled():
         return
 
-    provenance._interpreter_check_exempt = False
     state = config.stash[_STATE_KEY]
 
     _set_config(state.original_config)

@@ -219,7 +219,7 @@ def test_capture_environment_identity_requires_uv_managed_python(
         (tmp_path / "pyvenv.cfg").write_text(pyvenv_cfg)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "prefix", str(tmp_path))
-    monkeypatch.setattr(provenance, "_interpreter_check_exempt", False)
+    monkeypatch.delenv("PYTEST_VERSION", raising=False)
     EnvironmentIdentity.capture.cache_clear()
     try:
         with pytest.raises(RuntimeError, match="not managed by uv") as excinfo:
@@ -232,7 +232,7 @@ def test_capture_environment_identity_requires_uv_managed_python(
         EnvironmentIdentity.capture.cache_clear()
 
 
-def test_interpreter_exemption_still_records_environment_identity(
+def test_pytest_exemption_still_records_environment_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (tmp_path / "pyproject.toml").write_text("[project]\n")
@@ -240,11 +240,11 @@ def test_interpreter_exemption_still_records_environment_identity(
     (tmp_path / "pyvenv.cfg").write_text("home = /x\nimplementation = CPython\n")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "prefix", str(tmp_path))
-    monkeypatch.setattr(provenance, "_interpreter_check_exempt", True)
+    monkeypatch.setenv("PYTEST_VERSION", pytest.__version__)
     EnvironmentIdentity.capture.cache_clear()
     try:
         identity = EnvironmentIdentity.capture()
-        assert identity.uv is None
+        assert identity.uv == ""
         assert identity.uv_lock_hash.startswith("blake2s:")
         assert identity.pyproject_hash.startswith("blake2s:")
     finally:
@@ -337,7 +337,7 @@ def test_create_fails_before_compute_without_uv(
     (tmp_path / "uv.lock").write_text("version = 1\n")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "prefix", str(tmp_path))
-    monkeypatch.setattr(provenance, "_interpreter_check_exempt", False)
+    monkeypatch.delenv("PYTEST_VERSION", raising=False)
     EnvironmentIdentity.capture.cache_clear()
     provenance._require_uv.cache_clear()
     try:

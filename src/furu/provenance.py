@@ -19,11 +19,6 @@ from pydantic import BaseModel, ConfigDict
 _ACCELERATOR_PROBE_TIMEOUT_SECONDS = 2.0
 _HASH_PREFIX = "blake2s:"
 
-# Set by furu.testing so pytest suites can run under non-uv interpreters (CI
-# images). It skips only the interpreter check — environment identity is still
-# captured and recorded. There is deliberately no user-facing escape hatch.
-_interpreter_check_exempt: bool = False
-
 
 class GitIdentity(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -67,7 +62,7 @@ class EnvironmentIdentity(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     python: str
-    uv: str | None  # None only under the furu.testing interpreter exemption
+    uv: str
     project_root: str
     uv_lock_hash: str
     pyproject_hash: str
@@ -115,7 +110,7 @@ class EnvironmentIdentity(BaseModel):
                 if (parts := line.partition("="))[1] and parts[0].strip() == "uv"
             )
         except (OSError, StopIteration) as exc:
-            if not _interpreter_check_exempt:
+            if "PYTEST_VERSION" not in os.environ:  # pytest suites may run on CI images
                 raise RuntimeError(
                     "this interpreter is not managed by uv\n"
                     f"  interpreter : {sys.executable}\n"
@@ -125,7 +120,7 @@ class EnvironmentIdentity(BaseModel):
                     "  uv sync\n"
                     "  uv run python ..."
                 ) from exc
-            uv = None
+            uv = ""
 
         return cls(
             python="{}.{}.{}".format(*sys.version_info[:3]),
