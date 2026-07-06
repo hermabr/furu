@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from hmac import compare_digest
-from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, status
@@ -26,15 +25,6 @@ class _ExecutionCoordinatorApiClientBase:
     server_url: str
     auth_token: str
     request_timeout_s: float = 10.0
-
-    def _request_json(
-        self,
-        path: str,
-        *,
-        method: str,
-        payload: object | None = None,
-    ) -> Any:
-        return self._request(path, method=method, payload=payload).json()
 
     def _request(
         self,
@@ -79,11 +69,11 @@ class WorkerApiClient(_ExecutionCoordinatorApiClientBase):
         return TypeAdapter(LeaseJobResponse).validate_json(response.content)
 
     def job_result(self, lease_id: str, request: JobResultRequest) -> None:
-        response = self._request_json(
+        response = self._request(
             f"/worker/job_result/{lease_id}",
             method="POST",
             payload=request.model_dump(mode="json"),
-        )
+        ).json()
         OkResponse.model_validate(response)
 
 
@@ -91,29 +81,29 @@ class PoolApiClient(_ExecutionCoordinatorApiClientBase):
     def count_satisfiable_jobs(
         self, *, resources: ResourceRequest, max_workers: int
     ) -> int:
-        response = self._request_json(
+        response = self._request(
             "/pool/count_satisfiable_jobs",
             method="POST",
             payload=CountSatisfiableJobsRequest(
                 resources=resources, max_workers=max_workers
             ).model_dump(mode="json"),
-        )
+        ).json()
         return int(response)
 
     def fail(self, *, message: str) -> None:
-        response = self._request_json(
+        response = self._request(
             "/pool/fail",
             method="POST",
             payload=FailRequest(message=message).model_dump(mode="json"),
-        )
+        ).json()
         OkResponse.model_validate(response)
 
     def worker_lost(self, *, worker: str) -> None:
-        response = self._request_json(
+        response = self._request(
             "/pool/worker_lost",
             method="POST",
             payload=WorkerLostRequest(worker=worker).model_dump(mode="json"),
-        )
+        ).json()
         OkResponse.model_validate(response)
 
 
