@@ -1,3 +1,4 @@
+import contextlib
 import hashlib
 import os
 import secrets
@@ -11,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from furu import provenance
 from furu.config import _Config, _FuruDirectories, _set_config, get_config
 
 
@@ -54,6 +56,14 @@ def pytest_configure(config: pytest.Config) -> None:
     if not _is_furu_pytest_mode_enabled():
         return
 
+    # Tests may run under non-uv interpreters (CI images) and chdir freely, so
+    # exempt the interpreter check and prime the per-process environment
+    # capture while cwd is still the project root. Recording is never skipped;
+    # a missing project surfaces at the first create() with the real error.
+    provenance._interpreter_check_exempt = True
+    with contextlib.suppress(RuntimeError):
+        provenance.EnvironmentIdentity.capture()
+
     run_base_directory = (
         Path(tempfile.gettempdir())
         / f"furu-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(4)}"
@@ -80,6 +90,7 @@ def pytest_unconfigure(config: pytest.Config) -> None:
     if not _is_furu_pytest_mode_enabled():
         return
 
+    provenance._interpreter_check_exempt = False
     state = config.stash[_STATE_KEY]
 
     _set_config(state.original_config)

@@ -19,6 +19,11 @@ from pydantic import BaseModel, ConfigDict
 _ACCELERATOR_PROBE_TIMEOUT_SECONDS = 2.0
 _HASH_PREFIX = "blake2s:"
 
+# Set by furu.testing so pytest suites can run under non-uv interpreters (CI
+# images). It skips only the interpreter check — environment identity is still
+# captured and recorded. There is deliberately no user-facing escape hatch.
+_interpreter_check_exempt: bool = False
+
 
 class GitIdentity(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -62,7 +67,7 @@ class EnvironmentIdentity(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     python: str
-    uv: str
+    uv: str | None  # None only under the furu.testing interpreter exemption
     project_root: str
     uv_lock_hash: str
     pyproject_hash: str
@@ -110,10 +115,17 @@ class EnvironmentIdentity(BaseModel):
                 if (parts := line.partition("="))[1] and parts[0].strip() == "uv"
             )
         except (OSError, StopIteration) as exc:
-            raise RuntimeError(
-                "furu must run under a uv-managed interpreter so results are "
-                "reproducible. Run furu commands via:\n  uv run ..."
-            ) from exc
+            if not _interpreter_check_exempt:
+                raise RuntimeError(
+                    "this interpreter is not managed by uv\n"
+                    f"  interpreter : {sys.executable}\n"
+                    f"  project     : {project_root}  "
+                    "(pyproject.toml found, uv.lock found)\n"
+                    "furu requires uv so results are reproducible. Run instead:\n"
+                    "  uv sync\n"
+                    "  uv run python ..."
+                ) from exc
+            uv = None
 
         return cls(
             python="{}.{}.{}".format(*sys.version_info[:3]),
@@ -196,6 +208,41 @@ class Provenance(BaseModel):
             snapshot_id=submit.snapshot_id,
             submitted=submit.submitted,
             executed=executed,
+        )
+
+
+@functools.cache
+def _require_uv() -> None:
+    """Crash unless running inside a locked, uv-managed project.
+
+    Memoized per process; called at the first _load_or_create(). Project-file
+    and interpreter checks live in EnvironmentIdentity.capture(); this adds
+    lock freshness on top.
+    """
+    project_root = EnvironmentIdentity.capture().project_root
+    try:
+        result = subprocess.run(
+            ["uv", "lock", "--check"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        raise RuntimeError(
+            "uv executable not found\n"
+            "furu requires uv so results are reproducible. Install uv "
+            "(https://docs.astral.sh/uv/), then run:\n"
+            "  uv sync\n"
+            "  uv run python ..."
+        ) from exc
+    if result.returncode != 0:
+        raise RuntimeError(
+            "uv.lock is out of date with pyproject.toml\n"
+            f"  project : {project_root}\n"
+            f"{result.stderr.strip()}\n"
+            "furu requires a fresh lock so results are reproducible. Run:\n"
+            "  uv sync\n"
+            "  uv run python ..."
         )
 
 

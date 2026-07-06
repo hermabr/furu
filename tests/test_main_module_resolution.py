@@ -19,6 +19,15 @@ from furu.utils import (
 )
 
 
+def _write_uv_project(path: Path) -> None:
+    """Make path a locked uv project so spawned furu scripts pass _require_uv()."""
+    (path / "pyproject.toml").write_text(
+        '[project]\nname = "scratch"\nversion = "0"\nrequires-python = ">=3.12"\n',
+        encoding="utf-8",
+    )
+    subprocess.run(["uv", "lock"], cwd=path, check=True, capture_output=True)
+
+
 @contextmanager
 def _simulated_python_m_main(
     monkeypatch: pytest.MonkeyPatch, *, spec_name: str
@@ -95,6 +104,7 @@ def test_main_without_spec_name_is_not_serializable(
 
 
 def test_direct_script_main_objects_work_in_debug_mode(tmp_path: Path) -> None:
+    _write_uv_project(tmp_path)
     script = tmp_path / "debug_script.py"
     script.write_text(
         """
@@ -175,6 +185,7 @@ def test_fully_qualified_name_rejects_local_classes() -> None:
 
 
 def test_python_m_main_objects_resolve_to_main_identity(tmp_path: Path) -> None:
+    _write_uv_project(tmp_path)
     package_dir = tmp_path / "my_lib"
     package_dir.mkdir()
     (package_dir / "__init__.py").write_text("", encoding="utf-8")

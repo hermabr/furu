@@ -9,7 +9,7 @@ import pytest
 from pydantic import ByteSize
 
 import furu
-from furu import provenance
+from furu import Spec, provenance
 from furu.config import _Config, _FuruProvenanceConfig
 from furu.provenance import (
     EnvironmentIdentity,
@@ -219,10 +219,34 @@ def test_capture_environment_identity_requires_uv_managed_python(
         (tmp_path / "pyvenv.cfg").write_text(pyvenv_cfg)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "prefix", str(tmp_path))
+    monkeypatch.setattr(provenance, "_interpreter_check_exempt", False)
     EnvironmentIdentity.capture.cache_clear()
     try:
-        with pytest.raises(RuntimeError, match="uv run"):
+        with pytest.raises(RuntimeError, match="not managed by uv") as excinfo:
             EnvironmentIdentity.capture()
+        assert sys.executable in str(excinfo.value)
+        assert str(tmp_path.resolve()) in str(excinfo.value)
+        assert "uv sync" in str(excinfo.value)
+        assert "uv run" in str(excinfo.value)
+    finally:
+        EnvironmentIdentity.capture.cache_clear()
+
+
+def test_interpreter_exemption_still_records_environment_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    (tmp_path / "uv.lock").write_text("version = 1\n")
+    (tmp_path / "pyvenv.cfg").write_text("home = /x\nimplementation = CPython\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "prefix", str(tmp_path))
+    monkeypatch.setattr(provenance, "_interpreter_check_exempt", True)
+    EnvironmentIdentity.capture.cache_clear()
+    try:
+        identity = EnvironmentIdentity.capture()
+        assert identity.uv is None
+        assert identity.uv_lock_hash.startswith("blake2s:")
+        assert identity.pyproject_hash.startswith("blake2s:")
     finally:
         EnvironmentIdentity.capture.cache_clear()
 
@@ -252,6 +276,76 @@ def test_capture_environment_identity_requires_uv_lock(
             EnvironmentIdentity.capture()
     finally:
         EnvironmentIdentity.capture.cache_clear()
+
+
+def test_require_uv_runs_lock_check_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(provenance.subprocess, "run", fake_run)
+    provenance._require_uv.cache_clear()
+    try:
+        provenance._require_uv()
+        provenance._require_uv()
+    finally:
+        provenance._require_uv.cache_clear()
+    assert calls == [["uv", "lock", "--check"]]
+
+
+def test_require_uv_stale_lock_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args, 1, "", "The lockfile is outdated")
+
+    monkeypatch.setattr(provenance.subprocess, "run", fake_run)
+    provenance._require_uv.cache_clear()
+    try:
+        with pytest.raises(RuntimeError, match="out of date") as excinfo:
+            provenance._require_uv()
+        assert "The lockfile is outdated" in str(excinfo.value)
+        assert "uv sync" in str(excinfo.value)
+    finally:
+        provenance._require_uv.cache_clear()
+
+
+def test_require_uv_missing_uv_binary_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError("uv")
+
+    monkeypatch.setattr(provenance.subprocess, "run", fake_run)
+    provenance._require_uv.cache_clear()
+    try:
+        with pytest.raises(RuntimeError, match="uv executable not found"):
+            provenance._require_uv()
+    finally:
+        provenance._require_uv.cache_clear()
+
+
+class _EnforcementNode(Spec[str]):
+    name: str
+
+    def create(self) -> str:
+        raise AssertionError("create() must not run when uv enforcement fails")
+
+
+def test_create_fails_before_compute_without_uv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    (tmp_path / "uv.lock").write_text("version = 1\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "prefix", str(tmp_path))
+    monkeypatch.setattr(provenance, "_interpreter_check_exempt", False)
+    EnvironmentIdentity.capture.cache_clear()
+    provenance._require_uv.cache_clear()
+    try:
+        with pytest.raises(RuntimeError, match="not managed by uv"):
+            _EnforcementNode(name="x").create()
+    finally:
+        EnvironmentIdentity.capture.cache_clear()
+        provenance._require_uv.cache_clear()
 
 
 def test_capture_submit_context() -> None:
