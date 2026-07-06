@@ -124,10 +124,6 @@ def create_snapshot(worktree: Path) -> str:
         ),
         total_bytes=total_bytes,
     )
-    # Raw subprocess, not _run_git: a patch can contain non-UTF-8 bytes.
-    diff = subprocess.run(
-        ["git", "diff", "HEAD"], cwd=repo_root, capture_output=True, check=True
-    ).stdout
 
     final_dir.parent.mkdir(parents=True, exist_ok=True)
     tmp_dir = nfs_safe_unique_name(final_dir, name="tmp")
@@ -163,7 +159,6 @@ def create_snapshot(worktree: Path) -> str:
         _write_file(
             tmp_dir / "manifest.json", manifest.model_dump_json(indent=2).encode()
         )
-        _write_file(tmp_dir / "diff.patch", diff)
     except BaseException:
         shutil.rmtree(tmp_dir, ignore_errors=True)
         raise

@@ -167,22 +167,6 @@ def test_manifest_records_commit_entries_and_totals(git_repo: Path) -> None:
     assert manifest.total_bytes == sum(entry.size for entry in manifest.entries)
 
 
-def test_diff_patch_records_staged_and_unstaged_changes(git_repo: Path) -> None:
-    (git_repo / "tracked.txt").write_text("unstaged change\n")
-    (git_repo / "sub" / "nested.txt").write_text("staged change\n")
-    _git(git_repo, "add", "sub/nested.txt")
-
-    diff = (_snapshot_dir(create_snapshot(git_repo)) / "diff.patch").read_text()
-
-    assert "+unstaged change" in diff
-    assert "+staged change" in diff
-
-
-def test_clean_worktree_writes_empty_diff_patch(git_repo: Path) -> None:
-    diff_path = _snapshot_dir(create_snapshot(git_repo)) / "diff.patch"
-    assert diff_path.read_bytes() == b""
-
-
 def test_oversize_worktree_fails_before_tarring(git_repo: Path) -> None:
     (git_repo / "big.bin").write_bytes(b"x" * 4096)
 
