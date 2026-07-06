@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ByteSize, ConfigDict, Field
 from pydantic_settings import (
     BaseSettings,
     JsonConfigSettingsSource,
@@ -30,6 +30,13 @@ class _FuruWorkerConfig(BaseModel):
     max_retries_per_object: int = 3
 
 
+class _FuruProvenanceConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    snapshot_default: bool = False
+    max_snapshot_bytes: ByteSize = ByteSize(256 * 1024 * 1024)
+
+
 class _Config(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="FURU_",
@@ -45,6 +52,7 @@ class _Config(BaseSettings):
     debug_mode: bool = False
     directories: _FuruDirectories = Field(default_factory=_FuruDirectories)
     worker: _FuruWorkerConfig = Field(default_factory=_FuruWorkerConfig)
+    provenance: _FuruProvenanceConfig = Field(default_factory=_FuruProvenanceConfig)
 
     @property
     def run_directories(self) -> _FuruDirectories:
