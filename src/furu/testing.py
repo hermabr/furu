@@ -1,3 +1,4 @@
+import contextlib
 import hashlib
 import os
 import secrets
@@ -11,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from furu import provenance
 from furu.config import _Config, _FuruDirectories, _set_config, get_config
 
 
@@ -53,6 +55,12 @@ def _replace_config_directories(
 def pytest_configure(config: pytest.Config) -> None:
     if not _is_furu_pytest_mode_enabled():
         return
+
+    # Tests chdir freely, so prime the per-process environment capture while
+    # cwd is still the project root. Recording is never skipped; a missing
+    # project surfaces at the first create() with the real error.
+    with contextlib.suppress(RuntimeError):
+        provenance.EnvironmentIdentity.capture()
 
     run_base_directory = (
         Path(tempfile.gettempdir())

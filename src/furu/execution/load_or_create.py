@@ -22,6 +22,7 @@ from furu.locking import lock
 from furu.logging import _scoped_log_files, get_logger
 from furu.metadata import RunningMetadata
 from furu.migration.links import result_dir_for_loading
+from furu.provenance import _require_uv
 from furu.migration.stale import raise_if_stale
 from furu.result.bundle import _save_result_bundle, load_result_bundle
 from furu.storage._layout import (
@@ -198,6 +199,7 @@ def _load_or_create[T](
     *,
     use_lock: bool = True,
 ) -> T | list[T]:
+    _require_uv()
     if _worker_execution_lease_id.get() is not None:
         return _load_or_create_worker(obj_or_objs)
     return _load_or_create_local(obj_or_objs, use_lock=use_lock)
