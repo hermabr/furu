@@ -36,18 +36,12 @@ class SnapshotManifest(BaseModel):
     total_bytes: int
 
 
-def create_snapshot(worktree: Path, *, git: GitIdentity | None = None) -> str:
-    """Snapshot the git worktree containing ``worktree``; return its id.
-
-    ``git`` lets callers that already captured the worktree's git identity
-    pass it along instead of capturing it a second time.
-    """
+def create_snapshot(worktree: Path, *, git: GitIdentity) -> str:
+    """Snapshot the git worktree identified by ``git``; return its id."""
     if (marker := find_snapshot_marker(worktree)) is not None:
         # An extracted snapshot re-snapshots as itself: its identity was
         # established when the snapshot was created.
         return marker.snapshot_id
-    if git is None:
-        git = GitIdentity.capture(worktree)
     repo_root = Path(git.repo_root)
 
     # Split the manifest paths into clean files (path -> index blob hash) and

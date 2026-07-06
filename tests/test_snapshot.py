@@ -65,27 +65,29 @@ def test_same_worktree_state_produces_same_id_and_identical_bytes(
 ) -> None:
     (git_repo / "tracked.txt").write_text("dirty\n")
     (git_repo / "untracked.txt").write_text("new\n")
-    first_id = create_snapshot(git_repo)
+    first_id = create_snapshot(git_repo, git=GitIdentity.capture(git_repo))
     first_bytes = _tarball(first_id).read_bytes()
     shutil.rmtree(_snapshots_root())
 
-    second_id = create_snapshot(git_repo)
+    second_id = create_snapshot(git_repo, git=GitIdentity.capture(git_repo))
 
     assert second_id == first_id
     assert _tarball(second_id).read_bytes() == first_bytes
 
 
 def test_snapshot_accepts_paths_below_the_repo_root(git_repo: Path) -> None:
-    assert create_snapshot(git_repo / "sub") == create_snapshot(git_repo)
+    assert create_snapshot(
+        git_repo / "sub", git=GitIdentity.capture(git_repo / "sub")
+    ) == create_snapshot(git_repo, git=GitIdentity.capture(git_repo))
 
 
 def test_existing_snapshot_is_reused_without_rebuilding(
     git_repo: Path,
 ) -> None:
-    snapshot_id = create_snapshot(git_repo)
+    snapshot_id = create_snapshot(git_repo, git=GitIdentity.capture(git_repo))
     _tarball(snapshot_id).unlink()
 
-    assert create_snapshot(git_repo) == snapshot_id
+    assert create_snapshot(git_repo, git=GitIdentity.capture(git_repo)) == snapshot_id
     assert not _tarball(snapshot_id).exists()
 
 
@@ -95,7 +97,9 @@ def test_dirty_and_untracked_files_land_with_worktree_bytes(
     (git_repo / "tracked.txt").write_text("worktree version\n")
     (git_repo / "untracked.txt").write_text("brand new\n")
 
-    extracted = _extract(create_snapshot(git_repo), tmp_path / "out")
+    extracted = _extract(
+        create_snapshot(git_repo, git=GitIdentity.capture(git_repo)), tmp_path / "out"
+    )
 
     assert (extracted / "tracked.txt").read_text() == "worktree version\n"
     assert (extracted / "untracked.txt").read_text() == "brand new\n"
@@ -108,26 +112,30 @@ def test_ignored_files_never_appear(git_repo: Path) -> None:
     _git(git_repo, "add", ".gitignore")
     _git(git_repo, "commit", "-qm", "ignore")
 
-    with tarfile.open(_tarball(create_snapshot(git_repo))) as tar:
+    with tarfile.open(
+        _tarball(create_snapshot(git_repo, git=GitIdentity.capture(git_repo)))
+    ) as tar:
         assert "ignored.txt" not in tar.getnames()
 
 
 def test_file_deleted_from_worktree_is_excluded(git_repo: Path) -> None:
     (git_repo / "tracked.txt").unlink()
 
-    with tarfile.open(_tarball(create_snapshot(git_repo))) as tar:
+    with tarfile.open(
+        _tarball(create_snapshot(git_repo, git=GitIdentity.capture(git_repo)))
+    ) as tar:
         assert "tracked.txt" not in tar.getnames()
 
 
 def test_untracked_content_addresses_like_committed_content(git_repo: Path) -> None:
     (git_repo / "new.txt").write_text("stable\n")
-    untracked_id = create_snapshot(git_repo)
+    untracked_id = create_snapshot(git_repo, git=GitIdentity.capture(git_repo))
     shutil.rmtree(_snapshots_root())
 
     _git(git_repo, "add", "new.txt")
     _git(git_repo, "commit", "-qm", "add new.txt")
 
-    assert create_snapshot(git_repo) == untracked_id
+    assert create_snapshot(git_repo, git=GitIdentity.capture(git_repo)) == untracked_id
 
 
 def test_symlinks_and_exec_bits_are_preserved_and_normalized(
@@ -137,7 +145,9 @@ def test_symlinks_and_exec_bits_are_preserved_and_normalized(
     (git_repo / "run.sh").chmod(0o744)
     (git_repo / "link.txt").symlink_to("tracked.txt")
 
-    with tarfile.open(_tarball(create_snapshot(git_repo))) as tar:
+    with tarfile.open(
+        _tarball(create_snapshot(git_repo, git=GitIdentity.capture(git_repo)))
+    ) as tar:
         link = tar.getmember("link.txt")
         assert link.issym()
         assert link.linkname == "tracked.txt"
@@ -151,7 +161,7 @@ def test_symlinks_and_exec_bits_are_preserved_and_normalized(
 
 def test_manifest_records_commit_entries_and_totals(git_repo: Path) -> None:
     (git_repo / "untracked.txt").write_text("new\n")
-    snapshot_id = create_snapshot(git_repo)
+    snapshot_id = create_snapshot(git_repo, git=GitIdentity.capture(git_repo))
 
     manifest = SnapshotManifest.model_validate_json(
         (_snapshot_dir(snapshot_id) / "manifest.json").read_text()
@@ -175,7 +185,7 @@ def test_oversize_worktree_fails_before_tarring(git_repo: Path) -> None:
 
     with override_config(_with_max_snapshot_bytes(1024)):
         with pytest.raises(RuntimeError, match=r"(?s)4\.0 KiB  big\.bin.*gitignore"):
-            create_snapshot(git_repo)
+            create_snapshot(git_repo, git=GitIdentity.capture(git_repo))
 
     assert not _snapshots_root().exists()
 
@@ -189,7 +199,7 @@ def test_concurrent_writer_losing_the_rename_discards_its_work(
         raise OSError("simulated concurrent snapshot rename")
 
     monkeypatch.setattr(Path, "rename", race_loser_rename)
-    snapshot_id = create_snapshot(git_repo)
+    snapshot_id = create_snapshot(git_repo, git=GitIdentity.capture(git_repo))
 
     assert (_snapshot_dir(snapshot_id) / "winner").is_file()
     assert list(_snapshots_root().iterdir()) == [_snapshot_dir(snapshot_id)]
@@ -197,7 +207,7 @@ def test_concurrent_writer_losing_the_rename_discards_its_work(
 
 def test_outside_a_git_worktree_raises(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="not inside a git repository"):
-        create_snapshot(tmp_path)
+        create_snapshot(tmp_path, git=GitIdentity.capture(tmp_path))
 
 
 def test_extract_snapshot_round_trips_and_verifies(
@@ -206,7 +216,7 @@ def test_extract_snapshot_round_trips_and_verifies(
     (git_repo / "tracked.txt").write_text("worktree version\n")
     (git_repo / "untracked.txt").write_text("brand new\n")
     (git_repo / "link.txt").symlink_to("tracked.txt")
-    snapshot_id = create_snapshot(git_repo)
+    snapshot_id = create_snapshot(git_repo, git=GitIdentity.capture(git_repo))
 
     dest = extract_snapshot(snapshot_id, tmp_path / "out", verify=True)
 
@@ -220,7 +230,7 @@ def test_extract_snapshot_round_trips_and_verifies(
 def test_extracted_tree_is_stamped_and_re_snapshots_as_itself(
     git_repo: Path, tmp_path: Path
 ) -> None:
-    snapshot_id = create_snapshot(git_repo)
+    snapshot_id = create_snapshot(git_repo, git=GitIdentity.capture(git_repo))
 
     dest = extract_snapshot(snapshot_id, tmp_path / "out", verify=True)
 
@@ -230,12 +240,12 @@ def test_extracted_tree_is_stamped_and_re_snapshots_as_itself(
     assert marker.git.commit == _git(git_repo, "rev-parse", "HEAD")
     # The extracted tree is not a git repository, yet snapshotting and git
     # capture both resolve from the marker alone.
-    assert create_snapshot(dest) == snapshot_id
+    assert create_snapshot(dest, git=GitIdentity.capture(dest)) == snapshot_id
     assert GitIdentity.capture(dest) == marker.git
 
 
 def test_extract_verify_detects_content_drift(git_repo: Path, tmp_path: Path) -> None:
-    snapshot_id = create_snapshot(git_repo)
+    snapshot_id = create_snapshot(git_repo, git=GitIdentity.capture(git_repo))
     tarball = _tarball(snapshot_id)
     corrupted: dict[str, bytes] = {}
     with tarfile.open(tarball) as tar:
@@ -256,7 +266,7 @@ def test_extract_verify_detects_content_drift(git_repo: Path, tmp_path: Path) ->
 
 
 def test_extract_refuses_non_empty_destination(git_repo: Path, tmp_path: Path) -> None:
-    snapshot_id = create_snapshot(git_repo)
+    snapshot_id = create_snapshot(git_repo, git=GitIdentity.capture(git_repo))
     dest = tmp_path / "out"
     dest.mkdir()
     (dest / "existing.txt").write_text("keep me\n")
