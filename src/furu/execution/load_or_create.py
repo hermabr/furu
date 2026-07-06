@@ -266,16 +266,10 @@ def _normalize_load_or_create_input[T](
 
 
 @overload
-def create[T](
-    obj: Spec[T],
-    *,
-    on: Sequence[WorkerBackend] | None = None,
-) -> T: ...
+def create[T](obj: Spec[T], *, on: Sequence[WorkerBackend] | None = None) -> T: ...
 @overload
 def create[T](
-    objs: Sequence[Spec[T]],
-    *,
-    on: Sequence[WorkerBackend] | None = None,
+    objs: Sequence[Spec[T]], *, on: Sequence[WorkerBackend] | None = None
 ) -> list[T]: ...
 def create[T](
     obj_or_objs: Spec[T] | Sequence[Spec[T]],
