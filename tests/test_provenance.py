@@ -17,10 +17,6 @@ from furu.provenance import (
     Provenance,
     SubmitContext,
     SubmitProvenance,
-    capture_environment_identity,
-    capture_execute_context,
-    capture_git_identity,
-    capture_submit_context,
     find_project_root,
 )
 
@@ -123,7 +119,7 @@ def test_submit_provenance_round_trips_through_json() -> None:
 
 
 def test_git_identity_clean_repo(git_repo: Path) -> None:
-    identity = capture_git_identity(git_repo)
+    identity = GitIdentity.capture(git_repo)
     assert identity.commit == _git(git_repo, "rev-parse", "HEAD")
     assert identity.branch == "main"
     assert identity.remote is None
@@ -134,7 +130,7 @@ def test_git_identity_clean_repo(git_repo: Path) -> None:
 
 def test_git_identity_dirty_repo(git_repo: Path) -> None:
     (git_repo / "tracked.txt").write_text("changed\n")
-    identity = capture_git_identity(git_repo)
+    identity = GitIdentity.capture(git_repo)
     assert identity.dirty is True
     assert identity.diff_stats is not None
     assert "1 file changed" in identity.diff_stats
@@ -144,7 +140,7 @@ def test_git_identity_untracked_only_is_dirty_without_diff_stats(
     git_repo: Path,
 ) -> None:
     (git_repo / "new.txt").write_text("new\n")
-    identity = capture_git_identity(git_repo)
+    identity = GitIdentity.capture(git_repo)
     assert identity.dirty is True
     assert identity.diff_stats is None
 
@@ -152,20 +148,20 @@ def test_git_identity_untracked_only_is_dirty_without_diff_stats(
 def test_git_identity_detached_head(git_repo: Path) -> None:
     commit = _git(git_repo, "rev-parse", "HEAD")
     _git(git_repo, "checkout", "-q", commit)
-    identity = capture_git_identity(git_repo)
+    identity = GitIdentity.capture(git_repo)
     assert identity.branch is None
     assert identity.commit == commit
 
 
 def test_git_identity_records_remote(git_repo: Path) -> None:
     _git(git_repo, "remote", "add", "origin", "git@example.com:t/t.git")
-    identity = capture_git_identity(git_repo)
+    identity = GitIdentity.capture(git_repo)
     assert identity.remote == "git@example.com:t/t.git"
 
 
 def test_git_identity_outside_repo(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError):
-        capture_git_identity(tmp_path)
+        GitIdentity.capture(tmp_path)
 
 
 def test_uv_version_from_pyvenv_cfg(tmp_path: Path) -> None:
@@ -192,17 +188,17 @@ def test_find_project_root_missing_raises(tmp_path: Path) -> None:
 
 
 def test_capture_environment_identity_is_cached_and_populated() -> None:
-    capture_environment_identity.cache_clear()
+    EnvironmentIdentity.capture.cache_clear()
     try:
-        identity = capture_environment_identity()
-        assert identity is capture_environment_identity()
+        identity = EnvironmentIdentity.capture()
+        assert identity is EnvironmentIdentity.capture()
         assert identity.python.count(".") == 2
         assert identity.uv_lock_hash.startswith("blake2s:")
         assert identity.pyproject_hash.startswith("blake2s:")
         assert identity.furu == furu.__version__
         assert (Path(identity.project_root) / "uv.lock").is_file()
     finally:
-        capture_environment_identity.cache_clear()
+        EnvironmentIdentity.capture.cache_clear()
 
 
 def test_capture_environment_identity_requires_uv_lock(
@@ -210,16 +206,16 @@ def test_capture_environment_identity_requires_uv_lock(
 ) -> None:
     (tmp_path / "pyproject.toml").write_text("[project]\n")
     monkeypatch.chdir(tmp_path)
-    capture_environment_identity.cache_clear()
+    EnvironmentIdentity.capture.cache_clear()
     try:
         with pytest.raises(RuntimeError, match="uv sync"):
-            capture_environment_identity()
+            EnvironmentIdentity.capture()
     finally:
-        capture_environment_identity.cache_clear()
+        EnvironmentIdentity.capture.cache_clear()
 
 
 def test_capture_submit_context() -> None:
-    context = capture_submit_context()
+    context = SubmitContext.capture()
     assert context.cwd == str(Path.cwd())
     assert context.launch_command
     assert context.timestamp.tzinfo is not None
@@ -229,7 +225,7 @@ def test_capture_execute_context_defaults_to_local(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("SLURM_JOB_ID", raising=False)
-    context = capture_execute_context()
+    context = ExecuteContext.capture()
     assert context.worker_backend == "local"
     assert context.pid == os.getpid()
     assert context.cpu_count > 0
