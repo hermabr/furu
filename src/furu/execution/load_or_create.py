@@ -16,19 +16,27 @@ from typing import (
 )
 
 from furu._declared_types import declared_result_type
+from furu.config import get_config
 from furu.core import SpecCreateMode, Missing, Spec
 from furu.dependencies import dependency_recorder, record_dependency_call
 from furu.locking import lock
 from furu.logging import _scoped_log_files, get_logger
 from furu.metadata import RunningMetadata
 from furu.migration.links import result_dir_for_loading
-from furu.provenance import _require_uv
+from furu.provenance import (
+    ExecuteContext,
+    Provenance,
+    SubmitProvenance,
+    _require_uv,
+    capture_submit_provenance,
+)
 from furu.migration.stale import raise_if_stale
 from furu.result.bundle import _save_result_bundle, load_result_bundle
 from furu.storage._layout import (
     compute_lock_path_in,
     data_dir_in,
     metadata_path_in,
+    provenance_path_in,
     result_dir_in,
     run_log_path_in,
     schema_snapshot_path_in,
@@ -128,6 +136,14 @@ def _record_schema_snapshot(obj: Spec[Any]) -> None:
     tmp_path.rename(schema_path)
 
 
+def _write_provenance(obj: Spec[Any], submit_provenance: SubmitProvenance) -> None:
+    provenance = Provenance.merge(submit_provenance, ExecuteContext.capture())
+    provenance_path = provenance_path_in(obj._base_dir)
+    tmp_path = nfs_safe_unique_name(provenance_path, name="tmp")
+    tmp_path.write_text(provenance.model_dump_json(indent=2))
+    tmp_path.rename(provenance_path)
+
+
 def _store_result[T](
     obj: Spec[T],
     result: T,
@@ -135,6 +151,7 @@ def _store_result[T](
     metadata: RunningMetadata,
     observed_dependencies: tuple[str, ...],
     has_lock: HasLock,
+    submit_provenance: SubmitProvenance,
 ) -> T:
     lock_path = compute_lock_path_in(obj._base_dir)
     result_dir = result_dir_in(obj._base_dir)
@@ -166,6 +183,8 @@ def _store_result[T](
     ).model_dump_json(indent=2)
     metadata_path_in(obj._base_dir).write_text(metadata_text)
 
+    _write_provenance(obj, submit_provenance)
+
     obj.logger.debug("stored result bundle at %s", result_dir)
 
     for binding in dump_state.ref_bindings:
@@ -185,12 +204,14 @@ def _store_result[T](
 
 
 @overload
-def _load_or_create[T](obj: Spec[T], *, use_lock: bool = True) -> T: ...
+def _load_or_create[T](
+    obj: Spec[T], *, use_lock: bool = True, snapshot: bool | None = None
+) -> T: ...
 
 
 @overload
 def _load_or_create[T](
-    objs: Sequence[Spec[T]], *, use_lock: bool = True
+    objs: Sequence[Spec[T]], *, use_lock: bool = True, snapshot: bool | None = None
 ) -> list[T]: ...
 
 
@@ -198,11 +219,12 @@ def _load_or_create[T](
     obj_or_objs: Spec[T] | Sequence[Spec[T]],
     *,
     use_lock: bool = True,
+    snapshot: bool | None = None,
 ) -> T | list[T]:
     _require_uv()
     if _worker_execution_lease_id.get() is not None:
         return _load_or_create_worker(obj_or_objs)
-    return _load_or_create_local(obj_or_objs, use_lock=use_lock)
+    return _load_or_create_local(obj_or_objs, use_lock=use_lock, snapshot=snapshot)
 
 
 def _ensure_single_result[T](obj: Spec[T]) -> None:
@@ -222,6 +244,9 @@ def _ensure_single_result[T](obj: Spec[T]) -> None:
             [obj],
             has_lock=has_lock,
             results_by_object_id={},
+            # Workers record their own process as the submit half; snapshots
+            # are a submit-side concern and never built on the execute side.
+            submit_provenance=capture_submit_provenance(snapshot=False),
         )
 
 
@@ -248,22 +273,33 @@ def _normalize_load_or_create_input[T](
 
 
 @overload
-def create[T](obj: Spec[T], *, on: Sequence[WorkerBackend] | None = None) -> T: ...
+def create[T](
+    obj: Spec[T],
+    *,
+    on: Sequence[WorkerBackend] | None = None,
+    snapshot: bool | None = None,
+) -> T: ...
 @overload
 def create[T](
-    objs: Sequence[Spec[T]], *, on: Sequence[WorkerBackend] | None = None
+    objs: Sequence[Spec[T]],
+    *,
+    on: Sequence[WorkerBackend] | None = None,
+    snapshot: bool | None = None,
 ) -> list[T]: ...
 def create[T](
     obj_or_objs: Spec[T] | Sequence[Spec[T]],
     *,
     on: Sequence[WorkerBackend] | None = None,
+    snapshot: bool | None = None,
 ) -> T | list[T]:
     if on is not None:
         from furu.execution.execution_coordinator import ExecutionCoordinator
 
+        if snapshot is None:
+            snapshot = True
         objs = [obj_or_objs] if isinstance(obj_or_objs, Spec) else list(obj_or_objs)
         ExecutionCoordinator.run(objs, worker_backends=tuple(on))
-    return _load_or_create(obj_or_objs)
+    return _load_or_create(obj_or_objs, snapshot=snapshot)
 
 
 def load_existing[T](objs: Sequence[Spec[T]]) -> list[T]:
@@ -363,6 +399,7 @@ def _load_or_create_local[T](
     obj_or_objs: Spec[T] | Sequence[Spec[T]],
     *,
     use_lock: bool = True,
+    snapshot: bool | None = None,
 ) -> T | list[T]:
     objs, unwrap = _normalize_load_or_create_input(obj_or_objs)
 
@@ -430,16 +467,22 @@ def _load_or_create_local[T](
         if direct_create_started:
             objs[0].logger.info("creating %s", objs[0]._log_label)
 
-        grouped: dict[type[object], list[Spec[T]]] = {}
-        for obj in pending:
-            grouped.setdefault(type(obj), []).append(obj)
+        if pending:
+            if snapshot is None:
+                snapshot = get_config().provenance.snapshot_default
+            submit_provenance = capture_submit_provenance(snapshot=snapshot)
 
-        for group in grouped.values():
-            _create_and_store_group(
-                group,
-                has_lock=has_lock,
-                results_by_object_id=results_by_object_id,
-            )
+            grouped: dict[type[object], list[Spec[T]]] = {}
+            for obj in pending:
+                grouped.setdefault(type(obj), []).append(obj)
+
+            for group in grouped.values():
+                _create_and_store_group(
+                    group,
+                    has_lock=has_lock,
+                    results_by_object_id=results_by_object_id,
+                    submit_provenance=submit_provenance,
+                )
 
     outputs = [results_by_object_id[obj.object_id] for obj in objs]
 
@@ -461,6 +504,7 @@ def _create_and_store_group[T](
     *,
     has_lock: HasLock,
     results_by_object_id: dict[str, T],
+    submit_provenance: SubmitProvenance,
 ) -> None:
     log_paths = tuple(run_log_path_in(obj._base_dir) for obj in group)
 
@@ -527,6 +571,7 @@ def _create_and_store_group[T](
                     metadata=obj_metadata,
                     observed_dependencies=observed_dependency_ids,
                     has_lock=has_lock,
+                    submit_provenance=submit_provenance,
                 )
 
             logger.debug(

@@ -29,6 +29,7 @@ from furu.migration.links import result_dir_for_loading
 from furu.migration.resolution import validate_embedded_migration_declarations
 from furu.migration.stale import raise_if_stale, sideways_status
 from furu.migration.steps import MigrationStep, validate_migration_declaration
+from furu.provenance import Provenance
 from furu.result.bundle import load_result_bundle
 from furu.result.codec import Codec
 from furu.serializer.artifact import to_json as _to_json
@@ -39,6 +40,7 @@ from furu.storage._layout import (
     compute_lock_path_in,
     data_dir_in,
     metadata_path_in,
+    provenance_path_in,
     result_link_path_in,
     result_manifest_path_in,
 )
@@ -211,6 +213,21 @@ class Spec[T](_FuruDataclassTransform, ABC):
             "load_existing() only loads existing results; use create() to compute "
             "missing results."
         )
+
+    @final
+    def provenance(self) -> Provenance | None:
+        """Provenance of the run that produced this result, if recorded.
+
+        Follows result links, so a migrated result reads the provenance
+        written beside its original result directory.
+        """
+        result_dir = result_dir_for_loading(self)
+        if result_dir is None:
+            return None
+        path = provenance_path_in(result_dir.parent)
+        if not path.exists():
+            return None
+        return Provenance.model_validate_json(path.read_text(encoding="utf-8"))
 
     @final
     @property

@@ -16,6 +16,9 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
+from furu.config import get_config
+from furu.logging import get_logger
+
 _ACCELERATOR_PROBE_TIMEOUT_SECONDS = 2.0
 _HASH_PREFIX = "blake2s:"
 
@@ -180,7 +183,7 @@ class SubmitProvenance(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    git: GitIdentity
+    git: GitIdentity | None
     environment: EnvironmentIdentity
     snapshot_id: str | None
     submitted: SubmitContext
@@ -189,7 +192,7 @@ class SubmitProvenance(BaseModel):
 class Provenance(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    git: GitIdentity
+    git: GitIdentity | None
     environment: EnvironmentIdentity
     snapshot_id: str | None
     submitted: SubmitContext
@@ -204,6 +207,50 @@ class Provenance(BaseModel):
             submitted=submit.submitted,
             executed=executed,
         )
+
+    @property
+    def snapshot_path(self) -> Path | None:
+        if self.snapshot_id is None:
+            return None
+        return (
+            get_config().run_directories.snapshots
+            / self.snapshot_id
+            / "snapshot.tar.gz"
+        )
+
+
+def capture_submit_provenance(*, snapshot: bool) -> SubmitProvenance:
+    """Capture the submit-side provenance half for a batch about to compute.
+
+    Callers own the once-per-batch discipline: call this only when there is
+    work to create, never on the cache-hit path.
+    """
+    from furu.snapshot import create_snapshot  # snapshot.py imports this module
+
+    cwd = Path.cwd()
+    environment = EnvironmentIdentity.capture()
+    snapshot_id = create_snapshot(cwd) if snapshot else None
+    try:
+        git = GitIdentity.capture(cwd)
+    except RuntimeError:
+        if snapshot_id is not None:
+            raise
+        _warn_missing_git()
+        git = None
+    return SubmitProvenance(
+        git=git,
+        environment=environment,
+        snapshot_id=snapshot_id,
+        submitted=SubmitContext.capture(),
+    )
+
+
+@functools.cache
+def _warn_missing_git() -> None:
+    get_logger().warning(
+        "not inside a git repository; recording provenance without git identity. "
+        "Results created here cannot be traced back to a code revision."
+    )
 
 
 @functools.cache
