@@ -5,9 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from furu import snapshot as snapshot_module
 from furu.config import _Config, get_config
-from furu.snapshot import SnapshotManifest, create_snapshot, snapshot_dir
+from furu.snapshot import SnapshotManifest, create_snapshot
 from furu.testing import override_config
 
 
@@ -35,8 +34,12 @@ def git_repo(tmp_path: Path) -> Path:
     return repo
 
 
+def _snapshot_dir(snapshot_id: str) -> Path:
+    return _snapshots_root() / snapshot_id
+
+
 def _tarball(snapshot_id: str) -> Path:
-    return snapshot_dir(snapshot_id) / "snapshot.tar.gz"
+    return _snapshot_dir(snapshot_id) / "snapshot.tar.gz"
 
 
 def _extract(snapshot_id: str, dest: Path) -> Path:
@@ -75,15 +78,13 @@ def test_snapshot_accepts_paths_below_the_repo_root(git_repo: Path) -> None:
 
 
 def test_existing_snapshot_is_reused_without_rebuilding(
-    git_repo: Path, monkeypatch: pytest.MonkeyPatch
+    git_repo: Path,
 ) -> None:
     snapshot_id = create_snapshot(git_repo)
+    _tarball(snapshot_id).unlink()
 
-    def unexpected_rebuild(*args: object) -> None:
-        raise AssertionError("tarball rebuilt despite existing snapshot")
-
-    monkeypatch.setattr(snapshot_module, "_write_tarball", unexpected_rebuild)
     assert create_snapshot(git_repo) == snapshot_id
+    assert not _tarball(snapshot_id).exists()
 
 
 def test_dirty_and_untracked_files_land_with_worktree_bytes(
@@ -151,7 +152,7 @@ def test_manifest_records_commit_entries_and_totals(git_repo: Path) -> None:
     snapshot_id = create_snapshot(git_repo)
 
     manifest = SnapshotManifest.model_validate_json(
-        (snapshot_dir(snapshot_id) / "manifest.json").read_text()
+        (_snapshot_dir(snapshot_id) / "manifest.json").read_text()
     )
 
     assert manifest.commit == _git(git_repo, "rev-parse", "HEAD")
@@ -171,26 +172,20 @@ def test_diff_patch_records_staged_and_unstaged_changes(git_repo: Path) -> None:
     (git_repo / "sub" / "nested.txt").write_text("staged change\n")
     _git(git_repo, "add", "sub/nested.txt")
 
-    diff = (snapshot_dir(create_snapshot(git_repo)) / "diff.patch").read_text()
+    diff = (_snapshot_dir(create_snapshot(git_repo)) / "diff.patch").read_text()
 
     assert "+unstaged change" in diff
     assert "+staged change" in diff
 
 
 def test_clean_worktree_writes_empty_diff_patch(git_repo: Path) -> None:
-    diff_path = snapshot_dir(create_snapshot(git_repo)) / "diff.patch"
+    diff_path = _snapshot_dir(create_snapshot(git_repo)) / "diff.patch"
     assert diff_path.read_bytes() == b""
 
 
-def test_oversize_worktree_fails_before_tarring(
-    git_repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_oversize_worktree_fails_before_tarring(git_repo: Path) -> None:
     (git_repo / "big.bin").write_bytes(b"x" * 4096)
 
-    def unexpected_tar(*args: object) -> None:
-        raise AssertionError("tarball written despite oversize manifest")
-
-    monkeypatch.setattr(snapshot_module, "_write_tarball", unexpected_tar)
     with override_config(_with_max_snapshot_bytes(1024)):
         with pytest.raises(RuntimeError, match=r"(?s)4\.0 KiB  big\.bin.*gitignore"):
             create_snapshot(git_repo)
@@ -201,19 +196,16 @@ def test_oversize_worktree_fails_before_tarring(
 def test_concurrent_writer_losing_the_rename_discards_its_work(
     git_repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    write_tarball = snapshot_module._write_tarball
+    def race_loser_rename(self: Path, target: Path) -> Path:
+        target.mkdir(parents=True)
+        (target / "winner").touch()
+        raise OSError("simulated concurrent snapshot rename")
 
-    def race_winner(path: Path, repo_root: Path, paths: list[str]) -> None:
-        write_tarball(path, repo_root, paths)
-        final_dir = path.parent.parent / path.parent.name.split(".")[0]
-        final_dir.mkdir(parents=True)
-        (final_dir / "winner").touch()
-
-    monkeypatch.setattr(snapshot_module, "_write_tarball", race_winner)
+    monkeypatch.setattr(Path, "rename", race_loser_rename)
     snapshot_id = create_snapshot(git_repo)
 
-    assert (snapshot_dir(snapshot_id) / "winner").is_file()
-    assert list(_snapshots_root().iterdir()) == [snapshot_dir(snapshot_id)]
+    assert (_snapshot_dir(snapshot_id) / "winner").is_file()
+    assert list(_snapshots_root().iterdir()) == [_snapshot_dir(snapshot_id)]
 
 
 def test_outside_a_git_worktree_raises(tmp_path: Path) -> None:
