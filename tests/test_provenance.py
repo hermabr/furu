@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,7 +18,6 @@ from furu.provenance import (
     Provenance,
     SubmitContext,
     SubmitProvenance,
-    find_project_root,
 )
 
 EXAMPLE_PROVENANCE_JSON = """
@@ -163,29 +163,68 @@ def test_git_identity_outside_repo(tmp_path: Path) -> None:
         GitIdentity.capture(tmp_path)
 
 
-def test_uv_version_from_pyvenv_cfg(tmp_path: Path) -> None:
-    cfg = tmp_path / "pyvenv.cfg"
-    cfg.write_text("home = /x\nimplementation = CPython\nuv = 0.7.13\n")
-    assert provenance._uv_version_from_pyvenv_cfg(cfg) == "0.7.13"
-
-    cfg.write_text("home = /x\nimplementation = CPython\n")
-    with pytest.raises(RuntimeError, match="uv run"):
-        provenance._uv_version_from_pyvenv_cfg(cfg)
-
-    with pytest.raises(RuntimeError, match="uv run"):
-        provenance._uv_version_from_pyvenv_cfg(tmp_path / "missing.cfg")
-
-
-def test_find_project_root_walks_up(tmp_path: Path) -> None:
+def test_capture_environment_identity_finds_project_root_from_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     (tmp_path / "pyproject.toml").write_text("[project]\n")
+    (tmp_path / "uv.lock").write_text("version = 1\n")
+    (tmp_path / "pyvenv.cfg").write_text(
+        "home = /x\nimplementation = CPython\nuv = 0.7.13\n"
+    )
     nested = tmp_path / "a" / "b"
     nested.mkdir(parents=True)
-    assert find_project_root(nested) == tmp_path.resolve()
+    monkeypatch.chdir(nested)
+    monkeypatch.setattr(sys, "prefix", str(tmp_path))
+    EnvironmentIdentity.capture.cache_clear()
+    try:
+        assert Path(EnvironmentIdentity.capture().project_root) == tmp_path.resolve()
+    finally:
+        EnvironmentIdentity.capture.cache_clear()
 
 
-def test_find_project_root_missing_raises(tmp_path: Path) -> None:
+def test_capture_environment_identity_missing_project_root_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    EnvironmentIdentity.capture.cache_clear()
     with pytest.raises(RuntimeError, match="no pyproject.toml"):
-        find_project_root(tmp_path)
+        EnvironmentIdentity.capture()
+    EnvironmentIdentity.capture.cache_clear()
+
+
+def test_capture_environment_identity_reads_uv_version_from_pyvenv_cfg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    (tmp_path / "uv.lock").write_text("version = 1\n")
+    (tmp_path / "pyvenv.cfg").write_text(
+        "home = /x\nimplementation = CPython\nuv = 0.7.13\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "prefix", str(tmp_path))
+    EnvironmentIdentity.capture.cache_clear()
+    try:
+        assert EnvironmentIdentity.capture().uv == "0.7.13"
+    finally:
+        EnvironmentIdentity.capture.cache_clear()
+
+
+@pytest.mark.parametrize("pyvenv_cfg", ["home = /x\nimplementation = CPython\n", None])
+def test_capture_environment_identity_requires_uv_managed_python(
+    pyvenv_cfg: str | None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    (tmp_path / "uv.lock").write_text("version = 1\n")
+    if pyvenv_cfg is not None:
+        (tmp_path / "pyvenv.cfg").write_text(pyvenv_cfg)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "prefix", str(tmp_path))
+    EnvironmentIdentity.capture.cache_clear()
+    try:
+        with pytest.raises(RuntimeError, match="uv run"):
+            EnvironmentIdentity.capture()
+    finally:
+        EnvironmentIdentity.capture.cache_clear()
 
 
 def test_capture_environment_identity_is_cached_and_populated() -> None:

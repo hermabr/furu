@@ -71,7 +71,21 @@ class EnvironmentIdentity(BaseModel):
     @classmethod
     @functools.cache
     def capture(cls) -> EnvironmentIdentity:
-        project_root = find_project_root(Path.cwd())
+        start = Path.cwd().resolve()
+        project_root = next(
+            (
+                directory
+                for directory in (start, *start.parents)
+                if (directory / "pyproject.toml").is_file()
+            ),
+            None,
+        )
+        if project_root is None:
+            raise RuntimeError(
+                f"no pyproject.toml found from {start} upward.\n"
+                "furu requires a uv project so results are reproducible. Create one with:\n"
+                "  uv init"
+            )
         uv_lock = project_root / "uv.lock"
         if not uv_lock.is_file():
             raise RuntimeError(
@@ -87,9 +101,23 @@ class EnvironmentIdentity(BaseModel):
                 + hashlib.blake2s(path.read_bytes(), digest_size=10).hexdigest()
             )
 
+        try:
+            uv = next(
+                parts[2].strip()
+                for line in (Path(sys.prefix) / "pyvenv.cfg")
+                .read_text(encoding="utf-8")
+                .splitlines()
+                if (parts := line.partition("="))[1] and parts[0].strip() == "uv"
+            )
+        except (OSError, StopIteration) as exc:
+            raise RuntimeError(
+                "furu must run under a uv-managed interpreter so results are "
+                "reproducible. Run furu commands via:\n  uv run ..."
+            ) from exc
+
         return cls(
             python="{}.{}.{}".format(*sys.version_info[:3]),
-            uv=_uv_version_from_pyvenv_cfg(Path(sys.prefix) / "pyvenv.cfg"),
+            uv=uv,
             project_root=str(project_root),
             uv_lock_hash=hash_file(uv_lock),
             pyproject_hash=hash_file(project_root / "pyproject.toml"),
@@ -183,33 +211,6 @@ def _run_git(args: list[str], *, cwd: Path) -> str:
         check=True,
     )
     return result.stdout.strip()
-
-
-def find_project_root(start: Path) -> Path:
-    start = start.resolve()
-    for directory in (start, *start.parents):
-        if (directory / "pyproject.toml").is_file():
-            return directory
-    raise RuntimeError(
-        f"no pyproject.toml found from {start} upward.\n"
-        "furu requires a uv project so results are reproducible. Create one with:\n"
-        "  uv init"
-    )
-
-
-def _uv_version_from_pyvenv_cfg(pyvenv_cfg: Path) -> str:
-    try:
-        text = pyvenv_cfg.read_text(encoding="utf-8")
-    except OSError:
-        text = ""
-    for line in text.splitlines():
-        key, sep, value = line.partition("=")
-        if sep and key.strip() == "uv":
-            return value.strip()
-    raise RuntimeError(
-        "furu must run under a uv-managed interpreter so results are "
-        "reproducible. Run furu commands via:\n  uv run ..."
-    )
 
 
 @functools.cache
