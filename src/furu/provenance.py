@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import functools
 import hashlib
 import os
@@ -30,18 +31,12 @@ class GitIdentity(BaseModel):
     diff_stats: str | None
 
     @classmethod
-    def capture(cls, cwd: Path | None = None) -> GitIdentity:
-        cwd = cwd or Path.cwd()
+    def capture(cls, cwd: Path) -> GitIdentity:
         try:
             repo_root = _run_git(["rev-parse", "--show-toplevel"], cwd=cwd)
             commit = _run_git(["rev-parse", "HEAD"], cwd=cwd)
         except (OSError, subprocess.CalledProcessError) as exc:
-            detail = ""
-            if isinstance(exc, subprocess.CalledProcessError) and exc.stderr:
-                detail = f": {exc.stderr.strip()}"
-            raise RuntimeError(
-                f"cannot capture git identity from {cwd}{detail}"
-            ) from exc
+            raise RuntimeError(f"cannot capture git identity from {cwd}") from exc
         branch = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd)
         try:
             remote = _run_git(["remote", "get-url", "origin"], cwd=cwd)
@@ -76,7 +71,7 @@ class EnvironmentIdentity(BaseModel):
     @classmethod
     @functools.cache
     def capture(cls) -> EnvironmentIdentity:
-        project_root = find_project_root()
+        project_root = find_project_root(Path.cwd())
         uv_lock = project_root / "uv.lock"
         if not uv_lock.is_file():
             raise RuntimeError(
@@ -84,12 +79,6 @@ class EnvironmentIdentity(BaseModel):
                 "furu requires a locked uv project so results are reproducible. "
                 "Run:\n"
                 "  uv sync"
-            )
-        uv = _uv_version_from_pyvenv_cfg(Path(sys.prefix) / "pyvenv.cfg")
-        if uv is None:
-            raise RuntimeError(
-                "furu must run under a uv-managed interpreter so results are "
-                "reproducible. Run furu commands via:\n  uv run ..."
             )
 
         def hash_file(path: Path) -> str:
@@ -100,7 +89,7 @@ class EnvironmentIdentity(BaseModel):
 
         return cls(
             python="{}.{}.{}".format(*sys.version_info[:3]),
-            uv=uv,
+            uv=_uv_version_from_pyvenv_cfg(Path(sys.prefix) / "pyvenv.cfg"),
             project_root=str(project_root),
             uv_lock_hash=hash_file(uv_lock),
             pyproject_hash=hash_file(project_root / "pyproject.toml"),
@@ -196,8 +185,8 @@ def _run_git(args: list[str], *, cwd: Path) -> str:
     return result.stdout.strip()
 
 
-def find_project_root(start: Path | None = None) -> Path:
-    start = (start or Path.cwd()).resolve()
+def find_project_root(start: Path) -> Path:
+    start = start.resolve()
     for directory in (start, *start.parents):
         if (directory / "pyproject.toml").is_file():
             return directory
@@ -208,32 +197,32 @@ def find_project_root(start: Path | None = None) -> Path:
     )
 
 
-def _uv_version_from_pyvenv_cfg(pyvenv_cfg: Path) -> str | None:
+def _uv_version_from_pyvenv_cfg(pyvenv_cfg: Path) -> str:
     try:
         text = pyvenv_cfg.read_text(encoding="utf-8")
     except OSError:
-        return None
+        text = ""
     for line in text.splitlines():
         key, sep, value = line.partition("=")
         if sep and key.strip() == "uv":
             return value.strip()
-    return None
+    raise RuntimeError(
+        "furu must run under a uv-managed interpreter so results are "
+        "reproducible. Run furu commands via:\n  uv run ..."
+    )
 
 
 @functools.cache
 def _probe_accelerators() -> tuple[str, ...]:
-    try:
+    with contextlib.suppress(OSError, subprocess.TimeoutExpired):
         result = subprocess.run(
             ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
             capture_output=True,
             text=True,
             timeout=_ACCELERATOR_PROBE_TIMEOUT_SECONDS,
         )
-    except (OSError, subprocess.TimeoutExpired):
-        result = None
-    if result is not None and result.returncode == 0:
         names = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-        if names:
+        if result.returncode == 0 and names:
             return tuple(
                 name if count == 1 else f"{name} ×{count}"
                 for name, count in Counter(names).items()

@@ -170,9 +170,11 @@ def test_uv_version_from_pyvenv_cfg(tmp_path: Path) -> None:
     assert provenance._uv_version_from_pyvenv_cfg(cfg) == "0.7.13"
 
     cfg.write_text("home = /x\nimplementation = CPython\n")
-    assert provenance._uv_version_from_pyvenv_cfg(cfg) is None
+    with pytest.raises(RuntimeError, match="uv run"):
+        provenance._uv_version_from_pyvenv_cfg(cfg)
 
-    assert provenance._uv_version_from_pyvenv_cfg(tmp_path / "missing.cfg") is None
+    with pytest.raises(RuntimeError, match="uv run"):
+        provenance._uv_version_from_pyvenv_cfg(tmp_path / "missing.cfg")
 
 
 def test_find_project_root_walks_up(tmp_path: Path) -> None:
