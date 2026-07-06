@@ -1,3 +1,4 @@
+import io
 import shutil
 import subprocess
 import tarfile
@@ -6,7 +7,8 @@ from pathlib import Path
 import pytest
 
 from furu.config import _Config, get_config
-from furu.snapshot import SnapshotManifest, create_snapshot
+from furu.provenance import GitIdentity, find_snapshot_marker
+from furu.snapshot import SnapshotManifest, create_snapshot, extract_snapshot
 from furu.testing import override_config
 
 
@@ -155,7 +157,8 @@ def test_manifest_records_commit_entries_and_totals(git_repo: Path) -> None:
         (_snapshot_dir(snapshot_id) / "manifest.json").read_text()
     )
 
-    assert manifest.commit == _git(git_repo, "rev-parse", "HEAD")
+    assert manifest.git.commit == _git(git_repo, "rev-parse", "HEAD")
+    assert manifest.git.dirty  # untracked.txt
     assert [entry.path for entry in manifest.entries] == [
         "sub/nested.txt",
         "tracked.txt",
@@ -193,5 +196,77 @@ def test_concurrent_writer_losing_the_rename_discards_its_work(
 
 
 def test_outside_a_git_worktree_raises(tmp_path: Path) -> None:
-    with pytest.raises(RuntimeError, match="not inside a git worktree"):
+    with pytest.raises(RuntimeError, match="not inside a git repository"):
         create_snapshot(tmp_path)
+
+
+def test_extract_snapshot_round_trips_and_verifies(
+    git_repo: Path, tmp_path: Path
+) -> None:
+    (git_repo / "tracked.txt").write_text("worktree version\n")
+    (git_repo / "untracked.txt").write_text("brand new\n")
+    (git_repo / "link.txt").symlink_to("tracked.txt")
+    snapshot_id = create_snapshot(git_repo)
+
+    dest = extract_snapshot(snapshot_id, tmp_path / "out", verify=True)
+
+    assert (dest / "tracked.txt").read_text() == "worktree version\n"
+    assert (dest / "untracked.txt").read_text() == "brand new\n"
+    assert (dest / "sub" / "nested.txt").read_text() == "nested\n"
+    assert (dest / "link.txt").is_symlink()
+    assert (dest / "link.txt").readlink() == Path("tracked.txt")
+
+
+def test_extracted_tree_is_stamped_and_re_snapshots_as_itself(
+    git_repo: Path, tmp_path: Path
+) -> None:
+    snapshot_id = create_snapshot(git_repo)
+
+    dest = extract_snapshot(snapshot_id, tmp_path / "out", verify=True)
+
+    marker = find_snapshot_marker(dest / "sub")
+    assert marker is not None
+    assert marker.snapshot_id == snapshot_id
+    assert marker.git.commit == _git(git_repo, "rev-parse", "HEAD")
+    # The extracted tree is not a git repository, yet snapshotting and git
+    # capture both resolve from the marker alone.
+    assert create_snapshot(dest) == snapshot_id
+    assert GitIdentity.capture(dest) == marker.git
+
+
+def test_extract_verify_detects_content_drift(git_repo: Path, tmp_path: Path) -> None:
+    snapshot_id = create_snapshot(git_repo)
+    tarball = _tarball(snapshot_id)
+    corrupted: dict[str, bytes] = {}
+    with tarfile.open(tarball) as tar:
+        for member in tar.getmembers():
+            file = tar.extractfile(member)
+            assert file is not None
+            corrupted[member.name] = (
+                b"corrupted\n" if member.name == "tracked.txt" else file.read()
+            )
+    with tarfile.open(tarball, "w:gz") as tar:
+        for name, data in corrupted.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+
+    with pytest.raises(RuntimeError, match=r"modified   tracked\.txt"):
+        extract_snapshot(snapshot_id, tmp_path / "out", verify=True)
+
+
+def test_extract_refuses_non_empty_destination(git_repo: Path, tmp_path: Path) -> None:
+    snapshot_id = create_snapshot(git_repo)
+    dest = tmp_path / "out"
+    dest.mkdir()
+    (dest / "existing.txt").write_text("keep me\n")
+
+    with pytest.raises(RuntimeError, match="not an empty directory"):
+        extract_snapshot(snapshot_id, dest, verify=False)
+
+    assert (dest / "existing.txt").read_text() == "keep me\n"
+
+
+def test_extract_missing_snapshot_raises(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="has no tarball"):
+        extract_snapshot("0" * 20, tmp_path / "out")

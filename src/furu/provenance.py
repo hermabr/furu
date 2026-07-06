@@ -13,10 +13,14 @@ from datetime import datetime, timezone
 from getpass import getuser
 from importlib.metadata import version
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict
 
 from furu.config import get_config
+
+if TYPE_CHECKING:
+    from furu.core import Spec
 
 _ACCELERATOR_PROBE_TIMEOUT_SECONDS = 2.0
 _HASH_PREFIX = "blake2s:"
@@ -34,6 +38,8 @@ class GitIdentity(BaseModel):
 
     @classmethod
     def capture(cls, cwd: Path) -> GitIdentity:
+        if (marker := find_snapshot_marker(cwd)) is not None:
+            return marker.git
         try:
             repo_root = _run_git(["rev-parse", "--show-toplevel"], cwd=cwd)
             commit = _run_git(["rev-parse", "HEAD"], cwd=cwd)
@@ -62,6 +68,34 @@ class GitIdentity(BaseModel):
             dirty=dirty,
             diff_stats=diff_stats,
         )
+
+
+SNAPSHOT_MARKER_NAME = ".furu-snapshot.json"
+
+
+class SnapshotMarker(BaseModel):
+    """Stamped at the root of an extracted snapshot tree.
+
+    Trees carrying this marker were materialized from a snapshot, so their
+    identity was already established when the snapshot was created: git
+    identity and snapshot id come from the marker, never from re-inspection.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    snapshot_id: str
+    git: GitIdentity
+
+
+def find_snapshot_marker(cwd: Path) -> SnapshotMarker | None:
+    start = cwd.resolve()
+    for directory in (start, *start.parents):
+        path = directory / SNAPSHOT_MARKER_NAME
+        if path.is_file():
+            return SnapshotMarker.model_validate_json(
+                path.read_text(encoding="utf-8")
+            )
+    return None
 
 
 class EnvironmentIdentity(BaseModel):
@@ -101,12 +135,6 @@ class EnvironmentIdentity(BaseModel):
                 "  uv sync"
             )
 
-        def hash_file(path: Path) -> str:
-            return (
-                _HASH_PREFIX
-                + hashlib.blake2s(path.read_bytes(), digest_size=10).hexdigest()
-            )
-
         try:
             uv = next(
                 parts[2].strip()
@@ -132,10 +160,14 @@ class EnvironmentIdentity(BaseModel):
             python="{}.{}.{}".format(*sys.version_info[:3]),
             uv=uv,
             project_root=str(project_root),
-            uv_lock_hash=hash_file(uv_lock),
-            pyproject_hash=hash_file(project_root / "pyproject.toml"),
+            uv_lock_hash=_hash_file(uv_lock),
+            pyproject_hash=_hash_file(project_root / "pyproject.toml"),
             furu=version("furu"),
         )
+
+
+def _hash_file(path: Path) -> str:
+    return _HASH_PREFIX + hashlib.blake2s(path.read_bytes(), digest_size=10).hexdigest()
 
 
 class SubmitContext(BaseModel):
@@ -231,12 +263,29 @@ def capture_submit_provenance(*, snapshot: bool) -> SubmitProvenance:
     from furu.snapshot import create_snapshot  # snapshot.py imports this module
 
     cwd = Path.cwd()
+    git = GitIdentity.capture(cwd)
     return SubmitProvenance(
-        git=GitIdentity.capture(cwd),
+        git=git,
         environment=EnvironmentIdentity.capture(),
-        snapshot_id=create_snapshot(cwd) if snapshot else None,
+        snapshot_id=create_snapshot(cwd, git=git) if snapshot else None,
         submitted=SubmitContext.capture(),
     )
+
+
+def extract(obj: Spec[Any], dest: Path, *, verify: bool = False) -> Path:
+    """Materialize the code snapshot behind ``obj``'s stored result into ``dest``."""
+    record = obj.provenance()
+    if record.snapshot_id is None:
+        raise RuntimeError(
+            f"{obj._log_label} was computed without a snapshot (snapshot_id is "
+            "null in provenance.json), so there is no code tarball to extract.\n"
+            f"It was submitted from commit {record.git.commit}"
+            + (" with uncommitted changes" if record.git.dirty else "")
+            + "; check that commit out instead."
+        )
+    from furu.snapshot import extract_snapshot  # snapshot.py imports this module
+
+    return extract_snapshot(record.snapshot_id, dest, verify=verify)
 
 
 @functools.cache

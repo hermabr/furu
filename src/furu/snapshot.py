@@ -4,14 +4,19 @@ import gzip
 import os
 import shutil
 import stat
-import subprocess
 import tarfile
 from pathlib import Path
 
 from pydantic import BaseModel, ByteSize, ConfigDict
 
 from furu.config import get_config
-from furu.provenance import _run_git
+from furu.provenance import (
+    SNAPSHOT_MARKER_NAME,
+    GitIdentity,
+    SnapshotMarker,
+    _run_git,
+    find_snapshot_marker,
+)
 from furu.utils import _hash_dict_deterministically, nfs_safe_unique_name
 
 
@@ -26,22 +31,24 @@ class SnapshotEntry(BaseModel):
 class SnapshotManifest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    commit: str
+    git: GitIdentity
     entries: tuple[SnapshotEntry, ...]
     total_bytes: int
 
 
-def create_snapshot(worktree: Path) -> str:
-    """Snapshot the git worktree containing ``worktree``; return its id."""
-    try:
-        repo_root = Path(_run_git(["rev-parse", "--show-toplevel"], cwd=worktree))
-        commit = _run_git(["rev-parse", "HEAD"], cwd=worktree)
-    except (OSError, subprocess.CalledProcessError) as exc:
-        raise RuntimeError(
-            f"cannot snapshot {worktree}: not inside a git worktree with a commit.\n"
-            "Snapshots use git's index as the manifest, so snapshotting requires "
-            "a git repository."
-        ) from exc
+def create_snapshot(worktree: Path, *, git: GitIdentity | None = None) -> str:
+    """Snapshot the git worktree containing ``worktree``; return its id.
+
+    ``git`` lets callers that already captured the worktree's git identity
+    pass it along instead of capturing it a second time.
+    """
+    if (marker := find_snapshot_marker(worktree)) is not None:
+        # An extracted snapshot re-snapshots as itself: its identity was
+        # established when the snapshot was created.
+        return marker.snapshot_id
+    if git is None:
+        git = GitIdentity.capture(worktree)
+    repo_root = Path(git.repo_root)
 
     # Split the manifest paths into clean files (path -> index blob hash) and
     # dirty files (paths whose worktree bytes must be hashed). The two are disjoint.
@@ -117,7 +124,7 @@ def create_snapshot(worktree: Path) -> str:
         return snapshot_id
 
     manifest = SnapshotManifest(
-        commit=commit,
+        git=git,
         entries=tuple(
             SnapshotEntry(path=path, hash=blob, size=sizes[path])
             for path, blob in sorted(blobs.items())
@@ -170,6 +177,112 @@ def create_snapshot(worktree: Path) -> str:
         if not final_dir.is_dir():
             raise
     return snapshot_id
+
+
+def read_snapshot_manifest(snapshot_id: str) -> SnapshotManifest:
+    manifest_path = (
+        get_config().run_directories.snapshots / snapshot_id / "manifest.json"
+    )
+    try:
+        return SnapshotManifest.model_validate_json(
+            manifest_path.read_text(encoding="utf-8")
+        )
+    except OSError as exc:
+        raise RuntimeError(
+            f"snapshot {snapshot_id} has no readable manifest at {manifest_path}.\n"
+            "Snapshots live in the furu-data snapshots directory of the project "
+            "that created the result. Run from that project, or copy its "
+            "snapshot directory here."
+        ) from exc
+
+
+def extract_snapshot(snapshot_id: str, dest: Path, *, verify: bool = False) -> Path:
+    """Materialize snapshot ``snapshot_id`` into ``dest``; return ``dest``.
+
+    The extracted tree is stamped with a snapshot marker recording the
+    snapshot id and the git identity captured when the snapshot was created,
+    so it is runnable without a git repository of its own.
+
+    With ``verify=True``, re-hash the extracted tree with ``git hash-object``
+    semantics and require the (path -> hash) map to re-derive ``snapshot_id``.
+    """
+    tarball = get_config().run_directories.snapshots / snapshot_id / "snapshot.tar.gz"
+    if not tarball.is_file():
+        raise RuntimeError(
+            f"snapshot {snapshot_id} has no tarball at {tarball}.\n"
+            "Snapshots live in the furu-data snapshots directory of the project "
+            "that created the result. Run from that project, or copy its "
+            "snapshot directory here."
+        )
+    manifest = read_snapshot_manifest(snapshot_id)
+    if dest.exists() and (not dest.is_dir() or any(dest.iterdir())):
+        raise RuntimeError(
+            f"refusing to extract snapshot {snapshot_id} into {dest}: "
+            "the destination already exists and is not an empty directory."
+        )
+    dest.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(tarball) as tar:
+        tar.extractall(dest, filter="tar")
+    if verify:
+        _verify_extraction(snapshot_id, manifest, dest)
+    marker = SnapshotMarker(snapshot_id=snapshot_id, git=manifest.git)
+    _write_file(
+        dest / SNAPSHOT_MARKER_NAME, marker.model_dump_json(indent=2).encode()
+    )
+    return dest
+
+
+def _verify_extraction(
+    snapshot_id: str, manifest: SnapshotManifest, dest: Path
+) -> None:
+    expected = {entry.path: entry.hash for entry in manifest.entries}
+    if _hash_dict_deterministically(expected) != snapshot_id:
+        raise RuntimeError(
+            f"snapshot {snapshot_id} failed verification: manifest.json does not "
+            "re-derive the snapshot id, so the snapshot directory was modified "
+            "after it was written."
+        )
+    actual = _hash_extracted_tree(dest)
+    if actual == expected:
+        return
+    problems = []
+    for path in sorted(expected.keys() | actual.keys()):
+        if path not in actual:
+            problems.append(f"  missing    {path}")
+        elif path not in expected:
+            problems.append(f"  unexpected {path}")
+        elif actual[path] != expected[path]:
+            problems.append(f"  modified   {path}")
+    raise RuntimeError(
+        f"snapshot {snapshot_id} failed verification: the extracted tree does "
+        f"not match the manifest:\n" + "\n".join(problems)
+    )
+
+
+def _hash_extracted_tree(root: Path) -> dict[str, str]:
+    # Mirror of create_snapshot's dirty-file hashing: git hash-object semantics,
+    # symlinks hash their target, regular files their bytes.
+    blobs: dict[str, str] = {}
+    regular_paths: list[str] = []
+    for path in sorted(
+        str(entry.relative_to(root))
+        for entry in root.rglob("*")
+        if entry.is_symlink() or entry.is_file()
+    ):
+        if (root / path).is_symlink():
+            blobs[path] = _run_git(
+                ["hash-object", "--stdin"], cwd=root, input=os.readlink(root / path)
+            )
+        else:
+            regular_paths.append(path)
+    if regular_paths:
+        output = _run_git(
+            ["hash-object", "--stdin-paths"],
+            cwd=root,
+            input="".join(f"{path}\n" for path in regular_paths),
+        )
+        blobs.update(zip(regular_paths, output.splitlines(), strict=True))
+    return blobs
 
 
 def _write_file(path: Path, data: bytes) -> None:
