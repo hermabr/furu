@@ -44,9 +44,9 @@ def git_repo(tmp_path: Path) -> Path:
     return repo
 
 
-def _with_snapshot_default(enabled: bool) -> _Config:
+def _with_snapshot(enabled: bool) -> _Config:
     data = get_config().model_dump()
-    data["provenance"]["snapshot_default"] = enabled
+    data["provenance"]["snapshot"] = enabled
     return _Config.model_validate(data)
 
 
@@ -59,6 +59,12 @@ class _Node(Spec[int]):
     def create(self) -> int:
         _created.append(self.object_id)
         return self.value + 1
+
+
+def test_pytest_harness_disables_snapshot_by_default() -> None:
+    # The furu pytest plugin opts out of the snapshot-on-by-default policy;
+    # snapshot tests opt back in with override_config.
+    assert get_config().provenance.snapshot is False
 
 
 def test_create_writes_provenance_next_to_metadata(
@@ -82,12 +88,13 @@ def test_create_writes_provenance_next_to_metadata(
     assert provenance.snapshot_path is None
 
 
-def test_snapshot_true_builds_tarball_referenced_by_snapshot_id(
+def test_snapshot_builds_tarball_referenced_by_snapshot_id(
     git_repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(git_repo)
 
-    furu.create(_Node(value=2), snapshot=True)
+    with override_config(_with_snapshot(True)):
+        furu.create(_Node(value=2))
 
     provenance = _Node(value=2).provenance()
     assert provenance.snapshot_id is not None
@@ -112,7 +119,8 @@ def test_cache_hit_performs_no_capture_and_no_writes(
     )
 
     assert node.create() == 4
-    assert furu.create(_Node(value=3), snapshot=True) == 4
+    with override_config(_with_snapshot(True)):
+        assert furu.create(_Node(value=3)) == 4
     assert provenance_path_in(node._base_dir).read_text() == original
 
 
@@ -150,34 +158,24 @@ def test_snapshot_outside_git_repo_fails_before_compute(
     monkeypatch.chdir(tmp_path)
     computed = len(_created)
 
-    with pytest.raises(RuntimeError, match="not inside a git worktree"):
-        furu.create(_Node(value=6), snapshot=True)
+    with override_config(_with_snapshot(True)):
+        with pytest.raises(RuntimeError, match="not inside a git worktree"):
+            furu.create(_Node(value=6))
 
     assert len(_created) == computed
 
 
-def test_snapshot_default_config_applies_to_plain_create(
+def test_snapshot_config_applies_to_plain_create(
     git_repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(git_repo)
-    with override_config(_with_snapshot_default(True)):
+    with override_config(_with_snapshot(True)):
         _Node(value=7).create()
 
         provenance = _Node(value=7).provenance()
         assert provenance.snapshot_id is not None
         assert provenance.snapshot_path is not None
         assert provenance.snapshot_path.is_file()
-
-
-def test_explicit_snapshot_false_overrides_config_default(
-    git_repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.chdir(git_repo)
-    with override_config(_with_snapshot_default(True)):
-        furu.create(_Node(value=8), snapshot=False)
-
-        provenance = _Node(value=8).provenance()
-        assert provenance.snapshot_id is None
 
 
 def test_provenance_raises_missing_for_missing_result() -> None:

@@ -204,14 +204,12 @@ def _store_result[T](
 
 
 @overload
-def _load_or_create[T](
-    obj: Spec[T], *, use_lock: bool = True, snapshot: bool | None = None
-) -> T: ...
+def _load_or_create[T](obj: Spec[T], *, use_lock: bool = True) -> T: ...
 
 
 @overload
 def _load_or_create[T](
-    objs: Sequence[Spec[T]], *, use_lock: bool = True, snapshot: bool | None = None
+    objs: Sequence[Spec[T]], *, use_lock: bool = True
 ) -> list[T]: ...
 
 
@@ -219,12 +217,11 @@ def _load_or_create[T](
     obj_or_objs: Spec[T] | Sequence[Spec[T]],
     *,
     use_lock: bool = True,
-    snapshot: bool | None = None,
 ) -> T | list[T]:
     _require_uv()
     if _worker_execution_lease_id.get() is not None:
         return _load_or_create_worker(obj_or_objs)
-    return _load_or_create_local(obj_or_objs, use_lock=use_lock, snapshot=snapshot)
+    return _load_or_create_local(obj_or_objs, use_lock=use_lock)
 
 
 def _ensure_single_result[T](obj: Spec[T]) -> None:
@@ -277,29 +274,24 @@ def create[T](
     obj: Spec[T],
     *,
     on: Sequence[WorkerBackend] | None = None,
-    snapshot: bool | None = None,
 ) -> T: ...
 @overload
 def create[T](
     objs: Sequence[Spec[T]],
     *,
     on: Sequence[WorkerBackend] | None = None,
-    snapshot: bool | None = None,
 ) -> list[T]: ...
 def create[T](
     obj_or_objs: Spec[T] | Sequence[Spec[T]],
     *,
     on: Sequence[WorkerBackend] | None = None,
-    snapshot: bool | None = None,
 ) -> T | list[T]:
     if on is not None:
         from furu.execution.execution_coordinator import ExecutionCoordinator
 
-        if snapshot is None:
-            snapshot = True
         objs = [obj_or_objs] if isinstance(obj_or_objs, Spec) else list(obj_or_objs)
         ExecutionCoordinator.run(objs, worker_backends=tuple(on))
-    return _load_or_create(obj_or_objs, snapshot=snapshot)
+    return _load_or_create(obj_or_objs)
 
 
 def load_existing[T](objs: Sequence[Spec[T]]) -> list[T]:
@@ -399,7 +391,6 @@ def _load_or_create_local[T](
     obj_or_objs: Spec[T] | Sequence[Spec[T]],
     *,
     use_lock: bool = True,
-    snapshot: bool | None = None,
 ) -> T | list[T]:
     objs, unwrap = _normalize_load_or_create_input(obj_or_objs)
 
@@ -468,9 +459,9 @@ def _load_or_create_local[T](
             objs[0].logger.info("creating %s", objs[0]._log_label)
 
         if pending:
-            if snapshot is None:
-                snapshot = get_config().provenance.snapshot_default
-            submit_provenance = capture_submit_provenance(snapshot=snapshot)
+            submit_provenance = capture_submit_provenance(
+                snapshot=get_config().provenance.snapshot
+            )
 
             grouped: dict[type[object], list[Spec[T]]] = {}
             for obj in pending:

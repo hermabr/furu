@@ -76,6 +76,12 @@ def pytest_configure(config: pytest.Config) -> None:
             }
         ),
     )
+    # Snapshotting tarballs the enclosing repo on every miss, and the per-test
+    # directories below defeat its dedup; snapshot tests opt back in with
+    # override_config.
+    run_data = run_config.model_dump()
+    run_data["provenance"]["snapshot"] = False
+    run_config = _Config.model_validate(run_data)
 
     state = _FuruPytestState(
         original_config=get_config(),

@@ -156,6 +156,8 @@ if __name__ == "__main__":
         pythonpath.append(existing)
     env["FURU_DEBUG_MODE"] = "true"
     env["PYTHONPATH"] = os.pathsep.join(pythonpath)
+    # The scratch project is not a git repo, so snapshotting would refuse to run.
+    env["FURU_PROVENANCE__SNAPSHOT"] = "false"
 
     result = subprocess.run(
         [sys.executable, str(script)],
@@ -310,6 +312,8 @@ if __name__ == "__main__":
     if existing := env.get("PYTHONPATH"):
         pythonpath.append(existing)
     env["PYTHONPATH"] = os.pathsep.join(pythonpath)
+    # The scratch project is not a git repo, so snapshotting would refuse to run.
+    env["FURU_PROVENANCE__SNAPSHOT"] = "false"
 
     result = subprocess.run(
         [sys.executable, "-m", "my_lib.data"],

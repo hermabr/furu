@@ -34,7 +34,7 @@ class _FuruWorkerConfig(BaseModel):
 class _FuruProvenanceConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    snapshot_default: bool = False
+    snapshot: bool = True
     max_snapshot_bytes: ByteSize = ByteSize(256 * 1024 * 1024)
 
 
