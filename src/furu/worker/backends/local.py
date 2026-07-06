@@ -33,7 +33,7 @@ class LocalThreadWorkerBackend:
         bound_port: int,
         auth_token: str,
         executor_dir: Path,
-        provenance: SubmitProvenance | None = None,
+        provenance: SubmitProvenance,
     ) -> LocalThreadWorkerPool:
         # Workers are threads in the submitting process, so they already run
         # the exact code the snapshot captured; ``provenance`` is unused.

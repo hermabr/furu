@@ -16,7 +16,7 @@ class WorkerBackend(Protocol):
         bound_port: int,
         auth_token: str,
         executor_dir: Path,
-        provenance: SubmitProvenance | None = None,
+        provenance: SubmitProvenance,
     ) -> WorkerPool: ...
 
 

@@ -52,7 +52,7 @@ class SlurmWorkerBackend:
         bound_port: int,
         auth_token: str,
         executor_dir: Path,
-        provenance: SubmitProvenance | None = None,
+        provenance: SubmitProvenance,
     ) -> SlurmWorkerPool:
         connect_port = (
             bound_port if self.worker_connect_port is None else self.worker_connect_port
@@ -61,7 +61,7 @@ class SlurmWorkerBackend:
 
         chdir = Path.cwd().resolve()
         project_root = Path(EnvironmentIdentity.capture().project_root)
-        if provenance is not None and provenance.snapshot_id is not None:
+        if provenance.snapshot_id is not None:
             # Run workers from the extracted snapshot, not the live worktree,
             # so edits made after submit cannot leak into these jobs.
             code_dir = extract_snapshot(provenance.snapshot_id)
