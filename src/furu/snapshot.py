@@ -43,27 +43,35 @@ def create_snapshot(worktree: Path) -> str:
             "a git repository."
         ) from exc
 
-    # Map manifest paths to index blob hashes. ``None`` marks paths whose
-    # worktree bytes need hashing because they differ from the index.
-    index_blobs: dict[str, str | None] = {}
+    # Split the manifest paths into clean files (path -> index blob hash) and
+    # dirty files (paths whose worktree bytes must be hashed). The two are disjoint.
+    clean_blobs: dict[str, str] = {}
+    dirty_paths: set[str] = set()
     for line in _split_z(_run_git(["ls-files", "-s", "-z"], cwd=repo_root)):
         meta, _, path = line.partition("\t")
         mode, blob, stage = meta.split()
         if mode == "160000":  # gitlink (submodule): no worktree bytes to archive
             continue
-        index_blobs[path] = blob if stage == "0" else None
+        if stage == "0":
+            clean_blobs[path] = blob
+        else:  # unmerged (conflict): the index blob is ambiguous, hash the worktree
+            dirty_paths.add(path)
     tokens = _split_z(_run_git(["diff-files", "--name-status", "-z"], cwd=repo_root))
     for status, path in zip(tokens[::2], tokens[1::2], strict=True):
+        clean_blobs.pop(path, None)  # differs from the index, so no longer clean
         if status == "D":
-            index_blobs.pop(path, None)
+            dirty_paths.discard(path)  # deleted from the worktree: nothing to archive
         else:
-            index_blobs[path] = None
+            dirty_paths.add(path)
     for path in _split_z(
         _run_git(["ls-files", "-o", "--exclude-standard", "-z"], cwd=repo_root)
     ):
-        index_blobs[path] = None
+        dirty_paths.add(path)
 
-    sizes = {path: os.lstat(repo_root / path).st_size for path in index_blobs}
+    sizes = {
+        path: os.lstat(repo_root / path).st_size
+        for path in (*clean_blobs, *dirty_paths)
+    }
     total_bytes = sum(sizes.values())
     limit = get_config().provenance.max_snapshot_bytes
     if total_bytes > limit:
@@ -82,15 +90,13 @@ def create_snapshot(worktree: Path) -> str:
             "or raise [tool.furu.provenance] max_snapshot_bytes if this is intentional."
         )
 
-    # Use ``git hash-object`` semantics so dirty files hash identically after
-    # they are committed later.
-    hashed: dict[str, str] = {}
+    # Hash dirty files with ``git hash-object`` semantics, so they hash identically
+    # once committed later. Symlinks hash their target; regular files their bytes.
+    blobs = dict(clean_blobs)
     regular_paths: list[str] = []
-    for path, blob in index_blobs.items():
-        if blob is not None:
-            continue
+    for path in sorted(dirty_paths):
         if (repo_root / path).is_symlink():
-            hashed[path] = _run_git(
+            blobs[path] = _run_git(
                 ["hash-object", "--stdin"],
                 cwd=repo_root,
                 input=os.readlink(repo_root / path),
@@ -103,8 +109,7 @@ def create_snapshot(worktree: Path) -> str:
             cwd=repo_root,
             input="".join(f"{path}\n" for path in regular_paths),
         )
-        hashed.update(zip(regular_paths, output.splitlines(), strict=True))
-    blobs = {path: blob or hashed[path] for path, blob in index_blobs.items()}
+        blobs.update(zip(regular_paths, output.splitlines(), strict=True))
     snapshot_id = _hash_dict_deterministically(blobs)
 
     final_dir = get_config().run_directories.snapshots / snapshot_id
