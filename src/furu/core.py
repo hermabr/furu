@@ -216,11 +216,6 @@ class Spec[T](_FuruDataclassTransform, ABC):
 
     @final
     def provenance(self) -> Provenance:
-        """Provenance of the run that produced this result.
-
-        Follows result links, so a migrated result reads the provenance
-        written beside its original result directory.
-        """
         result_dir = result_dir_for_loading(self)
         if result_dir is None:
             raise Missing(
