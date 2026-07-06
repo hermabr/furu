@@ -20,12 +20,19 @@ from furu.utils import (
 
 
 def _write_uv_project(path: Path) -> None:
-    """Make path a locked uv project so spawned furu scripts pass _require_uv()."""
+    """Make path a locked uv project in a git repo so spawned furu scripts run."""
     (path / "pyproject.toml").write_text(
         '[project]\nname = "scratch"\nversion = "0"\nrequires-python = ">=3.12"\n',
         encoding="utf-8",
     )
     subprocess.run(["uv", "lock"], cwd=path, check=True, capture_output=True)
+    for args in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "init"]):
+        subprocess.run(
+            ["git", "-c", "user.email=t@t.t", "-c", "user.name=t", *args],
+            cwd=path,
+            check=True,
+            capture_output=True,
+        )
 
 
 @contextmanager

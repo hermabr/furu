@@ -85,7 +85,6 @@ def _example_provenance() -> Provenance:
 
 def test_example_provenance_json_parses() -> None:
     prov = _example_provenance()
-    assert prov.git is not None
     assert prov.git.dirty is True
     assert prov.submitted.launch_command == (
         "uv",

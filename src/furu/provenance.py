@@ -17,7 +17,6 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict
 
 from furu.config import get_config
-from furu.logging import get_logger
 
 _ACCELERATOR_PROBE_TIMEOUT_SECONDS = 2.0
 _HASH_PREFIX = "blake2s:"
@@ -39,7 +38,11 @@ class GitIdentity(BaseModel):
             repo_root = _run_git(["rev-parse", "--show-toplevel"], cwd=cwd)
             commit = _run_git(["rev-parse", "HEAD"], cwd=cwd)
         except (OSError, subprocess.CalledProcessError) as exc:
-            raise RuntimeError(f"cannot capture git identity from {cwd}") from exc
+            raise RuntimeError(
+                f"not inside a git repository with a commit (from {cwd}).\n"
+                "furu requires git so results are reproducible. Run:\n"
+                "  git init && git commit"
+            ) from exc
         branch = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd)
         try:
             remote = _run_git(["remote", "get-url", "origin"], cwd=cwd)
@@ -183,7 +186,7 @@ class SubmitProvenance(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    git: GitIdentity | None
+    git: GitIdentity
     environment: EnvironmentIdentity
     snapshot_id: str | None
     submitted: SubmitContext
@@ -192,7 +195,7 @@ class SubmitProvenance(BaseModel):
 class Provenance(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    git: GitIdentity | None
+    git: GitIdentity
     environment: EnvironmentIdentity
     snapshot_id: str | None
     submitted: SubmitContext
@@ -228,28 +231,11 @@ def capture_submit_provenance(*, snapshot: bool) -> SubmitProvenance:
     from furu.snapshot import create_snapshot  # snapshot.py imports this module
 
     cwd = Path.cwd()
-    environment = EnvironmentIdentity.capture()
-    snapshot_id = create_snapshot(cwd) if snapshot else None
-    try:
-        git = GitIdentity.capture(cwd)
-    except RuntimeError:
-        if snapshot_id is not None:
-            raise
-        _warn_missing_git()
-        git = None
     return SubmitProvenance(
-        git=git,
-        environment=environment,
-        snapshot_id=snapshot_id,
+        git=GitIdentity.capture(cwd),
+        environment=EnvironmentIdentity.capture(),
+        snapshot_id=create_snapshot(cwd) if snapshot else None,
         submitted=SubmitContext.capture(),
-    )
-
-
-@functools.cache
-def _warn_missing_git() -> None:
-    get_logger().warning(
-        "not inside a git repository; recording provenance without git identity. "
-        "Results created here cannot be traced back to a code revision."
     )
 
 

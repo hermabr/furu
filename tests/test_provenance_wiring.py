@@ -1,4 +1,3 @@
-import json
 import os
 import subprocess
 from collections.abc import Iterator
@@ -78,7 +77,6 @@ def test_create_writes_provenance_next_to_metadata(
     path = provenance_path_in(node._base_dir)
     assert path.parent == metadata_path_in(node._base_dir).parent
     provenance = Provenance.model_validate_json(path.read_text())
-    assert provenance.git is not None
     assert provenance.git.commit == _git(git_repo, "rev-parse", "HEAD")
     assert provenance.snapshot_id is None
     assert provenance.submitted.hostname == provenance.executed.hostname
@@ -139,28 +137,14 @@ def test_result_without_provenance_loads_but_provenance_raises(
         node.provenance()
 
 
-def test_outside_git_repo_records_null_git(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    node = _Node(value=5)
-    node.create()
-
-    provenance = node.provenance()
-    assert provenance.git is None
-    assert provenance.snapshot_id is None
-    assert json.loads(provenance_path_in(node._base_dir).read_text())["git"] is None
-
-
-def test_snapshot_outside_git_repo_fails_before_compute(
+def test_outside_git_repo_fails_before_compute(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
     computed = len(_created)
 
-    with override_config(_with_snapshot(True)):
-        with pytest.raises(RuntimeError, match="not inside a git worktree"):
-            furu.create(_Node(value=6))
+    with pytest.raises(RuntimeError, match="not inside a git repository"):
+        furu.create(_Node(value=6))
 
     assert len(_created) == computed
 
