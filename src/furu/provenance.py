@@ -16,6 +16,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
+from furu.config import get_config
+
 _ACCELERATOR_PROBE_TIMEOUT_SECONDS = 2.0
 _HASH_PREFIX = "blake2s:"
 
@@ -36,7 +38,11 @@ class GitIdentity(BaseModel):
             repo_root = _run_git(["rev-parse", "--show-toplevel"], cwd=cwd)
             commit = _run_git(["rev-parse", "HEAD"], cwd=cwd)
         except (OSError, subprocess.CalledProcessError) as exc:
-            raise RuntimeError(f"cannot capture git identity from {cwd}") from exc
+            raise RuntimeError(
+                f"not inside a git repository with a commit (from {cwd}).\n"
+                "furu requires git so results are reproducible. Run:\n"
+                "  git init && git commit"
+            ) from exc
         branch = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd)
         try:
             remote = _run_git(["remote", "get-url", "origin"], cwd=cwd)
@@ -204,6 +210,33 @@ class Provenance(BaseModel):
             submitted=submit.submitted,
             executed=executed,
         )
+
+    @property
+    def snapshot_path(self) -> Path | None:
+        if self.snapshot_id is None:
+            return None
+        return (
+            get_config().run_directories.snapshots
+            / self.snapshot_id
+            / "snapshot.tar.gz"
+        )
+
+
+def capture_submit_provenance(*, snapshot: bool) -> SubmitProvenance:
+    """Capture the submit-side provenance half for a batch about to compute.
+
+    Callers own the once-per-batch discipline: call this only when there is
+    work to create, never on the cache-hit path.
+    """
+    from furu.snapshot import create_snapshot  # snapshot.py imports this module
+
+    cwd = Path.cwd()
+    return SubmitProvenance(
+        git=GitIdentity.capture(cwd),
+        environment=EnvironmentIdentity.capture(),
+        snapshot_id=create_snapshot(cwd) if snapshot else None,
+        submitted=SubmitContext.capture(),
+    )
 
 
 @functools.cache

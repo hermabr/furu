@@ -16,6 +16,7 @@ from furu.migration.steps import (
     Rewrite,
     Stale,
 )
+from furu.provenance import Provenance
 from furu.result.codec import Codec
 from furu.result.ref import Ref, ref
 from furu.serializer.registry import Serializer
@@ -44,6 +45,7 @@ __all__ = [
     "MigrationStep",
     "Missing",
     "MovedFrom",
+    "Provenance",
     "Ref",
     "Renamed",
     "Requires",

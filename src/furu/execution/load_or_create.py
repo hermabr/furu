@@ -16,19 +16,27 @@ from typing import (
 )
 
 from furu._declared_types import declared_result_type
-from furu.core import SpecCreateMode, Missing, Spec
+from furu.config import get_config
+from furu.core import Missing, Spec, SpecCreateMode
 from furu.dependencies import dependency_recorder, record_dependency_call
 from furu.locking import lock
 from furu.logging import _scoped_log_files, get_logger
 from furu.metadata import RunningMetadata
 from furu.migration.links import result_dir_for_loading
-from furu.provenance import _require_uv
 from furu.migration.stale import raise_if_stale
+from furu.provenance import (
+    ExecuteContext,
+    Provenance,
+    SubmitProvenance,
+    _require_uv,
+    capture_submit_provenance,
+)
 from furu.result.bundle import _save_result_bundle, load_result_bundle
 from furu.storage._layout import (
     compute_lock_path_in,
     data_dir_in,
     metadata_path_in,
+    provenance_path_in,
     result_dir_in,
     run_log_path_in,
     schema_snapshot_path_in,
@@ -135,6 +143,7 @@ def _store_result[T](
     metadata: RunningMetadata,
     observed_dependencies: tuple[str, ...],
     has_lock: HasLock,
+    submit_provenance: SubmitProvenance,
 ) -> T:
     lock_path = compute_lock_path_in(obj._base_dir)
     result_dir = result_dir_in(obj._base_dir)
@@ -165,6 +174,12 @@ def _store_result[T](
         observed_dependencies=observed_dependencies
     ).model_dump_json(indent=2)
     metadata_path_in(obj._base_dir).write_text(metadata_text)
+
+    provenance = Provenance.merge(submit_provenance, ExecuteContext.capture())
+    provenance_path = provenance_path_in(obj._base_dir)
+    tmp_path = nfs_safe_unique_name(provenance_path, name="tmp")
+    tmp_path.write_text(provenance.model_dump_json(indent=2))
+    tmp_path.rename(provenance_path)
 
     obj.logger.debug("stored result bundle at %s", result_dir)
 
@@ -222,6 +237,9 @@ def _ensure_single_result[T](obj: Spec[T]) -> None:
             [obj],
             has_lock=has_lock,
             results_by_object_id={},
+            # Workers record their own process as the submit half; snapshots
+            # are a submit-side concern and never built on the execute side.
+            submit_provenance=capture_submit_provenance(snapshot=False),
         )
 
 
@@ -430,16 +448,22 @@ def _load_or_create_local[T](
         if direct_create_started:
             objs[0].logger.info("creating %s", objs[0]._log_label)
 
-        grouped: dict[type[object], list[Spec[T]]] = {}
-        for obj in pending:
-            grouped.setdefault(type(obj), []).append(obj)
-
-        for group in grouped.values():
-            _create_and_store_group(
-                group,
-                has_lock=has_lock,
-                results_by_object_id=results_by_object_id,
+        if pending:
+            submit_provenance = capture_submit_provenance(
+                snapshot=get_config().provenance.snapshot
             )
+
+            grouped: dict[type[object], list[Spec[T]]] = {}
+            for obj in pending:
+                grouped.setdefault(type(obj), []).append(obj)
+
+            for group in grouped.values():
+                _create_and_store_group(
+                    group,
+                    has_lock=has_lock,
+                    results_by_object_id=results_by_object_id,
+                    submit_provenance=submit_provenance,
+                )
 
     outputs = [results_by_object_id[obj.object_id] for obj in objs]
 
@@ -461,6 +485,7 @@ def _create_and_store_group[T](
     *,
     has_lock: HasLock,
     results_by_object_id: dict[str, T],
+    submit_provenance: SubmitProvenance,
 ) -> None:
     log_paths = tuple(run_log_path_in(obj._base_dir) for obj in group)
 
@@ -527,6 +552,7 @@ def _create_and_store_group[T](
                     metadata=obj_metadata,
                     observed_dependencies=observed_dependency_ids,
                     has_lock=has_lock,
+                    submit_provenance=submit_provenance,
                 )
 
             logger.debug(

@@ -397,18 +397,18 @@ def test_accelerator_probe_degrades_to_empty(monkeypatch: pytest.MonkeyPatch) ->
 
 def test_provenance_config_defaults() -> None:
     config = _FuruProvenanceConfig()
-    assert config.snapshot_default is False
+    assert config.snapshot is True
     assert config.max_snapshot_bytes == 256 * 1024 * 1024
 
 
 def test_provenance_config_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("FURU_PROVENANCE__SNAPSHOT_DEFAULT", "true")
+    monkeypatch.setenv("FURU_PROVENANCE__SNAPSHOT", "false")
     monkeypatch.setenv("FURU_PROVENANCE__MAX_SNAPSHOT_BYTES", "1GiB")
 
     config = _Config()
 
     assert config.provenance == _FuruProvenanceConfig(
-        snapshot_default=True,
+        snapshot=False,
         max_snapshot_bytes=ByteSize(1024**3),
     )
 
@@ -419,7 +419,7 @@ def test_provenance_config_from_pyproject(
     (tmp_path / "pyproject.toml").write_text(
         """
 [tool.furu.provenance]
-snapshot_default = true
+snapshot = false
 max_snapshot_bytes = "512MiB"
 """,
         encoding="utf-8",
@@ -428,7 +428,7 @@ max_snapshot_bytes = "512MiB"
 
     config = _Config()
 
-    assert config.provenance.snapshot_default is True
+    assert config.provenance.snapshot is False
     assert config.provenance.max_snapshot_bytes == 512 * 1024 * 1024
 
 
