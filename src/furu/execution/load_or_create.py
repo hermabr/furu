@@ -17,12 +17,13 @@ from typing import (
 
 from furu._declared_types import declared_result_type
 from furu.config import get_config
-from furu.core import SpecCreateMode, Missing, Spec
+from furu.core import Missing, Spec, SpecCreateMode
 from furu.dependencies import dependency_recorder, record_dependency_call
 from furu.locking import lock
 from furu.logging import _scoped_log_files, get_logger
 from furu.metadata import RunningMetadata
 from furu.migration.links import result_dir_for_loading
+from furu.migration.stale import raise_if_stale
 from furu.provenance import (
     ExecuteContext,
     Provenance,
@@ -30,7 +31,6 @@ from furu.provenance import (
     _require_uv,
     capture_submit_provenance,
 )
-from furu.migration.stale import raise_if_stale
 from furu.result.bundle import _save_result_bundle, load_result_bundle
 from furu.storage._layout import (
     compute_lock_path_in,
@@ -136,14 +136,6 @@ def _record_schema_snapshot(obj: Spec[Any]) -> None:
     tmp_path.rename(schema_path)
 
 
-def _write_provenance(obj: Spec[Any], submit_provenance: SubmitProvenance) -> None:
-    provenance = Provenance.merge(submit_provenance, ExecuteContext.capture())
-    provenance_path = provenance_path_in(obj._base_dir)
-    tmp_path = nfs_safe_unique_name(provenance_path, name="tmp")
-    tmp_path.write_text(provenance.model_dump_json(indent=2))
-    tmp_path.rename(provenance_path)
-
-
 def _store_result[T](
     obj: Spec[T],
     result: T,
@@ -183,7 +175,11 @@ def _store_result[T](
     ).model_dump_json(indent=2)
     metadata_path_in(obj._base_dir).write_text(metadata_text)
 
-    _write_provenance(obj, submit_provenance)
+    provenance = Provenance.merge(submit_provenance, ExecuteContext.capture())
+    provenance_path = provenance_path_in(obj._base_dir)
+    tmp_path = nfs_safe_unique_name(provenance_path, name="tmp")
+    tmp_path.write_text(provenance.model_dump_json(indent=2))
+    tmp_path.rename(provenance_path)
 
     obj.logger.debug("stored result bundle at %s", result_dir)
 
