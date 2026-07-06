@@ -18,6 +18,7 @@ class _FuruDirectories(BaseModel):
 
     objects: Path = Path("furu-data") / "objects"
     executions: Path = Path("furu-data") / "executions"
+    snapshots: Path = Path("furu-data") / "snapshots"
     debug: Path = Path("furu-data") / "debug"
 
 
@@ -60,6 +61,7 @@ class _Config(BaseSettings):
             return _FuruDirectories(
                 objects=self.directories.debug / "objects",
                 executions=self.directories.debug / "executions",
+                snapshots=self.directories.debug / "snapshots",
                 debug=self.directories.debug,
             )
         return self.directories

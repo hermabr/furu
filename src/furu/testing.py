@@ -64,6 +64,7 @@ def pytest_configure(config: pytest.Config) -> None:
         _FuruDirectories(
             objects=run_base_directory / "objects",
             executions=run_base_directory / "executions",
+            snapshots=run_base_directory / "snapshots",
             debug=run_base_directory / "debug",
         ),
     )
@@ -116,6 +117,7 @@ def _furu_per_test_base_directory(
             _FuruDirectories(
                 objects=test_objects_directory,
                 executions=test_executions_directory,
+                snapshots=state.run_config.directories.snapshots / test_id,
                 debug=state.run_config.directories.debug / test_id,
             ),
         )
