@@ -62,10 +62,10 @@ def pytest_configure(config: pytest.Config) -> None:
     run_config = _replace_config_directories(
         get_config(),
         _FuruDirectories(
-            objects=run_base_directory / "objects",
-            executions=run_base_directory / "executions",
-            snapshots=run_base_directory / "snapshots",
-            debug=run_base_directory / "debug",
+            **{
+                name: run_base_directory / name
+                for name in _FuruDirectories.model_fields
+            }
         ),
     )
 
@@ -85,14 +85,12 @@ def pytest_unconfigure(config: pytest.Config) -> None:
 
     _set_config(state.original_config)
 
-    if not _keep_furu_data():
-        for field_name in type(state.run_config.directories).model_fields:
-            path = getattr(state.run_config.directories, field_name)
+    for field_name in type(state.run_config.directories).model_fields:
+        path = getattr(state.run_config.directories, field_name)
+        if _keep_furu_data():
+            print(f"kept furu {field_name} at {path}")
+        else:
             shutil.rmtree(path, ignore_errors=True)
-    else:
-        print(f"kept furu objects at {state.run_config.directories.objects}")
-        print(f"kept furu executions at {state.run_config.directories.executions}")
-        print(f"kept furu debug at {state.run_config.directories.debug}")
 
 
 @pytest.fixture(autouse=True)
@@ -108,17 +106,16 @@ def _furu_per_test_base_directory(
     previous_config = get_config()
 
     test_id = hashlib.sha1(request.node.nodeid.encode("utf-8")).hexdigest()[:12]
-    test_objects_directory = state.run_config.directories.objects / test_id
-    test_executions_directory = state.run_config.directories.executions / test_id
+    run_directories = state.run_config.directories
 
     _set_config(
         _replace_config_directories(
             previous_config,
             _FuruDirectories(
-                objects=test_objects_directory,
-                executions=test_executions_directory,
-                snapshots=state.run_config.directories.snapshots / test_id,
-                debug=state.run_config.directories.debug / test_id,
+                **{
+                    name: getattr(run_directories, name) / test_id
+                    for name in _FuruDirectories.model_fields
+                }
             ),
         )
     )

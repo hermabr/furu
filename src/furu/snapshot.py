@@ -9,8 +9,6 @@ shared directory under the configured snapshots root.
 from __future__ import annotations
 
 import gzip
-import hashlib
-import json
 import os
 import shutil
 import stat
@@ -22,11 +20,7 @@ from pydantic import BaseModel, ByteSize, ConfigDict
 
 from furu.config import get_config
 from furu.provenance import _run_git
-from furu.utils import nfs_safe_unique_name
-
-_SNAPSHOT_ID_DIGEST_SIZE = 10
-_LARGEST_OFFENDERS_SHOWN = 10
-_GITLINK_MODE = "160000"
+from furu.utils import _hash_dict_deterministically, nfs_safe_unique_name
 
 
 class SnapshotEntry(BaseModel):
@@ -64,14 +58,11 @@ def create_snapshot(worktree: Path) -> str:
     index_blobs = _manifest_blobs(repo_root)
     sizes = {path: os.lstat(repo_root / path).st_size for path in index_blobs}
     _guard_size(sizes)
-    blobs = {path: blob for path, blob in index_blobs.items() if blob is not None}
-    blobs |= _hash_worktree_files(
+    hashed = _hash_worktree_files(
         repo_root, [path for path, blob in index_blobs.items() if blob is None]
     )
-    snapshot_id = hashlib.blake2s(
-        json.dumps(blobs, sort_keys=True, separators=(",", ":")).encode(),
-        digest_size=_SNAPSHOT_ID_DIGEST_SIZE,
-    ).hexdigest()
+    blobs = {path: blob or hashed[path] for path, blob in index_blobs.items()}
+    snapshot_id = _hash_dict_deterministically(blobs)
 
     final_dir = snapshot_dir(snapshot_id)
     if final_dir.is_dir():
@@ -85,6 +76,7 @@ def create_snapshot(worktree: Path) -> str:
         ),
         total_bytes=sum(sizes.values()),
     )
+    # Raw subprocess, not _run_git: a patch can contain non-UTF-8 bytes.
     diff = subprocess.run(
         ["git", "diff", "HEAD"], cwd=repo_root, capture_output=True, check=True
     ).stdout
@@ -122,7 +114,7 @@ def _manifest_blobs(repo_root: Path) -> dict[str, str | None]:
     for line in _split_z(_run_git(["ls-files", "-s", "-z"], cwd=repo_root)):
         meta, _, path = line.partition("\t")
         mode, blob, stage = meta.split()
-        if mode == _GITLINK_MODE:
+        if mode == "160000":  # gitlink (submodule): no worktree bytes to archive
             continue
         blobs[path] = blob if stage == "0" else None
     tokens = _split_z(_run_git(["diff-files", "--name-status", "-z"], cwd=repo_root))
@@ -172,8 +164,7 @@ def _guard_size(sizes: dict[str, int]) -> None:
         return
     largest = sorted(sizes.items(), key=lambda item: item[1], reverse=True)
     offenders = "\n".join(
-        f"  {_human_size(size):>10}  {path}"
-        for path, size in largest[:_LARGEST_OFFENDERS_SHOWN]
+        f"  {_human_size(size):>10}  {path}" for path, size in largest[:10]
     )
     raise RuntimeError(
         f"worktree snapshot would be {_human_size(total)} "

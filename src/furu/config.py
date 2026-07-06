@@ -58,11 +58,10 @@ class _Config(BaseSettings):
     @property
     def run_directories(self) -> _FuruDirectories:
         if self.debug_mode:
+            debug = self.directories.debug
             return _FuruDirectories(
-                objects=self.directories.debug / "objects",
-                executions=self.directories.debug / "executions",
-                snapshots=self.directories.debug / "snapshots",
-                debug=self.directories.debug,
+                **{name: debug / name for name in _FuruDirectories.model_fields}
+                | {"debug": debug}
             )
         return self.directories
 
