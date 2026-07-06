@@ -19,18 +19,6 @@ _ACCELERATOR_PROBE_TIMEOUT_SECONDS = 2.0
 _HASH_PREFIX = "blake2s:"
 
 
-class UvEnvironmentError(RuntimeError):
-    pass
-
-
-class SnapshotTooLargeError(RuntimeError):
-    pass
-
-
-class NotAGitRepositoryError(RuntimeError):
-    pass
-
-
 class GitIdentity(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -130,7 +118,7 @@ def capture_git_identity(cwd: Path | None = None) -> GitIdentity:
         detail = ""
         if isinstance(exc, subprocess.CalledProcessError) and exc.stderr:
             detail = f": {exc.stderr.strip()}"
-        raise NotAGitRepositoryError(
+        raise RuntimeError(
             f"cannot capture git identity from {cwd}{detail}"
         ) from exc
     branch = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd)
@@ -161,7 +149,7 @@ def find_project_root(start: Path | None = None) -> Path:
     for directory in (start, *start.parents):
         if (directory / "pyproject.toml").is_file():
             return directory
-    raise UvEnvironmentError(
+    raise RuntimeError(
         f"no pyproject.toml found from {start} upward.\n"
         "furu requires a uv project so results are reproducible. Create one with:\n"
         "  uv init"
@@ -185,7 +173,7 @@ def capture_environment_identity() -> EnvironmentIdentity:
     project_root = find_project_root()
     uv_lock = project_root / "uv.lock"
     if not uv_lock.is_file():
-        raise UvEnvironmentError(
+        raise RuntimeError(
             f"no uv.lock beside {project_root / 'pyproject.toml'}.\n"
             "furu requires a locked uv project so results are reproducible. Run:\n"
             "  uv sync"

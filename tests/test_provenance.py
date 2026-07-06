@@ -14,11 +14,9 @@ from furu.provenance import (
     EnvironmentIdentity,
     ExecuteContext,
     GitIdentity,
-    NotAGitRepositoryError,
     Provenance,
     SubmitContext,
     SubmitProvenance,
-    UvEnvironmentError,
     capture_environment_identity,
     capture_execute_context,
     capture_git_identity,
@@ -166,7 +164,7 @@ def test_git_identity_records_remote(git_repo: Path) -> None:
 
 
 def test_git_identity_outside_repo(tmp_path: Path) -> None:
-    with pytest.raises(NotAGitRepositoryError):
+    with pytest.raises(RuntimeError):
         capture_git_identity(tmp_path)
 
 
@@ -189,7 +187,7 @@ def test_find_project_root_walks_up(tmp_path: Path) -> None:
 
 
 def test_find_project_root_missing_raises(tmp_path: Path) -> None:
-    with pytest.raises(UvEnvironmentError, match="no pyproject.toml"):
+    with pytest.raises(RuntimeError, match="no pyproject.toml"):
         find_project_root(tmp_path)
 
 
@@ -214,7 +212,7 @@ def test_capture_environment_identity_requires_uv_lock(
     monkeypatch.chdir(tmp_path)
     capture_environment_identity.cache_clear()
     try:
-        with pytest.raises(UvEnvironmentError, match="uv sync"):
+        with pytest.raises(RuntimeError, match="uv sync"):
             capture_environment_identity()
     finally:
         capture_environment_identity.cache_clear()
@@ -310,15 +308,6 @@ require_git = "always"
     assert config.provenance.snapshot_default is True
     assert config.provenance.max_snapshot_bytes == 512 * 1024 * 1024
     assert config.provenance.require_git == "always"
-
-
-def test_exceptions_are_runtime_errors_and_exported() -> None:
-    for exception in (
-        furu.UvEnvironmentError,
-        furu.SnapshotTooLargeError,
-        furu.NotAGitRepositoryError,
-    ):
-        assert issubclass(exception, RuntimeError)
 
 
 def test_example_json_matches_model_schema_exactly() -> None:

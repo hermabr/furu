@@ -7,11 +7,6 @@ from furu.dependencies import dependency
 from furu.diff import diff
 from furu.execution.load_or_create import create, load_existing
 from furu.logging import get_logger
-from furu.provenance import (
-    NotAGitRepositoryError,
-    SnapshotTooLargeError,
-    UvEnvironmentError,
-)
 from furu.migration.steps import (
     Added,
     MigrationStep,
@@ -49,19 +44,16 @@ __all__ = [
     "MigrationStep",
     "Missing",
     "MovedFrom",
-    "NotAGitRepositoryError",
     "Ref",
     "Renamed",
     "Requires",
     "Retyped",
     "Rewrite",
     "Serializer",
-    "SnapshotTooLargeError",
     "Spec",
     "Stale",
     "Subprocess",
     "Throttle",
-    "UvEnvironmentError",
     "at_least",
     "between",
     "create",
