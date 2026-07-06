@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from furu.provenance import SubmitProvenance
 
 
 class WorkerBackend(Protocol):
@@ -13,6 +16,7 @@ class WorkerBackend(Protocol):
         bound_port: int,
         auth_token: str,
         executor_dir: Path,
+        provenance: SubmitProvenance | None = None,
     ) -> WorkerPool: ...
 
 

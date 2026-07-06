@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -16,12 +17,19 @@ import pytest
 import furu.worker.backends.slurm.backend as slurm_backend_module
 from furu.config import (
     _Config,
+    _FuruDirectories,
     _FuruWorkerConfig,
     _WORKER_JSON_CONFIG_FILE_ENV_VAR,
     get_config,
 )
 from furu.execution.api import PoolApiClient
-from furu.provenance import EnvironmentIdentity
+from furu.provenance import (
+    EnvironmentIdentity,
+    GitIdentity,
+    SubmitContext,
+    SubmitProvenance,
+)
+from furu.snapshot import create_snapshot
 from furu.resources import ResourceRequest
 from furu.testing import override_config
 from furu.worker import _cli
@@ -1719,3 +1727,94 @@ def _read_records(record_file: Path) -> list[dict[str, Any]]:
 
 def _mode(path: Path) -> int:
     return stat.S_IMODE(path.stat().st_mode)
+
+
+def _committed_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for args in (
+        ["init", "-q", "-b", "main"],
+        ["add", "-A"],
+        ["commit", "-qm", "init", "--allow-empty"],
+    ):
+        subprocess.run(
+            ["git", "-c", "user.email=t@t.t", "-c", "user.name=t", *args],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+        )
+    return repo
+
+
+def test_slurm_backend_runs_workers_from_the_extracted_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    repo = _committed_repo(tmp_path)
+    (repo / "pyproject.toml").write_text('[project]\nname = "sut"\n')
+    monkeypatch.chdir(repo)
+    provenance = SubmitProvenance(
+        git=GitIdentity.capture(repo),
+        # Hand-built: the process-wide capture is cached from the furu repo,
+        # but this submit pretends to come from ``repo``.
+        environment=EnvironmentIdentity(
+            python="3.12.0",
+            uv="0",
+            project_root=str(repo),
+            uv_lock_hash="blake2s:0",
+            pyproject_hash="blake2s:0",
+            furu="0",
+        ),
+        snapshot_id=create_snapshot(repo),
+        submitted=SubmitContext.capture(),
+    )
+    backend = SlurmWorkerBackend(
+        max_workers=1,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="execution-coordinator.cluster",
+    )
+
+    pool = backend.start_pool(
+        bound_port=1234,
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+        provenance=provenance,
+    )
+
+    assert provenance.snapshot_id is not None
+    code_dir = get_config().run_directories.snapshots / provenance.snapshot_id / "code"
+    assert (code_dir / "pyproject.toml").is_file()
+    assert f"--chdir={code_dir}" in pool._sbatch_base_args
+    script = pool._script_path.read_text()
+    assert f"--project {shlex.quote(str(code_dir))}" in script
+    assert str(repo) not in script
+
+
+def test_slurm_backend_pins_relative_data_directories_for_workers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    monkeypatch.chdir(work_dir)
+    data = get_config().model_dump()
+    data["directories"] = _FuruDirectories().model_dump()  # relative furu-data/*
+    backend = SlurmWorkerBackend(
+        max_workers=1,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="execution-coordinator.cluster",
+    )
+
+    with override_config(_Config.model_validate(data)):
+        backend.start_pool(
+            bound_port=1234,
+            auth_token="secret-token",
+            executor_dir=tmp_path / "executor",
+        )
+
+    (config_file,) = (tmp_path / "executor" / "workers").glob("worker-*.config.json")
+    written = _Config.model_validate_json(config_file.read_text(encoding="utf-8"))
+    assert written.directories.objects == work_dir / "furu-data" / "objects"
+    assert written.directories.snapshots == work_dir / "furu-data" / "snapshots"

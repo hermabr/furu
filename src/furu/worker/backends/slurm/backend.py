@@ -8,10 +8,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, TypeAlias, assert_never
 
-from furu.config import _WORKER_JSON_CONFIG_FILE_ENV_VAR, get_config
+from furu.config import (
+    _WORKER_JSON_CONFIG_FILE_ENV_VAR,
+    _FuruDirectories,
+    get_config,
+)
 from furu.execution.api import PoolApiClient
-from furu.provenance import EnvironmentIdentity
+from furu.provenance import EnvironmentIdentity, SubmitProvenance
 from furu.resources import ResourceRequest
+from furu.snapshot import extract_snapshot
 from furu.utils import write_private_file
 from furu.worker.backends.slurm.pool import SlurmWorkerPool
 from furu.worker.backends.slurm.resources import SlurmResources
@@ -47,6 +52,7 @@ class SlurmWorkerBackend:
         bound_port: int,
         auth_token: str,
         executor_dir: Path,
+        provenance: SubmitProvenance | None = None,
     ) -> SlurmWorkerPool:
         connect_port = (
             bound_port if self.worker_connect_port is None else self.worker_connect_port
@@ -54,14 +60,35 @@ class SlurmWorkerBackend:
         server_url = f"http://{self.worker_connect_host}:{connect_port}"
 
         chdir = Path.cwd().resolve()
-        project_root = EnvironmentIdentity.capture().project_root
+        project_root = Path(EnvironmentIdentity.capture().project_root)
+        if provenance is not None and provenance.snapshot_id is not None:
+            # Run workers from the extracted snapshot, not the live worktree,
+            # so edits made after submit cannot leak into these jobs.
+            code_dir = extract_snapshot(provenance.snapshot_id)
+            repo_root = Path(provenance.git.repo_root)
+            chdir = code_dir / chdir.relative_to(repo_root)
+            project_root = code_dir / Path(
+                provenance.environment.project_root
+            ).relative_to(repo_root)
         worker_dir = executor_dir.resolve() / "workers"
         worker_dir.mkdir(parents=True, exist_ok=True)
 
         token_file = worker_dir / f"worker-{secrets.token_hex(16)}.token"
         write_private_file(token_file, auth_token, mode=0o600)
 
+        # Workers may run from a different directory (the extracted snapshot),
+        # so anchor any relative data directories to the submit cwd.
         config = get_config()
+        config = config.model_copy(
+            update={
+                "directories": _FuruDirectories(
+                    **{
+                        name: Path.cwd() / getattr(config.directories, name)
+                        for name in _FuruDirectories.model_fields
+                    }
+                )
+            }
+        )
         config_file = worker_dir / f"worker-{secrets.token_hex(16)}.config.json"
         write_private_file(
             config_file,

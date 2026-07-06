@@ -968,6 +968,7 @@ def test_execution_coordinator_run_uses_worker_backend() -> None:
         def __init__(self) -> None:
             self.bound_ports: list[int] = []
             self.auth_tokens: list[str] = []
+            self.provenances: list[SubmitProvenance | None] = []
 
         def start_pool(
             self,
@@ -975,9 +976,11 @@ def test_execution_coordinator_run_uses_worker_backend() -> None:
             bound_port: int,
             auth_token: str,
             executor_dir: Path,
+            provenance: SubmitProvenance | None = None,
         ) -> LocalThreadWorkerPool:
             self.bound_ports.append(bound_port)
             self.auth_tokens.append(auth_token)
+            self.provenances.append(provenance)
             return LocalThreadWorkerBackend(
                 max_workers=1,
                 resource_request=ResourceRequest(),
@@ -998,6 +1001,8 @@ def test_execution_coordinator_run_uses_worker_backend() -> None:
     assert leaf.status == "done"
     assert leaf.create() == 11
     assert len(backend.bound_ports) == 1
+    (pool_provenance,) = backend.provenances
+    assert isinstance(pool_provenance, SubmitProvenance)
     assert backend.bound_ports[0] > 0
     assert len(backend.auth_tokens) == 1
     assert backend.auth_tokens[0]
@@ -1016,6 +1021,7 @@ def test_execution_coordinator_run_passes_executor_dir_to_worker_backend() -> No
             bound_port: int,
             auth_token: str,
             executor_dir: Path,
+            provenance: SubmitProvenance | None = None,
         ) -> LocalThreadWorkerPool:
             self.executor_dirs.append(executor_dir)
             return LocalThreadWorkerBackend(
@@ -1081,6 +1087,7 @@ def test_execution_coordinator_run_returns_when_all_objects_are_already_complete
             bound_port: int,
             auth_token: str,
             executor_dir: Path,
+            provenance: SubmitProvenance | None = None,
         ) -> LocalThreadWorkerPool:
             raise AssertionError("coordinator started workers with no runnable objects")
 
@@ -1129,6 +1136,7 @@ def test_execution_coordinator_run_starts_backend_pool_and_stops_and_joins_when_
             bound_port: int,
             auth_token: str,
             executor_dir: Path,
+            provenance: SubmitProvenance | None = None,
         ) -> RecordingPool:
             self.pool.events.append("start_pool")
             server_url = f"http://127.0.0.1:{bound_port}"
@@ -1195,6 +1203,7 @@ def test_execution_coordinator_run_stops_backend_pool_when_interrupted() -> None
             bound_port: int,
             auth_token: str,
             executor_dir: Path,
+            provenance: SubmitProvenance | None = None,
         ) -> RecordingPool:
             self.pool.events.append("start_pool")
             return self.pool
@@ -1234,6 +1243,7 @@ def test_execution_coordinator_run_uses_worker_backend_execution_coordinator_lis
             bound_port: int,
             auth_token: str,
             executor_dir: Path,
+            provenance: SubmitProvenance | None = None,
         ) -> RecordingPool:
             server_url = f"http://{self.execution_coordinator_listen_host}:{bound_port}"
             self.server_urls.append(server_url)

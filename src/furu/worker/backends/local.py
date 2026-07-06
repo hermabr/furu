@@ -8,6 +8,7 @@ from pathlib import Path
 from furu.config import get_config
 from furu.execution.api import PoolApiClient
 from furu.logging import _scoped_component, get_logger
+from furu.provenance import SubmitProvenance
 from furu.resources import ResourceRequest
 
 logger = get_logger()
@@ -32,7 +33,10 @@ class LocalThreadWorkerBackend:
         bound_port: int,
         auth_token: str,
         executor_dir: Path,
+        provenance: SubmitProvenance | None = None,
     ) -> LocalThreadWorkerPool:
+        # Workers are threads in the submitting process, so they already run
+        # the exact code the snapshot captured; ``provenance`` is unused.
         server_url = f"http://{self.execution_coordinator_listen_host}:{bound_port}"
         pool_holder: list[LocalThreadWorkerPool] = []
         pool = LocalThreadWorkerPool(
