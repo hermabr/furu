@@ -18,6 +18,7 @@ from furu.execution.load_or_create import _ensure_single_result
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
 from furu.migration.links import result_dir_for_loading
+from furu.provenance import EnvironmentIdentity
 from furu.spec_metadata import Subprocess
 from furu.worker.context import _DependencyNotReady, worker_execution_context
 from furu.worker.protocol import (
@@ -37,10 +38,21 @@ _RETIRE_TIMEOUT_SECONDS = 5.0
 _job_result_adapter: TypeAdapter[JobResultRequest] = TypeAdapter(JobResultRequest)
 
 
-def execute_job(obj: Spec[Any], *, lease_id: str) -> JobResultRequest:
+def execute_job(obj: Spec[Any], *, job: Job) -> JobResultRequest:
     try:
-        with worker_execution_context(lease_id=lease_id):
-            _ensure_single_result(obj)
+        worker_hash = EnvironmentIdentity.capture().uv_lock_hash
+        submitted_hash = job.provenance.environment.uv_lock_hash
+        if worker_hash != submitted_hash:
+            raise RuntimeError(
+                "worker uv.lock does not match the submitted environment\n"
+                f"  submitted : {submitted_hash}\n"
+                f"  worker    : {worker_hash}\n"
+                "The worker's project checkout is out of sync with the submit host. "
+                "Update the checkout (e.g. git pull) and run:\n"
+                "  uv sync"
+            )
+        with worker_execution_context(lease_id=job.lease_id):
+            _ensure_single_result(obj, submit_provenance=job.provenance)
         return JobCompletedResult()
     except _DependencyNotReady as exc:
         return JobBlockedResult(
@@ -85,7 +97,9 @@ class ChildSlot:
             else:
                 environment[name] = value
         # Re-pin last so an override cannot sever the furu config plumbing.
-        if (config_file := os.environ.get(_WORKER_JSON_CONFIG_FILE_ENV_VAR)) is not None:
+        if (
+            config_file := os.environ.get(_WORKER_JSON_CONFIG_FILE_ENV_VAR)
+        ) is not None:
             environment[_WORKER_JSON_CONFIG_FILE_ENV_VAR] = config_file
 
         if missing := [

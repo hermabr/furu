@@ -220,7 +220,9 @@ def _load_or_create[T](
     return _load_or_create_local(obj_or_objs, use_lock=use_lock)
 
 
-def _ensure_single_result[T](obj: Spec[T]) -> None:
+def _ensure_single_result[T](
+    obj: Spec[T], *, submit_provenance: SubmitProvenance
+) -> None:
     if result_dir_for_loading(obj) is not None:
         obj.logger.info("cache hit for %s", obj._log_label)
         return
@@ -237,9 +239,7 @@ def _ensure_single_result[T](obj: Spec[T]) -> None:
             [obj],
             has_lock=has_lock,
             results_by_object_id={},
-            # Workers record their own process as the submit half; snapshots
-            # are a submit-side concern and never built on the execute side.
-            submit_provenance=capture_submit_provenance(snapshot=False),
+            submit_provenance=submit_provenance,
         )
 
 

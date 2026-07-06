@@ -123,6 +123,7 @@ class LocalThreadWorkerPool:
                 resource_request=self._resource_request,
                 idle_timeout=self._worker_idle_timeout,
                 component=component,
+                backend="local-thread",
             )
         except Exception as exc:
             self._failed_threads.append(threading.current_thread())

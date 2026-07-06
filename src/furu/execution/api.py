@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from hmac import compare_digest
-from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, status
@@ -27,13 +26,13 @@ class _ExecutionCoordinatorApiClientBase:
     auth_token: str
     request_timeout_s: float = 10.0
 
-    def _request_json(
+    def _request(
         self,
         path: str,
         *,
         method: str,
         payload: object | None = None,
-    ) -> Any:
+    ) -> httpx.Response:
         url = f"{self.server_url.rstrip('/')}{path}"
         try:
             response = httpx.request(
@@ -46,7 +45,7 @@ class _ExecutionCoordinatorApiClientBase:
             response.raise_for_status()
             if not response.content:
                 raise RuntimeError(f"{method} {url} returned an empty response")
-            return response.json()
+            return response
         except httpx.HTTPStatusError as exc:
             raise RuntimeError(
                 f"{method} {url} failed with HTTP "
@@ -58,21 +57,23 @@ class _ExecutionCoordinatorApiClientBase:
 
 class WorkerApiClient(_ExecutionCoordinatorApiClientBase):
     def lease_job(self, *, resources: ResourceRequest, worker: str) -> LeaseJobResponse:
-        response = self._request_json(
+        # Validate the raw JSON body: Job's strict models accept datetimes and
+        # tuples only in JSON mode, not from an already-parsed dict.
+        response = self._request(
             "/worker/lease_job",
             method="POST",
             payload=LeaseJobRequest(resources=resources, worker=worker).model_dump(
                 mode="json"
             ),
         )
-        return TypeAdapter(LeaseJobResponse).validate_python(response)
+        return TypeAdapter(LeaseJobResponse).validate_json(response.content)
 
     def job_result(self, lease_id: str, request: JobResultRequest) -> None:
-        response = self._request_json(
+        response = self._request(
             f"/worker/job_result/{lease_id}",
             method="POST",
             payload=request.model_dump(mode="json"),
-        )
+        ).json()
         OkResponse.model_validate(response)
 
 
@@ -80,29 +81,29 @@ class PoolApiClient(_ExecutionCoordinatorApiClientBase):
     def count_satisfiable_jobs(
         self, *, resources: ResourceRequest, max_workers: int
     ) -> int:
-        response = self._request_json(
+        response = self._request(
             "/pool/count_satisfiable_jobs",
             method="POST",
             payload=CountSatisfiableJobsRequest(
                 resources=resources, max_workers=max_workers
             ).model_dump(mode="json"),
-        )
+        ).json()
         return int(response)
 
     def fail(self, *, message: str) -> None:
-        response = self._request_json(
+        response = self._request(
             "/pool/fail",
             method="POST",
             payload=FailRequest(message=message).model_dump(mode="json"),
-        )
+        ).json()
         OkResponse.model_validate(response)
 
     def worker_lost(self, *, worker: str) -> None:
-        response = self._request_json(
+        response = self._request(
             "/pool/worker_lost",
             method="POST",
             payload=WorkerLostRequest(worker=worker).model_dump(mode="json"),
-        )
+        ).json()
         OkResponse.model_validate(response)
 
 

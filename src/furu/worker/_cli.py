@@ -54,6 +54,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         required=True,
         help="component label shown in this worker's logs",
     )
+    parser.add_argument(
+        "--backend",
+        required=True,
+        help="worker backend name recorded in provenance (e.g. slurm)",
+    )
     args = parser.parse_args(argv)
 
     worker_loop(
@@ -67,6 +72,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         idle_timeout=args.idle_timeout,
         max_consecutive_failures=args.max_consecutive_failures,
         component=args.component,
+        backend=args.backend,
     )
     return 0
 

@@ -27,6 +27,12 @@ from furu.execution.execution_coordinator import (
 )
 from furu.execution.server import execution_coordinator_server
 from furu.metadata import ArtifactSpec
+from furu.provenance import (
+    EnvironmentIdentity,
+    GitIdentity,
+    SubmitContext,
+    SubmitProvenance,
+)
 from furu.resources import ResourceRequest
 from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
 from furu.worker.loop import worker_loop
@@ -40,6 +46,32 @@ from furu.worker.protocol import (
 )
 
 ANY_RESOURCES = ResourceRequest()
+
+
+def _submit_provenance() -> SubmitProvenance:
+    # Real environment identity so worker-side lock-hash verification passes;
+    # the git half is a stub since these tests never read it back.
+    return SubmitProvenance(
+        git=GitIdentity(
+            commit="0" * 40,
+            branch=None,
+            remote=None,
+            repo_root=".",
+            dirty=False,
+            diff_stats=None,
+        ),
+        environment=EnvironmentIdentity.capture(),
+        snapshot_id=None,
+        submitted=SubmitContext.capture(),
+    )
+
+
+def _job(lease_id: str, obj: Spec[Any]) -> Job:
+    return Job(
+        lease_id=lease_id,
+        artifact=ArtifactSpec.from_furu(obj),
+        provenance=_submit_provenance(),
+    )
 
 
 @contextmanager
@@ -61,6 +93,7 @@ def _new_execution_coordinator(
     if max_retries_per_object is None:
         max_retries_per_object = get_config().worker.max_retries_per_object
     coordinator = ExecutionCoordinator(max_retries_per_object=max_retries_per_object)
+    coordinator.submit_provenance = _submit_provenance()
     _add_to_dag(coordinator, objs)
     digest = hashlib.blake2s(digest_size=16)
     for obj in objs:
@@ -748,7 +781,7 @@ def test_local_pool_scale_spawns_workers_up_to_max_as_satisfiable_count_grows(
     monkeypatch.setattr(
         worker_loop_module,
         "worker_loop",
-        lambda *, server_url, auth_token, resource_request, idle_timeout: (
+        lambda *, server_url, auth_token, resource_request, idle_timeout, component, backend: (
             release_workers.wait(timeout=5)
         ),
     )
@@ -792,6 +825,7 @@ def test_local_pool_scale_uses_unique_worker_names_after_worker_exits(
         resource_request: ResourceRequest,
         idle_timeout: float,
         component: str,
+        backend: str,
     ) -> None:
         nonlocal calls
         calls += 1
@@ -834,6 +868,7 @@ def test_local_pool_scale_does_not_count_normal_exits_as_restarts(
         resource_request: ResourceRequest,
         idle_timeout: float,
         component: str,
+        backend: str,
     ) -> None:
         nonlocal starts
         starts += 1
@@ -866,6 +901,7 @@ def test_local_pool_scale_counts_crashes_against_restart_limit(
         resource_request: ResourceRequest,
         idle_timeout: float,
         component: str,
+        backend: str,
     ) -> None:
         raise RuntimeError("worker boom")
 
@@ -902,6 +938,7 @@ def test_execution_coordinator_run_fails_when_worker_pool_reports_unhealthy(
         resource_request: ResourceRequest,
         idle_timeout: float,
         component: str,
+        backend: str,
     ) -> None:
         raise RuntimeError("worker boom")
 
@@ -1326,6 +1363,7 @@ def test_worker_loop_raises_when_server_is_unavailable() -> None:
             resource_request=ResourceRequest(),
             idle_timeout=get_config().worker.idle_timeout_seconds,
             component="test-worker",
+            backend="test",
         )
 
 
@@ -1357,6 +1395,7 @@ def test_worker_loop_exits_after_idle_timeout(
         resource_request=ResourceRequest(),
         idle_timeout=0,
         component="test-worker",
+        backend="test",
     )
 
     assert test_client.lease_calls == 1
@@ -1367,7 +1406,7 @@ def test_worker_loop_logs_task_requests_and_received_task(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
-    job = Job(lease_id="lease-1", artifact=ArtifactSpec.from_furu(leaf))
+    job = _job("lease-1", leaf)
     leases: list[LeaseJobResponse] = [job, "stop"]
 
     class TestClient:
@@ -1391,7 +1430,7 @@ def test_worker_loop_logs_task_requests_and_received_task(
     monkeypatch.setattr(
         worker_loop_module,
         "execute_job",
-        lambda obj, *, lease_id: JobCompletedResult(),
+        lambda obj, *, job: JobCompletedResult(),
     )
 
     with _captured_furu_logs(caplog):
@@ -1401,6 +1440,7 @@ def test_worker_loop_logs_task_requests_and_received_task(
             resource_request=ResourceRequest(),
             idle_timeout=get_config().worker.idle_timeout_seconds,
             component="test-worker",
+            backend="test",
         )
 
     assert "worker requesting new task from server" not in caplog.messages
@@ -1441,6 +1481,7 @@ def test_worker_loop_logs_stop_and_first_wait(
             resource_request=ResourceRequest(),
             idle_timeout=get_config().worker.idle_timeout_seconds,
             component="test-worker",
+            backend="test",
         )
 
     assert "worker requesting new task from server" not in caplog.messages
@@ -1453,9 +1494,9 @@ def test_worker_loop_exits_after_exceeding_max_consecutive_failures(
 ) -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
     jobs = [
-        Job(lease_id="lease-1", artifact=ArtifactSpec.from_furu(leaf)),
-        Job(lease_id="lease-2", artifact=ArtifactSpec.from_furu(leaf)),
-        Job(lease_id="lease-3", artifact=ArtifactSpec.from_furu(leaf)),
+        _job("lease-1", leaf),
+        _job("lease-2", leaf),
+        _job("lease-3", leaf),
     ]
 
     class TestClient:
@@ -1484,7 +1525,7 @@ def test_worker_loop_exits_after_exceeding_max_consecutive_failures(
     monkeypatch.setattr(
         worker_loop_module,
         "execute_job",
-        lambda obj, *, lease_id: JobFailedResult(error="worker task failed"),
+        lambda obj, *, job: JobFailedResult(error="worker task failed"),
     )
 
     worker_loop(
@@ -1494,6 +1535,7 @@ def test_worker_loop_exits_after_exceeding_max_consecutive_failures(
         idle_timeout=get_config().worker.idle_timeout_seconds,
         max_consecutive_failures=2,
         component="test-worker",
+        backend="test",
     )
 
     assert test_client.lease_calls == 3
@@ -1513,9 +1555,9 @@ def test_worker_loop_resets_consecutive_failures_after_success(
 ) -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
     leases: list[LeaseJobResponse] = [
-        Job(lease_id="lease-1", artifact=ArtifactSpec.from_furu(leaf)),
-        Job(lease_id="lease-2", artifact=ArtifactSpec.from_furu(leaf)),
-        Job(lease_id="lease-3", artifact=ArtifactSpec.from_furu(leaf)),
+        _job("lease-1", leaf),
+        _job("lease-2", leaf),
+        _job("lease-3", leaf),
         "stop",
     ]
 
@@ -1538,7 +1580,7 @@ def test_worker_loop_resets_consecutive_failures_after_success(
 
     calls = 0
 
-    def execute_job(obj: Spec[object], *, lease_id: str) -> JobResultRequest:
+    def execute_job(obj: Spec[object], *, job: Job) -> JobResultRequest:
         nonlocal calls
         calls += 1
         if calls in (1, 3):
@@ -1560,6 +1602,7 @@ def test_worker_loop_resets_consecutive_failures_after_success(
         idle_timeout=get_config().worker.idle_timeout_seconds,
         max_consecutive_failures=2,
         component="test-worker",
+        backend="test",
     )
 
     assert test_client.lease_calls == 4
@@ -1574,7 +1617,7 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
-    job = Job(lease_id="lease-1", artifact=ArtifactSpec.from_furu(leaf))
+    job = _job("lease-1", leaf)
 
     class TestClient:
         calls: list[str]
@@ -1594,7 +1637,7 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
         def job_result(self, lease_id: str, request: JobResultRequest) -> None:
             self.calls.append("job_result")
 
-    def execute_job(obj: Spec[object], *, lease_id: str) -> JobResultRequest:
+    def execute_job(obj: Spec[object], *, job: Job) -> JobResultRequest:
         raise KeyboardInterrupt
 
     test_client = TestClient("http://worker.test", auth_token="test-token")
@@ -1612,6 +1655,7 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
             resource_request=ResourceRequest(gpus=1),
             idle_timeout=get_config().worker.idle_timeout_seconds,
             component="test-worker",
+            backend="test",
         )
 
     assert test_client.calls == ["lease_job"]
@@ -1716,6 +1760,7 @@ def test_client_lease_job_posts_resource_request_to_lease_job_endpoint(
             json={
                 "lease_id": "lease-1",
                 "artifact": ArtifactSpec.from_furu(leaf).model_dump(mode="json"),
+                "provenance": _submit_provenance().model_dump(mode="json"),
             },
             request=httpx.Request(method, url),
         )
