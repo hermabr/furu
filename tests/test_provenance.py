@@ -269,14 +269,12 @@ def test_provenance_config_defaults() -> None:
     config = _FuruProvenanceConfig()
     assert config.snapshot_default is False
     assert config.max_snapshot_bytes == 256 * 1024 * 1024
-    assert config.verify_lock is True
     assert config.require_git == "executor"
 
 
 def test_provenance_config_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FURU_PROVENANCE__SNAPSHOT_DEFAULT", "true")
     monkeypatch.setenv("FURU_PROVENANCE__MAX_SNAPSHOT_BYTES", "1GiB")
-    monkeypatch.setenv("FURU_PROVENANCE__VERIFY_LOCK", "false")
     monkeypatch.setenv("FURU_PROVENANCE__REQUIRE_GIT", "never")
 
     config = _Config()
@@ -284,7 +282,6 @@ def test_provenance_config_from_environment(monkeypatch: pytest.MonkeyPatch) -> 
     assert config.provenance == _FuruProvenanceConfig(
         snapshot_default=True,
         max_snapshot_bytes=ByteSize(1024**3),
-        verify_lock=False,
         require_git="never",
     )
 

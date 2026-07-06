@@ -34,9 +34,7 @@ class EnvironmentIdentity(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     python: str
-    # None only under the furu.testing exemption; enforcement (`_require_uv`)
-    # guarantees a uv-managed interpreter everywhere else.
-    uv: str | None
+    uv: str
     project_root: str
     uv_lock_hash: str
     pyproject_hash: str
@@ -178,9 +176,15 @@ def capture_environment_identity() -> EnvironmentIdentity:
             "furu requires a locked uv project so results are reproducible. Run:\n"
             "  uv sync"
         )
+    uv = _uv_version_from_pyvenv_cfg(Path(sys.prefix) / "pyvenv.cfg")
+    if uv is None:
+        raise RuntimeError(
+            "furu must run under a uv-managed interpreter so results are "
+            "reproducible. Run furu commands via:\n  uv run ..."
+        )
     return EnvironmentIdentity(
         python="{}.{}.{}".format(*sys.version_info[:3]),
-        uv=_uv_version_from_pyvenv_cfg(Path(sys.prefix) / "pyvenv.cfg"),
+        uv=uv,
         project_root=str(project_root),
         uv_lock_hash=hash_file(uv_lock),
         pyproject_hash=hash_file(project_root / "pyproject.toml"),

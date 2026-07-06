@@ -36,7 +36,6 @@ class _FuruProvenanceConfig(BaseModel):
 
     snapshot_default: bool = False
     max_snapshot_bytes: ByteSize = ByteSize(256 * 1024 * 1024)
-    verify_lock: bool = True
     require_git: Literal["always", "executor", "never"] = "executor"
 
 
