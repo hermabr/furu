@@ -85,7 +85,6 @@ def _example_provenance() -> Provenance:
 
 def test_example_provenance_json_parses() -> None:
     prov = _example_provenance()
-    assert prov.git is not None
     assert prov.git.dirty is True
     assert prov.submitted.launch_command == (
         "uv",
@@ -267,20 +266,17 @@ def test_provenance_config_defaults() -> None:
     config = _FuruProvenanceConfig()
     assert config.snapshot_default is False
     assert config.max_snapshot_bytes == 256 * 1024 * 1024
-    assert config.require_git == "executor"
 
 
 def test_provenance_config_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FURU_PROVENANCE__SNAPSHOT_DEFAULT", "true")
     monkeypatch.setenv("FURU_PROVENANCE__MAX_SNAPSHOT_BYTES", "1GiB")
-    monkeypatch.setenv("FURU_PROVENANCE__REQUIRE_GIT", "never")
 
     config = _Config()
 
     assert config.provenance == _FuruProvenanceConfig(
         snapshot_default=True,
         max_snapshot_bytes=ByteSize(1024**3),
-        require_git="never",
     )
 
 
@@ -292,7 +288,6 @@ def test_provenance_config_from_pyproject(
 [tool.furu.provenance]
 snapshot_default = true
 max_snapshot_bytes = "512MiB"
-require_git = "always"
 """,
         encoding="utf-8",
     )
@@ -302,7 +297,6 @@ require_git = "always"
 
     assert config.provenance.snapshot_default is True
     assert config.provenance.max_snapshot_bytes == 512 * 1024 * 1024
-    assert config.provenance.require_git == "always"
 
 
 def test_example_json_matches_model_schema_exactly() -> None:

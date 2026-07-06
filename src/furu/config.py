@@ -1,6 +1,5 @@
 import os
 from pathlib import Path
-from typing import Literal
 
 from pydantic import BaseModel, ByteSize, ConfigDict, Field
 from pydantic_settings import (
@@ -36,7 +35,6 @@ class _FuruProvenanceConfig(BaseModel):
 
     snapshot_default: bool = False
     max_snapshot_bytes: ByteSize = ByteSize(256 * 1024 * 1024)
-    require_git: Literal["always", "executor", "never"] = "executor"
 
 
 class _Config(BaseSettings):

@@ -145,7 +145,7 @@ class SubmitProvenance(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    git: GitIdentity | None
+    git: GitIdentity
     environment: EnvironmentIdentity
     snapshot_id: str | None
     submitted: SubmitContext
@@ -154,7 +154,7 @@ class SubmitProvenance(BaseModel):
 class Provenance(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    git: GitIdentity | None
+    git: GitIdentity
     environment: EnvironmentIdentity
     snapshot_id: str | None
     submitted: SubmitContext
