@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from collections.abc import Mapping
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import (
     Annotated,
@@ -44,9 +44,17 @@ class _RefBinding:
 
 @dataclasses.dataclass
 class _DumpState:
+    bundle_dir: Path
     data_dir: Path
+    result_codecs: tuple[type[Codec], ...]
     should_reload_value_after_save: bool = False
     ref_bindings: list[_RefBinding] = dataclasses.field(default_factory=list)
+
+
+@dataclasses.dataclass(frozen=True)
+class _LoadState:
+    bundle_dir: Path
+    data_dir: Path
 
 
 def _value_path_display(value_path: ValuePath) -> str:
@@ -85,13 +93,14 @@ def _validate_result_path_segment(
     return value
 
 
+def _wrap(kind: WrapperKind, **body: JsonValue) -> JsonValue:
+    return {WRAPPER_KEY: {KINDMARKER: kind, **body}}
+
+
 def _dump_value(
     value: object,
-    *,
     declared_type: object,
     value_path: ValuePath,
-    bundle_dir: Path,
-    result_codecs: tuple[type[Codec], ...],
     dump_state: _DumpState,
 ) -> JsonValue:
     annotated_codec: type[Codec] | None = None
@@ -109,56 +118,20 @@ def _dump_value(
                     "but the field also has a different Annotated codec."
                 )
             return _dump_artifact(
-                value.load(),
-                codec=value._codec,
-                value_path=value_path,
-                bundle_dir=bundle_dir,
-                dump_state=dump_state,
-                ref=value,
+                value.load(), value._codec, value_path, dump_state, value
             )
         case _ if annotated_codec is not None:
-            return _dump_artifact(
-                value,
-                codec=annotated_codec,
-                value_path=value_path,
-                bundle_dir=bundle_dir,
-                dump_state=dump_state,
-            )
+            return _dump_artifact(value, annotated_codec, value_path, dump_state)
 
     match value:
         case None | bool() | int() | float() | str():
             return value
         case list():
-            width = len(str(len(value)))
-            return [
-                _dump_value(
-                    item,
-                    declared_type=child_declared_type(declared_type, i),
-                    value_path=(*value_path, f"{i:0{width}d}"),
-                    bundle_dir=bundle_dir,
-                    result_codecs=result_codecs,
-                    dump_state=dump_state,
-                )
-                for i, item in enumerate(value)
-            ]
+            return _dump_items(value, declared_type, value_path, dump_state)
         case tuple():
-            width = len(str(len(value)))
-            return {
-                WRAPPER_KEY: {
-                    KINDMARKER: "tuple",
-                    "items": [
-                        _dump_value(
-                            item,
-                            declared_type=child_declared_type(declared_type, i),
-                            value_path=(*value_path, f"{i:0{width}d}"),
-                            bundle_dir=bundle_dir,
-                            result_codecs=result_codecs,
-                            dump_state=dump_state,
-                        )
-                        for i, item in enumerate(value)
-                    ],
-                }
-            }
+            return _wrap(
+                "tuple", items=_dump_items(value, declared_type, value_path, dump_state)
+            )
         case set() | frozenset():
             kind = "frozenset" if isinstance(value, frozenset) else "set"
             for item in value:
@@ -177,23 +150,9 @@ def _dump_value(
                     repr(item),
                 ),
             )
-            width = len(str(len(items)))
-            return {
-                WRAPPER_KEY: {
-                    KINDMARKER: kind,
-                    "items": [
-                        _dump_value(
-                            item,
-                            declared_type=child_declared_type(declared_type, i),
-                            value_path=(*value_path, f"{i:0{width}d}"),
-                            bundle_dir=bundle_dir,
-                            result_codecs=result_codecs,
-                            dump_state=dump_state,
-                        )
-                        for i, item in enumerate(items)
-                    ],
-                }
-            }
+            return _wrap(
+                kind, items=_dump_items(items, declared_type, value_path, dump_state)
+            )
         case dict():
             out: dict[str, JsonValue] = {}
             for raw_key, child in value.items():
@@ -203,73 +162,28 @@ def _dump_value(
                 )
                 out[key] = _dump_value(
                     child,
-                    declared_type=child_declared_type(declared_type, raw_key),
-                    value_path=(*value_path, key),
-                    bundle_dir=bundle_dir,
-                    result_codecs=result_codecs,
-                    dump_state=dump_state,
+                    child_declared_type(declared_type, raw_key),
+                    (*value_path, key),
+                    dump_state,
                 )
             return out
         case Path():
-            return {
-                WRAPPER_KEY: {
-                    KINDMARKER: "path",
-                    "value": str(value),
-                }
-            }
+            return _wrap("path", value=str(value))
         case pydantic.BaseModel():
-            fields_out: dict[str, JsonValue] = {}
-            field_types = get_type_hints(value.__class__, include_extras=True)
-            for raw_name in value.__class__.model_fields:
-                name = _validate_result_path_segment(
-                    raw_name, parent_value_path=value_path
-                )
-                fields_out[name] = _dump_value(
-                    getattr(value, name),
-                    declared_type=field_types.get(name, Any),
-                    value_path=(*value_path, name),
-                    bundle_dir=bundle_dir,
-                    result_codecs=result_codecs,
-                    dump_state=dump_state,
-                )
-            return {
-                WRAPPER_KEY: {
-                    KINDMARKER: "pydantic",
-                    TYPEMARKER: fully_qualified_name(type(value)),
-                    FIELDSMARKER: fields_out,
-                }
-            }
+            return _dump_object(
+                value, "pydantic", value.__class__.model_fields, value_path, dump_state
+            )
         case _ if dataclasses.is_dataclass(value) and not isinstance(value, type):
-            fields_out: dict[str, JsonValue] = {}
-            field_types = get_type_hints(type(value), include_extras=True)
-            for field in dataclasses.fields(cast(Any, value)):
-                name = _validate_result_path_segment(
-                    field.name, parent_value_path=value_path
-                )
-                fields_out[name] = _dump_value(
-                    getattr(value, name),
-                    declared_type=field_types.get(field.name, Any),
-                    value_path=(*value_path, name),
-                    bundle_dir=bundle_dir,
-                    result_codecs=result_codecs,
-                    dump_state=dump_state,
-                )
-            return {
-                WRAPPER_KEY: {
-                    KINDMARKER: "dataclass",
-                    TYPEMARKER: fully_qualified_name(type(value)),
-                    FIELDSMARKER: fields_out,
-                }
-            }
+            return _dump_object(
+                value,
+                "dataclass",
+                (field.name for field in dataclasses.fields(cast(Any, value))),
+                value_path,
+                dump_state,
+            )
         case _:
-            if codec := CodecMeta.find_codec(value, result_codecs):
-                return _dump_artifact(
-                    value,
-                    codec=codec,
-                    value_path=value_path,
-                    bundle_dir=bundle_dir,
-                    dump_state=dump_state,
-                )
+            if codec := CodecMeta.find_codec(value, dump_state.result_codecs):
+                return _dump_artifact(value, codec, value_path, dump_state)
 
     raise ValueError(
         f"Unsupported result value at {_value_path_display(value_path)}:\n"
@@ -277,17 +191,70 @@ def _dump_value(
     )
 
 
+def _dump_items(
+    items: Sequence[object],
+    declared_type: object,
+    value_path: ValuePath,
+    dump_state: _DumpState,
+) -> list[JsonValue]:
+    width = len(str(len(items)))
+    return [
+        _dump_value(
+            item,
+            child_declared_type(declared_type, i),
+            (*value_path, f"{i:0{width}d}"),
+            dump_state,
+        )
+        for i, item in enumerate(items)
+    ]
+
+
+def _dump_fields(
+    value: object,
+    field_names: Iterable[str],
+    value_path: ValuePath,
+    dump_state: _DumpState,
+) -> dict[str, JsonValue]:
+    field_types = get_type_hints(type(value), include_extras=True)
+    return {
+        name: _dump_value(
+            getattr(value, name),
+            field_types.get(raw_name, Any),
+            (*value_path, name),
+            dump_state,
+        )
+        for raw_name in field_names
+        for name in (
+            _validate_result_path_segment(raw_name, parent_value_path=value_path),
+        )
+    }
+
+
+def _dump_object(
+    value: object,
+    kind: Literal["dataclass", "pydantic"],
+    field_names: Iterable[str],
+    value_path: ValuePath,
+    dump_state: _DumpState,
+) -> JsonValue:
+    return _wrap(
+        kind,
+        **{
+            TYPEMARKER: fully_qualified_name(type(value)),
+            FIELDSMARKER: _dump_fields(value, field_names, value_path, dump_state),
+        },
+    )
+
+
 def _dump_artifact(
     value: object,
-    *,
     codec: type[Codec],
     value_path: ValuePath,
-    bundle_dir: Path,
     dump_state: _DumpState,
     ref: Ref[Any] | None = None,
 ) -> JsonValue:
     artifact_rel = Path(ARTIFACTS_DIR_NAME, *(value_path or (_ROOT_ARTIFACT_NAME,)))
-    artifact_dir = bundle_dir / artifact_rel
+    artifact_dir = dump_state.bundle_dir / artifact_rel
     artifact_dir.mkdir(parents=True, exist_ok=False)
 
     codec_metadata = codec.save(value, artifact_dir)
@@ -317,14 +284,12 @@ def _dump_artifact(
     elif codec.reload_value_after_save:
         dump_state.should_reload_value_after_save = True
 
-    return {
-        WRAPPER_KEY: {
-            KINDMARKER: "artifact",
-            "codec": codec._codec_id(),
-            "path": artifact_rel.as_posix(),
-            "metadata": encoded_metadata,
-        }
-    }
+    return _wrap(
+        "artifact",
+        codec=codec._codec_id(),
+        path=artifact_rel.as_posix(),
+        metadata=encoded_metadata,
+    )
 
 
 def _encode_codec_metadata_value(
@@ -344,12 +309,9 @@ def _encode_codec_metadata_value(
                     f"Codec metadata path at {_value_path_display(value_path)} "
                     f"must live inside the data dir {data_dir}: {value}"
                 )
-            return {
-                WRAPPER_KEY: {
-                    KINDMARKER: "path",
-                    "value": resolved.relative_to(data_dir_resolved).as_posix(),
-                }
-            }
+            return _wrap(
+                "path", value=resolved.relative_to(data_dir_resolved).as_posix()
+            )
         case list():
             return [
                 _encode_codec_metadata_value(
@@ -358,17 +320,15 @@ def _encode_codec_metadata_value(
                 for item in value
             ]
         case tuple():
-            return {
-                WRAPPER_KEY: {
-                    KINDMARKER: "tuple",
-                    "items": [
-                        _encode_codec_metadata_value(
-                            item, data_dir=data_dir, value_path=value_path
-                        )
-                        for item in value
-                    ],
-                }
-            }
+            return _wrap(
+                "tuple",
+                items=[
+                    _encode_codec_metadata_value(
+                        item, data_dir=data_dir, value_path=value_path
+                    )
+                    for item in value
+                ],
+            )
         case Mapping():
             out: dict[str, JsonValue] = {}
             for key, child in value.items():
@@ -435,48 +395,50 @@ def _decode_codec_metadata_value(node: JsonValue, *, data_dir: Path) -> object:
 
 def _load_value(
     node: JsonValue,
-    *,
     declared_type: object,
-    bundle_dir: Path,
-    data_dir: Path,
     value_path: ValuePath,
+    load_state: _LoadState,
 ) -> object:
     match node:
         case None | bool() | int() | float() | str():
             return node
         case list():
-            width = len(str(len(node)))
-            return [
-                _load_value(
-                    child,
-                    declared_type=child_declared_type(declared_type, i),
-                    bundle_dir=bundle_dir,
-                    data_dir=data_dir,
-                    value_path=(*value_path, f"{i:0{width}d}"),
-                )
-                for i, child in enumerate(node)
-            ]
+            return list(_load_items(node, declared_type, value_path, load_state))
         case dict() if WRAPPER_KEY in node:
             return _load_wrapper(
                 cast(dict[str, Any], node[WRAPPER_KEY]),
-                declared_type=declared_type,
-                bundle_dir=bundle_dir,
-                data_dir=data_dir,
-                value_path=value_path,
+                declared_type,
+                value_path,
+                load_state,
             )
         case dict():
             return {
                 key: _load_value(
                     child,
-                    declared_type=child_declared_type(declared_type, key),
-                    bundle_dir=bundle_dir,
-                    data_dir=data_dir,
-                    value_path=(*value_path, key),
+                    child_declared_type(declared_type, key),
+                    (*value_path, key),
+                    load_state,
                 )
                 for key, child in node.items()
             }
         case _:
             assert_never(node)
+
+
+def _load_items(
+    items: list[JsonValue],
+    declared_type: object,
+    value_path: ValuePath,
+    load_state: _LoadState,
+) -> Iterator[object]:
+    width = len(str(len(items)))
+    for i, child in enumerate(items):
+        yield _load_value(
+            child,
+            child_declared_type(declared_type, i),
+            (*value_path, f"{i:0{width}d}"),
+            load_state,
+        )
 
 
 def _load_validated_fields(
@@ -485,9 +447,8 @@ def _load_validated_fields(
     cls: type[Any],
     expected: set[str],
     raw_fields: dict[str, JsonValue],
-    bundle_dir: Path,
-    data_dir: Path,
     value_path: ValuePath,
+    load_state: _LoadState,
 ) -> dict[str, object]:
     actual = set(raw_fields)
     missing = expected - actual
@@ -497,10 +458,9 @@ def _load_validated_fields(
         return {
             name: _load_value(
                 child,
-                declared_type=field_types.get(name, Any),
-                bundle_dir=bundle_dir,
-                data_dir=data_dir,
-                value_path=(*value_path, name),
+                field_types.get(name, Any),
+                (*value_path, name),
+                load_state,
             )
             for name, child in raw_fields.items()
         }
@@ -519,11 +479,9 @@ def _load_validated_fields(
 
 def _load_wrapper(
     body: dict[str, Any],
-    *,
     declared_type: object,
-    bundle_dir: Path,
-    data_dir: Path,
     value_path: ValuePath,
+    load_state: _LoadState,
 ) -> object:
     kind: WrapperKind = body[KINDMARKER]
     match kind:
@@ -534,8 +492,8 @@ def _load_wrapper(
                     f"artifact wrapper path must be relative: {artifact_rel}"
                 )
 
-            artifact_dir = (bundle_dir / artifact_rel).resolve()
-            artifacts_root = (bundle_dir / ARTIFACTS_DIR_NAME).resolve()
+            artifact_dir = (load_state.bundle_dir / artifact_rel).resolve()
+            artifacts_root = (load_state.bundle_dir / ARTIFACTS_DIR_NAME).resolve()
             if not artifact_dir.is_relative_to(artifacts_root):
                 raise ValueError(
                     f"artifact wrapper path escapes bundle artifacts dir: {artifact_rel}"
@@ -553,7 +511,7 @@ def _load_wrapper(
 
             if not isinstance(
                 metadata := _decode_codec_metadata_value(
-                    body["metadata"], data_dir=data_dir
+                    body["metadata"], data_dir=load_state.data_dir
                 ),
                 dict,
             ):
@@ -571,96 +529,72 @@ def _load_wrapper(
                 )
             return codec.load(metadata, artifact_dir)
         case "dataclass":
-            cls = resolve_fully_qualified_name(body[TYPEMARKER])
-            if not dataclasses.is_dataclass(cls):
-                raise ValueError(
-                    f"Cannot load dataclass at {_value_path_display(value_path)}: "
-                    f"{fully_qualified_name(cls)} is not a dataclass"
-                )
-            dataclass_fields = dataclasses.fields(cls)
-            init_fields = {field.name for field in dataclass_fields if field.init}
-            loaded_fields = _load_validated_fields(
-                kind="dataclass",
-                cls=cls,
-                expected={field.name for field in dataclass_fields},
-                raw_fields=body[FIELDSMARKER],
-                bundle_dir=bundle_dir,
-                data_dir=data_dir,
-                value_path=value_path,
-            )
-            try:
-                return cls(
-                    **{
-                        name: value
-                        for name, value in loaded_fields.items()
-                        if name in init_fields
-                    }
-                )
-            except Exception as exc:
-                raise ValueError(
-                    f"Cannot load dataclass {fully_qualified_name(cls)} "
-                    f"at {_value_path_display(value_path)}: {exc}"
-                ) from exc
+            return _load_dataclass(body, value_path, load_state)
         case "path":
             return Path(body["value"])
-        case "tuple":
-            return tuple(
-                _load_value(
-                    child,
-                    declared_type=child_declared_type(declared_type, i),
-                    bundle_dir=bundle_dir,
-                    data_dir=data_dir,
-                    value_path=(*value_path, str(i)),
-                )
-                for i, child in enumerate(body["items"])
-            )
-        case "set":
-            return {
-                _load_value(
-                    child,
-                    declared_type=child_declared_type(declared_type, i),
-                    bundle_dir=bundle_dir,
-                    data_dir=data_dir,
-                    value_path=(*value_path, str(i)),
-                )
-                for i, child in enumerate(body["items"])
-            }
-        case "frozenset":
-            return frozenset(
-                _load_value(
-                    child,
-                    declared_type=child_declared_type(declared_type, i),
-                    bundle_dir=bundle_dir,
-                    data_dir=data_dir,
-                    value_path=(*value_path, str(i)),
-                )
-                for i, child in enumerate(body["items"])
-            )
+        case "tuple" | "set" | "frozenset":
+            items = _load_items(body["items"], declared_type, value_path, load_state)
+            if kind == "tuple":
+                return tuple(items)
+            return set(items) if kind == "set" else frozenset(items)
         case "pydantic":
-            cls = resolve_fully_qualified_name(body[TYPEMARKER])
-            if not issubclass(cls, pydantic.BaseModel):
-                raise ValueError(
-                    f"Cannot load pydantic model at {_value_path_display(value_path)}: "
-                    f"{fully_qualified_name(cls)} is not a pydantic model"
-                )
-            loaded_fields = _load_validated_fields(
-                kind="pydantic model",
-                cls=cls,
-                expected=set(cls.model_fields),
-                raw_fields=body[FIELDSMARKER],
-                bundle_dir=bundle_dir,
-                data_dir=data_dir,
-                value_path=value_path,
-            )
-            try:
-                return cls.model_validate(loaded_fields)
-            except pydantic.ValidationError as exc:
-                raise ValueError(
-                    f"Cannot load pydantic model {fully_qualified_name(cls)} "
-                    f"at {_value_path_display(value_path)}: {exc}"
-                ) from exc
+            return _load_pydantic(body, value_path, load_state)
         case _:
             raise ValueError(f"unknown wrapper kind: {kind!r}")
+
+
+def _load_dataclass(
+    body: dict[str, Any], value_path: ValuePath, load_state: _LoadState
+) -> object:
+    cls = resolve_fully_qualified_name(body[TYPEMARKER])
+    if not dataclasses.is_dataclass(cls):
+        raise ValueError(
+            f"Cannot load dataclass at {_value_path_display(value_path)}: "
+            f"{fully_qualified_name(cls)} is not a dataclass"
+        )
+    dataclass_fields = dataclasses.fields(cls)
+    init_fields = {field.name for field in dataclass_fields if field.init}
+    loaded_fields = _load_validated_fields(
+        kind="dataclass",
+        cls=cls,
+        expected={field.name for field in dataclass_fields},
+        raw_fields=body[FIELDSMARKER],
+        value_path=value_path,
+        load_state=load_state,
+    )
+    try:
+        return cls(**{k: v for k, v in loaded_fields.items() if k in init_fields})
+    except Exception as exc:
+        raise ValueError(
+            f"Cannot load dataclass {fully_qualified_name(cls)} "
+            f"at {_value_path_display(value_path)}: {exc}"
+        ) from exc
+
+
+def _load_pydantic(
+    body: dict[str, Any], value_path: ValuePath, load_state: _LoadState
+) -> object:
+    cls = resolve_fully_qualified_name(body[TYPEMARKER])
+    if not issubclass(cls, pydantic.BaseModel):
+        raise ValueError(
+            f"Cannot load pydantic model at {_value_path_display(value_path)}: "
+            f"{fully_qualified_name(cls)} is not a pydantic model"
+        )
+    loaded_fields = _load_validated_fields(
+        kind="pydantic model",
+        cls=cls,
+        expected=set(cls.model_fields),
+        raw_fields=body[FIELDSMARKER],
+        value_path=value_path,
+        load_state=load_state,
+    )
+    try:
+        return cls.model_validate(loaded_fields)
+    except pydantic.ValidationError as exc:
+        raise ValueError(
+            f"Cannot load pydantic model {fully_qualified_name(cls)} "
+            f"at {_value_path_display(value_path)}: {exc}"
+        ) from exc
 
 
 def _save_result_bundle(
@@ -673,15 +607,12 @@ def _save_result_bundle(
 ) -> _DumpState:
     bundle_dir.mkdir(parents=True, exist_ok=False)
 
-    dump_state = _DumpState(data_dir=data_dir)
-    manifest = _dump_value(
-        value,
-        declared_type=declared_type,
-        value_path=(),
+    dump_state = _DumpState(
         bundle_dir=bundle_dir,
+        data_dir=data_dir,
         result_codecs=result_codecs,
-        dump_state=dump_state,
     )
+    manifest = _dump_value(value, declared_type, (), dump_state)
     (bundle_dir / MANIFEST_FILE_NAME).write_text(
         json.dumps(manifest, indent=2),
         encoding="utf-8",
@@ -697,10 +628,5 @@ def load_result_bundle(
 ) -> object:
     manifest_path = bundle_dir / MANIFEST_FILE_NAME
     raw = json.loads(manifest_path.read_text(encoding="utf-8"))
-    return _load_value(
-        raw,
-        declared_type=declared_type,
-        bundle_dir=bundle_dir,
-        data_dir=data_dir,
-        value_path=(),
-    )
+    load_state = _LoadState(bundle_dir=bundle_dir, data_dir=data_dir)
+    return _load_value(raw, declared_type, (), load_state)
