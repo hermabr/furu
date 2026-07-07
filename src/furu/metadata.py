@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import BaseModel, ConfigDict
 
 from furu.storage._layout import metadata_path_in
-from furu.utils import JsonValue, object_id_from_parts
+from furu.utils import JsonValue, atomic_write_text, object_id_from_parts
 
 if TYPE_CHECKING:
     from furu.core import Spec
@@ -67,7 +67,9 @@ class RunningMetadata(BaseModel):
             base_path=obj._base_dir,
             started_at=datetime.now(timezone.utc),
         )
-        metadata_path_in(obj._base_dir).write_text(metadata.model_dump_json(indent=2))
+        atomic_write_text(
+            metadata_path_in(obj._base_dir), metadata.model_dump_json(indent=2)
+        )
         return metadata
 
     def to_complete(

@@ -20,7 +20,7 @@ from furu.storage._layout import (
     result_link_path_in,
     result_manifest_path_in,
 )
-from furu.utils import JsonFields, nfs_safe_unique_name
+from furu.utils import JsonFields, atomic_write_text
 
 if TYPE_CHECKING:
     from furu.core import Spec
@@ -128,10 +128,9 @@ def _write_result_link(obj: Spec[Any], link: _ResultLink) -> None:
     from furu.execution.load_or_create import _record_schema_snapshot
 
     obj._base_dir.mkdir(parents=True, exist_ok=True)
-    link_path = result_link_path_in(obj._base_dir)
-    tmp_path = nfs_safe_unique_name(link_path, name="tmp")
-    tmp_path.write_text(link.model_dump_json(indent=2), encoding="utf-8")
-    tmp_path.rename(link_path)
+    atomic_write_text(
+        result_link_path_in(obj._base_dir), link.model_dump_json(indent=2)
+    )
     _record_schema_snapshot(obj)
 
 
