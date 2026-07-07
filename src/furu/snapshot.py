@@ -6,6 +6,8 @@ import shutil
 import stat
 import subprocess
 import tarfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from pydantic import BaseModel, ByteSize, ConfigDict
@@ -29,6 +31,28 @@ class SnapshotManifest(BaseModel):
     commit: str
     entries: tuple[SnapshotEntry, ...]
     total_bytes: int
+
+
+@contextmanager
+def publish_dir_atomically(final_dir: Path) -> Iterator[Path]:
+    """Yield a fresh temp dir to build in; on clean exit rename it to ``final_dir``.
+
+    A concurrent builder of the same content may win the rename first, in which case
+    the temp dir is discarded — the published directory is identical either way.
+    """
+    tmp_dir = nfs_safe_unique_name(final_dir, name="tmp")
+    tmp_dir.mkdir(parents=True)
+    try:
+        yield tmp_dir
+    except BaseException:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
+    try:
+        tmp_dir.rename(final_dir)
+    except OSError:
+        shutil.rmtree(tmp_dir)
+        if not final_dir.is_dir():
+            raise
 
 
 def create_snapshot(worktree: Path) -> str:
@@ -125,10 +149,7 @@ def create_snapshot(worktree: Path) -> str:
         total_bytes=total_bytes,
     )
 
-    final_dir.parent.mkdir(parents=True, exist_ok=True)
-    tmp_dir = nfs_safe_unique_name(final_dir, name="tmp")
-    tmp_dir.mkdir()
-    try:
+    with publish_dir_atomically(final_dir) as tmp_dir:
         tarball_path = tmp_dir / "snapshot.tar.gz"
         with open(tarball_path, "wb") as raw:
             with gzip.GzipFile(
@@ -159,16 +180,6 @@ def create_snapshot(worktree: Path) -> str:
         _write_file(
             tmp_dir / "manifest.json", manifest.model_dump_json(indent=2).encode()
         )
-    except BaseException:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        raise
-    try:
-        tmp_dir.rename(final_dir)
-    except OSError:
-        # A concurrent snapshotter of the same worktree state won the rename.
-        shutil.rmtree(tmp_dir)
-        if not final_dir.is_dir():
-            raise
     return snapshot_id
 
 
@@ -181,21 +192,9 @@ def extract_snapshot(snapshot_id: str) -> Path:
     code_dir = get_config().run_directories.snapshots / snapshot_id / "code"
     if code_dir.is_dir():
         return code_dir
-    tmp_dir = nfs_safe_unique_name(code_dir, name="tmp")
-    tmp_dir.mkdir(parents=True)
-    try:
+    with publish_dir_atomically(code_dir) as tmp_dir:
         with tarfile.open(code_dir.parent / "snapshot.tar.gz") as tar:
             tar.extractall(tmp_dir, filter="tar")
-    except BaseException:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        raise
-    try:
-        tmp_dir.rename(code_dir)
-    except OSError:
-        # A concurrent extractor of the same snapshot won the rename.
-        shutil.rmtree(tmp_dir)
-        if not code_dir.is_dir():
-            raise
     return code_dir
 
 

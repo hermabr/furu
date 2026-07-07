@@ -109,6 +109,14 @@ def nfs_safe_unique_name(path: Path, *, name: str | None = None) -> Path:
     return path.with_name(stem)
 
 
+def atomic_write_text(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` via a unique temp file and rename, so concurrent
+    readers on NFS never observe a truncated file."""
+    tmp_path = nfs_safe_unique_name(path, name="tmp")
+    tmp_path.write_text(text, encoding="utf-8")
+    tmp_path.rename(path)
+
+
 def write_private_file(path: Path, contents: str, *, mode: int) -> None:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
     with os.fdopen(fd, "w", encoding="utf-8") as file:

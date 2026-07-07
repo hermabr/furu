@@ -41,7 +41,7 @@ from furu.storage._layout import (
     run_log_path_in,
     schema_snapshot_path_in,
 )
-from furu.utils import format_duration, nfs_safe_unique_name
+from furu.utils import atomic_write_text, format_duration, nfs_safe_unique_name
 from furu.worker.context import (
     _DependencyNotReady,
     _worker_execution_lease_id,
@@ -131,9 +131,9 @@ def _record_schema_snapshot(obj: Spec[Any]) -> None:
     schema_path = schema_snapshot_path_in(obj._base_dir)
     if schema_path.exists():
         return
-    tmp_path = nfs_safe_unique_name(schema_path, name="tmp")
-    tmp_path.write_text(json.dumps(obj._schema_data, indent=2, sort_keys=True))
-    tmp_path.rename(schema_path)
+    atomic_write_text(
+        schema_path, json.dumps(obj._schema_data, indent=2, sort_keys=True)
+    )
 
 
 def _store_result[T](
@@ -173,13 +173,12 @@ def _store_result[T](
     metadata_text = metadata.to_complete(
         observed_dependencies=observed_dependencies
     ).model_dump_json(indent=2)
-    metadata_path_in(obj._base_dir).write_text(metadata_text)
+    atomic_write_text(metadata_path_in(obj._base_dir), metadata_text)
 
     provenance = Provenance.merge(submit_provenance, ExecuteContext.capture())
-    provenance_path = provenance_path_in(obj._base_dir)
-    tmp_path = nfs_safe_unique_name(provenance_path, name="tmp")
-    tmp_path.write_text(provenance.model_dump_json(indent=2))
-    tmp_path.rename(provenance_path)
+    atomic_write_text(
+        provenance_path_in(obj._base_dir), provenance.model_dump_json(indent=2)
+    )
 
     obj.logger.debug("stored result bundle at %s", result_dir)
 
