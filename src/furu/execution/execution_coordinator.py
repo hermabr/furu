@@ -151,6 +151,7 @@ class ExecutionCoordinator:
                         bound_port=server.bound_port,
                         auth_token=server.auth_token,
                         executor_dir=coordinator.executor_dir,
+                        provenance=coordinator.submit_provenance,
                     )
                     pools.append(pool)
                     logger.info("pool started · %s", type(backend).__name__)

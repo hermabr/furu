@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from furu.config import _Config, get_config
-from furu.snapshot import SnapshotManifest, create_snapshot
+from furu.snapshot import SnapshotManifest, create_snapshot, extract_snapshot
 from furu.testing import override_config
 
 
@@ -195,3 +195,33 @@ def test_concurrent_writer_losing_the_rename_discards_its_work(
 def test_outside_a_git_worktree_raises(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="not inside a git worktree"):
         create_snapshot(tmp_path)
+
+
+def test_extract_snapshot_materializes_worktree_bytes(git_repo: Path) -> None:
+    (git_repo / "tracked.txt").write_text("worktree version\n")
+    (git_repo / "untracked.txt").write_text("brand new\n")
+    (git_repo / "link.txt").symlink_to("tracked.txt")
+    snapshot_id = create_snapshot(git_repo)
+
+    code_dir = extract_snapshot(snapshot_id)
+
+    assert code_dir == _snapshot_dir(snapshot_id) / "code"
+    assert (code_dir / "tracked.txt").read_text() == "worktree version\n"
+    assert (code_dir / "untracked.txt").read_text() == "brand new\n"
+    assert (code_dir / "sub" / "nested.txt").read_text() == "nested\n"
+    assert (code_dir / "link.txt").readlink() == Path("tracked.txt")
+
+
+def test_extract_snapshot_reuses_an_existing_extraction(git_repo: Path) -> None:
+    snapshot_id = create_snapshot(git_repo)
+    code_dir = extract_snapshot(snapshot_id)
+    (code_dir / "witness.txt").write_text("kept\n")
+    _tarball(snapshot_id).unlink()
+
+    assert extract_snapshot(snapshot_id) == code_dir
+    assert (code_dir / "witness.txt").read_text() == "kept\n"
+
+
+def test_extract_missing_snapshot_raises(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        extract_snapshot("0" * 20)

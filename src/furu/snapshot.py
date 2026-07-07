@@ -172,6 +172,33 @@ def create_snapshot(worktree: Path) -> str:
     return snapshot_id
 
 
+def extract_snapshot(snapshot_id: str) -> Path:
+    """Materialize snapshot ``snapshot_id`` beside its tarball; return the tree.
+
+    Extraction is content-addressed like the snapshot itself: the tree lands in
+    ``<snapshots>/<snapshot_id>/code`` once and is reused by every later caller.
+    """
+    code_dir = get_config().run_directories.snapshots / snapshot_id / "code"
+    if code_dir.is_dir():
+        return code_dir
+    tmp_dir = nfs_safe_unique_name(code_dir, name="tmp")
+    tmp_dir.mkdir(parents=True)
+    try:
+        with tarfile.open(code_dir.parent / "snapshot.tar.gz") as tar:
+            tar.extractall(tmp_dir, filter="tar")
+    except BaseException:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
+    try:
+        tmp_dir.rename(code_dir)
+    except OSError:
+        # A concurrent extractor of the same snapshot won the rename.
+        shutil.rmtree(tmp_dir)
+        if not code_dir.is_dir():
+            raise
+    return code_dir
+
+
 def _write_file(path: Path, data: bytes) -> None:
     with open(path, "wb") as file:
         file.write(data)
