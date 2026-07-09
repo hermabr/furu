@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import (
     Annotated,
@@ -694,9 +694,12 @@ def load_result_bundle(
     *,
     data_dir: Path,
     declared_type: object,
+    manifest_transform: Callable[[JsonValue], JsonValue] | None = None,
 ) -> object:
     manifest_path = bundle_dir / MANIFEST_FILE_NAME
-    raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    raw = cast(JsonValue, json.loads(manifest_path.read_text(encoding="utf-8")))
+    if manifest_transform is not None:
+        raw = manifest_transform(raw)
     return _load_value(
         raw,
         declared_type=declared_type,

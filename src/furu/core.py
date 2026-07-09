@@ -25,7 +25,7 @@ from furu.explain import explain as _explain
 from furu.locking import LockError, is_active_lock, lock
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
-from furu.migration.links import result_dir_for_loading
+from furu.migration.links import result_source_for_loading
 from furu.migration.resolution import validate_embedded_migration_declarations
 from furu.migration.stale import raise_if_stale, sideways_status
 from furu.migration.steps import MigrationStep, validate_migration_declaration
@@ -193,13 +193,14 @@ class Spec[T](_FuruDataclassTransform, ABC):
         )
 
         record_dependency_call(self)
-        if (result_dir := result_dir_for_loading(self)) is not None:
+        if (source := result_source_for_loading(self)) is not None:
             return cast(
                 T,
                 load_result_bundle(
-                    result_dir,
+                    source.result_dir,
                     data_dir=data_dir_in(self._base_dir),
                     declared_type=declared_result_type(type(self)),
+                    manifest_transform=source.manifest_transform,
                 ),
             )
         raise_if_stale(self)
@@ -216,14 +217,14 @@ class Spec[T](_FuruDataclassTransform, ABC):
 
     @final
     def provenance(self) -> Provenance:
-        result_dir = result_dir_for_loading(self)
-        if result_dir is None:
+        source = result_source_for_loading(self)
+        if source is None:
             raise Missing(
                 f"{self._log_label}.provenance() could not find a result. "
                 "Provenance is recorded when a result is computed; use create() "
                 "to compute it first."
             )
-        path = provenance_path_in(result_dir.parent)
+        path = provenance_path_in(source.result_dir.parent)
         if not path.exists():
             raise Missing(
                 f"{self._log_label}.provenance(): the result exists but "

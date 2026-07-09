@@ -11,7 +11,19 @@ import pytest
 
 import furu
 import furu.migration.resolution as migration_resolution
-from furu import Added, MovedFrom, Renamed, Retyped, Rewrite, Spec, Stale
+from furu import (
+    Added,
+    MovedFrom,
+    Renamed,
+    ResultAdded,
+    ResultRemoved,
+    ResultRenamed,
+    ResultRewrite,
+    Retyped,
+    Rewrite,
+    Spec,
+    Stale,
+)
 from furu.migration.steps import MigrationError
 from furu.storage._layout import (
     result_link_path_in,
@@ -1336,3 +1348,285 @@ def test_embedded_dataclass_chain_is_validated_when_a_spec_embeds_it() -> None:
 
             def create(self) -> int:
                 return 0
+
+
+# --- result changes: migrating stored results alongside spec migrations ------------
+
+
+@dataclass(frozen=True)
+class _EvalResultV0:
+    accuracy: float
+
+
+@dataclass(frozen=True)
+class _EvalResult:
+    accuracy: float
+    final_model: str | None
+
+
+class _EvalDonor(Spec[_EvalResultV0]):
+    dataset: str
+
+    def create(self) -> _EvalResultV0:
+        return _EvalResultV0(accuracy=0.93)
+
+
+class _EvalRun(Spec[_EvalResult]):
+    dataset: str
+    save_final_model: bool = True
+
+    migrations = (
+        Added(
+            "save_final_model",
+            default=False,
+            result_changes=(ResultAdded("final_model", value=None),),
+        ),
+    )
+
+    def create(self) -> _EvalResult:
+        _COUNTER.calls += 1
+        return _EvalResult(accuracy=1.0, final_model="model.pt")
+
+
+def test_result_added_backfills_old_results_at_load() -> None:
+    donor = _EvalDonor(dataset="cifar10")
+    donor.create()
+    _transplant_generation(
+        donor,
+        _EvalRun,
+        renames={
+            fully_qualified_name(_EvalResultV0): fully_qualified_name(_EvalResult)
+        },
+    )
+
+    migrated = _EvalRun(dataset="cifar10", save_final_model=False)
+    assert migrated.create() == _EvalResult(accuracy=0.93, final_model=None)
+    assert _COUNTER.calls == 0
+
+    link = json.loads(result_link_path_in(migrated._base_dir).read_text())
+    assert link["migration_path"] == [
+        "Added('save_final_model', default=False, "
+        "result_changes=(ResultAdded('final_model', value=None),))"
+    ]
+    assert link["result_migrations"] == [
+        {
+            "fully_qualified_name": migrated._fully_qualified_name,
+            "start": 0,
+            "stop": 1,
+        }
+    ]
+
+    fresh = _EvalRun(dataset="cifar10")
+    assert fresh.create() == _EvalResult(accuracy=1.0, final_model="model.pt")
+    assert _COUNTER.calls == 1
+
+
+class _DictResultDonor(Spec[dict[str, int]]):
+    tag: str
+
+    def create(self) -> dict[str, int]:
+        return {"a": 1, "b": 2}
+
+
+class _DictResultRun(Spec[dict[str, int]]):
+    tag: str
+    epochs: int = 1
+
+    migrations = (
+        MovedFrom(fully_qualified_name(_DictResultDonor)),
+        Added(
+            "epochs",
+            default=1,
+            result_changes=(
+                ResultRenamed("a", to="alpha"),
+                ResultRemoved("b"),
+                ResultAdded("c", value=3),
+            ),
+        ),
+    )
+
+    def create(self) -> dict[str, int]:
+        _COUNTER.calls += 1
+        return {"alpha": 0, "c": 0}
+
+
+def test_result_changes_compose_on_dict_results() -> None:
+    _DictResultDonor(tag="x").create()
+
+    migrated = _DictResultRun(tag="x")
+    assert migrated.create() == {"alpha": 1, "c": 3}
+    assert _COUNTER.calls == 0
+
+
+def _scale_by_spec_factor(
+    fields: Mapping[str, JsonValue], *, spec: Mapping[str, JsonValue]
+) -> Mapping[str, JsonValue]:
+    assert isinstance(fields["a"], int) and isinstance(spec["factor"], int)
+    return {**fields, "a": fields["a"] * spec["factor"]}
+
+
+class _RewriteResultRun(Spec[dict[str, int]]):
+    tag: str
+    factor: int = 10
+
+    migrations = (
+        MovedFrom(fully_qualified_name(_DictResultDonor)),
+        Added(
+            "factor",
+            default=10,
+            result_changes=(ResultRewrite(_scale_by_spec_factor),),
+        ),
+    )
+
+    def create(self) -> dict[str, int]:
+        _COUNTER.calls += 1
+        return {"a": 0, "b": 0}
+
+
+def test_result_rewrite_computes_from_stored_and_spec_fields() -> None:
+    _DictResultDonor(tag="y").create()
+
+    migrated = _RewriteResultRun(tag="y")
+    assert migrated.create() == {"a": 10, "b": 2}
+    assert _COUNTER.calls == 0
+
+
+def _rename_in_rewrite(
+    fields: Mapping[str, JsonValue], *, spec: Mapping[str, JsonValue]
+) -> Mapping[str, JsonValue]:
+    return {"renamed": fields["a"], "b": fields["b"]}
+
+
+class _BadRewriteResultRun(Spec[dict[str, int]]):
+    tag: str
+    flag: bool = True
+
+    migrations = (
+        MovedFrom(fully_qualified_name(_DictResultDonor)),
+        Added(
+            "flag",
+            default=False,
+            result_changes=(ResultRewrite(_rename_in_rewrite),),
+        ),
+    )
+
+    def create(self) -> dict[str, int]:
+        return {}
+
+
+def test_result_rewrite_must_preserve_field_names() -> None:
+    _DictResultDonor(tag="z").create()
+
+    with pytest.raises(MigrationError, match="must preserve field names"):
+        _BadRewriteResultRun(tag="z", flag=False).create()
+
+
+class _HopMidRun(Spec[dict[str, int]]):
+    tag: str
+    epochs: int = 1
+
+    migrations = (
+        MovedFrom(fully_qualified_name(_DictResultDonor)),
+        Added("epochs", default=1, result_changes=(ResultAdded("mid", value=10),)),
+    )
+
+    def create(self) -> dict[str, int]:
+        _COUNTER.calls += 1
+        return {"a": 0, "b": 0, "mid": 0}
+
+
+class _HopFinalRun(Spec[dict[str, int]]):
+    tag: str
+    epochs: int = 1
+    seed: int = 0
+
+    migrations = (
+        MovedFrom(fully_qualified_name(_HopMidRun)),
+        Added("seed", default=0, result_changes=(ResultAdded("fin", value=20),)),
+    )
+
+    def create(self) -> dict[str, int]:
+        _COUNTER.calls += 1
+        return {"a": 0, "b": 0, "mid": 0, "fin": 0}
+
+
+def test_multi_hop_result_changes_compose_across_links() -> None:
+    donor = _DictResultDonor(tag="hop")
+    donor.create()
+    _COUNTER.calls = 0
+
+    assert _HopMidRun(tag="hop").create() == {"a": 1, "b": 2, "mid": 10}
+
+    final = _HopFinalRun(tag="hop")
+    assert final.create() == {"a": 1, "b": 2, "mid": 10, "fin": 20}
+    assert _COUNTER.calls == 0
+
+    link = json.loads(result_link_path_in(final._base_dir).read_text())
+    assert link["source"]["base_dir"] == str(donor._base_dir)
+    assert link["result_migrations"] == [
+        {
+            "fully_qualified_name": fully_qualified_name(_HopMidRun),
+            "start": 0,
+            "stop": 2,
+        },
+        {
+            "fully_qualified_name": fully_qualified_name(_HopFinalRun),
+            "start": 0,
+            "stop": 2,
+        },
+    ]
+
+
+def test_result_added_typo_fails_at_class_creation() -> None:
+    with pytest.raises(TypeError, match="'final_modle' is not a result field"):
+
+        class _TypoResultRun(Spec[_EvalResult]):
+            dataset: str
+            flag: bool = True
+
+            migrations = (
+                Added(
+                    "flag",
+                    default=False,
+                    result_changes=(ResultAdded("final_modle", value=None),),
+                ),
+            )
+
+            def create(self) -> _EvalResult:
+                raise NotImplementedError
+
+
+def test_breaking_step_with_result_changes_fails_at_class_creation() -> None:
+    with pytest.raises(TypeError, match="a breaking step discards old results"):
+
+        class _BreakingResultRun(Spec[dict[str, int]]):
+            flag: bool = True
+
+            migrations = (
+                Added(
+                    "flag",
+                    breaking=True,
+                    result_changes=(ResultAdded("x", value=1),),
+                ),
+            )
+
+            def create(self) -> dict[str, int]:
+                raise NotImplementedError
+
+
+def test_result_changes_must_be_a_tuple() -> None:
+    with pytest.raises(TypeError, match="result_changes must be a tuple"):
+
+        class _BareResultChangeRun(Spec[dict[str, int]]):
+            flag: bool = True
+
+            migrations = (
+                Added(
+                    "flag",
+                    default=False,
+                    result_changes=ResultAdded("x", value=1),  # ty: ignore[invalid-argument-type]
+                ),
+            )
+
+            def create(self) -> dict[str, int]:
+                raise NotImplementedError

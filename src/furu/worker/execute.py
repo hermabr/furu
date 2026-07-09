@@ -17,7 +17,7 @@ from furu.core import Spec
 from furu.execution.load_or_create import _ensure_single_result
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
-from furu.migration.links import result_dir_for_loading
+from furu.migration.links import result_source_for_loading
 from furu.provenance import EnvironmentIdentity
 from furu.spec_metadata import Subprocess
 from furu.worker.context import _DependencyNotReady, worker_execution_context
@@ -86,7 +86,7 @@ class ChildSlot:
     def run(
         self, obj: Spec[Any], *, job: Job, execution: Subprocess
     ) -> JobResultRequest:
-        if result_dir_for_loading(obj) is not None:
+        if result_source_for_loading(obj) is not None:
             obj.logger.info("cache hit for %s", obj._log_label)
             return JobCompletedResult()
 

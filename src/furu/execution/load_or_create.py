@@ -22,7 +22,7 @@ from furu.dependencies import dependency_recorder, record_dependency_call
 from furu.locking import lock
 from furu.logging import _scoped_log_files, get_logger
 from furu.metadata import RunningMetadata
-from furu.migration.links import result_dir_for_loading
+from furu.migration.links import result_source_for_loading
 from furu.migration.stale import raise_if_stale
 from furu.provenance import (
     ExecuteContext,
@@ -222,7 +222,7 @@ def _load_or_create[T](
 def _ensure_single_result[T](
     obj: Spec[T], *, submit_provenance: SubmitProvenance
 ) -> None:
-    if result_dir_for_loading(obj) is not None:
+    if result_source_for_loading(obj) is not None:
         obj.logger.info("cache hit for %s", obj._log_label)
         return
 
@@ -230,7 +230,7 @@ def _ensure_single_result[T](
     obj._base_dir.mkdir(parents=True, exist_ok=True)
 
     with lock(compute_lock_path_in(obj._base_dir)) as has_lock:
-        if result_dir_for_loading(obj) is not None:
+        if result_source_for_loading(obj) is not None:
             obj.logger.info("cache hit for %s", obj._log_label)
             return
 
@@ -293,7 +293,7 @@ def load_existing[T](objs: Sequence[Spec[T]]) -> list[T]:
     missing: list[Spec[T]] = []
     for obj in objs:
         record_dependency_call(obj)
-        if (result_dir := result_dir_for_loading(obj)) is None:
+        if (source := result_source_for_loading(obj)) is None:
             raise_if_stale(obj)
             missing.append(obj)
             continue
@@ -301,9 +301,10 @@ def load_existing[T](objs: Sequence[Spec[T]]) -> list[T]:
             cast(
                 T,
                 load_result_bundle(
-                    result_dir,
+                    source.result_dir,
                     data_dir=data_dir_in(obj._base_dir),
                     declared_type=declared_result_type(type(obj)),
+                    manifest_transform=source.manifest_transform,
                 ),
             )
         )
@@ -345,14 +346,15 @@ def _load_or_create_worker[T](
     missing: list[Spec[T]] = []
 
     for obj in objs:
-        if (cached_result_dir := result_dir_for_loading(obj)) is not None:
+        if (cached_source := result_source_for_loading(obj)) is not None:
             loaded.append(
                 cast(
                     T,
                     load_result_bundle(
-                        cached_result_dir,
+                        cached_source.result_dir,
                         data_dir=data_dir_in(obj._base_dir),
                         declared_type=declared_result_type(type(obj)),
+                        manifest_transform=cached_source.manifest_transform,
                     ),
                 )
             )
@@ -395,13 +397,14 @@ def _load_or_create_local[T](
     missing: list[Spec[T]] = []
 
     for obj in unique:
-        if (cached_result_dir := result_dir_for_loading(obj)) is not None:
+        if (cached_source := result_source_for_loading(obj)) is not None:
             results_by_object_id[obj.object_id] = cast(
                 T,
                 load_result_bundle(
-                    cached_result_dir,
+                    cached_source.result_dir,
                     data_dir=data_dir_in(obj._base_dir),
                     declared_type=declared_result_type(type(obj)),
+                    manifest_transform=cached_source.manifest_transform,
                 ),
             )
         else:
@@ -424,14 +427,15 @@ def _load_or_create_local[T](
         pending: list[Spec[T]] = []
         late_hits = 0
         for obj in missing:
-            if (cached_result_dir := result_dir_for_loading(obj)) is not None:
+            if (cached_source := result_source_for_loading(obj)) is not None:
                 late_hits += 1
                 results_by_object_id[obj.object_id] = cast(
                     T,
                     load_result_bundle(
-                        cached_result_dir,
+                        cached_source.result_dir,
                         data_dir=data_dir_in(obj._base_dir),
                         declared_type=declared_result_type(type(obj)),
+                        manifest_transform=cached_source.manifest_transform,
                     ),
                 )
             else:
