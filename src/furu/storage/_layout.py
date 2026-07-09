@@ -13,6 +13,10 @@ def result_manifest_path_in(base_dir: Path) -> Path:
     return result_dir_in(base_dir) / "manifest.json"
 
 
+def result_manifest_overlay_path_in(base_dir: Path) -> Path:
+    return base_dir / "result-manifest.json"
+
+
 def metadata_path_in(base_dir: Path) -> Path:
     return base_dir / "metadata.json"
 

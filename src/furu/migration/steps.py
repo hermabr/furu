@@ -17,11 +17,34 @@ _NO_DEFAULT: Any = object()
 
 
 @dataclass(frozen=True, slots=True)
+class ResultRenamed:
+    field: str
+    _: dataclasses.KW_ONLY
+    to: str
+
+
+@dataclass(frozen=True, slots=True)
+class ResultAdded:
+    field: str
+    _: dataclasses.KW_ONLY
+    default: JsonValue
+
+
+@dataclass(frozen=True, slots=True)
+class ResultRewrite:
+    transform: Callable[[JsonValue], JsonValue]
+
+
+ResultMigration: TypeAlias = ResultRenamed | ResultAdded | ResultRewrite
+
+
+@dataclass(frozen=True, slots=True)
 class Renamed:
     field: str
     _: dataclasses.KW_ONLY
     to: str
     breaking: bool = False
+    result: ResultMigration | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +53,7 @@ class Added:
     _: dataclasses.KW_ONLY
     default: Any = _NO_DEFAULT
     breaking: bool = False
+    result: ResultMigration | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +61,7 @@ class MovedFrom:
     fully_qualified_name: str
     _: dataclasses.KW_ONLY
     breaking: bool = False
+    result: ResultMigration | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,11 +70,14 @@ class Retyped:
     _: dataclasses.KW_ONLY
     was: Any
     breaking: bool = False
+    result: ResultMigration | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class Rewrite:
     transform: Callable[[Mapping[str, JsonValue]], Mapping[str, JsonValue]]
+    _: dataclasses.KW_ONLY
+    result: ResultMigration | None = None
 
 
 MigrationStep: TypeAlias = Renamed | Added | MovedFrom | Retyped | Rewrite
@@ -92,7 +120,22 @@ def _describe_step(step: MigrationStep) -> str:
         case Rewrite(transform=transform):
             body = f"{getattr(transform, '__qualname__', repr(transform))}"
     suffix = ", breaking=True" if _is_breaking(step) else ""
+    if step.result is not None:
+        suffix += f", result={_describe_result_migration(step.result)}"
     return f"{type(step).__name__}({body}{suffix})"
+
+
+def _describe_result_migration(migration: ResultMigration) -> str:
+    match migration:
+        case ResultRenamed(field=field, to=to):
+            body = f"{field!r}, to={to!r}"
+        case ResultAdded(field=field, default=default):
+            body = f"{field!r}, default={default!r}"
+        case ResultRewrite(transform=transform):
+            body = f"{getattr(transform, '__qualname__', repr(transform))}"
+        case unreachable:
+            assert_never(unreachable)
+    return f"{type(migration).__name__}({body})"
 
 
 def validate_migration_declaration(cls: type[Spec[Any]]) -> None:
@@ -107,7 +150,24 @@ def validate_migration_declaration(cls: type[Spec[Any]]) -> None:
 
     names = {field.name: field.name for field in dataclasses.fields(cls)}
 
+    result_migrations: list[tuple[int, MigrationStep]] = []
+
     for index in reversed(range(len(steps))):
+        step = steps[index]
+        if not (step.result is None or isinstance(step.result, ResultMigration)):
+            raise TypeError(
+                f"{cls.__name__}.migrations[{index}]: "
+                "result= must be a ResultRenamed/ResultAdded/ResultRewrite step"
+            )
+        if step.result is not None:
+            if _is_breaking(step):
+                raise TypeError(
+                    f"{cls.__name__}.migrations[{index}] ({_describe_step(step)}): "
+                    "a breaking migration discards old results, so result= can "
+                    "never migrate anything; drop one of the two"
+                )
+            result_migrations.append((index, step))
+
         match steps[index]:
             case Renamed(field=field, to=to):
                 if to not in names:
@@ -151,3 +211,14 @@ def validate_migration_declaration(cls: type[Spec[Any]]) -> None:
                 pass
             case unreachable:
                 assert_never(unreachable)
+
+    if result_migrations:
+        from furu.core import Spec
+
+        if not issubclass(cls, Spec):
+            index, step = result_migrations[-1]
+            raise TypeError(
+                f"{cls.__name__}.migrations[{index}] ({_describe_step(step)}): "
+                "result= is only valid on a Spec migration; embedded plain "
+                "dataclasses do not own cached results"
+            )

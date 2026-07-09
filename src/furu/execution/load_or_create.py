@@ -22,7 +22,7 @@ from furu.dependencies import dependency_recorder, record_dependency_call
 from furu.locking import lock
 from furu.logging import _scoped_log_files, get_logger
 from furu.metadata import RunningMetadata
-from furu.migration.links import result_dir_for_loading
+from furu.migration.links import result_dir_for_loading, result_manifest_for_loading
 from furu.migration.stale import raise_if_stale
 from furu.provenance import (
     ExecuteContext,
@@ -192,7 +192,10 @@ def _store_result[T](
         return cast(
             T,
             load_result_bundle(
-                result_dir, data_dir=data_dir, declared_type=declared_type
+                result_dir,
+                data_dir=data_dir,
+                declared_type=declared_type,
+                manifest_path=result_manifest_for_loading(obj, result_dir),
             ),
         )
     return result
@@ -304,6 +307,7 @@ def load_existing[T](objs: Sequence[Spec[T]]) -> list[T]:
                     result_dir,
                     data_dir=data_dir_in(obj._base_dir),
                     declared_type=declared_result_type(type(obj)),
+                    manifest_path=result_manifest_for_loading(obj, result_dir),
                 ),
             )
         )
@@ -353,6 +357,9 @@ def _load_or_create_worker[T](
                         cached_result_dir,
                         data_dir=data_dir_in(obj._base_dir),
                         declared_type=declared_result_type(type(obj)),
+                        manifest_path=result_manifest_for_loading(
+                            obj, cached_result_dir
+                        ),
                     ),
                 )
             )
@@ -402,6 +409,7 @@ def _load_or_create_local[T](
                     cached_result_dir,
                     data_dir=data_dir_in(obj._base_dir),
                     declared_type=declared_result_type(type(obj)),
+                    manifest_path=result_manifest_for_loading(obj, cached_result_dir),
                 ),
             )
         else:
@@ -432,6 +440,9 @@ def _load_or_create_local[T](
                         cached_result_dir,
                         data_dir=data_dir_in(obj._base_dir),
                         declared_type=declared_result_type(type(obj)),
+                        manifest_path=result_manifest_for_loading(
+                            obj, cached_result_dir
+                        ),
                     ),
                 )
             else:
