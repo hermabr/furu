@@ -694,11 +694,28 @@ def load_result_bundle(
     *,
     data_dir: Path,
     declared_type: object,
+    manifest_path: Path | None = None,
 ) -> object:
-    manifest_path = bundle_dir / MANIFEST_FILE_NAME
+    if manifest_path is None:
+        manifest_path = bundle_dir / MANIFEST_FILE_NAME
     raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    return load_result_manifest(
+        cast(JsonValue, raw),
+        bundle_dir=bundle_dir,
+        data_dir=data_dir,
+        declared_type=declared_type,
+    )
+
+
+def load_result_manifest(
+    manifest: JsonValue,
+    *,
+    bundle_dir: Path,
+    data_dir: Path,
+    declared_type: object,
+) -> object:
     return _load_value(
-        raw,
+        manifest,
         declared_type=declared_type,
         bundle_dir=bundle_dir,
         data_dir=data_dir,

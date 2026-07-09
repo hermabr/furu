@@ -11,10 +11,22 @@ import pytest
 
 import furu
 import furu.migration.resolution as migration_resolution
-from furu import Added, MovedFrom, Renamed, Retyped, Rewrite, Spec, Stale
+from furu import (
+    Added,
+    MovedFrom,
+    Renamed,
+    ResultAdded,
+    ResultRenamed,
+    ResultRewrite,
+    Retyped,
+    Rewrite,
+    Spec,
+    Stale,
+)
 from furu.migration.steps import MigrationError
 from furu.storage._layout import (
     result_link_path_in,
+    result_manifest_overlay_path_in,
     result_manifest_path_in,
 )
 from furu.utils import JsonValue, fully_qualified_name
@@ -534,6 +546,272 @@ def test_rewrite_must_preserve_field_names() -> None:
 
     with pytest.raises(MigrationError, match="must preserve field names"):
         _ = _RewriteRenamesRun(dataset="cifar10", version=2).status
+
+
+# --- result migrations --------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _OldTrainResult:
+    final_loss: float
+
+
+@dataclass(frozen=True)
+class _TrainResult:
+    final_loss: float
+    final_model: Path | None
+
+
+class _ResultMigrationDonor(Spec[_OldTrainResult]):
+    dataset: str
+
+    def create(self) -> _OldTrainResult:
+        _COUNTER.calls += 1
+        return _OldTrainResult(final_loss=0.25)
+
+
+class _ResultMigrationTrain(Spec[_TrainResult]):
+    dataset: str
+    save_final_model: bool = True
+
+    migrations = (
+        Added(
+            "save_final_model",
+            default=False,
+            result=ResultAdded("final_model", default=None),
+        ),
+    )
+
+    def create(self) -> _TrainResult:
+        _COUNTER.calls += 1
+        return _TrainResult(
+            final_loss=0.1,
+            final_model=Path("model.bin") if self.save_final_model else None,
+        )
+
+
+def test_result_added_migrates_manifest_without_mutating_source_bundle() -> None:
+    donor = _ResultMigrationDonor(dataset="cifar10")
+    assert donor.create() == _OldTrainResult(final_loss=0.25)
+    old_directory = _transplant_generation(
+        donor,
+        _ResultMigrationTrain,
+        renames={
+            fully_qualified_name(_OldTrainResult): fully_qualified_name(_TrainResult)
+        },
+    )
+    source_base_dir = old_directory / donor._base_dir.name
+    source_manifest_path = result_manifest_path_in(source_base_dir)
+    source_manifest_before = source_manifest_path.read_text(encoding="utf-8")
+    _COUNTER.calls = 0
+
+    old_behavior = _ResultMigrationTrain(dataset="cifar10", save_final_model=False)
+    assert old_behavior.status == "done"
+    assert old_behavior.create() == _TrainResult(final_loss=0.25, final_model=None)
+    assert old_behavior.load_existing() == _TrainResult(
+        final_loss=0.25, final_model=None
+    )
+    assert _COUNTER.calls == 0
+
+    assert source_manifest_path.read_text(encoding="utf-8") == source_manifest_before
+    overlay_path = result_manifest_overlay_path_in(old_behavior._base_dir)
+    overlay = json.loads(overlay_path.read_text(encoding="utf-8"))
+    assert overlay["$furu"]["|fields"] == {
+        "final_loss": 0.25,
+        "final_model": None,
+    }
+    link = json.loads(result_link_path_in(old_behavior._base_dir).read_text())
+    assert link["migration_path"] == [
+        "Added('save_final_model', default=False, "
+        "result=ResultAdded('final_model', default=None))"
+    ]
+
+    # The constructor default still describes new experiments, independently
+    # of the old behavior pinned by the migration.
+    new_behavior = _ResultMigrationTrain(dataset="cifar10")
+    assert new_behavior.status == "missing"
+    assert new_behavior.create() == _TrainResult(
+        final_loss=0.1, final_model=Path("model.bin")
+    )
+    assert _COUNTER.calls == 1
+
+
+def _result_manifest_to_current(manifest: JsonValue) -> JsonValue:
+    assert isinstance(manifest, dict)
+    return {"current": manifest["middle"]}
+
+
+class _ResultCompositionDonor(Spec[dict[str, int]]):
+    dataset: str
+
+    def create(self) -> dict[str, int]:
+        return {"legacy": 7}
+
+
+class _ResultCompositionCurrent(Spec[dict[str, int]]):
+    dataset: str
+    generation: int = 0
+
+    migrations = (
+        Added(
+            "generation",
+            default=0,
+            result=ResultRenamed("legacy", to="middle"),
+        ),
+        Rewrite(
+            _identity_rewrite,
+            result=ResultRewrite(_result_manifest_to_current),
+        ),
+    )
+
+    def create(self) -> dict[str, int]:
+        return {"current": 8}
+
+
+def test_result_migrations_compose_in_schema_step_order() -> None:
+    donor = _ResultCompositionDonor(dataset="cifar10")
+    donor.create()
+    _transplant_generation(donor, _ResultCompositionCurrent)
+
+    current = _ResultCompositionCurrent(dataset="cifar10")
+    assert current.create() == {"current": 7}
+    overlay = json.loads(
+        result_manifest_overlay_path_in(current._base_dir).read_text(encoding="utf-8")
+    )
+    assert overlay == {"current": 7}
+
+
+class _ResultHop0(Spec[dict[str, int]]):
+    dataset: str
+
+    def create(self) -> dict[str, int]:
+        return {"legacy": 1}
+
+
+class _ResultHop1(Spec[dict[str, int]]):
+    dataset: str
+    first_generation: bool = False
+
+    migrations = (
+        MovedFrom(fully_qualified_name(_ResultHop0)),
+        Added(
+            "first_generation",
+            default=False,
+            result=ResultAdded("middle", default=2),
+        ),
+    )
+
+    def create(self) -> dict[str, int]:
+        return {"legacy": 10, "middle": 20}
+
+
+class _ResultHop2(Spec[dict[str, int]]):
+    dataset: str
+    first_generation: bool = False
+    second_generation: bool = False
+
+    migrations = (
+        MovedFrom(fully_qualified_name(_ResultHop1)),
+        Added(
+            "second_generation",
+            default=False,
+            result=ResultRenamed("middle", to="current"),
+        ),
+    )
+
+    def create(self) -> dict[str, int]:
+        return {"legacy": 100, "current": 200}
+
+
+def test_result_manifest_overlays_compose_across_existing_links() -> None:
+    source = _ResultHop0(dataset="cifar10")
+    source.create()
+
+    middle = _ResultHop1(dataset="cifar10")
+    assert middle.create() == {"legacy": 1, "middle": 2}
+    assert result_manifest_overlay_path_in(middle._base_dir).exists()
+
+    current = _ResultHop2(dataset="cifar10")
+    assert current.create() == {"legacy": 1, "current": 2}
+    link = json.loads(result_link_path_in(current._base_dir).read_text())
+    assert link["source"]["base_dir"] == str(source._base_dir)
+
+
+class _ResultOwnerChildV0(Spec[dict[str, int]]):
+    old_name: int
+
+    def create(self) -> dict[str, int]:
+        return {"old_result": self.old_name}
+
+
+class _ResultOwnerChild(Spec[dict[str, int]]):
+    new_name: int
+
+    migrations = (
+        Renamed(
+            "old_name",
+            to="new_name",
+            result=ResultRenamed("old_result", to="new_result"),
+        ),
+    )
+
+    def create(self) -> dict[str, int]:
+        return {"new_result": self.new_name}
+
+
+class _ResultOwnerParentV0(Spec[dict[str, str]]):
+    child: _ResultOwnerChildV0
+
+    def create(self) -> dict[str, str]:
+        return {"owner": "parent"}
+
+
+class _ResultOwnerParent(Spec[dict[str, str]]):
+    child: _ResultOwnerChild
+
+    def create(self) -> dict[str, str]:
+        return {"owner": "new parent"}
+
+
+def test_embedded_child_result_migration_only_changes_the_childs_result() -> None:
+    old_parent = _ResultOwnerParentV0(child=_ResultOwnerChildV0(old_name=3))
+    old_parent.create()
+    _transplant_generation(
+        old_parent,
+        _ResultOwnerParent,
+        renames={
+            fully_qualified_name(_ResultOwnerChildV0): fully_qualified_name(
+                _ResultOwnerChild
+            )
+        },
+    )
+
+    parent = _ResultOwnerParent(child=_ResultOwnerChild(new_name=3))
+    assert parent.create() == {"owner": "parent"}
+
+    old_child = _ResultOwnerChildV0(old_name=3)
+    old_child.create()
+    _transplant_generation(old_child, _ResultOwnerChild)
+    child = _ResultOwnerChild(new_name=3)
+    assert child.create() == {"new_result": 3}
+
+
+def test_breaking_step_rejects_result_migration_at_class_creation() -> None:
+    with pytest.raises(TypeError, match="breaking migration.*result="):
+
+        class _BreakingResultMigration(Spec[dict[str, int | None]]):
+            seed: int
+
+            migrations = (
+                Added(
+                    "seed",
+                    breaking=True,
+                    result=ResultAdded("seed", default=None),
+                ),
+            )
+
+            def create(self) -> dict[str, int | None]:
+                return {"seed": self.seed}
 
 
 # --- breaking: old results are superseded, never reused or stale --------------------
