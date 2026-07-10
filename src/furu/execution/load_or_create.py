@@ -38,6 +38,7 @@ from furu.storage._layout import (
     metadata_path_in,
     provenance_path_in,
     result_dir_in,
+    result_link_path_in,
     run_log_path_in,
     schema_snapshot_path_in,
 )
@@ -167,6 +168,7 @@ def _store_result[T](
         raise RuntimeError(f"lost lock at {lock_path} after writing temporary result")
 
     tmp_result_dir.rename(result_dir)
+    result_link_path_in(obj._base_dir).unlink(missing_ok=True)
 
     _record_schema_snapshot(obj)
 

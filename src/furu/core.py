@@ -25,7 +25,7 @@ from furu.explain import explain as _explain
 from furu.locking import LockError, is_active_lock, lock
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
-from furu.migration.links import result_dir_for_loading
+from furu.migration.links import has_valid_result_link, result_dir_for_loading
 from furu.migration.resolution import validate_embedded_migration_declarations
 from furu.migration.stale import raise_if_stale, sideways_status
 from furu.migration.steps import MigrationStep, validate_migration_declaration
@@ -238,11 +238,12 @@ class Spec[T](_FuruDataclassTransform, ABC):
     def status(self) -> Literal["missing", "running", "failed", "done", "stale"]:
         if result_manifest_path_in(self._base_dir).exists():
             return "done"
-        if result_link_path_in(self._base_dir).exists():
+        has_result_link = result_link_path_in(self._base_dir).exists()
+        if has_result_link and has_valid_result_link(self):
             return "done"
         if is_active_lock(compute_lock_path_in(self._base_dir)):
             return "running"
-        if self._base_dir.exists():
+        if self._base_dir.exists() and not has_result_link:
             return "failed"
         return sideways_status(self)
 
