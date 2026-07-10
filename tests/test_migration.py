@@ -138,16 +138,31 @@ def test_no_matching_source_computes_fresh() -> None:
     assert not result_link_path_in(new._base_dir).exists()
 
 
-def test_load_raises_when_link_source_is_missing() -> None:
+@pytest.mark.parametrize(
+    "delete_schema_directory",
+    [False, True],
+    ids=["source-artifact", "source-schema-directory"],
+)
+def test_dangling_link_is_missing_and_recomputes(
+    delete_schema_directory: bool,
+) -> None:
     old = _OldTrainRun(learning_rate=0.001, dataset="cifar10")
     old.create()
     new = _TrainRun(dataset="cifar10", lr=0.001)
     new.create()
+    _COUNTER.calls = 0
 
-    result_manifest_path_in(old._base_dir).unlink()
+    deleted = old._base_dir.parent if delete_schema_directory else old._base_dir
+    shutil.rmtree(deleted)
 
-    with pytest.raises(RuntimeError, match="points to a missing result"):
+    assert new.status == "missing"
+    with pytest.raises(furu.Missing, match="could not find a result"):
         new.load_existing()
+
+    assert new.create() == {"dataset": "cifar10", "lr": "0.001", "seed": "0"}
+    assert _COUNTER.calls == 1
+    assert result_manifest_path_in(new._base_dir).exists()
+    assert not result_link_path_in(new._base_dir).exists()
 
 
 # --- multi-hop through an existing link -------------------------------------------
@@ -203,6 +218,21 @@ def test_multi_hop_link_points_directly_at_ultimate_source() -> None:
         f"MovedFrom({mid._fully_qualified_name!r})",
         "Added('seed', default=0)",
     ]
+
+
+def test_multi_hop_scan_ignores_a_dangling_intermediate_link() -> None:
+    old = _OldTrainRun(learning_rate=0.001, dataset="cifar10")
+    old.create()
+    mid = _MidRun(dataset="cifar10", lr=0.001)
+    mid.create()
+    shutil.rmtree(old._base_dir)
+    _COUNTER.calls = 0
+
+    final = _FinalRun(dataset="cifar10", lr=0.001)
+    assert final.status == "missing"
+    assert final.create() == {"dataset": "cifar10", "lr": "0.001", "seed": "0"}
+    assert _COUNTER.calls == 1
+    assert not result_link_path_in(final._base_dir).exists()
 
 
 # --- stale: orphaned generations block compute -------------------------------------

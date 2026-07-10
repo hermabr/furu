@@ -75,9 +75,10 @@ def _read_source(artifact_dir: Path) -> _ResultLink | None:
             migration_path=(),
         )
     link_path = result_link_path_in(artifact_dir)
-    if link_path.exists():
-        return _ResultLink.model_validate_json(link_path.read_text(encoding="utf-8"))
-    return None
+    if not link_path.exists():
+        return None
+    link = _ResultLink.model_validate_json(link_path.read_text(encoding="utf-8"))
+    return link if result_manifest_path_in(link.source.base_dir).exists() else None
 
 
 def _find_source(obj: Spec[Any], resolution: _ClassResolution) -> _ResultLink | None:
@@ -124,7 +125,14 @@ def _find_source(obj: Spec[Any], resolution: _ClassResolution) -> _ResultLink | 
     return None
 
 
-def _write_result_link(obj: Spec[Any], link: _ResultLink) -> None:
+def result_dir_for_loading(obj: Spec[Any]) -> Path | None:
+    if result_manifest_path_in(obj._base_dir).exists():
+        return result_dir_in(obj._base_dir)
+    if link := _read_source(obj._base_dir):
+        return result_dir_in(link.source.base_dir)
+    link = _find_source(obj, _class_resolution(obj))
+    if link is None:
+        return None
     from furu.execution.load_or_create import _record_schema_snapshot
 
     obj._base_dir.mkdir(parents=True, exist_ok=True)
@@ -132,19 +140,4 @@ def _write_result_link(obj: Spec[Any], link: _ResultLink) -> None:
         result_link_path_in(obj._base_dir), link.model_dump_json(indent=2)
     )
     _record_schema_snapshot(obj)
-
-
-def result_dir_for_loading(obj: Spec[Any]) -> Path | None:
-    if result_manifest_path_in(obj._base_dir).exists():
-        return result_dir_in(obj._base_dir)
-    link_path = result_link_path_in(obj._base_dir)
-    if link_path.exists():
-        link = _ResultLink.model_validate_json(link_path.read_text(encoding="utf-8"))
-        if not result_manifest_path_in(link.source.base_dir).exists():
-            raise RuntimeError(f"{link_path} points to a missing result")
-        return result_dir_in(link.source.base_dir)
-    link = _find_source(obj, _class_resolution(obj))
-    if link is None:
-        return None
-    _write_result_link(obj, link)
     return result_dir_in(link.source.base_dir)
