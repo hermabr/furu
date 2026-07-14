@@ -304,7 +304,7 @@ def load_existing[T](objs: Sequence[Spec[T]]) -> list[T]:
                 T,
                 load_result_bundle(
                     result_dir,
-                    data_dir=data_dir_in(obj._base_dir),
+                    data_dir=data_dir_in(result_dir.parent),
                     declared_type=declared_result_type(type(obj)),
                 ),
             )
@@ -353,7 +353,7 @@ def _load_or_create_worker[T](
                     T,
                     load_result_bundle(
                         cached_result_dir,
-                        data_dir=data_dir_in(obj._base_dir),
+                        data_dir=data_dir_in(cached_result_dir.parent),
                         declared_type=declared_result_type(type(obj)),
                     ),
                 )
@@ -402,7 +402,7 @@ def _load_or_create_local[T](
                 T,
                 load_result_bundle(
                     cached_result_dir,
-                    data_dir=data_dir_in(obj._base_dir),
+                    data_dir=data_dir_in(cached_result_dir.parent),
                     declared_type=declared_result_type(type(obj)),
                 ),
             )
@@ -432,7 +432,7 @@ def _load_or_create_local[T](
                     T,
                     load_result_bundle(
                         cached_result_dir,
-                        data_dir=data_dir_in(obj._base_dir),
+                        data_dir=data_dir_in(cached_result_dir.parent),
                         declared_type=declared_result_type(type(obj)),
                     ),
                 )
