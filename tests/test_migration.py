@@ -5,7 +5,7 @@ import shutil
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import pytest
 
@@ -13,6 +13,7 @@ import furu
 import furu.migration.resolution as migration_resolution
 from furu import Added, MovedFrom, Renamed, Retyped, Rewrite, Spec, Stale
 from furu.migration.steps import MigrationError
+from furu.result.codec import Codec
 from furu.storage._layout import (
     result_link_path_in,
     result_manifest_path_in,
@@ -116,6 +117,65 @@ def test_rename_plus_add_reuses_old_result_through_result_link() -> None:
     assert new.status == "done"
     assert new.load_existing() == {"dataset": "cifar10", "learning_rate": "0.001"}
     assert _COUNTER.calls == 0
+
+
+class _PathValue:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+
+class _PathValueCodec(Codec[_PathValue]):
+    @classmethod
+    def matches(cls, value: object) -> bool:
+        return isinstance(value, _PathValue)
+
+    @classmethod
+    def save(
+        cls, value: _PathValue, artifact_directory: Path
+    ) -> Mapping[str, object]:
+        return {"path": value.path}
+
+    @classmethod
+    def load(
+        cls, metadata: Mapping[str, object], artifact_directory: Path
+    ) -> _PathValue:
+        path = cast(Path, metadata["path"])
+        path.read_text(encoding="utf-8")
+        return _PathValue(path)
+
+
+class _OldPathResult(Spec[_PathValue]):
+    key: str
+    result_codecs = (_PathValueCodec,)
+
+    def create(self) -> _PathValue:
+        path = self.directory.data / "payload.txt"
+        path.write_text(self.key, encoding="utf-8")
+        return _PathValue(path)
+
+
+class _MigratedPathResult(Spec[_PathValue]):
+    key: str
+    version: int = 1
+    result_codecs = (_PathValueCodec,)
+    migrations = (
+        MovedFrom(fully_qualified_name(_OldPathResult)),
+        Added("version", default=1),
+    )
+
+    def create(self) -> _PathValue:
+        raise AssertionError("migrated result should be loaded from cache")
+
+
+def test_migrated_codec_metadata_path_uses_source_data_directory() -> None:
+    source = _OldPathResult(key="contents")
+    source.create()
+    migrated = _MigratedPathResult(key="contents")
+
+    assert migrated.create().path == (source.directory.data / "payload.txt").resolve()
+    assert migrated.load_existing().path == (
+        source.directory.data / "payload.txt"
+    ).resolve()
 
 
 def test_added_field_binds_only_the_default_value() -> None:

@@ -198,7 +198,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
                 T,
                 load_result_bundle(
                     result_dir,
-                    data_dir=data_dir_in(self._base_dir),
+                    data_dir=data_dir_in(result_dir.parent),
                     declared_type=declared_result_type(type(self)),
                 ),
             )
