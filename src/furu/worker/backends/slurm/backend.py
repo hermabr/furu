@@ -64,7 +64,10 @@ class SlurmWorkerBackend:
         if provenance.snapshot_id is not None:
             # Run workers from the extracted snapshot, not the live worktree,
             # so edits made after submit cannot leak into these jobs.
-            code_dir = extract_snapshot(provenance.snapshot_id)
+            # The configured snapshots directory may be relative to the submit
+            # cwd.  Slurm changes into ``chdir`` before running the worker
+            # script, so keep every path passed to Slurm and uv absolute.
+            code_dir = extract_snapshot(provenance.snapshot_id).resolve()
             repo_root = Path(provenance.git.repo_root)
             chdir = code_dir / chdir.relative_to(repo_root)
             project_root = code_dir / Path(
@@ -135,6 +138,11 @@ class SlurmWorkerBackend:
                 f"{component_line}"
                 "\n"
                 f"{pre_worker_script}"
+                # sbatch inherits the submit environment by default.  An active
+                # virtualenv belongs to the submit process, not this snapshot,
+                # and makes uv warn before it selects the snapshot's .venv.
+                "unset VIRTUAL_ENV\n"
+                "\n"
                 # --frozen forbids silent lock updates on the node; --project
                 # pins the environment regardless of --chdir.
                 "exec uv run --frozen "
