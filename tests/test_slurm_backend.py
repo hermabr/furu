@@ -634,6 +634,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert "secret-token" not in script
     project_root = EnvironmentIdentity.capture().project_root
     assert script.index('echo "Hello" > /tmp/hey') < script.index("exec uv run")
+    assert script.index("unset VIRTUAL_ENV") < script.index("exec uv run")
     assert f"exec uv run --frozen --project {project_root}" in script
     assert "python -m furu.worker._cli" in script
     assert sys.executable not in script
@@ -1827,7 +1828,9 @@ def test_slurm_backend_runs_workers_from_the_extracted_snapshot(
     )
 
     assert provenance.snapshot_id is not None
-    code_dir = get_config().run_directories.snapshots / provenance.snapshot_id / "code"
+    code_dir = (
+        get_config().run_directories.snapshots / provenance.snapshot_id / "code"
+    ).resolve()
     assert (code_dir / "pyproject.toml").is_file()
     assert f"--chdir={code_dir}" in pool._sbatch_base_args
     script = pool._script_path.read_text()
