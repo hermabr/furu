@@ -30,11 +30,13 @@ def _add_to_dag(coordinator: ExecutionCoordinator, objs: Sequence[Spec]) -> None
     newly_added: list[DagNode] = []
     # TODO: detect cycles and raise a clear error
     pending = list(reversed(objs))
+    seen_object_ids = set(coordinator.nodes_by_id)
 
     while pending:
         obj = pending.pop()
-        if obj.object_id in coordinator.nodes_by_id:
+        if obj.object_id in seen_object_ids:
             continue
+        seen_object_ids.add(obj.object_id)
         match obj.status:
             case "done":
                 continue
