@@ -232,7 +232,7 @@ def _ensure_single_result[T](
     obj._base_dir.mkdir(parents=True, exist_ok=True)
 
     with lock(compute_lock_path_in(obj._base_dir)) as has_lock:
-        if result_dir_for_loading(obj) is not None:
+        if result_dir_for_loading(obj, has_lock=True) is not None:
             obj.logger.info("cache hit for %s", obj._log_label)
             return
 
@@ -426,7 +426,9 @@ def _load_or_create_local[T](
         pending: list[Spec[T]] = []
         late_hits = 0
         for obj in missing:
-            if (cached_result_dir := result_dir_for_loading(obj)) is not None:
+            if (
+                cached_result_dir := result_dir_for_loading(obj, has_lock=use_lock)
+            ) is not None:
                 late_hits += 1
                 results_by_object_id[obj.object_id] = cast(
                     T,

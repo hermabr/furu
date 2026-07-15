@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import errno
 import json
 import shutil
 from collections.abc import Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar, cast
@@ -10,11 +12,14 @@ from typing import Any, ClassVar, cast
 import pytest
 
 import furu
+import furu.migration.links as migration_links
 import furu.migration.resolution as migration_resolution
 from furu import Added, MovedFrom, Renamed, Retyped, Rewrite, Spec, Stale
 from furu.migration.steps import MigrationError
 from furu.result.codec import Codec
 from furu.storage._layout import (
+    compute_lock_path_in,
+    result_dir_in,
     result_link_path_in,
     result_manifest_path_in,
 )
@@ -117,6 +122,66 @@ def test_rename_plus_add_reuses_old_result_through_result_link() -> None:
     assert new.status == "done"
     assert new.load_existing() == {"dataset": "cifar10", "learning_rate": "0.001"}
     assert _COUNTER.calls == 0
+
+
+def test_result_link_creation_rechecks_after_compute_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _OldTrainRun(learning_rate=0.001, dataset="cifar10")
+    source.create()
+    target = _TrainRun(dataset="cifar10", lr=0.001)
+    link_path = result_link_path_in(target._base_dir)
+
+    assert migration_links.result_dir_for_loading(target) == result_dir_in(
+        source._base_dir
+    )
+    link_text = link_path.read_text(encoding="utf-8")
+    link_path.unlink()
+
+    @contextmanager
+    def competing_writer(lock_path: Path):
+        assert lock_path == compute_lock_path_in(target._base_dir)
+        link_path.write_text(link_text, encoding="utf-8")
+        yield lambda: True
+
+    monkeypatch.setattr(migration_links, "lock", competing_writer)
+    monkeypatch.setattr(
+        migration_links,
+        "atomic_write_text",
+        lambda *_: pytest.fail("the competing worker's valid link was replaced"),
+    )
+
+    assert migration_links.result_dir_for_loading(target) == result_dir_in(
+        source._base_dir
+    )
+
+
+def test_result_link_read_gracefully_reresolves_estale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _OldTrainRun(learning_rate=0.001, dataset="cifar10")
+    source.create()
+    target = _TrainRun(dataset="cifar10", lr=0.001)
+    assert migration_links.result_dir_for_loading(target) is not None
+    link_path = result_link_path_in(target._base_dir)
+    path_type = type(link_path)
+    read_text = path_type.read_text
+    stale = True
+
+    def stale_once(
+        path: Path, encoding: str | None = None, errors: str | None = None
+    ) -> str:
+        nonlocal stale
+        if path == link_path and stale:
+            stale = False
+            raise OSError(errno.ESTALE, "stale file handle")
+        return read_text(path, encoding=encoding, errors=errors)
+
+    monkeypatch.setattr(path_type, "read_text", stale_once)
+
+    assert migration_links.result_dir_for_loading(target) == result_dir_in(
+        source._base_dir
+    )
 
 
 class _PathValue:

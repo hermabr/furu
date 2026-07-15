@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, cast
 from pydantic import BaseModel, ConfigDict
 
 from furu.constants import FIELDSMARKER
+from furu.locking import lock, read_text_or_none
 from furu.metadata import CompletedMetadata
 from furu.migration.resolution import (
     _apply_child_moves,
@@ -15,6 +16,7 @@ from furu.migration.resolution import (
 )
 from furu.migration.steps import _describe_step
 from furu.storage._layout import (
+    compute_lock_path_in,
     metadata_path_in,
     result_dir_in,
     result_link_path_in,
@@ -75,9 +77,9 @@ def _read_source(artifact_dir: Path) -> _ResultLink | None:
             migration_path=(),
         )
     link_path = result_link_path_in(artifact_dir)
-    if not link_path.exists():
+    if (link_text := read_text_or_none(link_path)) is None:
         return None
-    link = _ResultLink.model_validate_json(link_path.read_text(encoding="utf-8"))
+    link = _ResultLink.model_validate_json(link_text)
     return link if result_manifest_path_in(link.source.base_dir).exists() else None
 
 
@@ -125,7 +127,7 @@ def _find_source(obj: Spec[Any], resolution: _ClassResolution) -> _ResultLink | 
     return None
 
 
-def result_dir_for_loading(obj: Spec[Any]) -> Path | None:
+def result_dir_for_loading(obj: Spec[Any], *, has_lock: bool = False) -> Path | None:
     if result_manifest_path_in(obj._base_dir).exists():
         return result_dir_in(obj._base_dir)
     if link := _read_source(obj._base_dir):
@@ -133,9 +135,14 @@ def result_dir_for_loading(obj: Spec[Any]) -> Path | None:
     link = _find_source(obj, _class_resolution(obj))
     if link is None:
         return None
-    from furu.execution.load_or_create import _record_schema_snapshot
 
     obj._base_dir.mkdir(parents=True, exist_ok=True)
+    if not has_lock:
+        with lock(compute_lock_path_in(obj._base_dir)):
+            return result_dir_for_loading(obj, has_lock=True)
+
+    from furu.execution.load_or_create import _record_schema_snapshot
+
     atomic_write_text(
         result_link_path_in(obj._base_dir), link.model_dump_json(indent=2)
     )
