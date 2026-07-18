@@ -11,6 +11,7 @@ from dataclasses import (
     is_dataclass,
     replace,
 )
+from datetime import datetime, timezone
 from enum import Enum
 from functools import partial
 from pathlib import Path
@@ -210,6 +211,13 @@ class UsesPath(Spec[str]):
 
     def create(self) -> str:
         return str(self.path)
+
+
+class UsesDatetime(Spec[str]):
+    dt: datetime
+
+    def create(self) -> str:
+        return self.dt.isoformat()
 
 
 class UsesClassValue(Spec[None]):
@@ -1066,6 +1074,14 @@ def expected_schema_for_B_like(
             id="UsesPath",
         ),
         pytest.param(
+            lambda: UsesDatetime(dt=datetime(2026, 7, 18, 12, 30)),
+            {
+                "|class": "test_core.UsesDatetime",
+                "|fields": {"dt": fully_qualified_name(datetime)},
+            },
+            id="UsesDatetime",
+        ),
+        pytest.param(
             lambda: PydanticFields(pydantic_obj=PydanticSubclass(field1=1)),
             {
                 "|class": "test_core.PydanticFields",
@@ -1202,6 +1218,26 @@ def test_furu_object_with_typed_fields_round_trips_from_json_artifact():
     assert _from_json(path_obj._artifact_data) == path_obj
     assert _from_json(class_obj._artifact_data) == class_obj
     assert isinstance(cast(UsesPath, _from_json(path_obj._artifact_data)).path, Path)
+
+
+def test_datetime_field_round_trips_from_json_artifact():
+    naive_obj = UsesDatetime(dt=datetime(2026, 7, 18, 12, 30, 45, 123456))
+    aware_obj = UsesDatetime(dt=datetime(2026, 7, 18, 12, 30, tzinfo=timezone.utc))
+
+    assert naive_obj._artifact_data == {
+        "|kind": "instance",
+        "|class": "test_core.UsesDatetime",
+        "|fields": {
+            "dt": {"|kind": "datetime", "|value": "2026-07-18T12:30:45.123456"}
+        },
+    }
+
+    for obj in (naive_obj, aware_obj):
+        loaded = cast(UsesDatetime, _from_json(obj._artifact_data))
+        assert loaded == obj
+        assert isinstance(loaded.dt, datetime)
+        assert loaded.dt.tzinfo == obj.dt.tzinfo
+        assert loaded.object_id == obj.object_id
 
 
 def test_container_fields_round_trip_with_exact_types():

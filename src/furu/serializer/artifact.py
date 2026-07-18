@@ -1,5 +1,6 @@
 import enum
 from dataclasses import fields, is_dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast, get_type_hints
 
@@ -85,6 +86,8 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
             return obj
         case Path():
             return {KINDMARKER: "path", VALUEMARKER: str(obj)}
+        case datetime():
+            return {KINDMARKER: "datetime", VALUEMARKER: obj.isoformat()}
         case list():
             return [
                 to_json(
@@ -192,6 +195,9 @@ def _from_json_field(value: JsonValue, expected_type: Any) -> Any:
     if isinstance(value, dict) and value.get(KINDMARKER) == "path":
         return Path(cast(str, value[VALUEMARKER]))
 
+    if isinstance(value, dict) and value.get(KINDMARKER) == "datetime":
+        return datetime.fromisoformat(cast(str, value[VALUEMARKER]))
+
     if isinstance(value, dict) and value.get(KINDMARKER) in (
         "tuple",
         "set",
@@ -258,7 +264,13 @@ def _from_json(value: JsonValue) -> Any:
                 value.get(SERIALIZERMARKER), str
             ):
                 return _load_custom_value(cast(dict[str, Any], value), Any)
-            if value.get(KINDMARKER) in ("path", "tuple", "set", "frozenset"):
+            if value.get(KINDMARKER) in (
+                "path",
+                "datetime",
+                "tuple",
+                "set",
+                "frozenset",
+            ):
                 return _from_json_field(value, Any)
             if value.get(KINDMARKER) == "type_ref" and isinstance(class_name, str):
                 return _resolve_serialized_type(class_name)
