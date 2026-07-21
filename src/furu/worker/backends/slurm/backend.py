@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 import secrets
 import shlex
 import socket
+import subprocess
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -73,6 +75,11 @@ class SlurmWorkerBackend:
             project_root = code_dir / Path(
                 provenance.environment.project_root
             ).relative_to(repo_root)
+            subprocess.run(
+                ["uv", "sync", "--frozen", "--project", str(project_root)],
+                env={k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"},
+                check=True,
+            )
         worker_dir = executor_dir.resolve() / "workers"
         worker_dir.mkdir(parents=True, exist_ok=True)
 
