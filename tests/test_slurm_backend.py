@@ -1814,6 +1814,12 @@ def test_slurm_backend_runs_workers_from_the_extracted_snapshot(
         snapshot_id=create_snapshot(repo),
         submitted=SubmitContext.capture(),
     )
+    uv_commands: list[list[str]] = []
+    monkeypatch.setattr(
+        slurm_backend_module.subprocess,
+        "run",
+        lambda argv, **kwargs: uv_commands.append(argv),
+    )
     backend = SlurmWorkerBackend(
         max_workers=1,
         resources=SlurmResources(cpus_per_worker=1),
@@ -1836,6 +1842,8 @@ def test_slurm_backend_runs_workers_from_the_extracted_snapshot(
     script = pool._script_path.read_text()
     assert f"--project {shlex.quote(str(code_dir))}" in script
     assert str(repo) not in script
+    # The venv is built once at submit so workers never race to create it.
+    assert uv_commands == [["uv", "sync", "--frozen", "--project", str(code_dir)]]
 
 
 def test_slurm_backend_pins_relative_data_directories_for_workers(
