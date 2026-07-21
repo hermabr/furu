@@ -103,7 +103,7 @@ def _hash_dict_deterministically(obj: JsonValue) -> str:
 
 
 def nfs_safe_unique_name(path: Path, *, name: str | None = None) -> Path:
-    stem = f"{path.name}.{socket.getfqdn()}.{os.getpid()}.{uuid.uuid4().hex}"
+    stem = f"{path.name}.{socket.gethostname()}.{os.getpid()}.{uuid.uuid4().hex}"
     if name is not None:
         stem = f"{stem}.{name}"
     return path.with_name(stem)
