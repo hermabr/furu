@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, assert_type
+from typing import TYPE_CHECKING, Self, assert_type
 
 import furu
 
@@ -43,6 +43,14 @@ class TypingFunctionParent(furu.Spec[int]):
         return self.child.create()
 
 
+class TypingBatch(furu.Spec[int]):
+    value: int
+
+    @furu.batched(lambda _: (None, 8))
+    def create(objs: list[Self]) -> list[int]:
+        return [obj.value for obj in objs]
+
+
 @dataclass(frozen=True)
 class TypingRefOutput:
     weights: furu.Ref[list[int]]
@@ -56,6 +64,8 @@ if TYPE_CHECKING:
     assert_type(furu.load_existing([parent.cached_child]), list[int])
     assert_type(furu.create(parent.cached_child), int)
     assert_type(furu.create([parent.cached_child]), list[int])
+    assert_type(TypingBatch(value=1).create(), int)
+    assert_type(TypingBatch.create([TypingBatch(value=1)]), list[int])
     assert_type(typed_letter_count(source="banana", letter="a"), furu.Spec[int])
     assert_type(
         TypingFunctionParent(

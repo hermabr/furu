@@ -1,8 +1,9 @@
 from importlib.metadata import version
 
 from furu._declared_types import skip_hash
-from furu._function import spec
 from furu.core import Missing, Spec
+from furu._batched import batched
+from furu._function import spec
 from furu.dependencies import dependency
 from furu.diff import diff
 from furu.execution.load_or_create import create, load_existing
@@ -57,6 +58,7 @@ __all__ = [
     "Subprocess",
     "Throttle",
     "at_least",
+    "batched",
     "between",
     "create",
     "dependency",
