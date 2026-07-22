@@ -19,7 +19,7 @@ from furu.storage._layout import metadata_path_in, provenance_path_in
 from furu.testing import override_config
 from furu.worker.backends.local import LocalThreadWorkerBackend
 from furu.worker.execute import execute_job
-from furu.worker.protocol import Job, JobFailedResult
+from furu.worker.protocol import Job, JobFailedResult, JobMember
 
 
 @pytest.fixture(autouse=True)
@@ -225,10 +225,13 @@ def test_worker_fails_job_on_stale_uv_lock_hash(
     )
     computed = len(_created)
 
-    result = execute_job(
-        node,
+    (result,) = execute_job(
+        [node],
         job=Job(
-            lease_id="lease-1", artifact=ArtifactSpec.from_furu(node), provenance=stale
+            members=[
+                JobMember(lease_id="lease-1", artifact=ArtifactSpec.from_furu(node))
+            ],
+            provenance=stale,
         ),
     )
 

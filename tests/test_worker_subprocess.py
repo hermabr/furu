@@ -10,6 +10,7 @@ import pytest
 from subprocess_objects import (
     OtherSubprocessEnvLeaf,
     SubprocessBlockedParent,
+    SubprocessBatchLeaf,
     SubprocessCrashLeaf,
     SubprocessDependencyLeaf,
     SubprocessEnvLeaf,
@@ -31,6 +32,7 @@ from furu.worker.protocol import (
     JobBlockedResult,
     JobCompletedResult,
     JobFailedResult,
+    JobMember,
     JobResultRequest,
 )
 
@@ -76,14 +78,15 @@ def _run(slot: ChildSlot, obj: Spec[Any]) -> JobResultRequest:
     execution = obj._metadata.execution
     assert isinstance(execution, Subprocess)
     return slot.run(
-        obj,
+        [obj],
         job=Job(
-            lease_id=str(uuid4()),
-            artifact=ArtifactSpec.from_furu(obj),
+            members=[
+                JobMember(lease_id=str(uuid4()), artifact=ArtifactSpec.from_furu(obj))
+            ],
             provenance=_submit_provenance(),
         ),
         execution=execution,
-    )
+    )[0]
 
 
 def _pid_and_value(obj: Spec[str]) -> tuple[int, str]:
@@ -336,3 +339,18 @@ def test_subprocess_execution_through_local_worker_backend(tmp_path: Path) -> No
     pid, _, value = result.partition(":")
     assert value == "end-to-end"
     assert int(pid) != os.getpid()
+
+
+def test_batched_subprocess_execution_through_local_worker_backend(
+    tmp_path: Path,
+) -> None:
+    objs = [
+        SubprocessBatchLeaf(storage_root=str(tmp_path), value=value) for value in (1, 2)
+    ]
+
+    results = furu.create(objs, on=(LocalThreadWorkerBackend(),))
+    parsed = [result.partition(":") for result in results]
+
+    assert [value for _, _, value in parsed] == ["1", "2"]
+    assert len({pid for pid, _, _ in parsed}) == 1
+    assert int(parsed[0][0]) != os.getpid()
