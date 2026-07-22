@@ -30,6 +30,7 @@ from furu.worker.protocol import (
     JobBlockedResult,
     JobCompletedResult,
     JobFailedResult,
+    JobMember,
     JobResultRequest,
     LeaseJobResponse,
 )
@@ -211,27 +212,55 @@ class ExecutionCoordinator:
                 return "wait"
 
             node = self.ready.pop(object_id)
-            lease_id = str(uuid4())
-            self.running[lease_id] = RunningJob(
-                lease_id=lease_id, node=node, started_at=time.monotonic(), worker=worker
-            )
+            nodes = [node]
+            if node.batch_group is not None:
+                if (throttle := node.obj.throttle) is not None and (
+                    throttle.max_running < node.batch_group[1]
+                ):
+                    logger.warning(
+                        "%s throttle max_running=%d is below its batch cap %d; "
+                        "batches are capped by the throttle",
+                        type(node.obj).__name__,
+                        throttle.max_running,
+                        node.batch_group[1],
+                    )
+                nodes.extend(
+                    self.ready.pop(member_id)
+                    for member_id in self._batch_member_ids_locked(
+                        node, running_counts, exclude=frozenset()
+                    )
+                )
+            members = []
+            started_at = time.monotonic()
+            for member_node in nodes:
+                lease_id = str(uuid4())
+                self.running[lease_id] = RunningJob(
+                    lease_id=lease_id,
+                    node=member_node,
+                    started_at=started_at,
+                    worker=worker,
+                )
+                members.append(
+                    JobMember(
+                        lease_id=lease_id,
+                        artifact=ArtifactSpec.from_furu(member_node.obj),
+                    )
+                )
             logger.info(
-                "leased %s to %s",
+                "leased %s ×%d to %s",
                 node.obj._log_label,
+                len(members),
                 worker,
                 extra=log_detail(
-                    lease=lease_id,
+                    lease=members[0].lease_id,
                     object_id=node.obj.object_id,
+                    members=len(members),
                     worker=worker,
                     **self._counts_detail(),
                 ),
             )
             assert self.submit_provenance is not None
-            return Job(
-                lease_id=lease_id,
-                artifact=ArtifactSpec.from_furu(node.obj),
-                provenance=self.submit_provenance,
-            )
+            return Job(members=members, provenance=self.submit_provenance)
 
     def worker_lost(self, worker: str) -> None:
         with self.log_context(), self.lock:
@@ -245,17 +274,59 @@ class ExecutionCoordinator:
         with self.lock:
             count = 0
             running_counts = self._running_counts()
-            for node in self.ready.values():
+            consumed: set[str] = set()
+            for object_id, node in self.ready.items():
+                if object_id in consumed:
+                    continue
                 if resource_request_satisfies(
                     resources, node.obj._metadata.requires
                 ) and self._can_start_node_locked(node, running_counts):
                     count += 1
+                    consumed.add(object_id)
+                    member_ids = (
+                        self._batch_member_ids_locked(
+                            node, running_counts, exclude=consumed
+                        )
+                        if node.batch_group is not None
+                        else []
+                    )
+                    consumed.update(member_ids)
                     running_counts[type(node.obj)] = (
-                        running_counts.get(type(node.obj), 0) + 1
+                        running_counts.get(type(node.obj), 0) + 1 + len(member_ids)
                     )
                     if count >= max_workers:
                         return max_workers
             return count
+
+    def _batch_member_ids_locked(
+        self,
+        node: DagNode,
+        running_counts: dict[type[Spec], int],
+        *,
+        exclude: frozenset[str] | set[str],
+    ) -> list[str]:
+        """Ready nodes (beyond `node`) that can join its lease, throttle-aware.
+
+        Assumes `node` itself is already accounted for in neither the ready
+        set scan nor the returned ids; callers count it separately.
+        """
+        assert node.batch_group is not None
+        group_key, cap = node.batch_group
+        throttle = node.obj.throttle
+        taken = running_counts.get(type(node.obj), 0) + 1
+        member_ids: list[str] = []
+        for other_id, other in self.ready.items():
+            if len(member_ids) + 1 >= cap:
+                break
+            if throttle is not None and taken >= throttle.max_running:
+                break
+            if other is node or other_id in exclude:
+                continue
+            if other.batch_group is None or other.batch_group[0] != group_key:
+                continue
+            member_ids.append(other_id)
+            taken += 1
+        return member_ids
 
     def _running_counts(self) -> dict[type[Spec], int]:
         counts: dict[type[Spec], int] = {}

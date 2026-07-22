@@ -9,11 +9,23 @@ from furu.provenance import SubmitProvenance
 from furu.resources import ResourceRequest
 
 
-class Job(BaseModel):
+class JobMember(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     lease_id: str
     artifact: ArtifactSpec
+
+
+class Job(BaseModel):
+    """A group of individually-leased members executed as one batch.
+
+    A single-mode spec is a group of one. The worker executes the group once
+    and reports the outcome per lease.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    members: list[JobMember]
     provenance: SubmitProvenance
 
 

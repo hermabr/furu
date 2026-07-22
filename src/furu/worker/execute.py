@@ -7,6 +7,7 @@ import sys
 import threading
 import traceback
 from collections import deque
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, assert_never
 
@@ -14,7 +15,7 @@ from pydantic import TypeAdapter
 
 from furu.config import _WORKER_JSON_CONFIG_FILE_ENV_VAR
 from furu.core import Spec
-from furu.execution.load_or_create import _ensure_single_result
+from furu.execution.load_or_create import _ensure_group_result
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
 from furu.migration.links import result_dir_for_loading
@@ -38,7 +39,7 @@ _RETIRE_TIMEOUT_SECONDS = 5.0
 _job_result_adapter: TypeAdapter[JobResultRequest] = TypeAdapter(JobResultRequest)
 
 
-def execute_job(obj: Spec[Any], *, job: Job) -> JobResultRequest:
+def execute_job(objs: Sequence[Spec[Any]], *, job: Job) -> JobResultRequest:
     try:
         worker_hash = EnvironmentIdentity.capture().uv_lock_hash
         submitted_hash = job.provenance.environment.uv_lock_hash
@@ -51,8 +52,8 @@ def execute_job(obj: Spec[Any], *, job: Job) -> JobResultRequest:
                 "Update the checkout (e.g. git pull) and run:\n"
                 "  uv sync"
             )
-        with worker_execution_context(lease_id=job.lease_id):
-            _ensure_single_result(obj, submit_provenance=job.provenance)
+        with worker_execution_context(lease_id=job.members[0].lease_id):
+            _ensure_group_result(objs, submit_provenance=job.provenance)
         return JobCompletedResult()
     except _DependencyNotReady as exc:
         return JobBlockedResult(
@@ -84,10 +85,10 @@ class ChildSlot:
         self._child = None
 
     def run(
-        self, obj: Spec[Any], *, job: Job, execution: Subprocess
+        self, objs: Sequence[Spec[Any]], *, job: Job, execution: Subprocess
     ) -> JobResultRequest:
-        if result_dir_for_loading(obj) is not None:
-            obj.logger.info("cache hit for %s", obj._log_label)
+        if all(result_dir_for_loading(obj) is not None for obj in objs):
+            objs[0].logger.info("cache hit for %s", objs[0]._log_label)
             return JobCompletedResult()
 
         environment = dict(os.environ)
@@ -122,7 +123,7 @@ class ChildSlot:
                 case "same_environment_same_spec":
                     can_reuse = (
                         same_process_context
-                        and child.spec_name == obj._fully_qualified_name
+                        and child.spec_name == objs[0]._fully_qualified_name
                     )
                 case unreachable:
                     assert_never(unreachable)
@@ -131,7 +132,7 @@ class ChildSlot:
                 child = None
         if child is None:
             child = self._child = _spawn(environment)
-        child.spec_name = obj._fully_qualified_name
+        child.spec_name = objs[0]._fully_qualified_name
 
         result = _request(child, job)
         if execution.reuse == "never" or child.process.poll() is not None:
