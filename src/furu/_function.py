@@ -3,13 +3,34 @@ from __future__ import annotations
 import inspect
 import types
 from collections.abc import Callable
-from typing import Any, ClassVar, Protocol, cast, get_type_hints, overload
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    Protocol,
+    cast,
+    get_type_hints,
+    overload,
+)
 
 from furu.core import Spec
 
+if TYPE_CHECKING:
+
+    class FunctionSpec[T](Spec[T]):
+        """Typing-only view of a @furu.spec-generated class.
+
+        The generated class always defines a create hook, so callers get the
+        create verb with full types; plain ``Spec[T]`` declares no verbs.
+        """
+
+        def create(self) -> T: ...
+else:
+    FunctionSpec = Spec
+
 
 class SpecFunction[**P, T](Protocol):
-    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Spec[T]: ...
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> FunctionSpec[T]: ...
 
 
 @overload

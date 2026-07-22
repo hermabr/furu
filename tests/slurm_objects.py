@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 from typing import Any, Literal, cast
 
+import furu
 from furu import Metadata, Requires, Spec, between
 
 type SlurmTaskKind = Literal["a_only", "b_only", "shared"]
@@ -29,7 +30,7 @@ class SlurmWorkloadTask(Spec[dict[str, object]]):
 
     def create(self) -> dict[str, object]:
         parent_results = [
-            cast(dict[str, object], parent.create()) for parent in self.parents
+            cast(dict[str, object], furu.create(parent)) for parent in self.parents
         ]
         time.sleep(self.duration_seconds)
 
