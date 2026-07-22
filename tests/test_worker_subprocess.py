@@ -31,6 +31,7 @@ from furu.worker.protocol import (
     JobBlockedResult,
     JobCompletedResult,
     JobFailedResult,
+    JobMember,
     JobResultRequest,
 )
 
@@ -76,10 +77,11 @@ def _run(slot: ChildSlot, obj: Spec[Any]) -> JobResultRequest:
     execution = obj._metadata.execution
     assert isinstance(execution, Subprocess)
     return slot.run(
-        obj,
+        [obj],
         job=Job(
-            lease_id=str(uuid4()),
-            artifact=ArtifactSpec.from_furu(obj),
+            members=[
+                JobMember(lease_id=str(uuid4()), artifact=ArtifactSpec.from_furu(obj))
+            ],
             provenance=_submit_provenance(),
         ),
         execution=execution,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from functools import cached_property
 from typing import TYPE_CHECKING, assert_never
 
 from furu.core import Spec
@@ -18,6 +19,13 @@ class DagNode:
     obj: Spec
     dependencies: list[DagNode] = field(default_factory=list)
     dependents: list[DagNode] = field(default_factory=list)
+
+    @cached_property
+    def batch_group(self) -> tuple[object, int] | None:
+        """(grouping key, cap): ready nodes with equal keys may share one lease."""
+        from furu.execution.load_or_create import _batch_group
+
+        return _batch_group(self.obj)
 
 
 def _add_to_dag(coordinator: ExecutionCoordinator, objs: Sequence[Spec]) -> None:
