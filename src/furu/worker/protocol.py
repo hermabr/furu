@@ -9,12 +9,26 @@ from furu.provenance import SubmitProvenance
 from furu.resources import ResourceRequest
 
 
-class Job(BaseModel):
+class JobMember(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     lease_id: str
     artifact: ArtifactSpec
+
+
+class Job(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    members: list[JobMember] = Field(min_length=1)
     provenance: SubmitProvenance
+
+    @property
+    def lease_id(self) -> str:
+        return self.members[0].lease_id
+
+    @property
+    def artifact(self) -> ArtifactSpec:
+        return self.members[0].artifact
 
 
 class JobCompletedResult(BaseModel):

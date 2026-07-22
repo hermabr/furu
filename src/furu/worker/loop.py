@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 import traceback
-from typing import assert_never
+from typing import assert_never, cast
 
 from furu.core import Spec
 from furu.execution import api
@@ -33,7 +33,7 @@ def worker_loop(
     backend: str,
     max_consecutive_failures: int | None = None,
 ) -> None:
-    _worker_backend.set(backend)
+    worker_backend_token = _worker_backend.set(backend)
     with _scoped_component(component):
         client = api.WorkerApiClient(server_url=server_url, auth_token=auth_token)
         idle_started_at: float | None = None
@@ -62,26 +62,30 @@ def worker_loop(
                         idle_started_at = None
                         task_started_at = time.monotonic()
                         task_label: str | None = None
-                        job_result: JobResultRequest
                         try:
-                            obj = Spec.from_artifact(job.artifact)
-                            task_label = obj._log_label
+                            objs = [
+                                Spec.from_artifact(member.artifact)
+                                for member in job.members
+                            ]
+                            task_label = objs[0]._log_label
                             logger.info(
-                                "received %s",
+                                "received %s%s",
                                 task_label,
+                                f" + {len(objs) - 1}" if len(objs) > 1 else "",
                                 extra=log_detail(lease=job.lease_id),
                             )
-                            match obj._metadata.execution:
+                            match objs[0]._metadata.execution:
                                 case "inline":
-                                    job_result = execute_job(obj, job=job)
+                                    result = execute_job(objs, job=job)
                                 case Subprocess() as execution:
-                                    job_result = child_slot.run(
-                                        obj, job=job, execution=execution
+                                    result = child_slot.run(
+                                        objs, job=job, execution=execution
                                     )
                                 case unexpected_execution:
                                     assert_never(unexpected_execution)
+                            job_results = result
                         except Exception as exc:
-                            job_result = JobFailedResult(
+                            result = JobFailedResult(
                                 error="".join(
                                     traceback.format_exception(
                                         type(exc),
@@ -90,21 +94,28 @@ def worker_loop(
                                     )
                                 ),
                             )
+                            job_results = cast(
+                                list[JobResultRequest],
+                                [result for _ in job.members],
+                            )
 
-                        client.job_result(job.lease_id, job_result)
+                        for member, job_result in zip(
+                            job.members, job_results, strict=True
+                        ):
+                            client.job_result(member.lease_id, job_result)
 
-                        match job_result:
-                            case JobCompletedResult():
-                                status = "completed"
-                                consecutive_failures = 0
-                            case JobBlockedResult():
-                                status = "blocked"
-                                consecutive_failures = 0
-                            case JobFailedResult():
-                                status = "failed"
-                                consecutive_failures += 1
-                            case unexpected_result:
-                                assert_never(unexpected_result)
+                        if any(isinstance(x, JobFailedResult) for x in job_results):
+                            status = "failed"
+                            consecutive_failures += 1
+                        elif any(isinstance(x, JobBlockedResult) for x in job_results):
+                            status = "blocked"
+                            consecutive_failures = 0
+                        else:
+                            assert all(
+                                isinstance(x, JobCompletedResult) for x in job_results
+                            )
+                            status = "completed"
+                            consecutive_failures = 0
 
                         duration = format_duration(time.monotonic() - task_started_at)
                         status_word = "ok" if status == "completed" else status
@@ -133,3 +144,4 @@ def worker_loop(
                         assert_never(unexpected)
         finally:
             child_slot.close()
+            _worker_backend.reset(worker_backend_token)

@@ -50,6 +50,8 @@ if TYPE_CHECKING:
     from furu.worker.backends.protocol import WorkerBackend
 
 HasLock: TypeAlias = Callable[[], bool]
+
+
 def _record_schema_snapshot(obj: Spec[Any]) -> None:
     schema_path = schema_snapshot_path_in(obj._base_dir)
     if schema_path.exists():
@@ -143,27 +145,31 @@ def _load_or_create[T](
     return _load_or_create_local(obj_or_objs, use_lock=use_lock)
 
 
-def _ensure_single_result[T](
-    obj: Spec[T], *, submit_provenance: SubmitProvenance
+def _ensure_group_results[T](
+    objs: list[Spec[T]], *, submit_provenance: SubmitProvenance
 ) -> None:
-    if result_dir_for_loading(obj) is not None:
-        obj.logger.info("cache hit for %s", obj._log_label)
+    missing = []
+    for obj in objs:
+        if result_dir_for_loading(obj) is not None:
+            obj.logger.info("cache hit for %s", obj._log_label)
+        else:
+            raise_if_stale(obj)
+            obj._base_dir.mkdir(parents=True, exist_ok=True)
+            missing.append(obj)
+    if not missing:
         return
 
-    raise_if_stale(obj)
-    obj._base_dir.mkdir(parents=True, exist_ok=True)
-
-    with lock(compute_lock_path_in(obj._base_dir)) as has_lock:
-        if result_dir_for_loading(obj, has_lock=True) is not None:
-            obj.logger.info("cache hit for %s", obj._log_label)
-            return
-
-        _create_and_store_group(
-            [obj],
-            has_lock=has_lock,
-            results_by_object_id={},
-            submit_provenance=submit_provenance,
-        )
+    with lock([compute_lock_path_in(obj._base_dir) for obj in missing]) as has_lock:
+        pending = [
+            obj for obj in missing if result_dir_for_loading(obj, has_lock=True) is None
+        ]
+        if pending:
+            _create_and_store_group(
+                pending,
+                has_lock=has_lock,
+                results_by_object_id={},
+                submit_provenance=submit_provenance,
+            )
 
 
 def _normalize_load_or_create_input[T](
@@ -249,7 +255,9 @@ def load_existing[T](objs: Sequence[Spec[T]]) -> list[T]:
     return loaded
 
 
-def _cached_to_build_msg(cached: list[Spec[Any]], to_build: list[Spec[Any]]) -> str:
+def _cached_to_build_msg(
+    cached: list[Spec[Any]], to_build: list[Spec[Any]]
+) -> str:
     def fmt(objs: list[Spec[Any]]) -> str:
         if len(cached) + len(to_build) > 5:
             return str(len(objs))

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, assert_never
+from typing import TYPE_CHECKING, Hashable, assert_never
 
+from furu._batched import _batch_group
 from furu.core import Spec
 from furu.dependencies import collect_declared_refs
 from furu.metadata import ArtifactSpec
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
 @dataclass(eq=False)
 class DagNode:
     obj: Spec
+    batch: tuple[Hashable, int] | None
     dependencies: list[DagNode] = field(default_factory=list)
     dependents: list[DagNode] = field(default_factory=list)
 
@@ -49,7 +51,7 @@ def _add_to_dag(coordinator: ExecutionCoordinator, objs: Sequence[Spec]) -> None
                 raise_if_stale(obj)
             case x:
                 assert_never(x)
-        node = DagNode(obj=obj)
+        node = DagNode(obj=obj, batch=_batch_group(obj))
         coordinator.nodes_by_id[obj.object_id] = node
         newly_added.append(node)
         refs = collect_declared_refs(obj)
