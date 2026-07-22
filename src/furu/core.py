@@ -100,7 +100,9 @@ class batched:
     ``batch_key(self)`` returns (what may batch together, max specs per call).
     The decorated hook takes the whole batch (``objs: list[Self]``) and returns
     one result per member, in order; every call receives specs that share one
-    batch key, at most the cap of them. furu captures the hook at class
+    batch key, at most the cap of them — locally and on workers, where the
+    execution coordinator assembles same-key ready specs into one lease.
+    furu captures the hook at class
     creation and installs the create verb in its place: instance access loads
     or creates one result, class access loads or creates a same-class batch.
 

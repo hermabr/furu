@@ -144,27 +144,34 @@ def _load_or_create[T](
     return _load_or_create_local(obj_or_objs, use_lock=use_lock)
 
 
-def _ensure_single_result[T](
-    obj: Spec[T], *, submit_provenance: SubmitProvenance
+def _ensure_group_result[T](
+    objs: Sequence[Spec[T]], *, submit_provenance: SubmitProvenance
 ) -> None:
-    if result_dir_for_loading(obj) is not None:
-        obj.logger.info("cache hit for %s", obj._log_label)
+    missing: list[Spec[T]] = []
+    for obj in objs:
+        if result_dir_for_loading(obj) is not None:
+            obj.logger.info("cache hit for %s", obj._log_label)
+            continue
+        raise_if_stale(obj)
+        obj._base_dir.mkdir(parents=True, exist_ok=True)
+        missing.append(obj)
+
+    if not missing:
         return
 
-    raise_if_stale(obj)
-    obj._base_dir.mkdir(parents=True, exist_ok=True)
-
-    with lock(compute_lock_path_in(obj._base_dir)) as has_lock:
-        if result_dir_for_loading(obj, has_lock=True) is not None:
-            obj.logger.info("cache hit for %s", obj._log_label)
-            return
-
-        _create_and_store_group(
-            [obj],
-            has_lock=has_lock,
-            results_by_object_id={},
-            submit_provenance=submit_provenance,
-        )
+    with lock([compute_lock_path_in(obj._base_dir) for obj in missing]) as has_lock:
+        # Late cache hits shrink the group: a member that finished elsewhere
+        # while we waited for the lock is simply not recomputed.
+        pending = [
+            obj for obj in missing if result_dir_for_loading(obj, has_lock=True) is None
+        ]
+        if pending:
+            _create_and_store_group(
+                pending,
+                has_lock=has_lock,
+                results_by_object_id={},
+                submit_provenance=submit_provenance,
+            )
 
 
 def _normalize_load_or_create_input[T](
@@ -419,24 +426,32 @@ def _validated_batch_key(obj: Spec[Any]) -> tuple[Hashable, int]:
     return group_hash, cap
 
 
-def _grouped_pending[T](pending: list[Spec[T]]) -> list[list[Spec[T]]]:
-    """Partition by (type, batch_key, requires, execution), chunked to the cap.
+def _batch_group(obj: Spec[Any]) -> tuple[object, int] | None:
+    """(grouping key, cap): specs with equal keys may share one create call.
 
     Keys are compared by equality rather than hashed because Subprocess
     execution metadata holds an unhashable environment mapping.
     """
+    if _batch_fn(obj) is None:
+        return None
+    group_hash, cap = _validated_batch_key(obj)
+    key = (
+        type(obj),
+        group_hash,
+        cap,
+        obj._metadata.requires,
+        obj._metadata.execution,
+    )
+    return key, cap
+
+
+def _grouped_pending[T](pending: list[Spec[T]]) -> list[list[Spec[T]]]:
+    """Partition by (type, batch_key, requires, execution), chunked to the cap."""
     groups: list[tuple[object, int | None, list[Spec[T]]]] = []
     for obj in pending:
         cap: int | None = None
-        if _batch_fn(obj) is not None:
-            group_hash, cap = _validated_batch_key(obj)
-            key: object = (
-                type(obj),
-                group_hash,
-                cap,
-                obj._metadata.requires,
-                obj._metadata.execution,
-            )
+        if (batch_group := _batch_group(obj)) is not None:
+            key, cap = batch_group
         else:
             key = type(obj)
         for existing_key, _, group in groups:

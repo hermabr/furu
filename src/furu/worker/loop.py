@@ -62,21 +62,29 @@ def worker_loop(
                         idle_started_at = None
                         task_started_at = time.monotonic()
                         task_label: str | None = None
+                        first_lease = job.members[0].lease_id
                         job_result: JobResultRequest
                         try:
-                            obj = Spec.from_artifact(job.artifact)
-                            task_label = obj._log_label
+                            objs = [
+                                Spec.from_artifact(member.artifact)
+                                for member in job.members
+                            ]
+                            task_label = objs[0]._log_label
+                            if len(objs) > 1:
+                                task_label += f" ×{len(objs)}"
                             logger.info(
                                 "received %s",
                                 task_label,
-                                extra=log_detail(lease=job.lease_id),
+                                extra=log_detail(
+                                    lease=first_lease, members=len(job.members)
+                                ),
                             )
-                            match obj._metadata.execution:
+                            match objs[0]._metadata.execution:
                                 case "inline":
-                                    job_result = execute_job(obj, job=job)
+                                    job_result = execute_job(objs, job=job)
                                 case Subprocess() as execution:
                                     job_result = child_slot.run(
-                                        obj, job=job, execution=execution
+                                        objs, job=job, execution=execution
                                     )
                                 case unexpected_execution:
                                     assert_never(unexpected_execution)
@@ -91,7 +99,8 @@ def worker_loop(
                                 ),
                             )
 
-                        client.job_result(job.lease_id, job_result)
+                        for member in job.members:
+                            client.job_result(member.lease_id, job_result)
 
                         match job_result:
                             case JobCompletedResult():
@@ -113,7 +122,7 @@ def worker_loop(
                                 "finished %s · %s",
                                 status_word,
                                 duration,
-                                extra=log_detail(lease=job.lease_id, status=status),
+                                extra=log_detail(lease=first_lease, status=status),
                             )
                         else:
                             logger.info(
@@ -121,7 +130,7 @@ def worker_loop(
                                 task_label,
                                 status_word,
                                 duration,
-                                extra=log_detail(lease=job.lease_id, status=status),
+                                extra=log_detail(lease=first_lease, status=status),
                             )
 
                         if (
