@@ -41,6 +41,7 @@ from furu.worker.protocol import (
     JobBlockedResult,
     JobCompletedResult,
     JobFailedResult,
+    JobMember,
     JobResultRequest,
     LeaseJobResponse,
 )
@@ -68,10 +69,21 @@ def _submit_provenance() -> SubmitProvenance:
 
 def _job(lease_id: str, obj: Spec[Any]) -> Job:
     return Job(
-        lease_id=lease_id,
-        artifact=ArtifactSpec.from_furu(obj),
+        members=[JobMember(lease_id=lease_id, artifact=ArtifactSpec.from_furu(obj))],
         provenance=_submit_provenance(),
     )
+
+
+def _lease(job: LeaseJobResponse) -> str:
+    assert isinstance(job, Job)
+    (member,) = job.members
+    return member.lease_id
+
+
+def _artifact(job: LeaseJobResponse) -> ArtifactSpec:
+    assert isinstance(job, Job)
+    (member,) = job.members
+    return member.artifact
 
 
 @contextmanager
@@ -86,7 +98,7 @@ def _captured_furu_logs(caplog: pytest.LogCaptureFixture) -> Iterator[None]:
 
 
 def _new_execution_coordinator(
-    objs: Sequence[Spec[Any]],
+    objs: Sequence[furu.Spec[Any]],
     *,
     max_retries_per_object: int | None = None,
 ) -> ExecutionCoordinator:
@@ -168,6 +180,33 @@ class LimitedExecutionCoordinatorLeaf(Spec[int]):
         return self.value
 
 
+class BatchedCoordinatorLeaf(furu.Spec[int]):
+    value: int
+    group: str = "g"
+    cap: int = 10
+    batch_sizes: ClassVar[list[int]] = []
+
+    def batch_key(self) -> tuple[str, int]:
+        return (self.group, self.cap)
+
+    @furu.batched(batch_key)
+    def create(objs: list["BatchedCoordinatorLeaf"]) -> list[int]:
+        BatchedCoordinatorLeaf.batch_sizes.append(len(objs))
+        return [obj.value for obj in objs]
+
+
+class ThrottledBatchedCoordinatorLeaf(furu.Spec[int]):
+    value: int
+    throttle = Throttle(max_running=2)
+
+    def batch_key(self) -> tuple[None, int]:
+        return (None, 10)
+
+    @furu.batched(batch_key)
+    def create(objs: list["ThrottledBatchedCoordinatorLeaf"]) -> list[int]:
+        return [obj.value for obj in objs]
+
+
 class ExecutionCoordinatorParent(Spec[int]):
     child: ExecutionCoordinatorLeaf
 
@@ -230,14 +269,14 @@ def test_execution_coordinator_job_result_completed_moves_dependents_to_ready() 
 
     job = coordinator.lease_job(resources=ANY_RESOURCES, worker="test-worker")
     assert isinstance(job, Job)
-    assert job.lease_id != leaf.object_id
-    assert UUID(job.lease_id).version == 4
-    assert set(coordinator.running) == {job.lease_id}
-    running_job = coordinator.running[job.lease_id]
+    assert _lease(job) != leaf.object_id
+    assert UUID(_lease(job)).version == 4
+    assert set(coordinator.running) == {_lease(job)}
+    running_job = coordinator.running[_lease(job)]
     assert isinstance(running_job, RunningJob)
     assert running_job.node.obj is leaf
 
-    coordinator.job_result(job.lease_id, JobCompletedResult())
+    coordinator.job_result(_lease(job), JobCompletedResult())
 
     assert coordinator.running == {}
     assert set(coordinator.completed) == {leaf.object_id}
@@ -268,10 +307,10 @@ def test_execution_coordinator_job_result_blocked_discovers_lazy_dependency_and_
 
     parent_job = coordinator.lease_job(resources=ANY_RESOURCES, worker="test-worker")
     assert isinstance(parent_job, Job)
-    assert parent_job.lease_id != parent.object_id
+    assert _lease(parent_job) != parent.object_id
 
     coordinator.job_result(
-        parent_job.lease_id,
+        _lease(parent_job),
         JobBlockedResult(dependencies=[ArtifactSpec.from_furu(dependency)]),
     )
 
@@ -282,7 +321,7 @@ def test_execution_coordinator_job_result_blocked_discovers_lazy_dependency_and_
         resources=ANY_RESOURCES, worker="test-worker"
     )
     assert isinstance(dependency_job, Job)
-    coordinator.job_result(dependency_job.lease_id, JobCompletedResult())
+    coordinator.job_result(_lease(dependency_job), JobCompletedResult())
 
     assert set(coordinator.ready) == {parent.object_id}
     assert coordinator.blocked == {}
@@ -300,7 +339,7 @@ def test_execution_coordinator_job_result_blocked_ignores_completed_lazy_depende
     assert isinstance(parent_job, Job)
 
     coordinator.job_result(
-        parent_job.lease_id,
+        _lease(parent_job),
         JobBlockedResult(dependencies=[ArtifactSpec.from_furu(dependency)]),
     )
 
@@ -323,7 +362,7 @@ def test_execution_coordinator_job_result_blocked_discovers_multiple_lazy_depend
     assert isinstance(parent_job, Job)
 
     coordinator.job_result(
-        parent_job.lease_id,
+        _lease(parent_job),
         JobBlockedResult(
             dependencies=[
                 ArtifactSpec.from_furu(dependency) for dependency in dependencies
@@ -356,7 +395,7 @@ def test_execution_coordinator_uses_new_lease_when_blocked_job_is_released() -> 
     assert isinstance(first_parent_job, Job)
 
     coordinator.job_result(
-        first_parent_job.lease_id,
+        _lease(first_parent_job),
         JobBlockedResult(dependencies=[ArtifactSpec.from_furu(dependency)]),
     )
 
@@ -364,16 +403,16 @@ def test_execution_coordinator_uses_new_lease_when_blocked_job_is_released() -> 
         resources=ANY_RESOURCES, worker="test-worker"
     )
     assert isinstance(dependency_job, Job)
-    coordinator.job_result(dependency_job.lease_id, JobCompletedResult())
+    coordinator.job_result(_lease(dependency_job), JobCompletedResult())
 
     second_parent_job = coordinator.lease_job(
         resources=ANY_RESOURCES, worker="test-worker"
     )
     assert isinstance(second_parent_job, Job)
-    assert second_parent_job.lease_id != first_parent_job.lease_id
-    assert second_parent_job.artifact.object_id == parent.object_id
+    assert _lease(second_parent_job) != _lease(first_parent_job)
+    assert _artifact(second_parent_job).object_id == parent.object_id
 
-    assert set(coordinator.running) == {second_parent_job.lease_id}
+    assert set(coordinator.running) == {_lease(second_parent_job)}
     assert set(coordinator.completed) == {dependency.object_id}
 
 
@@ -383,14 +422,14 @@ def test_execution_coordinator_job_result_failed_finishes_with_error() -> None:
     job = coordinator.lease_job(resources=ANY_RESOURCES, worker="test-worker")
     assert isinstance(job, Job)
 
-    coordinator.job_result(job.lease_id, JobFailedResult(error="boom"))
+    coordinator.job_result(_lease(job), JobFailedResult(error="boom"))
 
     assert coordinator.running == {}
     assert set(coordinator.failed) == {leaf.object_id}
     failed_job = coordinator.failed[leaf.object_id]
     assert failed_job.failed_attempts == 1
     assert isinstance(failed_job, FailedJob)
-    assert failed_job.lease_id == job.lease_id
+    assert failed_job.lease_id == _lease(job)
     assert failed_job.node.obj is leaf
     assert failed_job.error == "boom"
     log_text = execution_coordinator_log_path_in(coordinator.executor_dir).read_text(
@@ -413,40 +452,40 @@ def test_execution_coordinator_job_result_failed_retries_before_finishing(
     first_job = coordinator.lease_job(resources=ANY_RESOURCES, worker="test-worker")
     assert isinstance(first_job, Job)
     with _captured_furu_logs(caplog):
-        coordinator.job_result(first_job.lease_id, JobFailedResult(error="boom 1"))
+        coordinator.job_result(_lease(first_job), JobFailedResult(error="boom 1"))
 
     assert set(coordinator.failed) == {leaf.object_id}
     failed_job = coordinator.failed[leaf.object_id]
     assert failed_job.failed_attempts == 1
-    assert failed_job.lease_id == first_job.lease_id
+    assert failed_job.lease_id == _lease(first_job)
     assert failed_job.error == "boom 1"
     assert set(coordinator.ready) == {leaf.object_id}
     assert not coordinator.done.is_set()
 
     second_job = coordinator.lease_job(resources=ANY_RESOURCES, worker="test-worker")
     assert isinstance(second_job, Job)
-    assert second_job.lease_id != first_job.lease_id
+    assert _lease(second_job) != _lease(first_job)
     with _captured_furu_logs(caplog):
-        coordinator.job_result(second_job.lease_id, JobFailedResult(error="boom 2"))
+        coordinator.job_result(_lease(second_job), JobFailedResult(error="boom 2"))
 
     assert set(coordinator.failed) == {leaf.object_id}
     failed_job = coordinator.failed[leaf.object_id]
     assert failed_job.failed_attempts == 2
-    assert failed_job.lease_id == second_job.lease_id
+    assert failed_job.lease_id == _lease(second_job)
     assert failed_job.error == "boom 2"
     assert set(coordinator.ready) == {leaf.object_id}
     assert not coordinator.done.is_set()
 
     third_job = coordinator.lease_job(resources=ANY_RESOURCES, worker="test-worker")
     assert isinstance(third_job, Job)
-    coordinator.job_result(third_job.lease_id, JobFailedResult(error="boom 3"))
+    coordinator.job_result(_lease(third_job), JobFailedResult(error="boom 3"))
 
     assert coordinator.running == {}
     assert coordinator.ready == {}
     assert set(coordinator.failed) == {leaf.object_id}
     failed_job = coordinator.failed[leaf.object_id]
     assert failed_job.failed_attempts == 3
-    assert failed_job.lease_id == third_job.lease_id
+    assert failed_job.lease_id == _lease(third_job)
     assert failed_job.error == "boom 3"
     assert coordinator.done.is_set()
     log_text = execution_coordinator_log_path_in(coordinator.executor_dir).read_text(
@@ -459,7 +498,7 @@ def test_execution_coordinator_job_result_failed_retries_before_finishing(
     assert any(
         "will retry" in message and "boom 2" in message for message in caplog.messages
     )
-    assert f"lease={third_job.lease_id}" in log_text
+    assert f"lease={_lease(third_job)}" in log_text
     assert "failed_retry=1 failed=0" in log_text
     assert "failed_retry=0 failed=1" in log_text
 
@@ -470,15 +509,15 @@ def test_execution_coordinator_job_result_failed_retry_can_later_complete() -> N
 
     first_job = coordinator.lease_job(resources=ANY_RESOURCES, worker="test-worker")
     assert isinstance(first_job, Job)
-    coordinator.job_result(first_job.lease_id, JobFailedResult(error="boom"))
+    coordinator.job_result(_lease(first_job), JobFailedResult(error="boom"))
 
     failed_job = coordinator.failed[leaf.object_id]
     assert failed_job.failed_attempts == 1
-    assert failed_job.lease_id == first_job.lease_id
+    assert failed_job.lease_id == _lease(first_job)
 
     retry_job = coordinator.lease_job(resources=ANY_RESOURCES, worker="test-worker")
     assert isinstance(retry_job, Job)
-    coordinator.job_result(retry_job.lease_id, JobCompletedResult())
+    coordinator.job_result(_lease(retry_job), JobCompletedResult())
 
     assert coordinator.failed == {}
     assert set(coordinator.completed) == {leaf.object_id}
@@ -619,20 +658,114 @@ def test_worker_cap_limits_satisfiable_jobs_and_leases() -> None:
     assert isinstance(second, Job)
     assert isinstance(third, Job)
     limited_ids = {obj.object_id for obj in limited}
-    leased_limited_ids = {first.artifact.object_id, second.artifact.object_id}
+    leased_limited_ids = {_artifact(first).object_id, _artifact(second).object_id}
     assert leased_limited_ids < limited_ids
-    assert third.artifact.object_id == uncapped.object_id
+    assert _artifact(third).object_id == uncapped.object_id
     assert (
         coordinator.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=10)
         == 0
     )
     assert _lease_job(coordinator, resources=ResourceRequest()) == "wait"
 
-    coordinator.job_result(first.lease_id, JobCompletedResult())
+    coordinator.job_result(_lease(first), JobCompletedResult())
     fourth = _lease_job(coordinator, resources=ResourceRequest())
 
     assert isinstance(fourth, Job)
-    assert fourth.artifact.object_id in limited_ids - leased_limited_ids
+    assert _artifact(fourth).object_id in limited_ids - leased_limited_ids
+
+
+def test_lease_job_assembles_same_key_batched_group_into_one_job() -> None:
+    objs = [BatchedCoordinatorLeaf(value=value) for value in range(3)]
+    coordinator = _new_execution_coordinator(objs)
+
+    job = _lease_job(coordinator)
+
+    assert isinstance(job, Job)
+    assert len(job.members) == 3
+    assert {member.lease_id for member in job.members} == set(coordinator.running)
+    assert coordinator.ready == {}
+
+    for member in job.members:
+        coordinator.job_result(member.lease_id, JobCompletedResult())
+
+    assert set(coordinator.completed) == {obj.object_id for obj in objs}
+    assert coordinator.done.is_set()
+
+
+def test_lease_job_groups_only_matching_batch_keys() -> None:
+    first_x = BatchedCoordinatorLeaf(value=1, group="x")
+    only_y = BatchedCoordinatorLeaf(value=2, group="y")
+    second_x = BatchedCoordinatorLeaf(value=3, group="x")
+    coordinator = _new_execution_coordinator([first_x, only_y, second_x])
+
+    x_job = _lease_job(coordinator)
+    y_job = _lease_job(coordinator)
+
+    assert isinstance(x_job, Job) and isinstance(y_job, Job)
+    assert {member.artifact.object_id for member in x_job.members} == {
+        first_x.object_id,
+        second_x.object_id,
+    }
+    assert [member.artifact.object_id for member in y_job.members] == [only_y.object_id]
+
+
+def test_lease_job_chunks_batched_group_to_the_cap() -> None:
+    objs = [BatchedCoordinatorLeaf(value=value, cap=2) for value in range(5)]
+    coordinator = _new_execution_coordinator(objs)
+
+    jobs = [_lease_job(coordinator) for _ in range(3)]
+
+    member_counts = [len(job.members) for job in jobs if isinstance(job, Job)]
+    assert member_counts == [2, 2, 1]
+    assert coordinator.ready == {}
+
+
+def test_lease_job_batch_gathering_respects_throttle(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    objs = [ThrottledBatchedCoordinatorLeaf(value=value) for value in range(5)]
+    coordinator = _new_execution_coordinator(objs)
+
+    with _captured_furu_logs(caplog):
+        job = _lease_job(coordinator)
+
+    assert isinstance(job, Job)
+    assert len(job.members) == 2
+    assert _lease_job(coordinator) == "wait"
+    assert "is below its batch cap" in caplog.text
+
+
+def test_count_satisfiable_jobs_counts_batched_groups() -> None:
+    objs = [BatchedCoordinatorLeaf(value=value) for value in range(4)]
+    coordinator = _new_execution_coordinator(objs)
+
+    assert (
+        coordinator.count_satisfiable_jobs(resources=ANY_RESOURCES, max_workers=10) == 1
+    )
+
+
+def test_batched_group_failure_retries_each_member() -> None:
+    objs = [BatchedCoordinatorLeaf(value=value) for value in range(2)]
+    coordinator = _new_execution_coordinator(objs, max_retries_per_object=1)
+
+    job = _lease_job(coordinator)
+    assert isinstance(job, Job)
+    for member in job.members:
+        coordinator.job_result(member.lease_id, JobFailedResult(error="boom"))
+
+    assert set(coordinator.failed) == {obj.object_id for obj in objs}
+    assert all(record.failed_attempts == 1 for record in coordinator.failed.values())
+    assert set(coordinator.ready) == {obj.object_id for obj in objs}
+
+
+def test_execution_coordinator_runs_batched_specs_as_one_batch() -> None:
+    BatchedCoordinatorLeaf.batch_sizes.clear()
+    objs = [BatchedCoordinatorLeaf(value=value, group="e2e") for value in range(3)]
+
+    results = furu.create(objs, on=[LocalThreadWorkerBackend()])
+
+    assert results == [0, 1, 2]
+    assert BatchedCoordinatorLeaf.batch_sizes == [3]
 
 
 def test_worker_lost_requeues_running_lease_without_counting_failure() -> None:
@@ -651,8 +784,8 @@ def test_worker_lost_requeues_running_lease_without_counting_failure() -> None:
 
     coordinator.worker_lost("worker-1")
 
-    assert set(coordinator.running) == {second.lease_id}
-    assert first.artifact.object_id in coordinator.ready
+    assert set(coordinator.running) == {_lease(second)}
+    assert _artifact(first).object_id in coordinator.ready
     assert coordinator.failed == {}
     assert (
         coordinator.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=10)
@@ -667,7 +800,7 @@ def test_job_result_after_worker_lost_is_ignored() -> None:
     assert isinstance(job, Job)
 
     coordinator.worker_lost("worker-1")
-    coordinator.job_result(job.lease_id, JobCompletedResult())
+    coordinator.job_result(_lease(job), JobCompletedResult())
 
     assert coordinator.running == {}
     assert set(coordinator.ready) == {leaf.object_id}
@@ -683,9 +816,9 @@ def test_lease_job_releases_previous_lease_from_same_worker() -> None:
 
     assert isinstance(first, Job)
     assert isinstance(second, Job)
-    assert second.lease_id != first.lease_id
-    assert set(coordinator.running) == {second.lease_id}
-    assert coordinator.running[second.lease_id].worker == "worker-1"
+    assert _lease(second) != _lease(first)
+    assert set(coordinator.running) == {_lease(second)}
+    assert coordinator.running[_lease(second)].worker == "worker-1"
     assert coordinator.ready == {}
     assert coordinator.failed == {}
 
@@ -697,13 +830,13 @@ def test_lease_job_filters_by_worker_resources() -> None:
 
     cpu_job = _lease_job(coordinator, resources=ResourceRequest(gpus=0))
     assert isinstance(cpu_job, Job)
-    assert cpu_job.artifact.object_id == cpu_leaf.object_id
+    assert _artifact(cpu_job).object_id == cpu_leaf.object_id
 
     assert _lease_job(coordinator, resources=ResourceRequest(gpus=0)) == "wait"
 
     gpu_job = _lease_job(coordinator, resources=ResourceRequest(gpus=1))
     assert isinstance(gpu_job, Job)
-    assert gpu_job.artifact.object_id == gpu_leaf.object_id
+    assert _artifact(gpu_job).object_id == gpu_leaf.object_id
 
 
 def test_lease_job_filters_by_worker_memory_gib() -> None:
@@ -721,7 +854,7 @@ def test_lease_job_filters_by_worker_memory_gib() -> None:
         resources=ResourceRequest(memory_gib=8), worker="test-worker"
     )
     assert isinstance(memory_job, Job)
-    assert memory_job.artifact.object_id == memory_leaf.object_id
+    assert _artifact(memory_job).object_id == memory_leaf.object_id
 
 
 def test_execution_coordinator_run_dynamically_allocates_local_workers_for_later_resource_stages() -> (
@@ -1068,7 +1201,7 @@ def test_execution_coordinator_run_writes_log_to_executor_dir() -> None:
     assert "server listening on " in log_text
     assert f"creating {leaf._log_label}" not in log_text
     assert f"(object_id={leaf.object_id})" not in log_text
-    assert f"leased {leaf._log_label} to local-worker-0" in log_text
+    assert f"leased {leaf._log_label} ×1 to local-worker-0" in log_text
     assert "worker=local-worker-0" in log_text
     assert leaf.object_id in log_text
     assert f"completed {leaf._log_label} ok" in log_text
@@ -1154,7 +1287,7 @@ def test_execution_coordinator_run_starts_backend_pool_and_stops_and_joins_when_
                     )
                     if not isinstance(job, Job):
                         raise AssertionError(f"expected job, got {job!r}")
-                    client.job_result(job.lease_id, JobCompletedResult())
+                    client.job_result(_lease(job), JobCompletedResult())
                 except BaseException as exc:
                     failure_client.fail(message=f"recording backend failed: {exc!r}")
 
@@ -1262,7 +1395,7 @@ def test_execution_coordinator_run_uses_worker_backend_execution_coordinator_lis
                     )
                     if not isinstance(job, Job):
                         raise AssertionError(f"expected job, got {job!r}")
-                    client.job_result(job.lease_id, JobCompletedResult())
+                    client.job_result(_lease(job), JobCompletedResult())
                 except BaseException as exc:
                     failure_client.fail(message=f"recording backend failed: {exc!r}")
 
@@ -1770,8 +1903,14 @@ def test_client_lease_job_posts_resource_request_to_lease_job_endpoint(
         return httpx.Response(
             200,
             json={
-                "lease_id": "lease-1",
-                "artifact": ArtifactSpec.from_furu(leaf).model_dump(mode="json"),
+                "members": [
+                    {
+                        "lease_id": "lease-1",
+                        "artifact": ArtifactSpec.from_furu(leaf).model_dump(
+                            mode="json"
+                        ),
+                    }
+                ],
                 "provenance": _submit_provenance().model_dump(mode="json"),
             },
             request=httpx.Request(method, url),
@@ -1923,4 +2062,5 @@ def test_execution_coordinator_api_accepts_matching_auth_token() -> None:
     )
 
     assert response.status_code == 200
-    assert response.json()["artifact"]["artifact_data"]["|fields"] == {"value": 1}
+    (member,) = response.json()["members"]
+    assert member["artifact"]["artifact_data"]["|fields"] == {"value": 1}
