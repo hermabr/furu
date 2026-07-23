@@ -14,7 +14,7 @@ from pydantic import TypeAdapter
 
 from furu.config import _WORKER_JSON_CONFIG_FILE_ENV_VAR
 from furu.core import Spec
-from furu.execution.load_or_create import _ensure_single_result
+from furu.execution.load_or_create import _ensure_group_results
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
 from furu.migration.links import result_dir_for_loading
@@ -35,10 +35,10 @@ _STDERR_TAIL_LINES = 200
 _STDERR_TAIL_CHARS = 32 * 1024
 _RETIRE_TIMEOUT_SECONDS = 5.0
 
-_job_result_adapter: TypeAdapter[JobResultRequest] = TypeAdapter(JobResultRequest)
 
-
-def execute_job(obj: Spec[Any], *, job: Job) -> JobResultRequest:
+def execute_job(objs: list[Spec[Any]], *, job: Job) -> list[JobResultRequest]:
+    if len(objs) != len(job.members):
+        raise ValueError("job member count does not match loaded artifacts")
     try:
         worker_hash = EnvironmentIdentity.capture().uv_lock_hash
         submitted_hash = job.provenance.environment.uv_lock_hash
@@ -52,18 +52,19 @@ def execute_job(obj: Spec[Any], *, job: Job) -> JobResultRequest:
                 "  uv sync"
             )
         with worker_execution_context(lease_id=job.lease_id):
-            _ensure_single_result(obj, submit_provenance=job.provenance)
-        return JobCompletedResult()
+            _ensure_group_results(objs, submit_provenance=job.provenance)
+        result: JobResultRequest = JobCompletedResult()
     except _DependencyNotReady as exc:
-        return JobBlockedResult(
+        result = JobBlockedResult(
             dependencies=[ArtifactSpec.from_furu(dep) for dep in exc.dependencies]
         )
     except Exception as exc:
-        return JobFailedResult(
+        result = JobFailedResult(
             error="".join(
                 traceback.format_exception(type(exc), exc, exc.__traceback__)
             ),
         )
+    return [result for _ in objs]
 
 
 @dataclass(slots=True)
@@ -84,11 +85,17 @@ class ChildSlot:
         self._child = None
 
     def run(
-        self, obj: Spec[Any], *, job: Job, execution: Subprocess
-    ) -> JobResultRequest:
-        if result_dir_for_loading(obj) is not None:
-            obj.logger.info("cache hit for %s", obj._log_label)
-            return JobCompletedResult()
+        self,
+        objs: list[Spec[Any]],
+        *,
+        job: Job,
+        execution: Subprocess,
+    ) -> list[JobResultRequest]:
+        if all(result_dir_for_loading(item) is not None for item in objs):
+            for item in objs:
+                item.logger.info("cache hit for %s", item._log_label)
+            result = JobCompletedResult()
+            return [result for _ in objs]
 
         environment = dict(os.environ)
         for name, value in execution.environment.items():
@@ -122,7 +129,7 @@ class ChildSlot:
                 case "same_environment_same_spec":
                     can_reuse = (
                         same_process_context
-                        and child.spec_name == obj._fully_qualified_name
+                        and child.spec_name == objs[0]._fully_qualified_name
                     )
                 case unreachable:
                     assert_never(unreachable)
@@ -131,7 +138,7 @@ class ChildSlot:
                 child = None
         if child is None:
             child = self._child = _spawn(environment)
-        child.spec_name = obj._fully_qualified_name
+        child.spec_name = objs[0]._fully_qualified_name
 
         result = _request(child, job)
         if execution.reuse == "never" or child.process.poll() is not None:
@@ -189,7 +196,7 @@ def _spawn(environment: dict[str, str]) -> _Child:
     )
 
 
-def _request(child: _Child, job: Job) -> JobResultRequest:
+def _request(child: _Child, job: Job) -> list[JobResultRequest]:
     assert child.process.stdin is not None
     assert child.process.stdout is not None
     try:
@@ -199,7 +206,7 @@ def _request(child: _Child, job: Job) -> JobResultRequest:
     except OSError:
         line = ""
     if line:
-        return _job_result_adapter.validate_json(line)
+        return TypeAdapter(list[JobResultRequest]).validate_json(line)
 
     returncode = child.process.wait()
     child.stderr_thread.join(timeout=_RETIRE_TIMEOUT_SECONDS)
@@ -214,4 +221,5 @@ def _request(child: _Child, job: Job) -> JobResultRequest:
     error = f"subprocess died: {reason}"
     if tail := "".join(child.stderr_tail)[-_STDERR_TAIL_CHARS:]:
         error += f"\nstderr tail:\n{tail}"
-    return JobFailedResult(error=error)
+    result = JobFailedResult(error=error)
+    return [result for _ in job.members]

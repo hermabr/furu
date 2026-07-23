@@ -1,10 +1,12 @@
 import os
 import sys
 
+from pydantic import TypeAdapter
+
 from furu.core import Spec
 from furu.provenance import _worker_backend
 from furu.worker.execute import execute_job
-from furu.worker.protocol import Job
+from furu.worker.protocol import Job, JobResultRequest
 
 
 def main() -> int:
@@ -17,9 +19,10 @@ def main() -> int:
 
     for line in sys.stdin:
         job = Job.model_validate_json(line)
-        obj = Spec.from_artifact(job.artifact)
-        result = execute_job(obj, job=job)
-        protocol_out.write(result.model_dump_json() + "\n")
+        objs = [Spec.from_artifact(member.artifact) for member in job.members]
+        results = execute_job(objs, job=job)
+        payload = TypeAdapter(list[JobResultRequest]).dump_json(results).decode()
+        protocol_out.write(payload + "\n")
         protocol_out.flush()
     return 0
 

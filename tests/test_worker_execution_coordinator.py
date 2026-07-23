@@ -4,7 +4,7 @@ import threading
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Self
 from uuid import UUID, uuid4
 
 import httpx
@@ -14,7 +14,14 @@ from pydantic import TypeAdapter, ValidationError
 
 import furu
 import furu.worker.loop as worker_loop_module
-from furu import GiB, Metadata, Requires, Spec, Throttle, at_least
+from furu import (
+    GiB,
+    Metadata,
+    Requires,
+    Spec,
+    Throttle,
+    at_least,
+)
 from furu.storage._layout import execution_coordinator_log_path_in
 from furu.config import get_config
 from furu.dag import _add_to_dag
@@ -42,6 +49,7 @@ from furu.worker.protocol import (
     JobCompletedResult,
     JobFailedResult,
     JobResultRequest,
+    JobMember,
     LeaseJobResponse,
 )
 
@@ -68,8 +76,7 @@ def _submit_provenance() -> SubmitProvenance:
 
 def _job(lease_id: str, obj: Spec[Any]) -> Job:
     return Job(
-        lease_id=lease_id,
-        artifact=ArtifactSpec.from_furu(obj),
+        members=[JobMember(lease_id=lease_id, artifact=ArtifactSpec.from_furu(obj))],
         provenance=_submit_provenance(),
     )
 
@@ -146,6 +153,18 @@ class ExecutionCoordinatorLeaf(Spec[int]):
 
     def create(self) -> int:
         return self.value
+
+
+class ExecutionCoordinatorBatch(Spec[int]):
+    value: int
+    group: str = "default"
+    batch_size: int = 2
+    calls: ClassVar[list[tuple[int, ...]]] = []
+
+    @furu.batched(lambda obj: (obj.group, obj.batch_size))
+    def create(objs: list[Self]) -> list[int]:
+        type(objs[0]).calls.append(tuple(obj.value for obj in objs))
+        return [obj.value for obj in objs]
 
 
 class FlakyExecutionCoordinatorLeaf(Spec[int]):
@@ -599,6 +618,39 @@ def test_count_satisfiable_jobs_caps_at_max_workers_and_filters_by_requirements(
         )
         == 3
     )
+
+
+def test_batched_jobs_count_and_lease_as_groups() -> None:
+    objs = [
+        ExecutionCoordinatorBatch(value=1),
+        ExecutionCoordinatorBatch(value=2),
+        ExecutionCoordinatorBatch(value=3),
+        ExecutionCoordinatorBatch(value=4, group="other"),
+    ]
+    coordinator = _new_execution_coordinator(objs)
+
+    assert (
+        coordinator.count_satisfiable_jobs(resources=ANY_RESOURCES, max_workers=10) == 3
+    )
+    job = _lease_job(coordinator)
+
+    assert isinstance(job, Job)
+    assert [member.artifact.object_id for member in job.members] == [
+        obj.object_id for obj in objs[:2]
+    ]
+    assert {member.lease_id for member in job.members} == set(coordinator.running)
+
+
+def test_local_worker_executes_batched_job_once() -> None:
+    ExecutionCoordinatorBatch.calls.clear()
+    objs = [ExecutionCoordinatorBatch(value=value) for value in (1, 2, 3)]
+
+    assert furu.create(objs, on=(LocalThreadWorkerBackend(max_workers=1),)) == [
+        1,
+        2,
+        3,
+    ]
+    assert ExecutionCoordinatorBatch.calls == [(1, 2), (3,)]
 
 
 def test_worker_cap_limits_satisfiable_jobs_and_leases() -> None:
@@ -1442,7 +1494,7 @@ def test_worker_loop_logs_task_requests_and_received_task(
     monkeypatch.setattr(
         worker_loop_module,
         "execute_job",
-        lambda obj, *, job: JobCompletedResult(),
+        lambda objs, *, job: [JobCompletedResult() for _ in objs],
     )
 
     with _captured_furu_logs(caplog):
@@ -1537,7 +1589,9 @@ def test_worker_loop_exits_after_exceeding_max_consecutive_failures(
     monkeypatch.setattr(
         worker_loop_module,
         "execute_job",
-        lambda obj, *, job: JobFailedResult(error="worker task failed"),
+        lambda objs, *, job: [
+            JobFailedResult(error="worker task failed") for _ in objs
+        ],
     )
 
     worker_loop(
@@ -1592,12 +1646,16 @@ def test_worker_loop_resets_consecutive_failures_after_success(
 
     calls = 0
 
-    def execute_job(obj: Spec[object], *, job: Job) -> JobResultRequest:
+    def execute_job(
+        objs: list[Spec[object]], *, job: Job
+    ) -> list[JobResultRequest]:
         nonlocal calls
         calls += 1
         if calls in (1, 3):
-            return JobFailedResult(error="worker task failed")
-        return JobCompletedResult()
+            result: JobResultRequest = JobFailedResult(error="worker task failed")
+        else:
+            result = JobCompletedResult()
+        return [result for _ in objs]
 
     test_client = TestClient("http://worker.test", auth_token="test-token")
     monkeypatch.setattr(
@@ -1649,7 +1707,9 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
         def job_result(self, lease_id: str, request: JobResultRequest) -> None:
             self.calls.append("job_result")
 
-    def execute_job(obj: Spec[object], *, job: Job) -> JobResultRequest:
+    def execute_job(
+        objs: list[Spec[object]], *, job: Job
+    ) -> list[JobResultRequest]:
         raise KeyboardInterrupt
 
     test_client = TestClient("http://worker.test", auth_token="test-token")
@@ -1770,8 +1830,14 @@ def test_client_lease_job_posts_resource_request_to_lease_job_endpoint(
         return httpx.Response(
             200,
             json={
-                "lease_id": "lease-1",
-                "artifact": ArtifactSpec.from_furu(leaf).model_dump(mode="json"),
+                "members": [
+                    {
+                        "lease_id": "lease-1",
+                        "artifact": ArtifactSpec.from_furu(leaf).model_dump(
+                            mode="json"
+                        ),
+                    }
+                ],
                 "provenance": _submit_provenance().model_dump(mode="json"),
             },
             request=httpx.Request(method, url),
@@ -1923,4 +1989,6 @@ def test_execution_coordinator_api_accepts_matching_auth_token() -> None:
     )
 
     assert response.status_code == 200
-    assert response.json()["artifact"]["artifact_data"]["|fields"] == {"value": 1}
+    assert response.json()["members"][0]["artifact"]["artifact_data"]["|fields"] == {
+        "value": 1
+    }

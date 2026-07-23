@@ -31,6 +31,7 @@ from furu.worker.protocol import (
     JobCompletedResult,
     JobFailedResult,
     JobResultRequest,
+    JobMember,
     LeaseJobResponse,
 )
 
@@ -210,28 +211,39 @@ class ExecutionCoordinator:
             if object_id is None:
                 return "wait"
 
-            node = self.ready.pop(object_id)
-            lease_id = str(uuid4())
-            self.running[lease_id] = RunningJob(
-                lease_id=lease_id, node=node, started_at=time.monotonic(), worker=worker
+            nodes = self._select_group_locked(
+                self.ready[object_id], self.ready, resources, running_counts
             )
-            logger.info(
-                "leased %s to %s",
-                node.obj._log_label,
-                worker,
-                extra=log_detail(
-                    lease=lease_id,
-                    object_id=node.obj.object_id,
+            members = []
+            started_at = time.monotonic()
+            for node in nodes:
+                self.ready.pop(node.obj.object_id)
+                lease_id = str(uuid4())
+                self.running[lease_id] = RunningJob(
+                    lease_id=lease_id,
+                    node=node,
+                    started_at=started_at,
                     worker=worker,
-                    **self._counts_detail(),
-                ),
-            )
+                )
+                members.append(
+                    JobMember(
+                        lease_id=lease_id,
+                        artifact=ArtifactSpec.from_furu(node.obj),
+                    )
+                )
+                logger.info(
+                    "leased %s to %s",
+                    node.obj._log_label,
+                    worker,
+                    extra=log_detail(
+                        lease=lease_id,
+                        object_id=node.obj.object_id,
+                        worker=worker,
+                        **self._counts_detail(),
+                    ),
+                )
             assert self.submit_provenance is not None
-            return Job(
-                lease_id=lease_id,
-                artifact=ArtifactSpec.from_furu(node.obj),
-                provenance=self.submit_provenance,
-            )
+            return Job(members=members, provenance=self.submit_provenance)
 
     def worker_lost(self, worker: str) -> None:
         with self.log_context(), self.lock:
@@ -245,17 +257,51 @@ class ExecutionCoordinator:
         with self.lock:
             count = 0
             running_counts = self._running_counts()
-            for node in self.ready.values():
-                if resource_request_satisfies(
-                    resources, node.obj._metadata.requires
-                ) and self._can_start_node_locked(node, running_counts):
-                    count += 1
-                    running_counts[type(node.obj)] = (
-                        running_counts.get(type(node.obj), 0) + 1
-                    )
-                    if count >= max_workers:
-                        return max_workers
+            available = dict(self.ready)
+            while available:
+                node = next(
+                    (
+                        node
+                        for node in available.values()
+                        if resource_request_satisfies(
+                            resources, node.obj._metadata.requires
+                        )
+                        and self._can_start_node_locked(node, running_counts)
+                    ),
+                    None,
+                )
+                if node is None:
+                    break
+                for selected in self._select_group_locked(
+                    node, available, resources, running_counts
+                ):
+                    available.pop(selected.obj.object_id)
+                count += 1
+                if count >= max_workers:
+                    return max_workers
             return count
+
+    def _select_group_locked(
+        self,
+        seed: DagNode,
+        available: dict[str, DagNode],
+        resources: ResourceRequest,
+        running_counts: dict[type[Spec], int],
+    ) -> list[DagNode]:
+        max_size = seed.batch[1] if seed.batch is not None else 1
+        selected = []
+        for node in available.values():
+            if (
+                node.batch == seed.batch
+                and resource_request_satisfies(resources, node.obj._metadata.requires)
+                and self._can_start_node_locked(node, running_counts)
+            ):
+                selected.append(node)
+                obj_type = type(node.obj)
+                running_counts[obj_type] = running_counts.get(obj_type, 0) + 1
+                if len(selected) == max_size:
+                    break
+        return selected
 
     def _running_counts(self) -> dict[type[Spec], int]:
         counts: dict[type[Spec], int] = {}
