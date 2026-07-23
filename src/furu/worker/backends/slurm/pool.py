@@ -49,6 +49,7 @@ class SlurmWorkerPool:
     _scale_thread: threading.Thread
     _job_ids: list[str]
     _failed_job_ids: list[str]
+    _running_job_ids: set[str]
 
     def stop(self, *, timeout: float) -> None:
         with _scoped_component("slurm"):
@@ -90,6 +91,11 @@ class SlurmWorkerPool:
             and job_id not in active_job_ids
             and ((state := states.get(job_id)) is None or not _is_failed_state(state))
         }
+        requeued_job_ids = self._running_job_ids & {
+            job_id
+            for job_id, state in states.items()
+            if state in {"PENDING", "REQUEUED"}
+        }
         self._failed_job_ids[:] = sorted(
             set(self._failed_job_ids)
             | {job_id for job_id, state in states.items() if _is_failed_state(state)}
@@ -103,7 +109,14 @@ class SlurmWorkerPool:
                 or states.get(job_id) not in (None, *_PRUNABLE_STATES)
             )
         ]
-        for job_id in sorted(lost_job_ids):
+        self._running_job_ids.intersection_update(self._job_ids)
+        self._running_job_ids.difference_update(states)
+        self._running_job_ids.update(
+            job_id
+            for job_id, state in states.items()
+            if state == "RUNNING" and job_id in self._job_ids
+        )
+        for job_id in sorted(lost_job_ids | requeued_job_ids):
             allocation_job_id, separator, array_task_id = job_id.partition("_")
             self._client.worker_lost(
                 worker=(

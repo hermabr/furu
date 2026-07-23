@@ -1040,6 +1040,57 @@ def test_slurm_pool_releases_nonfailed_array_workers_missing_from_squeue(
     ]
 
 
+def test_slurm_pool_releases_worker_requeued_with_same_job_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    lost_workers: list[str] = []
+    _stub_count_satisfiable_jobs(monkeypatch, 1)
+    monkeypatch.setattr(
+        PoolApiClient,
+        "worker_lost",
+        lambda self, *, worker: lost_workers.append(worker),
+    )
+    backend = SlurmWorkerBackend(
+        max_workers=1,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="execution-coordinator.cluster",
+        poll_interval=0,
+        use_job_arrays=False,
+    )
+    pool = backend.start_pool(
+        bound_port=1234,
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+        provenance=_submit_provenance(),
+    )
+
+    pool._scale_once()
+    pool._scale_once()
+    active_file.write_text("100 PENDING\n")
+    pool._scale_once()
+    pool._scale_once()
+
+    assert lost_workers == ["slurm-worker-100"]
+    assert pool._job_ids == ["100"]
+    assert len(
+        [
+            record
+            for record in _read_records(record_file)
+            if record["executable"] == "sbatch"
+        ]
+    ) == 1
+
+    active_file.write_text("100 RUNNING\n")
+    pool._scale_once()
+    active_file.write_text("100 REQUEUED\n")
+    pool._scale_once()
+
+    assert lost_workers == ["slurm-worker-100", "slurm-worker-100"]
+
+
 def test_slurm_worker_pool_stop_cancels_array_tasks(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -211,6 +211,7 @@ class SlurmWorkerBackend:
             ),
             _job_ids=[],
             _failed_job_ids=[],
+            _running_job_ids=set(),
         )
         pool_holder.append(pool)
         pool._scale_thread.start()
