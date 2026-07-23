@@ -98,7 +98,7 @@ class DependencyRecorder:
 
 
 # TODO: ContextVar state does not propagate to new threads. If create() or
-# create_batched() runs child loads in worker threads, those loads will not be
+# Batched create hooks may load children in worker threads; those loads will not be
 # recorded unless recorder context is propagated explicitly.
 _active_dependency_recorder: ContextVar[DependencyRecorder | None] = ContextVar(
     "_active_dependency_recorder",

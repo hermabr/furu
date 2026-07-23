@@ -30,7 +30,7 @@ _FURU_PACKAGE_DIR = Path(__file__).resolve().parent
 _DETAIL_ATTR = "_furu_detail"
 
 # TODO: ContextVar state does not propagate to new threads. Logs emitted from
-# worker threads inside create() or create_batched() will use unscoped.log
+# worker threads inside create() hooks will use unscoped.log
 # unless the current log path context is propagated explicitly.
 _CURRENT_LOG_PATHS: ContextVar[tuple[Path, ...]] = ContextVar(
     "furu_current_log_paths", default=()

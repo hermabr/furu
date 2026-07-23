@@ -4,19 +4,12 @@ import json
 import logging
 import shutil
 from abc import ABC
+from collections.abc import Callable, Hashable
 from dataclasses import dataclass, replace
-from functools import cached_property
+from functools import cached_property, wraps
 from inspect import get_annotations
 from pathlib import Path
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    ClassVar,
-    Literal,
-    TypeAlias,
-    cast,
-    final,
-)
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast, final
 
 from furu._declared_types import declared_result_type
 from furu.config import get_config
@@ -70,14 +63,12 @@ class Missing(Exception):
     pass
 
 
-SpecCreateMode: TypeAlias = Literal["single", "batched"] | None
 _SPEC_CLASS_ATTRIBUTES = frozenset(
     {"migrations", "throttle", "result_codecs", "artifact_serializers"}
 )
 _RESERVED_FIELD_NAMES = frozenset(
     {
         "create",
-        "create_batched",
         "metadata",
         "status",
         "directory",
@@ -95,7 +86,10 @@ _RESERVED_FIELD_NAMES = frozenset(
 
 
 class Spec[T](_FuruDataclassTransform, ABC):
-    _furu_create_mode: ClassVar[SpecCreateMode]
+    _furu_create_hook: ClassVar[Callable[..., Any]]
+    _furu_batch_fn: ClassVar[
+        Callable[[Spec[Any]], tuple[Hashable, int]] | None
+    ] = None
     throttle: ClassVar[Throttle | None] = None
     migrations: ClassVar[tuple[MigrationStep, ...]] = ()
     result_codecs: ClassVar[tuple[type[Codec], ...]] = ()
@@ -103,8 +97,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        if cls is Spec:
-            return
+        from furu._batched import _BatchedCreate
 
         annotations = get_annotations(cls, eval_str=False)
         if reserved := _RESERVED_FIELD_NAMES & annotations.keys():
@@ -129,24 +122,28 @@ class Spec[T](_FuruDataclassTransform, ABC):
         if cls.migrations:
             validate_migration_declaration(cls)
         validate_embedded_migration_declarations(cls)
-        from furu.execution.load_or_create import (
-            _install_create_dispatchers,
-            _resolve_create_mode,
-        )
+        match cls.__dict__.get("create"):
+            case None:
+                pass
+            case _BatchedCreate() as hook:
+                cls._furu_create_hook = hook.func
+                cls._furu_batch_fn = hook.batch_fn
+            case hook:
+                cls._furu_create_hook = hook
+                cls._furu_batch_fn = None
 
-        cls._furu_create_mode = _resolve_create_mode(cls)
-        _install_create_dispatchers(cls)
+                @wraps(hook)
+                def create_dispatcher(self: Spec[T], *args: Any, **kwargs: Any) -> T:
+                    from furu.execution.load_or_create import _load_or_create
+
+                    return _load_or_create(self, *args, **kwargs)
+
+                setattr(cls, "create", create_dispatcher)
 
     def create(self) -> T:
         from furu.execution.load_or_create import _load_or_create
 
         return _load_or_create(self)
-
-    @classmethod
-    def create_batched[TSpec: Spec](cls: type[TSpec], objs: list[TSpec]) -> list[T]:
-        raise NotImplementedError(
-            f"{cls.__name__} must implement create() or create_batched()"
-        )
 
     def metadata(self) -> Metadata:
         return Metadata()
