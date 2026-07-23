@@ -872,10 +872,10 @@ def test_slurm_backend_can_submit_workers_as_job_array(
     assert pool._job_ids == ["100_0", "100_1", "100_2"]
     assert pool._active_job_ids() == {"100_0", "100_1", "100_2"}
     active_file.write_text("100_0\n100_1 FAILED\n100_2\n")
-    assert pool._task_states() == {
-        "100_0": "RUNNING",
-        "100_1": "FAILED",
-        "100_2": "RUNNING",
+    assert pool._task_statuses() == {
+        "100_0": ("RUNNING", 0),
+        "100_1": ("FAILED", 0),
+        "100_2": ("RUNNING", 0),
     }
 
     records = _read_records(record_file)
@@ -928,7 +928,7 @@ def test_slurm_worker_pool_ignores_untracked_array_siblings_from_sacct(
     furu_logger.addHandler(caplog.handler)
     try:
         caplog.set_level(logging.WARNING, logger="furu")
-        assert pool._task_states() == {"100_1": "RUNNING"}
+        assert pool._task_statuses() == {"100_1": ("RUNNING", 0)}
     finally:
         furu_logger.removeHandler(caplog.handler)
     assert not any(
@@ -1018,11 +1018,11 @@ def test_slurm_pool_releases_nonfailed_array_workers_missing_from_squeue(
     monkeypatch.setattr(type(pool), "_active_job_ids", lambda self: {"100_0"})
     monkeypatch.setattr(
         type(pool),
-        "_task_states",
+        "_task_statuses",
         lambda self: {
-            "100_0": "RUNNING",
-            "100_1": "PREEMPTED",
-            "100_2": "REQUEUED",
+            "100_0": ("RUNNING", 0),
+            "100_1": ("PREEMPTED", 0),
+            "100_2": ("REQUEUED", 0),
         },
     )
     pool._scale_once()
@@ -1040,12 +1040,27 @@ def test_slurm_pool_releases_nonfailed_array_workers_missing_from_squeue(
     ]
 
 
-def test_slurm_pool_releases_worker_requeued_with_same_job_id(
+@pytest.mark.parametrize(
+    ("statuses", "expected_lost_workers"),
+    [
+        (("PENDING|0", "PENDING|0"), []),
+        (("RUNNING|0", "PENDING|1"), ["slurm-worker-100"]),
+        (("RUNNING|0", "REQUEUED|1"), ["slurm-worker-100"]),
+        (
+            ("RUNNING|0", "PREEMPTED|0", "PENDING|1"),
+            ["slurm-worker-100"],
+        ),
+        (("RUNNING|0", "RUNNING|1"), ["slurm-worker-100"]),
+    ],
+)
+def test_slurm_pool_releases_restarted_worker(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    statuses: tuple[str, ...],
+    expected_lost_workers: list[str],
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
-    record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    _record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
     lost_workers: list[str] = []
     _stub_count_satisfiable_jobs(monkeypatch, 1)
     monkeypatch.setattr(
@@ -1068,27 +1083,13 @@ def test_slurm_pool_releases_worker_requeued_with_same_job_id(
     )
 
     pool._scale_once()
-    pool._scale_once()
-    active_file.write_text("100 PENDING\n")
-    pool._scale_once()
+    for status in statuses:
+        active_file.write_text(f"100 {status}\n")
+        pool._scale_once()
     pool._scale_once()
 
-    assert lost_workers == ["slurm-worker-100"]
+    assert lost_workers == expected_lost_workers
     assert pool._job_ids == ["100"]
-    assert len(
-        [
-            record
-            for record in _read_records(record_file)
-            if record["executable"] == "sbatch"
-        ]
-    ) == 1
-
-    active_file.write_text("100 RUNNING\n")
-    pool._scale_once()
-    active_file.write_text("100 REQUEUED\n")
-    pool._scale_once()
-
-    assert lost_workers == ["slurm-worker-100", "slurm-worker-100"]
 
 
 def test_slurm_worker_pool_stop_cancels_array_tasks(
@@ -1289,14 +1290,19 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
     )
     pool._scale_once()
 
+    states = {
+        job_id: state for job_id, (state, _) in pool._task_statuses().items()
+    }
     assert not any(
         state not in _UNFINISHED_STATES and state not in frozenset({"COMPLETED"})
-        for state in pool._task_states().values()
+        for state in states.values()
     )
 
     active_file.write_text("100\n100.batch COMPLETED\n101 FAILED\n101.extern FAILED\n")
 
-    states = pool._task_states()
+    states = {
+        job_id: state for job_id, (state, _) in pool._task_statuses().items()
+    }
     assert states == {"100": "RUNNING", "101": "FAILED"}
     assert any(
         state not in _UNFINISHED_STATES and state != "COMPLETED"
@@ -1311,7 +1317,7 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
         "-X",
         "--noheader",
         "-o",
-        "JobID,State",
+        "JobID,State,Restarts",
         "--parsable2",
         "-j",
         "100,101",
@@ -1558,7 +1564,7 @@ def test_slurm_pool_scale_reports_cancelled_jobs_as_failures(
 
     pool._scale_once()
     active_file.write_text("100 CANCELLED by 12345\n")
-    assert pool._task_states() == {"100": "CANCELLED"}
+    assert pool._task_statuses() == {"100": ("CANCELLED", 0)}
 
     pool._scale_loop()
 
@@ -1734,11 +1740,12 @@ def _install_fake_slurm(
             active_jobs = file.read().splitlines()
 
         for active_job in sorted(active_jobs):
-            job_id, _, state = active_job.partition(" ")
+            job_id, _, status = active_job.partition(" ")
+            state, _, restarts = status.partition("|")
             allocation_job_id = job_id.partition(".")[0].partition("_")[0]
             if allocation_job_id not in requested_jobs:
                 continue
-            print(f"{job_id}|{state or 'RUNNING'}|node-a")
+            print(f"{job_id}|{state or 'RUNNING'}|{restarts or 0}")
         """,
     )
     _write_executable(
