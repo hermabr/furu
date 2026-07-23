@@ -49,6 +49,7 @@ class SlurmWorkerPool:
     _scale_thread: threading.Thread
     _job_ids: list[str]
     _failed_job_ids: list[str]
+    _job_restarts: dict[str, int]
 
     def stop(self, *, timeout: float) -> None:
         with _scoped_component("slurm"):
@@ -82,13 +83,19 @@ class SlurmWorkerPool:
 
     def _scale_once(self) -> dict[str, str]:
         active_job_ids = self._active_job_ids()
-        states = self._task_states()
+        statuses = self._task_statuses()
+        states = {job_id: state for job_id, (state, _) in statuses.items()}
         lost_job_ids = {
             job_id
             for job_id in self._job_ids
             if active_job_ids is not None
             and job_id not in active_job_ids
             and ((state := states.get(job_id)) is None or not _is_failed_state(state))
+        }
+        restarted_job_ids = {
+            job_id
+            for job_id, (_, restarts) in statuses.items()
+            if restarts > self._job_restarts.get(job_id, 0)
         }
         self._failed_job_ids[:] = sorted(
             set(self._failed_job_ids)
@@ -103,7 +110,13 @@ class SlurmWorkerPool:
                 or states.get(job_id) not in (None, *_PRUNABLE_STATES)
             )
         ]
-        for job_id in sorted(lost_job_ids):
+        for job_id, (_, restarts) in statuses.items():
+            self._job_restarts[job_id] = max(
+                restarts, self._job_restarts.get(job_id, 0)
+            )
+        for job_id in self._job_restarts.keys() - set(self._job_ids):
+            del self._job_restarts[job_id]
+        for job_id in sorted(lost_job_ids | restarted_job_ids):
             allocation_job_id, separator, array_task_id = job_id.partition("_")
             self._client.worker_lost(
                 worker=(
@@ -200,7 +213,7 @@ class SlurmWorkerPool:
             if line.strip()
         }
 
-    def _task_states(self) -> dict[str, str]:
+    def _task_statuses(self) -> dict[str, tuple[str, int]]:
         if not self._job_ids:
             return {}
 
@@ -215,7 +228,7 @@ class SlurmWorkerPool:
                     "-X",
                     "--noheader",
                     "-o",
-                    "JobID,State",
+                    "JobID,State,Restarts",
                     "--parsable2",
                     "-j",
                     ",".join(sorted(known_allocation_job_ids)),
@@ -232,13 +245,13 @@ class SlurmWorkerPool:
             logger.warning("sacct failed while checking slurm jobs: %s", result.stderr)
             return {}
 
-        states: dict[str, str] = {}
+        statuses: dict[str, tuple[str, int]] = {}
         for line in result.stdout.splitlines():
             parts = line.split("|")
-            if len(parts) < 2:
+            if len(parts) < 3:
                 logger.warning("ignoring malformed sacct line: %r", line)
                 continue
-            job_id, state = parts[0], parts[1]
+            job_id, state, restarts = parts[:3]
             allocation_job_id, separator, _step_id = job_id.partition(".")
             if separator and allocation_job_id in known_job_ids:
                 continue
@@ -255,8 +268,11 @@ class SlurmWorkerPool:
                     "ignoring unexpected slurm job id from sacct: %r", job_id
                 )
                 continue
-            states[job_id] = state.upper().split(maxsplit=1)[0].removesuffix("+")
-        return states
+            statuses[job_id] = (
+                state.upper().split(maxsplit=1)[0].removesuffix("+"),
+                int(restarts or 0),
+            )
+        return statuses
 
     def _scale_loop(self) -> None:
         with _scoped_component("slurm"):
