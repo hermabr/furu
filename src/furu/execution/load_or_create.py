@@ -424,35 +424,35 @@ def _create_and_store_group[T](
         logger.debug("create start")
         group_started_at = time.monotonic()
         try:
-            create_hook = getattr(type(group[0]), "_furu_create_hook", None)
-            if isinstance(create_hook, tuple):
-                logger.debug("running batched create()")
-                with dependency_recorder() as recorder:
-                    results = create_hook[0](group)
-                observed = recorder.finalize()
-                logger.debug("batched create() returned")
-                if not isinstance(results, list):
-                    raise TypeError(
-                        f"{type(group[0]).__name__}.create() must return a list"
-                    )
-                # TODO: Track dependency calls per object during batched execution.
-                # This currently assigns dependencies observed anywhere in the batch
-                # to every object.
-                observed_dependencies = [observed for _ in group]
-            else:
-                if create_hook is None:
+            match getattr(type(group[0]), "_furu_create_hook", None):
+                case (create_hook, _):
+                    logger.debug("running batched create()")
+                    with dependency_recorder() as recorder:
+                        results = create_hook(group)
+                    observed = recorder.finalize()
+                    logger.debug("batched create() returned")
+                    if not isinstance(results, list):
+                        raise TypeError(
+                            f"{type(group[0]).__name__}.create() must return a list"
+                        )
+                    # TODO: Track dependency calls per object during batched execution.
+                    # This currently assigns dependencies observed anywhere in the batch
+                    # to every object.
+                    observed_dependencies = [observed for _ in group]
+                case None:
                     raise TypeError(
                         f"{type(group[0]).__qualname__} cannot create missing results "
                         "because it does not define create()"
                     )
-                logger.debug("running sequential create() fallback")
-                results = []
-                observed_dependencies = []
-                for obj in group:
-                    with dependency_recorder() as recorder:
-                        results.append(create_hook(obj))
-                    observed_dependencies.append(recorder.finalize())
-                logger.debug("sequential create() fallback returned")
+                case create_hook:
+                    logger.debug("running sequential create() fallback")
+                    results = []
+                    observed_dependencies = []
+                    for obj in group:
+                        with dependency_recorder() as recorder:
+                            results.append(create_hook(obj))
+                        observed_dependencies.append(recorder.finalize())
+                    logger.debug("sequential create() fallback returned")
 
             if len(results) != len(group):
                 raise TypeError(
