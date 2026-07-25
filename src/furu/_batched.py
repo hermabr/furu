@@ -46,8 +46,9 @@ def batched[S: Spec, T](
 
 
 def _batch_group(obj: Any) -> tuple[Hashable, int] | None:
-    if (batch_fn := type(obj)._furu_batch_fn) is None:
+    if not isinstance(hook := getattr(type(obj), "_furu_create_hook", None), tuple):
         return None
+    _, batch_fn = hook
     key, max_size = batch_fn(obj)
     if type(max_size) is not int or max_size < 1:
         raise ValueError("@furu.batched group size must be a positive integer")

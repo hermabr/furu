@@ -424,10 +424,11 @@ def _create_and_store_group[T](
         logger.debug("create start")
         group_started_at = time.monotonic()
         try:
-            if type(group[0])._furu_batch_fn is not None:
+            create_hook = getattr(type(group[0]), "_furu_create_hook", None)
+            if isinstance(create_hook, tuple):
                 logger.debug("running batched create()")
                 with dependency_recorder() as recorder:
-                    results = type(group[0])._furu_create_hook(group)
+                    results = create_hook[0](group)
                 observed = recorder.finalize()
                 logger.debug("batched create() returned")
                 if not isinstance(results, list):
@@ -439,7 +440,7 @@ def _create_and_store_group[T](
                 # to every object.
                 observed_dependencies = [observed for _ in group]
             else:
-                if not hasattr(type(group[0]), "_furu_create_hook"):
+                if create_hook is None:
                     raise TypeError(
                         f"{type(group[0]).__qualname__} cannot create missing results "
                         "because it does not define create()"
@@ -449,7 +450,7 @@ def _create_and_store_group[T](
                 observed_dependencies = []
                 for obj in group:
                     with dependency_recorder() as recorder:
-                        results.append(type(obj)._furu_create_hook(obj))
+                        results.append(create_hook(obj))
                     observed_dependencies.append(recorder.finalize())
                 logger.debug("sequential create() fallback returned")
 

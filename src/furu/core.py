@@ -86,10 +86,10 @@ _RESERVED_FIELD_NAMES = frozenset(
 
 
 class Spec[T](_FuruDataclassTransform, ABC):
-    _furu_create_hook: ClassVar[Callable[..., Any]]
-    _furu_batch_fn: ClassVar[
-        Callable[[Spec[Any]], tuple[Hashable, int]] | None
-    ] = None
+    _furu_create_hook: ClassVar[
+        Callable[..., Any]
+        | tuple[Callable[..., Any], Callable[[Spec[Any]], tuple[Hashable, int]]]
+    ]
     throttle: ClassVar[Throttle | None] = None
     migrations: ClassVar[tuple[MigrationStep, ...]] = ()
     result_codecs: ClassVar[tuple[type[Codec], ...]] = ()
@@ -126,11 +126,9 @@ class Spec[T](_FuruDataclassTransform, ABC):
             case None:
                 pass
             case _BatchedCreate() as hook:
-                cls._furu_create_hook = hook.func
-                cls._furu_batch_fn = hook.batch_fn
+                cls._furu_create_hook = (hook.func, hook.batch_fn)
             case hook:
                 cls._furu_create_hook = hook
-                cls._furu_batch_fn = None
 
                 @wraps(hook)
                 def create_dispatcher(self: Spec[T], *args: Any, **kwargs: Any) -> T:

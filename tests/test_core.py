@@ -173,7 +173,9 @@ class B[T](Spec):
             "__annotations__": ann,
             "_hidden": 0,
         }
-        namespace["create"] = lambda self: cls._furu_create_hook(self)
+        hook = cls._furu_create_hook
+        assert not isinstance(hook, tuple)
+        namespace["create"] = lambda self: hook(self)
 
         Hidden = types.new_class(
             cls.__name__,
@@ -384,7 +386,11 @@ class BatchOnlyValue(Spec[str]):
 class DelegatingBatchValue(BatchOnlyValue):
     @furu.batched(lambda _: (None, 1_000))
     def create(objs: list[Self]) -> list[str]:
-        return BatchOnlyValue._furu_create_hook(objs)
+        match BatchOnlyValue._furu_create_hook:
+            case (hook, _):
+                return hook(objs)
+            case _:
+                raise AssertionError
 
 
 class GroupBatchA(Spec[str]):
@@ -972,9 +978,11 @@ def test_hashes_and_data_dir():
     )
 
     def qualname_alias(cls: type[Spec[object]], *, ret_typ: type) -> type[Spec[object]]:
+        hook = cls._furu_create_hook
+        assert not isinstance(hook, tuple)
         namespace: dict[str, object] = {
             "__module__": cls.__module__,
-            "create": lambda self: cls._furu_create_hook(self),
+            "create": lambda self: hook(self),
         }
         alias = type(ret_typ.__qualname__, (cls,), namespace)
         alias.__qualname__ = ret_typ.__qualname__
@@ -2008,6 +2016,9 @@ def test_small_cache_summary_logs_labels_for_cached_and_missing_items(
 def test_single_and_batched_create_use_the_same_spec_type() -> None:
     assert isinstance(Node(name="single"), Spec)
     assert isinstance(BatchOnlyValue(key=1), Spec)
+    assert callable(Node._furu_create_hook)
+    assert isinstance(BatchOnlyValue._furu_create_hook, tuple)
+    assert not hasattr(Spec, "_furu_batch_fn")
     assert not hasattr(furu, "BaseSpec")
     assert not hasattr(furu, "BatchedSpec")
 
