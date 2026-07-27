@@ -199,6 +199,11 @@ class Spec[T](_FuruDataclassTransform, ABC):
         validate_embedded_migration_declarations(cls)
         _install_create_verb(cls)
 
+    def create(self) -> T:
+        from furu.execution.load_or_create import _load_or_create
+
+        return _load_or_create(self)
+
     def metadata(self) -> Metadata:
         return Metadata()
 
