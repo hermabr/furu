@@ -33,7 +33,7 @@ def worker_loop(
     backend: str,
     max_consecutive_failures: int | None = None,
 ) -> None:
-    _worker_backend.set(backend)
+    worker_backend_token = _worker_backend.set(backend)
     with _scoped_component(component):
         client = api.WorkerApiClient(server_url=server_url, auth_token=auth_token)
         idle_started_at: float | None = None
@@ -142,3 +142,4 @@ def worker_loop(
                         assert_never(unexpected)
         finally:
             child_slot.close()
+            _worker_backend.reset(worker_backend_token)
