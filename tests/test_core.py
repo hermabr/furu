@@ -2027,6 +2027,13 @@ def test_create_hook_flavor_validation() -> None:
     with pytest.raises(TypeError, match="needs a batch key function"):
         furu.batched("not-a-function")  # ty: ignore[invalid-argument-type]
 
+    with pytest.raises(TypeError, match=r"can only decorate create\(\)"):
+
+        class BatchedNonCreateMethod(Spec[int]):
+            @furu.batched(lambda _: (None, 1))
+            def run(objs: list["BatchedNonCreateMethod"]) -> list[int]:
+                return [1 for _ in objs]
+
     # Abstract intermediate bases defining no hook stay legal.
     class NoCreateHook(Spec[int]):
         value: int
@@ -2158,6 +2165,8 @@ def test_batch_key_cap_chunks_batched_create_calls() -> None:
 def test_batch_key_cap_must_be_a_positive_int() -> None:
     with pytest.raises(TypeError, match="cap must be a positive int"):
         _load_or_create([KeyedBatchValue(key=1, group="x", cap=0)])
+    with pytest.raises(TypeError, match="cap must be a positive int"):
+        _load_or_create([KeyedBatchValue(key=1, group="x", cap=True)])
 
 
 def test_duplicate_cache_identities_compute_once_and_preserve_input_order() -> None:
