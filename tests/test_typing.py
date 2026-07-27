@@ -51,9 +51,7 @@ class TypingFunctionParent(furu.Spec[int]):
     child: furu.Spec[int]
 
     def create(self) -> int:
-        # Code generic over Spec[T]/Spec[T] cannot call .create()
-        # statically; the module-level verb covers that case with full types.
-        return furu.create(self.child)
+        return self.child.create()
 
 
 @dataclass(frozen=True)
@@ -72,6 +70,7 @@ if TYPE_CHECKING:
     assert_type(TypingChild().create(), int)
     assert_type(TypingBatched(key=1).create(), str)
     assert_type(TypingBatched.create([TypingBatched(key=1)]), list[str])
+    assert_type(typed_letter_count(source="banana", letter="a"), furu.Spec[int])
     assert_type(typed_letter_count(source="banana", letter="a").create(), int)
     assert_type(
         TypingFunctionParent(
