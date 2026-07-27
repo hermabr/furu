@@ -411,7 +411,7 @@ def _validated_batch_key(obj: Spec[Any]) -> tuple[Hashable, int]:
     batch_fn = _batch_fn(obj)
     assert batch_fn is not None
     group_hash, cap = batch_fn(obj)
-    if not isinstance(cap, int) or cap < 1:
+    if type(cap) is not int or cap < 1:
         raise TypeError(
             f"{type(obj).__qualname__} batch key cap must be a positive int, "
             f"got {cap!r}"

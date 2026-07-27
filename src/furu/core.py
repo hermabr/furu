@@ -118,6 +118,8 @@ class batched:
     def __call__[S, T](
         self, func: Callable[[list[S]], list[T]], /
     ) -> _BatchedCreate[S, T]:
+        if getattr(func, "__name__", None) != "create":
+            raise TypeError("@furu.batched can only decorate create()")
         return _BatchedCreate(func, self.batch_fn)
 
 
