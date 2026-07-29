@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import functools
 import json
 import logging
 import shutil
 from abc import ABC
-from collections.abc import Callable, Hashable
 from dataclasses import dataclass, replace
-from functools import cached_property
+from functools import cached_property, wraps
 from inspect import get_annotations
 from pathlib import Path
 from typing import (
@@ -17,9 +15,9 @@ from typing import (
     Literal,
     cast,
     final,
-    overload,
 )
 
+from furu._batched import _BatchedCreate, _BatchedCreateVerb, batched
 from furu._declared_types import declared_result_type
 from furu.config import get_config
 from furu.explain import ExplainDepth
@@ -92,58 +90,6 @@ _RESERVED_FIELD_NAMES = frozenset(
         "artifact_serializers",
     }
 )
-
-
-class batched:
-    """Marks a create hook as batched: ``@furu.batched(batch_key)``.
-
-    ``batch_key(self)`` returns (what may batch together, max specs per call).
-    The decorated hook takes the whole batch (``objs: list[Self]``) and returns
-    one result per member, in order; every call receives specs that share one
-    batch key, at most the cap of them. furu captures the hook at class
-    creation and installs the create verb in its place: instance access loads
-    or creates one result, class access loads or creates a same-class batch.
-
-    ``batch_key`` is typed loosely (``self: Any``) so the hook's inference
-    stays exact; define it as a method so its body is checked against Self.
-    """
-
-    def __init__(self, batch_fn: Callable[[Any], tuple[Hashable, int]], /) -> None:
-        if not callable(batch_fn):
-            raise TypeError(
-                "@furu.batched needs a batch key function: @furu.batched(batch_key)"
-            )
-        self.batch_fn = batch_fn
-
-    def __call__[S, T](
-        self, func: Callable[[list[S]], list[T]], /
-    ) -> _BatchedCreate[S, T]:
-        if getattr(func, "__name__", None) != "create":
-            raise TypeError("@furu.batched can only decorate create()")
-        return _BatchedCreate(func, self.batch_fn)
-
-
-class _BatchedCreate[S, T]:
-    def __init__(
-        self,
-        func: Callable[[list[S]], list[T]],
-        batch_fn: Callable[[Any], tuple[Hashable, int]],
-        /,
-    ) -> None:
-        self.func = func
-        self.batch_fn = batch_fn
-
-    # The class-access overload must come first so ty resolves
-    # ``MyBatched.create([...])`` against it.
-    @overload
-    def __get__(self, obj: None, objtype: type, /) -> Callable[[list[S]], list[T]]: ...
-    @overload
-    def __get__(self, obj: S, objtype: type, /) -> Callable[[], T]: ...
-    def __get__(self, obj: Any, objtype: type | None = None, /) -> Any:
-        raise TypeError(
-            "@furu.batched hooks are captured by furu at class creation; "
-            "define them on a furu.Spec subclass"
-        )
 
 
 class Spec[T](_FuruDataclassTransform, ABC):
@@ -425,15 +371,6 @@ class Spec[T](_FuruDataclassTransform, ABC):
         )
 
 
-class _BatchedCreateVerb:
-    def __get__(self, obj: Spec[Any] | None, objtype: type | None = None) -> Any:
-        from furu.execution.load_or_create import _load_or_create
-
-        if obj is None:
-            return _load_or_create
-        return functools.partial(_load_or_create, obj)
-
-
 def _install_create_verb(cls: type[Spec[Any]]) -> None:
     """Capture the author's create hook and install the create verb over it."""
     if "create" not in cls.__dict__:
@@ -452,7 +389,7 @@ def _install_create_verb(cls: type[Spec[Any]]) -> None:
         setattr(cls, "_furu_create_hook", hook)
         setattr(cls, "_furu_batch_fn", None)
 
-        @functools.wraps(hook)
+        @wraps(hook)
         def create_verb(self: Spec[Any]) -> Any:
             from furu.execution.load_or_create import _load_or_create
 
