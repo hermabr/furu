@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import functools
 from collections.abc import Callable, Hashable
-from typing import TYPE_CHECKING, Any, overload
+from typing import TYPE_CHECKING, Any, NamedTuple, overload
 
 if TYPE_CHECKING:
     from furu.core import Spec
+
+
+class _BatchedHook(NamedTuple):
+    func: Callable[[list[Any]], list[Any]]
+    batch_fn: Callable[[Any], tuple[Hashable, int]]
 
 
 class batched:
@@ -35,9 +40,7 @@ class _BatchedCreate[S, T]:
         self.batch_fn = batch_fn
 
     @overload
-    def __get__(
-        self, obj: None, _objtype: type, /
-    ) -> Callable[[list[S]], list[T]]: ...
+    def __get__(self, obj: None, _objtype: type, /) -> Callable[[list[S]], list[T]]: ...
     @overload
     def __get__(self, obj: S, _objtype: type, /) -> Callable[[], T]: ...
     def __get__(self, obj: Any, _objtype: type | None = None, /) -> Any:

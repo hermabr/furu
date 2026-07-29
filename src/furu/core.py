@@ -4,6 +4,7 @@ import json
 import logging
 import shutil
 from abc import ABC
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from functools import cached_property, wraps
 from inspect import get_annotations
@@ -18,7 +19,7 @@ from typing import (
     final,
 )
 
-from furu._batched import _BatchedCreate, _BatchedCreateVerb, batched
+from furu._batched import _BatchedCreate, _BatchedCreateVerb, _BatchedHook, batched
 from furu._declared_types import declared_result_type
 from furu.config import get_config
 from furu.explain import ExplainDepth
@@ -94,8 +95,7 @@ _RESERVED_FIELD_NAMES = frozenset(
 
 
 class Spec[T](_FuruDataclassTransform, ABC):
-    _furu_create_hook: ClassVar[Any]
-    _furu_batch_fn: ClassVar[Any]
+    _furu_create_hook: ClassVar[Callable[..., Any] | _BatchedHook]
     throttle: ClassVar[Throttle | None] = None
     migrations: ClassVar[tuple[MigrationStep, ...]] = ()
     result_codecs: ClassVar[tuple[type[Codec], ...]] = ()
@@ -368,12 +368,10 @@ def _install_create_verb(cls: type[Spec[Any]]) -> None:
             "function: @furu.batched(batch_key)"
         )
     if isinstance(hook, _BatchedCreate):
-        cls._furu_create_hook = staticmethod(hook.func)
-        cls._furu_batch_fn = staticmethod(hook.batch_fn)
+        cls._furu_create_hook = _BatchedHook(hook.func, hook.batch_fn)
         cls.create = _BatchedCreateVerb()  # ty: ignore[invalid-assignment]
     else:
         cls._furu_create_hook = hook
-        cls._furu_batch_fn = None
 
         @wraps(hook)
         def create_verb(self: Spec[Any]) -> Any:
