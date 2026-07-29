@@ -12,6 +12,7 @@ from typing import (
     overload,
 )
 
+from furu._batched import _BatchedHook
 from furu._declared_types import declared_result_type
 from furu.config import get_config
 from furu.core import Missing, Spec
@@ -404,7 +405,8 @@ def _load_or_create_local[T](
 
 def _batch_fn(obj: Spec[Any]) -> Callable[[Any], tuple[Hashable, int]] | None:
     """The batch key function of a batched-flavored spec, None for single."""
-    return getattr(type(obj), "_furu_batch_fn", None)
+    hook = getattr(type(obj), "_furu_create_hook", None)
+    return hook.batch_fn if isinstance(hook, _BatchedHook) else None
 
 
 def _validated_batch_key(obj: Spec[Any]) -> tuple[Hashable, int]:
@@ -472,34 +474,35 @@ def _create_and_store_group[T](
         logger.debug("create start")
         group_started_at = time.monotonic()
         try:
-            if getattr(type(group[0]), "_furu_create_hook", None) is None:
-                raise TypeError(
-                    f"{type(group[0]).__qualname__} cannot create missing results "
-                    "because it does not define create()"
-                )
-            if _batch_fn(group[0]) is not None:
-                logger.debug("running batched create() hook")
-                with dependency_recorder() as recorder:
-                    results = type(group[0])._furu_create_hook(group)
-                observed = recorder.finalize()
-                logger.debug("batched create() hook returned")
-                if not isinstance(results, list):
+            match getattr(type(group[0]), "_furu_create_hook", None):
+                case None:
                     raise TypeError(
-                        f"{type(group[0]).__name__}.create() must return a list"
+                        f"{type(group[0]).__qualname__} cannot create missing results "
+                        "because it does not define create()"
                     )
-                # TODO: Track dependency calls per object during batched execution.
-                # This currently assigns dependencies observed anywhere in the batch
-                # to every object.
-                observed_dependencies = [observed for _ in group]
-            else:
-                logger.debug("running sequential create() fallback")
-                results = []
-                observed_dependencies = []
-                for obj in group:
+                case _BatchedHook(func=create_hook):
+                    logger.debug("running batched create() hook")
                     with dependency_recorder() as recorder:
-                        results.append(obj._furu_create_hook())
-                    observed_dependencies.append(recorder.finalize())
-                logger.debug("sequential create() fallback returned")
+                        results = create_hook(group)
+                    observed = recorder.finalize()
+                    logger.debug("batched create() hook returned")
+                    if not isinstance(results, list):
+                        raise TypeError(
+                            f"{type(group[0]).__name__}.create() must return a list"
+                        )
+                    # TODO: Track dependency calls per object during batched execution.
+                    # This currently assigns dependencies observed anywhere in the batch
+                    # to every object.
+                    observed_dependencies = [observed for _ in group]
+                case create_hook:
+                    logger.debug("running sequential create() fallback")
+                    results = []
+                    observed_dependencies = []
+                    for obj in group:
+                        with dependency_recorder() as recorder:
+                            results.append(create_hook(obj))
+                        observed_dependencies.append(recorder.finalize())
+                    logger.debug("sequential create() fallback returned")
 
             if len(results) != len(group):
                 raise TypeError(

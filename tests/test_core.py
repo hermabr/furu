@@ -173,7 +173,7 @@ class B[T](Spec):
             "__annotations__": ann,
             "_hidden": 0,
         }
-        namespace["create"] = lambda self: cls._furu_create_hook(self)
+        namespace["create"] = lambda self: cls._furu_create_hook(self)  # ty: ignore[call-non-callable]
 
         Hidden = types.new_class(
             cls.__name__,
@@ -986,7 +986,7 @@ def test_hashes_and_data_dir():
 
     def qualname_alias(cls: type[Spec[object]], *, ret_typ: type) -> type[Spec[object]]:
         namespace: dict[str, object] = {"__module__": cls.__module__}
-        namespace["create"] = lambda self: cls._furu_create_hook(self)
+        namespace["create"] = lambda self: cls._furu_create_hook(self)  # ty: ignore[call-non-callable]
         alias = type(ret_typ.__qualname__, (cls,), namespace)
         alias.__qualname__ = ret_typ.__qualname__
         return alias
