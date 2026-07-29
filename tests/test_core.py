@@ -52,7 +52,7 @@ from furu.testing import override_config
 from furu.utils import fully_qualified_name
 from furu.worker.context import (
     _DependencyNotReady,
-    _worker_execution_lease_id,
+    _in_worker_execution,
     worker_execution_context,
 )
 
@@ -2246,12 +2246,10 @@ def test_empty_list_returns_empty_list() -> None:
 
 
 def test_worker_execution_context_is_scoped() -> None:
-    assert _worker_execution_lease_id.get() is None
-    with worker_execution_context(
-        lease_id="lease-1",
-    ):
-        assert _worker_execution_lease_id.get() == "lease-1"
-    assert _worker_execution_lease_id.get() is None
+    assert not _in_worker_execution.get()
+    with worker_execution_context():
+        assert _in_worker_execution.get()
+    assert not _in_worker_execution.get()
 
 
 def test_worker_create_loads_cached_result_without_recomputing(
@@ -2263,9 +2261,7 @@ def test_worker_create_loads_cached_result_without_recomputing(
     assert cached.create() == "object-id:10"
     ObjectIdStorageValue.create_calls.clear()
 
-    with worker_execution_context(
-        lease_id="lease-1",
-    ):
+    with worker_execution_context():
         assert cached.create() == "object-id:10"
 
     assert ObjectIdStorageValue.create_calls == []
@@ -2279,9 +2275,7 @@ def test_worker_create_reports_all_missing_dependencies(
     second = ObjectIdStorageValue(key=12)
 
     with (
-        worker_execution_context(
-            lease_id="lease-1",
-        ),
+        worker_execution_context(),
         pytest.raises(_DependencyNotReady) as exc_info,
     ):
         _load_or_create([first, second])
@@ -2299,9 +2293,7 @@ def test_worker_load_existing_reports_missing_dependency(tmp_path: Path) -> None
     missing = ObjectIdStorageValue(key=13)
 
     with (
-        worker_execution_context(
-            lease_id="lease-1",
-        ),
+        worker_execution_context(),
         pytest.raises(_DependencyNotReady) as exc_info,
     ):
         missing.load_existing()
@@ -2322,9 +2314,7 @@ def test_worker_top_level_load_existing_reports_all_missing_dependencies(
     assert ready.create() == "object-id:22"
 
     with (
-        worker_execution_context(
-            lease_id="lease-1",
-        ),
+        worker_execution_context(),
         pytest.raises(_DependencyNotReady) as exc_info,
     ):
         furu.load_existing([missing_first, ready, missing_second])
@@ -2341,9 +2331,7 @@ def test_worker_dependency_not_ready_is_not_caught_as_exception(
     missing = ObjectIdStorageValue(key=14)
 
     with pytest.raises(_DependencyNotReady):
-        with worker_execution_context(
-            lease_id="lease-1",
-        ):
+        with worker_execution_context():
             try:
                 missing.load_existing()
             except Exception as exc:  # pragma: no cover

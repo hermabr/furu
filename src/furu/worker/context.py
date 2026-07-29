@@ -11,23 +11,20 @@ if TYPE_CHECKING:
 DependencyCallKind: TypeAlias = Literal["create", "load_existing"]
 
 
-_worker_execution_lease_id: ContextVar[str | None] = ContextVar(
-    "_worker_execution_lease_id",
-    default=None,
+_in_worker_execution: ContextVar[bool] = ContextVar(
+    "_in_worker_execution",
+    default=False,
 )
 
 
 @contextmanager
-def worker_execution_context(
-    *,
-    lease_id: str,
-) -> Iterator[None]:
-    token = _worker_execution_lease_id.set(lease_id)
+def worker_execution_context() -> Iterator[None]:
+    token = _in_worker_execution.set(True)
 
     try:
         yield
     finally:
-        _worker_execution_lease_id.reset(token)
+        _in_worker_execution.reset(token)
 
 
 class _DependencyNotReady(BaseException):

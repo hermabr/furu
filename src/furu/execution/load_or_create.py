@@ -43,7 +43,7 @@ from furu.storage._layout import (
 from furu.utils import atomic_write_text, format_duration, nfs_safe_unique_name
 from furu.worker.context import (
     _DependencyNotReady,
-    _worker_execution_lease_id,
+    _in_worker_execution,
 )
 
 if TYPE_CHECKING:
@@ -140,7 +140,7 @@ def _load_or_create[T](
     use_lock: bool = True,
 ) -> T | list[T]:
     _require_uv()
-    if _worker_execution_lease_id.get() is not None:
+    if _in_worker_execution.get():
         return _load_or_create_worker(obj_or_objs)
     return _load_or_create_local(obj_or_objs, use_lock=use_lock)
 
@@ -241,7 +241,7 @@ def load_existing[T](objs: Sequence[Spec[T]]) -> list[T]:
             )
         )
     if missing:
-        if _worker_execution_lease_id.get() is not None:
+        if _in_worker_execution.get():
             raise _DependencyNotReady(dependencies=missing, call_kind="load_existing")
         first = missing[0]
         raise Missing(

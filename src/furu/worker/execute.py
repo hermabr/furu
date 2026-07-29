@@ -52,7 +52,7 @@ def execute_job(objs: Sequence[Spec[Any]], *, job: Job) -> JobResultRequest:
                 "Update the checkout (e.g. git pull) and run:\n"
                 "  uv sync"
             )
-        with worker_execution_context(lease_id=job.members[0].lease_id):
+        with worker_execution_context():
             _ensure_group_result(objs, submit_provenance=job.provenance)
         return JobCompletedResult()
     except _DependencyNotReady as exc:

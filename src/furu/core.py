@@ -191,7 +191,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
         from furu.dependencies import record_dependency_call
         from furu.worker.context import (
             _DependencyNotReady,
-            _worker_execution_lease_id,
+            _in_worker_execution,
         )
 
         record_dependency_call(self)
@@ -205,7 +205,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
                 ),
             )
         raise_if_stale(self)
-        if _worker_execution_lease_id.get() is not None:
+        if _in_worker_execution.get():
             raise _DependencyNotReady(
                 dependencies=[self],
                 call_kind="load_existing",
