@@ -62,7 +62,8 @@ def worker_loop(
                         idle_started_at = None
                         task_started_at = time.monotonic()
                         task_label: str | None = None
-                        first_lease = job.members[0].lease_id
+                        lease_ids = [member.lease_id for member in job.members]
+                        first_lease = lease_ids[0]
                         job_result: JobResultRequest
                         try:
                             objs = [
@@ -76,7 +77,8 @@ def worker_loop(
                                 "received %s",
                                 task_label,
                                 extra=log_detail(
-                                    lease=first_lease, members=len(job.members)
+                                    leases=",".join(lease_ids),
+                                    members=len(job.members),
                                 ),
                             )
                             match objs[0]._metadata.execution:

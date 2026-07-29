@@ -15,7 +15,6 @@ from pydantic import TypeAdapter, ValidationError
 import furu
 import furu.worker.loop as worker_loop_module
 from furu import GiB, Metadata, Requires, Spec, Throttle, at_least
-from furu.storage._layout import execution_coordinator_log_path_in
 from furu.config import get_config
 from furu.dag import _add_to_dag
 from furu.execution import api
@@ -26,6 +25,7 @@ from furu.execution.execution_coordinator import (
     RunningJob,
 )
 from furu.execution.server import execution_coordinator_server
+from furu.logging import _scoped_log_files
 from furu.metadata import ArtifactSpec
 from furu.provenance import (
     EnvironmentIdentity,
@@ -34,6 +34,7 @@ from furu.provenance import (
     SubmitProvenance,
 )
 from furu.resources import ResourceRequest
+from furu.storage._layout import execution_coordinator_log_path_in
 from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
 from furu.worker.loop import worker_loop
 from furu.worker.protocol import (
@@ -1549,10 +1550,23 @@ def test_worker_loop_exits_after_idle_timeout(
 def test_worker_loop_logs_task_requests_and_received_task(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
 ) -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
-    job = _job("lease-1", leaf)
+    other_leaf = ExecutionCoordinatorLeaf(value=2)
+    job = Job(
+        members=[
+            JobMember(
+                lease_id="lease-1", artifact=ArtifactSpec.from_furu(leaf)
+            ),
+            JobMember(
+                lease_id="lease-2", artifact=ArtifactSpec.from_furu(other_leaf)
+            ),
+        ],
+        provenance=_submit_provenance(),
+    )
     leases: list[LeaseJobResponse] = [job, "stop"]
+    log_path = tmp_path / "worker.log"
 
     class TestClient:
         def __init__(self, server_url: str, *, auth_token: str) -> None:
@@ -1578,7 +1592,7 @@ def test_worker_loop_logs_task_requests_and_received_task(
         lambda obj, *, job: JobCompletedResult(),
     )
 
-    with _captured_furu_logs(caplog):
+    with _captured_furu_logs(caplog), _scoped_log_files((log_path,)):
         worker_loop(
             server_url="http://worker.test",
             auth_token="test-token",
@@ -1589,11 +1603,16 @@ def test_worker_loop_logs_task_requests_and_received_task(
         )
 
     assert "worker requesting new task from server" not in caplog.messages
-    assert f"received {leaf._log_label}" in caplog.messages
+    assert f"received {leaf._log_label} ×2" in caplog.messages
     assert any(
-        message.startswith(f"finished {leaf._log_label} ok ·")
+        message.startswith(f"finished {leaf._log_label} ×2 ok ·")
         for message in caplog.messages
     )
+    received_line = next(
+        line for line in log_path.read_text().splitlines() if 'msg="received ' in line
+    )
+    assert "leases=lease-1,lease-2" in received_line
+    assert "members=2" in received_line
 
 
 def test_worker_loop_logs_stop_and_first_wait(
