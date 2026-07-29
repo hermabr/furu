@@ -6,7 +6,7 @@ import shutil
 from abc import ABC
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from functools import cached_property, wraps
+from functools import cached_property
 from inspect import get_annotations
 from pathlib import Path
 from typing import (
@@ -19,7 +19,7 @@ from typing import (
     final,
 )
 
-from furu._batched import _BatchedCreate, _BatchedCreateVerb, _BatchedHook, batched
+from furu._batched import _BatchedCreate, _BatchedHook, batched
 from furu._declared_types import declared_result_type
 from furu.config import get_config
 from furu.explain import ExplainDepth
@@ -131,7 +131,19 @@ class Spec[T](_FuruDataclassTransform, ABC):
         if cls.migrations:
             validate_migration_declaration(cls)
         validate_embedded_migration_declarations(cls)
-        _install_create_verb(cls)
+        match cls.__dict__.get("create"):
+            case None:
+                pass
+            case batched():
+                raise TypeError(
+                    f"{cls.__qualname__}.create: @furu.batched needs a batch "
+                    "key function: @furu.batched(batch_key)"
+                )
+            case _BatchedCreate() as hook:
+                cls._furu_create_hook = _BatchedHook(hook.func, hook.batch_fn)
+            case hook:
+                cls._furu_create_hook = hook
+                del cls.create  # unshadow the inherited create verb
 
     def create(self) -> T:
         from furu.execution.load_or_create import _load_or_create
@@ -355,28 +367,3 @@ class Spec[T](_FuruDataclassTransform, ABC):
             + f"{self._artifact_schema_hash[:5]}:"
             + f"{self._artifact_hash[:5]}"
         )
-
-
-def _install_create_verb(cls: type[Spec[Any]]) -> None:
-    """Capture the author's create hook and install the create verb over it."""
-    if "create" not in cls.__dict__:
-        return
-    hook = cls.__dict__["create"]
-    if isinstance(hook, batched):
-        raise TypeError(
-            f"{cls.__qualname__}.create: @furu.batched needs a batch key "
-            "function: @furu.batched(batch_key)"
-        )
-    if isinstance(hook, _BatchedCreate):
-        cls._furu_create_hook = _BatchedHook(hook.func, hook.batch_fn)
-        cls.create = _BatchedCreateVerb()  # ty: ignore[invalid-assignment]
-    else:
-        cls._furu_create_hook = hook
-
-        @wraps(hook)
-        def create_verb(self: Spec[Any]) -> Any:
-            from furu.execution.load_or_create import _load_or_create
-
-            return _load_or_create(self)
-
-        cls.create = create_verb  # ty: ignore[invalid-assignment]
