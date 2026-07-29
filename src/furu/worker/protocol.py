@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -17,12 +17,6 @@ class JobMember(BaseModel):
 
 
 class Job(BaseModel):
-    """A group of individually-leased members executed as one batch.
-
-    A single-mode spec is a group of one. The worker executes the group once
-    and reports the outcome per lease.
-    """
-
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     members: list[JobMember]
@@ -49,7 +43,7 @@ class JobBlockedResult(BaseModel):
     dependencies: list[ArtifactSpec]
 
 
-JobResultRequest: TypeAlias = Annotated[
+type JobResultRequest = Annotated[
     JobCompletedResult | JobFailedResult | JobBlockedResult,
     Field(discriminator="status"),
 ]
@@ -61,7 +55,7 @@ class OkResponse(BaseModel):
     ok: Literal[True] = True
 
 
-LeaseJobResponse: TypeAlias = Job | Literal["wait", "stop"]
+type LeaseJobResponse = Job | Literal["wait", "stop"]
 
 
 class LeaseJobRequest(BaseModel):
