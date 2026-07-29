@@ -1216,6 +1216,25 @@ def test_dataclass_load_reports_constructor_error_with_path(tmp_path: Path) -> N
     assert "value must be non-negative" in message
 
 
+def test_tuple_load_reports_constructor_error_with_padded_index(
+    tmp_path: Path,
+) -> None:
+    bundle_dir = tmp_path / "bundle"
+    value = tuple(DataclassWithPostInit(value=3) for _ in range(10))
+    _save_result_bundle(value, bundle_dir, result_codecs=())
+    manifest_path = bundle_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["$furu"]["items"][3]["$furu"]["|fields"]["value"] = -1
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError) as exc_info:
+        load_result_bundle(bundle_dir)
+
+    message = str(exc_info.value)
+    assert "at 03" in message
+    assert "value must be non-negative" in message
+
+
 def test_dataclass_load_reports_missing_and_extra_fields_with_path(
     tmp_path: Path,
 ) -> None:
