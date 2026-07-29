@@ -201,7 +201,7 @@ class ThrottledBatchedCoordinatorLeaf(furu.Spec[int]):
     throttle = Throttle(max_running=2)
 
     def batch_key(self) -> tuple[None, int]:
-        return (None, 10)
+        return (None, 3)
 
     @furu.batched(batch_key)
     def create(objs: list["ThrottledBatchedCoordinatorLeaf"]) -> list[int]:
@@ -721,19 +721,30 @@ def test_lease_job_chunks_batched_group_to_the_cap() -> None:
     assert coordinator.ready == {}
 
 
-def test_lease_job_batch_gathering_respects_throttle(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    objs = [ThrottledBatchedCoordinatorLeaf(value=value) for value in range(5)]
+def test_throttle_limits_concurrent_batches_not_members() -> None:
+    objs = [ThrottledBatchedCoordinatorLeaf(value=value) for value in range(8)]
     coordinator = _new_execution_coordinator(objs)
 
-    with _captured_furu_logs(caplog):
-        job = _lease_job(coordinator)
+    first = _lease_job(coordinator)
+    second = _lease_job(coordinator)
 
-    assert isinstance(job, Job)
-    assert len(job.members) == 2
+    assert isinstance(first, Job) and len(first.members) == 3
+    assert isinstance(second, Job) and len(second.members) == 3
     assert _lease_job(coordinator) == "wait"
-    assert "is below its batch cap" in caplog.text
+
+    for member in first.members:
+        coordinator.job_result(member.lease_id, JobCompletedResult())
+    third = _lease_job(coordinator)
+    assert isinstance(third, Job) and len(third.members) == 2
+
+
+def test_count_satisfiable_jobs_counts_throttled_batches() -> None:
+    objs = [ThrottledBatchedCoordinatorLeaf(value=value) for value in range(9)]
+    coordinator = _new_execution_coordinator(objs)
+
+    assert (
+        coordinator.count_satisfiable_jobs(resources=ANY_RESOURCES, max_workers=10) == 2
+    )
 
 
 def test_count_satisfiable_jobs_counts_batched_groups() -> None:
@@ -1556,12 +1567,8 @@ def test_worker_loop_logs_task_requests_and_received_task(
     other_leaf = ExecutionCoordinatorLeaf(value=2)
     job = Job(
         members=[
-            JobMember(
-                lease_id="lease-1", artifact=ArtifactSpec.from_furu(leaf)
-            ),
-            JobMember(
-                lease_id="lease-2", artifact=ArtifactSpec.from_furu(other_leaf)
-            ),
+            JobMember(lease_id="lease-1", artifact=ArtifactSpec.from_furu(leaf)),
+            JobMember(lease_id="lease-2", artifact=ArtifactSpec.from_furu(other_leaf)),
         ],
         provenance=_submit_provenance(),
     )

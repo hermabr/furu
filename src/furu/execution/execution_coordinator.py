@@ -7,6 +7,7 @@ from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, assert_never
 from uuid import uuid4
@@ -193,43 +194,14 @@ class ExecutionCoordinator:
             self._maybe_finish_locked()
             if self.done.is_set():
                 return "stop"
-            if not self.ready:
+            lease = next(self._satisfiable_leases_locked(resources), None)
+            if lease is None:
                 return "wait"
-
-            running_counts = self._running_counts()
-            object_id = next(
-                (
-                    object_id
-                    for object_id, node in self.ready.items()
-                    if resource_request_satisfies(
-                        resources, node.obj._metadata.requires
-                    )
-                    and self._can_start_node_locked(node, running_counts)
-                ),
-                None,
-            )
-            if object_id is None:
-                return "wait"
-
-            node = self.ready.pop(object_id)
-            nodes = [node]
-            if node.batch_group is not None:
-                if (throttle := node.obj.throttle) is not None and (
-                    throttle.max_running < node.batch_group[1]
-                ):
-                    logger.warning(
-                        "%s throttle max_running=%d is below its batch cap %d; "
-                        "batches are capped by the throttle",
-                        type(node.obj).__name__,
-                        throttle.max_running,
-                        node.batch_group[1],
-                    )
-                nodes.extend(
-                    self.ready.pop(member_id)
-                    for member_id in self._batch_member_ids_locked(
-                        node, running_counts, exclude=frozenset()
-                    )
-                )
+            node, member_ids = lease
+            nodes = [
+                self.ready.pop(member_id)
+                for member_id in (node.obj.object_id, *member_ids)
+            ]
             members = []
             started_at = time.monotonic()
             for member_node in nodes:
@@ -272,74 +244,50 @@ class ExecutionCoordinator:
         self, *, resources: ResourceRequest, max_workers: int
     ) -> int:
         with self.lock:
-            count = 0
-            running_counts = self._running_counts()
-            consumed: set[str] = set()
-            for object_id, node in self.ready.items():
-                if object_id in consumed:
-                    continue
-                if resource_request_satisfies(
-                    resources, node.obj._metadata.requires
-                ) and self._can_start_node_locked(node, running_counts):
-                    count += 1
-                    consumed.add(object_id)
-                    member_ids = (
-                        self._batch_member_ids_locked(
-                            node, running_counts, exclude=consumed
-                        )
-                        if node.batch_group is not None
-                        else []
-                    )
-                    consumed.update(member_ids)
-                    running_counts[type(node.obj)] = (
-                        running_counts.get(type(node.obj), 0) + 1 + len(member_ids)
-                    )
-                    if count >= max_workers:
-                        return max_workers
-            return count
+            leases = self._satisfiable_leases_locked(resources)
+            return sum(1 for _ in islice(leases, max_workers))
 
-    def _batch_member_ids_locked(
-        self,
-        node: DagNode,
-        running_counts: dict[type[Spec], int],
-        *,
-        exclude: frozenset[str] | set[str],
-    ) -> list[str]:
-        """Ready nodes (beyond `node`) that can join its lease, throttle-aware.
+    def _satisfiable_leases_locked(
+        self, resources: ResourceRequest
+    ) -> Iterator[tuple[DagNode, list[str]]]:
+        """Yield (node, batch member ids) for each lease that could start now.
 
-        Assumes `node` itself is already accounted for in neither the ready
-        set scan nor the returned ids; callers count it separately.
+        Throttles count concurrent create calls, so a running batch counts
+        once. A worker holds at most one job at a time, which makes distinct
+        (worker, spec type) pairs the number of running jobs per type.
         """
-        assert node.batch_group is not None
-        group_key, cap = node.batch_group
-        throttle = node.obj.throttle
-        taken = running_counts.get(type(node.obj), 0) + 1
-        member_ids: list[str] = []
-        for other_id, other in self.ready.items():
-            if len(member_ids) + 1 >= cap:
-                break
-            if throttle is not None and taken >= throttle.max_running:
-                break
-            if other is node or other_id in exclude:
+        running_counts: dict[type[Spec], int] = {}
+        for _, obj_type in {
+            (job.worker, type(job.node.obj)) for job in self.running.values()
+        }:
+            running_counts[obj_type] = running_counts.get(obj_type, 0) + 1
+        consumed: set[str] = set()
+        for object_id, node in self.ready.items():
+            if object_id in consumed:
                 continue
-            if other.batch_group is None or other.batch_group[0] != group_key:
+            if not resource_request_satisfies(resources, node.obj._metadata.requires):
                 continue
-            member_ids.append(other_id)
-            taken += 1
-        return member_ids
-
-    def _running_counts(self) -> dict[type[Spec], int]:
-        counts: dict[type[Spec], int] = {}
-        for job in self.running.values():
-            counts[type(job.node.obj)] = counts.get(type(job.node.obj), 0) + 1
-        return counts
-
-    def _can_start_node_locked(
-        self, node: DagNode, running_counts: dict[type[Spec], int]
-    ) -> bool:
-        if (throttle := node.obj.throttle) is None:
-            return True
-        return running_counts.get(type(node.obj), 0) < throttle.max_running
+            throttle = node.obj.throttle
+            if (
+                throttle is not None
+                and running_counts.get(type(node.obj), 0) >= throttle.max_running
+            ):
+                continue
+            consumed.add(object_id)
+            member_ids: list[str] = []
+            if node.batch_group is not None:
+                group_key, cap = node.batch_group
+                for other_id, other in self.ready.items():
+                    if len(member_ids) + 1 >= cap:
+                        break
+                    if other_id in consumed:
+                        continue
+                    if other.batch_group is None or other.batch_group[0] != group_key:
+                        continue
+                    member_ids.append(other_id)
+                consumed.update(member_ids)
+            running_counts[type(node.obj)] = running_counts.get(type(node.obj), 0) + 1
+            yield node, member_ids
 
     def _release_worker_locked(self, worker: str, *, reason: str) -> None:
         for lease_id, running_job in tuple(self.running.items()):
