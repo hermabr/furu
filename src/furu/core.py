@@ -13,6 +13,7 @@ from typing import (
     Any,
     ClassVar,
     Literal,
+    Self,
     cast,
     final,
 )
@@ -55,7 +56,7 @@ from furu.utils import (
 from furu.validate import validate_cls
 
 if TYPE_CHECKING:
-    from typing_extensions import dataclass_transform
+    from typing import dataclass_transform
 
     @dataclass_transform(kw_only_default=True, frozen_default=True)
     class _FuruDataclassTransform:
@@ -93,19 +94,6 @@ _RESERVED_FIELD_NAMES = frozenset(
 
 
 class Spec[T](_FuruDataclassTransform, ABC):
-    """Authors implement one create hook, single or batched:
-
-    - ``def create(self) -> T`` computes one result at a time.
-    - ``@furu.batched(batch_key)`` over ``def create(objs: list[Self]) ->
-      list[T]`` computes a batch at a time, grouped by ``batch_key``.
-
-    furu captures the hook at class creation and installs the create verb
-    (load-or-create) in its place.
-    """
-
-    # The author's create hook, captured by _install_create_verb: a plain
-    # ``(self) -> T`` method, or a staticmethod ``(list[Self]) -> list[T]``
-    # when _furu_batch_fn is set (None marks a single-flavored hook).
     _furu_create_hook: ClassVar[Any]
     _furu_batch_fn: ClassVar[Any]
     throttle: ClassVar[Throttle | None] = None
@@ -285,9 +273,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
 
     @final
     @classmethod
-    def from_artifact[TSpec: Spec](
-        cls: type[TSpec], artifact: ArtifactSpec | Path
-    ) -> TSpec:
+    def from_artifact(cls, artifact: ArtifactSpec | Path) -> Self:
         from furu.serializer.artifact import _from_artifact
 
         if not isinstance(artifact, ArtifactSpec):
@@ -382,12 +368,12 @@ def _install_create_verb(cls: type[Spec[Any]]) -> None:
             "function: @furu.batched(batch_key)"
         )
     if isinstance(hook, _BatchedCreate):
-        setattr(cls, "_furu_create_hook", staticmethod(hook.func))
-        setattr(cls, "_furu_batch_fn", staticmethod(hook.batch_fn))
-        setattr(cls, "create", _BatchedCreateVerb())
+        cls._furu_create_hook = staticmethod(hook.func)
+        cls._furu_batch_fn = staticmethod(hook.batch_fn)
+        cls.create = _BatchedCreateVerb()  # ty: ignore[invalid-assignment]
     else:
-        setattr(cls, "_furu_create_hook", hook)
-        setattr(cls, "_furu_batch_fn", None)
+        cls._furu_create_hook = hook
+        cls._furu_batch_fn = None
 
         @wraps(hook)
         def create_verb(self: Spec[Any]) -> Any:
@@ -395,4 +381,4 @@ def _install_create_verb(cls: type[Spec[Any]]) -> None:
 
             return _load_or_create(self)
 
-        setattr(cls, "create", create_verb)
+        cls.create = create_verb  # ty: ignore[invalid-assignment]
