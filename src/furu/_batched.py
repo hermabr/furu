@@ -2,10 +2,7 @@ from __future__ import annotations
 
 import functools
 from collections.abc import Callable, Hashable
-from typing import TYPE_CHECKING, Any, NamedTuple, overload
-
-if TYPE_CHECKING:
-    from furu.core import Spec
+from typing import Any, NamedTuple, overload
 
 
 class _BatchedHook(NamedTuple):
@@ -44,14 +41,6 @@ class _BatchedCreate[S, T]:
     @overload
     def __get__(self, obj: S, _objtype: type, /) -> Callable[[], T]: ...
     def __get__(self, obj: Any, _objtype: type | None = None, /) -> Any:
-        raise TypeError(
-            "@furu.batched hooks are captured by furu at class creation; "
-            "define them on a furu.Spec subclass"
-        )
-
-
-class _BatchedCreateVerb:
-    def __get__(self, obj: Spec[Any] | None, _objtype: type | None = None) -> Any:
         from furu.execution.load_or_create import _load_or_create
 
         if obj is None:
