@@ -15,7 +15,7 @@ from pydantic import TypeAdapter
 
 from furu.config import _WORKER_JSON_CONFIG_FILE_ENV_VAR
 from furu.core import Spec
-from furu.execution.load_or_create import _ensure_group_result
+from furu.execution.load_or_create import _cached_to_build_msg, _ensure_group_result
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
 from furu.migration.links import result_dir_for_loading
@@ -88,7 +88,7 @@ class ChildSlot:
         self, objs: Sequence[Spec[Any]], *, job: Job, execution: Subprocess
     ) -> JobResultRequest:
         if all(result_dir_for_loading(obj) is not None for obj in objs):
-            objs[0].logger.info("cache hit for %s", objs[0]._log_label)
+            logger.info("%s", _cached_to_build_msg(list(objs), []))
             return JobCompletedResult()
 
         environment = dict(os.environ)
