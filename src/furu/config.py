@@ -48,10 +48,6 @@ def _project_anchor() -> Path:
     return anchor
 
 
-def _anchored(path: Path) -> Path:
-    return path if path.is_absolute() else _project_anchor() / path
-
-
 class _FuruDirectories(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -59,6 +55,16 @@ class _FuruDirectories(BaseModel):
     executions: Path = Path("furu-data") / "executions"
     snapshots: Path = Path("furu-data") / "snapshots"
     debug: Path = Path("furu-data") / "debug"
+
+    def anchored(self) -> "_FuruDirectories":
+        return _FuruDirectories(
+            **{
+                name: path
+                if (path := getattr(self, name)).is_absolute()
+                else _project_anchor() / path
+                for name in _FuruDirectories.model_fields
+            }
+        )
 
 
 class _FuruWorkerConfig(BaseModel):
@@ -103,12 +109,7 @@ class _Config(BaseSettings):
                 **{name: debug / name for name in _FuruDirectories.model_fields}
                 | {"debug": debug}
             )
-        return _FuruDirectories(
-            **{
-                name: _anchored(getattr(directories, name))
-                for name in _FuruDirectories.model_fields
-            }
-        )
+        return directories.anchored()
 
     @classmethod
     def settings_customise_sources(

@@ -12,8 +12,6 @@ from typing import Literal, TypeAlias, assert_never
 
 from furu.config import (
     _WORKER_JSON_CONFIG_FILE_ENV_VAR,
-    _anchored,
-    _FuruDirectories,
     get_config,
 )
 from furu.execution.api import PoolApiClient
@@ -91,14 +89,7 @@ class SlurmWorkerBackend:
         # so pin any relative data directories to the submit-side anchor.
         config = get_config()
         config = config.model_copy(
-            update={
-                "directories": _FuruDirectories(
-                    **{
-                        name: _anchored(getattr(config.directories, name))
-                        for name in _FuruDirectories.model_fields
-                    }
-                )
-            }
+            update={"directories": config.directories.anchored()}
         )
         config_file = worker_dir / f"worker-{secrets.token_hex(16)}.config.json"
         write_private_file(
