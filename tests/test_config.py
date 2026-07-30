@@ -137,6 +137,64 @@ debug = "/tmp/furu-parent-pyproject-debug"
     )
 
 
+def test_config_reads_global_toml(tmp_path, monkeypatch) -> None:
+    config_home = tmp_path / ".config"
+    config_file = config_home / "furu" / "furu.toml"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text(
+        """
+debug_mode = true
+
+[worker]
+connect_host = "login01.cluster"
+idle_timeout_seconds = 7.5
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    config = _Config()
+
+    assert config.debug_mode is True
+    assert config.worker.connect_host == "login01.cluster"
+    assert config.worker.idle_timeout_seconds == 7.5
+
+
+def test_pyproject_toml_overrides_global_toml(tmp_path, monkeypatch) -> None:
+    config_home = tmp_path / "config"
+    config_file = config_home / "furu" / "furu.toml"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text(
+        """
+debug_mode = false
+
+[worker]
+idle_timeout_seconds = 7.5
+max_failed_restarts = 7
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "pyproject.toml").write_text(
+        """
+[tool.furu]
+debug_mode = true
+
+[tool.furu.worker]
+idle_timeout_seconds = 12.5
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    monkeypatch.chdir(tmp_path)
+
+    config = _Config()
+
+    assert config.debug_mode is True
+    assert config.worker.idle_timeout_seconds == 12.5
+    assert config.worker.max_failed_restarts == 7
+
+
 def test_environment_overrides_pyproject_toml(tmp_path, monkeypatch) -> None:
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text(

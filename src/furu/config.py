@@ -8,6 +8,7 @@ from pydantic_settings import (
     PydanticBaseSettingsSource,
     PyprojectTomlConfigSettingsSource,
     SettingsConfigDict,
+    TomlConfigSettingsSource,
 )
 
 _WORKER_JSON_CONFIG_FILE_ENV_VAR = "_FURU_WORKER_JSON_CONFIG_FILE"
@@ -84,6 +85,12 @@ class _Config(BaseSettings):
             env_settings,
             dotenv_settings,
             PyprojectTomlConfigSettingsSource(settings_cls),
+            TomlConfigSettingsSource(
+                settings_cls,
+                Path(os.getenv("XDG_CONFIG_HOME", "~/.config")).expanduser()
+                / "furu"
+                / "furu.toml",
+            ),
             file_secret_settings,
         )
 
