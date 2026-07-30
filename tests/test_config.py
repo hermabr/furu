@@ -1,3 +1,5 @@
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -9,6 +11,7 @@ from furu.config import (
     _FuruWorkerConfig,
     _WORKER_JSON_CONFIG_FILE_ENV_VAR,
     _set_config,
+    _project_anchor,
     get_config,
 )
 from furu.testing import override_config
@@ -48,6 +51,7 @@ def test_config_reads_environment(monkeypatch) -> None:
 
 def test_debug_mode_uses_default_debug_directory(monkeypatch) -> None:
     monkeypatch.setenv("FURU_DEBUG_MODE", "true")
+    monkeypatch.setattr("furu.config._project_anchor", lambda: Path())
 
     config = _Config()
 
@@ -61,7 +65,81 @@ def test_debug_mode_uses_default_debug_directory(monkeypatch) -> None:
     )
 
 
-def test_config_uses_main_directories_by_default() -> None:
+def test_relative_directories_anchor_to_main_worktree(tmp_path, monkeypatch) -> None:
+    main = tmp_path / "main"
+    main.mkdir()
+    (main / "pyproject.toml").write_text("", encoding="utf-8")
+    git = ["git", "-c", "user.email=t@t", "-c", "user.name=t"]
+    subprocess.run([*git, "init", "-q"], cwd=main, check=True)
+    subprocess.run([*git, "add", "pyproject.toml"], cwd=main, check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "init"], cwd=main, check=True)
+    subprocess.run(
+        [*git, "worktree", "add", "-q", str(tmp_path / "linked")], cwd=main, check=True
+    )
+
+    # The linked worktree has its own pyproject.toml, but the git worktree
+    # mapping wins so all worktrees share the main checkout's directories.
+    monkeypatch.chdir(tmp_path / "linked")
+    _project_anchor.cache_clear()
+    try:
+        expected = main.resolve() / "furu-data" / "objects"
+        assert _Config().run_directories.objects == expected
+
+        monkeypatch.chdir(main)
+        _project_anchor.cache_clear()
+        assert _Config().run_directories.objects == expected
+    finally:
+        _project_anchor.cache_clear()
+
+
+def test_relative_directories_anchor_to_pyproject_root(tmp_path, monkeypatch) -> None:
+    (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
+    nested = tmp_path / "src" / "deep"
+    nested.mkdir(parents=True)
+
+    monkeypatch.chdir(nested)
+    _project_anchor.cache_clear()
+    try:
+        expected = tmp_path.resolve() / "furu-data" / "objects"
+        assert _Config().run_directories.objects == expected
+    finally:
+        _project_anchor.cache_clear()
+
+
+def test_import_outside_project_defers_anchor_crash(tmp_path) -> None:
+    code = (
+        "import furu\n"
+        "from furu.config import get_config\n"
+        "config = get_config()\n"
+        "try:\n"
+        "    config.run_directories\n"
+        "except RuntimeError:\n"
+        "    print('deferred')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip() == "deferred"
+
+
+def test_relative_directories_require_a_project(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    _project_anchor.cache_clear()
+    try:
+        config = _Config()  # config loads fine; only directory access crashes
+        with pytest.raises(RuntimeError, match="no pyproject.toml"):
+            _ = config.run_directories
+    finally:
+        _project_anchor.cache_clear()
+
+
+def test_config_uses_main_directories_by_default(monkeypatch) -> None:
+    monkeypatch.setattr("furu.config._project_anchor", lambda: Path())
+
     config = _Config()
 
     assert config.debug_mode is False

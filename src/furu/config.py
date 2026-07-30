@@ -1,4 +1,6 @@
+import functools
 import os
+import subprocess
 from pathlib import Path
 
 from pydantic import BaseModel, ByteSize, ConfigDict, Field
@@ -11,6 +13,43 @@ from pydantic_settings import (
 )
 
 _WORKER_JSON_CONFIG_FILE_ENV_VAR = "_FURU_WORKER_JSON_CONFIG_FILE"
+
+
+@functools.cache
+def _project_anchor() -> Path:
+    try:
+        git_dir, common_dir = subprocess.run(
+            [
+                "git",
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-dir",
+                "--git-common-dir",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.splitlines()
+        if git_dir != common_dir:
+            return Path(common_dir).parent
+    except (OSError, subprocess.CalledProcessError, ValueError):
+        pass
+    cwd = Path.cwd()
+    anchor = next(
+        (d for d in (cwd, *cwd.parents) if (d / "pyproject.toml").is_file()),
+        None,
+    )
+    if anchor is None:
+        raise RuntimeError(
+            f"no pyproject.toml found from {cwd} upward.\n"
+            "furu anchors its data directories to the project root. Create one with:\n"
+            "  uv init"
+        )
+    return anchor
+
+
+def _anchored(path: Path) -> Path:
+    return path if path.is_absolute() else _project_anchor() / path
 
 
 class _FuruDirectories(BaseModel):
@@ -57,13 +96,19 @@ class _Config(BaseSettings):
 
     @property
     def run_directories(self) -> _FuruDirectories:
+        directories = self.directories
         if self.debug_mode:
-            debug = self.directories.debug
-            return _FuruDirectories(
+            debug = directories.debug
+            directories = _FuruDirectories(
                 **{name: debug / name for name in _FuruDirectories.model_fields}
                 | {"debug": debug}
             )
-        return self.directories
+        return _FuruDirectories(
+            **{
+                name: _anchored(getattr(directories, name))
+                for name in _FuruDirectories.model_fields
+            }
+        )
 
     @classmethod
     def settings_customise_sources(
@@ -88,10 +133,13 @@ class _Config(BaseSettings):
         )
 
 
-_config = _Config()
+_config: _Config | None = None
 
 
 def get_config() -> _Config:
+    global _config
+    if _config is None:
+        _config = _Config()
     return _config
 
 
