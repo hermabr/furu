@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
+from pydantic_settings import SettingsError
 
 from furu.config import (
     _Config,
@@ -143,11 +144,14 @@ def test_config_reads_global_toml(tmp_path, monkeypatch) -> None:
     config_file.parent.mkdir(parents=True)
     config_file.write_text(
         """
-debug_mode = true
-
 [worker]
 connect_host = "login01.cluster"
-idle_timeout_seconds = 7.5
+idle_timeout_seconds = 120
+max_failed_restarts = 8
+max_retries_per_object = 5
+
+[provenance]
+max_snapshot_bytes = "1GiB"
 """,
         encoding="utf-8",
     )
@@ -156,9 +160,11 @@ idle_timeout_seconds = 7.5
 
     config = _Config()
 
-    assert config.debug_mode is True
     assert config.worker.connect_host == "login01.cluster"
-    assert config.worker.idle_timeout_seconds == 7.5
+    assert config.worker.idle_timeout_seconds == 120
+    assert config.worker.max_failed_restarts == 8
+    assert config.worker.max_retries_per_object == 5
+    assert config.provenance.max_snapshot_bytes == 1024**3
 
 
 def test_pyproject_toml_overrides_global_toml(tmp_path, monkeypatch) -> None:
@@ -167,21 +173,15 @@ def test_pyproject_toml_overrides_global_toml(tmp_path, monkeypatch) -> None:
     config_file.parent.mkdir(parents=True)
     config_file.write_text(
         """
-debug_mode = false
-
 [worker]
-idle_timeout_seconds = 7.5
-max_failed_restarts = 7
+connect_host = "global.cluster"
 """,
         encoding="utf-8",
     )
     (tmp_path / "pyproject.toml").write_text(
         """
-[tool.furu]
-debug_mode = true
-
 [tool.furu.worker]
-idle_timeout_seconds = 12.5
+connect_host = "project.cluster"
 """,
         encoding="utf-8",
     )
@@ -190,9 +190,31 @@ idle_timeout_seconds = 12.5
 
     config = _Config()
 
-    assert config.debug_mode is True
-    assert config.worker.idle_timeout_seconds == 12.5
-    assert config.worker.max_failed_restarts == 7
+    assert config.worker.connect_host == "project.cluster"
+
+
+@pytest.mark.parametrize(
+    ("contents", "unsupported"),
+    [
+        ("debug_mode = true", "debug_mode"),
+        ('[directories]\nobjects = "/tmp/furu-objects"', "directories"),
+        ("[provenance]\nsnapshot = false", "provenance.snapshot"),
+        ("[worker]\nunknown_setting = 5", "worker.unknown_setting"),
+    ],
+)
+def test_global_toml_rejects_project_settings(
+    contents, unsupported, tmp_path, monkeypatch
+) -> None:
+    config_home = tmp_path / "config"
+    config_file = config_home / "furu" / "furu.toml"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text(contents, encoding="utf-8")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+
+    with pytest.raises(SettingsError) as error:
+        _Config()
+
+    assert unsupported in str(error.value)
 
 
 def test_environment_overrides_pyproject_toml(tmp_path, monkeypatch) -> None:
