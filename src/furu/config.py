@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, ByteSize, ConfigDict, Field
 from pydantic_settings import (
@@ -11,10 +12,36 @@ from pydantic_settings import (
     PydanticBaseSettingsSource,
     PyprojectTomlConfigSettingsSource,
     SettingsConfigDict,
+    SettingsError,
     TomlConfigSettingsSource,
 )
 
 _WORKER_JSON_CONFIG_FILE_ENV_VAR = "_FURU_WORKER_JSON_CONFIG_FILE"
+_GLOBAL_CONFIG_KEYS = {
+    "worker": {
+        "connect_host",
+        "idle_timeout_seconds",
+        "max_failures_per_worker",
+        "max_retries_per_object",
+    },
+    "provenance": {"max_snapshot_bytes"},
+}
+
+
+class _GlobalTomlConfigSettingsSource(TomlConfigSettingsSource):
+    def __call__(self) -> dict[str, Any]:
+        values = super().__call__()
+        unsupported = set(values) - _GLOBAL_CONFIG_KEYS.keys()
+        for section, allowed in _GLOBAL_CONFIG_KEYS.items():
+            if isinstance(section_values := values.get(section), dict):
+                unsupported |= {
+                    f"{section}.{key}" for key in section_values if key not in allowed
+                }
+        if unsupported:
+            raise SettingsError(
+                f"Unsupported global Furu setting(s): {', '.join(sorted(unsupported))}"
+            )
+        return values
 
 
 @functools.cache
@@ -120,7 +147,7 @@ class _Config(BaseSettings):
             env_settings,
             dotenv_settings,
             PyprojectTomlConfigSettingsSource(settings_cls),
-            TomlConfigSettingsSource(
+            _GlobalTomlConfigSettingsSource(
                 settings_cls,
                 Path(os.getenv("XDG_CONFIG_HOME", "~/.config")).expanduser()
                 / "furu"
