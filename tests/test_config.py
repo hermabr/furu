@@ -131,7 +131,7 @@ def test_relative_directories_require_a_project(tmp_path, monkeypatch) -> None:
     _project_anchor.cache_clear()
     try:
         config = _Config()  # config loads fine; only directory access crashes
-        with pytest.raises(RuntimeError, match="no pyproject.toml"):
+        with pytest.raises(RuntimeError, match="no git repository or pyproject.toml"):
             _ = config.run_directories
     finally:
         _project_anchor.cache_clear()

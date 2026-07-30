@@ -18,34 +18,24 @@ _WORKER_JSON_CONFIG_FILE_ENV_VAR = "_FURU_WORKER_JSON_CONFIG_FILE"
 @functools.cache
 def _project_anchor() -> Path:
     try:
-        git_dir, common_dir = subprocess.run(
-            [
-                "git",
-                "rev-parse",
-                "--path-format=absolute",
-                "--git-dir",
-                "--git-common-dir",
-            ],
+        common_dir = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
             capture_output=True,
             text=True,
             check=True,
-        ).stdout.splitlines()
-        if git_dir != common_dir:
-            return Path(common_dir).parent
-    except (OSError, subprocess.CalledProcessError, ValueError):
+        ).stdout.strip()
+        return Path(common_dir).parent
+    except (OSError, subprocess.CalledProcessError):
         pass
     cwd = Path.cwd()
-    anchor = next(
-        (d for d in (cwd, *cwd.parents) if (d / "pyproject.toml").is_file()),
-        None,
+    for directory in (cwd, *cwd.parents):
+        if (directory / "pyproject.toml").is_file():
+            return directory
+    raise RuntimeError(
+        f"no git repository or pyproject.toml found from {cwd} upward.\n"
+        "furu anchors its data directories to the project root. Create one with:\n"
+        "  uv init"
     )
-    if anchor is None:
-        raise RuntimeError(
-            f"no pyproject.toml found from {cwd} upward.\n"
-            "furu anchors its data directories to the project root. Create one with:\n"
-            "  uv init"
-        )
-    return anchor
 
 
 class _FuruDirectories(BaseModel):
@@ -59,10 +49,8 @@ class _FuruDirectories(BaseModel):
     def anchored(self) -> "_FuruDirectories":
         return _FuruDirectories(
             **{
-                name: path
-                if (path := getattr(self, name)).is_absolute()
-                else _project_anchor() / path
-                for name in _FuruDirectories.model_fields
+                name: path if path.is_absolute() else _project_anchor() / path
+                for name, path in self
             }
         )
 
@@ -134,13 +122,10 @@ class _Config(BaseSettings):
         )
 
 
-_config: _Config | None = None
+_config = _Config()
 
 
 def get_config() -> _Config:
-    global _config
-    if _config is None:
-        _config = _Config()
     return _config
 
 
