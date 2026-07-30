@@ -1765,7 +1765,8 @@ def test_load_path_reads_metadata_storage_without_touching_requires(
     assert UnsatisfiableRequiresNode(name="x").load_existing() == "x"
 
 
-def test_debug_mode_ignores_storage_override() -> None:
+def test_debug_mode_ignores_storage_override(monkeypatch) -> None:
+    monkeypatch.setattr("furu.config._project_anchor", lambda: Path())
     with override_config(_Config(debug_mode=True)):
         node = CustomStorageNode(name="x")
 
@@ -1781,7 +1782,8 @@ def test_debug_mode_ignores_storage_override() -> None:
         )
 
 
-def test_debug_mode_uses_configured_debug_directory() -> None:
+def test_debug_mode_uses_configured_debug_directory(monkeypatch) -> None:
+    monkeypatch.setattr("furu.config._project_anchor", lambda: Path())
     config = _Config(
         debug_mode=True,
         directories=_FuruDirectories(

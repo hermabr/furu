@@ -1854,6 +1854,7 @@ def test_slurm_backend_pins_relative_data_directories_for_workers(
     work_dir = tmp_path / "work"
     work_dir.mkdir()
     monkeypatch.chdir(work_dir)
+    monkeypatch.setattr("furu.config._project_anchor", lambda: work_dir)
     data = get_config().model_dump()
     data["directories"] = _FuruDirectories().model_dump()  # relative furu-data/*
     backend = SlurmWorkerBackend(

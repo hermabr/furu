@@ -1,4 +1,6 @@
+import functools
 import os
+import subprocess
 from pathlib import Path
 
 from pydantic import BaseModel, ByteSize, ConfigDict, Field
@@ -13,6 +15,29 @@ from pydantic_settings import (
 _WORKER_JSON_CONFIG_FILE_ENV_VAR = "_FURU_WORKER_JSON_CONFIG_FILE"
 
 
+@functools.cache
+def _project_anchor() -> Path:
+    try:
+        common_dir = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        return Path(common_dir).parent
+    except (OSError, subprocess.CalledProcessError):
+        pass
+    cwd = Path.cwd()
+    for directory in (cwd, *cwd.parents):
+        if (directory / "pyproject.toml").is_file():
+            return directory
+    raise RuntimeError(
+        f"no git repository or pyproject.toml found from {cwd} upward.\n"
+        "furu anchors its data directories to the project root. Create one with:\n"
+        "  uv init"
+    )
+
+
 class _FuruDirectories(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -20,6 +45,14 @@ class _FuruDirectories(BaseModel):
     executions: Path = Path("furu-data") / "executions"
     snapshots: Path = Path("furu-data") / "snapshots"
     debug: Path = Path("furu-data") / "debug"
+
+    def anchored(self) -> "_FuruDirectories":
+        return _FuruDirectories(
+            **{
+                name: path if path.is_absolute() else _project_anchor() / path
+                for name, path in self
+            }
+        )
 
 
 class _FuruWorkerConfig(BaseModel):
@@ -57,13 +90,14 @@ class _Config(BaseSettings):
 
     @property
     def run_directories(self) -> _FuruDirectories:
+        directories = self.directories
         if self.debug_mode:
-            debug = self.directories.debug
-            return _FuruDirectories(
+            debug = directories.debug
+            directories = _FuruDirectories(
                 **{name: debug / name for name in _FuruDirectories.model_fields}
                 | {"debug": debug}
             )
-        return self.directories
+        return directories.anchored()
 
     @classmethod
     def settings_customise_sources(
