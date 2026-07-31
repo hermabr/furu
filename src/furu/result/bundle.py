@@ -9,7 +9,6 @@ from typing import (
     Any,
     Final,
     Literal,
-    TypeAlias,
     assert_never,
     cast,
     get_args,
@@ -29,8 +28,8 @@ WRAPPER_KEY: Final = "$furu"
 ARTIFACTS_DIR_NAME: Final = "artifacts"
 MANIFEST_FILE_NAME: Final = "manifest.json"
 _ROOT_ARTIFACT_NAME: Final = "root"
-ValuePath: TypeAlias = tuple[str, ...]
-WrapperKind: TypeAlias = Literal[
+type ValuePath = tuple[str, ...]
+type WrapperKind = Literal[
     "artifact", "dataclass", "path", "pydantic", "tuple", "set", "frozenset"
 ]
 

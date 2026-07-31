@@ -8,7 +8,7 @@ import subprocess
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, TypeAlias, assert_never
+from typing import Literal, assert_never
 
 from furu.config import (
     _WORKER_JSON_CONFIG_FILE_ENV_VAR,
@@ -22,7 +22,7 @@ from furu.utils import write_private_file
 from furu.worker.backends.slurm.pool import SlurmWorkerPool
 from furu.worker.backends.slurm.resources import SlurmResources
 
-SlurmExport: TypeAlias = Literal["NIL", "ALL"] | tuple[str, ...] | None
+type SlurmExport = Literal["NIL", "ALL"] | tuple[str, ...] | None
 
 
 @dataclass(frozen=True, slots=True)

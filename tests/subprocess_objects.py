@@ -12,11 +12,11 @@ import os
 import signal
 import sys
 from pathlib import Path
-from typing import Literal, TypeAlias
+from typing import Literal
 
 from furu import Metadata, Spec, Subprocess, batched
 
-Reuse: TypeAlias = Literal["never", "same_environment", "same_environment_same_spec"]
+type Reuse = Literal["never", "same_environment", "same_environment_same_spec"]
 
 
 def _pid_and_variable(name: str) -> str:

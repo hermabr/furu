@@ -7,11 +7,11 @@ import sys
 import uuid
 from enum import Enum
 from pathlib import Path
-from typing import Any, TypeAlias
+from typing import Any
 
 from pydantic import JsonValue
 
-JsonFields: TypeAlias = dict[str, JsonValue]
+type JsonFields = dict[str, JsonValue]
 
 
 def _running_main_module_name() -> str | None:

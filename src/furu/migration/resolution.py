@@ -6,7 +6,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, is_dataclass
 from dataclasses import fields as dataclass_fields
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from furu.constants import CLASSMARKER, FIELDSMARKER, KINDMARKER
 from furu.migration.steps import (
@@ -35,7 +35,7 @@ from furu.utils import (
 if TYPE_CHECKING:
     from furu.core import Spec
 
-_FieldExpectation: TypeAlias = tuple[Literal["exact", "shape", "any"], JsonValue]
+type _FieldExpectation = tuple[Literal["exact", "shape", "any"], JsonValue]
 _ANY: _FieldExpectation = ("any", None)
 
 

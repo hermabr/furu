@@ -7,7 +7,6 @@ from contextlib import nullcontext
 from typing import (
     TYPE_CHECKING,
     Any,
-    TypeAlias,
     cast,
     overload,
 )
@@ -49,7 +48,7 @@ from furu.worker.context import (
 if TYPE_CHECKING:
     from furu.worker.backends.protocol import WorkerBackend
 
-HasLock: TypeAlias = Callable[[], bool]
+type HasLock = Callable[[], bool]
 
 
 def _record_schema_snapshot(obj: Spec[Any]) -> None:
