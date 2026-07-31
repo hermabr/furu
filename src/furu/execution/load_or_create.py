@@ -402,20 +402,10 @@ def _load_or_create_local[T](
 
 
 def _batch_group(obj: Spec[Any]) -> tuple[object, int] | None:
-    """(grouping key, cap): specs with equal keys may share one create call.
-
-    Keys are compared by equality rather than hashed because Subprocess
-    execution metadata holds an unhashable environment mapping.
-    """
     hook = getattr(type(obj), "_furu_create_hook", None)
     if not isinstance(hook, _BatchedHook):
         return None
     group_hash, cap = hook.batch_fn(obj)
-    if type(cap) is not int or cap < 1:
-        raise TypeError(
-            f"{type(obj).__qualname__} batch key cap must be a positive int, "
-            f"got {cap!r}"
-        )
     key = (type(obj), group_hash, cap, obj._metadata.requires, obj._metadata.execution)
     return key, cap
 
