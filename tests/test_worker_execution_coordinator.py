@@ -12,6 +12,7 @@ from uuid import UUID, uuid4
 import pytest
 from pydantic import TypeAdapter, ValidationError
 from websockets.exceptions import ConnectionClosed, InvalidStatus
+from websockets.headers import build_authorization_basic
 from websockets.sync.client import ClientConnection, connect
 from websockets.sync.server import ServerConnection, serve
 
@@ -234,7 +235,9 @@ def _connect_worker(
     token = server.auth_token if auth_token is None else auth_token
     connection = connect(
         server.server_url,
-        additional_headers={"Authorization": f"Bearer {token}"},
+        additional_headers={
+            "Authorization": build_authorization_basic("furu", token)
+        },
     )
     connection.send(
         HelloMessage(
@@ -260,7 +263,9 @@ def _wait_until(condition: Callable[[], bool], *, timeout: float = 10.0) -> None
 def _complete_one_job_over_ws(server_url: str, auth_token: str) -> None:
     connection = connect(
         server_url,
-        additional_headers={"Authorization": f"Bearer {auth_token}"},
+        additional_headers={
+            "Authorization": build_authorization_basic("furu", auth_token)
+        },
     )
     with connection:
         connection.send(
@@ -1562,14 +1567,13 @@ def test_execution_coordinator_server_rejects_connections_without_auth_token() -
         with pytest.raises(InvalidStatus) as no_token:
             connect(server.server_url)
         assert no_token.value.response.status_code == 401
-        assert b"invalid furu execution coordinator auth token" in (
-            no_token.value.response.body
-        )
 
         with pytest.raises(InvalidStatus) as wrong_token:
             connect(
                 server.server_url,
-                additional_headers={"Authorization": "Bearer wrong"},
+                additional_headers={
+                    "Authorization": build_authorization_basic("furu", "wrong")
+                },
             )
         assert wrong_token.value.response.status_code == 401
 
@@ -1635,6 +1639,22 @@ def test_worker_disconnect_requeues_leased_job() -> None:
     assert set(coordinator.completed) == {leaf.object_id}
 
 
+def test_execution_coordinator_server_closes_active_workers() -> None:
+    coordinator = _new_execution_coordinator([ExecutionCoordinatorLeaf(value=1)])
+
+    with execution_coordinator_server(
+        coordinator, bind_host="127.0.0.1", port=0
+    ) as server:
+        connection = _connect_worker(server)
+        assert isinstance(
+            server_message_adapter.validate_json(connection.recv(timeout=5)),
+            AssignMessage,
+        )
+
+    with pytest.raises(ConnectionClosed):
+        connection.recv(timeout=5)
+
+
 def test_server_rejects_mismatched_protocol_version() -> None:
     coordinator = _new_execution_coordinator([ExecutionCoordinatorLeaf(value=1)])
 
@@ -1642,7 +1662,9 @@ def test_server_rejects_mismatched_protocol_version() -> None:
         coordinator, bind_host="127.0.0.1", port=0
     ) as server, connect(
         server.server_url,
-        additional_headers={"Authorization": f"Bearer {server.auth_token}"},
+        additional_headers={
+            "Authorization": build_authorization_basic("furu", server.auth_token)
+        },
     ) as connection:
         connection.send(
             HelloMessage(
