@@ -161,8 +161,6 @@ def _ensure_group_result[T](
         return
 
     with lock([compute_lock_path_in(obj._base_dir) for obj in missing]) as has_lock:
-        # Late cache hits shrink the group: a member that finished elsewhere
-        # while we waited for the lock is simply not recomputed.
         pending = [
             obj for obj in missing if result_dir_for_loading(obj, has_lock=True) is None
         ]
