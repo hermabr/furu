@@ -6,7 +6,7 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 from uuid import UUID, uuid4
 
 import pytest
@@ -47,8 +47,7 @@ from furu.worker.protocol import (
     JobCompletedResult,
     JobFailedResult,
     JobMember,
-    JobResultRequest,
-    LeaseJobResponse,
+    JobResult,
     ResultMessage,
     StopMessage,
     server_message_adapter,
@@ -83,13 +82,16 @@ def _job(lease_id: str, obj: Spec[Any]) -> Job:
     )
 
 
-def _lease(job: LeaseJobResponse) -> str:
+type _LeaseJobResult = Job | Literal["wait", "stop"]
+
+
+def _lease(job: _LeaseJobResult) -> str:
     assert isinstance(job, Job)
     (member,) = job.members
     return member.lease_id
 
 
-def _artifact(job: LeaseJobResponse) -> ArtifactSpec:
+def _artifact(job: _LeaseJobResult) -> ArtifactSpec:
     assert isinstance(job, Job)
     (member,) = job.members
     return member.artifact
@@ -126,7 +128,7 @@ def _new_execution_coordinator(
 
 def _lease_job(
     coordinator: ExecutionCoordinator, *, resources: ResourceRequest = ANY_RESOURCES
-) -> LeaseJobResponse:
+) -> _LeaseJobResult:
     return coordinator.lease_job(resources=resources, worker=f"test-worker-{uuid4()}")
 
 
@@ -184,7 +186,7 @@ class _ScriptedServer:
 
     server_url: str
     hellos: list[HelloMessage] = field(default_factory=list)
-    results: list[JobResultRequest] = field(default_factory=list)
+    results: list[JobResult] = field(default_factory=list)
 
 
 @contextmanager
@@ -1671,13 +1673,13 @@ def test_execution_coordinator_run_rejects_conflicting_execution_coordinator_lis
         )
 
 
-def test_job_result_request_requires_error_for_failed_status() -> None:
+def test_job_result_requires_error_for_failed_status() -> None:
     with pytest.raises(ValidationError, match="Field required"):
         JobFailedResult.model_validate({"status": "failed"})
 
 
-def test_job_result_request_uses_status_discriminator() -> None:
-    adapter = TypeAdapter(JobResultRequest)
+def test_job_result_uses_status_discriminator() -> None:
+    adapter = TypeAdapter(JobResult)
 
     assert adapter.validate_python({"status": "completed"}) == JobCompletedResult()
     assert adapter.validate_python(
@@ -1819,7 +1821,7 @@ def test_worker_loop_resets_consecutive_failures_after_success(
 
     calls = 0
 
-    def execute_job(obj: Spec[object], *, job: Job) -> JobResultRequest:
+    def execute_job(obj: Spec[object], *, job: Job) -> JobResult:
         nonlocal calls
         calls += 1
         if calls in (1, 3):
@@ -1851,7 +1853,7 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
 ) -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
 
-    def execute_job(obj: Spec[object], *, job: Job) -> JobResultRequest:
+    def execute_job(obj: Spec[object], *, job: Job) -> JobResult:
         raise KeyboardInterrupt
 
     monkeypatch.setattr(worker_loop_module, "execute_job", execute_job)

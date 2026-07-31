@@ -33,7 +33,7 @@ from furu.worker.protocol import (
     JobCompletedResult,
     JobFailedResult,
     JobMember,
-    JobResultRequest,
+    JobResult,
 )
 
 
@@ -74,7 +74,7 @@ def _submit_provenance() -> SubmitProvenance:
     )
 
 
-def _run(slot: ChildSlot, obj: Spec[Any]) -> JobResultRequest:
+def _run(slot: ChildSlot, obj: Spec[Any]) -> JobResult:
     execution = obj._metadata.execution
     assert isinstance(execution, Subprocess)
     return slot.run(

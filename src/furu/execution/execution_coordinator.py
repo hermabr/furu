@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, assert_never
+from typing import TYPE_CHECKING, Any, Literal, assert_never
 from uuid import uuid4
 
 from furu.config import get_config
@@ -32,8 +32,7 @@ from furu.worker.protocol import (
     JobCompletedResult,
     JobFailedResult,
     JobMember,
-    JobResultRequest,
-    LeaseJobResponse,
+    JobResult,
 )
 
 if TYPE_CHECKING:
@@ -192,7 +191,9 @@ class ExecutionCoordinator:
         with self.wake:
             self.wake.notify_all()
 
-    def lease_job(self, *, resources: ResourceRequest, worker: str) -> LeaseJobResponse:
+    def lease_job(
+        self, *, resources: ResourceRequest, worker: str
+    ) -> Job | Literal["wait", "stop"]:
         with self.log_context(), self.lock:
             if self.done.is_set():
                 return "stop"
@@ -316,7 +317,7 @@ class ExecutionCoordinator:
                 ),
             )
 
-    def job_result(self, lease_id: str, request: JobResultRequest) -> None:
+    def job_result(self, lease_id: str, request: JobResult) -> None:
         with self.log_context(), self.lock:
             running_job = self.running.pop(lease_id, None)
             if running_job is None:

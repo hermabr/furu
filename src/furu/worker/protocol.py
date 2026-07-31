@@ -43,13 +43,10 @@ class JobBlockedResult(BaseModel):
     dependencies: list[ArtifactSpec]
 
 
-type JobResultRequest = Annotated[
+type JobResult = Annotated[
     JobCompletedResult | JobFailedResult | JobBlockedResult,
     Field(discriminator="status"),
 ]
-
-
-type LeaseJobResponse = Job | Literal["wait", "stop"]
 
 
 class HelloMessage(BaseModel):
@@ -65,7 +62,7 @@ class ResultMessage(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     kind: Literal["result"] = "result"
-    result: JobResultRequest
+    result: JobResult
 
 
 class AssignMessage(BaseModel):
@@ -82,15 +79,9 @@ class StopMessage(BaseModel):
     reason: str
 
 
-type WorkerMessage = Annotated[
-    HelloMessage | ResultMessage,
-    Field(discriminator="kind"),
-]
-
-type ServerMessage = Annotated[
-    AssignMessage | StopMessage,
-    Field(discriminator="kind"),
-]
-
-worker_message_adapter: TypeAdapter[WorkerMessage] = TypeAdapter(WorkerMessage)
-server_message_adapter: TypeAdapter[ServerMessage] = TypeAdapter(ServerMessage)
+worker_message_adapter = TypeAdapter(
+    Annotated[HelloMessage | ResultMessage, Field(discriminator="kind")]
+)
+server_message_adapter = TypeAdapter(
+    Annotated[AssignMessage | StopMessage, Field(discriminator="kind")]
+)

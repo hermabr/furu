@@ -21,7 +21,7 @@ logger = get_logger("worker.loop")
 
 def _run_job(
     job: protocol.Job, child_slot: ChildSlot
-) -> tuple[protocol.JobResultRequest, str | None]:
+) -> tuple[protocol.JobResult, str | None]:
     task_label: str | None = None
     try:
         objs = [Spec.from_artifact(member.artifact) for member in job.members]
