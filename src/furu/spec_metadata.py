@@ -46,8 +46,6 @@ class Requires:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Throttle:
-    """Cap concurrent create calls per spec class; a batched call counts once."""
-
     max_running: int
 
     def __post_init__(self) -> None:
