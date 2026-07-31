@@ -3,12 +3,12 @@ from __future__ import annotations
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Literal, TYPE_CHECKING, TypeAlias
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from furu.core import Spec
 
-DependencyCallKind: TypeAlias = Literal["create", "load_existing"]
+type DependencyCallKind = Literal["create", "load_existing"]
 
 
 _in_worker_execution: ContextVar[bool] = ContextVar(

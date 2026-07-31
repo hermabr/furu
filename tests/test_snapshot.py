@@ -170,9 +170,11 @@ def test_manifest_records_commit_entries_and_totals(git_repo: Path) -> None:
 def test_oversize_worktree_fails_before_tarring(git_repo: Path) -> None:
     (git_repo / "big.bin").write_bytes(b"x" * 4096)
 
-    with override_config(_with_max_snapshot_bytes(1024)):
-        with pytest.raises(RuntimeError, match=r"(?s)4\.0 KiB  big\.bin.*gitignore"):
-            create_snapshot(git_repo)
+    with (
+        override_config(_with_max_snapshot_bytes(1024)),
+        pytest.raises(RuntimeError, match=r"(?s)4\.0 KiB  big\.bin.*gitignore"),
+    ):
+        create_snapshot(git_repo)
 
     assert not _snapshots_root().exists()
 

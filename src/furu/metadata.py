@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -65,7 +65,7 @@ class RunningMetadata(BaseModel):
         metadata = cls(
             artifact=ArtifactSpec.from_furu(obj),
             base_path=obj._base_dir,
-            started_at=datetime.now(timezone.utc),
+            started_at=datetime.now(UTC),
         )
         atomic_write_text(
             metadata_path_in(obj._base_dir), metadata.model_dump_json(indent=2)
@@ -81,7 +81,7 @@ class RunningMetadata(BaseModel):
             artifact=self.artifact,
             base_path=self.base_path,
             started_at=self.started_at,
-            completed_at=datetime.now(timezone.utc),
+            completed_at=datetime.now(UTC),
             observed_dependencies=observed_dependencies,
         )
 

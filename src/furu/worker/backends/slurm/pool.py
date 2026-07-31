@@ -279,7 +279,7 @@ class SlurmWorkerPool:
                             )
                         )
                         return
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 -- fault barrier: any crash is reported
                 self._report_failure(
                     "slurm worker pool scale loop crashed: "
                     + "".join(

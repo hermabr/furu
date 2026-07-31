@@ -195,9 +195,7 @@ class _PathValueCodec(Codec[_PathValue]):
         return isinstance(value, _PathValue)
 
     @classmethod
-    def save(
-        cls, value: _PathValue, artifact_directory: Path
-    ) -> Mapping[str, object]:
+    def save(cls, value: _PathValue, artifact_directory: Path) -> Mapping[str, object]:
         return {"path": value.path}
 
     @classmethod
@@ -238,9 +236,10 @@ def test_migrated_codec_metadata_path_uses_source_data_directory() -> None:
     migrated = _MigratedPathResult(key="contents")
 
     assert migrated.create().path == (source.directory.data / "payload.txt").resolve()
-    assert migrated.load_existing().path == (
-        source.directory.data / "payload.txt"
-    ).resolve()
+    assert (
+        migrated.load_existing().path
+        == (source.directory.data / "payload.txt").resolve()
+    )
 
 
 def test_added_field_binds_only_the_default_value() -> None:
@@ -899,7 +898,7 @@ def test_migrations_must_be_a_tuple_of_steps() -> None:
         class _ListMigrations(Spec[int]):
             n: int
 
-            migrations = [Renamed("m", to="n")]
+            migrations = [Renamed("m", to="n")]  # noqa: RUF012
 
             def create(self) -> int:
                 return 0
@@ -1336,8 +1335,10 @@ def test_child_movedfrom_rewrites_the_embedded_class_marker() -> None:
 
     link = json.loads(result_link_path_in(model._base_dir).read_text())
     assert link["migration_path"] == [
-        "_CascadeMovedTokenizer: "
-        f"MovedFrom({fully_qualified_name(_CascadeRelocatedTokenizer)!r})",
+        (
+            "_CascadeMovedTokenizer: "
+            f"MovedFrom({fully_qualified_name(_CascadeRelocatedTokenizer)!r})"
+        ),
     ]
 
 

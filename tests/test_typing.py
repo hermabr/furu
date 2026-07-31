@@ -43,7 +43,7 @@ class TypingBatched(furu.Spec[str]):
         return (self.key % 2, 1_000)
 
     @furu.batched(batch_key)
-    def create(objs: list["TypingBatched"]) -> list[str]:
+    def create(objs: list[TypingBatched]) -> list[str]:
         return [str(obj.key) for obj in objs]
 
 

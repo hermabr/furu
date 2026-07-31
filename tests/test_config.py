@@ -6,12 +6,12 @@ import pytest
 from pydantic import ValidationError
 
 from furu.config import (
+    _WORKER_JSON_CONFIG_FILE_ENV_VAR,
     _Config,
     _FuruDirectories,
     _FuruWorkerConfig,
-    _WORKER_JSON_CONFIG_FILE_ENV_VAR,
-    _set_config,
     _project_anchor,
+    _set_config,
     get_config,
 )
 from furu.testing import override_config
@@ -332,7 +332,9 @@ def test_override_config_restores_previous_config_on_exit() -> None:
         assert get_config() is replacement_config
     assert get_config() is original_config
 
-    with pytest.raises(RuntimeError, match="boom"):
-        with override_config(replacement_config):
-            raise RuntimeError("boom")
+    with (
+        pytest.raises(RuntimeError, match="boom"),
+        override_config(replacement_config),
+    ):
+        raise RuntimeError("boom")
     assert get_config() is original_config

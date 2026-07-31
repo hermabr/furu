@@ -71,6 +71,7 @@ def schema_dataclass(
     artifact_serializers: tuple[type[Serializer], ...],
     for_hash: bool,
 ) -> JsonValue:
+    assert is_dataclass(tp)
     return schema_class(
         tp,
         sorted(f.name for f in fields(tp)),
@@ -199,8 +200,6 @@ def schema_type(
         return fully_qualified_name(tp)
     elif isinstance(tp, typing.TypeVar):
         return repr(tp)
-    elif isinstance(tp, enum.EnumType):
-        return fully_qualified_name(tp)
-    elif isinstance(tp, type):
+    elif isinstance(tp, (enum.EnumType, type)):
         return fully_qualified_name(tp)
     raise TypeError(f"Unsupported type in furu schema: {tp!r}")

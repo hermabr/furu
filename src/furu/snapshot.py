@@ -152,29 +152,29 @@ def create_snapshot(worktree: Path) -> str:
     with publish_dir_atomically(final_dir) as tmp_dir:
         tarball_path = tmp_dir / "snapshot.tar.gz"
         with open(tarball_path, "wb") as raw:
-            with gzip.GzipFile(
-                filename="", fileobj=raw, mode="wb", mtime=0
-            ) as compressed:
-                with tarfile.open(fileobj=compressed, mode="w") as tar:
-                    for rel_path in sorted(blobs):
-                        full_path = repo_root / rel_path
-                        file_stat = os.lstat(full_path)
-                        info = tarfile.TarInfo(rel_path)
-                        info.mtime = 0
-                        info.uid = info.gid = 0
-                        info.uname = info.gname = ""
-                        if stat.S_ISLNK(file_stat.st_mode):
-                            info.type = tarfile.SYMTYPE
-                            info.linkname = os.readlink(full_path)
-                            info.mode = 0o777
-                            tar.addfile(info)
-                        else:
-                            info.size = file_stat.st_size
-                            info.mode = (
-                                0o755 if file_stat.st_mode & stat.S_IXUSR else 0o644
-                            )
-                            with open(full_path, "rb") as file:
-                                tar.addfile(info, file)
+            with (
+                gzip.GzipFile(
+                    filename="", fileobj=raw, mode="wb", mtime=0
+                ) as compressed,
+                tarfile.open(fileobj=compressed, mode="w") as tar,
+            ):
+                for rel_path in sorted(blobs):
+                    full_path = repo_root / rel_path
+                    file_stat = os.lstat(full_path)
+                    info = tarfile.TarInfo(rel_path)
+                    info.mtime = 0
+                    info.uid = info.gid = 0
+                    info.uname = info.gname = ""
+                    if stat.S_ISLNK(file_stat.st_mode):
+                        info.type = tarfile.SYMTYPE
+                        info.linkname = os.readlink(full_path)
+                        info.mode = 0o777
+                        tar.addfile(info)
+                    else:
+                        info.size = file_stat.st_size
+                        info.mode = 0o755 if file_stat.st_mode & stat.S_IXUSR else 0o644
+                        with open(full_path, "rb") as file:
+                            tar.addfile(info, file)
             raw.flush()
             os.fsync(raw.fileno())
         _write_file(
@@ -192,9 +192,11 @@ def extract_snapshot(snapshot_id: str) -> Path:
     code_dir = get_config().run_directories.snapshots / snapshot_id / "code"
     if code_dir.is_dir():
         return code_dir
-    with publish_dir_atomically(code_dir) as tmp_dir:
-        with tarfile.open(code_dir.parent / "snapshot.tar.gz") as tar:
-            tar.extractall(tmp_dir, filter="tar")
+    with (
+        publish_dir_atomically(code_dir) as tmp_dir,
+        tarfile.open(code_dir.parent / "snapshot.tar.gz") as tar,
+    ):
+        tar.extractall(tmp_dir, filter="tar")
     return code_dir
 
 

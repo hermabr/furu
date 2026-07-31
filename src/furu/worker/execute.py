@@ -59,7 +59,7 @@ def execute_job(objs: Sequence[Spec[Any]], *, job: Job) -> JobResultRequest:
         return JobBlockedResult(
             dependencies=[ArtifactSpec.from_furu(dep) for dep in exc.dependencies]
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 -- fault barrier: any crash fails the job
         return JobFailedResult(
             error="".join(
                 traceback.format_exception(type(exc), exc, exc.__traceback__)

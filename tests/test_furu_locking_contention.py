@@ -7,11 +7,11 @@ from pathlib import Path
 
 import furu
 from furu import Spec
-from furu.storage._layout import data_dir_in
 from furu.config import _Config, _FuruDirectories, _set_config
 from furu.execution.load_or_create import _load_or_create
 from furu.locking import DEFAULT_ACQUIRE_POLL_INTERVAL_S
 from furu.result.bundle import load_result_bundle
+from furu.storage._layout import data_dir_in
 
 TEST_TIMING_SCALE = 4.0 if os.environ.get("GITHUB_ACTIONS") == "true" else 1.0
 OVERLAP_SLEEP_S = 0.01 * TEST_TIMING_SCALE

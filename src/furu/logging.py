@@ -7,12 +7,12 @@ import shutil
 import sys
 import textwrap
 import traceback
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import cache
 from pathlib import Path
-from typing import Iterator, Mapping
 
 from furu.config import get_config
 
@@ -190,7 +190,9 @@ def _decorate_message(
 
 def _render_console(record: logging.LogRecord, *, color: bool) -> str:
     palette = _Palette(color)
-    timestamp = datetime.fromtimestamp(record.created).strftime("%H:%M:%S")
+    timestamp = (
+        datetime.fromtimestamp(record.created, tz=UTC).astimezone().strftime("%H:%M:%S")
+    )
     letter = _LEVEL_LETTER.get(record.levelno, "?")
     component = _CURRENT_COMPONENT.get()
     component = (
@@ -292,7 +294,7 @@ def _logfmt_value(value: str) -> str:
 
 
 def _render_logfmt(record: logging.LogRecord) -> str:
-    created = datetime.fromtimestamp(record.created, tz=timezone.utc)
+    created = datetime.fromtimestamp(record.created, tz=UTC)
     timestamp = created.strftime("%Y-%m-%dT%H:%M:%S") + f".{int(record.msecs):03d}Z"
 
     parts = [timestamp, f"level={record.levelname.lower()}"]
@@ -354,13 +356,13 @@ class _ScopedFileHandler(logging.Handler):
                     and log_path.exists()
                     and log_path.stat().st_size >= _UNSCOPED_LOG_MAX_BYTES
                 ):
-                    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+                    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
                     log_path.replace(
                         log_path.with_name(f"{log_path.stem}-{timestamp}.log")
                     )
                 with log_path.open("a", encoding="utf-8") as f:
                     f.write(payload)
-        except Exception:
+        except Exception:  # noqa: BLE001 -- logging.Handler.emit contract: never raise
             self.handleError(record)
 
 

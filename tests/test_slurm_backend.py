@@ -16,10 +16,10 @@ import pytest
 
 import furu.worker.backends.slurm.backend as slurm_backend_module
 from furu.config import (
+    _WORKER_JSON_CONFIG_FILE_ENV_VAR,
     _Config,
     _FuruDirectories,
     _FuruWorkerConfig,
-    _WORKER_JSON_CONFIG_FILE_ENV_VAR,
     get_config,
 )
 from furu.execution.api import PoolApiClient
@@ -29,8 +29,8 @@ from furu.provenance import (
     SubmitContext,
     SubmitProvenance,
 )
-from furu.snapshot import create_snapshot
 from furu.resources import ResourceRequest
+from furu.snapshot import create_snapshot
 from furu.testing import override_config
 from furu.worker import _cli
 from furu.worker.backends.slurm.backend import SlurmWorkerBackend

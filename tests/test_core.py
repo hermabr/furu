@@ -11,7 +11,7 @@ from dataclasses import (
     is_dataclass,
     replace,
 )
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from functools import partial
 from pathlib import Path
@@ -32,14 +32,6 @@ from furu import (
     between,
     validate,
 )
-from furu.storage._layout import (
-    compute_lock_path_in,
-    data_dir_in,
-    metadata_path_in,
-    result_dir_in,
-    result_manifest_path_in,
-    run_log_path_in,
-)
 from furu.config import _Config, _FuruDirectories, get_config
 from furu.dependencies import collect_declared_refs
 from furu.execution.load_or_create import _load_or_create
@@ -48,6 +40,14 @@ from furu.logging import _scoped_log_files
 from furu.metadata import ArtifactSpec
 from furu.result.bundle import _save_result_bundle, load_result_bundle
 from furu.serializer.artifact import _from_json, to_json
+from furu.storage._layout import (
+    compute_lock_path_in,
+    data_dir_in,
+    metadata_path_in,
+    result_dir_in,
+    result_manifest_path_in,
+    run_log_path_in,
+)
 from furu.testing import override_config
 from furu.utils import fully_qualified_name
 from furu.worker.context import (
@@ -623,7 +623,7 @@ def test_frozen_dataclass_inheritance():
         with pytest.raises(TypeError):
             type.__call__(cls, 1, 2)
         with pytest.raises(FrozenInstanceError):
-            setattr(obj, "a", 3)
+            obj.a = 3  # ty: ignore[invalid-assignment]
         with pytest.raises(TypeError):
             cls(1, 2)  # ty: ignore[missing-argument,too-many-positional-arguments]
         with pytest.raises(FrozenInstanceError):
@@ -636,8 +636,8 @@ def test_spec_function_creates_spec_from_function_signature():
     assert isinstance(obj, Spec)
     assert is_dataclass(type(obj))
     assert type(obj).__name__ == "letter_count"
-    assert getattr(obj, "source") == "banana"
-    assert getattr(obj, "letter") == "a"
+    assert obj.source == "banana"  # ty: ignore[unresolved-attribute]
+    assert obj.letter == "a"  # ty: ignore[unresolved-attribute]
     assert obj.create() == 3
     assert letter_count(source="banana", letter="a") == obj
 
@@ -648,7 +648,7 @@ def test_spec_function_creates_spec_from_function_signature():
 def test_spec_function_supports_defaults_and_artifact_round_trip():
     obj = letter_count_with_default("banana")
 
-    assert getattr(obj, "letter") == "a"
+    assert obj.letter == "a"  # ty: ignore[unresolved-attribute]
     assert obj.create() == 3
     assert obj._fully_qualified_name == "test_core.letter_count_with_default"
     assert _from_json(obj._artifact_data) == obj
@@ -673,8 +673,8 @@ def test_spec_function_supports_parenthesized_decorator():
     obj = letter_count_with_parentheses("banana", "n")
 
     assert isinstance(obj, Spec)
-    assert getattr(obj, "source") == "banana"
-    assert getattr(obj, "letter") == "n"
+    assert obj.source == "banana"  # ty: ignore[unresolved-attribute]
+    assert obj.letter == "n"  # ty: ignore[unresolved-attribute]
     assert obj.create() == 2
     assert obj._fully_qualified_name == "test_core.letter_count_with_parentheses"
     assert _from_json(obj._artifact_data) == obj
@@ -1248,7 +1248,7 @@ def test_furu_object_with_typed_fields_round_trips_from_json_artifact():
 
 def test_datetime_field_round_trips_from_json_artifact():
     naive_obj = UsesDatetime(dt=datetime(2026, 7, 18, 12, 30, 45, 123456))
-    aware_obj = UsesDatetime(dt=datetime(2026, 7, 18, 12, 30, tzinfo=timezone.utc))
+    aware_obj = UsesDatetime(dt=datetime(2026, 7, 18, 12, 30, tzinfo=UTC))
 
     assert naive_obj._artifact_data == {
         "|kind": "instance",
@@ -1685,7 +1685,7 @@ def test_gib_is_frozen_slots_value_object():
     assert memory.count == 16
     assert not hasattr(memory, "__dict__")
     with pytest.raises(FrozenInstanceError):
-        setattr(memory, "count", 32)
+        memory.count = 32
     with pytest.raises(ValueError, match="GiB count must be non-negative"):
         GiB(-1)
 
@@ -2332,14 +2332,11 @@ def test_worker_dependency_not_ready_is_not_caught_as_exception(
     ObjectIdStorageValue.storage_override = tmp_path / "data"
     missing = ObjectIdStorageValue(key=14)
 
-    with pytest.raises(_DependencyNotReady):
-        with worker_execution_context():
-            try:
-                missing.load_existing()
-            except Exception as exc:  # pragma: no cover
-                raise AssertionError(
-                    "ordinary Exception handler caught signal"
-                ) from exc
+    with pytest.raises(_DependencyNotReady), worker_execution_context():
+        try:
+            missing.load_existing()
+        except Exception as exc:  # pragma: no cover
+            raise AssertionError("ordinary Exception handler caught signal") from exc
 
 
 def test_mixed_type_list_follows_documented_grouping_policy() -> None:

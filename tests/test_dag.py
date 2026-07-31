@@ -1,8 +1,8 @@
 import hashlib
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from collections.abc import Sequence
-from typing import Any, ClassVar, Iterator
+from typing import Any, ClassVar
 
 import pytest
 

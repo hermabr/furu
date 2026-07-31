@@ -8,12 +8,11 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from slurm_objects import SlurmTaskKind, SlurmWorkloadTask
 
 from furu.execution.execution_coordinator import ExecutionCoordinator
 from furu.worker.backends.slurm.backend import SlurmWorkerBackend
 from furu.worker.backends.slurm.resources import SlurmResources
-from slurm_objects import SlurmTaskKind, SlurmWorkloadTask
-
 
 A_WORKER_COUNT = 2
 B_WORKER_COUNT = 3

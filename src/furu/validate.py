@@ -1,4 +1,5 @@
-from typing import Any, Callable, overload
+from collections.abc import Callable
+from typing import Any, overload
 
 _VALIDATOR_MARKER = "__furu_validator__"
 _POST_INIT_WRAPPER_MARKER = "__furu_post_init_wrapper__"
@@ -65,4 +66,4 @@ def validate_cls(cls: type) -> None:
     ):
         setattr(cls, _USER_POST_INIT_ATTR, user_post_init)
     setattr(__post_init__, _POST_INIT_WRAPPER_MARKER, True)
-    setattr(cls, "__post_init__", __post_init__)
+    cls.__post_init__ = __post_init__  # ty: ignore[unresolved-attribute]

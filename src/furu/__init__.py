@@ -38,7 +38,6 @@ _install_main_module_alias()
 __version__ = version("furu")
 
 __all__ = [
-    "__version__",
     "Added",
     "Codec",
     "GiB",
@@ -57,6 +56,7 @@ __all__ = [
     "Stale",
     "Subprocess",
     "Throttle",
+    "__version__",
     "at_least",
     "batched",
     "between",
@@ -66,7 +66,7 @@ __all__ = [
     "get_logger",
     "load_existing",
     "ref",
-    "spec",
     "skip_hash",
+    "spec",
     "validate",
 ]

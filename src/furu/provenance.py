@@ -9,7 +9,7 @@ import subprocess
 import sys
 from collections import Counter
 from contextvars import ContextVar
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from getpass import getuser
 from importlib.metadata import version
 from pathlib import Path
@@ -154,7 +154,7 @@ class SubmitContext(BaseModel):
             user=getuser(),
             cwd=str(Path.cwd()),
             launch_command=tuple(sys.orig_argv),
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
         )
 
 
@@ -254,6 +254,7 @@ def _require_uv() -> None:
             cwd=project_root,
             capture_output=True,
             text=True,
+            check=False,
         )
     except OSError as exc:
         raise RuntimeError(
@@ -297,6 +298,7 @@ def _probe_accelerators() -> tuple[str, ...]:
             capture_output=True,
             text=True,
             timeout=_ACCELERATOR_PROBE_TIMEOUT_SECONDS,
+            check=False,
         )
         names = [line.strip() for line in result.stdout.splitlines() if line.strip()]
         if result.returncode == 0 and names:

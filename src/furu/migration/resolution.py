@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import typing
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass, fields as dataclass_fields, is_dataclass
+from dataclasses import dataclass, is_dataclass
+from dataclasses import fields as dataclass_fields
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from furu.constants import CLASSMARKER, FIELDSMARKER, KINDMARKER
 from furu.migration.steps import (
@@ -34,7 +35,7 @@ from furu.utils import (
 if TYPE_CHECKING:
     from furu.core import Spec
 
-_FieldExpectation: TypeAlias = tuple[Literal["exact", "shape", "any"], JsonValue]
+type _FieldExpectation = tuple[Literal["exact", "shape", "any"], JsonValue]
 _ANY: _FieldExpectation = ("any", None)
 
 
@@ -120,6 +121,7 @@ def _embedded_migratable_classes(
     field types are walked directly so cls's own name (which need not be
     importable when this runs at class definition) is never serialized.
     """
+    assert is_dataclass(cls)
     seen: set[type] = {cls}
     hints = typing.get_type_hints(cls, include_extras=True)
     for field in dataclass_fields(cls):
@@ -141,7 +143,7 @@ def _embedded_migratable_classes(
 def validate_embedded_migration_declarations(cls: type[Spec[Any]]) -> None:
     try:
         children = _embedded_migratable_classes(cls, cls.artifact_serializers)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return  # schema not buildable yet (forward references, ...); resolution re-checks
     for child in children:
         validate_migration_declaration(cast("type[Spec[Any]]", child))

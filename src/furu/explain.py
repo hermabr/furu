@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import fields, is_dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, TypeAlias
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel as PydanticBaseModel
 
@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from furu.core import Spec
 
 
-ExplainDepth: TypeAlias = int | Literal["full"]
+type ExplainDepth = int | Literal["full"]
 
 
 def explain(spec: Spec[Any], *, depth: ExplainDepth = 0) -> str:
