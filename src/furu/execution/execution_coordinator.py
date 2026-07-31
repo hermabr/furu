@@ -189,7 +189,6 @@ class ExecutionCoordinator:
             yield
 
     def notify_state_changed(self) -> None:
-        """Wake connection handlers waiting for work to become available."""
         with self.wake:
             self.wake.notify_all()
 
