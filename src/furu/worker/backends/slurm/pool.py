@@ -6,10 +6,13 @@ import time
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from furu.execution.api import PoolApiClient
 from furu.logging import _scoped_component, get_logger
 from furu.resources import ResourceRequest
+
+if TYPE_CHECKING:
+    from furu.worker.backends.protocol import PoolCoordinator
 
 logger = get_logger()
 
@@ -43,7 +46,7 @@ class SlurmWorkerPool:
     _server_url: str
     _auth_token: str
     _poll_interval: float
-    _client: PoolApiClient
+    _coordinator: PoolCoordinator
     _stop_event: threading.Event
     _use_job_arrays: bool
     _scale_thread: threading.Thread
@@ -81,6 +84,10 @@ class SlurmWorkerPool:
                 )
 
     def _scale_once(self) -> dict[str, str]:
+        # Lease recovery for vanished workers is not this pool's job: the
+        # execution coordinator releases a worker's leases the moment its
+        # WebSocket connection drops. This poll only tracks Slurm job ids so
+        # scaling can submit replacements and surface failed jobs.
         active_job_ids = self._active_job_ids()
         states = self._task_states()
         lost_job_ids = {
@@ -103,15 +110,6 @@ class SlurmWorkerPool:
                 or states.get(job_id) not in (None, *_PRUNABLE_STATES)
             )
         ]
-        for job_id in sorted(lost_job_ids):
-            allocation_job_id, separator, array_task_id = job_id.partition("_")
-            self._client.worker_lost(
-                worker=(
-                    f"slurm-worker-{allocation_job_id}a{array_task_id}"
-                    if separator
-                    else f"slurm-worker-{allocation_job_id}"
-                )
-            )
         remaining_starts = (
             self._max_workers
             + self._max_failed_restarts
@@ -124,7 +122,7 @@ class SlurmWorkerPool:
         to_spawn = min(
             max(
                 0,
-                self._client.count_satisfiable_jobs(
+                self._coordinator.count_satisfiable_jobs(
                     resources=self._resource_request,
                     max_workers=self._max_workers,
                 )
@@ -289,9 +287,4 @@ class SlurmWorkerPool:
 
     def _report_failure(self, message: str) -> None:
         logger.error("slurm worker pool failure: %s", message)
-        try:
-            self._client.fail(message=message)
-        except Exception:
-            logger.exception(
-                "failed to report slurm worker pool failure to execution coordinator"
-            )
+        self._coordinator.fail(message)

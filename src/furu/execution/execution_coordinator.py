@@ -32,7 +32,7 @@ from furu.worker.protocol import (
     JobCompletedResult,
     JobFailedResult,
     JobMember,
-    JobResultRequest,
+    JobResult,
     LeaseJobResponse,
 )
 
@@ -150,6 +150,7 @@ class ExecutionCoordinator:
                 pools = []
                 for backend in worker_backends:
                     pool = backend.start_pool(
+                        coordinator=coordinator,
                         bound_port=server.bound_port,
                         auth_token=server.auth_token,
                         executor_dir=coordinator.executor_dir,
@@ -309,7 +310,7 @@ class ExecutionCoordinator:
                 ),
             )
 
-    def job_result(self, lease_id: str, request: JobResultRequest) -> None:
+    def job_result(self, lease_id: str, request: JobResult) -> None:
         with self.log_context(), self.lock:
             running_job = self.running.pop(lease_id, None)
             if running_job is None:

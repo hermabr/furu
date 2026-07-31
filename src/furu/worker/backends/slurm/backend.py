@@ -8,19 +8,21 @@ import subprocess
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, assert_never
+from typing import TYPE_CHECKING, Literal, assert_never
 
 from furu.config import (
     _WORKER_JSON_CONFIG_FILE_ENV_VAR,
     get_config,
 )
-from furu.execution.api import PoolApiClient
 from furu.provenance import EnvironmentIdentity, SubmitProvenance
 from furu.resources import ResourceRequest
 from furu.snapshot import extract_snapshot
 from furu.utils import write_private_file
 from furu.worker.backends.slurm.pool import SlurmWorkerPool
 from furu.worker.backends.slurm.resources import SlurmResources
+
+if TYPE_CHECKING:
+    from furu.worker.backends.protocol import PoolCoordinator
 
 type SlurmExport = Literal["NIL", "ALL"] | tuple[str, ...] | None
 
@@ -50,6 +52,7 @@ class SlurmWorkerBackend:
     def start_pool(
         self,
         *,
+        coordinator: PoolCoordinator,
         bound_port: int,
         auth_token: str,
         executor_dir: Path,
@@ -58,7 +61,7 @@ class SlurmWorkerBackend:
         connect_port = (
             bound_port if self.worker_connect_port is None else self.worker_connect_port
         )
-        server_url = f"http://{self.worker_connect_host}:{connect_port}"
+        server_url = f"ws://{self.worker_connect_host}:{connect_port}"
 
         chdir = Path.cwd().resolve()
         project_root = Path(EnvironmentIdentity.capture().project_root)
@@ -194,7 +197,7 @@ class SlurmWorkerBackend:
             _server_url=server_url,
             _auth_token=auth_token,
             _poll_interval=self.poll_interval,
-            _client=PoolApiClient(server_url=server_url, auth_token=auth_token),
+            _coordinator=coordinator,
             _stop_event=threading.Event(),
             _use_job_arrays=self.use_job_arrays,
             _scale_thread=threading.Thread(

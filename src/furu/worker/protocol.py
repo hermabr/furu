@@ -43,7 +43,7 @@ class JobBlockedResult(BaseModel):
     dependencies: list[ArtifactSpec]
 
 
-type JobResultRequest = Annotated[
+type JobResult = Annotated[
     JobCompletedResult | JobFailedResult | JobBlockedResult,
     Field(discriminator="status"),
 ]
@@ -61,24 +61,20 @@ type LeaseJobResponse = Job | Literal["wait", "stop"]
 class LeaseJobRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    type: Literal["lease_job"] = "lease_job"
     resources: ResourceRequest
     worker: str
 
 
-class CountSatisfiableJobsRequest(BaseModel):
+class JobResultMessage(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    resources: ResourceRequest
-    max_workers: int
+    type: Literal["job_result"] = "job_result"
+    lease_id: str
+    result: JobResult
 
 
-class FailRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    message: str
-
-
-class WorkerLostRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    worker: str
+type WorkerMessage = Annotated[
+    LeaseJobRequest | JobResultMessage,
+    Field(discriminator="type"),
+]
