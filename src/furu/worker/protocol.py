@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -9,11 +9,17 @@ from furu.provenance import SubmitProvenance
 from furu.resources import ResourceRequest
 
 
-class Job(BaseModel):
+class JobMember(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     lease_id: str
     artifact: ArtifactSpec
+
+
+class Job(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    members: list[JobMember]
     provenance: SubmitProvenance
 
 
@@ -37,7 +43,7 @@ class JobBlockedResult(BaseModel):
     dependencies: list[ArtifactSpec]
 
 
-JobResultRequest: TypeAlias = Annotated[
+type JobResultRequest = Annotated[
     JobCompletedResult | JobFailedResult | JobBlockedResult,
     Field(discriminator="status"),
 ]
@@ -49,7 +55,7 @@ class OkResponse(BaseModel):
     ok: Literal[True] = True
 
 
-LeaseJobResponse: TypeAlias = Job | Literal["wait", "stop"]
+type LeaseJobResponse = Job | Literal["wait", "stop"]
 
 
 class LeaseJobRequest(BaseModel):

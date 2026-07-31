@@ -52,7 +52,7 @@ from furu.testing import override_config
 from furu.utils import fully_qualified_name
 from furu.worker.context import (
     _DependencyNotReady,
-    _worker_execution_lease_id,
+    _in_worker_execution,
     worker_execution_context,
 )
 
@@ -173,12 +173,7 @@ class B[T](Spec):
             "__annotations__": ann,
             "_hidden": 0,
         }
-        if cls._furu_create_mode == "single":
-            namespace["create"] = lambda self: cls.create(self)
-        else:
-            namespace["create_batched"] = classmethod(
-                lambda hidden_cls, objs: cls.create_batched(objs)
-            )
+        namespace["create"] = lambda self: cls._furu_create_hook(self)  # ty: ignore[call-non-callable]
 
         Hidden = types.new_class(
             cls.__name__,
@@ -375,52 +370,79 @@ class NoCreateHookValue(Spec[str]):
     key: int
 
 
-class BatchOnlyValue(Spec[str]):
+class BatchOnlyValue(furu.Spec[str]):
     key: int
     batch_calls: ClassVar[list[tuple[int, ...]]] = []
 
-    @classmethod
-    def create_batched(cls, objs) -> list[str]:
+    def batch_key(self) -> tuple[None, int]:
+        return (None, 1024)
+
+    @furu.batched(batch_key)
+    def create(objs: list["BatchOnlyValue"]) -> list[str]:
         keys = tuple(obj.key for obj in objs)
-        cls.batch_calls.append(keys)
+        BatchOnlyValue.batch_calls.append(keys)
         return [f"batch:{obj.key}" for obj in objs]
 
 
-class DelegatingBatchValue(BatchOnlyValue):
-    @classmethod
-    def create_batched(cls, objs) -> list[str]:
-        return BatchOnlyValue.create_batched(objs)
+class InheritedHookBatchValue(BatchOnlyValue):
+    pass
 
 
-class GroupBatchA(Spec[str]):
+class KeyedBatchValue(furu.Spec[str]):
+    key: int
+    group: str
+    cap: int = 1024
+    batch_calls: ClassVar[list[tuple[str, tuple[int, ...]]]] = []
+
+    def batch_key(self) -> tuple[str, int]:
+        return (self.group, self.cap)
+
+    @furu.batched(batch_key)
+    def create(objs: list["KeyedBatchValue"]) -> list[str]:
+        KeyedBatchValue.batch_calls.append(
+            (objs[0].group, tuple(obj.key for obj in objs))
+        )
+        return [f"keyed:{obj.group}:{obj.key}" for obj in objs]
+
+
+class GroupBatchA(furu.Spec[str]):
     key: int
     batch_calls: ClassVar[list[tuple[int, ...]]] = []
 
-    @classmethod
-    def create_batched(cls, objs) -> list[str]:
+    def batch_key(self) -> tuple[None, int]:
+        return (None, 1024)
+
+    @furu.batched(batch_key)
+    def create(objs: list["GroupBatchA"]) -> list[str]:
         keys = tuple(obj.key for obj in objs)
-        cls.batch_calls.append(keys)
+        GroupBatchA.batch_calls.append(keys)
         GROUP_EXECUTION_EVENTS.append(("batch_a", keys))
         return [f"group-a:{obj.key}" for obj in objs]
 
 
-class GroupBatchB(Spec[str]):
+class GroupBatchB(furu.Spec[str]):
     key: int
     batch_calls: ClassVar[list[tuple[int, ...]]] = []
 
-    @classmethod
-    def create_batched(cls, objs) -> list[str]:
+    def batch_key(self) -> tuple[None, int]:
+        return (None, 1024)
+
+    @furu.batched(batch_key)
+    def create(objs: list["GroupBatchB"]) -> list[str]:
         keys = tuple(obj.key for obj in objs)
-        cls.batch_calls.append(keys)
+        GroupBatchB.batch_calls.append(keys)
         GROUP_EXECUTION_EVENTS.append(("batch_b", keys))
         return [f"group-b:{obj.key}" for obj in objs]
 
 
-class LoggedBatchValue(Spec[str]):
+class LoggedBatchValue(furu.Spec[str]):
     key: int
 
-    @classmethod
-    def create_batched(cls, objs) -> list[str]:
+    def batch_key(self) -> tuple[None, int]:
+        return (None, 1024)
+
+    @furu.batched(batch_key)
+    def create(objs: list["LoggedBatchValue"]) -> list[str]:
         keys = ",".join(str(obj.key) for obj in objs)
         objs[0].logger.info("batched detail for %s", keys)
         return [f"logged-batch:{obj.key}" for obj in objs]
@@ -434,11 +456,14 @@ class LoggedSingleValue(Spec[str]):
         return f"logged-single:{self.key}"
 
 
-class FailingBatchValue(Spec[str]):
+class FailingBatchValue(furu.Spec[str]):
     key: int
 
-    @classmethod
-    def create_batched(cls, objs) -> list[str]:
+    def batch_key(self) -> tuple[None, int]:
+        return (None, 1024)
+
+    @furu.batched(batch_key)
+    def create(objs: list["FailingBatchValue"]) -> list[str]:
         _local_debug_value = "furu-local-debug-value-should-not-leak"
         raise RuntimeError(f"failed batch for {[obj.key for obj in objs]}")
 
@@ -457,11 +482,14 @@ class InterruptingValue(Spec[str]):
         raise KeyboardInterrupt
 
 
-class PartialBatchValue(Spec[str]):
+class PartialBatchValue(furu.Spec[str]):
     key: int
 
-    @classmethod
-    def create_batched(cls, objs) -> list[str]:
+    def batch_key(self) -> tuple[None, int]:
+        return (None, 1024)
+
+    @furu.batched(batch_key)
+    def create(objs: list["PartialBatchValue"]) -> list[str]:
         return [f"partial:{obj.key}" for obj in objs]
 
 
@@ -552,12 +580,15 @@ class FuruBoundaryParent(Spec[str]):
         return self.child.node1.create()
 
 
-class BatchDependencyParent(Spec[str]):
+class BatchDependencyParent(furu.Spec[str]):
     key: int
     eager: Node
 
-    @classmethod
-    def create_batched(cls, objs) -> list[str]:
+    def batch_key(self) -> tuple[None, int]:
+        return (None, 1024)
+
+    @furu.batched(batch_key)
+    def create(objs: list["BatchDependencyParent"]) -> list[str]:
         eager_values = [obj.eager.create() for obj in objs]
         lazy_value = Node(name="shared-lazy").create()
         return [f"{value}:{lazy_value}" for value in eager_values]
@@ -569,6 +600,7 @@ def _reset_batch_trackers() -> None:
     ObjectIdStorageValue.storage_override = Path("object-id-root")
     ObjectIdStorageValue.create_calls.clear()
     BatchOnlyValue.batch_calls.clear()
+    KeyedBatchValue.batch_calls.clear()
     GroupBatchA.batch_calls.clear()
     GroupBatchB.batch_calls.clear()
     GROUP_EXECUTION_EVENTS.clear()
@@ -708,7 +740,6 @@ def test_reserved_field_name_raises_at_class_creation():
     assert "['status']" in message
     for name in (
         "create",
-        "create_batched",
         "metadata",
         "status",
         "directory",
@@ -955,12 +986,7 @@ def test_hashes_and_data_dir():
 
     def qualname_alias(cls: type[Spec[object]], *, ret_typ: type) -> type[Spec[object]]:
         namespace: dict[str, object] = {"__module__": cls.__module__}
-        if cls._furu_create_mode == "single":
-            namespace["create"] = lambda self: cls.create(self)
-        else:
-            namespace["create_batched"] = classmethod(
-                lambda alias_cls, objs: cls.create_batched(objs)
-            )
+        namespace["create"] = lambda self: cls._furu_create_hook(self)  # ty: ignore[call-non-callable]
         alias = type(ret_typ.__qualname__, (cls,), namespace)
         alias.__qualname__ = ret_typ.__qualname__
         return alias
@@ -1322,7 +1348,7 @@ def test_furu_from_artifact_returns_furu_object():
     assert "artifact_schema_hash" not in raw_metadata
 
 
-def _dependency_object_ids(obj: Spec) -> list[str]:
+def _dependency_object_ids(obj: furu.Spec) -> list[str]:
     metadata = json.loads(metadata_path_in(obj._base_dir).read_text())
     return metadata["observed_dependencies"]
 
@@ -1992,67 +2018,27 @@ def test_small_cache_summary_logs_labels_for_cached_and_missing_items(
     )
 
 
-def test_resolved_create_mode_validation() -> None:
-    class ExplicitSingle(Node):
-        label: str
+def test_create_hook_flavor_validation() -> None:
+    with pytest.raises(TypeError, match="needs a batch key function"):
 
-        def create(self) -> str:
-            return f"single:{self.label}"
-
-    class ExplicitBatch(Spec[str]):
-        label: str
-
-        @classmethod
-        def create_batched(cls, objs) -> list[str]:
-            return [f"batch:{obj.label}" for obj in objs]
-
-    assert Node._furu_create_mode == "single"
-    assert BatchOnlyValue._furu_create_mode == "batched"
-    assert ExplicitSingle._furu_create_mode == "single"
-    assert ExplicitBatch._furu_create_mode == "batched"
-
-    class InheritedSingle(Node):
-        label: str
-
-    class InheritedBatch(BatchOnlyValue):
-        label: str
-
-    assert InheritedSingle._furu_create_mode == "single"
-    assert InheritedBatch._furu_create_mode == "batched"
-
-    with pytest.raises(
-        TypeError, match="must define exactly one of create or create_batched"
-    ):
-
-        class InvalidBoth(Spec[int]):
-            def create(self) -> int:
-                return 1
-
-            @classmethod
-            def create_batched(cls, objs) -> list[int]:
+        class BareBatchedDecorator(Spec[int]):
+            @furu.batched  # ty: ignore[invalid-argument-type]
+            def create(objs: list["BareBatchedDecorator"]) -> list[int]:
                 return [1 for _ in objs]
 
-    with pytest.raises(TypeError, match=r"create_batched must be a @classmethod"):
+    with pytest.raises(TypeError, match="needs a batch key function"):
+        furu.batched("not-a-function")  # ty: ignore[invalid-argument-type]
 
-        class InvalidBatchMethod(Spec[int]):
-            def create_batched(self, objs) -> list[int]:
+    with pytest.raises(TypeError, match=r"can only decorate create\(\)"):
+
+        class BatchedNonCreateMethod(Spec[int]):
+            @furu.batched(lambda _: (None, 1))
+            def run(objs: list["BatchedNonCreateMethod"]) -> list[int]:
                 return [1 for _ in objs]
 
-    with pytest.raises(
-        TypeError, match="must define exactly one of create or create_batched"
-    ):
-
-        class InvalidInherited(Node):
-            label: str
-
-            @classmethod
-            def create_batched(cls, objs) -> list[str]:
-                return [obj.label for obj in objs]
-
+    # Abstract intermediate bases defining no hook stay legal.
     class NoCreateHook(Spec[int]):
         value: int
-
-    assert NoCreateHook._furu_create_mode is None
 
 
 def test_no_create_hook_loads_cached_result() -> None:
@@ -2065,18 +2051,18 @@ def test_no_create_hook_loads_cached_result() -> None:
         data_dir=obj.directory.data,
     )
 
-    assert obj.create() == "cached:1"
+    assert furu.create(obj) == "cached:1"
 
 
 def test_no_create_hook_raises_only_for_missing_result() -> None:
     with pytest.raises(
         TypeError,
         match=(
-            "NoCreateHookValue cannot create missing results because it does not define "
-            r"create\(\) or create_batched\(\)"
+            "NoCreateHookValue cannot create missing results because it does not "
+            r"define create\(\)"
         ),
     ):
-        NoCreateHookValue(key=2).create()
+        furu.create(NoCreateHookValue(key=2))
 
 
 def test_no_create_hook_uses_post_lock_cache_recheck(
@@ -2098,7 +2084,7 @@ def test_no_create_hook_uses_post_lock_cache_recheck(
 
     monkeypatch.setattr(execution_module, "lock", fake_lock)
 
-    assert obj.create() == "cached-after-lock:1"
+    assert furu.create(obj) == "cached-after-lock:1"
 
 
 def test_single_object_on_batch_only_class_uses_create_batched() -> None:
@@ -2106,8 +2092,13 @@ def test_single_object_on_batch_only_class_uses_create_batched() -> None:
     assert BatchOnlyValue.batch_calls == [(1,)]
 
 
-def test_create_batched_can_delegate_to_base_implementation() -> None:
-    objs = [DelegatingBatchValue(key=1), DelegatingBatchValue(key=2)]
+def test_instance_access_on_batched_create_runs_a_group_of_one() -> None:
+    assert BatchOnlyValue(key=7).create() == "batch:7"
+    assert BatchOnlyValue.batch_calls == [(7,)]
+
+
+def test_batched_create_hook_is_inherited_by_subclasses() -> None:
+    objs = [InheritedHookBatchValue(key=1), InheritedHookBatchValue(key=2)]
 
     assert _load_or_create(objs) == ["batch:1", "batch:2"]
     assert BatchOnlyValue.batch_calls == [(1, 2)]
@@ -2149,6 +2140,35 @@ def test_list_input_on_batch_only_class_calls_create_batched_once_per_concrete_g
     assert _load_or_create(objs) == ["group-a:1", "group-b:1", "group-a:2", "group-b:2"]
     assert GroupBatchA.batch_calls == [(1, 2)]
     assert GroupBatchB.batch_calls == [(1, 2)]
+
+
+def test_batch_key_partitions_batched_create_calls() -> None:
+    objs = [
+        KeyedBatchValue(key=1, group="x"),
+        KeyedBatchValue(key=2, group="y"),
+        KeyedBatchValue(key=3, group="x"),
+    ]
+
+    assert _load_or_create(objs) == ["keyed:x:1", "keyed:y:2", "keyed:x:3"]
+    assert KeyedBatchValue.batch_calls == [("x", (1, 3)), ("y", (2,))]
+
+
+def test_batch_key_cap_chunks_batched_create_calls() -> None:
+    objs = [KeyedBatchValue(key=key, group="x", cap=2) for key in range(5)]
+
+    assert _load_or_create(objs) == [f"keyed:x:{key}" for key in range(5)]
+    assert KeyedBatchValue.batch_calls == [
+        ("x", (0, 1)),
+        ("x", (2, 3)),
+        ("x", (4,)),
+    ]
+
+
+def test_batch_key_cap_must_be_a_positive_int() -> None:
+    with pytest.raises(TypeError, match="cap must be a positive int"):
+        _load_or_create([KeyedBatchValue(key=1, group="x", cap=0)])
+    with pytest.raises(TypeError, match="cap must be a positive int"):
+        _load_or_create([KeyedBatchValue(key=1, group="x", cap=True)])
 
 
 def test_duplicate_cache_identities_compute_once_and_preserve_input_order() -> None:
@@ -2228,12 +2248,10 @@ def test_empty_list_returns_empty_list() -> None:
 
 
 def test_worker_execution_context_is_scoped() -> None:
-    assert _worker_execution_lease_id.get() is None
-    with worker_execution_context(
-        lease_id="lease-1",
-    ):
-        assert _worker_execution_lease_id.get() == "lease-1"
-    assert _worker_execution_lease_id.get() is None
+    assert not _in_worker_execution.get()
+    with worker_execution_context():
+        assert _in_worker_execution.get()
+    assert not _in_worker_execution.get()
 
 
 def test_worker_create_loads_cached_result_without_recomputing(
@@ -2245,9 +2263,7 @@ def test_worker_create_loads_cached_result_without_recomputing(
     assert cached.create() == "object-id:10"
     ObjectIdStorageValue.create_calls.clear()
 
-    with worker_execution_context(
-        lease_id="lease-1",
-    ):
+    with worker_execution_context():
         assert cached.create() == "object-id:10"
 
     assert ObjectIdStorageValue.create_calls == []
@@ -2261,9 +2277,7 @@ def test_worker_create_reports_all_missing_dependencies(
     second = ObjectIdStorageValue(key=12)
 
     with (
-        worker_execution_context(
-            lease_id="lease-1",
-        ),
+        worker_execution_context(),
         pytest.raises(_DependencyNotReady) as exc_info,
     ):
         _load_or_create([first, second])
@@ -2281,9 +2295,7 @@ def test_worker_load_existing_reports_missing_dependency(tmp_path: Path) -> None
     missing = ObjectIdStorageValue(key=13)
 
     with (
-        worker_execution_context(
-            lease_id="lease-1",
-        ),
+        worker_execution_context(),
         pytest.raises(_DependencyNotReady) as exc_info,
     ):
         missing.load_existing()
@@ -2304,9 +2316,7 @@ def test_worker_top_level_load_existing_reports_all_missing_dependencies(
     assert ready.create() == "object-id:22"
 
     with (
-        worker_execution_context(
-            lease_id="lease-1",
-        ),
+        worker_execution_context(),
         pytest.raises(_DependencyNotReady) as exc_info,
     ):
         furu.load_existing([missing_first, ready, missing_second])
@@ -2323,9 +2333,7 @@ def test_worker_dependency_not_ready_is_not_caught_as_exception(
     missing = ObjectIdStorageValue(key=14)
 
     with pytest.raises(_DependencyNotReady):
-        with worker_execution_context(
-            lease_id="lease-1",
-        ):
+        with worker_execution_context():
             try:
                 missing.load_existing()
             except Exception as exc:  # pragma: no cover
@@ -2484,7 +2492,11 @@ def test_create_publicly_loads_or_computes_result() -> None:
     assert CountedSingleValue.create_calls == [99]
 
 
-def test_create_batched_cannot_be_called_directly() -> None:
+def test_class_access_on_batched_create_is_the_batch_verb() -> None:
     objs = [BatchOnlyValue(key=1), BatchOnlyValue(key=2)]
-    with pytest.raises(RuntimeError, match="must not be called directly"):
-        BatchOnlyValue.create_batched(objs)
+
+    assert BatchOnlyValue.create(objs) == ["batch:1", "batch:2"]
+    assert BatchOnlyValue.batch_calls == [(1, 2)]
+    # A second call is served from cache without invoking the hook again.
+    assert BatchOnlyValue.create(objs) == ["batch:1", "batch:2"]
+    assert BatchOnlyValue.batch_calls == [(1, 2)]

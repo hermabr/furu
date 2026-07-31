@@ -4,6 +4,7 @@ import json
 import logging
 import shutil
 from abc import ABC
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from functools import cached_property
 from inspect import get_annotations
@@ -13,11 +14,12 @@ from typing import (
     Any,
     ClassVar,
     Literal,
-    TypeAlias,
+    Self,
     cast,
     final,
 )
 
+from furu._batched import _BatchedCreate, _BatchedHook, batched
 from furu._declared_types import declared_result_type
 from furu.config import get_config
 from furu.explain import ExplainDepth
@@ -55,7 +57,7 @@ from furu.utils import (
 from furu.validate import validate_cls
 
 if TYPE_CHECKING:
-    from typing_extensions import dataclass_transform
+    from typing import dataclass_transform
 
     @dataclass_transform(kw_only_default=True, frozen_default=True)
     class _FuruDataclassTransform:
@@ -70,14 +72,12 @@ class Missing(Exception):
     pass
 
 
-SpecCreateMode: TypeAlias = Literal["single", "batched"] | None
 _SPEC_CLASS_ATTRIBUTES = frozenset(
     {"migrations", "throttle", "result_codecs", "artifact_serializers"}
 )
 _RESERVED_FIELD_NAMES = frozenset(
     {
         "create",
-        "create_batched",
         "metadata",
         "status",
         "directory",
@@ -95,7 +95,7 @@ _RESERVED_FIELD_NAMES = frozenset(
 
 
 class Spec[T](_FuruDataclassTransform, ABC):
-    _furu_create_mode: ClassVar[SpecCreateMode]
+    _furu_create_hook: ClassVar[Callable[..., Any] | _BatchedHook]
     throttle: ClassVar[Throttle | None] = None
     migrations: ClassVar[tuple[MigrationStep, ...]] = ()
     result_codecs: ClassVar[tuple[type[Codec], ...]] = ()
@@ -119,7 +119,9 @@ class Spec[T](_FuruDataclassTransform, ABC):
                 and name not in _SPEC_CLASS_ATTRIBUTES
                 and name not in annotations
                 and not callable(value)
-                and not isinstance(value, (classmethod, property, cached_property))
+                and not isinstance(
+                    value, (classmethod, property, cached_property, _BatchedCreate)
+                )
             ):
                 raise TypeError(f"{cls.__name__}.{name} must have a type annotation")
 
@@ -129,24 +131,24 @@ class Spec[T](_FuruDataclassTransform, ABC):
         if cls.migrations:
             validate_migration_declaration(cls)
         validate_embedded_migration_declarations(cls)
-        from furu.execution.load_or_create import (
-            _install_create_dispatchers,
-            _resolve_create_mode,
-        )
-
-        cls._furu_create_mode = _resolve_create_mode(cls)
-        _install_create_dispatchers(cls)
+        match cls.__dict__.get("create"):
+            case None:
+                pass
+            case batched():
+                raise TypeError(
+                    f"{cls.__qualname__}.create: @furu.batched needs a batch "
+                    "key function: @furu.batched(batch_key)"
+                )
+            case _BatchedCreate() as hook:
+                cls._furu_create_hook = _BatchedHook(hook.func, hook.batch_fn)
+            case hook:
+                cls._furu_create_hook = hook
+                del cls.create  # unshadow the inherited create verb
 
     def create(self) -> T:
         from furu.execution.load_or_create import _load_or_create
 
         return _load_or_create(self)
-
-    @classmethod
-    def create_batched[TSpec: Spec](cls: type[TSpec], objs: list[TSpec]) -> list[T]:
-        raise NotImplementedError(
-            f"{cls.__name__} must implement create() or create_batched()"
-        )
 
     def metadata(self) -> Metadata:
         return Metadata()
@@ -189,7 +191,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
         from furu.dependencies import record_dependency_call
         from furu.worker.context import (
             _DependencyNotReady,
-            _worker_execution_lease_id,
+            _in_worker_execution,
         )
 
         record_dependency_call(self)
@@ -203,7 +205,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
                 ),
             )
         raise_if_stale(self)
-        if _worker_execution_lease_id.get() is not None:
+        if _in_worker_execution.get():
             raise _DependencyNotReady(
                 dependencies=[self],
                 call_kind="load_existing",
@@ -283,9 +285,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
 
     @final
     @classmethod
-    def from_artifact[TSpec: Spec](
-        cls: type[TSpec], artifact: ArtifactSpec | Path
-    ) -> TSpec:
+    def from_artifact(cls, artifact: ArtifactSpec | Path) -> Self:
         from furu.serializer.artifact import _from_artifact
 
         if not isinstance(artifact, ArtifactSpec):

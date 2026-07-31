@@ -1,23 +1,21 @@
 from __future__ import annotations
 
-import functools
 import json
 import time
-from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager, nullcontext
-from contextvars import ContextVar
+from collections.abc import Callable, Sequence
+from contextlib import nullcontext
 from typing import (
     TYPE_CHECKING,
     Any,
     TypeAlias,
-    assert_never,
     cast,
     overload,
 )
 
+from furu._batched import _BatchedHook
 from furu._declared_types import declared_result_type
 from furu.config import get_config
-from furu.core import Missing, Spec, SpecCreateMode
+from furu.core import Missing, Spec
 from furu.dependencies import dependency_recorder, record_dependency_call
 from furu.locking import lock
 from furu.logging import _scoped_log_files, get_logger
@@ -45,87 +43,13 @@ from furu.storage._layout import (
 from furu.utils import atomic_write_text, format_duration, nfs_safe_unique_name
 from furu.worker.context import (
     _DependencyNotReady,
-    _worker_execution_lease_id,
+    _in_worker_execution,
 )
 
 if TYPE_CHECKING:
     from furu.worker.backends.protocol import WorkerBackend
 
 HasLock: TypeAlias = Callable[[], bool]
-_DirectCreateTarget: TypeAlias = Spec[Any] | type[Spec[Any]]
-
-
-_direct_create_target: ContextVar[_DirectCreateTarget | None] = ContextVar(
-    "_furu_direct_create_target", default=None
-)
-
-
-@contextmanager
-def _allow_direct_create(target: _DirectCreateTarget) -> Iterator[None]:
-    token = _direct_create_target.set(target)
-    try:
-        yield
-    finally:
-        _direct_create_target.reset(token)
-
-
-def _install_create_dispatchers[T](cls: type[Spec[T]]) -> None:
-    if "create" in cls.__dict__:
-        raw_create = cls.__dict__["create"]
-
-        @functools.wraps(raw_create)
-        def create_dispatcher(self: Spec[T], *args: Any, **kwargs: Any) -> T:
-            if _direct_create_target.get() is self:
-                return raw_create(self, *args, **kwargs)
-            return _load_or_create(self, *args, **kwargs)
-
-        setattr(cls, "create", create_dispatcher)
-
-    if "create_batched" in cls.__dict__:
-        raw_create_batched = cls.__dict__["create_batched"]
-        func = raw_create_batched.__func__
-
-        @functools.wraps(func)
-        def create_batched_guard(
-            owner: type[Spec[T]], *args: Any, **kwargs: Any
-        ) -> list[T]:
-            target = _direct_create_target.get()
-            if not (isinstance(target, type) and issubclass(target, owner)):
-                raise RuntimeError(
-                    f"{owner.__name__}.create_batched() must not be called directly; "
-                    "call .create() on Spec objects instead"
-                )
-            return func(owner, *args, **kwargs)
-
-        setattr(cls, "create_batched", classmethod(create_batched_guard))
-
-
-def _resolve_create_mode[T](cls: type[Spec[T]]) -> SpecCreateMode:
-    defines_single = False
-    defines_batched = False
-
-    for base in cls.__mro__:
-        if not issubclass(base, Spec) or base is Spec:
-            continue
-
-        if "create" in base.__dict__:
-            defines_single = True
-        if "create_batched" in base.__dict__:
-            if not isinstance(base.__dict__["create_batched"], classmethod):
-                raise TypeError(
-                    f"{base.__qualname__}.create_batched must be a @classmethod"
-                )
-            defines_batched = True
-
-    if defines_single and defines_batched:
-        raise TypeError(
-            f"{cls.__qualname__} must define exactly one of create or create_batched"
-        )
-    if defines_single:
-        return "single"
-    if defines_batched:
-        return "batched"
-    return None
 
 
 def _record_schema_snapshot(obj: Spec[Any]) -> None:
@@ -216,54 +140,52 @@ def _load_or_create[T](
     use_lock: bool = True,
 ) -> T | list[T]:
     _require_uv()
-    if _worker_execution_lease_id.get() is not None:
+    if _in_worker_execution.get():
         return _load_or_create_worker(obj_or_objs)
     return _load_or_create_local(obj_or_objs, use_lock=use_lock)
 
 
-def _ensure_single_result[T](
-    obj: Spec[T], *, submit_provenance: SubmitProvenance
+def _ensure_group_result[T](
+    objs: Sequence[Spec[T]], *, submit_provenance: SubmitProvenance
 ) -> None:
-    if result_dir_for_loading(obj) is not None:
-        obj.logger.info("cache hit for %s", obj._log_label)
+    missing: list[Spec[T]] = []
+    for obj in objs:
+        if result_dir_for_loading(obj) is not None:
+            obj.logger.info("cache hit for %s", obj._log_label)
+            continue
+        raise_if_stale(obj)
+        obj._base_dir.mkdir(parents=True, exist_ok=True)
+        missing.append(obj)
+
+    if not missing:
         return
 
-    raise_if_stale(obj)
-    obj._base_dir.mkdir(parents=True, exist_ok=True)
-
-    with lock(compute_lock_path_in(obj._base_dir)) as has_lock:
-        if result_dir_for_loading(obj, has_lock=True) is not None:
-            obj.logger.info("cache hit for %s", obj._log_label)
-            return
-
-        _create_and_store_group(
-            [obj],
-            has_lock=has_lock,
-            results_by_object_id={},
-            submit_provenance=submit_provenance,
-        )
+    with lock([compute_lock_path_in(obj._base_dir) for obj in missing]) as has_lock:
+        pending = [
+            obj for obj in missing if result_dir_for_loading(obj, has_lock=True) is None
+        ]
+        if pending:
+            _create_and_store_group(
+                pending,
+                has_lock=has_lock,
+                results_by_object_id={},
+                submit_provenance=submit_provenance,
+            )
 
 
 def _normalize_load_or_create_input[T](
     obj_or_objs: Spec[T] | Sequence[Spec[T]],
 ) -> tuple[list[Spec[T]], bool]:
-    if isinstance(obj_or_objs, Spec):
-        objs = [obj_or_objs]
-        unwrap = True
-        record_dependency_call(objs[0])
-        objs[0].logger.debug(".create called for %s", objs[0])
-    else:
-        if not isinstance(obj_or_objs, Sequence):
-            raise TypeError(
-                "_load_or_create() expected a Spec object or a sequence of Spec objects"
-            )
-        objs = list(obj_or_objs)
-        unwrap = False
-        if any(not isinstance(obj, Spec) for obj in objs):
-            raise TypeError("_load_or_create() expected Spec objects")
-        for obj in objs:
+    match obj_or_objs:
+        case Spec() as obj:
+            assert not isinstance(obj, Sequence)
             record_dependency_call(obj)
-    return objs, unwrap
+            obj.logger.debug(".create called for %s", obj)
+            return [obj], True
+        case Sequence() as objs:
+            for obj in objs:
+                record_dependency_call(obj)
+            return list(objs), False
 
 
 @overload
@@ -310,7 +232,7 @@ def load_existing[T](objs: Sequence[Spec[T]]) -> list[T]:
             )
         )
     if missing:
-        if _worker_execution_lease_id.get() is not None:
+        if _in_worker_execution.get():
             raise _DependencyNotReady(dependencies=missing, call_kind="load_existing")
         first = missing[0]
         raise Missing(
@@ -456,11 +378,7 @@ def _load_or_create_local[T](
                 snapshot=get_config().provenance.snapshot
             )
 
-            grouped: dict[type[object], list[Spec[T]]] = {}
-            for obj in pending:
-                grouped.setdefault(type(obj), []).append(obj)
-
-            for group in grouped.values():
+            for group in _grouped_pending(pending):
                 _create_and_store_group(
                     group,
                     has_lock=has_lock,
@@ -483,6 +401,38 @@ def _load_or_create_local[T](
     return outputs
 
 
+def _batch_group(obj: Spec[Any]) -> tuple[object, int] | None:
+    hook = getattr(type(obj), "_furu_create_hook", None)
+    if not isinstance(hook, _BatchedHook):
+        return None
+    group_hash, cap = hook.batch_fn(obj)
+    if type(cap) is not int or cap < 1:
+        raise TypeError(
+            f"{type(obj).__qualname__} batch key cap must be a positive int, "
+            f"got {cap!r}"
+        )
+    key = (type(obj), group_hash, cap, obj._metadata.requires, obj._metadata.execution)
+    return key, cap
+
+
+def _grouped_pending[T](pending: list[Spec[T]]) -> list[list[Spec[T]]]:
+    """Partition by (type, batch_key, requires, execution), chunked to the cap."""
+    groups: list[tuple[object, int | None, list[Spec[T]]]] = []
+    for obj in pending:
+        key, cap = _batch_group(obj) or (type(obj), None)
+        for existing_key, _, group in groups:
+            if existing_key == key:
+                group.append(obj)
+                break
+        else:
+            groups.append((key, cap, [obj]))
+    return [
+        group[i : i + (cap or len(group))]
+        for _, cap, group in groups
+        for i in range(0, len(group), cap or len(group))
+    ]
+
+
 def _create_and_store_group[T](
     group: list[Spec[T]],
     *,
@@ -499,43 +449,35 @@ def _create_and_store_group[T](
         logger.debug("create start")
         group_started_at = time.monotonic()
         try:
-            match group[0]._furu_create_mode:
-                case "batched":
-                    logger.debug("running create_batched()")
-                    with (
-                        dependency_recorder() as recorder,
-                        _allow_direct_create(type(group[0])),
-                    ):
-                        results = type(group[0]).create_batched(group)
+            match getattr(type(group[0]), "_furu_create_hook", None):
+                case None:
+                    raise TypeError(
+                        f"{type(group[0]).__qualname__} cannot create missing results "
+                        "because it does not define create()"
+                    )
+                case _BatchedHook(func=create_hook):
+                    logger.debug("running batched create() hook")
+                    with dependency_recorder() as recorder:
+                        results = create_hook(group)
                     observed = recorder.finalize()
-                    logger.debug("create_batched() returned")
+                    logger.debug("batched create() hook returned")
                     if not isinstance(results, list):
                         raise TypeError(
-                            f"{type(group[0]).__name__}.create_batched() must return a list"
+                            f"{type(group[0]).__name__}.create() must return a list"
                         )
                     # TODO: Track dependency calls per object during batched execution.
                     # This currently assigns dependencies observed anywhere in the batch
                     # to every object.
                     observed_dependencies = [observed for _ in group]
-                case "single":
+                case create_hook:
                     logger.debug("running sequential create() fallback")
                     results = []
                     observed_dependencies = []
                     for obj in group:
-                        with (
-                            dependency_recorder() as recorder,
-                            _allow_direct_create(obj),
-                        ):
-                            results.append(obj.create())
+                        with dependency_recorder() as recorder:
+                            results.append(create_hook(obj))
                         observed_dependencies.append(recorder.finalize())
                     logger.debug("sequential create() fallback returned")
-                case None:
-                    raise TypeError(
-                        f"{type(group[0]).__qualname__} cannot create missing results because it does not "
-                        "define create() or create_batched()"
-                    )
-                case _:
-                    assert_never(group[0]._furu_create_mode)
 
             if len(results) != len(group):
                 raise TypeError(

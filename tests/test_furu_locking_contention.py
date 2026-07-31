@@ -5,6 +5,7 @@ import time
 from multiprocessing import get_context
 from pathlib import Path
 
+import furu
 from furu import Spec
 from furu.storage._layout import data_dir_in
 from furu.config import _Config, _FuruDirectories, _set_config
@@ -31,11 +32,14 @@ class SlowProbe(Spec[int]):
         return 42
 
 
-class SlowBatchProbe(Spec[int]):
+class SlowBatchProbe(furu.Spec[int]):
     key: int
 
-    @classmethod
-    def create_batched(cls, objs) -> list[int]:
+    def batch_key(self) -> tuple[None, int]:
+        return (None, 1024)
+
+    @furu.batched(batch_key)
+    def create(objs: list["SlowBatchProbe"]) -> list[int]:
         marker_dir = Path(os.environ["FURU_TEST_MARKER_DIR"])
         marker_dir.mkdir(parents=True, exist_ok=True)
         for obj in objs:
