@@ -8,7 +8,8 @@ if TYPE_CHECKING:
 
 
 class WorkerBackend(Protocol):
-    execution_coordinator_listen_host: str
+    @property
+    def execution_coordinator_listen_host(self) -> str: ...
 
     def start_pool(
         self,
