@@ -1,24 +1,25 @@
 import hashlib
 import logging
 import threading
-from collections.abc import Iterator, Sequence
+import time
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
 from uuid import UUID, uuid4
 
-import httpx
 import pytest
-from fastapi.testclient import TestClient
 from pydantic import TypeAdapter, ValidationError
+from websockets.exceptions import ConnectionClosed, InvalidStatus
+from websockets.sync.client import ClientConnection, connect
+from websockets.sync.server import ServerConnection, serve
 
 import furu
 import furu.worker.loop as worker_loop_module
 from furu import GiB, Metadata, Requires, Spec, Throttle, at_least
 from furu.config import get_config
 from furu.dag import _add_to_dag
-from furu.execution import api
-from furu.execution.api import create_execution_coordinator_api_app
 from furu.execution.execution_coordinator import (
     ExecutionCoordinator,
     FailedJob,
@@ -36,8 +37,12 @@ from furu.provenance import (
 from furu.resources import ResourceRequest
 from furu.storage._layout import execution_coordinator_log_path_in
 from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
+from furu.worker.backends.protocol import PoolCoordinator
 from furu.worker.loop import worker_loop
 from furu.worker.protocol import (
+    PROTOCOL_VERSION,
+    AssignMessage,
+    HelloMessage,
     Job,
     JobBlockedResult,
     JobCompletedResult,
@@ -45,6 +50,11 @@ from furu.worker.protocol import (
     JobMember,
     JobResultRequest,
     LeaseJobResponse,
+    ResultMessage,
+    StopMessage,
+    WelcomeMessage,
+    server_message_adapter,
+    worker_message_adapter,
 )
 
 ANY_RESOURCES = ResourceRequest()
@@ -122,9 +132,24 @@ def _lease_job(
     return coordinator.lease_job(resources=resources, worker=f"test-worker-{uuid4()}")
 
 
+class _StubPoolCoordinator:
+    """Stands in for the ExecutionCoordinator that pools call in-process."""
+
+    def __init__(self, count: Callable[[int], int] = lambda max_workers: 0) -> None:
+        self._count = count
+        self.failures: list[str] = []
+
+    def count_satisfiable_jobs(self, *, resources: object, max_workers: int) -> int:
+        return self._count(max_workers)
+
+    def fail(self, message: str) -> None:
+        self.failures.append(message)
+
+
 def _new_local_pool(
     *,
-    server_url: str = "http://execution-coordinator.test",
+    coordinator: Any = None,
+    server_url: str = "ws://execution-coordinator.test",
     auth_token: str = "secret",
     max_workers: int = 1,
     max_failed_restarts: int = 3,
@@ -140,7 +165,7 @@ def _new_local_pool(
         _resource_request=resource_request or ResourceRequest(),
         _scale_interval=scale_interval,
         _worker_idle_timeout=get_config().worker.idle_timeout_seconds,
-        _client=api.PoolApiClient(server_url=server_url, auth_token=auth_token),
+        _coordinator=coordinator or _StubPoolCoordinator(),
         _stop_event=threading.Event(),
         _unhealthy_event=threading.Event(),
         _scale_thread=threading.Thread(
@@ -152,6 +177,110 @@ def _new_local_pool(
     )
     pool_holder.append(pool)
     return pool
+
+
+@dataclass(slots=True)
+class _ScriptedServer:
+    """A hand-rolled coordinator that plays a fixed sequence of messages."""
+
+    server_url: str
+    hellos: list[HelloMessage] = field(default_factory=list)
+    results: list[JobResultRequest] = field(default_factory=list)
+
+
+@contextmanager
+def _scripted_worker_server(
+    messages: Sequence[AssignMessage | StopMessage],
+) -> Iterator[_ScriptedServer]:
+    record = _ScriptedServer(server_url="")
+
+    def handler(connection: ServerConnection) -> None:
+        hello = worker_message_adapter.validate_json(connection.recv(timeout=5))
+        assert isinstance(hello, HelloMessage)
+        record.hellos.append(hello)
+        connection.send(WelcomeMessage(executor_id="test-executor").model_dump_json())
+        try:
+            for message in messages:
+                connection.send(message.model_dump_json())
+                if isinstance(message, AssignMessage):
+                    reply = worker_message_adapter.validate_json(
+                        connection.recv(timeout=5)
+                    )
+                    assert isinstance(reply, ResultMessage)
+                    record.results.append(reply.result)
+            # Linger until the worker hangs up (idle timeout, crash, ...).
+            connection.recv(timeout=5)
+        except (TimeoutError, ConnectionClosed):
+            pass
+
+    server = serve(handler, "127.0.0.1", 0)
+    record.server_url = f"ws://127.0.0.1:{server.socket.getsockname()[1]}"
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        yield record
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
+def _connect_worker(
+    server: Any,
+    *,
+    auth_token: str | None = None,
+    worker: str = "raw-test-worker",
+    resources: ResourceRequest | None = None,
+) -> ClientConnection:
+    token = server.auth_token if auth_token is None else auth_token
+    connection = connect(
+        server.server_url,
+        additional_headers={"Authorization": f"Bearer {token}"},
+    )
+    connection.send(
+        HelloMessage(
+            version=PROTOCOL_VERSION,
+            worker=worker,
+            backend="test",
+            resources=resources or ResourceRequest(),
+        ).model_dump_json()
+    )
+    welcome = server_message_adapter.validate_json(connection.recv(timeout=5))
+    assert isinstance(welcome, WelcomeMessage)
+    return connection
+
+
+def _wait_until(condition: Callable[[], bool], *, timeout: float = 10.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not condition():
+        if time.monotonic() > deadline:
+            raise TimeoutError("condition not met in time")
+        time.sleep(0.01)
+
+
+def _complete_one_job_over_ws(server_url: str, auth_token: str) -> None:
+    connection = connect(
+        server_url,
+        additional_headers={"Authorization": f"Bearer {auth_token}"},
+    )
+    with connection:
+        connection.send(
+            HelloMessage(
+                version=PROTOCOL_VERSION,
+                worker="recording-worker",
+                backend="test",
+                resources=ResourceRequest(),
+            ).model_dump_json()
+        )
+        while True:
+            match server_message_adapter.validate_json(connection.recv(timeout=10)):
+                case AssignMessage():
+                    connection.send(
+                        ResultMessage(result=JobCompletedResult()).model_dump_json()
+                    )
+                case StopMessage():
+                    return
+                case WelcomeMessage():
+                    pass
 
 
 class ExecutionCoordinatorLeaf(Spec[int]):
@@ -923,12 +1052,9 @@ def test_local_pool_scale_spawns_workers_up_to_max_as_satisfiable_count_grows(
     counts = iter([0, 2, 10, 10])
     release_workers = threading.Event()
 
-    def fake_count(
-        self: api.PoolApiClient, *, resources: object, max_workers: int
-    ) -> int:
-        return min(next(counts), max_workers)
-
-    monkeypatch.setattr(api.PoolApiClient, "count_satisfiable_jobs", fake_count)
+    coordinator = _StubPoolCoordinator(
+        lambda max_workers: min(next(counts), max_workers)
+    )
     monkeypatch.setattr(
         worker_loop_module,
         "worker_loop",
@@ -937,7 +1063,7 @@ def test_local_pool_scale_spawns_workers_up_to_max_as_satisfiable_count_grows(
         ),
     )
 
-    pool = _new_local_pool(max_workers=3)
+    pool = _new_local_pool(coordinator=coordinator, max_workers=3)
 
     try:
         pool._scale_once()
@@ -964,11 +1090,6 @@ def test_local_pool_scale_uses_unique_worker_names_after_worker_exits(
     release_workers = threading.Event()
     calls = 0
 
-    def fake_count(
-        self: api.PoolApiClient, *, resources: object, max_workers: int
-    ) -> int:
-        return max_workers
-
     def worker_loop(
         *,
         server_url: str,
@@ -984,10 +1105,12 @@ def test_local_pool_scale_uses_unique_worker_names_after_worker_exits(
         if calls > 1:
             release_workers.wait(timeout=5)
 
-    monkeypatch.setattr(api.PoolApiClient, "count_satisfiable_jobs", fake_count)
     monkeypatch.setattr(worker_loop_module, "worker_loop", worker_loop)
 
-    pool = _new_local_pool(max_workers=3)
+    pool = _new_local_pool(
+        coordinator=_StubPoolCoordinator(lambda max_workers: max_workers),
+        max_workers=3,
+    )
 
     try:
         pool._scale_once()
@@ -1024,14 +1147,13 @@ def test_local_pool_scale_does_not_count_normal_exits_as_restarts(
         nonlocal starts
         starts += 1
 
-    monkeypatch.setattr(
-        api.PoolApiClient,
-        "count_satisfiable_jobs",
-        lambda self, *, resources, max_workers: max_workers,
-    )
     monkeypatch.setattr(worker_loop_module, "worker_loop", worker_loop)
 
-    pool = _new_local_pool(max_workers=1, max_failed_restarts=0)
+    pool = _new_local_pool(
+        coordinator=_StubPoolCoordinator(lambda max_workers: max_workers),
+        max_workers=1,
+        max_failed_restarts=0,
+    )
 
     for _ in range(3):
         pool._scale_once()
@@ -1056,14 +1178,13 @@ def test_local_pool_scale_counts_crashes_against_restart_limit(
     ) -> None:
         raise RuntimeError("worker boom")
 
-    monkeypatch.setattr(
-        api.PoolApiClient,
-        "count_satisfiable_jobs",
-        lambda self, *, resources, max_workers: max_workers,
-    )
     monkeypatch.setattr(worker_loop_module, "worker_loop", worker_loop)
 
-    pool = _new_local_pool(max_workers=1, max_failed_restarts=1)
+    pool = _new_local_pool(
+        coordinator=_StubPoolCoordinator(lambda max_workers: max_workers),
+        max_workers=1,
+        max_failed_restarts=1,
+    )
 
     pool._scale_once()
     pool._threads[0].join(timeout=5)
@@ -1124,6 +1245,7 @@ def test_execution_coordinator_run_uses_worker_backend() -> None:
         def start_pool(
             self,
             *,
+            coordinator: PoolCoordinator,
             bound_port: int,
             auth_token: str,
             executor_dir: Path,
@@ -1137,6 +1259,7 @@ def test_execution_coordinator_run_uses_worker_backend() -> None:
                 resource_request=ResourceRequest(),
                 scale_interval=1.0,
             ).start_pool(
+                coordinator=coordinator,
                 bound_port=bound_port,
                 auth_token=auth_token,
                 executor_dir=executor_dir,
@@ -1170,6 +1293,7 @@ def test_execution_coordinator_run_passes_executor_dir_to_worker_backend() -> No
         def start_pool(
             self,
             *,
+            coordinator: PoolCoordinator,
             bound_port: int,
             auth_token: str,
             executor_dir: Path,
@@ -1181,6 +1305,7 @@ def test_execution_coordinator_run_passes_executor_dir_to_worker_backend() -> No
                 resource_request=ResourceRequest(),
                 scale_interval=1.0,
             ).start_pool(
+                coordinator=coordinator,
                 bound_port=bound_port,
                 auth_token=auth_token,
                 executor_dir=executor_dir,
@@ -1237,6 +1362,7 @@ def test_execution_coordinator_run_returns_when_all_objects_are_already_complete
         def start_pool(
             self,
             *,
+            coordinator: PoolCoordinator,
             bound_port: int,
             auth_token: str,
             executor_dir: Path,
@@ -1286,28 +1412,20 @@ def test_execution_coordinator_run_starts_backend_pool_and_stops_and_joins_when_
         def start_pool(
             self,
             *,
+            coordinator: PoolCoordinator,
             bound_port: int,
             auth_token: str,
             executor_dir: Path,
             provenance: SubmitProvenance,
         ) -> RecordingPool:
             self.pool.events.append("start_pool")
-            server_url = f"http://127.0.0.1:{bound_port}"
-            client = api.WorkerApiClient(server_url=server_url, auth_token=auth_token)
-            failure_client = api.PoolApiClient(
-                server_url=server_url, auth_token=auth_token
-            )
+            server_url = f"ws://127.0.0.1:{bound_port}"
 
             def complete_job() -> None:
                 try:
-                    job = client.lease_job(
-                        resources=ANY_RESOURCES, worker="recording-worker"
-                    )
-                    if not isinstance(job, Job):
-                        raise AssertionError(f"expected job, got {job!r}")
-                    client.job_result(_lease(job), JobCompletedResult())
+                    _complete_one_job_over_ws(server_url, auth_token)
                 except BaseException as exc:
-                    failure_client.fail(message=f"recording backend failed: {exc!r}")
+                    coordinator.fail(f"recording backend failed: {exc!r}")
 
             self.pool.worker_thread = threading.Thread(target=complete_job)
             self.pool.worker_thread.start()
@@ -1353,6 +1471,7 @@ def test_execution_coordinator_run_stops_backend_pool_when_interrupted() -> None
         def start_pool(
             self,
             *,
+            coordinator: PoolCoordinator,
             bound_port: int,
             auth_token: str,
             executor_dir: Path,
@@ -1393,29 +1512,21 @@ def test_execution_coordinator_run_uses_worker_backend_execution_coordinator_lis
         def start_pool(
             self,
             *,
+            coordinator: PoolCoordinator,
             bound_port: int,
             auth_token: str,
             executor_dir: Path,
             provenance: SubmitProvenance,
         ) -> RecordingPool:
-            server_url = f"http://{self.execution_coordinator_listen_host}:{bound_port}"
+            server_url = f"ws://{self.execution_coordinator_listen_host}:{bound_port}"
             self.server_urls.append(server_url)
             pool = RecordingPool()
-            client = api.WorkerApiClient(server_url=server_url, auth_token=auth_token)
-            failure_client = api.PoolApiClient(
-                server_url=server_url, auth_token=auth_token
-            )
 
             def complete_job() -> None:
                 try:
-                    job = client.lease_job(
-                        resources=ANY_RESOURCES, worker="recording-worker"
-                    )
-                    if not isinstance(job, Job):
-                        raise AssertionError(f"expected job, got {job!r}")
-                    client.job_result(_lease(job), JobCompletedResult())
+                    _complete_one_job_over_ws(server_url, auth_token)
                 except BaseException as exc:
-                    failure_client.fail(message=f"recording backend failed: {exc!r}")
+                    coordinator.fail(f"recording backend failed: {exc!r}")
 
             pool.worker_thread = threading.Thread(target=complete_job)
             pool.worker_thread.start()
@@ -1428,7 +1539,7 @@ def test_execution_coordinator_run_uses_worker_backend_execution_coordinator_lis
     )
 
     assert len(backend.server_urls) == 1
-    assert backend.server_urls[0].startswith("http://127.0.0.1:")
+    assert backend.server_urls[0].startswith("ws://127.0.0.1:")
 
 
 def test_execution_coordinator_server_exposes_bound_host_and_port() -> None:
@@ -1442,36 +1553,111 @@ def test_execution_coordinator_server_exposes_bound_host_and_port() -> None:
         assert server.auth_token
 
 
-def test_execution_coordinator_server_rejects_requests_without_auth_token() -> None:
+def test_execution_coordinator_server_rejects_connections_without_auth_token() -> None:
     coordinator = _new_execution_coordinator([ExecutionCoordinatorLeaf(value=12)])
 
     with execution_coordinator_server(
         coordinator, bind_host="127.0.0.1", port=0
     ) as server:
-        response = httpx.post(f"{server.server_url}/worker/lease_job")
-        assert response.status_code == 401
-        assert response.json() == {
-            "detail": "invalid furu execution coordinator auth token"
-        }
-
-        response = httpx.post(
-            f"{server.server_url}/worker/lease_job",
-            headers={"Authorization": "Bearer wrong"},
+        with pytest.raises(InvalidStatus) as no_token:
+            connect(server.server_url)
+        assert no_token.value.response.status_code == 401
+        assert b"invalid furu execution coordinator auth token" in (
+            no_token.value.response.body
         )
-        assert response.status_code == 401
-        assert response.json() == {
-            "detail": "invalid furu execution coordinator auth token"
-        }
 
-        response = httpx.post(
-            f"{server.server_url}/worker/lease_job",
-            headers={"Authorization": f"Bearer {server.auth_token}"},
-            json={
-                "resources": {"cpus": 1, "gpus": 0, "memory_gib": 0},
-                "worker": "test-worker",
-            },
+        with pytest.raises(InvalidStatus) as wrong_token:
+            connect(
+                server.server_url,
+                additional_headers={"Authorization": "Bearer wrong"},
+            )
+        assert wrong_token.value.response.status_code == 401
+
+        connection = _connect_worker(server)
+        connection.close()
+
+
+def test_worker_protocol_round_trip_over_server() -> None:
+    leaf = ExecutionCoordinatorLeaf(value=1)
+    coordinator = _new_execution_coordinator([leaf])
+
+    with execution_coordinator_server(
+        coordinator, bind_host="127.0.0.1", port=0
+    ) as server, _connect_worker(server) as connection:
+        assign = server_message_adapter.validate_json(connection.recv(timeout=5))
+        assert isinstance(assign, AssignMessage)
+        (member,) = assign.job.members
+        assert member.artifact.object_id == leaf.object_id
+        assert member.artifact.artifact_data["|fields"] == {"value": 1}
+        assert member.lease_id in coordinator.running
+
+        connection.send(
+            ResultMessage(result=JobCompletedResult()).model_dump_json()
         )
-        assert response.status_code == 200
+        stop = server_message_adapter.validate_json(connection.recv(timeout=5))
+        assert isinstance(stop, StopMessage)
+        assert stop.reason == "run finished"
+
+    assert set(coordinator.completed) == {leaf.object_id}
+    assert coordinator.done.is_set()
+
+
+def test_worker_disconnect_requeues_leased_job() -> None:
+    leaf = ExecutionCoordinatorLeaf(value=1)
+    coordinator = _new_execution_coordinator([leaf])
+
+    with execution_coordinator_server(
+        coordinator, bind_host="127.0.0.1", port=0
+    ) as server:
+        connection = _connect_worker(server, worker="doomed-worker")
+        assign = server_message_adapter.validate_json(connection.recv(timeout=5))
+        assert isinstance(assign, AssignMessage)
+        connection.close()
+
+        # The dropped connection releases the lease; nothing is lost or failed.
+        _wait_until(lambda: leaf.object_id in coordinator.ready)
+        assert coordinator.running == {}
+        assert coordinator.failed == {}
+
+        with _connect_worker(server, worker="replacement-worker") as replacement:
+            reassign = server_message_adapter.validate_json(
+                replacement.recv(timeout=5)
+            )
+            assert isinstance(reassign, AssignMessage)
+            (member,) = reassign.job.members
+            assert member.artifact.object_id == leaf.object_id
+            replacement.send(
+                ResultMessage(result=JobCompletedResult()).model_dump_json()
+            )
+            stop = server_message_adapter.validate_json(replacement.recv(timeout=5))
+            assert isinstance(stop, StopMessage)
+
+    assert set(coordinator.completed) == {leaf.object_id}
+
+
+def test_server_rejects_mismatched_protocol_version() -> None:
+    coordinator = _new_execution_coordinator([ExecutionCoordinatorLeaf(value=1)])
+
+    with execution_coordinator_server(
+        coordinator, bind_host="127.0.0.1", port=0
+    ) as server, connect(
+        server.server_url,
+        additional_headers={"Authorization": f"Bearer {server.auth_token}"},
+    ) as connection:
+        connection.send(
+            HelloMessage(
+                version=PROTOCOL_VERSION + 1,
+                worker="future-worker",
+                backend="test",
+                resources=ResourceRequest(),
+            ).model_dump_json()
+        )
+        stop = server_message_adapter.validate_json(connection.recv(timeout=5))
+        assert isinstance(stop, StopMessage)
+        assert "protocol version mismatch" in stop.reason
+
+    assert coordinator.completed == {}
+    assert coordinator.running == {}
 
 
 def test_execution_coordinator_run_requires_explicit_worker_backends() -> None:
@@ -1521,7 +1707,7 @@ def test_job_result_request_uses_status_discriminator() -> None:
 def test_worker_loop_raises_when_server_is_unavailable() -> None:
     with pytest.raises(RuntimeError, match="failed"):
         worker_loop(
-            server_url="http://127.0.0.1:1",
+            server_url="ws://127.0.0.1:1",
             auth_token="test-token",
             resource_request=ResourceRequest(),
             idle_timeout=get_config().worker.idle_timeout_seconds,
@@ -1530,41 +1716,22 @@ def test_worker_loop_raises_when_server_is_unavailable() -> None:
         )
 
 
-def test_worker_loop_exits_after_idle_timeout(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class TestClient:
-        lease_calls = 0
+def test_worker_loop_exits_after_idle_timeout() -> None:
+    with _scripted_worker_server([]) as server:
+        worker_loop(
+            server_url=server.server_url,
+            auth_token="test-token",
+            resource_request=ResourceRequest(),
+            idle_timeout=0.05,
+            component="test-worker",
+            backend="test",
+        )
 
-        def __init__(self, server_url: str, *, auth_token: str) -> None:
-            pass
-
-        def lease_job(
-            self, *, resources: ResourceRequest, worker: str
-        ) -> LeaseJobResponse:
-            self.lease_calls += 1
-            return "wait"
-
-    test_client = TestClient("http://worker.test", auth_token="test-token")
-    monkeypatch.setattr(
-        api,
-        "WorkerApiClient",
-        lambda server_url, *, auth_token: test_client,
-    )
-
-    worker_loop(
-        server_url="http://worker.test",
-        auth_token="test-token",
-        resource_request=ResourceRequest(),
-        idle_timeout=0,
-        component="test-worker",
-        backend="test",
-    )
-
-    assert test_client.lease_calls == 1
+        assert len(server.hellos) == 1
+        assert server.results == []
 
 
-def test_worker_loop_logs_task_requests_and_received_task(
+def test_worker_loop_logs_received_task_and_result(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
     tmp_path: Path,
@@ -1578,36 +1745,23 @@ def test_worker_loop_logs_task_requests_and_received_task(
         ],
         provenance=_submit_provenance(),
     )
-    leases: list[LeaseJobResponse] = [job, "stop"]
     log_path = tmp_path / "worker.log"
 
-    class TestClient:
-        def __init__(self, server_url: str, *, auth_token: str) -> None:
-            pass
-
-        def lease_job(
-            self, *, resources: ResourceRequest, worker: str
-        ) -> LeaseJobResponse:
-            return leases.pop(0)
-
-        def job_result(self, lease_id: str, request: JobResultRequest) -> None:
-            pass
-
-    test_client = TestClient("http://worker.test", auth_token="test-token")
-    monkeypatch.setattr(
-        api,
-        "WorkerApiClient",
-        lambda server_url, *, auth_token: test_client,
-    )
     monkeypatch.setattr(
         worker_loop_module,
         "execute_job",
         lambda obj, *, job: JobCompletedResult(),
     )
 
-    with _captured_furu_logs(caplog), _scoped_log_files((log_path,)):
+    with (
+        _scripted_worker_server(
+            [AssignMessage(job=job), StopMessage(reason="run finished")]
+        ) as server,
+        _captured_furu_logs(caplog),
+        _scoped_log_files((log_path,)),
+    ):
         worker_loop(
-            server_url="http://worker.test",
+            server_url=server.server_url,
             auth_token="test-token",
             resource_request=ResourceRequest(),
             idle_timeout=get_config().worker.idle_timeout_seconds,
@@ -1615,12 +1769,14 @@ def test_worker_loop_logs_task_requests_and_received_task(
             backend="test",
         )
 
-    assert "worker requesting new task from server" not in caplog.messages
+        assert server.results == [JobCompletedResult()]
+
     assert f"received {leaf._log_label} ×2" in caplog.messages
     assert any(
         message.startswith(f"finished {leaf._log_label} ×2 ok ·")
         for message in caplog.messages
     )
+    assert "worker told to stop: run finished" in caplog.messages
     received_line = next(
         line for line in log_path.read_text().splitlines() if 'msg="received ' in line
     )
@@ -1628,132 +1784,52 @@ def test_worker_loop_logs_task_requests_and_received_task(
     assert "members=2" in received_line
 
 
-def test_worker_loop_logs_stop_and_first_wait(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    leases: list[LeaseJobResponse] = ["wait", "wait", "stop"]
-
-    class TestClient:
-        def __init__(self, server_url: str, *, auth_token: str) -> None:
-            pass
-
-        def lease_job(
-            self, *, resources: ResourceRequest, worker: str
-        ) -> LeaseJobResponse:
-            return leases.pop(0)
-
-    test_client = TestClient("http://worker.test", auth_token="test-token")
-    monkeypatch.setattr(
-        api,
-        "WorkerApiClient",
-        lambda server_url, *, auth_token: test_client,
-    )
-    monkeypatch.setattr(worker_loop_module.time, "sleep", lambda seconds: None)
-
-    with _captured_furu_logs(caplog):
-        worker_loop(
-            server_url="http://worker.test",
-            auth_token="test-token",
-            resource_request=ResourceRequest(),
-            idle_timeout=get_config().worker.idle_timeout_seconds,
-            component="test-worker",
-            backend="test",
-        )
-
-    assert "worker requesting new task from server" not in caplog.messages
-    assert caplog.messages.count("worker told to wait") == 1
-    assert "worker told to stop" in caplog.messages
-
-
 def test_worker_loop_exits_after_exceeding_max_consecutive_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
-    jobs = [
-        _job("lease-1", leaf),
-        _job("lease-2", leaf),
-        _job("lease-3", leaf),
+    assigns = [
+        AssignMessage(job=_job("lease-1", leaf)),
+        AssignMessage(job=_job("lease-2", leaf)),
+        AssignMessage(job=_job("lease-3", leaf)),
+        AssignMessage(job=_job("lease-4", leaf)),
     ]
 
-    class TestClient:
-        lease_calls: int
-        results: list[tuple[str, JobResultRequest]]
-
-        def __init__(self, server_url: str, *, auth_token: str) -> None:
-            self.lease_calls = 0
-            self.results = []
-
-        def lease_job(
-            self, *, resources: ResourceRequest, worker: str
-        ) -> LeaseJobResponse:
-            self.lease_calls += 1
-            return jobs.pop(0)
-
-        def job_result(self, lease_id: str, request: JobResultRequest) -> None:
-            self.results.append((lease_id, request))
-
-    test_client = TestClient("http://worker.test", auth_token="test-token")
-    monkeypatch.setattr(
-        api,
-        "WorkerApiClient",
-        lambda server_url, *, auth_token: test_client,
-    )
     monkeypatch.setattr(
         worker_loop_module,
         "execute_job",
         lambda obj, *, job: JobFailedResult(error="worker task failed"),
     )
 
-    worker_loop(
-        server_url="http://worker.test",
-        auth_token="test-token",
-        resource_request=ResourceRequest(),
-        idle_timeout=get_config().worker.idle_timeout_seconds,
-        max_consecutive_failures=2,
-        component="test-worker",
-        backend="test",
-    )
+    with _scripted_worker_server(assigns) as server:
+        worker_loop(
+            server_url=server.server_url,
+            auth_token="test-token",
+            resource_request=ResourceRequest(),
+            idle_timeout=get_config().worker.idle_timeout_seconds,
+            max_consecutive_failures=2,
+            component="test-worker",
+            backend="test",
+        )
 
-    assert test_client.lease_calls == 3
-    assert [lease_id for lease_id, _request in test_client.results] == [
-        "lease-1",
-        "lease-2",
-        "lease-3",
-    ]
-    assert all(
-        isinstance(request, JobFailedResult)
-        for _lease_id, request in test_client.results
-    )
+        # The worker gives up after its third consecutive failure and never
+        # reports a result for the fourth assignment.
+        assert len(server.results) == 3
+        assert all(
+            isinstance(result, JobFailedResult) for result in server.results
+        )
 
 
 def test_worker_loop_resets_consecutive_failures_after_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
-    leases: list[LeaseJobResponse] = [
-        _job("lease-1", leaf),
-        _job("lease-2", leaf),
-        _job("lease-3", leaf),
-        "stop",
+    messages: list[AssignMessage | StopMessage] = [
+        AssignMessage(job=_job("lease-1", leaf)),
+        AssignMessage(job=_job("lease-2", leaf)),
+        AssignMessage(job=_job("lease-3", leaf)),
+        StopMessage(reason="run finished"),
     ]
-
-    class TestClient:
-        lease_calls: int
-        results: list[JobResultRequest]
-
-        def __init__(self, server_url: str, *, auth_token: str) -> None:
-            self.lease_calls = 0
-            self.results = []
-
-        def lease_job(
-            self, *, resources: ResourceRequest, worker: str
-        ) -> LeaseJobResponse:
-            self.lease_calls += 1
-            return leases.pop(0)
-
-        def job_result(self, lease_id: str, request: JobResultRequest) -> None:
-            self.results.append(request)
 
     calls = 0
 
@@ -1764,335 +1840,60 @@ def test_worker_loop_resets_consecutive_failures_after_success(
             return JobFailedResult(error="worker task failed")
         return JobCompletedResult()
 
-    test_client = TestClient("http://worker.test", auth_token="test-token")
-    monkeypatch.setattr(
-        api,
-        "WorkerApiClient",
-        lambda server_url, *, auth_token: test_client,
-    )
     monkeypatch.setattr(worker_loop_module, "execute_job", execute_job)
 
-    worker_loop(
-        server_url="http://worker.test",
-        auth_token="test-token",
-        resource_request=ResourceRequest(),
-        idle_timeout=get_config().worker.idle_timeout_seconds,
-        max_consecutive_failures=2,
-        component="test-worker",
-        backend="test",
-    )
+    with _scripted_worker_server(messages) as server:
+        worker_loop(
+            server_url=server.server_url,
+            auth_token="test-token",
+            resource_request=ResourceRequest(),
+            idle_timeout=get_config().worker.idle_timeout_seconds,
+            max_consecutive_failures=2,
+            component="test-worker",
+            backend="test",
+        )
 
-    assert test_client.lease_calls == 4
-    assert [result.status for result in test_client.results] == [
-        "failed",
-        "completed",
-        "failed",
-    ]
+        assert [result.status for result in server.results] == [
+            "failed",
+            "completed",
+            "failed",
+        ]
 
 
 def test_worker_loop_does_not_swallow_keyboard_interrupt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
-    job = _job("lease-1", leaf)
-
-    class TestClient:
-        calls: list[str]
-        lease_resources: list[ResourceRequest]
-
-        def __init__(self, server_url: str, *, auth_token: str) -> None:
-            self.calls = []
-            self.lease_resources = []
-
-        def lease_job(
-            self, *, resources: ResourceRequest, worker: str
-        ) -> LeaseJobResponse:
-            self.calls.append("lease_job")
-            self.lease_resources.append(resources)
-            return job
-
-        def job_result(self, lease_id: str, request: JobResultRequest) -> None:
-            self.calls.append("job_result")
 
     def execute_job(obj: Spec[object], *, job: Job) -> JobResultRequest:
         raise KeyboardInterrupt
 
-    test_client = TestClient("http://worker.test", auth_token="test-token")
-    monkeypatch.setattr(
-        api,
-        "WorkerApiClient",
-        lambda server_url, *, auth_token: test_client,
-    )
     monkeypatch.setattr(worker_loop_module, "execute_job", execute_job)
 
-    with pytest.raises(KeyboardInterrupt):
-        worker_loop(
-            server_url="http://worker.test",
-            auth_token="test-token",
-            resource_request=ResourceRequest(gpus=1),
-            idle_timeout=get_config().worker.idle_timeout_seconds,
-            component="test-worker",
-            backend="test",
-        )
+    with _scripted_worker_server([AssignMessage(job=_job("lease-1", leaf))]) as server:
+        with pytest.raises(KeyboardInterrupt):
+            worker_loop(
+                server_url=server.server_url,
+                auth_token="test-token",
+                resource_request=ResourceRequest(gpus=1),
+                idle_timeout=get_config().worker.idle_timeout_seconds,
+                component="test-worker",
+                backend="test",
+            )
 
-    assert test_client.calls == ["lease_job"]
-    assert test_client.lease_resources == [ResourceRequest(gpus=1)]
-
-
-def test_client_job_result_uses_job_result_endpoint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    requests: list[tuple[str, str, dict[str, str], object | None]] = []
-
-    def request(
-        method: str,
-        url: str,
-        *,
-        headers: dict[str, str],
-        json: object | None,
-        timeout: float,
-    ) -> httpx.Response:
-        requests.append((method, url, headers, json))
-        return httpx.Response(
-            200, json={"ok": True}, request=httpx.Request(method, url)
-        )
-
-    monkeypatch.setattr(httpx, "request", request)
-
-    api.WorkerApiClient(
-        server_url="http://worker.test/", auth_token="secret-token"
-    ).job_result("lease-1", JobBlockedResult(dependencies=[]))
-
-    assert requests == [
-        (
-            "POST",
-            "http://worker.test/worker/job_result/lease-1",
-            {"Authorization": "Bearer secret-token"},
-            {"status": "blocked", "dependencies": []},
-        )
-    ]
+        assert server.results == []
+        (hello,) = server.hellos
+        assert hello.resources == ResourceRequest(gpus=1)
+        assert hello.version == PROTOCOL_VERSION
+        assert hello.worker == "test-worker"
+        assert hello.backend == "test"
 
 
-def test_client_job_result_rejects_non_ok_response(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def request(
-        method: str,
-        url: str,
-        *,
-        headers: dict[str, str],
-        json: object | None,
-        timeout: float,
-    ) -> httpx.Response:
-        return httpx.Response(
-            200, json={"ok": False}, request=httpx.Request(method, url)
-        )
-
-    monkeypatch.setattr(httpx, "request", request)
-
-    with pytest.raises(ValidationError, match="Input should be True"):
-        api.WorkerApiClient(
-            server_url="http://worker.test", auth_token="secret-token"
-        ).job_result("lease-1", JobCompletedResult())
-
-
-def test_client_lease_job_rejects_empty_response(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def request(
-        method: str,
-        url: str,
-        *,
-        headers: dict[str, str],
-        json: object | None,
-        timeout: float,
-    ) -> httpx.Response:
-        return httpx.Response(200, request=httpx.Request(method, url))
-
-    monkeypatch.setattr(httpx, "request", request)
-
-    with pytest.raises(RuntimeError, match="returned an empty response"):
-        api.WorkerApiClient(
-            server_url="http://worker.test", auth_token="secret-token"
-        ).lease_job(resources=ANY_RESOURCES, worker="test-worker")
-
-
-def test_client_lease_job_posts_resource_request_to_lease_job_endpoint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    leaf = ExecutionCoordinatorLeaf(value=1)
-    requests: list[tuple[str, str, dict[str, str], object | None]] = []
-
-    def request(
-        method: str,
-        url: str,
-        *,
-        headers: dict[str, str],
-        json: object | None,
-        timeout: float,
-    ) -> httpx.Response:
-        requests.append((method, url, headers, json))
-        return httpx.Response(
-            200,
-            json={
-                "members": [
-                    {
-                        "lease_id": "lease-1",
-                        "artifact": ArtifactSpec.from_furu(leaf).model_dump(
-                            mode="json"
-                        ),
-                    }
-                ],
-                "provenance": _submit_provenance().model_dump(mode="json"),
-            },
-            request=httpx.Request(method, url),
-        )
-
-    monkeypatch.setattr(httpx, "request", request)
-
-    job = api.WorkerApiClient(
-        server_url="http://worker.test/",
-        auth_token="secret-token",
-    ).lease_job(
-        resources=ResourceRequest(cpus=2, gpus=1, memory_gib=16),
-        worker="test-worker",
-    )
-
-    assert isinstance(job, Job)
-    assert requests == [
-        (
-            "POST",
-            "http://worker.test/worker/lease_job",
-            {"Authorization": "Bearer secret-token"},
-            {
-                "resources": {"cpus": 2, "gpus": 1, "memory_gib": 16},
-                "worker": "test-worker",
-            },
-        )
-    ]
-
-
-def test_pool_api_client_worker_lost_uses_worker_lost_endpoint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    requests: list[tuple[str, str, dict[str, str], object | None]] = []
-
-    def request(
-        method: str,
-        url: str,
-        *,
-        headers: dict[str, str],
-        json: object | None,
-        timeout: float,
-    ) -> httpx.Response:
-        requests.append((method, url, headers, json))
-        return httpx.Response(
-            200, json={"ok": True}, request=httpx.Request(method, url)
-        )
-
-    monkeypatch.setattr(httpx, "request", request)
-
-    api.PoolApiClient(
-        server_url="http://pool.test/", auth_token="secret-token"
-    ).worker_lost(worker="slurm-worker-100a1")
-
-    assert requests == [
-        (
-            "POST",
-            "http://pool.test/pool/worker_lost",
-            {"Authorization": "Bearer secret-token"},
-            {"worker": "slurm-worker-100a1"},
-        )
-    ]
-
-
-def test_execution_coordinator_api_rejects_missing_auth_token() -> None:
-    app = create_execution_coordinator_api_app(
-        _new_execution_coordinator([ExecutionCoordinatorLeaf(value=1)]),
-        auth_token="secret",
-    )
-    client = TestClient(app)
-
-    response = client.post("/worker/lease_job")
-
-    assert response.status_code == 401
-    assert response.json() == {
-        "detail": "invalid furu execution coordinator auth token"
-    }
-
-
-def test_execution_coordinator_api_rejects_wrong_auth_token() -> None:
-    app = create_execution_coordinator_api_app(
-        _new_execution_coordinator([ExecutionCoordinatorLeaf(value=1)]),
-        auth_token="secret",
-    )
-    client = TestClient(app)
-
-    response = client.post(
-        "/worker/lease_job",
-        headers={"Authorization": "Bearer wrong"},
-    )
-
-    assert response.status_code == 401
-    assert response.json() == {
-        "detail": "invalid furu execution coordinator auth token"
-    }
-
-
-def test_execution_coordinator_api_fail_endpoint_sets_finish_error_and_done() -> None:
+def test_execution_coordinator_fail_sets_finish_error_and_done() -> None:
     coordinator = _new_execution_coordinator([ExecutionCoordinatorLeaf(value=1)])
-    app = create_execution_coordinator_api_app(coordinator, auth_token="secret")
-    client = TestClient(app)
 
-    response = client.post(
-        "/pool/fail",
-        headers={"Authorization": "Bearer secret"},
-        json={"message": "pool broke"},
-    )
+    coordinator.fail("pool broke")
 
-    assert response.status_code == 200
-    assert response.json() == {"ok": True}
     assert coordinator.done.is_set()
     with pytest.raises(RuntimeError, match="pool broke"):
         coordinator.raise_for_failure()
-
-
-def test_execution_coordinator_api_worker_lost_endpoint_requeues_job() -> None:
-    leaf = ExecutionCoordinatorLeaf(value=1)
-    coordinator = _new_execution_coordinator([leaf])
-    job = coordinator.lease_job(resources=ResourceRequest(), worker="worker-1")
-    assert isinstance(job, Job)
-    app = create_execution_coordinator_api_app(coordinator, auth_token="secret")
-    client = TestClient(app)
-
-    response = client.post(
-        "/pool/worker_lost",
-        headers={"Authorization": "Bearer secret"},
-        json={"worker": "worker-1"},
-    )
-
-    assert response.status_code == 200
-    assert response.json() == {"ok": True}
-    assert coordinator.running == {}
-    assert set(coordinator.ready) == {leaf.object_id}
-
-
-def test_execution_coordinator_api_accepts_matching_auth_token() -> None:
-    app = create_execution_coordinator_api_app(
-        _new_execution_coordinator([ExecutionCoordinatorLeaf(value=1)]),
-        auth_token="secret",
-    )
-    client = TestClient(app)
-
-    response = client.post(
-        "/worker/lease_job",
-        headers={"Authorization": "Bearer secret"},
-        json={
-            "resources": {"cpus": 1, "gpus": 0, "memory_gib": 0},
-            "worker": "test-worker",
-        },
-    )
-
-    assert response.status_code == 200
-    (member,) = response.json()["members"]
-    assert member["artifact"]["artifact_data"]["|fields"] == {"value": 1}

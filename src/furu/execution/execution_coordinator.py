@@ -70,6 +70,7 @@ class ExecutionCoordinator:
     completed: dict[str, DagNode] = field(default_factory=dict)
     failed: dict[str, FailedJob] = field(default_factory=dict)
     lock: Any = field(default_factory=threading.Lock)
+    wake: threading.Condition = field(default_factory=threading.Condition)
     done: threading.Event = field(default_factory=threading.Event)
     finish_error: str | None = None
     submit_provenance: SubmitProvenance | None = None
@@ -150,6 +151,7 @@ class ExecutionCoordinator:
                 pools = []
                 for backend in worker_backends:
                     pool = backend.start_pool(
+                        coordinator=coordinator,
                         bound_port=server.bound_port,
                         auth_token=server.auth_token,
                         executor_dir=coordinator.executor_dir,
@@ -185,6 +187,15 @@ class ExecutionCoordinator:
             _scoped_log_files((execution_coordinator_log_path_in(self.executor_dir),)),
         ):
             yield
+
+    def notify_state_changed(self) -> None:
+        """Wake connection handlers waiting for work to become available."""
+        with self.wake:
+            self.wake.notify_all()
+
+    def wait_for_state_change(self, timeout: float) -> None:
+        with self.wake:
+            self.wake.wait(timeout)
 
     def lease_job(self, *, resources: ResourceRequest, worker: str) -> LeaseJobResponse:
         with self.log_context(), self.lock:
@@ -239,6 +250,7 @@ class ExecutionCoordinator:
             if self.done.is_set():
                 return
             self._release_worker_locked(worker, reason="worker is no longer active")
+        self.notify_state_changed()
 
     def count_satisfiable_jobs(
         self, *, resources: ResourceRequest, max_workers: int
@@ -414,6 +426,7 @@ class ExecutionCoordinator:
                 extra=log_detail(**self._counts_detail()),
             )
             self._maybe_finish_locked()
+        self.notify_state_changed()
 
     def raise_for_failure(self) -> None:
         if self.finish_error is not None:
@@ -426,6 +439,7 @@ class ExecutionCoordinator:
             self.finish_error = message
             logger.error("furu execution coordinator finished with error: %s", message)
             self.done.set()
+        self.notify_state_changed()
 
     def _maybe_finish_locked(self) -> None:
         if self.done.is_set() or self.ready or self.running:

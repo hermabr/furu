@@ -11,7 +11,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--server-url",
         required=True,
-        help="execution coordinator API URL",
+        help="execution coordinator WebSocket URL (ws://host:port)",
     )
     parser.add_argument(
         "--auth-token-file",

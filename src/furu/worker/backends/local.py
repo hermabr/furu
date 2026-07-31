@@ -4,12 +4,15 @@ import threading
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from furu.config import get_config
-from furu.execution.api import PoolApiClient
 from furu.logging import _scoped_component, get_logger
 from furu.provenance import SubmitProvenance
 from furu.resources import ResourceRequest
+
+if TYPE_CHECKING:
+    from furu.worker.backends.protocol import PoolCoordinator
 
 logger = get_logger()
 
@@ -30,6 +33,7 @@ class LocalThreadWorkerBackend:
     def start_pool(
         self,
         *,
+        coordinator: PoolCoordinator,
         bound_port: int,
         auth_token: str,
         executor_dir: Path,
@@ -37,7 +41,7 @@ class LocalThreadWorkerBackend:
     ) -> LocalThreadWorkerPool:
         # Workers are threads in the submitting process, so they already run
         # the exact code the snapshot captured; ``provenance`` is unused.
-        server_url = f"http://{self.execution_coordinator_listen_host}:{bound_port}"
+        server_url = f"ws://{self.execution_coordinator_listen_host}:{bound_port}"
         pool_holder: list[LocalThreadWorkerPool] = []
         pool = LocalThreadWorkerPool(
             _server_url=server_url,
@@ -47,7 +51,7 @@ class LocalThreadWorkerBackend:
             _resource_request=self.resource_request,
             _scale_interval=self.scale_interval,
             _worker_idle_timeout=self.worker_idle_timeout,
-            _client=PoolApiClient(server_url=server_url, auth_token=auth_token),
+            _coordinator=coordinator,
             _stop_event=threading.Event(),
             _unhealthy_event=threading.Event(),
             _scale_thread=threading.Thread(
@@ -71,7 +75,7 @@ class LocalThreadWorkerPool:
     _resource_request: ResourceRequest
     _scale_interval: float
     _worker_idle_timeout: float
-    _client: PoolApiClient
+    _coordinator: PoolCoordinator
     _stop_event: threading.Event
     _unhealthy_event: threading.Event
     _scale_thread: threading.Thread
@@ -100,7 +104,7 @@ class LocalThreadWorkerPool:
         to_spawn = min(
             max(
                 0,
-                self._client.count_satisfiable_jobs(
+                self._coordinator.count_satisfiable_jobs(
                     resources=self._resource_request,
                     max_workers=self._max_workers,
                 )
@@ -150,8 +154,8 @@ class LocalThreadWorkerPool:
                         if self._unhealthy_reason
                         else ""
                     )
-                    self._client.fail(
-                        message=f"local worker pool became unhealthy{reason}"
+                    self._coordinator.fail(
+                        f"local worker pool became unhealthy{reason}"
                     )
                     return
 
@@ -159,7 +163,7 @@ class LocalThreadWorkerPool:
                     return
 
         except Exception as exc:  # noqa: BLE001 -- fault barrier: any crash is reported
-            self._client.fail(
-                message="local worker pool scale loop crashed: "
+            self._coordinator.fail(
+                "local worker pool scale loop crashed: "
                 + "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
             )

@@ -5,6 +5,17 @@ from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
     from furu.provenance import SubmitProvenance
+    from furu.resources import ResourceRequest
+
+
+class PoolCoordinator(Protocol):
+    """The slice of the execution coordinator that worker pools call."""
+
+    def count_satisfiable_jobs(
+        self, *, resources: ResourceRequest, max_workers: int
+    ) -> int: ...
+
+    def fail(self, message: str) -> None: ...
 
 
 class WorkerBackend(Protocol):
@@ -14,6 +25,7 @@ class WorkerBackend(Protocol):
     def start_pool(
         self,
         *,
+        coordinator: PoolCoordinator,
         bound_port: int,
         auth_token: str,
         executor_dir: Path,
