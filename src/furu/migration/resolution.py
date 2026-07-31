@@ -121,6 +121,7 @@ def _embedded_migratable_classes(
     field types are walked directly so cls's own name (which need not be
     importable when this runs at class definition) is never serialized.
     """
+    assert is_dataclass(cls)
     seen: set[type] = {cls}
     hints = typing.get_type_hints(cls, include_extras=True)
     for field in dataclass_fields(cls):

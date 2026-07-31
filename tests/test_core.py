@@ -623,7 +623,7 @@ def test_frozen_dataclass_inheritance():
         with pytest.raises(TypeError):
             type.__call__(cls, 1, 2)
         with pytest.raises(FrozenInstanceError):
-            obj.a = 3
+            obj.a = 3  # ty: ignore[invalid-assignment]
         with pytest.raises(TypeError):
             cls(1, 2)  # ty: ignore[missing-argument,too-many-positional-arguments]
         with pytest.raises(FrozenInstanceError):

@@ -71,6 +71,7 @@ def schema_dataclass(
     artifact_serializers: tuple[type[Serializer], ...],
     for_hash: bool,
 ) -> JsonValue:
+    assert is_dataclass(tp)
     return schema_class(
         tp,
         sorted(f.name for f in fields(tp)),
