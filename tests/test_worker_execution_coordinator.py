@@ -51,7 +51,6 @@ from furu.worker.protocol import (
     LeaseJobResponse,
     ResultMessage,
     StopMessage,
-    WelcomeMessage,
     server_message_adapter,
     worker_message_adapter,
 )
@@ -198,7 +197,6 @@ def _scripted_worker_server(
         hello = worker_message_adapter.validate_json(connection.recv(timeout=5))
         assert isinstance(hello, HelloMessage)
         record.hellos.append(hello)
-        connection.send(WelcomeMessage(executor_id="test-executor").model_dump_json())
         try:
             for message in messages:
                 connection.send(message.model_dump_json())
@@ -245,8 +243,6 @@ def _connect_worker(
             resources=resources or ResourceRequest(),
         ).model_dump_json()
     )
-    welcome = server_message_adapter.validate_json(connection.recv(timeout=5))
-    assert isinstance(welcome, WelcomeMessage)
     return connection
 
 
@@ -281,8 +277,6 @@ def _complete_one_job_over_ws(server_url: str, auth_token: str) -> None:
                     )
                 case StopMessage():
                     return
-                case WelcomeMessage():
-                    pass
 
 
 class ExecutionCoordinatorLeaf(Spec[int]):

@@ -31,12 +31,4 @@ def worker_client(
             resources=resources,
         )
         connection.send(hello.model_dump_json())
-        match protocol.server_message_adapter.validate_json(
-            connection.recv(timeout=10)
-        ):
-            case protocol.WelcomeMessage():
-                yield connection
-            case protocol.StopMessage(reason=reason):
-                raise RuntimeError(reason)
-            case unexpected:
-                raise RuntimeError(f"expected welcome, got {unexpected.kind!r}")
+        yield connection

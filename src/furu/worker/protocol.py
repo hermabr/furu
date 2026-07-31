@@ -72,13 +72,6 @@ class ResultMessage(BaseModel):
     result: JobResultRequest
 
 
-class WelcomeMessage(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-
-    kind: Literal["welcome"] = "welcome"
-    executor_id: str
-
-
 class AssignMessage(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -99,7 +92,7 @@ type WorkerMessage = Annotated[
 ]
 
 type ServerMessage = Annotated[
-    WelcomeMessage | AssignMessage | StopMessage,
+    AssignMessage | StopMessage,
     Field(discriminator="kind"),
 ]
 

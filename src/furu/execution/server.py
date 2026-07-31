@@ -17,7 +17,6 @@ from furu.worker.protocol import (
     Job,
     ResultMessage,
     StopMessage,
-    WelcomeMessage,
     worker_message_adapter,
 )
 
@@ -52,9 +51,6 @@ def _serve_worker(
             extra=log_detail(worker=worker, backend=hello.backend),
         )
         try:
-            connection.send(
-                WelcomeMessage(executor_id=coordinator.executor_id).model_dump_json()
-            )
             while True:
                 match coordinator.lease_job(resources=hello.resources, worker=worker):
                     case "stop":
