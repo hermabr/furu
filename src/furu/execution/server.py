@@ -74,7 +74,8 @@ def _serve_worker(
                         )
                         return
                     case "wait":
-                        coordinator.wait_for_state_change(timeout=1.0)
+                        with coordinator.wake:
+                            coordinator.wake.wait(timeout=1.0)
                     case Job() as job:
                         connection.send(AssignMessage(job=job).model_dump_json())
                         match worker_message_adapter.validate_json(connection.recv()):

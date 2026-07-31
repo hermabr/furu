@@ -192,10 +192,6 @@ class ExecutionCoordinator:
         with self.wake:
             self.wake.notify_all()
 
-    def wait_for_state_change(self, timeout: float) -> None:
-        with self.wake:
-            self.wake.wait(timeout)
-
     def lease_job(self, *, resources: ResourceRequest, worker: str) -> LeaseJobResponse:
         with self.log_context(), self.lock:
             if self.done.is_set():
