@@ -16,13 +16,12 @@ def worker_client(
     backend: str,
     resources: ResourceRequest,
 ) -> Iterator[ClientConnection]:
-    connection = connect(
+    with connect(
         server_url,
         additional_headers={"Authorization": f"Bearer {auth_token}"},
         max_size=None,
-    )
-
-    with connection:
+    ) as connection:
+        assert isinstance(connection, ClientConnection)
         hello = protocol.HelloMessage(
             version=protocol.PROTOCOL_VERSION,
             worker=worker,
