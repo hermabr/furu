@@ -6,12 +6,12 @@ import pytest
 from pydantic import ValidationError
 
 from furu.config import (
+    _WORKER_JSON_CONFIG_FILE_ENV_VAR,
     _Config,
     _FuruDirectories,
     _FuruWorkerConfig,
-    _WORKER_JSON_CONFIG_FILE_ENV_VAR,
-    _set_config,
     _project_anchor,
+    _set_config,
     get_config,
 )
 from furu.testing import override_config

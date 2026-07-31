@@ -73,7 +73,7 @@ class SubprocessBatchLeaf(Spec[str]):
         return Metadata(storage=Path(self.storage_root), execution=Subprocess())
 
     @batched(lambda _: (None, 8))
-    def create(objs: list["SubprocessBatchLeaf"]) -> list[str]:
+    def create(objs: list[SubprocessBatchLeaf]) -> list[str]:
         return [f"{os.getpid()}:{obj.value}" for obj in objs]
 
 

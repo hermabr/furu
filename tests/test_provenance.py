@@ -2,7 +2,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -95,7 +95,7 @@ def test_example_provenance_json_parses() -> None:
         "lr",
     )
     assert prov.submitted.timestamp == datetime(
-        2026, 7, 5, 14, 2, 11, tzinfo=timezone.utc
+        2026, 7, 5, 14, 2, 11, tzinfo=UTC
     )
     assert prov.executed.worker_backend == "slurm"
 

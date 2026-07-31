@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import typing
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass, fields as dataclass_fields, is_dataclass
+from dataclasses import dataclass, is_dataclass
+from dataclasses import fields as dataclass_fields
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
 

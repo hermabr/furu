@@ -12,11 +12,14 @@ from pydantic import BaseModel, ConfigDict
 
 import furu
 from furu import Ref, Spec
-from furu.storage._layout import data_dir_in, result_dir_in, result_manifest_path_in
 from furu._declared_types import child_declared_type
 from furu.result.bundle import (
     _DumpState,
+)
+from furu.result.bundle import (
     _save_result_bundle as _save_result_bundle_impl,
+)
+from furu.result.bundle import (
     load_result_bundle as load_result_bundle_impl,
 )
 from furu.result.codec import (
@@ -25,6 +28,7 @@ from furu.result.codec import (
     NumpyNpyCodec,
     PolarsParquetCodec,
 )
+from furu.storage._layout import data_dir_in, result_dir_in, result_manifest_path_in
 
 np = pytest.importorskip("numpy")
 pl = pytest.importorskip("polars")
@@ -1242,7 +1246,7 @@ def test_dataclass_load_reports_missing_and_extra_fields_with_path(
 
 @dataclass(frozen=True)
 class NestedOuter:
-    inner: "NestedInner"
+    inner: NestedInner
     label: str
 
 

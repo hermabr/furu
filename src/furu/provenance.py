@@ -9,7 +9,7 @@ import subprocess
 import sys
 from collections import Counter
 from contextvars import ContextVar
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from getpass import getuser
 from importlib.metadata import version
 from pathlib import Path
@@ -154,7 +154,7 @@ class SubmitContext(BaseModel):
             user=getuser(),
             cwd=str(Path.cwd()),
             launch_command=tuple(sys.orig_argv),
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
         )
 
 

@@ -7,12 +7,12 @@ import shutil
 import sys
 import textwrap
 import traceback
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import cache
 from pathlib import Path
-from typing import Iterator, Mapping
 
 from furu.config import get_config
 
@@ -292,7 +292,7 @@ def _logfmt_value(value: str) -> str:
 
 
 def _render_logfmt(record: logging.LogRecord) -> str:
-    created = datetime.fromtimestamp(record.created, tz=timezone.utc)
+    created = datetime.fromtimestamp(record.created, tz=UTC)
     timestamp = created.strftime("%Y-%m-%dT%H:%M:%S") + f".{int(record.msecs):03d}Z"
 
     parts = [timestamp, f"level={record.levelname.lower()}"]
@@ -354,7 +354,7 @@ class _ScopedFileHandler(logging.Handler):
                     and log_path.exists()
                     and log_path.stat().st_size >= _UNSCOPED_LOG_MAX_BYTES
                 ):
-                    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+                    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
                     log_path.replace(
                         log_path.with_name(f"{log_path.stem}-{timestamp}.log")
                     )
