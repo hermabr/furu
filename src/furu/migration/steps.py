@@ -52,7 +52,7 @@ class Rewrite:
     transform: Callable[[Mapping[str, JsonValue]], Mapping[str, JsonValue]]
 
 
-MigrationStep: TypeAlias = Renamed | Added | MovedFrom | Retyped | Rewrite
+MigrationStep: TypeAlias = Renamed | Added | MovedFrom | Retyped | Rewrite  # noqa: UP040
 
 
 def _is_breaking(step: MigrationStep) -> bool:
