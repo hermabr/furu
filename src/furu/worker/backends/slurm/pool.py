@@ -86,8 +86,6 @@ class SlurmWorkerPool:
     def _scale_once(self) -> dict[str, str]:
         active_job_ids = self._active_job_ids()
         states = self._task_states()
-        # Lost workers need no coordinator notification: their dropped
-        # WebSocket connection already released their leases.
         lost_job_ids = {
             job_id
             for job_id in self._job_ids
