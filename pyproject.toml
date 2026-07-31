@@ -38,6 +38,9 @@ dev = [
     "ty>=0.0.65",
 ]
 
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["BLE001", "DTZ001", "TRY004"]
+
 [tool.pytest.ini_options]
 addopts = "-n auto --dist worksteal"
 markers = [

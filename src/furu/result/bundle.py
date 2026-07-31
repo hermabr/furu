@@ -60,7 +60,7 @@ def _validate_result_path_segment(
     parent_value_path: ValuePath,
 ) -> str:
     if not isinstance(value, str):
-        raise ValueError(
+        raise ValueError(  # noqa: TRY004 -- malformed payload, not a bad argument
             f"Unsupported result value at {_value_path_display(parent_value_path)}:\n"
             + f"must be strings; got {type(value).__name__} key {value!r}."
         )
@@ -556,7 +556,7 @@ def _load_wrapper(
                 ),
                 dict,
             ):
-                raise ValueError(
+                raise ValueError(  # noqa: TRY004 -- malformed payload, not a bad argument
                     f"Codec metadata at {_value_path_display(value_path)} must be a mapping"
                 )
             metadata = cast(dict[str, object], metadata)
@@ -638,7 +638,7 @@ def _load_wrapper(
         case "pydantic":
             cls = resolve_fully_qualified_name(body[TYPEMARKER])
             if not issubclass(cls, pydantic.BaseModel):
-                raise ValueError(
+                raise ValueError(  # noqa: TRY004 -- malformed payload, not a bad argument
                     f"Cannot load pydantic model at {_value_path_display(value_path)}: "
                     f"{fully_qualified_name(cls)} is not a pydantic model"
                 )

@@ -90,7 +90,7 @@ def worker_loop(
                                     )
                                 case unexpected_execution:
                                     assert_never(unexpected_execution)
-                        except Exception as exc:
+                        except Exception as exc:  # noqa: BLE001 -- fault barrier: any crash fails the job
                             job_result = JobFailedResult(
                                 error="".join(
                                     traceback.format_exception(

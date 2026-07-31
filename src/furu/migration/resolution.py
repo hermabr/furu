@@ -142,7 +142,7 @@ def _embedded_migratable_classes(
 def validate_embedded_migration_declarations(cls: type[Spec[Any]]) -> None:
     try:
         children = _embedded_migratable_classes(cls, cls.artifact_serializers)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return  # schema not buildable yet (forward references, ...); resolution re-checks
     for child in children:
         validate_migration_declaration(cast("type[Spec[Any]]", child))

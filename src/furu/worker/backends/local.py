@@ -158,7 +158,7 @@ class LocalThreadWorkerPool:
                 if self._stop_event.wait(timeout=self._scale_interval):
                     return
 
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 -- fault barrier: any crash is reported
             self._client.fail(
                 message="local worker pool scale loop crashed: "
                 + "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))

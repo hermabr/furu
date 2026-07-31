@@ -7,7 +7,7 @@ import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -64,7 +64,7 @@ def pytest_configure(config: pytest.Config) -> None:
 
     run_base_directory = (
         Path(tempfile.gettempdir())
-        / f"furu-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(4)}"
+        / f"furu-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(4)}"
     )
 
     run_config = _replace_config_directories(

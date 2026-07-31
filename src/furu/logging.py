@@ -190,7 +190,9 @@ def _decorate_message(
 
 def _render_console(record: logging.LogRecord, *, color: bool) -> str:
     palette = _Palette(color)
-    timestamp = datetime.fromtimestamp(record.created).strftime("%H:%M:%S")
+    timestamp = (
+        datetime.fromtimestamp(record.created, tz=UTC).astimezone().strftime("%H:%M:%S")
+    )
     letter = _LEVEL_LETTER.get(record.levelno, "?")
     component = _CURRENT_COMPONENT.get()
     component = (
@@ -360,7 +362,7 @@ class _ScopedFileHandler(logging.Handler):
                     )
                 with log_path.open("a", encoding="utf-8") as f:
                     f.write(payload)
-        except Exception:
+        except Exception:  # noqa: BLE001 -- logging.Handler.emit contract: never raise
             self.handleError(record)
 
 
