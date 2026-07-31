@@ -66,4 +66,4 @@ def validate_cls(cls: type) -> None:
     ):
         setattr(cls, _USER_POST_INIT_ATTR, user_post_init)
     setattr(__post_init__, _POST_INIT_WRAPPER_MARKER, True)
-    setattr(cls, "__post_init__", __post_init__)
+    type.__setattr__(cls, "__post_init__", __post_init__)
