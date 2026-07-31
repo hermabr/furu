@@ -639,7 +639,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert "python -m furu.worker._cli" in script
     assert sys.executable not in script
     assert "--backend slurm" in script
-    assert "--server-url http://execution-coordinator.cluster:1234" in script
+    assert "--server-url ws://execution-coordinator.cluster:1234" in script
     assert "SLURM_ARRAY_TASK_ID" in script
     assert "SLURM_ARRAY_JOB_ID" in script
     assert (
@@ -981,22 +981,16 @@ def test_slurm_pool_submits_replacement_workers_as_job_array(
     ]
 
 
-def test_slurm_pool_releases_nonfailed_array_workers_missing_from_squeue(
+def test_slurm_pool_replaces_nonfailed_array_workers_missing_from_squeue(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
     record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    lost_workers: list[str] = []
     monkeypatch.setattr(
         PoolApiClient,
         "count_satisfiable_jobs",
         lambda self, *, resources, max_workers: max_workers,
-    )
-    monkeypatch.setattr(
-        PoolApiClient,
-        "worker_lost",
-        lambda self, *, worker: lost_workers.append(worker),
     )
     backend = SlurmWorkerBackend(
         max_workers=3,
@@ -1027,7 +1021,6 @@ def test_slurm_pool_releases_nonfailed_array_workers_missing_from_squeue(
     )
     pool._scale_once()
 
-    assert lost_workers == ["slurm-worker-100a1", "slurm-worker-100a2"]
     assert pool._job_ids == ["100_0", "101_0", "101_1"]
     assert pool._failed_job_ids == []
     sbatch_records = [
@@ -1155,7 +1148,7 @@ def test_slurm_backend_builds_server_url_from_worker_connect_host(
 
     script_path = Path(sbatch_records[0]["argv"][-1])
     script = script_path.read_text()
-    assert "--server-url http://execution-coordinator.cluster:4321" in script
+    assert "--server-url ws://execution-coordinator.cluster:4321" in script
     assert f"--idle-timeout {get_config().worker.idle_timeout_seconds}" in script
     assert "--max-consecutive-failures 5" in script
 
@@ -1187,7 +1180,7 @@ def test_slurm_backend_worker_connect_port_overrides_bound_port(
     assert len(sbatch_records) == 1
 
     script = Path(sbatch_records[0]["argv"][-1]).read_text()
-    assert "--server-url http://execution-coordinator.cluster:9000" in script
+    assert "--server-url ws://execution-coordinator.cluster:9000" in script
     assert ":4321" not in script
 
 
@@ -1605,7 +1598,6 @@ def _install_fake_slurm(
 
     monkeypatch.delenv("FURU_EXECUTION_COORDINATOR_SERVER_URL", raising=False)
     monkeypatch.delenv("FURU_EXECUTION_COORDINATOR_AUTH_TOKEN", raising=False)
-    monkeypatch.setattr(PoolApiClient, "worker_lost", lambda self, *, worker: None)
     monkeypatch.setenv("FURU_FAKE_SLURM_RECORD_FILE", str(record_file))
     monkeypatch.setenv("FURU_FAKE_SLURM_ACTIVE_FILE", str(active_file))
     monkeypatch.setenv("FURU_FAKE_SLURM_COUNTER_FILE", str(counter_file))

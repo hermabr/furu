@@ -52,33 +52,80 @@ type JobResultRequest = Annotated[
 class OkResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    ok: Literal[True] = True
+    type: Literal["ok"] = "ok"
 
 
 type LeaseJobResponse = Job | Literal["wait", "stop"]
 
 
 class LeaseJobRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
+    type: Literal["lease_job"] = "lease_job"
     resources: ResourceRequest
     worker: str
 
 
 class CountSatisfiableJobsRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
+    type: Literal["count_satisfiable_jobs"] = "count_satisfiable_jobs"
     resources: ResourceRequest
     max_workers: int
 
 
 class FailRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
+    type: Literal["fail"] = "fail"
     message: str
 
 
-class WorkerLostRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+class JobResultMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    worker: str
+    type: Literal["job_result"] = "job_result"
+    lease_id: str
+    result: JobResultRequest
+
+
+class JobResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    type: Literal["job"] = "job"
+    job: Job
+
+
+class WaitResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    type: Literal["wait"] = "wait"
+
+
+class StopResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    type: Literal["stop"] = "stop"
+
+
+class CountSatisfiableJobsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    type: Literal["count_satisfiable_jobs"] = "count_satisfiable_jobs"
+    count: int
+
+
+type WorkerRequest = Annotated[
+    LeaseJobRequest | JobResultMessage, Field(discriminator="type")
+]
+type PoolRequest = Annotated[
+    CountSatisfiableJobsRequest | FailRequest, Field(discriminator="type")
+]
+type ClientRequest = Annotated[
+    LeaseJobRequest | JobResultMessage | CountSatisfiableJobsRequest | FailRequest,
+    Field(discriminator="type"),
+]
+type LeaseJobWireResponse = Annotated[
+    JobResponse | WaitResponse | StopResponse,
+    Field(discriminator="type"),
+]

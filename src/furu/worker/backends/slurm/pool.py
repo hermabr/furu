@@ -40,8 +40,6 @@ class SlurmWorkerPool:
     _max_workers: int
     _max_failed_restarts: int
     _resource_request: ResourceRequest
-    _server_url: str
-    _auth_token: str
     _poll_interval: float
     _client: PoolApiClient
     _stop_event: threading.Event
@@ -54,31 +52,36 @@ class SlurmWorkerPool:
         with _scoped_component("slurm"):
             self._stop_event.set()
             self._scale_thread.join(timeout=timeout)
+            try:
+                deadline = time.monotonic() + timeout
+                while time.monotonic() < deadline:
+                    active_job_ids = self._active_job_ids()
+                    if active_job_ids is not None and not active_job_ids:
+                        return
+                    time.sleep(
+                        min(
+                            self._poll_interval,
+                            max(0.0, deadline - time.monotonic()),
+                        )
+                    )
 
-            deadline = time.monotonic() + timeout
-            while time.monotonic() < deadline:
-                active_job_ids = self._active_job_ids()
-                if active_job_ids is not None and not active_job_ids:
+                if not self._job_ids:
                     return
-                time.sleep(
-                    min(self._poll_interval, max(0.0, deadline - time.monotonic()))
+                result = subprocess.run(
+                    ["scancel", *self._job_ids],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=_SLURM_COMMAND_TIMEOUT_S,
                 )
-
-            if not self._job_ids:
-                return
-            result = subprocess.run(
-                ["scancel", *self._job_ids],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=_SLURM_COMMAND_TIMEOUT_S,
-            )
-            if result.returncode != 0:
-                logger.error(
-                    "scancel failed for slurm worker jobs %s: %s",
-                    ",".join(self._job_ids),
-                    result.stderr.strip(),
-                )
+                if result.returncode != 0:
+                    logger.error(
+                        "scancel failed for slurm worker jobs %s: %s",
+                        ",".join(self._job_ids),
+                        result.stderr.strip(),
+                    )
+            finally:
+                self._client.close()
 
     def _scale_once(self) -> dict[str, str]:
         active_job_ids = self._active_job_ids()
@@ -103,15 +106,6 @@ class SlurmWorkerPool:
                 or states.get(job_id) not in (None, *_PRUNABLE_STATES)
             )
         ]
-        for job_id in sorted(lost_job_ids):
-            allocation_job_id, separator, array_task_id = job_id.partition("_")
-            self._client.worker_lost(
-                worker=(
-                    f"slurm-worker-{allocation_job_id}a{array_task_id}"
-                    if separator
-                    else f"slurm-worker-{allocation_job_id}"
-                )
-            )
         remaining_starts = (
             self._max_workers
             + self._max_failed_restarts

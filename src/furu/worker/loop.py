@@ -143,5 +143,8 @@ def worker_loop(
                     case unexpected:
                         assert_never(unexpected)
         finally:
+            close = getattr(client, "close", None)
+            if close is not None:
+                close()
             child_slot.close()
             _worker_backend.reset(worker_backend_token)

@@ -58,7 +58,7 @@ class SlurmWorkerBackend:
         connect_port = (
             bound_port if self.worker_connect_port is None else self.worker_connect_port
         )
-        server_url = f"http://{self.worker_connect_host}:{connect_port}"
+        server_url = f"ws://{self.worker_connect_host}:{connect_port}"
 
         chdir = Path.cwd().resolve()
         project_root = Path(EnvironmentIdentity.capture().project_root)
@@ -191,8 +191,6 @@ class SlurmWorkerBackend:
             _max_workers=self.max_workers,
             _max_failed_restarts=self.max_failed_restarts,
             _resource_request=resource_request,
-            _server_url=server_url,
-            _auth_token=auth_token,
             _poll_interval=self.poll_interval,
             _client=PoolApiClient(server_url=server_url, auth_token=auth_token),
             _stop_event=threading.Event(),

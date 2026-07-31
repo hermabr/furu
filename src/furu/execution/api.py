@@ -1,155 +1,116 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from hmac import compare_digest
+from dataclasses import dataclass, field
+from typing import Any
 
-import httpx
-from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, status
-from pydantic import TypeAdapter
+from pydantic import BaseModel, TypeAdapter
+from websockets.exceptions import WebSocketException
+from websockets.sync.client import ClientConnection, connect
 
-from furu.execution.execution_coordinator import ExecutionCoordinator
 from furu.resources import ResourceRequest
 from furu.worker.protocol import (
     CountSatisfiableJobsRequest,
+    CountSatisfiableJobsResponse,
     FailRequest,
+    JobResponse,
+    JobResultMessage,
     JobResultRequest,
     LeaseJobRequest,
     LeaseJobResponse,
+    LeaseJobWireResponse,
     OkResponse,
-    WorkerLostRequest,
+    StopResponse,
+    WaitResponse,
 )
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(slots=True, kw_only=True)
 class _ExecutionCoordinatorApiClientBase:
     server_url: str
     auth_token: str
     request_timeout_s: float = 10.0
+    _connection: ClientConnection | None = field(default=None, init=False, repr=False)
+    _closed: bool = field(default=False, init=False, repr=False)
 
-    def _request(
-        self,
-        path: str,
-        *,
-        method: str,
-        payload: object | None = None,
-    ) -> httpx.Response:
-        url = f"{self.server_url.rstrip('/')}{path}"
+    def _connect(self) -> ClientConnection:
+        if self._closed:
+            raise RuntimeError("execution coordinator WebSocket client is closed")
+        if self._connection is not None:
+            return self._connection
         try:
-            response = httpx.request(
-                method,
-                url,
-                headers={"Authorization": f"Bearer {self.auth_token}"},
-                json=payload,
-                timeout=self.request_timeout_s,
+            connection = connect(
+                self.server_url,
+                additional_headers={
+                    "Authorization": f"Bearer {self.auth_token}",
+                },
+                open_timeout=self.request_timeout_s,
+                close_timeout=self.request_timeout_s,
             )
-            response.raise_for_status()
-            if not response.content:
-                raise RuntimeError(f"{method} {url} returned an empty response")
-            return response
-        except httpx.HTTPStatusError as exc:
+        except (OSError, WebSocketException, ValueError) as exc:
             raise RuntimeError(
-                f"{method} {url} failed with HTTP "
-                f"{exc.response.status_code}: {exc.response.text}"
+                f"WebSocket connection to {self.server_url} failed: {exc}"
             ) from exc
-        except httpx.HTTPError as exc:
-            raise RuntimeError(f"{method} {url} failed: {exc}") from exc
+        self._connection = connection
+        return connection
+
+    def _request[ResponseT](
+        self, request: BaseModel, response_type: Any
+    ) -> ResponseT:
+        connection = self._connect()
+        try:
+            connection.send(request.model_dump_json())
+            return TypeAdapter(response_type).validate_json(
+                connection.recv(timeout=self.request_timeout_s)
+            )
+        except (OSError, WebSocketException, ValueError) as exc:
+            self.close()
+            raise RuntimeError(
+                f"WebSocket request to {self.server_url} failed: {exc}"
+            ) from exc
+
+    def close(self) -> None:
+        self._closed = True
+        if self._connection is not None:
+            self._connection.close()
+            self._connection = None
 
 
+@dataclass(slots=True, kw_only=True)
 class WorkerApiClient(_ExecutionCoordinatorApiClientBase):
     def lease_job(self, *, resources: ResourceRequest, worker: str) -> LeaseJobResponse:
-        # Validate the raw JSON body: Job's strict models accept datetimes and
-        # tuples only in JSON mode, not from an already-parsed dict.
         response = self._request(
-            "/worker/lease_job",
-            method="POST",
-            payload=LeaseJobRequest(resources=resources, worker=worker).model_dump(
-                mode="json"
-            ),
+            LeaseJobRequest(resources=resources, worker=worker), LeaseJobWireResponse
         )
-        return TypeAdapter(LeaseJobResponse).validate_json(response.content)
+        match response:
+            case JobResponse(job=job):
+                return job
+            case WaitResponse():
+                return "wait"
+            case StopResponse():
+                return "stop"
+        raise AssertionError(f"unexpected lease response: {response!r}")
 
     def job_result(self, lease_id: str, request: JobResultRequest) -> None:
         response = self._request(
-            f"/worker/job_result/{lease_id}",
-            method="POST",
-            payload=request.model_dump(mode="json"),
-        ).json()
-        OkResponse.model_validate(response)
+            JobResultMessage(lease_id=lease_id, result=request), OkResponse
+        )
+        assert isinstance(response, OkResponse)
 
 
+@dataclass(slots=True, kw_only=True)
 class PoolApiClient(_ExecutionCoordinatorApiClientBase):
     def count_satisfiable_jobs(
         self, *, resources: ResourceRequest, max_workers: int
     ) -> int:
         response = self._request(
-            "/pool/count_satisfiable_jobs",
-            method="POST",
-            payload=CountSatisfiableJobsRequest(
+            CountSatisfiableJobsRequest(
                 resources=resources, max_workers=max_workers
-            ).model_dump(mode="json"),
-        ).json()
-        return int(response)
+            ),
+            CountSatisfiableJobsResponse,
+        )
+        assert isinstance(response, CountSatisfiableJobsResponse)
+        return response.count
 
     def fail(self, *, message: str) -> None:
-        response = self._request(
-            "/pool/fail",
-            method="POST",
-            payload=FailRequest(message=message).model_dump(mode="json"),
-        ).json()
-        OkResponse.model_validate(response)
-
-    def worker_lost(self, *, worker: str) -> None:
-        response = self._request(
-            "/pool/worker_lost",
-            method="POST",
-            payload=WorkerLostRequest(worker=worker).model_dump(mode="json"),
-        ).json()
-        OkResponse.model_validate(response)
-
-
-def create_execution_coordinator_api_app(
-    coordinator: ExecutionCoordinator, *, auth_token: str
-) -> FastAPI:
-    def require_auth(authorization: str = Header(default="")) -> None:
-        scheme, _, token = authorization.partition(" ")
-        if scheme.lower() != "bearer" or not compare_digest(token, auth_token):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="invalid furu execution coordinator auth token",
-            )
-
-    app = FastAPI()
-    auth_dependency = Depends(require_auth)
-
-    worker_router = APIRouter(prefix="/worker", dependencies=[auth_dependency])
-
-    @worker_router.post("/lease_job", response_model=LeaseJobResponse)
-    def lease_job(request: LeaseJobRequest) -> LeaseJobResponse:
-        return coordinator.lease_job(resources=request.resources, worker=request.worker)
-
-    @worker_router.post("/job_result/{lease_id}", response_model=OkResponse)
-    def job_result(lease_id: str, request: JobResultRequest) -> OkResponse:
-        coordinator.job_result(lease_id, request)
-        return OkResponse()
-
-    pool_router = APIRouter(prefix="/pool", dependencies=[auth_dependency])
-
-    @pool_router.post("/count_satisfiable_jobs")
-    def count_satisfiable_jobs(request: CountSatisfiableJobsRequest) -> int:
-        return coordinator.count_satisfiable_jobs(
-            resources=request.resources, max_workers=request.max_workers
-        )
-
-    @pool_router.post("/fail", response_model=OkResponse)
-    def fail(request: FailRequest) -> OkResponse:
-        coordinator.fail(request.message)
-        return OkResponse()
-
-    @pool_router.post("/worker_lost", response_model=OkResponse)
-    def worker_lost(request: WorkerLostRequest) -> OkResponse:
-        coordinator.worker_lost(request.worker)
-        return OkResponse()
-
-    app.include_router(worker_router)
-    app.include_router(pool_router)
-    return app
+        response = self._request(FailRequest(message=message), OkResponse)
+        assert isinstance(response, OkResponse)

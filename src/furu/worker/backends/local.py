@@ -37,7 +37,7 @@ class LocalThreadWorkerBackend:
     ) -> LocalThreadWorkerPool:
         # Workers are threads in the submitting process, so they already run
         # the exact code the snapshot captured; ``provenance`` is unused.
-        server_url = f"http://{self.execution_coordinator_listen_host}:{bound_port}"
+        server_url = f"ws://{self.execution_coordinator_listen_host}:{bound_port}"
         pool_holder: list[LocalThreadWorkerPool] = []
         pool = LocalThreadWorkerPool(
             _server_url=server_url,
@@ -85,6 +85,7 @@ class LocalThreadWorkerPool:
         self._scale_thread.join(timeout=timeout)
         for worker in self._threads:
             worker.join(timeout=timeout)
+        self._client.close()
 
     def _scale_once(self) -> None:
         self._threads[:] = [thread for thread in self._threads if thread.is_alive()]

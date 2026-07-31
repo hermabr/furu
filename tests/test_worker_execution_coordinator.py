@@ -1,16 +1,17 @@
 import hashlib
 import logging
 import threading
+import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, ClassVar
 from uuid import UUID, uuid4
 
-import httpx
 import pytest
-from fastapi.testclient import TestClient
 from pydantic import TypeAdapter, ValidationError
+from websockets.exceptions import InvalidStatus
+from websockets.sync.client import connect
 
 import furu
 import furu.worker.loop as worker_loop_module
@@ -18,7 +19,6 @@ from furu import GiB, Metadata, Requires, Spec, Throttle, at_least
 from furu.config import get_config
 from furu.dag import _add_to_dag
 from furu.execution import api
-from furu.execution.api import create_execution_coordinator_api_app
 from furu.execution.execution_coordinator import (
     ExecutionCoordinator,
     FailedJob,
@@ -124,7 +124,7 @@ def _lease_job(
 
 def _new_local_pool(
     *,
-    server_url: str = "http://execution-coordinator.test",
+    server_url: str = "ws://execution-coordinator.test",
     auth_token: str = "secret",
     max_workers: int = 1,
     max_failed_restarts: int = 3,
@@ -1292,7 +1292,7 @@ def test_execution_coordinator_run_starts_backend_pool_and_stops_and_joins_when_
             provenance: SubmitProvenance,
         ) -> RecordingPool:
             self.pool.events.append("start_pool")
-            server_url = f"http://127.0.0.1:{bound_port}"
+            server_url = f"ws://127.0.0.1:{bound_port}"
             client = api.WorkerApiClient(server_url=server_url, auth_token=auth_token)
             failure_client = api.PoolApiClient(
                 server_url=server_url, auth_token=auth_token
@@ -1398,7 +1398,7 @@ def test_execution_coordinator_run_uses_worker_backend_execution_coordinator_lis
             executor_dir: Path,
             provenance: SubmitProvenance,
         ) -> RecordingPool:
-            server_url = f"http://{self.execution_coordinator_listen_host}:{bound_port}"
+            server_url = f"ws://{self.execution_coordinator_listen_host}:{bound_port}"
             self.server_urls.append(server_url)
             pool = RecordingPool()
             client = api.WorkerApiClient(server_url=server_url, auth_token=auth_token)
@@ -1428,7 +1428,7 @@ def test_execution_coordinator_run_uses_worker_backend_execution_coordinator_lis
     )
 
     assert len(backend.server_urls) == 1
-    assert backend.server_urls[0].startswith("http://127.0.0.1:")
+    assert backend.server_urls[0].startswith("ws://127.0.0.1:")
 
 
 def test_execution_coordinator_server_exposes_bound_host_and_port() -> None:
@@ -1448,30 +1448,24 @@ def test_execution_coordinator_server_rejects_requests_without_auth_token() -> N
     with execution_coordinator_server(
         coordinator, bind_host="127.0.0.1", port=0
     ) as server:
-        response = httpx.post(f"{server.server_url}/worker/lease_job")
-        assert response.status_code == 401
-        assert response.json() == {
-            "detail": "invalid furu execution coordinator auth token"
-        }
+        with pytest.raises(InvalidStatus) as missing:
+            connect(server.server_url)
+        assert missing.value.response.status_code == 401
 
-        response = httpx.post(
-            f"{server.server_url}/worker/lease_job",
-            headers={"Authorization": "Bearer wrong"},
-        )
-        assert response.status_code == 401
-        assert response.json() == {
-            "detail": "invalid furu execution coordinator auth token"
-        }
+        with pytest.raises(InvalidStatus) as wrong:
+            connect(
+                server.server_url,
+                additional_headers={"Authorization": "Bearer wrong"},
+            )
+        assert wrong.value.response.status_code == 401
 
-        response = httpx.post(
-            f"{server.server_url}/worker/lease_job",
-            headers={"Authorization": f"Bearer {server.auth_token}"},
-            json={
-                "resources": {"cpus": 1, "gpus": 0, "memory_gib": 0},
-                "worker": "test-worker",
-            },
+        client = api.WorkerApiClient(
+            server_url=server.server_url, auth_token=server.auth_token
         )
-        assert response.status_code == 200
+        assert isinstance(
+            client.lease_job(resources=ANY_RESOURCES, worker="test-worker"), Job
+        )
+        client.close()
 
 
 def test_execution_coordinator_run_requires_explicit_worker_backends() -> None:
@@ -1521,7 +1515,7 @@ def test_job_result_request_uses_status_discriminator() -> None:
 def test_worker_loop_raises_when_server_is_unavailable() -> None:
     with pytest.raises(RuntimeError, match="failed"):
         worker_loop(
-            server_url="http://127.0.0.1:1",
+            server_url="ws://127.0.0.1:1",
             auth_token="test-token",
             resource_request=ResourceRequest(),
             idle_timeout=get_config().worker.idle_timeout_seconds,
@@ -1839,260 +1833,67 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
     assert test_client.lease_resources == [ResourceRequest(gpus=1)]
 
 
-def test_client_job_result_uses_job_result_endpoint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    requests: list[tuple[str, str, dict[str, str], object | None]] = []
+def test_worker_websocket_is_persistent_and_carries_typed_messages() -> None:
+    coordinator = _new_execution_coordinator(
+        [ExecutionCoordinatorLeaf(value=1), ExecutionCoordinatorLeaf(value=2)]
+    )
 
-    def request(
-        method: str,
-        url: str,
-        *,
-        headers: dict[str, str],
-        json: object | None,
-        timeout: float,
-    ) -> httpx.Response:
-        requests.append((method, url, headers, json))
-        return httpx.Response(
-            200, json={"ok": True}, request=httpx.Request(method, url)
+    with execution_coordinator_server(
+        coordinator, bind_host="127.0.0.1", port=0
+    ) as server:
+        client = api.WorkerApiClient(
+            server_url=server.server_url, auth_token=server.auth_token
         )
+        first = client.lease_job(resources=ANY_RESOURCES, worker="worker-1")
+        assert isinstance(first, Job)
+        connection = client._connection
 
-    monkeypatch.setattr(httpx, "request", request)
+        client.job_result(_lease(first), JobCompletedResult())
+        second = client.lease_job(resources=ANY_RESOURCES, worker="worker-1")
 
-    api.WorkerApiClient(
-        server_url="http://worker.test/", auth_token="secret-token"
-    ).job_result("lease-1", JobBlockedResult(dependencies=[]))
-
-    assert requests == [
-        (
-            "POST",
-            "http://worker.test/worker/job_result/lease-1",
-            {"Authorization": "Bearer secret-token"},
-            {"status": "blocked", "dependencies": []},
-        )
-    ]
+        assert isinstance(second, Job)
+        assert client._connection is connection
+        client.job_result(_lease(second), JobCompletedResult())
+        assert client.lease_job(resources=ANY_RESOURCES, worker="worker-1") == "stop"
+        client.close()
 
 
-def test_client_job_result_rejects_non_ok_response(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def request(
-        method: str,
-        url: str,
-        *,
-        headers: dict[str, str],
-        json: object | None,
-        timeout: float,
-    ) -> httpx.Response:
-        return httpx.Response(
-            200, json={"ok": False}, request=httpx.Request(method, url)
-        )
-
-    monkeypatch.setattr(httpx, "request", request)
-
-    with pytest.raises(ValidationError, match="Input should be True"):
-        api.WorkerApiClient(
-            server_url="http://worker.test", auth_token="secret-token"
-        ).job_result("lease-1", JobCompletedResult())
-
-
-def test_client_lease_job_rejects_empty_response(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def request(
-        method: str,
-        url: str,
-        *,
-        headers: dict[str, str],
-        json: object | None,
-        timeout: float,
-    ) -> httpx.Response:
-        return httpx.Response(200, request=httpx.Request(method, url))
-
-    monkeypatch.setattr(httpx, "request", request)
-
-    with pytest.raises(RuntimeError, match="returned an empty response"):
-        api.WorkerApiClient(
-            server_url="http://worker.test", auth_token="secret-token"
-        ).lease_job(resources=ANY_RESOURCES, worker="test-worker")
-
-
-def test_client_lease_job_posts_resource_request_to_lease_job_endpoint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_worker_websocket_disconnect_requeues_its_running_job() -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
-    requests: list[tuple[str, str, dict[str, str], object | None]] = []
+    coordinator = _new_execution_coordinator([leaf])
 
-    def request(
-        method: str,
-        url: str,
-        *,
-        headers: dict[str, str],
-        json: object | None,
-        timeout: float,
-    ) -> httpx.Response:
-        requests.append((method, url, headers, json))
-        return httpx.Response(
-            200,
-            json={
-                "members": [
-                    {
-                        "lease_id": "lease-1",
-                        "artifact": ArtifactSpec.from_furu(leaf).model_dump(
-                            mode="json"
-                        ),
-                    }
-                ],
-                "provenance": _submit_provenance().model_dump(mode="json"),
-            },
-            request=httpx.Request(method, url),
+    with execution_coordinator_server(
+        coordinator, bind_host="127.0.0.1", port=0
+    ) as server:
+        client = api.WorkerApiClient(
+            server_url=server.server_url, auth_token=server.auth_token
         )
-
-    monkeypatch.setattr(httpx, "request", request)
-
-    job = api.WorkerApiClient(
-        server_url="http://worker.test/",
-        auth_token="secret-token",
-    ).lease_job(
-        resources=ResourceRequest(cpus=2, gpus=1, memory_gib=16),
-        worker="test-worker",
-    )
-
-    assert isinstance(job, Job)
-    assert requests == [
-        (
-            "POST",
-            "http://worker.test/worker/lease_job",
-            {"Authorization": "Bearer secret-token"},
-            {
-                "resources": {"cpus": 2, "gpus": 1, "memory_gib": 16},
-                "worker": "test-worker",
-            },
+        assert isinstance(
+            client.lease_job(resources=ANY_RESOURCES, worker="worker-1"), Job
         )
-    ]
+        assert coordinator.running
+
+        client.close()
+        deadline = time.monotonic() + 1
+        while coordinator.running and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        assert coordinator.running == {}
+        assert set(coordinator.ready) == {leaf.object_id}
 
 
-def test_pool_api_client_worker_lost_uses_worker_lost_endpoint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    requests: list[tuple[str, str, dict[str, str], object | None]] = []
-
-    def request(
-        method: str,
-        url: str,
-        *,
-        headers: dict[str, str],
-        json: object | None,
-        timeout: float,
-    ) -> httpx.Response:
-        requests.append((method, url, headers, json))
-        return httpx.Response(
-            200, json={"ok": True}, request=httpx.Request(method, url)
-        )
-
-    monkeypatch.setattr(httpx, "request", request)
-
-    api.PoolApiClient(
-        server_url="http://pool.test/", auth_token="secret-token"
-    ).worker_lost(worker="slurm-worker-100a1")
-
-    assert requests == [
-        (
-            "POST",
-            "http://pool.test/pool/worker_lost",
-            {"Authorization": "Bearer secret-token"},
-            {"worker": "slurm-worker-100a1"},
-        )
-    ]
-
-
-def test_execution_coordinator_api_rejects_missing_auth_token() -> None:
-    app = create_execution_coordinator_api_app(
-        _new_execution_coordinator([ExecutionCoordinatorLeaf(value=1)]),
-        auth_token="secret",
-    )
-    client = TestClient(app)
-
-    response = client.post("/worker/lease_job")
-
-    assert response.status_code == 401
-    assert response.json() == {
-        "detail": "invalid furu execution coordinator auth token"
-    }
-
-
-def test_execution_coordinator_api_rejects_wrong_auth_token() -> None:
-    app = create_execution_coordinator_api_app(
-        _new_execution_coordinator([ExecutionCoordinatorLeaf(value=1)]),
-        auth_token="secret",
-    )
-    client = TestClient(app)
-
-    response = client.post(
-        "/worker/lease_job",
-        headers={"Authorization": "Bearer wrong"},
-    )
-
-    assert response.status_code == 401
-    assert response.json() == {
-        "detail": "invalid furu execution coordinator auth token"
-    }
-
-
-def test_execution_coordinator_api_fail_endpoint_sets_finish_error_and_done() -> None:
+def test_pool_websocket_can_fail_the_execution() -> None:
     coordinator = _new_execution_coordinator([ExecutionCoordinatorLeaf(value=1)])
-    app = create_execution_coordinator_api_app(coordinator, auth_token="secret")
-    client = TestClient(app)
 
-    response = client.post(
-        "/pool/fail",
-        headers={"Authorization": "Bearer secret"},
-        json={"message": "pool broke"},
-    )
+    with execution_coordinator_server(
+        coordinator, bind_host="127.0.0.1", port=0
+    ) as server:
+        client = api.PoolApiClient(
+            server_url=server.server_url, auth_token=server.auth_token
+        )
+        client.fail(message="pool broke")
+        client.close()
 
-    assert response.status_code == 200
-    assert response.json() == {"ok": True}
     assert coordinator.done.is_set()
     with pytest.raises(RuntimeError, match="pool broke"):
         coordinator.raise_for_failure()
-
-
-def test_execution_coordinator_api_worker_lost_endpoint_requeues_job() -> None:
-    leaf = ExecutionCoordinatorLeaf(value=1)
-    coordinator = _new_execution_coordinator([leaf])
-    job = coordinator.lease_job(resources=ResourceRequest(), worker="worker-1")
-    assert isinstance(job, Job)
-    app = create_execution_coordinator_api_app(coordinator, auth_token="secret")
-    client = TestClient(app)
-
-    response = client.post(
-        "/pool/worker_lost",
-        headers={"Authorization": "Bearer secret"},
-        json={"worker": "worker-1"},
-    )
-
-    assert response.status_code == 200
-    assert response.json() == {"ok": True}
-    assert coordinator.running == {}
-    assert set(coordinator.ready) == {leaf.object_id}
-
-
-def test_execution_coordinator_api_accepts_matching_auth_token() -> None:
-    app = create_execution_coordinator_api_app(
-        _new_execution_coordinator([ExecutionCoordinatorLeaf(value=1)]),
-        auth_token="secret",
-    )
-    client = TestClient(app)
-
-    response = client.post(
-        "/worker/lease_job",
-        headers={"Authorization": "Bearer secret"},
-        json={
-            "resources": {"cpus": 1, "gpus": 0, "memory_gib": 0},
-            "worker": "test-worker",
-        },
-    )
-
-    assert response.status_code == 200
-    (member,) = response.json()["members"]
-    assert member["artifact"]["artifact_data"]["|fields"] == {"value": 1}
