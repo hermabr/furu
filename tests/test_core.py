@@ -636,8 +636,8 @@ def test_spec_function_creates_spec_from_function_signature():
     assert isinstance(obj, Spec)
     assert is_dataclass(type(obj))
     assert type(obj).__name__ == "letter_count"
-    assert obj.source == "banana"
-    assert obj.letter == "a"
+    assert obj.source == "banana"  # ty: ignore[unresolved-attribute]
+    assert obj.letter == "a"  # ty: ignore[unresolved-attribute]
     assert obj.create() == 3
     assert letter_count(source="banana", letter="a") == obj
 
@@ -648,7 +648,7 @@ def test_spec_function_creates_spec_from_function_signature():
 def test_spec_function_supports_defaults_and_artifact_round_trip():
     obj = letter_count_with_default("banana")
 
-    assert obj.letter == "a"
+    assert obj.letter == "a"  # ty: ignore[unresolved-attribute]
     assert obj.create() == 3
     assert obj._fully_qualified_name == "test_core.letter_count_with_default"
     assert _from_json(obj._artifact_data) == obj
@@ -673,8 +673,8 @@ def test_spec_function_supports_parenthesized_decorator():
     obj = letter_count_with_parentheses("banana", "n")
 
     assert isinstance(obj, Spec)
-    assert obj.source == "banana"
-    assert obj.letter == "n"
+    assert obj.source == "banana"  # ty: ignore[unresolved-attribute]
+    assert obj.letter == "n"  # ty: ignore[unresolved-attribute]
     assert obj.create() == 2
     assert obj._fully_qualified_name == "test_core.letter_count_with_parentheses"
     assert _from_json(obj._artifact_data) == obj
