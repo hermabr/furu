@@ -5,36 +5,23 @@ import traceback
 from typing import assert_never
 
 from websockets.exceptions import ConnectionClosed
-from websockets.sync.client import connect
 
 from furu.core import Spec
+from furu.execution.client import worker_client
 from furu.logging import _scoped_component, get_logger, log_detail
 from furu.provenance import _worker_backend
 from furu.resources import ResourceRequest
 from furu.spec_metadata import Subprocess
 from furu.utils import format_duration
+from furu.worker import protocol
 from furu.worker.execute import ChildSlot, execute_job
-from furu.worker.protocol import (
-    PROTOCOL_VERSION,
-    AssignMessage,
-    HelloMessage,
-    Job,
-    JobBlockedResult,
-    JobCompletedResult,
-    JobFailedResult,
-    JobResultRequest,
-    ResultMessage,
-    StopMessage,
-    WelcomeMessage,
-    server_message_adapter,
-)
 
 logger = get_logger("worker.loop")
 
-_WELCOME_TIMEOUT_S = 10.0
 
-
-def _run_job(job: Job, child_slot: ChildSlot) -> tuple[JobResultRequest, str | None]:
+def _run_job(
+    job: protocol.Job, child_slot: ChildSlot
+) -> tuple[protocol.JobResultRequest, str | None]:
     task_label: str | None = None
     try:
         objs = [Spec.from_artifact(member.artifact) for member in job.members]
@@ -58,7 +45,7 @@ def _run_job(job: Job, child_slot: ChildSlot) -> tuple[JobResultRequest, str | N
                 assert_never(unexpected_execution)
     except Exception as exc:  # noqa: BLE001 -- fault barrier: any crash fails the job
         return (
-            JobFailedResult(
+            protocol.JobFailedResult(
                 error="".join(
                     traceback.format_exception(type(exc), exc, exc.__traceback__)
                 ),
@@ -83,36 +70,18 @@ def worker_loop(
         child_slot = ChildSlot()
 
         try:
-            try:
-                connection = connect(
-                    server_url,
-                    additional_headers={"Authorization": f"Bearer {auth_token}"},
-                    max_size=None,
-                )
-            except Exception as exc:
-                raise RuntimeError(f"connecting to {server_url} failed: {exc}") from exc
-            with connection:
-                connection.send(
-                    HelloMessage(
-                        version=PROTOCOL_VERSION,
-                        worker=component,
-                        backend=backend,
-                        resources=resource_request,
-                    ).model_dump_json()
-                )
-                match server_message_adapter.validate_json(
-                    connection.recv(timeout=_WELCOME_TIMEOUT_S)
-                ):
-                    case WelcomeMessage():
-                        pass
-                    case unexpected:
-                        raise RuntimeError(
-                            f"expected welcome message, got {unexpected.type!r}"
-                        )
-
+            with worker_client(
+                server_url=server_url,
+                auth_token=auth_token,
+                worker=component,
+                backend=backend,
+                resources=resource_request,
+            ) as connection:
                 while True:
                     try:
-                        raw = connection.recv(timeout=idle_timeout)
+                        message = protocol.server_message_adapter.validate_json(
+                            connection.recv(timeout=idle_timeout)
+                        )
                     except TimeoutError:
                         logger.info(
                             "no work for %s; worker exiting",
@@ -125,58 +94,42 @@ def worker_loop(
                         logger.info("server closed the connection; worker exiting")
                         return
 
-                    match server_message_adapter.validate_json(raw):
-                        case StopMessage(reason=reason):
+                    match message:
+                        case protocol.StopMessage(reason=reason):
                             logger.info("worker told to stop: %s", reason)
                             return
-                        case AssignMessage(job=job):
+                        case protocol.AssignMessage(job=job):
                             task_started_at = time.monotonic()
                             job_result, task_label = _run_job(job, child_slot)
                             connection.send(
-                                ResultMessage(result=job_result).model_dump_json()
+                                protocol.ResultMessage(
+                                    result=job_result
+                                ).model_dump_json()
                             )
 
-                            match job_result:
-                                case JobCompletedResult():
-                                    status = "completed"
-                                    consecutive_failures = 0
-                                case JobBlockedResult():
-                                    status = "blocked"
-                                    consecutive_failures = 0
-                                case JobFailedResult():
-                                    status = "failed"
-                                    consecutive_failures += 1
-                                case unexpected_result:
-                                    assert_never(unexpected_result)
+                            status = job_result.status
+                            if isinstance(job_result, protocol.JobFailedResult):
+                                consecutive_failures += 1
+                            else:
+                                consecutive_failures = 0
 
                             duration = format_duration(
                                 time.monotonic() - task_started_at
                             )
-                            status_word = "ok" if status == "completed" else status
                             first_lease = job.members[0].lease_id
-                            if task_label is None:
-                                logger.info(
-                                    "finished %s · %s",
-                                    status_word,
-                                    duration,
-                                    extra=log_detail(lease=first_lease, status=status),
-                                )
-                            else:
-                                logger.info(
-                                    "finished %s %s · %s",
-                                    task_label,
-                                    status_word,
-                                    duration,
-                                    extra=log_detail(lease=first_lease, status=status),
-                                )
+                            logger.info(
+                                "finished %s%s · %s",
+                                f"{task_label} " if task_label else "",
+                                "ok" if status == "completed" else status,
+                                duration,
+                                extra=log_detail(lease=first_lease, status=status),
+                            )
 
                             if (
                                 max_consecutive_failures is not None
                                 and consecutive_failures > max_consecutive_failures
                             ):
                                 return
-                        case WelcomeMessage():
-                            raise RuntimeError("unexpected repeated welcome message")
         finally:
             child_slot.close()
             _worker_backend.reset(worker_backend_token)
