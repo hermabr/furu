@@ -40,4 +40,4 @@ def worker_client(
             case protocol.StopMessage(reason=reason):
                 raise RuntimeError(reason)
             case unexpected:
-                raise RuntimeError(f"expected welcome, got {unexpected.type!r}")
+                raise RuntimeError(f"expected welcome, got {unexpected.kind!r}")

@@ -22,7 +22,7 @@ from furu.worker.backends.slurm.pool import SlurmWorkerPool
 from furu.worker.backends.slurm.resources import SlurmResources
 
 if TYPE_CHECKING:
-    from furu.worker.backends.protocol import PoolCoordinator
+    from furu.execution.execution_coordinator import ExecutionCoordinator
 
 type SlurmExport = Literal["NIL", "ALL"] | tuple[str, ...] | None
 
@@ -52,7 +52,7 @@ class SlurmWorkerBackend:
     def start_pool(
         self,
         *,
-        coordinator: PoolCoordinator,
+        coordinator: ExecutionCoordinator,
         bound_port: int,
         auth_token: str,
         executor_dir: Path,

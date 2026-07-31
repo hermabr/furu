@@ -12,7 +12,7 @@ from furu.logging import _scoped_component, get_logger
 from furu.resources import ResourceRequest
 
 if TYPE_CHECKING:
-    from furu.worker.backends.protocol import PoolCoordinator
+    from furu.execution.execution_coordinator import ExecutionCoordinator
 
 logger = get_logger()
 
@@ -46,7 +46,7 @@ class SlurmWorkerPool:
     _server_url: str
     _auth_token: str
     _poll_interval: float
-    _coordinator: PoolCoordinator
+    _coordinator: ExecutionCoordinator
     _stop_event: threading.Event
     _use_job_arrays: bool
     _scale_thread: threading.Thread

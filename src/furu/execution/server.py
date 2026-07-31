@@ -45,7 +45,7 @@ def _serve_worker(
             case HelloMessage() as hello:
                 pass
             case unexpected:
-                raise RuntimeError(f"expected hello message, got {unexpected.type!r}")
+                raise RuntimeError(f"expected hello message, got {unexpected.kind!r}")
         if hello.version != PROTOCOL_VERSION:
             connection.send(
                 StopMessage(
@@ -83,7 +83,7 @@ def _serve_worker(
                                 pass
                             case unexpected:
                                 raise RuntimeError(
-                                    f"expected result message, got {unexpected.type!r}"
+                                    f"expected result message, got {unexpected.kind!r}"
                                 )
                         for member in job.members:
                             coordinator.job_result(member.lease_id, reply.result)

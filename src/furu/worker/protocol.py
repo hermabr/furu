@@ -59,7 +59,7 @@ class HelloMessage(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    type: Literal["hello"] = "hello"
+    kind: Literal["hello"] = "hello"
     version: int
     worker: str
     backend: str
@@ -71,39 +71,39 @@ class ResultMessage(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    type: Literal["result"] = "result"
+    kind: Literal["result"] = "result"
     result: JobResultRequest
 
 
 class WelcomeMessage(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    type: Literal["welcome"] = "welcome"
+    kind: Literal["welcome"] = "welcome"
     executor_id: str
 
 
 class AssignMessage(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    type: Literal["assign"] = "assign"
+    kind: Literal["assign"] = "assign"
     job: Job
 
 
 class StopMessage(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    type: Literal["stop"] = "stop"
+    kind: Literal["stop"] = "stop"
     reason: str
 
 
 type WorkerMessage = Annotated[
     HelloMessage | ResultMessage,
-    Field(discriminator="type"),
+    Field(discriminator="kind"),
 ]
 
 type ServerMessage = Annotated[
     WelcomeMessage | AssignMessage | StopMessage,
-    Field(discriminator="type"),
+    Field(discriminator="kind"),
 ]
 
 # Validate wire strings directly: the strict models above accept datetimes and

@@ -12,7 +12,7 @@ from furu.provenance import SubmitProvenance
 from furu.resources import ResourceRequest
 
 if TYPE_CHECKING:
-    from furu.worker.backends.protocol import PoolCoordinator
+    from furu.execution.execution_coordinator import ExecutionCoordinator
 
 logger = get_logger()
 
@@ -33,7 +33,7 @@ class LocalThreadWorkerBackend:
     def start_pool(
         self,
         *,
-        coordinator: PoolCoordinator,
+        coordinator: ExecutionCoordinator,
         bound_port: int,
         auth_token: str,
         executor_dir: Path,
@@ -75,7 +75,7 @@ class LocalThreadWorkerPool:
     _resource_request: ResourceRequest
     _scale_interval: float
     _worker_idle_timeout: float
-    _coordinator: PoolCoordinator
+    _coordinator: ExecutionCoordinator
     _stop_event: threading.Event
     _unhealthy_event: threading.Event
     _scale_thread: threading.Thread

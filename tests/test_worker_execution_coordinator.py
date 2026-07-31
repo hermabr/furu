@@ -38,7 +38,6 @@ from furu.provenance import (
 from furu.resources import ResourceRequest
 from furu.storage._layout import execution_coordinator_log_path_in
 from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
-from furu.worker.backends.protocol import PoolCoordinator
 from furu.worker.loop import worker_loop
 from furu.worker.protocol import (
     PROTOCOL_VERSION,
@@ -133,10 +132,11 @@ def _lease_job(
     return coordinator.lease_job(resources=resources, worker=f"test-worker-{uuid4()}")
 
 
-class _StubPoolCoordinator:
+class _StubCoordinator(ExecutionCoordinator):
     """Stands in for the ExecutionCoordinator that pools call in-process."""
 
     def __init__(self, count: Callable[[int], int] = lambda max_workers: 0) -> None:
+        super().__init__(max_retries_per_object=0)
         self._count = count
         self.failures: list[str] = []
 
@@ -149,7 +149,7 @@ class _StubPoolCoordinator:
 
 def _new_local_pool(
     *,
-    coordinator: Any = None,
+    coordinator: ExecutionCoordinator | None = None,
     server_url: str = "ws://execution-coordinator.test",
     auth_token: str = "secret",
     max_workers: int = 1,
@@ -166,7 +166,7 @@ def _new_local_pool(
         _resource_request=resource_request or ResourceRequest(),
         _scale_interval=scale_interval,
         _worker_idle_timeout=get_config().worker.idle_timeout_seconds,
-        _coordinator=coordinator or _StubPoolCoordinator(),
+        _coordinator=coordinator or _StubCoordinator(),
         _stop_event=threading.Event(),
         _unhealthy_event=threading.Event(),
         _scale_thread=threading.Thread(
@@ -1057,7 +1057,7 @@ def test_local_pool_scale_spawns_workers_up_to_max_as_satisfiable_count_grows(
     counts = iter([0, 2, 10, 10])
     release_workers = threading.Event()
 
-    coordinator = _StubPoolCoordinator(
+    coordinator = _StubCoordinator(
         lambda max_workers: min(next(counts), max_workers)
     )
     monkeypatch.setattr(
@@ -1113,7 +1113,7 @@ def test_local_pool_scale_uses_unique_worker_names_after_worker_exits(
     monkeypatch.setattr(worker_loop_module, "worker_loop", worker_loop)
 
     pool = _new_local_pool(
-        coordinator=_StubPoolCoordinator(lambda max_workers: max_workers),
+        coordinator=_StubCoordinator(lambda max_workers: max_workers),
         max_workers=3,
     )
 
@@ -1155,7 +1155,7 @@ def test_local_pool_scale_does_not_count_normal_exits_as_restarts(
     monkeypatch.setattr(worker_loop_module, "worker_loop", worker_loop)
 
     pool = _new_local_pool(
-        coordinator=_StubPoolCoordinator(lambda max_workers: max_workers),
+        coordinator=_StubCoordinator(lambda max_workers: max_workers),
         max_workers=1,
         max_failed_restarts=0,
     )
@@ -1186,7 +1186,7 @@ def test_local_pool_scale_counts_crashes_against_restart_limit(
     monkeypatch.setattr(worker_loop_module, "worker_loop", worker_loop)
 
     pool = _new_local_pool(
-        coordinator=_StubPoolCoordinator(lambda max_workers: max_workers),
+        coordinator=_StubCoordinator(lambda max_workers: max_workers),
         max_workers=1,
         max_failed_restarts=1,
     )
@@ -1250,7 +1250,7 @@ def test_execution_coordinator_run_uses_worker_backend() -> None:
         def start_pool(
             self,
             *,
-            coordinator: PoolCoordinator,
+            coordinator: ExecutionCoordinator,
             bound_port: int,
             auth_token: str,
             executor_dir: Path,
@@ -1298,7 +1298,7 @@ def test_execution_coordinator_run_passes_executor_dir_to_worker_backend() -> No
         def start_pool(
             self,
             *,
-            coordinator: PoolCoordinator,
+            coordinator: ExecutionCoordinator,
             bound_port: int,
             auth_token: str,
             executor_dir: Path,
@@ -1367,7 +1367,7 @@ def test_execution_coordinator_run_returns_when_all_objects_are_already_complete
         def start_pool(
             self,
             *,
-            coordinator: PoolCoordinator,
+            coordinator: ExecutionCoordinator,
             bound_port: int,
             auth_token: str,
             executor_dir: Path,
@@ -1417,7 +1417,7 @@ def test_execution_coordinator_run_starts_backend_pool_and_stops_and_joins_when_
         def start_pool(
             self,
             *,
-            coordinator: PoolCoordinator,
+            coordinator: ExecutionCoordinator,
             bound_port: int,
             auth_token: str,
             executor_dir: Path,
@@ -1476,7 +1476,7 @@ def test_execution_coordinator_run_stops_backend_pool_when_interrupted() -> None
         def start_pool(
             self,
             *,
-            coordinator: PoolCoordinator,
+            coordinator: ExecutionCoordinator,
             bound_port: int,
             auth_token: str,
             executor_dir: Path,
@@ -1517,7 +1517,7 @@ def test_execution_coordinator_run_uses_worker_backend_execution_coordinator_lis
         def start_pool(
             self,
             *,
-            coordinator: PoolCoordinator,
+            coordinator: ExecutionCoordinator,
             bound_port: int,
             auth_token: str,
             executor_dir: Path,

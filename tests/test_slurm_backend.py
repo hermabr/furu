@@ -23,6 +23,7 @@ from furu.config import (
     _FuruWorkerConfig,
     get_config,
 )
+from furu.execution.execution_coordinator import ExecutionCoordinator
 from furu.provenance import (
     EnvironmentIdentity,
     GitIdentity,
@@ -43,10 +44,11 @@ from furu.worker.backends.slurm.resources import (
 )
 
 
-class _StubCoordinator:
+class _StubCoordinator(ExecutionCoordinator):
     """Stands in for the ExecutionCoordinator the pool calls in-process."""
 
     def __init__(self, count: Callable[[int], int] | int = 0) -> None:
+        super().__init__(max_retries_per_object=0)
         self._count = count
         self.failures: list[str] = []
 
