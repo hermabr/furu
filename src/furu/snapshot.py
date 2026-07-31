@@ -152,9 +152,12 @@ def create_snapshot(worktree: Path) -> str:
     with publish_dir_atomically(final_dir) as tmp_dir:
         tarball_path = tmp_dir / "snapshot.tar.gz"
         with open(tarball_path, "wb") as raw:
-            with gzip.GzipFile(
-                filename="", fileobj=raw, mode="wb", mtime=0
-            ) as compressed, tarfile.open(fileobj=compressed, mode="w") as tar:
+            with (
+                gzip.GzipFile(
+                    filename="", fileobj=raw, mode="wb", mtime=0
+                ) as compressed,
+                tarfile.open(fileobj=compressed, mode="w") as tar,
+            ):
                 for rel_path in sorted(blobs):
                     full_path = repo_root / rel_path
                     file_stat = os.lstat(full_path)
@@ -169,9 +172,7 @@ def create_snapshot(worktree: Path) -> str:
                         tar.addfile(info)
                     else:
                         info.size = file_stat.st_size
-                        info.mode = (
-                            0o755 if file_stat.st_mode & stat.S_IXUSR else 0o644
-                        )
+                        info.mode = 0o755 if file_stat.st_mode & stat.S_IXUSR else 0o644
                         with open(full_path, "rb") as file:
                             tar.addfile(info, file)
             raw.flush()

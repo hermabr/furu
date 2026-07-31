@@ -195,9 +195,7 @@ class _PathValueCodec(Codec[_PathValue]):
         return isinstance(value, _PathValue)
 
     @classmethod
-    def save(
-        cls, value: _PathValue, artifact_directory: Path
-    ) -> Mapping[str, object]:
+    def save(cls, value: _PathValue, artifact_directory: Path) -> Mapping[str, object]:
         return {"path": value.path}
 
     @classmethod
@@ -238,9 +236,10 @@ def test_migrated_codec_metadata_path_uses_source_data_directory() -> None:
     migrated = _MigratedPathResult(key="contents")
 
     assert migrated.create().path == (source.directory.data / "payload.txt").resolve()
-    assert migrated.load_existing().path == (
-        source.directory.data / "payload.txt"
-    ).resolve()
+    assert (
+        migrated.load_existing().path
+        == (source.directory.data / "payload.txt").resolve()
+    )
 
 
 def test_added_field_binds_only_the_default_value() -> None:

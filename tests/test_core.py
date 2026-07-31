@@ -2336,9 +2336,7 @@ def test_worker_dependency_not_ready_is_not_caught_as_exception(
         try:
             missing.load_existing()
         except Exception as exc:  # pragma: no cover
-            raise AssertionError(
-                "ordinary Exception handler caught signal"
-            ) from exc
+            raise AssertionError("ordinary Exception handler caught signal") from exc
 
 
 def test_mixed_type_list_follows_documented_grouping_policy() -> None:

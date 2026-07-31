@@ -92,10 +92,13 @@ def _child_hold_lock_and_report_heartbeat(
     lifetime_s: float = SHORT_LIFETIME_S,
     heartbeat_interval_s: float = SHORT_HEARTBEAT_INTERVAL_S,
 ) -> None:
-    with suppress(RuntimeError), lock(
-        lock_path,
-        lifetime_s=lifetime_s,
-        heartbeat_interval_s=heartbeat_interval_s,
+    with (
+        suppress(RuntimeError),
+        lock(
+            lock_path,
+            lifetime_s=lifetime_s,
+            heartbeat_interval_s=heartbeat_interval_s,
+        ),
     ):
         heartbeat_threads = [
             thread.name
@@ -173,11 +176,14 @@ def test_lock_normalizes_paths_and_shares_one_claim_manifest(
 def test_has_lock_returns_false_when_lock_is_lost(tmp_path: Path) -> None:
     lock_path = tmp_path / "single.lock"
 
-    with pytest.raises(LockError, match="lost lock"), lock(
-        lock_path,
-        lifetime_s=SHORT_LIFETIME_S,
-        heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
-    ) as has_lock:
+    with (
+        pytest.raises(LockError, match="lost lock"),
+        lock(
+            lock_path,
+            lifetime_s=SHORT_LIFETIME_S,
+            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+        ) as has_lock,
+    ):
         _drop_current_lock(lock_path)
         assert not has_lock()
 
@@ -185,11 +191,14 @@ def test_has_lock_returns_false_when_lock_is_lost(tmp_path: Path) -> None:
 def test_has_lock_returns_false_when_any_batch_link_is_lost(tmp_path: Path) -> None:
     lock_paths = [tmp_path / "a.lock", tmp_path / "b.lock", tmp_path / "c.lock"]
 
-    with pytest.raises(LockError, match="lost lock"), lock(
-        lock_paths,
-        lifetime_s=SHORT_LIFETIME_S,
-        heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
-    ) as has_lock:
+    with (
+        pytest.raises(LockError, match="lost lock"),
+        lock(
+            lock_paths,
+            lifetime_s=SHORT_LIFETIME_S,
+            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+        ) as has_lock,
+    ):
         lock_paths[1].unlink()
         assert not has_lock()
 
@@ -199,10 +208,13 @@ def test_exit_raises_lock_lost_error_when_lock_is_lost_mid_block(
 ) -> None:
     lock_path = tmp_path / "single.lock"
 
-    with pytest.raises(LockError, match="lost lock"), lock(
-        lock_path,
-        lifetime_s=SHORT_LIFETIME_S,
-        heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+    with (
+        pytest.raises(LockError, match="lost lock"),
+        lock(
+            lock_path,
+            lifetime_s=SHORT_LIFETIME_S,
+            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+        ),
     ):
         _drop_current_lock(lock_path)
         time.sleep(SHORT_LIFETIME_S)
@@ -219,11 +231,14 @@ def test_refresh_extends_expiration(tmp_path: Path) -> None:
         assert has_lock()
         time.sleep(SHORT_LIFETIME_S * 4)
 
-        with pytest.raises(LockError, match="could not acquire lock"), lock(
-            lock_path,
-            lifetime_s=SHORT_LIFETIME_S,
-            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
-            acquire_timeout_s=0.0,
+        with (
+            pytest.raises(LockError, match="could not acquire lock"),
+            lock(
+                lock_path,
+                lifetime_s=SHORT_LIFETIME_S,
+                heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+                acquire_timeout_s=0.0,
+            ),
         ):
             pass
 
@@ -242,11 +257,14 @@ def test_lock_starts_heartbeat_thread(tmp_path: Path) -> None:
         _, heartbeat_name = thread_queue.get(timeout=PROCESS_TIMEOUT_S)
         assert heartbeat_name == f"lock-heartbeat:{lock_path.name}"
 
-        with pytest.raises(LockError, match="could not acquire lock"), lock(
-            lock_path,
-            lifetime_s=SHORT_LIFETIME_S,
-            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
-            acquire_timeout_s=0.0,
+        with (
+            pytest.raises(LockError, match="could not acquire lock"),
+            lock(
+                lock_path,
+                lifetime_s=SHORT_LIFETIME_S,
+                heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+                acquire_timeout_s=0.0,
+            ),
         ):
             pass
     finally:
@@ -267,10 +285,13 @@ def test_timeout_when_lock_is_held(tmp_path: Path) -> None:
     try:
         holder_queue.get(timeout=PROCESS_TIMEOUT_S)
         started_at = time.monotonic()
-        with pytest.raises(LockError, match="could not acquire lock"), lock(
-            lock_path,
-            lifetime_s=SHORT_LIFETIME_S,
-            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+        with (
+            pytest.raises(LockError, match="could not acquire lock"),
+            lock(
+                lock_path,
+                lifetime_s=SHORT_LIFETIME_S,
+                heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+            ),
         ):
             pass
         assert time.monotonic() - started_at >= SHORT_LIFETIME_S
@@ -318,16 +339,20 @@ def test_lock_logs_when_waiting_for_lock(
 
     try:
         caplog.set_level(logging.INFO, logger="furu")
-        with lock(
-            lock_path,
-            lifetime_s=SHORT_LIFETIME_S * 4,
-            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
-        ), pytest.raises(LockError, match="could not acquire lock"), lock(
-            lock_path,
-            lifetime_s=SHORT_LIFETIME_S,
-            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
-            acquire_timeout_s=SHORT_SLEEP_S,
-            acquire_poll_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+        with (
+            lock(
+                lock_path,
+                lifetime_s=SHORT_LIFETIME_S * 4,
+                heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+            ),
+            pytest.raises(LockError, match="could not acquire lock"),
+            lock(
+                lock_path,
+                lifetime_s=SHORT_LIFETIME_S,
+                heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+                acquire_timeout_s=SHORT_SLEEP_S,
+                acquire_poll_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+            ),
         ):
             pass
     finally:
@@ -402,10 +427,13 @@ def test_release_cleanup_removes_member_links_when_claim_file_is_missing(
 ) -> None:
     lock_paths = [tmp_path / "a.lock", tmp_path / "b.lock", tmp_path / "c.lock"]
 
-    with pytest.raises(LockError, match="lost lock"), lock(
-        lock_paths,
-        lifetime_s=SHORT_LIFETIME_S,
-        heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+    with (
+        pytest.raises(LockError, match="lost lock"),
+        lock(
+            lock_paths,
+            lifetime_s=SHORT_LIFETIME_S,
+            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+        ),
     ):
         _manifest_claim_path(lock_paths[0]).unlink()
 
@@ -455,16 +483,18 @@ def test_lock_raises_if_stale_break_would_remove_reacquired_lock(
         os.utime(lock_path, (stale, stale))
         return break_path
 
-    with patch.object(
-        locking_module,
-        "acquire_break_file",
-        side_effect=reacquire_before_break,
-    ), pytest.raises(
-        LockError, match="changed owners while breaking a stale lock"
-    ), lock(
-        lock_path,
-        lifetime_s=SHORT_LIFETIME_S,
-        heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+    with (
+        patch.object(
+            locking_module,
+            "acquire_break_file",
+            side_effect=reacquire_before_break,
+        ),
+        pytest.raises(LockError, match="changed owners while breaking a stale lock"),
+        lock(
+            lock_path,
+            lifetime_s=SHORT_LIFETIME_S,
+            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+        ),
     ):
         pass
 
@@ -506,15 +536,19 @@ def test_partial_acquire_rollback_releases_subset_under_overlap(tmp_path: Path) 
     first_lock = tmp_path / "a.lock"
     blocked_lock = tmp_path / "b.lock"
 
-    with lock(
-        blocked_lock,
-        lifetime_s=SHORT_LIFETIME_S,
-        heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
-    ), pytest.raises(LockError, match="could not acquire lock"), lock(
-        [first_lock, blocked_lock],
-        lifetime_s=SHORT_LIFETIME_S,
-        heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
-        acquire_timeout_s=0.0,
+    with (
+        lock(
+            blocked_lock,
+            lifetime_s=SHORT_LIFETIME_S,
+            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+        ),
+        pytest.raises(LockError, match="could not acquire lock"),
+        lock(
+            [first_lock, blocked_lock],
+            lifetime_s=SHORT_LIFETIME_S,
+            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+            acquire_timeout_s=0.0,
+        ),
     ):
         pass
 
@@ -532,11 +566,14 @@ def test_does_not_break_lock_within_clock_slop(tmp_path: Path) -> None:
         almost_stale = time.time() - locking_module.CLOCK_SLOP_S + SHORT_SLEEP_S / 2
         os.utime(lock_path, (almost_stale, almost_stale))
 
-        with pytest.raises(LockError, match="could not acquire lock"), lock(
-            lock_path,
-            lifetime_s=SHORT_LIFETIME_S,
-            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
-            acquire_timeout_s=0.0,
+        with (
+            pytest.raises(LockError, match="could not acquire lock"),
+            lock(
+                lock_path,
+                lifetime_s=SHORT_LIFETIME_S,
+                heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+                acquire_timeout_s=0.0,
+            ),
         ):
             pass
 
@@ -547,10 +584,13 @@ def test_stale_break_refuses_malformed_manifest(tmp_path: Path) -> None:
     stale_time = time.time() - locking_module.CLOCK_SLOP_S - SHORT_SLEEP_S
     os.utime(lock_path, (stale_time, stale_time))
 
-    with pytest.raises(LockError, match="malformed lock manifest"), lock(
-        lock_path,
-        lifetime_s=SHORT_LIFETIME_S,
-        heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+    with (
+        pytest.raises(LockError, match="malformed lock manifest"),
+        lock(
+            lock_path,
+            lifetime_s=SHORT_LIFETIME_S,
+            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+        ),
     ):
         pass
 
@@ -569,10 +609,13 @@ def test_lock_retries_once_after_benign_link_error(tmp_path: Path) -> None:
             raise OSError(errno.ENOENT, "simulated benign race")
         return original_link(src, dst, *args, **kwargs)
 
-    with patch("os.link", side_effect=flaky_link), lock(
-        lock_path,
-        lifetime_s=SHORT_LIFETIME_S,
-        heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+    with (
+        patch("os.link", side_effect=flaky_link),
+        lock(
+            lock_path,
+            lifetime_s=SHORT_LIFETIME_S,
+            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+        ),
     ):
         assert lock_path.exists()
 
@@ -657,11 +700,14 @@ def test_process_exit_without_cleanup_allows_reclaim_after_expiry(
         first_owner = owner_path.read_text(encoding="utf-8").strip()
         assert lock_path.exists()
 
-        with pytest.raises(LockError, match="could not acquire lock"), lock(
-            lock_path,
-            lifetime_s=SHORT_LIFETIME_S,
-            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
-            acquire_timeout_s=0.0,
+        with (
+            pytest.raises(LockError, match="could not acquire lock"),
+            lock(
+                lock_path,
+                lifetime_s=SHORT_LIFETIME_S,
+                heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+                acquire_timeout_s=0.0,
+            ),
         ):
             pass
 
