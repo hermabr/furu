@@ -176,23 +176,16 @@ def _ensure_group_result[T](
 def _normalize_load_or_create_input[T](
     obj_or_objs: Spec[T] | Sequence[Spec[T]],
 ) -> tuple[list[Spec[T]], bool]:
-    if isinstance(obj_or_objs, Spec):
-        objs = [cast(Spec[T], obj_or_objs)]
-        unwrap = True
-        record_dependency_call(objs[0])
-        objs[0].logger.debug(".create called for %s", objs[0])
-    else:
-        if not isinstance(obj_or_objs, Sequence):
-            raise TypeError(
-                "_load_or_create() expected a Spec object or a sequence of Spec objects"
-            )
-        objs = list(cast(Sequence[Spec[T]], obj_or_objs))
-        unwrap = False
-        if any(not isinstance(obj, Spec) for obj in objs):
-            raise TypeError("_load_or_create() expected Spec objects")
-        for obj in objs:
+    match obj_or_objs:
+        case Spec() as obj:
+            assert not isinstance(obj, Sequence)
             record_dependency_call(obj)
-    return objs, unwrap
+            obj.logger.debug(".create called for %s", obj)
+            return [obj], True
+        case Sequence() as objs:
+            for obj in objs:
+                record_dependency_call(obj)
+            return list(objs), False
 
 
 @overload
