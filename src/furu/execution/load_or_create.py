@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Callable, Hashable, Sequence
+from collections.abc import Callable, Sequence
 from contextlib import nullcontext
 from typing import (
     TYPE_CHECKING,
@@ -410,40 +410,22 @@ def _load_or_create_local[T](
     return outputs
 
 
-def _batch_fn(obj: Spec[Any]) -> Callable[[Any], tuple[Hashable, int]] | None:
-    """The batch key function of a batched-flavored spec, None for single."""
-    hook = getattr(type(obj), "_furu_create_hook", None)
-    return hook.batch_fn if isinstance(hook, _BatchedHook) else None
-
-
-def _validated_batch_key(obj: Spec[Any]) -> tuple[Hashable, int]:
-    batch_fn = _batch_fn(obj)
-    assert batch_fn is not None
-    group_hash, cap = batch_fn(obj)
-    if type(cap) is not int or cap < 1:
-        raise TypeError(
-            f"{type(obj).__qualname__} batch key cap must be a positive int, "
-            f"got {cap!r}"
-        )
-    return group_hash, cap
-
-
 def _batch_group(obj: Spec[Any]) -> tuple[object, int] | None:
     """(grouping key, cap): specs with equal keys may share one create call.
 
     Keys are compared by equality rather than hashed because Subprocess
     execution metadata holds an unhashable environment mapping.
     """
-    if _batch_fn(obj) is None:
+    hook = getattr(type(obj), "_furu_create_hook", None)
+    if not isinstance(hook, _BatchedHook):
         return None
-    group_hash, cap = _validated_batch_key(obj)
-    key = (
-        type(obj),
-        group_hash,
-        cap,
-        obj._metadata.requires,
-        obj._metadata.execution,
-    )
+    group_hash, cap = hook.batch_fn(obj)
+    if type(cap) is not int or cap < 1:
+        raise TypeError(
+            f"{type(obj).__qualname__} batch key cap must be a positive int, "
+            f"got {cap!r}"
+        )
+    key = (type(obj), group_hash, cap, obj._metadata.requires, obj._metadata.execution)
     return key, cap
 
 
@@ -451,11 +433,7 @@ def _grouped_pending[T](pending: list[Spec[T]]) -> list[list[Spec[T]]]:
     """Partition by (type, batch_key, requires, execution), chunked to the cap."""
     groups: list[tuple[object, int | None, list[Spec[T]]]] = []
     for obj in pending:
-        cap: int | None = None
-        if (batch_group := _batch_group(obj)) is not None:
-            key, cap = batch_group
-        else:
-            key = type(obj)
+        key, cap = _batch_group(obj) or (type(obj), None)
         for existing_key, _, group in groups:
             if existing_key == key:
                 group.append(obj)
@@ -463,13 +441,9 @@ def _grouped_pending[T](pending: list[Spec[T]]) -> list[list[Spec[T]]]:
         else:
             groups.append((key, cap, [obj]))
     return [
-        chunk
+        group[i : i + (cap or len(group))]
         for _, cap, group in groups
-        for chunk in (
-            [group]
-            if cap is None
-            else [group[i : i + cap] for i in range(0, len(group), cap)]
-        )
+        for i in range(0, len(group), cap or len(group))
     ]
 
 
