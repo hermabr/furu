@@ -53,8 +53,6 @@ type LeaseJobResponse = Job | Literal["wait", "stop"]
 
 
 class HelloMessage(BaseModel):
-    """First message on a connection: the worker introduces itself."""
-
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     kind: Literal["hello"] = "hello"
@@ -64,8 +62,6 @@ class HelloMessage(BaseModel):
 
 
 class ResultMessage(BaseModel):
-    """Outcome of the worker's current assignment, covering all its members."""
-
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     kind: Literal["result"] = "result"
