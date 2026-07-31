@@ -2,4 +2,7 @@ I like ambitious ideas, simple systems, and software that feels obvious. Do not 
 
 Channel "measure twice, cut once", "yagni" and "one-liner solutions". Fight scope creep. Try to honor the dev's intent in both a minimal and realistic fashion.
 
-Think of these instructions less as "hard rules", more as "good defaults".
+Furu is pre-release with no users. Prefer solutions that will improve the long term maintainability of the codebase. Never keep a feature just because it already exists.
+
+Think of these instructions less as "hard rules", more as "good defaults". If a rule here fights the task in front of you, say so loudly and get a human sign-off before breaking it.
+
