@@ -12,7 +12,6 @@ from websockets.sync.server import ServerConnection, basic_auth, serve
 from furu.execution.execution_coordinator import ExecutionCoordinator
 from furu.logging import get_logger, log_detail
 from furu.worker.protocol import (
-    PROTOCOL_VERSION,
     AssignMessage,
     HelloMessage,
     Job,
@@ -46,16 +45,6 @@ def _serve_worker(
                 pass
             case unexpected:
                 raise RuntimeError(f"expected hello message, got {unexpected.kind!r}")
-        if hello.version != PROTOCOL_VERSION:
-            connection.send(
-                StopMessage(
-                    reason=(
-                        f"protocol version mismatch: worker speaks {hello.version}, "
-                        f"coordinator speaks {PROTOCOL_VERSION}"
-                    )
-                ).model_dump_json()
-            )
-            return
         worker = hello.worker
         logger.info(
             "worker connected · %s",

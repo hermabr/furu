@@ -8,8 +8,6 @@ from furu.metadata import ArtifactSpec
 from furu.provenance import SubmitProvenance
 from furu.resources import ResourceRequest
 
-PROTOCOL_VERSION = 1
-
 
 class JobMember(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -60,7 +58,6 @@ class HelloMessage(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     kind: Literal["hello"] = "hello"
-    version: int
     worker: str
     backend: str
     resources: ResourceRequest
@@ -106,7 +103,5 @@ type ServerMessage = Annotated[
     Field(discriminator="kind"),
 ]
 
-# Validate wire strings directly: the strict models above accept datetimes and
-# tuples only in JSON mode, not from an already-parsed dict.
 worker_message_adapter: TypeAdapter[WorkerMessage] = TypeAdapter(WorkerMessage)
 server_message_adapter: TypeAdapter[ServerMessage] = TypeAdapter(ServerMessage)

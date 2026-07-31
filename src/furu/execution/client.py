@@ -26,7 +26,6 @@ def worker_client(
     ) as connection:
         assert isinstance(connection, ClientConnection)
         hello = protocol.HelloMessage(
-            version=protocol.PROTOCOL_VERSION,
             worker=worker,
             backend=backend,
             resources=resources,

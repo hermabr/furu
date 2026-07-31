@@ -40,7 +40,6 @@ from furu.storage._layout import execution_coordinator_log_path_in
 from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
 from furu.worker.loop import worker_loop
 from furu.worker.protocol import (
-    PROTOCOL_VERSION,
     AssignMessage,
     HelloMessage,
     Job,
@@ -241,7 +240,6 @@ def _connect_worker(
     )
     connection.send(
         HelloMessage(
-            version=PROTOCOL_VERSION,
             worker=worker,
             backend="test",
             resources=resources or ResourceRequest(),
@@ -270,7 +268,6 @@ def _complete_one_job_over_ws(server_url: str, auth_token: str) -> None:
     with connection:
         connection.send(
             HelloMessage(
-                version=PROTOCOL_VERSION,
                 worker="recording-worker",
                 backend="test",
                 resources=ResourceRequest(),
@@ -1655,33 +1652,6 @@ def test_execution_coordinator_server_closes_active_workers() -> None:
         connection.recv(timeout=5)
 
 
-def test_server_rejects_mismatched_protocol_version() -> None:
-    coordinator = _new_execution_coordinator([ExecutionCoordinatorLeaf(value=1)])
-
-    with execution_coordinator_server(
-        coordinator, bind_host="127.0.0.1", port=0
-    ) as server, connect(
-        server.server_url,
-        additional_headers={
-            "Authorization": build_authorization_basic("furu", server.auth_token)
-        },
-    ) as connection:
-        connection.send(
-            HelloMessage(
-                version=PROTOCOL_VERSION + 1,
-                worker="future-worker",
-                backend="test",
-                resources=ResourceRequest(),
-            ).model_dump_json()
-        )
-        stop = server_message_adapter.validate_json(connection.recv(timeout=5))
-        assert isinstance(stop, StopMessage)
-        assert "protocol version mismatch" in stop.reason
-
-    assert coordinator.completed == {}
-    assert coordinator.running == {}
-
-
 def test_execution_coordinator_run_requires_explicit_worker_backends() -> None:
     with pytest.raises(TypeError, match="worker_backends"):
         ExecutionCoordinator.run([ExecutionCoordinatorLeaf(value=12)])  # ty: ignore[missing-argument]
@@ -1906,7 +1876,6 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
         assert server.results == []
         (hello,) = server.hellos
         assert hello.resources == ResourceRequest(gpus=1)
-        assert hello.version == PROTOCOL_VERSION
         assert hello.worker == "test-worker"
         assert hello.backend == "test"
 
