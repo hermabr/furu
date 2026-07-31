@@ -27,11 +27,6 @@ from furu.worker.protocol import (
 
 logger = get_logger()
 
-_HELLO_TIMEOUT_S = 10.0
-# Fallback re-check while a worker waits for work, in case a wake
-# notification races with entering the wait.  Dispatch is normally instant.
-_WAIT_RECHECK_S = 1.0
-
 
 @dataclass(frozen=True, slots=True)
 class ExecutionCoordinatorServer:
@@ -50,9 +45,7 @@ def _serve_worker(
     stopping: threading.Event,
 ) -> None:
     with coordinator.log_context():
-        match worker_message_adapter.validate_json(
-            connection.recv(timeout=_HELLO_TIMEOUT_S)
-        ):
+        match worker_message_adapter.validate_json(connection.recv(timeout=10.0)):
             case HelloMessage() as hello:
                 pass
             case unexpected:
@@ -85,7 +78,7 @@ def _serve_worker(
                         )
                         return
                     case "wait":
-                        coordinator.wait_for_state_change(timeout=_WAIT_RECHECK_S)
+                        coordinator.wait_for_state_change(timeout=1.0)
                     case Job() as job:
                         connection.send(AssignMessage(job=job).model_dump_json())
                         match worker_message_adapter.validate_json(connection.recv()):
