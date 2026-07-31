@@ -675,16 +675,22 @@ def test_worker_cap_limits_satisfiable_jobs_and_leases() -> None:
     assert _artifact(fourth).object_id in limited_ids - leased_limited_ids
 
 
-def test_lease_job_assembles_same_key_batched_group_into_one_job() -> None:
+def test_lease_job_assembles_same_key_batched_group_into_one_job(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     objs = [BatchedCoordinatorLeaf(value=value) for value in range(3)]
     coordinator = _new_execution_coordinator(objs)
 
-    job = _lease_job(coordinator)
+    with _captured_furu_logs(caplog):
+        job = _lease_job(coordinator)
 
     assert isinstance(job, Job)
     assert len(job.members) == 3
     assert {member.lease_id for member in job.members} == set(coordinator.running)
     assert coordinator.ready == {}
+    detail = caplog.records[-1].__dict__["_furu_detail"]
+    assert detail["leases"] == ",".join(member.lease_id for member in job.members)
+    assert detail["object_ids"] == ",".join(obj.object_id for obj in objs)
 
     for member in job.members:
         coordinator.job_result(member.lease_id, JobCompletedResult())

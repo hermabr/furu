@@ -224,8 +224,8 @@ class ExecutionCoordinator:
                 len(members),
                 worker,
                 extra=log_detail(
-                    lease=members[0].lease_id,
-                    object_id=node.obj.object_id,
+                    leases=",".join(member.lease_id for member in members),
+                    object_ids=",".join(node.obj.object_id for node in nodes),
                     members=len(members),
                     worker=worker,
                     **self._counts_detail(),
