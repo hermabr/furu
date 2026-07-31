@@ -1705,7 +1705,7 @@ def test_job_result_request_uses_status_discriminator() -> None:
 
 
 def test_worker_loop_raises_when_server_is_unavailable() -> None:
-    with pytest.raises(RuntimeError, match="failed"):
+    with pytest.raises(OSError):
         worker_loop(
             server_url="ws://127.0.0.1:1",
             auth_token="test-token",
