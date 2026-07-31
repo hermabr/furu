@@ -191,9 +191,11 @@ def extract_snapshot(snapshot_id: str) -> Path:
     code_dir = get_config().run_directories.snapshots / snapshot_id / "code"
     if code_dir.is_dir():
         return code_dir
-    with publish_dir_atomically(code_dir) as tmp_dir:
-        with tarfile.open(code_dir.parent / "snapshot.tar.gz") as tar:
-            tar.extractall(tmp_dir, filter="tar")
+    with (
+        publish_dir_atomically(code_dir) as tmp_dir,
+        tarfile.open(code_dir.parent / "snapshot.tar.gz") as tar,
+    ):
+        tar.extractall(tmp_dir, filter="tar")
     return code_dir
 
 

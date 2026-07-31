@@ -11,7 +11,7 @@ from furu.utils import JsonValue, fully_qualified_name
 
 
 class SerializerMeta(ABCMeta):
-    _auto_registered_serializers: list[type[Serializer]] = []
+    _auto_registered_serializers: ClassVar[list[type[Serializer]]] = []
     _auto_registered_serializers_lock = Lock()
 
     def __init__(
@@ -64,14 +64,14 @@ class SerializerMeta(ABCMeta):
             return serializer
 
         declared_type = strip_annotated(declared_type)
-        if isinstance(declared_type, type):
-            if serializer := _class_serializer(declared_type):
-                return serializer
+        if isinstance(declared_type, type) and (
+            serializer := _class_serializer(declared_type)
+        ):
+            return serializer
 
         origin = get_origin(declared_type)
-        if isinstance(origin, type):
-            if serializer := _class_serializer(origin):
-                return serializer
+        if isinstance(origin, type) and (serializer := _class_serializer(origin)):
+            return serializer
 
         if serializer := _find_single_serializer_match(
             artifact_serializers,
@@ -99,9 +99,10 @@ class SerializerMeta(ABCMeta):
             return serializer
 
         declared_type = strip_annotated(declared_type)
-        if isinstance(declared_type, type):
-            if serializer := _class_serializer(declared_type):
-                return serializer
+        if isinstance(declared_type, type) and (
+            serializer := _class_serializer(declared_type)
+        ):
+            return serializer
 
         if serializer := _class_serializer(type(value)):
             return serializer

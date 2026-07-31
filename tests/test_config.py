@@ -332,7 +332,9 @@ def test_override_config_restores_previous_config_on_exit() -> None:
         assert get_config() is replacement_config
     assert get_config() is original_config
 
-    with pytest.raises(RuntimeError, match="boom"):
-        with override_config(replacement_config):
-            raise RuntimeError("boom")
+    with (
+        pytest.raises(RuntimeError, match="boom"),
+        override_config(replacement_config),
+    ):
+        raise RuntimeError("boom")
     assert get_config() is original_config

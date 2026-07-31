@@ -16,7 +16,7 @@ from furu.utils import fully_qualified_name
 
 
 class CodecMeta(ABCMeta):
-    _auto_registered_codecs: list[type[Codec]] = []
+    _auto_registered_codecs: ClassVar[list[type[Codec]]] = []
     _auto_registered_codecs_lock = Lock()
 
     def __init__(

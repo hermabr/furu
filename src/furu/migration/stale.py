@@ -85,9 +85,11 @@ def raise_if_stale(obj: Spec[Any]) -> None:
     current_schema = cast(dict[str, JsonValue], obj._schema_data)
     current_fields = cast(dict[str, JsonValue], current_schema[FIELDSMARKER])
     lines = [
-        f"{type(obj).__name__} is stale: the store holds results under "
-        f"{len(orphaned)} other schema(s) with no migration chain to the "
-        "current schema."
+        (
+            f"{type(obj).__name__} is stale: the store holds results under "
+            f"{len(orphaned)} other schema(s) with no migration chain to the "
+            "current schema."
+        )
     ]
     owners: set[str] = set()
     for directory in orphaned:

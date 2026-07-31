@@ -199,6 +199,6 @@ def schema_type(
         return fully_qualified_name(tp)
     elif isinstance(tp, typing.TypeVar):
         return repr(tp)
-    elif isinstance(tp, enum.EnumType) or isinstance(tp, type):
+    elif isinstance(tp, (enum.EnumType, type)):
         return fully_qualified_name(tp)
     raise TypeError(f"Unsupported type in furu schema: {tp!r}")

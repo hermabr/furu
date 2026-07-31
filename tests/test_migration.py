@@ -899,7 +899,7 @@ def test_migrations_must_be_a_tuple_of_steps() -> None:
         class _ListMigrations(Spec[int]):
             n: int
 
-            migrations = [Renamed("m", to="n")]
+            migrations = [Renamed("m", to="n")]  # noqa: RUF012
 
             def create(self) -> int:
                 return 0
@@ -1336,8 +1336,10 @@ def test_child_movedfrom_rewrites_the_embedded_class_marker() -> None:
 
     link = json.loads(result_link_path_in(model._base_dir).read_text())
     assert link["migration_path"] == [
-        "_CascadeMovedTokenizer: "
-        f"MovedFrom({fully_qualified_name(_CascadeRelocatedTokenizer)!r})",
+        (
+            "_CascadeMovedTokenizer: "
+            f"MovedFrom({fully_qualified_name(_CascadeRelocatedTokenizer)!r})"
+        ),
     ]
 
 

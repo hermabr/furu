@@ -582,14 +582,16 @@ def test_lock_retries_once_after_benign_link_error(tmp_path: Path) -> None:
 def test_lock_raises_unexpected_link_error(tmp_path: Path) -> None:
     lock_path = tmp_path / "single.lock"
 
-    with patch("os.link", side_effect=OSError(errno.EINVAL, "bad link")):
-        with pytest.raises(OSError, match="bad link"):
-            with lock(
-                lock_path,
-                lifetime_s=SHORT_LIFETIME_S,
-                heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
-            ):
-                pass
+    with (
+        patch("os.link", side_effect=OSError(errno.EINVAL, "bad link")),
+        pytest.raises(OSError, match="bad link"),
+        lock(
+            lock_path,
+            lifetime_s=SHORT_LIFETIME_S,
+            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+        ),
+    ):
+        pass
 
 
 def test_release_raises_lock_lost_for_estale_unlink_error(tmp_path: Path) -> None:
@@ -604,14 +606,16 @@ def test_release_raises_lock_lost_for_estale_unlink_error(tmp_path: Path) -> Non
             raise OSError(errno.ESTALE, "stale unlink")
         return original_unlink(path, *args, **kwargs)
 
-    with patch("os.unlink", side_effect=flaky_unlink):
-        with pytest.raises(LockError, match="lost lock"):
-            with lock(
-                lock_path,
-                lifetime_s=SHORT_LIFETIME_S,
-                heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
-            ):
-                assert lock_path.exists()
+    with (
+        patch("os.unlink", side_effect=flaky_unlink),
+        pytest.raises(LockError, match="lost lock"),
+        lock(
+            lock_path,
+            lifetime_s=SHORT_LIFETIME_S,
+            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+        ),
+    ):
+        assert lock_path.exists()
 
 
 def test_release_raises_unexpected_unlink_error(tmp_path: Path) -> None:
@@ -623,14 +627,16 @@ def test_release_raises_unexpected_unlink_error(tmp_path: Path) -> None:
             raise OSError(errno.EINVAL, "bad unlink")
         return original_unlink(path, *args, **kwargs)
 
-    with patch("os.unlink", side_effect=bad_unlink):
-        with pytest.raises(OSError, match="bad unlink"):
-            with lock(
-                lock_path,
-                lifetime_s=SHORT_LIFETIME_S,
-                heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
-            ):
-                pass
+    with (
+        patch("os.unlink", side_effect=bad_unlink),
+        pytest.raises(OSError, match="bad unlink"),
+        lock(
+            lock_path,
+            lifetime_s=SHORT_LIFETIME_S,
+            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+        ),
+    ):
+        pass
 
 
 def test_process_exit_without_cleanup_allows_reclaim_after_expiry(
