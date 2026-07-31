@@ -1,6 +1,7 @@
 from collections.abc import Iterator
 from contextlib import contextmanager
 
+from websockets.headers import build_authorization_basic
 from websockets.sync.client import ClientConnection, connect
 
 from furu.resources import ResourceRequest
@@ -18,7 +19,9 @@ def worker_client(
 ) -> Iterator[ClientConnection]:
     with connect(
         server_url,
-        additional_headers={"Authorization": f"Bearer {auth_token}"},
+        additional_headers={
+            "Authorization": build_authorization_basic("furu", auth_token)
+        },
         max_size=None,
     ) as connection:
         assert isinstance(connection, ClientConnection)

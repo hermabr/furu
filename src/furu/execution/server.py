@@ -4,13 +4,10 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from hmac import compare_digest
-from http import HTTPStatus
 from secrets import token_urlsafe
 
 from websockets.exceptions import ConnectionClosed
-from websockets.http11 import Request, Response
-from websockets.sync.server import ServerConnection, serve
+from websockets.sync.server import ServerConnection, basic_auth, serve
 
 from furu.execution.execution_coordinator import ExecutionCoordinator
 from furu.logging import get_logger, log_detail
@@ -42,7 +39,6 @@ class ExecutionCoordinatorServer:
 def _serve_worker(
     coordinator: ExecutionCoordinator,
     connection: ServerConnection,
-    stopping: threading.Event,
 ) -> None:
     with coordinator.log_context():
         match worker_message_adapter.validate_json(connection.recv(timeout=10.0)):
@@ -70,7 +66,7 @@ def _serve_worker(
             connection.send(
                 WelcomeMessage(executor_id=coordinator.executor_id).model_dump_json()
             )
-            while not stopping.is_set():
+            while True:
                 match coordinator.lease_job(resources=hello.resources, worker=worker):
                     case "stop":
                         connection.send(
@@ -90,9 +86,6 @@ def _serve_worker(
                                 )
                         for member in job.members:
                             coordinator.job_result(member.lease_id, reply.result)
-            connection.send(
-                StopMessage(reason="coordinator shutting down").model_dump_json()
-            )
         except ConnectionClosed:
             logger.warning(
                 "worker disconnected · %s",
@@ -108,35 +101,24 @@ def execution_coordinator_server(
     coordinator: ExecutionCoordinator, *, bind_host: str, port: int
 ) -> Iterator[ExecutionCoordinatorServer]:
     auth_token = token_urlsafe(32)
-    stopping = threading.Event()
     connections: set[ServerConnection] = set()
-    connections_lock = threading.Lock()
-
-    def process_request(
-        connection: ServerConnection, request: Request
-    ) -> Response | None:
-        scheme, _, token = request.headers.get("Authorization", "").partition(" ")
-        if scheme.lower() != "bearer" or not compare_digest(token, auth_token):
-            return connection.respond(
-                HTTPStatus.UNAUTHORIZED,
-                "invalid furu execution coordinator auth token\n",
-            )
-        return None
+    connections_changed = threading.Condition()
 
     def handler(connection: ServerConnection) -> None:
-        with connections_lock:
+        with connections_changed:
             connections.add(connection)
         try:
-            _serve_worker(coordinator, connection, stopping)
+            _serve_worker(coordinator, connection)
         finally:
-            with connections_lock:
+            with connections_changed:
                 connections.discard(connection)
+                connections_changed.notify_all()
 
     server = serve(
         handler,
         bind_host,
         port,
-        process_request=process_request,
+        process_request=basic_auth(credentials=("furu", auth_token)),
         max_size=None,
     )
     bound_host, bound_port = server.socket.getsockname()[:2]
@@ -152,14 +134,11 @@ def execution_coordinator_server(
             auth_token=auth_token,
         )
     finally:
-        stopping.set()
-        # Wake handlers idling in wait_for_state_change so they say stop and
-        # exit; shutdown() only stops accepting, so also close what is open to
-        # unblock handlers waiting on a result from a busy or dead worker.
-        coordinator.notify_state_changed()
         server.shutdown()
         thread.join(timeout=10)
-        with connections_lock:
+        with connections_changed:
             open_connections = tuple(connections)
         for connection in open_connections:
             connection.close()
+        with connections_changed:
+            connections_changed.wait_for(lambda: not connections, timeout=10)
