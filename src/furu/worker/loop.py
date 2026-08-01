@@ -25,17 +25,14 @@ def _run_job(
 ) -> tuple[protocol.JobResult, str | None]:
     task_label: str | None = None
     try:
-        objs = [Spec.from_artifact(member.artifact) for member in job.members]
+        objs = [Spec.from_artifact(artifact) for artifact in job.artifacts]
         task_label = objs[0]._log_label
         if len(objs) > 1:
             task_label += f" ×{len(objs)}"
         logger.info(
             "received %s",
             task_label,
-            extra=log_detail(
-                leases=",".join(member.lease_id for member in job.members),
-                members=len(job.members),
-            ),
+            extra=log_detail(artifacts=len(job.artifacts)),
         )
         match objs[0]._metadata.execution:
             case "inline":
@@ -112,13 +109,12 @@ def worker_loop(
                         consecutive_failures = 0
 
                     duration = format_duration(time.monotonic() - task_started_at)
-                    first_lease = job.members[0].lease_id
                     logger.info(
                         "finished %s%s · %s",
                         f"{task_label} " if task_label else "",
                         "ok" if status == "completed" else status,
                         duration,
-                        extra=log_detail(lease=first_lease, status=status),
+                        extra=log_detail(status=status),
                     )
 
                     if (

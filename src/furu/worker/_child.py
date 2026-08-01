@@ -17,7 +17,7 @@ def main() -> int:
 
     for line in sys.stdin:
         job = Job.model_validate_json(line)
-        objs = [Spec.from_artifact(member.artifact) for member in job.members]
+        objs = [Spec.from_artifact(artifact) for artifact in job.artifacts]
         result = execute_job(objs, job=job)
         protocol_out.write(result.model_dump_json() + "\n")
         protocol_out.flush()
