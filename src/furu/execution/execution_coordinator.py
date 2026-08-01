@@ -68,8 +68,6 @@ class ExecutionCoordinator:
     running: dict[str, RunningJob] = field(default_factory=dict)
     completed: dict[str, DagNode] = field(default_factory=dict)
     failed: dict[str, FailedJob] = field(default_factory=dict)
-    # A Condition doubles as the state lock; mutators notify it so blocked
-    # ``lease_job`` calls re-check for work.
     lock: threading.Condition = field(default_factory=threading.Condition)
     done: threading.Event = field(default_factory=threading.Event)
     finish_error: str | None = None
@@ -189,7 +187,6 @@ class ExecutionCoordinator:
             yield
 
     def lease_job(self, *, resources: ResourceRequest, worker: str) -> Job | None:
-        """Block until a job is available for ``resources``; None means stop."""
         with self.log_context(), self.lock:
             while True:
                 if self.done.is_set():
