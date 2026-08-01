@@ -87,9 +87,7 @@ def worker_loop(
                 )
                 while True:
                     try:
-                        message = protocol.server_message_adapter.validate_json(
-                            connection.recv(timeout=idle_timeout)
-                        )
+                        message = connection.recv(timeout=idle_timeout)
                     except TimeoutError:
                         logger.info(
                             "no work for %s; worker exiting",
@@ -97,47 +95,38 @@ def worker_loop(
                         )
                         return
                     except ConnectionClosed:
-                        # The coordinator is gone; whatever we would compute
-                        # next has no one to report to.
+                        # The server closing the connection is the stop signal.
                         logger.info("server closed the connection; worker exiting")
                         return
 
-                    match message:
-                        case protocol.StopMessage(reason=reason):
-                            logger.info("worker told to stop: %s", reason)
-                            return
-                        case protocol.AssignMessage(job=job):
-                            task_started_at = time.monotonic()
-                            job_result, task_label = _run_job(job, child_slot)
-                            connection.send(
-                                protocol.job_result_adapter.dump_json(
-                                    job_result
-                                ).decode()
-                            )
+                    job = protocol.Job.model_validate_json(message)
+                    task_started_at = time.monotonic()
+                    job_result, task_label = _run_job(job, child_slot)
+                    connection.send(
+                        protocol.job_result_adapter.dump_json(job_result).decode()
+                    )
 
-                            status = job_result.status
-                            if isinstance(job_result, protocol.JobFailedResult):
-                                consecutive_failures += 1
-                            else:
-                                consecutive_failures = 0
+                    status = job_result.status
+                    if isinstance(job_result, protocol.JobFailedResult):
+                        consecutive_failures += 1
+                    else:
+                        consecutive_failures = 0
 
-                            duration = format_duration(
-                                time.monotonic() - task_started_at
-                            )
-                            first_lease = job.members[0].lease_id
-                            logger.info(
-                                "finished %s%s · %s",
-                                f"{task_label} " if task_label else "",
-                                "ok" if status == "completed" else status,
-                                duration,
-                                extra=log_detail(lease=first_lease, status=status),
-                            )
+                    duration = format_duration(time.monotonic() - task_started_at)
+                    first_lease = job.members[0].lease_id
+                    logger.info(
+                        "finished %s%s · %s",
+                        f"{task_label} " if task_label else "",
+                        "ok" if status == "completed" else status,
+                        duration,
+                        extra=log_detail(lease=first_lease, status=status),
+                    )
 
-                            if (
-                                max_consecutive_failures is not None
-                                and consecutive_failures > max_consecutive_failures
-                            ):
-                                return
+                    if (
+                        max_consecutive_failures is not None
+                        and consecutive_failures > max_consecutive_failures
+                    ):
+                        return
         finally:
             child_slot.close()
             _worker_backend.reset(worker_backend_token)

@@ -142,24 +142,27 @@ class ExecutionCoordinator:
                     executor_dir=coordinator.executor_dir,
                 ),
             )
-            with execution_coordinator_server(
-                coordinator, bind_host=bind_host, port=port
-            ) as server:
-                logger.info("server listening on %s", server.server_url)
-                pools = []
-                for backend in worker_backends:
-                    pool = backend.start_pool(
-                        coordinator=coordinator,
-                        bound_port=server.bound_port,
-                        auth_token=server.auth_token,
-                        executor_dir=coordinator.executor_dir,
-                        provenance=coordinator.submit_provenance,
-                    )
-                    pools.append(pool)
-                    logger.info("pool started · %s", type(backend).__name__)
-                try:
+            pools = []
+            try:
+                with execution_coordinator_server(
+                    coordinator, bind_host=bind_host, port=port
+                ) as server:
+                    logger.info("server listening on %s", server.server_url)
+                    for backend in worker_backends:
+                        pool = backend.start_pool(
+                            coordinator=coordinator,
+                            bound_port=server.bound_port,
+                            auth_token=server.auth_token,
+                            executor_dir=coordinator.executor_dir,
+                            provenance=coordinator.submit_provenance,
+                        )
+                        pools.append(pool)
+                        logger.info("pool started · %s", type(backend).__name__)
                     coordinator.done.wait()
-                finally:
+            finally:
+                # The server is closed first so workers see their stop signal
+                # and pool stops only join already-exiting workers.
+                if pools:
                     with ThreadPoolExecutor(max_workers=len(pools)) as executor:
                         stop_futures = [
                             executor.submit(pool.stop, timeout=5) for pool in pools

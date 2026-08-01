@@ -57,22 +57,3 @@ class HelloMessage(BaseModel):
     worker: str
     backend: str
     resources: ResourceRequest
-
-
-class AssignMessage(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-
-    kind: Literal["assign"] = "assign"
-    job: Job
-
-
-class StopMessage(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-
-    kind: Literal["stop"] = "stop"
-    reason: str
-
-
-server_message_adapter = TypeAdapter(
-    Annotated[AssignMessage | StopMessage, Field(discriminator="kind")]
-)

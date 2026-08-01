@@ -11,12 +11,7 @@ from websockets.sync.server import ServerConnection, basic_auth, serve
 
 from furu.execution.execution_coordinator import ExecutionCoordinator
 from furu.logging import get_logger, log_detail
-from furu.worker.protocol import (
-    AssignMessage,
-    HelloMessage,
-    StopMessage,
-    job_result_adapter,
-)
+from furu.worker.protocol import HelloMessage, job_result_adapter
 
 logger = get_logger()
 
@@ -48,11 +43,10 @@ def _serve_worker(
             while True:
                 job = coordinator.lease_job(resources=hello.resources, worker=worker)
                 if job is None:
-                    connection.send(
-                        StopMessage(reason="run finished").model_dump_json()
-                    )
+                    # Returning closes the connection; that is the worker's
+                    # stop signal.
                     return
-                connection.send(AssignMessage(job=job).model_dump_json())
+                connection.send(job.model_dump_json())
                 result = job_result_adapter.validate_json(connection.recv())
                 for member in job.members:
                     coordinator.job_result(member.lease_id, result)
@@ -104,6 +98,9 @@ def execution_coordinator_server(
             auth_token=auth_token,
         )
     finally:
+        # Wake handlers blocked in lease_job; closing their connections below
+        # cannot interrupt that wait, only a coordinator notification can.
+        coordinator.fail("execution coordinator server closed before the run finished")
         server.shutdown()
         thread.join(timeout=10)
         with connections_changed:

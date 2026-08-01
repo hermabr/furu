@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
-from websockets.exceptions import ConnectionClosed, InvalidStatus
+from websockets.exceptions import ConnectionClosed, ConnectionClosedOK, InvalidStatus
 from websockets.headers import build_authorization_basic
 from websockets.sync.client import ClientConnection, connect
 from websockets.sync.server import ServerConnection, serve
@@ -40,7 +40,6 @@ from furu.storage._layout import execution_coordinator_log_path_in
 from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
 from furu.worker.loop import worker_loop
 from furu.worker.protocol import (
-    AssignMessage,
     HelloMessage,
     Job,
     JobBlockedResult,
@@ -48,9 +47,7 @@ from furu.worker.protocol import (
     JobFailedResult,
     JobMember,
     JobResult,
-    StopMessage,
     job_result_adapter,
-    server_message_adapter,
 )
 
 ANY_RESOURCES = ResourceRequest()
@@ -193,7 +190,9 @@ class _ScriptedServer:
 
 @contextmanager
 def _scripted_worker_server(
-    messages: Sequence[AssignMessage | StopMessage],
+    jobs: Sequence[Job],
+    *,
+    hold_open: bool = False,
 ) -> Iterator[_ScriptedServer]:
     record = _ScriptedServer(server_url="")
 
@@ -201,13 +200,14 @@ def _scripted_worker_server(
         hello = HelloMessage.model_validate_json(connection.recv(timeout=5))
         record.hellos.append(hello)
         try:
-            for message in messages:
-                connection.send(message.model_dump_json())
-                if isinstance(message, AssignMessage):
-                    reply = job_result_adapter.validate_json(connection.recv(timeout=5))
-                    record.results.append(reply)
-            # Linger until the worker hangs up (idle timeout, crash, ...).
-            connection.recv(timeout=5)
+            for job in jobs:
+                connection.send(job.model_dump_json())
+                record.results.append(
+                    job_result_adapter.validate_json(connection.recv(timeout=5))
+                )
+            if hold_open:
+                # Linger until the worker hangs up (idle timeout, crash, ...).
+                connection.recv(timeout=5)
         except (TimeoutError, ConnectionClosed):
             pass
 
@@ -268,11 +268,12 @@ def _complete_one_job_over_ws(server_url: str, auth_token: str) -> None:
             ).model_dump_json()
         )
         while True:
-            match server_message_adapter.validate_json(connection.recv(timeout=10)):
-                case AssignMessage():
-                    connection.send(JobCompletedResult().model_dump_json())
-                case StopMessage():
-                    return
+            try:
+                message = connection.recv(timeout=10)
+            except ConnectionClosed:
+                return
+            Job.model_validate_json(message)
+            connection.send(JobCompletedResult().model_dump_json())
 
 
 class ExecutionCoordinatorLeaf(Spec[int]):
@@ -1555,17 +1556,16 @@ def test_worker_protocol_round_trip_over_server() -> None:
         ) as server,
         _connect_worker(server) as connection,
     ):
-        assign = server_message_adapter.validate_json(connection.recv(timeout=5))
-        assert isinstance(assign, AssignMessage)
-        (member,) = assign.job.members
+        job = Job.model_validate_json(connection.recv(timeout=5))
+        (member,) = job.members
         assert member.artifact.object_id == leaf.object_id
         assert member.artifact.artifact_data["|fields"] == {"value": 1}
         assert member.lease_id in coordinator.running
 
         connection.send(JobCompletedResult().model_dump_json())
-        stop = server_message_adapter.validate_json(connection.recv(timeout=5))
-        assert isinstance(stop, StopMessage)
-        assert stop.reason == "run finished"
+        # The server hanging up cleanly is the stop signal.
+        with pytest.raises(ConnectionClosedOK):
+            connection.recv(timeout=5)
 
     assert set(coordinator.completed) == {leaf.object_id}
     assert coordinator.done.is_set()
@@ -1579,8 +1579,7 @@ def test_worker_disconnect_requeues_leased_job() -> None:
         coordinator, bind_host="127.0.0.1", port=0
     ) as server:
         connection = _connect_worker(server, worker="doomed-worker")
-        assign = server_message_adapter.validate_json(connection.recv(timeout=5))
-        assert isinstance(assign, AssignMessage)
+        Job.model_validate_json(connection.recv(timeout=5))
         connection.close()
 
         # The dropped connection releases the lease; nothing is lost or failed.
@@ -1589,13 +1588,12 @@ def test_worker_disconnect_requeues_leased_job() -> None:
         assert coordinator.failed == {}
 
         with _connect_worker(server, worker="replacement-worker") as replacement:
-            reassign = server_message_adapter.validate_json(replacement.recv(timeout=5))
-            assert isinstance(reassign, AssignMessage)
-            (member,) = reassign.job.members
+            reassign = Job.model_validate_json(replacement.recv(timeout=5))
+            (member,) = reassign.members
             assert member.artifact.object_id == leaf.object_id
             replacement.send(JobCompletedResult().model_dump_json())
-            stop = server_message_adapter.validate_json(replacement.recv(timeout=5))
-            assert isinstance(stop, StopMessage)
+            with pytest.raises(ConnectionClosedOK):
+                replacement.recv(timeout=5)
 
     assert set(coordinator.completed) == {leaf.object_id}
 
@@ -1607,11 +1605,25 @@ def test_execution_coordinator_server_closes_active_workers() -> None:
         coordinator, bind_host="127.0.0.1", port=0
     ) as server:
         connection = _connect_worker(server)
-        assert isinstance(
-            server_message_adapter.validate_json(connection.recv(timeout=5)),
-            AssignMessage,
-        )
+        Job.model_validate_json(connection.recv(timeout=5))
 
+    with pytest.raises(ConnectionClosed):
+        connection.recv(timeout=5)
+
+
+def test_execution_coordinator_server_shutdown_wakes_idle_worker_handlers() -> None:
+    coordinator = _new_execution_coordinator([GpuLeaf(value=1)])
+
+    started = time.monotonic()
+    with execution_coordinator_server(
+        coordinator, bind_host="127.0.0.1", port=0
+    ) as server:
+        # No leasable job for a CPU-only worker, so its handler waits inside
+        # lease_job without touching the socket.
+        connection = _connect_worker(server, resources=ResourceRequest(gpus=0))
+
+    assert time.monotonic() - started < 5
+    assert coordinator.finish_error is not None
     with pytest.raises(ConnectionClosed):
         connection.recv(timeout=5)
 
@@ -1673,7 +1685,7 @@ def test_worker_loop_raises_when_server_is_unavailable() -> None:
 
 
 def test_worker_loop_exits_after_idle_timeout() -> None:
-    with _scripted_worker_server([]) as server:
+    with _scripted_worker_server([], hold_open=True) as server:
         worker_loop(
             server_url=server.server_url,
             auth_token="test-token",
@@ -1710,9 +1722,7 @@ def test_worker_loop_logs_received_task_and_result(
     )
 
     with (
-        _scripted_worker_server(
-            [AssignMessage(job=job), StopMessage(reason="run finished")]
-        ) as server,
+        _scripted_worker_server([job]) as server,
         _captured_furu_logs(caplog),
         _scoped_log_files((log_path,)),
     ):
@@ -1732,7 +1742,7 @@ def test_worker_loop_logs_received_task_and_result(
         message.startswith(f"finished {leaf._log_label} ×2 ok ·")
         for message in caplog.messages
     )
-    assert "worker told to stop: run finished" in caplog.messages
+    assert "server closed the connection; worker exiting" in caplog.messages
     received_line = next(
         line for line in log_path.read_text().splitlines() if 'msg="received ' in line
     )
@@ -1744,11 +1754,11 @@ def test_worker_loop_exits_after_exceeding_max_consecutive_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
-    assigns = [
-        AssignMessage(job=_job("lease-1", leaf)),
-        AssignMessage(job=_job("lease-2", leaf)),
-        AssignMessage(job=_job("lease-3", leaf)),
-        AssignMessage(job=_job("lease-4", leaf)),
+    jobs = [
+        _job("lease-1", leaf),
+        _job("lease-2", leaf),
+        _job("lease-3", leaf),
+        _job("lease-4", leaf),
     ]
 
     monkeypatch.setattr(
@@ -1757,7 +1767,7 @@ def test_worker_loop_exits_after_exceeding_max_consecutive_failures(
         lambda obj, *, job: JobFailedResult(error="worker task failed"),
     )
 
-    with _scripted_worker_server(assigns) as server:
+    with _scripted_worker_server(jobs) as server:
         worker_loop(
             server_url=server.server_url,
             auth_token="test-token",
@@ -1778,11 +1788,10 @@ def test_worker_loop_resets_consecutive_failures_after_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
-    messages: list[AssignMessage | StopMessage] = [
-        AssignMessage(job=_job("lease-1", leaf)),
-        AssignMessage(job=_job("lease-2", leaf)),
-        AssignMessage(job=_job("lease-3", leaf)),
-        StopMessage(reason="run finished"),
+    jobs = [
+        _job("lease-1", leaf),
+        _job("lease-2", leaf),
+        _job("lease-3", leaf),
     ]
 
     calls = 0
@@ -1796,7 +1805,7 @@ def test_worker_loop_resets_consecutive_failures_after_success(
 
     monkeypatch.setattr(worker_loop_module, "execute_job", execute_job)
 
-    with _scripted_worker_server(messages) as server:
+    with _scripted_worker_server(jobs) as server:
         worker_loop(
             server_url=server.server_url,
             auth_token="test-token",
@@ -1824,7 +1833,7 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
 
     monkeypatch.setattr(worker_loop_module, "execute_job", execute_job)
 
-    with _scripted_worker_server([AssignMessage(job=_job("lease-1", leaf))]) as server:
+    with _scripted_worker_server([_job("lease-1", leaf)]) as server:
         with pytest.raises(KeyboardInterrupt):
             worker_loop(
                 server_url=server.server_url,
