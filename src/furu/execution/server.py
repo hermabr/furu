@@ -48,8 +48,8 @@ def _serve_worker(
                     return
                 connection.send(job.model_dump_json())
                 result = job_result_adapter.validate_json(connection.recv())
-                for member in job.members:
-                    coordinator.job_result(member.lease_id, result)
+                for artifact in job.artifacts:
+                    coordinator.job_result(artifact.object_id, result)
         except ConnectionClosed:
             logger.warning(
                 "worker disconnected · %s",
