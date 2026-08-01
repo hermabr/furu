@@ -124,54 +124,6 @@ def _no_satisfiable_job(
     return coordinator.count_satisfiable_jobs(resources=resources, max_workers=1) == 0
 
 
-class _StubCoordinator(ExecutionCoordinator):
-    """Stands in for the ExecutionCoordinator that pools call in-process."""
-
-    def __init__(self, count: Callable[[int], int] = lambda max_workers: 0) -> None:
-        super().__init__(max_retries_per_object=0)
-        self._count = count
-        self.failures: list[str] = []
-
-    def count_satisfiable_jobs(self, *, resources: object, max_workers: int) -> int:
-        return self._count(max_workers)
-
-    def fail(self, message: str) -> None:
-        self.failures.append(message)
-
-
-def _new_local_pool(
-    *,
-    coordinator: ExecutionCoordinator | None = None,
-    server_url: str = "ws://execution-coordinator.test",
-    auth_token: str = "secret",
-    max_workers: int = 1,
-    max_failed_restarts: int = 3,
-    resource_request: ResourceRequest | None = None,
-    scale_interval: float = 1.0,
-) -> LocalThreadWorkerPool:
-    pool_holder: list[LocalThreadWorkerPool] = []
-    pool = LocalThreadWorkerPool(
-        _server_url=server_url,
-        _auth_token=auth_token,
-        _max_workers=max_workers,
-        _max_failed_restarts=max_failed_restarts,
-        _resource_request=resource_request or ResourceRequest(),
-        _scale_interval=scale_interval,
-        _worker_idle_timeout=get_config().worker.idle_timeout_seconds,
-        _coordinator=coordinator or _StubCoordinator(),
-        _stop_event=threading.Event(),
-        _unhealthy_event=threading.Event(),
-        _scale_thread=threading.Thread(
-            target=lambda: pool_holder[0]._scale_loop(),
-            name="furu-local-worker-pool-scale",
-        ),
-        _threads=[],
-        _failed_threads=[],
-    )
-    pool_holder.append(pool)
-    return pool
-
-
 @dataclass(slots=True)
 class _ScriptedServer:
     """A hand-rolled coordinator that plays a fixed sequence of messages."""
@@ -962,7 +914,7 @@ def test_lease_job_filters_by_worker_memory_gib() -> None:
     assert _artifact(memory_job).object_id == memory_leaf.object_id
 
 
-def test_execution_coordinator_run_dynamically_allocates_local_workers_for_later_resource_stages() -> (
+def test_execution_coordinator_run_completes_later_resource_stages_on_local_workers() -> (
     None
 ):
     for cls in (
@@ -1004,159 +956,7 @@ def test_execution_coordinator_run_dynamically_allocates_local_workers_for_later
     ]
 
 
-def test_local_pool_scale_spawns_workers_up_to_max_as_satisfiable_count_grows(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    counts = iter([0, 2, 10, 10])
-    release_workers = threading.Event()
-
-    coordinator = _StubCoordinator(lambda max_workers: min(next(counts), max_workers))
-    monkeypatch.setattr(
-        worker_loop_module,
-        "worker_loop",
-        lambda *, server_url, auth_token, resource_request, idle_timeout, component, backend: (
-            release_workers.wait(timeout=5)
-        ),
-    )
-
-    pool = _new_local_pool(coordinator=coordinator, max_workers=3)
-
-    try:
-        pool._scale_once()
-        assert len(pool._threads) == 0
-
-        pool._scale_once()
-        assert len(pool._threads) == 2
-
-        pool._scale_once()
-        assert len(pool._threads) == 3
-
-        pool._scale_once()
-        assert len(pool._threads) == 3
-    finally:
-        release_workers.set()
-        for thread in pool._threads:
-            thread.join(timeout=5)
-
-
-def test_local_pool_scale_uses_unique_worker_names_after_worker_exits(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    worker_started = threading.Semaphore(0)
-    release_workers = threading.Event()
-    calls = 0
-
-    def worker_loop(
-        *,
-        server_url: str,
-        auth_token: str,
-        resource_request: ResourceRequest,
-        idle_timeout: float,
-        component: str,
-        backend: str,
-    ) -> None:
-        nonlocal calls
-        calls += 1
-        worker_started.release()
-        if calls > 1:
-            release_workers.wait(timeout=5)
-
-    monkeypatch.setattr(worker_loop_module, "worker_loop", worker_loop)
-
-    pool = _new_local_pool(
-        coordinator=_StubCoordinator(lambda max_workers: max_workers),
-        max_workers=3,
-    )
-
-    try:
-        pool._scale_once()
-        for _ in range(3):
-            assert worker_started.acquire(timeout=5)
-        pool._threads[0].join(timeout=5)
-
-        pool._scale_once()
-        assert worker_started.acquire(timeout=5)
-
-        worker_names = [thread.name for thread in pool._threads]
-        assert len(set(worker_names)) == 3
-        assert all(name.startswith("local-worker-") for name in worker_names)
-    finally:
-        release_workers.set()
-        for thread in pool._threads:
-            thread.join(timeout=5)
-
-
-def test_local_pool_scale_does_not_count_normal_exits_as_restarts(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    starts = 0
-
-    def worker_loop(
-        *,
-        server_url: str,
-        auth_token: str,
-        resource_request: ResourceRequest,
-        idle_timeout: float,
-        component: str,
-        backend: str,
-    ) -> None:
-        nonlocal starts
-        starts += 1
-
-    monkeypatch.setattr(worker_loop_module, "worker_loop", worker_loop)
-
-    pool = _new_local_pool(
-        coordinator=_StubCoordinator(lambda max_workers: max_workers),
-        max_workers=1,
-        max_failed_restarts=0,
-    )
-
-    for _ in range(3):
-        pool._scale_once()
-        pool._threads[0].join(timeout=5)
-
-    assert starts == 3
-    assert pool._failed_threads == []
-    assert not any(thread.is_alive() for thread in pool._threads)
-
-
-def test_local_pool_scale_counts_crashes_against_restart_limit(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def worker_loop(
-        *,
-        server_url: str,
-        auth_token: str,
-        resource_request: ResourceRequest,
-        idle_timeout: float,
-        component: str,
-        backend: str,
-    ) -> None:
-        raise RuntimeError("worker boom")
-
-    monkeypatch.setattr(worker_loop_module, "worker_loop", worker_loop)
-
-    pool = _new_local_pool(
-        coordinator=_StubCoordinator(lambda max_workers: max_workers),
-        max_workers=1,
-        max_failed_restarts=1,
-    )
-
-    pool._scale_once()
-    pool._threads[0].join(timeout=5)
-    assert not pool._unhealthy_event.is_set()
-
-    pool._scale_once()
-    pool._threads[0].join(timeout=5)
-    assert pool._unhealthy_event.is_set()
-
-    pool._scale_once()
-
-    assert len(pool._failed_threads) == 2
-    assert pool._threads == []
-
-
-def test_execution_coordinator_run_fails_when_worker_pool_reports_unhealthy(
+def test_execution_coordinator_run_fails_when_local_worker_crashes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def crashing_worker_loop(
@@ -1164,7 +964,7 @@ def test_execution_coordinator_run_fails_when_worker_pool_reports_unhealthy(
         server_url: str,
         auth_token: str,
         resource_request: ResourceRequest,
-        idle_timeout: float,
+        idle_timeout: float | None,
         component: str,
         backend: str,
     ) -> None:
@@ -1174,18 +974,11 @@ def test_execution_coordinator_run_fails_when_worker_pool_reports_unhealthy(
 
     with pytest.raises(
         RuntimeError,
-        match="local worker pool became unhealthy: RuntimeError: worker boom",
+        match="local worker thread crashed: RuntimeError: worker boom",
     ):
         ExecutionCoordinator.run(
             [ExecutionCoordinatorLeaf(value=42)],
-            worker_backends=(
-                LocalThreadWorkerBackend(
-                    max_workers=1,
-                    max_failed_restarts=0,
-                    resource_request=ResourceRequest(),
-                    scale_interval=0.05,
-                ),
-            ),
+            worker_backends=(LocalThreadWorkerBackend(max_workers=1),),
         )
 
 
@@ -1213,7 +1006,6 @@ def test_execution_coordinator_run_uses_worker_backend() -> None:
             return LocalThreadWorkerBackend(
                 max_workers=1,
                 resource_request=ResourceRequest(),
-                scale_interval=1.0,
             ).start_pool(
                 coordinator=coordinator,
                 bound_port=bound_port,
@@ -1259,7 +1051,6 @@ def test_execution_coordinator_run_passes_executor_dir_to_worker_backend() -> No
             return LocalThreadWorkerBackend(
                 max_workers=1,
                 resource_request=ResourceRequest(),
-                scale_interval=1.0,
             ).start_pool(
                 coordinator=coordinator,
                 bound_port=bound_port,

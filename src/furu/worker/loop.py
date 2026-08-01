@@ -57,7 +57,7 @@ def worker_loop(
     server_url: str,
     auth_token: str,
     resource_request: ResourceRequest,
-    idle_timeout: float,
+    idle_timeout: float | None,
     component: str,
     backend: str,
     max_consecutive_failures: int | None = None,
@@ -86,6 +86,7 @@ def worker_loop(
                     try:
                         message = connection.recv(timeout=idle_timeout)
                     except TimeoutError:
+                        assert idle_timeout is not None
                         logger.info(
                             "no work for %s; worker exiting",
                             format_duration(idle_timeout),
