@@ -104,7 +104,7 @@ def test_worker_cli_reads_auth_token_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[str, str, ResourceRequest, float | None, int | None]] = []
+    calls: list[tuple[str, str, ResourceRequest, float | None]] = []
     token_file = tmp_path / "worker.token"
     token_file.write_text("secret\n\n")
 
@@ -114,19 +114,10 @@ def test_worker_cli_reads_auth_token_file(
         auth_token: str,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
-        max_consecutive_failures: int | None,
         component: str,
         backend: str,
     ) -> None:
-        calls.append(
-            (
-                server_url,
-                auth_token,
-                resource_request,
-                idle_timeout,
-                max_consecutive_failures,
-            )
-        )
+        calls.append((server_url, auth_token, resource_request, idle_timeout))
 
     monkeypatch.setattr(_cli, "worker_loop", worker_loop)
 
@@ -155,13 +146,7 @@ def test_worker_cli_reads_auth_token_file(
     )
 
     assert calls == [
-        (
-            "http://execution-coordinator.test",
-            "secret",
-            ResourceRequest(),
-            60.0,
-            None,
-        )
+        ("http://execution-coordinator.test", "secret", ResourceRequest(), 60.0)
     ]
     assert token_file.exists()
 
@@ -170,7 +155,7 @@ def test_worker_cli_reads_resource_request(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[ResourceRequest, float | None, int | None]] = []
+    calls: list[tuple[ResourceRequest, float | None]] = []
     token_file = tmp_path / "worker.token"
     token_file.write_text("secret")
 
@@ -180,11 +165,10 @@ def test_worker_cli_reads_resource_request(
         auth_token: str,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
-        max_consecutive_failures: int | None,
         component: str,
         backend: str,
     ) -> None:
-        calls.append((resource_request, idle_timeout, max_consecutive_failures))
+        calls.append((resource_request, idle_timeout))
 
     monkeypatch.setattr(_cli, "worker_loop", worker_loop)
 
@@ -212,7 +196,7 @@ def test_worker_cli_reads_resource_request(
         == 0
     )
 
-    assert calls == [(ResourceRequest(cpus=4, gpus=1, memory_gib=16), 30.0, None)]
+    assert calls == [(ResourceRequest(cpus=4, gpus=1, memory_gib=16), 30.0)]
 
 
 def test_worker_cli_reads_idle_timeout(
@@ -229,7 +213,6 @@ def test_worker_cli_reads_idle_timeout(
         auth_token: str,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
-        max_consecutive_failures: int | None,
         component: str,
         backend: str,
     ) -> None:
@@ -264,57 +247,6 @@ def test_worker_cli_reads_idle_timeout(
     assert calls == [0.25]
 
 
-def test_worker_cli_reads_max_consecutive_failures(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[int | None] = []
-    token_file = tmp_path / "worker.token"
-    token_file.write_text("secret")
-
-    def worker_loop(
-        *,
-        server_url: str,
-        auth_token: str,
-        resource_request: ResourceRequest,
-        idle_timeout: float | None,
-        max_consecutive_failures: int | None,
-        component: str,
-        backend: str,
-    ) -> None:
-        calls.append(max_consecutive_failures)
-
-    monkeypatch.setattr(_cli, "worker_loop", worker_loop)
-
-    assert (
-        _cli.main(
-            [
-                "--server-url",
-                "http://execution-coordinator.test",
-                "--auth-token-file",
-                str(token_file),
-                "--resource-cpus",
-                "4",
-                "--resource-gpus",
-                "1",
-                "--resource-memory-gib",
-                "0",
-                "--idle-timeout",
-                "0.25",
-                "--component",
-                "test-worker",
-                "--backend",
-                "slurm",
-                "--max-consecutive-failures",
-                "3",
-            ]
-        )
-        == 0
-    )
-
-    assert calls == [3]
-
-
 def _run_worker_cli_capturing_component(
     monkeypatch: pytest.MonkeyPatch,
     token_file: Path,
@@ -328,7 +260,6 @@ def _run_worker_cli_capturing_component(
         auth_token: str,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
-        max_consecutive_failures: int | None,
         component: str,
         backend: str,
     ) -> None:
@@ -389,7 +320,6 @@ def test_worker_cli_requires_component(
         auth_token: str,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
-        max_consecutive_failures: int | None,
         component: str,
         backend: str,
     ) -> None:
@@ -601,7 +531,6 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
         worker_connect_host="execution-coordinator.cluster",
         poll_interval=1.5,
         worker_idle_timeout=0.25,
-        worker_max_consecutive_failures=3,
         pre_worker_commands=('echo "Hello" > /tmp/hey',),
     )
 
@@ -659,7 +588,6 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     )
     assert '--component "${furu_worker_component}"' in script
     assert "--idle-timeout 0.25" in script
-    assert "--max-consecutive-failures 3" in script
     assert "--resource-cpus 4" in script
     assert "--resource-gpus 1" in script
     assert "--resource-memory-gib 8" in script
@@ -1033,7 +961,6 @@ def test_slurm_pool_replaces_nonfailed_array_workers_missing_from_squeue(
     pool._scale_once()
 
     assert pool._job_ids == ["100_0", "101_0", "101_1"]
-    assert pool._failed_job_ids == []
     sbatch_records = [
         record
         for record in _read_records(record_file)
@@ -1163,7 +1090,6 @@ def test_slurm_backend_builds_server_url_from_worker_connect_host(
     script = script_path.read_text()
     assert "--server-url ws://execution-coordinator.cluster:4321" in script
     assert f"--idle-timeout {get_config().worker.idle_timeout_seconds}" in script
-    assert "--max-consecutive-failures 5" in script
 
 
 def test_slurm_backend_worker_connect_port_overrides_bound_port(
@@ -1284,7 +1210,6 @@ def test_slurm_worker_pool_unhealthy_report_includes_failed_state(
     coordinator = _StubCoordinator()
     backend = SlurmWorkerBackend(
         max_workers=1,
-        max_failed_restarts=0,
         resources=SlurmResources(cpus_per_worker=1),
         worker_connect_host="execution-coordinator.cluster",
         poll_interval=0,
@@ -1438,7 +1363,6 @@ def test_slurm_pool_scale_does_not_count_completed_jobs_as_restarts(
 
     backend = SlurmWorkerBackend(
         max_workers=1,
-        max_failed_restarts=0,
         resources=SlurmResources(cpus_per_worker=1),
         worker_connect_host="execution-coordinator.cluster",
         poll_interval=0,
@@ -1459,7 +1383,6 @@ def test_slurm_pool_scale_does_not_count_completed_jobs_as_restarts(
     pool._scale_once()
 
     assert pool._job_ids == ["102"]
-    assert pool._failed_job_ids == []
     assert (
         len(
             [
@@ -1482,7 +1405,6 @@ def test_slurm_pool_scale_reports_cancelled_jobs_as_failures(
 
     backend = SlurmWorkerBackend(
         max_workers=1,
-        max_failed_restarts=0,
         resources=SlurmResources(cpus_per_worker=1),
         worker_connect_host="execution-coordinator.cluster",
         poll_interval=0,
@@ -1504,7 +1426,6 @@ def test_slurm_pool_scale_reports_cancelled_jobs_as_failures(
 
     assert coordinator.failures == ["slurm worker pool became unhealthy: 100 CANCELLED"]
     assert pool._job_ids == ["100"]
-    assert pool._failed_job_ids == ["100"]
     assert (
         len(
             [
@@ -1579,8 +1500,6 @@ def test_slurm_backend_uses_default_poll_interval() -> None:
     assert backend.poll_interval == 10.0
     assert backend.execution_coordinator_listen_host == "0.0.0.0"
     assert backend.worker_idle_timeout == get_config().worker.idle_timeout_seconds
-    assert backend.worker_max_consecutive_failures == 5
-    assert backend.max_failed_restarts == get_config().worker.max_failed_restarts
     assert backend.use_job_arrays is True
 
 

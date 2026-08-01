@@ -60,11 +60,9 @@ def worker_loop(
     idle_timeout: float | None,
     component: str,
     backend: str,
-    max_consecutive_failures: int | None = None,
 ) -> None:
     worker_backend_token = _worker_backend.set(backend)
     with _scoped_component(component):
-        consecutive_failures = 0
         child_slot = ChildSlot()
 
         try:
@@ -105,11 +103,6 @@ def worker_loop(
                     )
 
                     status = job_result.status
-                    if isinstance(job_result, protocol.JobFailedResult):
-                        consecutive_failures += 1
-                    else:
-                        consecutive_failures = 0
-
                     duration = format_duration(time.monotonic() - task_started_at)
                     logger.info(
                         "finished %s%s · %s",
@@ -118,12 +111,6 @@ def worker_loop(
                         duration,
                         extra=log_detail(status=status),
                     )
-
-                    if (
-                        max_consecutive_failures is not None
-                        and consecutive_failures > max_consecutive_failures
-                    ):
-                        return
         finally:
             child_slot.close()
             _worker_backend.reset(worker_backend_token)

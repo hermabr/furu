@@ -35,16 +35,12 @@ class SlurmWorkerBackend:
         default_factory=lambda: get_config().worker.connect_host or socket.getfqdn()
     )
     worker_connect_port: int | None = None
-    max_failed_restarts: int = field(
-        default_factory=lambda: get_config().worker.max_failed_restarts
-    )
     execution_coordinator_listen_host: str = "0.0.0.0"
     job_name: str = "furu-worker"
     poll_interval: float = 10.0
     worker_idle_timeout: float = field(
         default_factory=lambda: get_config().worker.idle_timeout_seconds
     )
-    worker_max_consecutive_failures: int | None = 5  # TODO: maybe add this to config?
     pre_worker_commands: tuple[str, ...] = ()
     export: SlurmExport = None
     use_job_arrays: bool = True
@@ -106,14 +102,6 @@ class SlurmWorkerBackend:
             gpus=self.resources.gpus,
             memory_gib=self.resources.memory_gib,
         )
-        worker_failure_arg = (
-            ""
-            if self.worker_max_consecutive_failures is None
-            else (
-                "    --max-consecutive-failures "
-                f"{self.worker_max_consecutive_failures} \\\n"
-            )
-        )
         pre_worker_script = "".join(
             f"{command}\n" for command in self.pre_worker_commands
         )
@@ -155,7 +143,6 @@ class SlurmWorkerBackend:
                 '    --component "${furu_worker_component}" \\\n'
                 "    --backend slurm \\\n"
                 f"    --idle-timeout {self.worker_idle_timeout} \\\n"
-                f"{worker_failure_arg}"
                 f"    --resource-cpus {resource_request.cpus} \\\n"
                 f"    --resource-gpus {resource_request.gpus} \\\n"
                 f"    --resource-memory-gib {resource_request.memory_gib}\n"
@@ -192,10 +179,7 @@ class SlurmWorkerBackend:
             _sbatch_base_args=sbatch_base_args,
             _script_path=script_path,
             _max_workers=self.max_workers,
-            _max_failed_restarts=self.max_failed_restarts,
             _resource_request=resource_request,
-            _server_url=server_url,
-            _auth_token=auth_token,
             _poll_interval=self.poll_interval,
             _coordinator=coordinator,
             _stop_event=threading.Event(),
@@ -205,7 +189,6 @@ class SlurmWorkerBackend:
                 name="furu-slurm-worker-pool-scale",
             ),
             _job_ids=[],
-            _failed_job_ids=[],
         )
         pool_holder.append(pool)
         pool._scale_thread.start()

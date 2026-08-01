@@ -41,17 +41,13 @@ class SlurmWorkerPool:
     _sbatch_base_args: tuple[str, ...]
     _script_path: Path
     _max_workers: int
-    _max_failed_restarts: int
     _resource_request: ResourceRequest
-    _server_url: str
-    _auth_token: str
     _poll_interval: float
     _coordinator: ExecutionCoordinator
     _stop_event: threading.Event
     _use_job_arrays: bool
     _scale_thread: threading.Thread
     _job_ids: list[str]
-    _failed_job_ids: list[str]
 
     def stop(self, *, timeout: float) -> None:
         with _scoped_component("slurm"):
@@ -93,10 +89,6 @@ class SlurmWorkerPool:
             and job_id not in active_job_ids
             and ((state := states.get(job_id)) is None or not _is_failed_state(state))
         }
-        self._failed_job_ids[:] = sorted(
-            set(self._failed_job_ids)
-            | {job_id for job_id, state in states.items() if _is_failed_state(state)}
-        )
         self._job_ids[:] = [
             job_id
             for job_id in self._job_ids
@@ -106,13 +98,8 @@ class SlurmWorkerPool:
                 or states.get(job_id) not in (None, *_PRUNABLE_STATES)
             )
         ]
-        remaining_starts = (
-            self._max_workers
-            + self._max_failed_restarts
-            - len(self._failed_job_ids)
-            - len(self._job_ids)
-        )
-        if len(self._job_ids) >= self._max_workers or remaining_starts <= 0:
+        remaining_starts = self._max_workers - len(self._job_ids)
+        if remaining_starts <= 0:
             return states
 
         to_spawn = min(
