@@ -14,10 +14,8 @@ from furu.logging import get_logger, log_detail
 from furu.worker.protocol import (
     AssignMessage,
     HelloMessage,
-    Job,
-    ResultMessage,
     StopMessage,
-    worker_message_adapter,
+    job_result_adapter,
 )
 
 logger = get_logger()
@@ -39,11 +37,7 @@ def _serve_worker(
     connection: ServerConnection,
 ) -> None:
     with coordinator.log_context():
-        match worker_message_adapter.validate_json(connection.recv(timeout=10.0)):
-            case HelloMessage() as hello:
-                pass
-            case unexpected:
-                raise RuntimeError(f"expected hello message, got {unexpected.kind!r}")
+        hello = HelloMessage.model_validate_json(connection.recv(timeout=10.0))
         worker = hello.worker
         logger.info(
             "worker connected · %s",
@@ -52,26 +46,16 @@ def _serve_worker(
         )
         try:
             while True:
-                match coordinator.lease_job(resources=hello.resources, worker=worker):
-                    case "stop":
-                        connection.send(
-                            StopMessage(reason="run finished").model_dump_json()
-                        )
-                        return
-                    case "wait":
-                        with coordinator.wake:
-                            coordinator.wake.wait(timeout=1.0)
-                    case Job() as job:
-                        connection.send(AssignMessage(job=job).model_dump_json())
-                        match worker_message_adapter.validate_json(connection.recv()):
-                            case ResultMessage() as reply:
-                                pass
-                            case unexpected:
-                                raise RuntimeError(
-                                    f"expected result message, got {unexpected.kind!r}"
-                                )
-                        for member in job.members:
-                            coordinator.job_result(member.lease_id, reply.result)
+                job = coordinator.lease_job(resources=hello.resources, worker=worker)
+                if job is None:
+                    connection.send(
+                        StopMessage(reason="run finished").model_dump_json()
+                    )
+                    return
+                connection.send(AssignMessage(job=job).model_dump_json())
+                result = job_result_adapter.validate_json(connection.recv())
+                for member in job.members:
+                    coordinator.job_result(member.lease_id, result)
         except ConnectionClosed:
             logger.warning(
                 "worker disconnected · %s",

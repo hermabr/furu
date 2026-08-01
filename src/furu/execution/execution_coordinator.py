@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, assert_never
+from typing import TYPE_CHECKING, assert_never
 from uuid import uuid4
 
 from furu.config import get_config
@@ -68,8 +68,9 @@ class ExecutionCoordinator:
     running: dict[str, RunningJob] = field(default_factory=dict)
     completed: dict[str, DagNode] = field(default_factory=dict)
     failed: dict[str, FailedJob] = field(default_factory=dict)
-    lock: Any = field(default_factory=threading.Lock)
-    wake: threading.Condition = field(default_factory=threading.Condition)
+    # A Condition doubles as the state lock; mutators notify it so blocked
+    # ``lease_job`` calls re-check for work.
+    lock: threading.Condition = field(default_factory=threading.Condition)
     done: threading.Event = field(default_factory=threading.Event)
     finish_error: str | None = None
     submit_provenance: SubmitProvenance | None = None
@@ -187,23 +188,16 @@ class ExecutionCoordinator:
         ):
             yield
 
-    def notify_state_changed(self) -> None:
-        with self.wake:
-            self.wake.notify_all()
-
-    def lease_job(
-        self, *, resources: ResourceRequest, worker: str
-    ) -> Job | Literal["wait", "stop"]:
+    def lease_job(self, *, resources: ResourceRequest, worker: str) -> Job | None:
+        """Block until a job is available for ``resources``; None means stop."""
         with self.log_context(), self.lock:
-            if self.done.is_set():
-                return "stop"
-            self._release_worker_locked(worker, reason="worker requested a new lease")
-            self._maybe_finish_locked()
-            if self.done.is_set():
-                return "stop"
-            lease = next(self._satisfiable_leases_locked(resources), None)
-            if lease is None:
-                return "wait"
+            while True:
+                if self.done.is_set():
+                    return None
+                lease = next(self._satisfiable_leases_locked(resources), None)
+                if lease is not None:
+                    break
+                self.lock.wait()
             node, member_ids = lease
             nodes = [
                 self.ready.pop(member_id)
@@ -246,7 +240,7 @@ class ExecutionCoordinator:
             if self.done.is_set():
                 return
             self._release_worker_locked(worker, reason="worker is no longer active")
-        self.notify_state_changed()
+            self.lock.notify_all()
 
     def count_satisfiable_jobs(
         self, *, resources: ResourceRequest, max_workers: int
@@ -422,7 +416,7 @@ class ExecutionCoordinator:
                 extra=log_detail(**self._counts_detail()),
             )
             self._maybe_finish_locked()
-        self.notify_state_changed()
+            self.lock.notify_all()
 
     def raise_for_failure(self) -> None:
         if self.finish_error is not None:
@@ -435,7 +429,7 @@ class ExecutionCoordinator:
             self.finish_error = message
             logger.error("furu execution coordinator finished with error: %s", message)
             self.done.set()
-        self.notify_state_changed()
+            self.lock.notify_all()
 
     def _maybe_finish_locked(self) -> None:
         if self.done.is_set() or self.ready or self.running:

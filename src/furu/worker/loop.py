@@ -5,9 +5,10 @@ import traceback
 from typing import assert_never
 
 from websockets.exceptions import ConnectionClosed
+from websockets.headers import build_authorization_basic
+from websockets.sync.client import connect
 
 from furu.core import Spec
-from furu.execution.client import worker_client
 from furu.logging import _scoped_component, get_logger, log_detail
 from furu.provenance import _worker_backend
 from furu.resources import ResourceRequest
@@ -70,13 +71,20 @@ def worker_loop(
         child_slot = ChildSlot()
 
         try:
-            with worker_client(
-                server_url=server_url,
-                auth_token=auth_token,
-                worker=component,
-                backend=backend,
-                resources=resource_request,
+            with connect(
+                server_url,
+                additional_headers={
+                    "Authorization": build_authorization_basic("furu", auth_token)
+                },
+                max_size=None,
             ) as connection:
+                connection.send(
+                    protocol.HelloMessage(
+                        worker=component,
+                        backend=backend,
+                        resources=resource_request,
+                    ).model_dump_json()
+                )
                 while True:
                     try:
                         message = protocol.server_message_adapter.validate_json(
@@ -102,9 +110,9 @@ def worker_loop(
                             task_started_at = time.monotonic()
                             job_result, task_label = _run_job(job, child_slot)
                             connection.send(
-                                protocol.ResultMessage(
-                                    result=job_result
-                                ).model_dump_json()
+                                protocol.job_result_adapter.dump_json(
+                                    job_result
+                                ).decode()
                             )
 
                             status = job_result.status

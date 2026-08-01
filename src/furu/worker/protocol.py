@@ -48,21 +48,15 @@ type JobResult = Annotated[
     Field(discriminator="status"),
 ]
 
+job_result_adapter: TypeAdapter[JobResult] = TypeAdapter(JobResult)
+
 
 class HelloMessage(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    kind: Literal["hello"] = "hello"
     worker: str
     backend: str
     resources: ResourceRequest
-
-
-class ResultMessage(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-
-    kind: Literal["result"] = "result"
-    result: JobResult
 
 
 class AssignMessage(BaseModel):
@@ -79,9 +73,6 @@ class StopMessage(BaseModel):
     reason: str
 
 
-worker_message_adapter = TypeAdapter(
-    Annotated[HelloMessage | ResultMessage, Field(discriminator="kind")]
-)
 server_message_adapter = TypeAdapter(
     Annotated[AssignMessage | StopMessage, Field(discriminator="kind")]
 )

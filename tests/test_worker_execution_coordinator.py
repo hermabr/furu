@@ -6,7 +6,7 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar
 from uuid import UUID, uuid4
 
 import pytest
@@ -48,10 +48,9 @@ from furu.worker.protocol import (
     JobFailedResult,
     JobMember,
     JobResult,
-    ResultMessage,
     StopMessage,
+    job_result_adapter,
     server_message_adapter,
-    worker_message_adapter,
 )
 
 ANY_RESOURCES = ResourceRequest()
@@ -82,16 +81,13 @@ def _job(lease_id: str, obj: Spec[Any]) -> Job:
     )
 
 
-type _LeaseJobResult = Job | Literal["wait", "stop"]
-
-
-def _lease(job: _LeaseJobResult) -> str:
+def _lease(job: Job | None) -> str:
     assert isinstance(job, Job)
     (member,) = job.members
     return member.lease_id
 
 
-def _artifact(job: _LeaseJobResult) -> ArtifactSpec:
+def _artifact(job: Job | None) -> ArtifactSpec:
     assert isinstance(job, Job)
     (member,) = job.members
     return member.artifact
@@ -128,8 +124,14 @@ def _new_execution_coordinator(
 
 def _lease_job(
     coordinator: ExecutionCoordinator, *, resources: ResourceRequest = ANY_RESOURCES
-) -> _LeaseJobResult:
+) -> Job | None:
     return coordinator.lease_job(resources=resources, worker=f"test-worker-{uuid4()}")
+
+
+def _no_satisfiable_job(
+    coordinator: ExecutionCoordinator, *, resources: ResourceRequest = ANY_RESOURCES
+) -> bool:
+    return coordinator.count_satisfiable_jobs(resources=resources, max_workers=1) == 0
 
 
 class _StubCoordinator(ExecutionCoordinator):
@@ -196,18 +198,14 @@ def _scripted_worker_server(
     record = _ScriptedServer(server_url="")
 
     def handler(connection: ServerConnection) -> None:
-        hello = worker_message_adapter.validate_json(connection.recv(timeout=5))
-        assert isinstance(hello, HelloMessage)
+        hello = HelloMessage.model_validate_json(connection.recv(timeout=5))
         record.hellos.append(hello)
         try:
             for message in messages:
                 connection.send(message.model_dump_json())
                 if isinstance(message, AssignMessage):
-                    reply = worker_message_adapter.validate_json(
-                        connection.recv(timeout=5)
-                    )
-                    assert isinstance(reply, ResultMessage)
-                    record.results.append(reply.result)
+                    reply = job_result_adapter.validate_json(connection.recv(timeout=5))
+                    record.results.append(reply)
             # Linger until the worker hangs up (idle timeout, crash, ...).
             connection.recv(timeout=5)
         except (TimeoutError, ConnectionClosed):
@@ -234,9 +232,7 @@ def _connect_worker(
     token = server.auth_token if auth_token is None else auth_token
     connection = connect(
         server.server_url,
-        additional_headers={
-            "Authorization": build_authorization_basic("furu", token)
-        },
+        additional_headers={"Authorization": build_authorization_basic("furu", token)},
     )
     connection.send(
         HelloMessage(
@@ -274,9 +270,7 @@ def _complete_one_job_over_ws(server_url: str, auth_token: str) -> None:
         while True:
             match server_message_adapter.validate_json(connection.recv(timeout=10)):
                 case AssignMessage():
-                    connection.send(
-                        ResultMessage(result=JobCompletedResult()).model_dump_json()
-                    )
+                    connection.send(JobCompletedResult().model_dump_json())
                 case StopMessage():
                     return
 
@@ -412,7 +406,7 @@ def test_execution_coordinator_job_result_completed_moves_dependents_to_ready() 
     assert coordinator.blocked == {}
 
 
-def test_execution_coordinator_lease_job_returns_wait_when_only_running_jobs_can_unblock_work() -> (
+def test_execution_coordinator_has_no_lease_when_only_running_jobs_can_unblock_work() -> (
     None
 ):
     leaf = ExecutionCoordinatorLeaf(value=1)
@@ -422,7 +416,7 @@ def test_execution_coordinator_lease_job_returns_wait_when_only_running_jobs_can
     job = _lease_job(coordinator)
     assert isinstance(job, Job)
 
-    assert _lease_job(coordinator) == "wait"
+    assert _no_satisfiable_job(coordinator)
     assert not coordinator.done.is_set()
 
 
@@ -793,7 +787,7 @@ def test_worker_cap_limits_satisfiable_jobs_and_leases() -> None:
         coordinator.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=10)
         == 0
     )
-    assert _lease_job(coordinator, resources=ResourceRequest()) == "wait"
+    assert _no_satisfiable_job(coordinator, resources=ResourceRequest())
 
     coordinator.job_result(_lease(first), JobCompletedResult())
     fourth = _lease_job(coordinator, resources=ResourceRequest())
@@ -863,7 +857,7 @@ def test_throttle_limits_concurrent_batches_not_members() -> None:
 
     assert isinstance(first, Job) and len(first.members) == 3
     assert isinstance(second, Job) and len(second.members) == 3
-    assert _lease_job(coordinator) == "wait"
+    assert _no_satisfiable_job(coordinator)
 
     for member in first.members:
         coordinator.job_result(member.lease_id, JobCompletedResult())
@@ -952,22 +946,6 @@ def test_job_result_after_worker_lost_is_ignored() -> None:
     assert coordinator.completed == {}
 
 
-def test_lease_job_releases_previous_lease_from_same_worker() -> None:
-    leaf = ExecutionCoordinatorLeaf(value=1)
-    coordinator = _new_execution_coordinator([leaf])
-
-    first = coordinator.lease_job(resources=ResourceRequest(), worker="worker-1")
-    second = coordinator.lease_job(resources=ResourceRequest(), worker="worker-1")
-
-    assert isinstance(first, Job)
-    assert isinstance(second, Job)
-    assert _lease(second) != _lease(first)
-    assert set(coordinator.running) == {_lease(second)}
-    assert coordinator.running[_lease(second)].worker == "worker-1"
-    assert coordinator.ready == {}
-    assert coordinator.failed == {}
-
-
 def test_lease_job_filters_by_worker_resources() -> None:
     cpu_leaf = CpuOnlyLeaf(value=1)
     gpu_leaf = GpuLeaf(value=2)
@@ -977,7 +955,7 @@ def test_lease_job_filters_by_worker_resources() -> None:
     assert isinstance(cpu_job, Job)
     assert _artifact(cpu_job).object_id == cpu_leaf.object_id
 
-    assert _lease_job(coordinator, resources=ResourceRequest(gpus=0)) == "wait"
+    assert _no_satisfiable_job(coordinator, resources=ResourceRequest(gpus=0))
 
     gpu_job = _lease_job(coordinator, resources=ResourceRequest(gpus=1))
     assert isinstance(gpu_job, Job)
@@ -988,12 +966,7 @@ def test_lease_job_filters_by_worker_memory_gib() -> None:
     memory_leaf = MemoryLeaf(value=1)
     coordinator = _new_execution_coordinator([memory_leaf])
 
-    assert (
-        coordinator.lease_job(
-            resources=ResourceRequest(memory_gib=7), worker="test-worker"
-        )
-        == "wait"
-    )
+    assert _no_satisfiable_job(coordinator, resources=ResourceRequest(memory_gib=7))
 
     memory_job = coordinator.lease_job(
         resources=ResourceRequest(memory_gib=8), worker="test-worker"
@@ -1050,9 +1023,7 @@ def test_local_pool_scale_spawns_workers_up_to_max_as_satisfiable_count_grows(
     counts = iter([0, 2, 10, 10])
     release_workers = threading.Event()
 
-    coordinator = _StubCoordinator(
-        lambda max_workers: min(next(counts), max_workers)
-    )
+    coordinator = _StubCoordinator(lambda max_workers: min(next(counts), max_workers))
     monkeypatch.setattr(
         worker_loop_module,
         "worker_loop",
@@ -1578,9 +1549,12 @@ def test_worker_protocol_round_trip_over_server() -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
     coordinator = _new_execution_coordinator([leaf])
 
-    with execution_coordinator_server(
-        coordinator, bind_host="127.0.0.1", port=0
-    ) as server, _connect_worker(server) as connection:
+    with (
+        execution_coordinator_server(
+            coordinator, bind_host="127.0.0.1", port=0
+        ) as server,
+        _connect_worker(server) as connection,
+    ):
         assign = server_message_adapter.validate_json(connection.recv(timeout=5))
         assert isinstance(assign, AssignMessage)
         (member,) = assign.job.members
@@ -1588,9 +1562,7 @@ def test_worker_protocol_round_trip_over_server() -> None:
         assert member.artifact.artifact_data["|fields"] == {"value": 1}
         assert member.lease_id in coordinator.running
 
-        connection.send(
-            ResultMessage(result=JobCompletedResult()).model_dump_json()
-        )
+        connection.send(JobCompletedResult().model_dump_json())
         stop = server_message_adapter.validate_json(connection.recv(timeout=5))
         assert isinstance(stop, StopMessage)
         assert stop.reason == "run finished"
@@ -1617,15 +1589,11 @@ def test_worker_disconnect_requeues_leased_job() -> None:
         assert coordinator.failed == {}
 
         with _connect_worker(server, worker="replacement-worker") as replacement:
-            reassign = server_message_adapter.validate_json(
-                replacement.recv(timeout=5)
-            )
+            reassign = server_message_adapter.validate_json(replacement.recv(timeout=5))
             assert isinstance(reassign, AssignMessage)
             (member,) = reassign.job.members
             assert member.artifact.object_id == leaf.object_id
-            replacement.send(
-                ResultMessage(result=JobCompletedResult()).model_dump_json()
-            )
+            replacement.send(JobCompletedResult().model_dump_json())
             stop = server_message_adapter.validate_json(replacement.recv(timeout=5))
             assert isinstance(stop, StopMessage)
 
@@ -1803,9 +1771,7 @@ def test_worker_loop_exits_after_exceeding_max_consecutive_failures(
         # The worker gives up after its third consecutive failure and never
         # reports a result for the fourth assignment.
         assert len(server.results) == 3
-        assert all(
-            isinstance(result, JobFailedResult) for result in server.results
-        )
+        assert all(isinstance(result, JobFailedResult) for result in server.results)
 
 
 def test_worker_loop_resets_consecutive_failures_after_success(

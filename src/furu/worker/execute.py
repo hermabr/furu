@@ -11,8 +11,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, assert_never
 
-from pydantic import TypeAdapter
-
 from furu.config import _WORKER_JSON_CONFIG_FILE_ENV_VAR
 from furu.core import Spec
 from furu.execution.load_or_create import _cached_to_build_msg, _ensure_group_result
@@ -28,6 +26,7 @@ from furu.worker.protocol import (
     JobCompletedResult,
     JobFailedResult,
     JobResult,
+    job_result_adapter,
 )
 
 logger = get_logger("worker.execute")
@@ -35,8 +34,6 @@ logger = get_logger("worker.execute")
 _STDERR_TAIL_LINES = 200
 _STDERR_TAIL_CHARS = 32 * 1024
 _RETIRE_TIMEOUT_SECONDS = 5.0
-
-_job_result_adapter: TypeAdapter[JobResult] = TypeAdapter(JobResult)
 
 
 def execute_job(objs: Sequence[Spec[Any]], *, job: Job) -> JobResult:
@@ -200,7 +197,7 @@ def _request(child: _Child, job: Job) -> JobResult:
     except OSError:
         line = ""
     if line:
-        return _job_result_adapter.validate_json(line)
+        return job_result_adapter.validate_json(line)
 
     returncode = child.process.wait()
     child.stderr_thread.join(timeout=_RETIRE_TIMEOUT_SECONDS)
