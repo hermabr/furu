@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import functools
 from collections.abc import Callable, Hashable
-from typing import Any, NamedTuple, overload
+from typing import TYPE_CHECKING, Any, NamedTuple, overload
 
 
 class _BatchedHook(NamedTuple):
@@ -26,23 +25,14 @@ class batched:
         return _BatchedCreate(func, self.batch_fn)
 
 
-class _BatchedCreate[S, T]:
-    def __init__(
-        self,
-        func: Callable[[list[S]], list[T]],
-        batch_fn: Callable[[Any], tuple[Hashable, int]],
-        /,
-    ) -> None:
-        self.func = func
-        self.batch_fn = batch_fn
+class _BatchedCreate[S, T](NamedTuple):
+    func: Callable[[list[S]], list[T]]
+    batch_fn: Callable[[Any], tuple[Hashable, int]]
 
-    @overload
-    def __get__(self, obj: None, _objtype: type, /) -> Callable[[list[S]], list[T]]: ...
-    @overload
-    def __get__(self, obj: S, _objtype: type, /) -> Callable[[], T]: ...
-    def __get__(self, obj: Any, _objtype: type | None = None, /) -> Any:
-        from furu.execution.load_or_create import _load_or_create
+    if TYPE_CHECKING:
 
-        if obj is None:
-            return _load_or_create
-        return functools.partial(_load_or_create, obj)
+        @overload
+        def __get__(self, obj: None, _objtype: type, /) -> Callable[[S], T]: ...
+
+        @overload
+        def __get__(self, obj: S, _objtype: type, /) -> Callable[[], T]: ...
