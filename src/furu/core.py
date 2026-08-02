@@ -54,7 +54,6 @@ from furu.utils import (
     nfs_safe_unique_name,
     object_id_from_parts,
 )
-from furu.validate import validate_cls
 
 if TYPE_CHECKING:
     from typing import dataclass_transform
@@ -125,7 +124,6 @@ class Spec[T](_FuruDataclassTransform, ABC):
             ):
                 raise TypeError(f"{cls.__name__}.{name} must have a type annotation")
 
-        validate_cls(cls)
         if "__dataclass_params__" not in cls.__dict__:
             dataclass(frozen=True, kw_only=True)(cls)
         if cls.migrations:
