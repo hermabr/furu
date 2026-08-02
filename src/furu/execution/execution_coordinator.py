@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import threading
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -89,9 +89,9 @@ class ExecutionCoordinator:
         }
 
     @classmethod
-    def run[ObjsT: Sequence[Spec]](
+    def run[ObjsT](
         cls,
-        objs: ObjsT,  # TODO: support pytrees
+        objs: ObjsT,
         *,
         max_retries_per_object: int | None = None,
         worker_backends: tuple[WorkerBackend, ...],
@@ -100,9 +100,9 @@ class ExecutionCoordinator:
         if max_retries_per_object is None:
             max_retries_per_object = get_config().worker.max_retries_per_object
         coordinator = cls(max_retries_per_object=max_retries_per_object)
-        _add_to_dag(coordinator, objs)
+        root_objs = _add_to_dag(coordinator, objs)
         digest = hashlib.blake2s(digest_size=16)
-        for obj in objs:
+        for obj in root_objs:
             digest.update(obj.object_id.encode("utf-8"))
             digest.update(b"\0")
         coordinator.executor_id = digest.hexdigest()

@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import json
-from dataclasses import fields, is_dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import BaseModel as PydanticBaseModel
+from furu._pytree import tree_node
 
 if TYPE_CHECKING:
     from furu.core import Spec
@@ -63,16 +62,9 @@ def _rows(children: list[tuple[str, object]], depth: ExplainDepth) -> list[str]:
 
 
 def _children(value: object) -> list[tuple[str, object]] | None:
-    if isinstance(value, PydanticBaseModel):
-        return [(name, getattr(value, name)) for name in type(value).model_fields]
-    if is_dataclass(value) and not isinstance(value, type):
-        return [(field.name, getattr(value, field.name)) for field in fields(value)]
-    if isinstance(value, (tuple, list)):
-        return [(str(index), item) for index, item in enumerate(value)]
-    if isinstance(value, (set, frozenset)):
-        return [
-            (str(index), item) for index, item in enumerate(sorted(value, key=repr))
-        ]
-    if isinstance(value, dict):
-        return [(str(key), item) for key, item in value.items()]
-    return None
+    if (node := tree_node(value)) is None:
+        return None
+    return [
+        (str(entry), child)
+        for entry, child in zip(node.entries, node.children, strict=True)
+    ]

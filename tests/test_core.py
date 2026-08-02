@@ -1419,13 +1419,12 @@ def test_top_level_create_accepts_single_spec_and_sequence() -> None:
     assert furu.create(nodes) == ["Node(top-create-a)", "Node(top-create-b)"]
 
 
-def test_top_level_load_existing_rejects_single_furu_object() -> None:
+def test_top_level_load_existing_accepts_single_furu_object_pytree() -> None:
     node = Node(name="single-load")
 
     assert node.create() == "Node(single-load)"
 
-    with pytest.raises(TypeError, match="expected a sequence of Spec objects"):
-        furu.load_existing(node)  # ty:ignore[invalid-argument-type]
+    assert furu.load_existing(node) == "Node(single-load)"
 
 
 def test_top_level_load_existing_accepts_list_and_logs_once(tmp_path: Path) -> None:

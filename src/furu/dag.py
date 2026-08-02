@@ -3,8 +3,9 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import TYPE_CHECKING, assert_never
+from typing import TYPE_CHECKING, assert_never, cast
 
+from furu._pytree import tree_leaves
 from furu.core import Spec
 from furu.dependencies import collect_declared_refs
 from furu.metadata import ArtifactSpec
@@ -27,11 +28,11 @@ class DagNode:
         return _batch_group(self.obj)
 
 
-def _add_to_dag(coordinator: ExecutionCoordinator, objs: Sequence[Spec]) -> None:
-    if any(not isinstance(obj, Spec) for obj in objs):
-        # TODO: accept pytrees of Spec objects (e.g. nested lists/dicts/dataclasses)
-        # and flatten them before walking dependencies.
-        raise TypeError("expected Spec objects")
+def _add_to_dag(coordinator: ExecutionCoordinator, obj_tree: object) -> list[Spec]:
+    leaves = tree_leaves(obj_tree, is_leaf=lambda value: isinstance(value, Spec))
+    if any(not isinstance(obj, Spec) for obj in leaves):
+        raise TypeError("expected Spec objects in every PyTree leaf")
+    objs = cast(list[Spec], leaves)
 
     refs_by_id: dict[str, tuple[Spec, ...]] = {}
     newly_added: list[DagNode] = []
@@ -75,6 +76,7 @@ def _add_to_dag(coordinator: ExecutionCoordinator, objs: Sequence[Spec]) -> None
             coordinator.blocked[node.obj.object_id] = node
         else:
             coordinator.ready[node.obj.object_id] = node
+    return objs
 
 
 def _update_dag_blocking_dependencies(

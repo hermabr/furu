@@ -1,16 +1,14 @@
 import enum
-from dataclasses import fields, is_dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast, get_type_hints
-
-from pydantic import BaseModel as PydanticBaseModel
 
 from furu._declared_types import (
     child_declared_type,
     has_skip_hash,
     strip_annotated,
 )
+from furu._pytree import tree_node
 from furu.constants import (
     CLASSMARKER,
     FIELDSMARKER,
@@ -88,100 +86,78 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
             return {KINDMARKER: "path", VALUEMARKER: str(obj)}
         case datetime():
             return {KINDMARKER: "datetime", VALUEMARKER: obj.isoformat()}
-        case list():
-            return [
+
+    if node := tree_node(obj):
+        hints = (
+            get_type_hints(type(obj), include_extras=True)
+            if node.kind in ("dataclass", "pydantic")
+            else {}
+        )
+        entries_and_children = [
+            (entry, child)
+            for entry, child in zip(node.entries, node.children, strict=True)
+            if not (
+                for_hash
+                and node.kind in ("dataclass", "pydantic")
+                and has_skip_hash(hints.get(cast(str, entry), Any))
+            )
+        ]
+        encoded = [
+            (
+                entry,
                 to_json(
-                    x,
-                    declared_type=child_declared_type(declared_type, i),
-                    artifact_serializers=artifact_serializers,
-                    for_hash=for_hash,
-                )
-                for i, x in enumerate(obj)
-            ]
-        case tuple():
-            return {
-                KINDMARKER: "tuple",
-                VALUEMARKER: [
-                    to_json(
-                        x,
-                        declared_type=child_declared_type(declared_type, i),
-                        artifact_serializers=artifact_serializers,
-                        for_hash=for_hash,
-                    )
-                    for i, x in enumerate(obj)
-                ],
-            }
-        case set() | frozenset():
-            element_type = child_declared_type(declared_type, 0)
-            return {
-                KINDMARKER: "set" if isinstance(obj, set) else "frozenset",
-                VALUEMARKER: sorted(
-                    (
-                        to_json(
-                            x,
-                            declared_type=element_type,
-                            artifact_serializers=artifact_serializers,
-                            for_hash=for_hash,
-                        )
-                        for x in obj
+                    child,
+                    declared_type=(
+                        hints.get(cast(str, entry), Any)
+                        if node.kind in ("dataclass", "pydantic")
+                        else child_declared_type(declared_type, entry)
                     ),
-                    key=_stable_json_dump,
-                ),
-            }
-        case dict():
-            return {
-                assert_correct_dict_key(k): to_json(
-                    v,
-                    declared_type=child_declared_type(declared_type, k),
                     artifact_serializers=artifact_serializers,
                     for_hash=for_hash,
-                )
-                for k, v in obj.items()
-            }
-        case x if is_dataclass(x):
-            hints = get_type_hints(type(x), include_extras=True)
-            return {
-                KINDMARKER: "instance",
-                CLASSMARKER: fully_qualified_name(type(x)),
-                FIELDSMARKER: {
-                    f.name: to_json(
-                        getattr(x, f.name),
-                        declared_type=hints.get(f.name, Any),
-                        artifact_serializers=artifact_serializers,
-                        for_hash=for_hash,
-                    )
-                    for f in fields(x)
-                    if not (for_hash and has_skip_hash(hints.get(f.name, Any)))
-                },
-            }
-        case PydanticBaseModel():
-            model_cls = type(obj)
-            model_fields = model_cls.model_fields
-            hints = get_type_hints(model_cls, include_extras=True)
-            return {
-                KINDMARKER: "instance",
-                CLASSMARKER: fully_qualified_name(model_cls),
-                FIELDSMARKER: {
-                    k: to_json(
-                        getattr(obj, k),
-                        declared_type=hints.get(k, Any),
-                        artifact_serializers=artifact_serializers,
-                        for_hash=for_hash,
-                    )
-                    for k in model_fields
-                    if not (for_hash and has_skip_hash(hints.get(k, Any)))
-                },
-            }
-        case enum.Enum():
-            raise TypeError(
-                f"Cannot serialize enum value {obj!r}: enums are not supported "
-                "in furu artifacts yet"
+                ),
             )
-        case _:
-            raise TypeError(
-                f"Cannot serialize value {obj!r} of type {type(obj).__name__!r} "
-                "into a furu artifact; register a Serializer for this type"
-            )
+            for entry, child in entries_and_children
+        ]
+        match node.kind:
+            case "list":
+                return [child for _, child in encoded]
+            case "tuple":
+                return {
+                    KINDMARKER: "tuple",
+                    VALUEMARKER: [child for _, child in encoded],
+                }
+            case "set" | "frozenset":
+                return {
+                    KINDMARKER: node.kind,
+                    VALUEMARKER: sorted(
+                        (child for _, child in encoded), key=_stable_json_dump
+                    ),
+                }
+            case "dict":
+                return {
+                    assert_correct_dict_key(key): child
+                    for key, child in encoded
+                }
+            case "dataclass" | "pydantic":
+                cls = type(obj)
+                return {
+                    KINDMARKER: "instance",
+                    CLASSMARKER: fully_qualified_name(cls),
+                    FIELDSMARKER: {
+                        cast(str, name): child
+                        for name, child in encoded
+                    },
+                }
+
+    if isinstance(obj, enum.Enum):
+        raise TypeError(
+            f"Cannot serialize enum value {obj!r}: enums are not supported "
+            "in furu artifacts yet"
+        )
+    raise TypeError(
+        f"Cannot serialize value {obj!r} of type {type(obj).__name__!r} "
+        "into a furu artifact; register a Serializer for this type"
+    )
 
 
 def _from_json_field(value: JsonValue, expected_type: Any) -> Any:

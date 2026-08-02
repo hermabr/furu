@@ -13,6 +13,7 @@ from typing import (
 
 from furu._batched import _BatchedHook
 from furu._declared_types import declared_result_type
+from furu._pytree import tree_leaves, tree_map
 from furu.config import get_config
 from furu.core import Missing, Spec
 from furu.dependencies import dependency_recorder, record_dependency_call
@@ -129,15 +130,21 @@ def _load_or_create[T](obj: Spec[T], *, use_lock: bool = True) -> T: ...
 
 @overload
 def _load_or_create[T](
+    objs: tuple[Spec[T], ...], *, use_lock: bool = True
+) -> tuple[T, ...]: ...
+@overload
+def _load_or_create[T](
     objs: Sequence[Spec[T]], *, use_lock: bool = True
 ) -> list[T]: ...
+@overload
+def _load_or_create(obj_tree: object, *, use_lock: bool = True) -> object: ...
 
 
 def _load_or_create[T](
-    obj_or_objs: Spec[T] | Sequence[Spec[T]],
+    obj_or_objs: object,
     *,
     use_lock: bool = True,
-) -> T | list[T]:
+) -> object:
     _require_uv()
     if _in_worker_execution.get():
         return _load_or_create_worker(obj_or_objs)
@@ -173,45 +180,69 @@ def _ensure_group_result[T](
 
 
 def _normalize_load_or_create_input[T](
-    obj_or_objs: Spec[T] | Sequence[Spec[T]],
+    obj_or_objs: object,
+    *,
+    log_single_create: bool,
 ) -> tuple[list[Spec[T]], bool]:
-    match obj_or_objs:
-        case Spec() as obj:
-            assert not isinstance(obj, Sequence)
-            record_dependency_call(obj)
-            obj.logger.debug(".create called for %s", obj)
-            return [obj], True
-        case Sequence() as objs:
-            for obj in objs:
-                record_dependency_call(obj)
-            return list(objs), False
+    leaves = tree_leaves(obj_or_objs, is_leaf=lambda value: isinstance(value, Spec))
+    if any(not isinstance(obj, Spec) for obj in leaves):
+        raise TypeError("expected a PyTree of Spec objects")
+    objs = cast(list[Spec[T]], leaves)
+    for obj in objs:
+        record_dependency_call(obj)
+    unwrap = isinstance(obj_or_objs, Spec)
+    if log_single_create and unwrap:
+        objs[0].logger.debug(".create called for %s", objs[0])
+    return objs, unwrap
+
+
+def _rebuild_spec_tree(obj_tree: object, values: list[object]) -> object:
+    values_iter = iter(values)
+    return tree_map(
+        lambda _: next(values_iter),
+        obj_tree,
+        is_leaf=lambda value: isinstance(value, Spec),
+    )
 
 
 @overload
 def create[T](obj: Spec[T], *, on: Sequence[WorkerBackend] | None = None) -> T: ...
 @overload
 def create[T](
+    objs: tuple[Spec[T], ...], *, on: Sequence[WorkerBackend] | None = None
+) -> tuple[T, ...]: ...
+@overload
+def create[T](
     objs: Sequence[Spec[T]], *, on: Sequence[WorkerBackend] | None = None
 ) -> list[T]: ...
+@overload
+def create(
+    obj_tree: object, *, on: Sequence[WorkerBackend] | None = None
+) -> object: ...
 def create[T](
-    obj_or_objs: Spec[T] | Sequence[Spec[T]],
+    obj_or_objs: object,
     *,
     on: Sequence[WorkerBackend] | None = None,
-) -> T | list[T]:
+) -> object:
     if on is not None:
         from furu.execution.execution_coordinator import ExecutionCoordinator
 
-        objs = [obj_or_objs] if isinstance(obj_or_objs, Spec) else list(obj_or_objs)
-        ExecutionCoordinator.run(objs, worker_backends=tuple(on))
+        ExecutionCoordinator.run(obj_or_objs, worker_backends=tuple(on))
     return _load_or_create(obj_or_objs)
 
 
-def load_existing[T](objs: Sequence[Spec[T]]) -> list[T]:
-    if not isinstance(objs, Sequence):
-        raise TypeError("load_existing() expected a sequence of Spec objects")
-    objs = list(objs)
-    if any(not isinstance(obj, Spec) for obj in objs):
-        raise TypeError("load_existing() expected Spec objects")
+@overload
+def load_existing[T](obj: Spec[T]) -> T: ...
+@overload
+def load_existing[T](objs: tuple[Spec[T], ...]) -> tuple[T, ...]: ...
+@overload
+def load_existing[T](objs: Sequence[Spec[T]]) -> list[T]: ...
+@overload
+def load_existing(obj_tree: object) -> object: ...
+def load_existing[T](obj_tree: object) -> object:
+    objs, _ = _normalize_load_or_create_input(
+        obj_tree, log_single_create=False
+    )
     loaded: list[T] = []
     missing: list[Spec[T]] = []
     for obj in objs:
@@ -245,7 +276,7 @@ def load_existing[T](objs: Sequence[Spec[T]]) -> list[T]:
         )
     else:
         get_logger().info("loaded 0 furu objects")
-    return loaded
+    return _rebuild_spec_tree(obj_tree, cast(list[object], loaded))
 
 
 def _cached_to_build_msg(cached: list[Spec[Any]], to_build: list[Spec[Any]]) -> str:
@@ -259,9 +290,11 @@ def _cached_to_build_msg(cached: list[Spec[Any]], to_build: list[Spec[Any]]) -> 
 
 
 def _load_or_create_worker[T](
-    obj_or_objs: Spec[T] | Sequence[Spec[T]],
-) -> T | list[T]:
-    objs, unwrap = _normalize_load_or_create_input(obj_or_objs)
+    obj_or_objs: object,
+) -> object:
+    objs, _ = _normalize_load_or_create_input(
+        obj_or_objs, log_single_create=True
+    )
 
     loaded: list[T] = []
     cached: list[Spec[T]] = []
@@ -293,21 +326,20 @@ def _load_or_create_worker[T](
             call_kind="create",
         )
 
-    if unwrap:
-        (result,) = loaded
-        return result
-    return loaded
+    return _rebuild_spec_tree(obj_or_objs, cast(list[object], loaded))
 
 
 def _load_or_create_local[T](
-    obj_or_objs: Spec[T] | Sequence[Spec[T]],
+    obj_or_objs: object,
     *,
     use_lock: bool = True,
-) -> T | list[T]:
-    objs, unwrap = _normalize_load_or_create_input(obj_or_objs)
+) -> object:
+    objs, unwrap = _normalize_load_or_create_input(
+        obj_or_objs, log_single_create=True
+    )
 
     if not objs:
-        return []
+        return _rebuild_spec_tree(obj_or_objs, [])
 
     unique_by_object_id: dict[str, Spec[T]] = {}
     for obj in objs:
@@ -389,15 +421,13 @@ def _load_or_create_local[T](
 
     if unwrap:
         (obj,) = objs
-        (output,) = outputs
         if direct_create_started:
             obj.logger.info(
                 "finished %s ok · %s",
                 obj._log_label,
                 format_duration(time.monotonic() - create_started_at),
             )
-        return output
-    return outputs
+    return _rebuild_spec_tree(obj_or_objs, cast(list[object], outputs))
 
 
 def _batch_group(obj: Spec[Any]) -> tuple[object, int] | None:

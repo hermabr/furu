@@ -19,6 +19,7 @@ from typing import (
 import pydantic
 
 from furu._declared_types import child_declared_type, strip_annotated
+from furu._pytree import tree_node
 from furu.constants import FIELDSMARKER, KINDMARKER, TYPEMARKER
 from furu.result.codec import Codec, CodecMeta
 from furu.result.ref import Ref
@@ -127,88 +128,6 @@ def _dump_value(
     match value:
         case None | bool() | int() | float() | str():
             return value
-        case list():
-            width = len(str(len(value)))
-            return [
-                _dump_value(
-                    item,
-                    declared_type=child_declared_type(declared_type, i),
-                    value_path=(*value_path, f"{i:0{width}d}"),
-                    bundle_dir=bundle_dir,
-                    result_codecs=result_codecs,
-                    dump_state=dump_state,
-                )
-                for i, item in enumerate(value)
-            ]
-        case tuple():
-            width = len(str(len(value)))
-            return {
-                WRAPPER_KEY: {
-                    KINDMARKER: "tuple",
-                    "items": [
-                        _dump_value(
-                            item,
-                            declared_type=child_declared_type(declared_type, i),
-                            value_path=(*value_path, f"{i:0{width}d}"),
-                            bundle_dir=bundle_dir,
-                            result_codecs=result_codecs,
-                            dump_state=dump_state,
-                        )
-                        for i, item in enumerate(value)
-                    ],
-                }
-            }
-        case set() | frozenset():
-            kind = "frozenset" if isinstance(value, frozenset) else "set"
-            for item in value:
-                if type(item).__repr__ is object.__repr__:
-                    raise ValueError(
-                        f"Unsupported result value at {_value_path_display(value_path)}:\n"
-                        f"set members of type {type(item).__name__!r} have no "
-                        "value-based repr, so their order cannot be made "
-                        "deterministic; use a list or implement __repr__."
-                    )
-            items = sorted(
-                value,
-                key=lambda item: (
-                    type(item).__module__,
-                    type(item).__qualname__,
-                    repr(item),
-                ),
-            )
-            width = len(str(len(items)))
-            return {
-                WRAPPER_KEY: {
-                    KINDMARKER: kind,
-                    "items": [
-                        _dump_value(
-                            item,
-                            declared_type=child_declared_type(declared_type, i),
-                            value_path=(*value_path, f"{i:0{width}d}"),
-                            bundle_dir=bundle_dir,
-                            result_codecs=result_codecs,
-                            dump_state=dump_state,
-                        )
-                        for i, item in enumerate(items)
-                    ],
-                }
-            }
-        case dict():
-            out: dict[str, JsonValue] = {}
-            for raw_key, child in value.items():
-                key = _validate_result_path_segment(
-                    raw_key,
-                    parent_value_path=value_path,
-                )
-                out[key] = _dump_value(
-                    child,
-                    declared_type=child_declared_type(declared_type, raw_key),
-                    value_path=(*value_path, key),
-                    bundle_dir=bundle_dir,
-                    result_codecs=result_codecs,
-                    dump_state=dump_state,
-                )
-            return out
         case Path():
             return {
                 WRAPPER_KEY: {
@@ -216,59 +135,80 @@ def _dump_value(
                     "value": str(value),
                 }
             }
-        case pydantic.BaseModel():
-            fields_out: dict[str, JsonValue] = {}
-            field_types = get_type_hints(value.__class__, include_extras=True)
-            for raw_name in value.__class__.model_fields:
-                name = _validate_result_path_segment(
-                    raw_name, parent_value_path=value_path
+
+    if node := tree_node(value):
+        if node.kind in ("set", "frozenset"):
+            for item in node.children:
+                if type(item).__repr__ is object.__repr__:
+                    raise ValueError(
+                        f"Unsupported result value at {_value_path_display(value_path)}:\n"
+                        f"set members of type {type(item).__name__!r} have no "
+                        "value-based repr, so their order cannot be made "
+                        "deterministic; use a list or implement __repr__."
+                    )
+
+        field_types = (
+            get_type_hints(type(value), include_extras=True)
+            if node.kind in ("dataclass", "pydantic")
+            else {}
+        )
+        width = len(str(len(node.children)))
+        dumped: list[tuple[object, JsonValue]] = []
+        for entry, child in zip(node.entries, node.children, strict=True):
+            if node.kind in ("dict", "dataclass", "pydantic"):
+                segment = _validate_result_path_segment(
+                    entry, parent_value_path=value_path
                 )
-                fields_out[name] = _dump_value(
-                    getattr(value, name),
-                    declared_type=field_types.get(name, Any),
-                    value_path=(*value_path, name),
-                    bundle_dir=bundle_dir,
-                    result_codecs=result_codecs,
-                    dump_state=dump_state,
+            else:
+                assert isinstance(entry, int)
+                segment = f"{entry:0{width}d}"
+            dumped.append(
+                (
+                    entry,
+                    _dump_value(
+                        child,
+                        declared_type=(
+                            field_types.get(cast(str, entry), Any)
+                            if node.kind in ("dataclass", "pydantic")
+                            else child_declared_type(declared_type, entry)
+                        ),
+                        value_path=(*value_path, segment),
+                        bundle_dir=bundle_dir,
+                        result_codecs=result_codecs,
+                        dump_state=dump_state,
+                    ),
                 )
+            )
+
+        if node.kind == "list":
+            return [child for _, child in dumped]
+        if node.kind == "dict":
+            return {cast(str, key): child for key, child in dumped}
+        if node.kind in ("tuple", "set", "frozenset"):
             return {
                 WRAPPER_KEY: {
-                    KINDMARKER: "pydantic",
-                    TYPEMARKER: fully_qualified_name(type(value)),
-                    FIELDSMARKER: fields_out,
+                    KINDMARKER: node.kind,
+                    "items": [child for _, child in dumped],
                 }
             }
-        case _ if dataclasses.is_dataclass(value) and not isinstance(value, type):
-            fields_out: dict[str, JsonValue] = {}
-            field_types = get_type_hints(type(value), include_extras=True)
-            for field in dataclasses.fields(cast(Any, value)):
-                name = _validate_result_path_segment(
-                    field.name, parent_value_path=value_path
-                )
-                fields_out[name] = _dump_value(
-                    getattr(value, name),
-                    declared_type=field_types.get(field.name, Any),
-                    value_path=(*value_path, name),
-                    bundle_dir=bundle_dir,
-                    result_codecs=result_codecs,
-                    dump_state=dump_state,
-                )
-            return {
-                WRAPPER_KEY: {
-                    KINDMARKER: "dataclass",
-                    TYPEMARKER: fully_qualified_name(type(value)),
-                    FIELDSMARKER: fields_out,
-                }
+        return {
+            WRAPPER_KEY: {
+                KINDMARKER: node.kind,
+                TYPEMARKER: fully_qualified_name(type(value)),
+                FIELDSMARKER: {
+                    cast(str, name): child for name, child in dumped
+                },
             }
-        case _:
-            if codec := CodecMeta.find_codec(value, result_codecs):
-                return _dump_artifact(
-                    value,
-                    codec=codec,
-                    value_path=value_path,
-                    bundle_dir=bundle_dir,
-                    dump_state=dump_state,
-                )
+        }
+
+    if codec := CodecMeta.find_codec(value, result_codecs):
+        return _dump_artifact(
+            value,
+            codec=codec,
+            value_path=value_path,
+            bundle_dir=bundle_dir,
+            dump_state=dump_state,
+        )
 
     raise ValueError(
         f"Unsupported result value at {_value_path_display(value_path)}:\n"

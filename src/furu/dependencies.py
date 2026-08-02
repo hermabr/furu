@@ -3,11 +3,11 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import fields, is_dataclass
+from dataclasses import fields
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, Self, overload
 
-from pydantic import BaseModel as PydanticBaseModel
+from furu._pytree import tree_leaves
 
 if TYPE_CHECKING:
     from furu.core import Spec
@@ -47,21 +47,11 @@ def dependency[TSpec: Spec[Any], T](
 def find_nested_furu_objects(value: object) -> Iterator[Spec]:
     from furu.core import Spec
 
-    match value:
-        case Spec():
-            yield value
-        case _ if is_dataclass(value) and not isinstance(value, type):
-            for field in fields(value):
-                yield from find_nested_furu_objects(getattr(value, field.name))
-        case PydanticBaseModel():
-            for name in type(value).model_fields:
-                yield from find_nested_furu_objects(getattr(value, name))
-        case tuple() | list() | set() | frozenset():
-            for item in value:
-                yield from find_nested_furu_objects(item)
-        case dict():
-            for item in value.values():
-                yield from find_nested_furu_objects(item)
+    yield from (
+        leaf
+        for leaf in tree_leaves(value, is_leaf=lambda item: isinstance(item, Spec))
+        if isinstance(leaf, Spec)
+    )
 
 
 def collect_declared_refs(obj: Spec) -> tuple[Spec, ...]:
