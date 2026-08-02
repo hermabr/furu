@@ -4,7 +4,6 @@ import os
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
 import pytest
 from subprocess_objects import (
@@ -32,8 +31,7 @@ from furu.worker.protocol import (
     JobBlockedResult,
     JobCompletedResult,
     JobFailedResult,
-    JobMember,
-    JobResultRequest,
+    JobResult,
 )
 
 
@@ -74,15 +72,13 @@ def _submit_provenance() -> SubmitProvenance:
     )
 
 
-def _run(slot: ChildSlot, obj: Spec[Any]) -> JobResultRequest:
+def _run(slot: ChildSlot, obj: Spec[Any]) -> JobResult:
     execution = obj._metadata.execution
     assert isinstance(execution, Subprocess)
     return slot.run(
         [obj],
         job=Job(
-            members=[
-                JobMember(lease_id=str(uuid4()), artifact=ArtifactSpec.from_furu(obj))
-            ],
+            artifacts=[ArtifactSpec.from_furu(obj)],
             provenance=_submit_provenance(),
         ),
         execution=execution,

@@ -11,8 +11,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, assert_never
 
-from pydantic import TypeAdapter
-
 from furu.config import _WORKER_JSON_CONFIG_FILE_ENV_VAR
 from furu.core import Spec
 from furu.execution.load_or_create import _cached_to_build_msg, _ensure_group_result
@@ -27,7 +25,8 @@ from furu.worker.protocol import (
     JobBlockedResult,
     JobCompletedResult,
     JobFailedResult,
-    JobResultRequest,
+    JobResult,
+    job_result_adapter,
 )
 
 logger = get_logger("worker.execute")
@@ -36,10 +35,8 @@ _STDERR_TAIL_LINES = 200
 _STDERR_TAIL_CHARS = 32 * 1024
 _RETIRE_TIMEOUT_SECONDS = 5.0
 
-_job_result_adapter: TypeAdapter[JobResultRequest] = TypeAdapter(JobResultRequest)
 
-
-def execute_job(objs: Sequence[Spec[Any]], *, job: Job) -> JobResultRequest:
+def execute_job(objs: Sequence[Spec[Any]], *, job: Job) -> JobResult:
     try:
         worker_hash = EnvironmentIdentity.capture().uv_lock_hash
         submitted_hash = job.provenance.environment.uv_lock_hash
@@ -86,7 +83,7 @@ class ChildSlot:
 
     def run(
         self, objs: Sequence[Spec[Any]], *, job: Job, execution: Subprocess
-    ) -> JobResultRequest:
+    ) -> JobResult:
         if all(result_dir_for_loading(obj) is not None for obj in objs):
             logger.info("%s", _cached_to_build_msg(list(objs), []))
             return JobCompletedResult()
@@ -190,7 +187,7 @@ def _spawn(environment: dict[str, str]) -> _Child:
     )
 
 
-def _request(child: _Child, job: Job) -> JobResultRequest:
+def _request(child: _Child, job: Job) -> JobResult:
     assert child.process.stdin is not None
     assert child.process.stdout is not None
     try:
@@ -200,7 +197,7 @@ def _request(child: _Child, job: Job) -> JobResultRequest:
     except OSError:
         line = ""
     if line:
-        return _job_result_adapter.validate_json(line)
+        return job_result_adapter.validate_json(line)
 
     returncode = child.process.wait()
     child.stderr_thread.join(timeout=_RETIRE_TIMEOUT_SECONDS)

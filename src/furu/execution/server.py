@@ -1,17 +1,19 @@
 from __future__ import annotations
 
-import socket
 import threading
-import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from secrets import token_urlsafe
 
-import uvicorn
+from websockets.exceptions import ConnectionClosed
+from websockets.sync.server import ServerConnection, basic_auth, serve
 
-from furu.execution.api import create_execution_coordinator_api_app
 from furu.execution.execution_coordinator import ExecutionCoordinator
+from furu.logging import get_logger, log_detail
+from furu.worker.protocol import HelloMessage, job_result_adapter
+
+logger = get_logger()
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,7 +24,38 @@ class ExecutionCoordinatorServer:
 
     @property
     def server_url(self) -> str:
-        return f"http://{self.bound_host}:{self.bound_port}"
+        return f"ws://{self.bound_host}:{self.bound_port}"
+
+
+def _serve_worker(
+    coordinator: ExecutionCoordinator,
+    connection: ServerConnection,
+) -> None:
+    with coordinator.log_context():
+        hello = HelloMessage.model_validate_json(connection.recv(timeout=10.0))
+        worker = hello.worker
+        logger.info(
+            "worker connected · %s",
+            worker,
+            extra=log_detail(worker=worker, backend=hello.backend),
+        )
+        try:
+            while True:
+                job = coordinator.lease_job(resources=hello.resources, worker=worker)
+                if job is None:
+                    return
+                connection.send(job.model_dump_json())
+                result = job_result_adapter.validate_json(connection.recv())
+                for artifact in job.artifacts:
+                    coordinator.job_result(artifact.object_id, result)
+        except ConnectionClosed:
+            logger.warning(
+                "worker disconnected · %s",
+                worker,
+                extra=log_detail(worker=worker),
+            )
+        finally:
+            coordinator.worker_lost(worker)
 
 
 @contextmanager
@@ -30,52 +63,45 @@ def execution_coordinator_server(
     coordinator: ExecutionCoordinator, *, bind_host: str, port: int
 ) -> Iterator[ExecutionCoordinatorServer]:
     auth_token = token_urlsafe(32)
-    app = create_execution_coordinator_api_app(coordinator, auth_token=auth_token)
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server: uvicorn.Server | None = None
-    thread: threading.Thread | None = None
+    connections: set[ServerConnection] = set()
+    connections_changed = threading.Condition()
 
+    def handler(connection: ServerConnection) -> None:
+        with connections_changed:
+            connections.add(connection)
+        try:
+            _serve_worker(coordinator, connection)
+        finally:
+            with connections_changed:
+                connections.discard(connection)
+                connections_changed.notify_all()
+
+    server = serve(
+        handler,
+        bind_host,
+        port,
+        process_request=basic_auth(credentials=("furu", auth_token)),
+        max_size=None,
+    )
+    bound_host, bound_port = server.socket.getsockname()[:2]
+    thread = threading.Thread(
+        target=server.serve_forever,
+        name="furu-execution-coordinator-server",
+    )
+    thread.start()
     try:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind((bind_host, port))
-        sock.listen()
-        sock.set_inheritable(True)
-        bound_host, bound_port = sock.getsockname()[:2]
-
-        server = uvicorn.Server(
-            uvicorn.Config(
-                app,
-                log_level="warning",
-                lifespan="off",
-                ws="none",
-            )
-        )
-        thread = threading.Thread(
-            target=server.run,
-            kwargs={"sockets": [sock]},
-            name="furu-execution-coordinator-server",
-        )
-        thread.start()
-        deadline = time.monotonic() + 10
-        while not server.started:
-            if not thread.is_alive():
-                raise RuntimeError(
-                    "execution coordinator server exited before it was ready"
-                )
-            if time.monotonic() > deadline:
-                raise TimeoutError(
-                    "execution coordinator server did not start within 10 seconds"
-                )
-            time.sleep(0.01)
-
         yield ExecutionCoordinatorServer(
             bound_host=bound_host,
             bound_port=bound_port,
             auth_token=auth_token,
         )
     finally:
-        if server is not None:
-            server.should_exit = True
-        if thread is not None:
-            thread.join(timeout=10)
-        sock.close()
+        coordinator.fail("execution coordinator server closed before the run finished")
+        server.shutdown()
+        thread.join(timeout=10)
+        with connections_changed:
+            open_connections = tuple(connections)
+        for connection in open_connections:
+            connection.close()
+        with connections_changed:
+            connections_changed.wait_for(lambda: not connections, timeout=10)

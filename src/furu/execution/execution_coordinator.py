@@ -9,8 +9,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, assert_never
-from uuid import uuid4
+from typing import TYPE_CHECKING, assert_never
 
 from furu.config import get_config
 from furu.core import Spec
@@ -31,9 +30,7 @@ from furu.worker.protocol import (
     JobBlockedResult,
     JobCompletedResult,
     JobFailedResult,
-    JobMember,
-    JobResultRequest,
-    LeaseJobResponse,
+    JobResult,
 )
 
 if TYPE_CHECKING:
@@ -45,7 +42,6 @@ logger = get_logger()
 
 @dataclass(frozen=True, slots=True)
 class RunningJob:
-    lease_id: str
     node: DagNode
     started_at: float
     worker: str
@@ -54,7 +50,6 @@ class RunningJob:
 @dataclass(frozen=True, slots=True)
 class FailedJob:
     failed_attempts: int
-    lease_id: str
     node: DagNode
     error: str
 
@@ -69,7 +64,7 @@ class ExecutionCoordinator:
     running: dict[str, RunningJob] = field(default_factory=dict)
     completed: dict[str, DagNode] = field(default_factory=dict)
     failed: dict[str, FailedJob] = field(default_factory=dict)
-    lock: Any = field(default_factory=threading.Lock)
+    lock: threading.Condition = field(default_factory=threading.Condition)
     done: threading.Event = field(default_factory=threading.Event)
     finish_error: str | None = None
     submit_provenance: SubmitProvenance | None = None
@@ -143,23 +138,25 @@ class ExecutionCoordinator:
                     executor_dir=coordinator.executor_dir,
                 ),
             )
-            with execution_coordinator_server(
-                coordinator, bind_host=bind_host, port=port
-            ) as server:
-                logger.info("server listening on %s", server.server_url)
-                pools = []
-                for backend in worker_backends:
-                    pool = backend.start_pool(
-                        bound_port=server.bound_port,
-                        auth_token=server.auth_token,
-                        executor_dir=coordinator.executor_dir,
-                        provenance=coordinator.submit_provenance,
-                    )
-                    pools.append(pool)
-                    logger.info("pool started · %s", type(backend).__name__)
-                try:
+            pools = []
+            try:
+                with execution_coordinator_server(
+                    coordinator, bind_host=bind_host, port=port
+                ) as server:
+                    logger.info("server listening on %s", server.server_url)
+                    for backend in worker_backends:
+                        pool = backend.start_pool(
+                            coordinator=coordinator,
+                            bound_port=server.bound_port,
+                            auth_token=server.auth_token,
+                            executor_dir=coordinator.executor_dir,
+                            provenance=coordinator.submit_provenance,
+                        )
+                        pools.append(pool)
+                        logger.info("pool started · %s", type(backend).__name__)
                     coordinator.done.wait()
-                finally:
+            finally:
+                if pools:
                     with ThreadPoolExecutor(max_workers=len(pools)) as executor:
                         stop_futures = [
                             executor.submit(pool.stop, timeout=5) for pool in pools
@@ -186,64 +183,58 @@ class ExecutionCoordinator:
         ):
             yield
 
-    def lease_job(self, *, resources: ResourceRequest, worker: str) -> LeaseJobResponse:
+    def lease_job(self, *, resources: ResourceRequest, worker: str) -> Job | None:
         with self.log_context(), self.lock:
-            if self.done.is_set():
-                return "stop"
-            self._release_worker_locked(worker, reason="worker requested a new lease")
-            self._maybe_finish_locked()
-            if self.done.is_set():
-                return "stop"
-            lease = next(self._satisfiable_leases_locked(resources), None)
-            if lease is None:
-                return "wait"
+            while True:
+                if self.done.is_set():
+                    return None
+                lease = next(self._satisfiable_leases_locked(resources), None)
+                if lease is not None:
+                    break
+                self.lock.wait()
             node, member_ids = lease
             nodes = [
                 self.ready.pop(member_id)
                 for member_id in (node.obj.object_id, *member_ids)
             ]
-            members = []
             started_at = time.monotonic()
             for member_node in nodes:
-                lease_id = str(uuid4())
-                self.running[lease_id] = RunningJob(
-                    lease_id=lease_id,
+                self.running[member_node.obj.object_id] = RunningJob(
                     node=member_node,
                     started_at=started_at,
                     worker=worker,
                 )
-                members.append(
-                    JobMember(
-                        lease_id=lease_id,
-                        artifact=ArtifactSpec.from_furu(member_node.obj),
-                    )
-                )
             logger.info(
                 "leased %s ×%d to %s",
                 node.obj._log_label,
-                len(members),
+                len(nodes),
                 worker,
                 extra=log_detail(
-                    leases=",".join(member.lease_id for member in members),
                     object_ids=",".join(node.obj.object_id for node in nodes),
-                    members=len(members),
+                    members=len(nodes),
                     worker=worker,
                     **self._counts_detail(),
                 ),
             )
             assert self.submit_provenance is not None
-            return Job(members=members, provenance=self.submit_provenance)
+            return Job(
+                artifacts=[ArtifactSpec.from_furu(node.obj) for node in nodes],
+                provenance=self.submit_provenance,
+            )
 
     def worker_lost(self, worker: str) -> None:
         with self.log_context(), self.lock:
             if self.done.is_set():
                 return
             self._release_worker_locked(worker, reason="worker is no longer active")
+            self.lock.notify_all()
 
     def count_satisfiable_jobs(
         self, *, resources: ResourceRequest, max_workers: int
     ) -> int:
         with self.lock:
+            if self.done.is_set():
+                return 0
             leases = self._satisfiable_leases_locked(resources)
             return sum(1 for _ in islice(leases, max_workers))
 
@@ -290,11 +281,10 @@ class ExecutionCoordinator:
             yield node, member_ids
 
     def _release_worker_locked(self, worker: str, *, reason: str) -> None:
-        for lease_id, running_job in tuple(self.running.items()):
+        for object_id, running_job in tuple(self.running.items()):
             if running_job.worker != worker:
                 continue
-            self.running.pop(lease_id)
-            object_id = running_job.node.obj.object_id
+            self.running.pop(object_id)
             self.ready[object_id] = running_job.node
             logger.warning(
                 "released %s from %s: %s",
@@ -302,26 +292,25 @@ class ExecutionCoordinator:
                 worker,
                 reason,
                 extra=log_detail(
-                    lease=lease_id,
                     object_id=object_id,
                     worker=worker,
                     **self._counts_detail(),
                 ),
             )
 
-    def job_result(self, lease_id: str, request: JobResultRequest) -> None:
+    def job_result(self, object_id: str, request: JobResult) -> None:
         with self.log_context(), self.lock:
-            running_job = self.running.pop(lease_id, None)
+            running_job = self.running.pop(object_id, None)
             if running_job is None:
                 logger.info(
-                    "ignoring result for unknown lease",
-                    extra=log_detail(lease=lease_id),
+                    "ignoring result for job that is no longer running",
+                    extra=log_detail(object_id=object_id),
                 )
                 return
             match request:
                 case JobCompletedResult():
-                    self.failed.pop(running_job.node.obj.object_id, None)
-                    self.completed[running_job.node.obj.object_id] = running_job.node
+                    self.failed.pop(object_id, None)
+                    self.completed[object_id] = running_job.node
                     for dependent in tuple(running_job.node.dependents):
                         if running_job.node in dependent.dependencies:
                             dependent.dependencies.remove(running_job.node)
@@ -334,21 +323,18 @@ class ExecutionCoordinator:
                         running_job.node.obj._log_label,
                         format_duration(time.monotonic() - running_job.started_at),
                         extra=log_detail(
-                            lease=lease_id,
-                            object_id=running_job.node.obj.object_id,
+                            object_id=object_id,
                             **self._counts_detail(),
                         ),
                     )
 
                 case JobFailedResult(error=error):
-                    object_id = running_job.node.obj.object_id
                     previous_failed = self.failed.get(object_id)
                     failed_attempts = (
                         previous_failed.failed_attempts if previous_failed else 0
                     ) + 1
                     self.failed[object_id] = FailedJob(
                         failed_attempts=failed_attempts,
-                        lease_id=lease_id,
                         node=running_job.node,
                         error=error,
                     )
@@ -359,9 +345,7 @@ class ExecutionCoordinator:
                         time.monotonic() - running_job.started_at
                     )
                     label = running_job.node.obj._log_label
-                    fail_detail = log_detail(
-                        lease=lease_id, object_id=object_id, error=error
-                    )
+                    fail_detail = log_detail(object_id=object_id, error=error)
                     if will_retry:
                         logger.warning(
                             "failed %s · attempt %d/%d, will retry · %s: %s",
@@ -390,8 +374,7 @@ class ExecutionCoordinator:
                         running_job.node.obj._log_label,
                         len(dependencies),
                         extra=log_detail(
-                            lease=lease_id,
-                            object_id=running_job.node.obj.object_id,
+                            object_id=object_id,
                             dependencies=len(dependencies),
                             **self._counts_detail(),
                         ),
@@ -414,6 +397,7 @@ class ExecutionCoordinator:
                 extra=log_detail(**self._counts_detail()),
             )
             self._maybe_finish_locked()
+            self.lock.notify_all()
 
     def raise_for_failure(self) -> None:
         if self.finish_error is not None:
@@ -426,6 +410,7 @@ class ExecutionCoordinator:
             self.finish_error = message
             logger.error("furu execution coordinator finished with error: %s", message)
             self.done.set()
+            self.lock.notify_all()
 
     def _maybe_finish_locked(self) -> None:
         if self.done.is_set() or self.ready or self.running:
@@ -450,8 +435,8 @@ class ExecutionCoordinator:
                 failed_job = terminal_failed[first_object_id]
                 parts.append(
                     f"first failure for {first_object_id} "
-                    f"after {failed_job.failed_attempts} failed attempts "
-                    f"(lease {failed_job.lease_id}): {failed_job.error}"
+                    f"after {failed_job.failed_attempts} failed attempts: "
+                    f"{failed_job.error}"
                 )
             self.finish_error = (
                 "execution coordinator run could not complete; " + "; ".join(parts)

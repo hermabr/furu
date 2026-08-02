@@ -8,19 +8,21 @@ import subprocess
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, assert_never
+from typing import TYPE_CHECKING, Literal, assert_never
 
 from furu.config import (
     _WORKER_JSON_CONFIG_FILE_ENV_VAR,
     get_config,
 )
-from furu.execution.api import PoolApiClient
 from furu.provenance import EnvironmentIdentity, SubmitProvenance
 from furu.resources import ResourceRequest
 from furu.snapshot import extract_snapshot
 from furu.utils import write_private_file
 from furu.worker.backends.slurm.pool import SlurmWorkerPool
 from furu.worker.backends.slurm.resources import SlurmResources
+
+if TYPE_CHECKING:
+    from furu.execution.execution_coordinator import ExecutionCoordinator
 
 type SlurmExport = Literal["NIL", "ALL"] | tuple[str, ...] | None
 
@@ -33,16 +35,12 @@ class SlurmWorkerBackend:
         default_factory=lambda: get_config().worker.connect_host or socket.getfqdn()
     )
     worker_connect_port: int | None = None
-    max_failed_restarts: int = field(
-        default_factory=lambda: get_config().worker.max_failed_restarts
-    )
     execution_coordinator_listen_host: str = "0.0.0.0"
     job_name: str = "furu-worker"
     poll_interval: float = 10.0
     worker_idle_timeout: float = field(
         default_factory=lambda: get_config().worker.idle_timeout_seconds
     )
-    worker_max_consecutive_failures: int | None = 5  # TODO: maybe add this to config?
     pre_worker_commands: tuple[str, ...] = ()
     export: SlurmExport = None
     use_job_arrays: bool = True
@@ -50,6 +48,7 @@ class SlurmWorkerBackend:
     def start_pool(
         self,
         *,
+        coordinator: ExecutionCoordinator,
         bound_port: int,
         auth_token: str,
         executor_dir: Path,
@@ -58,7 +57,7 @@ class SlurmWorkerBackend:
         connect_port = (
             bound_port if self.worker_connect_port is None else self.worker_connect_port
         )
-        server_url = f"http://{self.worker_connect_host}:{connect_port}"
+        server_url = f"ws://{self.worker_connect_host}:{connect_port}"
 
         chdir = Path.cwd().resolve()
         project_root = Path(EnvironmentIdentity.capture().project_root)
@@ -103,14 +102,6 @@ class SlurmWorkerBackend:
             gpus=self.resources.gpus,
             memory_gib=self.resources.memory_gib,
         )
-        worker_failure_arg = (
-            ""
-            if self.worker_max_consecutive_failures is None
-            else (
-                "    --max-consecutive-failures "
-                f"{self.worker_max_consecutive_failures} \\\n"
-            )
-        )
         pre_worker_script = "".join(
             f"{command}\n" for command in self.pre_worker_commands
         )
@@ -152,7 +143,6 @@ class SlurmWorkerBackend:
                 '    --component "${furu_worker_component}" \\\n'
                 "    --backend slurm \\\n"
                 f"    --idle-timeout {self.worker_idle_timeout} \\\n"
-                f"{worker_failure_arg}"
                 f"    --resource-cpus {resource_request.cpus} \\\n"
                 f"    --resource-gpus {resource_request.gpus} \\\n"
                 f"    --resource-memory-gib {resource_request.memory_gib}\n"
@@ -189,12 +179,9 @@ class SlurmWorkerBackend:
             _sbatch_base_args=sbatch_base_args,
             _script_path=script_path,
             _max_workers=self.max_workers,
-            _max_failed_restarts=self.max_failed_restarts,
             _resource_request=resource_request,
-            _server_url=server_url,
-            _auth_token=auth_token,
             _poll_interval=self.poll_interval,
-            _client=PoolApiClient(server_url=server_url, auth_token=auth_token),
+            _coordinator=coordinator,
             _stop_event=threading.Event(),
             _use_job_arrays=self.use_job_arrays,
             _scale_thread=threading.Thread(
@@ -202,7 +189,6 @@ class SlurmWorkerBackend:
                 name="furu-slurm-worker-pool-scale",
             ),
             _job_ids=[],
-            _failed_job_ids=[],
         )
         pool_holder.append(pool)
         pool._scale_thread.start()

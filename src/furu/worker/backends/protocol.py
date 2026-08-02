@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
+    from furu.execution.execution_coordinator import ExecutionCoordinator
     from furu.provenance import SubmitProvenance
 
 
@@ -14,6 +15,7 @@ class WorkerBackend(Protocol):
     def start_pool(
         self,
         *,
+        coordinator: ExecutionCoordinator,
         bound_port: int,
         auth_token: str,
         executor_dir: Path,

@@ -2,24 +2,17 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from furu.metadata import ArtifactSpec
 from furu.provenance import SubmitProvenance
 from furu.resources import ResourceRequest
 
 
-class JobMember(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-
-    lease_id: str
-    artifact: ArtifactSpec
-
-
 class Job(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    members: list[JobMember]
+    artifacts: list[ArtifactSpec]
     provenance: SubmitProvenance
 
 
@@ -43,42 +36,17 @@ class JobBlockedResult(BaseModel):
     dependencies: list[ArtifactSpec]
 
 
-type JobResultRequest = Annotated[
+type JobResult = Annotated[
     JobCompletedResult | JobFailedResult | JobBlockedResult,
     Field(discriminator="status"),
 ]
 
+job_result_adapter: TypeAdapter[JobResult] = TypeAdapter(JobResult)
 
-class OkResponse(BaseModel):
+
+class HelloMessage(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    ok: Literal[True] = True
-
-
-type LeaseJobResponse = Job | Literal["wait", "stop"]
-
-
-class LeaseJobRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    resources: ResourceRequest
     worker: str
-
-
-class CountSatisfiableJobsRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
+    backend: str
     resources: ResourceRequest
-    max_workers: int
-
-
-class FailRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    message: str
-
-
-class WorkerLostRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    worker: str

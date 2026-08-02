@@ -6,10 +6,13 @@ import time
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from furu.execution.api import PoolApiClient
 from furu.logging import _scoped_component, get_logger
 from furu.resources import ResourceRequest
+
+if TYPE_CHECKING:
+    from furu.execution.execution_coordinator import ExecutionCoordinator
 
 logger = get_logger()
 
@@ -38,17 +41,13 @@ class SlurmWorkerPool:
     _sbatch_base_args: tuple[str, ...]
     _script_path: Path
     _max_workers: int
-    _max_failed_restarts: int
     _resource_request: ResourceRequest
-    _server_url: str
-    _auth_token: str
     _poll_interval: float
-    _client: PoolApiClient
+    _coordinator: ExecutionCoordinator
     _stop_event: threading.Event
     _use_job_arrays: bool
     _scale_thread: threading.Thread
     _job_ids: list[str]
-    _failed_job_ids: list[str]
 
     def stop(self, *, timeout: float) -> None:
         with _scoped_component("slurm"):
@@ -90,10 +89,6 @@ class SlurmWorkerPool:
             and job_id not in active_job_ids
             and ((state := states.get(job_id)) is None or not _is_failed_state(state))
         }
-        self._failed_job_ids[:] = sorted(
-            set(self._failed_job_ids)
-            | {job_id for job_id, state in states.items() if _is_failed_state(state)}
-        )
         self._job_ids[:] = [
             job_id
             for job_id in self._job_ids
@@ -103,28 +98,14 @@ class SlurmWorkerPool:
                 or states.get(job_id) not in (None, *_PRUNABLE_STATES)
             )
         ]
-        for job_id in sorted(lost_job_ids):
-            allocation_job_id, separator, array_task_id = job_id.partition("_")
-            self._client.worker_lost(
-                worker=(
-                    f"slurm-worker-{allocation_job_id}a{array_task_id}"
-                    if separator
-                    else f"slurm-worker-{allocation_job_id}"
-                )
-            )
-        remaining_starts = (
-            self._max_workers
-            + self._max_failed_restarts
-            - len(self._failed_job_ids)
-            - len(self._job_ids)
-        )
-        if len(self._job_ids) >= self._max_workers or remaining_starts <= 0:
+        remaining_starts = self._max_workers - len(self._job_ids)
+        if remaining_starts <= 0:
             return states
 
         to_spawn = min(
             max(
                 0,
-                self._client.count_satisfiable_jobs(
+                self._coordinator.count_satisfiable_jobs(
                     resources=self._resource_request,
                     max_workers=self._max_workers,
                 )
@@ -289,9 +270,4 @@ class SlurmWorkerPool:
 
     def _report_failure(self, message: str) -> None:
         logger.error("slurm worker pool failure: %s", message)
-        try:
-            self._client.fail(message=message)
-        except Exception:
-            logger.exception(
-                "failed to report slurm worker pool failure to execution coordinator"
-            )
+        self._coordinator.fail(message)

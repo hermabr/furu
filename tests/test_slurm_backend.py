@@ -9,6 +9,7 @@ import stat
 import subprocess
 import sys
 import textwrap
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +23,7 @@ from furu.config import (
     _FuruWorkerConfig,
     get_config,
 )
-from furu.execution.api import PoolApiClient
+from furu.execution.execution_coordinator import ExecutionCoordinator
 from furu.provenance import (
     EnvironmentIdentity,
     GitIdentity,
@@ -43,12 +44,21 @@ from furu.worker.backends.slurm.resources import (
 )
 
 
-def _stub_count_satisfiable_jobs(monkeypatch: pytest.MonkeyPatch, count: int) -> None:
-    monkeypatch.setattr(
-        PoolApiClient,
-        "count_satisfiable_jobs",
-        lambda self, *, resources, max_workers: count,
-    )
+class _StubCoordinator(ExecutionCoordinator):
+    """Stands in for the ExecutionCoordinator the pool calls in-process."""
+
+    def __init__(self, count: Callable[[int], int] | int = 0) -> None:
+        super().__init__(max_retries_per_object=0)
+        self._count = count
+        self.failures: list[str] = []
+
+    def count_satisfiable_jobs(self, *, resources: object, max_workers: int) -> int:
+        if isinstance(self._count, int):
+            return self._count
+        return self._count(max_workers)
+
+    def fail(self, message: str) -> None:
+        self.failures.append(message)
 
 
 def _disable_slurm_pool_scale_thread(
@@ -94,7 +104,7 @@ def test_worker_cli_reads_auth_token_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[str, str, ResourceRequest, float | None, int | None]] = []
+    calls: list[tuple[str, str, ResourceRequest, float | None]] = []
     token_file = tmp_path / "worker.token"
     token_file.write_text("secret\n\n")
 
@@ -104,19 +114,10 @@ def test_worker_cli_reads_auth_token_file(
         auth_token: str,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
-        max_consecutive_failures: int | None,
         component: str,
         backend: str,
     ) -> None:
-        calls.append(
-            (
-                server_url,
-                auth_token,
-                resource_request,
-                idle_timeout,
-                max_consecutive_failures,
-            )
-        )
+        calls.append((server_url, auth_token, resource_request, idle_timeout))
 
     monkeypatch.setattr(_cli, "worker_loop", worker_loop)
 
@@ -145,13 +146,7 @@ def test_worker_cli_reads_auth_token_file(
     )
 
     assert calls == [
-        (
-            "http://execution-coordinator.test",
-            "secret",
-            ResourceRequest(),
-            60.0,
-            None,
-        )
+        ("http://execution-coordinator.test", "secret", ResourceRequest(), 60.0)
     ]
     assert token_file.exists()
 
@@ -160,7 +155,7 @@ def test_worker_cli_reads_resource_request(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[ResourceRequest, float | None, int | None]] = []
+    calls: list[tuple[ResourceRequest, float | None]] = []
     token_file = tmp_path / "worker.token"
     token_file.write_text("secret")
 
@@ -170,11 +165,10 @@ def test_worker_cli_reads_resource_request(
         auth_token: str,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
-        max_consecutive_failures: int | None,
         component: str,
         backend: str,
     ) -> None:
-        calls.append((resource_request, idle_timeout, max_consecutive_failures))
+        calls.append((resource_request, idle_timeout))
 
     monkeypatch.setattr(_cli, "worker_loop", worker_loop)
 
@@ -202,7 +196,7 @@ def test_worker_cli_reads_resource_request(
         == 0
     )
 
-    assert calls == [(ResourceRequest(cpus=4, gpus=1, memory_gib=16), 30.0, None)]
+    assert calls == [(ResourceRequest(cpus=4, gpus=1, memory_gib=16), 30.0)]
 
 
 def test_worker_cli_reads_idle_timeout(
@@ -219,7 +213,6 @@ def test_worker_cli_reads_idle_timeout(
         auth_token: str,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
-        max_consecutive_failures: int | None,
         component: str,
         backend: str,
     ) -> None:
@@ -254,57 +247,6 @@ def test_worker_cli_reads_idle_timeout(
     assert calls == [0.25]
 
 
-def test_worker_cli_reads_max_consecutive_failures(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[int | None] = []
-    token_file = tmp_path / "worker.token"
-    token_file.write_text("secret")
-
-    def worker_loop(
-        *,
-        server_url: str,
-        auth_token: str,
-        resource_request: ResourceRequest,
-        idle_timeout: float | None,
-        max_consecutive_failures: int | None,
-        component: str,
-        backend: str,
-    ) -> None:
-        calls.append(max_consecutive_failures)
-
-    monkeypatch.setattr(_cli, "worker_loop", worker_loop)
-
-    assert (
-        _cli.main(
-            [
-                "--server-url",
-                "http://execution-coordinator.test",
-                "--auth-token-file",
-                str(token_file),
-                "--resource-cpus",
-                "4",
-                "--resource-gpus",
-                "1",
-                "--resource-memory-gib",
-                "0",
-                "--idle-timeout",
-                "0.25",
-                "--component",
-                "test-worker",
-                "--backend",
-                "slurm",
-                "--max-consecutive-failures",
-                "3",
-            ]
-        )
-        == 0
-    )
-
-    assert calls == [3]
-
-
 def _run_worker_cli_capturing_component(
     monkeypatch: pytest.MonkeyPatch,
     token_file: Path,
@@ -318,7 +260,6 @@ def _run_worker_cli_capturing_component(
         auth_token: str,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
-        max_consecutive_failures: int | None,
         component: str,
         backend: str,
     ) -> None:
@@ -379,7 +320,6 @@ def test_worker_cli_requires_component(
         auth_token: str,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
-        max_consecutive_failures: int | None,
         component: str,
         backend: str,
     ) -> None:
@@ -571,7 +511,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
     record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    _stub_count_satisfiable_jobs(monkeypatch, 2)
+    coordinator = _StubCoordinator(2)
     work_dir = tmp_path / "work"
     work_dir.mkdir()
     executor_dir = tmp_path / "furu" / "executions" / "executor-1"
@@ -591,11 +531,11 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
         worker_connect_host="execution-coordinator.cluster",
         poll_interval=1.5,
         worker_idle_timeout=0.25,
-        worker_max_consecutive_failures=3,
         pre_worker_commands=('echo "Hello" > /tmp/hey',),
     )
 
     pool = backend.start_pool(
+        coordinator=coordinator,
         bound_port=1234,
         auth_token="secret-token",
         executor_dir=executor_dir,
@@ -639,7 +579,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert "python -m furu.worker._cli" in script
     assert sys.executable not in script
     assert "--backend slurm" in script
-    assert "--server-url http://execution-coordinator.cluster:1234" in script
+    assert "--server-url ws://execution-coordinator.cluster:1234" in script
     assert "SLURM_ARRAY_TASK_ID" in script
     assert "SLURM_ARRAY_JOB_ID" in script
     assert (
@@ -648,7 +588,6 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     )
     assert '--component "${furu_worker_component}"' in script
     assert "--idle-timeout 0.25" in script
-    assert "--max-consecutive-failures 3" in script
     assert "--resource-cpus 4" in script
     assert "--resource-gpus 1" in script
     assert "--resource-memory-gib 8" in script
@@ -707,6 +646,7 @@ def test_slurm_worker_component_label_derivation_under_bash(
         use_job_arrays=False,
     )
     pool = backend.start_pool(
+        coordinator=_StubCoordinator(),
         bound_port=1234,
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
@@ -748,6 +688,7 @@ def test_slurm_array_worker_component_label_derivation_under_bash(
         use_job_arrays=True,
     )
     pool = backend.start_pool(
+        coordinator=_StubCoordinator(),
         bound_port=1234,
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
@@ -806,6 +747,7 @@ def test_slurm_backend_export_option_controls_sbatch_args(
     )
 
     pool = backend.start_pool(
+        coordinator=_StubCoordinator(),
         bound_port=1234,
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
@@ -824,7 +766,7 @@ def test_slurm_backend_includes_selected_export_names_in_sbatch_args(
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
     record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    _stub_count_satisfiable_jobs(monkeypatch, 1)
+    coordinator = _StubCoordinator(1)
     backend = SlurmWorkerBackend(
         max_workers=1,
         resources=SlurmResources(cpus_per_worker=1),
@@ -833,6 +775,7 @@ def test_slurm_backend_includes_selected_export_names_in_sbatch_args(
     )
 
     pool = backend.start_pool(
+        coordinator=coordinator,
         bound_port=1234,
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
@@ -852,7 +795,7 @@ def test_slurm_backend_can_submit_workers_as_job_array(
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
     record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    _stub_count_satisfiable_jobs(monkeypatch, 3)
+    coordinator = _StubCoordinator(3)
     backend = SlurmWorkerBackend(
         max_workers=3,
         resources=SlurmResources(cpus_per_worker=1),
@@ -862,6 +805,7 @@ def test_slurm_backend_can_submit_workers_as_job_array(
     )
 
     pool = backend.start_pool(
+        coordinator=coordinator,
         bound_port=1234,
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
@@ -898,7 +842,7 @@ def test_slurm_worker_pool_ignores_untracked_array_siblings_from_sacct(
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
     _record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    _stub_count_satisfiable_jobs(monkeypatch, 3)
+    coordinator = _StubCoordinator(3)
     backend = SlurmWorkerBackend(
         max_workers=3,
         resources=SlurmResources(cpus_per_worker=1),
@@ -907,6 +851,7 @@ def test_slurm_worker_pool_ignores_untracked_array_siblings_from_sacct(
         use_job_arrays=True,
     )
     pool = backend.start_pool(
+        coordinator=coordinator,
         bound_port=1234,
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
@@ -943,11 +888,7 @@ def test_slurm_pool_submits_replacement_workers_as_job_array(
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
     record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    monkeypatch.setattr(
-        PoolApiClient,
-        "count_satisfiable_jobs",
-        lambda self, *, resources, max_workers: max_workers,
-    )
+    coordinator = _StubCoordinator(lambda max_workers: max_workers)
     backend = SlurmWorkerBackend(
         max_workers=3,
         resources=SlurmResources(cpus_per_worker=1),
@@ -955,6 +896,7 @@ def test_slurm_pool_submits_replacement_workers_as_job_array(
         poll_interval=0,
     )
     pool = backend.start_pool(
+        coordinator=coordinator,
         bound_port=1234,
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
@@ -981,23 +923,13 @@ def test_slurm_pool_submits_replacement_workers_as_job_array(
     ]
 
 
-def test_slurm_pool_releases_nonfailed_array_workers_missing_from_squeue(
+def test_slurm_pool_replaces_nonfailed_array_workers_missing_from_squeue(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
     record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    lost_workers: list[str] = []
-    monkeypatch.setattr(
-        PoolApiClient,
-        "count_satisfiable_jobs",
-        lambda self, *, resources, max_workers: max_workers,
-    )
-    monkeypatch.setattr(
-        PoolApiClient,
-        "worker_lost",
-        lambda self, *, worker: lost_workers.append(worker),
-    )
+    coordinator = _StubCoordinator(lambda max_workers: max_workers)
     backend = SlurmWorkerBackend(
         max_workers=3,
         resources=SlurmResources(cpus_per_worker=1),
@@ -1006,6 +938,7 @@ def test_slurm_pool_releases_nonfailed_array_workers_missing_from_squeue(
         use_job_arrays=True,
     )
     pool = backend.start_pool(
+        coordinator=coordinator,
         bound_port=1234,
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
@@ -1027,9 +960,7 @@ def test_slurm_pool_releases_nonfailed_array_workers_missing_from_squeue(
     )
     pool._scale_once()
 
-    assert lost_workers == ["slurm-worker-100a1", "slurm-worker-100a2"]
     assert pool._job_ids == ["100_0", "101_0", "101_1"]
-    assert pool._failed_job_ids == []
     sbatch_records = [
         record
         for record in _read_records(record_file)
@@ -1046,7 +977,7 @@ def test_slurm_worker_pool_stop_cancels_array_tasks(
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
     record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    _stub_count_satisfiable_jobs(monkeypatch, 2)
+    coordinator = _StubCoordinator(2)
     backend = SlurmWorkerBackend(
         max_workers=2,
         resources=SlurmResources(cpus_per_worker=1),
@@ -1054,6 +985,7 @@ def test_slurm_worker_pool_stop_cancels_array_tasks(
         poll_interval=0,
     )
     pool = backend.start_pool(
+        coordinator=coordinator,
         bound_port=1234,
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
@@ -1132,7 +1064,7 @@ def test_slurm_backend_builds_server_url_from_worker_connect_host(
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
     record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    _stub_count_satisfiable_jobs(monkeypatch, 1)
+    coordinator = _StubCoordinator(1)
     backend = SlurmWorkerBackend(
         max_workers=1,
         resources=SlurmResources(cpus_per_worker=1),
@@ -1140,6 +1072,7 @@ def test_slurm_backend_builds_server_url_from_worker_connect_host(
     )
 
     pool = backend.start_pool(
+        coordinator=coordinator,
         bound_port=4321,
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
@@ -1155,9 +1088,8 @@ def test_slurm_backend_builds_server_url_from_worker_connect_host(
 
     script_path = Path(sbatch_records[0]["argv"][-1])
     script = script_path.read_text()
-    assert "--server-url http://execution-coordinator.cluster:4321" in script
+    assert "--server-url ws://execution-coordinator.cluster:4321" in script
     assert f"--idle-timeout {get_config().worker.idle_timeout_seconds}" in script
-    assert "--max-consecutive-failures 5" in script
 
 
 def test_slurm_backend_worker_connect_port_overrides_bound_port(
@@ -1166,7 +1098,7 @@ def test_slurm_backend_worker_connect_port_overrides_bound_port(
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
     record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    _stub_count_satisfiable_jobs(monkeypatch, 1)
+    coordinator = _StubCoordinator(1)
     backend = SlurmWorkerBackend(
         max_workers=1,
         resources=SlurmResources(cpus_per_worker=1),
@@ -1175,6 +1107,7 @@ def test_slurm_backend_worker_connect_port_overrides_bound_port(
     )
 
     pool = backend.start_pool(
+        coordinator=coordinator,
         bound_port=4321,
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
@@ -1187,7 +1120,7 @@ def test_slurm_backend_worker_connect_port_overrides_bound_port(
     assert len(sbatch_records) == 1
 
     script = Path(sbatch_records[0]["argv"][-1]).read_text()
-    assert "--server-url http://execution-coordinator.cluster:9000" in script
+    assert "--server-url ws://execution-coordinator.cluster:9000" in script
     assert ":4321" not in script
 
 
@@ -1222,7 +1155,7 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
     record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    _stub_count_satisfiable_jobs(monkeypatch, 2)
+    coordinator = _StubCoordinator(2)
     backend = SlurmWorkerBackend(
         max_workers=2,
         resources=SlurmResources(cpus_per_worker=1),
@@ -1231,6 +1164,7 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
         use_job_arrays=False,
     )
     pool = backend.start_pool(
+        coordinator=coordinator,
         bound_port=1234,
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
@@ -1273,19 +1207,16 @@ def test_slurm_worker_pool_unhealthy_report_includes_failed_state(
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
     _record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    reports: list[str] = []
-    monkeypatch.setattr(
-        PoolApiClient, "fail", lambda self, *, message: reports.append(message)
-    )
+    coordinator = _StubCoordinator()
     backend = SlurmWorkerBackend(
         max_workers=1,
-        max_failed_restarts=0,
         resources=SlurmResources(cpus_per_worker=1),
         worker_connect_host="execution-coordinator.cluster",
         poll_interval=0,
         use_job_arrays=False,
     )
     pool = backend.start_pool(
+        coordinator=coordinator,
         bound_port=1234,
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
@@ -1296,7 +1227,7 @@ def test_slurm_worker_pool_unhealthy_report_includes_failed_state(
 
     pool._scale_loop()
 
-    assert reports == ["slurm worker pool became unhealthy: 100 FAILED"]
+    assert coordinator.failures == ["slurm worker pool became unhealthy: 100 FAILED"]
 
 
 def test_slurm_pool_scale_submits_additional_workers_as_satisfiable_count_grows(
@@ -1306,11 +1237,7 @@ def test_slurm_pool_scale_submits_additional_workers_as_satisfiable_count_grows(
     _disable_slurm_pool_scale_thread(monkeypatch)
     record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
     counts = iter([0, 2, 10, 10])
-    monkeypatch.setattr(
-        PoolApiClient,
-        "count_satisfiable_jobs",
-        lambda self, *, resources, max_workers: min(next(counts), max_workers),
-    )
+    coordinator = _StubCoordinator(lambda max_workers: min(next(counts), max_workers))
 
     backend = SlurmWorkerBackend(
         max_workers=3,
@@ -1320,6 +1247,7 @@ def test_slurm_pool_scale_submits_additional_workers_as_satisfiable_count_grows(
         use_job_arrays=False,
     )
     pool = backend.start_pool(
+        coordinator=coordinator,
         bound_port=1234,
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
@@ -1357,7 +1285,7 @@ def test_slurm_pool_scale_does_not_resubmit_for_already_tracked_viable_job(
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
     record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    _stub_count_satisfiable_jobs(monkeypatch, 1)
+    coordinator = _StubCoordinator(1)
 
     backend = SlurmWorkerBackend(
         max_workers=5,
@@ -1367,6 +1295,7 @@ def test_slurm_pool_scale_does_not_resubmit_for_already_tracked_viable_job(
         use_job_arrays=False,
     )
     pool = backend.start_pool(
+        coordinator=coordinator,
         bound_port=1234,
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
@@ -1392,11 +1321,7 @@ def test_slurm_pool_scale_submits_replacement_workers_after_existing_workers_exi
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
     record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    monkeypatch.setattr(
-        PoolApiClient,
-        "count_satisfiable_jobs",
-        lambda self, *, resources, max_workers: max_workers,
-    )
+    coordinator = _StubCoordinator(lambda max_workers: max_workers)
 
     backend = SlurmWorkerBackend(
         max_workers=3,
@@ -1406,6 +1331,7 @@ def test_slurm_pool_scale_submits_replacement_workers_after_existing_workers_exi
         use_job_arrays=False,
     )
     pool = backend.start_pool(
+        coordinator=coordinator,
         bound_port=1234,
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
@@ -1433,21 +1359,17 @@ def test_slurm_pool_scale_does_not_count_completed_jobs_as_restarts(
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
     record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    monkeypatch.setattr(
-        PoolApiClient,
-        "count_satisfiable_jobs",
-        lambda self, *, resources, max_workers: max_workers,
-    )
+    coordinator = _StubCoordinator(lambda max_workers: max_workers)
 
     backend = SlurmWorkerBackend(
         max_workers=1,
-        max_failed_restarts=0,
         resources=SlurmResources(cpus_per_worker=1),
         worker_connect_host="execution-coordinator.cluster",
         poll_interval=0,
         use_job_arrays=False,
     )
     pool = backend.start_pool(
+        coordinator=coordinator,
         bound_port=1234,
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
@@ -1461,7 +1383,6 @@ def test_slurm_pool_scale_does_not_count_completed_jobs_as_restarts(
     pool._scale_once()
 
     assert pool._job_ids == ["102"]
-    assert pool._failed_job_ids == []
     assert (
         len(
             [
@@ -1480,25 +1401,17 @@ def test_slurm_pool_scale_reports_cancelled_jobs_as_failures(
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
     record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    reports: list[str] = []
-    monkeypatch.setattr(
-        PoolApiClient,
-        "count_satisfiable_jobs",
-        lambda self, *, resources, max_workers: max_workers,
-    )
-    monkeypatch.setattr(
-        PoolApiClient, "fail", lambda self, *, message: reports.append(message)
-    )
+    coordinator = _StubCoordinator(lambda max_workers: max_workers)
 
     backend = SlurmWorkerBackend(
         max_workers=1,
-        max_failed_restarts=0,
         resources=SlurmResources(cpus_per_worker=1),
         worker_connect_host="execution-coordinator.cluster",
         poll_interval=0,
         use_job_arrays=False,
     )
     pool = backend.start_pool(
+        coordinator=coordinator,
         bound_port=1234,
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
@@ -1511,9 +1424,8 @@ def test_slurm_pool_scale_reports_cancelled_jobs_as_failures(
 
     pool._scale_loop()
 
-    assert reports == ["slurm worker pool became unhealthy: 100 CANCELLED"]
+    assert coordinator.failures == ["slurm worker pool became unhealthy: 100 CANCELLED"]
     assert pool._job_ids == ["100"]
-    assert pool._failed_job_ids == ["100"]
     assert (
         len(
             [
@@ -1535,6 +1447,7 @@ def test_slurm_backend_requires_explicit_executor_dir() -> None:
 
     with pytest.raises(TypeError, match="executor_dir"):
         backend.start_pool(
+            coordinator=_StubCoordinator(),
             bound_port=1234,
             auth_token="secret-token",
             provenance=_submit_provenance(),
@@ -1547,7 +1460,7 @@ def test_slurm_worker_pool_join_cancels_jobs_left_after_timeout(
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
     record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    _stub_count_satisfiable_jobs(monkeypatch, 2)
+    coordinator = _StubCoordinator(2)
     backend = SlurmWorkerBackend(
         max_workers=2,
         resources=SlurmResources(cpus_per_worker=1),
@@ -1556,6 +1469,7 @@ def test_slurm_worker_pool_join_cancels_jobs_left_after_timeout(
         use_job_arrays=False,
     )
     pool = backend.start_pool(
+        coordinator=coordinator,
         bound_port=1234,
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
@@ -1586,8 +1500,6 @@ def test_slurm_backend_uses_default_poll_interval() -> None:
     assert backend.poll_interval == 10.0
     assert backend.execution_coordinator_listen_host == "0.0.0.0"
     assert backend.worker_idle_timeout == get_config().worker.idle_timeout_seconds
-    assert backend.worker_max_consecutive_failures == 5
-    assert backend.max_failed_restarts == get_config().worker.max_failed_restarts
     assert backend.use_job_arrays is True
 
 
@@ -1605,7 +1517,6 @@ def _install_fake_slurm(
 
     monkeypatch.delenv("FURU_EXECUTION_COORDINATOR_SERVER_URL", raising=False)
     monkeypatch.delenv("FURU_EXECUTION_COORDINATOR_AUTH_TOKEN", raising=False)
-    monkeypatch.setattr(PoolApiClient, "worker_lost", lambda self, *, worker: None)
     monkeypatch.setenv("FURU_FAKE_SLURM_RECORD_FILE", str(record_file))
     monkeypatch.setenv("FURU_FAKE_SLURM_ACTIVE_FILE", str(active_file))
     monkeypatch.setenv("FURU_FAKE_SLURM_COUNTER_FILE", str(counter_file))
@@ -1827,6 +1738,7 @@ def test_slurm_backend_runs_workers_from_the_extracted_snapshot(
     )
 
     pool = backend.start_pool(
+        coordinator=_StubCoordinator(),
         bound_port=1234,
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
@@ -1865,6 +1777,7 @@ def test_slurm_backend_pins_relative_data_directories_for_workers(
 
     with override_config(_Config.model_validate(data)):
         backend.start_pool(
+            coordinator=_StubCoordinator(),
             bound_port=1234,
             auth_token="secret-token",
             executor_dir=tmp_path / "executor",
