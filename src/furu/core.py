@@ -139,6 +139,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
                 )
             case _BatchedCreate() as hook:
                 cls._furu_create_hook = _BatchedHook(hook.func, hook.batch_fn)
+                del cls.create  # unshadow the inherited create verb
             case hook:
                 cls._furu_create_hook = hook
                 del cls.create  # unshadow the inherited create verb

@@ -1890,6 +1890,7 @@ def test_single_object_on_batch_only_class_uses_create_batched() -> None:
 
 
 def test_instance_access_on_batched_create_runs_a_group_of_one() -> None:
+    assert BatchOnlyValue.create is Spec.create
     assert BatchOnlyValue(key=7).create() == "batch:7"
     assert BatchOnlyValue.batch_calls == [(7,)]
 
@@ -2286,11 +2287,11 @@ def test_create_publicly_loads_or_computes_result() -> None:
     assert CountedSingleValue.create_calls == [99]
 
 
-def test_class_access_on_batched_create_is_the_batch_verb() -> None:
+def test_public_create_batches_lists() -> None:
     objs = [BatchOnlyValue(key=1), BatchOnlyValue(key=2)]
 
-    assert BatchOnlyValue.create(objs) == ["batch:1", "batch:2"]
+    assert furu.create(objs) == ["batch:1", "batch:2"]
     assert BatchOnlyValue.batch_calls == [(1, 2)]
     # A second call is served from cache without invoking the hook again.
-    assert BatchOnlyValue.create(objs) == ["batch:1", "batch:2"]
+    assert furu.create(objs) == ["batch:1", "batch:2"]
     assert BatchOnlyValue.batch_calls == [(1, 2)]
