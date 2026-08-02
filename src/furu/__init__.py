@@ -31,7 +31,6 @@ from furu.spec_metadata import (
     between,
 )
 from furu.utils import _install_main_module_alias
-from furu.validate import validate
 
 _install_main_module_alias()
 
@@ -68,5 +67,4 @@ __all__ = [
     "ref",
     "skip_hash",
     "spec",
-    "validate",
 ]
