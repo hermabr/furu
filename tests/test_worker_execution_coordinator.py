@@ -1535,7 +1535,7 @@ def test_worker_loop_logs_received_task_and_result(
     received_line = next(
         line for line in log_path.read_text().splitlines() if 'msg="received ' in line
     )
-    assert "artifacts=2" in received_line
+    assert f"object_ids={leaf.object_id},{other_leaf.object_id}" in received_line
 
 
 def test_worker_loop_does_not_swallow_keyboard_interrupt(

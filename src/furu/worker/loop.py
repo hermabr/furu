@@ -32,7 +32,9 @@ def _run_job(
         logger.info(
             "received %s",
             task_label,
-            extra=log_detail(artifacts=len(job.artifacts)),
+            extra=log_detail(
+                object_ids=",".join(artifact.object_id for artifact in job.artifacts)
+            ),
         )
         match objs[0]._metadata.execution:
             case "inline":
