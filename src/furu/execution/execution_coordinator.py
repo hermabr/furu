@@ -233,6 +233,8 @@ class ExecutionCoordinator:
         self, *, resources: ResourceRequest, max_workers: int
     ) -> int:
         with self.lock:
+            if self.done.is_set():
+                return 0
             leases = self._satisfiable_leases_locked(resources)
             return sum(1 for _ in islice(leases, max_workers))
 

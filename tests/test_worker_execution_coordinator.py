@@ -748,6 +748,21 @@ def test_count_satisfiable_jobs_caps_at_max_workers_and_filters_by_requirements(
     )
 
 
+def test_count_satisfiable_jobs_returns_zero_when_coordinator_is_done() -> None:
+    coordinator = _new_execution_coordinator([ExecutionCoordinatorLeaf(value=1)])
+    assert (
+        coordinator.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=10)
+        == 1
+    )
+
+    coordinator.fail("execution interrupted")
+
+    assert (
+        coordinator.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=10)
+        == 0
+    )
+
+
 def test_worker_cap_limits_satisfiable_jobs_and_leases() -> None:
     limited = [LimitedExecutionCoordinatorLeaf(value=value) for value in range(3)]
     uncapped = ExecutionCoordinatorLeaf(value=10)
