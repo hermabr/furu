@@ -95,7 +95,6 @@ def worker_loop(
                         )
                         return
                     except ConnectionClosed:
-                        # The server closing the connection is the stop signal.
                         logger.info("server closed the connection; worker exiting")
                         return
 

@@ -43,8 +43,6 @@ def _serve_worker(
             while True:
                 job = coordinator.lease_job(resources=hello.resources, worker=worker)
                 if job is None:
-                    # Returning closes the connection; that is the worker's
-                    # stop signal.
                     return
                 connection.send(job.model_dump_json())
                 result = job_result_adapter.validate_json(connection.recv())
@@ -98,8 +96,6 @@ def execution_coordinator_server(
             auth_token=auth_token,
         )
     finally:
-        # Wake handlers blocked in lease_job; closing their connections below
-        # cannot interrupt that wait, only a coordinator notification can.
         coordinator.fail("execution coordinator server closed before the run finished")
         server.shutdown()
         thread.join(timeout=10)

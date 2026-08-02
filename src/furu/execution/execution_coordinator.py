@@ -160,8 +160,6 @@ class ExecutionCoordinator:
                         logger.info("pool started · %s", type(backend).__name__)
                     coordinator.done.wait()
             finally:
-                # The server is closed first so workers see their stop signal
-                # and pool stops only join already-exiting workers.
                 if pools:
                     with ThreadPoolExecutor(max_workers=len(pools)) as executor:
                         stop_futures = [
