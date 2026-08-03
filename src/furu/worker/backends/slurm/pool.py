@@ -98,21 +98,30 @@ class SlurmWorkerPool:
                 or states.get(job_id) not in (None, *_PRUNABLE_STATES)
             )
         ]
-        remaining_starts = self._max_workers - len(self._job_ids)
-        if remaining_starts <= 0:
-            return states
-
-        to_spawn = min(
+        desired_workers = min(
+            self._max_workers,
             max(
                 0,
                 self._coordinator.count_satisfiable_jobs(
                     resources=self._resource_request,
                     max_workers=self._max_workers,
-                )
-                - len(self._job_ids),
+                ),
             ),
-            remaining_starts,
         )
+
+        surplus_workers = max(0, len(self._job_ids) - desired_workers)
+        pending_job_ids = [
+            job_id
+            for job_id in reversed(self._job_ids)
+            if states.get(job_id) == "PENDING"
+        ][:surplus_workers]
+        if pending_job_ids and self._cancel(pending_job_ids):
+            cancelled = set(pending_job_ids)
+            self._job_ids[:] = [
+                job_id for job_id in self._job_ids if job_id not in cancelled
+            ]
+
+        to_spawn = desired_workers - len(self._job_ids)
         if to_spawn <= 0:
             return states
 
@@ -144,6 +153,30 @@ class SlurmWorkerPool:
             else:
                 self._job_ids.append(job_id)
         return states
+
+    def _cancel(self, job_ids: list[str]) -> bool:
+        try:
+            result = subprocess.run(
+                ["scancel", *job_ids],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=_SLURM_COMMAND_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "scancel timed out while scaling down slurm worker jobs %s",
+                ",".join(job_ids),
+            )
+            return False
+        if result.returncode != 0:
+            logger.warning(
+                "scancel failed while scaling down slurm worker jobs %s: %s",
+                ",".join(job_ids),
+                result.stderr.strip(),
+            )
+            return False
+        return True
 
     def _active_job_ids(self) -> set[str] | None:
         if not self._job_ids:

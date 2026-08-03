@@ -1315,6 +1315,90 @@ def test_slurm_pool_scale_does_not_resubmit_for_already_tracked_viable_job(
     assert len(sbatch_records) == 1
 
 
+@pytest.mark.parametrize("use_job_arrays", [False, True])
+def test_slurm_pool_scale_cancels_surplus_pending_workers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    use_job_arrays: bool,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    counts = iter([3, 1])
+    coordinator = _StubCoordinator(lambda max_workers: min(next(counts), max_workers))
+
+    backend = SlurmWorkerBackend(
+        max_workers=3,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="execution-coordinator.cluster",
+        poll_interval=0,
+        use_job_arrays=use_job_arrays,
+    )
+    pool = backend.start_pool(
+        coordinator=coordinator,
+        bound_port=1234,
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+        provenance=_submit_provenance(),
+    )
+
+    pool._scale_once()
+    initial_job_ids = (
+        ["100_0", "100_1", "100_2"] if use_job_arrays else ["100", "101", "102"]
+    )
+    assert pool._job_ids == initial_job_ids
+    active_file.write_text("".join(f"{job_id} PENDING\n" for job_id in initial_job_ids))
+
+    pool._scale_once()
+
+    assert pool._job_ids == initial_job_ids[:1]
+    assert active_file.read_text() == f"{initial_job_ids[0]} PENDING\n"
+    scancel_records = [
+        record
+        for record in _read_records(record_file)
+        if record["executable"] == "scancel"
+    ]
+    assert scancel_records == [
+        {"executable": "scancel", "argv": list(reversed(initial_job_ids[1:]))}
+    ]
+
+
+def test_slurm_pool_scale_does_not_cancel_running_workers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    counts = iter([3, 0])
+    coordinator = _StubCoordinator(lambda max_workers: min(next(counts), max_workers))
+    backend = SlurmWorkerBackend(
+        max_workers=3,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="execution-coordinator.cluster",
+        poll_interval=0,
+        use_job_arrays=False,
+    )
+    pool = backend.start_pool(
+        coordinator=coordinator,
+        bound_port=1234,
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+        provenance=_submit_provenance(),
+    )
+
+    pool._scale_once()
+    active_file.write_text("100 RUNNING\n101 PENDING\n102 RUNNING\n")
+
+    pool._scale_once()
+
+    assert pool._job_ids == ["100", "102"]
+    assert active_file.read_text() == "100 RUNNING\n102 RUNNING\n"
+    assert [
+        record
+        for record in _read_records(record_file)
+        if record["executable"] == "scancel"
+    ] == [{"executable": "scancel", "argv": ["101"]}]
+
+
 def test_slurm_pool_scale_submits_replacement_workers_after_existing_workers_exit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1655,13 +1739,14 @@ def _install_fake_slurm(
 
         cancelled_jobs = set(sys.argv[1:])
         with open(active_file, encoding="utf-8") as file:
-            active_jobs = set(file.read().split())
-        active_jobs = {
+            active_jobs = file.read().splitlines()
+        active_jobs = [
             active_job
             for active_job in active_jobs
-            if active_job not in cancelled_jobs
-            and active_job.partition("_")[0] not in cancelled_jobs
-        }
+            if active_job.split(maxsplit=1)[0] not in cancelled_jobs
+            and active_job.split(maxsplit=1)[0].partition("_")[0]
+            not in cancelled_jobs
+        ]
         with open(active_file, "w", encoding="utf-8") as file:
             file.write("".join(f"{job_id}\\n" for job_id in sorted(active_jobs)))
         """,
