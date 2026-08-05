@@ -1316,7 +1316,7 @@ def test_slurm_pool_scale_does_not_resubmit_for_already_tracked_viable_job(
 
 
 @pytest.mark.parametrize("use_job_arrays", [False, True])
-def test_slurm_pool_scale_cancels_surplus_pending_workers(
+def test_slurm_pool_scale_cancels_newest_surplus_pending_workers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     use_job_arrays: bool,
@@ -1362,16 +1362,16 @@ def test_slurm_pool_scale_cancels_surplus_pending_workers(
     ]
 
 
-def test_slurm_pool_scale_does_not_cancel_running_workers(
+def test_slurm_pool_scale_preserves_running_and_oldest_pending_workers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
     record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    counts = iter([3, 0])
+    counts = iter([4, 2])
     coordinator = _StubCoordinator(lambda max_workers: min(next(counts), max_workers))
     backend = SlurmWorkerBackend(
-        max_workers=3,
+        max_workers=4,
         resources=SlurmResources(cpus_per_worker=1),
         worker_connect_host="execution-coordinator.cluster",
         poll_interval=0,
@@ -1386,17 +1386,17 @@ def test_slurm_pool_scale_does_not_cancel_running_workers(
     )
 
     pool._scale_once()
-    active_file.write_text("100 RUNNING\n101 PENDING\n102 RUNNING\n")
+    active_file.write_text("100 PENDING\n101 RUNNING\n102 PENDING\n103 PENDING\n")
 
     pool._scale_once()
 
-    assert pool._job_ids == ["100", "102"]
-    assert active_file.read_text() == "100 RUNNING\n102 RUNNING\n"
+    assert pool._job_ids == ["100", "101"]
+    assert active_file.read_text() == "100 PENDING\n101 RUNNING\n"
     assert [
         record
         for record in _read_records(record_file)
         if record["executable"] == "scancel"
-    ] == [{"executable": "scancel", "argv": ["101"]}]
+    ] == [{"executable": "scancel", "argv": ["103", "102"]}]
 
 
 def test_slurm_pool_scale_submits_replacement_workers_after_existing_workers_exit(

@@ -110,13 +110,15 @@ class SlurmWorkerPool:
         )
 
         surplus_workers = max(0, len(self._job_ids) - desired_workers)
-        pending_job_ids = [
+        # Job IDs stay in submission order, so preserve the workers that have
+        # waited longest by considering pending jobs newest-first.
+        newest_pending_job_ids = [
             job_id
             for job_id in reversed(self._job_ids)
             if states.get(job_id) == "PENDING"
         ][:surplus_workers]
-        if pending_job_ids and self._cancel(pending_job_ids):
-            cancelled = set(pending_job_ids)
+        if newest_pending_job_ids and self._cancel(newest_pending_job_ids):
+            cancelled = set(newest_pending_job_ids)
             self._job_ids[:] = [
                 job_id for job_id in self._job_ids if job_id not in cancelled
             ]
