@@ -143,10 +143,6 @@ class SlurmWorkerPool:
     def _cancel_queued_workers(
         self, excess: int, active_job_states: dict[str, str]
     ) -> None:
-        # Only still-queued jobs are safe to cancel: a running worker may hold
-        # a lease, and the idle timeout already retires it once work runs dry.
-        # Cancel the newest queued jobs first; older ones have accrued queue
-        # age and are the closest to being scheduled.
         to_cancel = [
             job_id
             for job_id in reversed(self._job_ids)
@@ -171,19 +167,11 @@ class SlurmWorkerPool:
                 result.stderr.strip(),
             )
             return
-        # Forget the jobs immediately so their CANCELLED state is not
-        # mistaken for the pool becoming unhealthy.
         self._job_ids[:] = [
             job_id for job_id in self._job_ids if job_id not in set(to_cancel)
         ]
 
     def _active_job_states(self) -> dict[str, str] | None:
-        """Map still-queued-or-running job id -> squeue state; None on failure.
-
-        Unlike sacct, which reports queued array tasks in one aggregate line
-        ("100_[1-3]"), squeue --array lists them individually, so scale-down
-        can read per-task PENDING states straight off the output.
-        """
         if not self._job_ids:
             return {}
 
