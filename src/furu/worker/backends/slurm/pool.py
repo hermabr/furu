@@ -106,9 +106,9 @@ class SlurmWorkerPool:
             self._max_workers,
         )
         to_spawn = demand - len(self._job_ids)
-        if to_spawn < 0:
-            self._cancel_queued_workers(-to_spawn, active_job_states or {})
         if to_spawn <= 0:
+            if to_spawn < 0:
+                self._cancel_queued_workers(-to_spawn, active_job_states or {})
             return states
 
         for _ in range(1 if self._use_job_arrays else to_spawn):
