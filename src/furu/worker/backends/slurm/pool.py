@@ -56,8 +56,8 @@ class SlurmWorkerPool:
 
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
-                active_job_ids = self._active_job_ids()
-                if active_job_ids is not None and not active_job_ids:
+                active_job_states = self._active_job_states()
+                if active_job_states is not None and not active_job_states:
                     return
                 time.sleep(
                     min(self._poll_interval, max(0.0, deadline - time.monotonic()))
@@ -80,13 +80,13 @@ class SlurmWorkerPool:
                 )
 
     def _scale_once(self) -> dict[str, str]:
-        active_job_ids = self._active_job_ids()
+        active_job_states = self._active_job_states()
         states = self._task_states()
         lost_job_ids = {
             job_id
             for job_id in self._job_ids
-            if active_job_ids is not None
-            and job_id not in active_job_ids
+            if active_job_states is not None
+            and job_id not in active_job_states
             and ((state := states.get(job_id)) is None or not _is_failed_state(state))
         }
         self._job_ids[:] = [
@@ -94,26 +94,21 @@ class SlurmWorkerPool:
             for job_id in self._job_ids
             if job_id not in lost_job_ids
             and (
-                (active_job_ids is not None and job_id in active_job_ids)
+                (active_job_states is not None and job_id in active_job_states)
                 or states.get(job_id) not in (None, *_PRUNABLE_STATES)
             )
         ]
-        remaining_starts = self._max_workers - len(self._job_ids)
-        if remaining_starts <= 0:
-            return states
-
-        to_spawn = min(
-            max(
-                0,
-                self._coordinator.count_satisfiable_jobs(
-                    resources=self._resource_request,
-                    max_workers=self._max_workers,
-                )
-                - len(self._job_ids),
+        demand = min(
+            self._coordinator.count_satisfiable_jobs(
+                resources=self._resource_request,
+                max_workers=self._max_workers,
             ),
-            remaining_starts,
+            self._max_workers,
         )
+        to_spawn = demand - len(self._job_ids)
         if to_spawn <= 0:
+            if to_spawn < 0:
+                self._cancel_queued_workers(-to_spawn, active_job_states or {})
             return states
 
         for _ in range(1 if self._use_job_arrays else to_spawn):
@@ -145,9 +140,40 @@ class SlurmWorkerPool:
                 self._job_ids.append(job_id)
         return states
 
-    def _active_job_ids(self) -> set[str] | None:
+    def _cancel_queued_workers(
+        self, excess: int, active_job_states: dict[str, str]
+    ) -> None:
+        to_cancel = [
+            job_id
+            for job_id in reversed(self._job_ids)
+            if active_job_states.get(job_id) == "PENDING"
+        ][:excess]
+        if not to_cancel:
+            return
+        try:
+            result = subprocess.run(
+                ["scancel", *to_cancel],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=_SLURM_COMMAND_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning("scancel timed out; retrying on the next scale tick")
+            return
+        if result.returncode != 0:
+            logger.warning(
+                "scancel failed; retrying on the next scale tick: %s",
+                result.stderr.strip(),
+            )
+            return
+        self._job_ids[:] = [
+            job_id for job_id in self._job_ids if job_id not in set(to_cancel)
+        ]
+
+    def _active_job_states(self) -> dict[str, str] | None:
         if not self._job_ids:
-            return set()
+            return {}
 
         try:
             result = subprocess.run(
@@ -159,9 +185,9 @@ class SlurmWorkerPool:
                         sorted({job_id.partition("_")[0] for job_id in self._job_ids})
                     ),
                     *(
-                        ("--array", "--format=%i")
+                        ("--array", "--format=%i %T")
                         if self._use_job_arrays
-                        else ("--format=%A",)
+                        else ("--format=%A %T",)
                     ),
                 ],
                 check=False,
@@ -175,11 +201,12 @@ class SlurmWorkerPool:
         if result.returncode != 0:
             logger.debug("squeue failed while checking slurm jobs: %s", result.stderr)
             return None
-        return {
-            line.strip().split(maxsplit=1)[0]
-            for line in result.stdout.splitlines()
-            if line.strip()
-        }
+        states: dict[str, str] = {}
+        for line in result.stdout.splitlines():
+            job_id, _, state = line.strip().partition(" ")
+            if job_id:
+                states[job_id] = state
+        return states
 
     def _task_states(self) -> dict[str, str]:
         if not self._job_ids:
