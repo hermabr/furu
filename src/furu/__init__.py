@@ -6,6 +6,7 @@ from furu._function import spec
 from furu.core import Missing, Spec
 from furu.dependencies import dependency
 from furu.diff import diff
+from furu.execution.execution_coordinator import FuruReplacedError
 from furu.execution.load_or_create import create, load_existing
 from furu.logging import get_logger
 from furu.migration.steps import (
@@ -39,6 +40,7 @@ __version__ = version("furu")
 __all__ = [
     "Added",
     "Codec",
+    "FuruReplacedError",
     "GiB",
     "Metadata",
     "MigrationStep",

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from furu.execution.takeover import PoolInventory, PoolJob
 from furu.logging import _scoped_component, get_logger
 from furu.resources import ResourceRequest
 
@@ -48,11 +49,41 @@ class SlurmWorkerPool:
     _use_job_arrays: bool
     _scale_thread: threading.Thread
     _job_ids: list[str]
+    _pool_id: str
+    _fingerprint: str
+    _endpoint_file: Path
+    _surrendered: threading.Event
+
+    @property
+    def pool_id(self) -> str:
+        return self._pool_id
+
+    def takeover_inventory(self) -> PoolInventory:
+        states = self._active_job_states() or {}
+        return PoolInventory(
+            pool_id=self._pool_id,
+            fingerprint=self._fingerprint,
+            endpoint_file=self._endpoint_file,
+            jobs=[
+                PoolJob(job_id=job_id, state=states.get(job_id, "UNKNOWN"))
+                for job_id in list(self._job_ids)
+            ],
+        )
+
+    def surrender(self) -> None:
+        """Hand this pool's jobs to a successor: stop scaling now (so the job
+        list is final) and make ``stop()`` leave the jobs alone."""
+        self._surrendered.set()
+        self._stop_event.set()
+        self._scale_thread.join(timeout=_SLURM_COMMAND_TIMEOUT_S)
 
     def stop(self, *, timeout: float) -> None:
         with _scoped_component("slurm"):
             self._stop_event.set()
             self._scale_thread.join(timeout=timeout)
+            if self._surrendered.is_set():
+                # The jobs belong to the successor run now.
+                return
 
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
