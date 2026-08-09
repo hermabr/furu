@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import secrets
 import shlex
@@ -14,17 +16,28 @@ from furu.config import (
     _WORKER_JSON_CONFIG_FILE_ENV_VAR,
     get_config,
 )
+from furu.execution.takeover import AdoptedPool, PoolOffer
 from furu.provenance import EnvironmentIdentity, SubmitProvenance
 from furu.resources import ResourceRequest
 from furu.snapshot import extract_snapshot
 from furu.utils import write_private_file
 from furu.worker.backends.slurm.pool import SlurmWorkerPool
 from furu.worker.backends.slurm.resources import SlurmResources
+from furu.worker.endpoint import WorkerEndpoint, write_worker_endpoint
 
 if TYPE_CHECKING:
     from furu.execution.execution_coordinator import ExecutionCoordinator
 
 type SlurmExport = Literal["NIL", "ALL"] | tuple[str, ...] | None
+
+
+def _endpoint_field_lookup(field_name: str) -> str:
+    """Shell fragment resolving one endpoint-file field at script runtime."""
+    return (
+        '"$(python3 -c '
+        "'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "
+        f'"$furu_endpoint_file" {field_name})"'
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,20 +58,35 @@ class SlurmWorkerBackend:
     export: SlurmExport = None
     use_job_arrays: bool = True
 
-    def start_pool(
-        self,
-        *,
-        coordinator: ExecutionCoordinator,
-        bound_port: int,
-        auth_token: str,
-        executor_dir: Path,
-        provenance: SubmitProvenance,
-    ) -> SlurmWorkerPool:
+    def fingerprint(self) -> str:
+        """Hash of exactly the fields that change what a worker *is*.
+
+        Submitter-side concerns (max_workers, poll interval, idle timeout,
+        connect host/port) and the snapshot are deliberately excluded: an old
+        pool whose fingerprint matches can serve this backend's jobs.
+        """
+        payload = json.dumps(
+            {
+                "sbatch_args": self.resources.to_sbatch_args(),
+                "job_name": self.job_name,
+                "export": self.export,
+                "use_job_arrays": self.use_job_arrays,
+                "pre_worker_commands": self.pre_worker_commands,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _server_url(self, bound_port: int) -> str:
         connect_port = (
             bound_port if self.worker_connect_port is None else self.worker_connect_port
         )
-        server_url = f"ws://{self.worker_connect_host}:{connect_port}"
+        return f"ws://{self.worker_connect_host}:{connect_port}"
 
+    def _prepare_project(self, provenance: SubmitProvenance) -> tuple[Path, Path]:
+        """Resolve (chdir, project_root), extracting the snapshot and building
+        its venv so workers never race to create it."""
         chdir = Path.cwd().resolve()
         project_root = Path(EnvironmentIdentity.capture().project_root)
         if provenance.snapshot_id is not None:
@@ -78,12 +106,9 @@ class SlurmWorkerBackend:
                 env={k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"},
                 check=True,
             )
-        worker_dir = executor_dir.resolve() / "workers"
-        worker_dir.mkdir(parents=True, exist_ok=True)
+        return chdir, project_root
 
-        token_file = worker_dir / f"worker-{secrets.token_hex(16)}.token"
-        write_private_file(token_file, auth_token, mode=0o600)
-
+    def _write_worker_config(self, worker_dir: Path) -> Path:
         # Workers may run from a different directory (the extracted snapshot),
         # so pin any relative data directories to the submit-side anchor.
         config = get_config()
@@ -96,6 +121,62 @@ class SlurmWorkerBackend:
             config.model_dump_json(indent=2) + "\n",
             mode=0o600,
         )
+        return config_file
+
+    def takeover_offer(
+        self,
+        *,
+        bound_port: int,
+        auth_token: str,
+        executor_dir: Path,
+        provenance: SubmitProvenance,
+    ) -> PoolOffer:
+        """This run's coordinates for adopted workers, with the snapshot venv
+        built and this run's worker config written."""
+        _, project_root = self._prepare_project(provenance)
+        worker_dir = executor_dir.resolve() / "workers"
+        worker_dir.mkdir(parents=True, exist_ok=True)
+        return PoolOffer(
+            fingerprint=self.fingerprint(),
+            server_url=self._server_url(bound_port),
+            auth_token=auth_token,
+            project_root=str(project_root),
+            config_file=str(self._write_worker_config(worker_dir)),
+        )
+
+    def start_pool(
+        self,
+        *,
+        coordinator: ExecutionCoordinator,
+        bound_port: int,
+        auth_token: str,
+        executor_dir: Path,
+        provenance: SubmitProvenance,
+        adopt: AdoptedPool | None = None,
+    ) -> SlurmWorkerPool:
+        chdir, project_root = self._prepare_project(provenance)
+        worker_dir = executor_dir.resolve() / "workers"
+        worker_dir.mkdir(parents=True, exist_ok=True)
+
+        if adopt is None:
+            pool_id = secrets.token_hex(8)
+            endpoint_file = worker_dir / f"endpoint-{pool_id}.json"
+            write_worker_endpoint(
+                endpoint_file,
+                WorkerEndpoint(
+                    generation=1,
+                    server_url=self._server_url(bound_port),
+                    auth_token=auth_token,
+                    project_root=str(project_root),
+                    config_file=str(self._write_worker_config(worker_dir)),
+                ),
+            )
+        else:
+            # The takeover already rewrote the adopted pool's endpoint file to
+            # point here; the pool's queued job scripts bake that path, so
+            # this run's new submissions must keep using the same file.
+            pool_id = adopt.pool_id
+            endpoint_file = adopt.endpoint_file
 
         resource_request = ResourceRequest(
             cpus=self.resources.cpus_per_worker,
@@ -110,7 +191,7 @@ class SlurmWorkerBackend:
 
         scripts_dir = worker_dir / "scripts"
         scripts_dir.mkdir(parents=True, exist_ok=True)
-        script_path = scripts_dir / f"worker-{secrets.token_hex(16)}.sh"
+        script_path = scripts_dir / f"worker-{pool_id}.sh"
         if self.use_job_arrays:
             component_line = 'furu_worker_component="slurm-worker-${SLURM_ARRAY_JOB_ID}a${SLURM_ARRAY_TASK_ID}"\n'
         else:
@@ -122,8 +203,11 @@ class SlurmWorkerBackend:
                 "#!/bin/bash\n"
                 "set -euo pipefail\n"
                 "\n"
-                "export "
-                f"{_WORKER_JSON_CONFIG_FILE_ENV_VAR}={shlex.quote(str(config_file))}\n"
+                # The endpoint file is the one runtime indirection between this
+                # (copied-at-submit) script and its coordinator: resolving the
+                # config, project, and server here rather than at submit time
+                # is what lets a successor run redirect already-queued jobs.
+                f"furu_endpoint_file={shlex.quote(str(endpoint_file))}\n"
                 "\n"
                 f"{component_line}"
                 "\n"
@@ -133,13 +217,16 @@ class SlurmWorkerBackend:
                 # and makes uv warn before it selects the snapshot's .venv.
                 "unset VIRTUAL_ENV\n"
                 "\n"
+                "export "
+                f"{_WORKER_JSON_CONFIG_FILE_ENV_VAR}="
+                f"{_endpoint_field_lookup('config_file')}\n"
+                "\n"
                 # --frozen forbids silent lock updates on the node; --project
                 # pins the environment regardless of --chdir.
                 "exec uv run --frozen "
-                f"--project {shlex.quote(str(project_root))} \\\n"
+                f"--project {_endpoint_field_lookup('project_root')} \\\n"
                 "    python -m furu.worker._cli \\\n"
-                f"    --server-url {shlex.quote(server_url)} \\\n"
-                f"    --auth-token-file {shlex.quote(str(token_file))} \\\n"
+                '    --endpoint-file "$furu_endpoint_file" \\\n'
                 '    --component "${furu_worker_component}" \\\n'
                 "    --backend slurm \\\n"
                 f"    --idle-timeout {self.worker_idle_timeout} \\\n"
@@ -188,7 +275,11 @@ class SlurmWorkerBackend:
                 target=lambda: pool_holder[0]._scale_loop(),
                 name="furu-slurm-worker-pool-scale",
             ),
-            _job_ids=[],
+            _job_ids=list(adopt.job_ids) if adopt is not None else [],
+            _pool_id=pool_id,
+            _fingerprint=self.fingerprint(),
+            _endpoint_file=endpoint_file,
+            _surrendered=threading.Event(),
         )
         pool_holder.append(pool)
         pool._scale_thread.start()

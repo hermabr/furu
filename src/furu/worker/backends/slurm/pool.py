@@ -8,8 +8,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from furu.execution.takeover import AdoptedPool, PoolOffer
 from furu.logging import _scoped_component, get_logger
 from furu.resources import ResourceRequest
+from furu.worker.endpoint import (
+    WorkerEndpoint,
+    read_worker_endpoint,
+    write_worker_endpoint,
+)
 
 if TYPE_CHECKING:
     from furu.execution.execution_coordinator import ExecutionCoordinator
@@ -48,11 +54,56 @@ class SlurmWorkerPool:
     _use_job_arrays: bool
     _scale_thread: threading.Thread
     _job_ids: list[str]
+    _pool_id: str
+    _fingerprint: str
+    _endpoint_file: Path
+    _surrendered: threading.Event
+
+    @property
+    def pool_id(self) -> str:
+        return self._pool_id
+
+    @property
+    def fingerprint(self) -> str:
+        return self._fingerprint
+
+    def surrender_to(self, offer: PoolOffer) -> tuple[AdoptedPool, list[str]]:
+        """Hand this pool's jobs to a successor: stop scaling (so the job
+        list is final), rewrite the endpoint file to the offered coordinates,
+        and make ``stop()`` leave the jobs alone. Returns what the successor
+        inherits plus the RUNNING job ids that need a redirect signal."""
+        self._surrendered.set()
+        self._stop_event.set()
+        self._scale_thread.join(timeout=_SLURM_COMMAND_TIMEOUT_S)
+        old_endpoint = read_worker_endpoint(self._endpoint_file)
+        write_worker_endpoint(
+            self._endpoint_file,
+            WorkerEndpoint(
+                generation=old_endpoint.generation + 1,
+                server_url=offer.server_url,
+                auth_token=offer.auth_token,
+                project_root=offer.project_root,
+                config_file=offer.config_file,
+            ),
+        )
+        states = self._active_job_states() or {}
+        job_ids = list(self._job_ids)
+        return (
+            AdoptedPool(
+                pool_id=self._pool_id,
+                endpoint_file=self._endpoint_file,
+                job_ids=tuple(job_ids),
+            ),
+            [job_id for job_id in job_ids if states.get(job_id) == "RUNNING"],
+        )
 
     def stop(self, *, timeout: float) -> None:
         with _scoped_component("slurm"):
             self._stop_event.set()
             self._scale_thread.join(timeout=timeout)
+            if self._surrendered.is_set():
+                # The jobs belong to the successor run now.
+                return
 
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:

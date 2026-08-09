@@ -3,12 +3,12 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shlex
 import shutil
 import stat
 import subprocess
 import sys
 import textwrap
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -24,6 +24,7 @@ from furu.config import (
     get_config,
 )
 from furu.execution.execution_coordinator import ExecutionCoordinator
+from furu.execution.takeover import AdoptedPool, PoolOffer
 from furu.provenance import (
     EnvironmentIdentity,
     GitIdentity,
@@ -42,6 +43,8 @@ from furu.worker.backends.slurm.resources import (
     MemoryPerNode,
     SlurmResources,
 )
+from furu.worker.endpoint import read_worker_endpoint
+from furu.worker.loop import WorkerPreempted
 
 
 class _StubCoordinator(ExecutionCoordinator):
@@ -74,7 +77,13 @@ def _disable_slurm_pool_scale_thread(
         def join(self, timeout: float | None = None) -> None:
             pass
 
-    monkeypatch.setattr(slurm_backend_module.threading, "Thread", NoopThread)
+    class ThreadingShim:
+        Thread = NoopThread
+        Event = threading.Event
+
+    # Patch only the backend module's view of ``threading``: other components
+    # (e.g. the locking heartbeat) still need real threads.
+    monkeypatch.setattr(slurm_backend_module, "threading", ThreadingShim)
 
 
 def _submit_provenance() -> SubmitProvenance:
@@ -100,13 +109,45 @@ def _submit_provenance() -> SubmitProvenance:
     )
 
 
-def test_worker_cli_reads_auth_token_file(
+def _write_endpoint(path: Path, **overrides: object) -> None:
+    data: dict[str, object] = {
+        "generation": 1,
+        "server_url": "ws://execution-coordinator.test:1234",
+        "auth_token": "secret",
+        "project_root": "/proj/one",
+        "config_file": "/cfg/one.json",
+    }
+    data.update(overrides)
+    path.write_text(json.dumps(data))
+
+
+def _worker_cli_args(endpoint_file: Path, *extra: str) -> list[str]:
+    return [
+        "--endpoint-file",
+        str(endpoint_file),
+        "--resource-cpus",
+        "1",
+        "--resource-gpus",
+        "0",
+        "--resource-memory-gib",
+        "0",
+        "--idle-timeout",
+        "60",
+        "--component",
+        "test-worker",
+        "--backend",
+        "slurm",
+        *extra,
+    ]
+
+
+def test_worker_cli_reads_endpoint_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[str, str, ResourceRequest, float | None]] = []
-    token_file = tmp_path / "worker.token"
-    token_file.write_text("secret\n\n")
+    endpoint_file = tmp_path / "endpoint.json"
+    _write_endpoint(endpoint_file)
 
     def worker_loop(
         *,
@@ -116,48 +157,27 @@ def test_worker_cli_reads_auth_token_file(
         idle_timeout: float | None,
         component: str,
         backend: str,
-    ) -> None:
+    ) -> str:
         calls.append((server_url, auth_token, resource_request, idle_timeout))
+        return "idle"
 
     monkeypatch.setattr(_cli, "worker_loop", worker_loop)
 
-    assert (
-        _cli.main(
-            [
-                "--server-url",
-                "http://execution-coordinator.test",
-                "--auth-token-file",
-                str(token_file),
-                "--resource-cpus",
-                "1",
-                "--resource-gpus",
-                "0",
-                "--resource-memory-gib",
-                "0",
-                "--idle-timeout",
-                "60",
-                "--component",
-                "test-worker",
-                "--backend",
-                "slurm",
-            ]
-        )
-        == 0
-    )
+    assert _cli.main(_worker_cli_args(endpoint_file)) == 0
 
     assert calls == [
-        ("http://execution-coordinator.test", "secret", ResourceRequest(), 60.0)
+        ("ws://execution-coordinator.test:1234", "secret", ResourceRequest(), 60.0)
     ]
-    assert token_file.exists()
+    assert endpoint_file.exists()
 
 
-def test_worker_cli_reads_resource_request(
+def test_worker_cli_reads_resource_request_and_idle_timeout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[ResourceRequest, float | None]] = []
-    token_file = tmp_path / "worker.token"
-    token_file.write_text("secret")
+    endpoint_file = tmp_path / "endpoint.json"
+    _write_endpoint(endpoint_file)
 
     def worker_loop(
         *,
@@ -167,72 +187,23 @@ def test_worker_cli_reads_resource_request(
         idle_timeout: float | None,
         component: str,
         backend: str,
-    ) -> None:
+    ) -> str:
         calls.append((resource_request, idle_timeout))
+        return "idle"
 
     monkeypatch.setattr(_cli, "worker_loop", worker_loop)
 
     assert (
         _cli.main(
             [
-                "--server-url",
-                "http://execution-coordinator.test",
-                "--auth-token-file",
-                str(token_file),
+                "--endpoint-file",
+                str(endpoint_file),
                 "--resource-cpus",
                 "4",
                 "--resource-gpus",
                 "1",
                 "--resource-memory-gib",
                 "16",
-                "--idle-timeout",
-                "30",
-                "--component",
-                "test-worker",
-                "--backend",
-                "slurm",
-            ]
-        )
-        == 0
-    )
-
-    assert calls == [(ResourceRequest(cpus=4, gpus=1, memory_gib=16), 30.0)]
-
-
-def test_worker_cli_reads_idle_timeout(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[float | None] = []
-    token_file = tmp_path / "worker.token"
-    token_file.write_text("secret")
-
-    def worker_loop(
-        *,
-        server_url: str,
-        auth_token: str,
-        resource_request: ResourceRequest,
-        idle_timeout: float | None,
-        component: str,
-        backend: str,
-    ) -> None:
-        calls.append(idle_timeout)
-
-    monkeypatch.setattr(_cli, "worker_loop", worker_loop)
-
-    assert (
-        _cli.main(
-            [
-                "--server-url",
-                "http://execution-coordinator.test",
-                "--auth-token-file",
-                str(token_file),
-                "--resource-cpus",
-                "4",
-                "--resource-gpus",
-                "1",
-                "--resource-memory-gib",
-                "0",
                 "--idle-timeout",
                 "0.25",
                 "--component",
@@ -244,75 +215,16 @@ def test_worker_cli_reads_idle_timeout(
         == 0
     )
 
-    assert calls == [0.25]
-
-
-def _run_worker_cli_capturing_component(
-    monkeypatch: pytest.MonkeyPatch,
-    token_file: Path,
-    extra_args: list[str],
-) -> str:
-    captured: list[str] = []
-
-    def worker_loop(
-        *,
-        server_url: str,
-        auth_token: str,
-        resource_request: ResourceRequest,
-        idle_timeout: float | None,
-        component: str,
-        backend: str,
-    ) -> None:
-        captured.append(component)
-
-    monkeypatch.setattr(_cli, "worker_loop", worker_loop)
-
-    assert (
-        _cli.main(
-            [
-                "--server-url",
-                "http://execution-coordinator.test",
-                "--auth-token-file",
-                str(token_file),
-                "--resource-cpus",
-                "1",
-                "--resource-gpus",
-                "0",
-                "--resource-memory-gib",
-                "0",
-                "--idle-timeout",
-                "60",
-                "--backend",
-                "slurm",
-                *extra_args,
-            ]
-        )
-        == 0
-    )
-    (component,) = captured
-    return component
+    assert calls == [(ResourceRequest(cpus=4, gpus=1, memory_gib=16), 0.25)]
 
 
 def test_worker_cli_reads_component_override(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    token_file = tmp_path / "worker.token"
-    token_file.write_text("secret")
-
-    component = _run_worker_cli_capturing_component(
-        monkeypatch, token_file, ["--component", "worker-a"]
-    )
-
-    assert component == "worker-a"
-
-
-def test_worker_cli_requires_component(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    token_file = tmp_path / "worker.token"
-    token_file.write_text("secret")
+    captured: list[str] = []
+    endpoint_file = tmp_path / "endpoint.json"
+    _write_endpoint(endpoint_file)
 
     def worker_loop(
         *,
@@ -322,187 +234,174 @@ def test_worker_cli_requires_component(
         idle_timeout: float | None,
         component: str,
         backend: str,
-    ) -> None:
+    ) -> str:
+        captured.append(component)
+        return "idle"
+
+    monkeypatch.setattr(_cli, "worker_loop", worker_loop)
+
+    args = _worker_cli_args(endpoint_file)
+    args[args.index("--component") + 1] = "worker-a"
+    assert _cli.main(args) == 0
+
+    assert captured == ["worker-a"]
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ["--endpoint-file", "--component", "--idle-timeout", "--resource-cpus"],
+)
+def test_worker_cli_requires_arguments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    missing: str,
+) -> None:
+    endpoint_file = tmp_path / "endpoint.json"
+    _write_endpoint(endpoint_file)
+
+    def worker_loop(**kwargs: object) -> str:
+        raise AssertionError("worker_loop should not be called")
+
+    monkeypatch.setattr(_cli, "worker_loop", worker_loop)
+
+    args = _worker_cli_args(endpoint_file)
+    index = args.index(missing)
+    del args[index : index + 2]
+
+    with pytest.raises(SystemExit) as exc_info:
+        _cli.main(args)
+
+    assert exc_info.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "rejected",
+    [
+        ("--auth-token", "secret"),
+        ("--auth-token-file", "/tmp/worker.token"),
+        ("--server-url", "ws://execution-coordinator.test:1"),
+    ],
+)
+def test_worker_cli_rejects_direct_connection_arguments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    rejected: tuple[str, str],
+) -> None:
+    endpoint_file = tmp_path / "endpoint.json"
+    _write_endpoint(endpoint_file)
+
+    def worker_loop(**kwargs: object) -> str:
         raise AssertionError("worker_loop should not be called")
 
     monkeypatch.setattr(_cli, "worker_loop", worker_loop)
 
     with pytest.raises(SystemExit) as exc_info:
-        _cli.main(
-            [
-                "--server-url",
-                "http://execution-coordinator.test",
-                "--auth-token-file",
-                str(token_file),
-                "--resource-cpus",
-                "1",
-                "--resource-gpus",
-                "0",
-                "--resource-memory-gib",
-                "0",
-                "--idle-timeout",
-                "60",
-            ]
-        )
+        _cli.main(_worker_cli_args(endpoint_file, *rejected))
 
     assert exc_info.value.code == 2
 
 
-def test_worker_cli_requires_resource_request(
+def _capture_execvp(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, list[str]]]:
+    execs: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        _cli.os, "execvp", lambda file, argv: execs.append((file, list(argv)))
+    )
+    return execs
+
+
+def test_worker_cli_reexecs_when_endpoint_generation_grows(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[ResourceRequest] = []
-    token_file = tmp_path / "worker.token"
-    token_file.write_text("secret")
+    endpoint_file = tmp_path / "endpoint.json"
+    _write_endpoint(endpoint_file)
 
-    def worker_loop(
-        *,
-        server_url: str,
-        auth_token: str,
-        resource_request: ResourceRequest,
-        idle_timeout: float | None,
-    ) -> None:
-        calls.append(resource_request)
+    def worker_loop(**kwargs: object) -> str:
+        # A takeover rewrites the endpoint file while the worker is connected.
+        _write_endpoint(
+            endpoint_file,
+            generation=2,
+            server_url="ws://successor.test:1",
+            project_root="/proj/two",
+            config_file="/cfg/two.json",
+        )
+        return "disconnected"
 
     monkeypatch.setattr(_cli, "worker_loop", worker_loop)
+    execs = _capture_execvp(monkeypatch)
+    monkeypatch.setenv("VIRTUAL_ENV", "/old/venv")
+    monkeypatch.setenv(_WORKER_JSON_CONFIG_FILE_ENV_VAR, "/cfg/one.json")
 
-    with pytest.raises(SystemExit) as exc_info:
-        _cli.main(
-            [
-                "--server-url",
-                "http://execution-coordinator.test",
-                "--auth-token-file",
-                str(token_file),
-                "--idle-timeout",
-                "60",
-                "--component",
-                "test-worker",
-            ]
-        )
+    args = _worker_cli_args(endpoint_file)
+    assert _cli.main(args) == 0
 
-    assert exc_info.value.code == 2
-    assert calls == []
-
-
-def test_worker_cli_requires_auth_token_file(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[tuple[str, str]] = []
-
-    def worker_loop(
-        *,
-        server_url: str,
-        auth_token: str,
-        resource_request: ResourceRequest,
-        idle_timeout: float | None,
-    ) -> None:
-        calls.append((server_url, auth_token))
-
-    monkeypatch.setattr(_cli, "worker_loop", worker_loop)
-
-    with pytest.raises(SystemExit) as exc_info:
-        _cli.main(
-            [
-                "--server-url",
-                "http://execution-coordinator.test",
-                "--resource-cpus",
-                "1",
-                "--resource-gpus",
-                "0",
-                "--resource-memory-gib",
-                "0",
-                "--idle-timeout",
-                "60",
-                "--component",
-                "test-worker",
-            ]
-        )
-
-    assert exc_info.value.code == 2
-    assert calls == []
+    ((file, argv),) = execs
+    assert file == "uv"
+    assert argv[:8] == [
+        "uv",
+        "run",
+        "--frozen",
+        "--project",
+        "/proj/two",
+        "python",
+        "-m",
+        "furu.worker._cli",
+    ]
+    assert argv[8:] == args
+    assert os.environ[_WORKER_JSON_CONFIG_FILE_ENV_VAR] == "/cfg/two.json"
+    assert "VIRTUAL_ENV" not in os.environ
 
 
-def test_worker_cli_requires_idle_timeout(
+def test_worker_cli_exits_without_reexec_when_generation_unchanged(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[float | None] = []
-    token_file = tmp_path / "worker.token"
-    token_file.write_text("secret")
+    endpoint_file = tmp_path / "endpoint.json"
+    _write_endpoint(endpoint_file)
 
-    def worker_loop(
-        *,
-        server_url: str,
-        auth_token: str,
-        resource_request: ResourceRequest,
-        idle_timeout: float | None,
-    ) -> None:
-        calls.append(idle_timeout)
+    monkeypatch.setattr(_cli, "worker_loop", lambda **kwargs: "disconnected")
+    execs = _capture_execvp(monkeypatch)
 
-    monkeypatch.setattr(_cli, "worker_loop", worker_loop)
-
-    with pytest.raises(SystemExit) as exc_info:
-        _cli.main(
-            [
-                "--server-url",
-                "http://execution-coordinator.test",
-                "--auth-token-file",
-                str(token_file),
-                "--resource-cpus",
-                "1",
-                "--resource-gpus",
-                "0",
-                "--resource-memory-gib",
-                "0",
-            ]
-        )
-
-    assert exc_info.value.code == 2
-    assert calls == []
+    assert _cli.main(_worker_cli_args(endpoint_file)) == 0
+    assert execs == []
 
 
-def test_worker_cli_rejects_auth_token_argument(
+def test_worker_cli_reexecs_after_preemption(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[str, str]] = []
-    token_file = tmp_path / "worker.token"
-    token_file.write_text("secret")
+    endpoint_file = tmp_path / "endpoint.json"
+    _write_endpoint(endpoint_file)
 
-    def worker_loop(
-        *,
-        server_url: str,
-        auth_token: str,
-        resource_request: ResourceRequest,
-        idle_timeout: float | None,
-    ) -> None:
-        calls.append((server_url, auth_token))
+    def worker_loop(**kwargs: object) -> str:
+        _write_endpoint(endpoint_file, generation=2, project_root="/proj/two")
+        raise WorkerPreempted
 
     monkeypatch.setattr(_cli, "worker_loop", worker_loop)
+    execs = _capture_execvp(monkeypatch)
 
-    with pytest.raises(SystemExit) as exc_info:
-        _cli.main(
-            [
-                "--server-url",
-                "http://execution-coordinator.test",
-                "--auth-token-file",
-                str(token_file),
-                "--resource-cpus",
-                "1",
-                "--resource-gpus",
-                "0",
-                "--resource-memory-gib",
-                "0",
-                "--idle-timeout",
-                "60",
-                "--component",
-                "test-worker",
-                "--auth-token",
-                "secret",
-            ]
-        )
+    assert _cli.main(_worker_cli_args(endpoint_file)) == 0
 
-    assert exc_info.value.code == 2
-    assert calls == []
+    ((_, argv),) = execs
+    assert argv[3:5] == ["--project", "/proj/two"]
+
+
+def test_worker_cli_reraises_connect_failure_when_endpoint_unchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    endpoint_file = tmp_path / "endpoint.json"
+    _write_endpoint(endpoint_file)
+
+    def worker_loop(**kwargs: object) -> str:
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(_cli, "worker_loop", worker_loop)
+    execs = _capture_execvp(monkeypatch)
+
+    with pytest.raises(OSError, match="connection refused"):
+        _cli.main(_worker_cli_args(endpoint_file))
+    assert execs == []
 
 
 def test_slurm_backend_submits_workers_with_required_sbatch_options(
@@ -569,17 +468,19 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
 
     script_path = Path(argv[-1])
     script = script_path.read_text()
-    assert "--auth-token-file" in script
-    assert "--auth-token " not in script
+    assert "--auth-token" not in script
+    assert "--server-url" not in script
     assert "secret-token" not in script
     project_root = EnvironmentIdentity.capture().project_root
     assert script.index('echo "Hello" > /tmp/hey') < script.index("exec uv run")
     assert script.index("unset VIRTUAL_ENV") < script.index("exec uv run")
-    assert f"exec uv run --frozen --project {project_root}" in script
+    # The project is resolved from the endpoint file at script runtime, so a
+    # takeover can redirect queued jobs into a new snapshot.
+    assert 'exec uv run --frozen --project "$(python3 -c' in script
     assert "python -m furu.worker._cli" in script
     assert sys.executable not in script
     assert "--backend slurm" in script
-    assert "--server-url ws://execution-coordinator.cluster:1234" in script
+    assert '--endpoint-file "$furu_endpoint_file"' in script
     assert "SLURM_ARRAY_TASK_ID" in script
     assert "SLURM_ARRAY_JOB_ID" in script
     assert (
@@ -595,12 +496,18 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert "FURU_DIRECTORIES__EXECUTIONS" not in script
 
     assert not (worker_dir / "secrets").exists()
-    token_files = sorted(worker_dir.glob("worker-*.token"))
-    assert len(token_files) == 1
-    for token_file in token_files:
-        assert _mode(token_file) == 0o600
-        assert token_file.read_text() == "secret-token"
-        assert str(token_file) in script
+    assert sorted(worker_dir.glob("worker-*.token")) == []
+
+    endpoint_files = sorted(worker_dir.glob("endpoint-*.json"))
+    assert len(endpoint_files) == 1
+    (endpoint_file,) = endpoint_files
+    assert _mode(endpoint_file) == 0o600
+    assert f"furu_endpoint_file={endpoint_file}" in script
+    endpoint = read_worker_endpoint(endpoint_file)
+    assert endpoint.generation == 1
+    assert endpoint.server_url == "ws://execution-coordinator.cluster:1234"
+    assert endpoint.auth_token == "secret-token"
+    assert endpoint.project_root == project_root
 
     config_files = sorted(worker_dir.glob("worker-*.config.json"))
     assert len(config_files) == 1
@@ -610,14 +517,13 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
             _Config.model_validate_json(config_file.read_text(encoding="utf-8"))
             == get_config()
         )
-        assert f"export {_WORKER_JSON_CONFIG_FILE_ENV_VAR}={config_file}" in script
+        assert endpoint.config_file == str(config_file)
+    # The config env var is resolved from the endpoint file at script runtime.
+    assert f'export {_WORKER_JSON_CONFIG_FILE_ENV_VAR}="$(python3 -c' in script
 
     assert not sbatch_records[0]["has_execution_coordinator_environment"]
 
     assert "secret-token" not in record_file.read_text()
-
-    assert all(token_file.exists() for token_file in token_files)
-    assert all(config_file.exists() for config_file in config_files)
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="requires bash")
@@ -720,6 +626,62 @@ def test_slurm_array_worker_component_label_derivation_under_bash(
     )
 
     assert result.stdout == "slurm-worker-100a7"
+
+
+@pytest.mark.skipif(
+    shutil.which("bash") is None or shutil.which("python3") is None,
+    reason="requires bash and python3",
+)
+def test_slurm_worker_script_resolves_endpoint_fields_under_bash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    backend = SlurmWorkerBackend(
+        max_workers=1,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="execution-coordinator.cluster",
+    )
+    pool = backend.start_pool(
+        coordinator=_StubCoordinator(),
+        bound_port=1234,
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+        provenance=_submit_provenance(),
+    )
+    endpoint = read_worker_endpoint(pool._endpoint_file)
+    lines = pool._script_path.read_text().splitlines()
+    endpoint_line = next(
+        line for line in lines if line.startswith("furu_endpoint_file=")
+    )
+    export_line = next(
+        line
+        for line in lines
+        if line.startswith(f"export {_WORKER_JSON_CONFIG_FILE_ENV_VAR}=")
+    )
+    project_lookup = (
+        next(line for line in lines if "--project" in line)
+        .removeprefix("exec uv run --frozen --project ")
+        .removesuffix(" \\")
+    )
+    script = (
+        "set -euo pipefail\n"
+        f"{endpoint_line}\n"
+        f"{export_line}\n"
+        f'printf "%s\\n" "${_WORKER_JSON_CONFIG_FILE_ENV_VAR}"\n'
+        f"printf '%s' {project_lookup}\n"
+    )
+
+    result = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    config_file, project_root = result.stdout.split("\n")
+    assert config_file == endpoint.config_file
+    assert project_root == endpoint.project_root
 
 
 @pytest.mark.parametrize(
@@ -1092,9 +1054,9 @@ def test_slurm_backend_builds_server_url_from_worker_connect_host(
     sbatch_records = [record for record in records if record["executable"] == "sbatch"]
     assert len(sbatch_records) == 1
 
-    script_path = Path(sbatch_records[0]["argv"][-1])
-    script = script_path.read_text()
-    assert "--server-url ws://execution-coordinator.cluster:4321" in script
+    endpoint = read_worker_endpoint(pool._endpoint_file)
+    assert endpoint.server_url == "ws://execution-coordinator.cluster:4321"
+    script = Path(sbatch_records[0]["argv"][-1]).read_text()
     assert f"--idle-timeout {get_config().worker.idle_timeout_seconds}" in script
 
 
@@ -1125,9 +1087,9 @@ def test_slurm_backend_worker_connect_port_overrides_bound_port(
     sbatch_records = [record for record in records if record["executable"] == "sbatch"]
     assert len(sbatch_records) == 1
 
-    script = Path(sbatch_records[0]["argv"][-1]).read_text()
-    assert "--server-url ws://execution-coordinator.cluster:9000" in script
-    assert ":4321" not in script
+    endpoint = read_worker_endpoint(pool._endpoint_file)
+    assert endpoint.server_url == "ws://execution-coordinator.cluster:9000"
+    assert ":4321" not in endpoint.server_url
 
 
 def test_slurm_backend_worker_connect_host_defaults_to_config() -> None:
@@ -1779,6 +1741,10 @@ def _install_fake_slurm(
         with open(record_file, "a", encoding="utf-8") as file:
             file.write(json.dumps({"executable": "scancel", "argv": sys.argv[1:]}) + "\\n")
 
+        if any(arg.startswith("--signal") for arg in sys.argv[1:]):
+            # Signal delivery leaves the job running.
+            sys.exit(0)
+
         cancelled_jobs = set(sys.argv[1:])
         with open(active_file, encoding="utf-8") as file:
             active_jobs = [
@@ -1876,8 +1842,9 @@ def test_slurm_backend_runs_workers_from_the_extracted_snapshot(
     ).resolve()
     assert (code_dir / "pyproject.toml").is_file()
     assert f"--chdir={code_dir}" in pool._sbatch_base_args
+    endpoint = read_worker_endpoint(pool._endpoint_file)
+    assert endpoint.project_root == str(code_dir)
     script = pool._script_path.read_text()
-    assert f"--project {shlex.quote(str(code_dir))}" in script
     assert str(repo) not in script
     # The venv is built once at submit so workers never race to create it.
     assert uv_commands == [["uv", "sync", "--frozen", "--project", str(code_dir)]]
@@ -1913,3 +1880,119 @@ def test_slurm_backend_pins_relative_data_directories_for_workers(
     written = _Config.model_validate_json(config_file.read_text(encoding="utf-8"))
     assert written.directories.objects == work_dir / "furu-data" / "objects"
     assert written.directories.snapshots == work_dir / "furu-data" / "snapshots"
+
+
+def test_slurm_backend_fingerprint_covers_worker_identity_only() -> None:
+    def backend(**overrides: Any) -> SlurmWorkerBackend:
+        kwargs: dict[str, Any] = {
+            "max_workers": 2,
+            "resources": SlurmResources(cpus_per_worker=4, partition="debug"),
+            "worker_connect_host": "execution-coordinator.cluster",
+        }
+        kwargs.update(overrides)
+        return SlurmWorkerBackend(**kwargs)
+
+    base = backend().fingerprint()
+    # Submitter-side concerns do not change what a worker is.
+    assert backend(max_workers=9).fingerprint() == base
+    assert backend(poll_interval=99.0).fingerprint() == base
+    assert backend(worker_idle_timeout=1.0).fingerprint() == base
+    assert (
+        backend(worker_connect_host="other", worker_connect_port=1).fingerprint()
+        == base
+    )
+    # Anything reaching sbatch or the worker runtime does.
+    assert backend(resources=SlurmResources(cpus_per_worker=8)).fingerprint() != base
+    assert backend(job_name="other").fingerprint() != base
+    assert backend(use_job_arrays=False).fingerprint() != base
+    assert backend(export="ALL").fingerprint() != base
+    assert backend(pre_worker_commands=("module load cuda",)).fingerprint() != base
+
+
+def test_slurm_backend_start_pool_adopts_inherited_jobs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    backend = SlurmWorkerBackend(
+        max_workers=4,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="execution-coordinator.cluster",
+    )
+    adopted_endpoint = tmp_path / "old-executor" / "workers" / "endpoint-cafe0123.json"
+
+    pool = backend.start_pool(
+        coordinator=_StubCoordinator(),
+        bound_port=1234,
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+        provenance=_submit_provenance(),
+        adopt=AdoptedPool(
+            pool_id="cafe0123",
+            endpoint_file=adopted_endpoint,
+            job_ids=("100_0", "100_1"),
+        ),
+    )
+
+    assert pool._job_ids == ["100_0", "100_1"]
+    assert pool.pool_id == "cafe0123"
+    assert pool._endpoint_file == adopted_endpoint
+    # The takeover already rewrote the adopted endpoint file; the pool must
+    # not write a competing one of its own.
+    assert list((tmp_path / "executor" / "workers").glob("endpoint-*.json")) == []
+    script = pool._script_path.read_text()
+    assert f"furu_endpoint_file={adopted_endpoint}" in script
+
+
+def test_slurm_worker_pool_surrender_redirects_endpoint_and_keeps_jobs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    backend = SlurmWorkerBackend(
+        max_workers=2,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="execution-coordinator.cluster",
+        poll_interval=0,
+    )
+    pool = backend.start_pool(
+        coordinator=_StubCoordinator(2),
+        bound_port=1234,
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+        provenance=_submit_provenance(),
+    )
+    pool._scale_once()
+    assert pool._job_ids == ["100_0", "100_1"]
+    active_file.write_text("100_0 RUNNING\n100_1 PENDING\n")
+
+    adopted, running_job_ids = pool.surrender_to(
+        PoolOffer(
+            fingerprint=backend.fingerprint(),
+            server_url="ws://successor.test:9",
+            auth_token="successor-token",
+            project_root="/proj/new",
+            config_file="/cfg/new.json",
+        )
+    )
+
+    assert adopted == AdoptedPool(
+        pool_id=pool.pool_id,
+        endpoint_file=pool._endpoint_file,
+        job_ids=("100_0", "100_1"),
+    )
+    assert running_job_ids == ["100_0"]
+    endpoint = read_worker_endpoint(pool._endpoint_file)
+    assert endpoint.generation == 2
+    assert endpoint.server_url == "ws://successor.test:9"
+    assert endpoint.auth_token == "successor-token"
+    assert endpoint.project_root == "/proj/new"
+    assert endpoint.config_file == "/cfg/new.json"
+
+    # The ordinary shutdown path must leave the surrendered jobs alone.
+    pool.stop(timeout=0)
+    assert active_file.read_text() != ""
+    assert not any(
+        record["executable"] == "scancel" for record in _read_records(record_file)
+    )

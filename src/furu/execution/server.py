@@ -10,6 +10,11 @@ from websockets.exceptions import ConnectionClosed
 from websockets.sync.server import ServerConnection, basic_auth, serve
 
 from furu.execution.execution_coordinator import ExecutionCoordinator
+from furu.execution.takeover import (
+    TAKEOVER_PATH,
+    TakeoverRequest,
+    register_live_run,
+)
 from furu.logging import get_logger, log_detail
 from furu.worker.protocol import HelloMessage, job_result_adapter
 
@@ -58,6 +63,37 @@ def _serve_worker(
             coordinator.worker_lost(worker)
 
 
+def _serve_takeover(
+    coordinator: ExecutionCoordinator,
+    connection: ServerConnection,
+    busy: threading.Lock,
+) -> None:
+    """Single request/response exchange with a successor run.
+
+    The request carries everything the takeover needs, so a dropped or
+    malformed connection surrenders nothing; once the request validates, this
+    run redirects the matched pools itself and only then answers and stops.
+    """
+    with coordinator.log_context():
+        if not busy.acquire(blocking=False):
+            logger.warning("rejecting takeover connection: one already in progress")
+            connection.close(1013, "takeover already in progress")
+            return
+        try:
+            request = TakeoverRequest.model_validate_json(
+                connection.recv(timeout=10.0)
+            )
+            logger.info(
+                "takeover requested by successor %s", request.successor_executor_id
+            )
+            response = coordinator.handle_takeover(request)
+            connection.send(response.model_dump_json())
+            if response.adopted:
+                coordinator.replaced(request.successor_executor_id)
+        finally:
+            busy.release()
+
+
 @contextmanager
 def execution_coordinator_server(
     coordinator: ExecutionCoordinator, *, bind_host: str, port: int
@@ -65,12 +101,19 @@ def execution_coordinator_server(
     auth_token = token_urlsafe(32)
     connections: set[ServerConnection] = set()
     connections_changed = threading.Condition()
+    takeover_busy = threading.Lock()
 
     def handler(connection: ServerConnection) -> None:
         with connections_changed:
             connections.add(connection)
         try:
-            _serve_worker(coordinator, connection)
+            if (
+                connection.request is not None
+                and connection.request.path == TAKEOVER_PATH
+            ):
+                _serve_takeover(coordinator, connection, takeover_busy)
+            else:
+                _serve_worker(coordinator, connection)
         finally:
             with connections_changed:
                 connections.discard(connection)
@@ -90,11 +133,17 @@ def execution_coordinator_server(
     )
     thread.start()
     try:
-        yield ExecutionCoordinatorServer(
-            bound_host=bound_host,
+        with register_live_run(
+            executor_id=coordinator.executor_id,
+            executor_dir=coordinator.executor_dir,
             bound_port=bound_port,
             auth_token=auth_token,
-        )
+        ):
+            yield ExecutionCoordinatorServer(
+                bound_host=bound_host,
+                bound_port=bound_port,
+                auth_token=auth_token,
+            )
     finally:
         coordinator.fail("execution coordinator server closed before the run finished")
         server.shutdown()
