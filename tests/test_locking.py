@@ -222,20 +222,26 @@ def test_exit_raises_lock_lost_error_when_lock_is_lost_mid_block(
 
 def test_refresh_extends_expiration(tmp_path: Path) -> None:
     lock_path = tmp_path / "single.lock"
+    lifetime_s = SHORT_LIFETIME_S * 4
 
     with lock(
         lock_path,
-        lifetime_s=SHORT_LIFETIME_S,
+        lifetime_s=lifetime_s,
         heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
     ) as has_lock:
         assert has_lock()
-        time.sleep(SHORT_LIFETIME_S * 4)
+
+        initial_expiration = lock_path.stat().st_mtime
+        refresh_deadline = time.monotonic() + PROCESS_TIMEOUT_S
+        while lock_path.stat().st_mtime <= initial_expiration:
+            assert time.monotonic() < refresh_deadline, "lock was not refreshed"
+            time.sleep(SHORT_HEARTBEAT_INTERVAL_S / 2)
 
         with (
             pytest.raises(LockError, match="could not acquire lock"),
             lock(
                 lock_path,
-                lifetime_s=SHORT_LIFETIME_S,
+                lifetime_s=lifetime_s,
                 heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
                 acquire_timeout_s=0.0,
             ),
