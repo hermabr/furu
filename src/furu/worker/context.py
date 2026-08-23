@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:
     from furu.core import Spec
 
-type DependencyCallKind = Literal["create", "load_existing"]
+type DependencyCallKind = Literal["create", "load_existing", "provenance"]
 
 
 _in_worker_execution: ContextVar[bool] = ContextVar(

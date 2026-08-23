@@ -564,6 +564,17 @@ class LoadExistingDependencyParent(Spec[str]):
         return "loaded"
 
 
+class ProvenanceDependencyParent(Spec[str]):
+    name: str
+
+    def create(self) -> str:
+        try:
+            Node(name=self.name).provenance()
+        except furu.Missing:
+            return "missing"
+        return "recorded"
+
+
 class FunctionDependencyParent(Spec[int]):
     child: letter_count  # ty: ignore[invalid-type-form]
 
@@ -1225,6 +1236,19 @@ def test_load_existing_inside_create_is_recorded_even_on_missing_result() -> Non
 
     metadata = json.loads(metadata_path_in(parent._base_dir).read_text())
     assert metadata["observed_dependencies"] == [Node(name="optional").object_id]
+
+
+def test_provenance_inside_create_is_recorded_even_on_missing_result() -> None:
+    dep = Node(name="prov-present")
+    dep.create()
+
+    present = ProvenanceDependencyParent(name="prov-present")
+    assert present.create() == "recorded"
+    assert _dependency_object_ids(present) == [dep.object_id]
+
+    absent = ProvenanceDependencyParent(name="prov-absent")
+    assert absent.create() == "missing"
+    assert _dependency_object_ids(absent) == [Node(name="prov-absent").object_id]
 
 
 def test_load_existing_missing_result_explains_how_to_compute() -> None:
@@ -2162,6 +2186,21 @@ def test_worker_load_existing_reports_missing_dependency(tmp_path: Path) -> None
 
     exc = exc_info.value
     assert exc.call_kind == "load_existing"
+    assert exc.dependencies == (missing,)
+
+
+def test_worker_provenance_reports_missing_dependency(tmp_path: Path) -> None:
+    ObjectIdStorageValue.storage_override = tmp_path / "data"
+    missing = ObjectIdStorageValue(key=17)
+
+    with (
+        worker_execution_context(),
+        pytest.raises(_DependencyNotReady) as exc_info,
+    ):
+        missing.provenance()
+
+    exc = exc_info.value
+    assert exc.call_kind == "provenance"
     assert exc.dependencies == (missing,)
 
 
