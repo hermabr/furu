@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import fields, is_dataclass
@@ -120,3 +120,22 @@ def dependency_recorder() -> Iterator[DependencyRecorder]:
         yield recorder
     finally:
         _active_dependency_recorder.reset(token)
+
+
+_specs_under_creation: ContextVar[frozenset[str]] = ContextVar(
+    "_specs_under_creation",
+    default=frozenset(),
+)
+
+
+def is_under_creation(obj: Spec[Any]) -> bool:
+    return obj.object_id in _specs_under_creation.get()
+
+
+@contextmanager
+def under_creation(objs: Sequence[Spec[Any]]) -> Iterator[None]:
+    token = _specs_under_creation.set(frozenset(obj.object_id for obj in objs))
+    try:
+        yield
+    finally:
+        _specs_under_creation.reset(token)

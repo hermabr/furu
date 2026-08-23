@@ -16,7 +16,11 @@ from furu._batched import _BatchedHook
 from furu._declared_types import declared_result_type
 from furu.config import get_config
 from furu.core import Missing, Spec
-from furu.dependencies import dependency_recorder, record_dependency_call
+from furu.dependencies import (
+    dependency_recorder,
+    record_dependency_call,
+    under_creation,
+)
 from furu.locking import lock
 from furu.logging import _scoped_log_files, get_logger
 from furu.metadata import RunningMetadata
@@ -458,7 +462,7 @@ def _create_and_store_group[T](
                     )
                 case _BatchedHook(func=create_hook):
                     logger.debug("running batched create() hook")
-                    with dependency_recorder() as recorder:
+                    with dependency_recorder() as recorder, under_creation(group):
                         results = create_hook(group)
                     observed = recorder.finalize()
                     logger.debug("batched create() hook returned")
@@ -475,7 +479,7 @@ def _create_and_store_group[T](
                     results = []
                     observed_dependencies = []
                     for obj in group:
-                        with dependency_recorder() as recorder:
+                        with dependency_recorder() as recorder, under_creation([obj]):
                             results.append(create_hook(obj))
                         observed_dependencies.append(recorder.finalize())
                     logger.debug("sequential create() fallback returned")

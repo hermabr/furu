@@ -166,8 +166,19 @@ class Spec[T](_FuruDataclassTransform, ABC):
         return get_logger()
 
     @final
-    @cached_property
+    @property
     def directory(self) -> SpecDirectory:
+        from furu.dependencies import is_under_creation
+
+        if not is_under_creation(self):
+            raise RuntimeError(
+                f"{self._log_label}.directory is only available inside this "
+                "spec's own create() hook. To use files another spec produced, "
+                "include their paths in its result and go through "
+                "create()/load_existing() so the dependency is recorded. If "
+                "create() spawns threads that need .directory, propagate "
+                "context with contextvars.copy_context()."
+            )
         return SpecDirectory(self._base_dir)
 
     @final
@@ -217,8 +228,20 @@ class Spec[T](_FuruDataclassTransform, ABC):
 
     @final
     def provenance(self) -> Provenance:
-        result_dir = result_dir_for_loading(self)
-        if result_dir is None:
+        from furu.dependencies import record_dependency_call
+        from furu.worker.context import (
+            _DependencyNotReady,
+            _in_worker_execution,
+        )
+
+        record_dependency_call(self)
+        if (result_dir := result_dir_for_loading(self)) is None:
+            raise_if_stale(self)
+            if _in_worker_execution.get():
+                raise _DependencyNotReady(
+                    dependencies=[self],
+                    call_kind="provenance",
+                )
             raise Missing(
                 f"{self._log_label}.provenance() could not find a result. "
                 "Provenance is recorded when a result is computed; use create() "
