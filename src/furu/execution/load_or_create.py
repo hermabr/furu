@@ -443,7 +443,6 @@ def _create_and_store_group[T](
 ) -> None:
     log_paths = tuple(run_log_path_in(obj._base_dir) for obj in group)
 
-    # Scratch left by a preempted or failed attempt must not leak into this one.
     for obj in group:
         shutil.rmtree(scratch_dir_in(obj._base_dir), ignore_errors=True)
 
@@ -504,8 +503,6 @@ def _create_and_store_group[T](
                     has_lock=has_lock,
                     submit_provenance=submit_provenance,
                 )
-                # Only now have codecs persisted the value, so scratch files it
-                # referenced (e.g. via a lazy frame) are no longer needed.
                 shutil.rmtree(scratch_dir_in(obj._base_dir), ignore_errors=True)
 
             logger.debug(

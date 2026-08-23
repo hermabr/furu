@@ -546,7 +546,6 @@ class _ScratchBackedCodec(Codec[_ScratchBackedValue]):
     def save(
         cls, value: _ScratchBackedValue, artifact_directory: Path
     ) -> Mapping[str, object]:
-        # Reads the source file at persist time, like a lazy frame would.
         artifact_directory.joinpath("data.txt").write_text(
             value.source.read_text(encoding="utf-8"), encoding="utf-8"
         )
@@ -574,8 +573,6 @@ def test_scratch_files_survive_until_codec_save() -> None:
 
     value = obj.create()
 
-    # The codec read the scratch file during save; scratch is gone afterwards
-    # and the reloaded value points at the persisted copy.
     assert not (obj._base_dir / "scratch").exists()
     assert value.source.is_relative_to(result_dir_in(obj._base_dir))
     assert value.source.read_text(encoding="utf-8") == "lazy"
