@@ -135,6 +135,27 @@ class UserDataWritingValue(Spec[str]):
         return payload_path.read_text(encoding="utf-8")
 
 
+class DirectoryPeekingValue(Spec[str]):
+    def create(self) -> str:
+        assert self.directory.data == self._base_dir / "data"
+        with pytest.raises(RuntimeError, match=r"only available inside"):
+            _ = Node(name="other").directory
+        return "ok"
+
+
+class BatchedDirectoryValue(Spec[str]):
+    key: int
+
+    def batch_key(self) -> tuple[None, int]:
+        return (None, 1024)
+
+    @furu.batched(batch_key)
+    def create(objs: list["BatchedDirectoryValue"]) -> list[str]:
+        for obj in objs:
+            assert obj.directory.data == obj._base_dir / "data"
+        return [f"dir:{obj.key}" for obj in objs]
+
+
 class ScratchWritingValue(Spec[str]):
     name: str
 
@@ -1139,7 +1160,7 @@ def test_furu_from_artifact_returns_furu_object():
     assert "schema_data" in type(artifact).model_fields
     assert loaded == obj
     assert isinstance(loaded, NodePair)
-    assert loaded.directory.data == obj.directory.data
+    assert loaded._base_dir == obj._base_dir
     assert raw_metadata["kind"] == "completed"
     assert raw_metadata["base_path"] == str(obj._base_dir)
     assert "data_path" not in raw_metadata
@@ -1467,8 +1488,8 @@ def test_data_dir():
         / "21733b1febfab88b565c"
         / "685af925669262434640"
     )
-    assert node_pair.directory.data == node_pair._base_dir / "data"
-    assert node_pair.directory.data == Path(
+    assert data_dir_in(node_pair._base_dir) == node_pair._base_dir / "data"
+    assert data_dir_in(node_pair._base_dir) == Path(
         get_config().run_directories.objects
         / "test_core"
         / "NodePair"
@@ -1582,7 +1603,7 @@ def test_metadata_storage_overrides_base_dir(
         / node._artifact_schema_hash
         / node._artifact_hash
     )
-    assert node.directory.data == node._base_dir / "data"
+    assert data_dir_in(node._base_dir) == node._base_dir / "data"
 
 
 def test_load_path_reads_metadata_storage_without_touching_requires(
@@ -1659,7 +1680,9 @@ def test_data_dir_is_user_data_subdirectory() -> None:
 
     assert obj.create() == "payload"
 
-    assert (obj.directory.data / "payload.txt").read_text(encoding="utf-8") == "payload"
+    assert (data_dir_in(obj._base_dir) / "payload.txt").read_text(
+        encoding="utf-8"
+    ) == "payload"
     assert result_manifest_path_in(obj._base_dir).exists()
     assert metadata_path_in(obj._base_dir).exists()
     assert not (obj._base_dir / ".furu").exists()
@@ -1674,14 +1697,31 @@ def test_unused_data_dir_is_not_created_by_create() -> None:
     assert not user_data_path.exists()
 
 
-def test_data_dir_property_creates_user_data_subdirectory() -> None:
+def test_directory_is_only_available_inside_own_create() -> None:
     node = Node(name="manual-data")
-    user_data_path = node._base_dir / "data"
 
-    assert not user_data_path.exists()
-    assert node.directory.data == user_data_path
-    assert user_data_path.exists()
-    assert node.status == "failed"
+    with pytest.raises(RuntimeError, match=r"only available inside"):
+        _ = node.directory
+
+    # Outside access must not fabricate storage (it would flip status to
+    # "failed" for a spec that never ran).
+    assert not node._base_dir.exists()
+    assert node.status == "missing"
+
+    node.create()
+
+    with pytest.raises(RuntimeError, match=r"only available inside"):
+        _ = node.directory
+
+
+def test_directory_of_another_spec_raises_inside_create() -> None:
+    assert DirectoryPeekingValue().create() == "ok"
+
+
+def test_batched_create_can_access_every_group_members_directory() -> None:
+    objs = [BatchedDirectoryValue(key=1), BatchedDirectoryValue(key=2)]
+
+    assert _load_or_create(objs) == ["dir:1", "dir:2"]
 
 
 def test_scratch_survives_retries_and_is_deleted_after_create() -> None:
@@ -1746,9 +1786,9 @@ def test_delete_force() -> None:
     node = Node(name="x")
 
     assert node.create() == "Node(x)"
-    assert node.directory.data.exists()
+    assert node._base_dir.exists()
     assert node.delete(mode="force")
-    assert not node.directory.data.exists()
+    assert not node._base_dir.exists()
     assert node.create() == "Node(x)"
 
 
@@ -1758,7 +1798,7 @@ def test_delete_prompt_cancel() -> None:
     assert node.create() == "Node(x)"
     with patch("builtins.input", return_value="n"):
         assert not node.delete()
-    assert node.directory.data.exists()
+    assert node._base_dir.exists()
 
 
 def test_delete_returns_false_when_missing() -> None:
@@ -1867,7 +1907,7 @@ def test_no_create_hook_loads_cached_result() -> None:
         result_dir_in(obj._base_dir),
         declared_type=str,
         result_codecs=(),
-        data_dir=obj.directory.data,
+        data_dir=data_dir_in(obj._base_dir),
     )
 
     assert furu.create(obj) == "cached:1"
@@ -1897,7 +1937,7 @@ def test_no_create_hook_uses_post_lock_cache_recheck(
             result_dir_in(obj._base_dir),
             declared_type=str,
             result_codecs=(),
-            data_dir=obj.directory.data,
+            data_dir=data_dir_in(obj._base_dir),
         )
         yield lambda: True
 
@@ -2006,11 +2046,11 @@ def test_duplicate_cache_identities_compute_once_and_preserve_input_order() -> N
 def test_executor_deduplicates_by_object_id_not_data_dir(tmp_path: Path) -> None:
     ObjectIdStorageValue.storage_override = tmp_path / "first"
     first = ObjectIdStorageValue(key=1)
-    first_data_dir = first.directory.data
+    first_data_dir = data_dir_in(first._base_dir)
 
     ObjectIdStorageValue.storage_override = tmp_path / "second"
     second = ObjectIdStorageValue(key=1)
-    second_data_dir = second.directory.data
+    second_data_dir = data_dir_in(second._base_dir)
 
     assert first.object_id == second.object_id
     assert first_data_dir != second_data_dir
@@ -2053,7 +2093,7 @@ def test_pending_items_are_rechecked_after_lock_acquisition(
             result_dir_in(pending._base_dir),
             declared_type=str,
             result_codecs=(),
-            data_dir=pending.directory.data,
+            data_dir=data_dir_in(pending._base_dir),
         )
         yield lambda: True
 

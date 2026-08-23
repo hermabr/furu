@@ -1029,7 +1029,7 @@ def test_ref_codec_conflicts_with_different_annotated_codec() -> None:
 def test_codec_metadata_path_round_trips_shared_data_dir_path() -> None:
     obj = DataDirPathResult()
     loaded = obj.create()
-    data_path = obj.directory.data / "data.zarr"
+    data_path = data_dir_in(obj._base_dir) / "data.zarr"
 
     assert loaded["first"].path.resolve() == data_path.resolve()
     # The creating run keeps the handle it put in, rebound to storage.

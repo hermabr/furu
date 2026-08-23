@@ -166,8 +166,21 @@ class Spec[T](_FuruDataclassTransform, ABC):
         return get_logger()
 
     @final
-    @cached_property
+    @property
     def directory(self) -> SpecDirectory:
+        # A plain property, not cached: a handle grabbed inside create() must
+        # not keep working after the create scope ends.
+        from furu.dependencies import is_under_creation
+
+        if not is_under_creation(self):
+            raise RuntimeError(
+                f"{self._log_label}.directory is only available inside this "
+                "spec's own create() hook. To use files another spec produced, "
+                "include their paths in its result and go through "
+                "create()/load_existing() so the dependency is recorded. If "
+                "create() spawns threads that need .directory, propagate "
+                "context with contextvars.copy_context()."
+            )
         return SpecDirectory(self._base_dir)
 
     @final

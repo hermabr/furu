@@ -19,6 +19,7 @@ from furu.migration.steps import MigrationError
 from furu.result.codec import Codec
 from furu.storage._layout import (
     compute_lock_path_in,
+    data_dir_in,
     result_dir_in,
     result_link_path_in,
     result_manifest_path_in,
@@ -235,11 +236,9 @@ def test_migrated_codec_metadata_path_uses_source_data_directory() -> None:
     source.create()
     migrated = _MigratedPathResult(key="contents")
 
-    assert migrated.create().path == (source.directory.data / "payload.txt").resolve()
-    assert (
-        migrated.load_existing().path
-        == (source.directory.data / "payload.txt").resolve()
-    )
+    source_payload = data_dir_in(source._base_dir) / "payload.txt"
+    assert migrated.create().path == source_payload.resolve()
+    assert migrated.load_existing().path == source_payload.resolve()
 
 
 def test_added_field_binds_only_the_default_value() -> None:
