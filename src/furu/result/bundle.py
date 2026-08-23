@@ -22,6 +22,7 @@ from furu._declared_types import child_declared_type, strip_annotated
 from furu.constants import FIELDSMARKER, KINDMARKER, TYPEMARKER
 from furu.result.codec import Codec, CodecMeta
 from furu.result.ref import Ref
+from furu.storage._layout import scratch_dir_in
 from furu.utils import JsonValue, fully_qualified_name, resolve_fully_qualified_name
 
 WRAPPER_KEY: Final = "$furu"
@@ -210,6 +211,13 @@ def _dump_value(
                 )
             return out
         case Path():
+            scratch_dir = scratch_dir_in(dump_state.data_dir.parent)
+            if value.resolve().is_relative_to(scratch_dir.resolve()):
+                raise ValueError(
+                    f"Result path at {_value_path_display(value_path)} must not "
+                    f"point into the scratch dir {scratch_dir}, which is deleted "
+                    f"once the result is stored: {value}"
+                )
             return {
                 WRAPPER_KEY: {
                     KINDMARKER: "path",

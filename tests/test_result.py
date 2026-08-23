@@ -568,6 +568,15 @@ class ScratchBackedResult(Spec[_ScratchBackedValue]):
         return _ScratchBackedValue(source)
 
 
+def test_result_path_into_scratch_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="scratch dir"):
+        _save_result_bundle(
+            tmp_path / "scratch" / "download.csv",
+            tmp_path / "result",
+            result_codecs=(),
+        )
+
+
 def test_scratch_files_survive_until_codec_save() -> None:
     obj = ScratchBackedResult(name="lazy")
 
