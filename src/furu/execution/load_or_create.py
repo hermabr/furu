@@ -443,9 +443,6 @@ def _create_and_store_group[T](
 ) -> None:
     log_paths = tuple(run_log_path_in(obj._base_dir) for obj in group)
 
-    for obj in group:
-        shutil.rmtree(scratch_dir_in(obj._base_dir), ignore_errors=True)
-
     metadata = [RunningMetadata.write_for(obj) for obj in group]
 
     with _scoped_log_files(log_paths):

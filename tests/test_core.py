@@ -139,9 +139,9 @@ class ScratchWritingValue(Spec[str]):
     name: str
 
     def create(self) -> str:
-        assert not list(self.directory.scratch.iterdir()), "stale scratch leaked in"
         payload_path = self.directory.scratch / "download.csv"
-        payload_path.write_text(self.name, encoding="utf-8")
+        if not payload_path.exists():
+            payload_path.write_text(self.name, encoding="utf-8")
         return payload_path.read_text(encoding="utf-8")
 
 
@@ -1684,15 +1684,15 @@ def test_data_dir_property_creates_user_data_subdirectory() -> None:
     assert node.status == "failed"
 
 
-def test_scratch_dir_is_wiped_before_create_and_deleted_after() -> None:
+def test_scratch_survives_retries_and_is_deleted_after_create() -> None:
     obj = ScratchWritingValue(name="payload")
-    stale_dir = obj._base_dir / "scratch"
-    stale_dir.mkdir(parents=True)
-    (stale_dir / "stale.csv").write_text("stale", encoding="utf-8")
+    scratch_dir = obj._base_dir / "scratch"
+    scratch_dir.mkdir(parents=True)
+    (scratch_dir / "download.csv").write_text("from-previous-attempt", encoding="utf-8")
 
-    assert obj.create() == "payload"
+    assert obj.create() == "from-previous-attempt"
 
-    assert not (obj._base_dir / "scratch").exists()
+    assert not scratch_dir.exists()
     assert obj.status == "done"
 
 
