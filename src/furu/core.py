@@ -168,8 +168,6 @@ class Spec[T](_FuruDataclassTransform, ABC):
     @final
     @property
     def directory(self) -> SpecDirectory:
-        # A plain property, not cached: a handle grabbed inside create() must
-        # not keep working after the create scope ends.
         from furu.dependencies import is_under_creation
 
         if not is_under_creation(self):

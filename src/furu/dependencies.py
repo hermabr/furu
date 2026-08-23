@@ -122,8 +122,6 @@ def dependency_recorder() -> Iterator[DependencyRecorder]:
         _active_dependency_recorder.reset(token)
 
 
-# Like the recorder above, this does not propagate to threads spawned inside
-# a create() hook; such threads must carry it over via contextvars.copy_context().
 _specs_under_creation: ContextVar[frozenset[str]] = ContextVar(
     "_specs_under_creation",
     default=frozenset(),
