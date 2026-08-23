@@ -529,6 +529,64 @@ class AnnotatedAutoRegisteredValueResult(
         return _AutoRegisteredValue(11)
 
 
+class _ScratchBackedValue:
+    def __init__(self, source: Path) -> None:
+        self.source = source
+
+
+class _ScratchBackedCodec(Codec[_ScratchBackedValue]):
+    auto_register: ClassVar[bool] = False
+    reload_value_after_save: ClassVar[bool] = True
+
+    @classmethod
+    def matches(cls, value: object) -> bool:
+        return isinstance(value, _ScratchBackedValue)
+
+    @classmethod
+    def save(
+        cls, value: _ScratchBackedValue, artifact_directory: Path
+    ) -> Mapping[str, object]:
+        artifact_directory.joinpath("data.txt").write_text(
+            value.source.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        return {}
+
+    @classmethod
+    def load(
+        cls, metadata: Mapping[str, object], artifact_directory: Path
+    ) -> _ScratchBackedValue:
+        return _ScratchBackedValue(artifact_directory / "data.txt")
+
+
+class ScratchBackedResult(Spec[_ScratchBackedValue]):
+    name: str
+    result_codecs = (_ScratchBackedCodec,)
+
+    def create(self) -> _ScratchBackedValue:
+        source = self.directory.scratch / "download.csv"
+        source.write_text(self.name, encoding="utf-8")
+        return _ScratchBackedValue(source)
+
+
+def test_result_path_into_scratch_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="scratch dir"):
+        _save_result_bundle(
+            tmp_path / "scratch" / "download.csv",
+            tmp_path / "result",
+            result_codecs=(),
+        )
+
+
+def test_scratch_files_survive_until_codec_save() -> None:
+    obj = ScratchBackedResult(name="lazy")
+
+    value = obj.create()
+
+    assert not (obj._base_dir / "scratch").exists()
+    assert value.source.is_relative_to(result_dir_in(obj._base_dir))
+    assert value.source.read_text(encoding="utf-8") == "lazy"
+
+
 def test_codec_id_is_derived_from_class_identity() -> None:
     assert _CountingCodec._codec_id() == (
         f"{_CountingCodec.__module__}.{_CountingCodec.__qualname__}"

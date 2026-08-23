@@ -135,6 +135,16 @@ class UserDataWritingValue(Spec[str]):
         return payload_path.read_text(encoding="utf-8")
 
 
+class ScratchWritingValue(Spec[str]):
+    name: str
+
+    def create(self) -> str:
+        payload_path = self.directory.scratch / "download.csv"
+        if not payload_path.exists():
+            payload_path.write_text(self.name, encoding="utf-8")
+        return payload_path.read_text(encoding="utf-8")
+
+
 class Fruit(Enum):  # TODO: test enums at some point
     apple = "apple"
     banana = "banana"
@@ -1672,6 +1682,18 @@ def test_data_dir_property_creates_user_data_subdirectory() -> None:
     assert node.directory.data == user_data_path
     assert user_data_path.exists()
     assert node.status == "failed"
+
+
+def test_scratch_survives_retries_and_is_deleted_after_create() -> None:
+    obj = ScratchWritingValue(name="payload")
+    scratch_dir = obj._base_dir / "scratch"
+    scratch_dir.mkdir(parents=True)
+    (scratch_dir / "download.csv").write_text("from-previous-attempt", encoding="utf-8")
+
+    assert obj.create() == "from-previous-attempt"
+
+    assert not scratch_dir.exists()
+    assert obj.status == "done"
 
 
 def test_status_is_running_while_compute_lock_is_held() -> None:
