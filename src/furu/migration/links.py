@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 from pydantic import BaseModel, ConfigDict
 
@@ -83,7 +83,7 @@ def _read_source(artifact_dir: Path) -> _ResultLink | None:
     return link if result_manifest_path_in(link.source.base_dir).exists() else None
 
 
-def _find_source(obj: Spec[Any], resolution: _ClassResolution) -> _ResultLink | None:
+def _find_source(obj: Spec, resolution: _ClassResolution) -> _ResultLink | None:
     if not resolution.covered:
         return None
     target_fields = cast(JsonFields, obj._artifact_data[FIELDSMARKER])
@@ -127,7 +127,7 @@ def _find_source(obj: Spec[Any], resolution: _ClassResolution) -> _ResultLink | 
     return None
 
 
-def result_dir_for_loading(obj: Spec[Any], *, has_lock: bool = False) -> Path | None:
+def result_dir_for_loading(obj: Spec, *, has_lock: bool = False) -> Path | None:
     if result_manifest_path_in(obj._base_dir).exists():
         return result_dir_in(obj._base_dir)
     if link := _read_source(obj._base_dir):

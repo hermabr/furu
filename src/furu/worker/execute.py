@@ -9,7 +9,7 @@ import traceback
 from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, assert_never
+from typing import assert_never
 
 from furu.config import _WORKER_JSON_CONFIG_FILE_ENV_VAR
 from furu.core import Spec
@@ -36,7 +36,7 @@ _STDERR_TAIL_CHARS = 32 * 1024
 _RETIRE_TIMEOUT_SECONDS = 5.0
 
 
-def execute_job(objs: Sequence[Spec[Any]], *, job: Job) -> JobResult:
+def execute_job(objs: Sequence[Spec], *, job: Job) -> JobResult:
     try:
         worker_hash = EnvironmentIdentity.capture().uv_lock_hash
         submitted_hash = job.provenance.environment.uv_lock_hash
@@ -82,7 +82,7 @@ class ChildSlot:
         self._child = None
 
     def run(
-        self, objs: Sequence[Spec[Any]], *, job: Job, execution: Subprocess
+        self, objs: Sequence[Spec], *, job: Job, execution: Subprocess
     ) -> JobResult:
         if all(result_dir_for_loading(obj) is not None for obj in objs):
             logger.info("%s", _cached_to_build_msg(list(objs), []))

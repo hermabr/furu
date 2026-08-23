@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, cast
+from typing import ClassVar, cast
 
 import pytest
 
@@ -41,8 +41,8 @@ def _reset_counter() -> None:
 
 
 def _transplant_generation(
-    donor: Spec[Any],
-    target_cls: type[Spec[Any]],
+    donor: Spec,
+    target_cls: type[Spec],
     renames: Mapping[str, str] | None = None,
 ) -> Path:
     """Copy the donor's stored schema generation into the target class's tree.
@@ -941,7 +941,7 @@ def test_sideways_scan_runs_once_per_class_per_process(
     scans: list[type] = []
     real_resolve = migration_resolution._resolve_class
 
-    def counting(obj: Spec[Any]) -> migration_resolution._ClassResolution:
+    def counting(obj: Spec) -> migration_resolution._ClassResolution:
         scans.append(type(obj))
         return real_resolve(obj)
 

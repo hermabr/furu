@@ -1,6 +1,6 @@
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import cast
 
 from furu.constants import CLASSMARKER, FIELDSMARKER, KINDMARKER
 from furu.core import Spec
@@ -22,7 +22,7 @@ def _as_instance_node(
     return None
 
 
-def diff(a: Spec[Any], b: Spec[Any]) -> list[FieldDiff]:
+def diff(a: Spec, b: Spec) -> list[FieldDiff]:
     diffs: list[FieldDiff] = []
     queue: deque[tuple[str, JsonValue, JsonValue]] = deque(
         [("", a._artifact_data_for_hash, b._artifact_data_for_hash)]

@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import time
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Literal, cast
 
 from furu import Metadata, Requires, Spec, between
 
@@ -15,7 +15,7 @@ class SlurmWorkloadTask(Spec[dict[str, object]]):
     kind: SlurmTaskKind
     scenario_id: str
     duration_seconds: float
-    parents: tuple[Spec[Any], ...] = ()
+    parents: tuple[Spec, ...] = ()
 
     def metadata(self) -> Metadata:
         match self.kind:

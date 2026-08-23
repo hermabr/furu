@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 from furu.constants import CLASSMARKER, FIELDSMARKER
 from furu.migration.links import _find_source
@@ -24,7 +24,7 @@ def _orphaned_directories(resolution: _ClassResolution) -> list[Path]:
     ]
 
 
-def sideways_status(obj: Spec[Any]) -> Literal["done", "stale", "missing"]:
+def sideways_status(obj: Spec) -> Literal["done", "stale", "missing"]:
     resolution = _class_resolution(obj)
     if _find_source(obj, resolution) is not None:
         return "done"
@@ -78,7 +78,7 @@ def _field_diff(
                 )
 
 
-def raise_if_stale(obj: Spec[Any]) -> None:
+def raise_if_stale(obj: Spec) -> None:
     orphaned = _orphaned_directories(_class_resolution(obj))
     if not orphaned:
         return

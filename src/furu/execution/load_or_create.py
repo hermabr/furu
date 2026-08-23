@@ -7,7 +7,6 @@ from collections.abc import Callable, Sequence
 from contextlib import nullcontext
 from typing import (
     TYPE_CHECKING,
-    Any,
     cast,
     overload,
 )
@@ -57,7 +56,7 @@ if TYPE_CHECKING:
 type HasLock = Callable[[], bool]
 
 
-def _record_schema_snapshot(obj: Spec[Any]) -> None:
+def _record_schema_snapshot(obj: Spec) -> None:
     schema_path = schema_snapshot_path_in(obj._base_dir)
     if schema_path.exists():
         return
@@ -254,8 +253,8 @@ def load_existing[T](objs: Sequence[Spec[T]]) -> list[T]:
     return loaded
 
 
-def _cached_to_build_msg(cached: list[Spec[Any]], to_build: list[Spec[Any]]) -> str:
-    def fmt(objs: list[Spec[Any]]) -> str:
+def _cached_to_build_msg(cached: list[Spec], to_build: list[Spec]) -> str:
+    def fmt(objs: list[Spec]) -> str:
         if len(cached) + len(to_build) > 5:
             return str(len(objs))
         return ", ".join(o._log_label for o in objs)
@@ -406,7 +405,7 @@ def _load_or_create_local[T](
     return outputs
 
 
-def _batch_group(obj: Spec[Any]) -> tuple[object, int] | None:
+def _batch_group(obj: Spec) -> tuple[object, int] | None:
     hook = getattr(type(obj), "_furu_create_hook", None)
     if not isinstance(hook, _BatchedHook):
         return None

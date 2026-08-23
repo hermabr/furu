@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
 
 import pytest
 from subprocess_objects import (
@@ -72,7 +71,7 @@ def _submit_provenance() -> SubmitProvenance:
     )
 
 
-def _run(slot: ChildSlot, obj: Spec[Any]) -> JobResult:
+def _run(slot: ChildSlot, obj: Spec) -> JobResult:
     execution = obj._metadata.execution
     assert isinstance(execution, Subprocess)
     return slot.run(
