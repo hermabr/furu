@@ -2,7 +2,7 @@ import hashlib
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import ClassVar
 
 import pytest
 
@@ -75,7 +75,7 @@ def mark_running(obj: Spec) -> Iterator[None]:
 
 
 def _new_execution_coordinator(
-    objs: Sequence[Spec[Any]],
+    objs: Sequence[Spec],
     *,
     max_retries_per_object: int | None = None,
 ) -> ExecutionCoordinator:

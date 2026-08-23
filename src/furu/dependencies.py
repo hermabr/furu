@@ -28,14 +28,14 @@ class _CachedDependency[TOwner, T](cached_property):
 
 
 @overload
-def dependency[TSpec: Spec[Any], T](
+def dependency[TSpec: Spec, T](
     func: Callable[[TSpec], T], /
 ) -> _CachedDependency[TSpec, T]: ...
 @overload
-def dependency[TSpec: Spec[Any], T]() -> Callable[
+def dependency[TSpec: Spec, T]() -> Callable[
     [Callable[[TSpec], T]], _CachedDependency[TSpec, T]
 ]: ...
-def dependency[TSpec: Spec[Any], T](
+def dependency[TSpec: Spec, T](
     func: Callable[[TSpec], T] | None = None, /
 ) -> (
     _CachedDependency[TSpec, T]
@@ -128,12 +128,12 @@ _specs_under_creation: ContextVar[frozenset[str]] = ContextVar(
 )
 
 
-def is_under_creation(obj: Spec[Any]) -> bool:
+def is_under_creation(obj: Spec) -> bool:
     return obj.object_id in _specs_under_creation.get()
 
 
 @contextmanager
-def under_creation(objs: Sequence[Spec[Any]]) -> Iterator[None]:
+def under_creation(objs: Sequence[Spec]) -> Iterator[None]:
     token = _specs_under_creation.set(frozenset(obj.object_id for obj in objs))
     try:
         yield

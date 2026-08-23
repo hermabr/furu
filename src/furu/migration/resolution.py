@@ -6,7 +6,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, is_dataclass
 from dataclasses import fields as dataclass_fields
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 from furu.constants import CLASSMARKER, FIELDSMARKER, KINDMARKER
 from furu.migration.steps import (
@@ -140,13 +140,13 @@ def _embedded_migratable_classes(
     )
 
 
-def validate_embedded_migration_declarations(cls: type[Spec[Any]]) -> None:
+def validate_embedded_migration_declarations(cls: type[Spec]) -> None:
     try:
         children = _embedded_migratable_classes(cls, cls.artifact_serializers)
     except Exception:  # noqa: BLE001
         return  # schema not buildable yet (forward references, ...); resolution re-checks
     for child in children:
-        validate_migration_declaration(cast("type[Spec[Any]]", child))
+        validate_migration_declaration(cast("type[Spec]", child))
 
 
 def _build_chain(
@@ -313,12 +313,12 @@ def _normalize_snapshot(
     return normalized, dict(sorted(moves.items()))
 
 
-def _resolve_class(obj: Spec[Any]) -> _ClassResolution:
+def _resolve_class(obj: Spec) -> _ClassResolution:
     cls = type(obj)
     own = _build_chain(cls, obj.artifact_serializers)
     children = _embedded_migratable_classes(cls, obj.artifact_serializers)
     for child in children:
-        validate_migration_declaration(cast("type[Spec[Any]]", child))
+        validate_migration_declaration(cast("type[Spec]", child))
     chains = tuple(_build_chain(child, obj.artifact_serializers) for child in children)
 
     covered: list[_Covered] = []
@@ -381,7 +381,7 @@ def _resolve_class(obj: Spec[Any]) -> _ClassResolution:
 _RESOLUTION_CACHE: dict[tuple[type, Path], _ClassResolution | MigrationError] = {}
 
 
-def _class_resolution(obj: Spec[Any]) -> _ClassResolution:
+def _class_resolution(obj: Spec) -> _ClassResolution:
     key = (type(obj), obj._metadata.storage)
     cached = _RESOLUTION_CACHE.get(key)
     if cached is None:

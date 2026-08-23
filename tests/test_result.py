@@ -1420,7 +1420,7 @@ class NumpyResult(Spec[dict[str, object]]):
         return {"weights": np.arange(10, dtype=np.float32)}
 
 
-class RegistryNumpyResult(Spec[Any]):
+class RegistryNumpyResult(Spec):
     result_codecs = (_RegistryNumpyCodec,)
 
     def create(self) -> Any:

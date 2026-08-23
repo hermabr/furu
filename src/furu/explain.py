@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import fields, is_dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel as PydanticBaseModel
 
@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 type ExplainDepth = int | Literal["full"]
 
 
-def explain(spec: Spec[Any], *, depth: ExplainDepth = 0) -> str:
+def explain(spec: Spec, *, depth: ExplainDepth = 0) -> str:
     header = (
         f"{type(spec).__name__}"
         f"  schema={spec._artifact_schema_hash[:5]}"

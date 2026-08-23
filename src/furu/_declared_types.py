@@ -48,7 +48,7 @@ def child_declared_type(declared_type: object, key: object) -> object:
 
 
 @cache
-def declared_result_type(spec_type: type[Spec[Any]]) -> object:
+def declared_result_type(spec_type: type[Spec]) -> object:
     from furu.core import Spec
 
     declared: object = Any

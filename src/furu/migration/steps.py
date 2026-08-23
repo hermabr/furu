@@ -95,7 +95,7 @@ def _describe_step(step: MigrationStep) -> str:
     return f"{type(step).__name__}({body}{suffix})"
 
 
-def validate_migration_declaration(cls: type[Spec[Any]]) -> None:
+def validate_migration_declaration(cls: type[Spec]) -> None:
     steps = cls.migrations
     if not isinstance(steps, tuple) or not all(
         isinstance(step, MigrationStep) for step in steps

@@ -70,7 +70,7 @@ def _submit_provenance() -> SubmitProvenance:
     )
 
 
-def _job(obj: Spec[Any]) -> Job:
+def _job(obj: Spec) -> Job:
     return Job(
         artifacts=[ArtifactSpec.from_furu(obj)],
         provenance=_submit_provenance(),
@@ -95,7 +95,7 @@ def _captured_furu_logs(caplog: pytest.LogCaptureFixture) -> Iterator[None]:
 
 
 def _new_execution_coordinator(
-    objs: Sequence[furu.Spec[Any]],
+    objs: Sequence[furu.Spec],
     *,
     max_retries_per_object: int | None = None,
 ) -> ExecutionCoordinator:
