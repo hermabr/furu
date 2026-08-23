@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import time
 from collections.abc import Callable, Sequence
 from contextlib import nullcontext
@@ -38,6 +39,7 @@ from furu.storage._layout import (
     result_link_path_in,
     run_log_path_in,
     schema_snapshot_path_in,
+    scratch_dir_in,
 )
 from furu.utils import atomic_write_text, format_duration, nfs_safe_unique_name
 from furu.worker.context import (
@@ -441,6 +443,10 @@ def _create_and_store_group[T](
 ) -> None:
     log_paths = tuple(run_log_path_in(obj._base_dir) for obj in group)
 
+    # Scratch left by a preempted or failed attempt must not leak into this one.
+    for obj in group:
+        shutil.rmtree(scratch_dir_in(obj._base_dir), ignore_errors=True)
+
     metadata = [RunningMetadata.write_for(obj) for obj in group]
 
     with _scoped_log_files(log_paths):
@@ -498,6 +504,9 @@ def _create_and_store_group[T](
                     has_lock=has_lock,
                     submit_provenance=submit_provenance,
                 )
+                # Only now have codecs persisted the value, so scratch files it
+                # referenced (e.g. via a lazy frame) are no longer needed.
+                shutil.rmtree(scratch_dir_in(obj._base_dir), ignore_errors=True)
 
             logger.debug(
                 "create complete · %s",

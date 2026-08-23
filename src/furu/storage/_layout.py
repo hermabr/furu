@@ -5,6 +5,10 @@ def data_dir_in(base_dir: Path) -> Path:
     return base_dir / "data"
 
 
+def scratch_dir_in(base_dir: Path) -> Path:
+    return base_dir / "scratch"
+
+
 def result_dir_in(base_dir: Path) -> Path:
     return base_dir / "result"
 
