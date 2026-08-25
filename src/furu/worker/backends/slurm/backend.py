@@ -15,8 +15,9 @@ from furu.config import (
     get_config,
 )
 from furu.provenance import EnvironmentIdentity, SubmitProvenance
-from furu.resources import ResourceRequest
+from furu.resources import ResourceRequest, resource_request_adapter
 from furu.snapshot import extract_snapshot
+from furu.spec_metadata import Requires
 from furu.utils import write_private_file
 from furu.worker.backends.slurm.pool import SlurmWorkerPool
 from furu.worker.backends.slurm.resources import SlurmResources
@@ -44,6 +45,16 @@ class SlurmWorkerBackend:
     pre_worker_commands: tuple[str, ...] = ()
     export: SlurmExport = None
     use_job_arrays: bool = True
+    reserve_for: Requires | None = None
+
+    @property
+    def resource_request(self) -> ResourceRequest:
+        return ResourceRequest(
+            cpus=self.resources.cpus_per_worker,
+            gpus=self.resources.gpus,
+            memory_gib=self.resources.memory_gib,
+            reserve_for=self.reserve_for,
+        )
 
     def start_pool(
         self,
@@ -97,11 +108,8 @@ class SlurmWorkerBackend:
             mode=0o600,
         )
 
-        resource_request = ResourceRequest(
-            cpus=self.resources.cpus_per_worker,
-            gpus=self.resources.gpus,
-            memory_gib=self.resources.memory_gib,
-        )
+        resource_request = self.resource_request
+        resources_json = resource_request_adapter.dump_json(resource_request).decode()
         pre_worker_script = "".join(
             f"{command}\n" for command in self.pre_worker_commands
         )
@@ -143,9 +151,7 @@ class SlurmWorkerBackend:
                 '    --component "${furu_worker_component}" \\\n'
                 "    --backend slurm \\\n"
                 f"    --idle-timeout {self.worker_idle_timeout} \\\n"
-                f"    --resource-cpus {resource_request.cpus} \\\n"
-                f"    --resource-gpus {resource_request.gpus} \\\n"
-                f"    --resource-memory-gib {resource_request.memory_gib}\n"
+                f"    --resources {shlex.quote(resources_json)}\n"
             ),
             mode=0o700,
         )

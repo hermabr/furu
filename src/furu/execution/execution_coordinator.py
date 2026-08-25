@@ -115,6 +115,18 @@ class ExecutionCoordinator:
                 coordinator._maybe_finish_locked()
             return objs
 
+        for node in coordinator.nodes_by_id.values():
+            requires = node.obj._metadata.requires
+            if not any(
+                resource_request_satisfies(backend.resource_request, requires)
+                for backend in worker_backends
+            ):
+                raise ValueError(
+                    f"no worker backend can run {node.obj._log_label} "
+                    f"(requires={requires}); worker resources: "
+                    + ", ".join(str(b.resource_request) for b in worker_backends)
+                )
+
         # One capture (and at most one snapshot build) for the whole batch;
         # every job carries this same frozen submit half.
         coordinator.submit_provenance = capture_submit_provenance(

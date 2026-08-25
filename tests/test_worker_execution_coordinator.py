@@ -929,6 +929,71 @@ def test_lease_job_filters_by_worker_memory_gib() -> None:
     assert _artifact(memory_job).object_id == memory_leaf.object_id
 
 
+class BigMemoryLeaf(Spec[int]):
+    value: int
+
+    def metadata(self) -> Metadata:
+        return Metadata(requires=Requires(ram=GiB(600)))
+
+    def create(self) -> int:
+        return self.value
+
+
+def test_lease_job_honours_reserve_for() -> None:
+    small = MemoryLeaf(value=1)
+    any_size = CpuOnlyLeaf(value=2)
+    big = BigMemoryLeaf(value=3)
+    coordinator = _new_execution_coordinator([small, any_size, big])
+    reserved = ResourceRequest(memory_gib=600, reserve_for=Requires(ram=GiB(200)))
+
+    big_job = _lease_job(coordinator, resources=reserved)
+    assert isinstance(big_job, Job)
+    assert _artifact(big_job).object_id == big.object_id
+    assert _no_satisfiable_job(coordinator, resources=reserved)
+
+    small_ids = {
+        _artifact(
+            _lease_job(coordinator, resources=ResourceRequest(memory_gib=100))
+        ).object_id
+        for _ in range(2)
+    }
+    assert small_ids == {small.object_id, any_size.object_id}
+
+
+def test_execution_coordinator_run_rejects_jobs_no_backend_can_run() -> None:
+    with pytest.raises(ValueError, match="no worker backend can run BigMemoryLeaf"):
+        ExecutionCoordinator.run(
+            [BigMemoryLeaf(value=uuid4().int)],
+            worker_backends=(
+                LocalThreadWorkerBackend(
+                    resource_request=ResourceRequest(memory_gib=100)
+                ),
+            ),
+        )
+
+
+def test_execution_coordinator_run_splits_work_across_reserved_and_open_pools() -> None:
+    small = MemoryLeaf(value=uuid4().int)
+    big = BigMemoryLeaf(value=uuid4().int)
+
+    ExecutionCoordinator.run(
+        [small, big],
+        worker_backends=(
+            LocalThreadWorkerBackend(
+                resource_request=ResourceRequest(memory_gib=100),
+            ),
+            LocalThreadWorkerBackend(
+                resource_request=ResourceRequest(
+                    memory_gib=600, reserve_for=Requires(ram=GiB(200))
+                ),
+            ),
+        ),
+    )
+
+    assert small.status == "done"
+    assert big.status == "done"
+
+
 def test_execution_coordinator_run_completes_later_resource_stages_on_local_workers() -> (
     None
 ):
@@ -1000,6 +1065,7 @@ def test_execution_coordinator_run_fails_when_local_worker_crashes(
 def test_execution_coordinator_run_uses_worker_backend() -> None:
     class RecordingBackend:
         execution_coordinator_listen_host = "0.0.0.0"
+        resource_request = ResourceRequest()
 
         def __init__(self) -> None:
             self.bound_ports: list[int] = []
@@ -1049,6 +1115,7 @@ def test_execution_coordinator_run_uses_worker_backend() -> None:
 def test_execution_coordinator_run_passes_executor_dir_to_worker_backend() -> None:
     class RecordingBackend:
         execution_coordinator_listen_host = "127.0.0.1"
+        resource_request = ResourceRequest()
 
         def __init__(self) -> None:
             self.executor_dirs: list[Path] = []
@@ -1120,6 +1187,7 @@ def test_execution_coordinator_run_returns_when_all_objects_are_already_complete
 ):
     class UnexpectedBackend:
         execution_coordinator_listen_host = "127.0.0.1"
+        resource_request = ResourceRequest()
 
         def start_pool(
             self,
@@ -1167,6 +1235,7 @@ def test_execution_coordinator_run_starts_backend_pool_and_stops_and_joins_when_
 
     class RecordingBackend:
         execution_coordinator_listen_host = "127.0.0.1"
+        resource_request = ResourceRequest()
 
         def __init__(self, pool: RecordingPool) -> None:
             self.pool = pool
@@ -1226,6 +1295,7 @@ def test_execution_coordinator_run_stops_backend_pool_when_interrupted() -> None
 
     class RecordingBackend:
         execution_coordinator_listen_host = "127.0.0.1"
+        resource_request = ResourceRequest()
 
         def __init__(self, pool: RecordingPool) -> None:
             self.pool = pool
@@ -1267,6 +1337,7 @@ def test_execution_coordinator_run_uses_worker_backend_execution_coordinator_lis
 
     class RecordingBackend:
         execution_coordinator_listen_host = "127.0.0.1"
+        resource_request = ResourceRequest()
 
         def __init__(self) -> None:
             self.server_urls: list[str] = []
@@ -1426,7 +1497,7 @@ def test_execution_coordinator_run_requires_explicit_worker_backends() -> None:
 
 
 def test_execution_coordinator_run_rejects_empty_worker_backends() -> None:
-    with pytest.raises(ValueError, match="not enough values to unpack"):
+    with pytest.raises(ValueError, match="no worker backend can run"):
         ExecutionCoordinator.run(
             [ExecutionCoordinatorLeaf(value=12)], worker_backends=()
         )

@@ -1,18 +1,61 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
+
+from pydantic import TypeAdapter
 
 from furu.spec_metadata import Between, GiB, Requires
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ResourceRequest:
+    """What a worker brings to a lease: its capacity and, optionally, a floor.
+
+    With ``reserve_for`` set, the worker only takes jobs whose declared
+    ``Metadata.requires`` demand at least that much in every dimension
+    ``reserve_for`` constrains; a job that leaves a dimension unconstrained
+    (``None``) never qualifies. This keeps a big worker from wasting itself
+    on jobs a smaller pool could run.
+    """
+
     cpus: int = 1
     gpus: int = 0
     memory_gib: int = 0
+    reserve_for: Requires | None = None
+
+
+resource_request_adapter: TypeAdapter[ResourceRequest] = TypeAdapter(ResourceRequest)
+
+
+def _minimum(constraint: int | GiB | Between[int] | Between[GiB] | None) -> int | None:
+    """The least a constraint demands, or None when it does not constrain."""
+    match constraint:
+        case None:
+            return None
+        case Between(low=low):
+            return _minimum(low)
+        case GiB(count=count):
+            return count
+        case int():
+            return constraint
+
+
+def _demands_at_least(requires: Requires | None, floor: Requires) -> bool:
+    for f in fields(Requires):
+        threshold = _minimum(getattr(floor, f.name))
+        if threshold is None:
+            continue
+        declared = None if requires is None else _minimum(getattr(requires, f.name))
+        if declared is None or declared < threshold:
+            return False
+    return True
 
 
 def resource_request_satisfies(
     request: ResourceRequest, requires: Requires | None
 ) -> bool:
+    if request.reserve_for is not None and not _demands_at_least(
+        requires, request.reserve_for
+    ):
+        return False
     if requires is None:
         return True
 

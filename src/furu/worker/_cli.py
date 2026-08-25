@@ -2,7 +2,7 @@ import argparse
 from collections.abc import Sequence
 from pathlib import Path
 
-from furu.resources import ResourceRequest
+from furu.resources import resource_request_adapter
 from furu.worker.loop import worker_loop
 
 
@@ -20,22 +20,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="path to a file containing the execution coordinator auth token",
     )
     parser.add_argument(
-        "--resource-cpus",
+        "--resources",
         required=True,
-        type=int,
-        help="CPU count available to this worker",
-    )
-    parser.add_argument(
-        "--resource-gpus",
-        required=True,
-        type=int,
-        help="GPU count available to this worker",
-    )
-    parser.add_argument(
-        "--resource-memory-gib",
-        required=True,
-        type=int,
-        help="memory in GiB available to this worker",
+        type=resource_request_adapter.validate_json,
+        help="JSON ResourceRequest this worker presents when leasing jobs",
     )
     parser.add_argument(
         "--idle-timeout",
@@ -58,11 +46,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     worker_loop(
         server_url=args.server_url,
         auth_token=args.auth_token_file.read_text(encoding="utf-8").rstrip(),
-        resource_request=ResourceRequest(
-            cpus=args.resource_cpus,
-            gpus=args.resource_gpus,
-            memory_gib=args.resource_memory_gib,
-        ),
+        resource_request=args.resources,
         idle_timeout=args.idle_timeout,
         component=args.component,
         backend=args.backend,
