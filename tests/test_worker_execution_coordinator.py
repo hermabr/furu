@@ -18,7 +18,7 @@ from websockets.sync.server import ServerConnection, serve
 
 import furu
 import furu.worker.loop as worker_loop_module
-from furu import GiB, Metadata, Requires, Spec, Throttle, at_least
+from furu import GiB, Metadata, Requires, Spec, Throttle, at_least, between
 from furu.config import get_config
 from furu.dag import _add_to_dag
 from furu.execution.execution_coordinator import (
@@ -35,7 +35,7 @@ from furu.provenance import (
     SubmitContext,
     SubmitProvenance,
 )
-from furu.resources import ResourceRequest
+from furu.resources import ResourceRequest, resource_request_satisfies
 from furu.storage._layout import execution_coordinator_log_path_in
 from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
 from furu.worker.loop import worker_loop
@@ -929,6 +929,64 @@ def test_lease_job_filters_by_worker_memory_gib() -> None:
     assert _artifact(memory_job).object_id == memory_leaf.object_id
 
 
+@pytest.mark.parametrize(
+    ("requires", "eligible"),
+    [
+        (Requires(), False),
+        (Requires(ram=GiB(4)), False),
+        (Requires(ram=GiB(8)), True),
+        (Requires(ram=between(GiB(8), GiB(32))), True),
+        (Requires(ram=between(GiB(2), GiB(32))), False),
+        (Requires(ram=GiB(64)), False),
+    ],
+)
+def test_reserve_for_matches_job_lower_bounds(
+    requires: Requires, eligible: bool
+) -> None:
+    worker = ResourceRequest(memory_gib=32, reserve_for=Requires(ram=GiB(8)))
+
+    assert resource_request_satisfies(worker, requires) is eligible
+
+
+def test_lease_job_honors_worker_reserve_for() -> None:
+    cpu_leaf = CpuOnlyLeaf(value=1)
+    memory_leaf = MemoryLeaf(value=2)
+    coordinator = _new_execution_coordinator([cpu_leaf, memory_leaf])
+    reserved = ResourceRequest(memory_gib=16, reserve_for=Requires(ram=GiB(8)))
+
+    memory_job = _lease_job(coordinator, resources=reserved)
+    assert isinstance(memory_job, Job)
+    assert _artifact(memory_job).object_id == memory_leaf.object_id
+    assert _no_satisfiable_job(coordinator, resources=reserved)
+
+    cpu_job = _lease_job(coordinator, resources=ResourceRequest(memory_gib=16))
+    assert isinstance(cpu_job, Job)
+    assert _artifact(cpu_job).object_id == cpu_leaf.object_id
+
+
+def test_execution_coordinator_run_fails_fast_when_no_pool_can_run_a_job() -> None:
+    with pytest.raises(RuntimeError, match="no worker pool can run"):
+        ExecutionCoordinator.run(
+            [MemoryLeaf(value=1)], worker_backends=(LocalThreadWorkerBackend(),)
+        )
+
+
+def test_execution_coordinator_fails_when_no_pool_can_run_a_lazy_dependency() -> None:
+    parent = ExecutionCoordinatorLazyParent(value=3)
+    coordinator = _new_execution_coordinator([parent])
+    coordinator.pool_resources = (ResourceRequest(),)
+    assert isinstance(_lease_job(coordinator), Job)
+
+    coordinator.job_result(
+        parent.object_id,
+        JobBlockedResult(dependencies=[ArtifactSpec.from_furu(MemoryLeaf(value=3))]),
+    )
+
+    assert coordinator.done.is_set()
+    assert coordinator.finish_error is not None
+    assert "no worker pool can run" in coordinator.finish_error
+
+
 def test_execution_coordinator_run_completes_later_resource_stages_on_local_workers() -> (
     None
 ):
@@ -1000,6 +1058,7 @@ def test_execution_coordinator_run_fails_when_local_worker_crashes(
 def test_execution_coordinator_run_uses_worker_backend() -> None:
     class RecordingBackend:
         execution_coordinator_listen_host = "0.0.0.0"
+        resource_request = ResourceRequest()
 
         def __init__(self) -> None:
             self.bound_ports: list[int] = []
@@ -1049,6 +1108,7 @@ def test_execution_coordinator_run_uses_worker_backend() -> None:
 def test_execution_coordinator_run_passes_executor_dir_to_worker_backend() -> None:
     class RecordingBackend:
         execution_coordinator_listen_host = "127.0.0.1"
+        resource_request = ResourceRequest()
 
         def __init__(self) -> None:
             self.executor_dirs: list[Path] = []
@@ -1120,6 +1180,7 @@ def test_execution_coordinator_run_returns_when_all_objects_are_already_complete
 ):
     class UnexpectedBackend:
         execution_coordinator_listen_host = "127.0.0.1"
+        resource_request = ResourceRequest()
 
         def start_pool(
             self,
@@ -1167,6 +1228,7 @@ def test_execution_coordinator_run_starts_backend_pool_and_stops_and_joins_when_
 
     class RecordingBackend:
         execution_coordinator_listen_host = "127.0.0.1"
+        resource_request = ResourceRequest()
 
         def __init__(self, pool: RecordingPool) -> None:
             self.pool = pool
@@ -1226,6 +1288,7 @@ def test_execution_coordinator_run_stops_backend_pool_when_interrupted() -> None
 
     class RecordingBackend:
         execution_coordinator_listen_host = "127.0.0.1"
+        resource_request = ResourceRequest()
 
         def __init__(self, pool: RecordingPool) -> None:
             self.pool = pool
@@ -1267,6 +1330,7 @@ def test_execution_coordinator_run_uses_worker_backend_execution_coordinator_lis
 
     class RecordingBackend:
         execution_coordinator_listen_host = "127.0.0.1"
+        resource_request = ResourceRequest()
 
         def __init__(self) -> None:
             self.server_urls: list[str] = []
