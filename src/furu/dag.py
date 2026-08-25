@@ -9,6 +9,7 @@ from furu.core import Spec
 from furu.dependencies import collect_declared_refs
 from furu.metadata import ArtifactSpec
 from furu.migration.stale import raise_if_stale
+from furu.resources import resource_request_satisfies
 
 if TYPE_CHECKING:
     from furu.execution.execution_coordinator import ExecutionCoordinator
@@ -62,6 +63,23 @@ def _add_to_dag(coordinator: ExecutionCoordinator, objs: Sequence[Spec]) -> None
         refs = collect_declared_refs(obj)
         refs_by_id[obj.object_id] = refs
         pending.extend(refs)
+
+    if coordinator.pool_resources is not None:
+        unsatisfiable = [
+            f"{node.obj._log_label} requires {node.obj._metadata.requires}"
+            for node in newly_added
+            if not any(
+                resource_request_satisfies(resources, node.obj._metadata.requires)
+                for resources in coordinator.pool_resources
+            )
+        ]
+        if unsatisfiable:
+            worker_resources = ", ".join(map(str, coordinator.pool_resources)) or "none"
+            raise RuntimeError(
+                "no worker pool can run: "
+                + "; ".join(sorted(unsatisfiable))
+                + f"; worker resources: {worker_resources}"
+            )
 
     for obj_id, refs in refs_by_id.items():
         node = coordinator.nodes_by_id[obj_id]
