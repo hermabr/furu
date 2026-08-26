@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import threading
 import time
 from collections.abc import Iterator, Sequence
@@ -13,7 +14,13 @@ from typing import TYPE_CHECKING, assert_never
 
 from furu.config import get_config
 from furu.core import Spec
-from furu.dag import DagNode, _add_to_dag, _update_dag_blocking_dependencies
+from furu.dag import (
+    DagNode,
+    RunningObjectError,
+    _add_to_dag,
+    _update_dag_blocking_dependencies,
+)
+from furu.execution.takeover import AdoptedPool, ClaimResponse, PoolInventory
 from furu.logging import (
     _scoped_component,
     _scoped_log_files,
@@ -34,10 +41,18 @@ from furu.worker.protocol import (
 )
 
 if TYPE_CHECKING:
-    from furu.worker.backends.protocol import WorkerBackend
+    from furu.worker.backends.protocol import WorkerBackend, WorkerPool
 
 
 logger = get_logger()
+
+# After a takeover, aborted old-run workers release their compute locks as
+# they unwind; a hard-killed worker's lock only goes stale after ~35s.
+_POST_TAKEOVER_LOCK_WAIT_S = 45.0
+
+
+class FuruReplacedError(RuntimeError):
+    """This run surrendered its workers to a successor run and stopped."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +83,8 @@ class ExecutionCoordinator:
     done: threading.Event = field(default_factory=threading.Event)
     finish_error: str | None = None
     submit_provenance: SubmitProvenance | None = None
+    pools: list[WorkerPool] = field(default_factory=list)
+    replaced_by: str | None = None
 
     def _failed_counts(self) -> tuple[int, int]:
         failed_retry = sum(
@@ -100,20 +117,25 @@ class ExecutionCoordinator:
         if max_retries_per_object is None:
             max_retries_per_object = get_config().worker.max_retries_per_object
         coordinator = cls(max_retries_per_object=max_retries_per_object)
-        _add_to_dag(coordinator, objs)
         digest = hashlib.blake2s(digest_size=16)
         for obj in objs:
             digest.update(obj.object_id.encode("utf-8"))
             digest.update(b"\0")
         coordinator.executor_id = digest.hexdigest()
 
-        if not coordinator.nodes_by_id:
-            with coordinator.log_context(), coordinator.lock:
-                logger.info(
-                    "all objects already exist; no execution coordinator work to run"
-                )
-                coordinator._maybe_finish_locked()
-            return objs
+        # A takeover must happen before DAG construction: the old run's
+        # workers are still computing objects this DAG may contain.
+        replace_selector = os.environ.get("FURU_REPLACE_ORCHESTRATOR") or None
+
+        if replace_selector is None:
+            _add_to_dag(coordinator, objs)
+            if not coordinator.nodes_by_id:
+                with coordinator.log_context(), coordinator.lock:
+                    logger.info(
+                        "all objects already exist; no execution coordinator work to run"
+                    )
+                    coordinator._maybe_finish_locked()
+                return objs
 
         # One capture (and at most one snapshot build) for the whole batch;
         # every job carries this same frozen submit half.
@@ -129,39 +151,79 @@ class ExecutionCoordinator:
 
         with coordinator.log_context():
             logger.info(
-                "starting exec=%s · %d ready · %d blocked",
+                "starting exec=%s — replace with FURU_REPLACE_ORCHESTRATOR=auto",
                 coordinator.executor_id[:5],
-                len(coordinator.ready),
-                len(coordinator.blocked),
                 extra=log_detail(
                     executor_id=coordinator.executor_id,
                     executor_dir=coordinator.executor_dir,
                 ),
             )
-            pools = []
             try:
                 with execution_coordinator_server(
                     coordinator, bind_host=bind_host, port=port
                 ) as server:
                     logger.info("server listening on %s", server.server_url)
-                    for backend in worker_backends:
-                        pool = backend.start_pool(
+                    adoptions: dict[int, AdoptedPool] = {}
+                    if replace_selector is not None:
+                        from furu.execution.takeover import perform_takeover
+
+                        adoptions = perform_takeover(
+                            selector=replace_selector,
                             coordinator=coordinator,
-                            bound_port=server.bound_port,
-                            auth_token=server.auth_token,
-                            executor_dir=coordinator.executor_dir,
-                            provenance=coordinator.submit_provenance,
+                            server=server,
+                            worker_backends=worker_backends,
                         )
-                        pools.append(pool)
+                        _add_to_dag_after_takeover(coordinator, objs)
+                        if not coordinator.nodes_by_id:
+                            with coordinator.lock:
+                                logger.info(
+                                    "all objects already exist; "
+                                    "shutting down adopted workers"
+                                )
+                                coordinator._maybe_finish_locked()
+                    logger.info(
+                        "%d ready · %d blocked",
+                        len(coordinator.ready),
+                        len(coordinator.blocked),
+                    )
+                    for index, backend in enumerate(worker_backends):
+                        if (adopt := adoptions.get(index)) is not None:
+                            from furu.worker.backends.slurm.backend import (
+                                SlurmWorkerBackend,
+                            )
+
+                            assert isinstance(backend, SlurmWorkerBackend)
+                            pool = backend.start_pool(
+                                coordinator=coordinator,
+                                bound_port=server.bound_port,
+                                auth_token=server.auth_token,
+                                executor_dir=coordinator.executor_dir,
+                                provenance=coordinator.submit_provenance,
+                                adopt=adopt,
+                            )
+                        else:
+                            pool = backend.start_pool(
+                                coordinator=coordinator,
+                                bound_port=server.bound_port,
+                                auth_token=server.auth_token,
+                                executor_dir=coordinator.executor_dir,
+                                provenance=coordinator.submit_provenance,
+                            )
+                        coordinator.pools.append(pool)
                         logger.info("pool started · %s", type(backend).__name__)
                     coordinator.done.wait()
             finally:
-                if pools:
-                    with ThreadPoolExecutor(max_workers=len(pools)) as executor:
+                if coordinator.pools:
+                    with ThreadPoolExecutor(
+                        max_workers=len(coordinator.pools)
+                    ) as executor:
                         stop_futures = [
-                            executor.submit(pool.stop, timeout=5) for pool in pools
+                            executor.submit(pool.stop, timeout=5)
+                            for pool in coordinator.pools
                         ]
-                    for pool, future in zip(pools, stop_futures, strict=True):
+                    for pool, future in zip(
+                        coordinator.pools, stop_futures, strict=True
+                    ):
                         if (exc := future.exception()) is not None:
                             logger.error(
                                 "pool stop failed · %s · %s",
@@ -399,7 +461,61 @@ class ExecutionCoordinator:
             self._maybe_finish_locked()
             self.lock.notify_all()
 
+    def takeover_inventory(self) -> list[PoolInventory]:
+        from furu.worker.backends.slurm.pool import SlurmWorkerPool
+
+        return [
+            pool.takeover_inventory()
+            for pool in self.pools
+            if isinstance(pool, SlurmWorkerPool)
+        ]
+
+    def surrender_pools(self, adopt: list[str]) -> ClaimResponse:
+        """Hand the named pools' jobs to a successor; the rest are cancelled
+        by this run's ordinary shutdown path."""
+        from furu.worker.backends.slurm.pool import SlurmWorkerPool
+
+        pools_by_id = {
+            pool.pool_id: pool
+            for pool in self.pools
+            if isinstance(pool, SlurmWorkerPool)
+        }
+        if unknown := set(adopt) - set(pools_by_id):
+            raise ValueError(
+                f"cannot surrender unknown pools: {', '.join(sorted(unknown))}"
+            )
+        adopted: list[PoolInventory] = []
+        for pool_id in adopt:
+            pool = pools_by_id[pool_id]
+            pool.surrender()
+            adopted.append(pool.takeover_inventory())
+        with self.log_context():
+            logger.info(
+                "surrendered %d of %d slurm pools",
+                len(adopted),
+                len(pools_by_id),
+                extra=log_detail(adopted=",".join(adopt)),
+            )
+        return ClaimResponse(
+            adopted=adopted,
+            cancelled=[pool_id for pool_id in pools_by_id if pool_id not in set(adopt)],
+        )
+
+    def replaced(self, successor_executor_id: str) -> None:
+        with self.log_context(), self.lock:
+            if self.done.is_set():
+                return
+            self.replaced_by = successor_executor_id
+            self.finish_error = (
+                f"orchestrator replaced by successor {successor_executor_id}"
+            )
+            logger.info("furu execution coordinator finished: %s", self.finish_error)
+            self.done.set()
+            self.lock.notify_all()
+
     def raise_for_failure(self) -> None:
+        if self.replaced_by is not None:
+            raise FuruReplacedError(self.finish_error)
         if self.finish_error is not None:
             raise RuntimeError(self.finish_error)
 
@@ -448,3 +564,27 @@ class ExecutionCoordinator:
         else:
             logger.info("furu execution coordinator finished successfully")
         self.done.set()
+
+
+def _add_to_dag_after_takeover(
+    coordinator: ExecutionCoordinator, objs: Sequence[Spec]
+) -> None:
+    """Build the DAG once the aborted old-run workers' compute locks clear.
+
+    Probes on a throwaway coordinator because a failed ``_add_to_dag`` leaves
+    partially classified nodes behind; the real build only runs clean.
+    """
+    deadline = time.monotonic() + _POST_TAKEOVER_LOCK_WAIT_S
+    while True:
+        probe = ExecutionCoordinator(
+            max_retries_per_object=coordinator.max_retries_per_object
+        )
+        try:
+            _add_to_dag(probe, objs)
+            break
+        except RunningObjectError:
+            if time.monotonic() >= deadline:
+                raise
+            logger.info("waiting for adopted workers to release compute locks")
+            time.sleep(1.0)
+    _add_to_dag(coordinator, objs)

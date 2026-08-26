@@ -10,6 +10,13 @@ from websockets.exceptions import ConnectionClosed
 from websockets.sync.server import ServerConnection, basic_auth, serve
 
 from furu.execution.execution_coordinator import ExecutionCoordinator
+from furu.execution.takeover import (
+    TAKEOVER_PATH,
+    ClaimRequest,
+    PoolsRequest,
+    PoolsResponse,
+    register_live_run,
+)
 from furu.logging import get_logger, log_detail
 from furu.worker.protocol import HelloMessage, job_result_adapter
 
@@ -58,6 +65,48 @@ def _serve_worker(
             coordinator.worker_lost(worker)
 
 
+def _serve_takeover(
+    coordinator: ExecutionCoordinator,
+    connection: ServerConnection,
+    busy: threading.Lock,
+) -> None:
+    """Two-message handshake with a successor run, on one connection.
+
+    Inventory and claim stay separate so the destructive step is explicit and
+    the successor can prepare (venv, config, endpoint files) between them; a
+    drop before the claim aborts the takeover with nothing surrendered.
+    """
+    with coordinator.log_context():
+        if not busy.acquire(blocking=False):
+            logger.warning("rejecting takeover connection: one already in progress")
+            connection.close(1013, "takeover already in progress")
+            return
+        try:
+            request = PoolsRequest.model_validate_json(connection.recv(timeout=10.0))
+            logger.info(
+                "takeover requested by successor %s", request.successor_executor_id
+            )
+            connection.send(
+                PoolsResponse(
+                    executor_id=coordinator.executor_id,
+                    executor_dir=coordinator.executor_dir,
+                    pools=coordinator.takeover_inventory(),
+                ).model_dump_json()
+            )
+            try:
+                claim = ClaimRequest.model_validate_json(connection.recv())
+            except ConnectionClosed:
+                logger.warning(
+                    "successor disconnected before claiming; keeping all pools"
+                )
+                return
+            response = coordinator.surrender_pools(claim.adopt)
+            connection.send(response.model_dump_json())
+            coordinator.replaced(request.successor_executor_id)
+        finally:
+            busy.release()
+
+
 @contextmanager
 def execution_coordinator_server(
     coordinator: ExecutionCoordinator, *, bind_host: str, port: int
@@ -65,12 +114,19 @@ def execution_coordinator_server(
     auth_token = token_urlsafe(32)
     connections: set[ServerConnection] = set()
     connections_changed = threading.Condition()
+    takeover_busy = threading.Lock()
 
     def handler(connection: ServerConnection) -> None:
         with connections_changed:
             connections.add(connection)
         try:
-            _serve_worker(coordinator, connection)
+            if (
+                connection.request is not None
+                and connection.request.path == TAKEOVER_PATH
+            ):
+                _serve_takeover(coordinator, connection, takeover_busy)
+            else:
+                _serve_worker(coordinator, connection)
         finally:
             with connections_changed:
                 connections.discard(connection)
@@ -90,11 +146,17 @@ def execution_coordinator_server(
     )
     thread.start()
     try:
-        yield ExecutionCoordinatorServer(
-            bound_host=bound_host,
+        with register_live_run(
+            executor_id=coordinator.executor_id,
+            executor_dir=coordinator.executor_dir,
             bound_port=bound_port,
             auth_token=auth_token,
-        )
+        ):
+            yield ExecutionCoordinatorServer(
+                bound_host=bound_host,
+                bound_port=bound_port,
+                auth_token=auth_token,
+            )
     finally:
         coordinator.fail("execution coordinator server closed before the run finished")
         server.shutdown()

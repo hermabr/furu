@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 import traceback
-from typing import assert_never
+from typing import Literal, assert_never
 
 from websockets.exceptions import ConnectionClosed
 from websockets.headers import build_authorization_basic
@@ -18,6 +18,15 @@ from furu.worker import protocol
 from furu.worker.execute import ChildSlot, execute_job
 
 logger = get_logger("worker.loop")
+
+
+class WorkerPreempted(BaseException):
+    """Raised by the SIGUSR1 handler: abandon in-flight work immediately.
+
+    A BaseException so the fault barriers that convert crashes into
+    JobFailedResults cannot swallow it; unwinding still releases compute
+    locks and retires the warm child via the ``finally`` blocks it passes.
+    """
 
 
 def _run_job(
@@ -62,7 +71,7 @@ def worker_loop(
     idle_timeout: float | None,
     component: str,
     backend: str,
-) -> None:
+) -> Literal["idle", "disconnected"]:
     worker_backend_token = _worker_backend.set(backend)
     with _scoped_component(component):
         child_slot = ChildSlot()
@@ -91,10 +100,10 @@ def worker_loop(
                             "no work for %s; worker exiting",
                             format_duration(idle_timeout),
                         )
-                        return
+                        return "idle"
                     except ConnectionClosed:
                         logger.info("server closed the connection; worker exiting")
-                        return
+                        return "disconnected"
 
                     job = protocol.Job.model_validate_json(message)
                     task_started_at = time.monotonic()
