@@ -6,11 +6,17 @@ from typing import TYPE_CHECKING, Protocol
 if TYPE_CHECKING:
     from furu.execution.execution_coordinator import ExecutionCoordinator
     from furu.provenance import SubmitProvenance
+    from furu.resources import ResourceRequest
 
 
 class WorkerBackend(Protocol):
     @property
     def execution_coordinator_listen_host(self) -> str: ...
+
+    @property
+    def resource_request(self) -> ResourceRequest:
+        """What every worker in this pool offers when leasing jobs."""
+        ...
 
     def start_pool(
         self,
