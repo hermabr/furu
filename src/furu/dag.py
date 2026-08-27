@@ -58,7 +58,6 @@ def _add_to_dag(coordinator: ExecutionCoordinator, objs: Sequence[Spec]) -> None
             case x:
                 assert_never(x)
         node = DagNode(obj=obj)
-        coordinator.nodes_by_id[obj.object_id] = node
         newly_added.append(node)
         refs = collect_declared_refs(obj)
         refs_by_id[obj.object_id] = refs
@@ -79,6 +78,9 @@ def _add_to_dag(coordinator: ExecutionCoordinator, objs: Sequence[Spec]) -> None
             + "; ".join(sorted(unsatisfiable))
             + f"; worker resources: {worker_resources}"
         )
+
+    for node in newly_added:
+        coordinator.nodes_by_id[node.obj.object_id] = node
 
     for obj_id, refs in refs_by_id.items():
         node = coordinator.nodes_by_id[obj_id]
