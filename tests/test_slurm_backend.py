@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 import furu.worker.backends.slurm.backend as slurm_backend_module
+from furu import GiB, Requires
 from furu.config import (
     _WORKER_JSON_CONFIG_FILE_ENV_VAR,
     _Config,
@@ -30,7 +31,7 @@ from furu.provenance import (
     SubmitContext,
     SubmitProvenance,
 )
-from furu.resources import ResourceRequest
+from furu.resources import ResourceRequest, resource_request_adapter
 from furu.snapshot import create_snapshot
 from furu.testing import override_config
 from furu.worker import _cli
@@ -128,12 +129,8 @@ def test_worker_cli_reads_auth_token_file(
                 "http://execution-coordinator.test",
                 "--auth-token-file",
                 str(token_file),
-                "--resource-cpus",
-                "1",
-                "--resource-gpus",
-                "0",
-                "--resource-memory-gib",
-                "0",
+                "--resources",
+                '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
                 "--idle-timeout",
                 "60",
                 "--component",
@@ -179,12 +176,8 @@ def test_worker_cli_reads_resource_request(
                 "http://execution-coordinator.test",
                 "--auth-token-file",
                 str(token_file),
-                "--resource-cpus",
-                "4",
-                "--resource-gpus",
-                "1",
-                "--resource-memory-gib",
-                "16",
+                "--resources",
+                '{"cpus": 4, "gpus": 1, "memory_gib": 16, "reserve_for": {"ram": {"count": 8}}}',
                 "--idle-timeout",
                 "30",
                 "--component",
@@ -196,7 +189,17 @@ def test_worker_cli_reads_resource_request(
         == 0
     )
 
-    assert calls == [(ResourceRequest(cpus=4, gpus=1, memory_gib=16), 30.0)]
+    assert calls == [
+        (
+            ResourceRequest(
+                cpus=4,
+                gpus=1,
+                memory_gib=16,
+                reserve_for=Requires(ram=GiB(8)),
+            ),
+            30.0,
+        )
+    ]
 
 
 def test_worker_cli_reads_idle_timeout(
@@ -227,12 +230,8 @@ def test_worker_cli_reads_idle_timeout(
                 "http://execution-coordinator.test",
                 "--auth-token-file",
                 str(token_file),
-                "--resource-cpus",
-                "4",
-                "--resource-gpus",
-                "1",
-                "--resource-memory-gib",
-                "0",
+                "--resources",
+                '{"cpus": 4, "gpus": 1, "memory_gib": 0}',
                 "--idle-timeout",
                 "0.25",
                 "--component",
@@ -274,12 +273,8 @@ def _run_worker_cli_capturing_component(
                 "http://execution-coordinator.test",
                 "--auth-token-file",
                 str(token_file),
-                "--resource-cpus",
-                "1",
-                "--resource-gpus",
-                "0",
-                "--resource-memory-gib",
-                "0",
+                "--resources",
+                '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
                 "--idle-timeout",
                 "60",
                 "--backend",
@@ -334,12 +329,8 @@ def test_worker_cli_requires_component(
                 "http://execution-coordinator.test",
                 "--auth-token-file",
                 str(token_file),
-                "--resource-cpus",
-                "1",
-                "--resource-gpus",
-                "0",
-                "--resource-memory-gib",
-                "0",
+                "--resources",
+                '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
                 "--idle-timeout",
                 "60",
             ]
@@ -404,12 +395,8 @@ def test_worker_cli_requires_auth_token_file(monkeypatch: pytest.MonkeyPatch) ->
             [
                 "--server-url",
                 "http://execution-coordinator.test",
-                "--resource-cpus",
-                "1",
-                "--resource-gpus",
-                "0",
-                "--resource-memory-gib",
-                "0",
+                "--resources",
+                '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
                 "--idle-timeout",
                 "60",
                 "--component",
@@ -447,12 +434,8 @@ def test_worker_cli_requires_idle_timeout(
                 "http://execution-coordinator.test",
                 "--auth-token-file",
                 str(token_file),
-                "--resource-cpus",
-                "1",
-                "--resource-gpus",
-                "0",
-                "--resource-memory-gib",
-                "0",
+                "--resources",
+                '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
             ]
         )
 
@@ -486,12 +469,8 @@ def test_worker_cli_rejects_auth_token_argument(
                 "http://execution-coordinator.test",
                 "--auth-token-file",
                 str(token_file),
-                "--resource-cpus",
-                "1",
-                "--resource-gpus",
-                "0",
-                "--resource-memory-gib",
-                "0",
+                "--resources",
+                '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
                 "--idle-timeout",
                 "60",
                 "--component",
@@ -532,6 +511,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
         poll_interval=1.5,
         worker_idle_timeout=0.25,
         pre_worker_commands=('echo "Hello" > /tmp/hey',),
+        reserve_for=Requires(ram=GiB(4)),
     )
 
     pool = backend.start_pool(
@@ -588,9 +568,10 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     )
     assert '--component "${furu_worker_component}"' in script
     assert "--idle-timeout 0.25" in script
-    assert "--resource-cpus 4" in script
-    assert "--resource-gpus 1" in script
-    assert "--resource-memory-gib 8" in script
+    resources_json = resource_request_adapter.dump_json(
+        ResourceRequest(cpus=4, gpus=1, memory_gib=8, reserve_for=Requires(ram=GiB(4)))
+    ).decode()
+    assert f"--resources {shlex.quote(resources_json)}" in script
     assert "FURU_DIRECTORIES__OBJECTS" not in script
     assert "FURU_DIRECTORIES__EXECUTIONS" not in script
 

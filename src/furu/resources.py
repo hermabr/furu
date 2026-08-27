@@ -1,18 +1,57 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field, fields
+
+from pydantic import TypeAdapter
 
 from furu.spec_metadata import Between, GiB, Requires
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ResourceRequest:
+    """A worker's capacity and the jobs it is reserved for.
+
+    ``reserve_for`` keeps a worker for jobs whose declared ``requires`` meet
+    its lower bounds. Jobs that omit a reserved dimension do not qualify.
+    """
+
     cpus: int = 1
     gpus: int = 0
     memory_gib: int = 0
+    reserve_for: Requires = field(default_factory=Requires)
+
+
+resource_request_adapter: TypeAdapter[ResourceRequest] = TypeAdapter(ResourceRequest)
+
+
+def _minimum(constraint: int | GiB | Between[int] | Between[GiB] | None) -> int | None:
+    match constraint:
+        case None:
+            return None
+        case Between(low=low):
+            return _minimum(low)
+        case GiB(count=count):
+            return count
+        case int():
+            return constraint
+
+
+def _demands_at_least(requires: Requires | None, reserve_for: Requires) -> bool:
+    for resource in fields(Requires):
+        reserved_minimum = _minimum(getattr(reserve_for, resource.name))
+        if reserved_minimum is None:
+            continue
+        required_minimum = (
+            None if requires is None else _minimum(getattr(requires, resource.name))
+        )
+        if required_minimum is None or required_minimum < reserved_minimum:
+            return False
+    return True
 
 
 def resource_request_satisfies(
     request: ResourceRequest, requires: Requires | None
 ) -> bool:
+    if not _demands_at_least(requires, request.reserve_for):
+        return False
     if requires is None:
         return True
 
