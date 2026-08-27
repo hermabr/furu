@@ -12,6 +12,7 @@ from furu.config import get_config
 from furu.dag import DagNode, _add_to_dag
 from furu.execution.execution_coordinator import ExecutionCoordinator
 from furu.locking import lock
+from furu.resources import ResourceRequest
 from furu.storage._layout import (
     compute_lock_path_in,
     run_log_path_in,
@@ -81,7 +82,10 @@ def _new_execution_coordinator(
 ) -> ExecutionCoordinator:
     if max_retries_per_object is None:
         max_retries_per_object = get_config().worker.max_retries_per_object
-    coordinator = ExecutionCoordinator(max_retries_per_object=max_retries_per_object)
+    coordinator = ExecutionCoordinator(
+        max_retries_per_object=max_retries_per_object,
+        pool_resources=(ResourceRequest(),),
+    )
     _add_to_dag(coordinator, objs)
     digest = hashlib.blake2s(digest_size=16)
     for obj in objs:

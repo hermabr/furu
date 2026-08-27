@@ -35,7 +35,7 @@ from furu.provenance import (
     SubmitContext,
     SubmitProvenance,
 )
-from furu.resources import ResourceRequest
+from furu.resources import ResourceFloor, ResourceRequest
 from furu.storage._layout import execution_coordinator_log_path_in
 from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
 from furu.worker.loop import worker_loop
@@ -50,6 +50,7 @@ from furu.worker.protocol import (
 )
 
 ANY_RESOURCES = ResourceRequest()
+TEST_POOL_RESOURCES = (ResourceRequest(gpus=1, memory_gib=16),)
 
 
 def _submit_provenance() -> SubmitProvenance:
@@ -101,7 +102,10 @@ def _new_execution_coordinator(
 ) -> ExecutionCoordinator:
     if max_retries_per_object is None:
         max_retries_per_object = get_config().worker.max_retries_per_object
-    coordinator = ExecutionCoordinator(max_retries_per_object=max_retries_per_object)
+    coordinator = ExecutionCoordinator(
+        max_retries_per_object=max_retries_per_object,
+        pool_resources=TEST_POOL_RESOURCES,
+    )
     coordinator.submit_provenance = _submit_provenance()
     _add_to_dag(coordinator, objs)
     digest = hashlib.blake2s(digest_size=16)
@@ -622,7 +626,7 @@ class MemoryLeaf(Spec[int]):
     value: int
 
     def metadata(self) -> Metadata:
-        return Metadata(requires=Requires(ram=GiB(8)))
+        return Metadata(requires=Requires(memory=GiB(8)))
 
     def create(self) -> int:
         return self.value
@@ -929,6 +933,68 @@ def test_lease_job_filters_by_worker_memory_gib() -> None:
     assert _artifact(memory_job).object_id == memory_leaf.object_id
 
 
+def test_lease_job_honors_worker_reserve_for() -> None:
+    cpu_leaf = CpuOnlyLeaf(value=1)
+    memory_leaf = MemoryLeaf(value=2)
+    coordinator = _new_execution_coordinator([cpu_leaf, memory_leaf])
+    reserved = ResourceRequest(memory_gib=16, reserve_for=ResourceFloor(memory_gib=8))
+
+    memory_job = _lease_job(coordinator, resources=reserved)
+    assert isinstance(memory_job, Job)
+    assert _artifact(memory_job).object_id == memory_leaf.object_id
+    assert _no_satisfiable_job(coordinator, resources=reserved)
+
+    cpu_job = _lease_job(coordinator, resources=ResourceRequest(memory_gib=16))
+    assert isinstance(cpu_job, Job)
+    assert _artifact(cpu_job).object_id == cpu_leaf.object_id
+
+
+def test_execution_coordinator_run_fails_fast_when_no_pool_can_run_a_job() -> None:
+    with pytest.raises(RuntimeError, match=r"no worker pool can run.*worker resources"):
+        ExecutionCoordinator.run(
+            [MemoryLeaf(value=uuid4().int)],
+            worker_backends=(LocalThreadWorkerBackend(),),
+        )
+
+
+def test_execution_coordinator_fails_when_no_pool_can_run_a_lazy_dependency() -> None:
+    parent = ExecutionCoordinatorLazyParent(value=uuid4().int)
+    coordinator = _new_execution_coordinator([parent])
+    coordinator.pool_resources = (ResourceRequest(),)
+    assert isinstance(_lease_job(coordinator), Job)
+
+    coordinator.job_result(
+        parent.object_id,
+        JobBlockedResult(
+            dependencies=[ArtifactSpec.from_furu(MemoryLeaf(value=uuid4().int))]
+        ),
+    )
+
+    assert coordinator.done.is_set()
+    assert coordinator.finish_error is not None
+    assert "no worker pool can run" in coordinator.finish_error
+
+
+def test_execution_coordinator_splits_work_across_open_and_reserved_pools() -> None:
+    cpu_leaf = CpuOnlyLeaf(value=uuid4().int)
+    memory_leaf = MemoryLeaf(value=uuid4().int)
+
+    ExecutionCoordinator.run(
+        [cpu_leaf, memory_leaf],
+        worker_backends=(
+            LocalThreadWorkerBackend(),
+            LocalThreadWorkerBackend(
+                resource_request=ResourceRequest(
+                    memory_gib=16, reserve_for=ResourceFloor(memory_gib=8)
+                )
+            ),
+        ),
+    )
+
+    assert cpu_leaf.status == "done"
+    assert memory_leaf.status == "done"
+
+
 def test_execution_coordinator_run_completes_later_resource_stages_on_local_workers() -> (
     None
 ):
@@ -1000,6 +1066,7 @@ def test_execution_coordinator_run_fails_when_local_worker_crashes(
 def test_execution_coordinator_run_uses_worker_backend() -> None:
     class RecordingBackend:
         execution_coordinator_listen_host = "0.0.0.0"
+        resource_request = ResourceRequest()
 
         def __init__(self) -> None:
             self.bound_ports: list[int] = []
@@ -1049,6 +1116,7 @@ def test_execution_coordinator_run_uses_worker_backend() -> None:
 def test_execution_coordinator_run_passes_executor_dir_to_worker_backend() -> None:
     class RecordingBackend:
         execution_coordinator_listen_host = "127.0.0.1"
+        resource_request = ResourceRequest()
 
         def __init__(self) -> None:
             self.executor_dirs: list[Path] = []
@@ -1120,6 +1188,7 @@ def test_execution_coordinator_run_returns_when_all_objects_are_already_complete
 ):
     class UnexpectedBackend:
         execution_coordinator_listen_host = "127.0.0.1"
+        resource_request = ResourceRequest()
 
         def start_pool(
             self,
@@ -1167,6 +1236,7 @@ def test_execution_coordinator_run_starts_backend_pool_and_stops_and_joins_when_
 
     class RecordingBackend:
         execution_coordinator_listen_host = "127.0.0.1"
+        resource_request = ResourceRequest()
 
         def __init__(self, pool: RecordingPool) -> None:
             self.pool = pool
@@ -1211,8 +1281,16 @@ def test_execution_coordinator_run_stops_backend_pool_when_interrupted() -> None
             raise KeyboardInterrupt
 
     class InterruptingCoordinator(ExecutionCoordinator):
-        def __init__(self, *, max_retries_per_object: int) -> None:
-            super().__init__(max_retries_per_object=max_retries_per_object)
+        def __init__(
+            self,
+            *,
+            max_retries_per_object: int,
+            pool_resources: tuple[ResourceRequest, ...],
+        ) -> None:
+            super().__init__(
+                max_retries_per_object=max_retries_per_object,
+                pool_resources=pool_resources,
+            )
             self.done = InterruptingEvent()
 
     class RecordingPool:
@@ -1226,6 +1304,7 @@ def test_execution_coordinator_run_stops_backend_pool_when_interrupted() -> None
 
     class RecordingBackend:
         execution_coordinator_listen_host = "127.0.0.1"
+        resource_request = ResourceRequest()
 
         def __init__(self, pool: RecordingPool) -> None:
             self.pool = pool
@@ -1267,6 +1346,7 @@ def test_execution_coordinator_run_uses_worker_backend_execution_coordinator_lis
 
     class RecordingBackend:
         execution_coordinator_listen_host = "127.0.0.1"
+        resource_request = ResourceRequest()
 
         def __init__(self) -> None:
             self.server_urls: list[str] = []
@@ -1426,7 +1506,7 @@ def test_execution_coordinator_run_requires_explicit_worker_backends() -> None:
 
 
 def test_execution_coordinator_run_rejects_empty_worker_backends() -> None:
-    with pytest.raises(ValueError, match="not enough values to unpack"):
+    with pytest.raises(RuntimeError, match="no worker pool can run"):
         ExecutionCoordinator.run(
             [ExecutionCoordinatorLeaf(value=12)], worker_backends=()
         )

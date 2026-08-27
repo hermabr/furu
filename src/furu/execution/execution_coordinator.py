@@ -57,6 +57,7 @@ class FailedJob:
 @dataclass(slots=True, kw_only=True)
 class ExecutionCoordinator:
     max_retries_per_object: int
+    pool_resources: tuple[ResourceRequest, ...]
     executor_id: str = "not-computed-yet"
     nodes_by_id: dict[str, DagNode] = field(default_factory=dict)
     ready: dict[str, DagNode] = field(default_factory=dict)
@@ -99,7 +100,12 @@ class ExecutionCoordinator:
     ) -> ObjsT:
         if max_retries_per_object is None:
             max_retries_per_object = get_config().worker.max_retries_per_object
-        coordinator = cls(max_retries_per_object=max_retries_per_object)
+        coordinator = cls(
+            max_retries_per_object=max_retries_per_object,
+            pool_resources=tuple(
+                backend.resource_request for backend in worker_backends
+            ),
+        )
         _add_to_dag(coordinator, objs)
         digest = hashlib.blake2s(digest_size=16)
         for obj in objs:
@@ -366,9 +372,13 @@ class ExecutionCoordinator:
                             extra=fail_detail,
                         )
                 case JobBlockedResult(dependencies=dependencies):
-                    _update_dag_blocking_dependencies(
-                        self, running_job.node, dependencies
-                    )
+                    try:
+                        _update_dag_blocking_dependencies(
+                            self, running_job.node, dependencies
+                        )
+                    except RuntimeError as exc:
+                        self.fail(str(exc))
+                        return
                     logger.info(
                         "blocked %s · %d deps",
                         running_job.node.obj._log_label,
