@@ -6,6 +6,15 @@ from furu.spec_metadata import Between, GiB, Requires
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class ResourceFloor:
+    """Minimums a job must demand before a reserved worker leases it."""
+
+    cpus: int | None = None
+    gpus: int | None = None
+    memory_gib: int | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class ResourceRequest:
     """A worker's capacity and the jobs it is reserved for.
 
@@ -16,7 +25,7 @@ class ResourceRequest:
     cpus: int = 1
     gpus: int = 0
     memory_gib: int = 0
-    reserve_for: Requires = field(default_factory=Requires)
+    reserve_for: ResourceFloor = field(default_factory=ResourceFloor)
 
 
 resource_request_adapter: TypeAdapter[ResourceRequest] = TypeAdapter(ResourceRequest)
@@ -36,12 +45,11 @@ def _minimum(constraint: _Constraint) -> int | None:
             return constraint
 
 
-def _demands_at_least(constraint: _Constraint, floor: _Constraint) -> bool:
-    threshold = _minimum(floor)
-    if threshold is None:
+def _demands_at_least(constraint: _Constraint, floor: int | None) -> bool:
+    if floor is None:
         return True
     demanded = _minimum(constraint)
-    return demanded is not None and demanded >= threshold
+    return demanded is not None and demanded >= floor
 
 
 def _matches(value: int, constraint: int | Between[int] | None) -> bool:
@@ -69,8 +77,8 @@ def resource_request_satisfies(request: ResourceRequest, requires: Requires) -> 
     return (
         _matches(request.cpus, requires.cpus)
         and _matches(request.gpus, requires.gpus)
-        and _memory_matches(request.memory_gib, requires.ram)
+        and _memory_matches(request.memory_gib, requires.memory)
         and _demands_at_least(requires.cpus, floor.cpus)
         and _demands_at_least(requires.gpus, floor.gpus)
-        and _demands_at_least(requires.ram, floor.ram)
+        and _demands_at_least(requires.memory, floor.memory_gib)
     )

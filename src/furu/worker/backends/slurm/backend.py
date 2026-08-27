@@ -15,9 +15,8 @@ from furu.config import (
     get_config,
 )
 from furu.provenance import EnvironmentIdentity, SubmitProvenance
-from furu.resources import ResourceRequest, resource_request_adapter
+from furu.resources import ResourceFloor, ResourceRequest, resource_request_adapter
 from furu.snapshot import extract_snapshot
-from furu.spec_metadata import Requires
 from furu.utils import write_private_file
 from furu.worker.backends.slurm.pool import SlurmWorkerPool
 from furu.worker.backends.slurm.resources import SlurmResources
@@ -45,7 +44,7 @@ class SlurmWorkerBackend:
     pre_worker_commands: tuple[str, ...] = ()
     export: SlurmExport = None
     use_job_arrays: bool = True
-    reserve_for: Requires = field(default_factory=Requires)
+    reserve_for: ResourceFloor = field(default_factory=ResourceFloor)
 
     @property
     def resource_request(self) -> ResourceRequest:

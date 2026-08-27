@@ -41,7 +41,7 @@ def at_least[T](minimum: T) -> Between[T]:
 class Requires:
     gpus: int | Between[int] | None = None
     cpus: int | Between[int] | None = None
-    ram: GiB | Between[GiB] | None = None
+    memory: GiB | Between[GiB] | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

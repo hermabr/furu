@@ -344,7 +344,7 @@ class UnsatisfiableRequiresNode(Spec[str]):
     def metadata(self) -> Metadata:
         return Metadata(
             storage=type(self).storage_override,
-            requires=Requires(gpus=between(64, 128), ram=GiB(1024 * 1024)),
+            requires=Requires(gpus=between(64, 128), memory=GiB(1024 * 1024)),
         )
 
     def create(self) -> str:
@@ -1527,7 +1527,7 @@ def test_metadata_defaults_to_project_config_storage_and_empty_requires():
     node = Node(name="x")
 
     assert node.metadata() == Metadata()
-    assert node.metadata().requires == Requires(cpus=None, gpus=None, ram=None)
+    assert node.metadata().requires == Requires(cpus=None, gpus=None, memory=None)
     assert node._metadata.storage == get_config().run_directories.objects
 
 
@@ -1586,7 +1586,7 @@ def test_metadata_requires_can_depend_on_fields():
                 requires=Requires(
                     gpus=between(1, 8) if self.big else 0,
                     cpus=4,
-                    ram=GiB(16),
+                    memory=GiB(16),
                 )
             )
 
@@ -1594,23 +1594,23 @@ def test_metadata_requires_can_depend_on_fields():
             return self.name
 
     assert HeavyNode(name="x", big=True)._metadata.requires == (
-        Requires(gpus=between(1, 8), cpus=4, ram=GiB(16))
+        Requires(gpus=between(1, 8), cpus=4, memory=GiB(16))
     )
     assert HeavyNode(name="x", big=False)._metadata.requires == (
-        Requires(gpus=0, cpus=4, ram=GiB(16))
+        Requires(gpus=0, cpus=4, memory=GiB(16))
     )
 
 
 def test_metadata_requires_accepts_memory_range():
     class MemoryRangeNode(Spec[str]):
         def metadata(self) -> Metadata:
-            return Metadata(requires=Requires(ram=between(GiB(16), GiB(64))))
+            return Metadata(requires=Requires(memory=between(GiB(16), GiB(64))))
 
         def create(self) -> str:
             return "x"
 
     assert MemoryRangeNode()._metadata.requires == Requires(
-        ram=between(GiB(16), GiB(64))
+        memory=between(GiB(16), GiB(64))
     )
 
 

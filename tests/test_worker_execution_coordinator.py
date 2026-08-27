@@ -35,7 +35,7 @@ from furu.provenance import (
     SubmitContext,
     SubmitProvenance,
 )
-from furu.resources import ResourceRequest
+from furu.resources import ResourceFloor, ResourceRequest
 from furu.storage._layout import execution_coordinator_log_path_in
 from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
 from furu.worker.loop import worker_loop
@@ -626,7 +626,7 @@ class MemoryLeaf(Spec[int]):
     value: int
 
     def metadata(self) -> Metadata:
-        return Metadata(requires=Requires(ram=GiB(8)))
+        return Metadata(requires=Requires(memory=GiB(8)))
 
     def create(self) -> int:
         return self.value
@@ -937,7 +937,7 @@ def test_lease_job_honors_worker_reserve_for() -> None:
     cpu_leaf = CpuOnlyLeaf(value=1)
     memory_leaf = MemoryLeaf(value=2)
     coordinator = _new_execution_coordinator([cpu_leaf, memory_leaf])
-    reserved = ResourceRequest(memory_gib=16, reserve_for=Requires(ram=GiB(8)))
+    reserved = ResourceRequest(memory_gib=16, reserve_for=ResourceFloor(memory_gib=8))
 
     memory_job = _lease_job(coordinator, resources=reserved)
     assert isinstance(memory_job, Job)
@@ -985,7 +985,7 @@ def test_execution_coordinator_splits_work_across_open_and_reserved_pools() -> N
             LocalThreadWorkerBackend(),
             LocalThreadWorkerBackend(
                 resource_request=ResourceRequest(
-                    memory_gib=16, reserve_for=Requires(ram=GiB(8))
+                    memory_gib=16, reserve_for=ResourceFloor(memory_gib=8)
                 )
             ),
         ),
