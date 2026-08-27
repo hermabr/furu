@@ -17,7 +17,6 @@ def test_reserve_for_requires_every_reserved_dimension_to_be_declared() -> None:
     assert resource_request_satisfies(
         RESERVED, Requires(ram=between(GiB(200), GiB(600)), gpus=between(1, 2))
     )
-    assert not resource_request_satisfies(RESERVED, None)
     assert not resource_request_satisfies(RESERVED, Requires())
     assert not resource_request_satisfies(RESERVED, Requires(ram=GiB(200)))
     assert not resource_request_satisfies(RESERVED, Requires(gpus=2))
@@ -42,6 +41,5 @@ def test_reserve_for_uses_the_lower_bound_of_ranges() -> None:
     assert not resource_request_satisfies(request, Requires(ram=GiB(100)))
 
 
-def test_unreserved_worker_accepts_undeclared_jobs() -> None:
-    assert resource_request_satisfies(ResourceRequest(), None)
+def test_unreserved_worker_accepts_unconstrained_jobs() -> None:
     assert resource_request_satisfies(ResourceRequest(), Requires())
