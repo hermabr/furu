@@ -57,8 +57,7 @@ class FailedJob:
 @dataclass(slots=True, kw_only=True)
 class ExecutionCoordinator:
     max_retries_per_object: int
-    # None skips fail-fast validation when no pool configuration is available.
-    pool_resources: tuple[ResourceRequest, ...] | None = None
+    pool_resources: tuple[ResourceRequest, ...]
     executor_id: str = "not-computed-yet"
     nodes_by_id: dict[str, DagNode] = field(default_factory=dict)
     ready: dict[str, DagNode] = field(default_factory=dict)
@@ -101,9 +100,11 @@ class ExecutionCoordinator:
     ) -> ObjsT:
         if max_retries_per_object is None:
             max_retries_per_object = get_config().worker.max_retries_per_object
-        coordinator = cls(max_retries_per_object=max_retries_per_object)
-        coordinator.pool_resources = tuple(
-            backend.resource_request for backend in worker_backends
+        coordinator = cls(
+            max_retries_per_object=max_retries_per_object,
+            pool_resources=tuple(
+                backend.resource_request for backend in worker_backends
+            ),
         )
         _add_to_dag(coordinator, objs)
         digest = hashlib.blake2s(digest_size=16)

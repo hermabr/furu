@@ -49,7 +49,7 @@ class _StubCoordinator(ExecutionCoordinator):
     """Stands in for the ExecutionCoordinator the pool calls in-process."""
 
     def __init__(self, count: Callable[[int], int] | int = 0) -> None:
-        super().__init__(max_retries_per_object=0)
+        super().__init__(max_retries_per_object=0, pool_resources=())
         self._count = count
         self.failures: list[str] = []
 

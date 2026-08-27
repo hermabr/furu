@@ -50,6 +50,7 @@ from furu.worker.protocol import (
 )
 
 ANY_RESOURCES = ResourceRequest()
+TEST_POOL_RESOURCES = (ResourceRequest(gpus=1, memory_gib=16),)
 
 
 def _submit_provenance() -> SubmitProvenance:
@@ -101,7 +102,10 @@ def _new_execution_coordinator(
 ) -> ExecutionCoordinator:
     if max_retries_per_object is None:
         max_retries_per_object = get_config().worker.max_retries_per_object
-    coordinator = ExecutionCoordinator(max_retries_per_object=max_retries_per_object)
+    coordinator = ExecutionCoordinator(
+        max_retries_per_object=max_retries_per_object,
+        pool_resources=TEST_POOL_RESOURCES,
+    )
     coordinator.submit_provenance = _submit_provenance()
     _add_to_dag(coordinator, objs)
     digest = hashlib.blake2s(digest_size=16)
@@ -1277,8 +1281,16 @@ def test_execution_coordinator_run_stops_backend_pool_when_interrupted() -> None
             raise KeyboardInterrupt
 
     class InterruptingCoordinator(ExecutionCoordinator):
-        def __init__(self, *, max_retries_per_object: int) -> None:
-            super().__init__(max_retries_per_object=max_retries_per_object)
+        def __init__(
+            self,
+            *,
+            max_retries_per_object: int,
+            pool_resources: tuple[ResourceRequest, ...],
+        ) -> None:
+            super().__init__(
+                max_retries_per_object=max_retries_per_object,
+                pool_resources=pool_resources,
+            )
             self.done = InterruptingEvent()
 
     class RecordingPool:
