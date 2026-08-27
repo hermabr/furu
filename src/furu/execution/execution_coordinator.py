@@ -92,7 +92,7 @@ class ExecutionCoordinator:
     @classmethod
     def run[ObjsT: Sequence[Spec]](
         cls,
-        objs: ObjsT,  # TODO: support pytrees
+        objs: ObjsT,
         *,
         max_retries_per_object: int | None = None,
         worker_backends: tuple[WorkerBackend, ...],
