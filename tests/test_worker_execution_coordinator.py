@@ -40,6 +40,7 @@ from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWork
 from furu.worker.execute import ChildSlot
 from furu.worker.loop import worker_loop
 from furu.worker.protocol import (
+    CancelMessage,
     HelloMessage,
     Job,
     JobBlockedResult,
@@ -49,6 +50,7 @@ from furu.worker.protocol import (
     ProcessSettings,
     coordinator_url,
     job_result_adapter,
+    server_message_adapter,
 )
 
 ANY_RESOURCES = ResourceRequest()
@@ -169,6 +171,18 @@ def _scripted_worker_server(
         thread.join(timeout=5)
 
 
+@contextmanager
+def _serve(handler: Callable[[ServerConnection], None]) -> Iterator[str]:
+    server = serve(handler, "127.0.0.1", 0)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        yield f"ws://127.0.0.1:{server.socket.getsockname()[1]}"
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+
 def _connect_worker(
     server: Any,
     *,
@@ -240,6 +254,19 @@ class FlakyExecutionCoordinatorLeaf(Spec[int]):
             f.write("x")
         if Path(self.attempts_file).read_text(encoding="utf-8") == "x":
             raise RuntimeError(f"temporary failure: {self.value}")
+        return self.value
+
+
+class GatedExecutionCoordinatorLeaf(Spec[int]):
+    value: int
+    release_file: str
+
+    def create(self) -> int:
+        deadline = time.monotonic() + 30
+        while not Path(self.release_file).exists():
+            if time.monotonic() > deadline:
+                raise TimeoutError("never released")
+            time.sleep(0.01)
         return self.value
 
 
@@ -1020,7 +1047,7 @@ def test_execution_coordinator_run_fails_when_local_worker_crashes(
 ) -> None:
     def crashing_worker_loop(
         *,
-        coordinator_url: str,
+        coordinator: str | Path,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
         component: str,
@@ -1626,7 +1653,7 @@ def test_job_result_uses_status_discriminator() -> None:
 def test_worker_loop_raises_when_server_is_unavailable() -> None:
     with pytest.raises(OSError):
         worker_loop(
-            coordinator_url="ws://127.0.0.1:1",
+            coordinator="ws://127.0.0.1:1",
             resource_request=ResourceRequest(),
             idle_timeout=get_config().worker.idle_timeout_seconds,
             component="test-worker",
@@ -1637,7 +1664,7 @@ def test_worker_loop_raises_when_server_is_unavailable() -> None:
 def test_worker_loop_exits_after_idle_timeout() -> None:
     with _scripted_worker_server([], hold_open=True) as server:
         worker_loop(
-            coordinator_url=server.server_url,
+            coordinator=server.server_url,
             resource_request=ResourceRequest(),
             idle_timeout=0.05,
             component="test-worker",
@@ -1667,7 +1694,7 @@ def test_worker_loop_logs_received_task_and_result(
         _scoped_log_files((log_path,)),
     ):
         worker_loop(
-            coordinator_url=server.server_url,
+            coordinator=server.server_url,
             resource_request=ResourceRequest(),
             idle_timeout=get_config().worker.idle_timeout_seconds,
             component="test-worker",
@@ -1702,7 +1729,7 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
     with _scripted_worker_server([_job(leaf)]) as server:
         with pytest.raises(KeyboardInterrupt):
             worker_loop(
-                coordinator_url=server.server_url,
+                coordinator=server.server_url,
                 resource_request=ResourceRequest(gpus=1),
                 idle_timeout=get_config().worker.idle_timeout_seconds,
                 component="test-worker",
@@ -1724,3 +1751,233 @@ def test_execution_coordinator_fail_sets_finish_error_and_done() -> None:
     assert coordinator.done.is_set()
     with pytest.raises(RuntimeError, match="pool broke"):
         coordinator.raise_for_failure()
+
+
+def test_hello_message_running_defaults_to_empty() -> None:
+    hello = HelloMessage(worker="w", backend="test", resources=ResourceRequest())
+
+    assert hello.running == []
+    assert HelloMessage.model_validate_json(hello.model_dump_json()) == hello
+
+
+def test_server_message_adapter_discriminates_job_and_cancel() -> None:
+    job = _job(ExecutionCoordinatorLeaf(value=1))
+
+    assert server_message_adapter.validate_json(job.model_dump_json()) == job
+    assert (
+        server_message_adapter.validate_json(CancelMessage().model_dump_json())
+        == CancelMessage()
+    )
+
+
+def test_hello_running_adopts_job_this_run_still_wants() -> None:
+    leaf = ExecutionCoordinatorLeaf(value=1)
+    coordinator = _new_execution_coordinator([leaf])
+
+    with execution_coordinator_server(
+        coordinator, bind_host="127.0.0.1", port=0
+    ) as server:
+        connection = connect(
+            coordinator_url(
+                host="127.0.0.1", port=server.bound_port, auth_token=server.auth_token
+            )
+        )
+        with connection:
+            connection.send(
+                HelloMessage(
+                    worker="inherited-worker",
+                    backend="test",
+                    resources=ResourceRequest(),
+                    running=[ArtifactSpec.from_furu(leaf)],
+                ).model_dump_json()
+            )
+            _wait_until(lambda: leaf.object_id in coordinator.running)
+            assert coordinator.running[leaf.object_id].worker == "inherited-worker"
+            assert coordinator.ready == {}
+
+            connection.send(JobCompletedResult().model_dump_json())
+            with pytest.raises(ConnectionClosedOK):
+                connection.recv(timeout=5)
+
+    assert set(coordinator.completed) == {leaf.object_id}
+    log_text = execution_coordinator_log_path_in(coordinator.executor_dir).read_text(
+        encoding="utf-8"
+    )
+    assert (
+        f"worker connected · inherited-worker · running {leaf._log_label}" in log_text
+    )
+    assert f"adopted {leaf._log_label} ×1 from inherited-worker" in log_text
+
+
+def test_hello_running_cancels_job_not_in_this_run() -> None:
+    leaf = ExecutionCoordinatorLeaf(value=1)
+    stranger = ExecutionCoordinatorLeaf(value=2)
+    coordinator = _new_execution_coordinator([leaf])
+
+    with execution_coordinator_server(
+        coordinator, bind_host="127.0.0.1", port=0
+    ) as server:
+        connection = connect(
+            coordinator_url(
+                host="127.0.0.1", port=server.bound_port, auth_token=server.auth_token
+            )
+        )
+        with connection:
+            connection.send(
+                HelloMessage(
+                    worker="inherited-worker",
+                    backend="test",
+                    resources=ResourceRequest(),
+                    running=[ArtifactSpec.from_furu(stranger)],
+                ).model_dump_json()
+            )
+            assert (
+                server_message_adapter.validate_json(connection.recv(timeout=5))
+                == CancelMessage()
+            )
+            connection.send(
+                JobFailedResult(error="subprocess died: signal 9").model_dump_json()
+            )
+
+            job = Job.model_validate_json(connection.recv(timeout=5))
+            assert _artifact(job).object_id == leaf.object_id
+            connection.send(JobCompletedResult().model_dump_json())
+            with pytest.raises(ConnectionClosedOK):
+                connection.recv(timeout=5)
+
+    assert coordinator.failed == {}
+    assert set(coordinator.completed) == {leaf.object_id}
+    log_text = execution_coordinator_log_path_in(coordinator.executor_dir).read_text(
+        encoding="utf-8"
+    )
+    assert f"cancelled {stranger._log_label} on inherited-worker: not in this run" in (
+        log_text
+    )
+
+
+def test_worker_loop_cancel_kills_running_job(tmp_path: Path) -> None:
+    leaf = GatedExecutionCoordinatorLeaf(value=1, release_file=str(tmp_path / "go"))
+    results: list[JobResult] = []
+
+    def handler(connection: ServerConnection) -> None:
+        HelloMessage.model_validate_json(connection.recv(timeout=5))
+        connection.send(_job(leaf).model_dump_json())
+        connection.send(CancelMessage().model_dump_json())
+        results.append(job_result_adapter.validate_json(connection.recv(timeout=10)))
+
+    with _serve(handler) as url:
+        worker_loop(
+            coordinator=url,
+            resource_request=ResourceRequest(),
+            idle_timeout=5,
+            component="test-worker",
+            backend="test",
+        )
+
+    (result,) = results
+    assert isinstance(result, JobFailedResult)
+    assert result.error.startswith("subprocess died: signal 9 (SIGKILL)")
+    assert leaf.status != "done"
+
+
+def test_worker_loop_reconnects_when_coordinator_file_changes(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    leaf = ExecutionCoordinatorLeaf(value=1)
+    coordinator_file = tmp_path / "coordinator.url"
+    hellos: dict[str, list[HelloMessage]] = {"old": [], "new": []}
+    results: list[JobResult] = []
+
+    def new_handler(connection: ServerConnection) -> None:
+        hellos["new"].append(
+            HelloMessage.model_validate_json(connection.recv(timeout=5))
+        )
+        connection.send(_job(leaf).model_dump_json())
+        results.append(job_result_adapter.validate_json(connection.recv(timeout=10)))
+
+    with _serve(new_handler) as new_url:
+
+        def old_handler(connection: ServerConnection) -> None:
+            hellos["old"].append(
+                HelloMessage.model_validate_json(connection.recv(timeout=5))
+            )
+            coordinator_file.write_text(new_url + "\n")
+
+        with _serve(old_handler) as old_url, _captured_furu_logs(caplog):
+            coordinator_file.write_text(old_url + "\n")
+            worker_loop(
+                coordinator=coordinator_file,
+                resource_request=ResourceRequest(),
+                idle_timeout=5,
+                component="test-worker",
+                backend="test",
+            )
+
+    assert [hello.running for hello in hellos["old"]] == [[]]
+    assert [hello.running for hello in hellos["new"]] == [[]]
+    assert results == [JobCompletedResult()]
+    assert "coordinator moved; reconnecting" in caplog.messages
+    assert "server closed the connection; worker exiting" in caplog.messages
+
+
+def test_worker_loop_carries_running_job_to_new_coordinator(tmp_path: Path) -> None:
+    release_file = tmp_path / "go"
+    leaf = GatedExecutionCoordinatorLeaf(value=7, release_file=str(release_file))
+    job = _job(leaf)
+    coordinator_file = tmp_path / "coordinator.url"
+    new_hellos: list[HelloMessage] = []
+    results: list[JobResult] = []
+
+    def new_handler(connection: ServerConnection) -> None:
+        new_hellos.append(HelloMessage.model_validate_json(connection.recv(timeout=5)))
+        release_file.touch()
+        results.append(job_result_adapter.validate_json(connection.recv(timeout=10)))
+
+    with _serve(new_handler) as new_url:
+
+        def old_handler(connection: ServerConnection) -> None:
+            HelloMessage.model_validate_json(connection.recv(timeout=5))
+            connection.send(job.model_dump_json())
+            coordinator_file.write_text(new_url + "\n")
+
+        with _serve(old_handler) as old_url:
+            coordinator_file.write_text(old_url + "\n")
+            worker_loop(
+                coordinator=coordinator_file,
+                resource_request=ResourceRequest(),
+                idle_timeout=5,
+                component="test-worker",
+                backend="test",
+            )
+
+    assert [hello.running for hello in new_hellos] == [job.artifacts]
+    assert results == [JobCompletedResult()]
+    assert leaf.status == "done"
+
+
+def test_worker_loop_kills_job_when_coordinator_disappears(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    leaf = GatedExecutionCoordinatorLeaf(value=1, release_file=str(tmp_path / "go"))
+
+    def handler(connection: ServerConnection) -> None:
+        HelloMessage.model_validate_json(connection.recv(timeout=5))
+        connection.send(_job(leaf).model_dump_json())
+
+    started = time.monotonic()
+    with _serve(handler) as url, _captured_furu_logs(caplog):
+        worker_loop(
+            coordinator=url,
+            resource_request=ResourceRequest(),
+            idle_timeout=5,
+            component="test-worker",
+            backend="test",
+        )
+
+    assert time.monotonic() - started < 10
+    assert leaf.status != "done"
+    assert (
+        f"server closed the connection mid-job; killing {leaf._log_label}"
+        in caplog.messages
+    )
+    assert "server closed the connection; worker exiting" in caplog.messages

@@ -230,6 +230,40 @@ class ExecutionCoordinator:
                 process=ProcessSettings.from_metadata(node.obj._metadata),
             )
 
+    def adopt(self, artifacts: Sequence[ArtifactSpec], *, worker: str) -> bool:
+        with self.log_context(), self.lock:
+            object_ids = [artifact.object_id for artifact in artifacts]
+            label = artifacts[0].log_label
+            if self.done.is_set() or any(
+                object_id not in self.ready for object_id in object_ids
+            ):
+                logger.info(
+                    "cancelled %s on %s: not in this run",
+                    label,
+                    worker,
+                    extra=log_detail(object_ids=",".join(object_ids), worker=worker),
+                )
+                return False
+            started_at = time.monotonic()
+            for object_id in object_ids:
+                self.running[object_id] = RunningJob(
+                    node=self.ready.pop(object_id),
+                    started_at=started_at,
+                    worker=worker,
+                )
+            logger.info(
+                "adopted %s ×%d from %s",
+                label,
+                len(object_ids),
+                worker,
+                extra=log_detail(
+                    object_ids=",".join(object_ids),
+                    worker=worker,
+                    **self._counts_detail(),
+                ),
+            )
+            return True
+
     def worker_lost(self, worker: str) -> None:
         with self.log_context(), self.lock:
             if self.done.is_set():
