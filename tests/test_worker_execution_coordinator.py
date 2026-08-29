@@ -18,7 +18,7 @@ from websockets.sync.server import ServerConnection, serve
 
 import furu
 import furu.worker.loop as worker_loop_module
-from furu import GiB, Metadata, Requires, Spec, Subprocess, Throttle, at_least
+from furu import GiB, Metadata, Requires, Spec, Throttle, at_least
 from furu.config import get_config
 from furu.dag import _add_to_dag
 from furu.execution.execution_coordinator import (
@@ -1605,7 +1605,7 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
     leaf = ExecutionCoordinatorLeaf(value=1)
 
     def run(
-        self: ChildSlot, objs: Sequence[Spec], *, job: Job, execution: Subprocess
+        self: ChildSlot, objs: Sequence[Spec], *, job: Job, metadata: Metadata
     ) -> JobResult:
         raise KeyboardInterrupt
 

@@ -14,7 +14,7 @@ from subprocess_objects import (
 )
 
 import furu
-from furu import Metadata, Spec, Subprocess
+from furu import Metadata, Spec
 from furu.metadata import ArtifactSpec
 from furu.provenance import (
     EnvironmentIdentity,
@@ -67,7 +67,7 @@ def _run(slot: ChildSlot, obj: Spec) -> JobResult:
             artifacts=[ArtifactSpec.from_furu(obj)],
             provenance=_submit_provenance(),
         ),
-        execution=obj._metadata.execution,
+        metadata=obj._metadata,
     )
 
 
@@ -76,8 +76,12 @@ def _pid_and_value(obj: Spec[str]) -> tuple[int, str]:
     return int(pid), value
 
 
-def test_metadata_execution_defaults_to_subprocess() -> None:
-    assert Metadata().execution == Subprocess()
+def test_metadata_defaults_to_warm_child_with_inherited_environment() -> None:
+    metadata = Metadata()
+
+    assert metadata.environment == {}
+    assert metadata.required_environment == ()
+    assert metadata.reuse == "same_environment"
 
 
 def test_subprocess_environment_override_is_visible_in_child(

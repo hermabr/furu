@@ -18,7 +18,7 @@ from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
 from furu.migration.links import result_dir_for_loading
 from furu.provenance import EnvironmentIdentity
-from furu.spec_metadata import Subprocess
+from furu.spec_metadata import Metadata
 from furu.worker.context import _DependencyNotReady, worker_execution_context
 from furu.worker.protocol import (
     Job,
@@ -71,9 +71,7 @@ class ChildSlot:
         self._backend = backend
         self._child = None
 
-    def run(
-        self, objs: Sequence[Spec], *, job: Job, execution: Subprocess
-    ) -> JobResult:
+    def run(self, objs: Sequence[Spec], *, job: Job, metadata: Metadata) -> JobResult:
         worker_hash = EnvironmentIdentity.capture().uv_lock_hash
         submitted_hash = job.provenance.environment.uv_lock_hash
         if worker_hash != submitted_hash:
@@ -90,14 +88,14 @@ class ChildSlot:
             return JobCompletedResult()
 
         environment = dict(os.environ)
-        for name, value in execution.environment.items():
+        for name, value in metadata.environment.items():
             if value is None:
                 environment.pop(name, None)
             else:
                 environment[name] = value
 
         if missing := [
-            name for name in execution.required_environment if name not in environment
+            name for name in metadata.required_environment if name not in environment
         ]:
             raise RuntimeError(
                 f"required environment variables not set: {', '.join(missing)}"
@@ -108,7 +106,7 @@ class ChildSlot:
             same_process_context = (
                 child.process.poll() is None and child.environment == environment
             )
-            match execution.reuse:
+            match metadata.reuse:
                 case "never":
                     can_reuse = False
                 case "same_environment":
@@ -128,7 +126,7 @@ class ChildSlot:
         child.spec_name = objs[0]._fully_qualified_name
 
         result = _request(child, job)
-        if execution.reuse == "never" or child.process.poll() is not None:
+        if metadata.reuse == "never" or child.process.poll() is not None:
             self.close()
         return result
 

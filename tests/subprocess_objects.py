@@ -12,7 +12,7 @@ import signal
 import sys
 from typing import Literal
 
-from furu import Metadata, Spec, Subprocess, batched
+from furu import Metadata, Spec, batched
 
 type Reuse = Literal["never", "same_environment", "same_environment_same_spec"]
 
@@ -30,11 +30,9 @@ class SubprocessEnvLeaf(Spec[str]):
 
     def metadata(self) -> Metadata:
         return Metadata(
-            execution=Subprocess(
-                environment={self.variable_name: self.variable_value},
-                reuse=self.reuse,
-                required_environment=self.required_environment,
-            ),
+            environment={self.variable_name: self.variable_value},
+            reuse=self.reuse,
+            required_environment=self.required_environment,
         )
 
     def create(self) -> str:
@@ -49,10 +47,8 @@ class OtherSubprocessEnvLeaf(Spec[str]):
 
     def metadata(self) -> Metadata:
         return Metadata(
-            execution=Subprocess(
-                environment={self.variable_name: self.variable_value},
-                reuse=self.reuse,
-            ),
+            environment={self.variable_name: self.variable_value},
+            reuse=self.reuse,
         )
 
     def create(self) -> str:

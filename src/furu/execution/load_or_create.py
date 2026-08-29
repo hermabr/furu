@@ -415,12 +415,12 @@ def _batch_group(obj: Spec) -> tuple[object, int] | None:
             f"{type(obj).__qualname__} batch key cap must be a positive int, "
             f"got {cap!r}"
         )
-    key = (type(obj), group_hash, cap, obj._metadata.requires, obj._metadata.execution)
+    key = (type(obj), group_hash, cap, obj._metadata)
     return key, cap
 
 
 def _grouped_pending[T](pending: list[Spec[T]]) -> list[list[Spec[T]]]:
-    """Partition by (type, batch_key, requires, execution), chunked to the cap."""
+    """Partition by (type, batch_key, metadata), chunked to the cap."""
     groups: list[tuple[object, int | None, list[Spec[T]]]] = []
     for obj in pending:
         key, cap = _batch_group(obj) or (type(obj), None)

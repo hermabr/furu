@@ -228,7 +228,7 @@ def test_worker_fails_job_on_stale_uv_lock_hash(
         ChildSlot(backend="test").run(
             [node],
             job=Job(artifacts=[ArtifactSpec.from_furu(node)], provenance=stale),
-            execution=node._metadata.execution,
+            metadata=node._metadata,
         )
 
     assert "blake2s:stale" in str(excinfo.value)

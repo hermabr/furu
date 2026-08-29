@@ -34,7 +34,7 @@ def _run_job(
             ),
         )
         return (
-            child_slot.run(objs, job=job, execution=objs[0]._metadata.execution),
+            child_slot.run(objs, job=job, metadata=objs[0]._metadata),
             task_label,
         )
     except Exception as exc:  # noqa: BLE001 -- fault barrier: any crash fails the job
