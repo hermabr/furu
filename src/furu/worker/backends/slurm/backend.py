@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 import shlex
 import socket
 import subprocess
@@ -87,8 +88,10 @@ class SlurmWorkerBackend:
                 env={k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"},
                 check=True,
             )
-        worker_dir = executor_dir.resolve() / "workers"
-        worker_dir.mkdir(parents=True, exist_ok=True)
+        # A coordinator may run several Slurm pools, so each pool owns one
+        # directory and can use fixed filenames without clobbering another.
+        worker_dir = executor_dir.resolve() / "workers" / secrets.token_hex(8)
+        worker_dir.mkdir(parents=True)
 
         token_file = worker_dir / "worker.token"
         write_private_file(token_file, auth_token, mode=0o600)
@@ -114,9 +117,7 @@ class SlurmWorkerBackend:
         if pre_worker_script:
             pre_worker_script += "\n"
 
-        scripts_dir = worker_dir / "scripts"
-        scripts_dir.mkdir(parents=True, exist_ok=True)
-        script_path = scripts_dir / "worker.sh"
+        script_path = worker_dir / "worker.sh"
         if self.use_job_arrays:
             component_line = 'furu_worker_component="slurm-worker-${SLURM_ARRAY_JOB_ID}a${SLURM_ARRAY_TASK_ID}"\n'
         else:
@@ -155,7 +156,7 @@ class SlurmWorkerBackend:
         )
 
         log_dir = worker_dir / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
+        log_dir.mkdir()
         log_name = "furu-worker-%A_%a" if self.use_job_arrays else "furu-worker-%j"
 
         export_sbatch_arg: tuple[str, ...]

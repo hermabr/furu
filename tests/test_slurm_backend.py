@@ -493,8 +493,6 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     work_dir = tmp_path / "work"
     work_dir.mkdir()
     executor_dir = tmp_path / "furu" / "executions" / "executor-1"
-    worker_dir = executor_dir / "workers"
-    log_dir = worker_dir / "logs"
     monkeypatch.chdir(work_dir)
 
     backend = SlurmWorkerBackend(
@@ -523,6 +521,8 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     pool._scale_once()
 
     assert pool._job_ids == ["100_0", "100_1"]
+    (worker_dir,) = (executor_dir / "workers").iterdir()
+    log_dir = worker_dir / "logs"
     assert log_dir.is_dir()
 
     records = _read_records(record_file)
@@ -547,7 +547,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert "secret-token" not in " ".join(argv)
 
     script_path = Path(argv[-1])
-    assert script_path == worker_dir / "scripts" / "worker.sh"
+    assert script_path == worker_dir / "worker.sh"
     script = script_path.read_text()
     assert "--auth-token-file" in script
     assert "--auth-token " not in script
@@ -600,6 +600,44 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
 
     assert token_file.exists()
     assert config_file.exists()
+
+
+def test_slurm_backend_isolates_worker_files_between_pools(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    executor_dir = tmp_path / "executor"
+    coordinator = _StubCoordinator()
+    provenance = _submit_provenance()
+
+    pools = [
+        SlurmWorkerBackend(
+            max_workers=1,
+            resources=SlurmResources(cpus_per_worker=1),
+            pre_worker_commands=(f"echo pool-{pool_number}",),
+        ).start_pool(
+            coordinator=coordinator,
+            bound_port=1234,
+            auth_token="secret-token",
+            executor_dir=executor_dir,
+            provenance=provenance,
+        )
+        for pool_number in (1, 2)
+    ]
+
+    worker_dirs = {pool._script_path.parent for pool in pools}
+    assert len(worker_dirs) == 2
+    assert {path.parent for path in worker_dirs} == {executor_dir / "workers"}
+    for pool_number, pool in enumerate(pools, start=1):
+        worker_dir = pool._script_path.parent
+        assert len(worker_dir.name) == 16
+        assert int(worker_dir.name, 16) >= 0
+        assert pool._script_path == worker_dir / "worker.sh"
+        assert f"echo pool-{pool_number}" in pool._script_path.read_text()
+        assert (worker_dir / "worker.token").read_text() == "secret-token"
+        assert (worker_dir / "worker.config.json").is_file()
+        assert (worker_dir / "logs").is_dir()
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="requires bash")
@@ -1891,7 +1929,7 @@ def test_slurm_backend_pins_relative_data_directories_for_workers(
             provenance=_submit_provenance(),
         )
 
-    config_file = tmp_path / "executor" / "workers" / "worker.config.json"
+    (config_file,) = (tmp_path / "executor" / "workers").glob("*/worker.config.json")
     written = _Config.model_validate_json(config_file.read_text(encoding="utf-8"))
     assert written.directories.objects == work_dir / "furu-data" / "objects"
     assert written.directories.snapshots == work_dir / "furu-data" / "snapshots"
