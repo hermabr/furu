@@ -18,6 +18,9 @@ class WorkerBackend(Protocol):
         """The resources presented by every worker in this pool."""
         ...
 
+    @property
+    def pool_key(self) -> str: ...
+
     def start_pool(
         self,
         *,

@@ -4,7 +4,6 @@ import time
 import traceback
 
 from websockets.exceptions import ConnectionClosed
-from websockets.headers import build_authorization_basic
 from websockets.sync.client import connect
 
 from furu.logging import _scoped_component, get_logger, log_detail
@@ -46,8 +45,7 @@ def _run_job(job: protocol.Job, child_slot: ChildSlot) -> protocol.JobResult:
 
 def worker_loop(
     *,
-    server_url: str,
-    auth_token: str,
+    coordinator_url: str,
     resource_request: ResourceRequest,
     idle_timeout: float | None,
     component: str,
@@ -57,13 +55,7 @@ def worker_loop(
         child_slot = ChildSlot(backend=backend)
 
         try:
-            with connect(
-                server_url,
-                additional_headers={
-                    "Authorization": build_authorization_basic("furu", auth_token)
-                },
-                max_size=None,
-            ) as connection:
+            with connect(coordinator_url, max_size=None) as connection:
                 connection.send(
                     protocol.HelloMessage(
                         worker=component,

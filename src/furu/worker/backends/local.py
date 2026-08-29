@@ -8,7 +8,9 @@ from typing import TYPE_CHECKING
 
 from furu.logging import _scoped_component, get_logger
 from furu.provenance import SubmitProvenance
-from furu.resources import ResourceRequest
+from furu.resources import ResourceRequest, resource_request_adapter
+from furu.utils import _hash_dict_deterministically
+from furu.worker.protocol import coordinator_url
 
 if TYPE_CHECKING:
     from furu.execution.execution_coordinator import ExecutionCoordinator
@@ -22,6 +24,16 @@ class LocalThreadWorkerBackend:
     resource_request: ResourceRequest = field(default_factory=ResourceRequest)
     execution_coordinator_listen_host: str = "127.0.0.1"
 
+    @property
+    def pool_key(self) -> str:
+        return "local:" + _hash_dict_deterministically(
+            {
+                "resources": resource_request_adapter.dump_python(
+                    self.resource_request, mode="json"
+                ),
+            }
+        )
+
     def start_pool(
         self,
         *,
@@ -33,15 +45,18 @@ class LocalThreadWorkerBackend:
     ) -> LocalThreadWorkerPool:
         # Workers are threads in the submitting process, so they already run
         # the exact code the snapshot captured; ``provenance`` is unused.
-        server_url = f"ws://{self.execution_coordinator_listen_host}:{bound_port}"
+        url = coordinator_url(
+            host=self.execution_coordinator_listen_host,
+            port=bound_port,
+            auth_token=auth_token,
+        )
         threads = []
         for index in range(self.max_workers):
             thread = threading.Thread(
                 target=_run_worker,
                 kwargs={
                     "coordinator": coordinator,
-                    "server_url": server_url,
-                    "auth_token": auth_token,
+                    "coordinator_url": url,
                     "resource_request": self.resource_request,
                     "index": index,
                 },
@@ -55,8 +70,7 @@ class LocalThreadWorkerBackend:
 def _run_worker(
     *,
     coordinator: ExecutionCoordinator,
-    server_url: str,
-    auth_token: str,
+    coordinator_url: str,
     resource_request: ResourceRequest,
     index: int,
 ) -> None:
@@ -65,8 +79,7 @@ def _run_worker(
     component = f"local-worker-{index}"
     try:
         worker_loop(
-            server_url=server_url,
-            auth_token=auth_token,
+            coordinator_url=coordinator_url,
             resource_request=resource_request,
             # Local threads are cheap to keep connected; they stay until the
             # server closes the connection.

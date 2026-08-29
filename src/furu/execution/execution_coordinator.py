@@ -35,7 +35,7 @@ from furu.worker.protocol import (
 )
 
 if TYPE_CHECKING:
-    from furu.worker.backends.protocol import WorkerBackend
+    from furu.worker.backends.protocol import WorkerBackend, WorkerPool
 
 
 logger = get_logger()
@@ -66,6 +66,7 @@ class ExecutionCoordinator:
     running: dict[str, RunningJob] = field(default_factory=dict)
     completed: dict[str, DagNode] = field(default_factory=dict)
     failed: dict[str, FailedJob] = field(default_factory=dict)
+    pools: dict[str, WorkerPool] = field(default_factory=dict)
     lock: threading.Condition = field(default_factory=threading.Condition)
     done: threading.Event = field(default_factory=threading.Event)
     finish_error: str | None = None
@@ -126,6 +127,12 @@ class ExecutionCoordinator:
         (bind_host,) = {
             backend.execution_coordinator_listen_host for backend in worker_backends
         }
+        pool_keys = [backend.pool_key for backend in worker_backends]
+        if len(set(pool_keys)) != len(pool_keys):
+            raise ValueError(
+                "worker backends with identical configuration; "
+                "use one backend with a larger max_workers instead"
+            )
 
         from furu.execution.server import execution_coordinator_server
 
@@ -140,25 +147,23 @@ class ExecutionCoordinator:
                     executor_dir=coordinator.executor_dir,
                 ),
             )
-            pools = []
             try:
                 with execution_coordinator_server(
                     coordinator, bind_host=bind_host, port=port
                 ) as server:
                     logger.info("server listening on %s", server.server_url)
                     for backend in worker_backends:
-                        pool = backend.start_pool(
+                        coordinator.pools[backend.pool_key] = backend.start_pool(
                             coordinator=coordinator,
                             bound_port=server.bound_port,
                             auth_token=server.auth_token,
                             executor_dir=coordinator.executor_dir,
                             provenance=coordinator.submit_provenance,
                         )
-                        pools.append(pool)
                         logger.info("pool started · %s", type(backend).__name__)
                     coordinator.done.wait()
             finally:
-                if pools:
+                if pools := list(coordinator.pools.values()):
                     with ThreadPoolExecutor(max_workers=len(pools)) as executor:
                         stop_futures = [
                             executor.submit(pool.stop, timeout=5) for pool in pools

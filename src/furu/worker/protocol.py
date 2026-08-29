@@ -68,3 +68,7 @@ class HelloMessage(BaseModel):
     worker: str
     backend: str
     resources: ResourceRequest
+
+
+def coordinator_url(*, host: str, port: int, auth_token: str) -> str:
+    return f"ws://furu:{auth_token}@{host}:{port}"

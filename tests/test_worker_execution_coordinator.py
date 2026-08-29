@@ -47,6 +47,7 @@ from furu.worker.protocol import (
     JobFailedResult,
     JobResult,
     ProcessSettings,
+    coordinator_url,
     job_result_adapter,
 )
 
@@ -1019,8 +1020,7 @@ def test_execution_coordinator_run_fails_when_local_worker_crashes(
 ) -> None:
     def crashing_worker_loop(
         *,
-        server_url: str,
-        auth_token: str,
+        coordinator_url: str,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
         component: str,
@@ -1044,6 +1044,7 @@ def test_execution_coordinator_run_uses_worker_backend() -> None:
     class RecordingBackend:
         execution_coordinator_listen_host = "0.0.0.0"
         resource_request = ResourceRequest()
+        pool_key = "test-pool"
 
         def __init__(self) -> None:
             self.bound_ports: list[int] = []
@@ -1094,6 +1095,7 @@ def test_execution_coordinator_run_passes_executor_dir_to_worker_backend() -> No
     class RecordingBackend:
         execution_coordinator_listen_host = "127.0.0.1"
         resource_request = ResourceRequest()
+        pool_key = "test-pool"
 
         def __init__(self) -> None:
             self.executor_dirs: list[Path] = []
@@ -1169,6 +1171,7 @@ def test_execution_coordinator_run_returns_when_all_objects_are_already_complete
     class UnexpectedBackend:
         execution_coordinator_listen_host = "127.0.0.1"
         resource_request = ResourceRequest()
+        pool_key = "test-pool"
 
         def start_pool(
             self,
@@ -1219,6 +1222,7 @@ def test_execution_coordinator_run_starts_backend_pool_and_stops_and_joins_when_
     class RecordingBackend:
         execution_coordinator_listen_host = "127.0.0.1"
         resource_request = ResourceRequest()
+        pool_key = "test-pool"
 
         def __init__(self, pool: RecordingPool) -> None:
             self.pool = pool
@@ -1287,6 +1291,7 @@ def test_execution_coordinator_run_stops_backend_pool_when_interrupted() -> None
     class RecordingBackend:
         execution_coordinator_listen_host = "127.0.0.1"
         resource_request = ResourceRequest()
+        pool_key = "test-pool"
 
         def __init__(self, pool: RecordingPool) -> None:
             self.pool = pool
@@ -1329,6 +1334,7 @@ def test_execution_coordinator_run_uses_worker_backend_execution_coordinator_lis
     class RecordingBackend:
         execution_coordinator_listen_host = "127.0.0.1"
         resource_request = ResourceRequest()
+        pool_key = "test-pool"
 
         def __init__(self) -> None:
             self.server_urls: list[str] = []
@@ -1398,6 +1404,35 @@ def test_execution_coordinator_server_rejects_connections_without_auth_token() -
 
         connection = _connect_worker(server)
         connection.close()
+
+
+def test_execution_coordinator_server_accepts_token_in_url() -> None:
+    coordinator = _new_execution_coordinator([ExecutionCoordinatorLeaf(value=12)])
+
+    with execution_coordinator_server(
+        coordinator, bind_host="127.0.0.1", port=0
+    ) as server:
+        with connect(
+            coordinator_url(
+                host="127.0.0.1", port=server.bound_port, auth_token=server.auth_token
+            )
+        ) as connection:
+            connection.send(
+                HelloMessage(
+                    worker="url-auth-worker",
+                    backend="test",
+                    resources=ResourceRequest(),
+                ).model_dump_json()
+            )
+            Job.model_validate_json(connection.recv(timeout=5))
+
+        with pytest.raises(InvalidStatus) as wrong_token:
+            connect(
+                coordinator_url(
+                    host="127.0.0.1", port=server.bound_port, auth_token="wrong"
+                )
+            )
+        assert wrong_token.value.response.status_code == 401
 
 
 def test_worker_protocol_round_trip_over_server() -> None:
@@ -1487,6 +1522,68 @@ def test_execution_coordinator_run_requires_explicit_worker_backends() -> None:
         ExecutionCoordinator.run([ExecutionCoordinatorLeaf(value=12)])  # ty: ignore[missing-argument]
 
 
+def test_local_pool_key_distinguishes_resources_not_worker_count() -> None:
+    backend = LocalThreadWorkerBackend(max_workers=2)
+
+    assert backend.pool_key.startswith("local:")
+    assert LocalThreadWorkerBackend(max_workers=2).pool_key == backend.pool_key
+    assert LocalThreadWorkerBackend(max_workers=3).pool_key == backend.pool_key
+    assert (
+        LocalThreadWorkerBackend(
+            max_workers=2, resource_request=ResourceRequest(gpus=1)
+        ).pool_key
+        != backend.pool_key
+    )
+
+
+def test_execution_coordinator_run_rejects_identical_worker_backends() -> None:
+    with pytest.raises(ValueError, match="identical configuration"):
+        ExecutionCoordinator.run(
+            [ExecutionCoordinatorLeaf(value=12)],
+            worker_backends=(LocalThreadWorkerBackend(), LocalThreadWorkerBackend()),
+        )
+
+
+def test_execution_coordinator_run_registers_pools_by_key() -> None:
+    class RecordingBackend:
+        execution_coordinator_listen_host = "127.0.0.1"
+        resource_request = ResourceRequest()
+        pool_key = "recording"
+
+        def __init__(self) -> None:
+            self.coordinators: list[ExecutionCoordinator] = []
+            self.pools: list[LocalThreadWorkerPool] = []
+
+        def start_pool(
+            self,
+            *,
+            coordinator: ExecutionCoordinator,
+            bound_port: int,
+            auth_token: str,
+            executor_dir: Path,
+            provenance: SubmitProvenance,
+        ) -> LocalThreadWorkerPool:
+            self.coordinators.append(coordinator)
+            pool = LocalThreadWorkerBackend().start_pool(
+                coordinator=coordinator,
+                bound_port=bound_port,
+                auth_token=auth_token,
+                executor_dir=executor_dir,
+                provenance=provenance,
+            )
+            self.pools.append(pool)
+            return pool
+
+    backend = RecordingBackend()
+
+    ExecutionCoordinator.run(
+        [ExecutionCoordinatorLeaf(value=16)], worker_backends=(backend,)
+    )
+
+    (coordinator,) = backend.coordinators
+    assert coordinator.pools == {"recording": backend.pools[0]}
+
+
 def test_execution_coordinator_run_rejects_empty_worker_backends() -> None:
     with pytest.raises(RuntimeError, match="no worker pool can run"):
         ExecutionCoordinator.run(
@@ -1529,8 +1626,7 @@ def test_job_result_uses_status_discriminator() -> None:
 def test_worker_loop_raises_when_server_is_unavailable() -> None:
     with pytest.raises(OSError):
         worker_loop(
-            server_url="ws://127.0.0.1:1",
-            auth_token="test-token",
+            coordinator_url="ws://127.0.0.1:1",
             resource_request=ResourceRequest(),
             idle_timeout=get_config().worker.idle_timeout_seconds,
             component="test-worker",
@@ -1541,8 +1637,7 @@ def test_worker_loop_raises_when_server_is_unavailable() -> None:
 def test_worker_loop_exits_after_idle_timeout() -> None:
     with _scripted_worker_server([], hold_open=True) as server:
         worker_loop(
-            server_url=server.server_url,
-            auth_token="test-token",
+            coordinator_url=server.server_url,
             resource_request=ResourceRequest(),
             idle_timeout=0.05,
             component="test-worker",
@@ -1572,8 +1667,7 @@ def test_worker_loop_logs_received_task_and_result(
         _scoped_log_files((log_path,)),
     ):
         worker_loop(
-            server_url=server.server_url,
-            auth_token="test-token",
+            coordinator_url=server.server_url,
             resource_request=ResourceRequest(),
             idle_timeout=get_config().worker.idle_timeout_seconds,
             component="test-worker",
@@ -1608,8 +1702,7 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
     with _scripted_worker_server([_job(leaf)]) as server:
         with pytest.raises(KeyboardInterrupt):
             worker_loop(
-                server_url=server.server_url,
-                auth_token="test-token",
+                coordinator_url=server.server_url,
                 resource_request=ResourceRequest(gpus=1),
                 idle_timeout=get_config().worker.idle_timeout_seconds,
                 component="test-worker",

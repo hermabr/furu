@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import os
 import secrets
 import shlex
@@ -17,9 +18,10 @@ from furu.config import (
 from furu.provenance import EnvironmentIdentity, SubmitProvenance
 from furu.resources import ResourceFloor, ResourceRequest, resource_request_adapter
 from furu.snapshot import extract_snapshot
-from furu.utils import write_private_file
+from furu.utils import _hash_dict_deterministically, write_private_file
 from furu.worker.backends.slurm.pool import SlurmWorkerPool
 from furu.worker.backends.slurm.resources import SlurmResources
+from furu.worker.protocol import coordinator_url
 
 if TYPE_CHECKING:
     from furu.execution.execution_coordinator import ExecutionCoordinator
@@ -55,6 +57,19 @@ class SlurmWorkerBackend:
             reserve_for=self.reserve_for,
         )
 
+    @property
+    def pool_key(self) -> str:
+        export = list(self.export) if isinstance(self.export, tuple) else self.export
+        return "slurm:" + _hash_dict_deterministically(
+            {
+                "sbatch": self.resources.to_sbatch_args(),
+                "reserve_for": dataclasses.asdict(self.reserve_for),
+                "pre_worker_commands": list(self.pre_worker_commands),
+                "export": export,
+                "use_job_arrays": self.use_job_arrays,
+            }
+        )
+
     def start_pool(
         self,
         *,
@@ -67,7 +82,9 @@ class SlurmWorkerBackend:
         connect_port = (
             bound_port if self.worker_connect_port is None else self.worker_connect_port
         )
-        server_url = f"ws://{self.worker_connect_host}:{connect_port}"
+        url = coordinator_url(
+            host=self.worker_connect_host, port=connect_port, auth_token=auth_token
+        )
 
         chdir = Path.cwd().resolve()
         project_root = Path(EnvironmentIdentity.capture().project_root)
@@ -87,8 +104,8 @@ class SlurmWorkerBackend:
         worker_dir = executor_dir.resolve() / "workers" / secrets.token_hex(8)
         worker_dir.mkdir(parents=True)
 
-        token_file = worker_dir / "worker.token"
-        write_private_file(token_file, auth_token, mode=0o600)
+        coordinator_file = worker_dir / "coordinator.url"
+        write_private_file(coordinator_file, url + "\n", mode=0o600)
 
         config = get_config()
         config = config.model_copy(
@@ -133,8 +150,7 @@ class SlurmWorkerBackend:
                 "exec uv run --frozen "
                 f"--project {shlex.quote(str(project_root))} \\\n"
                 "    python -m furu.worker._cli \\\n"
-                f"    --server-url {shlex.quote(server_url)} \\\n"
-                f"    --auth-token-file {shlex.quote(str(token_file))} \\\n"
+                f"    --coordinator-file {shlex.quote(str(coordinator_file))} \\\n"
                 '    --component "${furu_worker_component}" \\\n'
                 "    --backend slurm \\\n"
                 f"    --idle-timeout {self.worker_idle_timeout} \\\n"
