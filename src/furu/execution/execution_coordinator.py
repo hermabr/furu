@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import hashlib
+import secrets
 import threading
 import time
 from collections.abc import Iterator, Sequence
@@ -59,7 +59,7 @@ class FailedJob:
 class ExecutionCoordinator:
     max_retries_per_object: int
     pool_resources: tuple[ResourceRequest, ...]
-    executor_id: str = "not-computed-yet"
+    executor_id: str = field(default_factory=lambda: secrets.token_hex(16))
     nodes_by_id: dict[str, DagNode] = field(default_factory=dict)
     ready: dict[str, DagNode] = field(default_factory=dict)
     blocked: dict[str, DagNode] = field(default_factory=dict)
@@ -108,11 +108,6 @@ class ExecutionCoordinator:
             ),
         )
         _add_to_dag(coordinator, objs)
-        digest = hashlib.blake2s(digest_size=16)
-        for obj in objs:
-            digest.update(obj.object_id.encode("utf-8"))
-            digest.update(b"\0")
-        coordinator.executor_id = digest.hexdigest()
 
         if not coordinator.nodes_by_id:
             with coordinator.log_context(), coordinator.lock:
