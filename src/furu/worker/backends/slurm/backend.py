@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import secrets
 import shlex
 import socket
 import subprocess
@@ -91,7 +90,7 @@ class SlurmWorkerBackend:
         worker_dir = executor_dir.resolve() / "workers"
         worker_dir.mkdir(parents=True, exist_ok=True)
 
-        token_file = worker_dir / f"worker-{secrets.token_hex(16)}.token"
+        token_file = worker_dir / "worker.token"
         write_private_file(token_file, auth_token, mode=0o600)
 
         # Workers may run from a different directory (the extracted snapshot),
@@ -100,7 +99,7 @@ class SlurmWorkerBackend:
         config = config.model_copy(
             update={"directories": config.directories.anchored()}
         )
-        config_file = worker_dir / f"worker-{secrets.token_hex(16)}.config.json"
+        config_file = worker_dir / "worker.config.json"
         write_private_file(
             config_file,
             config.model_dump_json(indent=2) + "\n",
@@ -117,7 +116,7 @@ class SlurmWorkerBackend:
 
         scripts_dir = worker_dir / "scripts"
         scripts_dir.mkdir(parents=True, exist_ok=True)
-        script_path = scripts_dir / f"worker-{secrets.token_hex(16)}.sh"
+        script_path = scripts_dir / "worker.sh"
         if self.use_job_arrays:
             component_line = 'furu_worker_component="slurm-worker-${SLURM_ARRAY_JOB_ID}a${SLURM_ARRAY_TASK_ID}"\n'
         else:
