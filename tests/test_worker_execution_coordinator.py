@@ -1,4 +1,3 @@
-import hashlib
 import logging
 import threading
 import time
@@ -111,11 +110,6 @@ def _new_execution_coordinator(
     )
     coordinator.submit_provenance = _submit_provenance()
     _add_to_dag(coordinator, objs)
-    digest = hashlib.blake2s(digest_size=16)
-    for obj in objs:
-        digest.update(obj.object_id.encode("utf-8"))
-        digest.update(b"\0")
-    coordinator.executor_id = digest.hexdigest()
     return coordinator
 
 
@@ -314,22 +308,16 @@ def test_execution_coordinator_init_partitions_ready_and_blocked() -> None:
     assert coordinator.running == {}
 
 
-def test_execution_coordinator_executor_id_is_stable_hash_of_root_object_tuple() -> (
-    None
-):
+def test_execution_coordinator_executor_id_is_unique() -> None:
     left = ExecutionCoordinatorLeaf(value=1)
     right = ExecutionCoordinatorLeaf(value=2)
 
     coordinator = _new_execution_coordinator([left, right])
+    other = _new_execution_coordinator([left, right])
 
     assert len(coordinator.executor_id) == 32
     assert int(coordinator.executor_id, 16) >= 0
-    assert (
-        _new_execution_coordinator([left, right]).executor_id == coordinator.executor_id
-    )
-    assert (
-        _new_execution_coordinator([right, left]).executor_id != coordinator.executor_id
-    )
+    assert other.executor_id != coordinator.executor_id
     assert (
         coordinator.executor_dir
         == get_config().run_directories.executions / coordinator.executor_id
@@ -1132,12 +1120,15 @@ def test_execution_coordinator_run_passes_executor_dir_to_worker_backend() -> No
             )
 
     leaf = ExecutionCoordinatorLeaf(value=12)
-    expected_executor_dir = _new_execution_coordinator([leaf]).executor_dir
     backend = RecordingBackend()
 
     ExecutionCoordinator.run([leaf], worker_backends=(backend,))
 
-    assert backend.executor_dirs == [expected_executor_dir]
+    assert len(backend.executor_dirs) == 1
+    (executor_dir,) = backend.executor_dirs
+    assert executor_dir.parent == get_config().run_directories.executions
+    assert len(executor_dir.name) == 32
+    assert int(executor_dir.name, 16) >= 0
 
 
 def test_top_level_create_runs_dag_on_worker_backends() -> None:
@@ -1150,13 +1141,13 @@ def test_top_level_create_runs_dag_on_worker_backends() -> None:
 
 def test_execution_coordinator_run_writes_log_to_executor_dir() -> None:
     leaf = ExecutionCoordinatorLeaf(value=14)
-    coordinator = _new_execution_coordinator([leaf])
+    executions_dir = get_config().run_directories.executions
 
     ExecutionCoordinator.run([leaf], worker_backends=(LocalThreadWorkerBackend(),))
 
-    log_path = execution_coordinator_log_path_in(coordinator.executor_dir)
-    assert execution_coordinator_log_path_in(coordinator.executor_dir) == log_path
-    assert log_path.parent == coordinator.executor_dir
+    (executor_dir,) = executions_dir.iterdir()
+    log_path = execution_coordinator_log_path_in(executor_dir)
+    assert log_path.parent == executor_dir
 
     log_text = log_path.read_text(encoding="utf-8")
     assert "starting exec=" in log_text
@@ -1194,13 +1185,15 @@ def test_execution_coordinator_run_returns_when_all_objects_are_already_complete
     leaf.create()
     objs = [leaf]
     coordinator = _new_execution_coordinator(objs)
+    executions_dir = get_config().run_directories.executions
 
     assert coordinator.nodes_by_id == {}
 
     returned = ExecutionCoordinator.run(objs, worker_backends=(UnexpectedBackend(),))
 
     assert returned is objs
-    log_text = execution_coordinator_log_path_in(coordinator.executor_dir).read_text(
+    (executor_dir,) = executions_dir.iterdir()
+    log_text = execution_coordinator_log_path_in(executor_dir).read_text(
         encoding="utf-8"
     )
     assert "all objects already exist; no execution coordinator work to run" in log_text

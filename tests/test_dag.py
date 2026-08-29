@@ -1,4 +1,3 @@
-import hashlib
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -87,11 +86,6 @@ def _new_execution_coordinator(
         pool_resources=(ResourceRequest(),),
     )
     _add_to_dag(coordinator, objs)
-    digest = hashlib.blake2s(digest_size=16)
-    for obj in objs:
-        digest.update(obj.object_id.encode("utf-8"))
-        digest.update(b"\0")
-    coordinator.executor_id = digest.hexdigest()
     return coordinator
 
 
