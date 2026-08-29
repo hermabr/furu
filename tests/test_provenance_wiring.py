@@ -92,22 +92,26 @@ def test_create_writes_provenance_next_to_metadata(
     assert provenance.executed.worker_backend == "local"
     assert provenance.executed.pid == os.getpid()
     assert node.provenance() == provenance
-    assert provenance.snapshot_path is None
 
 
-def test_snapshot_builds_tarball_referenced_by_snapshot_id(
+def test_snapshot_id_is_a_commit_pinned_in_the_repo(
     git_repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(git_repo)
+    (git_repo / "tracked.txt").write_text("edited\n")
 
     with override_config(_with_snapshot(True)):
         furu.create(_Node(value=2))
 
     provenance = _Node(value=2).provenance()
     assert provenance.snapshot_id is not None
-    assert provenance.snapshot_path is not None
-    assert provenance.snapshot_path.is_file()
-    assert provenance.snapshot_path.parent.name == provenance.snapshot_id
+    assert provenance.snapshot_id != provenance.git.commit
+    assert _git(git_repo, "rev-parse", f"refs/furu/{provenance.snapshot_id}") == (
+        provenance.snapshot_id
+    )
+    assert _git(git_repo, "rev-parse", f"{provenance.snapshot_id}~1") == (
+        provenance.git.commit
+    )
 
 
 def test_cache_hit_performs_no_capture_and_no_writes(
@@ -166,9 +170,8 @@ def test_snapshot_config_applies_to_plain_create(
         _Node(value=7).create()
 
         provenance = _Node(value=7).provenance()
-        assert provenance.snapshot_id is not None
-        assert provenance.snapshot_path is not None
-        assert provenance.snapshot_path.is_file()
+        # Clean tree: the snapshot is HEAD itself.
+        assert provenance.snapshot_id == provenance.git.commit
 
 
 def test_provenance_raises_missing_for_missing_result() -> None:

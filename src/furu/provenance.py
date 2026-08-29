@@ -16,8 +16,6 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
-from furu.config import get_config
-
 _ACCELERATOR_PROBE_TIMEOUT_SECONDS = 2.0
 _HASH_PREFIX = "blake2s:"
 
@@ -29,8 +27,6 @@ class GitIdentity(BaseModel):
     branch: str | None
     remote: str | None
     repo_root: str
-    dirty: bool
-    diff_stats: str | None
 
     @classmethod
     def capture(cls, cwd: Path) -> GitIdentity:
@@ -48,19 +44,11 @@ class GitIdentity(BaseModel):
             remote = _run_git(["remote", "get-url", "origin"], cwd=cwd)
         except subprocess.CalledProcessError:
             remote = None
-        dirty = bool(_run_git(["status", "--porcelain"], cwd=cwd))
-        diff_stats = (
-            _run_git(["diff", "HEAD", "--shortstat"], cwd=cwd) or None
-            if dirty
-            else None
-        )
         return cls(
             commit=commit,
             branch=None if branch == "HEAD" else branch,
             remote=remote,
             repo_root=repo_root,
-            dirty=dirty,
-            diff_stats=diff_stats,
         )
 
 
@@ -211,16 +199,6 @@ class Provenance(BaseModel):
             executed=executed,
         )
 
-    @property
-    def snapshot_path(self) -> Path | None:
-        if self.snapshot_id is None:
-            return None
-        return (
-            get_config().run_directories.snapshots
-            / self.snapshot_id
-            / "snapshot.tar.gz"
-        )
-
 
 def capture_submit_provenance(*, snapshot: bool) -> SubmitProvenance:
     """Capture the submit-side provenance half for a batch about to compute.
@@ -278,14 +256,14 @@ def _require_uv() -> None:
 _worker_backend: ContextVar[str] = ContextVar("_furu_worker_backend", default="local")
 
 
-def _run_git(args: list[str], *, cwd: Path, input: str | None = None) -> str:
+def _run_git(args: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> str:
     result = subprocess.run(
         ["git", *args],
         cwd=cwd,
+        env=env,
         capture_output=True,
         text=True,
         check=True,
-        input=input,
     )
     return result.stdout.strip()
 

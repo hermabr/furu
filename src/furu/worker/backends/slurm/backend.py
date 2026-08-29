@@ -77,8 +77,10 @@ class SlurmWorkerBackend:
             # The configured snapshots directory may be relative to the submit
             # cwd.  Slurm changes into ``chdir`` before running the worker
             # script, so keep every path passed to Slurm and uv absolute.
-            code_dir = extract_snapshot(provenance.snapshot_id).resolve()
             repo_root = Path(provenance.git.repo_root)
+            code_dir = extract_snapshot(
+                provenance.snapshot_id, repo=repo_root
+            ).resolve()
             chdir = code_dir / chdir.relative_to(repo_root)
             project_root = code_dir / Path(
                 provenance.environment.project_root

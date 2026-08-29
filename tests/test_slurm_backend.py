@@ -11,6 +11,7 @@ import sys
 import textwrap
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -84,8 +85,6 @@ def _submit_provenance() -> SubmitProvenance:
             branch=None,
             remote=None,
             repo_root=".",
-            dirty=False,
-            diff_stats=None,
         ),
         environment=EnvironmentIdentity(
             python="3.12.0",
@@ -1837,9 +1836,9 @@ def test_slurm_backend_runs_workers_from_the_extracted_snapshot(
     )
     uv_commands: list[list[str]] = []
     monkeypatch.setattr(
-        slurm_backend_module.subprocess,
-        "run",
-        lambda argv, **kwargs: uv_commands.append(argv),
+        slurm_backend_module,
+        "subprocess",
+        SimpleNamespace(run=lambda argv, **kwargs: uv_commands.append(argv)),
     )
     backend = SlurmWorkerBackend(
         max_workers=1,
