@@ -158,8 +158,6 @@ def _spawn(environment: dict[str, str], *, backend: str) -> _Child:
         text=True,
     )
     assert process.stdin is not None
-    # Hand over the effective config and backend name on the private protocol
-    # channel; environment variables could be severed by a user override.
     process.stdin.write(get_config().model_dump_json() + "\n")
     process.stdin.write(backend + "\n")
     process.stdin.flush()
