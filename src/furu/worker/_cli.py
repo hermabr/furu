@@ -9,15 +9,10 @@ from furu.worker.loop import worker_loop
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
-        "--server-url",
-        required=True,
-        help="execution coordinator WebSocket URL (ws://host:port)",
-    )
-    parser.add_argument(
-        "--auth-token-file",
+        "--coordinator-file",
         required=True,
         type=Path,
-        help="path to a file containing the execution coordinator auth token",
+        help="file holding the execution coordinator URL (credentials included)",
     )
     parser.add_argument(
         "--resources",
@@ -44,8 +39,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     worker_loop(
-        server_url=args.server_url,
-        auth_token=args.auth_token_file.read_text(encoding="utf-8").rstrip(),
+        coordinator_url=args.coordinator_file.read_text(encoding="utf-8").strip(),
         resource_request=args.resources,
         idle_timeout=args.idle_timeout,
         component=args.component,

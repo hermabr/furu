@@ -100,34 +100,31 @@ def _submit_provenance() -> SubmitProvenance:
     )
 
 
-def test_worker_cli_reads_auth_token_file(
+def test_worker_cli_reads_coordinator_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[str, str, ResourceRequest, float | None]] = []
-    token_file = tmp_path / "worker.token"
-    token_file.write_text("secret\n\n")
+    calls: list[tuple[str, ResourceRequest, float | None]] = []
+    coordinator_file = tmp_path / "coordinator.url"
+    coordinator_file.write_text("ws://furu:secret@execution-coordinator.test:1\n\n")
 
     def worker_loop(
         *,
-        server_url: str,
-        auth_token: str,
+        coordinator_url: str,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
         component: str,
         backend: str,
     ) -> None:
-        calls.append((server_url, auth_token, resource_request, idle_timeout))
+        calls.append((coordinator_url, resource_request, idle_timeout))
 
     monkeypatch.setattr(_cli, "worker_loop", worker_loop)
 
     assert (
         _cli.main(
             [
-                "--server-url",
-                "http://execution-coordinator.test",
-                "--auth-token-file",
-                str(token_file),
+                "--coordinator-file",
+                str(coordinator_file),
                 "--resources",
                 '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
                 "--idle-timeout",
@@ -142,9 +139,8 @@ def test_worker_cli_reads_auth_token_file(
     )
 
     assert calls == [
-        ("http://execution-coordinator.test", "secret", ResourceRequest(), 60.0)
+        ("ws://furu:secret@execution-coordinator.test:1", ResourceRequest(), 60.0)
     ]
-    assert token_file.exists()
 
 
 def test_worker_cli_reads_resource_request(
@@ -152,13 +148,12 @@ def test_worker_cli_reads_resource_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[ResourceRequest, float | None]] = []
-    token_file = tmp_path / "worker.token"
-    token_file.write_text("secret")
+    coordinator_file = tmp_path / "coordinator.url"
+    coordinator_file.write_text("ws://furu:secret@execution-coordinator.test:1")
 
     def worker_loop(
         *,
-        server_url: str,
-        auth_token: str,
+        coordinator_url: str,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
         component: str,
@@ -171,10 +166,8 @@ def test_worker_cli_reads_resource_request(
     assert (
         _cli.main(
             [
-                "--server-url",
-                "http://execution-coordinator.test",
-                "--auth-token-file",
-                str(token_file),
+                "--coordinator-file",
+                str(coordinator_file),
                 "--resources",
                 '{"cpus": 4, "gpus": 1, "memory_gib": 16, "reserve_for": {"memory_gib": 8}}',
                 "--idle-timeout",
@@ -206,13 +199,12 @@ def test_worker_cli_reads_idle_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[float | None] = []
-    token_file = tmp_path / "worker.token"
-    token_file.write_text("secret")
+    coordinator_file = tmp_path / "coordinator.url"
+    coordinator_file.write_text("ws://furu:secret@execution-coordinator.test:1")
 
     def worker_loop(
         *,
-        server_url: str,
-        auth_token: str,
+        coordinator_url: str,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
         component: str,
@@ -225,10 +217,8 @@ def test_worker_cli_reads_idle_timeout(
     assert (
         _cli.main(
             [
-                "--server-url",
-                "http://execution-coordinator.test",
-                "--auth-token-file",
-                str(token_file),
+                "--coordinator-file",
+                str(coordinator_file),
                 "--resources",
                 '{"cpus": 4, "gpus": 1, "memory_gib": 0}',
                 "--idle-timeout",
@@ -247,15 +237,14 @@ def test_worker_cli_reads_idle_timeout(
 
 def _run_worker_cli_capturing_component(
     monkeypatch: pytest.MonkeyPatch,
-    token_file: Path,
+    coordinator_file: Path,
     extra_args: list[str],
 ) -> str:
     captured: list[str] = []
 
     def worker_loop(
         *,
-        server_url: str,
-        auth_token: str,
+        coordinator_url: str,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
         component: str,
@@ -268,10 +257,8 @@ def _run_worker_cli_capturing_component(
     assert (
         _cli.main(
             [
-                "--server-url",
-                "http://execution-coordinator.test",
-                "--auth-token-file",
-                str(token_file),
+                "--coordinator-file",
+                str(coordinator_file),
                 "--resources",
                 '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
                 "--idle-timeout",
@@ -291,11 +278,11 @@ def test_worker_cli_reads_component_override(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    token_file = tmp_path / "worker.token"
-    token_file.write_text("secret")
+    coordinator_file = tmp_path / "coordinator.url"
+    coordinator_file.write_text("ws://furu:secret@execution-coordinator.test:1")
 
     component = _run_worker_cli_capturing_component(
-        monkeypatch, token_file, ["--component", "worker-a"]
+        monkeypatch, coordinator_file, ["--component", "worker-a"]
     )
 
     assert component == "worker-a"
@@ -305,13 +292,12 @@ def test_worker_cli_requires_component(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    token_file = tmp_path / "worker.token"
-    token_file.write_text("secret")
+    coordinator_file = tmp_path / "coordinator.url"
+    coordinator_file.write_text("ws://furu:secret@execution-coordinator.test:1")
 
     def worker_loop(
         *,
-        server_url: str,
-        auth_token: str,
+        coordinator_url: str,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
         component: str,
@@ -324,10 +310,8 @@ def test_worker_cli_requires_component(
     with pytest.raises(SystemExit) as exc_info:
         _cli.main(
             [
-                "--server-url",
-                "http://execution-coordinator.test",
-                "--auth-token-file",
-                str(token_file),
+                "--coordinator-file",
+                str(coordinator_file),
                 "--resources",
                 '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
                 "--idle-timeout",
@@ -343,13 +327,12 @@ def test_worker_cli_requires_resource_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[ResourceRequest] = []
-    token_file = tmp_path / "worker.token"
-    token_file.write_text("secret")
+    coordinator_file = tmp_path / "coordinator.url"
+    coordinator_file.write_text("ws://furu:secret@execution-coordinator.test:1")
 
     def worker_loop(
         *,
-        server_url: str,
-        auth_token: str,
+        coordinator_url: str,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
     ) -> None:
@@ -360,10 +343,8 @@ def test_worker_cli_requires_resource_request(
     with pytest.raises(SystemExit) as exc_info:
         _cli.main(
             [
-                "--server-url",
-                "http://execution-coordinator.test",
-                "--auth-token-file",
-                str(token_file),
+                "--coordinator-file",
+                str(coordinator_file),
                 "--idle-timeout",
                 "60",
                 "--component",
@@ -375,25 +356,22 @@ def test_worker_cli_requires_resource_request(
     assert calls == []
 
 
-def test_worker_cli_requires_auth_token_file(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[tuple[str, str]] = []
+def test_worker_cli_requires_coordinator_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
 
     def worker_loop(
         *,
-        server_url: str,
-        auth_token: str,
+        coordinator_url: str,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
     ) -> None:
-        calls.append((server_url, auth_token))
+        calls.append(coordinator_url)
 
     monkeypatch.setattr(_cli, "worker_loop", worker_loop)
 
     with pytest.raises(SystemExit) as exc_info:
         _cli.main(
             [
-                "--server-url",
-                "http://execution-coordinator.test",
                 "--resources",
                 '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
                 "--idle-timeout",
@@ -412,13 +390,12 @@ def test_worker_cli_requires_idle_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[float | None] = []
-    token_file = tmp_path / "worker.token"
-    token_file.write_text("secret")
+    coordinator_file = tmp_path / "coordinator.url"
+    coordinator_file.write_text("ws://furu:secret@execution-coordinator.test:1")
 
     def worker_loop(
         *,
-        server_url: str,
-        auth_token: str,
+        coordinator_url: str,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
     ) -> None:
@@ -429,10 +406,8 @@ def test_worker_cli_requires_idle_timeout(
     with pytest.raises(SystemExit) as exc_info:
         _cli.main(
             [
-                "--server-url",
-                "http://execution-coordinator.test",
-                "--auth-token-file",
-                str(token_file),
+                "--coordinator-file",
+                str(coordinator_file),
                 "--resources",
                 '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
             ]
@@ -446,28 +421,25 @@ def test_worker_cli_rejects_auth_token_argument(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[str, str]] = []
-    token_file = tmp_path / "worker.token"
-    token_file.write_text("secret")
+    calls: list[str] = []
+    coordinator_file = tmp_path / "coordinator.url"
+    coordinator_file.write_text("ws://furu:secret@execution-coordinator.test:1")
 
     def worker_loop(
         *,
-        server_url: str,
-        auth_token: str,
+        coordinator_url: str,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
     ) -> None:
-        calls.append((server_url, auth_token))
+        calls.append(coordinator_url)
 
     monkeypatch.setattr(_cli, "worker_loop", worker_loop)
 
     with pytest.raises(SystemExit) as exc_info:
         _cli.main(
             [
-                "--server-url",
-                "http://execution-coordinator.test",
-                "--auth-token-file",
-                str(token_file),
+                "--coordinator-file",
+                str(coordinator_file),
                 "--resources",
                 '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
                 "--idle-timeout",
@@ -549,8 +521,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     script_path = Path(argv[-1])
     assert script_path == worker_dir / "worker.sh"
     script = script_path.read_text()
-    assert "--auth-token-file" in script
-    assert "--auth-token " not in script
+    assert "--coordinator-file" in script
     assert "secret-token" not in script
     project_root = EnvironmentIdentity.capture().project_root
     assert script.index('echo "Hello" > /tmp/hey') < script.index("exec uv run")
@@ -559,7 +530,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert "python -m furu.worker._cli" in script
     assert sys.executable not in script
     assert "--backend slurm" in script
-    assert "--server-url ws://execution-coordinator.cluster:1234" in script
+    assert "--server-url" not in script
     assert "SLURM_ARRAY_TASK_ID" in script
     assert "SLURM_ARRAY_JOB_ID" in script
     assert (
@@ -581,10 +552,13 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert "FURU_DIRECTORIES__EXECUTIONS" not in script
 
     assert not (worker_dir / "secrets").exists()
-    token_file = worker_dir / "worker.token"
-    assert _mode(token_file) == 0o600
-    assert token_file.read_text() == "secret-token"
-    assert str(token_file) in script
+    coordinator_file = worker_dir / "coordinator.url"
+    assert _mode(coordinator_file) == 0o600
+    assert (
+        coordinator_file.read_text()
+        == "ws://furu:secret-token@execution-coordinator.cluster:1234\n"
+    )
+    assert f"--coordinator-file {coordinator_file}" in script
 
     config_file = worker_dir / "worker.config.json"
     assert _mode(config_file) == 0o600
@@ -598,7 +572,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
 
     assert "secret-token" not in record_file.read_text()
 
-    assert token_file.exists()
+    assert coordinator_file.exists()
     assert config_file.exists()
 
 
@@ -635,7 +609,11 @@ def test_slurm_backend_isolates_worker_files_between_pools(
         assert int(worker_dir.name, 16) >= 0
         assert pool._script_path == worker_dir / "worker.sh"
         assert f"echo pool-{pool_number}" in pool._script_path.read_text()
-        assert (worker_dir / "worker.token").read_text() == "secret-token"
+        assert (
+            (worker_dir / "coordinator.url")
+            .read_text()
+            .startswith("ws://furu:secret-token@")
+        )
         assert (worker_dir / "worker.config.json").is_file()
         assert (worker_dir / "logs").is_dir()
 
@@ -1084,7 +1062,7 @@ def test_slurm_resources_emit_node_count() -> None:
     ]
 
 
-def test_slurm_backend_builds_server_url_from_worker_connect_host(
+def test_slurm_backend_builds_coordinator_url_from_worker_connect_host(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1114,7 +1092,9 @@ def test_slurm_backend_builds_server_url_from_worker_connect_host(
 
     script_path = Path(sbatch_records[0]["argv"][-1])
     script = script_path.read_text()
-    assert "--server-url ws://execution-coordinator.cluster:4321" in script
+    assert (
+        script_path.parent / "coordinator.url"
+    ).read_text() == "ws://furu:secret-token@execution-coordinator.cluster:4321\n"
     assert f"--idle-timeout {get_config().worker.idle_timeout_seconds}" in script
 
 
@@ -1145,9 +1125,13 @@ def test_slurm_backend_worker_connect_port_overrides_bound_port(
     sbatch_records = [record for record in records if record["executable"] == "sbatch"]
     assert len(sbatch_records) == 1
 
-    script = Path(sbatch_records[0]["argv"][-1]).read_text()
-    assert "--server-url ws://execution-coordinator.cluster:9000" in script
-    assert ":4321" not in script
+    script_path = Path(sbatch_records[0]["argv"][-1])
+    coordinator_file_text = (script_path.parent / "coordinator.url").read_text()
+    assert (
+        coordinator_file_text
+        == "ws://furu:secret-token@execution-coordinator.cluster:9000\n"
+    )
+    assert ":4321" not in script_path.read_text()
 
 
 def test_slurm_backend_worker_connect_host_defaults_to_config() -> None:
@@ -1933,3 +1917,58 @@ def test_slurm_backend_pins_relative_data_directories_for_workers(
     written = _Config.model_validate_json(config_file.read_text(encoding="utf-8"))
     assert written.directories.objects == work_dir / "furu-data" / "objects"
     assert written.directories.snapshots == work_dir / "furu-data" / "snapshots"
+
+
+def _slurm_backend(**overrides: Any) -> SlurmWorkerBackend:
+    fields: dict[str, Any] = {
+        "max_workers": 2,
+        "resources": SlurmResources(partition="debug", cpus_per_worker=4),
+        "worker_connect_host": "login01.cluster",
+    }
+    return SlurmWorkerBackend(**{**fields, **overrides})
+
+
+def test_slurm_pool_key_ignores_where_and_how_many() -> None:
+    key = _slurm_backend().pool_key
+
+    assert key.startswith("slurm:")
+    assert _slurm_backend(max_workers=9).pool_key == key
+    assert _slurm_backend(worker_connect_host="login02.cluster").pool_key == key
+    assert _slurm_backend(worker_connect_port=9000).pool_key == key
+    assert _slurm_backend(job_name="other").pool_key == key
+    assert _slurm_backend(poll_interval=1.0, worker_idle_timeout=1.0).pool_key == key
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"resources": SlurmResources(partition="gpu", cpus_per_worker=4)},
+        {"resources": SlurmResources(partition="debug", cpus_per_worker=8)},
+        {
+            "resources": SlurmResources(
+                partition="debug", cpus_per_worker=4, memory=MemoryPerNode(8)
+            )
+        },
+        {"reserve_for": ResourceFloor(memory_gib=8)},
+        {"pre_worker_commands": ("module load cuda",)},
+        {"export": "NIL"},
+        {"export": ("HF_TOKEN",)},
+        {"use_job_arrays": False},
+    ],
+    ids=lambda override: next(iter(override)),
+)
+def test_slurm_pool_key_changes_with_what_a_worker_is(
+    override: dict[str, Any],
+) -> None:
+    assert _slurm_backend(**override).pool_key != _slurm_backend().pool_key
+
+
+def test_slurm_pool_key_distinguishes_memory_kinds() -> None:
+    per_node = _slurm_backend(
+        resources=SlurmResources(cpus_per_worker=4, memory=MemoryPerNode(8))
+    )
+    per_cpu = _slurm_backend(
+        resources=SlurmResources(cpus_per_worker=4, memory=MemoryPerCpu(8))
+    )
+
+    assert per_node.pool_key != per_cpu.pool_key
