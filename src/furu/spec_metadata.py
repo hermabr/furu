@@ -5,6 +5,8 @@ from typing import Any, Literal, cast
 
 from furu.config import get_config
 
+type Reuse = Literal["never", "same_environment", "same_environment_same_spec"]
+
 
 @dataclass(frozen=True, slots=True, order=True)
 class GiB:
@@ -68,6 +70,4 @@ class Metadata:
     requires: Requires = Requires()
     environment: Mapping[str, str | None] = field(default_factory=dict)
     required_environment: tuple[str, ...] = ()
-    reuse: Literal["never", "same_environment", "same_environment_same_spec"] = (
-        "same_environment"
-    )
+    reuse: Reuse = "same_environment"

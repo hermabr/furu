@@ -7,6 +7,25 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from furu.metadata import ArtifactSpec
 from furu.provenance import SubmitProvenance
 from furu.resources import ResourceRequest
+from furu.spec_metadata import Metadata, Reuse
+
+
+class ProcessSettings(BaseModel):
+    """How the worker runs the job's child process; copied from ``Metadata``."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    environment: dict[str, str | None]
+    required_environment: tuple[str, ...]
+    reuse: Reuse
+
+    @classmethod
+    def from_metadata(cls, metadata: Metadata) -> ProcessSettings:
+        return cls(
+            environment=dict(metadata.environment),
+            required_environment=metadata.required_environment,
+            reuse=metadata.reuse,
+        )
 
 
 class Job(BaseModel):
@@ -14,6 +33,7 @@ class Job(BaseModel):
 
     artifacts: list[ArtifactSpec]
     provenance: SubmitProvenance
+    process: ProcessSettings
 
 
 class JobCompletedResult(BaseModel):

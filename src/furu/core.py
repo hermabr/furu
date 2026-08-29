@@ -51,6 +51,7 @@ from furu.utils import (
     JsonValue,
     _hash_dict_deterministically,
     fully_qualified_name,
+    log_label_from_parts,
     nfs_safe_unique_name,
     object_id_from_parts,
 )
@@ -384,8 +385,8 @@ class Spec[T](_FuruDataclassTransform, ABC):
     @final
     @cached_property
     def _log_label(self) -> str:
-        return (
-            f"{type(self).__name__}:"
-            + f"{self._artifact_schema_hash[:5]}:"
-            + f"{self._artifact_hash[:5]}"
+        return log_label_from_parts(
+            fully_qualified_name=self._fully_qualified_name,
+            schema_hash=self._artifact_schema_hash,
+            artifact_hash=self._artifact_hash,
         )

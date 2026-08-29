@@ -31,6 +31,7 @@ from furu.worker.protocol import (
     JobCompletedResult,
     JobFailedResult,
     JobResult,
+    ProcessSettings,
 )
 
 if TYPE_CHECKING:
@@ -226,6 +227,7 @@ class ExecutionCoordinator:
             return Job(
                 artifacts=[ArtifactSpec.from_furu(node.obj) for node in nodes],
                 provenance=self.submit_provenance,
+                process=ProcessSettings.from_metadata(node.obj._metadata),
             )
 
     def worker_lost(self, worker: str) -> None:

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import importlib
 import os
+import sys
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 from subprocess_objects import (
@@ -30,6 +33,7 @@ from furu.worker.protocol import (
     JobCompletedResult,
     JobFailedResult,
     JobResult,
+    ProcessSettings,
 )
 
 
@@ -62,12 +66,11 @@ def _submit_provenance() -> SubmitProvenance:
 
 def _run(slot: ChildSlot, obj: Spec) -> JobResult:
     return slot.run(
-        [obj],
-        job=Job(
+        Job(
             artifacts=[ArtifactSpec.from_furu(obj)],
             provenance=_submit_provenance(),
-        ),
-        metadata=obj._metadata,
+            process=ProcessSettings.from_metadata(obj._metadata),
+        )
     )
 
 
@@ -278,17 +281,38 @@ def test_subprocess_blocked_dependency_is_relayed(child_slot: ChildSlot) -> None
     ]
 
 
-def test_subprocess_cache_hit_does_not_spawn_child(child_slot: ChildSlot) -> None:
+def test_subprocess_cache_hit_completes_without_recreating(
+    child_slot: ChildSlot,
+) -> None:
     leaf = SubprocessEnvLeaf(
         variable_name="FURU_TEST_VARIABLE",
         variable_value="cached",
     )
     leaf.create()
+    assert _pid_and_value(leaf)[0] == os.getpid()
 
     result = _run(child_slot, leaf)
 
     assert isinstance(result, JobCompletedResult)
-    assert child_slot._child is None
+    # The child saw the cached result and did not run create() again.
+    assert _pid_and_value(leaf)[0] == os.getpid()
+
+
+def test_spec_module_is_imported_only_in_child(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module_name = "import_side_effect_objects"
+    monkeypatch.setenv("FURU_TEST_IMPORT_MARKER_DIR", str(tmp_path))
+    leaf = importlib.import_module(module_name).ImportSideEffectLeaf()
+    # Forget the module so a parent-side import would leave a fresh marker;
+    # the marker written while constructing the leaf is not the parent's.
+    monkeypatch.delitem(sys.modules, module_name)
+    (tmp_path / str(os.getpid())).unlink(missing_ok=True)
+
+    child_pid = furu.create(leaf, on=(LocalThreadWorkerBackend(),))
+
+    assert child_pid != os.getpid()
+    assert {int(path.name) for path in tmp_path.iterdir()} == {child_pid}
 
 
 def test_subprocess_execution_through_local_worker_backend() -> None:

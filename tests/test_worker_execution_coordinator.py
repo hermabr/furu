@@ -47,6 +47,7 @@ from furu.worker.protocol import (
     JobCompletedResult,
     JobFailedResult,
     JobResult,
+    ProcessSettings,
     job_result_adapter,
 )
 
@@ -76,6 +77,7 @@ def _job(obj: Spec) -> Job:
     return Job(
         artifacts=[ArtifactSpec.from_furu(obj)],
         provenance=_submit_provenance(),
+        process=ProcessSettings.from_metadata(obj._metadata),
     )
 
 
@@ -1567,6 +1569,7 @@ def test_worker_loop_logs_received_task_and_result(
     job = Job(
         artifacts=[ArtifactSpec.from_furu(leaf), ArtifactSpec.from_furu(other_leaf)],
         provenance=_submit_provenance(),
+        process=ProcessSettings.from_metadata(leaf._metadata),
     )
     log_path = tmp_path / "worker.log"
 
@@ -1604,9 +1607,7 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
 ) -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
 
-    def run(
-        self: ChildSlot, objs: Sequence[Spec], *, job: Job, metadata: Metadata
-    ) -> JobResult:
+    def run(self: ChildSlot, job: Job) -> JobResult:
         raise KeyboardInterrupt
 
     monkeypatch.setattr(ChildSlot, "run", run)

@@ -19,7 +19,7 @@ from furu.storage._layout import metadata_path_in, provenance_path_in
 from furu.testing import override_config
 from furu.worker.backends.local import LocalThreadWorkerBackend
 from furu.worker.execute import ChildSlot
-from furu.worker.protocol import Job
+from furu.worker.protocol import Job, ProcessSettings
 
 
 @pytest.fixture(autouse=True)
@@ -226,9 +226,11 @@ def test_worker_fails_job_on_stale_uv_lock_hash(
 
     with pytest.raises(RuntimeError, match="worker uv.lock does not match") as excinfo:
         ChildSlot(backend="test").run(
-            [node],
-            job=Job(artifacts=[ArtifactSpec.from_furu(node)], provenance=stale),
-            metadata=node._metadata,
+            Job(
+                artifacts=[ArtifactSpec.from_furu(node)],
+                provenance=stale,
+                process=ProcessSettings.from_metadata(node._metadata),
+            )
         )
 
     assert "blake2s:stale" in str(excinfo.value)
