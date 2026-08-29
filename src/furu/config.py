@@ -67,6 +67,7 @@ class _FuruProvenanceConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     snapshot: bool = True
+    push: bool = True
     max_snapshot_bytes: ByteSize = ByteSize(256 * 1024 * 1024)
 
 
