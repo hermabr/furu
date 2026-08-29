@@ -29,9 +29,21 @@ class ProcessSettings(BaseModel):
 class Job(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
+    kind: Literal["job"] = "job"
     artifacts: list[ArtifactSpec]
     provenance: SubmitProvenance
     process: ProcessSettings
+
+
+class CancelMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    kind: Literal["cancel"] = "cancel"
+
+
+type ServerMessage = Annotated[Job | CancelMessage, Field(discriminator="kind")]
+
+server_message_adapter: TypeAdapter[ServerMessage] = TypeAdapter(ServerMessage)
 
 
 class JobCompletedResult(BaseModel):
@@ -68,6 +80,7 @@ class HelloMessage(BaseModel):
     worker: str
     backend: str
     resources: ResourceRequest
+    running: list[ArtifactSpec] = Field(default_factory=list)
 
 
 def coordinator_url(*, host: str, port: int, auth_token: str) -> str:
