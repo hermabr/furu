@@ -1,11 +1,33 @@
 import os
 import sys
+import traceback
 
 from furu.config import _Config, _set_config
 from furu.core import Spec
+from furu.execution.load_or_create import _ensure_group_result
+from furu.metadata import ArtifactSpec
 from furu.provenance import _worker_backend
-from furu.worker.execute import execute_job
-from furu.worker.protocol import Job
+from furu.worker.context import _DependencyNotReady, worker_execution_context
+from furu.worker.protocol import (
+    Job,
+    JobBlockedResult,
+    JobCompletedResult,
+    JobFailedResult,
+    JobResult,
+)
+
+
+def _execute(job: Job) -> JobResult:
+    try:
+        objs = [Spec.from_artifact(artifact) for artifact in job.artifacts]
+        _ensure_group_result(objs, submit_provenance=job.provenance)
+        return JobCompletedResult()
+    except _DependencyNotReady as exc:
+        return JobBlockedResult(
+            dependencies=[ArtifactSpec.from_furu(dep) for dep in exc.dependencies]
+        )
+    except Exception as exc:  # noqa: BLE001 -- fault barrier: any crash fails the job
+        return JobFailedResult(error="".join(traceback.format_exception(exc)))
 
 
 def main() -> int:
@@ -16,12 +38,11 @@ def main() -> int:
     _set_config(_Config.model_validate_json(sys.stdin.readline()))
     _worker_backend.set(sys.stdin.readline().rstrip("\n"))
 
-    for line in sys.stdin:
-        job = Job.model_validate_json(line)
-        objs = [Spec.from_artifact(artifact) for artifact in job.artifacts]
-        result = execute_job(objs, job=job)
-        protocol_out.write(result.model_dump_json() + "\n")
-        protocol_out.flush()
+    with worker_execution_context():
+        for line in sys.stdin:
+            result = _execute(Job.model_validate_json(line))
+            protocol_out.write(result.model_dump_json() + "\n")
+            protocol_out.flush()
     return 0
 
 

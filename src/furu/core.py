@@ -53,6 +53,7 @@ from furu.utils import (
     fully_qualified_name,
     nfs_safe_unique_name,
     object_id_from_parts,
+    spec_label,
 )
 
 if TYPE_CHECKING:
@@ -384,8 +385,6 @@ class Spec[T](_FuruDataclassTransform, ABC):
     @final
     @cached_property
     def _log_label(self) -> str:
-        return (
-            f"{type(self).__name__}:"
-            + f"{self._artifact_schema_hash[:5]}:"
-            + f"{self._artifact_hash[:5]}"
+        return spec_label(
+            self._fully_qualified_name, self._artifact_schema_hash, self._artifact_hash
         )

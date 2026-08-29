@@ -7,6 +7,23 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from furu.metadata import ArtifactSpec
 from furu.provenance import SubmitProvenance
 from furu.resources import ResourceRequest
+from furu.spec_metadata import Metadata, Reuse
+
+
+class ProcessSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    environment: dict[str, str | None]
+    required_environment_variables: tuple[str, ...]
+    reuse: Reuse
+
+    @classmethod
+    def from_metadata(cls, metadata: Metadata) -> ProcessSettings:
+        return cls(
+            environment=dict(metadata.environment),
+            required_environment_variables=metadata.required_environment_variables,
+            reuse=metadata.reuse,
+        )
 
 
 class Job(BaseModel):
@@ -14,6 +31,7 @@ class Job(BaseModel):
 
     artifacts: list[ArtifactSpec]
     provenance: SubmitProvenance
+    process: ProcessSettings
 
 
 class JobCompletedResult(BaseModel):

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import importlib
 import os
+import sys
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 from subprocess_objects import (
@@ -30,6 +33,7 @@ from furu.worker.protocol import (
     JobCompletedResult,
     JobFailedResult,
     JobResult,
+    ProcessSettings,
 )
 
 
@@ -62,12 +66,11 @@ def _submit_provenance() -> SubmitProvenance:
 
 def _run(slot: ChildSlot, obj: Spec) -> JobResult:
     return slot.run(
-        [obj],
-        job=Job(
+        Job(
             artifacts=[ArtifactSpec.from_furu(obj)],
             provenance=_submit_provenance(),
-        ),
-        metadata=obj._metadata,
+            process=ProcessSettings.from_metadata(obj._metadata),
+        )
     )
 
 
@@ -80,7 +83,7 @@ def test_metadata_defaults_to_warm_child_with_inherited_environment() -> None:
     metadata = Metadata()
 
     assert metadata.environment == {}
-    assert metadata.required_environment == ()
+    assert metadata.required_environment_variables == ()
     assert metadata.reuse == "same_environment"
 
 
@@ -120,14 +123,14 @@ def test_subprocess_none_unsets_variable_in_child(
     assert _pid_and_value(leaf)[1] == "None"
 
 
-def test_subprocess_missing_required_environment_fails_before_spawn(
+def test_subprocess_missing_required_environment_variables_fails_before_spawn(
     monkeypatch: pytest.MonkeyPatch, child_slot: ChildSlot
 ) -> None:
     monkeypatch.delenv("FURU_TEST_REQUIRED", raising=False)
     leaf = SubprocessEnvLeaf(
         variable_name="FURU_TEST_VARIABLE",
         variable_value="irrelevant",
-        required_environment=("FURU_TEST_REQUIRED",),
+        required_environment_variables=("FURU_TEST_REQUIRED",),
     )
 
     with pytest.raises(RuntimeError, match="FURU_TEST_REQUIRED"):
@@ -135,14 +138,14 @@ def test_subprocess_missing_required_environment_fails_before_spawn(
     assert child_slot._child is None
 
 
-def test_subprocess_required_environment_satisfied_by_parent_or_override(
+def test_subprocess_required_environment_variables_satisfied_by_parent_or_override(
     monkeypatch: pytest.MonkeyPatch, child_slot: ChildSlot
 ) -> None:
     monkeypatch.setenv("FURU_TEST_REQUIRED", "from-parent")
     leaf = SubprocessEnvLeaf(
         variable_name="FURU_TEST_VARIABLE",
         variable_value="from-override",
-        required_environment=("FURU_TEST_REQUIRED", "FURU_TEST_VARIABLE"),
+        required_environment_variables=("FURU_TEST_REQUIRED", "FURU_TEST_VARIABLE"),
     )
 
     assert isinstance(_run(child_slot, leaf), JobCompletedResult)
@@ -278,17 +281,38 @@ def test_subprocess_blocked_dependency_is_relayed(child_slot: ChildSlot) -> None
     ]
 
 
-def test_subprocess_cache_hit_does_not_spawn_child(child_slot: ChildSlot) -> None:
+def test_subprocess_cache_hit_completes_without_recreating(
+    child_slot: ChildSlot,
+) -> None:
     leaf = SubprocessEnvLeaf(
         variable_name="FURU_TEST_VARIABLE",
         variable_value="cached",
     )
     leaf.create()
+    assert _pid_and_value(leaf)[0] == os.getpid()
 
     result = _run(child_slot, leaf)
 
     assert isinstance(result, JobCompletedResult)
-    assert child_slot._child is None
+    # The child saw the cached result and did not run create() again.
+    assert _pid_and_value(leaf)[0] == os.getpid()
+
+
+def test_spec_module_is_imported_only_in_child(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module_name = "import_side_effect_objects"
+    monkeypatch.setenv("FURU_TEST_IMPORT_MARKER_DIR", str(tmp_path))
+    leaf = importlib.import_module(module_name).ImportSideEffectLeaf()
+    # Forget the module so a parent-side import would leave a fresh marker;
+    # the marker written while constructing the leaf is not the parent's.
+    monkeypatch.delitem(sys.modules, module_name)
+    (tmp_path / str(os.getpid())).unlink(missing_ok=True)
+
+    child_pid = furu.create(leaf, on=(LocalThreadWorkerBackend(),))
+
+    assert child_pid != os.getpid()
+    assert {int(path.name) for path in tmp_path.iterdir()} == {child_pid}
 
 
 def test_subprocess_execution_through_local_worker_backend() -> None:

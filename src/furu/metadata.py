@@ -8,7 +8,12 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import BaseModel, ConfigDict
 
 from furu.storage._layout import metadata_path_in
-from furu.utils import JsonValue, atomic_write_text, object_id_from_parts
+from furu.utils import (
+    JsonValue,
+    atomic_write_text,
+    object_id_from_parts,
+    spec_label,
+)
 
 if TYPE_CHECKING:
     from furu.core import Spec
@@ -43,6 +48,12 @@ class ArtifactSpec(BaseModel):
             fully_qualified_name=self.fully_qualified_name,
             schema_hash=self.schema_hash,
             artifact_hash=self.artifact_hash,
+        )
+
+    @cached_property
+    def log_label(self) -> str:
+        return spec_label(
+            self.fully_qualified_name, self.schema_hash, self.artifact_hash
         )
 
 

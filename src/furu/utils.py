@@ -89,6 +89,11 @@ def object_id_from_parts(
     return f"{fully_qualified_name}:{schema_hash}:{artifact_hash}"
 
 
+def spec_label(fully_qualified_name: str, schema_hash: str, artifact_hash: str) -> str:
+    class_name = fully_qualified_name.rpartition(".")[2]
+    return f"{class_name}:{schema_hash[:5]}:{artifact_hash[:5]}"
+
+
 def _stable_json_dump(x: JsonValue) -> str:
     return json.dumps(x, sort_keys=True, separators=(",", ":"))
 
