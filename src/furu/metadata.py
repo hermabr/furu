@@ -11,8 +11,8 @@ from furu.storage._layout import metadata_path_in
 from furu.utils import (
     JsonValue,
     atomic_write_text,
-    log_label_from_parts,
     object_id_from_parts,
+    spec_label,
 )
 
 if TYPE_CHECKING:
@@ -52,10 +52,8 @@ class ArtifactSpec(BaseModel):
 
     @cached_property
     def log_label(self) -> str:
-        return log_label_from_parts(
-            fully_qualified_name=self.fully_qualified_name,
-            schema_hash=self.schema_hash,
-            artifact_hash=self.artifact_hash,
+        return spec_label(
+            self.fully_qualified_name, self.schema_hash, self.artifact_hash
         )
 
 

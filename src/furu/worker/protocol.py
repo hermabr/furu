@@ -11,8 +11,6 @@ from furu.spec_metadata import Metadata, Reuse
 
 
 class ProcessSettings(BaseModel):
-    """How the worker runs the job's child process; copied from ``Metadata``."""
-
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     environment: dict[str, str | None]

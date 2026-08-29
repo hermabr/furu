@@ -31,11 +31,7 @@ class _Child:
 
 
 class ChildSlot:
-    """At most one warm child process, tagged with what it last ran.
-
-    The parent never imports spec modules: everything it needs to supervise a
-    job travels in the ``Job`` itself.
-    """
+    """At most one warm child process, tagged with what it last ran."""
 
     _child: _Child | None
 

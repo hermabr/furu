@@ -16,22 +16,32 @@ from furu.worker.execute import ChildSlot
 logger = get_logger("worker.loop")
 
 
-def _label(job: protocol.Job) -> str:
+def _run_job(job: protocol.Job, child_slot: ChildSlot) -> protocol.JobResult:
     label = job.artifacts[0].log_label
     if len(job.artifacts) > 1:
         label += f" ×{len(job.artifacts)}"
-    return label
-
-
-def _run_job(job: protocol.Job, child_slot: ChildSlot) -> protocol.JobResult:
+    logger.info(
+        "received %s",
+        label,
+        extra=log_detail(
+            object_ids=",".join(artifact.object_id for artifact in job.artifacts)
+        ),
+    )
+    started_at = time.monotonic()
     try:
-        return child_slot.run(job)
+        result = child_slot.run(job)
     except Exception as exc:  # noqa: BLE001 -- fault barrier: any crash fails the job
-        return protocol.JobFailedResult(
-            error="".join(
-                traceback.format_exception(type(exc), exc, exc.__traceback__)
-            ),
+        result = protocol.JobFailedResult(
+            error="".join(traceback.format_exception(exc))
         )
+    logger.info(
+        "finished %s %s · %s",
+        label,
+        "ok" if result.status == "completed" else result.status,
+        format_duration(time.monotonic() - started_at),
+        extra=log_detail(status=result.status),
+    )
+    return result
 
 
 def worker_loop(
@@ -76,30 +86,9 @@ def worker_loop(
                         return
 
                     job = protocol.Job.model_validate_json(message)
-                    task_label = _label(job)
-                    logger.info(
-                        "received %s",
-                        task_label,
-                        extra=log_detail(
-                            object_ids=",".join(
-                                artifact.object_id for artifact in job.artifacts
-                            )
-                        ),
-                    )
-                    task_started_at = time.monotonic()
                     job_result = _run_job(job, child_slot)
                     connection.send(
                         protocol.job_result_adapter.dump_json(job_result).decode()
-                    )
-
-                    status = job_result.status
-                    duration = format_duration(time.monotonic() - task_started_at)
-                    logger.info(
-                        "finished %s %s · %s",
-                        task_label,
-                        "ok" if status == "completed" else status,
-                        duration,
-                        extra=log_detail(status=status),
                     )
         finally:
             child_slot.close()

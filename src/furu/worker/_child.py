@@ -20,19 +20,14 @@ from furu.worker.protocol import (
 def _execute(job: Job) -> JobResult:
     try:
         objs = [Spec.from_artifact(artifact) for artifact in job.artifacts]
-        with worker_execution_context():
-            _ensure_group_result(objs, submit_provenance=job.provenance)
+        _ensure_group_result(objs, submit_provenance=job.provenance)
         return JobCompletedResult()
     except _DependencyNotReady as exc:
         return JobBlockedResult(
             dependencies=[ArtifactSpec.from_furu(dep) for dep in exc.dependencies]
         )
     except Exception as exc:  # noqa: BLE001 -- fault barrier: any crash fails the job
-        return JobFailedResult(
-            error="".join(
-                traceback.format_exception(type(exc), exc, exc.__traceback__)
-            ),
-        )
+        return JobFailedResult(error="".join(traceback.format_exception(exc)))
 
 
 def main() -> int:
@@ -43,10 +38,13 @@ def main() -> int:
     _set_config(_Config.model_validate_json(sys.stdin.readline()))
     _worker_backend.set(sys.stdin.readline().rstrip("\n"))
 
-    for line in sys.stdin:
-        result = _execute(Job.model_validate_json(line))
-        protocol_out.write(result.model_dump_json() + "\n")
-        protocol_out.flush()
+    # This whole process is the worker execution context: create() calls made
+    # inside a job report missing dependencies instead of computing them here.
+    with worker_execution_context():
+        for line in sys.stdin:
+            result = _execute(Job.model_validate_json(line))
+            protocol_out.write(result.model_dump_json() + "\n")
+            protocol_out.flush()
     return 0
 
 
