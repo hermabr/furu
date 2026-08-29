@@ -62,8 +62,6 @@ def _submit_provenance() -> SubmitProvenance:
             branch=None,
             remote=None,
             repo_root=".",
-            dirty=False,
-            diff_stats=None,
         ),
         environment=EnvironmentIdentity.capture(),
         snapshot_id=None,
@@ -359,8 +357,6 @@ def test_materializing_slot_runs_each_job_from_its_snapshot(tmp_path: Path) -> N
                     branch=None,
                     remote=None,
                     repo_root=str(repo),
-                    dirty=False,
-                    diff_stats=None,
                 ),
                 # Stale lock hash: the job runs in its snapshot's venv, so the
                 # worker's own environment must not be checked.

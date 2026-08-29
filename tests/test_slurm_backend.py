@@ -9,7 +9,6 @@ import shutil
 import stat
 import subprocess
 import sys
-import tarfile
 import textwrap
 import threading
 import time
@@ -114,22 +113,18 @@ def _disable_slurm_pool_scale_thread(
 
 
 def _submit_provenance() -> SubmitProvenance:
-    """Provenance for a pretend repo at ``/repo``, backed by an empty snapshot
-    tarball so ``start_pool`` can extract it."""
+    """Provenance for a pretend repo at ``/repo``, backed by an already
+    extracted empty snapshot so ``start_pool`` never runs git."""
     snapshot_id = "stub-snapshot"
-    snapshot_dir = get_config().run_directories.snapshots / snapshot_id
-    if not snapshot_dir.is_dir():
-        snapshot_dir.mkdir(parents=True)
-        with tarfile.open(snapshot_dir / "snapshot.tar.gz", "w:gz"):
-            pass
+    (get_config().run_directories.snapshots / snapshot_id / "code").mkdir(
+        parents=True, exist_ok=True
+    )
     return SubmitProvenance(
         git=GitIdentity(
             commit="0" * 40,
             branch=None,
             remote=None,
             repo_root="/repo",
-            dirty=False,
-            diff_stats=None,
         ),
         environment=EnvironmentIdentity(
             python="3.12.0",
@@ -2055,9 +2050,9 @@ def test_slurm_backend_runs_workers_from_the_extracted_snapshot(
     )
     uv_commands: list[list[str]] = []
     monkeypatch.setattr(
-        slurm_backend_module.subprocess,
-        "run",
-        lambda argv, **kwargs: uv_commands.append(argv),
+        slurm_backend_module,
+        "subprocess",
+        SimpleNamespace(run=lambda argv, **kwargs: uv_commands.append(argv)),
     )
     backend = SlurmWorkerBackend(
         max_workers=1,
