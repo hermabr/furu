@@ -18,10 +18,14 @@ from furu.config import (
 from furu.provenance import EnvironmentIdentity, SubmitProvenance
 from furu.resources import ResourceFloor, ResourceRequest, resource_request_adapter
 from furu.snapshot import extract_snapshot
-from furu.utils import _hash_dict_deterministically, write_private_file
+from furu.utils import (
+    _hash_dict_deterministically,
+    replace_private_file,
+    write_private_file,
+)
 from furu.worker.backends.slurm.pool import SlurmWorkerPool
 from furu.worker.backends.slurm.resources import SlurmResources
-from furu.worker.protocol import coordinator_url
+from furu.worker.protocol import PoolHandoff, coordinator_url
 
 if TYPE_CHECKING:
     from furu.execution.execution_coordinator import ExecutionCoordinator
@@ -78,6 +82,7 @@ class SlurmWorkerBackend:
         auth_token: str,
         executor_dir: Path,
         provenance: SubmitProvenance,
+        handoff: PoolHandoff | None,
     ) -> SlurmWorkerPool:
         connect_port = (
             bound_port if self.worker_connect_port is None else self.worker_connect_port
@@ -106,6 +111,13 @@ class SlurmWorkerBackend:
 
         coordinator_file = worker_dir / "coordinator.url"
         write_private_file(coordinator_file, url + "\n", mode=0o600)
+        coordinator_files = [coordinator_file]
+        job_ids: list[str] = []
+        if handoff is not None:
+            for inherited_file in handoff.coordinator_files:
+                replace_private_file(inherited_file, url + "\n", mode=0o600)
+            coordinator_files.extend(handoff.coordinator_files)
+            job_ids.extend(handoff.job_ids)
 
         config = get_config()
         config = config.model_copy(
@@ -197,7 +209,8 @@ class SlurmWorkerBackend:
                 target=lambda: pool_holder[0]._scale_loop(),
                 name="furu-slurm-worker-pool-scale",
             ),
-            _job_ids=[],
+            _job_ids=job_ids,
+            _coordinator_files=coordinator_files,
         )
         pool_holder.append(pool)
         pool._scale_thread.start()

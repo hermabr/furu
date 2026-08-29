@@ -16,6 +16,7 @@ from furu.storage._layout import (
     compute_lock_path_in,
     run_log_path_in,
 )
+from furu.testing import override_config
 from furu.worker.backends.local import LocalThreadWorkerBackend
 
 
@@ -207,6 +208,17 @@ def test_add_to_dag_rejects_running_root():
 
         with pytest.raises(RuntimeError, match="cannot add running object to DAG"):
             _new_execution_coordinator([leaf])
+
+
+def test_add_to_dag_holds_running_object_for_adoption_under_takeover():
+    leaf = Leaf(name="running-inherited")
+    takeover_config = get_config().model_copy(update={"takeover": "7f3a1"})
+
+    with mark_running(leaf), override_config(takeover_config):
+        coordinator = _new_execution_coordinator([leaf])
+
+    assert set(coordinator.ready) == {leaf.object_id}
+    assert coordinator.awaiting_adoption == {leaf.object_id}
 
 
 def test_add_to_dag_rejects_running_dependency():
