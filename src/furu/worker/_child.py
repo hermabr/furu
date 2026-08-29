@@ -38,8 +38,6 @@ def main() -> int:
     _set_config(_Config.model_validate_json(sys.stdin.readline()))
     _worker_backend.set(sys.stdin.readline().rstrip("\n"))
 
-    # This whole process is the worker execution context: create() calls made
-    # inside a job report missing dependencies instead of computing them here.
     with worker_execution_context():
         for line in sys.stdin:
             result = _execute(Job.model_validate_json(line))
