@@ -61,7 +61,7 @@ class Metadata:
 
     Workers run create() in a child Python process. A None value in
     environment removes the variable from the child, as opposed to setting it
-    to the empty string. Variables named in required_environment (e.g.
+    to the empty string. Variables named in required_environment_variables (e.g.
     HF_TOKEN) must be set in the child environment; the job fails before
     spawning otherwise. reuse controls when a warm child is kept between jobs.
     """
@@ -69,5 +69,5 @@ class Metadata:
     storage: Path = field(default_factory=lambda: get_config().run_directories.objects)
     requires: Requires = Requires()
     environment: Mapping[str, str | None] = field(default_factory=dict)
-    required_environment: tuple[str, ...] = ()
+    required_environment_variables: tuple[str, ...] = ()
     reuse: Reuse = "same_environment"

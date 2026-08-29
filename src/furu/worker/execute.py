@@ -61,7 +61,9 @@ class ChildSlot:
                 environment[name] = value
 
         if missing := [
-            name for name in settings.required_environment if name not in environment
+            name
+            for name in settings.required_environment_variables
+            if name not in environment
         ]:
             raise RuntimeError(
                 f"required environment variables not set: {', '.join(missing)}"

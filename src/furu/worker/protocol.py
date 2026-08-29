@@ -14,14 +14,14 @@ class ProcessSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     environment: dict[str, str | None]
-    required_environment: tuple[str, ...]
+    required_environment_variables: tuple[str, ...]
     reuse: Reuse
 
     @classmethod
     def from_metadata(cls, metadata: Metadata) -> ProcessSettings:
         return cls(
             environment=dict(metadata.environment),
-            required_environment=metadata.required_environment,
+            required_environment_variables=metadata.required_environment_variables,
             reuse=metadata.reuse,
         )
 
