@@ -39,7 +39,7 @@ class ChildSlot:
         self._backend = backend
         self._child = None
 
-    def run(self, job: Job) -> JobResult:
+    def run(self, job: Job, *, cancelled: threading.Event) -> JobResult:
         worker_hash = EnvironmentIdentity.capture().uv_lock_hash
         submitted_hash = job.provenance.environment.uv_lock_hash
         if worker_hash != submitted_hash:
@@ -91,10 +91,16 @@ class ChildSlot:
             child = self._child = _spawn(environment, backend=self._backend)
         child.spec_name = spec_name
 
+        if cancelled.is_set():
+            child.process.kill()
         result = _request(child, job)
         if settings.reuse == "never" or child.process.poll() is not None:
             self.close()
         return result
+
+    def kill(self) -> None:
+        if (child := self._child) is not None:
+            child.process.kill()
 
     def close(self) -> None:
         child, self._child = self._child, None

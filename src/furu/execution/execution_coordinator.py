@@ -200,17 +200,7 @@ class ExecutionCoordinator:
                     break
                 self.lock.wait()
             node, member_ids = lease
-            nodes = [
-                self.ready.pop(member_id)
-                for member_id in (node.obj.object_id, *member_ids)
-            ]
-            started_at = time.monotonic()
-            for member_node in nodes:
-                self.running[member_node.obj.object_id] = RunningJob(
-                    node=member_node,
-                    started_at=started_at,
-                    worker=worker,
-                )
+            nodes = self._start_locked((node.obj.object_id, *member_ids), worker=worker)
             logger.info(
                 "leased %s ×%d to %s",
                 node.obj._log_label,
@@ -229,6 +219,43 @@ class ExecutionCoordinator:
                 provenance=self.submit_provenance,
                 process=ProcessSettings.from_metadata(node.obj._metadata),
             )
+
+    def _start_locked(self, object_ids: Sequence[str], *, worker: str) -> list[DagNode]:
+        started_at = time.monotonic()
+        nodes = [self.ready.pop(object_id) for object_id in object_ids]
+        for node in nodes:
+            self.running[node.obj.object_id] = RunningJob(
+                node=node, started_at=started_at, worker=worker
+            )
+        return nodes
+
+    def adopt(self, artifacts: Sequence[ArtifactSpec], *, worker: str) -> bool:
+        with self.log_context(), self.lock:
+            object_ids = [artifact.object_id for artifact in artifacts]
+            label = artifacts[0].log_label
+            if self.done.is_set() or any(
+                object_id not in self.ready for object_id in object_ids
+            ):
+                logger.info(
+                    "cancelled %s on %s: not in this run",
+                    label,
+                    worker,
+                    extra=log_detail(object_ids=",".join(object_ids), worker=worker),
+                )
+                return False
+            self._start_locked(object_ids, worker=worker)
+            logger.info(
+                "adopted %s ×%d from %s",
+                label,
+                len(object_ids),
+                worker,
+                extra=log_detail(
+                    object_ids=",".join(object_ids),
+                    worker=worker,
+                    **self._counts_detail(),
+                ),
+            )
+            return True
 
     def worker_lost(self, worker: str) -> None:
         with self.log_context(), self.lock:

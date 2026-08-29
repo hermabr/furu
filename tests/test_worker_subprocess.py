@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import os
 import sys
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -70,7 +71,8 @@ def _run(slot: ChildSlot, obj: Spec) -> JobResult:
             artifacts=[ArtifactSpec.from_furu(obj)],
             provenance=_submit_provenance(),
             process=ProcessSettings.from_metadata(obj._metadata),
-        )
+        ),
+        cancelled=threading.Event(),
     )
 
 

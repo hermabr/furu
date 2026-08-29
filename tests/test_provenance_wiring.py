@@ -1,5 +1,6 @@
 import os
 import subprocess
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -230,7 +231,8 @@ def test_worker_fails_job_on_stale_uv_lock_hash(
                 artifacts=[ArtifactSpec.from_furu(node)],
                 provenance=stale,
                 process=ProcessSettings.from_metadata(node._metadata),
-            )
+            ),
+            cancelled=threading.Event(),
         )
 
     assert "blake2s:stale" in str(excinfo.value)
