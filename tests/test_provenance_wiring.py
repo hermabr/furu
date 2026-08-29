@@ -18,8 +18,8 @@ from furu.provenance import (
 from furu.storage._layout import metadata_path_in, provenance_path_in
 from furu.testing import override_config
 from furu.worker.backends.local import LocalThreadWorkerBackend
-from furu.worker.execute import execute_job
-from furu.worker.protocol import Job, JobFailedResult
+from furu.worker.execute import ChildSlot
+from furu.worker.protocol import Job
 
 
 @pytest.fixture(autouse=True)
@@ -223,18 +223,14 @@ def test_worker_fails_job_on_stale_uv_lock_hash(
             )
         }
     )
-    computed = len(_created)
 
-    result = execute_job(
-        [node],
-        job=Job(
-            artifacts=[ArtifactSpec.from_furu(node)],
-            provenance=stale,
-        ),
-    )
+    with pytest.raises(RuntimeError, match="worker uv.lock does not match") as excinfo:
+        ChildSlot(backend="test").run(
+            [node],
+            job=Job(artifacts=[ArtifactSpec.from_furu(node)], provenance=stale),
+            metadata=node._metadata,
+        )
 
-    assert isinstance(result, JobFailedResult)
-    assert "worker uv.lock does not match the submitted environment" in result.error
-    assert "blake2s:stale" in result.error
-    assert EnvironmentIdentity.capture().uv_lock_hash in result.error
-    assert len(_created) == computed
+    assert "blake2s:stale" in str(excinfo.value)
+    assert EnvironmentIdentity.capture().uv_lock_hash in str(excinfo.value)
+    assert node.status == "missing"

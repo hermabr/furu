@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import time
 import traceback
-from typing import assert_never
 
 from websockets.exceptions import ConnectionClosed
 from websockets.headers import build_authorization_basic
@@ -10,12 +9,10 @@ from websockets.sync.client import connect
 
 from furu.core import Spec
 from furu.logging import _scoped_component, get_logger, log_detail
-from furu.provenance import _worker_backend
 from furu.resources import ResourceRequest
-from furu.spec_metadata import Subprocess
 from furu.utils import format_duration
 from furu.worker import protocol
-from furu.worker.execute import ChildSlot, execute_job
+from furu.worker.execute import ChildSlot
 
 logger = get_logger("worker.loop")
 
@@ -36,13 +33,10 @@ def _run_job(
                 object_ids=",".join(artifact.object_id for artifact in job.artifacts)
             ),
         )
-        match objs[0]._metadata.execution:
-            case "inline":
-                return execute_job(objs, job=job), task_label
-            case Subprocess() as execution:
-                return child_slot.run(objs, job=job, execution=execution), task_label
-            case unexpected_execution:
-                assert_never(unexpected_execution)
+        return (
+            child_slot.run(objs, job=job, metadata=objs[0]._metadata),
+            task_label,
+        )
     except Exception as exc:  # noqa: BLE001 -- fault barrier: any crash fails the job
         return (
             protocol.JobFailedResult(
@@ -63,9 +57,8 @@ def worker_loop(
     component: str,
     backend: str,
 ) -> None:
-    worker_backend_token = _worker_backend.set(backend)
     with _scoped_component(component):
-        child_slot = ChildSlot()
+        child_slot = ChildSlot(backend=backend)
 
         try:
             with connect(
@@ -114,4 +107,3 @@ def worker_loop(
                     )
         finally:
             child_slot.close()
-            _worker_backend.reset(worker_backend_token)

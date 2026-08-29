@@ -11,14 +11,14 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import assert_never
 
-from furu.config import _WORKER_JSON_CONFIG_FILE_ENV_VAR
+from furu.config import get_config
 from furu.core import Spec
 from furu.execution.load_or_create import _cached_to_build_msg, _ensure_group_result
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
 from furu.migration.links import result_dir_for_loading
 from furu.provenance import EnvironmentIdentity
-from furu.spec_metadata import Subprocess
+from furu.spec_metadata import Metadata
 from furu.worker.context import _DependencyNotReady, worker_execution_context
 from furu.worker.protocol import (
     Job,
@@ -38,17 +38,6 @@ _RETIRE_TIMEOUT_SECONDS = 5.0
 
 def execute_job(objs: Sequence[Spec], *, job: Job) -> JobResult:
     try:
-        worker_hash = EnvironmentIdentity.capture().uv_lock_hash
-        submitted_hash = job.provenance.environment.uv_lock_hash
-        if worker_hash != submitted_hash:
-            raise RuntimeError(
-                "worker uv.lock does not match the submitted environment\n"
-                f"  submitted : {submitted_hash}\n"
-                f"  worker    : {worker_hash}\n"
-                "The worker's project checkout is out of sync with the submit host. "
-                "Update the checkout (e.g. git pull) and run:\n"
-                "  uv sync"
-            )
         with worker_execution_context():
             _ensure_group_result(objs, submit_provenance=job.provenance)
         return JobCompletedResult()
@@ -78,30 +67,35 @@ class ChildSlot:
 
     _child: _Child | None
 
-    def __init__(self) -> None:
+    def __init__(self, *, backend: str) -> None:
+        self._backend = backend
         self._child = None
 
-    def run(
-        self, objs: Sequence[Spec], *, job: Job, execution: Subprocess
-    ) -> JobResult:
+    def run(self, objs: Sequence[Spec], *, job: Job, metadata: Metadata) -> JobResult:
+        worker_hash = EnvironmentIdentity.capture().uv_lock_hash
+        submitted_hash = job.provenance.environment.uv_lock_hash
+        if worker_hash != submitted_hash:
+            raise RuntimeError(
+                "worker uv.lock does not match the submitted environment\n"
+                f"  submitted : {submitted_hash}\n"
+                f"  worker    : {worker_hash}\n"
+                "The worker's project checkout is out of sync with the submit host. "
+                "Update the checkout (e.g. git pull) and run:\n"
+                "  uv sync"
+            )
         if all(result_dir_for_loading(obj) is not None for obj in objs):
             logger.info("%s", _cached_to_build_msg(list(objs), []))
             return JobCompletedResult()
 
         environment = dict(os.environ)
-        for name, value in execution.environment.items():
+        for name, value in metadata.environment.items():
             if value is None:
                 environment.pop(name, None)
             else:
                 environment[name] = value
-        # Re-pin last so an override cannot sever the furu config plumbing.
-        if (
-            config_file := os.environ.get(_WORKER_JSON_CONFIG_FILE_ENV_VAR)
-        ) is not None:
-            environment[_WORKER_JSON_CONFIG_FILE_ENV_VAR] = config_file
 
         if missing := [
-            name for name in execution.required_environment if name not in environment
+            name for name in metadata.required_environment if name not in environment
         ]:
             raise RuntimeError(
                 f"required environment variables not set: {', '.join(missing)}"
@@ -112,7 +106,7 @@ class ChildSlot:
             same_process_context = (
                 child.process.poll() is None and child.environment == environment
             )
-            match execution.reuse:
+            match metadata.reuse:
                 case "never":
                     can_reuse = False
                 case "same_environment":
@@ -128,11 +122,11 @@ class ChildSlot:
                 self.close()
                 child = None
         if child is None:
-            child = self._child = _spawn(environment)
+            child = self._child = _spawn(environment, backend=self._backend)
         child.spec_name = objs[0]._fully_qualified_name
 
         result = _request(child, job)
-        if execution.reuse == "never" or child.process.poll() is not None:
+        if metadata.reuse == "never" or child.process.poll() is not None:
             self.close()
         return result
 
@@ -154,7 +148,7 @@ class ChildSlot:
         logger.debug("retired child %d", child.process.pid)
 
 
-def _spawn(environment: dict[str, str]) -> _Child:
+def _spawn(environment: dict[str, str], *, backend: str) -> _Child:
     process = subprocess.Popen(
         [sys.executable, "-m", "furu.worker._child"],
         stdin=subprocess.PIPE,
@@ -163,6 +157,10 @@ def _spawn(environment: dict[str, str]) -> _Child:
         env=environment,
         text=True,
     )
+    assert process.stdin is not None
+    process.stdin.write(get_config().model_dump_json() + "\n")
+    process.stdin.write(backend + "\n")
+    process.stdin.flush()
     stderr_tail: deque[str] = deque(maxlen=_STDERR_TAIL_LINES)
 
     def forward_stderr() -> None:

@@ -1,6 +1,7 @@
 import os
 import sys
 
+from furu.config import _Config, _set_config
 from furu.core import Spec
 from furu.provenance import _worker_backend
 from furu.worker.execute import execute_job
@@ -8,12 +9,12 @@ from furu.worker.protocol import Job
 
 
 def main() -> int:
-    _worker_backend.set("subprocess")
-    # Keep the protocol channel to the parent on a private descriptor and send
-    # everything user code writes to stdout (prints, progress bars) to stderr,
-    # so it lands in the worker's log instead of corrupting the protocol.
+    #  Keep a private copy of stdout for the parent protocol; send user stdout to the worker log.
     protocol_out = os.fdopen(os.dup(sys.stdout.fileno()), "w")
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
+
+    _set_config(_Config.model_validate_json(sys.stdin.readline()))
+    _worker_backend.set(sys.stdin.readline().rstrip("\n"))
 
     for line in sys.stdin:
         job = Job.model_validate_json(line)
