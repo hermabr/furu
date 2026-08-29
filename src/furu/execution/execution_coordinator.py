@@ -5,7 +5,7 @@ import threading
 import time
 from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
@@ -67,6 +67,10 @@ class ExecutionCoordinator:
     completed: dict[str, DagNode] = field(default_factory=dict)
     failed: dict[str, FailedJob] = field(default_factory=dict)
     pools: dict[str, WorkerPool] = field(default_factory=dict)
+    # Ready specs whose compute lock is held by someone we cannot see: a worker
+    # we are inheriting, or a stray create() elsewhere. Not leased until the
+    # lock lifts or a worker connects carrying the job (see ``adopt``).
+    running_elsewhere: set[str] = field(default_factory=set)
     lock: threading.Condition = field(default_factory=threading.Condition)
     done: threading.Event = field(default_factory=threading.Event)
     finish_error: str | None = None
@@ -102,6 +106,11 @@ class ExecutionCoordinator:
     ) -> ObjsT:
         if max_retries_per_object is None:
             max_retries_per_object = get_config().worker.max_retries_per_object
+        takeover = (
+            _resolve_takeover(prefix)
+            if (prefix := get_config().takeover) is not None
+            else None
+        )
         coordinator = cls(
             max_retries_per_object=max_retries_per_object,
             pool_resources=tuple(
@@ -134,14 +143,20 @@ class ExecutionCoordinator:
                 "use one backend with a larger max_workers instead"
             )
 
-        from furu.execution.server import execution_coordinator_server
+        from furu.execution.server import (
+            execution_coordinator_server,
+            request_takeover,
+        )
 
         with coordinator.log_context():
             logger.info(
-                "starting exec=%s · %d ready · %d blocked",
+                "starting exec=%s · %d ready · %d blocked%s",
                 coordinator.executor_id[:5],
                 len(coordinator.ready),
                 len(coordinator.blocked),
+                f" · {len(coordinator.running_elsewhere)} running elsewhere"
+                if coordinator.running_elsewhere
+                else "",
                 extra=log_detail(
                     executor_id=coordinator.executor_id,
                     executor_dir=coordinator.executor_dir,
@@ -152,15 +167,40 @@ class ExecutionCoordinator:
                     coordinator, bind_host=bind_host, port=port
                 ) as server:
                     logger.info("server listening on %s", server.server_url)
-                    for backend in worker_backends:
-                        coordinator.pools[backend.pool_key] = backend.start_pool(
-                            coordinator=coordinator,
-                            bound_port=server.bound_port,
-                            auth_token=server.auth_token,
-                            executor_dir=coordinator.executor_dir,
-                            provenance=coordinator.submit_provenance,
+                    handshake = (
+                        request_takeover(
+                            executor_id=coordinator.executor_id,
+                            source_id=takeover[0],
+                            url=takeover[1],
+                            pool_keys=pool_keys,
                         )
-                        logger.info("pool started · %s", type(backend).__name__)
+                        if takeover is not None
+                        else nullcontext({})
+                    )
+                    with handshake as handoffs:
+                        if takeover is not None:
+                            logger.info(
+                                "taking over exec=%s · inherited %d workers",
+                                takeover[0][:5],
+                                sum(len(h.job_ids) for h in handoffs.values()),
+                            )
+                        for backend in worker_backends:
+                            handoff = handoffs.get(backend.pool_key)
+                            coordinator.pools[backend.pool_key] = backend.start_pool(
+                                coordinator=coordinator,
+                                bound_port=server.bound_port,
+                                auth_token=server.auth_token,
+                                executor_dir=coordinator.executor_dir,
+                                provenance=coordinator.submit_provenance,
+                                handoff=handoff,
+                            )
+                            logger.info(
+                                "pool started · %s%s",
+                                type(backend).__name__,
+                                f" · inherited {len(handoff.job_ids)} workers"
+                                if handoff is not None
+                                else "",
+                            )
                     coordinator.done.wait()
             finally:
                 if pools := list(coordinator.pools.values()):
@@ -198,7 +238,7 @@ class ExecutionCoordinator:
                 lease = next(self._satisfiable_leases_locked(resources), None)
                 if lease is not None:
                     break
-                self.lock.wait()
+                self.lock.wait(timeout=1.0 if self.running_elsewhere else None)
             node, member_ids = lease
             nodes = self._start_locked((node.obj.object_id, *member_ids), worker=worker)
             logger.info(
@@ -243,6 +283,7 @@ class ExecutionCoordinator:
                     extra=log_detail(object_ids=",".join(object_ids), worker=worker),
                 )
                 return False
+            self.running_elsewhere.difference_update(object_ids)
             self._start_locked(object_ids, worker=worker)
             logger.info(
                 "adopted %s ×%d from %s",
@@ -267,7 +308,7 @@ class ExecutionCoordinator:
     def count_satisfiable_jobs(
         self, *, resources: ResourceRequest, max_workers: int
     ) -> int:
-        with self.lock:
+        with self.log_context(), self.lock:
             if self.done.is_set():
                 return 0
             leases = self._satisfiable_leases_locked(resources)
@@ -287,7 +328,15 @@ class ExecutionCoordinator:
             (job.worker, type(job.node.obj)) for job in self.running.values()
         }:
             running_counts[obj_type] = running_counts.get(obj_type, 0) + 1
-        consumed: set[str] = set()
+        for object_id in tuple(self.running_elsewhere):
+            if self.nodes_by_id[object_id].obj.status != "running":
+                self.running_elsewhere.discard(object_id)
+                logger.info(
+                    "lock on %s lifted; leasing it normally",
+                    self.nodes_by_id[object_id].obj._log_label,
+                    extra=log_detail(object_id=object_id),
+                )
+        consumed: set[str] = set(self.running_elsewhere)
         for object_id, node in self.ready.items():
             if object_id in consumed:
                 continue
@@ -487,3 +536,24 @@ class ExecutionCoordinator:
         else:
             logger.info("furu execution coordinator finished successfully")
         self.done.set()
+
+
+def _resolve_takeover(prefix: str) -> tuple[str, str]:
+    executions = get_config().run_directories.executions
+    matches = sorted(
+        path.name
+        for path in (executions.iterdir() if executions.is_dir() else ())
+        if path.name.startswith(prefix)
+    )
+    if len(matches) != 1:
+        found = f"; candidates: {', '.join(matches)}" if matches else ""
+        raise RuntimeError(
+            f"FURU_TAKEOVER={prefix} matches {len(matches)} executions{found}"
+        )
+    (executor_id,) = matches
+    # Every Slurm pool leaves the URL its workers dial beside its worker script;
+    # any one of them reaches the coordinator.
+    url_files = sorted((executions / executor_id / "workers").glob("*/coordinator.url"))
+    if not url_files:
+        raise RuntimeError(f"exec={executor_id[:5]} has no worker pools to take over")
+    return executor_id, url_files[0].read_text(encoding="utf-8").strip()

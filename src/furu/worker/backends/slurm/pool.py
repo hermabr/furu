@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from furu.logging import _scoped_component, get_logger
 from furu.resources import ResourceRequest
+from furu.worker.protocol import PoolHandoff
 
 if TYPE_CHECKING:
     from furu.execution.execution_coordinator import ExecutionCoordinator
@@ -48,6 +49,17 @@ class SlurmWorkerPool:
     _use_job_arrays: bool
     _scale_thread: threading.Thread
     _job_ids: list[str]
+    _coordinator_files: list[Path]
+
+    def handoff(self) -> PoolHandoff:
+        with _scoped_component("slurm"):
+            self._stop_event.set()
+            self._scale_thread.join()
+            job_ids, self._job_ids[:] = list(self._job_ids), []
+            logger.info("handed off %d slurm workers", len(job_ids))
+            return PoolHandoff(
+                job_ids=job_ids, coordinator_files=list(self._coordinator_files)
+            )
 
     def stop(self, *, timeout: float) -> None:
         with _scoped_component("slurm"):

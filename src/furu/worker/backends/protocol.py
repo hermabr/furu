@@ -7,6 +7,7 @@ if TYPE_CHECKING:
     from furu.execution.execution_coordinator import ExecutionCoordinator
     from furu.provenance import SubmitProvenance
     from furu.resources import ResourceRequest
+    from furu.worker.protocol import PoolHandoff
 
 
 class WorkerBackend(Protocol):
@@ -29,8 +30,11 @@ class WorkerBackend(Protocol):
         auth_token: str,
         executor_dir: Path,
         provenance: SubmitProvenance,
+        handoff: PoolHandoff | None,
     ) -> WorkerPool: ...
 
 
 class WorkerPool(Protocol):
     def stop(self, *, timeout: float) -> None: ...
+
+    def handoff(self) -> PoolHandoff: ...
