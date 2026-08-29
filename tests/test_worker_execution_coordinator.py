@@ -6,7 +6,7 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -18,7 +18,7 @@ from websockets.sync.server import ServerConnection, serve
 
 import furu
 import furu.worker.loop as worker_loop_module
-from furu import GiB, Metadata, Requires, Spec, Throttle, at_least
+from furu import GiB, Metadata, Requires, Spec, Subprocess, Throttle, at_least
 from furu.config import get_config
 from furu.dag import _add_to_dag
 from furu.execution.execution_coordinator import (
@@ -38,6 +38,7 @@ from furu.provenance import (
 from furu.resources import ResourceFloor, ResourceRequest
 from furu.storage._layout import execution_coordinator_log_path_in
 from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
+from furu.worker.execute import ChildSlot
 from furu.worker.loop import worker_loop
 from furu.worker.protocol import (
     HelloMessage,
@@ -234,12 +235,13 @@ class ExecutionCoordinatorLeaf(Spec[int]):
 
 class FlakyExecutionCoordinatorLeaf(Spec[int]):
     value: int
-    attempts_by_value: ClassVar[dict[int, int]] = {}
+    attempts_file: str
 
     def create(self) -> int:
-        attempts = type(self).attempts_by_value.get(self.value, 0) + 1
-        type(self).attempts_by_value[self.value] = attempts
-        if attempts == 1:
+        # Workers run create() in a child process; count attempts on disk.
+        with open(self.attempts_file, "a", encoding="utf-8") as f:
+            f.write("x")
+        if Path(self.attempts_file).read_text(encoding="utf-8") == "x":
             raise RuntimeError(f"temporary failure: {self.value}")
         return self.value
 
@@ -256,15 +258,21 @@ class BatchedCoordinatorLeaf(furu.Spec[int]):
     value: int
     group: str = "g"
     cap: int = 10
-    batch_sizes: ClassVar[list[int]] = []
 
     def batch_key(self) -> tuple[str, int]:
         return (self.group, self.cap)
 
     @furu.batched(batch_key)
     def create(objs: list["BatchedCoordinatorLeaf"]) -> list[int]:
-        BatchedCoordinatorLeaf.batch_sizes.append(len(objs))
         return [obj.value for obj in objs]
+
+
+class BatchSizeCoordinatorLeaf(furu.Spec[int]):
+    value: int
+
+    @furu.batched(lambda _: (None, 10))
+    def create(objs: list["BatchSizeCoordinatorLeaf"]) -> list[int]:
+        return [len(objs)] * len(objs)
 
 
 class ThrottledBatchedCoordinatorLeaf(furu.Spec[int]):
@@ -588,10 +596,11 @@ def test_execution_coordinator_job_result_failed_retry_can_later_complete() -> N
     assert coordinator.done.is_set()
 
 
-def test_execution_coordinator_run_retries_failed_worker_result() -> None:
-    FlakyExecutionCoordinatorLeaf.attempts_by_value.clear()
-    value = uuid4().int
-    leaf = FlakyExecutionCoordinatorLeaf(value=value)
+def test_execution_coordinator_run_retries_failed_worker_result(
+    tmp_path: Path,
+) -> None:
+    attempts_file = tmp_path / "attempts"
+    leaf = FlakyExecutionCoordinatorLeaf(value=1, attempts_file=str(attempts_file))
     objs = [leaf]
 
     returned = ExecutionCoordinator.run(
@@ -600,9 +609,9 @@ def test_execution_coordinator_run_retries_failed_worker_result() -> None:
         worker_backends=(LocalThreadWorkerBackend(),),
     )
 
-    assert FlakyExecutionCoordinatorLeaf.attempts_by_value == {value: 2}
+    assert attempts_file.read_text(encoding="utf-8") == "xx"
     assert returned is objs
-    assert leaf.create() == value
+    assert leaf.create() == 1
 
 
 class GpuLeaf(Spec[int]):
@@ -634,46 +643,38 @@ class MemoryLeaf(Spec[int]):
 
 class DynamicCpuSeed(Spec[int]):
     value: int
-    create_calls: ClassVar[list[int]] = []
 
     def create(self) -> int:
-        type(self).create_calls.append(self.value)
         return self.value
 
 
 class DynamicGpuAfterSeed(Spec[int]):
     parent: DynamicCpuSeed
     value: int
-    create_calls: ClassVar[list[int]] = []
 
     def metadata(self) -> Metadata:
         return Metadata(requires=Requires(gpus=at_least(1)))
 
     def create(self) -> int:
-        type(self).create_calls.append(self.value)
         return self.parent.create() + self.value
 
 
 class DynamicCpuAfterGpu(Spec[int]):
     parent: DynamicGpuAfterSeed
     value: int
-    create_calls: ClassVar[list[int]] = []
 
     def create(self) -> int:
-        type(self).create_calls.append(self.value)
         return self.parent.create() + self.value
 
 
 class DynamicGpuAfterCpu(Spec[int]):
     parent: DynamicCpuAfterGpu
     value: int
-    create_calls: ClassVar[list[int]] = []
 
     def metadata(self) -> Metadata:
         return Metadata(requires=Requires(gpus=at_least(1)))
 
     def create(self) -> int:
-        type(self).create_calls.append(self.value)
         return self.parent.create() + self.value
 
 
@@ -856,13 +857,9 @@ def test_batched_group_failure_retries_each_member() -> None:
 
 
 def test_execution_coordinator_runs_batched_specs_as_one_batch() -> None:
-    BatchedCoordinatorLeaf.batch_sizes.clear()
-    objs = [BatchedCoordinatorLeaf(value=value, group="e2e") for value in range(3)]
+    objs = [BatchSizeCoordinatorLeaf(value=value) for value in range(3)]
 
-    results = furu.create(objs, on=[LocalThreadWorkerBackend()])
-
-    assert results == [0, 1, 2]
-    assert BatchedCoordinatorLeaf.batch_sizes == [3]
+    assert furu.create(objs, on=[LocalThreadWorkerBackend()]) == [3, 3, 3]
 
 
 def test_worker_lost_requeues_running_lease_without_counting_failure() -> None:
@@ -998,14 +995,6 @@ def test_execution_coordinator_splits_work_across_open_and_reserved_pools() -> N
 def test_execution_coordinator_run_completes_later_resource_stages_on_local_workers() -> (
     None
 ):
-    for cls in (
-        DynamicCpuSeed,
-        DynamicGpuAfterSeed,
-        DynamicCpuAfterGpu,
-        DynamicGpuAfterCpu,
-    ):
-        cls.create_calls.clear()
-
     seed_value = uuid4().int
     seed = DynamicCpuSeed(value=seed_value)
     first_gpu = DynamicGpuAfterSeed(parent=seed, value=20)
@@ -1028,10 +1017,8 @@ def test_execution_coordinator_run_completes_later_resource_stages_on_local_work
         ),
     )
 
-    assert DynamicCpuSeed.create_calls == [seed_value]
-    assert DynamicGpuAfterSeed.create_calls == [20]
-    assert DynamicCpuAfterGpu.create_calls == [30]
-    assert sorted(DynamicGpuAfterCpu.create_calls) == [0, 1, 2, 3]
+    for obj in (seed, first_gpu, second_cpu, *final_gpus):
+        assert obj.status == "done"
     assert [obj.create() for obj in final_gpus] == [
         seed_value + 50 + value for value in range(4)
     ]
@@ -1572,23 +1559,16 @@ def test_worker_loop_exits_after_idle_timeout() -> None:
 
 
 def test_worker_loop_logs_received_task_and_result(
-    monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
     tmp_path: Path,
 ) -> None:
-    leaf = ExecutionCoordinatorLeaf(value=1)
-    other_leaf = ExecutionCoordinatorLeaf(value=2)
+    leaf = BatchedCoordinatorLeaf(value=1)
+    other_leaf = BatchedCoordinatorLeaf(value=2)
     job = Job(
         artifacts=[ArtifactSpec.from_furu(leaf), ArtifactSpec.from_furu(other_leaf)],
         provenance=_submit_provenance(),
     )
     log_path = tmp_path / "worker.log"
-
-    monkeypatch.setattr(
-        worker_loop_module,
-        "execute_job",
-        lambda obj, *, job: JobCompletedResult(),
-    )
 
     with (
         _scripted_worker_server([job]) as server,
@@ -1606,6 +1586,7 @@ def test_worker_loop_logs_received_task_and_result(
 
         assert server.results == [JobCompletedResult()]
 
+    assert (leaf.create(), other_leaf.create()) == (1, 2)
     assert f"received {leaf._log_label} ×2" in caplog.messages
     assert any(
         message.startswith(f"finished {leaf._log_label} ×2 ok ·")
@@ -1623,10 +1604,12 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
 ) -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
 
-    def execute_job(obj: Spec[object], *, job: Job) -> JobResult:
+    def run(
+        self: ChildSlot, objs: Sequence[Spec], *, job: Job, execution: Subprocess
+    ) -> JobResult:
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(worker_loop_module, "execute_job", execute_job)
+    monkeypatch.setattr(ChildSlot, "run", run)
 
     with _scripted_worker_server([_job(leaf)]) as server:
         with pytest.raises(KeyboardInterrupt):

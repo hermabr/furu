@@ -55,7 +55,7 @@ class Throttle:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Subprocess:
-    """Run create() in a child Python process owned by the worker.
+    """How the worker runs create() in the child Python process it owns.
 
     A None value in environment removes the variable from the child, as
     opposed to setting it to the empty string.
@@ -75,4 +75,4 @@ class Subprocess:
 class Metadata:
     storage: Path = field(default_factory=lambda: get_config().run_directories.objects)
     requires: Requires = Requires()
-    execution: Literal["inline"] | Subprocess = "inline"
+    execution: Subprocess = Subprocess()

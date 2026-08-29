@@ -2,7 +2,7 @@ import hashlib
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import ClassVar
+from pathlib import Path
 
 import pytest
 
@@ -295,32 +295,43 @@ def test_add_to_dag_rejects_non_furu_values():
         )
 
 
+def _record_call(calls_dir: str, cls: type, value: object) -> None:
+    # Workers run create() in a child process, so calls are recorded on disk.
+    with (Path(calls_dir) / cls.__name__).open("a", encoding="utf-8") as f:
+        f.write(f"{value}\n")
+
+
+def _calls(calls_dir: Path, cls: type) -> list[str]:
+    path = calls_dir / cls.__name__
+    return path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+
+
 class TrackingLeaf(Spec[int]):
     n: int
-    create_calls: ClassVar[list[int]] = []
+    calls_dir: str
 
     def create(self) -> int:
-        type(self).create_calls.append(self.n)
+        _record_call(self.calls_dir, type(self), self.n)
         return self.n * 2
 
 
 class TrackingMid(Spec[int]):
     label: str
     child: TrackingLeaf
-    create_calls: ClassVar[list[str]] = []
+    calls_dir: str
 
     def create(self) -> int:
-        type(self).create_calls.append(self.label)
+        _record_call(self.calls_dir, type(self), self.label)
         return self.child.create() + 1
 
 
 class LazyChildLoader(Spec[int]):
     base: int
-    create_calls: ClassVar[list[int]] = []
+    calls_dir: str
 
     def create(self) -> int:
-        type(self).create_calls.append(self.base)
-        return self.base + TrackingLeaf(n=self.base).create()
+        _record_call(self.calls_dir, type(self), self.base)
+        return self.base + TrackingLeaf(n=self.base, calls_dir=self.calls_dir).create()
 
 
 class AlwaysFails(Spec[int]):
@@ -338,68 +349,67 @@ class DependsOnFailing(Spec[int]):
         return self.child.create() + 1
 
 
-@pytest.fixture(autouse=True)
-def _reset_tracking() -> None:
-    TrackingLeaf.create_calls.clear()
-    TrackingMid.create_calls.clear()
-    LazyChildLoader.create_calls.clear()
-
-
-def test_execution_coordinator_run_runs_single_zero_dependency_node():
-    leaf = TrackingLeaf(n=3)
+def test_execution_coordinator_run_runs_single_zero_dependency_node(tmp_path: Path):
+    leaf = TrackingLeaf(n=3, calls_dir=str(tmp_path))
 
     ExecutionCoordinator.run([leaf], worker_backends=(LocalThreadWorkerBackend(),))
 
-    assert TrackingLeaf.create_calls == [3]
+    assert _calls(tmp_path, TrackingLeaf) == ["3"]
     assert leaf.status == "done"
     assert leaf.create() == 6
 
 
-def test_execution_coordinator_run_runs_static_dependencies_in_order():
-    leaf = TrackingLeaf(n=4)
-    mid = TrackingMid(label="m", child=leaf)
+def test_execution_coordinator_run_runs_static_dependencies_in_order(tmp_path: Path):
+    leaf = TrackingLeaf(n=4, calls_dir=str(tmp_path))
+    mid = TrackingMid(label="m", child=leaf, calls_dir=str(tmp_path))
 
     ExecutionCoordinator.run([mid], worker_backends=(LocalThreadWorkerBackend(),))
 
-    assert TrackingLeaf.create_calls == [4]
-    assert TrackingMid.create_calls == ["m"]
+    assert _calls(tmp_path, TrackingLeaf) == ["4"]
+    assert _calls(tmp_path, TrackingMid) == ["m"]
     assert mid.create() == 9
 
 
-def test_execution_coordinator_run_handles_shared_dependency_only_once():
-    shared = TrackingLeaf(n=5)
-    left = TrackingMid(label="L", child=shared)
-    right = TrackingMid(label="R", child=shared)
+def test_execution_coordinator_run_handles_shared_dependency_only_once(
+    tmp_path: Path,
+):
+    shared = TrackingLeaf(n=5, calls_dir=str(tmp_path))
+    left = TrackingMid(label="L", child=shared, calls_dir=str(tmp_path))
+    right = TrackingMid(label="R", child=shared, calls_dir=str(tmp_path))
 
     ExecutionCoordinator.run(
         [left, right], worker_backends=(LocalThreadWorkerBackend(),)
     )
 
-    assert TrackingLeaf.create_calls == [5]
-    assert sorted(TrackingMid.create_calls) == ["L", "R"]
+    assert _calls(tmp_path, TrackingLeaf) == ["5"]
+    assert sorted(_calls(tmp_path, TrackingMid)) == ["L", "R"]
 
 
-def test_execution_coordinator_run_with_multiple_workers_runs_independent_nodes():
-    leaves = [TrackingLeaf(n=i) for i in range(8)]
+def test_execution_coordinator_run_with_multiple_workers_runs_independent_nodes(
+    tmp_path: Path,
+):
+    leaves = [TrackingLeaf(n=i, calls_dir=str(tmp_path)) for i in range(8)]
 
     ExecutionCoordinator.run(
         leaves, worker_backends=(LocalThreadWorkerBackend(max_workers=4),)
     )
 
-    assert sorted(TrackingLeaf.create_calls) == list(range(8))
+    assert sorted(_calls(tmp_path, TrackingLeaf), key=int) == [str(i) for i in range(8)]
     for leaf in leaves:
         assert leaf.status == "done"
 
 
-def test_execution_coordinator_run_discovers_lazy_dependencies_and_reruns_parent():
-    parent = LazyChildLoader(base=7)
+def test_execution_coordinator_run_discovers_lazy_dependencies_and_reruns_parent(
+    tmp_path: Path,
+):
+    parent = LazyChildLoader(base=7, calls_dir=str(tmp_path))
 
     ExecutionCoordinator.run([parent], worker_backends=(LocalThreadWorkerBackend(),))
 
-    assert TrackingLeaf.create_calls == [7]
+    assert _calls(tmp_path, TrackingLeaf) == ["7"]
     # Parent's create() is called once to discover the lazy dep (raising
     # _DependencyNotReady), then once more after the dep completes.
-    assert LazyChildLoader.create_calls == [7, 7]
+    assert _calls(tmp_path, LazyChildLoader) == ["7", "7"]
     assert parent.create() == 21
     parent_log = run_log_path_in(parent._base_dir).read_text(encoding="utf-8")
     assert (
@@ -410,16 +420,16 @@ def test_execution_coordinator_run_discovers_lazy_dependencies_and_reruns_parent
     assert "=== Debug Traceback ===" not in parent_log
 
 
-def test_execution_coordinator_run_skips_already_completed_objects():
-    leaf = TrackingLeaf(n=8)
+def test_execution_coordinator_run_skips_already_completed_objects(tmp_path: Path):
+    leaf = TrackingLeaf(n=8, calls_dir=str(tmp_path))
     leaf.create()
-    TrackingLeaf.create_calls.clear()
-    mid = TrackingMid(label="cached-child", child=leaf)
+    mid = TrackingMid(label="cached-child", child=leaf, calls_dir=str(tmp_path))
 
     ExecutionCoordinator.run([mid], worker_backends=(LocalThreadWorkerBackend(),))
 
-    assert TrackingLeaf.create_calls == []
-    assert TrackingMid.create_calls == ["cached-child"]
+    # Only the in-process create above; the worker never recomputed the leaf.
+    assert _calls(tmp_path, TrackingLeaf) == ["8"]
+    assert _calls(tmp_path, TrackingMid) == ["cached-child"]
 
 
 def test_execution_coordinator_run_reports_worker_failures():

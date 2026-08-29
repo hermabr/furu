@@ -2,8 +2,7 @@
 
 These live in their own module (instead of the test file) so the worker's
 child process can import them by fully qualified name; the tests put this
-directory on the child's PYTHONPATH. Storage is a spec field so parent and
-child agree on directories without config plumbing.
+directory on the child's PYTHONPATH.
 """
 
 from __future__ import annotations
@@ -11,7 +10,6 @@ from __future__ import annotations
 import os
 import signal
 import sys
-from pathlib import Path
 from typing import Literal
 
 from furu import Metadata, Spec, Subprocess, batched
@@ -24,7 +22,6 @@ def _pid_and_variable(name: str) -> str:
 
 
 class SubprocessEnvLeaf(Spec[str]):
-    storage_root: str
     variable_name: str
     variable_value: str | None
     reuse: Reuse = "same_environment"
@@ -33,7 +30,6 @@ class SubprocessEnvLeaf(Spec[str]):
 
     def metadata(self) -> Metadata:
         return Metadata(
-            storage=Path(self.storage_root),
             execution=Subprocess(
                 environment={self.variable_name: self.variable_value},
                 reuse=self.reuse,
@@ -46,7 +42,6 @@ class SubprocessEnvLeaf(Spec[str]):
 
 
 class OtherSubprocessEnvLeaf(Spec[str]):
-    storage_root: str
     variable_name: str
     variable_value: str | None
     reuse: Reuse = "same_environment"
@@ -54,7 +49,6 @@ class OtherSubprocessEnvLeaf(Spec[str]):
 
     def metadata(self) -> Metadata:
         return Metadata(
-            storage=Path(self.storage_root),
             execution=Subprocess(
                 environment={self.variable_name: self.variable_value},
                 reuse=self.reuse,
@@ -66,11 +60,7 @@ class OtherSubprocessEnvLeaf(Spec[str]):
 
 
 class SubprocessBatchLeaf(Spec[str]):
-    storage_root: str
     value: int
-
-    def metadata(self) -> Metadata:
-        return Metadata(storage=Path(self.storage_root), execution=Subprocess())
 
     @batched(lambda _: (None, 8))
     def create(objs: list[SubprocessBatchLeaf]) -> list[str]:
@@ -78,14 +68,7 @@ class SubprocessBatchLeaf(Spec[str]):
 
 
 class SubprocessCrashLeaf(Spec[str]):
-    storage_root: str
     marker: int = 0
-
-    def metadata(self) -> Metadata:
-        return Metadata(
-            storage=Path(self.storage_root),
-            execution=Subprocess(),
-        )
 
     def create(self) -> str:
         print("crash-leaf about to die", file=sys.stderr, flush=True)
@@ -94,7 +77,6 @@ class SubprocessCrashLeaf(Spec[str]):
 
 
 class SubprocessDependencyLeaf(Spec[str]):
-    storage_root: str
     marker: int = 0
 
     def create(self) -> str:
@@ -102,16 +84,7 @@ class SubprocessDependencyLeaf(Spec[str]):
 
 
 class SubprocessBlockedParent(Spec[str]):
-    storage_root: str
     marker: int = 0
 
-    def metadata(self) -> Metadata:
-        return Metadata(
-            storage=Path(self.storage_root),
-            execution=Subprocess(),
-        )
-
     def create(self) -> str:
-        return SubprocessDependencyLeaf(
-            storage_root=self.storage_root, marker=self.marker
-        ).create()
+        return SubprocessDependencyLeaf(marker=self.marker).create()
