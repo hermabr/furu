@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import textwrap
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -96,19 +97,50 @@ def create_snapshot(worktree: Path) -> str:
             },
         )
 
+    # The local ref keeps the commit out of gc and memoizes "already pushed".
     ref = snapshot_ref(sha)
     if not _run_git(["for-each-ref", ref], cwd=repo_root):
+        push = get_config().provenance.push
+        if push:
+            _push(repo_root, sha)
         _run_git(["update-ref", ref, sha], cwd=repo_root)
         untracked = _split_z(
             _run_git(["ls-files", "-o", "--exclude-standard", "-z"], cwd=repo_root)
         )
         logger.info(
-            "snapshot %s pinned at %s%s",
+            "snapshot %s %s %s%s",
             sha[:12],
+            "pushed to origin as" if push else "pinned locally at",
             ref,
             f"; untracked files included: {' '.join(untracked)}" if untracked else "",
         )
     return sha
+
+
+def _push(repo_root: Path, sha: str) -> None:
+    result = subprocess.run(
+        [
+            "git",
+            "push",
+            "--quiet",
+            "--no-verify",
+            "origin",
+            f"{sha}:{snapshot_ref(sha)}",
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"could not push snapshot {sha} to origin:\n"
+            f"{textwrap.indent(result.stderr.strip(), '  ')}\n"
+            "furu pushes every snapshot so results point at commits anyone with repo "
+            "access can fetch.\n"
+            "Fix the `origin` remote (or the connection), or keep snapshots local with\n"
+            "  FURU_PROVENANCE__PUSH=false   # or push = false under [tool.furu.provenance]"
+        )
 
 
 def extract_snapshot(snapshot_id: str, *, repo: Path) -> Path:

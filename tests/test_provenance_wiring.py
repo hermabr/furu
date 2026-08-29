@@ -73,6 +73,7 @@ def test_pytest_harness_disables_snapshot_by_default() -> None:
     # The furu pytest plugin opts out of the snapshot-on-by-default policy;
     # snapshot tests opt back in with override_config.
     assert get_config().provenance.snapshot is False
+    assert get_config().provenance.push is False
 
 
 def test_create_writes_provenance_next_to_metadata(
