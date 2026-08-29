@@ -15,7 +15,6 @@ from typing import (
 from furu._batched import _BatchedHook
 from furu._declared_types import declared_result_type
 from furu._tree import map_specs, specs_in
-from furu.config import get_config
 from furu.core import Missing, Spec
 from furu.dag import Dag
 from furu.dependencies import (
@@ -358,9 +357,7 @@ def _load_or_create_local[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
 
 def _run_in_process(dag: Dag, *, keep: set[str]) -> dict[str, Any]:
     """Create every ready spec in ``dag`` and return the results in ``keep``."""
-    submit_provenance = capture_submit_provenance(
-        snapshot=get_config().provenance.snapshot
-    )
+    submit_provenance = capture_submit_provenance()
     here = Worker.here()
     results: dict[str, Any] = {}
     while dag.ready:

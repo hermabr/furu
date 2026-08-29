@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import gzip
-import os
+import io
 import shutil
-import stat
 import subprocess
 import sys
 import tarfile
@@ -12,27 +10,16 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from pydantic import BaseModel, ByteSize, ConfigDict
+from pydantic import ByteSize
 
 from furu.config import get_config
-from furu.provenance import EnvironmentIdentity, SubmitProvenance, _run_git
-from furu.utils import _hash_dict_deterministically, nfs_safe_unique_name
-
-
-class SnapshotEntry(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-
-    path: str
-    hash: str
-    size: int
-
-
-class SnapshotManifest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-
-    commit: str
-    entries: tuple[SnapshotEntry, ...]
-    total_bytes: int
+from furu.provenance import (
+    EnvironmentIdentity,
+    GitIdentity,
+    SubmitProvenance,
+    _run_git,
+)
+from furu.utils import nfs_safe_unique_name
 
 
 @contextmanager
@@ -57,149 +44,71 @@ def publish_dir_atomically(final_dir: Path) -> Generator[Path]:
             raise
 
 
-def create_snapshot(worktree: Path) -> str:
-    """Snapshot the git worktree containing ``worktree``; return its id."""
-    try:
-        repo_root = Path(_run_git(["rev-parse", "--show-toplevel"], cwd=worktree))
-        commit = _run_git(["rev-parse", "HEAD"], cwd=worktree)
-    except (OSError, subprocess.CalledProcessError) as exc:
-        raise RuntimeError(
-            f"cannot snapshot {worktree}: not inside a git worktree with a commit.\n"
-            "Snapshots use git's index as the manifest, so snapshotting requires "
-            "a git repository."
-        ) from exc
+def require_pushed(git: GitIdentity) -> None:
+    """Refuse unless the checkout is exactly ``git.commit`` and origin has it.
 
-    # Split the manifest paths into clean files (path -> index blob hash) and
-    # dirty files (paths whose worktree bytes must be hashed). The two are disjoint.
-    clean_blobs: dict[str, str] = {}
-    dirty_paths: set[str] = set()
-    for line in _split_z(_run_git(["ls-files", "-s", "-z"], cwd=repo_root)):
-        meta, _, path = line.partition("\t")
-        mode, blob, stage = meta.split()
-        if mode == "160000":  # gitlink: its files live in another repository
-            raise RuntimeError(
-                f"{path} is a git submodule, which furu does not support.\n"
-                "Are you sure you put it in the correct place?"
-            )
-        if stage == "0":
-            clean_blobs[path] = blob
-        else:  # unmerged (conflict): the index blob is ambiguous, hash the worktree
-            dirty_paths.add(path)
-    tokens = _split_z(_run_git(["diff-files", "--name-status", "-z"], cwd=repo_root))
-    for status, path in zip(tokens[::2], tokens[1::2], strict=True):
-        clean_blobs.pop(path, None)  # differs from the index, so no longer clean
-        if status == "D":
-            dirty_paths.discard(path)  # deleted from the worktree: nothing to archive
-        else:
-            dirty_paths.add(path)
-    for path in _split_z(
-        _run_git(["ls-files", "-o", "--exclude-standard", "-z"], cwd=repo_root)
-    ):
-        dirty_paths.add(path)
-
-    sizes = {
-        path: os.lstat(repo_root / path).st_size
-        for path in (*clean_blobs, *dirty_paths)
-    }
-    total_bytes = sum(sizes.values())
-    limit = get_config().provenance.max_snapshot_bytes
-    if total_bytes > limit:
-        largest = sorted(sizes.items(), key=lambda item: item[1], reverse=True)
-        offenders = "\n".join(
-            f"  {ByteSize(size).human_readable(separator=' '):>10}  {path}"
-            for path, size in largest[:10]
-        )
-        total = ByteSize(total_bytes).human_readable(separator=" ")
-        limit_text = ByteSize(limit).human_readable(separator=" ")
-        raise RuntimeError(
-            f"worktree snapshot would be {total} "
-            f"(limit: {limit_text}). Largest files in the manifest:\n"
-            f"{offenders}\n"
-            "These files are tracked or not ignored. Either add them to .gitignore,\n"
-            "or raise [tool.furu.provenance] max_snapshot_bytes if this is intentional."
-        )
-
-    # Hash dirty files with ``git hash-object`` semantics, so they hash identically
-    # once committed later. Symlinks hash their target; regular files their bytes.
-    blobs = dict(clean_blobs)
-    regular_paths: list[str] = []
-    for path in sorted(dirty_paths):
-        if (repo_root / path).is_symlink():
-            blobs[path] = _run_git(
-                ["hash-object", "--stdin"],
-                cwd=repo_root,
-                input=os.readlink(repo_root / path),
-            )
-        else:
-            regular_paths.append(path)
-    if regular_paths:
-        output = _run_git(
-            ["hash-object", "--stdin-paths"],
-            cwd=repo_root,
-            input="".join(f"{path}\n" for path in regular_paths),
-        )
-        blobs.update(zip(regular_paths, output.splitlines(), strict=True))
-    snapshot_id = _hash_dict_deterministically(blobs)
-
-    final_dir = get_config().run_directories.snapshots / snapshot_id
-    if final_dir.is_dir():
-        return snapshot_id
-
-    manifest = SnapshotManifest(
-        commit=commit,
-        entries=tuple(
-            SnapshotEntry(path=path, hash=blob, size=sizes[path])
-            for path, blob in sorted(blobs.items())
-        ),
-        total_bytes=total_bytes,
-    )
-
-    with publish_dir_atomically(final_dir) as tmp_dir:
-        tarball_path = tmp_dir / "snapshot.tar.gz"
-        with open(tarball_path, "wb") as raw:
-            with (
-                gzip.GzipFile(
-                    filename="", fileobj=raw, mode="wb", mtime=0
-                ) as compressed,
-                tarfile.open(fileobj=compressed, mode="w") as tar,
-            ):
-                for rel_path in sorted(blobs):
-                    full_path = repo_root / rel_path
-                    file_stat = os.lstat(full_path)
-                    info = tarfile.TarInfo(rel_path)
-                    info.mtime = 0
-                    info.uid = info.gid = 0
-                    info.uname = info.gname = ""
-                    if stat.S_ISLNK(file_stat.st_mode):
-                        info.type = tarfile.SYMTYPE
-                        info.linkname = os.readlink(full_path)
-                        info.mode = 0o777
-                        tar.addfile(info)
-                    else:
-                        info.size = file_stat.st_size
-                        info.mode = 0o755 if file_stat.st_mode & stat.S_IXUSR else 0o644
-                        with open(full_path, "rb") as file:
-                            tar.addfile(info, file)
-            raw.flush()
-            os.fsync(raw.fileno())
-        _write_file(
-            tmp_dir / "manifest.json", manifest.model_dump_json(indent=2).encode()
-        )
-    return snapshot_id
-
-
-def extract_snapshot(snapshot_id: str) -> Path:
-    """Materialize snapshot ``snapshot_id`` beside its tarball; return the tree.
-
-    Extraction is content-addressed like the snapshot itself: the tree lands in
-    ``<snapshots>/<snapshot_id>/code`` once and is reused by every later caller.
+    Every result then points at a commit that anyone with access to origin can
+    fetch, and Slurm workers can run that commit as the code snapshot.
     """
-    code_dir = get_config().run_directories.snapshots / snapshot_id / "code"
+    repo_root = Path(git.repo_root)
+    # Keep furu's own directories out of `git status`, as uv does for .venv.
+    for _, directory in get_config().run_directories:
+        if not (ignore := directory / ".gitignore").exists():
+            directory.mkdir(parents=True, exist_ok=True)
+            ignore.write_text("*\n")
+    status = _run_git(["status", "--porcelain"], cwd=repo_root)
+    if status:
+        changes = status.splitlines()
+        shown = "\n".join(f"  {line}" for line in changes[:10])
+        more = f"\n  ... and {len(changes) - 10} more" if len(changes) > 10 else ""
+        raise RuntimeError(
+            f"uncommitted changes in {repo_root}:\n{shown}{more}\n"
+            "furu only runs committed, pushed code, so every result points at a "
+            "commit others can fetch.\n"
+            "Commit and push them (or add them to .gitignore):\n"
+            f"  git add -A && git commit -m '...' && {_push_command(git)}"
+        )
+    _check_size(repo_root, git.commit)
+    if git.remote is None:
+        raise RuntimeError(
+            f"{repo_root} has no remote named origin.\n"
+            "furu only runs pushed code, so every result points at a commit "
+            "others can fetch. Add a remote and push:\n"
+            "  git remote add origin <url>\n"
+            f"  {_push_command(git)}"
+        )
+    pushed_to = _run_git(
+        ["for-each-ref", "--contains", git.commit, "refs/remotes/origin"],
+        cwd=repo_root,
+    )
+    if not pushed_to:
+        raise RuntimeError(
+            f"HEAD ({git.commit[:12]}) is not on any branch of origin "
+            f"({git.remote}).\n"
+            "furu only runs pushed code, so every result points at a commit "
+            "others can fetch. Push it:\n"
+            f"  {_push_command(git)}"
+        )
+
+
+def extract_snapshot(commit: str, *, repo: Path) -> Path:
+    """Materialize ``commit`` from ``repo``'s objects; return the tree.
+
+    The tree lands in ``<snapshots>/<commit>/code`` once and is reused by every
+    later caller.
+    """
+    code_dir = get_config().run_directories.snapshots / commit / "code"
     if code_dir.is_dir():
         return code_dir
+    archive = subprocess.run(
+        ["git", "archive", "--format=tar", commit],
+        cwd=repo,
+        capture_output=True,
+        check=True,
+    ).stdout
     with (
         publish_dir_atomically(code_dir) as tmp_dir,
-        tarfile.open(code_dir.parent / "snapshot.tar.gz") as tar,
+        tarfile.open(fileobj=io.BytesIO(archive)) as tar,
     ):
         tar.extractall(tmp_dir, filter="tar")
     return code_dir
@@ -221,13 +130,8 @@ class CodeLocation:
 
     @classmethod
     def from_snapshot(cls, provenance: SubmitProvenance) -> CodeLocation:
-        if provenance.snapshot_id is None:
-            raise RuntimeError(
-                "job has no code snapshot; Slurm workers require one "
-                "(set [tool.furu.provenance] snapshot = true)"
-            )
-        code_dir = extract_snapshot(provenance.snapshot_id).resolve()
         repo_root = Path(provenance.git.repo_root)
+        code_dir = extract_snapshot(provenance.git.commit, repo=repo_root).resolve()
         project_root = code_dir / Path(provenance.environment.project_root).relative_to(
             repo_root
         )
@@ -238,11 +142,43 @@ class CodeLocation:
         )
 
 
-def _write_file(path: Path, data: bytes) -> None:
-    with open(path, "wb") as file:
-        file.write(data)
-        file.flush()
-        os.fsync(file.fileno())
+def _push_command(git: GitIdentity) -> str:
+    if git.branch is None:  # detached HEAD
+        return "git push origin HEAD:refs/heads/<branch>"
+    return f"git push -u origin {git.branch}"
+
+
+def _check_size(repo_root: Path, commit: str) -> None:
+    sizes: dict[str, int] = {}
+    for line in _split_z(
+        _run_git(["ls-tree", "-r", "-l", "-z", commit], cwd=repo_root)
+    ):
+        meta, _, path = line.partition("\t")
+        mode, _, _, size = meta.split()
+        if mode == "160000":  # gitlink: its files live in another repository
+            raise RuntimeError(
+                f"{path} is a git submodule, which furu does not support.\n"
+                "Are you sure you put it in the correct place?"
+            )
+        sizes[path] = int(size)
+    total_bytes = sum(sizes.values())
+    limit = get_config().provenance.max_snapshot_bytes
+    if total_bytes <= limit:
+        return
+    largest = sorted(sizes.items(), key=lambda item: item[1], reverse=True)
+    offenders = "\n".join(
+        f"  {ByteSize(size).human_readable(separator=' '):>10}  {path}"
+        for path, size in largest[:10]
+    )
+    total = ByteSize(total_bytes).human_readable(separator=" ")
+    limit_text = ByteSize(limit).human_readable(separator=" ")
+    raise RuntimeError(
+        f"code snapshot of {commit[:12]} would be {total} "
+        f"(limit: {limit_text}). Largest committed files:\n"
+        f"{offenders}\n"
+        "Remove them from git (git rm --cached <path>, then add them to .gitignore),\n"
+        "or raise [tool.furu.provenance] max_snapshot_bytes if this is intentional."
+    )
 
 
 def _split_z(output: str) -> list[str]:

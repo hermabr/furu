@@ -26,9 +26,7 @@ EXAMPLE_PROVENANCE_JSON = """
     "commit": "1fd0701e9c41d0a7b31f58c2aa04d6ce8b7712f3",
     "branch": "sweep/lr-ablation",
     "remote": "git@github.com:herman/atlas-train.git",
-    "repo_root": "/home/herman/dev/atlas-train",
-    "dirty": true,
-    "diff_stats": "2 files changed, 31 insertions(+), 4 deletions(-)"
+    "repo_root": "/home/herman/dev/atlas-train"
   },
   "environment": {
     "python": "3.12.8",
@@ -38,7 +36,6 @@ EXAMPLE_PROVENANCE_JSON = """
     "pyproject_hash": "blake2s:77b2c91e04d5a3f6e812",
     "furu": "0.0.62"
   },
-  "snapshot_id": "9c41e2d0a7b31f58c2aa",
   "submitted": {
     "hostname": "login-01",
     "user": "herman",
@@ -85,7 +82,7 @@ def _example_provenance() -> Provenance:
 
 def test_example_provenance_json_parses() -> None:
     prov = _example_provenance()
-    assert prov.git.dirty is True
+    assert prov.git.branch == "sweep/lr-ablation"
     assert prov.submitted.launch_command == (
         "uv",
         "run",
@@ -108,7 +105,6 @@ def test_submit_provenance_round_trips_through_json() -> None:
     submit = SubmitProvenance(
         git=prov.git,
         environment=prov.environment,
-        snapshot_id=prov.snapshot_id,
         submitted=prov.submitted,
     )
     assert SubmitProvenance.model_validate_json(submit.model_dump_json()) == submit
@@ -121,25 +117,6 @@ def test_git_identity_clean_repo(git_repo: Path) -> None:
     assert identity.branch == "main"
     assert identity.remote is None
     assert Path(identity.repo_root) == git_repo.resolve()
-    assert identity.dirty is False
-    assert identity.diff_stats is None
-
-
-def test_git_identity_dirty_repo(git_repo: Path) -> None:
-    (git_repo / "tracked.txt").write_text("changed\n")
-    identity = GitIdentity.capture(git_repo)
-    assert identity.dirty is True
-    assert identity.diff_stats is not None
-    assert "1 file changed" in identity.diff_stats
-
-
-def test_git_identity_untracked_only_is_dirty_without_diff_stats(
-    git_repo: Path,
-) -> None:
-    (git_repo / "new.txt").write_text("new\n")
-    identity = GitIdentity.capture(git_repo)
-    assert identity.dirty is True
-    assert identity.diff_stats is None
 
 
 def test_git_identity_detached_head(git_repo: Path) -> None:
@@ -405,18 +382,15 @@ def test_accelerator_probe_degrades_to_empty(monkeypatch: pytest.MonkeyPatch) ->
 
 def test_provenance_config_defaults() -> None:
     config = _FuruProvenanceConfig()
-    assert config.snapshot is True
     assert config.max_snapshot_bytes == 256 * 1024 * 1024
 
 
 def test_provenance_config_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("FURU_PROVENANCE__SNAPSHOT", "false")
     monkeypatch.setenv("FURU_PROVENANCE__MAX_SNAPSHOT_BYTES", "1GiB")
 
     config = _Config()
 
     assert config.provenance == _FuruProvenanceConfig(
-        snapshot=False,
         max_snapshot_bytes=ByteSize(1024**3),
     )
 
@@ -427,7 +401,6 @@ def test_provenance_config_from_pyproject(
     (tmp_path / "pyproject.toml").write_text(
         """
 [tool.furu.provenance]
-snapshot = false
 max_snapshot_bytes = "512MiB"
 """,
         encoding="utf-8",
@@ -436,7 +409,6 @@ max_snapshot_bytes = "512MiB"
 
     config = _Config()
 
-    assert config.provenance.snapshot is False
     assert config.provenance.max_snapshot_bytes == 512 * 1024 * 1024
 
 
