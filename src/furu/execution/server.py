@@ -1,17 +1,31 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from secrets import token_urlsafe
 
 from websockets.exceptions import ConnectionClosed
+from websockets.sync.client import connect
 from websockets.sync.server import ServerConnection, basic_auth, serve
 
 from furu.execution.execution_coordinator import ExecutionCoordinator
 from furu.logging import get_logger, log_detail
-from furu.worker.protocol import CancelMessage, HelloMessage, job_result_adapter
+from furu.worker.protocol import (
+    CancelMessage,
+    HelloMessage,
+    PoolHandoff,
+    TakeoverCommit,
+    TakeoverRefused,
+    TakeoverRequest,
+    TakeoverResponse,
+    first_message_adapter,
+    job_result_adapter,
+    takeover_reply_adapter,
+)
+
+_TAKEOVER_REPLY_TIMEOUT_S = 120.0
 
 logger = get_logger()
 
@@ -27,12 +41,81 @@ class ExecutionCoordinatorServer:
         return f"ws://{self.bound_host}:{self.bound_port}"
 
 
+def _serve(coordinator: ExecutionCoordinator, connection: ServerConnection) -> None:
+    with coordinator.log_context():
+        match first_message_adapter.validate_json(connection.recv(timeout=10.0)):
+            case HelloMessage() as hello:
+                _serve_worker(coordinator, connection, hello)
+            case TakeoverRequest() as request:
+                _serve_takeover(coordinator, connection, request)
+
+
+def _serve_takeover(
+    coordinator: ExecutionCoordinator,
+    connection: ServerConnection,
+    request: TakeoverRequest,
+) -> None:
+    reply = coordinator.handoff(request)
+    connection.send(reply.model_dump_json())
+    if isinstance(reply, TakeoverRefused):
+        return
+    try:
+        TakeoverCommit.model_validate_json(connection.recv())
+    except ConnectionClosed:
+        logger.error(
+            "exec=%s vanished after our pools were handed off; "
+            "they will no longer scale, and their workers stay with this run",
+            request.executor_id[:5],
+        )
+        return
+    coordinator.fail(f"execution taken over by exec={request.executor_id[:5]}")
+
+
+@contextmanager
+def request_takeover(
+    coordinator: ExecutionCoordinator,
+    *,
+    source_id: str,
+    url: str,
+    pool_keys: Sequence[str],
+) -> Iterator[dict[str, PoolHandoff]]:
+    request = TakeoverRequest(
+        executor_id=coordinator.executor_id,
+        pool_keys=list(pool_keys),
+        claiming=sorted(coordinator.awaiting_adoption),
+    )
+    try:
+        connection = connect(url, max_size=None)
+    except OSError as exc:
+        raise RuntimeError(
+            f"cannot reach exec={source_id[:5]}; is that coordinator still running?"
+        ) from exc
+    with connection:
+        connection.send(request.model_dump_json())
+        match takeover_reply_adapter.validate_json(
+            connection.recv(timeout=_TAKEOVER_REPLY_TIMEOUT_S)
+        ):
+            case TakeoverRefused(foreign=foreign):
+                labels = ", ".join(
+                    coordinator.nodes_by_id[object_id].obj._log_label
+                    for object_id in foreign
+                )
+                raise RuntimeError(
+                    f"cannot take over exec={source_id[:5]}: {len(foreign)} specs "
+                    "are being computed by something other than that coordinator: "
+                    + labels
+                )
+            case TakeoverResponse(handoffs=handoffs):
+                yield handoffs
+                connection.send(TakeoverCommit().model_dump_json())
+
+
 def _serve_worker(
     coordinator: ExecutionCoordinator,
     connection: ServerConnection,
+    hello: HelloMessage,
 ) -> None:
     with coordinator.log_context():
-        hello = HelloMessage.model_validate_json(connection.recv(timeout=10.0))
         worker = hello.worker
         logger.info(
             "worker connected · %s%s",
@@ -77,7 +160,7 @@ def execution_coordinator_server(
         with connections_changed:
             connections.add(connection)
         try:
-            _serve_worker(coordinator, connection)
+            _serve(coordinator, connection)
         finally:
             with connections_changed:
                 connections.discard(connection)

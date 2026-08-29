@@ -9,6 +9,7 @@ import stat
 import subprocess
 import sys
 import textwrap
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,7 @@ from furu.provenance import (
 from furu.resources import ResourceFloor, ResourceRequest, resource_request_adapter
 from furu.snapshot import create_snapshot
 from furu.testing import override_config
+from furu.utils import write_private_file
 from furu.worker import _cli
 from furu.worker.backends.slurm.backend import SlurmWorkerBackend
 from furu.worker.backends.slurm.pool import _UNFINISHED_STATES
@@ -42,6 +44,7 @@ from furu.worker.backends.slurm.resources import (
     MemoryPerNode,
     SlurmResources,
 )
+from furu.worker.protocol import PoolHandoff
 
 
 class _StubCoordinator(ExecutionCoordinator):
@@ -487,6 +490,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
         auth_token="secret-token",
         executor_dir=executor_dir,
         provenance=_submit_provenance(),
+        handoff=None,
     )
     pool._scale_once()
 
@@ -594,6 +598,7 @@ def test_slurm_backend_isolates_worker_files_between_pools(
             auth_token="secret-token",
             executor_dir=executor_dir,
             provenance=provenance,
+            handoff=None,
         )
         for pool_number in (1, 2)
     ]
@@ -647,6 +652,7 @@ def test_slurm_worker_component_label_derivation_under_bash(
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
         provenance=_submit_provenance(),
+        handoff=None,
     )
     script_text = pool._script_path.read_text()
     component_line = next(
@@ -689,6 +695,7 @@ def test_slurm_array_worker_component_label_derivation_under_bash(
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
         provenance=_submit_provenance(),
+        handoff=None,
     )
     script_text = pool._script_path.read_text()
     component_line = next(
@@ -748,6 +755,7 @@ def test_slurm_backend_export_option_controls_sbatch_args(
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
         provenance=_submit_provenance(),
+        handoff=None,
     )
 
     assert (
@@ -776,6 +784,7 @@ def test_slurm_backend_includes_selected_export_names_in_sbatch_args(
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
         provenance=_submit_provenance(),
+        handoff=None,
     )
     pool._scale_once()
 
@@ -806,6 +815,7 @@ def test_slurm_backend_can_submit_workers_as_job_array(
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
         provenance=_submit_provenance(),
+        handoff=None,
     )
     pool._scale_once()
 
@@ -856,6 +866,7 @@ def test_slurm_worker_pool_ignores_untracked_array_siblings_from_sacct(
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
         provenance=_submit_provenance(),
+        handoff=None,
     )
     pool._scale_once()
     pool._job_ids[:] = ["100_1"]
@@ -901,6 +912,7 @@ def test_slurm_pool_submits_replacement_workers_as_job_array(
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
         provenance=_submit_provenance(),
+        handoff=None,
     )
 
     pool._scale_once()
@@ -943,6 +955,7 @@ def test_slurm_pool_replaces_nonfailed_array_workers_missing_from_squeue(
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
         provenance=_submit_provenance(),
+        handoff=None,
     )
 
     pool._scale_once()
@@ -992,6 +1005,7 @@ def test_slurm_worker_pool_stop_cancels_array_tasks(
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
         provenance=_submit_provenance(),
+        handoff=None,
     )
     pool._scale_once()
     assert pool._job_ids == ["100_0", "100_1"]
@@ -1079,6 +1093,7 @@ def test_slurm_backend_builds_coordinator_url_from_worker_connect_host(
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
         provenance=_submit_provenance(),
+        handoff=None,
     )
     pool._scale_once()
 
@@ -1116,6 +1131,7 @@ def test_slurm_backend_worker_connect_port_overrides_bound_port(
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
         provenance=_submit_provenance(),
+        handoff=None,
     )
     pool._scale_once()
 
@@ -1177,6 +1193,7 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
         provenance=_submit_provenance(),
+        handoff=None,
     )
     pool._scale_once()
 
@@ -1229,6 +1246,7 @@ def test_slurm_worker_pool_unhealthy_report_includes_failed_state(
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
         provenance=_submit_provenance(),
+        handoff=None,
     )
     pool._job_ids[:] = ["100"]
     active_file.write_text("100 FAILED\n")
@@ -1260,6 +1278,7 @@ def test_slurm_pool_scale_submits_additional_workers_as_satisfiable_count_grows(
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
         provenance=_submit_provenance(),
+        handoff=None,
     )
 
     assert pool._job_ids == []
@@ -1308,6 +1327,7 @@ def test_slurm_pool_scale_does_not_resubmit_for_already_tracked_viable_job(
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
         provenance=_submit_provenance(),
+        handoff=None,
     )
 
     pool._scale_once()
@@ -1344,6 +1364,7 @@ def test_slurm_pool_scale_submits_replacement_workers_after_existing_workers_exi
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
         provenance=_submit_provenance(),
+        handoff=None,
     )
 
     pool._scale_once()
@@ -1383,6 +1404,7 @@ def test_slurm_pool_scale_cancels_newest_queued_workers_when_demand_drops(
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
         provenance=_submit_provenance(),
+        handoff=None,
     )
 
     pool._scale_once()
@@ -1419,6 +1441,7 @@ def test_slurm_pool_scale_cancels_newest_queued_array_tasks_when_demand_drops(
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
         provenance=_submit_provenance(),
+        handoff=None,
     )
 
     pool._scale_once()
@@ -1461,6 +1484,7 @@ def test_slurm_pool_scale_never_cancels_running_workers(
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
         provenance=_submit_provenance(),
+        handoff=None,
     )
 
     pool._scale_once()
@@ -1495,6 +1519,7 @@ def test_slurm_pool_scale_does_not_count_completed_jobs_as_restarts(
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
         provenance=_submit_provenance(),
+        handoff=None,
     )
 
     pool._scale_once()
@@ -1537,6 +1562,7 @@ def test_slurm_pool_scale_reports_cancelled_jobs_as_failures(
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
         provenance=_submit_provenance(),
+        handoff=None,
     )
 
     pool._scale_once()
@@ -1572,6 +1598,7 @@ def test_slurm_backend_requires_explicit_executor_dir() -> None:
             bound_port=1234,
             auth_token="secret-token",
             provenance=_submit_provenance(),
+            handoff=None,
         )  # ty: ignore[missing-argument]
 
 
@@ -1595,6 +1622,7 @@ def test_slurm_worker_pool_join_cancels_jobs_left_after_timeout(
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
         provenance=_submit_provenance(),
+        handoff=None,
     )
     pool._scale_once()
     pool._stop_event.set()
@@ -1870,6 +1898,7 @@ def test_slurm_backend_runs_workers_from_the_extracted_snapshot(
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
         provenance=provenance,
+        handoff=None,
     )
 
     assert provenance.snapshot_id is not None
@@ -1909,6 +1938,7 @@ def test_slurm_backend_pins_relative_data_directories_for_workers(
             auth_token="secret-token",
             executor_dir=tmp_path / "executor",
             provenance=_submit_provenance(),
+            handoff=None,
         )
 
     (config_file,) = (tmp_path / "executor" / "workers").glob("*/worker.config.json")
@@ -1970,3 +2000,85 @@ def test_slurm_pool_key_distinguishes_memory_kinds() -> None:
     )
 
     assert per_node.pool_key != per_cpu.pool_key
+
+
+def _wait_until(condition: Callable[[], bool], *, timeout: float = 10.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not condition():
+        if time.monotonic() > deadline:
+            raise TimeoutError("condition not met in time")
+        time.sleep(0.01)
+
+
+def test_slurm_backend_start_pool_with_handoff_inherits_workers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    inherited_dir = tmp_path / "old-executor" / "workers" / "abc"
+    inherited_dir.mkdir(parents=True)
+    inherited_file = inherited_dir / "coordinator.url"
+    write_private_file(inherited_file, "ws://furu:old-token@login01:1\n", mode=0o600)
+    backend = SlurmWorkerBackend(
+        max_workers=3,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="login02.cluster",
+    )
+
+    pool = backend.start_pool(
+        coordinator=_StubCoordinator(),
+        bound_port=4321,
+        auth_token="new-token",
+        executor_dir=tmp_path / "executor",
+        provenance=_submit_provenance(),
+        handoff=PoolHandoff(
+            job_ids=["100_0", "100_1"], coordinator_files=[inherited_file]
+        ),
+    )
+
+    assert pool._job_ids == ["100_0", "100_1"]
+    assert inherited_file.read_text() == "ws://furu:new-token@login02.cluster:4321\n"
+    assert _mode(inherited_file) == 0o600
+    own_file = pool._script_path.parent / "coordinator.url"
+    assert own_file.read_text() == inherited_file.read_text()
+    assert pool._coordinator_files == [own_file, inherited_file]
+
+    assert pool.handoff() == PoolHandoff(
+        job_ids=["100_0", "100_1"], coordinator_files=[own_file, inherited_file]
+    )
+    assert pool._job_ids == []
+
+
+def test_slurm_worker_pool_handoff_stops_scaling_and_stop_cancels_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    backend = SlurmWorkerBackend(
+        max_workers=2,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="execution-coordinator.cluster",
+        poll_interval=0.05,
+    )
+    pool = backend.start_pool(
+        coordinator=_StubCoordinator(2),
+        bound_port=1234,
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+        provenance=_submit_provenance(),
+        handoff=None,
+    )
+    _wait_until(lambda: len(pool._job_ids) == 2)
+
+    handoff = pool.handoff()
+
+    assert handoff.job_ids == ["100_0", "100_1"]
+    assert not pool._scale_thread.is_alive()
+    assert pool._job_ids == []
+
+    pool.stop(timeout=0)
+
+    assert not any(
+        record["executable"] == "scancel" for record in _read_records(record_file)
+    )
+    assert "100_0" in active_file.read_text()

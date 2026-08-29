@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
@@ -77,10 +78,61 @@ job_result_adapter: TypeAdapter[JobResult] = TypeAdapter(JobResult)
 class HelloMessage(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
+    kind: Literal["hello"] = "hello"
     worker: str
     backend: str
     resources: ResourceRequest
     running: list[ArtifactSpec] = Field(default_factory=list)
+
+
+class TakeoverRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    kind: Literal["takeover"] = "takeover"
+    executor_id: str
+    pool_keys: list[str]
+    claiming: list[str]
+
+
+type FirstMessage = Annotated[
+    HelloMessage | TakeoverRequest, Field(discriminator="kind")
+]
+
+first_message_adapter: TypeAdapter[FirstMessage] = TypeAdapter(FirstMessage)
+
+
+class PoolHandoff(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    job_ids: list[str] = Field(default_factory=list)
+    coordinator_files: list[Path] = Field(default_factory=list)
+
+
+class TakeoverResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    kind: Literal["handoff"] = "handoff"
+    handoffs: dict[str, PoolHandoff]
+
+
+class TakeoverRefused(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    kind: Literal["refused"] = "refused"
+    foreign: list[str]
+
+
+type TakeoverReply = Annotated[
+    TakeoverResponse | TakeoverRefused, Field(discriminator="kind")
+]
+
+takeover_reply_adapter: TypeAdapter[TakeoverReply] = TypeAdapter(TakeoverReply)
+
+
+class TakeoverCommit(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    kind: Literal["commit"] = "commit"
 
 
 def coordinator_url(*, host: str, port: int, auth_token: str) -> str:

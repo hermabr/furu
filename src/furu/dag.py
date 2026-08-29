@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from typing import TYPE_CHECKING, assert_never
 
+from furu.config import get_config
 from furu.core import Spec
 from furu.dependencies import collect_declared_refs
 from furu.metadata import ArtifactSpec
@@ -49,8 +50,12 @@ def _add_to_dag(coordinator: ExecutionCoordinator, objs: Sequence[Spec]) -> None
             case "done":
                 continue
             case "running":
-                # TODO: handle already-running objects as external dependencies.
-                raise RuntimeError(f"cannot add running object to DAG: {obj.object_id}")
+                if get_config().takeover is None:
+                    # TODO: handle already-running objects as external dependencies.
+                    raise RuntimeError(
+                        f"cannot add running object to DAG: {obj.object_id}"
+                    )
+                coordinator.awaiting_adoption.add(obj.object_id)
             case "missing" | "failed":
                 pass
             case "stale":
