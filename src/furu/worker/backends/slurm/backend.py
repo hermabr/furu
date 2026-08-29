@@ -72,11 +72,7 @@ class SlurmWorkerBackend:
         chdir = Path.cwd().resolve()
         project_root = Path(EnvironmentIdentity.capture().project_root)
         if provenance.snapshot_id is not None:
-            # Run workers from the extracted snapshot, not the live worktree,
-            # so edits made after submit cannot leak into these jobs.
-            # The configured snapshots directory may be relative to the submit
-            # cwd.  Slurm changes into ``chdir`` before running the worker
-            # script, so keep every path passed to Slurm and uv absolute.
+            # Slurm changes cwd, so paths into the extracted snapshot must be absolute.
             code_dir = extract_snapshot(provenance.snapshot_id).resolve()
             repo_root = Path(provenance.git.repo_root)
             chdir = code_dir / chdir.relative_to(repo_root)
@@ -88,16 +84,12 @@ class SlurmWorkerBackend:
                 env={k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"},
                 check=True,
             )
-        # A coordinator may run several Slurm pools, so each pool owns one
-        # directory and can use fixed filenames without clobbering another.
         worker_dir = executor_dir.resolve() / "workers" / secrets.token_hex(8)
         worker_dir.mkdir(parents=True)
 
         token_file = worker_dir / "worker.token"
         write_private_file(token_file, auth_token, mode=0o600)
 
-        # Workers may run from a different directory (the extracted snapshot),
-        # so pin any relative data directories to the submit-side anchor.
         config = get_config()
         config = config.model_copy(
             update={"directories": config.directories.anchored()}
@@ -135,13 +127,9 @@ class SlurmWorkerBackend:
                 f"{component_line}"
                 "\n"
                 f"{pre_worker_script}"
-                # sbatch inherits the submit environment by default.  An active
-                # virtualenv belongs to the submit process, not this snapshot,
-                # and makes uv warn before it selects the snapshot's .venv.
+                # Do not leak the submit environment into snapshot workers.
                 "unset VIRTUAL_ENV\n"
                 "\n"
-                # --frozen forbids silent lock updates on the node; --project
-                # pins the environment regardless of --chdir.
                 "exec uv run --frozen "
                 f"--project {shlex.quote(str(project_root))} \\\n"
                 "    python -m furu.worker._cli \\\n"
