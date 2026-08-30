@@ -16,10 +16,12 @@ from furu.worker.protocol import (
     CancelMessage,
     HelloMessage,
     PoolHandoff,
+    TakeoverAccepted,
+    TakeoverRefused,
     TakeoverRequest,
-    TakeoverResponse,
     first_message_adapter,
     job_result_adapter,
+    takeover_response_adapter,
 )
 
 _TAKEOVER_REPLY_TIMEOUT_S = 120.0
@@ -52,18 +54,28 @@ def _serve_takeover(
     connection: ServerConnection,
     request: TakeoverRequest,
 ) -> None:
-    handoffs = {
-        key: coordinator.pools[key].handoff()
-        for key in request.pool_keys
-        if key in coordinator.pools
-    }
+    keys = [key for key in request.pool_keys if key in coordinator.pools]
+    if not keys:
+        refused = "no worker pool with a matching configuration"
+    elif coordinator.taken_over_by is not None:
+        refused = f"already being taken over by exec={coordinator.taken_over_by[:5]}"
+    else:
+        refused = None
+    if refused is not None:
+        logger.warning(
+            "refused takeover by exec=%s: %s", request.executor_id[:5], refused
+        )
+        connection.send(TakeoverRefused(reason=refused).model_dump_json())
+        return
+    coordinator.taken_over_by = request.executor_id
+    handoffs = {key: coordinator.pools[key].handoff() for key in keys}
     logger.info(
         "handed off %d of %d pools to exec=%s",
         len(handoffs),
         len(coordinator.pools),
         request.executor_id[:5],
     )
-    connection.send(TakeoverResponse(handoffs=handoffs).model_dump_json())
+    connection.send(TakeoverAccepted(handoffs=handoffs).model_dump_json())
     # The new coordinator closes the connection once the inherited workers are
     # pointed at it. Whether it got that far or died trying, our part is over:
     # handed-off pools have nothing left to cancel and the rest stop as usual.
@@ -93,10 +105,15 @@ def request_takeover(
                 executor_id=executor_id, pool_keys=list(pool_keys)
             ).model_dump_json()
         )
-        response = TakeoverResponse.model_validate_json(
+        match takeover_response_adapter.validate_json(
             connection.recv(timeout=_TAKEOVER_REPLY_TIMEOUT_S)
-        )
-        yield response.handoffs
+        ):
+            case TakeoverRefused(reason=reason):
+                raise RuntimeError(
+                    f"exec={source_id[:5]} refused the takeover: {reason}"
+                )
+            case TakeoverAccepted(handoffs=handoffs):
+                yield handoffs
 
 
 def _serve_worker(

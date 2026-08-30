@@ -107,10 +107,25 @@ class PoolHandoff(BaseModel):
     coordinator_files: list[Path] = Field(default_factory=list)
 
 
-class TakeoverResponse(BaseModel):
+class TakeoverAccepted(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
+    kind: Literal["accepted"] = "accepted"
     handoffs: dict[str, PoolHandoff]
+
+
+class TakeoverRefused(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    kind: Literal["refused"] = "refused"
+    reason: str
+
+
+type TakeoverResponse = Annotated[
+    TakeoverAccepted | TakeoverRefused, Field(discriminator="kind")
+]
+
+takeover_response_adapter: TypeAdapter[TakeoverResponse] = TypeAdapter(TakeoverResponse)
 
 
 def coordinator_url(*, host: str, port: int, auth_token: str) -> str:

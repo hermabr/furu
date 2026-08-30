@@ -2118,6 +2118,59 @@ def test_request_takeover_hands_off_matching_pools_and_closing_ends_old_run() ->
     assert old.finish_error == f"execution taken over by exec={new.executor_id[:5]}"
 
 
+def test_request_takeover_without_matching_pool_is_refused() -> None:
+    leaf = ExecutionCoordinatorLeaf(value=1)
+    old = _new_execution_coordinator([leaf])
+    pool = _InertPool(["100_0"])
+    old.pools = {"k": pool}
+
+    with execution_coordinator_server(old, bind_host="127.0.0.1", port=0) as server:
+        with (
+            pytest.raises(
+                RuntimeError,
+                match="refused the takeover: no worker pool with a matching",
+            ),
+            request_takeover(
+                executor_id="b" * 32,
+                source_id=old.executor_id,
+                url=_url_for(server),
+                pool_keys=["m"],
+            ),
+        ):
+            raise AssertionError("unreachable")
+        assert pool.handoffs == 0
+        assert not old.done.is_set()
+
+
+def test_request_takeover_refuses_second_concurrent_takeover() -> None:
+    leaf = ExecutionCoordinatorLeaf(value=1)
+    old = _new_execution_coordinator([leaf])
+    old.pools = {"k": _InertPool(["100_0"])}
+
+    with execution_coordinator_server(old, bind_host="127.0.0.1", port=0) as server:
+        with (
+            request_takeover(
+                executor_id="b" * 32,
+                source_id=old.executor_id,
+                url=_url_for(server),
+                pool_keys=["k"],
+            ),
+            pytest.raises(
+                RuntimeError, match="refused the takeover: already being taken over"
+            ),
+            request_takeover(
+                executor_id="c" * 32,
+                source_id=old.executor_id,
+                url=_url_for(server),
+                pool_keys=["k"],
+            ),
+        ):
+            raise AssertionError("unreachable")
+        _wait_until(old.done.is_set)
+
+    assert old.finish_error == f"execution taken over by exec={'b' * 5}"
+
+
 def test_request_takeover_failing_midway_still_ends_old_run() -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
     old = _new_execution_coordinator([leaf])

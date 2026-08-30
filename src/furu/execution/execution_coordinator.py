@@ -71,6 +71,7 @@ class ExecutionCoordinator:
     done: threading.Event = field(default_factory=threading.Event)
     finish_error: str | None = None
     submit_provenance: SubmitProvenance | None = None
+    taken_over_by: str | None = None
 
     def _failed_counts(self) -> tuple[int, int]:
         failed_retry = sum(
