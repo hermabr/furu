@@ -91,7 +91,6 @@ class TakeoverRequest(BaseModel):
     kind: Literal["takeover"] = "takeover"
     executor_id: str
     pool_keys: list[str]
-    claiming: list[str]
 
 
 type FirstMessage = Annotated[
@@ -111,28 +110,7 @@ class PoolHandoff(BaseModel):
 class TakeoverResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    kind: Literal["handoff"] = "handoff"
     handoffs: dict[str, PoolHandoff]
-
-
-class TakeoverRefused(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-
-    kind: Literal["refused"] = "refused"
-    foreign: list[str]
-
-
-type TakeoverReply = Annotated[
-    TakeoverResponse | TakeoverRefused, Field(discriminator="kind")
-]
-
-takeover_reply_adapter: TypeAdapter[TakeoverReply] = TypeAdapter(TakeoverReply)
-
-
-class TakeoverCommit(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-
-    kind: Literal["commit"] = "commit"
 
 
 def coordinator_url(*, host: str, port: int, auth_token: str) -> str:

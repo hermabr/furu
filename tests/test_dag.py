@@ -16,7 +16,6 @@ from furu.storage._layout import (
     compute_lock_path_in,
     run_log_path_in,
 )
-from furu.testing import override_config
 from furu.worker.backends.local import LocalThreadWorkerBackend
 
 
@@ -200,36 +199,28 @@ def test_add_to_dag_completed_root_has_no_dependencies():
     assert coordinator.blocked == {}
 
 
-def test_add_to_dag_rejects_running_root():
+def test_add_to_dag_holds_running_root_until_its_lock_lifts():
     leaf = Leaf(name="running-root")
 
     with mark_running(leaf):
         assert leaf.status == "running"
-
-        with pytest.raises(RuntimeError, match="cannot add running object to DAG"):
-            _new_execution_coordinator([leaf])
-
-
-def test_add_to_dag_holds_running_object_for_adoption_under_takeover():
-    leaf = Leaf(name="running-inherited")
-    takeover_config = get_config().model_copy(update={"takeover": "7f3a1"})
-
-    with mark_running(leaf), override_config(takeover_config):
         coordinator = _new_execution_coordinator([leaf])
 
     assert set(coordinator.ready) == {leaf.object_id}
-    assert coordinator.awaiting_adoption == {leaf.object_id}
+    assert coordinator.running_elsewhere == {leaf.object_id}
 
 
-def test_add_to_dag_rejects_running_dependency():
+def test_add_to_dag_holds_running_dependency_until_its_lock_lifts():
     leaf = Leaf(name="running-dependency")
     mid = Mid(label="m", child=leaf)
 
     with mark_running(leaf):
         assert leaf.status == "running"
+        coordinator = _new_execution_coordinator([mid])
 
-        with pytest.raises(RuntimeError, match="cannot add running object to DAG"):
-            _new_execution_coordinator([mid])
+    assert set(coordinator.ready) == {leaf.object_id}
+    assert set(coordinator.blocked) == {mid.object_id}
+    assert coordinator.running_elsewhere == {leaf.object_id}
 
 
 def test_add_to_dag_does_not_reject_inactive_compute_lock():

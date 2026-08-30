@@ -87,17 +87,6 @@ def _start_job(
     ).start()
 
 
-def _wait_for_result(events: queue.Queue[_Event]) -> None:
-    while True:
-        match events.get():
-            case ("result", _):
-                return
-            case ("crash", exc):
-                raise exc
-            case _:
-                pass
-
-
 def worker_loop(
     *,
     coordinator: str | Path,
@@ -187,7 +176,6 @@ def worker_loop(
                         job.artifacts[0].log_label,
                     )
                     child_slot.kill()
-                    _wait_for_result(events)
                 logger.info("server closed the connection; worker exiting")
                 return
         finally:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from secrets import token_urlsafe
 
@@ -16,13 +16,10 @@ from furu.worker.protocol import (
     CancelMessage,
     HelloMessage,
     PoolHandoff,
-    TakeoverCommit,
-    TakeoverRefused,
     TakeoverRequest,
     TakeoverResponse,
     first_message_adapter,
     job_result_adapter,
-    takeover_reply_adapter,
 )
 
 _TAKEOVER_REPLY_TIMEOUT_S = 120.0
@@ -55,35 +52,35 @@ def _serve_takeover(
     connection: ServerConnection,
     request: TakeoverRequest,
 ) -> None:
-    reply = coordinator.handoff(request)
-    connection.send(reply.model_dump_json())
-    if isinstance(reply, TakeoverRefused):
-        return
-    try:
-        TakeoverCommit.model_validate_json(connection.recv())
-    except ConnectionClosed:
-        logger.error(
-            "exec=%s vanished after our pools were handed off; "
-            "they will no longer scale, and their workers stay with this run",
-            request.executor_id[:5],
-        )
-        return
+    handoffs = {
+        key: coordinator.pools[key].handoff()
+        for key in request.pool_keys
+        if key in coordinator.pools
+    }
+    logger.info(
+        "handed off %d of %d pools to exec=%s",
+        len(handoffs),
+        len(coordinator.pools),
+        request.executor_id[:5],
+    )
+    connection.send(TakeoverResponse(handoffs=handoffs).model_dump_json())
+    # The new coordinator closes the connection once the inherited workers are
+    # pointed at it. Whether it got that far or died trying, our part is over:
+    # handed-off pools have nothing left to cancel and the rest stop as usual.
+    with suppress(ConnectionClosed):
+        connection.recv()
     coordinator.fail(f"execution taken over by exec={request.executor_id[:5]}")
 
 
 @contextmanager
 def request_takeover(
-    coordinator: ExecutionCoordinator,
     *,
+    executor_id: str,
     source_id: str,
     url: str,
     pool_keys: Sequence[str],
 ) -> Iterator[dict[str, PoolHandoff]]:
-    request = TakeoverRequest(
-        executor_id=coordinator.executor_id,
-        pool_keys=list(pool_keys),
-        claiming=sorted(coordinator.awaiting_adoption),
-    )
+    """Inherit ``source_id``'s matching pools; closing the connection commits."""
     try:
         connection = connect(url, max_size=None)
     except OSError as exc:
@@ -91,23 +88,15 @@ def request_takeover(
             f"cannot reach exec={source_id[:5]}; is that coordinator still running?"
         ) from exc
     with connection:
-        connection.send(request.model_dump_json())
-        match takeover_reply_adapter.validate_json(
+        connection.send(
+            TakeoverRequest(
+                executor_id=executor_id, pool_keys=list(pool_keys)
+            ).model_dump_json()
+        )
+        response = TakeoverResponse.model_validate_json(
             connection.recv(timeout=_TAKEOVER_REPLY_TIMEOUT_S)
-        ):
-            case TakeoverRefused(foreign=foreign):
-                labels = ", ".join(
-                    coordinator.nodes_by_id[object_id].obj._log_label
-                    for object_id in foreign
-                )
-                raise RuntimeError(
-                    f"cannot take over exec={source_id[:5]}: {len(foreign)} specs "
-                    "are being computed by something other than that coordinator: "
-                    + labels
-                )
-            case TakeoverResponse(handoffs=handoffs):
-                yield handoffs
-                connection.send(TakeoverCommit().model_dump_json())
+        )
+        yield response.handoffs
 
 
 def _serve_worker(

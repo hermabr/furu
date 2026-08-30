@@ -43,10 +43,6 @@ def execution_coordinator_log_path_in(executor_dir: Path) -> Path:
     return executor_dir / "execution_coordinator.log"
 
 
-def coordinator_url_path_in(executor_dir: Path) -> Path:
-    return executor_dir / "coordinator.url"
-
-
 def compute_lock_path_in(base_dir: Path) -> Path:
     return base_dir / "compute.lock"
 
