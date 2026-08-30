@@ -813,6 +813,7 @@ def test_lease_job_assembles_same_key_batched_group_into_one_job(
     assert coordinator.ready == {}
     detail = caplog.records[-1].__dict__["_furu_detail"]
     assert detail["object_ids"] == ",".join(obj.object_id for obj in objs)
+    assert detail["member_count"] == 3
 
     for artifact in job.artifacts:
         coordinator.job_result(artifact.object_id, JobCompletedResult())
@@ -2026,46 +2027,15 @@ def test_worker_loop_kills_job_when_coordinator_disappears(
     assert "server closed the connection; worker exiting" in caplog.messages
 
 
-def test_running_elsewhere_is_not_leased_while_its_lock_is_active() -> None:
+def test_lease_job_checks_for_locks_acquired_after_dag_build() -> None:
     held = ExecutionCoordinatorLeaf(value=1)
     free = ExecutionCoordinatorLeaf(value=2)
-
-    with _mark_running(held):
-        coordinator = _new_execution_coordinator([held, free])
-
-        assert set(coordinator.ready) == {held.object_id, free.object_id}
-        assert coordinator.running_elsewhere == {held.object_id}
-        assert (
-            coordinator.count_satisfiable_jobs(resources=ANY_RESOURCES, max_workers=10)
-            == 1
-        )
-        assert _artifact(_lease_job(coordinator)).object_id == free.object_id
-        assert _no_satisfiable_job(coordinator)
-
-    assert (
-        coordinator.count_satisfiable_jobs(resources=ANY_RESOURCES, max_workers=10) == 1
-    )
-    assert coordinator.running_elsewhere == set()
-    assert _artifact(_lease_job(coordinator)).object_id == held.object_id
-
-
-def test_adopt_clears_running_elsewhere() -> None:
-    held = ExecutionCoordinatorLeaf(value=1)
-
-    with _mark_running(held):
-        coordinator = _new_execution_coordinator([held])
-        assert coordinator.adopt([ArtifactSpec.from_furu(held)], worker="w") is True
-
-    assert coordinator.running_elsewhere == set()
-    assert coordinator.running[held.object_id].worker == "w"
-
-
-def test_lease_job_wakes_when_a_lock_held_elsewhere_lifts() -> None:
-    held = ExecutionCoordinatorLeaf(value=1)
+    coordinator = _new_execution_coordinator([held, free])
     leased: list[Job | None] = []
 
     with _mark_running(held):
-        coordinator = _new_execution_coordinator([held])
+        assert set(coordinator.ready) == {held.object_id, free.object_id}
+        assert _artifact(_lease_job(coordinator)).object_id == free.object_id
         thread = threading.Thread(target=lambda: leased.append(_lease_job(coordinator)))
         thread.start()
         time.sleep(0.3)
@@ -2073,6 +2043,28 @@ def test_lease_job_wakes_when_a_lock_held_elsewhere_lifts() -> None:
 
     thread.join(timeout=10)
     assert _artifact(leased[0]).object_id == held.object_id
+
+
+def test_adopt_accepts_job_started_after_dag_build() -> None:
+    held = ExecutionCoordinatorLeaf(value=1)
+    coordinator = _new_execution_coordinator([held])
+
+    with _mark_running(held):
+        assert coordinator.adopt([ArtifactSpec.from_furu(held)], worker="w") is True
+
+    assert coordinator.running[held.object_id].worker == "w"
+
+
+def test_lease_job_checks_every_batch_member_for_active_locks() -> None:
+    held = BatchedCoordinatorLeaf(value=1)
+    free = BatchedCoordinatorLeaf(value=2)
+    coordinator = _new_execution_coordinator([held, free])
+
+    with _mark_running(held):
+        job = _lease_job(coordinator)
+
+    assert isinstance(job, Job)
+    assert [artifact.object_id for artifact in job.artifacts] == [free.object_id]
 
 
 class _InertPool:

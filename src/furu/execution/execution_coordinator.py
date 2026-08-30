@@ -67,10 +67,6 @@ class ExecutionCoordinator:
     completed: dict[str, DagNode] = field(default_factory=dict)
     failed: dict[str, FailedJob] = field(default_factory=dict)
     pools: dict[str, WorkerPool] = field(default_factory=dict)
-    # Ready specs whose compute lock is held by someone we cannot see: a worker
-    # we are inheriting, or a stray create() elsewhere. Not leased until the
-    # lock lifts or a worker connects carrying the job (see ``adopt``).
-    running_elsewhere: set[str] = field(default_factory=set)
     lock: threading.Condition = field(default_factory=threading.Condition)
     done: threading.Event = field(default_factory=threading.Event)
     finish_error: str | None = None
@@ -150,13 +146,10 @@ class ExecutionCoordinator:
 
         with coordinator.log_context():
             logger.info(
-                "starting exec=%s · %d ready · %d blocked%s",
+                "starting exec=%s · %d ready · %d blocked",
                 coordinator.executor_id[:5],
                 len(coordinator.ready),
                 len(coordinator.blocked),
-                f" · {len(coordinator.running_elsewhere)} running elsewhere"
-                if coordinator.running_elsewhere
-                else "",
                 extra=log_detail(
                     executor_id=coordinator.executor_id,
                     executor_dir=coordinator.executor_dir,
@@ -235,30 +228,37 @@ class ExecutionCoordinator:
             while True:
                 if self.done.is_set():
                     return None
-                lease = next(self._satisfiable_leases_locked(resources), None)
-                if lease is not None:
-                    break
-                self.lock.wait(timeout=1.0 if self.running_elsewhere else None)
-            node, member_ids = lease
-            nodes = self._start_locked((node.obj.object_id, *member_ids), worker=worker)
-            logger.info(
-                "leased %s ×%d to %s",
-                node.obj._log_label,
-                len(nodes),
-                worker,
-                extra=log_detail(
-                    object_ids=",".join(node.obj.object_id for node in nodes),
-                    members=len(nodes),
-                    worker=worker,
-                    **self._counts_detail(),
-                ),
-            )
-            assert self.submit_provenance is not None
-            return Job(
-                artifacts=[ArtifactSpec.from_furu(node.obj) for node in nodes],
-                provenance=self.submit_provenance,
-                process=ProcessSettings.from_metadata(node.obj._metadata),
-            )
+                saw_running = False
+                for node, member_ids in self._satisfiable_leases_locked(resources):
+                    object_ids = tuple(
+                        object_id
+                        for object_id in (node.obj.object_id, *member_ids)
+                        if self.nodes_by_id[object_id].obj.status != "running"
+                    )
+                    if not object_ids:
+                        saw_running = True
+                        continue
+                    nodes = self._start_locked(object_ids, worker=worker)
+                    node = nodes[0]
+                    logger.info(
+                        "leased %s ×%d to %s",
+                        node.obj._log_label,
+                        len(nodes),
+                        worker,
+                        extra=log_detail(
+                            object_ids=",".join(node.obj.object_id for node in nodes),
+                            member_count=len(nodes),
+                            worker=worker,
+                            **self._counts_detail(),
+                        ),
+                    )
+                    assert self.submit_provenance is not None
+                    return Job(
+                        artifacts=[ArtifactSpec.from_furu(node.obj) for node in nodes],
+                        provenance=self.submit_provenance,
+                        process=ProcessSettings.from_metadata(node.obj._metadata),
+                    )
+                self.lock.wait(timeout=1.0 if saw_running else None)
 
     def _start_locked(self, object_ids: Sequence[str], *, worker: str) -> list[DagNode]:
         started_at = time.monotonic()
@@ -283,7 +283,6 @@ class ExecutionCoordinator:
                     extra=log_detail(object_ids=",".join(object_ids), worker=worker),
                 )
                 return False
-            self.running_elsewhere.difference_update(object_ids)
             self._start_locked(object_ids, worker=worker)
             logger.info(
                 "adopted %s ×%d from %s",
@@ -308,7 +307,7 @@ class ExecutionCoordinator:
     def count_satisfiable_jobs(
         self, *, resources: ResourceRequest, max_workers: int
     ) -> int:
-        with self.log_context(), self.lock:
+        with self.lock:
             if self.done.is_set():
                 return 0
             leases = self._satisfiable_leases_locked(resources)
@@ -328,15 +327,7 @@ class ExecutionCoordinator:
             (job.worker, type(job.node.obj)) for job in self.running.values()
         }:
             running_counts[obj_type] = running_counts.get(obj_type, 0) + 1
-        for object_id in tuple(self.running_elsewhere):
-            if self.nodes_by_id[object_id].obj.status != "running":
-                self.running_elsewhere.discard(object_id)
-                logger.info(
-                    "lock on %s lifted; leasing it normally",
-                    self.nodes_by_id[object_id].obj._log_label,
-                    extra=log_detail(object_id=object_id),
-                )
-        consumed: set[str] = set(self.running_elsewhere)
+        consumed: set[str] = set()
         for object_id, node in self.ready.items():
             if object_id in consumed:
                 continue

@@ -48,9 +48,7 @@ def _add_to_dag(coordinator: ExecutionCoordinator, objs: Sequence[Spec]) -> None
         match obj.status:
             case "done":
                 continue
-            case "running":
-                coordinator.running_elsewhere.add(obj.object_id)
-            case "missing" | "failed":
+            case "running" | "missing" | "failed":
                 pass
             case "stale":
                 raise_if_stale(obj)

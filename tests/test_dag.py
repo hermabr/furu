@@ -199,7 +199,7 @@ def test_add_to_dag_completed_root_has_no_dependencies():
     assert coordinator.blocked == {}
 
 
-def test_add_to_dag_holds_running_root_until_its_lock_lifts():
+def test_add_to_dag_does_not_snapshot_running_root():
     leaf = Leaf(name="running-root")
 
     with mark_running(leaf):
@@ -207,10 +207,9 @@ def test_add_to_dag_holds_running_root_until_its_lock_lifts():
         coordinator = _new_execution_coordinator([leaf])
 
     assert set(coordinator.ready) == {leaf.object_id}
-    assert coordinator.running_elsewhere == {leaf.object_id}
 
 
-def test_add_to_dag_holds_running_dependency_until_its_lock_lifts():
+def test_add_to_dag_does_not_snapshot_running_dependency():
     leaf = Leaf(name="running-dependency")
     mid = Mid(label="m", child=leaf)
 
@@ -220,7 +219,6 @@ def test_add_to_dag_holds_running_dependency_until_its_lock_lifts():
 
     assert set(coordinator.ready) == {leaf.object_id}
     assert set(coordinator.blocked) == {mid.object_id}
-    assert coordinator.running_elsewhere == {leaf.object_id}
 
 
 def test_add_to_dag_does_not_reject_inactive_compute_lock():
