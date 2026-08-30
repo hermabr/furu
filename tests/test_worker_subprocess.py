@@ -363,7 +363,8 @@ def test_materializing_slot_runs_each_job_from_its_snapshot(tmp_path: Path) -> N
                     artifacts=[ArtifactSpec.from_furu(leaf)],
                     provenance=provenance,
                     process=ProcessSettings.from_metadata(leaf._metadata),
-                )
+                ),
+                cancelled=threading.Event(),
             )
             assert isinstance(result, JobCompletedResult)
             pids_and_cwds.append(_pid_and_value(leaf))
