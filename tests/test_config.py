@@ -47,14 +47,6 @@ def test_config_reads_environment(monkeypatch) -> None:
     )
 
 
-def test_config_reads_takeover_from_environment(monkeypatch) -> None:
-    assert _Config().takeover is None
-
-    monkeypatch.setenv("FURU_TAKEOVER", "7f3a1")
-
-    assert _Config().takeover == "7f3a1"
-
-
 def test_debug_mode_uses_default_debug_directory(monkeypatch) -> None:
     monkeypatch.setenv("FURU_DEBUG_MODE", "true")
     monkeypatch.setattr("furu.config._project_anchor", lambda: Path())

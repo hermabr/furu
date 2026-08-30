@@ -83,7 +83,6 @@ class _Config(BaseSettings):
     )
 
     debug_mode: bool = False
-    takeover: str | None = None
     directories: _FuruDirectories = Field(default_factory=_FuruDirectories)
     worker: _FuruWorkerConfig = Field(default_factory=_FuruWorkerConfig)
     provenance: _FuruProvenanceConfig = Field(default_factory=_FuruProvenanceConfig)

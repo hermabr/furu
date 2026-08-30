@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import secrets
 import threading
 import time
@@ -105,7 +106,7 @@ class ExecutionCoordinator:
             max_retries_per_object = get_config().worker.max_retries_per_object
         takeover = (
             _resolve_takeover(prefix)
-            if (prefix := get_config().takeover) is not None
+            if (prefix := os.environ.get("FURU_TAKEOVER")) is not None
             else None
         )
         coordinator = cls(

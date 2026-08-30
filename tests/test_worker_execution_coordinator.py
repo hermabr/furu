@@ -1,4 +1,5 @@
 import logging
+import os
 import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
@@ -6,6 +7,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from unittest import mock
 from uuid import uuid4
 
 import pytest
@@ -41,7 +43,6 @@ from furu.storage._layout import (
     compute_lock_path_in,
     execution_coordinator_log_path_in,
 )
-from furu.testing import override_config
 from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
 from furu.worker.execute import ChildSlot
 from furu.worker.loop import worker_loop
@@ -221,7 +222,7 @@ def _mark_running(obj: Spec) -> Iterator[None]:
 
 @contextmanager
 def _taking_over(prefix: str) -> Iterator[None]:
-    with override_config(get_config().model_copy(update={"takeover": prefix})):
+    with mock.patch.dict(os.environ, {"FURU_TAKEOVER": prefix}):
         yield
 
 
