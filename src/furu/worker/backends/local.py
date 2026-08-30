@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from furu.logging import _scoped_component, get_logger
-from furu.provenance import SubmitProvenance
 from furu.resources import ResourceRequest, resource_request_adapter
 from furu.utils import _hash_dict_deterministically
 from furu.worker.protocol import PoolHandoff, coordinator_url
@@ -41,11 +40,8 @@ class LocalThreadWorkerBackend:
         bound_port: int,
         auth_token: str,
         executor_dir: Path,
-        provenance: SubmitProvenance,
-        handoff: PoolHandoff | None,
+        handoff: PoolHandoff,
     ) -> LocalThreadWorkerPool:
-        # Workers are threads in the submitting process, so they already run
-        # the exact code the snapshot captured; ``provenance`` is unused.
         url = coordinator_url(
             host=self.execution_coordinator_listen_host,
             port=bound_port,

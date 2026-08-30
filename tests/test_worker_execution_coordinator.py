@@ -118,8 +118,8 @@ def _new_execution_coordinator(
     coordinator = ExecutionCoordinator(
         max_retries_per_object=max_retries_per_object,
         pool_resources=TEST_POOL_RESOURCES,
+        submit_provenance=_submit_provenance(),
     )
-    coordinator.submit_provenance = _submit_provenance()
     _add_to_dag(coordinator, objs)
     return coordinator
 
@@ -648,7 +648,6 @@ def test_execution_coordinator_run_retries_failed_worker_result(
 
     returned = ExecutionCoordinator.run(
         objs,
-        max_retries_per_object=1,
         worker_backends=(LocalThreadWorkerBackend(),),
     )
 
@@ -1112,12 +1111,11 @@ def test_execution_coordinator_run_uses_worker_backend() -> None:
             bound_port: int,
             auth_token: str,
             executor_dir: Path,
-            provenance: SubmitProvenance,
-            handoff: PoolHandoff | None,
+            handoff: PoolHandoff,
         ) -> LocalThreadWorkerPool:
             self.bound_ports.append(bound_port)
             self.auth_tokens.append(auth_token)
-            self.provenances.append(provenance)
+            self.provenances.append(coordinator.submit_provenance)
             return LocalThreadWorkerBackend(
                 max_workers=1,
                 resource_request=ResourceRequest(),
@@ -1126,7 +1124,6 @@ def test_execution_coordinator_run_uses_worker_backend() -> None:
                 bound_port=bound_port,
                 auth_token=auth_token,
                 executor_dir=executor_dir,
-                provenance=provenance,
                 handoff=handoff,
             )
 
@@ -1163,8 +1160,7 @@ def test_execution_coordinator_run_passes_executor_dir_to_worker_backend() -> No
             bound_port: int,
             auth_token: str,
             executor_dir: Path,
-            provenance: SubmitProvenance,
-            handoff: PoolHandoff | None,
+            handoff: PoolHandoff,
         ) -> LocalThreadWorkerPool:
             self.executor_dirs.append(executor_dir)
             return LocalThreadWorkerBackend(
@@ -1175,7 +1171,6 @@ def test_execution_coordinator_run_passes_executor_dir_to_worker_backend() -> No
                 bound_port=bound_port,
                 auth_token=auth_token,
                 executor_dir=executor_dir,
-                provenance=provenance,
                 handoff=handoff,
             )
 
@@ -1238,8 +1233,7 @@ def test_execution_coordinator_run_returns_when_all_objects_are_already_complete
             bound_port: int,
             auth_token: str,
             executor_dir: Path,
-            provenance: SubmitProvenance,
-            handoff: PoolHandoff | None,
+            handoff: PoolHandoff,
         ) -> LocalThreadWorkerPool:
             raise AssertionError("coordinator started workers with no runnable objects")
 
@@ -1254,13 +1248,9 @@ def test_execution_coordinator_run_returns_when_all_objects_are_already_complete
     returned = ExecutionCoordinator.run(objs, worker_backends=(UnexpectedBackend(),))
 
     assert returned is objs
-    (executor_dir,) = executions_dir.iterdir()
-    log_text = execution_coordinator_log_path_in(executor_dir).read_text(
-        encoding="utf-8"
-    )
-    assert "all objects already exist; no execution coordinator work to run" in log_text
-    assert "server listening on " not in log_text
-    assert "furu execution coordinator finished successfully" in log_text
+    # A no-op run returns before creating an executor dir or capturing
+    # provenance; nothing appears under executions/.
+    assert not executions_dir.exists() or list(executions_dir.iterdir()) == []
 
 
 def test_execution_coordinator_run_starts_backend_pool_and_stops_and_joins_when_done() -> (
@@ -1296,8 +1286,7 @@ def test_execution_coordinator_run_starts_backend_pool_and_stops_and_joins_when_
             bound_port: int,
             auth_token: str,
             executor_dir: Path,
-            provenance: SubmitProvenance,
-            handoff: PoolHandoff | None,
+            handoff: PoolHandoff,
         ) -> RecordingPool:
             self.pool.events.append("start_pool")
             server_url = f"ws://127.0.0.1:{bound_port}"
@@ -1330,16 +1319,8 @@ def test_execution_coordinator_run_stops_backend_pool_when_interrupted() -> None
             raise KeyboardInterrupt
 
     class InterruptingCoordinator(ExecutionCoordinator):
-        def __init__(
-            self,
-            *,
-            max_retries_per_object: int,
-            pool_resources: tuple[ResourceRequest, ...],
-        ) -> None:
-            super().__init__(
-                max_retries_per_object=max_retries_per_object,
-                pool_resources=pool_resources,
-            )
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
             self.done = InterruptingEvent()
 
     class RecordingPool:
@@ -1369,8 +1350,7 @@ def test_execution_coordinator_run_stops_backend_pool_when_interrupted() -> None
             bound_port: int,
             auth_token: str,
             executor_dir: Path,
-            provenance: SubmitProvenance,
-            handoff: PoolHandoff | None,
+            handoff: PoolHandoff,
         ) -> RecordingPool:
             self.pool.events.append("start_pool")
             return self.pool
@@ -1416,8 +1396,7 @@ def test_execution_coordinator_run_uses_worker_backend_execution_coordinator_lis
             bound_port: int,
             auth_token: str,
             executor_dir: Path,
-            provenance: SubmitProvenance,
-            handoff: PoolHandoff | None,
+            handoff: PoolHandoff,
         ) -> RecordingPool:
             server_url = f"ws://{self.execution_coordinator_listen_host}:{bound_port}"
             self.server_urls.append(server_url)
@@ -1632,8 +1611,7 @@ def test_execution_coordinator_run_registers_pools_by_key() -> None:
             bound_port: int,
             auth_token: str,
             executor_dir: Path,
-            provenance: SubmitProvenance,
-            handoff: PoolHandoff | None,
+            handoff: PoolHandoff,
         ) -> LocalThreadWorkerPool:
             self.coordinators.append(coordinator)
             pool = LocalThreadWorkerBackend().start_pool(
@@ -1641,7 +1619,6 @@ def test_execution_coordinator_run_registers_pools_by_key() -> None:
                 bound_port=bound_port,
                 auth_token=auth_token,
                 executor_dir=executor_dir,
-                provenance=provenance,
                 handoff=handoff,
             )
             self.pools.append(pool)
@@ -2248,7 +2225,7 @@ def test_execution_coordinator_run_inherits_pools_on_takeover() -> None:
         def __init__(self) -> None:
             self.pool = _InertPool(["100_0", "100_1"])
             self.coordinators: list[ExecutionCoordinator] = []
-            self.handoffs: list[PoolHandoff | None] = []
+            self.handoffs: list[PoolHandoff] = []
 
         def start_pool(
             self,
@@ -2257,8 +2234,7 @@ def test_execution_coordinator_run_inherits_pools_on_takeover() -> None:
             bound_port: int,
             auth_token: str,
             executor_dir: Path,
-            provenance: SubmitProvenance,
-            handoff: PoolHandoff | None,
+            handoff: PoolHandoff,
         ) -> _InertPool:
             self.coordinators.append(coordinator)
             self.handoffs.append(handoff)
@@ -2286,7 +2262,7 @@ def test_execution_coordinator_run_inherits_pools_on_takeover() -> None:
     old_thread.start()
     _wait_until(lambda: len(old_backend.handoffs) == 1)
     old = old_backend.coordinators[0]
-    assert old_backend.handoffs == [None]
+    assert old_backend.handoffs == [PoolHandoff()]
 
     new_backend = InertBackend()
     with _taking_over(old.executor_id[:5]):

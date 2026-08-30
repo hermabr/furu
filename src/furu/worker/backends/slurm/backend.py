@@ -15,7 +15,6 @@ from furu.config import (
     _WORKER_JSON_CONFIG_FILE_ENV_VAR,
     get_config,
 )
-from furu.provenance import SubmitProvenance
 from furu.resources import ResourceFloor, ResourceRequest, resource_request_adapter
 from furu.snapshot import snapshot_code
 from furu.utils import (
@@ -88,8 +87,7 @@ class SlurmWorkerBackend:
         bound_port: int,
         auth_token: str,
         executor_dir: Path,
-        provenance: SubmitProvenance,
-        handoff: PoolHandoff | None,
+        handoff: PoolHandoff,
     ) -> SlurmWorkerPool:
         connect_port = (
             bound_port if self.worker_connect_port is None else self.worker_connect_port
@@ -98,7 +96,7 @@ class SlurmWorkerBackend:
             host=self.worker_connect_host, port=connect_port, auth_token=auth_token
         )
 
-        code = snapshot_code(provenance)
+        code = snapshot_code(coordinator.submit_provenance)
         subprocess.run(
             ["uv", "sync", "--frozen", "--project", str(code.project_root)],
             env={k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"},
@@ -109,13 +107,10 @@ class SlurmWorkerBackend:
 
         coordinator_file = worker_dir / "coordinator.url"
         write_private_file(coordinator_file, url + "\n", mode=0o600)
-        coordinator_files = [coordinator_file]
-        job_ids: list[str] = []
-        if handoff is not None:
-            for inherited_file in handoff.coordinator_files:
-                replace_private_file(inherited_file, url + "\n", mode=0o600)
-            coordinator_files.extend(handoff.coordinator_files)
-            job_ids.extend(handoff.job_ids)
+        for inherited_file in handoff.coordinator_files:
+            replace_private_file(inherited_file, url + "\n", mode=0o600)
+        coordinator_files = [coordinator_file, *handoff.coordinator_files]
+        job_ids = list(handoff.job_ids)
 
         config = get_config()
         config = config.model_copy(

@@ -11,11 +11,18 @@ from furu.config import get_config
 from furu.dag import DagNode, _add_to_dag
 from furu.execution.execution_coordinator import ExecutionCoordinator
 from furu.locking import lock
+from furu.provenance import (
+    EnvironmentIdentity,
+    GitIdentity,
+    SubmitContext,
+    SubmitProvenance,
+)
 from furu.resources import ResourceRequest
 from furu.storage._layout import (
     compute_lock_path_in,
     run_log_path_in,
 )
+from furu.testing import override_config
 from furu.worker.backends.local import LocalThreadWorkerBackend
 
 
@@ -74,16 +81,27 @@ def mark_running(obj: Spec) -> Iterator[None]:
         yield
 
 
-def _new_execution_coordinator(
-    objs: Sequence[Spec],
-    *,
-    max_retries_per_object: int | None = None,
-) -> ExecutionCoordinator:
-    if max_retries_per_object is None:
-        max_retries_per_object = get_config().worker.max_retries_per_object
+def _submit_provenance() -> SubmitProvenance:
+    # Stub halves throughout; these tests only exercise DAG structure.
+    return SubmitProvenance(
+        git=GitIdentity(
+            commit="0" * 40,
+            branch=None,
+            remote=None,
+            repo_root=".",
+            dirty=False,
+            diff_stats=None,
+        ),
+        environment=EnvironmentIdentity.capture(),
+        snapshot_id=None,
+        submitted=SubmitContext.capture(),
+    )
+
+
+def _new_execution_coordinator(objs: Sequence[Spec]) -> ExecutionCoordinator:
     coordinator = ExecutionCoordinator(
-        max_retries_per_object=max_retries_per_object,
         pool_resources=(ResourceRequest(),),
+        submit_provenance=_submit_provenance(),
     )
     _add_to_dag(coordinator, objs)
     return coordinator
@@ -431,10 +449,17 @@ def test_execution_coordinator_run_reports_worker_failures():
     failing = AlwaysFails(name="boom")
     parent = DependsOnFailing(label="p", child=failing)
 
-    with pytest.raises(RuntimeError, match="failed jobs"):
+    config = get_config()
+    no_retries = config.model_copy(
+        update={
+            "worker": config.worker.model_copy(
+                update={"max_retries_per_object": 0}
+            )
+        }
+    )
+    with override_config(no_retries), pytest.raises(RuntimeError, match="failed jobs"):
         ExecutionCoordinator.run(
             [parent],
-            max_retries_per_object=0,
             worker_backends=(LocalThreadWorkerBackend(),),
         )
 

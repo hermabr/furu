@@ -32,6 +32,7 @@ from furu.worker.protocol import (
     JobCompletedResult,
     JobFailedResult,
     JobResult,
+    PoolHandoff,
     ProcessSettings,
 )
 
@@ -58,8 +59,11 @@ class FailedJob:
 
 @dataclass(slots=True, kw_only=True)
 class ExecutionCoordinator:
-    max_retries_per_object: int
+    max_retries_per_object: int = field(
+        default_factory=lambda: get_config().worker.max_retries_per_object
+    )
     pool_resources: tuple[ResourceRequest, ...]
+    submit_provenance: SubmitProvenance
     executor_id: str = field(default_factory=lambda: secrets.token_hex(16))
     nodes_by_id: dict[str, DagNode] = field(default_factory=dict)
     ready: dict[str, DagNode] = field(default_factory=dict)
@@ -71,7 +75,6 @@ class ExecutionCoordinator:
     lock: threading.Condition = field(default_factory=threading.Condition)
     done: threading.Event = field(default_factory=threading.Event)
     finish_error: str | None = None
-    submit_provenance: SubmitProvenance | None = None
     taken_over_by: str | None = None
 
     def _failed_counts(self) -> tuple[int, int]:
@@ -98,21 +101,26 @@ class ExecutionCoordinator:
         cls,
         objs: ObjsT,  # TODO: support pytrees
         *,
-        max_retries_per_object: int | None = None,
         worker_backends: tuple[WorkerBackend, ...],
         port: int = 0,
     ) -> ObjsT:
-        if max_retries_per_object is None:
-            max_retries_per_object = get_config().worker.max_retries_per_object
+        if all(isinstance(obj, Spec) and obj.status == "done" for obj in objs):
+            logger.info(
+                "all objects already exist; no execution coordinator work to run"
+            )
+            return objs
+
         takeover = (
             _resolve_takeover(prefix)
             if (prefix := os.environ.get("FURU_TAKEOVER")) is not None
             else None
         )
         coordinator = cls(
-            max_retries_per_object=max_retries_per_object,
             pool_resources=tuple(
                 backend.resource_request for backend in worker_backends
+            ),
+            submit_provenance=capture_submit_provenance(
+                snapshot=get_config().provenance.snapshot
             ),
         )
         _add_to_dag(coordinator, objs)
@@ -124,12 +132,6 @@ class ExecutionCoordinator:
                 )
                 coordinator._maybe_finish_locked()
             return objs
-
-        # One capture (and at most one snapshot build) for the whole batch;
-        # every job carries this same frozen submit half.
-        coordinator.submit_provenance = capture_submit_provenance(
-            snapshot=get_config().provenance.snapshot
-        )
 
         (bind_host,) = {
             backend.execution_coordinator_listen_host for backend in worker_backends
@@ -180,20 +182,19 @@ class ExecutionCoordinator:
                                 sum(len(h.job_ids) for h in handoffs.values()),
                             )
                         for backend in worker_backends:
-                            handoff = handoffs.get(backend.pool_key)
+                            handoff = handoffs.get(backend.pool_key, PoolHandoff())
                             coordinator.pools[backend.pool_key] = backend.start_pool(
                                 coordinator=coordinator,
                                 bound_port=server.bound_port,
                                 auth_token=server.auth_token,
                                 executor_dir=coordinator.executor_dir,
-                                provenance=coordinator.submit_provenance,
                                 handoff=handoff,
                             )
                             logger.info(
                                 "pool started · %s%s",
                                 type(backend).__name__,
                                 f" · inherited {len(handoff.job_ids)} workers"
-                                if handoff is not None
+                                if handoff.job_ids
                                 else "",
                             )
                     coordinator.done.wait()
@@ -254,7 +255,6 @@ class ExecutionCoordinator:
                             **self._counts_detail(),
                         ),
                     )
-                    assert self.submit_provenance is not None
                     return Job(
                         artifacts=[ArtifactSpec.from_furu(node.obj) for node in nodes],
                         provenance=self.submit_provenance,
