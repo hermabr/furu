@@ -8,10 +8,12 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import textwrap
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -45,6 +47,22 @@ from furu.worker.backends.slurm.resources import (
     SlurmResources,
 )
 from furu.worker.protocol import PoolHandoff
+
+
+@pytest.fixture(autouse=True)
+def _slurm_needs_snapshots(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    # SlurmWorkerBackend requires snapshotting, which the test harness turns
+    # off; turn it back on and stub the submit-time ``uv sync`` (the fake
+    # snapshots below have no lock file to sync from).
+    monkeypatch.setattr(
+        slurm_backend_module,
+        "subprocess",
+        SimpleNamespace(run=lambda *args, **kwargs: None),
+    )
+    data = get_config().model_dump()
+    data["provenance"]["snapshot"] = True
+    with override_config(_Config.model_validate(data)):
+        yield
 
 
 class _StubCoordinator(ExecutionCoordinator):
@@ -81,26 +99,41 @@ def _disable_slurm_pool_scale_thread(
 
 
 def _submit_provenance() -> SubmitProvenance:
+    """Provenance for a pretend repo at ``/repo``, backed by an empty snapshot
+    tarball so ``start_pool`` can extract it."""
+    snapshot_id = "stub-snapshot"
+    snapshot_dir = get_config().run_directories.snapshots / snapshot_id
+    if not snapshot_dir.is_dir():
+        snapshot_dir.mkdir(parents=True)
+        with tarfile.open(snapshot_dir / "snapshot.tar.gz", "w:gz"):
+            pass
     return SubmitProvenance(
         git=GitIdentity(
             commit="0" * 40,
             branch=None,
             remote=None,
-            repo_root=".",
+            repo_root="/repo",
             dirty=False,
             diff_stats=None,
         ),
         environment=EnvironmentIdentity(
             python="3.12.0",
             uv="0",
-            project_root=".",
+            project_root="/repo",
             uv_lock_hash="blake2s:0",
             pyproject_hash="blake2s:0",
             furu="0",
         ),
-        snapshot_id=None,
-        submitted=SubmitContext.capture(),
+        snapshot_id=snapshot_id,
+        submitted=SubmitContext.capture().model_copy(update={"cwd": "/repo"}),
     )
+
+
+def _code_dir(provenance: SubmitProvenance) -> Path:
+    assert provenance.snapshot_id is not None
+    return (
+        get_config().run_directories.snapshots / provenance.snapshot_id / "code"
+    ).resolve()
 
 
 def test_worker_cli_passes_coordinator_file(
@@ -118,6 +151,7 @@ def test_worker_cli_passes_coordinator_file(
         idle_timeout: float | None,
         component: str,
         backend: str,
+        materialize_snapshot: bool,
     ) -> None:
         calls.append((coordinator, resource_request, idle_timeout))
 
@@ -159,6 +193,7 @@ def test_worker_cli_reads_resource_request(
         idle_timeout: float | None,
         component: str,
         backend: str,
+        materialize_snapshot: bool,
     ) -> None:
         calls.append((resource_request, idle_timeout))
 
@@ -210,6 +245,7 @@ def test_worker_cli_reads_idle_timeout(
         idle_timeout: float | None,
         component: str,
         backend: str,
+        materialize_snapshot: bool,
     ) -> None:
         calls.append(idle_timeout)
 
@@ -250,6 +286,7 @@ def _run_worker_cli_capturing_component(
         idle_timeout: float | None,
         component: str,
         backend: str,
+        materialize_snapshot: bool,
     ) -> None:
         captured.append(component)
 
@@ -303,6 +340,7 @@ def test_worker_cli_requires_component(
         idle_timeout: float | None,
         component: str,
         backend: str,
+        materialize_snapshot: bool,
     ) -> None:
         raise AssertionError("worker_loop should not be called")
 
@@ -463,10 +501,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     _disable_slurm_pool_scale_thread(monkeypatch)
     record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
     coordinator = _StubCoordinator(2)
-    work_dir = tmp_path / "work"
-    work_dir.mkdir()
     executor_dir = tmp_path / "furu" / "executions" / "executor-1"
-    monkeypatch.chdir(work_dir)
 
     backend = SlurmWorkerBackend(
         max_workers=2,
@@ -484,12 +519,13 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
         reserve_for=ResourceFloor(memory_gib=4),
     )
 
+    provenance = _submit_provenance()
     pool = backend.start_pool(
         coordinator=coordinator,
         bound_port=1234,
         auth_token="secret-token",
         executor_dir=executor_dir,
-        provenance=_submit_provenance(),
+        provenance=provenance,
         handoff=None,
     )
     pool._scale_once()
@@ -505,7 +541,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
 
     argv = sbatch_records[0]["argv"]
     assert "--parsable" in argv
-    assert f"--chdir={work_dir.resolve()}" in argv
+    assert f"--chdir={_code_dir(provenance)}" in argv
     assert f"--output={log_dir.resolve() / 'furu-worker-%A_%a.out'}" in argv
     assert f"--error={log_dir.resolve() / 'furu-worker-%A_%a.err'}" in argv
     assert "--job-name=furu-worker" in argv
@@ -525,10 +561,9 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     script = script_path.read_text()
     assert "--coordinator-file" in script
     assert "secret-token" not in script
-    project_root = EnvironmentIdentity.capture().project_root
     assert script.index('echo "Hello" > /tmp/hey') < script.index("exec uv run")
     assert script.index("unset VIRTUAL_ENV") < script.index("exec uv run")
-    assert f"exec uv run --frozen --project {project_root}" in script
+    assert f"exec uv run --frozen --project {_code_dir(provenance)}" in script
     assert "python -m furu.worker._cli" in script
     assert sys.executable not in script
     assert "--backend slurm" in script
@@ -1171,6 +1206,20 @@ def test_slurm_backend_worker_connect_host_falls_back_to_fqdn(
     )
 
     assert backend.worker_connect_host == "node17.cluster"
+
+
+def test_slurm_backend_requires_snapshotting_at_construction() -> None:
+    data = get_config().model_dump()
+    data["provenance"]["snapshot"] = False
+
+    with (
+        override_config(_Config.model_validate(data)),
+        pytest.raises(ValueError, match="snapshot = true"),
+    ):
+        SlurmWorkerBackend(
+            max_workers=1,
+            resources=SlurmResources(cpus_per_worker=1),
+        )
 
 
 def test_slurm_worker_pool_health_tracks_sacct_jobs(

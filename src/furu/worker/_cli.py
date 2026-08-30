@@ -44,6 +44,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         idle_timeout=args.idle_timeout,
         component=args.component,
         backend=args.backend,
+        materialize_snapshot=True,
     )
     return 0
 

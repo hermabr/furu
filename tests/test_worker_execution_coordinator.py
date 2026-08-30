@@ -1077,6 +1077,7 @@ def test_execution_coordinator_run_fails_when_local_worker_crashes(
         idle_timeout: float | None,
         component: str,
         backend: str,
+        materialize_snapshot: bool,
     ) -> None:
         raise RuntimeError("worker boom")
 
@@ -1702,6 +1703,7 @@ def test_worker_loop_raises_when_server_is_unavailable() -> None:
             idle_timeout=get_config().worker.idle_timeout_seconds,
             component="test-worker",
             backend="test",
+            materialize_snapshot=False,
         )
 
 
@@ -1713,6 +1715,7 @@ def test_worker_loop_exits_after_idle_timeout() -> None:
             idle_timeout=0.05,
             component="test-worker",
             backend="test",
+            materialize_snapshot=False,
         )
 
         assert len(server.hellos) == 1
@@ -1743,6 +1746,7 @@ def test_worker_loop_logs_received_task_and_result(
             idle_timeout=get_config().worker.idle_timeout_seconds,
             component="test-worker",
             backend="test",
+            materialize_snapshot=False,
         )
 
         assert server.results == [JobCompletedResult()]
@@ -1778,6 +1782,7 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
                 idle_timeout=get_config().worker.idle_timeout_seconds,
                 component="test-worker",
                 backend="test",
+                materialize_snapshot=False,
             )
 
         assert server.results == []
@@ -1916,6 +1921,7 @@ def test_worker_loop_cancel_kills_running_job(tmp_path: Path) -> None:
             idle_timeout=5,
             component="test-worker",
             backend="test",
+            materialize_snapshot=False,
         )
 
     (result,) = results
@@ -1955,6 +1961,7 @@ def test_worker_loop_reconnects_when_coordinator_file_changes(
                 idle_timeout=5,
                 component="test-worker",
                 backend="test",
+                materialize_snapshot=False,
             )
 
     assert [hello.running for hello in hellos["old"]] == [[]]
@@ -1992,6 +1999,7 @@ def test_worker_loop_carries_running_job_to_new_coordinator(tmp_path: Path) -> N
                 idle_timeout=5,
                 component="test-worker",
                 backend="test",
+                materialize_snapshot=False,
             )
 
     assert [hello.running for hello in new_hellos] == [job.artifacts]
@@ -2016,6 +2024,7 @@ def test_worker_loop_kills_job_when_coordinator_disappears(
             idle_timeout=5,
             component="test-worker",
             backend="test",
+            materialize_snapshot=False,
         )
 
     assert time.monotonic() - started < 10

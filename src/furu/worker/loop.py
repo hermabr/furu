@@ -95,10 +95,13 @@ def worker_loop(
     idle_timeout: float | None,
     component: str,
     backend: str,
+    materialize_snapshot: bool,
 ) -> None:
     with _scoped_component(component):
         url = _read_url(coordinator)
-        child_slot = ChildSlot(backend=backend)
+        child_slot = ChildSlot(
+            backend=backend, materialize_snapshot=materialize_snapshot
+        )
         events: queue.Queue[_Event] = queue.Queue()
         job: protocol.Job | None = None
         cancelled = threading.Event()  # replaced with each new job

@@ -5,15 +5,17 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 from pydantic import BaseModel, ByteSize, ConfigDict
 
 from furu.config import get_config
-from furu.provenance import _run_git
+from furu.provenance import EnvironmentIdentity, SubmitProvenance, _run_git
 from furu.utils import _hash_dict_deterministically, nfs_safe_unique_name
 
 
@@ -198,6 +200,42 @@ def extract_snapshot(snapshot_id: str) -> Path:
     ):
         tar.extractall(tmp_dir, filter="tar")
     return code_dir
+
+
+@dataclass(frozen=True, slots=True)
+class CodeLocation:
+    """Where to run code from: an interpreter, its project, and a cwd."""
+
+    python: Path
+    project_root: Path
+    cwd: Path
+
+    @classmethod
+    def here(cls) -> CodeLocation:
+        """The live environment of the calling process."""
+        return cls(
+            python=Path(sys.executable),
+            project_root=Path(EnvironmentIdentity.capture().project_root),
+            cwd=Path.cwd(),
+        )
+
+
+def snapshot_code(provenance: SubmitProvenance) -> CodeLocation:
+    if provenance.snapshot_id is None:
+        raise RuntimeError(
+            "job has no code snapshot; Slurm workers require one "
+            "(set [tool.furu.provenance] snapshot = true)"
+        )
+    code_dir = extract_snapshot(provenance.snapshot_id).resolve()
+    repo_root = Path(provenance.git.repo_root)
+    project_root = code_dir / Path(provenance.environment.project_root).relative_to(
+        repo_root
+    )
+    return CodeLocation(
+        python=project_root / ".venv" / "bin" / "python",
+        project_root=project_root,
+        cwd=code_dir / Path(provenance.submitted.cwd).relative_to(repo_root),
+    )
 
 
 def _write_file(path: Path, data: bytes) -> None:

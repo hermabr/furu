@@ -87,6 +87,7 @@ def _run_worker(
             idle_timeout=None,
             component=component,
             backend="local-thread",
+            materialize_snapshot=False,
         )
     except Exception as exc:
         with _scoped_component(component):

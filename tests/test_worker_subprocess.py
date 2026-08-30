@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import subprocess
 import sys
 import threading
 from collections.abc import Iterator
@@ -13,12 +14,14 @@ from subprocess_objects import (
     SubprocessBatchLeaf,
     SubprocessBlockedParent,
     SubprocessCrashLeaf,
+    SubprocessCwdLeaf,
     SubprocessDependencyLeaf,
     SubprocessEnvLeaf,
 )
 
 import furu
 from furu import Metadata, Spec
+from furu.config import get_config
 from furu.metadata import ArtifactSpec
 from furu.provenance import (
     EnvironmentIdentity,
@@ -26,6 +29,7 @@ from furu.provenance import (
     SubmitContext,
     SubmitProvenance,
 )
+from furu.snapshot import create_snapshot
 from furu.worker.backends.local import LocalThreadWorkerBackend
 from furu.worker.execute import ChildSlot
 from furu.worker.protocol import (
@@ -40,7 +44,7 @@ from furu.worker.protocol import (
 
 @pytest.fixture
 def child_slot() -> Iterator[ChildSlot]:
-    slot = ChildSlot(backend="test")
+    slot = ChildSlot(backend="test", materialize_snapshot=False)
     try:
         yield slot
     finally:
@@ -298,6 +302,84 @@ def test_subprocess_cache_hit_completes_without_recreating(
     assert isinstance(result, JobCompletedResult)
     # The child saw the cached result and did not run create() again.
     assert _pid_and_value(leaf)[0] == os.getpid()
+
+
+def _snapshot_repo(repo: Path, marker: str) -> str:
+    """Commit a repo whose checked-in venv python shims this interpreter, so a
+    child spawned from the extracted snapshot actually runs."""
+    python = repo / ".venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text(f'#!/bin/sh\nexec {sys.executable} "$@"\n')
+    python.chmod(0o755)
+    (repo / "marker.txt").write_text(marker)
+    for args in (
+        ["init", "-q", "-b", "main"],
+        ["add", "-Af"],  # -f: the user's global excludes may ignore .venv
+        ["commit", "-qm", "snap"],
+    ):
+        subprocess.run(
+            ["git", "-c", "user.email=t@t.t", "-c", "user.name=t", *args],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+        )
+    return create_snapshot(repo)
+
+
+def test_materializing_slot_runs_each_job_from_its_snapshot(tmp_path: Path) -> None:
+    slot = ChildSlot(backend="test", materialize_snapshot=True)
+    pids_and_cwds: list[tuple[int, str]] = []
+    code_dirs: list[Path] = []
+    try:
+        for marker in (1, 2):
+            repo = tmp_path / f"repo-{marker}"
+            repo.mkdir()
+            snapshot_id = _snapshot_repo(repo, marker=str(marker))
+            leaf = SubprocessCwdLeaf(marker=marker)
+            provenance = SubmitProvenance(
+                git=GitIdentity(
+                    commit="0" * 40,
+                    branch=None,
+                    remote=None,
+                    repo_root=str(repo),
+                    dirty=False,
+                    diff_stats=None,
+                ),
+                # Stale lock hash: the job runs in its snapshot's venv, so the
+                # worker's own environment must not be checked.
+                environment=EnvironmentIdentity(
+                    python="3.12.0",
+                    uv="0",
+                    project_root=str(repo),
+                    uv_lock_hash="blake2s:stale",
+                    pyproject_hash="blake2s:0",
+                    furu="0",
+                ),
+                snapshot_id=snapshot_id,
+                submitted=SubmitContext.capture().model_copy(update={"cwd": str(repo)}),
+            )
+            result = slot.run(
+                Job(
+                    artifacts=[ArtifactSpec.from_furu(leaf)],
+                    provenance=provenance,
+                    process=ProcessSettings.from_metadata(leaf._metadata),
+                )
+            )
+            assert isinstance(result, JobCompletedResult)
+            pids_and_cwds.append(_pid_and_value(leaf))
+            code_dirs.append(
+                (
+                    get_config().run_directories.snapshots / snapshot_id / "code"
+                ).resolve()
+            )
+    finally:
+        slot.close()
+
+    # Each child ran inside its own job's extracted snapshot...
+    assert [Path(cwd) for _, cwd in pids_and_cwds] == code_dirs
+    assert code_dirs[0] != code_dirs[1]
+    # ...so the warm first child was retired when the code changed.
+    assert pids_and_cwds[0][0] != pids_and_cwds[1][0]
 
 
 def test_spec_module_is_imported_only_in_child(

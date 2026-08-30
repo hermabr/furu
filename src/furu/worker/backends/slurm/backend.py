@@ -15,9 +15,9 @@ from furu.config import (
     _WORKER_JSON_CONFIG_FILE_ENV_VAR,
     get_config,
 )
-from furu.provenance import EnvironmentIdentity, SubmitProvenance
+from furu.provenance import SubmitProvenance
 from furu.resources import ResourceFloor, ResourceRequest, resource_request_adapter
-from furu.snapshot import extract_snapshot
+from furu.snapshot import snapshot_code
 from furu.utils import (
     _hash_dict_deterministically,
     replace_private_file,
@@ -51,6 +51,13 @@ class SlurmWorkerBackend:
     export: SlurmExport = None
     use_job_arrays: bool = True
     reserve_for: ResourceFloor = field(default_factory=ResourceFloor)
+
+    def __post_init__(self) -> None:
+        if not get_config().provenance.snapshot:
+            raise ValueError(
+                "Slurm workers run from a code snapshot; "
+                "set [tool.furu.provenance] snapshot = true"
+            )
 
     @property
     def resource_request(self) -> ResourceRequest:
@@ -91,21 +98,12 @@ class SlurmWorkerBackend:
             host=self.worker_connect_host, port=connect_port, auth_token=auth_token
         )
 
-        chdir = Path.cwd().resolve()
-        project_root = Path(EnvironmentIdentity.capture().project_root)
-        if provenance.snapshot_id is not None:
-            # Slurm changes cwd, so paths into the extracted snapshot must be absolute.
-            code_dir = extract_snapshot(provenance.snapshot_id).resolve()
-            repo_root = Path(provenance.git.repo_root)
-            chdir = code_dir / chdir.relative_to(repo_root)
-            project_root = code_dir / Path(
-                provenance.environment.project_root
-            ).relative_to(repo_root)
-            subprocess.run(
-                ["uv", "sync", "--frozen", "--project", str(project_root)],
-                env={k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"},
-                check=True,
-            )
+        code = snapshot_code(provenance)
+        subprocess.run(
+            ["uv", "sync", "--frozen", "--project", str(code.project_root)],
+            env={k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"},
+            check=True,
+        )
         worker_dir = executor_dir.resolve() / "workers" / secrets.token_hex(8)
         worker_dir.mkdir(parents=True)
 
@@ -160,7 +158,7 @@ class SlurmWorkerBackend:
                 "unset VIRTUAL_ENV\n"
                 "\n"
                 "exec uv run --frozen "
-                f"--project {shlex.quote(str(project_root))} \\\n"
+                f"--project {shlex.quote(str(code.project_root))} \\\n"
                 "    python -m furu.worker._cli \\\n"
                 f"    --coordinator-file {shlex.quote(str(coordinator_file))} \\\n"
                 '    --component "${furu_worker_component}" \\\n'
@@ -187,7 +185,7 @@ class SlurmWorkerBackend:
                 assert_never(self.export)
 
         sbatch_base_args = (
-            f"--chdir={chdir}",
+            f"--chdir={code.cwd}",
             f"--output={log_dir / f'{log_name}.out'}",
             f"--error={log_dir / f'{log_name}.err'}",
             f"--job-name={self.job_name}",

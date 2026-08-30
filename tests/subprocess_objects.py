@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import signal
 import sys
+from pathlib import Path
 from typing import Literal
 
 from furu import Metadata, Spec, batched
@@ -61,6 +62,13 @@ class SubprocessBatchLeaf(Spec[str]):
     @batched(lambda _: (None, 8))
     def create(objs: list[SubprocessBatchLeaf]) -> list[str]:
         return [f"{os.getpid()}:{obj.value}" for obj in objs]
+
+
+class SubprocessCwdLeaf(Spec[str]):
+    marker: int = 0
+
+    def create(self) -> str:
+        return f"{os.getpid()}:{Path.cwd()}"
 
 
 class SubprocessCrashLeaf(Spec[str]):
