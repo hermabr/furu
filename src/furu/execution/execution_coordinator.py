@@ -342,7 +342,7 @@ class ExecutionCoordinator:
         self, *, resources: ResourceRequest, max_workers: int
     ) -> int:
         with self.log_context(), self.lock:
-            if self.done.is_set() or max_workers <= 0:
+            if self.done.is_set():
                 return 0
             return sum(
                 1

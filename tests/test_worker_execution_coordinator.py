@@ -752,6 +752,14 @@ def test_count_satisfiable_jobs_caps_at_max_workers_and_filters_by_requirements(
         == 1
     )
     assert (
+        coordinator.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=0)
+        == 0
+    )
+    with pytest.raises(ValueError):
+        coordinator.count_satisfiable_jobs(
+            resources=ResourceRequest(), max_workers=-1
+        )
+    assert (
         coordinator.count_satisfiable_jobs(
             resources=ResourceRequest(gpus=1), max_workers=10
         )
