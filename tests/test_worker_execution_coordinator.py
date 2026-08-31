@@ -2132,6 +2132,7 @@ def test_request_takeover_hands_off_matching_pools_and_closing_ends_old_run() ->
         ) as handoffs:
             assert handoffs == {"k": PoolHandoff(job_ids=["100_0"])}
             assert (matched.handoffs, unmatched.handoffs) == (1, 0)
+            assert _lease_job(old) is None
             assert not old.done.is_set()
         _wait_until(old.done.is_set)
 

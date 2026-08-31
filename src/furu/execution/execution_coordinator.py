@@ -230,7 +230,7 @@ class ExecutionCoordinator:
     def lease_job(self, *, resources: ResourceRequest, worker: str) -> Job | None:
         with self.log_context(), self.lock:
             while True:
-                if self.done.is_set():
+                if self.done.is_set() or self.taken_over_by is not None:
                     return None
                 saw_running = False
                 for node, member_ids in self._satisfiable_leases_locked(resources):
