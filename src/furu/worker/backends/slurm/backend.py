@@ -8,6 +8,7 @@ import socket
 import subprocess
 import threading
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, assert_never
 
@@ -118,6 +119,12 @@ class SlurmWorkerBackend:
             mode=0o600,
         )
         for inherited_file in handoff.worker_files:
+            timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
+            backup_file = inherited_file.with_name(
+                f"{inherited_file.stem}.backup-{timestamp}-{secrets.token_hex(4)}"
+                f"{inherited_file.suffix}"
+            )
+            os.link(inherited_file, backup_file)
             replace_private_file(inherited_file, config_contents, mode=0o600)
         worker_files = [config_file, *handoff.worker_files]
         job_ids = list(handoff.job_ids)

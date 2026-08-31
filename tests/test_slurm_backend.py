@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import os
@@ -2079,6 +2080,11 @@ def test_slurm_backend_start_pool_with_handoff_inherits_workers(
     assert inherited_config == get_config()
     assert inherited_config != old_config
     assert _mode(inherited_file) == 0o600
+    (backup_file,) = inherited_dir.glob("worker.config.backup-*.json")
+    backup_url, backup_config = _read_worker_json_config(backup_file)
+    assert backup_url == "ws://furu:old-token@login01:1"
+    assert backup_config == old_config
+    assert _mode(backup_file) == 0o600
     own_file = pool._script_path.parent / "worker.config.json"
     assert own_file.read_text() == inherited_file.read_text()
     assert pool._worker_files == [own_file, inherited_file]
@@ -2087,6 +2093,25 @@ def test_slurm_backend_start_pool_with_handoff_inherits_workers(
         job_ids=["100_0", "100_1"], worker_files=[own_file, inherited_file]
     )
     assert pool._job_ids == []
+
+    second_backend = dataclasses.replace(backend, worker_connect_host="login03.cluster")
+    second_backend.start_pool(
+        coordinator=_StubCoordinator(),
+        bound_port=5678,
+        auth_token="newer-token",
+        executor_dir=tmp_path / "second-executor",
+        handoff=PoolHandoff(worker_files=[inherited_file]),
+    )
+
+    backups = list(inherited_dir.glob("worker.config.backup-*.json"))
+    assert len(backups) == 2
+    assert {_read_worker_json_config(path)[0] for path in backups} == {
+        "ws://furu:old-token@login01:1",
+        "ws://furu:new-token@login02.cluster:4321",
+    }
+    assert _read_worker_json_config(inherited_file)[0] == (
+        "ws://furu:newer-token@login03.cluster:5678"
+    )
 
 
 def test_slurm_worker_pool_handoff_stops_scaling_and_stop_cancels_nothing(
