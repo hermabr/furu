@@ -12,6 +12,7 @@ from websockets.sync.server import ServerConnection, basic_auth, serve
 
 from furu.execution.execution_coordinator import ExecutionCoordinator
 from furu.logging import get_logger, log_detail
+from furu.worker.backends.protocol import WorkerPool
 from furu.worker.protocol import (
     CancelMessage,
     HelloMessage,
@@ -54,7 +55,7 @@ def _serve_takeover(
     connection: ServerConnection,
     request: TakeoverRequest,
 ) -> None:
-    handoffs: dict[str, PoolHandoff] | None = None
+    pools: dict[str, WorkerPool] | None = None
     with coordinator.lock:
         keys = [key for key in request.pool_keys if key in coordinator.pools]
         if not keys:
@@ -66,7 +67,7 @@ def _serve_takeover(
         else:
             refused = None
             coordinator.taken_over_by = request.executor_id
-            handoffs = {key: coordinator.pools[key].handoff() for key in keys}
+            pools = {key: coordinator.pools[key] for key in keys}
             pool_count = len(coordinator.pools)
     if refused is not None:
         logger.warning(
@@ -74,7 +75,8 @@ def _serve_takeover(
         )
         connection.send(TakeoverRefused(reason=refused).model_dump_json())
         return
-    assert handoffs is not None
+    assert pools is not None
+    handoffs = {key: pool.handoff() for key, pool in pools.items()}
     logger.info(
         "handed off %d of %d pools to exec=%s",
         len(handoffs),

@@ -2139,13 +2139,14 @@ def test_request_takeover_hands_off_matching_pools_and_closing_ends_old_run() ->
     assert old.finish_error == f"execution taken over by exec={new.executor_id[:5]}"
 
 
-def test_request_takeover_hands_off_pools_under_coordinator_lock() -> None:
+def test_request_takeover_hands_off_pools_outside_coordinator_lock() -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
     old = _new_execution_coordinator([leaf])
 
     class LockCheckingPool(_InertPool):
         def handoff(self) -> PoolHandoff:
-            old.lock.notify()  # Raises unless this thread owns the condition lock.
+            with pytest.raises(RuntimeError, match="un-acquired lock"):
+                old.lock.notify()
             return super().handoff()
 
     old.pools = {"k": LockCheckingPool(["100_0"])}
