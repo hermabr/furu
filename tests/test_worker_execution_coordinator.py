@@ -2138,6 +2138,28 @@ def test_request_takeover_hands_off_matching_pools_and_closing_ends_old_run() ->
     assert old.finish_error == f"execution taken over by exec={new.executor_id[:5]}"
 
 
+def test_request_takeover_hands_off_pools_under_coordinator_lock() -> None:
+    leaf = ExecutionCoordinatorLeaf(value=1)
+    old = _new_execution_coordinator([leaf])
+
+    class LockCheckingPool(_InertPool):
+        def handoff(self) -> PoolHandoff:
+            old.lock.notify()  # Raises unless this thread owns the condition lock.
+            return super().handoff()
+
+    old.pools = {"k": LockCheckingPool(["100_0"])}
+
+    with execution_coordinator_server(old, bind_host="127.0.0.1", port=0) as server:
+        with request_takeover(
+            executor_id="b" * 32,
+            source_id=old.executor_id,
+            url=_url_for(server),
+            pool_keys=["k"],
+        ):
+            pass
+        _wait_until(old.done.is_set)
+
+
 def test_request_takeover_without_matching_pool_is_refused() -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
     old = _new_execution_coordinator([leaf])

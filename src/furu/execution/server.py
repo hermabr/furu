@@ -54,25 +54,31 @@ def _serve_takeover(
     connection: ServerConnection,
     request: TakeoverRequest,
 ) -> None:
-    keys = [key for key in request.pool_keys if key in coordinator.pools]
-    if not keys:
-        refused = "no worker pool with a matching configuration"
-    elif coordinator.taken_over_by is not None:
-        refused = f"already being taken over by exec={coordinator.taken_over_by[:5]}"
-    else:
-        refused = None
+    handoffs: dict[str, PoolHandoff] | None = None
+    with coordinator.lock:
+        keys = [key for key in request.pool_keys if key in coordinator.pools]
+        if not keys:
+            refused = "no worker pool with a matching configuration"
+        elif coordinator.taken_over_by is not None:
+            refused = (
+                f"already being taken over by exec={coordinator.taken_over_by[:5]}"
+            )
+        else:
+            refused = None
+            coordinator.taken_over_by = request.executor_id
+            handoffs = {key: coordinator.pools[key].handoff() for key in keys}
+            pool_count = len(coordinator.pools)
     if refused is not None:
         logger.warning(
             "refused takeover by exec=%s: %s", request.executor_id[:5], refused
         )
         connection.send(TakeoverRefused(reason=refused).model_dump_json())
         return
-    coordinator.taken_over_by = request.executor_id
-    handoffs = {key: coordinator.pools[key].handoff() for key in keys}
+    assert handoffs is not None
     logger.info(
         "handed off %d of %d pools to exec=%s",
         len(handoffs),
-        len(coordinator.pools),
+        pool_count,
         request.executor_id[:5],
     )
     connection.send(TakeoverAccepted(handoffs=handoffs).model_dump_json())
