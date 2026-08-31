@@ -181,7 +181,7 @@ class ExecutionCoordinator:
                     with handshake as handoffs:
                         if takeover is not None:
                             if os.environ.get("FURU_TAKEOVER") == prefix:
-                                os.environ.pop("FURU_TAKEOVER", None)
+                                del os.environ["FURU_TAKEOVER"]
                             logger.info(
                                 "taking over exec=%s · inherited %d workers",
                                 takeover[0][:5],
