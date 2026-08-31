@@ -118,7 +118,8 @@ class SlurmWorkerBackend:
             config_contents,
             mode=0o600,
         )
-        for inherited_file in handoff.worker_files:
+        inherited_files = set(handoff.worker_files)
+        for inherited_file in inherited_files:
             timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
             backup_file = inherited_file.with_name(
                 f"{inherited_file.stem}.backup-{timestamp}-{secrets.token_hex(4)}"
@@ -126,7 +127,7 @@ class SlurmWorkerBackend:
             )
             os.link(inherited_file, backup_file)
             replace_private_file(inherited_file, config_contents, mode=0o600)
-        worker_files = [config_file, *handoff.worker_files]
+        worker_files = {config_file, *inherited_files}
         job_ids = list(handoff.job_ids)
 
         resource_request = self.resource_request

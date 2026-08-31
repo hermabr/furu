@@ -49,7 +49,7 @@ class SlurmWorkerPool:
     _use_job_arrays: bool
     _scale_thread: threading.Thread
     _job_ids: list[str]
-    _worker_files: list[Path]
+    _worker_files: set[Path]
 
     def handoff(self) -> PoolHandoff:
         with _scoped_component("slurm"):
@@ -57,7 +57,7 @@ class SlurmWorkerPool:
             self._scale_thread.join()
             job_ids, self._job_ids[:] = list(self._job_ids), []
             logger.info("handed off %d slurm workers", len(job_ids))
-            return PoolHandoff(job_ids=job_ids, worker_files=list(self._worker_files))
+            return PoolHandoff(job_ids=job_ids, worker_files=sorted(self._worker_files))
 
     def stop(self, *, timeout: float) -> None:
         with _scoped_component("slurm"):

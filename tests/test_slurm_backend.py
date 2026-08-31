@@ -2071,7 +2071,10 @@ def test_slurm_backend_start_pool_with_handoff_inherits_workers(
         bound_port=4321,
         auth_token="new-token",
         executor_dir=tmp_path / "executor",
-        handoff=PoolHandoff(job_ids=["100_0", "100_1"], worker_files=[inherited_file]),
+        handoff=PoolHandoff(
+            job_ids=["100_0", "100_1"],
+            worker_files=[inherited_file, inherited_file],
+        ),
     )
 
     assert pool._job_ids == ["100_0", "100_1"]
@@ -2087,7 +2090,7 @@ def test_slurm_backend_start_pool_with_handoff_inherits_workers(
     assert _mode(backup_file) == 0o600
     own_file = pool._script_path.parent / "worker.config.json"
     assert own_file.read_text() == inherited_file.read_text()
-    assert pool._worker_files == [own_file, inherited_file]
+    assert pool._worker_files == {own_file, inherited_file}
 
     assert pool.handoff() == PoolHandoff(
         job_ids=["100_0", "100_1"], worker_files=[own_file, inherited_file]
