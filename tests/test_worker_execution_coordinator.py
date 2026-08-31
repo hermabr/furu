@@ -775,33 +775,56 @@ def test_count_satisfiable_jobs_returns_zero_when_coordinator_is_done() -> None:
 
 
 @pytest.mark.parametrize(
-    ("leaf_type", "expected_log"),
+    ("leaf_factory", "initial_demand"),
     [
-        (ExecutionCoordinatorLeaf, "run is waiting on 2 external jobs"),
-        (BatchedCoordinatorLeaf, "run is waiting on 1 external job (2 specs)"),
+        (lambda value: ExecutionCoordinatorLeaf(value=value), 2),
+        (lambda value: BatchedCoordinatorLeaf(value=value), 1),
     ],
 )
-def test_count_satisfiable_jobs_ignores_external_computations(
+def test_only_discovered_external_computations_are_polled(
     caplog: pytest.LogCaptureFixture,
-    leaf_type: type[Spec],
-    expected_log: str,
+    leaf_factory: Callable[[int], Spec],
+    initial_demand: int,
 ) -> None:
-    leaves = [leaf_type(value=value) for value in range(2)]
+    leaves = [leaf_factory(value) for value in range(2)]
     coordinator = _new_execution_coordinator(leaves)
+    leased: list[Job | None] = []
 
-    with (
-        _mark_running(leaves[0]),
-        _mark_running(leaves[1]),
-        _captured_furu_logs(caplog),
+    with mock.patch(
+        "furu.execution.execution_coordinator._RUNNING_ELSEWHERE_POLL_INTERVAL_S",
+        0.01,
     ):
-        assert (
-            coordinator.count_satisfiable_jobs(
-                resources=ResourceRequest(), max_workers=10
+        with (
+            _mark_running(leaves[0]),
+            _mark_running(leaves[1]),
+            _captured_furu_logs(caplog),
+        ):
+            assert (
+                coordinator.count_satisfiable_jobs(
+                    resources=ResourceRequest(), max_workers=10
+                )
+                == initial_demand
             )
-            == 0
-        )
+            thread = threading.Thread(
+                target=lambda: leased.append(_lease_job(coordinator))
+            )
+            thread.start()
+            _wait_until(
+                lambda: set(coordinator.running_elsewhere)
+                == {leaf.object_id for leaf in leaves}
+            )
+            assert (
+                coordinator.count_satisfiable_jobs(
+                    resources=ResourceRequest(), max_workers=10
+                )
+                == 0
+            )
 
-    assert expected_log in caplog.messages
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+
+    assert isinstance(leased[0], Job)
+    assert "run is waiting on 2 external specs" in caplog.messages
 
 
 def test_worker_cap_limits_satisfiable_jobs_and_leases() -> None:
@@ -2173,15 +2196,23 @@ def test_lease_job_checks_for_locks_acquired_after_dag_build() -> None:
     coordinator = _new_execution_coordinator([held, free])
     leased: list[Job | None] = []
 
-    with _mark_running(held):
-        assert set(coordinator.ready) == {held.object_id, free.object_id}
-        assert _artifact(_lease_job(coordinator)).object_id == free.object_id
-        thread = threading.Thread(target=lambda: leased.append(_lease_job(coordinator)))
-        thread.start()
-        time.sleep(0.3)
-        assert leased == []
+    with mock.patch(
+        "furu.execution.execution_coordinator._RUNNING_ELSEWHERE_POLL_INTERVAL_S",
+        0.01,
+    ):
+        with _mark_running(held):
+            assert set(coordinator.ready) == {held.object_id, free.object_id}
+            assert _artifact(_lease_job(coordinator)).object_id == free.object_id
+            assert set(coordinator.running_elsewhere) == {held.object_id}
+            thread = threading.Thread(
+                target=lambda: leased.append(_lease_job(coordinator))
+            )
+            thread.start()
+            time.sleep(0.1)
+            assert leased == []
 
-    thread.join(timeout=10)
+        thread.join(timeout=10)
+        assert not thread.is_alive()
     assert _artifact(leased[0]).object_id == held.object_id
 
 

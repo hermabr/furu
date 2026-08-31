@@ -8,6 +8,7 @@ from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
+from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, assert_never
 
@@ -41,6 +42,8 @@ if TYPE_CHECKING:
 
 logger = get_logger()
 
+_RUNNING_ELSEWHERE_POLL_INTERVAL_S = 5.0
+
 
 @dataclass(frozen=True, slots=True)
 class RunningJob:
@@ -66,6 +69,7 @@ class ExecutionCoordinator:
     executor_id: str = field(default_factory=lambda: secrets.token_hex(16))
     nodes_by_id: dict[str, DagNode] = field(default_factory=dict)
     ready: dict[str, DagNode] = field(default_factory=dict)
+    running_elsewhere: set[str] = field(default_factory=set)
     blocked: dict[str, DagNode] = field(default_factory=dict)
     running: dict[str, RunningJob] = field(default_factory=dict)
     completed: dict[str, DagNode] = field(default_factory=dict)
@@ -87,6 +91,7 @@ class ExecutionCoordinator:
         failed_retry, failed = self._failed_counts()
         return {
             "ready": len(self.ready),
+            "running_elsewhere": len(self.running_elsewhere),
             "running": len(self.running),
             "blocked": len(self.blocked),
             "completed": len(self.completed),
@@ -232,16 +237,17 @@ class ExecutionCoordinator:
             while True:
                 if self.done.is_set() or self.taken_over_by is not None:
                     return None
-                saw_running = False
+                running_elsewhere: set[str] = set()
                 for node, member_ids in self._satisfiable_leases_locked(resources):
-                    object_ids = tuple(
-                        object_id
-                        for object_id in (node.obj.object_id, *member_ids)
-                        if self.nodes_by_id[object_id].obj.status != "running"
-                    )
+                    object_ids: list[str] = []
+                    for object_id in (node.obj.object_id, *member_ids):
+                        if self.nodes_by_id[object_id].obj.status == "running":
+                            running_elsewhere.add(object_id)
+                        else:
+                            object_ids.append(object_id)
                     if not object_ids:
-                        saw_running = True
                         continue
+                    self._defer_running_elsewhere_locked(running_elsewhere)
                     nodes = self._start_locked(object_ids, worker=worker)
                     node = nodes[0]
                     logger.info(
@@ -261,10 +267,35 @@ class ExecutionCoordinator:
                         provenance=self.submit_provenance,
                         process=ProcessSettings.from_metadata(node.obj._metadata),
                     )
-                self.lock.wait(timeout=1.0 if saw_running else None)
+                self._defer_running_elsewhere_locked(running_elsewhere)
+                if not self.running_elsewhere:
+                    self.lock.wait()
+                    continue
+                if self.lock.wait(timeout=_RUNNING_ELSEWHERE_POLL_INTERVAL_S):
+                    continue
+                available = {
+                    object_id
+                    for object_id in self.running_elsewhere
+                    if self.nodes_by_id[object_id].obj.status != "running"
+                }
+                self.running_elsewhere.difference_update(available)
+                if available:
+                    self.lock.notify_all()
+
+    def _defer_running_elsewhere_locked(self, object_ids: set[str]) -> None:
+        newly_deferred = object_ids - self.running_elsewhere
+        if not newly_deferred:
+            return
+        self.running_elsewhere.update(newly_deferred)
+        logger.info(
+            "run is waiting on %d external spec%s",
+            len(newly_deferred),
+            "" if len(newly_deferred) == 1 else "s",
+        )
 
     def _start_locked(self, object_ids: Sequence[str], *, worker: str) -> list[DagNode]:
         started_at = time.monotonic()
+        self.running_elsewhere.difference_update(object_ids)
         nodes = [self.ready.pop(object_id) for object_id in object_ids]
         for node in nodes:
             self.running[node.obj.object_id] = RunningJob(
@@ -313,30 +344,12 @@ class ExecutionCoordinator:
         with self.log_context(), self.lock:
             if self.done.is_set() or max_workers <= 0:
                 return 0
-            count = 0
-            waiting_on_external = (0, 0)
-            for node, member_ids in self._satisfiable_leases_locked(resources):
-                if all(
-                    self.nodes_by_id[object_id].obj.status == "running"
-                    for object_id in (node.obj.object_id, *member_ids)
-                ):
-                    waiting_on_external = (
-                        waiting_on_external[0] + 1,
-                        waiting_on_external[1] + len(member_ids) + 1,
-                    )
-                    continue
-                count += 1
-                if count >= max_workers:
-                    break
-            jobs, specs = waiting_on_external
-            if jobs:
-                logger.info(
-                    "run is waiting on %d external job%s",
-                    jobs,
-                    ("" if jobs == 1 else "s")
-                    + (f" ({specs} specs)" if jobs != specs else ""),
+            return sum(
+                1
+                for _ in islice(
+                    self._satisfiable_leases_locked(resources), max_workers
                 )
-            return count
+            )
 
     def _satisfiable_leases_locked(
         self, resources: ResourceRequest
@@ -354,7 +367,7 @@ class ExecutionCoordinator:
             running_counts[obj_type] = running_counts.get(obj_type, 0) + 1
         consumed: set[str] = set()
         for object_id, node in self.ready.items():
-            if object_id in consumed:
+            if object_id in consumed or object_id in self.running_elsewhere:
                 continue
             if not resource_request_satisfies(resources, node.obj._metadata.requires):
                 continue
@@ -372,6 +385,8 @@ class ExecutionCoordinator:
                     if len(member_ids) + 1 >= cap:
                         break
                     if other_id in consumed:
+                        continue
+                    if other_id in self.running_elsewhere:
                         continue
                     if other.batch_group is None or other.batch_group[0] != group_key:
                         continue
