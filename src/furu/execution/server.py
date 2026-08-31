@@ -113,6 +113,8 @@ def request_takeover(
                 )
             case TakeoverAccepted(handoffs=handoffs):
                 yield handoffs
+            case _ as unreachable:
+                assert_never(unreachable)
 
 
 def _serve_worker(
