@@ -88,25 +88,6 @@ def _read_url(coordinator: str | Path) -> str:
     return coordinator
 
 
-_URL_GRACE = 90.0
-_URL_POLL_INTERVAL = 5.0
-
-
-def _reread_url(coordinator: str | Path, url: str) -> str | None:
-    if isinstance(coordinator, str):
-        return None
-    deadline = time.monotonic() + _URL_GRACE
-    while True:
-        try:
-            if (new_url := _read_url(coordinator)) != url:
-                return new_url
-        except OSError:
-            pass
-        if time.monotonic() >= deadline:
-            return None
-        time.sleep(_URL_POLL_INTERVAL)
-
-
 def worker_loop(
     *,
     coordinator: str | Path,
@@ -192,7 +173,8 @@ def worker_loop(
                             case _:
                                 assert_never(event)
 
-                if (new_url := _reread_url(coordinator, url)) is not None:
+                new_url = _read_url(coordinator)
+                if new_url != url:
                     url = new_url
                     logger.info("coordinator moved; reconnecting")
                     continue

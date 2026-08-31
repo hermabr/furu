@@ -1941,9 +1941,7 @@ def test_worker_loop_cancel_kills_running_job(tmp_path: Path) -> None:
 def test_worker_loop_reconnects_when_coordinator_file_changes(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(worker_loop_module, "_URL_POLL_INTERVAL", 0.05)
     leaf = ExecutionCoordinatorLeaf(value=1)
     coordinator_file = tmp_path / "coordinator.url"
     hellos: dict[str, list[HelloMessage]] = {"old": [], "new": []}
@@ -1955,7 +1953,6 @@ def test_worker_loop_reconnects_when_coordinator_file_changes(
         )
         connection.send(_job(leaf).model_dump_json())
         results.append(job_result_adapter.validate_json(connection.recv(timeout=10)))
-        monkeypatch.setattr(worker_loop_module, "_URL_GRACE", 0.0)
 
     with _serve(new_handler) as new_url:
 
@@ -1963,12 +1960,7 @@ def test_worker_loop_reconnects_when_coordinator_file_changes(
             hellos["old"].append(
                 HelloMessage.model_validate_json(connection.recv(timeout=5))
             )
-            # A missing file reads as OSError, like NFS ESTALE after the
-            # takeover's rename; the worker must poll through it.
-            coordinator_file.unlink()
-            threading.Timer(
-                0.2, lambda: coordinator_file.write_text(new_url + "\n")
-            ).start()
+            coordinator_file.write_text(new_url + "\n")
 
         with _serve(old_handler) as old_url, _captured_furu_logs(caplog):
             coordinator_file.write_text(old_url + "\n")
@@ -1988,10 +1980,63 @@ def test_worker_loop_reconnects_when_coordinator_file_changes(
     assert "server closed the connection; worker exiting" in caplog.messages
 
 
-def test_worker_loop_carries_running_job_to_new_coordinator(
+def test_worker_loop_does_not_poll_an_unchanged_coordinator_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(worker_loop_module, "_URL_GRACE", 0.0)
+    coordinator_file = tmp_path / "coordinator.url"
+    read_url = worker_loop_module._read_url
+    reads = 0
+
+    def read_url_once_after_connect(coordinator: str | Path) -> str:
+        nonlocal reads
+        reads += 1
+        if reads > 2:
+            raise AssertionError("worker polled an unchanged coordinator URL")
+        return read_url(coordinator)
+
+    monkeypatch.setattr(worker_loop_module, "_read_url", read_url_once_after_connect)
+
+    def handler(connection: ServerConnection) -> None:
+        HelloMessage.model_validate_json(connection.recv(timeout=5))
+
+    with _serve(handler) as url:
+        coordinator_file.write_text(url + "\n")
+        worker_loop(
+            coordinator=coordinator_file,
+            resource_request=ResourceRequest(),
+            idle_timeout=5,
+            component="test-worker",
+            backend="test",
+            materialize_snapshot=False,
+        )
+
+    assert reads == 2
+
+
+def test_worker_loop_fails_when_coordinator_file_disappears(tmp_path: Path) -> None:
+    leaf = GatedExecutionCoordinatorLeaf(value=1, release_file=str(tmp_path / "go"))
+    coordinator_file = tmp_path / "coordinator.url"
+
+    def handler(connection: ServerConnection) -> None:
+        HelloMessage.model_validate_json(connection.recv(timeout=5))
+        connection.send(_job(leaf).model_dump_json())
+        coordinator_file.unlink()
+
+    with _serve(handler) as url, pytest.raises(OSError):
+        coordinator_file.write_text(url + "\n")
+        worker_loop(
+            coordinator=coordinator_file,
+            resource_request=ResourceRequest(),
+            idle_timeout=5,
+            component="test-worker",
+            backend="test",
+            materialize_snapshot=False,
+        )
+
+    assert leaf.status != "done"
+
+
+def test_worker_loop_carries_running_job_to_new_coordinator(tmp_path: Path) -> None:
     release_file = tmp_path / "go"
     leaf = GatedExecutionCoordinatorLeaf(value=7, release_file=str(release_file))
     job = _job(leaf)
