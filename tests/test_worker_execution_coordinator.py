@@ -20,7 +20,7 @@ from websockets.sync.server import ServerConnection, serve
 import furu
 import furu.worker.loop as worker_loop_module
 from furu import GiB, Metadata, Requires, Spec, Throttle, at_least
-from furu.config import get_config
+from furu.config import _Config, _dump_worker_json_config, get_config
 from furu.dag import _add_to_dag
 from furu.execution.execution_coordinator import (
     ExecutionCoordinator,
@@ -226,8 +226,20 @@ def _taking_over(prefix: str) -> Iterator[None]:
         yield
 
 
-def _pool_url_file(executor_dir: Path, pool: str) -> Path:
-    return executor_dir / "workers" / pool / "coordinator.url"
+def _pool_worker_file(executor_dir: Path, pool: str) -> Path:
+    return executor_dir / "workers" / pool / "worker.config.json"
+
+
+def _write_worker_config(
+    path: Path, *, url: str, config: _Config | None = None
+) -> None:
+    path.write_text(
+        _dump_worker_json_config(
+            get_config() if config is None else config,
+            coordinator_url=url,
+        ),
+        encoding="utf-8",
+    )
 
 
 def _wait_until(condition: Callable[[], bool], *, timeout: float = 10.0) -> None:
@@ -1938,12 +1950,12 @@ def test_worker_loop_cancel_kills_running_job(tmp_path: Path) -> None:
     assert leaf.status != "done"
 
 
-def test_worker_loop_reconnects_when_coordinator_file_changes(
+def test_worker_loop_reconnects_when_worker_config_url_changes(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
-    coordinator_file = tmp_path / "coordinator.url"
+    config_file = tmp_path / "worker.config.json"
     hellos: dict[str, list[HelloMessage]] = {"old": [], "new": []}
     results: list[JobResult] = []
 
@@ -1960,12 +1972,12 @@ def test_worker_loop_reconnects_when_coordinator_file_changes(
             hellos["old"].append(
                 HelloMessage.model_validate_json(connection.recv(timeout=5))
             )
-            coordinator_file.write_text(new_url + "\n")
+            _write_worker_config(config_file, url=new_url)
 
         with _serve(old_handler) as old_url, _captured_furu_logs(caplog):
-            coordinator_file.write_text(old_url + "\n")
+            _write_worker_config(config_file, url=old_url)
             worker_loop(
-                coordinator=coordinator_file,
+                coordinator=config_file,
                 resource_request=ResourceRequest(),
                 idle_timeout=5,
                 component="test-worker",
@@ -1980,29 +1992,29 @@ def test_worker_loop_reconnects_when_coordinator_file_changes(
     assert "server closed the connection; worker exiting" in caplog.messages
 
 
-def test_worker_loop_does_not_poll_an_unchanged_coordinator_file(
+def test_worker_loop_reads_unchanged_worker_config_only_after_disconnect(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    coordinator_file = tmp_path / "coordinator.url"
-    read_url = worker_loop_module._read_url
+    config_file = tmp_path / "worker.config.json"
+    read_target = worker_loop_module._read_target
     reads = 0
 
-    def read_url_once_after_connect(coordinator: str | Path) -> str:
+    def count_control_reads(coordinator: str | Path) -> Any:
         nonlocal reads
         reads += 1
         if reads > 2:
-            raise AssertionError("worker polled an unchanged coordinator URL")
-        return read_url(coordinator)
+            raise AssertionError("worker polled an unchanged config file")
+        return read_target(coordinator)
 
-    monkeypatch.setattr(worker_loop_module, "_read_url", read_url_once_after_connect)
+    monkeypatch.setattr(worker_loop_module, "_read_target", count_control_reads)
 
     def handler(connection: ServerConnection) -> None:
         HelloMessage.model_validate_json(connection.recv(timeout=5))
 
     with _serve(handler) as url:
-        coordinator_file.write_text(url + "\n")
+        _write_worker_config(config_file, url=url)
         worker_loop(
-            coordinator=coordinator_file,
+            coordinator=config_file,
             resource_request=ResourceRequest(),
             idle_timeout=5,
             component="test-worker",
@@ -2013,19 +2025,19 @@ def test_worker_loop_does_not_poll_an_unchanged_coordinator_file(
     assert reads == 2
 
 
-def test_worker_loop_fails_when_coordinator_file_disappears(tmp_path: Path) -> None:
+def test_worker_loop_fails_when_worker_config_disappears(tmp_path: Path) -> None:
     leaf = GatedExecutionCoordinatorLeaf(value=1, release_file=str(tmp_path / "go"))
-    coordinator_file = tmp_path / "coordinator.url"
+    config_file = tmp_path / "worker.config.json"
 
     def handler(connection: ServerConnection) -> None:
         HelloMessage.model_validate_json(connection.recv(timeout=5))
         connection.send(_job(leaf).model_dump_json())
-        coordinator_file.unlink()
+        config_file.unlink()
 
     with _serve(handler) as url, pytest.raises(OSError):
-        coordinator_file.write_text(url + "\n")
+        _write_worker_config(config_file, url=url)
         worker_loop(
-            coordinator=coordinator_file,
+            coordinator=config_file,
             resource_request=ResourceRequest(),
             idle_timeout=5,
             component="test-worker",
@@ -2040,7 +2052,7 @@ def test_worker_loop_carries_running_job_to_new_coordinator(tmp_path: Path) -> N
     release_file = tmp_path / "go"
     leaf = GatedExecutionCoordinatorLeaf(value=7, release_file=str(release_file))
     job = _job(leaf)
-    coordinator_file = tmp_path / "coordinator.url"
+    config_file = tmp_path / "worker.config.json"
     new_hellos: list[HelloMessage] = []
     results: list[JobResult] = []
 
@@ -2054,12 +2066,12 @@ def test_worker_loop_carries_running_job_to_new_coordinator(tmp_path: Path) -> N
         def old_handler(connection: ServerConnection) -> None:
             HelloMessage.model_validate_json(connection.recv(timeout=5))
             connection.send(job.model_dump_json())
-            coordinator_file.write_text(new_url + "\n")
+            _write_worker_config(config_file, url=new_url)
 
         with _serve(old_handler) as old_url:
-            coordinator_file.write_text(old_url + "\n")
+            _write_worker_config(config_file, url=old_url)
             worker_loop(
-                coordinator=coordinator_file,
+                coordinator=config_file,
                 resource_request=ResourceRequest(),
                 idle_timeout=5,
                 component="test-worker",
@@ -2070,6 +2082,60 @@ def test_worker_loop_carries_running_job_to_new_coordinator(tmp_path: Path) -> N
     assert [hello.running for hello in new_hellos] == [job.artifacts]
     assert results == [JobCompletedResult()]
     assert leaf.status == "done"
+
+
+def test_worker_loop_exits_when_worker_config_changes(
+    tmp_path: Path,
+) -> None:
+    release_file = tmp_path / "go"
+    old_leaf = GatedExecutionCoordinatorLeaf(value=7, release_file=str(release_file))
+    old_job = _job(old_leaf)
+    config_file = tmp_path / "worker.config.json"
+    old_config = get_config()
+    new_config = old_config.model_copy(
+        update={
+            "directories": old_config.directories.model_copy(
+                update={
+                    "objects": tmp_path / "new-objects",
+                    "snapshots": tmp_path / "new-snapshots",
+                }
+            )
+        }
+    )
+    new_hellos: list[HelloMessage] = []
+
+    def new_handler(connection: ServerConnection) -> None:
+        new_hellos.append(HelloMessage.model_validate_json(connection.recv(timeout=5)))
+
+    with _serve(new_handler) as new_url:
+
+        def old_handler(connection: ServerConnection) -> None:
+            HelloMessage.model_validate_json(connection.recv(timeout=5))
+            connection.send(old_job.model_dump_json())
+            _write_worker_config(
+                config_file,
+                url=new_url,
+                config=new_config,
+            )
+
+        with _serve(old_handler) as old_url:
+            _write_worker_config(
+                config_file,
+                url=old_url,
+                config=old_config,
+            )
+            worker_loop(
+                coordinator=config_file,
+                resource_request=ResourceRequest(),
+                idle_timeout=5,
+                component="test-worker",
+                backend="test",
+                materialize_snapshot=False,
+            )
+
+    assert new_hellos == []
+    assert get_config() == old_config
+    assert old_leaf.status != "done"
 
 
 def test_worker_loop_kills_job_when_coordinator_disappears(
@@ -2149,7 +2215,7 @@ class _InertPool:
 
     def handoff(self) -> PoolHandoff:
         self.handoffs += 1
-        return PoolHandoff(job_ids=self.job_ids, coordinator_files=[])
+        return PoolHandoff(job_ids=self.job_ids, worker_files=[])
 
     def stop(self, *, timeout: float) -> None:
         self.stops += 1
@@ -2299,9 +2365,12 @@ def test_resolve_takeover_matches_unique_prefix() -> None:
     executions = get_config().run_directories.executions
     for executor_id in ("7f3a1" + "0" * 27, "7f3b2" + "0" * 27, "c09e4" + "0" * 27):
         (executions / executor_id).mkdir(parents=True)
-    url_file = _pool_url_file(executions / ("7f3a1" + "0" * 27), "abc")
-    url_file.parent.mkdir(parents=True)
-    url_file.write_text("ws://furu:token@login01:41233\n")
+    worker_file = _pool_worker_file(executions / ("7f3a1" + "0" * 27), "abc")
+    worker_file.parent.mkdir(parents=True)
+    _write_worker_config(
+        worker_file,
+        url="ws://furu:token@login01:41233",
+    )
 
     assert _resolve_takeover("7f3a") == (
         "7f3a1" + "0" * 27,
@@ -2337,13 +2406,13 @@ def test_execution_coordinator_run_inherits_pools_on_takeover() -> None:
         ) -> _InertPool:
             self.coordinators.append(coordinator)
             self.handoffs.append(handoff)
-            url_file = _pool_url_file(executor_dir, self.pool_key)
-            url_file.parent.mkdir(parents=True)
-            url_file.write_text(
-                coordinator_url(
+            worker_file = _pool_worker_file(executor_dir, self.pool_key)
+            worker_file.parent.mkdir(parents=True)
+            _write_worker_config(
+                worker_file,
+                url=coordinator_url(
                     host="127.0.0.1", port=bound_port, auth_token=auth_token
-                )
-                + "\n"
+                ),
             )
             return self.pool
 

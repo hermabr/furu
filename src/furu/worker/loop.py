@@ -11,6 +11,7 @@ from typing import assert_never
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import ClientConnection, connect
 
+from furu.config import _Config, _read_worker_json_config, get_config
 from furu.logging import _scoped_component, get_logger, log_detail
 from furu.resources import ResourceRequest
 from furu.utils import format_duration
@@ -67,25 +68,27 @@ def _start_job_thread(
     child_slot: ChildSlot,
     cancelled: threading.Event,
     events: queue.Queue[_Event],
-) -> None:
+) -> threading.Thread:
     def run() -> None:
         try:
             events.put(_run_job(job, child_slot, cancelled))
         except BaseException as exc:  # noqa: BLE001 -- re-raised on the main thread
             events.put(exc)
 
-    threading.Thread(
+    thread = threading.Thread(
         target=contextvars.copy_context().run,
         args=(run,),
         name="furu-worker-job",
         daemon=True,
-    ).start()
+    )
+    thread.start()
+    return thread
 
 
-def _read_url(coordinator: str | Path) -> str:
+def _read_target(coordinator: str | Path) -> tuple[str, _Config | None]:
     if isinstance(coordinator, Path):
-        return coordinator.read_text(encoding="utf-8").strip()
-    return coordinator
+        return _read_worker_json_config(coordinator)
+    return coordinator, None
 
 
 def worker_loop(
@@ -98,17 +101,21 @@ def worker_loop(
     materialize_snapshot: bool,
 ) -> None:
     with _scoped_component(component):
-        url = _read_url(coordinator)
+        target = _read_target(coordinator)
+        if target[1] is not None and target[1] != get_config():
+            logger.info("worker configuration changed before startup; exiting")
+            return
         child_slot = ChildSlot(
             backend=backend, materialize_snapshot=materialize_snapshot
         )
         events: queue.Queue[_Event] = queue.Queue()
         job: protocol.Job | None = None
+        job_thread: threading.Thread | None = None
         cancelled = threading.Event()  # replaced with each new job
         result: protocol.JobResult | None = None
         try:
             while True:
-                with connect(url, max_size=None) as connection:
+                with connect(target[0], max_size=None) as connection:
                     connection.send(
                         protocol.HelloMessage(
                             worker=component,
@@ -146,7 +153,9 @@ def worker_loop(
                                 assert job is None
                                 job = event
                                 cancelled = threading.Event()
-                                _start_job_thread(job, child_slot, cancelled, events)
+                                job_thread = _start_job_thread(
+                                    job, child_slot, cancelled, events
+                                )
                             case protocol.CancelMessage():
                                 if job is not None and result is None:
                                     logger.info(
@@ -170,12 +179,21 @@ def worker_loop(
                                 except ConnectionClosed:
                                     continue  # Wait for the reader's None before reconnecting.
                                 job = result = None
+                                job_thread = None
                             case _:
                                 assert_never(event)
 
-                new_url = _read_url(coordinator)
-                if new_url != url:
-                    url = new_url
+                new_target = _read_target(coordinator)
+                if new_target != target:
+                    if new_target[1] != target[1]:
+                        if job is not None and result is None:
+                            cancelled.set()
+                            child_slot.kill()
+                            assert job_thread is not None
+                            job_thread.join()
+                        logger.info("worker configuration changed; exiting")
+                        return
+                    target = new_target
                     logger.info("coordinator moved; reconnecting")
                     continue
                 if job is not None and result is None:

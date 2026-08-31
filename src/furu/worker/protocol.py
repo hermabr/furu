@@ -104,7 +104,7 @@ class PoolHandoff(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     job_ids: list[str] = Field(default_factory=list)
-    coordinator_files: list[Path] = Field(default_factory=list)
+    worker_files: list[Path] = Field(default_factory=list)
 
 
 class TakeoverAccepted(BaseModel):

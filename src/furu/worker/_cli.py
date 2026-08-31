@@ -12,7 +12,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--coordinator-file",
         required=True,
         type=Path,
-        help="file holding the execution coordinator URL (credentials included)",
+        help="worker config file holding the execution coordinator URL",
     )
     parser.add_argument(
         "--resources",

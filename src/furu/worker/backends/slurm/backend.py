@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Literal, assert_never
 
 from furu.config import (
     _WORKER_JSON_CONFIG_FILE_ENV_VAR,
+    _dump_worker_json_config,
     get_config,
 )
 from furu.resources import ResourceFloor, ResourceRequest, resource_request_adapter
@@ -105,23 +106,21 @@ class SlurmWorkerBackend:
         worker_dir = executor_dir.resolve() / "workers" / secrets.token_hex(8)
         worker_dir.mkdir(parents=True)
 
-        coordinator_file = worker_dir / "coordinator.url"
-        write_private_file(coordinator_file, url + "\n", mode=0o600)
-        for inherited_file in handoff.coordinator_files:
-            replace_private_file(inherited_file, url + "\n", mode=0o600)
-        coordinator_files = [coordinator_file, *handoff.coordinator_files]
-        job_ids = list(handoff.job_ids)
-
         config = get_config()
         config = config.model_copy(
             update={"directories": config.directories.anchored()}
         )
+        config_contents = _dump_worker_json_config(config, coordinator_url=url)
         config_file = worker_dir / "worker.config.json"
         write_private_file(
             config_file,
-            config.model_dump_json(indent=2) + "\n",
+            config_contents,
             mode=0o600,
         )
+        for inherited_file in handoff.worker_files:
+            replace_private_file(inherited_file, config_contents, mode=0o600)
+        worker_files = [config_file, *handoff.worker_files]
+        job_ids = list(handoff.job_ids)
 
         resource_request = self.resource_request
         resources_json = resource_request_adapter.dump_json(resource_request).decode()
@@ -155,7 +154,7 @@ class SlurmWorkerBackend:
                 "exec uv run --frozen "
                 f"--project {shlex.quote(str(code.project_root))} \\\n"
                 "    python -m furu.worker._cli \\\n"
-                f"    --coordinator-file {shlex.quote(str(coordinator_file))} \\\n"
+                f"    --coordinator-file {shlex.quote(str(config_file))} \\\n"
                 '    --component "${furu_worker_component}" \\\n'
                 "    --backend slurm \\\n"
                 f"    --idle-timeout {self.worker_idle_timeout} \\\n"
@@ -203,7 +202,7 @@ class SlurmWorkerBackend:
                 name="furu-slurm-worker-pool-scale",
             ),
             _job_ids=job_ids,
-            _coordinator_files=coordinator_files,
+            _worker_files=worker_files,
         )
         pool_holder.append(pool)
         pool._scale_thread.start()

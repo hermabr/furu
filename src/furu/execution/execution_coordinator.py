@@ -555,6 +555,8 @@ class ExecutionCoordinator:
 
 
 def _resolve_takeover(prefix: str) -> tuple[str, str]:
+    from furu.config import _read_worker_json_config
+
     executions = get_config().run_directories.executions
     matches = sorted(
         path.name
@@ -567,9 +569,12 @@ def _resolve_takeover(prefix: str) -> tuple[str, str]:
             f"FURU_TAKEOVER={prefix} matches {len(matches)} executions{found}"
         )
     (executor_id,) = matches
-    # Every Slurm pool leaves the URL its workers dial beside its worker script;
-    # any one of them reaches the coordinator.
-    url_files = sorted((executions / executor_id / "workers").glob("*/coordinator.url"))
-    if not url_files:
+    # Every Slurm pool leaves its worker config beside its worker script; any
+    # one of them contains the coordinator URL.
+    worker_files = sorted(
+        (executions / executor_id / "workers").glob("*/worker.config.json")
+    )
+    if not worker_files:
         raise RuntimeError(f"exec={executor_id[:5]} has no worker pools to take over")
-    return executor_id, url_files[0].read_text(encoding="utf-8").strip()
+    coordinator_url, _ = _read_worker_json_config(worker_files[0])
+    return executor_id, coordinator_url

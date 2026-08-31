@@ -22,8 +22,10 @@ import furu.worker.backends.slurm.backend as slurm_backend_module
 from furu.config import (
     _WORKER_JSON_CONFIG_FILE_ENV_VAR,
     _Config,
+    _dump_worker_json_config,
     _FuruDirectories,
     _FuruWorkerConfig,
+    _read_worker_json_config,
     get_config,
 )
 from furu.execution.execution_coordinator import ExecutionCoordinator
@@ -592,27 +594,20 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert "FURU_DIRECTORIES__EXECUTIONS" not in script
 
     assert not (worker_dir / "secrets").exists()
-    coordinator_file = worker_dir / "coordinator.url"
-    assert _mode(coordinator_file) == 0o600
-    assert (
-        coordinator_file.read_text()
-        == "ws://furu:secret-token@execution-coordinator.cluster:1234\n"
-    )
-    assert f"--coordinator-file {coordinator_file}" in script
-
     config_file = worker_dir / "worker.config.json"
     assert _mode(config_file) == 0o600
+    coordinator_url, written_config = _read_worker_json_config(config_file)
     assert (
-        _Config.model_validate_json(config_file.read_text(encoding="utf-8"))
-        == get_config()
+        coordinator_url == "ws://furu:secret-token@execution-coordinator.cluster:1234"
     )
+    assert written_config == get_config()
+    assert f"--coordinator-file {config_file}" in script
     assert f"export {_WORKER_JSON_CONFIG_FILE_ENV_VAR}={config_file}" in script
 
     assert not sbatch_records[0]["has_execution_coordinator_environment"]
 
     assert "secret-token" not in record_file.read_text()
 
-    assert coordinator_file.exists()
     assert config_file.exists()
 
 
@@ -648,12 +643,8 @@ def test_slurm_backend_isolates_worker_files_between_pools(
         assert int(worker_dir.name, 16) >= 0
         assert pool._script_path == worker_dir / "worker.sh"
         assert f"echo pool-{pool_number}" in pool._script_path.read_text()
-        assert (
-            (worker_dir / "coordinator.url")
-            .read_text()
-            .startswith("ws://furu:secret-token@")
-        )
-        assert (worker_dir / "worker.config.json").is_file()
+        coordinator_url, _ = _read_worker_json_config(worker_dir / "worker.config.json")
+        assert coordinator_url.startswith("ws://furu:secret-token@")
         assert (worker_dir / "logs").is_dir()
 
 
@@ -1131,9 +1122,13 @@ def test_slurm_backend_builds_coordinator_url_from_worker_connect_host(
 
     script_path = Path(sbatch_records[0]["argv"][-1])
     script = script_path.read_text()
+    coordinator_url_text, _ = _read_worker_json_config(
+        script_path.parent / "worker.config.json"
+    )
     assert (
-        script_path.parent / "coordinator.url"
-    ).read_text() == "ws://furu:secret-token@execution-coordinator.cluster:4321\n"
+        coordinator_url_text
+        == "ws://furu:secret-token@execution-coordinator.cluster:4321"
+    )
     assert f"--idle-timeout {get_config().worker.idle_timeout_seconds}" in script
 
 
@@ -1165,10 +1160,12 @@ def test_slurm_backend_worker_connect_port_overrides_bound_port(
     assert len(sbatch_records) == 1
 
     script_path = Path(sbatch_records[0]["argv"][-1])
-    coordinator_file_text = (script_path.parent / "coordinator.url").read_text()
+    coordinator_url_text, _ = _read_worker_json_config(
+        script_path.parent / "worker.config.json"
+    )
     assert (
-        coordinator_file_text
-        == "ws://furu:secret-token@execution-coordinator.cluster:9000\n"
+        coordinator_url_text
+        == "ws://furu:secret-token@execution-coordinator.cluster:9000"
     )
     assert ":4321" not in script_path.read_text()
 
@@ -1969,7 +1966,7 @@ def test_slurm_backend_pins_relative_data_directories_for_workers(
         )
 
     (config_file,) = (tmp_path / "executor" / "workers").glob("*/worker.config.json")
-    written = _Config.model_validate_json(config_file.read_text(encoding="utf-8"))
+    _, written = _read_worker_json_config(config_file)
     assert written.directories.objects == work_dir / "furu-data" / "objects"
     assert written.directories.snapshots == work_dir / "furu-data" / "snapshots"
 
@@ -2044,8 +2041,24 @@ def test_slurm_backend_start_pool_with_handoff_inherits_workers(
     _disable_slurm_pool_scale_thread(monkeypatch)
     inherited_dir = tmp_path / "old-executor" / "workers" / "abc"
     inherited_dir.mkdir(parents=True)
-    inherited_file = inherited_dir / "coordinator.url"
-    write_private_file(inherited_file, "ws://furu:old-token@login01:1\n", mode=0o600)
+    inherited_file = inherited_dir / "worker.config.json"
+    old_config = get_config().model_copy(
+        update={
+            "directories": get_config().directories.model_copy(
+                update={
+                    "objects": tmp_path / "old-objects",
+                    "snapshots": tmp_path / "old-snapshots",
+                }
+            )
+        }
+    )
+    write_private_file(
+        inherited_file,
+        _dump_worker_json_config(
+            old_config, coordinator_url="ws://furu:old-token@login01:1"
+        ),
+        mode=0o600,
+    )
     backend = SlurmWorkerBackend(
         max_workers=3,
         resources=SlurmResources(cpus_per_worker=1),
@@ -2057,20 +2070,21 @@ def test_slurm_backend_start_pool_with_handoff_inherits_workers(
         bound_port=4321,
         auth_token="new-token",
         executor_dir=tmp_path / "executor",
-        handoff=PoolHandoff(
-            job_ids=["100_0", "100_1"], coordinator_files=[inherited_file]
-        ),
+        handoff=PoolHandoff(job_ids=["100_0", "100_1"], worker_files=[inherited_file]),
     )
 
     assert pool._job_ids == ["100_0", "100_1"]
-    assert inherited_file.read_text() == "ws://furu:new-token@login02.cluster:4321\n"
+    inherited_url, inherited_config = _read_worker_json_config(inherited_file)
+    assert inherited_url == "ws://furu:new-token@login02.cluster:4321"
+    assert inherited_config == get_config()
+    assert inherited_config != old_config
     assert _mode(inherited_file) == 0o600
-    own_file = pool._script_path.parent / "coordinator.url"
+    own_file = pool._script_path.parent / "worker.config.json"
     assert own_file.read_text() == inherited_file.read_text()
-    assert pool._coordinator_files == [own_file, inherited_file]
+    assert pool._worker_files == [own_file, inherited_file]
 
     assert pool.handoff() == PoolHandoff(
-        job_ids=["100_0", "100_1"], coordinator_files=[own_file, inherited_file]
+        job_ids=["100_0", "100_1"], worker_files=[own_file, inherited_file]
     )
     assert pool._job_ids == []
 

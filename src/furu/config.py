@@ -1,4 +1,5 @@
 import functools
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -131,3 +132,15 @@ def get_config() -> _Config:
 def _set_config(config: _Config) -> None:
     global _config
     _config = config
+
+
+def _dump_worker_json_config(config: _Config, *, coordinator_url: str) -> str:
+    document = config.model_dump(mode="json")
+    document["coordinator_url"] = coordinator_url
+    return json.dumps(document, indent=2) + "\n"
+
+
+def _read_worker_json_config(path: Path) -> tuple[str, _Config]:
+    with path.open(encoding="utf-8") as file:
+        document = json.load(file)
+    return document.pop("coordinator_url"), _Config.model_validate(document)
