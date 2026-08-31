@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
-import sys
 import threading
 from collections import deque
 from dataclasses import dataclass
@@ -12,6 +11,7 @@ from typing import assert_never
 from furu.config import get_config
 from furu.logging import get_logger
 from furu.provenance import EnvironmentIdentity
+from furu.snapshot import CodeLocation
 from furu.worker.protocol import Job, JobFailedResult, JobResult, job_result_adapter
 
 logger = get_logger("worker.execute")
@@ -25,35 +25,46 @@ _RETIRE_TIMEOUT_SECONDS = 5.0
 class _Child:
     process: subprocess.Popen[str]
     environment: dict[str, str]
+    code: CodeLocation
     spec_name: str
     stderr_thread: threading.Thread
     stderr_tail: deque[str]
 
 
 class ChildSlot:
-    """At most one warm child process, tagged with what it last ran."""
+    """At most one warm child process, tagged with what it last ran.
+
+    A materializing slot (remote workers) spawns each child inside the job's
+    code snapshot, so a job always runs the code it was submitted with; a
+    non-materializing slot (local threads) runs children in the live worktree.
+    """
 
     _child: _Child | None
 
-    def __init__(self, *, backend: str) -> None:
+    def __init__(self, *, backend: str, materialize_snapshot: bool) -> None:
         self._backend = backend
+        self._materialize_snapshot = materialize_snapshot
         self._child = None
 
     def run(self, job: Job, *, cancelled: threading.Event) -> JobResult:
-        worker_hash = EnvironmentIdentity.capture().uv_lock_hash
-        submitted_hash = job.provenance.environment.uv_lock_hash
-        if worker_hash != submitted_hash:
-            raise RuntimeError(
-                "worker uv.lock does not match the submitted environment\n"
-                f"  submitted : {submitted_hash}\n"
-                f"  worker    : {worker_hash}\n"
-                "The worker's project checkout is out of sync with the submit host. "
-                "Update the checkout (e.g. git pull) and run:\n"
-                "  uv sync"
-            )
+        if self._materialize_snapshot:
+            code = CodeLocation.from_snapshot(job.provenance)
+        else:
+            code = CodeLocation.here()
+            worker_hash = EnvironmentIdentity.capture().uv_lock_hash
+            submitted_hash = job.provenance.environment.uv_lock_hash
+            if worker_hash != submitted_hash:
+                raise RuntimeError(
+                    "worker uv.lock does not match the submitted environment\n"
+                    f"  submitted : {submitted_hash}\n"
+                    f"  worker    : {worker_hash}\n"
+                    "The worker's project checkout is out of sync with the "
+                    "submit host. Update the checkout (e.g. git pull) and run:\n"
+                    "  uv sync"
+                )
 
         settings = job.process
-        environment = dict(os.environ)
+        environment = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
         for name, value in settings.environment.items():
             if value is None:
                 environment.pop(name, None)
@@ -73,7 +84,9 @@ class ChildSlot:
         child = self._child
         if child is not None:
             same_process_context = (
-                child.process.poll() is None and child.environment == environment
+                child.process.poll() is None
+                and child.environment == environment
+                and child.code == code
             )
             match settings.reuse:
                 case "never":
@@ -88,7 +101,7 @@ class ChildSlot:
                 self.close()
                 child = None
         if child is None:
-            child = self._child = _spawn(environment, backend=self._backend)
+            child = self._child = _spawn(environment, code=code, backend=self._backend)
         child.spec_name = spec_name
 
         if cancelled.is_set():
@@ -120,12 +133,13 @@ class ChildSlot:
         logger.debug("retired child %d", child.process.pid)
 
 
-def _spawn(environment: dict[str, str], *, backend: str) -> _Child:
+def _spawn(environment: dict[str, str], *, code: CodeLocation, backend: str) -> _Child:
     process = subprocess.Popen(
-        [sys.executable, "-m", "furu.worker._child"],
+        [str(code.python), "-m", "furu.worker._child"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        cwd=code.cwd,
         env=environment,
         text=True,
     )
@@ -151,6 +165,7 @@ def _spawn(environment: dict[str, str], *, backend: str) -> _Child:
     return _Child(
         process=process,
         environment=environment,
+        code=code,
         spec_name="",
         stderr_thread=stderr_thread,
         stderr_tail=stderr_tail,

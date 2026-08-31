@@ -7,10 +7,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from furu.logging import _scoped_component, get_logger
-from furu.provenance import SubmitProvenance
 from furu.resources import ResourceRequest, resource_request_adapter
 from furu.utils import _hash_dict_deterministically
-from furu.worker.protocol import coordinator_url
+from furu.worker.protocol import PoolHandoff, coordinator_url
 
 if TYPE_CHECKING:
     from furu.execution.execution_coordinator import ExecutionCoordinator
@@ -41,10 +40,8 @@ class LocalThreadWorkerBackend:
         bound_port: int,
         auth_token: str,
         executor_dir: Path,
-        provenance: SubmitProvenance,
+        handoff: PoolHandoff,
     ) -> LocalThreadWorkerPool:
-        # Workers are threads in the submitting process, so they already run
-        # the exact code the snapshot captured; ``provenance`` is unused.
         url = coordinator_url(
             host=self.execution_coordinator_listen_host,
             port=bound_port,
@@ -86,6 +83,7 @@ def _run_worker(
             idle_timeout=None,
             component=component,
             backend="local-thread",
+            materialize_snapshot=False,
         )
     except Exception as exc:
         with _scoped_component(component):
@@ -103,3 +101,6 @@ class LocalThreadWorkerPool:
     def stop(self, *, timeout: float) -> None:
         for thread in self._threads:
             thread.join(timeout=timeout)
+
+    def handoff(self) -> PoolHandoff:
+        return PoolHandoff()

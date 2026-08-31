@@ -1,4 +1,5 @@
 import logging
+import os
 import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
@@ -6,6 +7,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from unittest import mock
 from uuid import uuid4
 
 import pytest
@@ -18,14 +20,16 @@ from websockets.sync.server import ServerConnection, serve
 import furu
 import furu.worker.loop as worker_loop_module
 from furu import GiB, Metadata, Requires, Spec, Throttle, at_least
-from furu.config import get_config
+from furu.config import _Config, _dump_worker_json_config, get_config
 from furu.dag import _add_to_dag
 from furu.execution.execution_coordinator import (
     ExecutionCoordinator,
     FailedJob,
     RunningJob,
+    _resolve_takeover,
 )
-from furu.execution.server import execution_coordinator_server
+from furu.execution.server import execution_coordinator_server, request_takeover
+from furu.locking import lock
 from furu.logging import _scoped_log_files
 from furu.metadata import ArtifactSpec
 from furu.provenance import (
@@ -35,7 +39,10 @@ from furu.provenance import (
     SubmitProvenance,
 )
 from furu.resources import ResourceFloor, ResourceRequest
-from furu.storage._layout import execution_coordinator_log_path_in
+from furu.storage._layout import (
+    compute_lock_path_in,
+    execution_coordinator_log_path_in,
+)
 from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
 from furu.worker.execute import ChildSlot
 from furu.worker.loop import worker_loop
@@ -47,6 +54,7 @@ from furu.worker.protocol import (
     JobCompletedResult,
     JobFailedResult,
     JobResult,
+    PoolHandoff,
     ProcessSettings,
     coordinator_url,
     job_result_adapter,
@@ -110,8 +118,8 @@ def _new_execution_coordinator(
     coordinator = ExecutionCoordinator(
         max_retries_per_object=max_retries_per_object,
         pool_resources=TEST_POOL_RESOURCES,
+        submit_provenance=_submit_provenance(),
     )
-    coordinator.submit_provenance = _submit_provenance()
     _add_to_dag(coordinator, objs)
     return coordinator
 
@@ -203,6 +211,35 @@ def _connect_worker(
         ).model_dump_json()
     )
     return connection
+
+
+@contextmanager
+def _mark_running(obj: Spec) -> Iterator[None]:
+    obj._base_dir.mkdir(parents=True, exist_ok=True)
+    with lock([compute_lock_path_in(obj._base_dir)]):
+        yield
+
+
+@contextmanager
+def _taking_over(prefix: str) -> Iterator[None]:
+    with mock.patch.dict(os.environ, {"FURU_TAKEOVER": prefix}):
+        yield
+
+
+def _pool_worker_file(executor_dir: Path, pool: str) -> Path:
+    return executor_dir / "workers" / pool / "worker.config.json"
+
+
+def _write_worker_config(
+    path: Path, *, url: str, config: _Config | None = None
+) -> None:
+    path.write_text(
+        _dump_worker_json_config(
+            get_config() if config is None else config,
+            coordinator_url=url,
+        ),
+        encoding="utf-8",
+    )
 
 
 def _wait_until(condition: Callable[[], bool], *, timeout: float = 10.0) -> None:
@@ -623,7 +660,6 @@ def test_execution_coordinator_run_retries_failed_worker_result(
 
     returned = ExecutionCoordinator.run(
         objs,
-        max_retries_per_object=1,
         worker_backends=(LocalThreadWorkerBackend(),),
     )
 
@@ -716,6 +752,14 @@ def test_count_satisfiable_jobs_caps_at_max_workers_and_filters_by_requirements(
         == 1
     )
     assert (
+        coordinator.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=0)
+        == 0
+    )
+    with pytest.raises(ValueError):
+        coordinator.count_satisfiable_jobs(
+            resources=ResourceRequest(), max_workers=-1
+        )
+    assert (
         coordinator.count_satisfiable_jobs(
             resources=ResourceRequest(gpus=1), max_workers=10
         )
@@ -736,6 +780,59 @@ def test_count_satisfiable_jobs_returns_zero_when_coordinator_is_done() -> None:
         coordinator.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=10)
         == 0
     )
+
+
+@pytest.mark.parametrize(
+    ("leaf_factory", "initial_demand"),
+    [
+        (lambda value: ExecutionCoordinatorLeaf(value=value), 2),
+        (lambda value: BatchedCoordinatorLeaf(value=value), 1),
+    ],
+)
+def test_only_discovered_external_computations_are_polled(
+    caplog: pytest.LogCaptureFixture,
+    leaf_factory: Callable[[int], Spec],
+    initial_demand: int,
+) -> None:
+    leaves = [leaf_factory(value) for value in range(2)]
+    coordinator = _new_execution_coordinator(leaves)
+    leased: list[Job | None] = []
+
+    with mock.patch(
+        "furu.execution.execution_coordinator._RUNNING_ELSEWHERE_POLL_INTERVAL_S",
+        0.01,
+    ):
+        with (
+            _mark_running(leaves[0]),
+            _mark_running(leaves[1]),
+            _captured_furu_logs(caplog),
+        ):
+            assert (
+                coordinator.count_satisfiable_jobs(
+                    resources=ResourceRequest(), max_workers=10
+                )
+                == initial_demand
+            )
+            thread = threading.Thread(
+                target=lambda: leased.append(_lease_job(coordinator))
+            )
+            thread.start()
+            _wait_until(
+                lambda: set(coordinator.running_elsewhere)
+                == {leaf.object_id for leaf in leaves}
+            )
+            assert (
+                coordinator.count_satisfiable_jobs(
+                    resources=ResourceRequest(), max_workers=10
+                )
+                == 0
+            )
+
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+
+    assert isinstance(leased[0], Job)
+    assert "run is waiting on 2 external specs" in caplog.messages
 
 
 def test_worker_cap_limits_satisfiable_jobs_and_leases() -> None:
@@ -789,6 +886,7 @@ def test_lease_job_assembles_same_key_batched_group_into_one_job(
     assert coordinator.ready == {}
     detail = caplog.records[-1].__dict__["_furu_detail"]
     assert detail["object_ids"] == ",".join(obj.object_id for obj in objs)
+    assert detail["member_count"] == 3
 
     for artifact in job.artifacts:
         coordinator.job_result(artifact.object_id, JobCompletedResult())
@@ -1052,6 +1150,7 @@ def test_execution_coordinator_run_fails_when_local_worker_crashes(
         idle_timeout: float | None,
         component: str,
         backend: str,
+        materialize_snapshot: bool,
     ) -> None:
         raise RuntimeError("worker boom")
 
@@ -1085,11 +1184,11 @@ def test_execution_coordinator_run_uses_worker_backend() -> None:
             bound_port: int,
             auth_token: str,
             executor_dir: Path,
-            provenance: SubmitProvenance,
+            handoff: PoolHandoff,
         ) -> LocalThreadWorkerPool:
             self.bound_ports.append(bound_port)
             self.auth_tokens.append(auth_token)
-            self.provenances.append(provenance)
+            self.provenances.append(coordinator.submit_provenance)
             return LocalThreadWorkerBackend(
                 max_workers=1,
                 resource_request=ResourceRequest(),
@@ -1098,7 +1197,7 @@ def test_execution_coordinator_run_uses_worker_backend() -> None:
                 bound_port=bound_port,
                 auth_token=auth_token,
                 executor_dir=executor_dir,
-                provenance=provenance,
+                handoff=handoff,
             )
 
     leaf = ExecutionCoordinatorLeaf(value=11)
@@ -1134,7 +1233,7 @@ def test_execution_coordinator_run_passes_executor_dir_to_worker_backend() -> No
             bound_port: int,
             auth_token: str,
             executor_dir: Path,
-            provenance: SubmitProvenance,
+            handoff: PoolHandoff,
         ) -> LocalThreadWorkerPool:
             self.executor_dirs.append(executor_dir)
             return LocalThreadWorkerBackend(
@@ -1145,7 +1244,7 @@ def test_execution_coordinator_run_passes_executor_dir_to_worker_backend() -> No
                 bound_port=bound_port,
                 auth_token=auth_token,
                 executor_dir=executor_dir,
-                provenance=provenance,
+                handoff=handoff,
             )
 
     leaf = ExecutionCoordinatorLeaf(value=12)
@@ -1207,7 +1306,7 @@ def test_execution_coordinator_run_returns_when_all_objects_are_already_complete
             bound_port: int,
             auth_token: str,
             executor_dir: Path,
-            provenance: SubmitProvenance,
+            handoff: PoolHandoff,
         ) -> LocalThreadWorkerPool:
             raise AssertionError("coordinator started workers with no runnable objects")
 
@@ -1222,13 +1321,9 @@ def test_execution_coordinator_run_returns_when_all_objects_are_already_complete
     returned = ExecutionCoordinator.run(objs, worker_backends=(UnexpectedBackend(),))
 
     assert returned is objs
-    (executor_dir,) = executions_dir.iterdir()
-    log_text = execution_coordinator_log_path_in(executor_dir).read_text(
-        encoding="utf-8"
-    )
-    assert "all objects already exist; no execution coordinator work to run" in log_text
-    assert "server listening on " not in log_text
-    assert "furu execution coordinator finished successfully" in log_text
+    # A no-op run returns before creating an executor dir or capturing
+    # provenance; nothing appears under executions/.
+    assert not executions_dir.exists() or list(executions_dir.iterdir()) == []
 
 
 def test_execution_coordinator_run_starts_backend_pool_and_stops_and_joins_when_done() -> (
@@ -1239,6 +1334,9 @@ def test_execution_coordinator_run_starts_backend_pool_and_stops_and_joins_when_
             self.events: list[str] = []
             self.stop_timeouts: list[float] = []
             self.worker_thread: threading.Thread | None = None
+
+        def handoff(self) -> PoolHandoff:
+            return PoolHandoff()
 
         def stop(self, *, timeout: float) -> None:
             self.events.append("stop")
@@ -1261,7 +1359,7 @@ def test_execution_coordinator_run_starts_backend_pool_and_stops_and_joins_when_
             bound_port: int,
             auth_token: str,
             executor_dir: Path,
-            provenance: SubmitProvenance,
+            handoff: PoolHandoff,
         ) -> RecordingPool:
             self.pool.events.append("start_pool")
             server_url = f"ws://127.0.0.1:{bound_port}"
@@ -1294,22 +1392,17 @@ def test_execution_coordinator_run_stops_backend_pool_when_interrupted() -> None
             raise KeyboardInterrupt
 
     class InterruptingCoordinator(ExecutionCoordinator):
-        def __init__(
-            self,
-            *,
-            max_retries_per_object: int,
-            pool_resources: tuple[ResourceRequest, ...],
-        ) -> None:
-            super().__init__(
-                max_retries_per_object=max_retries_per_object,
-                pool_resources=pool_resources,
-            )
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
             self.done = InterruptingEvent()
 
     class RecordingPool:
         def __init__(self) -> None:
             self.events: list[str] = []
             self.stop_timeouts: list[float] = []
+
+        def handoff(self) -> PoolHandoff:
+            return PoolHandoff()
 
         def stop(self, *, timeout: float) -> None:
             self.events.append("stop")
@@ -1330,7 +1423,7 @@ def test_execution_coordinator_run_stops_backend_pool_when_interrupted() -> None
             bound_port: int,
             auth_token: str,
             executor_dir: Path,
-            provenance: SubmitProvenance,
+            handoff: PoolHandoff,
         ) -> RecordingPool:
             self.pool.events.append("start_pool")
             return self.pool
@@ -1354,6 +1447,9 @@ def test_execution_coordinator_run_uses_worker_backend_execution_coordinator_lis
     class RecordingPool:
         worker_thread: threading.Thread | None = None
 
+        def handoff(self) -> PoolHandoff:
+            return PoolHandoff()
+
         def stop(self, *, timeout: float) -> None:
             if self.worker_thread is not None:
                 self.worker_thread.join(timeout=timeout)
@@ -1373,7 +1469,7 @@ def test_execution_coordinator_run_uses_worker_backend_execution_coordinator_lis
             bound_port: int,
             auth_token: str,
             executor_dir: Path,
-            provenance: SubmitProvenance,
+            handoff: PoolHandoff,
         ) -> RecordingPool:
             server_url = f"ws://{self.execution_coordinator_listen_host}:{bound_port}"
             self.server_urls.append(server_url)
@@ -1588,7 +1684,7 @@ def test_execution_coordinator_run_registers_pools_by_key() -> None:
             bound_port: int,
             auth_token: str,
             executor_dir: Path,
-            provenance: SubmitProvenance,
+            handoff: PoolHandoff,
         ) -> LocalThreadWorkerPool:
             self.coordinators.append(coordinator)
             pool = LocalThreadWorkerBackend().start_pool(
@@ -1596,7 +1692,7 @@ def test_execution_coordinator_run_registers_pools_by_key() -> None:
                 bound_port=bound_port,
                 auth_token=auth_token,
                 executor_dir=executor_dir,
-                provenance=provenance,
+                handoff=handoff,
             )
             self.pools.append(pool)
             return pool
@@ -1658,6 +1754,7 @@ def test_worker_loop_raises_when_server_is_unavailable() -> None:
             idle_timeout=get_config().worker.idle_timeout_seconds,
             component="test-worker",
             backend="test",
+            materialize_snapshot=False,
         )
 
 
@@ -1669,6 +1766,7 @@ def test_worker_loop_exits_after_idle_timeout() -> None:
             idle_timeout=0.05,
             component="test-worker",
             backend="test",
+            materialize_snapshot=False,
         )
 
         assert len(server.hellos) == 1
@@ -1699,6 +1797,7 @@ def test_worker_loop_logs_received_task_and_result(
             idle_timeout=get_config().worker.idle_timeout_seconds,
             component="test-worker",
             backend="test",
+            materialize_snapshot=False,
         )
 
         assert server.results == [JobCompletedResult()]
@@ -1734,6 +1833,7 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
                 idle_timeout=get_config().worker.idle_timeout_seconds,
                 component="test-worker",
                 backend="test",
+                materialize_snapshot=False,
             )
 
         assert server.results == []
@@ -1872,6 +1972,7 @@ def test_worker_loop_cancel_kills_running_job(tmp_path: Path) -> None:
             idle_timeout=5,
             component="test-worker",
             backend="test",
+            materialize_snapshot=False,
         )
 
     (result,) = results
@@ -1880,11 +1981,12 @@ def test_worker_loop_cancel_kills_running_job(tmp_path: Path) -> None:
     assert leaf.status != "done"
 
 
-def test_worker_loop_reconnects_when_coordinator_file_changes(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+def test_worker_loop_reconnects_when_worker_config_url_changes(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
-    coordinator_file = tmp_path / "coordinator.url"
+    config_file = tmp_path / "worker.config.json"
     hellos: dict[str, list[HelloMessage]] = {"old": [], "new": []}
     results: list[JobResult] = []
 
@@ -1901,16 +2003,17 @@ def test_worker_loop_reconnects_when_coordinator_file_changes(
             hellos["old"].append(
                 HelloMessage.model_validate_json(connection.recv(timeout=5))
             )
-            coordinator_file.write_text(new_url + "\n")
+            _write_worker_config(config_file, url=new_url)
 
         with _serve(old_handler) as old_url, _captured_furu_logs(caplog):
-            coordinator_file.write_text(old_url + "\n")
+            _write_worker_config(config_file, url=old_url)
             worker_loop(
-                coordinator=coordinator_file,
+                coordinator=config_file,
                 resource_request=ResourceRequest(),
                 idle_timeout=5,
                 component="test-worker",
                 backend="test",
+                materialize_snapshot=False,
             )
 
     assert [hello.running for hello in hellos["old"]] == [[]]
@@ -1920,11 +2023,67 @@ def test_worker_loop_reconnects_when_coordinator_file_changes(
     assert "server closed the connection; worker exiting" in caplog.messages
 
 
+def test_worker_loop_reads_unchanged_worker_config_only_after_disconnect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_file = tmp_path / "worker.config.json"
+    read_target = worker_loop_module._read_target
+    reads = 0
+
+    def count_control_reads(coordinator: str | Path) -> Any:
+        nonlocal reads
+        reads += 1
+        if reads > 2:
+            raise AssertionError("worker polled an unchanged config file")
+        return read_target(coordinator)
+
+    monkeypatch.setattr(worker_loop_module, "_read_target", count_control_reads)
+
+    def handler(connection: ServerConnection) -> None:
+        HelloMessage.model_validate_json(connection.recv(timeout=5))
+
+    with _serve(handler) as url:
+        _write_worker_config(config_file, url=url)
+        worker_loop(
+            coordinator=config_file,
+            resource_request=ResourceRequest(),
+            idle_timeout=5,
+            component="test-worker",
+            backend="test",
+            materialize_snapshot=False,
+        )
+
+    assert reads == 2
+
+
+def test_worker_loop_fails_when_worker_config_disappears(tmp_path: Path) -> None:
+    leaf = GatedExecutionCoordinatorLeaf(value=1, release_file=str(tmp_path / "go"))
+    config_file = tmp_path / "worker.config.json"
+
+    def handler(connection: ServerConnection) -> None:
+        HelloMessage.model_validate_json(connection.recv(timeout=5))
+        connection.send(_job(leaf).model_dump_json())
+        config_file.unlink()
+
+    with _serve(handler) as url, pytest.raises(OSError):
+        _write_worker_config(config_file, url=url)
+        worker_loop(
+            coordinator=config_file,
+            resource_request=ResourceRequest(),
+            idle_timeout=5,
+            component="test-worker",
+            backend="test",
+            materialize_snapshot=False,
+        )
+
+    assert leaf.status != "done"
+
+
 def test_worker_loop_carries_running_job_to_new_coordinator(tmp_path: Path) -> None:
     release_file = tmp_path / "go"
     leaf = GatedExecutionCoordinatorLeaf(value=7, release_file=str(release_file))
     job = _job(leaf)
-    coordinator_file = tmp_path / "coordinator.url"
+    config_file = tmp_path / "worker.config.json"
     new_hellos: list[HelloMessage] = []
     results: list[JobResult] = []
 
@@ -1938,21 +2097,76 @@ def test_worker_loop_carries_running_job_to_new_coordinator(tmp_path: Path) -> N
         def old_handler(connection: ServerConnection) -> None:
             HelloMessage.model_validate_json(connection.recv(timeout=5))
             connection.send(job.model_dump_json())
-            coordinator_file.write_text(new_url + "\n")
+            _write_worker_config(config_file, url=new_url)
 
         with _serve(old_handler) as old_url:
-            coordinator_file.write_text(old_url + "\n")
+            _write_worker_config(config_file, url=old_url)
             worker_loop(
-                coordinator=coordinator_file,
+                coordinator=config_file,
                 resource_request=ResourceRequest(),
                 idle_timeout=5,
                 component="test-worker",
                 backend="test",
+                materialize_snapshot=False,
             )
 
     assert [hello.running for hello in new_hellos] == [job.artifacts]
     assert results == [JobCompletedResult()]
     assert leaf.status == "done"
+
+
+def test_worker_loop_exits_when_worker_config_changes(
+    tmp_path: Path,
+) -> None:
+    release_file = tmp_path / "go"
+    old_leaf = GatedExecutionCoordinatorLeaf(value=7, release_file=str(release_file))
+    old_job = _job(old_leaf)
+    config_file = tmp_path / "worker.config.json"
+    old_config = get_config()
+    new_config = old_config.model_copy(
+        update={
+            "directories": old_config.directories.model_copy(
+                update={
+                    "objects": tmp_path / "new-objects",
+                    "snapshots": tmp_path / "new-snapshots",
+                }
+            )
+        }
+    )
+    new_hellos: list[HelloMessage] = []
+
+    def new_handler(connection: ServerConnection) -> None:
+        new_hellos.append(HelloMessage.model_validate_json(connection.recv(timeout=5)))
+
+    with _serve(new_handler) as new_url:
+
+        def old_handler(connection: ServerConnection) -> None:
+            HelloMessage.model_validate_json(connection.recv(timeout=5))
+            connection.send(old_job.model_dump_json())
+            _write_worker_config(
+                config_file,
+                url=new_url,
+                config=new_config,
+            )
+
+        with _serve(old_handler) as old_url:
+            _write_worker_config(
+                config_file,
+                url=old_url,
+                config=old_config,
+            )
+            worker_loop(
+                coordinator=config_file,
+                resource_request=ResourceRequest(),
+                idle_timeout=5,
+                component="test-worker",
+                backend="test",
+                materialize_snapshot=False,
+            )
+
+    assert new_hellos == []
+    assert get_config() == old_config
+    assert old_leaf.status != "done"
 
 
 def test_worker_loop_kills_job_when_coordinator_disappears(
@@ -1972,6 +2186,7 @@ def test_worker_loop_kills_job_when_coordinator_disappears(
             idle_timeout=5,
             component="test-worker",
             backend="test",
+            materialize_snapshot=False,
         )
 
     assert time.monotonic() - started < 10
@@ -1981,3 +2196,302 @@ def test_worker_loop_kills_job_when_coordinator_disappears(
         in caplog.messages
     )
     assert "server closed the connection; worker exiting" in caplog.messages
+
+
+def test_lease_job_checks_for_locks_acquired_after_dag_build() -> None:
+    held = ExecutionCoordinatorLeaf(value=1)
+    free = ExecutionCoordinatorLeaf(value=2)
+    coordinator = _new_execution_coordinator([held, free])
+    leased: list[Job | None] = []
+
+    with mock.patch(
+        "furu.execution.execution_coordinator._RUNNING_ELSEWHERE_POLL_INTERVAL_S",
+        0.01,
+    ):
+        with _mark_running(held):
+            assert set(coordinator.ready) == {held.object_id, free.object_id}
+            assert _artifact(_lease_job(coordinator)).object_id == free.object_id
+            assert set(coordinator.running_elsewhere) == {held.object_id}
+            thread = threading.Thread(
+                target=lambda: leased.append(_lease_job(coordinator))
+            )
+            thread.start()
+            time.sleep(0.1)
+            assert leased == []
+
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+    assert _artifact(leased[0]).object_id == held.object_id
+
+
+def test_adopt_accepts_job_started_after_dag_build() -> None:
+    held = ExecutionCoordinatorLeaf(value=1)
+    coordinator = _new_execution_coordinator([held])
+
+    with _mark_running(held):
+        assert coordinator.adopt([ArtifactSpec.from_furu(held)], worker="w") is True
+
+    assert coordinator.running[held.object_id].worker == "w"
+
+
+def test_lease_job_checks_every_batch_member_for_active_locks() -> None:
+    held = BatchedCoordinatorLeaf(value=1)
+    free = BatchedCoordinatorLeaf(value=2)
+    coordinator = _new_execution_coordinator([held, free])
+
+    with _mark_running(held):
+        job = _lease_job(coordinator)
+
+    assert isinstance(job, Job)
+    assert [artifact.object_id for artifact in job.artifacts] == [free.object_id]
+
+
+class _InertPool:
+    def __init__(self, job_ids: list[str]) -> None:
+        self.job_ids = job_ids
+        self.handoffs = 0
+        self.stops = 0
+
+    def handoff(self) -> PoolHandoff:
+        self.handoffs += 1
+        return PoolHandoff(job_ids=self.job_ids, worker_files=[])
+
+    def stop(self, *, timeout: float) -> None:
+        self.stops += 1
+
+
+def _url_for(server: Any) -> str:
+    return coordinator_url(
+        host="127.0.0.1", port=server.bound_port, auth_token=server.auth_token
+    )
+
+
+def test_request_takeover_hands_off_matching_pools_and_closing_ends_old_run() -> None:
+    leaf = ExecutionCoordinatorLeaf(value=1)
+    old = _new_execution_coordinator([leaf])
+    matched, unmatched = _InertPool(["100_0"]), _InertPool(["200_0"])
+    old.pools = {"k": matched, "n": unmatched}
+    new = _new_execution_coordinator([leaf])
+
+    with execution_coordinator_server(old, bind_host="127.0.0.1", port=0) as server:
+        with request_takeover(
+            executor_id=new.executor_id,
+            source_id=old.executor_id,
+            url=_url_for(server),
+            pool_keys=["k", "m"],
+        ) as handoffs:
+            assert handoffs == {"k": PoolHandoff(job_ids=["100_0"])}
+            assert (matched.handoffs, unmatched.handoffs) == (1, 0)
+            assert _lease_job(old) is None
+            assert not old.done.is_set()
+        _wait_until(old.done.is_set)
+
+    assert old.finish_error == f"execution taken over by exec={new.executor_id[:5]}"
+
+
+def test_request_takeover_hands_off_pools_outside_coordinator_lock() -> None:
+    leaf = ExecutionCoordinatorLeaf(value=1)
+    old = _new_execution_coordinator([leaf])
+
+    class LockCheckingPool(_InertPool):
+        def handoff(self) -> PoolHandoff:
+            with pytest.raises(RuntimeError, match="un-acquired lock"):
+                old.lock.notify()
+            return super().handoff()
+
+    old.pools = {"k": LockCheckingPool(["100_0"])}
+
+    with execution_coordinator_server(old, bind_host="127.0.0.1", port=0) as server:
+        with request_takeover(
+            executor_id="b" * 32,
+            source_id=old.executor_id,
+            url=_url_for(server),
+            pool_keys=["k"],
+        ):
+            pass
+        _wait_until(old.done.is_set)
+
+
+def test_request_takeover_without_matching_pool_is_refused() -> None:
+    leaf = ExecutionCoordinatorLeaf(value=1)
+    old = _new_execution_coordinator([leaf])
+    pool = _InertPool(["100_0"])
+    old.pools = {"k": pool}
+
+    with execution_coordinator_server(old, bind_host="127.0.0.1", port=0) as server:
+        with (
+            pytest.raises(
+                RuntimeError,
+                match="refused the takeover: no worker pool with a matching",
+            ),
+            request_takeover(
+                executor_id="b" * 32,
+                source_id=old.executor_id,
+                url=_url_for(server),
+                pool_keys=["m"],
+            ),
+        ):
+            raise AssertionError("unreachable")
+        assert pool.handoffs == 0
+        assert not old.done.is_set()
+
+
+def test_request_takeover_refuses_second_concurrent_takeover() -> None:
+    leaf = ExecutionCoordinatorLeaf(value=1)
+    old = _new_execution_coordinator([leaf])
+    old.pools = {"k": _InertPool(["100_0"])}
+
+    with execution_coordinator_server(old, bind_host="127.0.0.1", port=0) as server:
+        with (
+            request_takeover(
+                executor_id="b" * 32,
+                source_id=old.executor_id,
+                url=_url_for(server),
+                pool_keys=["k"],
+            ),
+            pytest.raises(
+                RuntimeError, match="refused the takeover: already being taken over"
+            ),
+            request_takeover(
+                executor_id="c" * 32,
+                source_id=old.executor_id,
+                url=_url_for(server),
+                pool_keys=["k"],
+            ),
+        ):
+            raise AssertionError("unreachable")
+        _wait_until(old.done.is_set)
+
+    assert old.finish_error == f"execution taken over by exec={'b' * 5}"
+
+
+def test_request_takeover_failing_midway_still_ends_old_run() -> None:
+    leaf = ExecutionCoordinatorLeaf(value=1)
+    old = _new_execution_coordinator([leaf])
+    old.pools = {"k": _InertPool(["100_0"])}
+    new = _new_execution_coordinator([leaf])
+
+    with execution_coordinator_server(old, bind_host="127.0.0.1", port=0) as server:
+        with (
+            pytest.raises(OSError, match="sbatch script would not write"),
+            request_takeover(
+                executor_id=new.executor_id,
+                source_id=old.executor_id,
+                url=_url_for(server),
+                pool_keys=["k"],
+            ),
+        ):
+            raise OSError("sbatch script would not write")
+        _wait_until(old.done.is_set)
+
+    assert old.finish_error == f"execution taken over by exec={new.executor_id[:5]}"
+
+
+def test_request_takeover_reports_unreachable_coordinator() -> None:
+    with (
+        pytest.raises(RuntimeError, match="cannot reach exec=7f3a1"),
+        request_takeover(
+            executor_id="b" * 32,
+            source_id="7f3a1" + "0" * 27,
+            url="ws://furu:token@127.0.0.1:1",
+            pool_keys=[],
+        ),
+    ):
+        raise AssertionError("unreachable")
+
+
+def test_resolve_takeover_matches_unique_prefix() -> None:
+    executions = get_config().run_directories.executions
+    for executor_id in ("7f3a1" + "0" * 27, "7f3b2" + "0" * 27, "c09e4" + "0" * 27):
+        (executions / executor_id).mkdir(parents=True)
+    worker_file = _pool_worker_file(executions / ("7f3a1" + "0" * 27), "abc")
+    worker_file.parent.mkdir(parents=True)
+    _write_worker_config(
+        worker_file,
+        url="ws://furu:token@login01:41233",
+    )
+
+    assert _resolve_takeover("7f3a") == (
+        "7f3a1" + "0" * 27,
+        "ws://furu:token@login01:41233",
+    )
+    with pytest.raises(RuntimeError, match=r"matches 2 executions; candidates: 7f3a1"):
+        _resolve_takeover("7f3")
+    with pytest.raises(RuntimeError, match="matches 0 executions"):
+        _resolve_takeover("zzz")
+    with pytest.raises(RuntimeError, match="exec=c09e4 has no worker pools"):
+        _resolve_takeover("c09e4")
+
+
+def test_execution_coordinator_run_inherits_pools_on_takeover() -> None:
+    class InertBackend:
+        execution_coordinator_listen_host = "127.0.0.1"
+        resource_request = ResourceRequest(gpus=1)
+        pool_key = "inert"
+
+        def __init__(self) -> None:
+            self.pool = _InertPool(["100_0", "100_1"])
+            self.coordinators: list[ExecutionCoordinator] = []
+            self.handoffs: list[PoolHandoff] = []
+
+        def start_pool(
+            self,
+            *,
+            coordinator: ExecutionCoordinator,
+            bound_port: int,
+            auth_token: str,
+            executor_dir: Path,
+            handoff: PoolHandoff,
+        ) -> _InertPool:
+            self.coordinators.append(coordinator)
+            self.handoffs.append(handoff)
+            worker_file = _pool_worker_file(executor_dir, self.pool_key)
+            worker_file.parent.mkdir(parents=True)
+            _write_worker_config(
+                worker_file,
+                url=coordinator_url(
+                    host="127.0.0.1", port=bound_port, auth_token=auth_token
+                ),
+            )
+            return self.pool
+
+    leaf = ExecutionCoordinatorLeaf(value=uuid4().int)
+    old_backend = InertBackend()
+    old_errors: list[BaseException] = []
+
+    def run_old() -> None:
+        try:
+            ExecutionCoordinator.run([leaf], worker_backends=(old_backend,))
+        except BaseException as exc:
+            old_errors.append(exc)
+
+    old_thread = threading.Thread(target=run_old)
+    old_thread.start()
+    _wait_until(lambda: len(old_backend.handoffs) == 1)
+    old = old_backend.coordinators[0]
+    assert old_backend.handoffs == [PoolHandoff()]
+
+    new_backend = InertBackend()
+    with _taking_over(old.executor_id[:5]):
+        ExecutionCoordinator.run(
+            [leaf], worker_backends=(LocalThreadWorkerBackend(), new_backend)
+        )
+        assert old.executor_dir.is_dir()
+        assert "FURU_TAKEOVER" not in os.environ
+        ExecutionCoordinator.run(
+            [ExecutionCoordinatorLeaf(value=uuid4().int)],
+            worker_backends=(LocalThreadWorkerBackend(),),
+        )
+    old_thread.join(timeout=10)
+
+    assert leaf.status == "done"
+    (new,) = new_backend.coordinators
+    (error,) = old_errors
+    assert str(error) == f"execution taken over by exec={new.executor_id[:5]}"
+    assert (old_backend.pool.handoffs, old_backend.pool.stops) == (1, 1)
+    assert new_backend.handoffs == [PoolHandoff(job_ids=["100_0", "100_1"])]
+    new_log = execution_coordinator_log_path_in(new.executor_dir).read_text(
+        encoding="utf-8"
+    )
+    assert f"taking over exec={old.executor_id[:5]} · inherited 2 workers" in new_log
+    assert "pool started · InertBackend · inherited 2 workers" in new_log

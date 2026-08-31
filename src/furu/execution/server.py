@@ -1,17 +1,32 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Iterator
-from contextlib import contextmanager
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from secrets import token_urlsafe
+from typing import assert_never
 
 from websockets.exceptions import ConnectionClosed
+from websockets.sync.client import connect
 from websockets.sync.server import ServerConnection, basic_auth, serve
 
 from furu.execution.execution_coordinator import ExecutionCoordinator
 from furu.logging import get_logger, log_detail
-from furu.worker.protocol import CancelMessage, HelloMessage, job_result_adapter
+from furu.worker.backends.protocol import WorkerPool
+from furu.worker.protocol import (
+    CancelMessage,
+    HelloMessage,
+    PoolHandoff,
+    TakeoverAccepted,
+    TakeoverRefused,
+    TakeoverRequest,
+    first_message_adapter,
+    job_result_adapter,
+    takeover_response_adapter,
+)
+
+_TAKEOVER_REPLY_TIMEOUT_S = 120.0
 
 logger = get_logger()
 
@@ -27,12 +42,87 @@ class ExecutionCoordinatorServer:
         return f"ws://{self.bound_host}:{self.bound_port}"
 
 
+def _serve_takeover(
+    coordinator: ExecutionCoordinator,
+    connection: ServerConnection,
+    request: TakeoverRequest,
+) -> None:
+    pools: dict[str, WorkerPool] | None = None
+    with coordinator.lock:
+        keys = [key for key in request.pool_keys if key in coordinator.pools]
+        if not keys:
+            refused = "no worker pool with a matching configuration"
+        elif coordinator.taken_over_by is not None:
+            refused = (
+                f"already being taken over by exec={coordinator.taken_over_by[:5]}"
+            )
+        else:
+            refused = None
+            coordinator.taken_over_by = request.executor_id
+            pools = {key: coordinator.pools[key] for key in keys}
+            pool_count = len(coordinator.pools)
+    if refused is not None:
+        logger.warning(
+            "refused takeover by exec=%s: %s", request.executor_id[:5], refused
+        )
+        connection.send(TakeoverRefused(reason=refused).model_dump_json())
+        return
+    assert pools is not None
+    handoffs = {key: pool.handoff() for key, pool in pools.items()}
+    logger.info(
+        "handed off %d of %d pools to exec=%s",
+        len(handoffs),
+        pool_count,
+        request.executor_id[:5],
+    )
+    try:
+        connection.send(TakeoverAccepted(handoffs=handoffs).model_dump_json())
+        with suppress(ConnectionClosed):
+            connection.recv()
+    finally:
+        coordinator.fail(f"execution taken over by exec={request.executor_id[:5]}")
+
+
+@contextmanager
+def request_takeover(
+    *,
+    executor_id: str,
+    source_id: str,
+    url: str,
+    pool_keys: Sequence[str],
+) -> Iterator[dict[str, PoolHandoff]]:
+    """Inherit ``source_id``'s matching pools; closing the connection commits."""
+    try:
+        connection = connect(url, max_size=None)
+    except OSError as exc:
+        raise RuntimeError(
+            f"cannot reach exec={source_id[:5]}; is that coordinator still running?"
+        ) from exc
+    with connection:
+        connection.send(
+            TakeoverRequest(
+                executor_id=executor_id, pool_keys=list(pool_keys)
+            ).model_dump_json()
+        )
+        match takeover_response_adapter.validate_json(
+            connection.recv(timeout=_TAKEOVER_REPLY_TIMEOUT_S)
+        ):
+            case TakeoverRefused(reason=reason):
+                raise RuntimeError(
+                    f"exec={source_id[:5]} refused the takeover: {reason}"
+                )
+            case TakeoverAccepted(handoffs=handoffs):
+                yield handoffs
+            case _ as unreachable:
+                assert_never(unreachable)
+
+
 def _serve_worker(
     coordinator: ExecutionCoordinator,
     connection: ServerConnection,
+    hello: HelloMessage,
 ) -> None:
     with coordinator.log_context():
-        hello = HelloMessage.model_validate_json(connection.recv(timeout=10.0))
         worker = hello.worker
         logger.info(
             "worker connected · %s%s",
@@ -77,7 +167,17 @@ def execution_coordinator_server(
         with connections_changed:
             connections.add(connection)
         try:
-            _serve_worker(coordinator, connection)
+            with coordinator.log_context():
+                first_message = first_message_adapter.validate_json(
+                    connection.recv(timeout=10.0)
+                )
+                match first_message:
+                    case HelloMessage() as hello:
+                        _serve_worker(coordinator, connection, hello)
+                    case TakeoverRequest() as request:
+                        _serve_takeover(coordinator, connection, request)
+                    case _ as unreachable:
+                        assert_never(unreachable)
         finally:
             with connections_changed:
                 connections.discard(connection)

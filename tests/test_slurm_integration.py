@@ -4,13 +4,16 @@ import os
 import shutil
 import subprocess
 from collections import Counter
+from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
 
 import pytest
 from slurm_objects import SlurmTaskKind, SlurmWorkloadTask
 
+from furu.config import _Config, get_config
 from furu.execution.execution_coordinator import ExecutionCoordinator
+from furu.testing import override_config
 from furu.worker.backends.slurm.backend import SlurmWorkerBackend
 from furu.worker.backends.slurm.resources import SlurmResources
 
@@ -26,6 +29,16 @@ pytestmark = [
         reason="set FURU_SLURM_INTEGRATION=1 inside the Slurm test container",
     ),
 ]
+
+
+@pytest.fixture(autouse=True)
+def _slurm_needs_snapshots() -> Iterator[None]:
+    # SlurmWorkerBackend requires snapshotting, which the test harness turns
+    # off; these tests exercise the real path, snapshot and all.
+    data = get_config().model_dump()
+    data["provenance"]["snapshot"] = True
+    with override_config(_Config.model_validate(data)):
+        yield
 
 
 @pytest.mark.parametrize(

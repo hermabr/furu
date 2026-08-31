@@ -48,10 +48,7 @@ def _add_to_dag(coordinator: ExecutionCoordinator, objs: Sequence[Spec]) -> None
         match obj.status:
             case "done":
                 continue
-            case "running":
-                # TODO: handle already-running objects as external dependencies.
-                raise RuntimeError(f"cannot add running object to DAG: {obj.object_id}")
-            case "missing" | "failed":
+            case "running" | "missing" | "failed":
                 pass
             case "stale":
                 raise_if_stale(obj)

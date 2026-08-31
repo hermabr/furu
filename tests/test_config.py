@@ -247,11 +247,12 @@ debug = "/tmp/furu-pyproject-debug"
     )
 
 
-def test_config_reads_json_config_file(tmp_path, monkeypatch) -> None:
-    config_file = tmp_path / "furu-config.json"
+def test_config_reads_worker_json_config_file(tmp_path, monkeypatch) -> None:
+    config_file = tmp_path / "worker.config.json"
     config_file.write_text(
         """
 {
+  "coordinator_url": "ws://furu:secret@coordinator.test:1",
   "debug_mode": true,
   "directories": {
     "objects": "/tmp/furu-json-objects",

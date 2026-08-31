@@ -129,6 +129,12 @@ def write_private_file(path: Path, contents: str, *, mode: int) -> None:
     path.chmod(mode)
 
 
+def replace_private_file(path: Path, contents: str, *, mode: int) -> None:
+    tmp_path = nfs_safe_unique_name(path, name="tmp")
+    write_private_file(tmp_path, contents, mode=mode)
+    tmp_path.rename(path)
+
+
 def format_duration(seconds: float) -> str:
     """Compact human duration for log lines: 850ms, 3.2s, 2m05s, 1h05m."""
     if seconds < 1:

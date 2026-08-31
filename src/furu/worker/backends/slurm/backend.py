@@ -8,20 +8,25 @@ import socket
 import subprocess
 import threading
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, assert_never
 
 from furu.config import (
     _WORKER_JSON_CONFIG_FILE_ENV_VAR,
+    _dump_worker_json_config,
     get_config,
 )
-from furu.provenance import EnvironmentIdentity, SubmitProvenance
 from furu.resources import ResourceFloor, ResourceRequest, resource_request_adapter
-from furu.snapshot import extract_snapshot
-from furu.utils import _hash_dict_deterministically, write_private_file
+from furu.snapshot import CodeLocation
+from furu.utils import (
+    _hash_dict_deterministically,
+    replace_private_file,
+    write_private_file,
+)
 from furu.worker.backends.slurm.pool import SlurmWorkerPool
 from furu.worker.backends.slurm.resources import SlurmResources
-from furu.worker.protocol import coordinator_url
+from furu.worker.protocol import PoolHandoff, coordinator_url
 
 if TYPE_CHECKING:
     from furu.execution.execution_coordinator import ExecutionCoordinator
@@ -47,6 +52,13 @@ class SlurmWorkerBackend:
     export: SlurmExport = None
     use_job_arrays: bool = True
     reserve_for: ResourceFloor = field(default_factory=ResourceFloor)
+
+    def __post_init__(self) -> None:
+        if not get_config().provenance.snapshot:
+            raise ValueError(
+                "Slurm workers run from a code snapshot; "
+                "set [tool.furu.provenance] snapshot = true"
+            )
 
     @property
     def resource_request(self) -> ResourceRequest:
@@ -77,7 +89,7 @@ class SlurmWorkerBackend:
         bound_port: int,
         auth_token: str,
         executor_dir: Path,
-        provenance: SubmitProvenance,
+        handoff: PoolHandoff,
     ) -> SlurmWorkerPool:
         connect_port = (
             bound_port if self.worker_connect_port is None else self.worker_connect_port
@@ -86,37 +98,37 @@ class SlurmWorkerBackend:
             host=self.worker_connect_host, port=connect_port, auth_token=auth_token
         )
 
-        chdir = Path.cwd().resolve()
-        project_root = Path(EnvironmentIdentity.capture().project_root)
-        if provenance.snapshot_id is not None:
-            # Slurm changes cwd, so paths into the extracted snapshot must be absolute.
-            code_dir = extract_snapshot(provenance.snapshot_id).resolve()
-            repo_root = Path(provenance.git.repo_root)
-            chdir = code_dir / chdir.relative_to(repo_root)
-            project_root = code_dir / Path(
-                provenance.environment.project_root
-            ).relative_to(repo_root)
-            subprocess.run(
-                ["uv", "sync", "--frozen", "--project", str(project_root)],
-                env={k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"},
-                check=True,
-            )
+        code = CodeLocation.from_snapshot(coordinator.submit_provenance)
+        subprocess.run(
+            ["uv", "sync", "--frozen", "--project", str(code.project_root)],
+            env={k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"},
+            check=True,
+        )
         worker_dir = executor_dir.resolve() / "workers" / secrets.token_hex(8)
         worker_dir.mkdir(parents=True)
-
-        coordinator_file = worker_dir / "coordinator.url"
-        write_private_file(coordinator_file, url + "\n", mode=0o600)
 
         config = get_config()
         config = config.model_copy(
             update={"directories": config.directories.anchored()}
         )
+        config_contents = _dump_worker_json_config(config, coordinator_url=url)
         config_file = worker_dir / "worker.config.json"
         write_private_file(
             config_file,
-            config.model_dump_json(indent=2) + "\n",
+            config_contents,
             mode=0o600,
         )
+        inherited_files = set(handoff.worker_files)
+        for inherited_file in inherited_files:
+            timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
+            backup_file = inherited_file.with_name(
+                f"{inherited_file.stem}.backup-{timestamp}-{secrets.token_hex(4)}"
+                f"{inherited_file.suffix}"
+            )
+            os.link(inherited_file, backup_file)
+            replace_private_file(inherited_file, config_contents, mode=0o600)
+        worker_files = {config_file, *inherited_files}
+        job_ids = list(handoff.job_ids)
 
         resource_request = self.resource_request
         resources_json = resource_request_adapter.dump_json(resource_request).decode()
@@ -148,9 +160,9 @@ class SlurmWorkerBackend:
                 "unset VIRTUAL_ENV\n"
                 "\n"
                 "exec uv run --frozen "
-                f"--project {shlex.quote(str(project_root))} \\\n"
+                f"--project {shlex.quote(str(code.project_root))} \\\n"
                 "    python -m furu.worker._cli \\\n"
-                f"    --coordinator-file {shlex.quote(str(coordinator_file))} \\\n"
+                f"    --coordinator-file {shlex.quote(str(config_file))} \\\n"
                 '    --component "${furu_worker_component}" \\\n'
                 "    --backend slurm \\\n"
                 f"    --idle-timeout {self.worker_idle_timeout} \\\n"
@@ -175,7 +187,7 @@ class SlurmWorkerBackend:
                 assert_never(self.export)
 
         sbatch_base_args = (
-            f"--chdir={chdir}",
+            f"--chdir={code.cwd}",
             f"--output={log_dir / f'{log_name}.out'}",
             f"--error={log_dir / f'{log_name}.err'}",
             f"--job-name={self.job_name}",
@@ -197,7 +209,8 @@ class SlurmWorkerBackend:
                 target=lambda: pool_holder[0]._scale_loop(),
                 name="furu-slurm-worker-pool-scale",
             ),
-            _job_ids=[],
+            _job_ids=job_ids,
+            _worker_files=worker_files,
         )
         pool_holder.append(pool)
         pool._scale_thread.start()
