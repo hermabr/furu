@@ -5,6 +5,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from secrets import token_urlsafe
+from typing import assert_never
 
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import connect
@@ -39,15 +40,6 @@ class ExecutionCoordinatorServer:
     @property
     def server_url(self) -> str:
         return f"ws://{self.bound_host}:{self.bound_port}"
-
-
-def _serve(coordinator: ExecutionCoordinator, connection: ServerConnection) -> None:
-    with coordinator.log_context():
-        match first_message_adapter.validate_json(connection.recv(timeout=10.0)):
-            case HelloMessage() as hello:
-                _serve_worker(coordinator, connection, hello)
-            case TakeoverRequest() as request:
-                _serve_takeover(coordinator, connection, request)
 
 
 def _serve_takeover(
@@ -173,7 +165,17 @@ def execution_coordinator_server(
         with connections_changed:
             connections.add(connection)
         try:
-            _serve(coordinator, connection)
+            with coordinator.log_context():
+                first_message = first_message_adapter.validate_json(
+                    connection.recv(timeout=10.0)
+                )
+                match first_message:
+                    case HelloMessage() as hello:
+                        _serve_worker(coordinator, connection, hello)
+                    case TakeoverRequest() as request:
+                        _serve_takeover(coordinator, connection, request)
+                    case _ as unreachable:
+                        assert_never(unreachable)
         finally:
             with connections_changed:
                 connections.discard(connection)
