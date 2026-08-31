@@ -204,15 +204,12 @@ def extract_snapshot(snapshot_id: str) -> Path:
 
 @dataclass(frozen=True, slots=True)
 class CodeLocation:
-    """Where to run code from: an interpreter, its project, and a cwd."""
-
     python: Path
     project_root: Path
     cwd: Path
 
     @classmethod
     def here(cls) -> CodeLocation:
-        """The live environment of the calling process."""
         return cls(
             python=Path(sys.executable),
             project_root=Path(EnvironmentIdentity.capture().project_root),
@@ -221,7 +218,6 @@ class CodeLocation:
 
     @classmethod
     def from_snapshot(cls, provenance: SubmitProvenance) -> CodeLocation:
-        """Materialize and locate the code snapshot recorded by ``provenance``."""
         if provenance.snapshot_id is None:
             raise RuntimeError(
                 "job has no code snapshot; Slurm workers require one "
