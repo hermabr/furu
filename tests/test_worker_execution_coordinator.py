@@ -762,6 +762,36 @@ def test_count_satisfiable_jobs_returns_zero_when_coordinator_is_done() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("leaf_type", "expected_log"),
+    [
+        (ExecutionCoordinatorLeaf, "run is waiting on 2 external jobs"),
+        (BatchedCoordinatorLeaf, "run is waiting on 1 external job (2 specs)"),
+    ],
+)
+def test_count_satisfiable_jobs_ignores_external_computations(
+    caplog: pytest.LogCaptureFixture,
+    leaf_type: type[Spec],
+    expected_log: str,
+) -> None:
+    leaves = [leaf_type(value=value) for value in range(2)]
+    coordinator = _new_execution_coordinator(leaves)
+
+    with (
+        _mark_running(leaves[0]),
+        _mark_running(leaves[1]),
+        _captured_furu_logs(caplog),
+    ):
+        assert (
+            coordinator.count_satisfiable_jobs(
+                resources=ResourceRequest(), max_workers=10
+            )
+            == 0
+        )
+
+    assert expected_log in caplog.messages
+
+
 def test_worker_cap_limits_satisfiable_jobs_and_leases() -> None:
     limited = [LimitedExecutionCoordinatorLeaf(value=value) for value in range(3)]
     uncapped = ExecutionCoordinatorLeaf(value=10)

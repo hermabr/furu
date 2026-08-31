@@ -8,7 +8,6 @@ from collections.abc import Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
-from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, assert_never
 
@@ -311,11 +310,33 @@ class ExecutionCoordinator:
     def count_satisfiable_jobs(
         self, *, resources: ResourceRequest, max_workers: int
     ) -> int:
-        with self.lock:
-            if self.done.is_set():
+        with self.log_context(), self.lock:
+            if self.done.is_set() or max_workers <= 0:
                 return 0
-            leases = self._satisfiable_leases_locked(resources)
-            return sum(1 for _ in islice(leases, max_workers))
+            count = 0
+            waiting_on_external = (0, 0)
+            for node, member_ids in self._satisfiable_leases_locked(resources):
+                if all(
+                    self.nodes_by_id[object_id].obj.status == "running"
+                    for object_id in (node.obj.object_id, *member_ids)
+                ):
+                    waiting_on_external = (
+                        waiting_on_external[0] + 1,
+                        waiting_on_external[1] + len(member_ids) + 1,
+                    )
+                    continue
+                count += 1
+                if count >= max_workers:
+                    break
+            jobs, specs = waiting_on_external
+            if jobs:
+                logger.info(
+                    "run is waiting on %d external job%s",
+                    jobs,
+                    ("" if jobs == 1 else "s")
+                    + (f" ({specs} specs)" if jobs != specs else ""),
+                )
+            return count
 
     def _satisfiable_leases_locked(
         self, resources: ResourceRequest
