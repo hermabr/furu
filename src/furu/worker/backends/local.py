@@ -79,7 +79,7 @@ def _run_worker(
     component = f"local-worker-{index}"
     try:
         worker_loop(
-            coordinator_url=coordinator_url,
+            coordinator=coordinator_url,
             resource_request=resource_request,
             # Local threads are cheap to keep connected; they stay until the
             # server closes the connection.

@@ -39,7 +39,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     worker_loop(
-        coordinator_url=args.coordinator_file.read_text(encoding="utf-8").strip(),
+        coordinator=args.coordinator_file,
         resource_request=args.resources,
         idle_timeout=args.idle_timeout,
         component=args.component,

@@ -100,23 +100,23 @@ def _submit_provenance() -> SubmitProvenance:
     )
 
 
-def test_worker_cli_reads_coordinator_file(
+def test_worker_cli_passes_coordinator_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[str, ResourceRequest, float | None]] = []
+    calls: list[tuple[Path, ResourceRequest, float | None]] = []
     coordinator_file = tmp_path / "coordinator.url"
     coordinator_file.write_text("ws://furu:secret@execution-coordinator.test:1\n\n")
 
     def worker_loop(
         *,
-        coordinator_url: str,
+        coordinator: Path,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
         component: str,
         backend: str,
     ) -> None:
-        calls.append((coordinator_url, resource_request, idle_timeout))
+        calls.append((coordinator, resource_request, idle_timeout))
 
     monkeypatch.setattr(_cli, "worker_loop", worker_loop)
 
@@ -138,9 +138,7 @@ def test_worker_cli_reads_coordinator_file(
         == 0
     )
 
-    assert calls == [
-        ("ws://furu:secret@execution-coordinator.test:1", ResourceRequest(), 60.0)
-    ]
+    assert calls == [(coordinator_file, ResourceRequest(), 60.0)]
 
 
 def test_worker_cli_reads_resource_request(
@@ -153,7 +151,7 @@ def test_worker_cli_reads_resource_request(
 
     def worker_loop(
         *,
-        coordinator_url: str,
+        coordinator: Path,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
         component: str,
@@ -204,7 +202,7 @@ def test_worker_cli_reads_idle_timeout(
 
     def worker_loop(
         *,
-        coordinator_url: str,
+        coordinator: Path,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
         component: str,
@@ -244,7 +242,7 @@ def _run_worker_cli_capturing_component(
 
     def worker_loop(
         *,
-        coordinator_url: str,
+        coordinator: Path,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
         component: str,
@@ -297,7 +295,7 @@ def test_worker_cli_requires_component(
 
     def worker_loop(
         *,
-        coordinator_url: str,
+        coordinator: Path,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
         component: str,
@@ -332,7 +330,7 @@ def test_worker_cli_requires_resource_request(
 
     def worker_loop(
         *,
-        coordinator_url: str,
+        coordinator: Path,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
     ) -> None:
@@ -361,11 +359,11 @@ def test_worker_cli_requires_coordinator_file(monkeypatch: pytest.MonkeyPatch) -
 
     def worker_loop(
         *,
-        coordinator_url: str,
+        coordinator: Path,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
     ) -> None:
-        calls.append(coordinator_url)
+        calls.append(str(coordinator))
 
     monkeypatch.setattr(_cli, "worker_loop", worker_loop)
 
@@ -395,7 +393,7 @@ def test_worker_cli_requires_idle_timeout(
 
     def worker_loop(
         *,
-        coordinator_url: str,
+        coordinator: Path,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
     ) -> None:
@@ -427,11 +425,11 @@ def test_worker_cli_rejects_auth_token_argument(
 
     def worker_loop(
         *,
-        coordinator_url: str,
+        coordinator: Path,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
     ) -> None:
-        calls.append(coordinator_url)
+        calls.append(str(coordinator))
 
     monkeypatch.setattr(_cli, "worker_loop", worker_loop)
 

@@ -11,7 +11,7 @@ from websockets.sync.server import ServerConnection, basic_auth, serve
 
 from furu.execution.execution_coordinator import ExecutionCoordinator
 from furu.logging import get_logger, log_detail
-from furu.worker.protocol import HelloMessage, job_result_adapter
+from furu.worker.protocol import CancelMessage, HelloMessage, job_result_adapter
 
 logger = get_logger()
 
@@ -35,11 +35,18 @@ def _serve_worker(
         hello = HelloMessage.model_validate_json(connection.recv(timeout=10.0))
         worker = hello.worker
         logger.info(
-            "worker connected · %s",
+            "worker connected · %s%s",
             worker,
+            f" · running {hello.running[0].log_label}" if hello.running else "",
             extra=log_detail(worker=worker, backend=hello.backend),
         )
         try:
+            if hello.running:
+                if not coordinator.adopt(hello.running, worker=worker):
+                    connection.send(CancelMessage().model_dump_json())
+                result = job_result_adapter.validate_json(connection.recv())
+                for artifact in hello.running:
+                    coordinator.job_result(artifact.object_id, result)
             while True:
                 job = coordinator.lease_job(resources=hello.resources, worker=worker)
                 if job is None:
