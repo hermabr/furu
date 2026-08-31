@@ -81,13 +81,12 @@ def _serve_takeover(
         pool_count,
         request.executor_id[:5],
     )
-    connection.send(TakeoverAccepted(handoffs=handoffs).model_dump_json())
-    # The new coordinator closes the connection once the inherited workers are
-    # pointed at it. Whether it got that far or died trying, our part is over:
-    # handed-off pools have nothing left to cancel and the rest stop as usual.
-    with suppress(ConnectionClosed):
-        connection.recv()
-    coordinator.fail(f"execution taken over by exec={request.executor_id[:5]}")
+    try:
+        connection.send(TakeoverAccepted(handoffs=handoffs).model_dump_json())
+        with suppress(ConnectionClosed):
+            connection.recv()
+    finally:
+        coordinator.fail(f"execution taken over by exec={request.executor_id[:5]}")
 
 
 @contextmanager
