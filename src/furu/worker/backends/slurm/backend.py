@@ -18,7 +18,7 @@ from furu.config import (
     get_config,
 )
 from furu.resources import ResourceFloor, ResourceRequest, resource_request_adapter
-from furu.snapshot import snapshot_code
+from furu.snapshot import CodeLocation
 from furu.utils import (
     _hash_dict_deterministically,
     replace_private_file,
@@ -98,7 +98,7 @@ class SlurmWorkerBackend:
             host=self.worker_connect_host, port=connect_port, auth_token=auth_token
         )
 
-        code = snapshot_code(coordinator.submit_provenance)
+        code = CodeLocation.from_snapshot(coordinator.submit_provenance)
         subprocess.run(
             ["uv", "sync", "--frozen", "--project", str(code.project_root)],
             env={k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"},

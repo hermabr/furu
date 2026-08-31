@@ -11,7 +11,7 @@ from typing import assert_never
 from furu.config import get_config
 from furu.logging import get_logger
 from furu.provenance import EnvironmentIdentity
-from furu.snapshot import CodeLocation, snapshot_code
+from furu.snapshot import CodeLocation
 from furu.worker.protocol import Job, JobFailedResult, JobResult, job_result_adapter
 
 logger = get_logger("worker.execute")
@@ -48,7 +48,7 @@ class ChildSlot:
 
     def run(self, job: Job, *, cancelled: threading.Event) -> JobResult:
         if self._materialize_snapshot:
-            code = snapshot_code(job.provenance)
+            code = CodeLocation.from_snapshot(job.provenance)
         else:
             code = CodeLocation.here()
             worker_hash = EnvironmentIdentity.capture().uv_lock_hash

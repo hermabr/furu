@@ -219,23 +219,24 @@ class CodeLocation:
             cwd=Path.cwd(),
         )
 
-
-def snapshot_code(provenance: SubmitProvenance) -> CodeLocation:
-    if provenance.snapshot_id is None:
-        raise RuntimeError(
-            "job has no code snapshot; Slurm workers require one "
-            "(set [tool.furu.provenance] snapshot = true)"
+    @classmethod
+    def from_snapshot(cls, provenance: SubmitProvenance) -> CodeLocation:
+        """Materialize and locate the code snapshot recorded by ``provenance``."""
+        if provenance.snapshot_id is None:
+            raise RuntimeError(
+                "job has no code snapshot; Slurm workers require one "
+                "(set [tool.furu.provenance] snapshot = true)"
+            )
+        code_dir = extract_snapshot(provenance.snapshot_id).resolve()
+        repo_root = Path(provenance.git.repo_root)
+        project_root = code_dir / Path(provenance.environment.project_root).relative_to(
+            repo_root
         )
-    code_dir = extract_snapshot(provenance.snapshot_id).resolve()
-    repo_root = Path(provenance.git.repo_root)
-    project_root = code_dir / Path(provenance.environment.project_root).relative_to(
-        repo_root
-    )
-    return CodeLocation(
-        python=project_root / ".venv" / "bin" / "python",
-        project_root=project_root,
-        cwd=code_dir / Path(provenance.submitted.cwd).relative_to(repo_root),
-    )
+        return cls(
+            python=project_root / ".venv" / "bin" / "python",
+            project_root=project_root,
+            cwd=code_dir / Path(provenance.submitted.cwd).relative_to(repo_root),
+        )
 
 
 def _write_file(path: Path, data: bytes) -> None:
