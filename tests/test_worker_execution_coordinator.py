@@ -2269,6 +2269,12 @@ def test_execution_coordinator_run_inherits_pools_on_takeover() -> None:
         ExecutionCoordinator.run(
             [leaf], worker_backends=(LocalThreadWorkerBackend(), new_backend)
         )
+        assert old.executor_dir.is_dir()
+        assert "FURU_TAKEOVER" not in os.environ
+        ExecutionCoordinator.run(
+            [ExecutionCoordinatorLeaf(value=uuid4().int)],
+            worker_backends=(LocalThreadWorkerBackend(),),
+        )
     old_thread.join(timeout=10)
 
     assert leaf.status == "done"
