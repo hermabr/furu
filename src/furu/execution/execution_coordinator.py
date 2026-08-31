@@ -346,9 +346,7 @@ class ExecutionCoordinator:
                 return 0
             return sum(
                 1
-                for _ in islice(
-                    self._satisfiable_leases_locked(resources), max_workers
-                )
+                for _ in islice(self._satisfiable_leases_locked(resources), max_workers)
             )
 
     def _satisfiable_leases_locked(
@@ -584,8 +582,6 @@ def _resolve_takeover(prefix: str) -> tuple[str, str]:
             f"FURU_TAKEOVER={prefix} matches {len(matches)} executions{found}"
         )
     (executor_id,) = matches
-    # Every Slurm pool leaves its worker config beside its worker script; any
-    # one of them contains the coordinator URL.
     worker_files = sorted(
         (executions / executor_id / "workers").glob("*/worker.config.json")
     )
