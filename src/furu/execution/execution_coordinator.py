@@ -582,10 +582,10 @@ def _resolve_takeover(prefix: str) -> tuple[str, str]:
             f"FURU_TAKEOVER={prefix} matches {len(matches)} executions{found}"
         )
     (executor_id,) = matches
-    worker_files = sorted(
-        (executions / executor_id / "workers").glob("*/worker.config.json")
+    worker_file = next(
+        (executions / executor_id / "workers").glob("*/worker.config.json"), None
     )
-    if not worker_files:
+    if worker_file is None:
         raise RuntimeError(f"exec={executor_id[:5]} has no worker pools to take over")
-    coordinator_url, _ = _read_worker_json_config(worker_files[0])
+    coordinator_url, _ = _read_worker_json_config(worker_file)
     return executor_id, coordinator_url
