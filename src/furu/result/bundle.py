@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 import json
 from collections.abc import Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import (
     Annotated,
@@ -31,7 +32,14 @@ MANIFEST_FILE_NAME: Final = "manifest.json"
 _ROOT_ARTIFACT_NAME: Final = "root"
 type ValuePath = tuple[str, ...]
 type WrapperKind = Literal[
-    "artifact", "dataclass", "path", "pydantic", "tuple", "set", "frozenset"
+    "artifact",
+    "dataclass",
+    "datetime",
+    "path",
+    "pydantic",
+    "tuple",
+    "set",
+    "frozenset",
 ]
 
 
@@ -128,6 +136,35 @@ def _dump_value(
     match value:
         case None | bool() | int() | float() | str():
             return value
+        case datetime():
+            if codec := CodecMeta.find_codec(value, result_codecs):
+                return _dump_artifact(
+                    value,
+                    codec=codec,
+                    value_path=value_path,
+                    bundle_dir=bundle_dir,
+                    dump_state=dump_state,
+                )
+            encoded = value.isoformat()
+            loaded = datetime.fromisoformat(encoded)
+            if (
+                type(value) is not datetime
+                or loaded != value
+                or loaded.fold != value.fold
+                or type(loaded.tzinfo) is not type(value.tzinfo)
+                or loaded.tzinfo != value.tzinfo
+                or loaded.tzname() != value.tzname()
+            ):
+                raise ValueError(
+                    f"Datetime at {_value_path_display(value_path)} cannot be "
+                    "faithfully stored as ISO format; use an explicit custom codec."
+                )
+            return {
+                WRAPPER_KEY: {
+                    KINDMARKER: "datetime",
+                    "value": encoded,
+                }
+            }
         case list():
             width = len(str(len(value)))
             return [
@@ -608,6 +645,8 @@ def _load_wrapper(
                     f"Cannot load dataclass {fully_qualified_name(cls)} "
                     f"at {_value_path_display(value_path)}: {exc}"
                 ) from exc
+        case "datetime":
+            return datetime.fromisoformat(body["value"])
         case "path":
             return Path(body["value"])
         case "tuple":
