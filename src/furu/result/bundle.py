@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 import json
 from collections.abc import Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import (
     Annotated,
@@ -31,7 +32,14 @@ MANIFEST_FILE_NAME: Final = "manifest.json"
 _ROOT_ARTIFACT_NAME: Final = "root"
 type ValuePath = tuple[str, ...]
 type WrapperKind = Literal[
-    "artifact", "dataclass", "path", "pydantic", "tuple", "set", "frozenset"
+    "artifact",
+    "dataclass",
+    "datetime",
+    "path",
+    "pydantic",
+    "tuple",
+    "set",
+    "frozenset",
 ]
 
 
@@ -128,6 +136,13 @@ def _dump_value(
     match value:
         case None | bool() | int() | float() | str():
             return value
+        case datetime():
+            return {
+                WRAPPER_KEY: {
+                    KINDMARKER: "datetime",
+                    "value": value.isoformat(),
+                }
+            }
         case list():
             width = len(str(len(value)))
             return [
@@ -608,6 +623,8 @@ def _load_wrapper(
                     f"Cannot load dataclass {fully_qualified_name(cls)} "
                     f"at {_value_path_display(value_path)}: {exc}"
                 ) from exc
+        case "datetime":
+            return datetime.fromisoformat(body["value"])
         case "path":
             return Path(body["value"])
         case "tuple":

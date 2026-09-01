@@ -4,6 +4,7 @@ import json
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, ClassVar, cast
 
@@ -277,6 +278,28 @@ def test_non_finite_floats_round_trip() -> None:
     assert "NaN" in text
     assert "Infinity" in text
     assert "-Infinity" in text
+
+
+def test_datetime_values_round_trip(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "bundle"
+    value = {
+        "naive": datetime(2026, 9, 1, 12, 30, 45, 123456),
+        "aware": datetime(2026, 9, 1, 12, 30, tzinfo=UTC),
+    }
+
+    _save_result_bundle(value, bundle_dir, result_codecs=())
+
+    assert load_result_bundle(bundle_dir) == value
+    assert not (bundle_dir / "artifacts").exists()
+    manifest = json.loads((bundle_dir / "manifest.json").read_text())
+    assert manifest["naive"]["$furu"] == {
+        "|kind": "datetime",
+        "value": "2026-09-01T12:30:45.123456",
+    }
+    assert manifest["aware"]["$furu"] == {
+        "|kind": "datetime",
+        "value": "2026-09-01T12:30:00+00:00",
+    }
 
 
 class _CustomTensor:
