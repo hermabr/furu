@@ -4,9 +4,10 @@ import json
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import Annotated, Any, ClassVar, cast
+from zoneinfo import ZoneInfo
 
 import pytest
 from pydantic import BaseModel, ConfigDict
@@ -285,11 +286,20 @@ def test_datetime_values_round_trip(tmp_path: Path) -> None:
     value = {
         "naive": datetime(2026, 9, 1, 12, 30, 45, 123456),
         "aware": datetime(2026, 9, 1, 12, 30, tzinfo=UTC),
+        "fixed": datetime(
+            2026,
+            9,
+            1,
+            12,
+            30,
+            tzinfo=timezone(timedelta(hours=5, minutes=30)),
+        ),
     }
 
     _save_result_bundle(value, bundle_dir, result_codecs=())
 
-    assert load_result_bundle(bundle_dir) == value
+    loaded = cast(dict[str, datetime], load_result_bundle(bundle_dir))
+    assert loaded == value
     assert not (bundle_dir / "artifacts").exists()
     manifest = json.loads((bundle_dir / "manifest.json").read_text())
     assert manifest["naive"]["$furu"] == {
@@ -300,6 +310,76 @@ def test_datetime_values_round_trip(tmp_path: Path) -> None:
         "|kind": "datetime",
         "value": "2026-09-01T12:30:00+00:00",
     }
+
+
+class _CustomTimezone(tzinfo):
+    def utcoffset(self, dt: datetime | None) -> timedelta:
+        return timedelta(hours=1)
+
+
+class _DatetimeSubclass(datetime):
+    pass
+
+
+class _CustomTimezoneDatetimeCodec(Codec[datetime]):
+    auto_register: ClassVar[bool] = False
+
+    @classmethod
+    def matches(cls, value: object) -> bool:
+        return isinstance(value, datetime)
+
+    @classmethod
+    def save(cls, value: datetime, artifact_directory: Path) -> Mapping[str, object]:
+        return {"value": value.replace(tzinfo=None).isoformat()}
+
+    @classmethod
+    def load(cls, metadata: Mapping[str, object], artifact_directory: Path) -> datetime:
+        value = datetime.fromisoformat(cast(str, metadata["value"]))
+        return value.replace(tzinfo=_CustomTimezone())
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        datetime(2026, 9, 1, fold=1),
+        datetime(
+            2026,
+            9,
+            1,
+            tzinfo=timezone(timedelta(hours=5, minutes=30), "IST"),
+        ),
+        datetime(2026, 9, 1, tzinfo=ZoneInfo("America/Los_Angeles")),
+        datetime(2026, 9, 1, tzinfo=_CustomTimezone()),
+        _DatetimeSubclass(2026, 9, 1),
+    ],
+    ids=["fold", "timezone-name", "zoneinfo", "custom-timezone", "subclass"],
+)
+def test_datetime_requires_codec_when_iso_round_trip_is_lossy(
+    tmp_path: Path, value: datetime
+) -> None:
+    with pytest.raises(ValueError, match="use an explicit custom codec"):
+        _save_result_bundle(
+            value,
+            tmp_path / "bundle",
+            result_codecs=(),
+        )
+
+
+def test_explicit_codec_overrides_native_datetime_storage(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "bundle"
+    value = datetime(2026, 9, 1, 12, 30, tzinfo=_CustomTimezone())
+
+    _save_result_bundle(
+        value,
+        bundle_dir,
+        result_codecs=(_CustomTimezoneDatetimeCodec,),
+    )
+
+    loaded = load_result_bundle(bundle_dir)
+    assert loaded == value
+    assert isinstance(cast(datetime, loaded).tzinfo, _CustomTimezone)
+    manifest = json.loads((bundle_dir / "manifest.json").read_text())
+    assert manifest["$furu"]["codec"] == _CustomTimezoneDatetimeCodec._codec_id()
 
 
 class _CustomTensor:
