@@ -93,30 +93,6 @@ def _validate_result_path_segment(
     return value
 
 
-def _dump_datetime(value: datetime, *, value_path: ValuePath) -> JsonValue:
-    encoded = value.isoformat()
-    loaded = datetime.fromisoformat(encoded)
-    if (
-        type(value) is not datetime
-        or loaded != value
-        or loaded.fold != value.fold
-        or type(loaded.tzinfo) is not type(value.tzinfo)
-        or loaded.tzinfo != value.tzinfo
-        or loaded.tzname() != value.tzname()
-    ):
-        raise ValueError(
-            f"Datetime at {_value_path_display(value_path)} cannot be faithfully "
-            "stored as ISO format; use an explicit custom codec."
-        )
-
-    return {
-        WRAPPER_KEY: {
-            KINDMARKER: "datetime",
-            "value": encoded,
-        }
-    }
-
-
 def _dump_value(
     value: object,
     *,
@@ -169,7 +145,26 @@ def _dump_value(
                     bundle_dir=bundle_dir,
                     dump_state=dump_state,
                 )
-            return _dump_datetime(value, value_path=value_path)
+            encoded = value.isoformat()
+            loaded = datetime.fromisoformat(encoded)
+            if (
+                type(value) is not datetime
+                or loaded != value
+                or loaded.fold != value.fold
+                or type(loaded.tzinfo) is not type(value.tzinfo)
+                or loaded.tzinfo != value.tzinfo
+                or loaded.tzname() != value.tzname()
+            ):
+                raise ValueError(
+                    f"Datetime at {_value_path_display(value_path)} cannot be "
+                    "faithfully stored as ISO format; use an explicit custom codec."
+                )
+            return {
+                WRAPPER_KEY: {
+                    KINDMARKER: "datetime",
+                    "value": encoded,
+                }
+            }
         case list():
             width = len(str(len(value)))
             return [
