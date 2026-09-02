@@ -54,9 +54,6 @@ class _Generation:
     start: int
     class_name: str
     expectations: Mapping[str, _FieldExpectation]
-    # Current field name -> the value every source of this generation migrates
-    # to (an Added default no later Rewrite can alter). A target disagreeing on
-    # any of these has no source here, so its artifacts need not be scanned.
     pinned: Mapping[str, JsonValue]
 
 
