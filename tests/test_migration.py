@@ -667,9 +667,10 @@ def test_rewrite_reshapes_values() -> None:
     assert _COUNTER.calls == 0
 
 
-def test_rewrite_scan_is_uncached_and_falls_back_after_deletion(
+def test_deleted_match_falls_back_to_the_next_source(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Both donors rewrite to version=2, so either can serve the target.
     first = _RewriteDonor(dataset="cifar10", version=2.1)
     second = _RewriteDonor(dataset="cifar10", version=2.9)
     first.create()
@@ -686,6 +687,7 @@ def test_rewrite_scan_is_uncached_and_falls_back_after_deletion(
         next(path for path in sorted(schema_directory.iterdir()) if path.is_dir())
     )
     assert target.status == "done"
+    assert len(reads) == 2
 
 
 def _touches_unknown_field(fields: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
@@ -1027,36 +1029,18 @@ def test_old_results_are_read_once_per_class_per_process(
 ) -> None:
     old = _OldTrainRun(learning_rate=0.001, dataset="cifar10")
     old.create()
-    other = _OldTrainRun(learning_rate=0.01, dataset="mnist")
-    other.create()
+    _OldTrainRun(learning_rate=0.01, dataset="mnist").create()
     reads = _count_reads_under(monkeypatch, old._base_dir.parent)
-
-    first = min((old, other), key=lambda source: source._base_dir)
-    assert _TrainRun(
-        dataset=first.dataset, lr=first.learning_rate
-    ).status == "done"
-    assert reads == [first._base_dir]
 
     assert _TrainRun(dataset="cifar10", lr=0.001).status == "done"
     assert _TrainRun(dataset="mnist", lr=0.01).status == "done"
     assert _TrainRun(dataset="mnist", lr=0.5).status == "missing"
     assert len(reads) == 2
 
-    # A deleted source falls through even though the cache still lists it.
+    # A deleted source falls through even though the index still lists it.
     shutil.rmtree(old._base_dir)
     assert _TrainRun(dataset="cifar10", lr=0.001).status == "missing"
     assert len(reads) == 2
-
-
-def test_old_result_created_after_scan_is_found() -> None:
-    _OldTrainRun(learning_rate=0.001, dataset="cifar10").create()
-    source = _OldTrainRun(learning_rate=0.01, dataset="mnist")
-    source._base_dir.mkdir(parents=True)
-    target = _TrainRun(dataset="mnist", lr=0.01)
-
-    assert target.status == "missing"
-    source.create()
-    assert target.status == "done"
 
 
 def test_pinned_added_default_skips_the_old_generation_entirely(

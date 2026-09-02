@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -15,7 +16,7 @@ from furu.migration.resolution import (
     _ClassResolution,
     _Covered,
 )
-from furu.migration.steps import Rewrite, _describe_step
+from furu.migration.steps import _describe_step
 from furu.storage._layout import (
     compute_lock_path_in,
     metadata_path_in,
@@ -84,45 +85,39 @@ def _read_source(artifact_dir: Path) -> _ResultLink | None:
     return link if result_manifest_path_in(link.source.base_dir).exists() else None
 
 
-_SOURCES_CACHE: dict[
-    tuple[type, Path], dict[Path, tuple[str, _ResultLink]]
-] = {}
+_SOURCES_CACHE: dict[tuple[type, Path], Mapping[str, list[_ResultLink]]] = {}
 
 
-def _cacheable(covered: _Covered, resolution: _ClassResolution) -> bool:
-    return not any(
-        isinstance(step, Rewrite)
-        for step in resolution.own.steps[covered.generation.start :]
-    ) and all(
-        not any(isinstance(step, Rewrite) for step in move.chain.steps[move.start :])
-        for move in covered.child_moves.values()
-    )
+def _migrated_sources(
+    cls: type, resolution: _ClassResolution, covered: _Covered
+) -> Mapping[str, list[_ResultLink]]:
+    """Results under ``covered.schema_directory``, keyed by the stable JSON of
+    their fields after migration.
 
-
-def _migrated_source(
-    artifact_dir: Path, resolution: _ClassResolution, covered: _Covered
-) -> tuple[str, _ResultLink] | None:
-    source_link = _read_source(artifact_dir)
-    if source_link is None:
-        return None
-    fields = source_link.current.fields
-    if covered.child_moves:
-        fields = {
-            name: _apply_child_moves(value, covered.child_moves)
-            for name, value in fields.items()
-        }
-    fields = _apply_steps(resolution.own, covered.generation.start, fields)
-    return _stable_json_dump(fields), source_link
-
-
-def _source_still_exists(artifact_dir: Path, link: _ResultLink) -> bool:
-    return (
-        (
-            result_manifest_path_in(artifact_dir).exists()
-            and metadata_path_in(artifact_dir).exists()
-        )
-        or result_link_path_in(artifact_dir).exists()
-    ) and result_manifest_path_in(link.source.base_dir).exists()
+    A stored result migrates to exactly one current spec, so the directory is
+    read once per process (the resolution already freezes the set of old schema
+    directories the same way) and each lookup is a dict probe. A source deleted
+    since the scan fails the manifest check on hit and the next one is tried.
+    """
+    key = (cls, covered.schema_directory)
+    if (sources := _SOURCES_CACHE.get(key)) is None:
+        sources = {}
+        if covered.schema_directory.exists():
+            for artifact_dir in sorted(covered.schema_directory.iterdir()):
+                if not artifact_dir.is_dir():
+                    continue
+                if (source_link := _read_source(artifact_dir)) is None:
+                    continue
+                fields = source_link.current.fields
+                if covered.child_moves:
+                    fields = {
+                        name: _apply_child_moves(value, covered.child_moves)
+                        for name, value in fields.items()
+                    }
+                fields = _apply_steps(resolution.own, covered.generation.start, fields)
+                sources.setdefault(_stable_json_dump(fields), []).append(source_link)
+        _SOURCES_CACHE[key] = sources
+    return sources
 
 
 def _find_source(obj: Spec, resolution: _ClassResolution) -> _ResultLink | None:
@@ -132,33 +127,14 @@ def _find_source(obj: Spec, resolution: _ClassResolution) -> _ResultLink | None:
     target_key = _stable_json_dump(target_fields)
     for covered in resolution.covered:
         if any(
+            # Serialized so NaN defaults compare equal, like the key below.
             _stable_json_dump(target_fields[name]) != _stable_json_dump(value)
             for name, value in covered.generation.pinned.items()
         ):
             continue
-        if not covered.schema_directory.exists():
-            continue
-        sources = (
-            _SOURCES_CACHE.setdefault(
-                (type(obj), covered.schema_directory), {}
-            )
-            if _cacheable(covered, resolution)
-            else {}
-        )
-        for artifact_dir in sorted(covered.schema_directory.iterdir()):
-            if not artifact_dir.is_dir():
-                continue
-            migrated = sources.get(artifact_dir)
-            if migrated is None:
-                migrated = _migrated_source(artifact_dir, resolution, covered)
-                if migrated is None:
-                    continue
-                sources[artifact_dir] = migrated
-            migrated_key, source_link = migrated
-            if migrated_key != target_key:
-                continue
-            if not _source_still_exists(artifact_dir, source_link):
-                sources.pop(artifact_dir, None)
+        sources = _migrated_sources(type(obj), resolution, covered)
+        for source_link in sources.get(target_key, ()):
+            if not result_manifest_path_in(source_link.source.base_dir).exists():
                 continue
             return _ResultLink(
                 current=_ResultLinkCurrent(
