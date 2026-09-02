@@ -54,7 +54,6 @@ class _Generation:
     start: int
     class_name: str
     expectations: Mapping[str, _FieldExpectation]
-    pinned: Mapping[str, JsonValue]
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,8 +169,6 @@ def _build_chain(
     expectations = dict(current_fields)
     current_name_of = {name: name for name in expectations}
     added_defaults: dict[int, JsonValue] = {}
-    pinned: dict[str, JsonValue] = {}
-    rewritten = False
     generations: list[_Generation] = []
     class_at = class_name
     for index in reversed(range(len(steps))):
@@ -187,8 +184,6 @@ def _build_chain(
                         declared_type=hints[name],
                         artifact_serializers=artifact_serializers,
                     )
-                    if not rewritten:
-                        pinned[name] = added_defaults[index]
                 del expectations[field]
             case Retyped(field=field) as step:
                 expectations[field] = (
@@ -205,22 +200,15 @@ def _build_chain(
                 class_at = name
             case Rewrite():
                 expectations = dict.fromkeys(expectations, _ANY)
-                rewritten = True
         generations.append(
             _Generation(
-                start=index,
-                class_name=class_at,
-                expectations=dict(expectations),
-                pinned=dict(pinned),
+                start=index, class_name=class_at, expectations=dict(expectations)
             )
         )
     generations.reverse()
     generations.append(
         _Generation(
-            start=len(steps),
-            class_name=class_name,
-            expectations=current_fields,
-            pinned={},
+            start=len(steps), class_name=class_name, expectations=current_fields
         )
     )
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -22,7 +24,7 @@ from furu.storage._layout import (
     result_link_path_in,
     result_manifest_path_in,
 )
-from furu.utils import JsonFields, atomic_write_text
+from furu.utils import JsonFields, _hash_dict_deterministically, atomic_write_text
 
 if TYPE_CHECKING:
     from furu.core import Spec
@@ -83,18 +85,34 @@ def _read_source(artifact_dir: Path) -> _ResultLink | None:
     return link if result_manifest_path_in(link.source.base_dir).exists() else None
 
 
-def _find_source(obj: Spec, resolution: _ClassResolution) -> _ResultLink | None:
-    if not resolution.covered:
-        return None
-    target_fields = cast(JsonFields, obj._artifact_data[FIELDSMARKER])
+@dataclass(frozen=True, slots=True)
+class _IndexedSource:
+    source: _ResultLinkSource
+    migration_path: tuple[str, ...]
+
+
+# Every old-generation artifact of a class, keyed by a digest of the fields it
+# migrates to. Scanned once per class per process, like the class resolution
+# itself: a source that finishes afterwards goes unnoticed and is merely
+# recomputed, while one deleted afterwards is caught on lookup.
+_SOURCE_INDEX: dict[tuple[type, Path], Mapping[str, Sequence[_IndexedSource]]] = {}
+
+
+def _index_sources(
+    resolution: _ClassResolution,
+) -> Mapping[str, Sequence[_IndexedSource]]:
+    index: dict[str, list[_IndexedSource]] = {}
     for covered in resolution.covered:
-        if any(
-            target_fields[name] != value
-            for name, value in covered.generation.pinned.items()
-        ):
-            continue
         if not covered.schema_directory.exists():
             continue
+        migration_path = tuple(
+            f"{move.chain.label}: {_describe_step(step)}"
+            for move in covered.child_moves.values()
+            for step in move.chain.steps[move.start :]
+        ) + tuple(
+            _describe_step(step)
+            for step in resolution.own.steps[covered.generation.start :]
+        )
         for artifact_dir in sorted(covered.schema_directory.iterdir()):
             if not artifact_dir.is_dir():
                 continue
@@ -108,27 +126,35 @@ def _find_source(obj: Spec, resolution: _ClassResolution) -> _ResultLink | None:
                     for name, value in fields.items()
                 }
             fields = _apply_steps(resolution.own, covered.generation.start, fields)
-            if fields != target_fields:
-                continue
-            return _ResultLink(
-                current=_ResultLinkCurrent(
-                    fully_qualified_name=obj._fully_qualified_name,
-                    schema_hash=obj._artifact_schema_hash,
-                    artifact_hash=obj._artifact_hash,
-                    fields=target_fields,
-                ),
-                source=source_link.source,
-                migration_path=source_link.migration_path
-                + tuple(
-                    f"{move.chain.label}: {_describe_step(step)}"
-                    for move in covered.child_moves.values()
-                    for step in move.chain.steps[move.start :]
+            index.setdefault(_hash_dict_deterministically(fields), []).append(
+                _IndexedSource(
+                    source=source_link.source,
+                    migration_path=source_link.migration_path + migration_path,
                 )
-                + tuple(
-                    _describe_step(step)
-                    for step in resolution.own.steps[covered.generation.start :]
-                ),
             )
+    return index
+
+
+def _find_source(obj: Spec, resolution: _ClassResolution) -> _ResultLink | None:
+    if not resolution.covered:
+        return None
+    key = (type(obj), obj._metadata.storage)
+    if (index := _SOURCE_INDEX.get(key)) is None:
+        index = _SOURCE_INDEX[key] = _index_sources(resolution)
+    target_fields = cast(JsonFields, obj._artifact_data[FIELDSMARKER])
+    for candidate in index.get(_hash_dict_deterministically(target_fields), ()):
+        if not result_manifest_path_in(candidate.source.base_dir).exists():
+            continue
+        return _ResultLink(
+            current=_ResultLinkCurrent(
+                fully_qualified_name=obj._fully_qualified_name,
+                schema_hash=obj._artifact_schema_hash,
+                artifact_hash=obj._artifact_hash,
+                fields=target_fields,
+            ),
+            source=candidate.source,
+            migration_path=candidate.migration_path,
+        )
     return None
 
 

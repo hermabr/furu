@@ -824,7 +824,7 @@ def test_added_default_pins_history_independently_of_the_field_default() -> None
     assert _COUNTER.calls == 0
 
 
-def test_generation_pinned_to_another_value_is_never_scanned(
+def test_old_artifacts_are_read_once_per_class_per_process(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     donor = _RetriesDonor(dataset="cifar10")
@@ -839,38 +839,13 @@ def test_generation_pinned_to_another_value_is_never_scanned(
 
     monkeypatch.setattr(migration_links, "_read_source", counting)
 
-    # Every old run migrates to num_retries=1, so a target with any other value
-    # is rejected up front rather than by reading each old artifact.
+    # The first lookup indexes every old artifact by the fields it migrates to;
+    # later lookups, hit or miss, are dictionary probes.
     assert _RetriesRun(dataset="cifar10").status == "missing"
-    assert reads == []
-    assert _RetriesRun(dataset="cifar10", num_retries=1).status == "done"
     assert reads == [schema_directory / donor._base_dir.name]
-
-
-def _bump_retries(fields: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
-    return {**fields, "num_retries": 5}
-
-
-class _RewrittenRetriesRun(Spec[str]):
-    dataset: str
-    num_retries: int = 3
-
-    migrations = (Added("num_retries", default=1), Rewrite(_bump_retries))
-
-    def create(self) -> str:
-        _COUNTER.calls += 1
-        return "recomputed"
-
-
-def test_rewrite_after_added_lifts_the_pin() -> None:
-    donor = _RetriesDonor(dataset="cifar10")
-    donor.create()
-    _transplant_generation(donor, _RewrittenRetriesRun)
-    _COUNTER.calls = 0
-
-    assert _RewrittenRetriesRun(dataset="cifar10", num_retries=5).status == "done"
-    assert _RewrittenRetriesRun(dataset="cifar10", num_retries=1).status == "missing"
-    assert _COUNTER.calls == 0
+    assert _RetriesRun(dataset="cifar10", num_retries=1).status == "done"
+    assert _RetriesRun(dataset="mnist", num_retries=1).status == "missing"
+    assert len(reads) == 1
 
 
 # --- phase one: validation at class creation ---------------------------------------
