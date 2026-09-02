@@ -91,14 +91,6 @@ _SOURCES_CACHE: dict[tuple[type, Path], Mapping[str, list[_ResultLink]]] = {}
 def _migrated_sources(
     cls: type, resolution: _ClassResolution, covered: _Covered
 ) -> Mapping[str, list[_ResultLink]]:
-    """Results under ``covered.schema_directory``, keyed by the stable JSON of
-    their fields after migration.
-
-    A stored result migrates to exactly one current spec, so the directory is
-    read once per process (the resolution already freezes the set of old schema
-    directories the same way) and each lookup is a dict probe. A source deleted
-    since the scan fails the manifest check on hit and the next one is tried.
-    """
     key = (cls, covered.schema_directory)
     if (sources := _SOURCES_CACHE.get(key)) is None:
         sources = {}
