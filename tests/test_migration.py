@@ -98,6 +98,24 @@ class _TrainRun(Spec[dict[str, str]]):
         return {"dataset": self.dataset, "lr": str(self.lr), "seed": str(self.seed)}
 
 
+_NAN = float("nan")
+
+
+class _NaNDefaultTrainRun(Spec[dict[str, str]]):
+    dataset: str
+    lr: float
+    score: float = _NAN
+
+    migrations = (
+        MovedFrom(fully_qualified_name(_OldTrainRun)),
+        Renamed("learning_rate", to="lr"),
+        Added("score", default=_NAN),
+    )
+
+    def create(self) -> dict[str, str]:
+        return {"dataset": self.dataset, "lr": str(self.lr)}
+
+
 def test_rename_plus_add_reuses_old_result_through_result_link() -> None:
     old = _OldTrainRun(learning_rate=0.001, dataset="cifar10")
     assert old.create() == {"dataset": "cifar10", "learning_rate": "0.001"}
@@ -248,6 +266,12 @@ def test_added_field_binds_only_the_default_value() -> None:
     # Old results correspond to the migration's pinned default; any other value
     # is a different spec whose result genuinely never existed.
     assert _TrainRun(dataset="cifar10", lr=0.001, seed=7).status == "missing"
+
+
+def test_added_nan_default_matches_by_serialized_value() -> None:
+    _OldTrainRun(learning_rate=0.001, dataset="cifar10").create()
+
+    assert _NaNDefaultTrainRun(dataset="cifar10", lr=0.001).status == "done"
 
 
 def test_no_matching_source_computes_fresh() -> None:
@@ -643,6 +667,29 @@ def test_rewrite_reshapes_values() -> None:
     assert _COUNTER.calls == 0
 
 
+def test_deleted_match_falls_back_to_the_next_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Both donors rewrite to version=2, so either can serve the target.
+    first = _RewriteDonor(dataset="cifar10", version=2.1)
+    second = _RewriteDonor(dataset="cifar10", version=2.9)
+    first.create()
+    second.create()
+    schema_directory = _transplant_generation(first, _RewrittenRun)
+    reads = _count_reads_under(monkeypatch, schema_directory)
+    target = _RewrittenRun(dataset="cifar10", version=2)
+
+    assert target.status == "done"
+    assert target.status == "done"
+    assert len(reads) == 2
+
+    shutil.rmtree(
+        next(path for path in sorted(schema_directory.iterdir()) if path.is_dir())
+    )
+    assert target.status == "done"
+    assert len(reads) == 2
+
+
 def _touches_unknown_field(fields: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
     return {"dataset": fields["missing_field"], "version": 1}
 
@@ -960,6 +1007,52 @@ def test_sideways_scan_runs_once_per_class_per_process(
     assert spec.status == "done"
     assert _ScanCounted(n=1).status == "done"
     assert len(scans) == 1
+
+
+def _count_reads_under(
+    monkeypatch: pytest.MonkeyPatch, schema_directory: Path
+) -> list[Path]:
+    reads: list[Path] = []
+    real_read_source = migration_links._read_source
+
+    def counting(artifact_dir: Path) -> migration_links._ResultLink | None:
+        if artifact_dir.parent == schema_directory:
+            reads.append(artifact_dir)
+        return real_read_source(artifact_dir)
+
+    monkeypatch.setattr(migration_links, "_read_source", counting)
+    return reads
+
+
+def test_old_results_are_read_once_per_class_per_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old = _OldTrainRun(learning_rate=0.001, dataset="cifar10")
+    old.create()
+    _OldTrainRun(learning_rate=0.01, dataset="mnist").create()
+    reads = _count_reads_under(monkeypatch, old._base_dir.parent)
+
+    assert _TrainRun(dataset="cifar10", lr=0.001).status == "done"
+    assert _TrainRun(dataset="mnist", lr=0.01).status == "done"
+    assert _TrainRun(dataset="mnist", lr=0.5).status == "missing"
+    assert len(reads) == 2
+
+    # A deleted source falls through even though the index still lists it.
+    shutil.rmtree(old._base_dir)
+    assert _TrainRun(dataset="cifar10", lr=0.001).status == "missing"
+    assert len(reads) == 2
+
+
+def test_pinned_added_default_skips_the_old_generation_entirely(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old = _OldTrainRun(learning_rate=0.001, dataset="cifar10")
+    old.create()
+    reads = _count_reads_under(monkeypatch, old._base_dir.parent)
+
+    # Every migrated result carries seed=0, so seed=7 has no source to look for.
+    assert _TrainRun(dataset="cifar10", lr=0.001, seed=7).status == "missing"
+    assert reads == []
 
 
 # --- cascading: a child chain carries every spec that embeds it ---------------------

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -13,6 +14,7 @@ from furu.migration.resolution import (
     _apply_steps,
     _class_resolution,
     _ClassResolution,
+    _Covered,
 )
 from furu.migration.steps import _describe_step
 from furu.storage._layout import (
@@ -22,7 +24,7 @@ from furu.storage._layout import (
     result_link_path_in,
     result_manifest_path_in,
 )
-from furu.utils import JsonFields, atomic_write_text
+from furu.utils import JsonFields, _stable_json_dump, atomic_write_text
 
 if TYPE_CHECKING:
     from furu.core import Spec
@@ -83,27 +85,48 @@ def _read_source(artifact_dir: Path) -> _ResultLink | None:
     return link if result_manifest_path_in(link.source.base_dir).exists() else None
 
 
+_SOURCES_CACHE: dict[tuple[type, Path], Mapping[str, list[_ResultLink]]] = {}
+
+
+def _migrated_sources(
+    cls: type, resolution: _ClassResolution, covered: _Covered
+) -> Mapping[str, list[_ResultLink]]:
+    key = (cls, covered.schema_directory)
+    if (sources := _SOURCES_CACHE.get(key)) is None:
+        sources = {}
+        if covered.schema_directory.exists():
+            for artifact_dir in sorted(covered.schema_directory.iterdir()):
+                if not artifact_dir.is_dir():
+                    continue
+                if (source_link := _read_source(artifact_dir)) is None:
+                    continue
+                fields = source_link.current.fields
+                if covered.child_moves:
+                    fields = {
+                        name: _apply_child_moves(value, covered.child_moves)
+                        for name, value in fields.items()
+                    }
+                fields = _apply_steps(resolution.own, covered.generation.start, fields)
+                sources.setdefault(_stable_json_dump(fields), []).append(source_link)
+        _SOURCES_CACHE[key] = sources
+    return sources
+
+
 def _find_source(obj: Spec, resolution: _ClassResolution) -> _ResultLink | None:
     if not resolution.covered:
         return None
     target_fields = cast(JsonFields, obj._artifact_data[FIELDSMARKER])
+    target_key = _stable_json_dump(target_fields)
     for covered in resolution.covered:
-        if not covered.schema_directory.exists():
+        if any(
+            # Serialized so NaN defaults compare equal, like the key below.
+            _stable_json_dump(target_fields[name]) != _stable_json_dump(value)
+            for name, value in covered.generation.pinned.items()
+        ):
             continue
-        for artifact_dir in sorted(covered.schema_directory.iterdir()):
-            if not artifact_dir.is_dir():
-                continue
-            source_link = _read_source(artifact_dir)
-            if source_link is None:
-                continue
-            fields = source_link.current.fields
-            if covered.child_moves:
-                fields = {
-                    name: _apply_child_moves(value, covered.child_moves)
-                    for name, value in fields.items()
-                }
-            fields = _apply_steps(resolution.own, covered.generation.start, fields)
-            if fields != target_fields:
+        sources = _migrated_sources(type(obj), resolution, covered)
+        for source_link in sources.get(target_key, ()):
+            if not result_manifest_path_in(source_link.source.base_dir).exists():
                 continue
             return _ResultLink(
                 current=_ResultLinkCurrent(
