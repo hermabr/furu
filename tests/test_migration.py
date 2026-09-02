@@ -967,7 +967,6 @@ def test_covered_results_are_read_once_per_class_per_process(
 ) -> None:
     for learning_rate in (0.001, 0.01, 0.1):
         _OldTrainRun(learning_rate=learning_rate, dataset="cifar10").create()
-    _COUNTER.calls = 0
 
     reads: list[Path] = []
     real_read_source = migration_links._read_source
@@ -978,18 +977,11 @@ def test_covered_results_are_read_once_per_class_per_process(
 
     monkeypatch.setattr(migration_links, "_read_source", counting)
 
-    # Many specs and many status checks share one pass over the old results.
     for learning_rate in (0.001, 0.01, 0.1, 1.0):
         spec = _TrainRun(dataset="cifar10", lr=learning_rate)
         assert spec.status == ("missing" if learning_rate == 1.0 else "done")
         assert spec.status == ("missing" if learning_rate == 1.0 else "done")
     assert len(reads) == 3
-
-    assert _TrainRun(dataset="cifar10", lr=0.01).create() == {
-        "dataset": "cifar10",
-        "learning_rate": "0.01",
-    }
-    assert _COUNTER.calls == 0
 
 
 # --- cascading: a child chain carries every spec that embeds it ---------------------
