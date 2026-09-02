@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -22,7 +24,12 @@ from furu.storage._layout import (
     result_link_path_in,
     result_manifest_path_in,
 )
-from furu.utils import JsonFields, atomic_write_text
+from furu.utils import (
+    JsonFields,
+    JsonValue,
+    _hash_dict_deterministically,
+    atomic_write_text,
+)
 
 if TYPE_CHECKING:
     from furu.core import Spec
@@ -83,10 +90,22 @@ def _read_source(artifact_dir: Path) -> _ResultLink | None:
     return link if result_manifest_path_in(link.source.base_dir).exists() else None
 
 
-def _find_source(obj: Spec, resolution: _ClassResolution) -> _ResultLink | None:
-    if not resolution.covered:
-        return None
-    target_fields = cast(JsonFields, obj._artifact_data[FIELDSMARKER])
+@dataclass(frozen=True, slots=True)
+class _MigratedSource:
+    source: _ResultLinkSource
+    migration_path: tuple[str, ...]
+
+
+def _index_sources(resolution: _ClassResolution) -> Mapping[str, _MigratedSource]:
+    """Every result stored under a covered schema, keyed by the hash of its
+    fields migrated to the current schema.
+
+    Each stored result has exactly one route to the current schema, so this is
+    computed once per class and store rather than once per spec looked up.
+    ``covered`` is ordered fewest-steps-first and ``setdefault`` keeps the first
+    hit, matching the precedence a linear scan would give.
+    """
+    index: dict[str, _MigratedSource] = {}
     for covered in resolution.covered:
         if not covered.schema_directory.exists():
             continue
@@ -103,28 +122,48 @@ def _find_source(obj: Spec, resolution: _ClassResolution) -> _ResultLink | None:
                     for name, value in fields.items()
                 }
             fields = _apply_steps(resolution.own, covered.generation.start, fields)
-            if fields != target_fields:
-                continue
-            return _ResultLink(
-                current=_ResultLinkCurrent(
-                    fully_qualified_name=obj._fully_qualified_name,
-                    schema_hash=obj._artifact_schema_hash,
-                    artifact_hash=obj._artifact_hash,
-                    fields=target_fields,
-                ),
-                source=source_link.source,
-                migration_path=source_link.migration_path
-                + tuple(
-                    f"{move.chain.label}: {_describe_step(step)}"
-                    for move in covered.child_moves.values()
-                    for step in move.chain.steps[move.start :]
-                )
-                + tuple(
-                    _describe_step(step)
-                    for step in resolution.own.steps[covered.generation.start :]
+            index.setdefault(
+                _hash_dict_deterministically(cast(JsonValue, fields)),
+                _MigratedSource(
+                    source=source_link.source,
+                    migration_path=source_link.migration_path
+                    + tuple(
+                        f"{move.chain.label}: {_describe_step(step)}"
+                        for move in covered.child_moves.values()
+                        for step in move.chain.steps[move.start :]
+                    )
+                    + tuple(
+                        _describe_step(step)
+                        for step in resolution.own.steps[covered.generation.start :]
+                    ),
                 ),
             )
-    return None
+    return index
+
+
+_SOURCE_INDEX: dict[tuple[type, Path], Mapping[str, _MigratedSource]] = {}
+
+
+def _find_source(obj: Spec, resolution: _ClassResolution) -> _ResultLink | None:
+    if not resolution.covered:
+        return None
+    key = (type(obj), obj._metadata.storage)
+    if (index := _SOURCE_INDEX.get(key)) is None:
+        index = _SOURCE_INDEX[key] = _index_sources(resolution)
+    target_fields = cast(JsonFields, obj._artifact_data[FIELDSMARKER])
+    found = index.get(_hash_dict_deterministically(cast(JsonValue, target_fields)))
+    if found is None or not result_manifest_path_in(found.source.base_dir).exists():
+        return None
+    return _ResultLink(
+        current=_ResultLinkCurrent(
+            fully_qualified_name=obj._fully_qualified_name,
+            schema_hash=obj._artifact_schema_hash,
+            artifact_hash=obj._artifact_hash,
+            fields=target_fields,
+        ),
+        source=found.source,
+        migration_path=found.migration_path,
+    )
 
 
 def result_dir_for_loading(obj: Spec, *, has_lock: bool = False) -> Path | None:
