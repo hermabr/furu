@@ -824,6 +824,55 @@ def test_added_default_pins_history_independently_of_the_field_default() -> None
     assert _COUNTER.calls == 0
 
 
+def test_generation_pinned_to_another_value_is_never_scanned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    donor = _RetriesDonor(dataset="cifar10")
+    donor.create()
+    schema_directory = _transplant_generation(donor, _RetriesRun)
+    reads: list[Path] = []
+    real_read_source = migration_links._read_source
+
+    def counting(artifact_dir: Path) -> migration_links._ResultLink | None:
+        reads.append(artifact_dir)
+        return real_read_source(artifact_dir)
+
+    monkeypatch.setattr(migration_links, "_read_source", counting)
+
+    # Every old run migrates to num_retries=1, so a target with any other value
+    # is rejected up front rather than by reading each old artifact.
+    assert _RetriesRun(dataset="cifar10").status == "missing"
+    assert reads == []
+    assert _RetriesRun(dataset="cifar10", num_retries=1).status == "done"
+    assert reads == [schema_directory / donor._base_dir.name]
+
+
+def _bump_retries(fields: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
+    return {**fields, "num_retries": 5}
+
+
+class _RewrittenRetriesRun(Spec[str]):
+    dataset: str
+    num_retries: int = 3
+
+    migrations = (Added("num_retries", default=1), Rewrite(_bump_retries))
+
+    def create(self) -> str:
+        _COUNTER.calls += 1
+        return "recomputed"
+
+
+def test_rewrite_after_added_lifts_the_pin() -> None:
+    donor = _RetriesDonor(dataset="cifar10")
+    donor.create()
+    _transplant_generation(donor, _RewrittenRetriesRun)
+    _COUNTER.calls = 0
+
+    assert _RewrittenRetriesRun(dataset="cifar10", num_retries=5).status == "done"
+    assert _RewrittenRetriesRun(dataset="cifar10", num_retries=1).status == "missing"
+    assert _COUNTER.calls == 0
+
+
 # --- phase one: validation at class creation ---------------------------------------
 
 

@@ -88,6 +88,11 @@ def _find_source(obj: Spec, resolution: _ClassResolution) -> _ResultLink | None:
         return None
     target_fields = cast(JsonFields, obj._artifact_data[FIELDSMARKER])
     for covered in resolution.covered:
+        if any(
+            target_fields[name] != value
+            for name, value in covered.generation.pinned.items()
+        ):
+            continue
         if not covered.schema_directory.exists():
             continue
         for artifact_dir in sorted(covered.schema_directory.iterdir()):
