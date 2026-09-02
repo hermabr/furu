@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -12,12 +11,11 @@ from furu.metadata import CompletedMetadata
 from furu.migration.resolution import (
     _apply_child_moves,
     _apply_steps,
-    _Chain,
     _class_resolution,
     _ClassResolution,
     _Covered,
 )
-from furu.migration.steps import _describe_step
+from furu.migration.steps import Rewrite, _describe_step
 from furu.storage._layout import (
     compute_lock_path_in,
     metadata_path_in,
@@ -86,32 +84,45 @@ def _read_source(artifact_dir: Path) -> _ResultLink | None:
     return link if result_manifest_path_in(link.source.base_dir).exists() else None
 
 
-_SOURCES_CACHE: dict[tuple[type, Path], Mapping[str, _ResultLink]] = {}
+_SOURCES_CACHE: dict[
+    tuple[type, Path], dict[Path, tuple[str, _ResultLink]]
+] = {}
 
 
-def _migrated_sources(
-    cls: type, own: _Chain, covered: _Covered
-) -> Mapping[str, _ResultLink]:
-    key = (cls, covered.schema_directory)
-    if (sources := _SOURCES_CACHE.get(key)) is None:
-        sources = {}
-        if covered.schema_directory.exists():
-            for artifact_dir in sorted(covered.schema_directory.iterdir()):
-                if not artifact_dir.is_dir():
-                    continue
-                source_link = _read_source(artifact_dir)
-                if source_link is None:
-                    continue
-                fields = source_link.current.fields
-                if covered.child_moves:
-                    fields = {
-                        name: _apply_child_moves(value, covered.child_moves)
-                        for name, value in fields.items()
-                    }
-                fields = _apply_steps(own, covered.generation.start, fields)
-                sources.setdefault(_stable_json_dump(fields), source_link)
-        _SOURCES_CACHE[key] = sources
-    return sources
+def _cacheable(covered: _Covered, resolution: _ClassResolution) -> bool:
+    return not any(
+        isinstance(step, Rewrite)
+        for step in resolution.own.steps[covered.generation.start :]
+    ) and all(
+        not any(isinstance(step, Rewrite) for step in move.chain.steps[move.start :])
+        for move in covered.child_moves.values()
+    )
+
+
+def _migrated_source(
+    artifact_dir: Path, resolution: _ClassResolution, covered: _Covered
+) -> tuple[str, _ResultLink] | None:
+    source_link = _read_source(artifact_dir)
+    if source_link is None:
+        return None
+    fields = source_link.current.fields
+    if covered.child_moves:
+        fields = {
+            name: _apply_child_moves(value, covered.child_moves)
+            for name, value in fields.items()
+        }
+    fields = _apply_steps(resolution.own, covered.generation.start, fields)
+    return _stable_json_dump(fields), source_link
+
+
+def _source_still_exists(artifact_dir: Path, link: _ResultLink) -> bool:
+    return (
+        (
+            result_manifest_path_in(artifact_dir).exists()
+            and metadata_path_in(artifact_dir).exists()
+        )
+        or result_link_path_in(artifact_dir).exists()
+    ) and result_manifest_path_in(link.source.base_dir).exists()
 
 
 def _find_source(obj: Spec, resolution: _ClassResolution) -> _ResultLink | None:
@@ -121,37 +132,53 @@ def _find_source(obj: Spec, resolution: _ClassResolution) -> _ResultLink | None:
     target_key = _stable_json_dump(target_fields)
     for covered in resolution.covered:
         if any(
-            target_fields[name] != value
+            _stable_json_dump(target_fields[name]) != _stable_json_dump(value)
             for name, value in covered.generation.pinned.items()
         ):
             continue
-        source_link = _migrated_sources(type(obj), resolution.own, covered).get(
-            target_key
-        )
-        if (
-            source_link is None
-            or not result_manifest_path_in(source_link.source.base_dir).exists()
-        ):
+        if not covered.schema_directory.exists():
             continue
-        return _ResultLink(
-            current=_ResultLinkCurrent(
-                fully_qualified_name=obj._fully_qualified_name,
-                schema_hash=obj._artifact_schema_hash,
-                artifact_hash=obj._artifact_hash,
-                fields=target_fields,
-            ),
-            source=source_link.source,
-            migration_path=source_link.migration_path
-            + tuple(
-                f"{move.chain.label}: {_describe_step(step)}"
-                for move in covered.child_moves.values()
-                for step in move.chain.steps[move.start :]
+        sources = (
+            _SOURCES_CACHE.setdefault(
+                (type(obj), covered.schema_directory), {}
             )
-            + tuple(
-                _describe_step(step)
-                for step in resolution.own.steps[covered.generation.start :]
-            ),
+            if _cacheable(covered, resolution)
+            else {}
         )
+        for artifact_dir in sorted(covered.schema_directory.iterdir()):
+            if not artifact_dir.is_dir():
+                continue
+            migrated = sources.get(artifact_dir)
+            if migrated is None:
+                migrated = _migrated_source(artifact_dir, resolution, covered)
+                if migrated is None:
+                    continue
+                sources[artifact_dir] = migrated
+            migrated_key, source_link = migrated
+            if migrated_key != target_key:
+                continue
+            if not _source_still_exists(artifact_dir, source_link):
+                sources.pop(artifact_dir, None)
+                continue
+            return _ResultLink(
+                current=_ResultLinkCurrent(
+                    fully_qualified_name=obj._fully_qualified_name,
+                    schema_hash=obj._artifact_schema_hash,
+                    artifact_hash=obj._artifact_hash,
+                    fields=target_fields,
+                ),
+                source=source_link.source,
+                migration_path=source_link.migration_path
+                + tuple(
+                    f"{move.chain.label}: {_describe_step(step)}"
+                    for move in covered.child_moves.values()
+                    for step in move.chain.steps[move.start :]
+                )
+                + tuple(
+                    _describe_step(step)
+                    for step in resolution.own.steps[covered.generation.start :]
+                ),
+            )
     return None
 
 

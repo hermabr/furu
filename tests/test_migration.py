@@ -98,6 +98,24 @@ class _TrainRun(Spec[dict[str, str]]):
         return {"dataset": self.dataset, "lr": str(self.lr), "seed": str(self.seed)}
 
 
+_NAN = float("nan")
+
+
+class _NaNDefaultTrainRun(Spec[dict[str, str]]):
+    dataset: str
+    lr: float
+    score: float = _NAN
+
+    migrations = (
+        MovedFrom(fully_qualified_name(_OldTrainRun)),
+        Renamed("learning_rate", to="lr"),
+        Added("score", default=_NAN),
+    )
+
+    def create(self) -> dict[str, str]:
+        return {"dataset": self.dataset, "lr": str(self.lr)}
+
+
 def test_rename_plus_add_reuses_old_result_through_result_link() -> None:
     old = _OldTrainRun(learning_rate=0.001, dataset="cifar10")
     assert old.create() == {"dataset": "cifar10", "learning_rate": "0.001"}
@@ -248,6 +266,12 @@ def test_added_field_binds_only_the_default_value() -> None:
     # Old results correspond to the migration's pinned default; any other value
     # is a different spec whose result genuinely never existed.
     assert _TrainRun(dataset="cifar10", lr=0.001, seed=7).status == "missing"
+
+
+def test_added_nan_default_matches_by_serialized_value() -> None:
+    _OldTrainRun(learning_rate=0.001, dataset="cifar10").create()
+
+    assert _NaNDefaultTrainRun(dataset="cifar10", lr=0.001).status == "done"
 
 
 def test_no_matching_source_computes_fresh() -> None:
@@ -643,6 +667,27 @@ def test_rewrite_reshapes_values() -> None:
     assert _COUNTER.calls == 0
 
 
+def test_rewrite_scan_is_uncached_and_falls_back_after_deletion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _RewriteDonor(dataset="cifar10", version=2.1)
+    second = _RewriteDonor(dataset="cifar10", version=2.9)
+    first.create()
+    second.create()
+    schema_directory = _transplant_generation(first, _RewrittenRun)
+    reads = _count_reads_under(monkeypatch, schema_directory)
+    target = _RewrittenRun(dataset="cifar10", version=2)
+
+    assert target.status == "done"
+    assert target.status == "done"
+    assert len(reads) == 2
+
+    shutil.rmtree(
+        next(path for path in sorted(schema_directory.iterdir()) if path.is_dir())
+    )
+    assert target.status == "done"
+
+
 def _touches_unknown_field(fields: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
     return {"dataset": fields["missing_field"], "version": 1}
 
@@ -982,18 +1027,36 @@ def test_old_results_are_read_once_per_class_per_process(
 ) -> None:
     old = _OldTrainRun(learning_rate=0.001, dataset="cifar10")
     old.create()
-    _OldTrainRun(learning_rate=0.01, dataset="mnist").create()
+    other = _OldTrainRun(learning_rate=0.01, dataset="mnist")
+    other.create()
     reads = _count_reads_under(monkeypatch, old._base_dir.parent)
+
+    first = min((old, other), key=lambda source: source._base_dir)
+    assert _TrainRun(
+        dataset=first.dataset, lr=first.learning_rate
+    ).status == "done"
+    assert reads == [first._base_dir]
 
     assert _TrainRun(dataset="cifar10", lr=0.001).status == "done"
     assert _TrainRun(dataset="mnist", lr=0.01).status == "done"
     assert _TrainRun(dataset="mnist", lr=0.5).status == "missing"
     assert len(reads) == 2
 
-    # A deleted source falls through even though the index still lists it.
+    # A deleted source falls through even though the cache still lists it.
     shutil.rmtree(old._base_dir)
     assert _TrainRun(dataset="cifar10", lr=0.001).status == "missing"
     assert len(reads) == 2
+
+
+def test_old_result_created_after_scan_is_found() -> None:
+    _OldTrainRun(learning_rate=0.001, dataset="cifar10").create()
+    source = _OldTrainRun(learning_rate=0.01, dataset="mnist")
+    source._base_dir.mkdir(parents=True)
+    target = _TrainRun(dataset="mnist", lr=0.01)
+
+    assert target.status == "missing"
+    source.create()
+    assert target.status == "done"
 
 
 def test_pinned_added_default_skips_the_old_generation_entirely(
