@@ -51,13 +51,6 @@ def _shape_of(schema: JsonValue) -> JsonValue:
 
 @dataclass(frozen=True, slots=True)
 class _Generation:
-    """One source schema in a chain, keyed by the current field names.
-
-    ``pinned`` holds the values every result migrated from here must carry:
-    Added defaults that no later Rewrite can touch. A spec whose fields differ
-    from them has no source in this generation, so its lookup can be skipped.
-    """
-
     start: int
     class_name: str
     expectations: Mapping[str, _FieldExpectation]

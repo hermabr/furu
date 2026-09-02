@@ -92,14 +92,6 @@ _SOURCES_CACHE: dict[tuple[type, Path], Mapping[str, _ResultLink]] = {}
 def _migrated_sources(
     cls: type, own: _Chain, covered: _Covered
 ) -> Mapping[str, _ResultLink]:
-    """Every result under ``covered.schema_directory``, keyed by the stable JSON
-    of its fields after migration.
-
-    A stored result migrates to exactly one current spec, so the directory is
-    read once per process and each later lookup is a dict probe. Entries can go
-    dangling when a source is deleted; callers re-validate hits against the
-    store like any other link.
-    """
     key = (cls, covered.schema_directory)
     if (sources := _SOURCES_CACHE.get(key)) is None:
         sources = {}
