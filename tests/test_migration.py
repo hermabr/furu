@@ -962,6 +962,52 @@ def test_sideways_scan_runs_once_per_class_per_process(
     assert len(scans) == 1
 
 
+def _count_reads_under(
+    monkeypatch: pytest.MonkeyPatch, schema_directory: Path
+) -> list[Path]:
+    reads: list[Path] = []
+    real_read_source = migration_links._read_source
+
+    def counting(artifact_dir: Path) -> migration_links._ResultLink | None:
+        if artifact_dir.parent == schema_directory:
+            reads.append(artifact_dir)
+        return real_read_source(artifact_dir)
+
+    monkeypatch.setattr(migration_links, "_read_source", counting)
+    return reads
+
+
+def test_old_results_are_read_once_per_class_per_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old = _OldTrainRun(learning_rate=0.001, dataset="cifar10")
+    old.create()
+    _OldTrainRun(learning_rate=0.01, dataset="mnist").create()
+    reads = _count_reads_under(monkeypatch, old._base_dir.parent)
+
+    assert _TrainRun(dataset="cifar10", lr=0.001).status == "done"
+    assert _TrainRun(dataset="mnist", lr=0.01).status == "done"
+    assert _TrainRun(dataset="mnist", lr=0.5).status == "missing"
+    assert len(reads) == 2
+
+    # A deleted source falls through even though the index still lists it.
+    shutil.rmtree(old._base_dir)
+    assert _TrainRun(dataset="cifar10", lr=0.001).status == "missing"
+    assert len(reads) == 2
+
+
+def test_pinned_added_default_skips_the_old_generation_entirely(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old = _OldTrainRun(learning_rate=0.001, dataset="cifar10")
+    old.create()
+    reads = _count_reads_under(monkeypatch, old._base_dir.parent)
+
+    # Every migrated result carries seed=0, so seed=7 has no source to look for.
+    assert _TrainRun(dataset="cifar10", lr=0.001, seed=7).status == "missing"
+    assert reads == []
+
+
 # --- cascading: a child chain carries every spec that embeds it ---------------------
 
 

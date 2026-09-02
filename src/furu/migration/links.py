@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -11,8 +12,10 @@ from furu.metadata import CompletedMetadata
 from furu.migration.resolution import (
     _apply_child_moves,
     _apply_steps,
+    _Chain,
     _class_resolution,
     _ClassResolution,
+    _Covered,
 )
 from furu.migration.steps import _describe_step
 from furu.storage._layout import (
@@ -22,7 +25,7 @@ from furu.storage._layout import (
     result_link_path_in,
     result_manifest_path_in,
 )
-from furu.utils import JsonFields, atomic_write_text
+from furu.utils import JsonFields, _stable_json_dump, atomic_write_text
 
 if TYPE_CHECKING:
     from furu.core import Spec
@@ -83,47 +86,80 @@ def _read_source(artifact_dir: Path) -> _ResultLink | None:
     return link if result_manifest_path_in(link.source.base_dir).exists() else None
 
 
+_SOURCES_CACHE: dict[tuple[type, Path], Mapping[str, _ResultLink]] = {}
+
+
+def _migrated_sources(
+    cls: type, own: _Chain, covered: _Covered
+) -> Mapping[str, _ResultLink]:
+    """Every result under ``covered.schema_directory``, keyed by the stable JSON
+    of its fields after migration.
+
+    A stored result migrates to exactly one current spec, so the directory is
+    read once per process and each later lookup is a dict probe. Entries can go
+    dangling when a source is deleted; callers re-validate hits against the
+    store like any other link.
+    """
+    key = (cls, covered.schema_directory)
+    if (sources := _SOURCES_CACHE.get(key)) is None:
+        sources = {}
+        if covered.schema_directory.exists():
+            for artifact_dir in sorted(covered.schema_directory.iterdir()):
+                if not artifact_dir.is_dir():
+                    continue
+                source_link = _read_source(artifact_dir)
+                if source_link is None:
+                    continue
+                fields = source_link.current.fields
+                if covered.child_moves:
+                    fields = {
+                        name: _apply_child_moves(value, covered.child_moves)
+                        for name, value in fields.items()
+                    }
+                fields = _apply_steps(own, covered.generation.start, fields)
+                sources.setdefault(_stable_json_dump(fields), source_link)
+        _SOURCES_CACHE[key] = sources
+    return sources
+
+
 def _find_source(obj: Spec, resolution: _ClassResolution) -> _ResultLink | None:
     if not resolution.covered:
         return None
     target_fields = cast(JsonFields, obj._artifact_data[FIELDSMARKER])
+    target_key = _stable_json_dump(target_fields)
     for covered in resolution.covered:
-        if not covered.schema_directory.exists():
+        if any(
+            target_fields[name] != value
+            for name, value in covered.generation.pinned.items()
+        ):
             continue
-        for artifact_dir in sorted(covered.schema_directory.iterdir()):
-            if not artifact_dir.is_dir():
-                continue
-            source_link = _read_source(artifact_dir)
-            if source_link is None:
-                continue
-            fields = source_link.current.fields
-            if covered.child_moves:
-                fields = {
-                    name: _apply_child_moves(value, covered.child_moves)
-                    for name, value in fields.items()
-                }
-            fields = _apply_steps(resolution.own, covered.generation.start, fields)
-            if fields != target_fields:
-                continue
-            return _ResultLink(
-                current=_ResultLinkCurrent(
-                    fully_qualified_name=obj._fully_qualified_name,
-                    schema_hash=obj._artifact_schema_hash,
-                    artifact_hash=obj._artifact_hash,
-                    fields=target_fields,
-                ),
-                source=source_link.source,
-                migration_path=source_link.migration_path
-                + tuple(
-                    f"{move.chain.label}: {_describe_step(step)}"
-                    for move in covered.child_moves.values()
-                    for step in move.chain.steps[move.start :]
-                )
-                + tuple(
-                    _describe_step(step)
-                    for step in resolution.own.steps[covered.generation.start :]
-                ),
+        source_link = _migrated_sources(type(obj), resolution.own, covered).get(
+            target_key
+        )
+        if (
+            source_link is None
+            or not result_manifest_path_in(source_link.source.base_dir).exists()
+        ):
+            continue
+        return _ResultLink(
+            current=_ResultLinkCurrent(
+                fully_qualified_name=obj._fully_qualified_name,
+                schema_hash=obj._artifact_schema_hash,
+                artifact_hash=obj._artifact_hash,
+                fields=target_fields,
+            ),
+            source=source_link.source,
+            migration_path=source_link.migration_path
+            + tuple(
+                f"{move.chain.label}: {_describe_step(step)}"
+                for move in covered.child_moves.values()
+                for step in move.chain.steps[move.start :]
             )
+            + tuple(
+                _describe_step(step)
+                for step in resolution.own.steps[covered.generation.start :]
+            ),
+        )
     return None
 
 

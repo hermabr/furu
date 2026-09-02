@@ -51,9 +51,17 @@ def _shape_of(schema: JsonValue) -> JsonValue:
 
 @dataclass(frozen=True, slots=True)
 class _Generation:
+    """One source schema in a chain, keyed by the current field names.
+
+    ``pinned`` holds the values every result migrated from here must carry:
+    Added defaults that no later Rewrite can touch. A spec whose fields differ
+    from them has no source in this generation, so its lookup can be skipped.
+    """
+
     start: int
     class_name: str
     expectations: Mapping[str, _FieldExpectation]
+    pinned: Mapping[str, JsonValue]
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,9 +173,12 @@ def _build_chain(
         ).items()
     }
 
+    hints = typing.get_type_hints(cls, include_extras=True)
     expectations = dict(current_fields)
     current_name_of = {name: name for name in expectations}
-    added_current_name: dict[int, str] = {}
+    added_defaults: dict[int, JsonValue] = {}
+    pinned: dict[str, JsonValue] = {}
+    rewritten = False
     generations: list[_Generation] = []
     class_at = class_name
     for index in reversed(range(len(steps))):
@@ -177,9 +188,15 @@ def _build_chain(
                 current_name_of[field] = current_name_of.pop(to)
             case Added(field=field) as step:
                 name = current_name_of.pop(field)
-                if not step.breaking:
-                    added_current_name[index] = name
                 del expectations[field]
+                if not step.breaking:
+                    added_defaults[index] = to_json(
+                        step.default,
+                        declared_type=hints[name],
+                        artifact_serializers=artifact_serializers,
+                    )
+                    if not rewritten:
+                        pinned[name] = added_defaults[index]
             case Retyped(field=field) as step:
                 expectations[field] = (
                     "shape",
@@ -195,15 +212,22 @@ def _build_chain(
                 class_at = name
             case Rewrite():
                 expectations = dict.fromkeys(expectations, _ANY)
+                rewritten = True
         generations.append(
             _Generation(
-                start=index, class_name=class_at, expectations=dict(expectations)
+                start=index,
+                class_name=class_at,
+                expectations=dict(expectations),
+                pinned=dict(pinned),
             )
         )
     generations.reverse()
     generations.append(
         _Generation(
-            start=len(steps), class_name=class_name, expectations=current_fields
+            start=len(steps),
+            class_name=class_name,
+            expectations=current_fields,
+            pinned={},
         )
     )
 
@@ -234,16 +258,6 @@ def _build_chain(
                 f"dead step: {step.field!r} already has that type, so the step can "
                 "never migrate anything. If old stored values need reshaping - "
                 "say a field's class itself changed - that is Rewrite's job."
-            )
-
-    added_defaults: dict[int, JsonValue] = {}
-    if added_current_name:
-        hints = typing.get_type_hints(cls, include_extras=True)
-        for index, name in added_current_name.items():
-            added_defaults[index] = to_json(
-                cast(Added, steps[index]).default,
-                declared_type=hints[name],
-                artifact_serializers=artifact_serializers,
             )
 
     return _Chain(
