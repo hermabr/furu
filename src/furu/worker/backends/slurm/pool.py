@@ -42,6 +42,7 @@ class SlurmWorkerPool:
     _sbatch_base_args: tuple[str, ...]
     _script_path: Path
     _max_workers: int
+    _max_failed_restarts: int
     _resource_request: ResourceRequest
     _poll_interval: float
     _coordinator: ExecutionCoordinator
@@ -49,6 +50,7 @@ class SlurmWorkerPool:
     _use_job_arrays: bool
     _scale_thread: threading.Thread
     _job_ids: list[str]
+    _failed_job_ids: list[str]
     _worker_files: set[Path]
 
     def handoff(self) -> PoolHandoff:
@@ -92,6 +94,23 @@ class SlurmWorkerPool:
     def _scale_once(self) -> dict[str, str]:
         active_job_states = self._active_job_states()
         states = self._task_states()
+        failed_states = {
+            job_id: state for job_id, state in states.items() if _is_failed_state(state)
+        }
+        new_failed_job_ids = sorted(set(failed_states).difference(self._failed_job_ids))
+        previous_failed_count = len(self._failed_job_ids)
+        self._failed_job_ids.extend(new_failed_job_ids)
+        if len(self._failed_job_ids) <= self._max_failed_restarts:
+            for failed_count, job_id in enumerate(
+                new_failed_job_ids, start=previous_failed_count + 1
+            ):
+                logger.warning(
+                    "requeuing failed slurm worker %s %s · %d/%d",
+                    job_id,
+                    failed_states[job_id],
+                    failed_count,
+                    self._max_failed_restarts,
+                )
         lost_job_ids = {
             job_id
             for job_id in self._job_ids
@@ -103,11 +122,14 @@ class SlurmWorkerPool:
             job_id
             for job_id in self._job_ids
             if job_id not in lost_job_ids
+            and job_id not in failed_states
             and (
                 (active_job_states is not None and job_id in active_job_states)
                 or states.get(job_id) not in (None, *_PRUNABLE_STATES)
             )
         ]
+        if len(self._failed_job_ids) > self._max_failed_restarts:
+            return states
         demand = min(
             self._coordinator.count_satisfiable_jobs(
                 resources=self._resource_request,
@@ -281,21 +303,25 @@ class SlurmWorkerPool:
             try:
                 if self._stop_event.is_set():
                     return
-                self._scale_once()
-                while not self._stop_event.wait(timeout=self._poll_interval):
+                while True:
                     states = self._scale_once()
-                    if failed_states := {
-                        job_id: state
-                        for job_id, state in states.items()
-                        if _is_failed_state(state)
-                    }:
+                    if len(self._failed_job_ids) > self._max_failed_restarts:
+                        failed_states = {
+                            job_id: state
+                            for job_id, state in states.items()
+                            if _is_failed_state(state)
+                        }
                         self._report_failure(
-                            "slurm worker pool became unhealthy: "
+                            "slurm worker restart limit exceeded "
+                            f"({len(self._failed_job_ids)}/"
+                            f"{self._max_failed_restarts}): "
                             + ", ".join(
                                 f"{job_id} {state}"
                                 for job_id, state in sorted(failed_states.items())
                             )
                         )
+                        return
+                    if self._stop_event.wait(timeout=self._poll_interval):
                         return
             except Exception as exc:  # noqa: BLE001 -- fault barrier: any crash is reported
                 self._report_failure(

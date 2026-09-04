@@ -42,12 +42,16 @@ class SlurmWorkerBackend:
         default_factory=lambda: get_config().worker.connect_host or socket.getfqdn()
     )
     worker_connect_port: int | None = None
+    max_failed_restarts: int = field(
+        default_factory=lambda: get_config().worker.max_failed_restarts
+    )
     execution_coordinator_listen_host: str = "0.0.0.0"
     job_name: str = "furu-worker"
     poll_interval: float = 10.0
     worker_idle_timeout: float = field(
         default_factory=lambda: get_config().worker.idle_timeout_seconds
     )
+    worker_max_consecutive_failures: int | None = 3
     pre_worker_commands: tuple[str, ...] = ()
     export: SlurmExport = None
     use_job_arrays: bool = True
@@ -77,6 +81,9 @@ class SlurmWorkerBackend:
                 "sbatch": self.resources.to_sbatch_args(),
                 "reserve_for": dataclasses.asdict(self.reserve_for),
                 "pre_worker_commands": list(self.pre_worker_commands),
+                "worker_max_consecutive_failures": (
+                    self.worker_max_consecutive_failures
+                ),
                 "export": export,
                 "use_job_arrays": self.use_job_arrays,
             }
@@ -137,6 +144,14 @@ class SlurmWorkerBackend:
         )
         if pre_worker_script:
             pre_worker_script += "\n"
+        worker_failure_arg = (
+            ""
+            if self.worker_max_consecutive_failures is None
+            else (
+                "    --max-consecutive-failures "
+                f"{self.worker_max_consecutive_failures} \\\n"
+            )
+        )
 
         script_path = worker_dir / "worker.sh"
         if self.use_job_arrays:
@@ -166,6 +181,7 @@ class SlurmWorkerBackend:
                 '    --component "${furu_worker_component}" \\\n'
                 "    --backend slurm \\\n"
                 f"    --idle-timeout {self.worker_idle_timeout} \\\n"
+                f"{worker_failure_arg}"
                 f"    --resources {shlex.quote(resources_json)}\n"
             ),
             mode=0o700,
@@ -200,6 +216,7 @@ class SlurmWorkerBackend:
             _sbatch_base_args=sbatch_base_args,
             _script_path=script_path,
             _max_workers=self.max_workers,
+            _max_failed_restarts=self.max_failed_restarts,
             _resource_request=resource_request,
             _poll_interval=self.poll_interval,
             _coordinator=coordinator,
@@ -210,6 +227,7 @@ class SlurmWorkerBackend:
                 name="furu-slurm-worker-pool-scale",
             ),
             _job_ids=job_ids,
+            _failed_job_ids=[],
             _worker_files=worker_files,
         )
         pool_holder.append(pool)

@@ -1815,6 +1815,72 @@ def test_worker_loop_logs_received_task_and_result(
     assert f"object_ids={leaf.object_id},{other_leaf.object_id}" in received_line
 
 
+def test_worker_loop_retires_after_three_consecutive_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    leaf = ExecutionCoordinatorLeaf(value=1)
+
+    def run(self: ChildSlot, job: Job, *, cancelled: threading.Event) -> JobResult:
+        return JobFailedResult(error="bad worker")
+
+    monkeypatch.setattr(ChildSlot, "run", run)
+
+    with (
+        _scripted_worker_server([_job(leaf), _job(leaf), _job(leaf)]) as server,
+        pytest.raises(
+            RuntimeError, match="worker retired after 3 consecutive failed jobs"
+        ),
+    ):
+        worker_loop(
+            coordinator=server.server_url,
+            resource_request=ResourceRequest(),
+            idle_timeout=get_config().worker.idle_timeout_seconds,
+            component="test-worker",
+            backend="slurm",
+            materialize_snapshot=False,
+            max_consecutive_failures=3,
+        )
+
+    assert server.results == [JobFailedResult(error="bad worker")] * 3
+
+
+def test_worker_loop_success_resets_consecutive_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    leaf = ExecutionCoordinatorLeaf(value=1)
+    results: list[JobResult] = [
+        JobFailedResult(error="bad worker"),
+        JobFailedResult(error="bad worker"),
+        JobCompletedResult(),
+        JobFailedResult(error="bad worker"),
+        JobFailedResult(error="bad worker"),
+    ]
+
+    def run(self: ChildSlot, job: Job, *, cancelled: threading.Event) -> JobResult:
+        return results.pop(0)
+
+    monkeypatch.setattr(ChildSlot, "run", run)
+
+    with _scripted_worker_server([_job(leaf)] * 5) as server:
+        worker_loop(
+            coordinator=server.server_url,
+            resource_request=ResourceRequest(),
+            idle_timeout=get_config().worker.idle_timeout_seconds,
+            component="test-worker",
+            backend="slurm",
+            materialize_snapshot=False,
+            max_consecutive_failures=3,
+        )
+
+    assert [result.status for result in server.results] == [
+        "failed",
+        "failed",
+        "completed",
+        "failed",
+        "failed",
+    ]
+
+
 def test_worker_loop_does_not_swallow_keyboard_interrupt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

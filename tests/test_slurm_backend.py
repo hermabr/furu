@@ -147,7 +147,7 @@ def test_worker_cli_passes_coordinator_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[Path, ResourceRequest, float | None]] = []
+    calls: list[tuple[Path, ResourceRequest, float | None, int | None]] = []
     coordinator_file = tmp_path / "coordinator.url"
     coordinator_file.write_text("ws://furu:secret@execution-coordinator.test:1\n\n")
 
@@ -159,8 +159,11 @@ def test_worker_cli_passes_coordinator_file(
         component: str,
         backend: str,
         materialize_snapshot: bool,
+        max_consecutive_failures: int | None,
     ) -> None:
-        calls.append((coordinator, resource_request, idle_timeout))
+        calls.append(
+            (coordinator, resource_request, idle_timeout, max_consecutive_failures)
+        )
 
     monkeypatch.setattr(_cli, "worker_loop", worker_loop)
 
@@ -182,14 +185,14 @@ def test_worker_cli_passes_coordinator_file(
         == 0
     )
 
-    assert calls == [(coordinator_file, ResourceRequest(), 60.0)]
+    assert calls == [(coordinator_file, ResourceRequest(), 60.0, None)]
 
 
 def test_worker_cli_reads_resource_request(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[ResourceRequest, float | None]] = []
+    calls: list[tuple[ResourceRequest, float | None, int | None]] = []
     coordinator_file = tmp_path / "coordinator.url"
     coordinator_file.write_text("ws://furu:secret@execution-coordinator.test:1")
 
@@ -201,8 +204,9 @@ def test_worker_cli_reads_resource_request(
         component: str,
         backend: str,
         materialize_snapshot: bool,
+        max_consecutive_failures: int | None,
     ) -> None:
-        calls.append((resource_request, idle_timeout))
+        calls.append((resource_request, idle_timeout, max_consecutive_failures))
 
     monkeypatch.setattr(_cli, "worker_loop", worker_loop)
 
@@ -233,6 +237,7 @@ def test_worker_cli_reads_resource_request(
                 reserve_for=ResourceFloor(memory_gib=8),
             ),
             30.0,
+            None,
         )
     ]
 
@@ -253,6 +258,7 @@ def test_worker_cli_reads_idle_timeout(
         component: str,
         backend: str,
         materialize_snapshot: bool,
+        max_consecutive_failures: int | None,
     ) -> None:
         calls.append(idle_timeout)
 
@@ -279,6 +285,51 @@ def test_worker_cli_reads_idle_timeout(
     assert calls == [0.25]
 
 
+def test_worker_cli_reads_max_consecutive_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[int | None] = []
+    coordinator_file = tmp_path / "coordinator.url"
+    coordinator_file.write_text("ws://furu:secret@execution-coordinator.test:1")
+
+    def worker_loop(
+        *,
+        coordinator: Path,
+        resource_request: ResourceRequest,
+        idle_timeout: float | None,
+        component: str,
+        backend: str,
+        materialize_snapshot: bool,
+        max_consecutive_failures: int | None,
+    ) -> None:
+        calls.append(max_consecutive_failures)
+
+    monkeypatch.setattr(_cli, "worker_loop", worker_loop)
+
+    assert (
+        _cli.main(
+            [
+                "--coordinator-file",
+                str(coordinator_file),
+                "--resources",
+                '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
+                "--idle-timeout",
+                "60",
+                "--max-consecutive-failures",
+                "3",
+                "--component",
+                "test-worker",
+                "--backend",
+                "slurm",
+            ]
+        )
+        == 0
+    )
+
+    assert calls == [3]
+
+
 def _run_worker_cli_capturing_component(
     monkeypatch: pytest.MonkeyPatch,
     coordinator_file: Path,
@@ -294,6 +345,7 @@ def _run_worker_cli_capturing_component(
         component: str,
         backend: str,
         materialize_snapshot: bool,
+        max_consecutive_failures: int | None,
     ) -> None:
         captured.append(component)
 
@@ -348,6 +400,7 @@ def test_worker_cli_requires_component(
         component: str,
         backend: str,
         materialize_snapshot: bool,
+        max_consecutive_failures: int | None,
     ) -> None:
         raise AssertionError("worker_loop should not be called")
 
@@ -582,6 +635,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     )
     assert '--component "${furu_worker_component}"' in script
     assert "--idle-timeout 0.25" in script
+    assert "--max-consecutive-failures 3" in script
     resources_json = resource_request_adapter.dump_json(
         ResourceRequest(
             cpus=4,
@@ -1271,6 +1325,7 @@ def test_slurm_worker_pool_unhealthy_report_includes_failed_state(
     coordinator = _StubCoordinator()
     backend = SlurmWorkerBackend(
         max_workers=1,
+        max_failed_restarts=0,
         resources=SlurmResources(cpus_per_worker=1),
         worker_connect_host="execution-coordinator.cluster",
         poll_interval=0,
@@ -1288,7 +1343,65 @@ def test_slurm_worker_pool_unhealthy_report_includes_failed_state(
 
     pool._scale_loop()
 
-    assert coordinator.failures == ["slurm worker pool became unhealthy: 100 FAILED"]
+    assert coordinator.failures == [
+        "slurm worker restart limit exceeded (1/0): 100 FAILED"
+    ]
+    assert pool._job_ids == []
+    assert pool._failed_job_ids == ["100"]
+
+
+def test_slurm_pool_requeues_ten_failed_workers_before_failing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    coordinator = _StubCoordinator(1)
+    backend = SlurmWorkerBackend(
+        max_workers=1,
+        max_failed_restarts=10,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="execution-coordinator.cluster",
+        poll_interval=0,
+        use_job_arrays=False,
+    )
+    pool = backend.start_pool(
+        coordinator=coordinator,
+        bound_port=1234,
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+        handoff=PoolHandoff(),
+    )
+
+    pool._scale_once()
+    for failed_count in range(1, 11):
+        (job_id,) = pool._job_ids
+        active_file.write_text(f"{job_id} FAILED\n")
+        pool._scale_once()
+
+        assert coordinator.failures == []
+        assert len(pool._failed_job_ids) == failed_count
+        assert len(pool._job_ids) == 1
+
+    (job_id,) = pool._job_ids
+    active_file.write_text(f"{job_id} OUT_OF_MEMORY\n")
+    pool._scale_loop()
+
+    assert coordinator.failures == [
+        "slurm worker restart limit exceeded (11/10): 110 OUT_OF_MEMORY"
+    ]
+    assert pool._job_ids == []
+    assert len(pool._failed_job_ids) == 11
+    assert (
+        len(
+            [
+                record
+                for record in _read_records(record_file)
+                if record["executable"] == "sbatch"
+            ]
+        )
+        == 11
+    )
 
 
 def test_slurm_pool_scale_submits_additional_workers_as_satisfiable_count_grows(
@@ -1557,6 +1670,7 @@ def test_slurm_pool_scale_does_not_count_completed_jobs_as_restarts(
     pool._scale_once()
 
     assert pool._job_ids == ["102"]
+    assert pool._failed_job_ids == []
     assert (
         len(
             [
@@ -1579,6 +1693,7 @@ def test_slurm_pool_scale_reports_cancelled_jobs_as_failures(
 
     backend = SlurmWorkerBackend(
         max_workers=1,
+        max_failed_restarts=0,
         resources=SlurmResources(cpus_per_worker=1),
         worker_connect_host="execution-coordinator.cluster",
         poll_interval=0,
@@ -1598,8 +1713,11 @@ def test_slurm_pool_scale_reports_cancelled_jobs_as_failures(
 
     pool._scale_loop()
 
-    assert coordinator.failures == ["slurm worker pool became unhealthy: 100 CANCELLED"]
-    assert pool._job_ids == ["100"]
+    assert coordinator.failures == [
+        "slurm worker restart limit exceeded (1/0): 100 CANCELLED"
+    ]
+    assert pool._job_ids == []
+    assert pool._failed_job_ids == ["100"]
     assert (
         len(
             [
@@ -1674,6 +1792,8 @@ def test_slurm_backend_uses_default_poll_interval() -> None:
     assert backend.poll_interval == 10.0
     assert backend.execution_coordinator_listen_host == "0.0.0.0"
     assert backend.worker_idle_timeout == get_config().worker.idle_timeout_seconds
+    assert backend.worker_max_consecutive_failures == 3
+    assert backend.max_failed_restarts == get_config().worker.max_failed_restarts == 10
     assert backend.use_job_arrays is True
 
 
@@ -2004,6 +2124,7 @@ def test_slurm_pool_key_ignores_where_and_how_many() -> None:
         },
         {"reserve_for": ResourceFloor(memory_gib=8)},
         {"pre_worker_commands": ("module load cuda",)},
+        {"worker_max_consecutive_failures": 4},
         {"export": "NIL"},
         {"export": ("HF_TOKEN",)},
         {"use_job_arrays": False},

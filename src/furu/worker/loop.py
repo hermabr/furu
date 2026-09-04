@@ -99,6 +99,7 @@ def worker_loop(
     component: str,
     backend: str,
     materialize_snapshot: bool,
+    max_consecutive_failures: int | None = None,
 ) -> None:
     with _scoped_component(component):
         target = _read_target(coordinator)
@@ -113,6 +114,7 @@ def worker_loop(
         job_thread: threading.Thread | None = None
         cancelled = threading.Event()  # replaced with each new job
         result: protocol.JobResult | None = None
+        consecutive_failures = 0
         try:
             while True:
                 with connect(target[0], max_size=None) as connection:
@@ -178,8 +180,21 @@ def worker_loop(
                                     )
                                 except ConnectionClosed:
                                     continue  # Wait for the reader's None before reconnecting.
+                                failed = isinstance(result, protocol.JobFailedResult)
                                 job = result = None
                                 job_thread = None
+                                consecutive_failures = (
+                                    consecutive_failures + 1 if failed else 0
+                                )
+                                if (
+                                    failed
+                                    and max_consecutive_failures is not None
+                                    and consecutive_failures >= max_consecutive_failures
+                                ):
+                                    raise RuntimeError(
+                                        "worker retired after "
+                                        f"{consecutive_failures} consecutive failed jobs"
+                                    )
                             case _:
                                 assert_never(event)
 

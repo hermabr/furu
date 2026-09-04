@@ -61,6 +61,7 @@ class _FuruWorkerConfig(BaseModel):
 
     connect_host: str | None = None
     idle_timeout_seconds: float = 60.0
+    max_failed_restarts: int = 10
     max_retries_per_object: int = 3
 
 
