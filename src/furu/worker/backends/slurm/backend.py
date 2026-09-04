@@ -48,8 +48,6 @@ class SlurmWorkerBackend:
     worker_idle_timeout: float = field(
         default_factory=lambda: get_config().worker.idle_timeout_seconds
     )
-    # A worker that fails this many jobs exits so a fresh allocation replaces it;
-    # the run gives up once more than max_failed_workers have failed.
     max_failures_per_worker: int = 3
     max_failed_workers: int = 10
     pre_worker_commands: tuple[str, ...] = ()
