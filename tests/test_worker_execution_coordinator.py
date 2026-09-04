@@ -1780,10 +1780,16 @@ def test_worker_loop_exits_after_idle_timeout() -> None:
         assert server.results == []
 
 
-def test_worker_loop_exits_non_zero_after_max_failures(
+def test_worker_loop_exits_non_zero_after_consecutive_failures(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    jobs = [_job(FailingCoordinatorLeaf(value=value)) for value in range(3)]
+    jobs = [
+        _job(FailingCoordinatorLeaf(value=0)),
+        _job(ExecutionCoordinatorLeaf(value=1)),  # success resets the count
+        _job(FailingCoordinatorLeaf(value=2)),
+        _job(FailingCoordinatorLeaf(value=3)),
+        _job(FailingCoordinatorLeaf(value=4)),
+    ]
 
     with (
         _scripted_worker_server(jobs, hold_open=True) as server,
@@ -1801,11 +1807,16 @@ def test_worker_loop_exits_non_zero_after_max_failures(
         )
 
     assert exc_info.value.code == 1
-    # Both failures reach the coordinator before the worker gives up.
-    assert [result.status for result in server.results] == ["failed", "failed"]
-    assert "2 jobs failed on this worker; exiting so the pool replaces it" in (
-        caplog.messages
-    )
+    # Every result reaches the coordinator before the worker gives up.
+    assert [result.status for result in server.results] == [
+        "failed",
+        "completed",
+        "failed",
+        "failed",
+    ]
+    assert (
+        "2 jobs failed in a row on this worker; exiting so the pool replaces it"
+    ) in caplog.messages
 
 
 def test_worker_loop_logs_received_task_and_result(

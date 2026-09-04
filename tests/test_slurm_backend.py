@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -29,6 +29,7 @@ from furu.config import (
     _read_worker_json_config,
     get_config,
 )
+from furu.dag import DagNode
 from furu.execution.execution_coordinator import ExecutionCoordinator
 from furu.provenance import (
     EnvironmentIdentity,
@@ -1313,7 +1314,9 @@ def test_slurm_pool_fails_run_once_failed_worker_budget_is_exhausted(
 
     pool._scale_loop()
 
-    assert coordinator.failures == ["more than 0 slurm workers failed: 100 FAILED"]
+    assert coordinator.failures == [
+        "more than 0 slurm workers failed without any job completing: 100 FAILED"
+    ]
     assert pool._stop_event.is_set()
 
 
@@ -1634,25 +1637,36 @@ def test_slurm_pool_scale_replaces_failed_workers_within_budget(
         furu_logger.removeHandler(caplog.handler)
 
     assert pool._job_ids == ["102", "103"]
-    assert pool._failed_workers == ["100 OUT_OF_MEMORY"]
+    assert pool._failed_workers.labels == ["100 OUT_OF_MEMORY"]
     assert coordinator.failures == []
     assert (
         "replacing 1 failed slurm worker · 100 OUT_OF_MEMORY · "
-        "1 of 2 failures tolerated"
+        "1 of 2 failures tolerated since the last completed job"
     ) in caplog.messages
 
-    # Workers exiting non-zero after too many failed jobs count as well, and
-    # the budget is exact: a third failure ends the run.
+    # Workers exiting non-zero after repeated job failures count as well, but a
+    # job completing in the meantime is progress and clears the earlier failure.
+    coordinator.completed["done"] = cast(DagNode, object())
     active_file.write_text("102 FAILED\n103 FAILED\n")
     pool._scale_once()
 
+    assert pool._job_ids == ["104", "105"]
+    assert pool._failed_workers.labels == ["102 FAILED", "103 FAILED"]
+    assert coordinator.failures == []
+
+    # With no further progress the budget is exact: a third failure ends the run.
+    active_file.write_text("104 NODE_FAIL\n")
+    pool._scale_once()
+
     assert pool._job_ids == []
-    assert pool._failed_workers == ["100 OUT_OF_MEMORY", "102 FAILED", "103 FAILED"]
     assert coordinator.failures == [
-        "more than 2 slurm workers failed: 100 OUT_OF_MEMORY, 102 FAILED, 103 FAILED"
+        (
+            "more than 2 slurm workers failed without any job completing: "
+            "102 FAILED, 103 FAILED, 104 NODE_FAIL"
+        )
     ]
     assert (
-        len([r for r in _read_records(record_file) if r["executable"] == "sbatch"]) == 4
+        len([r for r in _read_records(record_file) if r["executable"] == "sbatch"]) == 6
     )
 
 
@@ -1686,7 +1700,9 @@ def test_slurm_pool_scale_counts_cancelled_jobs_as_failed_workers(
 
     pool._scale_loop()
 
-    assert coordinator.failures == ["more than 0 slurm workers failed: 100 CANCELLED"]
+    assert coordinator.failures == [
+        "more than 0 slurm workers failed without any job completing: 100 CANCELLED"
+    ]
     assert pool._job_ids == []
     assert (
         len(

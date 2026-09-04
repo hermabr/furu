@@ -30,7 +30,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--max-failures",
         required=True,
         type=int,
-        help="failed jobs after which this worker exits non-zero to be replaced",
+        help="consecutive failed jobs after which this worker exits to be replaced",
     )
     parser.add_argument(
         "--component",

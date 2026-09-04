@@ -4,7 +4,7 @@ import subprocess
 import threading
 import time
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -37,6 +37,20 @@ def _is_failed_state(state: str) -> bool:
     return state not in _UNFINISHED_STATES and state not in _PRUNABLE_STATES
 
 
+@dataclass(slots=True)
+class _FailedWorkers:
+    labels: list[str] = field(default_factory=list)  # "<job id> <state>", oldest first
+    completed_seen: int = 0
+
+    def update(self, failed: dict[str, str], completed: int) -> list[str]:
+        if completed > self.completed_seen:
+            self.labels.clear()
+            self.completed_seen = completed
+        new = [f"{job_id} {state}" for job_id, state in sorted(failed.items())]
+        self.labels.extend(new)
+        return new
+
+
 @dataclass(frozen=True, slots=True)
 class SlurmWorkerPool:
     _sbatch_base_args: tuple[str, ...]
@@ -50,7 +64,7 @@ class SlurmWorkerPool:
     _use_job_arrays: bool
     _scale_thread: threading.Thread
     _job_ids: list[str]
-    _failed_workers: list[str]  # "<job id> <state>" per failed worker, oldest first
+    _failed_workers: _FailedWorkers
     _worker_files: set[Path]
 
     def handoff(self) -> PoolHandoff:
@@ -110,22 +124,23 @@ class SlurmWorkerPool:
             )
         ]
         if failed:
-            failed_labels = [
-                f"{job_id} {state}" for job_id, state in sorted(failed.items())
-            ]
-            self._failed_workers.extend(failed_labels)
-            if len(self._failed_workers) > self._max_failed_workers:
+            failed_labels = self._failed_workers.update(
+                failed, len(self._coordinator.completed)
+            )
+            if len(self._failed_workers.labels) > self._max_failed_workers:
                 self._report_failure(
-                    f"more than {self._max_failed_workers} slurm workers failed: "
-                    + ", ".join(self._failed_workers)
+                    f"more than {self._max_failed_workers} slurm workers failed "
+                    "without any job completing: "
+                    + ", ".join(self._failed_workers.labels)
                 )
                 return
             logger.warning(
-                "replacing %d failed slurm worker%s · %s · %d of %d failures tolerated",
+                "replacing %d failed slurm worker%s · %s · "
+                "%d of %d failures tolerated since the last completed job",
                 len(failed_labels),
                 "" if len(failed_labels) == 1 else "s",
                 ", ".join(failed_labels),
-                len(self._failed_workers),
+                len(self._failed_workers.labels),
                 self._max_failed_workers,
             )
         demand = min(

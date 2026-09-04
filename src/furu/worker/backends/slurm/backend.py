@@ -24,7 +24,7 @@ from furu.utils import (
     replace_private_file,
     write_private_file,
 )
-from furu.worker.backends.slurm.pool import SlurmWorkerPool
+from furu.worker.backends.slurm.pool import SlurmWorkerPool, _FailedWorkers
 from furu.worker.backends.slurm.resources import SlurmResources
 from furu.worker.protocol import PoolHandoff, coordinator_url
 
@@ -214,7 +214,7 @@ class SlurmWorkerBackend:
                 name="furu-slurm-worker-pool-scale",
             ),
             _job_ids=job_ids,
-            _failed_workers=[],
+            _failed_workers=_FailedWorkers(),
             _worker_files=worker_files,
         )
         pool_holder.append(pool)
