@@ -294,6 +294,13 @@ class FlakyExecutionCoordinatorLeaf(Spec[int]):
         return self.value
 
 
+class FailingCoordinatorLeaf(Spec[int]):
+    value: int
+
+    def create(self) -> int:
+        raise RuntimeError(f"always fails: {self.value}")
+
+
 class GatedExecutionCoordinatorLeaf(Spec[int]):
     value: int
     release_file: str
@@ -756,9 +763,7 @@ def test_count_satisfiable_jobs_caps_at_max_workers_and_filters_by_requirements(
         == 0
     )
     with pytest.raises(ValueError):
-        coordinator.count_satisfiable_jobs(
-            resources=ResourceRequest(), max_workers=-1
-        )
+        coordinator.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=-1)
     assert (
         coordinator.count_satisfiable_jobs(
             resources=ResourceRequest(gpus=1), max_workers=10
@@ -818,8 +823,10 @@ def test_only_discovered_external_computations_are_polled(
             )
             thread.start()
             _wait_until(
-                lambda: set(coordinator.running_elsewhere)
-                == {leaf.object_id for leaf in leaves}
+                lambda: (
+                    set(coordinator.running_elsewhere)
+                    == {leaf.object_id for leaf in leaves}
+                )
             )
             assert (
                 coordinator.count_satisfiable_jobs(
@@ -1771,6 +1778,34 @@ def test_worker_loop_exits_after_idle_timeout() -> None:
 
         assert len(server.hellos) == 1
         assert server.results == []
+
+
+def test_worker_loop_exits_non_zero_after_max_failures(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    jobs = [_job(FailingCoordinatorLeaf(value=value)) for value in range(3)]
+
+    with (
+        _scripted_worker_server(jobs, hold_open=True) as server,
+        _captured_furu_logs(caplog),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        worker_loop(
+            coordinator=server.server_url,
+            resource_request=ResourceRequest(),
+            idle_timeout=get_config().worker.idle_timeout_seconds,
+            component="test-worker",
+            backend="test",
+            materialize_snapshot=False,
+            max_failures=2,
+        )
+
+    assert exc_info.value.code == 1
+    # Both failures reach the coordinator before the worker gives up.
+    assert [result.status for result in server.results] == ["failed", "failed"]
+    assert "2 jobs failed on this worker; exiting so the pool replaces it" in (
+        caplog.messages
+    )
 
 
 def test_worker_loop_logs_received_task_and_result(

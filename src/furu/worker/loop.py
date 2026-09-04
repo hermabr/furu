@@ -99,7 +99,13 @@ def worker_loop(
     component: str,
     backend: str,
     materialize_snapshot: bool,
+    max_failures: int | None = None,
 ) -> None:
+    """Serve jobs until the coordinator hangs up or the worker goes idle.
+
+    After ``max_failures`` failed jobs the worker assumes its host is unhealthy
+    and exits non-zero so the pool can replace it.
+    """
     with _scoped_component(component):
         target = _read_target(coordinator)
         if target[1] is not None and target[1] != get_config():
@@ -113,6 +119,7 @@ def worker_loop(
         job_thread: threading.Thread | None = None
         cancelled = threading.Event()  # replaced with each new job
         result: protocol.JobResult | None = None
+        failures = 0
         try:
             while True:
                 with connect(target[0], max_size=None) as connection:
@@ -180,6 +187,15 @@ def worker_loop(
                                     continue  # Wait for the reader's None before reconnecting.
                                 job = result = None
                                 job_thread = None
+                                if isinstance(event, protocol.JobFailedResult):
+                                    failures += 1
+                                    if failures == max_failures:
+                                        logger.error(
+                                            "%d jobs failed on this worker; "
+                                            "exiting so the pool replaces it",
+                                            failures,
+                                        )
+                                        raise SystemExit(1)
                             case _:
                                 assert_never(event)
 
