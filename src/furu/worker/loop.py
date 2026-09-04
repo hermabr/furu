@@ -101,11 +101,6 @@ def worker_loop(
     materialize_snapshot: bool,
     max_failures: int | None = None,
 ) -> None:
-    """Serve jobs until the coordinator hangs up or the worker goes idle.
-
-    After ``max_failures`` failed jobs the worker assumes its host is unhealthy
-    and exits non-zero so the pool can replace it.
-    """
     with _scoped_component(component):
         target = _read_target(coordinator)
         if target[1] is not None and target[1] != get_config():
