@@ -38,20 +38,6 @@ def _is_failed_state(state: str) -> bool:
 
 
 @dataclass(slots=True)
-class _FailedWorkers:
-    labels: list[str] = field(default_factory=list)  # "<job id> <state>", oldest first
-    completed_seen: int = 0
-
-    def update(self, failed: dict[str, str], completed: int) -> list[str]:
-        if completed > self.completed_seen:
-            self.labels.clear()
-            self.completed_seen = completed
-        new = [f"{job_id} {state}" for job_id, state in sorted(failed.items())]
-        self.labels.extend(new)
-        return new
-
-
-@dataclass(frozen=True, slots=True)
 class SlurmWorkerPool:
     _sbatch_base_args: tuple[str, ...]
     _script_path: Path
@@ -64,8 +50,9 @@ class SlurmWorkerPool:
     _use_job_arrays: bool
     _scale_thread: threading.Thread
     _job_ids: list[str]
-    _failed_workers: _FailedWorkers
     _worker_files: set[Path]
+    _failed: list[str] = field(default_factory=list)  # "<job id> <state>"
+    _completed_seen: int = 0
 
     def handoff(self) -> PoolHandoff:
         with _scoped_component("slurm"):
@@ -124,24 +111,22 @@ class SlurmWorkerPool:
             )
         ]
         if failed:
-            failed_labels = self._failed_workers.update(
-                failed, len(self._coordinator.completed)
-            )
-            if len(self._failed_workers.labels) > self._max_failed_workers:
+            if len(self._coordinator.completed) > self._completed_seen:
+                self._completed_seen = len(self._coordinator.completed)
+                self._failed.clear()
+            self._failed += [f"{j} {s}" for j, s in sorted(failed.items())]
+            if len(self._failed) > self._max_failed_workers:
                 self._report_failure(
                     f"more than {self._max_failed_workers} slurm workers failed "
-                    "without any job completing: "
-                    + ", ".join(self._failed_workers.labels)
+                    f"without any job completing: {', '.join(self._failed)}"
                 )
                 return
             logger.warning(
-                "replacing %d failed slurm worker%s · %s · "
-                "%d of %d failures tolerated since the last completed job",
-                len(failed_labels),
-                "" if len(failed_labels) == 1 else "s",
-                ", ".join(failed_labels),
-                len(self._failed_workers.labels),
+                "replacing failed slurm workers (%d of %d tolerated since the "
+                "last completed job): %s",
+                len(self._failed),
                 self._max_failed_workers,
+                ", ".join(self._failed),
             )
         demand = min(
             self._coordinator.count_satisfiable_jobs(
@@ -325,7 +310,6 @@ class SlurmWorkerPool:
                 )
 
     def _report_failure(self, message: str) -> None:
-        """Give up: stop scaling and fail the run."""
         logger.error("slurm worker pool failure: %s", message)
         self._stop_event.set()
         self._coordinator.fail(message)

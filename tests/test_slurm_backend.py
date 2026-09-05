@@ -175,8 +175,6 @@ def test_worker_cli_passes_coordinator_file(
                 '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
                 "--idle-timeout",
                 "60",
-                "--max-failures",
-                "3",
                 "--component",
                 "test-worker",
                 "--backend",
@@ -220,8 +218,6 @@ def test_worker_cli_reads_resource_request(
                 '{"cpus": 4, "gpus": 1, "memory_gib": 16, "reserve_for": {"memory_gib": 8}}',
                 "--idle-timeout",
                 "30",
-                "--max-failures",
-                "3",
                 "--component",
                 "test-worker",
                 "--backend",
@@ -319,8 +315,6 @@ def _run_worker_cli_capturing_component(
                 '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
                 "--idle-timeout",
                 "60",
-                "--max-failures",
-                "3",
                 "--backend",
                 "slurm",
                 *extra_args,
@@ -376,8 +370,6 @@ def test_worker_cli_requires_component(
                 '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
                 "--idle-timeout",
                 "60",
-                "--max-failures",
-                "3",
             ]
         )
 
@@ -409,8 +401,6 @@ def test_worker_cli_requires_resource_request(
                 str(coordinator_file),
                 "--idle-timeout",
                 "60",
-                "--max-failures",
-                "3",
                 "--component",
                 "test-worker",
             ]
@@ -440,8 +430,6 @@ def test_worker_cli_requires_coordinator_file(monkeypatch: pytest.MonkeyPatch) -
                 '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
                 "--idle-timeout",
                 "60",
-                "--max-failures",
-                "3",
                 "--component",
                 "test-worker",
             ]
@@ -510,8 +498,6 @@ def test_worker_cli_rejects_auth_token_argument(
                 '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
                 "--idle-timeout",
                 "60",
-                "--max-failures",
-                "3",
                 "--component",
                 "test-worker",
                 "--auth-token",
@@ -1637,11 +1623,11 @@ def test_slurm_pool_scale_replaces_failed_workers_within_budget(
         furu_logger.removeHandler(caplog.handler)
 
     assert pool._job_ids == ["102", "103"]
-    assert pool._failed_workers.labels == ["100 OUT_OF_MEMORY"]
+    assert pool._failed == ["100 OUT_OF_MEMORY"]
     assert coordinator.failures == []
     assert (
-        "replacing 1 failed slurm worker · 100 OUT_OF_MEMORY · "
-        "1 of 2 failures tolerated since the last completed job"
+        "replacing failed slurm workers (1 of 2 tolerated since the last "
+        "completed job): 100 OUT_OF_MEMORY"
     ) in caplog.messages
 
     # Workers exiting non-zero after repeated job failures count as well, but a
@@ -1651,7 +1637,7 @@ def test_slurm_pool_scale_replaces_failed_workers_within_budget(
     pool._scale_once()
 
     assert pool._job_ids == ["104", "105"]
-    assert pool._failed_workers.labels == ["102 FAILED", "103 FAILED"]
+    assert pool._failed == ["102 FAILED", "103 FAILED"]
     assert coordinator.failures == []
 
     # With no further progress the budget is exact: a third failure ends the run.

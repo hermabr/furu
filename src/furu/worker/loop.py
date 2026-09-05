@@ -182,17 +182,17 @@ def worker_loop(
                                     continue  # Wait for the reader's None before reconnecting.
                                 job = result = None
                                 job_thread = None
-                                if isinstance(event, protocol.JobCompletedResult):
-                                    failures = 0
-                                elif isinstance(event, protocol.JobFailedResult):
-                                    failures += 1
-                                    if failures == max_failures:
-                                        logger.error(
-                                            "%d jobs failed in a row on this "
-                                            "worker; exiting so the pool replaces it",
-                                            failures,
-                                        )
-                                        raise SystemExit(1)
+                                failures = (
+                                    failures + 1
+                                    if isinstance(event, protocol.JobFailedResult)
+                                    else 0
+                                )
+                                if failures == max_failures:
+                                    logger.error(
+                                        "%d jobs failed in a row; worker exiting",
+                                        failures,
+                                    )
+                                    raise SystemExit(1)
                             case _:
                                 assert_never(event)
 

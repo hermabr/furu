@@ -28,7 +28,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--max-failures",
-        required=True,
         type=int,
         help="consecutive failed jobs after which this worker exits to be replaced",
     )

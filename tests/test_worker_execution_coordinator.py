@@ -1814,9 +1814,7 @@ def test_worker_loop_exits_non_zero_after_consecutive_failures(
         "failed",
         "failed",
     ]
-    assert (
-        "2 jobs failed in a row on this worker; exiting so the pool replaces it"
-    ) in caplog.messages
+    assert "2 jobs failed in a row; worker exiting" in caplog.messages
 
 
 def test_worker_loop_logs_received_task_and_result(
