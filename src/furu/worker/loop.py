@@ -96,10 +96,10 @@ def worker_loop(
     coordinator: str | Path,
     resource_request: ResourceRequest,
     idle_timeout: float | None,
+    max_failures: int,
     component: str,
     backend: str,
     materialize_snapshot: bool,
-    max_failures: int | None = None,
 ) -> None:
     with _scoped_component(component):
         target = _read_target(coordinator)
@@ -188,11 +188,9 @@ def worker_loop(
                                     else 0
                                 )
                                 if failures == max_failures:
-                                    logger.error(
-                                        "%d jobs failed in a row; worker exiting",
-                                        failures,
+                                    raise SystemExit(
+                                        f"{failures} jobs failed in a row; worker exiting"
                                     )
-                                    raise SystemExit(1)
                             case _:
                                 assert_never(event)
 

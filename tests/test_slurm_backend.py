@@ -160,7 +160,7 @@ def test_worker_cli_passes_coordinator_file(
         component: str,
         backend: str,
         materialize_snapshot: bool,
-        max_failures: int | None,
+        max_failures: int,
     ) -> None:
         calls.append((coordinator, resource_request, idle_timeout))
 
@@ -175,6 +175,8 @@ def test_worker_cli_passes_coordinator_file(
                 '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
                 "--idle-timeout",
                 "60",
+                "--max-failures",
+                "3",
                 "--component",
                 "test-worker",
                 "--backend",
@@ -203,7 +205,7 @@ def test_worker_cli_reads_resource_request(
         component: str,
         backend: str,
         materialize_snapshot: bool,
-        max_failures: int | None,
+        max_failures: int,
     ) -> None:
         calls.append((resource_request, idle_timeout))
 
@@ -218,6 +220,8 @@ def test_worker_cli_reads_resource_request(
                 '{"cpus": 4, "gpus": 1, "memory_gib": 16, "reserve_for": {"memory_gib": 8}}',
                 "--idle-timeout",
                 "30",
+                "--max-failures",
+                "3",
                 "--component",
                 "test-worker",
                 "--backend",
@@ -244,7 +248,7 @@ def test_worker_cli_reads_idle_timeout_and_max_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[float | None, int | None]] = []
+    calls: list[tuple[float | None, int]] = []
     coordinator_file = tmp_path / "coordinator.url"
     coordinator_file.write_text("ws://furu:secret@execution-coordinator.test:1")
 
@@ -256,7 +260,7 @@ def test_worker_cli_reads_idle_timeout_and_max_failures(
         component: str,
         backend: str,
         materialize_snapshot: bool,
-        max_failures: int | None,
+        max_failures: int,
     ) -> None:
         calls.append((idle_timeout, max_failures))
 
@@ -300,7 +304,7 @@ def _run_worker_cli_capturing_component(
         component: str,
         backend: str,
         materialize_snapshot: bool,
-        max_failures: int | None,
+        max_failures: int,
     ) -> None:
         captured.append(component)
 
@@ -315,6 +319,8 @@ def _run_worker_cli_capturing_component(
                 '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
                 "--idle-timeout",
                 "60",
+                "--max-failures",
+                "3",
                 "--backend",
                 "slurm",
                 *extra_args,
@@ -355,7 +361,7 @@ def test_worker_cli_requires_component(
         component: str,
         backend: str,
         materialize_snapshot: bool,
-        max_failures: int | None,
+        max_failures: int,
     ) -> None:
         raise AssertionError("worker_loop should not be called")
 
@@ -370,6 +376,8 @@ def test_worker_cli_requires_component(
                 '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
                 "--idle-timeout",
                 "60",
+                "--max-failures",
+                "3",
             ]
         )
 
@@ -401,6 +409,8 @@ def test_worker_cli_requires_resource_request(
                 str(coordinator_file),
                 "--idle-timeout",
                 "60",
+                "--max-failures",
+                "3",
                 "--component",
                 "test-worker",
             ]
@@ -430,6 +440,8 @@ def test_worker_cli_requires_coordinator_file(monkeypatch: pytest.MonkeyPatch) -
                 '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
                 "--idle-timeout",
                 "60",
+                "--max-failures",
+                "3",
                 "--component",
                 "test-worker",
             ]
@@ -498,6 +510,8 @@ def test_worker_cli_rejects_auth_token_argument(
                 '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
                 "--idle-timeout",
                 "60",
+                "--max-failures",
+                "3",
                 "--component",
                 "test-worker",
                 "--auth-token",

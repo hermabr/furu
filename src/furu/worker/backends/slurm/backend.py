@@ -48,7 +48,9 @@ class SlurmWorkerBackend:
     worker_idle_timeout: float = field(
         default_factory=lambda: get_config().worker.idle_timeout_seconds
     )
-    max_failures_per_worker: int = 3
+    max_failures_per_worker: int = field(
+        default_factory=lambda: get_config().worker.max_failures_per_worker
+    )
     max_failed_workers: int = 10
     pre_worker_commands: tuple[str, ...] = ()
     export: SlurmExport = None
