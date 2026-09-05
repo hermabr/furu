@@ -4,7 +4,7 @@ import subprocess
 import threading
 import time
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -37,11 +37,12 @@ def _is_failed_state(state: str) -> bool:
     return state not in _UNFINISHED_STATES and state not in _PRUNABLE_STATES
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class SlurmWorkerPool:
     _sbatch_base_args: tuple[str, ...]
     _script_path: Path
     _max_workers: int
+    _max_failed_workers: int
     _resource_request: ResourceRequest
     _poll_interval: float
     _coordinator: ExecutionCoordinator
@@ -50,6 +51,8 @@ class SlurmWorkerPool:
     _scale_thread: threading.Thread
     _job_ids: list[str]
     _worker_files: set[Path]
+    _failed: list[str] = field(default_factory=list)  # "<job id> <state>"
+    _completed_seen: int = 0
 
     def handoff(self) -> PoolHandoff:
         with _scoped_component("slurm"):
@@ -89,25 +92,42 @@ class SlurmWorkerPool:
                     result.stderr.strip(),
                 )
 
-    def _scale_once(self) -> dict[str, str]:
+    def _scale_once(self) -> None:
         active_job_states = self._active_job_states()
         states = self._task_states()
-        lost_job_ids = {
-            job_id
+        failed = {
+            job_id: state
             for job_id in self._job_ids
-            if active_job_states is not None
-            and job_id not in active_job_states
-            and ((state := states.get(job_id)) is None or not _is_failed_state(state))
+            if (state := states.get(job_id)) is not None and _is_failed_state(state)
         }
         self._job_ids[:] = [
             job_id
             for job_id in self._job_ids
-            if job_id not in lost_job_ids
+            if job_id not in failed
             and (
-                (active_job_states is not None and job_id in active_job_states)
-                or states.get(job_id) not in (None, *_PRUNABLE_STATES)
+                job_id in active_job_states
+                if active_job_states is not None
+                else states.get(job_id) not in (None, *_PRUNABLE_STATES)
             )
         ]
+        if failed:
+            if len(self._coordinator.completed) > self._completed_seen:
+                self._completed_seen = len(self._coordinator.completed)
+                self._failed.clear()
+            self._failed += [f"{j} {s}" for j, s in sorted(failed.items())]
+            if len(self._failed) > self._max_failed_workers:
+                self._report_failure(
+                    f"more than {self._max_failed_workers} slurm workers failed "
+                    f"without any job completing: {', '.join(self._failed)}"
+                )
+                return
+            logger.warning(
+                "replacing failed slurm workers (%d of %d tolerated since the "
+                "last completed job): %s",
+                len(self._failed),
+                self._max_failed_workers,
+                ", ".join(self._failed),
+            )
         demand = min(
             self._coordinator.count_satisfiable_jobs(
                 resources=self._resource_request,
@@ -119,11 +139,11 @@ class SlurmWorkerPool:
         if to_spawn <= 0:
             if to_spawn < 0:
                 self._cancel_queued_workers(-to_spawn, active_job_states or {})
-            return states
+            return
 
         for _ in range(1 if self._use_job_arrays else to_spawn):
             if self._stop_event.is_set():
-                return states
+                return
             result = subprocess.run(
                 [
                     "sbatch",
@@ -142,13 +162,12 @@ class SlurmWorkerPool:
                     "sbatch failed; retrying on the next scale tick: %s",
                     result.stderr.strip(),
                 )
-                return states
+                return
             job_id = result.stdout.strip().split(";", maxsplit=1)[0]
             if self._use_job_arrays:
                 self._job_ids.extend(f"{job_id}_{arr_i}" for arr_i in range(to_spawn))
             else:
                 self._job_ids.append(job_id)
-        return states
 
     def _cancel_queued_workers(
         self, excess: int, active_job_states: dict[str, str]
@@ -279,24 +298,9 @@ class SlurmWorkerPool:
     def _scale_loop(self) -> None:
         with _scoped_component("slurm"):
             try:
-                if self._stop_event.is_set():
-                    return
-                self._scale_once()
-                while not self._stop_event.wait(timeout=self._poll_interval):
-                    states = self._scale_once()
-                    if failed_states := {
-                        job_id: state
-                        for job_id, state in states.items()
-                        if _is_failed_state(state)
-                    }:
-                        self._report_failure(
-                            "slurm worker pool became unhealthy: "
-                            + ", ".join(
-                                f"{job_id} {state}"
-                                for job_id, state in sorted(failed_states.items())
-                            )
-                        )
-                        return
+                while not self._stop_event.is_set():
+                    self._scale_once()
+                    self._stop_event.wait(timeout=self._poll_interval)
             except Exception as exc:  # noqa: BLE001 -- fault barrier: any crash is reported
                 self._report_failure(
                     "slurm worker pool scale loop crashed: "
@@ -307,4 +311,5 @@ class SlurmWorkerPool:
 
     def _report_failure(self, message: str) -> None:
         logger.error("slurm worker pool failure: %s", message)
+        self._stop_event.set()
         self._coordinator.fail(message)

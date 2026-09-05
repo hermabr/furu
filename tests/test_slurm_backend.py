@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -29,6 +29,7 @@ from furu.config import (
     _read_worker_json_config,
     get_config,
 )
+from furu.dag import DagNode
 from furu.execution.execution_coordinator import ExecutionCoordinator
 from furu.provenance import (
     EnvironmentIdentity,
@@ -159,6 +160,7 @@ def test_worker_cli_passes_coordinator_file(
         component: str,
         backend: str,
         materialize_snapshot: bool,
+        max_failures: int,
     ) -> None:
         calls.append((coordinator, resource_request, idle_timeout))
 
@@ -173,6 +175,8 @@ def test_worker_cli_passes_coordinator_file(
                 '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
                 "--idle-timeout",
                 "60",
+                "--max-failures",
+                "3",
                 "--component",
                 "test-worker",
                 "--backend",
@@ -201,6 +205,7 @@ def test_worker_cli_reads_resource_request(
         component: str,
         backend: str,
         materialize_snapshot: bool,
+        max_failures: int,
     ) -> None:
         calls.append((resource_request, idle_timeout))
 
@@ -215,6 +220,8 @@ def test_worker_cli_reads_resource_request(
                 '{"cpus": 4, "gpus": 1, "memory_gib": 16, "reserve_for": {"memory_gib": 8}}',
                 "--idle-timeout",
                 "30",
+                "--max-failures",
+                "3",
                 "--component",
                 "test-worker",
                 "--backend",
@@ -237,11 +244,11 @@ def test_worker_cli_reads_resource_request(
     ]
 
 
-def test_worker_cli_reads_idle_timeout(
+def test_worker_cli_reads_idle_timeout_and_max_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[float | None] = []
+    calls: list[tuple[float | None, int]] = []
     coordinator_file = tmp_path / "coordinator.url"
     coordinator_file.write_text("ws://furu:secret@execution-coordinator.test:1")
 
@@ -253,8 +260,9 @@ def test_worker_cli_reads_idle_timeout(
         component: str,
         backend: str,
         materialize_snapshot: bool,
+        max_failures: int,
     ) -> None:
-        calls.append(idle_timeout)
+        calls.append((idle_timeout, max_failures))
 
     monkeypatch.setattr(_cli, "worker_loop", worker_loop)
 
@@ -267,6 +275,8 @@ def test_worker_cli_reads_idle_timeout(
                 '{"cpus": 4, "gpus": 1, "memory_gib": 0}',
                 "--idle-timeout",
                 "0.25",
+                "--max-failures",
+                "3",
                 "--component",
                 "test-worker",
                 "--backend",
@@ -276,7 +286,7 @@ def test_worker_cli_reads_idle_timeout(
         == 0
     )
 
-    assert calls == [0.25]
+    assert calls == [(0.25, 3)]
 
 
 def _run_worker_cli_capturing_component(
@@ -294,6 +304,7 @@ def _run_worker_cli_capturing_component(
         component: str,
         backend: str,
         materialize_snapshot: bool,
+        max_failures: int,
     ) -> None:
         captured.append(component)
 
@@ -308,6 +319,8 @@ def _run_worker_cli_capturing_component(
                 '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
                 "--idle-timeout",
                 "60",
+                "--max-failures",
+                "3",
                 "--backend",
                 "slurm",
                 *extra_args,
@@ -348,6 +361,7 @@ def test_worker_cli_requires_component(
         component: str,
         backend: str,
         materialize_snapshot: bool,
+        max_failures: int,
     ) -> None:
         raise AssertionError("worker_loop should not be called")
 
@@ -362,6 +376,8 @@ def test_worker_cli_requires_component(
                 '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
                 "--idle-timeout",
                 "60",
+                "--max-failures",
+                "3",
             ]
         )
 
@@ -393,6 +409,8 @@ def test_worker_cli_requires_resource_request(
                 str(coordinator_file),
                 "--idle-timeout",
                 "60",
+                "--max-failures",
+                "3",
                 "--component",
                 "test-worker",
             ]
@@ -422,6 +440,8 @@ def test_worker_cli_requires_coordinator_file(monkeypatch: pytest.MonkeyPatch) -
                 '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
                 "--idle-timeout",
                 "60",
+                "--max-failures",
+                "3",
                 "--component",
                 "test-worker",
             ]
@@ -490,6 +510,8 @@ def test_worker_cli_rejects_auth_token_argument(
                 '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
                 "--idle-timeout",
                 "60",
+                "--max-failures",
+                "3",
                 "--component",
                 "test-worker",
                 "--auth-token",
@@ -522,6 +544,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
         worker_connect_host="execution-coordinator.cluster",
         poll_interval=1.5,
         worker_idle_timeout=0.25,
+        max_failures_per_worker=2,
         pre_worker_commands=('echo "Hello" > /tmp/hey',),
         reserve_for=ResourceFloor(memory_gib=4),
     )
@@ -582,6 +605,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     )
     assert '--component "${furu_worker_component}"' in script
     assert "--idle-timeout 0.25" in script
+    assert "--max-failures 2" in script
     resources_json = resource_request_adapter.dump_json(
         ResourceRequest(
             cpus=4,
@@ -1131,6 +1155,7 @@ def test_slurm_backend_builds_coordinator_url_from_worker_connect_host(
         == "ws://furu:secret-token@execution-coordinator.cluster:4321"
     )
     assert f"--idle-timeout {get_config().worker.idle_timeout_seconds}" in script
+    assert "--max-failures 3" in script
 
 
 def test_slurm_backend_worker_connect_port_overrides_bound_port(
@@ -1262,7 +1287,7 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
     ]
 
 
-def test_slurm_worker_pool_unhealthy_report_includes_failed_state(
+def test_slurm_pool_fails_run_once_failed_worker_budget_is_exhausted(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1271,6 +1296,7 @@ def test_slurm_worker_pool_unhealthy_report_includes_failed_state(
     coordinator = _StubCoordinator()
     backend = SlurmWorkerBackend(
         max_workers=1,
+        max_failed_workers=0,
         resources=SlurmResources(cpus_per_worker=1),
         worker_connect_host="execution-coordinator.cluster",
         poll_interval=0,
@@ -1288,7 +1314,10 @@ def test_slurm_worker_pool_unhealthy_report_includes_failed_state(
 
     pool._scale_loop()
 
-    assert coordinator.failures == ["slurm worker pool became unhealthy: 100 FAILED"]
+    assert coordinator.failures == [
+        "more than 0 slurm workers failed without any job completing: 100 FAILED"
+    ]
+    assert pool._stop_event.is_set()
 
 
 def test_slurm_pool_scale_submits_additional_workers_as_satisfiable_count_grows(
@@ -1569,7 +1598,79 @@ def test_slurm_pool_scale_does_not_count_completed_jobs_as_restarts(
     )
 
 
-def test_slurm_pool_scale_reports_cancelled_jobs_as_failures(
+def test_slurm_pool_scale_replaces_failed_workers_within_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    coordinator = _StubCoordinator(lambda max_workers: max_workers)
+
+    backend = SlurmWorkerBackend(
+        max_workers=2,
+        max_failed_workers=2,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="execution-coordinator.cluster",
+        poll_interval=0,
+        use_job_arrays=False,
+    )
+    pool = backend.start_pool(
+        coordinator=coordinator,
+        bound_port=1234,
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+        handoff=PoolHandoff(),
+    )
+
+    pool._scale_once()
+    assert pool._job_ids == ["100", "101"]
+
+    # One worker OOMs; the other exits cleanly and leaves the queue uncounted.
+    active_file.write_text("100 OUT_OF_MEMORY\n")
+    furu_logger = logging.getLogger("furu")
+    furu_logger.addHandler(caplog.handler)
+    try:
+        caplog.set_level(logging.WARNING, logger="furu")
+        pool._scale_once()
+    finally:
+        furu_logger.removeHandler(caplog.handler)
+
+    assert pool._job_ids == ["102", "103"]
+    assert pool._failed == ["100 OUT_OF_MEMORY"]
+    assert coordinator.failures == []
+    assert (
+        "replacing failed slurm workers (1 of 2 tolerated since the last "
+        "completed job): 100 OUT_OF_MEMORY"
+    ) in caplog.messages
+
+    # Workers exiting non-zero after repeated job failures count as well, but a
+    # job completing in the meantime is progress and clears the earlier failure.
+    coordinator.completed["done"] = cast(DagNode, object())
+    active_file.write_text("102 FAILED\n103 FAILED\n")
+    pool._scale_once()
+
+    assert pool._job_ids == ["104", "105"]
+    assert pool._failed == ["102 FAILED", "103 FAILED"]
+    assert coordinator.failures == []
+
+    # With no further progress the budget is exact: a third failure ends the run.
+    active_file.write_text("104 NODE_FAIL\n")
+    pool._scale_once()
+
+    assert pool._job_ids == []
+    assert coordinator.failures == [
+        (
+            "more than 2 slurm workers failed without any job completing: "
+            "102 FAILED, 103 FAILED, 104 NODE_FAIL"
+        )
+    ]
+    assert (
+        len([r for r in _read_records(record_file) if r["executable"] == "sbatch"]) == 6
+    )
+
+
+def test_slurm_pool_scale_counts_cancelled_jobs_as_failed_workers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1579,6 +1680,7 @@ def test_slurm_pool_scale_reports_cancelled_jobs_as_failures(
 
     backend = SlurmWorkerBackend(
         max_workers=1,
+        max_failed_workers=0,
         resources=SlurmResources(cpus_per_worker=1),
         worker_connect_host="execution-coordinator.cluster",
         poll_interval=0,
@@ -1598,8 +1700,10 @@ def test_slurm_pool_scale_reports_cancelled_jobs_as_failures(
 
     pool._scale_loop()
 
-    assert coordinator.failures == ["slurm worker pool became unhealthy: 100 CANCELLED"]
-    assert pool._job_ids == ["100"]
+    assert coordinator.failures == [
+        "more than 0 slurm workers failed without any job completing: 100 CANCELLED"
+    ]
+    assert pool._job_ids == []
     assert (
         len(
             [

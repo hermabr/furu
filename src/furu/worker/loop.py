@@ -96,6 +96,7 @@ def worker_loop(
     coordinator: str | Path,
     resource_request: ResourceRequest,
     idle_timeout: float | None,
+    max_failures: int,
     component: str,
     backend: str,
     materialize_snapshot: bool,
@@ -113,6 +114,7 @@ def worker_loop(
         job_thread: threading.Thread | None = None
         cancelled = threading.Event()  # replaced with each new job
         result: protocol.JobResult | None = None
+        failures = 0
         try:
             while True:
                 with connect(target[0], max_size=None) as connection:
@@ -180,6 +182,15 @@ def worker_loop(
                                     continue  # Wait for the reader's None before reconnecting.
                                 job = result = None
                                 job_thread = None
+                                failures = (
+                                    failures + 1
+                                    if isinstance(event, protocol.JobFailedResult)
+                                    else 0
+                                )
+                                if failures == max_failures:
+                                    raise SystemExit(
+                                        f"{failures} jobs failed in a row; worker exiting"
+                                    )
                             case _:
                                 assert_never(event)
 

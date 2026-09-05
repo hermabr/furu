@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from furu.config import get_config
 from furu.logging import _scoped_component, get_logger
 from furu.resources import ResourceRequest, resource_request_adapter
 from furu.utils import _hash_dict_deterministically
@@ -81,11 +82,12 @@ def _run_worker(
             # Local threads are cheap to keep connected; they stay until the
             # server closes the connection.
             idle_timeout=None,
+            max_failures=get_config().worker.max_failures_per_worker,
             component=component,
             backend="local-thread",
             materialize_snapshot=False,
         )
-    except Exception as exc:
+    except (Exception, SystemExit) as exc:
         with _scoped_component(component):
             logger.exception("local worker thread crashed")
         coordinator.fail(

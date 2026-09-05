@@ -27,6 +27,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="seconds to wait without a lease before this worker exits",
     )
     parser.add_argument(
+        "--max-failures",
+        required=True,
+        type=int,
+        help="consecutive failed jobs after which this worker exits to be replaced",
+    )
+    parser.add_argument(
         "--component",
         required=True,
         help="component label shown in this worker's logs",
@@ -42,6 +48,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         coordinator=args.coordinator_file,
         resource_request=args.resources,
         idle_timeout=args.idle_timeout,
+        max_failures=args.max_failures,
         component=args.component,
         backend=args.backend,
         materialize_snapshot=True,

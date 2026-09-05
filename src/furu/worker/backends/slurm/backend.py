@@ -48,6 +48,10 @@ class SlurmWorkerBackend:
     worker_idle_timeout: float = field(
         default_factory=lambda: get_config().worker.idle_timeout_seconds
     )
+    max_failures_per_worker: int = field(
+        default_factory=lambda: get_config().worker.max_failures_per_worker
+    )
+    max_failed_workers: int = 10
     pre_worker_commands: tuple[str, ...] = ()
     export: SlurmExport = None
     use_job_arrays: bool = True
@@ -166,6 +170,7 @@ class SlurmWorkerBackend:
                 '    --component "${furu_worker_component}" \\\n'
                 "    --backend slurm \\\n"
                 f"    --idle-timeout {self.worker_idle_timeout} \\\n"
+                f"    --max-failures {self.max_failures_per_worker} \\\n"
                 f"    --resources {shlex.quote(resources_json)}\n"
             ),
             mode=0o700,
@@ -200,6 +205,7 @@ class SlurmWorkerBackend:
             _sbatch_base_args=sbatch_base_args,
             _script_path=script_path,
             _max_workers=self.max_workers,
+            _max_failed_workers=self.max_failed_workers,
             _resource_request=resource_request,
             _poll_interval=self.poll_interval,
             _coordinator=coordinator,

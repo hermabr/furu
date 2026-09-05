@@ -43,6 +43,7 @@ from furu.storage._layout import (
     compute_lock_path_in,
     execution_coordinator_log_path_in,
 )
+from furu.testing import override_config
 from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
 from furu.worker.execute import ChildSlot
 from furu.worker.loop import worker_loop
@@ -292,6 +293,13 @@ class FlakyExecutionCoordinatorLeaf(Spec[int]):
         if Path(self.attempts_file).read_text(encoding="utf-8") == "x":
             raise RuntimeError(f"temporary failure: {self.value}")
         return self.value
+
+
+class FailingCoordinatorLeaf(Spec[int]):
+    value: int
+
+    def create(self) -> int:
+        raise RuntimeError(f"always fails: {self.value}")
 
 
 class GatedExecutionCoordinatorLeaf(Spec[int]):
@@ -756,9 +764,7 @@ def test_count_satisfiable_jobs_caps_at_max_workers_and_filters_by_requirements(
         == 0
     )
     with pytest.raises(ValueError):
-        coordinator.count_satisfiable_jobs(
-            resources=ResourceRequest(), max_workers=-1
-        )
+        coordinator.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=-1)
     assert (
         coordinator.count_satisfiable_jobs(
             resources=ResourceRequest(gpus=1), max_workers=10
@@ -818,8 +824,10 @@ def test_only_discovered_external_computations_are_polled(
             )
             thread.start()
             _wait_until(
-                lambda: set(coordinator.running_elsewhere)
-                == {leaf.object_id for leaf in leaves}
+                lambda: (
+                    set(coordinator.running_elsewhere)
+                    == {leaf.object_id for leaf in leaves}
+                )
             )
             assert (
                 coordinator.count_satisfiable_jobs(
@@ -1148,6 +1156,7 @@ def test_execution_coordinator_run_fails_when_local_worker_crashes(
         coordinator: str | Path,
         resource_request: ResourceRequest,
         idle_timeout: float | None,
+        max_failures: int,
         component: str,
         backend: str,
         materialize_snapshot: bool,
@@ -1752,6 +1761,7 @@ def test_worker_loop_raises_when_server_is_unavailable() -> None:
             coordinator="ws://127.0.0.1:1",
             resource_request=ResourceRequest(),
             idle_timeout=get_config().worker.idle_timeout_seconds,
+            max_failures=get_config().worker.max_failures_per_worker,
             component="test-worker",
             backend="test",
             materialize_snapshot=False,
@@ -1764,6 +1774,7 @@ def test_worker_loop_exits_after_idle_timeout() -> None:
             coordinator=server.server_url,
             resource_request=ResourceRequest(),
             idle_timeout=0.05,
+            max_failures=get_config().worker.max_failures_per_worker,
             component="test-worker",
             backend="test",
             materialize_snapshot=False,
@@ -1771,6 +1782,59 @@ def test_worker_loop_exits_after_idle_timeout() -> None:
 
         assert len(server.hellos) == 1
         assert server.results == []
+
+
+def test_worker_loop_exits_non_zero_after_consecutive_failures() -> None:
+    jobs = [
+        _job(FailingCoordinatorLeaf(value=0)),
+        _job(ExecutionCoordinatorLeaf(value=1)),  # success resets the count
+        _job(FailingCoordinatorLeaf(value=2)),
+        _job(FailingCoordinatorLeaf(value=3)),
+        _job(FailingCoordinatorLeaf(value=4)),
+    ]
+
+    with (
+        _scripted_worker_server(jobs, hold_open=True) as server,
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        worker_loop(
+            coordinator=server.server_url,
+            resource_request=ResourceRequest(),
+            idle_timeout=get_config().worker.idle_timeout_seconds,
+            max_failures=2,
+            component="test-worker",
+            backend="test",
+            materialize_snapshot=False,
+        )
+
+    assert exc_info.value.code == "2 jobs failed in a row; worker exiting"
+    # Every result reaches the coordinator before the worker gives up.
+    assert [result.status for result in server.results] == [
+        "failed",
+        "completed",
+        "failed",
+        "failed",
+    ]
+
+
+def test_execution_coordinator_run_fails_when_local_worker_gives_up() -> None:
+    config = get_config()
+    two_failures = config.model_copy(
+        update={
+            "worker": config.worker.model_copy(update={"max_failures_per_worker": 2})
+        }
+    )
+    with (
+        override_config(two_failures),
+        pytest.raises(
+            RuntimeError,
+            match="local worker thread crashed: SystemExit: 2 jobs failed in a row",
+        ),
+    ):
+        ExecutionCoordinator.run(
+            [FailingCoordinatorLeaf(value=0)],
+            worker_backends=(LocalThreadWorkerBackend(max_workers=1),),
+        )
 
 
 def test_worker_loop_logs_received_task_and_result(
@@ -1795,6 +1859,7 @@ def test_worker_loop_logs_received_task_and_result(
             coordinator=server.server_url,
             resource_request=ResourceRequest(),
             idle_timeout=get_config().worker.idle_timeout_seconds,
+            max_failures=get_config().worker.max_failures_per_worker,
             component="test-worker",
             backend="test",
             materialize_snapshot=False,
@@ -1831,6 +1896,7 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
                 coordinator=server.server_url,
                 resource_request=ResourceRequest(gpus=1),
                 idle_timeout=get_config().worker.idle_timeout_seconds,
+                max_failures=get_config().worker.max_failures_per_worker,
                 component="test-worker",
                 backend="test",
                 materialize_snapshot=False,
@@ -1970,6 +2036,7 @@ def test_worker_loop_cancel_kills_running_job(tmp_path: Path) -> None:
             coordinator=url,
             resource_request=ResourceRequest(),
             idle_timeout=5,
+            max_failures=get_config().worker.max_failures_per_worker,
             component="test-worker",
             backend="test",
             materialize_snapshot=False,
@@ -2011,6 +2078,7 @@ def test_worker_loop_reconnects_when_worker_config_url_changes(
                 coordinator=config_file,
                 resource_request=ResourceRequest(),
                 idle_timeout=5,
+                max_failures=get_config().worker.max_failures_per_worker,
                 component="test-worker",
                 backend="test",
                 materialize_snapshot=False,
@@ -2048,6 +2116,7 @@ def test_worker_loop_reads_unchanged_worker_config_only_after_disconnect(
             coordinator=config_file,
             resource_request=ResourceRequest(),
             idle_timeout=5,
+            max_failures=get_config().worker.max_failures_per_worker,
             component="test-worker",
             backend="test",
             materialize_snapshot=False,
@@ -2071,6 +2140,7 @@ def test_worker_loop_fails_when_worker_config_disappears(tmp_path: Path) -> None
             coordinator=config_file,
             resource_request=ResourceRequest(),
             idle_timeout=5,
+            max_failures=get_config().worker.max_failures_per_worker,
             component="test-worker",
             backend="test",
             materialize_snapshot=False,
@@ -2105,6 +2175,7 @@ def test_worker_loop_carries_running_job_to_new_coordinator(tmp_path: Path) -> N
                 coordinator=config_file,
                 resource_request=ResourceRequest(),
                 idle_timeout=5,
+                max_failures=get_config().worker.max_failures_per_worker,
                 component="test-worker",
                 backend="test",
                 materialize_snapshot=False,
@@ -2159,6 +2230,7 @@ def test_worker_loop_exits_when_worker_config_changes(
                 coordinator=config_file,
                 resource_request=ResourceRequest(),
                 idle_timeout=5,
+                max_failures=get_config().worker.max_failures_per_worker,
                 component="test-worker",
                 backend="test",
                 materialize_snapshot=False,
@@ -2184,6 +2256,7 @@ def test_worker_loop_kills_job_when_coordinator_disappears(
             coordinator=url,
             resource_request=ResourceRequest(),
             idle_timeout=5,
+            max_failures=get_config().worker.max_failures_per_worker,
             component="test-worker",
             backend="test",
             materialize_snapshot=False,
