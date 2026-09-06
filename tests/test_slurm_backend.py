@@ -1155,7 +1155,7 @@ def test_slurm_backend_builds_coordinator_url_from_worker_connect_host(
         == "ws://furu:secret-token@execution-coordinator.cluster:4321"
     )
     assert f"--idle-timeout {get_config().worker.idle_timeout_seconds}" in script
-    assert "--max-failures 3" in script
+    assert f"--max-failures {get_config().worker.max_failures_per_worker}" in script
 
 
 def test_slurm_backend_worker_connect_port_overrides_bound_port(
