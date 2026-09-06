@@ -129,10 +129,9 @@ class SlurmWorkerPool:
                 ", ".join(self._failed),
             )
         with self._coordinator.lock:
-            busy_workers = {job.worker for job in self._coordinator.running.values()}
-            busy = sum(
-                f"slurm-worker-{job_id.replace('_', 'a')}" in busy_workers
-                for job_id in self._job_ids
+            busy = len(
+                {job.worker for job in self._coordinator.running.values()}
+                & {f"slurm-worker-{j.replace('_', 'a')}" for j in self._job_ids}
             )
             # Ready leases need capacity in addition to workers already busy.
             demand = min(

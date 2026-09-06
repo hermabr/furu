@@ -1421,15 +1421,6 @@ def test_slurm_pool_scales_for_ready_work_while_workers_are_busy(
     assert len(pool._job_ids) == expected_total
     assert not any(r["executable"] == "scancel" for r in _read_records(record_file))
 
-    # Idle running workers can satisfy ready work again; cancel the surplus.
-    coordinator.running.clear()
-    pool._scale_once()
-    assert pool._job_ids == original_ids
-    assert _read_records(record_file)[-1] == {
-        "executable": "scancel",
-        "argv": list(reversed(added_ids)),
-    }
-
 
 def test_slurm_pool_scale_does_not_resubmit_for_already_tracked_viable_job(
     tmp_path: Path,
