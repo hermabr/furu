@@ -187,7 +187,7 @@ wheels = [
 
 [[package]]
 name = "furu"
-version = "0.0.71"
+version = "0.0.70"
 source = { editable = "." }
 dependencies = [
     { name = "pydantic" },
