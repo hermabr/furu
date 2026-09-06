@@ -128,13 +128,20 @@ class SlurmWorkerPool:
                 self._max_failed_workers,
                 ", ".join(self._failed),
             )
-        demand = min(
-            self._coordinator.count_satisfiable_jobs(
-                resources=self._resource_request,
-                max_workers=self._max_workers,
-            ),
-            self._max_workers,
-        )
+        with self._coordinator.lock:
+            busy = len(
+                {job.worker for job in self._coordinator.running.values()}
+                & {f"slurm-worker-{j.replace('_', 'a')}" for j in self._job_ids}
+            )
+            # Ready leases need capacity in addition to workers already busy.
+            demand = min(
+                busy
+                + self._coordinator.count_satisfiable_jobs(
+                    resources=self._resource_request,
+                    max_workers=self._max_workers,
+                ),
+                self._max_workers,
+            )
         to_spawn = demand - len(self._job_ids)
         if to_spawn <= 0:
             if to_spawn < 0:

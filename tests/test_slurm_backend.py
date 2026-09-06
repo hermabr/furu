@@ -30,7 +30,7 @@ from furu.config import (
     get_config,
 )
 from furu.dag import DagNode
-from furu.execution.execution_coordinator import ExecutionCoordinator
+from furu.execution.execution_coordinator import ExecutionCoordinator, RunningJob
 from furu.provenance import (
     EnvironmentIdentity,
     GitIdentity,
@@ -1367,6 +1367,59 @@ def test_slurm_pool_scale_submits_additional_workers_as_satisfiable_count_grows(
     assert not any(
         arg.startswith("--array") for record in sbatch_records for arg in record["argv"]
     )
+
+
+@pytest.mark.parametrize("use_job_arrays", [False, True])
+@pytest.mark.parametrize("max_workers", [3, 10])
+def test_slurm_pool_scales_for_ready_work_while_workers_are_busy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    use_job_arrays: bool,
+    max_workers: int,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    coordinator = _StubCoordinator(2)
+    backend = SlurmWorkerBackend(
+        max_workers=max_workers,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="execution-coordinator.cluster",
+        poll_interval=0,
+        use_job_arrays=use_job_arrays,
+    )
+    pool = backend.start_pool(
+        coordinator=coordinator,
+        bound_port=1234,
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+        handoff=PoolHandoff(),
+    )
+    pool._scale_once()
+    original_ids = list(pool._job_ids)
+    assert len(original_ids) == 2
+    active_file.write_text("".join(f"{job_id} RUNNING\n" for job_id in original_ids))
+    workers = (
+        ["slurm-worker-100a0", "slurm-worker-100a1"]
+        if use_job_arrays
+        else ["slurm-worker-100", "slurm-worker-101"]
+    )
+    # A batch occupies one worker; another pool's work adds no demand here.
+    for i, worker in enumerate([*workers, workers[0], "slurm-worker-999"]):
+        coordinator.running[str(i)] = RunningJob(
+            node=cast(DagNode, object()), started_at=0, worker=worker
+        )
+
+    pool._scale_once()
+    expected_total = min(4, max_workers)
+    assert len(pool._job_ids) == expected_total
+    added_ids = pool._job_ids[2:]
+    active_file.write_text(
+        "".join(f"{job_id} RUNNING\n" for job_id in original_ids)
+        + "".join(f"{job_id} PENDING\n" for job_id in added_ids)
+    )
+    pool._scale_once()
+    assert len(pool._job_ids) == expected_total
+    assert not any(r["executable"] == "scancel" for r in _read_records(record_file))
 
 
 def test_slurm_pool_scale_does_not_resubmit_for_already_tracked_viable_job(
