@@ -236,9 +236,11 @@ class Spec[T](_FuruDataclassTransform, ABC):
             return "done"
         if is_active_lock(compute_lock_path_in(self._base_dir)):
             return "running"
-        if self._base_dir.exists() and not has_result_link:
+        # A result or job under an older schema outranks a failed attempt here.
+        status = sideways_status(self)
+        if status == "missing" and self._base_dir.exists() and not has_result_link:
             return "failed"
-        return sideways_status(self)
+        return status
 
     @final
     def delete(self, mode: Literal["prompt", "force"] = "prompt") -> bool:

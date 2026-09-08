@@ -18,6 +18,7 @@ from furu.core import Spec
 from furu.dag import DagNode, _add_to_dag, _update_dag_blocking_dependencies
 from furu.logging import _display_path, _execution_log, get_logger
 from furu.metadata import ArtifactSpec
+from furu.migration.links import computes
 from furu.provenance import SubmitProvenance, capture_submit_provenance
 from furu.storage._layout import execution_log_path_in, run_log_path_in
 from furu.utils import error_summary, format_duration
@@ -271,20 +272,36 @@ class ExecutionCoordinator:
             )
         return nodes
 
-    def adopt(self, artifacts: Sequence[ArtifactSpec], *, worker: str) -> bool:
+    def adopt(self, artifacts: Sequence[ArtifactSpec], *, worker: str) -> list[str]:
+        """Take a worker's in-flight job as this run's; the node ids it covers."""
         with self.lock:
-            object_ids = [artifact.object_id for artifact in artifacts]
+            object_ids = [
+                object_id
+                for artifact in artifacts
+                if (object_id := self._ready_id_locked(artifact)) is not None
+            ]
             label = artifacts[0].log_label
             if len(artifacts) > 1:
                 label += f" ×{len(artifacts)}"
-            if self.done.is_set() or any(
-                object_id not in self.ready for object_id in object_ids
-            ):
+            if self.done.is_set() or len(object_ids) != len(artifacts):
                 logger.info("cancelled %s on %s: not in this run", label, worker)
-                return False
+                return []
             self._start_locked(object_ids, worker=worker)
             logger.info("adopted %s from %s", label, worker)
-            return True
+            return object_ids
+
+    def _ready_id_locked(self, artifact: ArtifactSpec) -> str | None:
+        """The ready node ``artifact`` computes, possibly under an older schema."""
+        if artifact.object_id in self.ready:
+            return artifact.object_id
+        return next(
+            (
+                node_id
+                for node_id, node in self.ready.items()
+                if computes(artifact, node.obj)
+            ),
+            None,
+        )
 
     def worker_lost(self, worker: str) -> None:
         with self.lock:

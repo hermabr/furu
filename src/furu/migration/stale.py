@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
 from furu.constants import CLASSMARKER, FIELDSMARKER
-from furu.migration.links import _find_source
+from furu.migration.links import _find_source, _is_running_elsewhere
 from furu.migration.resolution import _class_resolution, _ClassResolution
 from furu.migration.steps import Stale
 from furu.storage._layout import schema_snapshot_path_in_schema_directory
@@ -24,10 +24,12 @@ def _orphaned_directories(resolution: _ClassResolution) -> list[Path]:
     ]
 
 
-def sideways_status(obj: Spec) -> Literal["done", "stale", "missing"]:
+def sideways_status(obj: Spec) -> Literal["done", "running", "stale", "missing"]:
     resolution = _class_resolution(obj)
     if _find_source(obj, resolution) is not None:
         return "done"
+    if _is_running_elsewhere(obj, resolution):
+        return "running"
     if _orphaned_directories(resolution):
         return "stale"
     return "missing"

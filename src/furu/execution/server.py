@@ -130,11 +130,12 @@ def _serve_worker(
     )
     try:
         if hello.running:
-            if not coordinator.adopt(hello.running, worker=worker):
+            adopted = coordinator.adopt(hello.running, worker=worker)
+            if not adopted:
                 connection.send(CancelMessage().model_dump_json())
             result = job_result_adapter.validate_json(connection.recv())
-            for artifact in hello.running:
-                coordinator.job_result(artifact.object_id, result)
+            for object_id in adopted:
+                coordinator.job_result(object_id, result)
         backend = coordinator.backends.get(hello.pool)
         if backend is None:
             logger.warning("worker %s belongs to no pool of this run; closing", worker)
