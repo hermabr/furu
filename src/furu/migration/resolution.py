@@ -325,20 +325,6 @@ def _normalize_snapshot(
     return normalized, dict(sorted(moves.items()))
 
 
-def _holds_work(schema_directory: Path) -> bool:
-    """Whether any artifact under the schema is done or still computing.
-
-    The snapshot is recorded when a job starts, so a schema whose every
-    attempt failed is leftover debris, not work a chain would need to carry.
-    """
-    return any(
-        result_manifest_path_in(artifact_dir).exists()
-        or is_active_lock(compute_lock_path_in(artifact_dir))
-        for artifact_dir in schema_directory.iterdir()
-        if artifact_dir.is_dir()
-    )
-
-
 def _resolve_class(obj: Spec) -> _ClassResolution:
     cls = type(obj)
     own = _build_chain(cls, obj.artifact_serializers)
@@ -385,7 +371,14 @@ def _resolve_class(obj: Spec) -> _ClassResolution:
                     "current schema"
                 )
             if not matches:
-                if _holds_work(schema_directory):
+                # Snapshots are written at job start, so a schema holding only
+                # failed attempts is debris, not work a chain must carry.
+                if any(
+                    result_manifest_path_in(artifact_dir).exists()
+                    or is_active_lock(compute_lock_path_in(artifact_dir))
+                    for artifact_dir in schema_directory.iterdir()
+                    if artifact_dir.is_dir()
+                ):
                     orphaned.append(schema_directory)
             elif matches[0].start > own.last_breaking and all(
                 move.start > move.chain.last_breaking for move in child_moves.values()

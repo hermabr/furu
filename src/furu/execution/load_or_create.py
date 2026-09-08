@@ -444,8 +444,7 @@ def _create_and_store_group[T](
 ) -> None:
     log_paths = tuple(run_log_path_in(obj._base_dir) for obj in group)
 
-    # Recorded at start so a run under a newer schema can recognize this job
-    # as its own while it is still computing.
+    # Recorded at start so runs under newer schemas can see this job.
     for obj in group:
         _record_schema_snapshot(obj)
     metadata = [RunningMetadata.write_for(obj) for obj in group]

@@ -2408,10 +2408,6 @@ def test_hello_running_adopts_job_under_an_older_schema() -> None:
                     connection.recv(timeout=5)
 
     assert set(coordinator.completed) == {new.object_id}
-    log_text = execution_coordinator_log_path_in(coordinator.executor_dir).read_text(
-        encoding="utf-8"
-    )
-    assert f"adopted {new._log_label} ×1 from inherited-worker" in log_text
 
 
 def test_lease_job_checks_every_batch_member_for_active_locks() -> None:

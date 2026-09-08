@@ -65,11 +65,7 @@ def _read_link(artifact_dir: Path) -> _ResultLink | None:
 
 
 def _read_source(artifact_dir: Path) -> _ResultLink | None:
-    """What the artifact directory is or points at, done or still computing.
-
-    Whether the result is usable is checked live by the caller (manifest for
-    done, compute lock for running), so the index stays valid as jobs finish.
-    """
+    """What the directory holds or points at, done or still computing."""
     if (link := _read_link(artifact_dir)) is not None:
         return link
     if (metadata_text := read_text_or_none(metadata_path_in(artifact_dir))) is None:
@@ -95,19 +91,6 @@ def _read_source(artifact_dir: Path) -> _ResultLink | None:
 _SOURCES_CACHE: dict[tuple[type, Path], Mapping[str, list[_ResultLink]]] = {}
 
 
-def _migrated_key(
-    resolution: _ClassResolution, covered: _Covered, fields: JsonFields
-) -> str:
-    if covered.child_moves:
-        fields = {
-            name: _apply_child_moves(value, covered.child_moves)
-            for name, value in fields.items()
-        }
-    return _stable_json_dump(
-        _apply_steps(resolution.own, covered.generation.start, fields)
-    )
-
-
 def _migrated_sources(
     cls: type, resolution: _ClassResolution, covered: _Covered
 ) -> Mapping[str, list[_ResultLink]]:
@@ -120,87 +103,81 @@ def _migrated_sources(
                     continue
                 if (source_link := _read_source(artifact_dir)) is None:
                     continue
-                sources.setdefault(
-                    _migrated_key(resolution, covered, source_link.current.fields), []
-                ).append(source_link)
+                fields = source_link.current.fields
+                if covered.child_moves:
+                    fields = {
+                        name: _apply_child_moves(value, covered.child_moves)
+                        for name, value in fields.items()
+                    }
+                fields = _apply_steps(resolution.own, covered.generation.start, fields)
+                sources.setdefault(_stable_json_dump(fields), []).append(source_link)
         _SOURCES_CACHE[key] = sources
     return sources
 
 
-def _pinned_matches(covered: _Covered, target_fields: JsonFields) -> bool:
-    return all(
-        # Serialized so NaN defaults compare equal, like the index keys.
-        _stable_json_dump(target_fields[name]) == _stable_json_dump(value)
-        for name, value in covered.generation.pinned.items()
-    )
-
-
-def _sources(
-    obj: Spec, resolution: _ClassResolution
-) -> Iterator[tuple[_Covered, _ResultLink]]:
-    """Artifacts under covered schemas whose migrated fields equal obj's."""
-    if not resolution.covered:
-        return
+def _sources(obj: Spec, resolution: _ClassResolution) -> Iterator[_ResultLink]:
+    """Artifacts under older schemas that migrate to obj's, done or running."""
     target_fields = cast(JsonFields, obj._artifact_data[FIELDSMARKER])
     target_key = _stable_json_dump(target_fields)
     for covered in resolution.covered:
-        if not _pinned_matches(covered, target_fields):
+        if any(
+            # Serialized so NaN defaults compare equal, like the key below.
+            _stable_json_dump(target_fields[name]) != _stable_json_dump(value)
+            for name, value in covered.generation.pinned.items()
+        ):
             continue
         sources = _migrated_sources(type(obj), resolution, covered)
         for source_link in sources.get(target_key, ()):
-            yield covered, source_link
+            yield _ResultLink(
+                current=_ResultLinkCurrent(
+                    fully_qualified_name=obj._fully_qualified_name,
+                    schema_hash=obj._artifact_schema_hash,
+                    artifact_hash=obj._artifact_hash,
+                    fields=target_fields,
+                ),
+                source=source_link.source,
+                migration_path=source_link.migration_path
+                + tuple(
+                    f"{move.chain.label}: {_describe_step(step)}"
+                    for move in covered.child_moves.values()
+                    for step in move.chain.steps[move.start :]
+                )
+                + tuple(
+                    _describe_step(step)
+                    for step in resolution.own.steps[covered.generation.start :]
+                ),
+            )
 
 
 def _find_source(obj: Spec, resolution: _ClassResolution) -> _ResultLink | None:
-    for covered, source_link in _sources(obj, resolution):
-        if not result_manifest_path_in(source_link.source.base_dir).exists():
-            continue
-        return _ResultLink(
-            current=_ResultLinkCurrent(
-                fully_qualified_name=obj._fully_qualified_name,
-                schema_hash=obj._artifact_schema_hash,
-                artifact_hash=obj._artifact_hash,
-                fields=cast(JsonFields, obj._artifact_data[FIELDSMARKER]),
-            ),
-            source=source_link.source,
-            migration_path=source_link.migration_path
-            + tuple(
-                f"{move.chain.label}: {_describe_step(step)}"
-                for move in covered.child_moves.values()
-                for step in move.chain.steps[move.start :]
-            )
-            + tuple(
-                _describe_step(step)
-                for step in resolution.own.steps[covered.generation.start :]
-            ),
-        )
-    return None
+    return next(
+        (
+            link
+            for link in _sources(obj, resolution)
+            if result_manifest_path_in(link.source.base_dir).exists()
+        ),
+        None,
+    )
 
 
 def _is_running_elsewhere(obj: Spec, resolution: _ClassResolution) -> bool:
-    """Whether a job under an older schema is computing obj's result right now."""
     return any(
-        is_active_lock(compute_lock_path_in(source_link.source.base_dir))
-        for _, source_link in _sources(obj, resolution)
+        is_active_lock(compute_lock_path_in(link.source.base_dir))
+        for link in _sources(obj, resolution)
     )
 
 
-def migrates_to(artifact: ArtifactSpec, obj: Spec) -> bool:
-    """Whether a result stored for ``artifact`` would be obj's after migration."""
-    resolution = _class_resolution(obj)
-    schema_directory = (
-        obj._metadata.storage
-        / Path(*artifact.fully_qualified_name.split("."))
-        / artifact.schema_hash
+def computes(artifact: ArtifactSpec, obj: Spec) -> bool:
+    """Whether a job storing ``artifact`` yields obj's result after migration."""
+    return any(
+        (
+            link.source.fully_qualified_name,
+            link.source.schema_hash,
+            link.source.artifact_hash,
+        )
+        == (artifact.fully_qualified_name, artifact.schema_hash, artifact.artifact_hash)
+        for link in _sources(obj, _class_resolution(obj))
     )
-    target_fields = cast(JsonFields, obj._artifact_data[FIELDSMARKER])
-    for covered in resolution.covered:
-        if covered.schema_directory != schema_directory:
-            continue
-        return _pinned_matches(covered, target_fields) and _migrated_key(
-            resolution, covered, cast(JsonFields, artifact.artifact_data[FIELDSMARKER])
-        ) == _stable_json_dump(target_fields)
-    return False
 
 
 def result_dir_for_loading(obj: Spec, *, has_lock: bool = False) -> Path | None:

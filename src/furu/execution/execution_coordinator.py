@@ -10,7 +10,7 @@ from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
-from typing import TYPE_CHECKING, assert_never, cast
+from typing import TYPE_CHECKING, assert_never
 
 from furu.config import get_config
 from furu.core import Spec
@@ -22,7 +22,7 @@ from furu.logging import (
     log_detail,
 )
 from furu.metadata import ArtifactSpec
-from furu.migration.links import migrates_to
+from furu.migration.links import computes
 from furu.provenance import SubmitProvenance, capture_submit_provenance
 from furu.resources import ResourceRequest, resource_request_satisfies
 from furu.storage._layout import execution_coordinator_log_path_in
@@ -305,14 +305,15 @@ class ExecutionCoordinator:
         return nodes
 
     def adopt(self, artifacts: Sequence[ArtifactSpec], *, worker: str) -> list[str]:
-        """Take a worker's in-flight job as this run's.
-
-        Returns the node ids it now covers; empty when the run has no use for it.
-        """
+        """Take a worker's in-flight job as this run's; the node ids it covers."""
         with self.log_context(), self.lock:
+            object_ids = [
+                object_id
+                for artifact in artifacts
+                if (object_id := self._ready_id_locked(artifact)) is not None
+            ]
             label = artifacts[0].log_label
-            object_ids = [self._ready_id_locked(artifact) for artifact in artifacts]
-            if self.done.is_set() or None in object_ids:
+            if self.done.is_set() or len(object_ids) != len(artifacts):
                 logger.info(
                     "cancelled %s on %s: not in this run",
                     label,
@@ -323,20 +324,19 @@ class ExecutionCoordinator:
                     ),
                 )
                 return []
-            adopted = cast(list[str], object_ids)
-            nodes = self._start_locked(adopted, worker=worker)
+            self._start_locked(object_ids, worker=worker)
             logger.info(
                 "adopted %s ×%d from %s",
-                nodes[0].obj._log_label,
-                len(nodes),
+                label,
+                len(object_ids),
                 worker,
                 extra=log_detail(
-                    object_ids=",".join(adopted),
+                    object_ids=",".join(object_ids),
                     worker=worker,
                     **self._counts_detail(),
                 ),
             )
-            return adopted
+            return object_ids
 
     def _ready_id_locked(self, artifact: ArtifactSpec) -> str | None:
         """The ready node ``artifact`` computes, possibly under an older schema."""
@@ -344,9 +344,9 @@ class ExecutionCoordinator:
             return artifact.object_id
         return next(
             (
-                object_id
-                for object_id, node in self.ready.items()
-                if migrates_to(artifact, node.obj)
+                node_id
+                for node_id, node in self.ready.items()
+                if computes(artifact, node.obj)
             ),
             None,
         )
