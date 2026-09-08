@@ -10,7 +10,7 @@ from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
-from typing import TYPE_CHECKING, assert_never
+from typing import TYPE_CHECKING, assert_never, cast
 
 from furu.config import get_config
 from furu.core import Spec
@@ -22,6 +22,7 @@ from furu.logging import (
     log_detail,
 )
 from furu.metadata import ArtifactSpec
+from furu.migration.links import migrates_to
 from furu.provenance import SubmitProvenance, capture_submit_provenance
 from furu.resources import ResourceRequest, resource_request_satisfies
 from furu.storage._layout import execution_coordinator_log_path_in
@@ -303,33 +304,52 @@ class ExecutionCoordinator:
             )
         return nodes
 
-    def adopt(self, artifacts: Sequence[ArtifactSpec], *, worker: str) -> bool:
+    def adopt(self, artifacts: Sequence[ArtifactSpec], *, worker: str) -> list[str]:
+        """Take a worker's in-flight job as this run's.
+
+        Returns the node ids it now covers; empty when the run has no use for it.
+        """
         with self.log_context(), self.lock:
-            object_ids = [artifact.object_id for artifact in artifacts]
             label = artifacts[0].log_label
-            if self.done.is_set() or any(
-                object_id not in self.ready for object_id in object_ids
-            ):
+            object_ids = [self._ready_id_locked(artifact) for artifact in artifacts]
+            if self.done.is_set() or None in object_ids:
                 logger.info(
                     "cancelled %s on %s: not in this run",
                     label,
                     worker,
-                    extra=log_detail(object_ids=",".join(object_ids), worker=worker),
+                    extra=log_detail(
+                        object_ids=",".join(a.object_id for a in artifacts),
+                        worker=worker,
+                    ),
                 )
-                return False
-            self._start_locked(object_ids, worker=worker)
+                return []
+            adopted = cast(list[str], object_ids)
+            nodes = self._start_locked(adopted, worker=worker)
             logger.info(
                 "adopted %s ×%d from %s",
-                label,
-                len(object_ids),
+                nodes[0].obj._log_label,
+                len(nodes),
                 worker,
                 extra=log_detail(
-                    object_ids=",".join(object_ids),
+                    object_ids=",".join(adopted),
                     worker=worker,
                     **self._counts_detail(),
                 ),
             )
-            return True
+            return adopted
+
+    def _ready_id_locked(self, artifact: ArtifactSpec) -> str | None:
+        """The ready node ``artifact`` computes, possibly under an older schema."""
+        if artifact.object_id in self.ready:
+            return artifact.object_id
+        return next(
+            (
+                object_id
+                for object_id, node in self.ready.items()
+                if migrates_to(artifact, node.obj)
+            ),
+            None,
+        )
 
     def worker_lost(self, worker: str) -> None:
         with self.log_context(), self.lock:

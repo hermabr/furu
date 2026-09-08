@@ -27,7 +27,7 @@ from furu.explain import explain as _explain
 from furu.locking import LockError, is_active_lock, lock
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
-from furu.migration.links import _read_source, result_dir_for_loading
+from furu.migration.links import _read_link, result_dir_for_loading
 from furu.migration.resolution import validate_embedded_migration_declarations
 from furu.migration.stale import raise_if_stale, sideways_status
 from furu.migration.steps import MigrationStep, validate_migration_declaration
@@ -264,13 +264,15 @@ class Spec[T](_FuruDataclassTransform, ABC):
         if result_manifest_path_in(self._base_dir).exists():
             return "done"
         has_result_link = result_link_path_in(self._base_dir).exists()
-        if has_result_link and _read_source(self._base_dir):
+        if has_result_link and _read_link(self._base_dir):
             return "done"
         if is_active_lock(compute_lock_path_in(self._base_dir)):
             return "running"
-        if self._base_dir.exists() and not has_result_link:
+        # A result or job under an older schema outranks a failed attempt here.
+        status = sideways_status(self)
+        if status == "missing" and self._base_dir.exists() and not has_result_link:
             return "failed"
-        return sideways_status(self)
+        return status
 
     @final
     def explain(self, depth: ExplainDepth = 0) -> str:

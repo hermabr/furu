@@ -3,6 +3,8 @@ from __future__ import annotations
 import errno
 import json
 import shutil
+import threading
+import time
 from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -20,6 +22,7 @@ from furu.result.codec import Codec
 from furu.storage._layout import (
     compute_lock_path_in,
     data_dir_in,
+    metadata_path_in,
     result_dir_in,
     result_link_path_in,
     result_manifest_path_in,
@@ -460,6 +463,87 @@ def test_declared_chain_lifts_the_stale_block() -> None:
 
     # A covered generation is not an orphan: unmatched specs are simply missing.
     assert _EvolvedWithChain(dataset="cifar10", lr=0.5).status == "missing"
+
+
+class _FailingLegacyRun(Spec[dict[str, str]]):
+    dataset: str
+    learning_rate: float
+
+    def create(self) -> dict[str, str]:
+        raise RuntimeError("boom")
+
+
+def test_failed_attempts_under_an_old_generation_are_not_stale() -> None:
+    legacy = _FailingLegacyRun(dataset="cifar10", learning_rate=0.001)
+    with pytest.raises(RuntimeError, match="boom"):
+        legacy.create()
+    assert legacy.status == "failed"
+    _transplant_generation(legacy, _EvolvedNoChain)
+
+    spec = _EvolvedNoChain(dataset="cifar10", lr=0.001)
+    assert spec.status == "missing"
+    assert spec.create() == {"dataset": "cifar10", "lr": "0.001"}
+
+
+# --- running: a job under an older schema is the new run's job -------------------
+
+
+class _GatedOldRun(Spec[dict[str, str]]):
+    value: int
+    gate: str
+
+    def create(self) -> dict[str, str]:
+        _COUNTER.calls += 1
+        deadline = time.monotonic() + 30
+        while not Path(self.gate).exists():
+            if time.monotonic() > deadline:
+                raise TimeoutError("never released")
+            time.sleep(0.01)
+        return {"value": str(self.value)}
+
+
+class _GatedRun(Spec[dict[str, str]]):
+    value: int
+    gate: str
+    seed: int = 0
+
+    migrations = (
+        MovedFrom(fully_qualified_name(_GatedOldRun)),
+        Added("seed", default=0),
+    )
+
+    def create(self) -> dict[str, str]:
+        _COUNTER.calls += 1
+        return {"value": str(self.value), "seed": str(self.seed)}
+
+
+def test_job_running_under_an_old_generation_is_running_then_done(
+    tmp_path: Path,
+) -> None:
+    gate = str(tmp_path / "go")
+    old = _GatedOldRun(value=1, gate=gate)
+    thread = threading.Thread(target=old.create)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 10
+        while not metadata_path_in(old._base_dir).exists():
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        assert old.status == "running"
+
+        assert _GatedRun(value=1, gate=gate).status == "running"
+        # Only the pinned default rides along; other values are fresh work.
+        assert _GatedRun(value=1, gate=gate, seed=7).status == "missing"
+        assert _GatedRun(value=2, gate=gate).status == "missing"
+    finally:
+        Path(gate).touch()
+        thread.join(timeout=10)
+    assert not thread.is_alive()
+
+    new = _GatedRun(value=1, gate=gate)
+    assert new.status == "done"
+    assert new.create() == {"value": "1"}
+    assert _COUNTER.calls == 1
 
 
 # --- Retyped: widened unions ---------------------------------------------------
