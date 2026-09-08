@@ -98,8 +98,6 @@ def _store_result[T](
     tmp_result_dir.rename(result_dir)
     result_link_path_in(obj._base_dir).unlink(missing_ok=True)
 
-    _record_schema_snapshot(obj)
-
     metadata_text = metadata.to_complete(
         observed_dependencies=observed_dependencies
     ).model_dump_json(indent=2)
@@ -446,6 +444,9 @@ def _create_and_store_group[T](
 ) -> None:
     log_paths = tuple(run_log_path_in(obj._base_dir) for obj in group)
 
+    # Recorded at start so runs under newer schemas can see this job.
+    for obj in group:
+        _record_schema_snapshot(obj)
     metadata = [RunningMetadata.write_for(obj) for obj in group]
 
     with _scoped_log_files(log_paths):

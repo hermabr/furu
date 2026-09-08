@@ -19,7 +19,7 @@ from websockets.sync.server import ServerConnection, serve
 
 import furu
 import furu.worker.loop as worker_loop_module
-from furu import GiB, Metadata, Requires, Spec, Throttle, at_least
+from furu import Added, GiB, Metadata, MovedFrom, Requires, Spec, Throttle, at_least
 from furu.config import _Config, _dump_worker_json_config, get_config
 from furu.dag import _add_to_dag
 from furu.execution.execution_coordinator import (
@@ -28,10 +28,11 @@ from furu.execution.execution_coordinator import (
     RunningJob,
     _resolve_takeover,
 )
+from furu.execution.load_or_create import _record_schema_snapshot
 from furu.execution.server import execution_coordinator_server, request_takeover
 from furu.locking import lock
 from furu.logging import _scoped_log_files
-from furu.metadata import ArtifactSpec
+from furu.metadata import ArtifactSpec, RunningMetadata
 from furu.provenance import (
     EnvironmentIdentity,
     GitIdentity,
@@ -44,6 +45,7 @@ from furu.storage._layout import (
     execution_coordinator_log_path_in,
 )
 from furu.testing import override_config
+from furu.utils import fully_qualified_name
 from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
 from furu.worker.execute import ChildSlot
 from furu.worker.loop import worker_loop
@@ -222,6 +224,15 @@ def _mark_running(obj: Spec) -> Iterator[None]:
 
 
 @contextmanager
+def _mark_running_under_old_schema(obj: Spec) -> Iterator[None]:
+    """A job in progress as a real worker leaves it: lock, metadata, snapshot."""
+    with _mark_running(obj):
+        _record_schema_snapshot(obj)
+        RunningMetadata.write_for(obj)
+        yield
+
+
+@contextmanager
 def _taking_over(prefix: str) -> Iterator[None]:
     with mock.patch.dict(os.environ, {"FURU_TAKEOVER": prefix}):
         yield
@@ -280,6 +291,26 @@ class ExecutionCoordinatorLeaf(Spec[int]):
 
     def create(self) -> int:
         return self.value
+
+
+class OldSchemaLeaf(Spec[int]):
+    value: int
+
+    def create(self) -> int:
+        return self.value
+
+
+class MigratedLeaf(Spec[int]):
+    value: int
+    seed: int = 0
+
+    migrations = (
+        MovedFrom(fully_qualified_name(OldSchemaLeaf)),
+        Added("seed", default=0),
+    )
+
+    def create(self) -> int:
+        return self.value + self.seed
 
 
 class FlakyExecutionCoordinatorLeaf(Spec[int]):
@@ -2302,9 +2333,81 @@ def test_adopt_accepts_job_started_after_dag_build() -> None:
     coordinator = _new_execution_coordinator([held])
 
     with _mark_running(held):
-        assert coordinator.adopt([ArtifactSpec.from_furu(held)], worker="w") is True
+        assert coordinator.adopt([ArtifactSpec.from_furu(held)], worker="w") == [
+            held.object_id
+        ]
 
     assert coordinator.running[held.object_id].worker == "w"
+
+
+def test_lease_job_waits_for_job_running_under_an_older_schema() -> None:
+    old = OldSchemaLeaf(value=1)
+    new = MigratedLeaf(value=1)
+    leased: list[Job | None] = []
+
+    with mock.patch(
+        "furu.execution.execution_coordinator._RUNNING_ELSEWHERE_POLL_INTERVAL_S",
+        0.01,
+    ):
+        with _mark_running_under_old_schema(old):
+            coordinator = _new_execution_coordinator([new])
+            assert set(coordinator.ready) == {new.object_id}
+            thread = threading.Thread(
+                target=lambda: leased.append(_lease_job(coordinator))
+            )
+            thread.start()
+            _wait_until(lambda: coordinator.running_elsewhere == {new.object_id})
+            time.sleep(0.1)
+            assert leased == []
+
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+    assert _artifact(leased[0]).object_id == new.object_id
+
+
+def test_adopt_maps_job_under_an_older_schema_to_its_migrated_node() -> None:
+    old = OldSchemaLeaf(value=1)
+    new = MigratedLeaf(value=1)
+
+    with _mark_running_under_old_schema(old):
+        coordinator = _new_execution_coordinator([new])
+        assert coordinator.adopt([ArtifactSpec.from_furu(old)], worker="w") == [
+            new.object_id
+        ]
+    assert coordinator.running[new.object_id].worker == "w"
+
+    # The pinned default is what old jobs computed; other values are new work.
+    other = OldSchemaLeaf(value=2)
+    with _mark_running_under_old_schema(other):
+        coordinator = _new_execution_coordinator([MigratedLeaf(value=2, seed=7)])
+        assert coordinator.adopt([ArtifactSpec.from_furu(other)], worker="w") == []
+
+
+def test_hello_running_adopts_job_under_an_older_schema() -> None:
+    old = OldSchemaLeaf(value=1)
+    new = MigratedLeaf(value=1)
+
+    with _mark_running_under_old_schema(old):
+        coordinator = _new_execution_coordinator([new])
+        with execution_coordinator_server(
+            coordinator, bind_host="127.0.0.1", port=0
+        ) as server:
+            connection = connect(_url_for(server))
+            with connection:
+                connection.send(
+                    HelloMessage(
+                        worker="inherited-worker",
+                        backend="test",
+                        resources=ResourceRequest(),
+                        running=[ArtifactSpec.from_furu(old)],
+                    ).model_dump_json()
+                )
+                _wait_until(lambda: new.object_id in coordinator.running)
+                connection.send(JobCompletedResult().model_dump_json())
+                with pytest.raises(ConnectionClosedOK):
+                    connection.recv(timeout=5)
+
+    assert set(coordinator.completed) == {new.object_id}
 
 
 def test_lease_job_checks_every_batch_member_for_active_locks() -> None:

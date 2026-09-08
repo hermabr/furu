@@ -274,7 +274,7 @@ def test_diff_reports_collections_as_whole_values() -> None:
     ]
 
 
-def test_schema_snapshot_written_on_first_store_and_never_rewritten() -> None:
+def test_schema_snapshot_written_when_create_starts_and_never_rewritten() -> None:
     first = SnapshotValue(name="first")
     schema_path = schema_snapshot_path_in(first._base_dir)
     assert not schema_path.exists()
@@ -293,8 +293,11 @@ def test_schema_snapshot_written_on_first_store_and_never_rewritten() -> None:
     )
 
 
-def test_schema_snapshot_not_written_when_create_fails() -> None:
+def test_schema_snapshot_written_even_when_create_fails() -> None:
+    # The snapshot declares the schema a job runs under, so a run under a newer
+    # schema can recognize in-flight work; it cannot wait for success.
     failing = FailingValue(name="x")
     with pytest.raises(RuntimeError, match="boom"):
         failing.create()
-    assert not schema_snapshot_path_in(failing._base_dir).exists()
+    schema_path = schema_snapshot_path_in(failing._base_dir)
+    assert json.loads(schema_path.read_text()) == failing._schema_data

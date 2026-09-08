@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
 from furu.constants import CLASSMARKER, FIELDSMARKER, KINDMARKER
+from furu.locking import is_active_lock
 from furu.migration.steps import (
     Added,
     MigrationError,
@@ -24,7 +25,11 @@ from furu.migration.steps import (
 from furu.serializer.artifact import to_json
 from furu.serializer.registry import Serializer
 from furu.serializer.schema import schema_type
-from furu.storage._layout import schema_snapshot_path_in_schema_directory
+from furu.storage._layout import (
+    compute_lock_path_in,
+    result_manifest_path_in,
+    schema_snapshot_path_in_schema_directory,
+)
 from furu.utils import (
     JsonFields,
     JsonValue,
@@ -366,7 +371,15 @@ def _resolve_class(obj: Spec) -> _ClassResolution:
                     "current schema"
                 )
             if not matches:
-                orphaned.append(schema_directory)
+                # Snapshots are written at job start, so a schema holding only
+                # failed attempts is debris, not work a chain must carry.
+                if any(
+                    result_manifest_path_in(artifact_dir).exists()
+                    or is_active_lock(compute_lock_path_in(artifact_dir))
+                    for artifact_dir in schema_directory.iterdir()
+                    if artifact_dir.is_dir()
+                ):
+                    orphaned.append(schema_directory)
             elif matches[0].start > own.last_breaking and all(
                 move.start > move.chain.last_breaking for move in child_moves.values()
             ):
