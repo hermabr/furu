@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import contextvars
-import copy
 import logging
 import os
 import queue
@@ -10,7 +9,6 @@ import shutil
 import sys
 import textwrap
 import threading
-import time
 import traceback
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -53,11 +51,8 @@ _CURRENT_COMPONENT: ContextVar[str | None] = ContextVar(
 
 _UNSCOPED_LOG_MAX_BYTES = 64 * 1024 * 1024
 
-# Records waiting for the file sink before new ones are dropped, and how long a
-# flush waits for the sink to catch up. Both bound how far a stalled NFS can
-# reach back into the code that logged.
+# Records waiting for the file sink before new ones are dropped.
 _LOG_QUEUE_MAX_RECORDS = 10_000
-_LOG_FLUSH_TIMEOUT_SECONDS = 10.0
 
 
 # --- ANSI styling --------------------------------------------------------------
@@ -380,71 +375,36 @@ class _ScopedFileHandler(logging.Handler):
 class _QueuedHandler(logging.Handler):
     """Hands records to `target` on a daemon thread so the caller never waits on I/O.
 
-    The file sink appends to NFS per record. Doing that on the caller's thread once
-    stalled the thread relaying a child's stderr: the child's pipe filled, its next
-    write blocked, and training froze while the worker still looked alive. Records
-    cross to the writer thread with their context (scoped log paths, component)
-    so they still land in the right file; when the queue is full — the sink has
-    stopped responding — new records are dropped rather than the caller blocking.
+    Appending to NFS per record once stalled the thread relaying a child's stderr:
+    the child's pipe filled and training froze. Records cross to the writer with
+    their context (scoped log paths, component); when the queue is full — the
+    sink has stopped responding — they are dropped rather than the caller waiting.
     """
 
     def __init__(self, target: logging.Handler) -> None:
         super().__init__()
         self._target = target
-        self._start()
-
-    def _start(self) -> None:
-        self._queue: queue.Queue[
-            tuple[contextvars.Context, logging.LogRecord] | threading.Event | None
-        ] = queue.Queue(_LOG_QUEUE_MAX_RECORDS)
-        self._thread = threading.Thread(
-            target=self._drain, name="furu-log-writer", daemon=True
+        self._queue: queue.Queue[tuple[contextvars.Context, logging.LogRecord]] = (
+            queue.Queue(_LOG_QUEUE_MAX_RECORDS)
         )
+        self._thread = threading.Thread(target=self._drain, daemon=True)
         self._thread.start()
 
     def _drain(self) -> None:
-        while (item := self._queue.get()) is not None:
-            if isinstance(item, threading.Event):
-                item.set()
-            else:
-                context, record = item
-                context.run(self._target.handle, record)
+        while True:
+            context, record = self._queue.get()
+            context.run(self._target.handle, record)
+            self._queue.task_done()
 
     def emit(self, record: logging.LogRecord) -> None:
-        if not self._thread.is_alive():
-            # A forked child inherits the queue but not the thread draining it.
-            self._start()
         try:
-            # Interpolate now: the args may be mutated by the time the writer runs.
-            record = copy.copy(record)
-            record.msg = record.getMessage()
-            record.args = None
             self._queue.put_nowait((contextvars.copy_context(), record))
         except queue.Full:
             pass  # the sink stopped responding; losing lines beats stalling the caller
-        except Exception:  # noqa: BLE001 -- logging.Handler.emit contract: never raise
-            self.handleError(record)
 
     def flush(self) -> None:
-        """Wait, up to the flush timeout, until every queued record reached the sink."""
-        if not self._thread.is_alive():
-            return
-        deadline = time.monotonic() + _LOG_FLUSH_TIMEOUT_SECONDS
-        drained = threading.Event()
-        try:
-            self._queue.put(drained, timeout=_LOG_FLUSH_TIMEOUT_SECONDS)
-        except queue.Full:
-            return
-        drained.wait(max(0.0, deadline - time.monotonic()))
-
-    def close(self) -> None:
-        self.flush()
-        try:
-            self._queue.put_nowait(None)
-        except queue.Full:
-            pass  # the writer is stuck in the sink; it is a daemon thread and dies with us
-        self._target.close()
-        super().close()
+        if self._thread.is_alive():  # a forked child has no writer to wait for
+            self._queue.join()
 
 
 @cache

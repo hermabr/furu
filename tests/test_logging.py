@@ -501,7 +501,7 @@ def test_queued_handler_drops_records_instead_of_blocking_on_a_stalled_sink(
     assert not caller.is_alive()  # never waited on the sink
 
     sink.gate.set()
-    handler.close()
+    handler.flush()
     assert sink.seen == ["r0", "r1", "r2"]  # in flight + queue capacity; rest dropped
 
 
