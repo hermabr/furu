@@ -165,20 +165,8 @@ def _spawn(environment: dict[str, str], *, code: CodeLocation, backend: str) -> 
 def _relay_stderr(
     process: subprocess.Popen[str], stderr_tail: deque[str]
 ) -> threading.Thread:
-    """Drain the child's stderr into ``stderr_tail`` and the logger.
-
-    Reading and logging run on separate threads so a stalled log sink (an NFS
-    append that never returns) can never stop the pipe from draining; a child
-    whose stderr write blocks on a full pipe stops training. The reader never
-    blocks: when the consumer falls more than ``_STDERR_QUEUE_LINES`` behind,
-    lines are dropped from the log (not the tail) and reported in one record.
-    Returns the consumer thread, which exits once the reader hits EOF and the
-    queue is drained.
-    """
     assert process.stderr is not None
     stderr = process.stderr
-    # Unbounded so the EOF sentinel can always be enqueued; the reader enforces
-    # the cap itself, which is exact since it is the only producer.
     lines: queue.Queue[str | None] = queue.Queue()
     dropped = 0
 
@@ -197,7 +185,6 @@ def _relay_stderr(
 
         def report_dropped() -> None:
             nonlocal reported
-            # Snapshot first: more lines may drop while this record itself stalls.
             if count := dropped - reported:
                 logger.warning(
                     "child %d: dropped %d stderr lines (log sinks stalled)",
