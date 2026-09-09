@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import os
 import subprocess
 import sys
@@ -22,6 +23,7 @@ from subprocess_objects import (
 import furu
 from furu import Metadata, Spec
 from furu.config import get_config
+from furu.logging import _QueuedFileHandler, _ScopedFileHandler
 from furu.metadata import ArtifactSpec
 from furu.provenance import (
     EnvironmentIdentity,
@@ -29,7 +31,8 @@ from furu.provenance import (
     SubmitContext,
     SubmitProvenance,
 )
-from furu.snapshot import create_snapshot
+from furu.snapshot import CodeLocation, create_snapshot
+from furu.worker import execute
 from furu.worker.backends.local import LocalThreadWorkerBackend
 from furu.worker.execute import ChildSlot
 from furu.worker.protocol import (
@@ -49,6 +52,57 @@ def child_slot() -> Iterator[ChildSlot]:
         yield slot
     finally:
         slot.close()
+
+
+def test_stalled_file_sink_does_not_stop_child_stderr_draining(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocked_emit(*args: object) -> None:
+        entered.set()
+        release.wait()
+
+    monkeypatch.setattr(_ScopedFileHandler, "emit", blocked_emit)
+    handler = _QueuedFileHandler(capacity=2)
+    logger = logging.getLogger("stderr-test")
+    monkeypatch.setattr(logger, "handlers", [handler])
+    monkeypatch.setattr(logger, "level", logging.DEBUG)
+    monkeypatch.setattr(logger, "propagate", False)
+    monkeypatch.setattr(execute, "logger", logger)
+    code = CodeLocation.here()
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; sys.stdin.readline(); sys.stdin.readline(); "
+                "sys.stderr.write(('x' * 1023 + '\\n') * 1024 + 'last line\\n')"
+            ),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    monkeypatch.setattr(execute.subprocess, "Popen", lambda *args, **kwargs: process)
+    try:
+        child = execute._spawn({}, code=code, backend="test")
+        assert entered.wait(timeout=2)
+        assert process.wait(timeout=5) == 0
+        child.stderr_thread.join(timeout=2)
+        assert not child.stderr_thread.is_alive()
+        assert child.stderr_tail[-1] == "last line\n"
+    finally:
+        release.set()
+        process.kill()
+        process.wait()
+        for stream in (process.stdin, process.stdout, process.stderr):
+            assert stream is not None
+            stream.close()
+        handler.flush()
+        handler.close()
 
 
 def _submit_provenance() -> SubmitProvenance:

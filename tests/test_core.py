@@ -34,7 +34,7 @@ from furu.config import _Config, _FuruDirectories, get_config
 from furu.dependencies import collect_declared_refs
 from furu.execution.load_or_create import _load_or_create
 from furu.locking import LockManifest, lock
-from furu.logging import _scoped_log_files
+from furu.logging import _flush_logs, _scoped_log_files
 from furu.metadata import ArtifactSpec
 from furu.result.bundle import _save_result_bundle, load_result_bundle
 from furu.serializer.artifact import _from_json, to_json
@@ -1289,6 +1289,7 @@ def test_top_level_load_existing_accepts_list_and_logs_once(tmp_path: Path) -> N
     with _scoped_log_files((log_path,)):
         assert furu.load_existing(nodes) == ["Node(load-a)", "Node(load-b)"]
 
+    _flush_logs()
     info_lines = [
         line
         for line in log_path.read_text(encoding="utf-8").splitlines()
@@ -1835,6 +1836,7 @@ def test_log_file_is_written_to_base_dir() -> None:
     assert node.create() == "leaf:x"
 
     assert run_log_path_in(node._base_dir).parent == node._base_dir
+    _flush_logs()
     log_text = run_log_path_in(node._base_dir).read_text(encoding="utf-8")
     assert "leaf detail for x" in log_text
 
@@ -1845,7 +1847,9 @@ def test_nested_create_scopes_logs_to_child_file() -> None:
 
     assert parent.create() == {"child": "leaf:child"}
 
+    _flush_logs()
     parent_log = run_log_path_in(parent._base_dir).read_text(encoding="utf-8")
+    _flush_logs()
     child_log = run_log_path_in(child._base_dir).read_text(encoding="utf-8")
 
     assert "parent before child" in parent_log
@@ -1870,6 +1874,7 @@ def test_cached_create_logs_debug_call_and_only_cache_hit_info(
     with _scoped_log_files((log_path,)):
         assert obj.create() == "object-id:1"
 
+    _flush_logs()
     log_text = log_path.read_text(encoding="utf-8")
     assert f".create called for {obj}" in log_text
     assert f"cached {obj._log_label}" in log_text
@@ -1895,6 +1900,7 @@ def test_small_cache_summary_logs_labels_for_cached_and_missing_items(
     with _scoped_log_files((log_path,)):
         assert _load_or_create([cached, missing]) == ["object-id:1", "object-id:2"]
 
+    _flush_logs()
     assert (
         f"building {missing._log_label}, cached {cached._log_label}"
         in log_path.read_text(encoding="utf-8")
@@ -2289,6 +2295,7 @@ def test_batched_compute_writes_shared_logs_to_every_participant() -> None:
     assert _load_or_create(objs) == ["logged-batch:1", "logged-batch:2"]
 
     for obj in objs:
+        _flush_logs()
         log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
         assert "batched detail for 1,2" in log_text
         for persisted_obj in objs:
@@ -2304,6 +2311,7 @@ def test_sequential_group_compute_writes_shared_logs_to_every_participant() -> N
     assert _load_or_create(objs) == ["logged-single:1", "logged-single:2"]
 
     for obj in objs:
+        _flush_logs()
         log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
         assert "single detail for 1" in log_text
         assert "single detail for 2" in log_text
@@ -2323,6 +2331,7 @@ def test_batched_failure_writes_error_details_to_run_log_for_every_participant()
         _load_or_create(objs)
 
     for obj in objs:
+        _flush_logs()
         log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
         assert "create failed" in log_text
         assert "failed batch for [1, 2]" in log_text
@@ -2339,6 +2348,7 @@ def test_create_failure_run_log_includes_user_create_call_stack() -> None:
     with pytest.raises(RuntimeError, match="failed single"):
         _main()
 
+    _flush_logs()
     log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
     assert "Traceback (most recent call last):" in log_text
     assert "failed single for 1" in log_text
@@ -2353,6 +2363,7 @@ def test_base_exception_does_not_log_as_load_failure() -> None:
     with pytest.raises(KeyboardInterrupt):
         obj.create()
 
+    _flush_logs()
     log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
     assert "create failed" not in log_text
 
