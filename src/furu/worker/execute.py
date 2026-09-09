@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import queue
 import signal
 import subprocess
 import threading
@@ -18,6 +19,7 @@ logger = get_logger("worker.execute")
 
 _STDERR_TAIL_LINES = 200
 _STDERR_TAIL_CHARS = 32 * 1024
+_STDERR_QUEUE_LINES = 1000
 _RETIRE_TIMEOUT_SECONDS = 5.0
 
 
@@ -148,19 +150,7 @@ def _spawn(environment: dict[str, str], *, code: CodeLocation, backend: str) -> 
     process.stdin.write(backend + "\n")
     process.stdin.flush()
     stderr_tail: deque[str] = deque(maxlen=_STDERR_TAIL_LINES)
-
-    def forward_stderr() -> None:
-        assert process.stderr is not None
-        for line in process.stderr:
-            stderr_tail.append(line)
-            logger.info("child %d: %s", process.pid, line.rstrip("\n"))
-
-    stderr_thread = threading.Thread(
-        target=forward_stderr,
-        name=f"furu-child-stderr-{process.pid}",
-        daemon=True,
-    )
-    stderr_thread.start()
+    stderr_thread = _relay_stderr(process, stderr_tail)
     logger.debug("spawned child %d", process.pid)
     return _Child(
         process=process,
@@ -170,6 +160,69 @@ def _spawn(environment: dict[str, str], *, code: CodeLocation, backend: str) -> 
         stderr_thread=stderr_thread,
         stderr_tail=stderr_tail,
     )
+
+
+def _relay_stderr(
+    process: subprocess.Popen[str], stderr_tail: deque[str]
+) -> threading.Thread:
+    """Drain the child's stderr into ``stderr_tail`` and the logger.
+
+    Reading and logging run on separate threads so a stalled log sink (an NFS
+    append that never returns) can never stop the pipe from draining; a child
+    whose stderr write blocks on a full pipe stops training. The reader never
+    blocks: when the consumer falls more than ``_STDERR_QUEUE_LINES`` behind,
+    lines are dropped from the log (not the tail) and reported in one record.
+    Returns the consumer thread, which exits once the reader hits EOF and the
+    queue is drained.
+    """
+    assert process.stderr is not None
+    stderr = process.stderr
+    # Unbounded so the EOF sentinel can always be enqueued; the reader enforces
+    # the cap itself, which is exact since it is the only producer.
+    lines: queue.Queue[str | None] = queue.Queue()
+    dropped = 0
+
+    def read_stderr() -> None:
+        nonlocal dropped
+        for line in stderr:
+            stderr_tail.append(line)
+            if lines.qsize() < _STDERR_QUEUE_LINES:
+                lines.put_nowait(line)
+            else:
+                dropped += 1
+        lines.put_nowait(None)
+
+    def forward_stderr() -> None:
+        reported = 0
+
+        def report_dropped() -> None:
+            nonlocal reported
+            # Snapshot first: more lines may drop while this record itself stalls.
+            if count := dropped - reported:
+                logger.warning(
+                    "child %d: dropped %d stderr lines (log sinks stalled)",
+                    process.pid,
+                    count,
+                )
+                reported += count
+
+        while (line := lines.get()) is not None:
+            report_dropped()
+            logger.info("child %d: %s", process.pid, line.rstrip("\n"))
+        report_dropped()
+
+    threading.Thread(
+        target=read_stderr,
+        name=f"furu-child-stderr-read-{process.pid}",
+        daemon=True,
+    ).start()
+    consumer = threading.Thread(
+        target=forward_stderr,
+        name=f"furu-child-stderr-{process.pid}",
+        daemon=True,
+    )
+    consumer.start()
+    return consumer
 
 
 def _request(child: _Child, job: Job) -> JobResult:
