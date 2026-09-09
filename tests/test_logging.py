@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import sys
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -449,6 +450,59 @@ def test_unscoped_log_rotates_with_timestamped_name_when_it_reaches_limit(
     assert unscoped_log.read_text(encoding="utf-8") == "new\n"
     assert len(archived_logs) == 1
     assert archived_logs[0].read_text(encoding="utf-8") == "old\n"
+
+
+def test_scoped_log_files_are_complete_when_the_scope_closes(
+    isolated_furu_logger: None, tmp_path: Path
+) -> None:
+    log_path = tmp_path / "run.log"
+    logger = furu_logging.get_logger()
+
+    with (
+        furu_logging._scoped_component("coord"),
+        furu_logging._scoped_log_files((log_path,)),
+    ):
+        logger.info("leased %s", "it")
+
+    (line,) = log_path.read_text(encoding="utf-8").splitlines()
+    assert "comp=coord" in line  # context reached the writer thread
+    assert 'msg="leased it"' in line
+
+
+class _StalledSink(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = threading.Event()
+        self.gate = threading.Event()
+        self.seen: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.entered.set()
+        self.gate.wait()
+        self.seen.append(record.getMessage())
+
+
+def test_queued_handler_drops_records_instead_of_blocking_on_a_stalled_sink(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(furu_logging, "_LOG_QUEUE_MAX_RECORDS", 2)
+    sink = _StalledSink()
+    handler = furu_logging._QueuedHandler(sink)
+
+    def log_five() -> None:
+        handler.emit(_record("r0"))
+        sink.entered.wait()  # writer is now stuck inside the sink
+        for index in range(1, 5):
+            handler.emit(_record(f"r{index}"))
+
+    caller = threading.Thread(target=log_five)
+    caller.start()
+    caller.join(timeout=5)
+    assert not caller.is_alive()  # never waited on the sink
+
+    sink.gate.set()
+    handler.close()
+    assert sink.seen == ["r0", "r1", "r2"]  # in flight + queue capacity; rest dropped
 
 
 # --- helpers ----------------------------------------------------------------

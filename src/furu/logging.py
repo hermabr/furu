@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import contextvars
+import copy
 import logging
 import os
+import queue
 import re
 import shutil
 import sys
 import textwrap
+import threading
+import time
 import traceback
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -47,6 +52,12 @@ _CURRENT_COMPONENT: ContextVar[str | None] = ContextVar(
 )
 
 _UNSCOPED_LOG_MAX_BYTES = 64 * 1024 * 1024
+
+# Records waiting for the file sink before new ones are dropped, and how long a
+# flush waits for the sink to catch up. Both bound how far a stalled NFS can
+# reach back into the code that logged.
+_LOG_QUEUE_MAX_RECORDS = 10_000
+_LOG_FLUSH_TIMEOUT_SECONDS = 10.0
 
 
 # --- ANSI styling --------------------------------------------------------------
@@ -366,6 +377,76 @@ class _ScopedFileHandler(logging.Handler):
             self.handleError(record)
 
 
+class _QueuedHandler(logging.Handler):
+    """Hands records to `target` on a daemon thread so the caller never waits on I/O.
+
+    The file sink appends to NFS per record. Doing that on the caller's thread once
+    stalled the thread relaying a child's stderr: the child's pipe filled, its next
+    write blocked, and training froze while the worker still looked alive. Records
+    cross to the writer thread with their context (scoped log paths, component)
+    so they still land in the right file; when the queue is full — the sink has
+    stopped responding — new records are dropped rather than the caller blocking.
+    """
+
+    def __init__(self, target: logging.Handler) -> None:
+        super().__init__()
+        self._target = target
+        self._start()
+
+    def _start(self) -> None:
+        self._queue: queue.Queue[
+            tuple[contextvars.Context, logging.LogRecord] | threading.Event | None
+        ] = queue.Queue(_LOG_QUEUE_MAX_RECORDS)
+        self._thread = threading.Thread(
+            target=self._drain, name="furu-log-writer", daemon=True
+        )
+        self._thread.start()
+
+    def _drain(self) -> None:
+        while (item := self._queue.get()) is not None:
+            if isinstance(item, threading.Event):
+                item.set()
+            else:
+                context, record = item
+                context.run(self._target.handle, record)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if not self._thread.is_alive():
+            # A forked child inherits the queue but not the thread draining it.
+            self._start()
+        try:
+            # Interpolate now: the args may be mutated by the time the writer runs.
+            record = copy.copy(record)
+            record.msg = record.getMessage()
+            record.args = None
+            self._queue.put_nowait((contextvars.copy_context(), record))
+        except queue.Full:
+            pass  # the sink stopped responding; losing lines beats stalling the caller
+        except Exception:  # noqa: BLE001 -- logging.Handler.emit contract: never raise
+            self.handleError(record)
+
+    def flush(self) -> None:
+        """Wait, up to the flush timeout, until every queued record reached the sink."""
+        if not self._thread.is_alive():
+            return
+        deadline = time.monotonic() + _LOG_FLUSH_TIMEOUT_SECONDS
+        drained = threading.Event()
+        try:
+            self._queue.put(drained, timeout=_LOG_FLUSH_TIMEOUT_SECONDS)
+        except queue.Full:
+            return
+        drained.wait(max(0.0, deadline - time.monotonic()))
+
+    def close(self) -> None:
+        self.flush()
+        try:
+            self._queue.put_nowait(None)
+        except queue.Full:
+            pass  # the writer is stuck in the sink; it is a daemon thread and dies with us
+        self._target.close()
+        super().close()
+
+
 @cache
 def _base_logger() -> logging.Logger:
     logger = logging.getLogger(_BASE_LOGGER_NAME)
@@ -375,9 +456,10 @@ def _base_logger() -> logging.Logger:
     stdout_handler.setFormatter(_FuruFormatter(console=True))
     logger.addHandler(stdout_handler)
 
-    file_handler = _ScopedFileHandler()
+    file_sink = _ScopedFileHandler()
+    file_sink.setFormatter(_FuruFormatter(console=False))
+    file_handler = _QueuedHandler(file_sink)
     file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(_FuruFormatter(console=False))
     logger.addHandler(file_handler)
 
     logger.setLevel(logging.DEBUG)
@@ -409,6 +491,10 @@ def _scoped_log_files(log_paths: tuple[Path, ...]) -> Iterator[None]:
         yield
     finally:
         _CURRENT_LOG_PATHS.reset(token)
+        # The scoped files are complete once the scope closes, so a run.log can be
+        # read right after create() returns.
+        for handler in logging.getLogger(_BASE_LOGGER_NAME).handlers:
+            handler.flush()
 
 
 @contextmanager
