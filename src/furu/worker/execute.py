@@ -153,7 +153,12 @@ def _spawn(environment: dict[str, str], *, code: CodeLocation, backend: str) -> 
         assert process.stderr is not None
         for line in process.stderr:
             stderr_tail.append(line)
-            logger.info("child %d: %s", process.pid, line.rstrip("\n"))
+            logger.info(
+                "child %d: %s",
+                process.pid,
+                line.rstrip("\n"),
+                extra={"_furu_console_only": True},
+            )
 
     stderr_thread = threading.Thread(
         target=forward_stderr,

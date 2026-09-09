@@ -30,7 +30,7 @@ from furu.execution.execution_coordinator import (
 )
 from furu.execution.server import execution_coordinator_server, request_takeover
 from furu.locking import lock
-from furu.logging import _flush_logs, _scoped_log_files
+from furu.logging import _scoped_log_files
 from furu.metadata import ArtifactSpec
 from furu.provenance import (
     EnvironmentIdentity,
@@ -572,7 +572,6 @@ def test_execution_coordinator_job_result_failed_finishes_with_error() -> None:
     assert isinstance(failed_job, FailedJob)
     assert failed_job.node.obj is leaf
     assert failed_job.error == "boom"
-    _flush_logs()
     log_text = execution_coordinator_log_path_in(coordinator.executor_dir).read_text(
         encoding="utf-8"
     )
@@ -625,7 +624,6 @@ def test_execution_coordinator_job_result_failed_retries_before_finishing(
     assert failed_job.failed_attempts == 3
     assert failed_job.error == "boom 3"
     assert coordinator.done.is_set()
-    _flush_logs()
     log_text = execution_coordinator_log_path_in(coordinator.executor_dir).read_text(
         encoding="utf-8"
     )
@@ -1288,7 +1286,6 @@ def test_execution_coordinator_run_writes_log_to_executor_dir() -> None:
     log_path = execution_coordinator_log_path_in(executor_dir)
     assert log_path.parent == executor_dir
 
-    _flush_logs()
     log_text = log_path.read_text(encoding="utf-8")
     assert "starting exec=" in log_text
     assert "server listening on " in log_text
@@ -1877,7 +1874,6 @@ def test_worker_loop_logs_received_task_and_result(
         for message in caplog.messages
     )
     assert "server closed the connection; worker exiting" in caplog.messages
-    _flush_logs()
     received_line = next(
         line for line in log_path.read_text().splitlines() if 'msg="received ' in line
     )
@@ -1970,7 +1966,6 @@ def test_hello_running_adopts_job_this_run_still_wants() -> None:
                 connection.recv(timeout=5)
 
     assert set(coordinator.completed) == {leaf.object_id}
-    _flush_logs()
     log_text = execution_coordinator_log_path_in(coordinator.executor_dir).read_text(
         encoding="utf-8"
     )
@@ -2018,7 +2013,6 @@ def test_hello_running_cancels_job_not_in_this_run() -> None:
 
     assert coordinator.failed == {}
     assert set(coordinator.completed) == {leaf.object_id}
-    _flush_logs()
     log_text = execution_coordinator_log_path_in(coordinator.executor_dir).read_text(
         encoding="utf-8"
     )
@@ -2569,7 +2563,6 @@ def test_execution_coordinator_run_inherits_pools_on_takeover() -> None:
     assert str(error) == f"execution taken over by exec={new.executor_id[:5]}"
     assert (old_backend.pool.handoffs, old_backend.pool.stops) == (1, 1)
     assert new_backend.handoffs == [PoolHandoff(job_ids=["100_0", "100_1"])]
-    _flush_logs()
     new_log = execution_coordinator_log_path_in(new.executor_dir).read_text(
         encoding="utf-8"
     )

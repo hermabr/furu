@@ -11,7 +11,6 @@ from furu.config import get_config
 from furu.dag import DagNode, _add_to_dag
 from furu.execution.execution_coordinator import ExecutionCoordinator
 from furu.locking import lock
-from furu.logging import _flush_logs
 from furu.provenance import (
     EnvironmentIdentity,
     GitIdentity,
@@ -425,7 +424,6 @@ def test_execution_coordinator_run_discovers_lazy_dependencies_and_reruns_parent
     # _DependencyNotReady), then once more after the dep completes.
     assert _calls(tmp_path, LazyChildLoader) == ["7", "7"]
     assert parent.create() == 21
-    _flush_logs()
     parent_log = run_log_path_in(parent._base_dir).read_text(encoding="utf-8")
     assert (
         "create deferred: create discovered 1 missing dependency/dependencies"

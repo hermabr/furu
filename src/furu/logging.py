@@ -6,18 +6,15 @@ import re
 import shutil
 import sys
 import textwrap
-import threading
 import traceback
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from contextvars import Context, ContextVar, copy_context
-from copy import copy
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from functools import cache
 from pathlib import Path
-from queue import Empty, Full, Queue
 
-from furu.config import _Config, get_config
+from furu.config import get_config
 
 _BASE_LOGGER_NAME = "furu"
 
@@ -343,14 +340,13 @@ class _FuruFormatter(logging.Formatter):
 
 
 class _ScopedFileHandler(logging.Handler):
-    def emit(self, record: logging.LogRecord, config: _Config | None = None) -> None:
+    def emit(self, record: logging.LogRecord) -> None:
+        log_paths = _CURRENT_LOG_PATHS.get()
+        use_unscoped_log = not log_paths
+        if not log_paths:
+            log_paths = (get_config().run_directories.objects / "unscoped.log",)
+
         try:
-            log_paths = _CURRENT_LOG_PATHS.get()
-            use_unscoped_log = not log_paths
-            if not log_paths:
-                log_paths = (
-                    (config or get_config()).run_directories.objects / "unscoped.log",
-                )
             rendered = self.format(record)
             payload = f"{rendered}\n"
             for log_path in log_paths:
@@ -370,68 +366,6 @@ class _ScopedFileHandler(logging.Handler):
             self.handleError(record)
 
 
-class _QueuedFileHandler(logging.Handler):
-    """Best-effort file logging: a stuck filesystem must not block producers.
-
-    Drop new records once the queue fills. The daemon writes without taking a
-    handler lock, so logging.shutdown cannot wait on a lock held across NFS IO.
-    """
-
-    def __init__(self, *, capacity: int = 1024) -> None:
-        super().__init__()
-        self._sink = _ScopedFileHandler()
-        self._sink.setFormatter(_FuruFormatter(console=False))
-        self._start(capacity)
-
-    def _start(self, capacity: int) -> None:
-        self._queue: Queue[tuple[Context, logging.LogRecord, _Config]] = Queue(capacity)
-        self._stopping = threading.Event()
-        self._thread = threading.Thread(
-            target=self._run, name="furu-file-log", daemon=True
-        )
-        self._thread.start()
-
-    def _at_fork_reinit(self) -> None:
-        super()._at_fork_reinit()  # ty: ignore[unresolved-attribute] -- stdlib fork hook
-        # Only the forking thread survives. Discard inherited records and locks;
-        # those records still belong to the parent's writer.
-        self._start(self._queue.maxsize)
-
-    def emit(self, record: logging.LogRecord) -> None:
-        if self._stopping.is_set():
-            return
-        try:
-            self._queue.put_nowait((copy_context(), copy(record), get_config()))
-        except Full:
-            # Do not report overflow through logging or stderr: either sink
-            # could be blocked, and this caller may be draining a child pipe.
-            pass
-
-    def _run(self) -> None:
-        while not self._stopping.is_set() or not self._queue.empty():
-            try:
-                context, record, config = self._queue.get(timeout=0.1)
-            except Empty:
-                continue
-            try:
-                context.run(self._sink.emit, record, config)
-            finally:
-                self._queue.task_done()
-
-    def flush(self) -> None:
-        # Queue.join has no timeout. Bound the wait even when a write never
-        # returns; ordinary shutdown still gives pending records time to drain.
-        with self._queue.all_tasks_done:
-            self._queue.all_tasks_done.wait_for(
-                lambda: self._queue.unfinished_tasks == 0, timeout=1.0
-            )
-
-    def close(self) -> None:
-        self._stopping.set()
-        self._thread.join(timeout=0.1)
-        super().close()
-
-
 @cache
 def _base_logger() -> logging.Logger:
     logger = logging.getLogger(_BASE_LOGGER_NAME)
@@ -441,8 +375,11 @@ def _base_logger() -> logging.Logger:
     stdout_handler.setFormatter(_FuruFormatter(console=True))
     logger.addHandler(stdout_handler)
 
-    file_handler = _QueuedFileHandler()
+    file_handler = _ScopedFileHandler()
+    # Filters run before the handler lock: relayed stderr must not wait for NFS.
+    file_handler.addFilter(lambda record: not getattr(record, "_furu_console_only", False))
     file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(_FuruFormatter(console=False))
     logger.addHandler(file_handler)
 
     logger.setLevel(logging.DEBUG)
@@ -455,12 +392,6 @@ def get_logger(name: str | None = None) -> logging.Logger:
     if name is None or name == _BASE_LOGGER_NAME:
         return logging.getLogger(_BASE_LOGGER_NAME)
     return logging.getLogger(f"{_BASE_LOGGER_NAME}.{name}")
-
-
-def _flush_logs() -> None:
-    """Best-effort bounded flush before reading log files."""
-    for handler in _base_logger().handlers:
-        handler.flush()
 
 
 def log_detail(**fields: object) -> dict[str, dict[str, object]]:

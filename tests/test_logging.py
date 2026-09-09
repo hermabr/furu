@@ -4,7 +4,6 @@ import re
 import sys
 import threading
 from collections.abc import Iterator
-from multiprocessing import get_context
 from pathlib import Path
 from typing import Any
 
@@ -424,94 +423,31 @@ def test_logfmt_multiline_detail_value_stays_on_one_line() -> None:
 # --- file handler ----------------------------------------------------------
 
 
-def test_queued_file_handler_preserves_context_and_exception(tmp_path: Path) -> None:
-    handler = furu_logging._QueuedFileHandler()
-    paths = (tmp_path / "first.log", tmp_path / "second.log")
-    try:
-        try:
-            raise ValueError("queued failure")
-        except ValueError:
-            record = _record("hello", exc_info=sys.exc_info(), detail={"lease": "L1"})
-        with (
-            furu_logging._scoped_log_files(paths),
-            furu_logging._scoped_component("worker"),
-        ):
-            handler.handle(record)
-        handler.flush()
-        for path in paths:
-            text = path.read_text()
-            assert "comp=worker" in text
-            assert "lease=L1" in text
-            assert "ValueError: queued failure" in text
-    finally:
-        handler.close()
-
-
-def test_blocked_file_sink_does_not_block_producers_or_shutdown(
-    monkeypatch: pytest.MonkeyPatch,
+def test_console_only_record_skips_a_locked_file_sink(
+    isolated_furu_logger: None,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    entered = threading.Event()
-    release = threading.Event()
+    logger = furu_logging.get_logger()
+    file_handler = next(
+        handler
+        for handler in logger.handlers
+        if isinstance(handler, furu_logging._ScopedFileHandler)
+    )
+    done = threading.Event()
 
-    def blocked_emit(
-        self: logging.Handler, record: logging.LogRecord, config: _Config | None = None
-    ) -> None:
-        entered.set()
-        release.wait()
+    def relay() -> None:
+        logger.info("child progress", extra={"_furu_console_only": True})
+        done.set()
 
-    monkeypatch.setattr(furu_logging._ScopedFileHandler, "emit", blocked_emit)
-    handler = furu_logging._QueuedFileHandler(capacity=2)
-    finished = threading.Event()
-
-    def produce_and_close() -> None:
-        for _ in range(10000):
-            handler.handle(_record("stderr progress"))
-        # Match logging.shutdown, including its acquisition of the handler lock.
-        handler.acquire()
-        try:
-            handler.flush()
-            handler.close()
-        finally:
-            handler.release()
-        finished.set()
-
-    producer = threading.Thread(target=produce_and_close, daemon=True)
+    thread = threading.Thread(target=relay, daemon=True)
+    file_handler.acquire()
     try:
-        handler.handle(_record("block"))
-        assert entered.wait(timeout=2)
-        producer.start()
-        assert finished.wait(timeout=3)
-        assert handler._queue.qsize() == 2
+        thread.start()
+        assert done.wait(timeout=2)
+        assert "child progress" in capsys.readouterr().out
     finally:
-        release.set()
-        producer.join(timeout=3)
-        handler._thread.join(timeout=3)
-        handler.close()
-
-
-@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires fork")
-def test_queued_file_handler_restarts_after_fork(tmp_path: Path) -> None:
-    handler = furu_logging._QueuedFileHandler()
-    path = tmp_path / "fork.log"
-
-    def log_in_child() -> None:
-        with furu_logging._scoped_log_files((path,)):
-            handler.handle(_record("from child"))
-        handler.flush()
-
-    process = get_context("fork").Process(target=log_in_child)
-    try:
-        # Inheriting a queue mutex held by another thread must not deadlock.
-        with handler._queue.mutex:
-            process.start()
-        process.join(timeout=3)
-        assert process.exitcode == 0
-        assert 'msg="from child"' in path.read_text()
-    finally:
-        if process.is_alive():
-            process.kill()
-            process.join(timeout=3)
-        handler.close()
+        file_handler.release()
+        thread.join(timeout=2)
 
 
 def test_unscoped_log_rotates_with_timestamped_name_when_it_reaches_limit(
