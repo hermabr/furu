@@ -142,6 +142,8 @@ class SlurmWorkerBackend:
         if pre_worker_script:
             pre_worker_script += "\n"
 
+        log_dir = worker_dir / "logs"
+        log_dir.mkdir()
         script_path = worker_dir / "worker.sh"
         if self.use_job_arrays:
             component_line = 'furu_worker_component="slurm-worker-${SLURM_ARRAY_JOB_ID}a${SLURM_ARRAY_TASK_ID}"\n'
@@ -168,6 +170,8 @@ class SlurmWorkerBackend:
                 "    python -m furu.worker._cli \\\n"
                 f"    --coordinator-file {shlex.quote(str(config_file))} \\\n"
                 '    --component "${furu_worker_component}" \\\n'
+                f"    --log-file {shlex.quote(str(log_dir))}"
+                '/"${furu_worker_component}.log" \\\n'
                 "    --backend slurm \\\n"
                 f"    --idle-timeout {self.worker_idle_timeout} \\\n"
                 f"    --max-failures {self.max_failures_per_worker} \\\n"
@@ -176,8 +180,6 @@ class SlurmWorkerBackend:
             mode=0o700,
         )
 
-        log_dir = worker_dir / "logs"
-        log_dir.mkdir()
         log_name = "furu-worker-%A_%a" if self.use_job_arrays else "furu-worker-%j"
 
         export_sbatch_arg: tuple[str, ...]

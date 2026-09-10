@@ -12,7 +12,7 @@ from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import ClientConnection, connect
 
 from furu.config import _Config, _read_worker_json_config, get_config
-from furu.logging import _scoped_component, get_logger, log_detail
+from furu.logging import _scoped_component, _scoped_log_files, get_logger, log_detail
 from furu.resources import ResourceRequest
 from furu.utils import format_duration
 from furu.worker import protocol
@@ -100,8 +100,9 @@ def worker_loop(
     component: str,
     backend: str,
     materialize_snapshot: bool,
+    log_file: Path,
 ) -> None:
-    with _scoped_component(component):
+    with _scoped_component(component), _scoped_log_files((log_file,)):
         target = _read_target(coordinator)
         if target[1] is not None and target[1] != get_config():
             logger.info("worker configuration changed before startup; exiting")

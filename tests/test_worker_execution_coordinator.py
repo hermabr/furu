@@ -30,7 +30,6 @@ from furu.execution.execution_coordinator import (
 )
 from furu.execution.server import execution_coordinator_server, request_takeover
 from furu.locking import lock
-from furu.logging import _scoped_log_files
 from furu.metadata import ArtifactSpec
 from furu.provenance import (
     EnvironmentIdentity,
@@ -1160,6 +1159,7 @@ def test_execution_coordinator_run_fails_when_local_worker_crashes(
         component: str,
         backend: str,
         materialize_snapshot: bool,
+        log_file: Path,
     ) -> None:
         raise RuntimeError("worker boom")
 
@@ -1294,6 +1294,11 @@ def test_execution_coordinator_run_writes_log_to_executor_dir() -> None:
     assert f"leased {leaf._log_label} ×1 to local-worker-0" in log_text
     assert "worker=local-worker-0" in log_text
     assert leaf.object_id in log_text
+
+    worker_log = (executor_dir / "workers" / "local-worker-0.log").read_text(
+        encoding="utf-8"
+    )
+    assert f'comp=local-worker-0 msg="received {leaf._log_label}"' in worker_log
     assert f"completed {leaf._log_label} ok" in log_text
     assert "progress 1/1 · 0 running" in log_text
     assert "failed_retry=0 failed=0" in log_text
@@ -1755,7 +1760,7 @@ def test_job_result_uses_status_discriminator() -> None:
         adapter.validate_python({"status": "skipped"})
 
 
-def test_worker_loop_raises_when_server_is_unavailable() -> None:
+def test_worker_loop_raises_when_server_is_unavailable(tmp_path: Path) -> None:
     with pytest.raises(OSError):
         worker_loop(
             coordinator="ws://127.0.0.1:1",
@@ -1765,10 +1770,11 @@ def test_worker_loop_raises_when_server_is_unavailable() -> None:
             component="test-worker",
             backend="test",
             materialize_snapshot=False,
+            log_file=tmp_path / "worker.log",
         )
 
 
-def test_worker_loop_exits_after_idle_timeout() -> None:
+def test_worker_loop_exits_after_idle_timeout(tmp_path: Path) -> None:
     with _scripted_worker_server([], hold_open=True) as server:
         worker_loop(
             coordinator=server.server_url,
@@ -1778,13 +1784,14 @@ def test_worker_loop_exits_after_idle_timeout() -> None:
             component="test-worker",
             backend="test",
             materialize_snapshot=False,
+            log_file=tmp_path / "worker.log",
         )
 
         assert len(server.hellos) == 1
         assert server.results == []
 
 
-def test_worker_loop_exits_non_zero_after_consecutive_failures() -> None:
+def test_worker_loop_exits_non_zero_after_consecutive_failures(tmp_path: Path) -> None:
     jobs = [
         _job(FailingCoordinatorLeaf(value=0)),
         _job(ExecutionCoordinatorLeaf(value=1)),  # success resets the count
@@ -1805,6 +1812,7 @@ def test_worker_loop_exits_non_zero_after_consecutive_failures() -> None:
             component="test-worker",
             backend="test",
             materialize_snapshot=False,
+            log_file=tmp_path / "worker.log",
         )
 
     assert exc_info.value.code == "2 jobs failed in a row; worker exiting"
@@ -1850,11 +1858,7 @@ def test_worker_loop_logs_received_task_and_result(
     )
     log_path = tmp_path / "worker.log"
 
-    with (
-        _scripted_worker_server([job]) as server,
-        _captured_furu_logs(caplog),
-        _scoped_log_files((log_path,)),
-    ):
+    with _scripted_worker_server([job]) as server, _captured_furu_logs(caplog):
         worker_loop(
             coordinator=server.server_url,
             resource_request=ResourceRequest(),
@@ -1863,6 +1867,7 @@ def test_worker_loop_logs_received_task_and_result(
             component="test-worker",
             backend="test",
             materialize_snapshot=False,
+            log_file=log_path,
         )
 
         assert server.results == [JobCompletedResult()]
@@ -1878,10 +1883,12 @@ def test_worker_loop_logs_received_task_and_result(
         line for line in log_path.read_text().splitlines() if 'msg="received ' in line
     )
     assert f"object_ids={leaf.object_id},{other_leaf.object_id}" in received_line
+    assert "comp=test-worker" in received_line
 
 
 def test_worker_loop_does_not_swallow_keyboard_interrupt(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
 
@@ -1900,6 +1907,7 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
                 component="test-worker",
                 backend="test",
                 materialize_snapshot=False,
+                log_file=tmp_path / "worker.log",
             )
 
         assert server.results == []
@@ -2040,6 +2048,7 @@ def test_worker_loop_cancel_kills_running_job(tmp_path: Path) -> None:
             component="test-worker",
             backend="test",
             materialize_snapshot=False,
+            log_file=tmp_path / "worker.log",
         )
 
     (result,) = results
@@ -2082,6 +2091,7 @@ def test_worker_loop_reconnects_when_worker_config_url_changes(
                 component="test-worker",
                 backend="test",
                 materialize_snapshot=False,
+                log_file=tmp_path / "worker.log",
             )
 
     assert [hello.running for hello in hellos["old"]] == [[]]
@@ -2120,6 +2130,7 @@ def test_worker_loop_reads_unchanged_worker_config_only_after_disconnect(
             component="test-worker",
             backend="test",
             materialize_snapshot=False,
+            log_file=tmp_path / "worker.log",
         )
 
     assert reads == 2
@@ -2144,6 +2155,7 @@ def test_worker_loop_fails_when_worker_config_disappears(tmp_path: Path) -> None
             component="test-worker",
             backend="test",
             materialize_snapshot=False,
+            log_file=tmp_path / "worker.log",
         )
 
     assert leaf.status != "done"
@@ -2179,6 +2191,7 @@ def test_worker_loop_carries_running_job_to_new_coordinator(tmp_path: Path) -> N
                 component="test-worker",
                 backend="test",
                 materialize_snapshot=False,
+                log_file=tmp_path / "worker.log",
             )
 
     assert [hello.running for hello in new_hellos] == [job.artifacts]
@@ -2234,6 +2247,7 @@ def test_worker_loop_exits_when_worker_config_changes(
                 component="test-worker",
                 backend="test",
                 materialize_snapshot=False,
+                log_file=tmp_path / "worker.log",
             )
 
     assert new_hellos == []
@@ -2260,6 +2274,7 @@ def test_worker_loop_kills_job_when_coordinator_disappears(
             component="test-worker",
             backend="test",
             materialize_snapshot=False,
+            log_file=tmp_path / "worker.log",
         )
 
     assert time.monotonic() - started < 10

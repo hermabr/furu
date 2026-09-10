@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import logging
 import os
-import queue
 import re
 import shutil
 import sys
 import textwrap
-import threading
 import traceback
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -49,8 +47,6 @@ _CURRENT_COMPONENT: ContextVar[str | None] = ContextVar(
 )
 
 _UNSCOPED_LOG_MAX_BYTES = 64 * 1024 * 1024
-# Records waiting for the file writer beyond this are dropped (and counted).
-_FILE_QUEUE_RECORDS = 10_000
 
 
 # --- ANSI styling --------------------------------------------------------------
@@ -344,106 +340,30 @@ class _FuruFormatter(logging.Formatter):
 
 
 class _ScopedFileHandler(logging.Handler):
-    """Appends each record to the log files scoped in the emitting context.
-
-    Rendering and the choice of files happen on the emitting thread (both read
-    ContextVars); the append runs on a writer thread so a stalled file (an NFS
-    hiccup) never blocks the emitter or the stdout handler beside it. The
-    hand-off queue is bounded: while the sink is stalled, records are dropped
-    and counted, and the count is written once the sink resumes. `flush()`
-    waits for the writer; `_scoped_log_files` flushes on exit so a scope's log
-    is complete when the scope ends.
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._dropped = 0
-        # Started on first emit, per process: a forked child inherits the queue
-        # but not the thread, and a process that never logs stays single-threaded.
-        self._writer: threading.Thread | None = None
-
-    def _start_writer(self) -> None:
-        self._queue: queue.Queue[_FileWrite | threading.Event | None] = queue.Queue(
-            maxsize=_FILE_QUEUE_RECORDS
-        )
-        self._writer_pid = os.getpid()
-        self._writer = threading.Thread(
-            target=self._drain, name="furu-log-writer", daemon=True
-        )
-        self._writer.start()
-
     def emit(self, record: logging.LogRecord) -> None:
-        if self._writer is None or self._writer_pid != os.getpid():
-            self._start_writer()
         log_paths = _CURRENT_LOG_PATHS.get()
         use_unscoped_log = not log_paths
-        if use_unscoped_log:
+        if not log_paths:
             log_paths = (get_config().run_directories.objects / "unscoped.log",)
+
         try:
-            payload = f"{self.format(record)}\n"
-            if self._dropped:
-                payload = f"{self.format(_dropped_record(self._dropped))}\n{payload}"
-            self._queue.put_nowait((payload, log_paths, use_unscoped_log, record))
-            self._dropped = 0
-        except queue.Full:
-            self._dropped += 1
+            rendered = self.format(record)
+            payload = f"{rendered}\n"
+            for log_path in log_paths:
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                if (
+                    use_unscoped_log
+                    and log_path.exists()
+                    and log_path.stat().st_size >= _UNSCOPED_LOG_MAX_BYTES
+                ):
+                    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
+                    log_path.replace(
+                        log_path.with_name(f"{log_path.stem}-{timestamp}.log")
+                    )
+                with log_path.open("a", encoding="utf-8") as f:
+                    f.write(payload)
         except Exception:  # noqa: BLE001 -- logging.Handler.emit contract: never raise
             self.handleError(record)
-
-    def flush(self) -> None:
-        """Block until every record queued so far has been written."""
-        if self._writer is None or not self._writer.is_alive():
-            return
-        written = threading.Event()
-        self._queue.put(written)
-        written.wait()
-
-    def close(self) -> None:
-        if self._writer is not None and self._writer.is_alive():
-            self._queue.put(None)
-            self._writer.join()
-        super().close()
-
-    def _drain(self) -> None:
-        while (item := self._queue.get()) is not None:
-            if isinstance(item, threading.Event):
-                item.set()
-                continue
-            payload, log_paths, use_unscoped_log, record = item
-            try:
-                self._write(payload, log_paths, use_unscoped_log)
-            except Exception:  # noqa: BLE001 -- logging.Handler.emit contract: never raise
-                self.handleError(record)
-
-    def _write(
-        self, payload: str, log_paths: tuple[Path, ...], use_unscoped_log: bool
-    ) -> None:
-        for log_path in log_paths:
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            if (
-                use_unscoped_log
-                and log_path.exists()
-                and log_path.stat().st_size >= _UNSCOPED_LOG_MAX_BYTES
-            ):
-                timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
-                log_path.replace(log_path.with_name(f"{log_path.stem}-{timestamp}.log"))
-            with log_path.open("a", encoding="utf-8") as f:
-                f.write(payload)
-
-
-_FileWrite = tuple[str, tuple[Path, ...], bool, logging.LogRecord]
-
-
-def _dropped_record(count: int) -> logging.LogRecord:
-    return logging.LogRecord(
-        name=_BASE_LOGGER_NAME,
-        level=logging.WARNING,
-        pathname=__file__,
-        lineno=0,
-        msg="dropped %d log records (file sink stalled)",
-        args=(count,),
-        exc_info=None,
-    )
 
 
 @cache
@@ -489,8 +409,6 @@ def _scoped_log_files(log_paths: tuple[Path, ...]) -> Iterator[None]:
         yield
     finally:
         _CURRENT_LOG_PATHS.reset(token)
-        for handler in _base_logger().handlers:
-            handler.flush()
 
 
 @contextmanager
