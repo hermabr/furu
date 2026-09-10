@@ -205,8 +205,6 @@ def _relay_stderr(
         daemon=True,
     ).start()
     consumer = threading.Thread(
-        # Carry the worker's logging context (component label, scoped log
-        # files) into the forwarding thread; ContextVars do not cross threads.
         target=contextvars.copy_context().run,
         args=(forward_stderr,),
         name=f"furu-child-stderr-{process.pid}",
