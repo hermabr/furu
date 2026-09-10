@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import sys
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -441,14 +442,130 @@ def test_unscoped_log_rotates_with_timestamped_name_when_it_reaches_limit(
     unscoped_log.parent.mkdir(parents=True)
     unscoped_log.write_text("old\n", encoding="utf-8")
 
-    furu_logging._ScopedFileHandler().emit(
-        _record("new", pathname=furu_logging.__file__)
-    )
+    handler = furu_logging._ScopedFileHandler()
+    handler.emit(_record("new", pathname=furu_logging.__file__))
+    handler.close()
 
     archived_logs = list(unscoped_log.parent.glob("unscoped-*.log"))
     assert unscoped_log.read_text(encoding="utf-8") == "new\n"
     assert len(archived_logs) == 1
     assert archived_logs[0].read_text(encoding="utf-8") == "old\n"
+
+
+@pytest.fixture
+def stalled_file_sink(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[tuple[threading.Event, threading.Event]]:
+    """Make the first file write block until `release` is set; `stalled` is set
+    once the writer thread is stuck inside it."""
+    stalled = threading.Event()
+    release = threading.Event()
+    write = furu_logging._ScopedFileHandler._write
+
+    def stalled_write(self: furu_logging._ScopedFileHandler, *args: Any) -> None:
+        stalled.set()
+        release.wait()
+        write(self, *args)
+
+    monkeypatch.setattr(furu_logging._ScopedFileHandler, "_write", stalled_write)
+    try:
+        yield stalled, release
+    finally:
+        release.set()
+
+
+def _scoped_logger(tmp_path: Path) -> tuple[logging.Logger, Path]:
+    _set_config(
+        _Config(
+            directories=_FuruDirectories(
+                objects=tmp_path / "objects",
+                executions=tmp_path / "executions",
+                debug=tmp_path / "debug",
+            )
+        )
+    )
+    return furu_logging.get_logger(), tmp_path / "objects" / "unscoped.log"
+
+
+def _messages(text: str) -> list[str]:
+    return re.findall(r' msg=("[^"]*"|\S+)', text)
+
+
+def _file_handler(logger: logging.Logger) -> furu_logging._ScopedFileHandler:
+    (handler,) = [
+        h for h in logger.handlers if isinstance(h, furu_logging._ScopedFileHandler)
+    ]
+    return handler
+
+
+def test_stalled_file_sink_does_not_block_stdout(
+    isolated_furu_logger: None,
+    stalled_file_sink: tuple[threading.Event, threading.Event],
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    stalled, release = stalled_file_sink
+    logger, unscoped_log = _scoped_logger(tmp_path)
+
+    logger.info("first")
+    assert stalled.wait(timeout=10)
+    logger.info("second")
+
+    assert _messages(capsys.readouterr().out) == ["first", "second"]
+    assert not unscoped_log.exists()
+
+    release.set()
+    _file_handler(logger).flush()
+    assert _messages(unscoped_log.read_text()) == ["first", "second"]
+
+
+def test_stalled_file_sink_drops_and_counts_records(
+    isolated_furu_logger: None,
+    stalled_file_sink: tuple[threading.Event, threading.Event],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(furu_logging, "_FILE_QUEUE_RECORDS", 1)
+    stalled, release = stalled_file_sink
+    logger, unscoped_log = _scoped_logger(tmp_path)
+    handler = _file_handler(logger)
+
+    logger.info("first")  # taken by the writer, which is now stuck in the sink
+    assert stalled.wait(timeout=10)
+    logger.info("second")  # fills the queue
+    logger.info("third")  # dropped
+    logger.info("fourth")  # dropped
+
+    release.set()
+    handler.flush()
+    logger.info("fifth")  # carries the count of what was dropped before it
+    handler.flush()
+
+    text = unscoped_log.read_text()
+    assert _messages(text) == [
+        "first",
+        "second",
+        '"dropped 2 log records (file sink stalled)"',
+        "fifth",
+    ]
+    assert 'level=warning msg="dropped 2' in text
+
+
+def test_scoped_log_files_are_complete_when_the_scope_exits(
+    isolated_furu_logger: None,
+    stalled_file_sink: tuple[threading.Event, threading.Event],
+    tmp_path: Path,
+) -> None:
+    stalled, release = stalled_file_sink
+    logger, _ = _scoped_logger(tmp_path)
+    log_path = tmp_path / "scoped.log"
+    threading.Timer(0.2, release.set).start()
+
+    with furu_logging._scoped_log_files((log_path,)):
+        logger.info("inside")
+        assert stalled.wait(timeout=10)
+
+    assert _messages(log_path.read_text()) == ["inside"]
 
 
 # --- helpers ----------------------------------------------------------------

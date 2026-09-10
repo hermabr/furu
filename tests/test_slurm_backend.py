@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tarfile
 import textwrap
+import threading
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -103,7 +104,13 @@ def _disable_slurm_pool_scale_thread(
         def join(self, timeout: float | None = None) -> None:
             pass
 
-    monkeypatch.setattr(slurm_backend_module.threading, "Thread", NoopThread)
+    # Only the backend module's view of `threading`: other threads (the log
+    # writer, for one) must keep working during the test.
+    monkeypatch.setattr(
+        slurm_backend_module,
+        "threading",
+        SimpleNamespace(Thread=NoopThread, Event=threading.Event),
+    )
 
 
 def _submit_provenance() -> SubmitProvenance:
