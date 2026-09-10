@@ -42,6 +42,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         required=True,
         help="worker backend name recorded in provenance (e.g. slurm)",
     )
+    parser.add_argument(
+        "--log-file",
+        required=True,
+        type=Path,
+        help="file this worker appends its log records to",
+    )
     args = parser.parse_args(argv)
 
     worker_loop(
@@ -52,6 +58,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         component=args.component,
         backend=args.backend,
         materialize_snapshot=True,
+        log_file=args.log_file,
     )
     return 0
 

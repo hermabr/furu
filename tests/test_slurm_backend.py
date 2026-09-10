@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tarfile
 import textwrap
+import threading
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -103,7 +104,13 @@ def _disable_slurm_pool_scale_thread(
         def join(self, timeout: float | None = None) -> None:
             pass
 
-    monkeypatch.setattr(slurm_backend_module.threading, "Thread", NoopThread)
+    # Only the backend module's view of `threading`: other threads (the log
+    # writer, for one) must keep working during the test.
+    monkeypatch.setattr(
+        slurm_backend_module,
+        "threading",
+        SimpleNamespace(Thread=NoopThread, Event=threading.Event),
+    )
 
 
 def _submit_provenance() -> SubmitProvenance:
@@ -161,6 +168,7 @@ def test_worker_cli_passes_coordinator_file(
         backend: str,
         materialize_snapshot: bool,
         max_failures: int,
+        log_file: Path,
     ) -> None:
         calls.append((coordinator, resource_request, idle_timeout))
 
@@ -177,6 +185,8 @@ def test_worker_cli_passes_coordinator_file(
                 "60",
                 "--max-failures",
                 "3",
+                "--log-file",
+                "worker.log",
                 "--component",
                 "test-worker",
                 "--backend",
@@ -206,6 +216,7 @@ def test_worker_cli_reads_resource_request(
         backend: str,
         materialize_snapshot: bool,
         max_failures: int,
+        log_file: Path,
     ) -> None:
         calls.append((resource_request, idle_timeout))
 
@@ -222,6 +233,8 @@ def test_worker_cli_reads_resource_request(
                 "30",
                 "--max-failures",
                 "3",
+                "--log-file",
+                "worker.log",
                 "--component",
                 "test-worker",
                 "--backend",
@@ -261,6 +274,7 @@ def test_worker_cli_reads_idle_timeout_and_max_failures(
         backend: str,
         materialize_snapshot: bool,
         max_failures: int,
+        log_file: Path,
     ) -> None:
         calls.append((idle_timeout, max_failures))
 
@@ -277,6 +291,8 @@ def test_worker_cli_reads_idle_timeout_and_max_failures(
                 "0.25",
                 "--max-failures",
                 "3",
+                "--log-file",
+                "worker.log",
                 "--component",
                 "test-worker",
                 "--backend",
@@ -305,6 +321,7 @@ def _run_worker_cli_capturing_component(
         backend: str,
         materialize_snapshot: bool,
         max_failures: int,
+        log_file: Path,
     ) -> None:
         captured.append(component)
 
@@ -321,6 +338,8 @@ def _run_worker_cli_capturing_component(
                 "60",
                 "--max-failures",
                 "3",
+                "--log-file",
+                "worker.log",
                 "--backend",
                 "slurm",
                 *extra_args,
@@ -362,6 +381,7 @@ def test_worker_cli_requires_component(
         backend: str,
         materialize_snapshot: bool,
         max_failures: int,
+        log_file: Path,
     ) -> None:
         raise AssertionError("worker_loop should not be called")
 
@@ -378,6 +398,8 @@ def test_worker_cli_requires_component(
                 "60",
                 "--max-failures",
                 "3",
+                "--log-file",
+                "worker.log",
             ]
         )
 
@@ -411,6 +433,8 @@ def test_worker_cli_requires_resource_request(
                 "60",
                 "--max-failures",
                 "3",
+                "--log-file",
+                "worker.log",
                 "--component",
                 "test-worker",
             ]
@@ -442,6 +466,8 @@ def test_worker_cli_requires_coordinator_file(monkeypatch: pytest.MonkeyPatch) -
                 "60",
                 "--max-failures",
                 "3",
+                "--log-file",
+                "worker.log",
                 "--component",
                 "test-worker",
             ]
@@ -512,6 +538,8 @@ def test_worker_cli_rejects_auth_token_argument(
                 "60",
                 "--max-failures",
                 "3",
+                "--log-file",
+                "worker.log",
                 "--component",
                 "test-worker",
                 "--auth-token",
@@ -604,6 +632,10 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
         in script
     )
     assert '--component "${furu_worker_component}"' in script
+    assert (
+        f"--log-file {shlex.quote(str(worker_dir / 'logs'))}"
+        '/"${furu_worker_component}.log"'
+    ) in script
     assert "--idle-timeout 0.25" in script
     assert "--max-failures 2" in script
     resources_json = resource_request_adapter.dump_json(

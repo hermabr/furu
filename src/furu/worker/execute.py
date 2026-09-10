@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextvars
 import os
 import queue
 import signal
@@ -204,7 +205,8 @@ def _relay_stderr(
         daemon=True,
     ).start()
     consumer = threading.Thread(
-        target=forward_stderr,
+        target=contextvars.copy_context().run,
+        args=(forward_stderr,),
         name=f"furu-child-stderr-{process.pid}",
         daemon=True,
     )

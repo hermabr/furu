@@ -57,6 +57,7 @@ class LocalThreadWorkerBackend:
                     "coordinator_url": url,
                     "resource_request": self.resource_request,
                     "index": index,
+                    "log_file": executor_dir / "workers" / f"local-worker-{index}.log",
                 },
                 name=f"local-worker-{index}",
             )
@@ -71,6 +72,7 @@ def _run_worker(
     coordinator_url: str,
     resource_request: ResourceRequest,
     index: int,
+    log_file: Path,
 ) -> None:
     from furu.worker.loop import worker_loop
 
@@ -86,6 +88,7 @@ def _run_worker(
             component=component,
             backend="local-thread",
             materialize_snapshot=False,
+            log_file=log_file,
         )
     except (Exception, SystemExit) as exc:
         with _scoped_component(component):

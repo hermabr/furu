@@ -8,6 +8,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable, Iterator
+from pathlib import Path
 
 import pytest
 
@@ -122,3 +123,45 @@ def test_dropped_lines_are_counted_once_logging_resumes(
     )
     assert len(relayed) + n_dropped == _LINES  # nothing lost, nothing double counted
     assert len(relayed) <= execute._STDERR_QUEUE_LINES + 1
+
+
+def test_forwarded_lines_keep_the_spawning_thread_log_context(
+    tmp_path: Path,
+) -> None:
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stderr.write('a\\nb\\n')"],
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    log_path = tmp_path / "worker.log"
+    seen: list[tuple[str | None, tuple[Path, ...]]] = []
+
+    class _Context(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            seen.append(
+                (
+                    furu_logging._CURRENT_COMPONENT.get(),
+                    furu_logging._CURRENT_LOG_PATHS.get(),
+                )
+            )
+
+    execute.logger.addHandler(handler := _Context())
+    try:
+        with (
+            furu_logging._scoped_component("test-worker"),
+            furu_logging._scoped_log_files((log_path,)),
+        ):
+            tail: deque[str] = deque(maxlen=execute._STDERR_TAIL_LINES)
+            consumer = execute._relay_stderr(child, tail)
+            assert child.wait(timeout=30) == 0
+            consumer.join(timeout=30)
+            assert not consumer.is_alive()
+    finally:
+        execute.logger.removeHandler(handler)
+
+    assert seen == [("test-worker", (log_path,))] * 2
+    lines = log_path.read_text(encoding="utf-8").splitlines()
+    assert [line.split(" ", 2)[2] for line in lines] == [
+        f'comp=test-worker msg="child {child.pid}: a"',
+        f'comp=test-worker msg="child {child.pid}: b"',
+    ]

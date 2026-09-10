@@ -452,9 +452,7 @@ def test_execution_coordinator_run_reports_worker_failures():
     config = get_config()
     no_retries = config.model_copy(
         update={
-            "worker": config.worker.model_copy(
-                update={"max_retries_per_object": 0}
-            )
+            "worker": config.worker.model_copy(update={"max_retries_per_object": 0})
         }
     )
     with override_config(no_retries), pytest.raises(RuntimeError, match="failed jobs"):
