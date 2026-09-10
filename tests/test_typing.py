@@ -67,6 +67,8 @@ if TYPE_CHECKING:
     assert_type(furu.load_existing([parent.cached_child]), list[int])
     assert_type(furu.create(parent.cached_child), int)
     assert_type(furu.create([parent.cached_child]), list[int])
+    assert_type(furu.create((parent.cached_child,)), tuple[int, ...])
+    assert_type(furu.load_existing(parent.cached_child), int)
     assert_type(TypingChild().create(), int)
     assert_type(TypingBatched(key=1).create(), str)
     assert_type(furu.create([TypingBatched(key=1)]), list[str])

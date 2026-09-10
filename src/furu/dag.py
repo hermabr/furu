@@ -30,8 +30,6 @@ class DagNode:
 
 def _add_to_dag(coordinator: ExecutionCoordinator, objs: Sequence[Spec]) -> None:
     if any(not isinstance(obj, Spec) for obj in objs):
-        # TODO: accept pytrees of Spec objects (e.g. nested lists/dicts/dataclasses)
-        # and flatten them before walking dependencies.
         raise TypeError("expected Spec objects")
 
     refs_by_id: dict[str, tuple[Spec, ...]] = {}
