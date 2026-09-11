@@ -2346,7 +2346,7 @@ def test_slurm_backend_start_pool_with_handoff_inherits_workers(
     assert pool.handoff() == PoolHandoff(
         job_ids=["100_0", "100_1"], worker_files=[own_file, inherited_file]
     )
-    assert pool._job_ids == []
+    assert pool._job_ids == ["100_0", "100_1"]
 
     second_backend = dataclasses.replace(backend, worker_connect_host="login03.cluster")
     second_backend.start_pool(
@@ -2368,9 +2368,11 @@ def test_slurm_backend_start_pool_with_handoff_inherits_workers(
     )
 
 
-def test_slurm_worker_pool_handoff_stops_scaling_and_stop_cancels_nothing(
+@pytest.mark.parametrize("complete", [False, True])
+def test_slurm_worker_pool_handoff_retains_ownership_until_completed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    complete: bool,
 ) -> None:
     record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
     backend = SlurmWorkerBackend(
@@ -2392,11 +2394,21 @@ def test_slurm_worker_pool_handoff_stops_scaling_and_stop_cancels_nothing(
 
     assert handoff.job_ids == ["100_0", "100_1"]
     assert not pool._scale_thread.is_alive()
-    assert pool._job_ids == []
+    assert pool._job_ids == handoff.job_ids
+    assert pool._job_ids is not handoff.job_ids
+    if complete:
+        pool.complete_handoff()
+        assert pool._job_ids == []
+    assert handoff.job_ids == ["100_0", "100_1"]
 
     pool.stop(timeout=0)
 
-    assert not any(
-        record["executable"] == "scancel" for record in _read_records(record_file)
+    cancellations = [
+        record
+        for record in _read_records(record_file)
+        if record["executable"] == "scancel"
+    ]
+    assert cancellations == (
+        [] if complete else [{"executable": "scancel", "argv": ["100_0", "100_1"]}]
     )
-    assert "100_0" in active_file.read_text()
+    assert ("100_0" in active_file.read_text()) == complete

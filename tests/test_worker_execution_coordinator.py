@@ -28,7 +28,11 @@ from furu.execution.execution_coordinator import (
     RunningJob,
     _resolve_takeover,
 )
-from furu.execution.server import execution_coordinator_server, request_takeover
+from furu.execution.server import (
+    _serve_takeover,
+    execution_coordinator_server,
+    request_takeover,
+)
 from furu.locking import lock
 from furu.metadata import ArtifactSpec
 from furu.provenance import (
@@ -56,6 +60,7 @@ from furu.worker.protocol import (
     JobResult,
     PoolHandoff,
     ProcessSettings,
+    TakeoverRequest,
     coordinator_url,
     job_result_adapter,
     server_message_adapter,
@@ -1352,6 +1357,9 @@ def test_execution_coordinator_run_starts_backend_pool_and_stops_and_joins_when_
         def handoff(self) -> PoolHandoff:
             return PoolHandoff()
 
+        def complete_handoff(self) -> None:
+            pass
+
         def stop(self, *, timeout: float) -> None:
             self.events.append("stop")
             self.stop_timeouts.append(timeout)
@@ -1418,6 +1426,9 @@ def test_execution_coordinator_run_stops_backend_pool_when_interrupted() -> None
         def handoff(self) -> PoolHandoff:
             return PoolHandoff()
 
+        def complete_handoff(self) -> None:
+            pass
+
         def stop(self, *, timeout: float) -> None:
             self.events.append("stop")
             self.stop_timeouts.append(timeout)
@@ -1463,6 +1474,9 @@ def test_execution_coordinator_run_uses_worker_backend_execution_coordinator_lis
 
         def handoff(self) -> PoolHandoff:
             return PoolHandoff()
+
+        def complete_handoff(self) -> None:
+            pass
 
         def stop(self, *, timeout: float) -> None:
             if self.worker_thread is not None:
@@ -2344,6 +2358,9 @@ class _InertPool:
         self.handoffs += 1
         return PoolHandoff(job_ids=self.job_ids, worker_files=[])
 
+    def complete_handoff(self) -> None:
+        self.job_ids.clear()
+
     def stop(self, *, timeout: float) -> None:
         self.stops += 1
 
@@ -2370,9 +2387,13 @@ def test_request_takeover_hands_off_matching_pools_and_closing_ends_old_run() ->
         ) as handoffs:
             assert handoffs == {"k": PoolHandoff(job_ids=["100_0"])}
             assert (matched.handoffs, unmatched.handoffs) == (1, 0)
+            assert matched.job_ids == ["100_0"]
             assert _lease_job(old) is None
             assert not old.done.is_set()
         _wait_until(old.done.is_set)
+
+    assert matched.job_ids == []
+    assert unmatched.job_ids == ["200_0"]
 
     assert old.finish_error == f"execution taken over by exec={new.executor_id[:5]}"
 
@@ -2456,7 +2477,8 @@ def test_request_takeover_refuses_second_concurrent_takeover() -> None:
 def test_request_takeover_failing_midway_still_ends_old_run() -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
     old = _new_execution_coordinator([leaf])
-    old.pools = {"k": _InertPool(["100_0"])}
+    pool = _InertPool(["100_0"])
+    old.pools = {"k": pool}
     new = _new_execution_coordinator([leaf])
 
     with execution_coordinator_server(old, bind_host="127.0.0.1", port=0) as server:
@@ -2473,6 +2495,31 @@ def test_request_takeover_failing_midway_still_ends_old_run() -> None:
         _wait_until(old.done.is_set)
 
     assert old.finish_error == f"execution taken over by exec={new.executor_id[:5]}"
+
+    assert pool.job_ids == ["100_0"]
+
+
+@pytest.mark.parametrize("failure", ["handoff", "reply"])
+def test_takeover_failure_retains_source_workers_and_ends_old_run(failure: str) -> None:
+    old = _new_execution_coordinator([ExecutionCoordinatorLeaf(value=1)])
+    pool = _InertPool(["100_0"])
+    old.pools = {"k": pool}
+    connection = mock.Mock(spec=ServerConnection)
+    if failure == "handoff":
+        pool.handoff = mock.Mock(side_effect=OSError("handoff failed"))
+    else:
+        connection.send.side_effect = OSError("reply failed")
+
+    with pytest.raises(OSError, match=f"{failure} failed"):
+        _serve_takeover(
+            old,
+            connection,
+            TakeoverRequest(executor_id="b" * 32, pool_keys=["k"]),
+        )
+
+    assert pool.job_ids == ["100_0"]
+    assert old.done.is_set()
+    assert old.finish_error == "execution taken over by exec=bbbbb"
 
 
 def test_request_takeover_reports_unreachable_coordinator() -> None:

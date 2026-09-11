@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Iterator, Sequence
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from dataclasses import dataclass
 from secrets import token_urlsafe
 from typing import assert_never
 
-from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import ConnectionClosed, ConnectionClosedOK
 from websockets.sync.client import connect
 from websockets.sync.server import ServerConnection, basic_auth, serve
 
@@ -68,17 +68,25 @@ def _serve_takeover(
         connection.send(TakeoverRefused(reason=refused).model_dump_json())
         return
     assert pools is not None
-    handoffs = {key: pool.handoff() for key, pool in pools.items()}
-    logger.info(
-        "handed off %d of %d pools to exec=%s",
-        len(handoffs),
-        pool_count,
-        request.executor_id[:5],
-    )
     try:
+        handoffs = {key: pool.handoff() for key, pool in pools.items()}
         connection.send(TakeoverAccepted(handoffs=handoffs).model_dump_json())
-        with suppress(ConnectionClosed):
+        try:
             connection.recv()
+        except ConnectionClosedOK:
+            for pool in pools.values():
+                pool.complete_handoff()
+            logger.info(
+                "handed off %d of %d pools to exec=%s",
+                len(handoffs),
+                pool_count,
+                request.executor_id[:5],
+            )
+        except ConnectionClosed:
+            logger.warning(
+                "takeover by exec=%s failed; retaining source workers",
+                request.executor_id[:5],
+            )
     finally:
         coordinator.fail(f"execution taken over by exec={request.executor_id[:5]}")
 

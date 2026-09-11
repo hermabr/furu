@@ -109,3 +109,6 @@ class LocalThreadWorkerPool:
 
     def handoff(self) -> PoolHandoff:
         return PoolHandoff()
+
+    def complete_handoff(self) -> None:
+        pass
