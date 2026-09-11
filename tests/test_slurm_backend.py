@@ -2346,6 +2346,8 @@ def test_slurm_backend_start_pool_with_handoff_inherits_workers(
     assert pool.handoff() == PoolHandoff(
         job_ids=["100_0", "100_1"], worker_files=[own_file, inherited_file]
     )
+    assert pool._job_ids == ["100_0", "100_1"]
+    pool.release()
     assert pool._job_ids == []
 
     second_backend = dataclasses.replace(backend, worker_connect_host="login03.cluster")
@@ -2368,9 +2370,11 @@ def test_slurm_backend_start_pool_with_handoff_inherits_workers(
     )
 
 
-def test_slurm_worker_pool_handoff_stops_scaling_and_stop_cancels_nothing(
+@pytest.mark.parametrize("released", [True, False])
+def test_slurm_worker_pool_handoff_stops_scaling_and_stop_cancels_unless_released(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    released: bool,
 ) -> None:
     record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
     backend = SlurmWorkerBackend(
@@ -2392,11 +2396,16 @@ def test_slurm_worker_pool_handoff_stops_scaling_and_stop_cancels_nothing(
 
     assert handoff.job_ids == ["100_0", "100_1"]
     assert not pool._scale_thread.is_alive()
-    assert pool._job_ids == []
+    assert pool._job_ids == ["100_0", "100_1"]
 
+    if released:
+        pool.release()
     pool.stop(timeout=0)
 
-    assert not any(
-        record["executable"] == "scancel" for record in _read_records(record_file)
-    )
-    assert "100_0" in active_file.read_text()
+    scancels = [
+        record["argv"]
+        for record in _read_records(record_file)
+        if record["executable"] == "scancel"
+    ]
+    assert scancels == ([] if released else [["100_0", "100_1"]])
+    assert ("100_0" in active_file.read_text()) == released
