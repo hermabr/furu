@@ -58,9 +58,13 @@ class SlurmWorkerPool:
         with _scoped_component("slurm"):
             self._stop_event.set()
             self._scale_thread.join()
-            job_ids, self._job_ids[:] = list(self._job_ids), []
-            logger.info("handed off %d slurm workers", len(job_ids))
-            return PoolHandoff(job_ids=job_ids, worker_files=sorted(self._worker_files))
+            logger.info("handed off %d slurm workers", len(self._job_ids))
+            return PoolHandoff(
+                job_ids=list(self._job_ids), worker_files=sorted(self._worker_files)
+            )
+
+    def release(self) -> None:
+        self._job_ids.clear()
 
     def stop(self, *, timeout: float) -> None:
         with _scoped_component("slurm"):

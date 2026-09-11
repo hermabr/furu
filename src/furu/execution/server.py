@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Iterator, Sequence
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from dataclasses import dataclass
 from secrets import token_urlsafe
 from typing import assert_never
 
-from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import (
+    ConnectionClosed,
+    ConnectionClosedError,
+    ConnectionClosedOK,
+)
 from websockets.sync.client import connect
 from websockets.sync.server import ServerConnection, basic_auth, serve
 
@@ -77,8 +81,15 @@ def _serve_takeover(
     )
     try:
         connection.send(TakeoverAccepted(handoffs=handoffs).model_dump_json())
-        with suppress(ConnectionClosed):
+        try:
             connection.recv()
+        except ConnectionClosedOK:
+            # The destination closed cleanly: its pools now own the workers.
+            # Any other outcome leaves them with us, and stopping cancels them.
+            for pool in pools.values():
+                pool.release()
+        except ConnectionClosedError:
+            pass
     finally:
         coordinator.fail(f"execution taken over by exec={request.executor_id[:5]}")
 
@@ -91,7 +102,7 @@ def request_takeover(
     url: str,
     pool_keys: Sequence[str],
 ) -> Iterator[dict[str, PoolHandoff]]:
-    """Inherit ``source_id``'s matching pools; closing the connection commits."""
+    """Inherit ``source_id``'s matching pools; a clean close commits the takeover."""
     try:
         connection = connect(url, max_size=None)
     except OSError as exc:
