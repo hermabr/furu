@@ -627,6 +627,50 @@ def test_snapshot_matching_two_chains_is_rejected() -> None:
         _ = _AmbiguousViaRewrite(optimizer=_SGD(momentum=0.9), lr=0.1).status
 
 
+class _RewriteThenChildAddedV0(Spec[str]):
+    tokenizer: _CascadeTokenizerV0
+    lr: float
+
+    def create(self) -> str:
+        return "old"
+
+
+class _RewriteThenChildAdded(Spec[str]):
+    tokenizer: _CascadeTokenizer
+    lr: float
+
+    migrations = (Rewrite(_identity_rewrite),)
+
+    def create(self) -> str:
+        _COUNTER.calls += 1
+        return "recomputed"
+
+
+def test_child_migration_is_not_ambiguous_with_a_trailing_rewrite() -> None:
+    """After the child normalises, the snapshot equals the current schema; the Rewrite's wildcard must not also claim it."""
+    old = _RewriteThenChildAddedV0(
+        tokenizer=_CascadeTokenizerV0(vocabulary_size=32000), lr=0.1
+    )
+    old.create()
+    _transplant_generation(
+        old,
+        _RewriteThenChildAdded,
+        renames={
+            fully_qualified_name(_CascadeTokenizerV0): fully_qualified_name(
+                _CascadeTokenizer
+            )
+        },
+    )
+    _COUNTER.calls = 0
+
+    current = _RewriteThenChildAdded(
+        tokenizer=_CascadeTokenizer(vocab_size=32000), lr=0.1
+    )
+    assert current.status == "done"
+    assert current.load_existing() == "old"
+    assert _COUNTER.calls == 0
+
+
 # --- Rewrite: the fenced escape hatch ----------------------------------------------
 
 

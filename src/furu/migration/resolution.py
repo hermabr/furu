@@ -357,6 +357,8 @@ def _resolve_class(obj: Spec) -> _ClassResolution:
                 for generation in own.generations
                 if _snapshot_matches(snapshot, generation)
             ]
+            if own.generations[-1] in matches:
+                matches = [own.generations[-1]]
             if len(matches) > 1:
                 raise MigrationError(
                     f"{cls.__name__}.migrations is ambiguous: the recorded schema "
