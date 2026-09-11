@@ -42,7 +42,13 @@ class WorkerBackend(Protocol):
 class WorkerPool(Protocol):
     def stop(self, *, timeout: float) -> None: ...
 
-    def handoff(self) -> PoolHandoff: ...
+    def handoff(self) -> PoolHandoff:
+        """Stop scaling and describe the workers, which stay owned here."""
+        ...
+
+    def release(self) -> None:
+        """Another executor now owns the handed-off workers."""
+        ...
 
 
 def can_run(backend: WorkerBackend, spec: Spec) -> bool:
