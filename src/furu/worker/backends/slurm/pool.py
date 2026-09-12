@@ -23,7 +23,7 @@ _UNFINISHED_STATES = frozenset(
     {
         "COMPLETING",
         "PENDING",
-        "PREEMPTED",
+        "PREEMPTED",  # Assume preempted workers will be requeued.
         "REQUEUED",
         "RUNNING",
         "UNKNOWN",
@@ -94,22 +94,24 @@ class SlurmWorkerPool:
 
     def _scale_once(self) -> None:
         active_job_states = self._active_job_states()
+        if active_job_states is None:
+            return
         states = self._task_states()
-        failed = {
+        removed = {
             job_id: state
             for job_id in self._job_ids
-            if (state := states.get(job_id)) is not None and _is_failed_state(state)
+            if job_id not in active_job_states
+            and (state := states.get(job_id)) is not None
+            and state not in _UNFINISHED_STATES
         }
-        self._job_ids[:] = [
-            job_id
-            for job_id in self._job_ids
-            if job_id not in failed
-            and (
-                job_id in active_job_states
-                if active_job_states is not None
-                else states.get(job_id) not in (None, *_PRUNABLE_STATES)
+        for job_id, state in removed.items():
+            logger.info(
+                "removing slurm worker %s: absent from squeue, sacct reports %s",
+                job_id,
+                state,
             )
-        ]
+        self._job_ids[:] = [j for j in self._job_ids if j not in removed]
+        failed = {j: s for j, s in removed.items() if _is_failed_state(s)}
         if failed:
             if len(self._coordinator.completed) > self._completed_seen:
                 self._completed_seen = len(self._coordinator.completed)
@@ -145,7 +147,7 @@ class SlurmWorkerPool:
         to_spawn = demand - len(self._job_ids)
         if to_spawn <= 0:
             if to_spawn < 0:
-                self._cancel_queued_workers(-to_spawn, active_job_states or {})
+                self._cancel_queued_workers(-to_spawn, active_job_states)
             return
 
         for _ in range(1 if self._use_job_arrays else to_spawn):
@@ -203,6 +205,10 @@ class SlurmWorkerPool:
                 result.stderr.strip(),
             )
             return
+        for job_id in to_cancel:
+            logger.info(
+                "removing slurm worker %s: cancelled due to reduced demand", job_id
+            )
         self._job_ids[:] = [
             job_id for job_id in self._job_ids if job_id not in set(to_cancel)
         ]
