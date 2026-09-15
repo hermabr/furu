@@ -101,6 +101,7 @@ def worker_loop(
     backend: str,
     materialize_snapshot: bool,
     log_file: Path,
+    disconnect_grace: float = 120.0,
 ) -> None:
     with _scoped_component(component), _scoped_log_files((log_file,)):
         target = _read_target(coordinator)
@@ -195,7 +196,13 @@ def worker_loop(
                             case _:
                                 assert_never(event)
 
-                new_target = _read_target(coordinator)
+                deadline = time.monotonic() + (
+                    disconnect_grace if isinstance(coordinator, Path) else 0
+                )
+                while (
+                    new_target := _read_target(coordinator)
+                ) == target and time.monotonic() < deadline:
+                    time.sleep(1)
                 if new_target != target:
                     if new_target[1] != target[1]:
                         if job is not None and result is None:
