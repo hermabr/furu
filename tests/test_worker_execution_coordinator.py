@@ -2092,6 +2092,7 @@ def test_worker_loop_reconnects_when_worker_config_url_changes(
                 backend="test",
                 materialize_snapshot=False,
                 log_file=tmp_path / "worker.log",
+                disconnect_grace=0,
             )
 
     assert [hello.running for hello in hellos["old"]] == [[]]
@@ -2131,6 +2132,7 @@ def test_worker_loop_reads_unchanged_worker_config_only_after_disconnect(
             backend="test",
             materialize_snapshot=False,
             log_file=tmp_path / "worker.log",
+            disconnect_grace=0,
         )
 
     assert reads == 2
@@ -2192,6 +2194,7 @@ def test_worker_loop_carries_running_job_to_new_coordinator(tmp_path: Path) -> N
                 backend="test",
                 materialize_snapshot=False,
                 log_file=tmp_path / "worker.log",
+                disconnect_grace=0,
             )
 
     assert [hello.running for hello in new_hellos] == [job.artifacts]
@@ -2284,6 +2287,85 @@ def test_worker_loop_kills_job_when_coordinator_disappears(
         in caplog.messages
     )
     assert "server closed the connection; worker exiting" in caplog.messages
+
+
+def test_worker_loop_keeps_job_while_waiting_for_moved_coordinator(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    release_file = tmp_path / "go"
+    leaf = GatedExecutionCoordinatorLeaf(value=1, release_file=str(release_file))
+    config_file = tmp_path / "worker.config.json"
+    new_hellos: list[HelloMessage] = []
+    results: list[JobResult] = []
+
+    def new_handler(connection: ServerConnection) -> None:
+        new_hellos.append(HelloMessage.model_validate_json(connection.recv(timeout=5)))
+        release_file.touch()
+        results.append(job_result_adapter.validate_json(connection.recv(timeout=10)))
+
+    def old_handler(connection: ServerConnection) -> None:
+        HelloMessage.model_validate_json(connection.recv(timeout=5))
+        connection.send(_job(leaf).model_dump_json())
+
+    with _serve(new_handler) as new_url, _serve(old_handler) as old_url:
+        _write_worker_config(config_file, url=old_url)
+
+        def move_later() -> None:
+            time.sleep(1)
+            _write_worker_config(config_file, url=new_url)
+
+        threading.Thread(target=move_later).start()
+        with _captured_furu_logs(caplog):
+            worker_loop(
+                coordinator=config_file,
+                resource_request=ResourceRequest(),
+                idle_timeout=5,
+                max_failures=get_config().worker.max_failures_per_worker,
+                component="test-worker",
+                backend="test",
+                materialize_snapshot=False,
+                log_file=tmp_path / "worker.log",
+                disconnect_grace=5,
+            )
+
+    assert [hello.running for hello in new_hellos] == [[ArtifactSpec.from_furu(leaf)]]
+    assert results == [JobCompletedResult()]
+    assert leaf.status == "done"
+    assert "coordinator moved; reconnecting" in caplog.messages
+    assert not any("killing" in message for message in caplog.messages)
+
+
+def test_worker_loop_kills_job_when_worker_config_never_changes(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    leaf = GatedExecutionCoordinatorLeaf(value=1, release_file=str(tmp_path / "go"))
+    config_file = tmp_path / "worker.config.json"
+
+    def handler(connection: ServerConnection) -> None:
+        HelloMessage.model_validate_json(connection.recv(timeout=5))
+        connection.send(_job(leaf).model_dump_json())
+
+    with _serve(handler) as url, _captured_furu_logs(caplog):
+        _write_worker_config(config_file, url=url)
+        started = time.monotonic()
+        worker_loop(
+            coordinator=config_file,
+            resource_request=ResourceRequest(),
+            idle_timeout=5,
+            max_failures=get_config().worker.max_failures_per_worker,
+            component="test-worker",
+            backend="test",
+            materialize_snapshot=False,
+            log_file=tmp_path / "worker.log",
+            disconnect_grace=2,
+        )
+
+    assert 2 <= time.monotonic() - started < 10
+    assert leaf.status != "done"
+    assert (
+        f"server closed the connection mid-job; killing {leaf._log_label}"
+        in caplog.messages
+    )
 
 
 def test_lease_job_checks_for_locks_acquired_after_dag_build() -> None:

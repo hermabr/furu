@@ -91,6 +91,23 @@ def _read_target(coordinator: str | Path) -> tuple[str, _Config | None]:
     return coordinator, None
 
 
+def _await_target(
+    coordinator: str | Path, target: tuple[str, _Config | None], grace: float
+) -> tuple[str, _Config | None]:
+    """Re-read the target, polling for up to ``grace`` seconds for it to change.
+
+    A coordinator taking over rewrites the worker config file and only then shuts
+    down the old server, but the rewrite may not be visible over NFS by the time
+    the connection drops. A bare URL can never change, so it is not polled.
+    """
+    deadline = time.monotonic() + (grace if isinstance(coordinator, Path) else 0)
+    while True:
+        new_target = _read_target(coordinator)
+        if new_target != target or time.monotonic() >= deadline:
+            return new_target
+        time.sleep(1)
+
+
 def worker_loop(
     *,
     coordinator: str | Path,
@@ -101,6 +118,7 @@ def worker_loop(
     backend: str,
     materialize_snapshot: bool,
     log_file: Path,
+    disconnect_grace: float = 120.0,
 ) -> None:
     with _scoped_component(component), _scoped_log_files((log_file,)):
         target = _read_target(coordinator)
@@ -195,7 +213,7 @@ def worker_loop(
                             case _:
                                 assert_never(event)
 
-                new_target = _read_target(coordinator)
+                new_target = _await_target(coordinator, target, disconnect_grace)
                 if new_target != target:
                     if new_target[1] != target[1]:
                         if job is not None and result is None:
