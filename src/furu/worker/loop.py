@@ -91,17 +91,6 @@ def _read_target(coordinator: str | Path) -> tuple[str, _Config | None]:
     return coordinator, None
 
 
-def _await_target(
-    coordinator: str | Path, target: tuple[str, _Config | None], grace: float
-) -> tuple[str, _Config | None]:
-    deadline = time.monotonic() + (grace if isinstance(coordinator, Path) else 0)
-    while True:
-        new_target = _read_target(coordinator)
-        if new_target != target or time.monotonic() >= deadline:
-            return new_target
-        time.sleep(1)
-
-
 def worker_loop(
     *,
     coordinator: str | Path,
@@ -207,7 +196,13 @@ def worker_loop(
                             case _:
                                 assert_never(event)
 
-                new_target = _await_target(coordinator, target, disconnect_grace)
+                deadline = time.monotonic() + (
+                    disconnect_grace if isinstance(coordinator, Path) else 0
+                )
+                while (
+                    new_target := _read_target(coordinator)
+                ) == target and time.monotonic() < deadline:
+                    time.sleep(1)
                 if new_target != target:
                     if new_target[1] != target[1]:
                         if job is not None and result is None:
