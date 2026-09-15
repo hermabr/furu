@@ -94,12 +94,6 @@ def _read_target(coordinator: str | Path) -> tuple[str, _Config | None]:
 def _await_target(
     coordinator: str | Path, target: tuple[str, _Config | None], grace: float
 ) -> tuple[str, _Config | None]:
-    """Re-read the target, polling for up to ``grace`` seconds for it to change.
-
-    A coordinator taking over rewrites the worker config file and only then shuts
-    down the old server, but the rewrite may not be visible over NFS by the time
-    the connection drops. A bare URL can never change, so it is not polled.
-    """
     deadline = time.monotonic() + (grace if isinstance(coordinator, Path) else 0)
     while True:
         new_target = _read_target(coordinator)
