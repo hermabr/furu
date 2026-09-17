@@ -32,6 +32,7 @@ from furu.config import (
 )
 from furu.dag import DagNode
 from furu.execution.execution_coordinator import ExecutionCoordinator, RunningJob
+from furu.logging import _CURRENT_LOG_PATHS
 from furu.provenance import (
     EnvironmentIdentity,
     GitIdentity,
@@ -40,11 +41,11 @@ from furu.provenance import (
 )
 from furu.resources import ResourceFloor, ResourceRequest, resource_request_adapter
 from furu.snapshot import create_snapshot
+from furu.storage._layout import execution_coordinator_log_path_in
 from furu.testing import override_config
 from furu.utils import write_private_file
 from furu.worker import _cli
 from furu.worker.backends.slurm.backend import SlurmWorkerBackend
-from furu.worker.backends.slurm.pool import _UNFINISHED_STATES
 from furu.worker.backends.slurm.resources import (
     MemoryPerCpu,
     MemoryPerGpu,
@@ -995,7 +996,7 @@ def test_slurm_pool_submits_replacement_workers_as_job_array(
     pool._scale_once()
     assert pool._job_ids == ["100_0", "100_1", "100_2"]
 
-    active_file.write_text("100_0\n")
+    active_file.write_text("100_0\n100_1 COMPLETED\n100_2 COMPLETED\n")
     pool._scale_once()
 
     assert pool._job_ids == ["100_0", "101_0", "101_1"]
@@ -1012,7 +1013,7 @@ def test_slurm_pool_submits_replacement_workers_as_job_array(
     ]
 
 
-def test_slurm_pool_replaces_nonfailed_array_workers_missing_from_squeue(
+def test_slurm_pool_keeps_preempted_and_requeued_array_workers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1051,15 +1052,81 @@ def test_slurm_pool_replaces_nonfailed_array_workers_missing_from_squeue(
     )
     pool._scale_once()
 
-    assert pool._job_ids == ["100_0", "101_0", "101_1"]
-    sbatch_records = [
-        record
-        for record in _read_records(record_file)
-        if record["executable"] == "sbatch"
-    ]
-    assert [arg for arg in sbatch_records[1]["argv"] if arg.startswith("--array")] == [
-        "--array=0-1"
-    ]
+    assert pool._job_ids == ["100_0", "100_1", "100_2"]
+    assert pool._failed == []
+    assert [r for r in _read_records(record_file) if r["executable"] == "sbatch"][
+        1:
+    ] == []
+
+
+def test_slurm_pool_keeps_every_worker_while_squeue_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    coordinator = _StubCoordinator(lambda max_workers: max_workers)
+    backend = SlurmWorkerBackend(
+        max_workers=3,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="execution-coordinator.cluster",
+        poll_interval=0,
+        use_job_arrays=True,
+    )
+    pool = backend.start_pool(
+        coordinator=coordinator,
+        bound_port=1234,
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+        handoff=PoolHandoff(),
+    )
+
+    pool._scale_once()
+    assert pool._job_ids == ["100_0", "100_1", "100_2"]
+
+    # sacct reports still-queued array tasks as one grouped row, which gives
+    # the tasks no individual state; that must not look like an exit.
+    active_file.write_text("100_[0-1] PENDING\n100_2 FAILED\n")
+    monkeypatch.setattr(type(pool), "_active_job_states", lambda self: None)
+    pool._scale_once()
+
+    assert pool._job_ids == ["100_0", "100_1", "100_2"]
+    assert pool._failed == []
+    assert [r for r in _read_records(record_file) if r["executable"] == "sbatch"][
+        1:
+    ] == []
+
+
+def test_slurm_pool_scale_loop_logs_to_the_execution_coordinator_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _disable_slurm_pool_scale_thread(monkeypatch)
+    _install_fake_slurm(tmp_path, monkeypatch)
+    coordinator = _StubCoordinator()
+    backend = SlurmWorkerBackend(
+        max_workers=1,
+        resources=SlurmResources(cpus_per_worker=1),
+        worker_connect_host="execution-coordinator.cluster",
+        poll_interval=0,
+    )
+    pool = backend.start_pool(
+        coordinator=coordinator,
+        bound_port=1234,
+        auth_token="secret-token",
+        executor_dir=tmp_path / "executor",
+        handoff=PoolHandoff(),
+    )
+    log_paths: list[tuple[Path, ...]] = []
+
+    def scale_once(self: object) -> None:
+        log_paths.append(_CURRENT_LOG_PATHS.get())
+        pool._stop_event.set()
+
+    monkeypatch.setattr(type(pool), "_scale_once", scale_once)
+    pool._scale_loop()
+
+    assert log_paths == [(execution_coordinator_log_path_in(coordinator.executor_dir),)]
 
 
 def test_slurm_worker_pool_stop_cancels_array_tasks(
@@ -1290,19 +1357,11 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
     )
     pool._scale_once()
 
-    assert not any(
-        state not in _UNFINISHED_STATES and state not in frozenset({"COMPLETED"})
-        for state in pool._task_states().values()
-    )
+    assert pool._task_states() == {"100": "RUNNING", "101": "RUNNING"}
 
     active_file.write_text("100\n100.batch COMPLETED\n101 FAILED\n101.extern FAILED\n")
 
-    states = pool._task_states()
-    assert states == {"100": "RUNNING", "101": "FAILED"}
-    assert any(
-        state not in _UNFINISHED_STATES and state != "COMPLETED"
-        for state in states.values()
-    )
+    assert pool._task_states() == {"100": "RUNNING", "101": "FAILED"}
     sacct_records = [
         record
         for record in _read_records(record_file)
@@ -1516,7 +1575,7 @@ def test_slurm_pool_scale_submits_replacement_workers_after_existing_workers_exi
     pool._scale_once()
     assert pool._job_ids == ["100", "101", "102"]
 
-    active_file.write_text("100\n101\n")
+    active_file.write_text("100\n101\n102 COMPLETED\n")
     pool._scale_once()
 
     assert pool._job_ids == ["100", "101", "103"]
@@ -1665,9 +1724,9 @@ def test_slurm_pool_scale_does_not_count_completed_jobs_as_restarts(
     )
 
     pool._scale_once()
-    active_file.write_text("")
+    active_file.write_text("100 COMPLETED\n")
     pool._scale_once()
-    active_file.write_text("")
+    active_file.write_text("101 COMPLETED\n")
     pool._scale_once()
 
     assert pool._job_ids == ["102"]
@@ -1711,12 +1770,12 @@ def test_slurm_pool_scale_replaces_failed_workers_within_budget(
     pool._scale_once()
     assert pool._job_ids == ["100", "101"]
 
-    # One worker OOMs; the other exits cleanly and leaves the queue uncounted.
-    active_file.write_text("100 OUT_OF_MEMORY\n")
+    # One worker OOMs; the other exits cleanly and is replaced uncounted.
+    active_file.write_text("100 OUT_OF_MEMORY\n101 COMPLETED\n")
     furu_logger = logging.getLogger("furu")
     furu_logger.addHandler(caplog.handler)
     try:
-        caplog.set_level(logging.WARNING, logger="furu")
+        caplog.set_level(logging.INFO, logger="furu")
         pool._scale_once()
     finally:
         furu_logger.removeHandler(caplog.handler)
@@ -1724,6 +1783,9 @@ def test_slurm_pool_scale_replaces_failed_workers_within_budget(
     assert pool._job_ids == ["102", "103"]
     assert pool._failed == ["100 OUT_OF_MEMORY"]
     assert coordinator.failures == []
+    assert (
+        "forgetting finished slurm workers: 100 OUT_OF_MEMORY, 101 COMPLETED"
+    ) in caplog.messages
     assert (
         "replacing failed slurm workers (1 of 2 tolerated since the last "
         "completed job): 100 OUT_OF_MEMORY"
@@ -1740,7 +1802,7 @@ def test_slurm_pool_scale_replaces_failed_workers_within_budget(
     assert coordinator.failures == []
 
     # With no further progress the budget is exact: a third failure ends the run.
-    active_file.write_text("104 NODE_FAIL\n")
+    active_file.write_text("104 NODE_FAIL\n105 COMPLETED\n")
     pool._scale_once()
 
     assert pool._job_ids == []
