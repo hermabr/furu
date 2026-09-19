@@ -130,8 +130,6 @@ class SlurmWorkerBackend:
                 f"{inherited_file.suffix}"
             )
             write_private_file(backup_file, inherited_file.read_text(), mode=0o600)
-            # In place: workers poll this path after a disconnect, and a rename
-            # would leave their NFS client reading the stale inode.
             overwrite_file_in_place(inherited_file, config_contents)
         worker_files = {config_file, *inherited_files}
         job_ids = list(handoff.job_ids)

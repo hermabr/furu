@@ -5,6 +5,7 @@ import queue
 import threading
 import time
 import traceback
+from contextlib import suppress
 from pathlib import Path
 from typing import assert_never
 
@@ -89,15 +90,6 @@ def _read_target(coordinator: str | Path) -> tuple[str, _Config | None]:
     if isinstance(coordinator, Path):
         return _read_worker_json_config(coordinator)
     return coordinator, None
-
-
-def _poll_target(
-    coordinator: str | Path, current: tuple[str, _Config | None]
-) -> tuple[str, _Config | None]:
-    try:
-        return _read_target(coordinator)
-    except ValueError:  # truncated mid-rewrite by a replacement coordinator
-        return current
 
 
 def worker_loop(
@@ -208,9 +200,12 @@ def worker_loop(
                 deadline = time.monotonic() + (
                     disconnect_grace if isinstance(coordinator, Path) else 0
                 )
-                while (
-                    new_target := _poll_target(coordinator, target)
-                ) == target and time.monotonic() < deadline:
+                new_target = target
+                while True:
+                    with suppress(ValueError):  # truncated mid-rewrite
+                        new_target = _read_target(coordinator)
+                    if new_target != target or time.monotonic() >= deadline:
+                        break
                     time.sleep(1)
                 if new_target != target:
                     if new_target[1] != target[1]:

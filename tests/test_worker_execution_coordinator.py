@@ -2388,7 +2388,7 @@ def test_worker_loop_ignores_truncated_worker_config_while_waiting(
 
         def old_handler(connection: ServerConnection) -> None:
             HelloMessage.model_validate_json(connection.recv(timeout=5))
-            config_file.write_text("")  # an in-place rewrite, caught mid-way
+            config_file.write_text("")
             threading.Thread(target=finish_rewrite_later).start()
 
         with _serve(old_handler) as old_url, _captured_furu_logs(caplog):

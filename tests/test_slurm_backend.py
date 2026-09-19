@@ -2268,7 +2268,6 @@ def test_slurm_backend_start_pool_with_handoff_inherits_workers(
     )
 
     assert pool._job_ids == ["100_0", "100_1"]
-    # Rewritten in place: NFS clients polling the old name must see the new URL.
     assert inherited_file.stat().st_ino == inherited_inode
     inherited_url, inherited_config = _read_worker_json_config(inherited_file)
     assert inherited_url == "ws://furu:new-token@login02.cluster:4321"
