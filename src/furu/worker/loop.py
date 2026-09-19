@@ -5,6 +5,7 @@ import queue
 import threading
 import time
 import traceback
+from contextlib import suppress
 from pathlib import Path
 from typing import assert_never
 
@@ -199,9 +200,12 @@ def worker_loop(
                 deadline = time.monotonic() + (
                     disconnect_grace if isinstance(coordinator, Path) else 0
                 )
-                while (
-                    new_target := _read_target(coordinator)
-                ) == target and time.monotonic() < deadline:
+                new_target = target
+                while True:
+                    with suppress(ValueError):  # truncated mid-rewrite
+                        new_target = _read_target(coordinator)
+                    if new_target != target or time.monotonic() >= deadline:
+                        break
                     time.sleep(1)
                 if new_target != target:
                     if new_target[1] != target[1]:

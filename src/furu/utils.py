@@ -129,10 +129,10 @@ def write_private_file(path: Path, contents: str, *, mode: int) -> None:
     path.chmod(mode)
 
 
-def replace_private_file(path: Path, contents: str, *, mode: int) -> None:
-    tmp_path = nfs_safe_unique_name(path, name="tmp")
-    write_private_file(tmp_path, contents, mode=mode)
-    tmp_path.rename(path)
+def overwrite_file_in_place(path: Path, contents: str) -> None:
+    """Same inode, so NFS clients holding the old name→inode entry see it."""
+    with path.open("w", encoding="utf-8") as file:
+        file.write(contents)
 
 
 def format_duration(seconds: float) -> str:

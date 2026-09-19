@@ -2255,6 +2255,7 @@ def test_slurm_backend_start_pool_with_handoff_inherits_workers(
         worker_connect_host="login02.cluster",
     )
 
+    inherited_inode = inherited_file.stat().st_ino
     pool = backend.start_pool(
         coordinator=_StubCoordinator(),
         bound_port=4321,
@@ -2267,6 +2268,7 @@ def test_slurm_backend_start_pool_with_handoff_inherits_workers(
     )
 
     assert pool._job_ids == ["100_0", "100_1"]
+    assert inherited_file.stat().st_ino == inherited_inode
     inherited_url, inherited_config = _read_worker_json_config(inherited_file)
     assert inherited_url == "ws://furu:new-token@login02.cluster:4321"
     assert inherited_config == get_config()
