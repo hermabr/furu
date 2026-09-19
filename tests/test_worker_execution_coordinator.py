@@ -3,7 +3,7 @@ import os
 import threading
 import time
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -56,6 +56,7 @@ from furu.worker.protocol import (
     JobResult,
     PoolHandoff,
     ProcessSettings,
+    ReconnectMessage,
     coordinator_url,
     job_result_adapter,
     server_message_adapter,
@@ -2202,8 +2203,107 @@ def test_worker_loop_carries_running_job_to_new_coordinator(tmp_path: Path) -> N
     assert leaf.status == "done"
 
 
+@pytest.mark.parametrize("running", [False, True])
+def test_takeover_redirects_workers_with_stale_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, running: bool
+) -> None:
+    release_file = tmp_path / "go"
+    leaf = GatedExecutionCoordinatorLeaf(value=7, release_file=str(release_file))
+    old = _new_execution_coordinator([leaf] if running else [])
+    config_file = tmp_path / "worker.config.json"
+    adopted = threading.Event()
+    errors: list[BaseException] = []
+    results: list[JobResult] = []
+    hellos: list[HelloMessage] = []
+    reads = 0
+
+    class Pool(_InertPool):
+        def handoff(self) -> PoolHandoff:
+            return PoolHandoff(worker_files=[config_file])
+
+    old.pools = {"k": Pool([])}
+
+    def new_handler(connection: ServerConnection) -> None:
+        hellos.append(HelloMessage.model_validate_json(connection.recv(timeout=5)))
+        assert reads == 1  # The redirect must bypass the stale config file.
+        adopted.set()
+        if running:
+            release_file.touch()
+            results.append(
+                job_result_adapter.validate_json(connection.recv(timeout=10))
+            )
+
+    with (
+        _serve(new_handler) as new_url,
+        execution_coordinator_server(old, bind_host="127.0.0.1", port=0) as server,
+    ):
+        old_url = _url_for(server)
+        _write_worker_config(config_file, url=old_url)
+
+        def stale_target(coordinator: str | Path) -> tuple[str, _Config]:
+            nonlocal reads
+            reads += 1
+            return (new_url if adopted.is_set() else old_url), get_config()
+
+        monkeypatch.setattr(worker_loop_module, "_read_target", stale_target)
+
+        def work() -> None:
+            try:
+                worker_loop(
+                    coordinator=config_file,
+                    resource_request=ResourceRequest(),
+                    idle_timeout=5,
+                    max_failures=10,
+                    component="inherited-worker",
+                    backend="test",
+                    materialize_snapshot=False,
+                    log_file=tmp_path / "worker.log",
+                    disconnect_grace=0,
+                )
+            except BaseException as exc:
+                errors.append(exc)
+
+        # For idle workers, connect during preparation and keep the connection
+        # alive until the new coordinator has published its target.
+        with (
+            request_takeover(
+                executor_id="b" * 32,
+                source_id=old.executor_id,
+                url=old_url,
+                pool_keys=["k"],
+            )
+            if not running
+            else nullcontext()
+        ):
+            thread = threading.Thread(target=work)
+            thread.start()
+            if not running:
+                _wait_until(lambda: reads == 1)
+                _write_worker_config(config_file, url=new_url)
+            else:
+                _wait_until(lambda: leaf.object_id in old.running)
+                with request_takeover(
+                    executor_id="b" * 32,
+                    source_id=old.executor_id,
+                    url=old_url,
+                    pool_keys=["k"],
+                ):
+                    _write_worker_config(config_file, url=new_url)
+        thread.join(timeout=15)
+        assert not thread.is_alive()
+        assert not errors
+        assert adopted.is_set()
+
+    assert [hello.running for hello in hellos] == [
+        [ArtifactSpec.from_furu(leaf)] if running else []
+    ]
+    assert results == ([JobCompletedResult()] if running else [])
+
+
+@pytest.mark.parametrize("redirect", [False, True])
 def test_worker_loop_exits_when_worker_config_changes(
     tmp_path: Path,
+    redirect: bool,
 ) -> None:
     release_file = tmp_path / "go"
     old_leaf = GatedExecutionCoordinatorLeaf(value=7, release_file=str(release_file))
@@ -2230,11 +2330,16 @@ def test_worker_loop_exits_when_worker_config_changes(
         def old_handler(connection: ServerConnection) -> None:
             HelloMessage.model_validate_json(connection.recv(timeout=5))
             connection.send(old_job.model_dump_json())
-            _write_worker_config(
-                config_file,
-                url=new_url,
-                config=new_config,
-            )
+            if redirect:
+                connection.send(
+                    ReconnectMessage(url=new_url, config=new_config).model_dump_json()
+                )
+            else:
+                _write_worker_config(
+                    config_file,
+                    url=new_url,
+                    config=new_config,
+                )
 
         with _serve(old_handler) as old_url:
             _write_worker_config(

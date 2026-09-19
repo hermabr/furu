@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from secrets import token_urlsafe
@@ -11,6 +11,7 @@ from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import connect
 from websockets.sync.server import ServerConnection, basic_auth, serve
 
+from furu.config import _read_worker_json_config
 from furu.execution.execution_coordinator import ExecutionCoordinator
 from furu.logging import get_logger, log_detail
 from furu.worker.backends.protocol import WorkerPool
@@ -18,7 +19,9 @@ from furu.worker.protocol import (
     CancelMessage,
     HelloMessage,
     PoolHandoff,
+    ReconnectMessage,
     TakeoverAccepted,
+    TakeoverReady,
     TakeoverRefused,
     TakeoverRequest,
     first_message_adapter,
@@ -46,6 +49,7 @@ def _serve_takeover(
     coordinator: ExecutionCoordinator,
     connection: ServerConnection,
     request: TakeoverRequest,
+    redirect_workers: Callable[[TakeoverReady], None],
 ) -> None:
     pools: dict[str, WorkerPool] | None = None
     with coordinator.lock:
@@ -78,7 +82,8 @@ def _serve_takeover(
     try:
         connection.send(TakeoverAccepted(handoffs=handoffs).model_dump_json())
         with suppress(ConnectionClosed):
-            connection.recv()
+            ready = TakeoverReady.model_validate_json(connection.recv())
+            redirect_workers(ready)
     finally:
         coordinator.fail(f"execution taken over by exec={request.executor_id[:5]}")
 
@@ -91,7 +96,7 @@ def request_takeover(
     url: str,
     pool_keys: Sequence[str],
 ) -> Iterator[dict[str, PoolHandoff]]:
-    """Inherit ``source_id``'s matching pools; closing the connection commits."""
+    """Inherit matching pools, then send their published targets to the old workers."""
     try:
         connection = connect(url, max_size=None)
     except OSError as exc:
@@ -113,6 +118,15 @@ def request_takeover(
                 )
             case TakeoverAccepted(handoffs=handoffs):
                 yield handoffs
+                # Read on the publishing side: compute nodes may still see old NFS files.
+                targets = {}
+                for handoff in handoffs.values():
+                    for path in handoff.worker_files:
+                        target_url, config = _read_worker_json_config(path)
+                        targets[str(path)] = ReconnectMessage(
+                            url=target_url, config=config
+                        )
+                connection.send(TakeoverReady(targets=targets).model_dump_json())
             case _ as unreachable:
                 assert_never(unreachable)
 
@@ -140,6 +154,8 @@ def _serve_worker(
             while True:
                 job = coordinator.lease_job(resources=hello.resources, worker=worker)
                 if job is None:
+                    if coordinator.taken_over_by is not None:
+                        coordinator.done.wait()  # Keep idle workers connected for the redirect.
                     return
                 connection.send(job.model_dump_json())
                 result = job_result_adapter.validate_json(connection.recv())
@@ -162,6 +178,18 @@ def execution_coordinator_server(
     auth_token = token_urlsafe(32)
     connections: set[ServerConnection] = set()
     connections_changed = threading.Condition()
+    workers: dict[ServerConnection, HelloMessage] = {}
+    redirects: dict[str, ReconnectMessage] = {}
+
+    def redirect_workers(ready: TakeoverReady) -> None:
+        with connections_changed:
+            redirects.update(ready.targets)
+            inherited = tuple(workers.items())
+        for worker_connection, hello in inherited:
+            if target := redirects.get(str(hello.coordinator_file)):
+                with suppress(ConnectionClosed):
+                    worker_connection.send(target.model_dump_json())
+                worker_connection.close()
 
     def handler(connection: ServerConnection) -> None:
         with connections_changed:
@@ -173,13 +201,22 @@ def execution_coordinator_server(
                 )
                 match first_message:
                     case HelloMessage() as hello:
-                        _serve_worker(coordinator, connection, hello)
+                        with connections_changed:
+                            workers[connection] = hello
+                            target = redirects.get(str(hello.coordinator_file))
+                        if target is not None:
+                            connection.send(target.model_dump_json())
+                        else:
+                            _serve_worker(coordinator, connection, hello)
                     case TakeoverRequest() as request:
-                        _serve_takeover(coordinator, connection, request)
+                        _serve_takeover(
+                            coordinator, connection, request, redirect_workers
+                        )
                     case _ as unreachable:
                         assert_never(unreachable)
         finally:
             with connections_changed:
+                workers.pop(connection, None)
                 connections.discard(connection)
                 connections_changed.notify_all()
 

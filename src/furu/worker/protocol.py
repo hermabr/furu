@@ -5,6 +5,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
+from furu.config import _Config
 from furu.metadata import ArtifactSpec
 from furu.provenance import SubmitProvenance
 from furu.resources import ResourceRequest
@@ -42,7 +43,17 @@ class CancelMessage(BaseModel):
     kind: Literal["cancel"] = "cancel"
 
 
-type ServerMessage = Annotated[Job | CancelMessage, Field(discriminator="kind")]
+class ReconnectMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    kind: Literal["reconnect"] = "reconnect"
+    url: str
+    config: _Config
+
+
+type ServerMessage = Annotated[
+    Job | CancelMessage | ReconnectMessage, Field(discriminator="kind")
+]
 
 server_message_adapter: TypeAdapter[ServerMessage] = TypeAdapter(ServerMessage)
 
@@ -83,6 +94,7 @@ class HelloMessage(BaseModel):
     backend: str
     resources: ResourceRequest
     running: list[ArtifactSpec] = Field(default_factory=list)
+    coordinator_file: Path | None = None
 
 
 class TakeoverRequest(BaseModel):
@@ -119,6 +131,12 @@ class TakeoverRefused(BaseModel):
 
     kind: Literal["refused"] = "refused"
     reason: str
+
+
+class TakeoverReady(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    targets: dict[str, ReconnectMessage]
 
 
 type TakeoverResponse = Annotated[

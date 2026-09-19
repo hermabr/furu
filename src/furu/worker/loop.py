@@ -119,9 +119,13 @@ def worker_loop(
         failures = 0
         try:
             while True:
+                redirect: protocol.ReconnectMessage | None = None
                 with connect(target[0], max_size=None) as connection:
                     connection.send(
                         protocol.HelloMessage(
+                            coordinator_file=(
+                                coordinator if isinstance(coordinator, Path) else None
+                            ),
                             worker=component,
                             backend=backend,
                             resources=resource_request,
@@ -153,6 +157,8 @@ def worker_loop(
                                 break
                             case BaseException():
                                 raise event
+                            case protocol.ReconnectMessage():
+                                redirect = event
                             case protocol.Job():
                                 assert job is None
                                 job = event
@@ -196,13 +202,20 @@ def worker_loop(
                             case _:
                                 assert_never(event)
 
-                deadline = time.monotonic() + (
-                    disconnect_grace if isinstance(coordinator, Path) else 0
-                )
-                while (
-                    new_target := _read_target(coordinator)
-                ) == target and time.monotonic() < deadline:
-                    time.sleep(1)
+                if redirect is not None:
+                    new_target = (redirect.url, redirect.config)
+                else:
+                    deadline = time.monotonic() + (
+                        disconnect_grace if isinstance(coordinator, Path) else 0
+                    )
+                    logger.info(
+                        "server disconnected; waiting up to %s for coordinator handoff",
+                        format_duration(max(0, deadline - time.monotonic())),
+                    )
+                    while (
+                        new_target := _read_target(coordinator)
+                    ) == target and time.monotonic() < deadline:
+                        time.sleep(1)
                 if new_target != target:
                     if new_target[1] != target[1]:
                         if job is not None and result is None:
