@@ -21,7 +21,7 @@ from furu.resources import ResourceFloor, ResourceRequest, resource_request_adap
 from furu.snapshot import CodeLocation
 from furu.utils import (
     _hash_dict_deterministically,
-    replace_private_file,
+    overwrite_file_in_place,
     write_private_file,
 )
 from furu.worker.backends.slurm.pool import SlurmWorkerPool
@@ -129,8 +129,10 @@ class SlurmWorkerBackend:
                 f"{inherited_file.stem}.backup-{timestamp}-{secrets.token_hex(4)}"
                 f"{inherited_file.suffix}"
             )
-            os.link(inherited_file, backup_file)
-            replace_private_file(inherited_file, config_contents, mode=0o600)
+            write_private_file(backup_file, inherited_file.read_text(), mode=0o600)
+            # In place: workers poll this path after a disconnect, and a rename
+            # would leave their NFS client reading the stale inode.
+            overwrite_file_in_place(inherited_file, config_contents)
         worker_files = {config_file, *inherited_files}
         job_ids = list(handoff.job_ids)
 

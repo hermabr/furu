@@ -2368,6 +2368,47 @@ def test_worker_loop_kills_job_when_worker_config_never_changes(
     )
 
 
+def test_worker_loop_ignores_truncated_worker_config_while_waiting(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    leaf = ExecutionCoordinatorLeaf(value=1)
+    config_file = tmp_path / "worker.config.json"
+    results: list[JobResult] = []
+
+    def new_handler(connection: ServerConnection) -> None:
+        HelloMessage.model_validate_json(connection.recv(timeout=5))
+        connection.send(_job(leaf).model_dump_json())
+        results.append(job_result_adapter.validate_json(connection.recv(timeout=10)))
+
+    with _serve(new_handler) as new_url:
+
+        def finish_rewrite_later() -> None:
+            time.sleep(1)
+            _write_worker_config(config_file, url=new_url)
+
+        def old_handler(connection: ServerConnection) -> None:
+            HelloMessage.model_validate_json(connection.recv(timeout=5))
+            config_file.write_text("")  # an in-place rewrite, caught mid-way
+            threading.Thread(target=finish_rewrite_later).start()
+
+        with _serve(old_handler) as old_url, _captured_furu_logs(caplog):
+            _write_worker_config(config_file, url=old_url)
+            worker_loop(
+                coordinator=config_file,
+                resource_request=ResourceRequest(),
+                idle_timeout=5,
+                max_failures=get_config().worker.max_failures_per_worker,
+                component="test-worker",
+                backend="test",
+                materialize_snapshot=False,
+                log_file=tmp_path / "worker.log",
+                disconnect_grace=5,
+            )
+
+    assert results == [JobCompletedResult()]
+    assert "coordinator moved; reconnecting" in caplog.messages
+
+
 def test_lease_job_checks_for_locks_acquired_after_dag_build() -> None:
     held = ExecutionCoordinatorLeaf(value=1)
     free = ExecutionCoordinatorLeaf(value=2)

@@ -129,10 +129,17 @@ def write_private_file(path: Path, contents: str, *, mode: int) -> None:
     path.chmod(mode)
 
 
-def replace_private_file(path: Path, contents: str, *, mode: int) -> None:
-    tmp_path = nfs_safe_unique_name(path, name="tmp")
-    write_private_file(tmp_path, contents, mode=mode)
-    tmp_path.rename(path)
+def overwrite_file_in_place(path: Path, contents: str) -> None:
+    """Rewrite ``path`` without replacing its inode.
+
+    Renaming a new file over ``path`` is invisible to NFS clients that cached
+    the old name→inode entry (they keep reading the old inode for as long as
+    they hold it), whereas close-to-open consistency guarantees that the next
+    open of the *same* inode observes an in-place rewrite. Readers may see a
+    truncated file mid-write and must retry.
+    """
+    with path.open("w", encoding="utf-8") as file:
+        file.write(contents)
 
 
 def format_duration(seconds: float) -> str:

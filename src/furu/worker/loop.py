@@ -91,6 +91,15 @@ def _read_target(coordinator: str | Path) -> tuple[str, _Config | None]:
     return coordinator, None
 
 
+def _poll_target(
+    coordinator: str | Path, current: tuple[str, _Config | None]
+) -> tuple[str, _Config | None]:
+    try:
+        return _read_target(coordinator)
+    except ValueError:  # truncated mid-rewrite by a replacement coordinator
+        return current
+
+
 def worker_loop(
     *,
     coordinator: str | Path,
@@ -200,7 +209,7 @@ def worker_loop(
                     disconnect_grace if isinstance(coordinator, Path) else 0
                 )
                 while (
-                    new_target := _read_target(coordinator)
+                    new_target := _poll_target(coordinator, target)
                 ) == target and time.monotonic() < deadline:
                     time.sleep(1)
                 if new_target != target:
