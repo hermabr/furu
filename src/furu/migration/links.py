@@ -17,7 +17,7 @@ from furu.migration.resolution import (
     _ClassResolution,
     _Covered,
 )
-from furu.migration.steps import MigrationStep, _describe_step
+from furu.migration.steps import _describe_step
 from furu.result.bundle import load_result_bundle
 from furu.storage._layout import (
     compute_lock_path_in,
@@ -59,36 +59,6 @@ class _ResultLink(BaseModel):
     migration_path: tuple[str, ...]
 
 
-def _result_at(artifact_dir: Path) -> _ResultLink | None:
-    """The result computed in ``artifact_dir`` itself, if any.
-
-    Directories holding only a link are not sources: their result lives in
-    the linked directory, which is found under its own (covered) schema.
-    """
-    result_manifest = result_manifest_path_in(artifact_dir)
-    metadata_path = metadata_path_in(artifact_dir)
-    if not (result_manifest.exists() and metadata_path.exists()):
-        return None
-    metadata = CompletedMetadata.model_validate_json(
-        metadata_path.read_text(encoding="utf-8")
-    )
-    return _ResultLink(
-        current=_ResultLinkCurrent(
-            fully_qualified_name=metadata.artifact.fully_qualified_name,
-            schema_hash=metadata.artifact.schema_hash,
-            artifact_hash=metadata.artifact.artifact_hash,
-            fields=cast(JsonFields, metadata.artifact.artifact_data[FIELDSMARKER]),
-        ),
-        source=_ResultLinkSource(
-            fully_qualified_name=metadata.artifact.fully_qualified_name,
-            schema_hash=metadata.artifact.schema_hash,
-            artifact_hash=metadata.artifact.artifact_hash,
-            base_dir=artifact_dir,
-        ),
-        migration_path=(),
-    )
-
-
 def _covered_in(
     resolution: _ClassResolution, schema_directory: Path
 ) -> _Covered | None:
@@ -115,29 +85,42 @@ def _read_link(obj: Spec) -> _ResultLink | None:
     return link
 
 
-_SOURCES_CACHE: dict[tuple[type, Path], Mapping[str, list[_ResultLink]]] = {}
+_SOURCES_CACHE: dict[tuple[type, Path], Mapping[str, list[_ResultLinkSource]]] = {}
 
 
 def _migrated_sources(
     cls: type, resolution: _ClassResolution, covered: _Covered
-) -> Mapping[str, list[_ResultLink]]:
+) -> Mapping[str, list[_ResultLinkSource]]:
+    """Results computed under ``covered.schema_directory``, keyed by their fields
+    migrated to the current schema. A directory holding only a link is not a
+    source: its result lives under its own (covered) schema directory."""
     key = (cls, covered.schema_directory)
     if (sources := _SOURCES_CACHE.get(key)) is None:
         sources = {}
         if covered.schema_directory.exists():
             for artifact_dir in sorted(covered.schema_directory.iterdir()):
-                if not artifact_dir.is_dir():
+                if not result_manifest_path_in(artifact_dir).exists():
                     continue
-                if (source_link := _result_at(artifact_dir)) is None:
+                metadata_path = metadata_path_in(artifact_dir)
+                if not metadata_path.exists():
                     continue
-                fields = source_link.current.fields
+                artifact = CompletedMetadata.model_validate_json(
+                    metadata_path.read_text(encoding="utf-8")
+                ).artifact
+                source = _ResultLinkSource(
+                    fully_qualified_name=artifact.fully_qualified_name,
+                    schema_hash=artifact.schema_hash,
+                    artifact_hash=artifact.artifact_hash,
+                    base_dir=artifact_dir,
+                )
+                fields = cast(JsonFields, artifact.artifact_data[FIELDSMARKER])
                 if covered.child_moves:
                     fields = {
                         name: _apply_child_moves(value, covered.child_moves)
                         for name, value in fields.items()
                     }
                 fields = _apply_steps(resolution.own, covered.generation.start, fields)
-                sources.setdefault(_stable_json_dump(fields), []).append(source_link)
+                sources.setdefault(_stable_json_dump(fields), []).append(source)
         _SOURCES_CACHE[key] = sources
     return sources
 
@@ -155,8 +138,8 @@ def _find_source(obj: Spec, resolution: _ClassResolution) -> _ResultLink | None:
         ):
             continue
         sources = _migrated_sources(type(obj), resolution, covered)
-        for source_link in sources.get(target_key, ()):
-            if not result_manifest_path_in(source_link.source.base_dir).exists():
+        for source in sources.get(target_key, ()):
+            if not result_manifest_path_in(source.base_dir).exists():
                 continue
             return _ResultLink(
                 current=_ResultLinkCurrent(
@@ -165,7 +148,7 @@ def _find_source(obj: Spec, resolution: _ClassResolution) -> _ResultLink | None:
                     artifact_hash=obj._artifact_hash,
                     fields=target_fields,
                 ),
-                source=source_link.source,
+                source=source,
                 migration_path=tuple(
                     f"{move.chain.label}: {_describe_step(step)}"
                     for move in covered.child_moves.values()
@@ -202,32 +185,21 @@ def result_dir_for_loading(obj: Spec, *, has_lock: bool = False) -> Path | None:
     return result_dir_in(link.source.base_dir)
 
 
-def _steps_behind(obj: Spec, source_base_dir: Path) -> tuple[MigrationStep, ...]:
-    """The steps of obj's chain that a result stored in ``source_base_dir`` went through."""
-    if source_base_dir == obj._base_dir:
-        return ()
-    resolution = _class_resolution(obj)
-    covered = _covered_in(resolution, source_base_dir.parent)
-    # result_dir_for_loading only hands out covered sources (_read_link,
-    # _find_source), and the resolution is cached per class, so this holds.
-    assert covered is not None, f"{source_base_dir} is not covered by {obj._log_label}"
-    return resolution.own.steps[covered.generation.start :]
-
-
 def load_stored_result[T](obj: Spec[T], result_dir: Path) -> T:
-    """Load the result at ``result_dir`` as obj's result.
-
-    A result reached through a migration chain is passed through each
-    traversed step's ``result_rewrite`` so old runs come back in the shape
-    ``create()`` produces today.
-    """
+    """Load the result at ``result_dir`` as obj's result, passing a migrated
+    result through each traversed step's ``result_rewrite``."""
     base_dir = result_dir.parent
     value = load_result_bundle(
         result_dir,
         data_dir=data_dir_in(base_dir),
         declared_type=declared_result_type(type(obj)),
     )
-    for step in _steps_behind(obj, base_dir):
-        if step.result_rewrite is not None:
-            value = step.result_rewrite(value)
+    if base_dir != obj._base_dir:
+        resolution = _class_resolution(obj)
+        covered = _covered_in(resolution, base_dir.parent)
+        # result_dir_for_loading only hands out covered sources.
+        assert covered is not None, f"{base_dir} is not covered by {obj._log_label}"
+        for step in resolution.own.steps[covered.generation.start :]:
+            if step.result_rewrite is not None:
+                value = step.result_rewrite(value)
     return cast(T, value)

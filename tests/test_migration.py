@@ -1206,14 +1206,14 @@ def _count_reads_under(
     monkeypatch: pytest.MonkeyPatch, schema_directory: Path
 ) -> list[Path]:
     reads: list[Path] = []
-    real_read_source = migration_links._result_at
+    real_metadata_path_in = migration_links.metadata_path_in
 
-    def counting(artifact_dir: Path) -> migration_links._ResultLink | None:
+    def counting(artifact_dir: Path) -> Path:
         if artifact_dir.parent == schema_directory:
             reads.append(artifact_dir)
-        return real_read_source(artifact_dir)
+        return real_metadata_path_in(artifact_dir)
 
-    monkeypatch.setattr(migration_links, "_result_at", counting)
+    monkeypatch.setattr(migration_links, "metadata_path_in", counting)
     return reads
 
 
