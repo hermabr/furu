@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from furu.core import Spec
 
 
-_NO_DEFAULT: Any = object()
+_NO_DEFAULT = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,9 +26,17 @@ class Renamed:
 
 @dataclass(frozen=True, slots=True)
 class Added:
+    """Backfill ``field`` on old results.
+
+    ``default`` is the one value every old run behaved as. ``default_factory``
+    computes it per run from that run's stored fields (as ``Rewrite`` sees
+    them): ``Added("model", default_factory=lambda f: ModelConfig(width=f["width"]))``.
+    """
+
     field: str
     _: dataclasses.KW_ONLY
-    default: Any = _NO_DEFAULT
+    default: object = _NO_DEFAULT
+    default_factory: Callable[[Mapping[str, JsonValue]], object] | None = None
     breaking: bool = False
 
 
@@ -79,12 +87,12 @@ def _describe_step(step: MigrationStep) -> str:
     match step:
         case Renamed(field=field, to=to):
             body = f"{field!r}, to={to!r}"
-        case Added(field=field, default=default):
-            body = (
-                f"{field!r}"
-                if default is _NO_DEFAULT
-                else f"{field!r}, default={default!r}"
-            )
+        case Added(field=field, default=default, default_factory=factory):
+            body = f"{field!r}"
+            if default is not _NO_DEFAULT:
+                body += f", default={default!r}"
+            if factory is not None:
+                body += f", default_factory={getattr(factory, '__qualname__', repr(factory))}"
         case MovedFrom(fully_qualified_name=name):
             body = f"{name!r}"
         case Retyped(field=field, was=was):
@@ -128,18 +136,23 @@ def validate_migration_declaration(cls: type[Spec]) -> None:
                         f"{field!r} is not a field; fields at that point in the chain: {sorted(names)}"
                     )
                 del names[field]
-                if step.breaking and step.default is not _NO_DEFAULT:
+                backfills = (step.default is not _NO_DEFAULT) + (
+                    step.default_factory is not None
+                )
+                if step.breaking and backfills:
                     raise TypeError(
                         f"{cls.__name__}.migrations[{index}] ({_describe_step(steps[index])}): "
-                        "a breaking Added discards old results, so default= can "
+                        "a breaking Added discards old results, so a default can "
                         "never backfill anything; drop one of the two"
                     )
-                if not step.breaking and step.default is _NO_DEFAULT:
+                if not step.breaking and backfills != 1:
                     raise TypeError(
                         f"{cls.__name__}.migrations[{index}] ({_describe_step(steps[index])}): "
-                        "Added needs default= (the value old runs behaved as, "
-                        "pinned independently of the field's own default), or "
-                        "breaking=True to discard the old results"
+                        "Added needs exactly one of default= (the value old runs "
+                        "behaved as, pinned independently of the field's own "
+                        "default) or default_factory= (computing it from the old "
+                        "run's stored fields), or breaking=True to discard the "
+                        "old results"
                     )
             case Retyped(field=field):
                 if field not in names:

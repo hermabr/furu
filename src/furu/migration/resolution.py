@@ -69,7 +69,8 @@ class _Chain:
     steps: tuple[MigrationStep, ...]
     generations: tuple[_Generation, ...]
     last_breaking: int
-    added_defaults: Mapping[int, JsonValue]
+    added_types: Mapping[int, object]  # declared type of each non-breaking Added
+    artifact_serializers: tuple[type[Serializer], ...]
     current_schema: JsonValue
 
     @property
@@ -169,7 +170,7 @@ def _build_chain(
     hints = typing.get_type_hints(cls, include_extras=True)
     expectations = dict(current_fields)
     current_name_of = {name: name for name in expectations}
-    added_defaults: dict[int, JsonValue] = {}
+    added_types: dict[int, object] = {}
     pinned: dict[str, JsonValue] = {}
     rewritten = False
     generations: list[_Generation] = []
@@ -183,13 +184,13 @@ def _build_chain(
                 name = current_name_of.pop(field)
                 del expectations[field]
                 if not step.breaking:
-                    added_defaults[index] = to_json(
-                        step.default,
-                        declared_type=hints[name],
-                        artifact_serializers=artifact_serializers,
-                    )
-                    if not rewritten:
-                        pinned[name] = added_defaults[index]
+                    added_types[index] = hints[name]
+                    if not rewritten and step.default_factory is None:
+                        pinned[name] = to_json(
+                            step.default,
+                            declared_type=hints[name],
+                            artifact_serializers=artifact_serializers,
+                        )
             case Retyped(field=field) as step:
                 expectations[field] = (
                     "shape",
@@ -261,7 +262,8 @@ def _build_chain(
             (index for index, step in enumerate(steps) if _is_breaking(step)),
             default=-1,
         ),
-        added_defaults=added_defaults,
+        added_types=added_types,
+        artifact_serializers=artifact_serializers,
         current_schema=current_schema,
     )
 
@@ -438,8 +440,12 @@ def _apply_steps(chain: _Chain, start: int, source_fields: JsonFields) -> JsonFi
                         f"stored fields: {sorted(fields)}"
                     )
                 fields[to] = fields.pop(field)
-            case Added(field=field):
-                fields[field] = chain.added_defaults[index]
+            case Added(field=field, default=default, default_factory=factory):
+                fields[field] = to_json(
+                    factory(_SourceFields(fields, description)) if factory else default,
+                    declared_type=chain.added_types[index],
+                    artifact_serializers=chain.artifact_serializers,
+                )
             case Retyped() | MovedFrom():
                 pass
             case Rewrite(transform=transform):
