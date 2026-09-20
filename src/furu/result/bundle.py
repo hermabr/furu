@@ -523,19 +523,10 @@ def _load_value(
             assert_never(node)
 
 
-def _structured_class(body: dict[str, Any], *, value_path: ValuePath) -> type[Any]:
-    cls = resolve_fully_qualified_name(body[TYPEMARKER])
-    if body[KINDMARKER] == "dataclass" and not dataclasses.is_dataclass(cls):
-        raise ValueError(
-            f"Cannot load dataclass at {_value_path_display(value_path)}: "
-            f"{fully_qualified_name(cls)} is not a dataclass"
-        )
-    if body[KINDMARKER] == "pydantic" and not issubclass(cls, pydantic.BaseModel):
-        raise ValueError(
-            f"Cannot load pydantic model at {_value_path_display(value_path)}: "
-            f"{fully_qualified_name(cls)} is not a pydantic model"
-        )
-    return cast(type[Any], cls)
+def _is_structured(cls: object) -> bool:
+    return isinstance(cls, type) and (
+        dataclasses.is_dataclass(cls) or issubclass(cls, pydantic.BaseModel)
+    )
 
 
 def _load_fields(
@@ -562,7 +553,7 @@ def _load_fields(
 def _build_structured(
     cls: type[Any], fields: Mapping[str, object], *, value_path: ValuePath
 ) -> object:
-    """Construct a dataclass or pydantic ``cls`` from decoded ``fields``,
+    """Construct dataclass or pydantic ``cls`` from decoded ``fields``,
     rejecting a field set that differs from the class."""
     is_model = issubclass(cls, pydantic.BaseModel)
     kind = "pydantic model" if is_model else "dataclass"
@@ -571,12 +562,14 @@ def _build_structured(
         if is_model
         else {field.name for field in dataclasses.fields(cls)}
     )
-    actual = set(fields)
-    details: list[str] = []
-    if missing := expected - actual:
-        details.append("missing fields: " + ", ".join(sorted(missing)))
-    if extra := actual - expected:
-        details.append("extra fields: " + ", ".join(sorted(extra)))
+    details = [
+        f"{label}: " + ", ".join(sorted(names))
+        for label, names in (
+            ("missing fields", expected - set(fields)),
+            ("extra fields", set(fields) - expected),
+        )
+        if names
+    ]
     if details:
         raise ValueError(
             f"Cannot load {kind} {fully_qualified_name(cls)} at "
@@ -585,8 +578,8 @@ def _build_structured(
     try:
         if is_model:
             return cls.model_validate(dict(fields))
-        init_fields = {field.name for field in dataclasses.fields(cls) if field.init}
-        return cls(**{name: fields[name] for name in init_fields})
+        init = {field.name for field in dataclasses.fields(cls) if field.init}
+        return cls(**{name: fields[name] for name in init})
     except Exception as exc:
         raise ValueError(
             f"Cannot load {kind} {fully_qualified_name(cls)} "
@@ -648,18 +641,20 @@ def _load_wrapper(
                 )
             return codec.load(metadata, artifact_dir)
         case "dataclass" | "pydantic":
-            cls = _structured_class(body, value_path=value_path)
-            return _build_structured(
+            cls = resolve_fully_qualified_name(body[TYPEMARKER])
+            if not _is_structured(cls):
+                raise ValueError(
+                    f"Cannot load {kind} at {_value_path_display(value_path)}: "
+                    f"{fully_qualified_name(cls)} is not a {kind}"
+                )
+            fields = _load_fields(
                 cls,
-                _load_fields(
-                    cls,
-                    body[FIELDSMARKER],
-                    bundle_dir=bundle_dir,
-                    data_dir=data_dir,
-                    value_path=value_path,
-                ),
+                body[FIELDSMARKER],
+                bundle_dir=bundle_dir,
+                data_dir=data_dir,
                 value_path=value_path,
             )
+            return _build_structured(cls, fields, value_path=value_path)
         case "datetime":
             return datetime.fromisoformat(body["value"])
         case "path":
@@ -727,22 +722,6 @@ def _save_result_bundle(
     return dump_state
 
 
-def _rewrite_target_class(raw: JsonValue, declared_type: object) -> type[Any] | None:
-    """The class a top-level dataclass/pydantic result is rebuilt as after
-    rewrites: the declared result type when it is one, else the stored name."""
-    if not (isinstance(raw, dict) and WRAPPER_KEY in raw):
-        return None
-    body = cast(dict[str, Any], raw[WRAPPER_KEY])
-    if body[KINDMARKER] not in ("dataclass", "pydantic"):
-        return None
-    declared = strip_annotated(declared_type)
-    if isinstance(declared, type) and (
-        dataclasses.is_dataclass(declared) or issubclass(declared, pydantic.BaseModel)
-    ):
-        return declared
-    return _structured_class(body, value_path=())
-
-
 def load_result_bundle(
     bundle_dir: Path,
     *,
@@ -750,17 +729,23 @@ def load_result_bundle(
     declared_type: object,
     rewrites: Sequence[Callable[[Any], Any]] = (),
 ) -> object:
-    """Decode the stored result, replaying ``rewrites`` (from migration steps)
-    over the decoded value in order.
+    """Decode the stored result, then replay ``rewrites`` (from migration
+    steps) over the decoded value in order.
 
-    A top-level dataclass or pydantic result is handed to the rewrites as a
-    dict of its decoded fields and rebuilt from the dict they return, using the
-    declared result class rather than the stored name. That is what lets a
-    rewrite add a field the stored wrapper lacks, or follow a moved class.
+    A top-level dataclass or pydantic result reaches the rewrites as a dict of
+    its decoded fields and is rebuilt from the dict they return as the declared
+    result class, so a rewrite can add a field the stored wrapper lacks or
+    follow a moved class.
     """
     raw = json.loads((bundle_dir / MANIFEST_FILE_NAME).read_text(encoding="utf-8"))
-    cls = _rewrite_target_class(raw, declared_type) if rewrites else None
-    if cls is None:
+    declared = strip_annotated(declared_type)
+    if not (
+        rewrites
+        and _is_structured(declared)
+        and isinstance(raw, dict)
+        and WRAPPER_KEY in raw
+        and raw[WRAPPER_KEY][KINDMARKER] in ("dataclass", "pydantic")
+    ):
         value = _load_value(
             raw,
             declared_type=declared_type,
@@ -768,22 +753,23 @@ def load_result_bundle(
             data_dir=data_dir,
             value_path=(),
         )
-    else:
-        value = _load_fields(
-            cls,
-            cast(dict[str, Any], raw)[WRAPPER_KEY][FIELDSMARKER],
-            bundle_dir=bundle_dir,
-            data_dir=data_dir,
-            value_path=(),
-        )
-    for rewrite in rewrites:
-        value = rewrite(value)
-        if cls is not None and not isinstance(value, Mapping):
-            raise TypeError(
-                f"result_rewrite {getattr(rewrite, '__qualname__', rewrite)!r} must "
-                f"return a mapping of {fully_qualified_name(cls)} fields; got "
-                f"{type(value).__name__}"
-            )
-    if cls is None:
+        for rewrite in rewrites:
+            value = rewrite(value)
         return value
-    return _build_structured(cls, cast(Mapping[str, object], value), value_path=())
+
+    cls = cast(type[Any], declared)
+    fields = _load_fields(
+        cls,
+        raw[WRAPPER_KEY][FIELDSMARKER],
+        bundle_dir=bundle_dir,
+        data_dir=data_dir,
+        value_path=(),
+    )
+    for rewrite in rewrites:
+        fields = rewrite(fields)
+    if not isinstance(fields, Mapping):
+        raise TypeError(
+            f"result_rewrite must return a mapping of {fully_qualified_name(cls)} "
+            f"fields; got {type(fields).__name__}"
+        )
+    return _build_structured(cls, fields, value_path=())

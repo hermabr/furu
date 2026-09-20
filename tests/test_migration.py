@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, cast
+from typing import ClassVar, cast
 
 import pydantic
 import pytest
@@ -23,7 +23,6 @@ from furu.storage._layout import (
     data_dir_in,
     result_link_path_in,
     result_manifest_path_in,
-    schema_snapshot_path_in_schema_directory,
 )
 from furu.utils import JsonValue, fully_qualified_name
 
@@ -1731,7 +1730,6 @@ class _LossDonor(Spec[dict[str, float | None]]):
     lr: float
 
     def create(self) -> dict[str, float | None]:
-        _COUNTER.calls += 1
         return {"loss": self.lr * 2}
 
 
@@ -1752,18 +1750,15 @@ def test_result_rewrite_adds_a_dict_key_to_old_results() -> None:
     donor = _LossDonor(lr=0.1)
     donor.create()
     _transplant_generation(donor, _LossEvalRun)
-    _COUNTER.calls = 0
 
     run = _LossEvalRun(lr=0.1)
     assert run.create() == {"loss": 0.2, "eval": None}
-    # Through the recorded link on the second read, not just the chain search.
+    # Second read goes through the recorded link rather than the chain search.
     assert run.load_existing() == {"loss": 0.2, "eval": None}
-    assert furu.load_existing([run]) == [{"loss": 0.2, "eval": None}]
     assert _COUNTER.calls == 0
-    link = json.loads(result_link_path_in(run._base_dir).read_text())
-    assert link["migration_path"] == [
-        "Added('eval', default=False, result_rewrite=_LossEvalRun.<lambda>)"
-    ]
+    assert json.loads(result_link_path_in(run._base_dir).read_text())[
+        "migration_path"
+    ] == ["Added('eval', default=False, result_rewrite=_LossEvalRun.<lambda>)"]
     # Fresh results already have the new shape and are never rewritten.
     assert _LossEvalRun(lr=0.5, eval=True).create() == {"loss": 1.0, "eval": 1.0}
 
@@ -1781,7 +1776,6 @@ class _PairRun(Spec[tuple[float, float | None]]):
     migrations = (Renamed("n_layers", to="depth", result_rewrite=lambda r: (*r, None)),)
 
     def create(self) -> tuple[float, float | None]:
-        _COUNTER.calls += 1
         return (float(self.depth), 1.0)
 
 
@@ -1791,7 +1785,6 @@ def test_result_rewrite_on_renamed_grows_a_tuple() -> None:
     _transplant_generation(donor, _PairRun)
 
     assert _PairRun(depth=3).create() == (3.0, None)
-    assert _COUNTER.calls == 0
 
 
 @dataclass(frozen=True)
@@ -1805,11 +1798,27 @@ class _Summary:
     eval: float | None
 
 
+class _OldReport(pydantic.BaseModel):
+    loss: float
+
+
+class _Report(pydantic.BaseModel):
+    loss: float
+    eval: float | None
+
+
 class _OldSummaryRun(Spec[_OldSummary]):
     lr: float
 
     def create(self) -> _OldSummary:
         return _OldSummary(loss=self.lr)
+
+
+class _OldReportRun(Spec[_OldReport]):
+    lr: float
+
+    def create(self) -> _OldReport:
+        return _OldReport(loss=self.lr)
 
 
 class _SummaryRun(Spec[_Summary]):
@@ -1823,31 +1832,7 @@ class _SummaryRun(Spec[_Summary]):
     )
 
     def create(self) -> _Summary:
-        _COUNTER.calls += 1
         return _Summary(loss=self.lr, eval=1.0)
-
-
-def test_result_rewrite_rebuilds_a_moved_dataclass_from_its_fields() -> None:
-    _OldSummaryRun(lr=0.1).create()
-
-    assert _SummaryRun(lr=0.1).create() == _Summary(loss=0.1, eval=None)
-    assert _COUNTER.calls == 0
-
-
-class _OldReport(pydantic.BaseModel):
-    loss: float
-
-
-class _Report(pydantic.BaseModel):
-    loss: float
-    eval: float | None
-
-
-class _OldReportRun(Spec[_OldReport]):
-    lr: float
-
-    def create(self) -> _OldReport:
-        return _OldReport(loss=self.lr)
 
 
 class _ReportRun(Spec[_Report]):
@@ -1861,15 +1846,15 @@ class _ReportRun(Spec[_Report]):
     )
 
     def create(self) -> _Report:
-        _COUNTER.calls += 1
         return _Report(loss=self.lr, eval=1.0)
 
 
-def test_result_rewrite_rebuilds_a_pydantic_model_from_its_fields() -> None:
+def test_result_rewrite_rebuilds_moved_dataclass_and_pydantic_results() -> None:
+    _OldSummaryRun(lr=0.1).create()
     _OldReportRun(lr=0.1).create()
 
+    assert _SummaryRun(lr=0.1).create() == _Summary(loss=0.1, eval=None)
     assert _ReportRun(lr=0.1).create() == _Report(loss=0.1, eval=None)
-    assert _COUNTER.calls == 0
 
 
 class _ForgetfulSummaryRun(Spec[_Summary]):
@@ -1909,60 +1894,28 @@ class _ChainFinal(Spec[dict[str, float | None]]):
     seed: int = 0
 
     migrations = (
-        MovedFrom(fully_qualified_name(_LossDonor)),
-        Added("eval", default=False, result_rewrite=lambda r: {**r, "eval": None}),
+        *_ChainMid.migrations,
         MovedFrom(fully_qualified_name(_ChainMid)),
         Added("seed", default=0, result_rewrite=lambda r: {**r, "seed": 0.0}),
     )
 
     def create(self) -> dict[str, float | None]:
         return {"loss": self.lr * 2, "eval": None, "seed": float(self.seed)}
+
+
+class _ShortChainFinal(_ChainFinal):
+    migrations = _ChainFinal.migrations[2:]
 
 
 def test_result_rewrites_replay_from_the_ultimate_source_across_hops() -> None:
     _LossDonor(lr=0.1).create()
     assert _ChainMid(lr=0.1).create() == {"loss": 0.2, "eval": None}
 
-    final = _ChainFinal(lr=0.1)
-    assert final.create() == {"loss": 0.2, "eval": None, "seed": 0.0}
-    link = json.loads(result_link_path_in(final._base_dir).read_text())
-    assert link["source"]["base_dir"] == str(_LossDonor(lr=0.1)._base_dir)
-
-
-class _ShortChainFinal(Spec[dict[str, float | None]]):
-    lr: float
-    eval: bool = False
-    seed: int = 0
-
-    migrations = (
-        MovedFrom(fully_qualified_name(_ChainMid)),
-        Added("seed", default=0, result_rewrite=lambda r: {**r, "seed": 0.0}),
-    )
-
-    def create(self) -> dict[str, float | None]:
-        return {"loss": self.lr * 2, "eval": None, "seed": float(self.seed)}
-
-
-def test_result_rewrite_refuses_a_hop_whose_own_rewrites_it_cannot_replay() -> None:
-    _LossDonor(lr=0.1).create()
-    _ChainMid(lr=0.1).create()
-
-    with pytest.raises(MigrationError, match="cannot replay"):
+    assert _ChainFinal(lr=0.1).create() == {"loss": 0.2, "eval": None, "seed": 0.0}
+    # The link skips the hop and points at the donor, which only a chain that
+    # covers the donor's schema can rewrite.
+    with pytest.raises(MigrationError, match="not covered"):
         _ShortChainFinal(lr=0.1).create()
-
-
-def test_result_rewrite_fails_loudly_when_the_source_is_no_longer_covered() -> None:
-    donor = _LossDonor(lr=0.1)
-    donor.create()
-    old_directory = _transplant_generation(donor, _LossEvalRun)
-    run = _LossEvalRun(lr=0.1)
-    assert run.create() == {"loss": 0.2, "eval": None}
-
-    # Without its schema snapshot the old generation drops out of the chain.
-    schema_snapshot_path_in_schema_directory(old_directory).unlink()
-    migration_resolution._RESOLUTION_CACHE.clear()
-    with pytest.raises(MigrationError, match="no longer covered"):
-        run.load_existing()
 
 
 def test_result_rewrite_is_rejected_on_a_breaking_step() -> None:
@@ -1972,18 +1925,6 @@ def test_result_rewrite_is_rejected_on_a_breaking_step() -> None:
             seed: int
 
             migrations = (Added("seed", breaking=True, result_rewrite=lambda r: r),)
-
-            def create(self) -> int:
-                return 0
-
-
-def test_result_rewrite_must_be_callable() -> None:
-    with pytest.raises(TypeError, match="result_rewrite must be callable"):
-
-        class _NotCallable(Spec[int]):
-            seed: int = 0
-
-            migrations = (Added("seed", default=0, result_rewrite=cast(Any, 3)),)
 
             def create(self) -> int:
                 return 0

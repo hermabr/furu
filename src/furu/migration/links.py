@@ -27,12 +27,7 @@ from furu.storage._layout import (
     result_link_path_in,
     result_manifest_path_in,
 )
-from furu.utils import (
-    JsonFields,
-    _stable_json_dump,
-    atomic_write_text,
-    resolve_fully_qualified_name,
-)
+from furu.utils import JsonFields, _stable_json_dump, atomic_write_text
 
 if TYPE_CHECKING:
     from furu.core import Spec
@@ -184,52 +179,23 @@ def _source_dir_for_loading(obj: Spec, *, has_lock: bool = False) -> Path | None
     return link.source.base_dir
 
 
-def _covering(
-    cls: type, resolution: _ClassResolution, source_dir: Path
-) -> _Covered | None:
-    """The covered generation through which ``source_dir`` is reachable:
-    its own schema directory, or one holding a link that points at it."""
-    for covered in resolution.covered:
-        if covered.schema_directory == source_dir.parent:
-            return covered
-    for covered in resolution.covered:
-        for links in _migrated_sources(cls, resolution, covered).values():
-            if any(link.source.base_dir == source_dir for link in links):
-                return covered
-    return None
-
-
 def _rewrites_for(obj: Spec, source_dir: Path) -> tuple[Callable[[Any], Any], ...]:
     """The result_rewrite callables between the source's generation and now."""
-    cls = type(obj)
-    steps = cls.migrations
+    steps = type(obj).migrations
     if not any(step.result_rewrite is not None for step in steps):
         return ()
-    resolution = _class_resolution(obj)
-    covered = _covering(cls, resolution, source_dir)
-    if covered is None:
-        raise MigrationError(
-            f"{obj._log_label} links to {source_dir}, whose schema is no longer "
-            "covered by the migration chain, so its result_rewrite steps cannot "
-            "be replayed"
-        )
-    if covered.schema_directory != source_dir.parent:
-        # Reached through another class's link. That class's own rewrites are
-        # not part of this chain and cannot be replayed from here.
-        via = resolve_fully_qualified_name(covered.generation.class_name)
-        if any(
-            step.result_rewrite is not None for step in getattr(via, "migrations", ())
-        ):
-            raise MigrationError(
-                f"{obj._log_label} reaches {source_dir} through a link recorded "
-                f"by {covered.generation.class_name}, whose migrations carry "
-                "result_rewrite steps that this chain cannot replay; declare the "
-                f"full chain from the source on {cls.__name__}.migrations"
+    for covered in _class_resolution(obj).covered:
+        if covered.schema_directory == source_dir.parent:
+            return tuple(
+                step.result_rewrite
+                for step in steps[covered.generation.start :]
+                if step.result_rewrite is not None
             )
-    return tuple(
-        step.result_rewrite
-        for step in steps[covered.generation.start :]
-        if step.result_rewrite is not None
+    raise MigrationError(
+        f"{obj._log_label} links to {source_dir}, whose schema is not covered "
+        f"by {type(obj).__name__}.migrations, so its result_rewrite steps cannot "
+        "be replayed. A result reached through another class's link needs the "
+        "chain declared from that source."
     )
 
 
