@@ -185,7 +185,7 @@ def _build_chain(
                 del expectations[field]
                 if not step.breaking:
                     added_types[index] = hints[name]
-                    if not rewritten and step.derive is None:
+                    if not rewritten and step.default_factory is None:
                         pinned[name] = to_json(
                             step.default,
                             declared_type=hints[name],
@@ -440,10 +440,9 @@ def _apply_steps(chain: _Chain, start: int, source_fields: JsonFields) -> JsonFi
                         f"stored fields: {sorted(fields)}"
                     )
                 fields[to] = fields.pop(field)
-            case Added(field=field) as step:
-                source = _SourceFields(fields, description)
+            case Added(field=field, default=default, default_factory=factory):
                 fields[field] = to_json(
-                    step.derive(source) if step.derive else step.default,
+                    factory(_SourceFields(fields, description)) if factory else default,
                     declared_type=chain.added_types[index],
                     artifact_serializers=chain.artifact_serializers,
                 )
