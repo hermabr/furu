@@ -17,7 +17,7 @@ from furu.migration.resolution import (
     _ClassResolution,
     _Covered,
 )
-from furu.migration.steps import _describe_step
+from furu.migration.steps import MigrationStep, _describe_step
 from furu.result.bundle import load_result_bundle
 from furu.storage._layout import (
     compute_lock_path_in,
@@ -189,17 +189,19 @@ def load_stored_result[T](obj: Spec[T], result_dir: Path) -> T:
     """Load the result at ``result_dir`` as obj's result, passing a migrated
     result through each traversed step's ``result_rewrite``."""
     base_dir = result_dir.parent
-    value = load_result_bundle(
-        result_dir,
-        data_dir=data_dir_in(base_dir),
-        declared_type=declared_result_type(type(obj)),
-    )
+    steps: tuple[MigrationStep, ...] = ()
     if base_dir != obj._base_dir:
         resolution = _class_resolution(obj)
         covered = _covered_in(resolution, base_dir.parent)
         # result_dir_for_loading only hands out covered sources.
         assert covered is not None, f"{base_dir} is not covered by {obj._log_label}"
-        for step in resolution.own.steps[covered.generation.start :]:
-            if step.result_rewrite is not None:
-                value = step.result_rewrite(value)
+        steps = resolution.own.steps[covered.generation.start :]
+    value = load_result_bundle(
+        result_dir,
+        data_dir=data_dir_in(base_dir),
+        declared_type=declared_result_type(type(obj)),
+        rewrites=[
+            step.result_rewrite for step in steps if step.result_rewrite is not None
+        ],
+    )
     return cast(T, value)

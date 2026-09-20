@@ -16,12 +16,15 @@ if TYPE_CHECKING:
 _NO_DEFAULT = object()
 
 # Every non-breaking step may carry ``result_rewrite``: a function applied to
-# an old run's *result* when it is loaded through this step. Where the schema
-# steps bring the stored fields up to date, ``result_rewrite`` brings the stored
-# value up to date, e.g. ``Added("eval", default=False, result_rewrite=lambda r:
-# (*r, None))`` when create() grew from a two-tuple to a three-tuple. A chain's
-# rewrites run in declaration order, oldest generation first.
-ResultRewrite: TypeAlias = Callable[[Any], Any]  # noqa: UP040
+# an old run's stored *result* when it is loaded through this step. Like
+# ``Rewrite.transform`` it works on the raw JSON as written to the result
+# manifest (a dataclass result is ``{"$furu": {"|kind": "dataclass", "|type":
+# ..., "|fields": {...}}}``), before anything is decoded or instantiated. So a
+# chain that grew a result dataclass field by field declares one rewrite per
+# step, each adding its field to ``|fields``, and the class is built once, from
+# the final JSON. Rewrites run in declaration order, oldest generation first;
+# the JSON is a private copy, so mutating it in place is fine.
+ResultRewrite: TypeAlias = Callable[[JsonValue], JsonValue]  # noqa: UP040
 
 
 @dataclass(frozen=True, slots=True)

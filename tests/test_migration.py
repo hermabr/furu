@@ -3,7 +3,7 @@ from __future__ import annotations
 import errno
 import json
 import shutil
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +17,7 @@ import furu.migration.resolution as migration_resolution
 from furu import Added, MovedFrom, Renamed, Retyped, Rewrite, Spec, Stale
 from furu.constants import FIELDSMARKER
 from furu.migration.steps import MigrationError
+from furu.result.bundle import WRAPPER_KEY
 from furu.result.codec import Codec
 from furu.storage._layout import (
     compute_lock_path_in,
@@ -1790,8 +1791,10 @@ class _PairDonor(Spec[tuple[str, float]]):
         return (self.dataset, 0.5)
 
 
-def _widen_to_triple(result: tuple[str, float]) -> tuple[str, float, None]:
-    return (*result, None)
+def _widen_to_triple(result: JsonValue) -> JsonValue:
+    body = cast(dict[str, JsonValue], result)[WRAPPER_KEY]
+    cast(list[JsonValue], cast(dict[str, JsonValue], body)["items"]).append(None)
+    return result
 
 
 class _TripleRun(Spec[tuple[str, float, float | None]]):
@@ -1834,45 +1837,88 @@ def test_result_rewrite_reshapes_migrated_results_on_every_load() -> None:
     assert _TripleRun(dataset="mnist").load_existing() == ("mnist", 0.5, None)
 
 
-class _ScoreV0(Spec[float]):
+@dataclass(frozen=True)
+class _MetricsV0:
+    loss: float
+
+
+@dataclass(frozen=True)
+class _MetricsV1:
+    loss: float
+    val_loss: float | None
+
+
+@dataclass(frozen=True)
+class _Metrics:
+    loss: float
+    val_loss: float | None
+    checkpoint: str | None
+
+
+class _MetricsRunV0(Spec[_MetricsV0]):
     dataset: str
 
-    def create(self) -> float:
-        return 0.25
+    def create(self) -> _MetricsV0:
+        return _MetricsV0(loss=0.5)
 
 
-class _ScoreV1(Spec[float]):
+class _MetricsRunV1(Spec[_MetricsV1]):
     dataset: str
-    lr: float = 0.1
+    evaluate: bool = False
 
-    def create(self) -> float:
-        return 25.0
+    def create(self) -> _MetricsV1:
+        return _MetricsV1(loss=0.25, val_loss=0.3 if self.evaluate else None)
 
 
-class _Score(Spec[dict[str, float]]):
+def _with_field(name: str) -> Callable[[JsonValue], JsonValue]:
+    def add(result: JsonValue) -> JsonValue:
+        body = cast(dict[str, JsonValue], result)[WRAPPER_KEY]
+        cast(dict[str, JsonValue], cast(dict[str, JsonValue], body)[FIELDSMARKER])[
+            name
+        ] = None
+        return result
+
+    return add
+
+
+class _MetricsRun(Spec[_Metrics]):
     dataset: str
-    lr: float = 0.1
-    seed: int = 0
+    evaluate: bool = False
+    save_checkpoint: bool = False
 
     migrations = (
-        MovedFrom(fully_qualified_name(_ScoreV0)),
-        Added("lr", default=0.1, result_rewrite=lambda score: score * 100),
-        MovedFrom(fully_qualified_name(_ScoreV1)),
-        Added("seed", default=0, result_rewrite=lambda score: {"score": score}),
+        Added("evaluate", default=False, result_rewrite=_with_field("val_loss")),
+        Added(
+            "save_checkpoint", default=False, result_rewrite=_with_field("checkpoint")
+        ),
     )
 
-    def create(self) -> dict[str, float]:
+    def create(self) -> _Metrics:
         _COUNTER.calls += 1
-        return {"score": 0.0}
+        return _Metrics(loss=0.0, val_loss=None, checkpoint=None)
 
 
-def test_result_rewrites_compose_from_the_source_generation_onward() -> None:
-    _ScoreV0(dataset="cifar10").create()
-    _ScoreV1(dataset="mnist").create()
+def test_result_rewrites_grow_a_dataclass_field_by_field_before_it_is_built() -> None:
+    # Both donors stored the *current* dataclass name with fewer fields; only
+    # the rewrites from each generation onward make it loadable.
+    renames = {
+        fully_qualified_name(_MetricsV0): fully_qualified_name(_Metrics),
+        fully_qualified_name(_MetricsV1): fully_qualified_name(_Metrics),
+    }
+    v0 = _MetricsRunV0(dataset="cifar10")
+    v0.create()
+    _transplant_generation(v0, _MetricsRun, renames=renames)
+    v1 = _MetricsRunV1(dataset="mnist")
+    v1.create()
+    _transplant_generation(v1, _MetricsRun, renames=renames)
     _COUNTER.calls = 0
 
-    assert _Score(dataset="cifar10").create() == {"score": 25.0}
-    assert _Score(dataset="mnist").create() == {"score": 25.0}
+    assert _MetricsRun(dataset="cifar10").create() == _Metrics(
+        loss=0.5, val_loss=None, checkpoint=None
+    )
+    assert _MetricsRun(dataset="mnist").create() == _Metrics(
+        loss=0.25, val_loss=None, checkpoint=None
+    )
     assert _COUNTER.calls == 0
 
 
