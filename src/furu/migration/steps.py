@@ -15,15 +15,6 @@ if TYPE_CHECKING:
 
 _NO_DEFAULT = object()
 
-# Every non-breaking step may carry ``result_rewrite``: a function applied to
-# an old run's stored *result* when it is loaded through this step. Like
-# ``Rewrite.transform`` it works on the raw JSON as written to the result
-# manifest (a dataclass result is ``{"$furu": {"|kind": "dataclass", "|type":
-# ..., "|fields": {...}}}``), before anything is decoded or instantiated. So a
-# chain that grew a result dataclass field by field declares one rewrite per
-# step, each adding its field to ``|fields``, and the class is built once, from
-# the final JSON. Rewrites run in declaration order, oldest generation first;
-# the JSON is a private copy, so mutating it in place is fine.
 ResultRewrite: TypeAlias = Callable[[JsonValue], JsonValue]  # noqa: UP040
 
 

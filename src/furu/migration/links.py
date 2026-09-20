@@ -186,8 +186,6 @@ def result_dir_for_loading(obj: Spec, *, has_lock: bool = False) -> Path | None:
 
 
 def load_stored_result[T](obj: Spec[T], result_dir: Path) -> T:
-    """Load the result at ``result_dir`` as obj's result, passing a migrated
-    result through each traversed step's ``result_rewrite``."""
     base_dir = result_dir.parent
     steps: tuple[MigrationStep, ...] = ()
     if base_dir != obj._base_dir:
