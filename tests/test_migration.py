@@ -3,7 +3,7 @@ from __future__ import annotations
 import errno
 import json
 import shutil
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,7 +15,9 @@ import furu
 import furu.migration.links as migration_links
 import furu.migration.resolution as migration_resolution
 from furu import Added, MovedFrom, Renamed, Retyped, Rewrite, Spec, Stale
+from furu.constants import FIELDSMARKER
 from furu.migration.steps import MigrationError
+from furu.result.bundle import WRAPPER_KEY
 from furu.result.codec import Codec
 from furu.storage._layout import (
     compute_lock_path_in,
@@ -24,7 +26,7 @@ from furu.storage._layout import (
     result_link_path_in,
     result_manifest_path_in,
 )
-from furu.utils import JsonValue, fully_qualified_name
+from furu.utils import JsonFields, JsonValue, fully_qualified_name
 
 
 class _Counter:
@@ -330,6 +332,26 @@ class _MidRun(Spec[dict[str, str]]):
 
 
 class _FinalRun(Spec[dict[str, str]]):
+    """The whole changelog lives on the current class: a run only reuses a
+    result whose generation its own chain reaches."""
+
+    dataset: str
+    lr: float
+    seed: int = 0
+
+    migrations = (
+        MovedFrom(fully_qualified_name(_OldTrainRun)),
+        Renamed("learning_rate", to="lr"),
+        MovedFrom(fully_qualified_name(_MidRun)),
+        Added("seed", default=0),
+    )
+
+    def create(self) -> dict[str, str]:
+        _COUNTER.calls += 1
+        return {"dataset": self.dataset, "lr": str(self.lr), "seed": str(self.seed)}
+
+
+class _FinalRunViaMid(Spec[dict[str, str]]):
     dataset: str
     lr: float
     seed: int = 0
@@ -344,7 +366,7 @@ class _FinalRun(Spec[dict[str, str]]):
         return {"dataset": self.dataset, "lr": str(self.lr), "seed": str(self.seed)}
 
 
-def test_multi_hop_link_points_directly_at_ultimate_source() -> None:
+def test_full_changelog_links_directly_at_the_ultimate_source() -> None:
     old = _OldTrainRun(learning_rate=0.001, dataset="cifar10")
     old.create()
     _COUNTER.calls = 0
@@ -367,19 +389,48 @@ def test_multi_hop_link_points_directly_at_ultimate_source() -> None:
     ]
 
 
-def test_multi_hop_scan_ignores_a_dangling_intermediate_link() -> None:
+def test_a_directory_holding_only_a_link_is_not_a_source() -> None:
+    # _MidRun's directory links at _OldTrainRun's result; a chain that reaches
+    # _MidRun but not _OldTrainRun cannot explain that result, so it recomputes.
     old = _OldTrainRun(learning_rate=0.001, dataset="cifar10")
     old.create()
-    mid = _MidRun(dataset="cifar10", lr=0.001)
-    mid.create()
-    shutil.rmtree(old._base_dir)
+    _MidRun(dataset="cifar10", lr=0.001).create()
     _COUNTER.calls = 0
 
-    final = _FinalRun(dataset="cifar10", lr=0.001)
+    final = _FinalRunViaMid(dataset="cifar10", lr=0.001)
     assert final.status == "missing"
     assert final.create() == {"dataset": "cifar10", "lr": "0.001", "seed": "0"}
     assert _COUNTER.calls == 1
     assert not result_link_path_in(final._base_dir).exists()
+
+
+def test_link_to_a_source_the_chain_no_longer_covers_is_no_result() -> None:
+    legacy = _LegacyRun(dataset="cifar10", learning_rate=0.001)
+    legacy.create()
+    target = _TrainRun(dataset="cifar10", lr=0.001)
+    target._base_dir.mkdir(parents=True)
+    result_link_path_in(target._base_dir).write_text(
+        migration_links._ResultLink(
+            current=migration_links._ResultLinkCurrent(
+                fully_qualified_name=target._fully_qualified_name,
+                schema_hash=target._artifact_schema_hash,
+                artifact_hash=target._artifact_hash,
+                fields=cast(JsonFields, target._artifact_data[FIELDSMARKER]),
+            ),
+            source=migration_links._ResultLinkSource(
+                fully_qualified_name=legacy._fully_qualified_name,
+                schema_hash=legacy._artifact_schema_hash,
+                artifact_hash=legacy._artifact_hash,
+                base_dir=legacy._base_dir,
+            ),
+            migration_path=(),
+        ).model_dump_json()
+    )
+    _COUNTER.calls = 0
+
+    assert target.status == "missing"
+    assert target.create() == {"dataset": "cifar10", "lr": "0.001", "seed": "0"}
+    assert _COUNTER.calls == 1
 
 
 # --- stale: orphaned generations block compute -------------------------------------
@@ -1156,14 +1207,14 @@ def _count_reads_under(
     monkeypatch: pytest.MonkeyPatch, schema_directory: Path
 ) -> list[Path]:
     reads: list[Path] = []
-    real_read_source = migration_links._read_source
+    real_metadata_path_in = migration_links.metadata_path_in
 
-    def counting(artifact_dir: Path) -> migration_links._ResultLink | None:
+    def counting(artifact_dir: Path) -> Path:
         if artifact_dir.parent == schema_directory:
             reads.append(artifact_dir)
-        return real_read_source(artifact_dir)
+        return real_metadata_path_in(artifact_dir)
 
-    monkeypatch.setattr(migration_links, "_read_source", counting)
+    monkeypatch.setattr(migration_links, "metadata_path_in", counting)
     return reads
 
 
@@ -1724,6 +1775,182 @@ def test_embedded_dataclass_chain_is_validated_when_a_spec_embeds_it() -> None:
 
         class _BrokenOptimizerRun(Spec[int]):
             optimizer: _CascadeBrokenOptimizer
+
+            def create(self) -> int:
+                return 0
+
+
+# --- result_rewrite: old results come back in today's shape -------------------------
+
+
+class _PairDonor(Spec[tuple[str, float]]):
+    dataset: str
+
+    def create(self) -> tuple[str, float]:
+        _COUNTER.calls += 1
+        return (self.dataset, 0.5)
+
+
+def _widen_to_triple(result: JsonValue) -> JsonValue:
+    body = cast(dict[str, JsonValue], result)[WRAPPER_KEY]
+    cast(list[JsonValue], cast(dict[str, JsonValue], body)["items"]).append(None)
+    return result
+
+
+class _TripleRun(Spec[tuple[str, float, float | None]]):
+    dataset: str
+    eval: bool = False
+
+    migrations = (
+        MovedFrom(fully_qualified_name(_PairDonor)),
+        Added("eval", default=False, result_rewrite=_widen_to_triple),
+    )
+
+    def create(self) -> tuple[str, float, float | None]:
+        _COUNTER.calls += 1
+        return (self.dataset, 0.5, 0.9 if self.eval else None)
+
+
+def test_result_rewrite_reshapes_migrated_results_on_every_load() -> None:
+    donor = _PairDonor(dataset="cifar10")
+    assert donor.create() == ("cifar10", 0.5)
+    _COUNTER.calls = 0
+
+    spec = _TripleRun(dataset="cifar10")
+    assert spec.status == "done"
+    assert spec.create() == ("cifar10", 0.5, None)
+    assert spec.load_existing() == ("cifar10", 0.5, None)
+    assert furu.load_existing([spec]) == [("cifar10", 0.5, None)]
+    assert _TripleRun(dataset="cifar10").create() == ("cifar10", 0.5, None)
+    assert _COUNTER.calls == 0
+
+    link = json.loads(result_link_path_in(spec._base_dir).read_text())
+    assert link["migration_path"] == [
+        f"MovedFrom({donor._fully_qualified_name!r})",
+        "Added('eval', default=False, result_rewrite=_widen_to_triple)",
+    ]
+
+    # The pinned default keeps eval=True runs away from the old results.
+    assert _TripleRun(dataset="cifar10", eval=True).status == "missing"
+    # A result computed today is not rewritten.
+    assert _TripleRun(dataset="mnist").create() == ("mnist", 0.5, None)
+    assert _TripleRun(dataset="mnist").load_existing() == ("mnist", 0.5, None)
+
+
+@dataclass(frozen=True)
+class _MetricsV0:
+    loss: float
+
+
+@dataclass(frozen=True)
+class _MetricsV1:
+    loss: float
+    val_loss: float | None
+
+
+@dataclass(frozen=True)
+class _Metrics:
+    loss: float
+    val_loss: float | None
+    checkpoint: str | None
+
+
+class _MetricsRunV0(Spec[_MetricsV0]):
+    dataset: str
+
+    def create(self) -> _MetricsV0:
+        return _MetricsV0(loss=0.5)
+
+
+class _MetricsRunV1(Spec[_MetricsV1]):
+    dataset: str
+    evaluate: bool = False
+
+    def create(self) -> _MetricsV1:
+        return _MetricsV1(loss=0.25, val_loss=0.3 if self.evaluate else None)
+
+
+def _with_field(name: str) -> Callable[[JsonValue], JsonValue]:
+    def add(result: JsonValue) -> JsonValue:
+        body = cast(dict[str, JsonValue], result)[WRAPPER_KEY]
+        cast(dict[str, JsonValue], cast(dict[str, JsonValue], body)[FIELDSMARKER])[
+            name
+        ] = None
+        return result
+
+    return add
+
+
+class _MetricsRun(Spec[_Metrics]):
+    dataset: str
+    evaluate: bool = False
+    save_checkpoint: bool = False
+
+    migrations = (
+        Added("evaluate", default=False, result_rewrite=_with_field("val_loss")),
+        Added(
+            "save_checkpoint", default=False, result_rewrite=_with_field("checkpoint")
+        ),
+    )
+
+    def create(self) -> _Metrics:
+        _COUNTER.calls += 1
+        return _Metrics(loss=0.0, val_loss=None, checkpoint=None)
+
+
+def test_result_rewrites_grow_a_dataclass_field_by_field_before_it_is_built() -> None:
+    # Both donors stored the *current* dataclass name with fewer fields; only
+    # the rewrites from each generation onward make it loadable.
+    renames = {
+        fully_qualified_name(_MetricsV0): fully_qualified_name(_Metrics),
+        fully_qualified_name(_MetricsV1): fully_qualified_name(_Metrics),
+    }
+    v0 = _MetricsRunV0(dataset="cifar10")
+    v0.create()
+    _transplant_generation(v0, _MetricsRun, renames=renames)
+    v1 = _MetricsRunV1(dataset="mnist")
+    v1.create()
+    _transplant_generation(v1, _MetricsRun, renames=renames)
+    _COUNTER.calls = 0
+
+    assert _MetricsRun(dataset="cifar10").create() == _Metrics(
+        loss=0.5, val_loss=None, checkpoint=None
+    )
+    assert _MetricsRun(dataset="mnist").create() == _Metrics(
+        loss=0.25, val_loss=None, checkpoint=None
+    )
+    assert _COUNTER.calls == 0
+
+
+def test_result_rewrite_on_a_breaking_step_fails_at_class_creation() -> None:
+    with pytest.raises(TypeError, match="breaking step discards old results"):
+
+        class _Bad(Spec[int]):
+            seed: int
+
+            migrations = (
+                Added("seed", breaking=True, result_rewrite=lambda result: result),
+            )
+
+            def create(self) -> int:
+                return 0
+
+
+@dataclass(frozen=True)
+class _KnobsWithResultRewrite:
+    width: int
+    depth: int = 1
+
+    migrations: ClassVar[tuple[Added, ...]] = (
+        Added("depth", default=1, result_rewrite=lambda result: result),
+    )
+
+
+def test_result_rewrite_on_an_embedded_dataclass_fails_at_class_creation() -> None:
+    with pytest.raises(TypeError, match="belongs on a Spec"):
+
+        class _UsesKnobs(Spec[int]):
+            knobs: _KnobsWithResultRewrite
 
             def create(self) -> int:
                 return 0

@@ -15,6 +15,8 @@ if TYPE_CHECKING:
 
 _NO_DEFAULT = object()
 
+ResultRewrite: TypeAlias = Callable[[JsonValue], JsonValue]  # noqa: UP040
+
 
 @dataclass(frozen=True, slots=True)
 class Renamed:
@@ -22,6 +24,7 @@ class Renamed:
     _: dataclasses.KW_ONLY
     to: str
     breaking: bool = False
+    result_rewrite: ResultRewrite | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +41,7 @@ class Added:
     default: object = _NO_DEFAULT
     default_factory: Callable[[Mapping[str, JsonValue]], object] | None = None
     breaking: bool = False
+    result_rewrite: ResultRewrite | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +49,7 @@ class MovedFrom:
     fully_qualified_name: str
     _: dataclasses.KW_ONLY
     breaking: bool = False
+    result_rewrite: ResultRewrite | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,11 +58,14 @@ class Retyped:
     _: dataclasses.KW_ONLY
     was: Any
     breaking: bool = False
+    result_rewrite: ResultRewrite | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class Rewrite:
     transform: Callable[[Mapping[str, JsonValue]], Mapping[str, JsonValue]]
+    _: dataclasses.KW_ONLY
+    result_rewrite: ResultRewrite | None = None
 
 
 MigrationStep: TypeAlias = Renamed | Added | MovedFrom | Retyped | Rewrite  # noqa: UP040
@@ -83,6 +91,10 @@ def _type_label(tp: object) -> str:
     return repr(tp)
 
 
+def _callable_label(fn: Callable[..., object]) -> str:
+    return getattr(fn, "__qualname__", repr(fn))
+
+
 def _describe_step(step: MigrationStep) -> str:
     match step:
         case Renamed(field=field, to=to):
@@ -92,14 +104,16 @@ def _describe_step(step: MigrationStep) -> str:
             if default is not _NO_DEFAULT:
                 body += f", default={default!r}"
             if factory is not None:
-                body += f", default_factory={getattr(factory, '__qualname__', repr(factory))}"
+                body += f", default_factory={_callable_label(factory)}"
         case MovedFrom(fully_qualified_name=name):
             body = f"{name!r}"
         case Retyped(field=field, was=was):
             body = f"{field!r}, was={_type_label(was)}"
         case Rewrite(transform=transform):
-            body = f"{getattr(transform, '__qualname__', repr(transform))}"
+            body = _callable_label(transform)
     suffix = ", breaking=True" if _is_breaking(step) else ""
+    if step.result_rewrite is not None:
+        suffix += f", result_rewrite={_callable_label(step.result_rewrite)}"
     return f"{type(step).__name__}({body}{suffix})"
 
 
@@ -114,6 +128,24 @@ def validate_migration_declaration(cls: type[Spec]) -> None:
         )
 
     names = {field.name: field.name for field in dataclasses.fields(cls)}
+
+    from furu.core import Spec
+
+    for index, step in enumerate(steps):
+        if step.result_rewrite is None:
+            continue
+        if _is_breaking(step):
+            raise TypeError(
+                f"{cls.__name__}.migrations[{index}] ({_describe_step(step)}): "
+                "a breaking step discards old results, so result_rewrite can "
+                "never run; drop one of the two"
+            )
+        if not issubclass(cls, Spec):
+            raise TypeError(
+                f"{cls.__name__}.migrations[{index}] ({_describe_step(step)}): "
+                f"{cls.__name__} has no results to rewrite; result_rewrite "
+                "belongs on a Spec"
+            )
 
     for index in reversed(range(len(steps))):
         match steps[index]:

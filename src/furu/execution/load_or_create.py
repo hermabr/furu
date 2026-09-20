@@ -23,7 +23,7 @@ from furu.dependencies import (
 from furu.locking import lock
 from furu.logging import _scoped_log_files, get_logger
 from furu.metadata import RunningMetadata
-from furu.migration.links import result_dir_for_loading
+from furu.migration.links import load_stored_result, result_dir_for_loading
 from furu.migration.stale import raise_if_stale
 from furu.provenance import (
     ExecuteContext,
@@ -225,16 +225,7 @@ def load_existing[T](objs: Sequence[Spec[T]]) -> list[T]:
             raise_if_stale(obj)
             missing.append(obj)
             continue
-        loaded.append(
-            cast(
-                T,
-                load_result_bundle(
-                    result_dir,
-                    data_dir=data_dir_in(result_dir.parent),
-                    declared_type=declared_result_type(type(obj)),
-                ),
-            )
-        )
+        loaded.append(load_stored_result(obj, result_dir))
     if missing:
         if _in_worker_execution.get():
             raise _DependencyNotReady(dependencies=missing, call_kind="load_existing")
@@ -274,16 +265,7 @@ def _load_or_create_worker[T](
 
     for obj in objs:
         if (cached_result_dir := result_dir_for_loading(obj)) is not None:
-            loaded.append(
-                cast(
-                    T,
-                    load_result_bundle(
-                        cached_result_dir,
-                        data_dir=data_dir_in(cached_result_dir.parent),
-                        declared_type=declared_result_type(type(obj)),
-                    ),
-                )
-            )
+            loaded.append(load_stored_result(obj, cached_result_dir))
             cached.append(obj)
         else:
             raise_if_stale(obj)
@@ -324,13 +306,8 @@ def _load_or_create_local[T](
 
     for obj in unique:
         if (cached_result_dir := result_dir_for_loading(obj)) is not None:
-            results_by_object_id[obj.object_id] = cast(
-                T,
-                load_result_bundle(
-                    cached_result_dir,
-                    data_dir=data_dir_in(cached_result_dir.parent),
-                    declared_type=declared_result_type(type(obj)),
-                ),
+            results_by_object_id[obj.object_id] = load_stored_result(
+                obj, cached_result_dir
             )
         else:
             raise_if_stale(obj)
@@ -356,13 +333,8 @@ def _load_or_create_local[T](
                 cached_result_dir := result_dir_for_loading(obj, has_lock=use_lock)
             ) is not None:
                 late_hits += 1
-                results_by_object_id[obj.object_id] = cast(
-                    T,
-                    load_result_bundle(
-                        cached_result_dir,
-                        data_dir=data_dir_in(cached_result_dir.parent),
-                        declared_type=declared_result_type(type(obj)),
-                    ),
+                results_by_object_id[obj.object_id] = load_stored_result(
+                    obj, cached_result_dir
                 )
             else:
                 pending.append(obj)

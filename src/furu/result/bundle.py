@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import (
@@ -740,9 +740,12 @@ def load_result_bundle(
     *,
     data_dir: Path,
     declared_type: object,
+    rewrites: Iterable[Callable[[JsonValue], JsonValue]] = (),
 ) -> object:
     manifest_path = bundle_dir / MANIFEST_FILE_NAME
     raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for rewrite in rewrites:
+        raw = rewrite(raw)
     return _load_value(
         raw,
         declared_type=declared_type,

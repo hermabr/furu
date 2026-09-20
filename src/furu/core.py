@@ -15,24 +15,21 @@ from typing import (
     ClassVar,
     Literal,
     Self,
-    cast,
     final,
 )
 
 from furu._batched import _BatchedCreate, _BatchedHook, batched
-from furu._declared_types import declared_result_type
 from furu.config import get_config
 from furu.explain import ExplainDepth
 from furu.explain import explain as _explain
 from furu.locking import LockError, is_active_lock, lock
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
-from furu.migration.links import _read_source, result_dir_for_loading
+from furu.migration.links import _read_link, load_stored_result, result_dir_for_loading
 from furu.migration.resolution import validate_embedded_migration_declarations
 from furu.migration.stale import raise_if_stale, sideways_status
 from furu.migration.steps import MigrationStep, validate_migration_declaration
 from furu.provenance import Provenance
-from furu.result.bundle import load_result_bundle
 from furu.result.codec import Codec
 from furu.serializer.artifact import to_json as _to_json
 from furu.serializer.registry import Serializer
@@ -40,7 +37,6 @@ from furu.serializer.schema import schema_type as _schema_type
 from furu.spec_metadata import Metadata, Throttle
 from furu.storage._layout import (
     compute_lock_path_in,
-    data_dir_in,
     metadata_path_in,
     provenance_path_in,
     result_link_path_in,
@@ -207,14 +203,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
 
         record_dependency_call(self)
         if (result_dir := result_dir_for_loading(self)) is not None:
-            return cast(
-                T,
-                load_result_bundle(
-                    result_dir,
-                    data_dir=data_dir_in(result_dir.parent),
-                    declared_type=declared_result_type(type(self)),
-                ),
-            )
+            return load_stored_result(self, result_dir)
         raise_if_stale(self)
         if _in_worker_execution.get():
             raise _DependencyNotReady(
@@ -264,7 +253,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
         if result_manifest_path_in(self._base_dir).exists():
             return "done"
         has_result_link = result_link_path_in(self._base_dir).exists()
-        if has_result_link and _read_source(self._base_dir):
+        if has_result_link and _read_link(self) is not None:
             return "done"
         if is_active_lock(compute_lock_path_in(self._base_dir)):
             return "running"
