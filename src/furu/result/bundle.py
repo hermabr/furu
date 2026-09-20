@@ -742,8 +742,6 @@ def load_result_bundle(
     declared_type: object,
     rewrites: Iterable[Callable[[JsonValue], JsonValue]] = (),
 ) -> object:
-    """Load a stored result; ``rewrites`` transform the raw manifest JSON, in
-    order, before anything is decoded or instantiated."""
     manifest_path = bundle_dir / MANIFEST_FILE_NAME
     raw = json.loads(manifest_path.read_text(encoding="utf-8"))
     for rewrite in rewrites:

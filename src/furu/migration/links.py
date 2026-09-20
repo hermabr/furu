@@ -73,8 +73,6 @@ def _covered_in(
 
 
 def _read_link(obj: Spec) -> _ResultLink | None:
-    """obj's stored result link, if it still names a source the current
-    migrations cover; a link outlived by its source or its chain is no result."""
     if (link_text := read_text_or_none(result_link_path_in(obj._base_dir))) is None:
         return None
     link = _ResultLink.model_validate_json(link_text)
@@ -91,9 +89,6 @@ _SOURCES_CACHE: dict[tuple[type, Path], Mapping[str, list[_ResultLinkSource]]] =
 def _migrated_sources(
     cls: type, resolution: _ClassResolution, covered: _Covered
 ) -> Mapping[str, list[_ResultLinkSource]]:
-    """Results computed under ``covered.schema_directory``, keyed by their fields
-    migrated to the current schema. A directory holding only a link is not a
-    source: its result lives under its own (covered) schema directory."""
     key = (cls, covered.schema_directory)
     if (sources := _SOURCES_CACHE.get(key)) is None:
         sources = {}
