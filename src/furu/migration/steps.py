@@ -22,6 +22,7 @@ class Renamed:
     _: dataclasses.KW_ONLY
     to: str
     breaking: bool = False
+    result_rewrite: Callable[[Any], Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +32,15 @@ class Added:
     ``default`` is the one value every old run behaved as. ``default_factory``
     computes it per run from that run's stored fields (as ``Rewrite`` sees
     them): ``Added("model", default_factory=lambda f: ModelConfig(width=f["width"]))``.
+
+    ``result_rewrite`` (available on every non-breaking step) views an old
+    run's stored result under the new ``create()`` contract. It receives the
+    decoded result and returns the reshaped one, so a dict gains a key with
+    ``lambda r: {**r, "eval": None}`` and a tuple gains a slot with
+    ``lambda r: (*r, None)``. Dataclass and pydantic results arrive as a dict
+    of their fields and are returned the same way; furu builds the instance.
+    A result change with no spec change still needs a step to hang on, e.g.
+    ``Added("result_version", default=1, result_rewrite=...)``.
     """
 
     field: str
@@ -38,6 +48,7 @@ class Added:
     default: object = _NO_DEFAULT
     default_factory: Callable[[Mapping[str, JsonValue]], object] | None = None
     breaking: bool = False
+    result_rewrite: Callable[[Any], Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +56,7 @@ class MovedFrom:
     fully_qualified_name: str
     _: dataclasses.KW_ONLY
     breaking: bool = False
+    result_rewrite: Callable[[Any], Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,11 +65,14 @@ class Retyped:
     _: dataclasses.KW_ONLY
     was: Any
     breaking: bool = False
+    result_rewrite: Callable[[Any], Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class Rewrite:
     transform: Callable[[Mapping[str, JsonValue]], Mapping[str, JsonValue]]
+    _: dataclasses.KW_ONLY
+    result_rewrite: Callable[[Any], Any] | None = None
 
 
 MigrationStep: TypeAlias = Renamed | Added | MovedFrom | Retyped | Rewrite  # noqa: UP040
@@ -83,6 +98,10 @@ def _type_label(tp: object) -> str:
     return repr(tp)
 
 
+def _callable_label(fn: object) -> str:
+    return getattr(fn, "__qualname__", repr(fn))
+
+
 def _describe_step(step: MigrationStep) -> str:
     match step:
         case Renamed(field=field, to=to):
@@ -92,13 +111,15 @@ def _describe_step(step: MigrationStep) -> str:
             if default is not _NO_DEFAULT:
                 body += f", default={default!r}"
             if factory is not None:
-                body += f", default_factory={getattr(factory, '__qualname__', repr(factory))}"
+                body += f", default_factory={_callable_label(factory)}"
         case MovedFrom(fully_qualified_name=name):
             body = f"{name!r}"
         case Retyped(field=field, was=was):
             body = f"{field!r}, was={_type_label(was)}"
         case Rewrite(transform=transform):
-            body = f"{getattr(transform, '__qualname__', repr(transform))}"
+            body = _callable_label(transform)
+    if step.result_rewrite is not None:
+        body += f", result_rewrite={_callable_label(step.result_rewrite)}"
     suffix = ", breaking=True" if _is_breaking(step) else ""
     return f"{type(step).__name__}({body}{suffix})"
 
@@ -116,6 +137,18 @@ def validate_migration_declaration(cls: type[Spec]) -> None:
     names = {field.name: field.name for field in dataclasses.fields(cls)}
 
     for index in reversed(range(len(steps))):
+        rewrite = steps[index].result_rewrite
+        if rewrite is not None and not callable(rewrite):
+            raise TypeError(
+                f"{cls.__name__}.migrations[{index}] ({_describe_step(steps[index])}): "
+                "result_rewrite must be callable"
+            )
+        if rewrite is not None and _is_breaking(steps[index]):
+            raise TypeError(
+                f"{cls.__name__}.migrations[{index}] ({_describe_step(steps[index])}): "
+                "a breaking step discards old results, so there is nothing for "
+                "result_rewrite to rewrite; drop one of the two"
+            )
         match steps[index]:
             case Renamed(field=field, to=to):
                 if to not in names:

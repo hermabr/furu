@@ -23,7 +23,7 @@ from furu.dependencies import (
 from furu.locking import lock
 from furu.logging import _scoped_log_files, get_logger
 from furu.metadata import RunningMetadata
-from furu.migration.links import result_dir_for_loading
+from furu.migration.links import _source_dir_for_loading, load_result
 from furu.migration.stale import raise_if_stale
 from furu.provenance import (
     ExecuteContext,
@@ -154,7 +154,7 @@ def _ensure_group_result[T](
 ) -> None:
     missing: list[Spec[T]] = []
     for obj in objs:
-        if result_dir_for_loading(obj) is not None:
+        if _source_dir_for_loading(obj) is not None:
             obj.logger.info("cache hit for %s", obj._log_label)
             continue
         raise_if_stale(obj)
@@ -166,7 +166,9 @@ def _ensure_group_result[T](
 
     with lock([compute_lock_path_in(obj._base_dir) for obj in missing]) as has_lock:
         pending = [
-            obj for obj in missing if result_dir_for_loading(obj, has_lock=True) is None
+            obj
+            for obj in missing
+            if _source_dir_for_loading(obj, has_lock=True) is None
         ]
         if pending:
             _create_and_store_group(
@@ -221,20 +223,11 @@ def load_existing[T](objs: Sequence[Spec[T]]) -> list[T]:
     missing: list[Spec[T]] = []
     for obj in objs:
         record_dependency_call(obj)
-        if (result_dir := result_dir_for_loading(obj)) is None:
+        if (result := load_result(obj)) is None:
             raise_if_stale(obj)
             missing.append(obj)
             continue
-        loaded.append(
-            cast(
-                T,
-                load_result_bundle(
-                    result_dir,
-                    data_dir=data_dir_in(result_dir.parent),
-                    declared_type=declared_result_type(type(obj)),
-                ),
-            )
-        )
+        loaded.append(result)
     if missing:
         if _in_worker_execution.get():
             raise _DependencyNotReady(dependencies=missing, call_kind="load_existing")
@@ -273,17 +266,8 @@ def _load_or_create_worker[T](
     missing: list[Spec[T]] = []
 
     for obj in objs:
-        if (cached_result_dir := result_dir_for_loading(obj)) is not None:
-            loaded.append(
-                cast(
-                    T,
-                    load_result_bundle(
-                        cached_result_dir,
-                        data_dir=data_dir_in(cached_result_dir.parent),
-                        declared_type=declared_result_type(type(obj)),
-                    ),
-                )
-            )
+        if (result := load_result(obj)) is not None:
+            loaded.append(result)
             cached.append(obj)
         else:
             raise_if_stale(obj)
@@ -323,15 +307,8 @@ def _load_or_create_local[T](
     missing: list[Spec[T]] = []
 
     for obj in unique:
-        if (cached_result_dir := result_dir_for_loading(obj)) is not None:
-            results_by_object_id[obj.object_id] = cast(
-                T,
-                load_result_bundle(
-                    cached_result_dir,
-                    data_dir=data_dir_in(cached_result_dir.parent),
-                    declared_type=declared_result_type(type(obj)),
-                ),
-            )
+        if (result := load_result(obj)) is not None:
+            results_by_object_id[obj.object_id] = result
         else:
             raise_if_stale(obj)
             obj._base_dir.mkdir(parents=True, exist_ok=True)
@@ -352,18 +329,9 @@ def _load_or_create_local[T](
         pending: list[Spec[T]] = []
         late_hits = 0
         for obj in missing:
-            if (
-                cached_result_dir := result_dir_for_loading(obj, has_lock=use_lock)
-            ) is not None:
+            if (result := load_result(obj, has_lock=use_lock)) is not None:
                 late_hits += 1
-                results_by_object_id[obj.object_id] = cast(
-                    T,
-                    load_result_bundle(
-                        cached_result_dir,
-                        data_dir=data_dir_in(cached_result_dir.parent),
-                        declared_type=declared_result_type(type(obj)),
-                    ),
-                )
+                results_by_object_id[obj.object_id] = result
             else:
                 pending.append(obj)
 

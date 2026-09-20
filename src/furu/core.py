@@ -15,24 +15,21 @@ from typing import (
     ClassVar,
     Literal,
     Self,
-    cast,
     final,
 )
 
 from furu._batched import _BatchedCreate, _BatchedHook, batched
-from furu._declared_types import declared_result_type
 from furu.config import get_config
 from furu.explain import ExplainDepth
 from furu.explain import explain as _explain
 from furu.locking import LockError, is_active_lock, lock
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
-from furu.migration.links import _read_source, result_dir_for_loading
+from furu.migration.links import _read_source, _source_dir_for_loading, load_result
 from furu.migration.resolution import validate_embedded_migration_declarations
 from furu.migration.stale import raise_if_stale, sideways_status
 from furu.migration.steps import MigrationStep, validate_migration_declaration
 from furu.provenance import Provenance
-from furu.result.bundle import load_result_bundle
 from furu.result.codec import Codec
 from furu.serializer.artifact import to_json as _to_json
 from furu.serializer.registry import Serializer
@@ -40,7 +37,6 @@ from furu.serializer.schema import schema_type as _schema_type
 from furu.spec_metadata import Metadata, Throttle
 from furu.storage._layout import (
     compute_lock_path_in,
-    data_dir_in,
     metadata_path_in,
     provenance_path_in,
     result_link_path_in,
@@ -206,15 +202,8 @@ class Spec[T](_FuruDataclassTransform, ABC):
         )
 
         record_dependency_call(self)
-        if (result_dir := result_dir_for_loading(self)) is not None:
-            return cast(
-                T,
-                load_result_bundle(
-                    result_dir,
-                    data_dir=data_dir_in(result_dir.parent),
-                    declared_type=declared_result_type(type(self)),
-                ),
-            )
+        if (result := load_result(self)) is not None:
+            return result
         raise_if_stale(self)
         if _in_worker_execution.get():
             raise _DependencyNotReady(
@@ -236,7 +225,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
         )
 
         record_dependency_call(self)
-        if (result_dir := result_dir_for_loading(self)) is None:
+        if (source_dir := _source_dir_for_loading(self)) is None:
             raise_if_stale(self)
             if _in_worker_execution.get():
                 raise _DependencyNotReady(
@@ -248,7 +237,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
                 "Provenance is recorded when a result is computed; use create() "
                 "to compute it first."
             )
-        path = provenance_path_in(result_dir.parent)
+        path = provenance_path_in(source_dir)
         if not path.exists():
             raise Missing(
                 f"{self._log_label}.provenance(): the result exists but "

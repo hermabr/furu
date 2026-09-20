@@ -115,6 +115,7 @@ def raise_if_stale(obj: Spec) -> None:
         f"\nEither declare a migration chain on {type(obj).__name__}.migrations "
         "(Renamed/Added/MovedFrom/Retyped/Rewrite), mark the change as breaking "
         "(breaking=True) to recompute instead of reuse, or discard the orphaned "
-        "results by deleting the directory above."
+        "results by deleting the directory above. If what create() returns "
+        "changed shape too, add result_rewrite= to the step that carries it."
     )
     raise Stale("\n".join(lines))
