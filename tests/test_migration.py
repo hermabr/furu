@@ -15,7 +15,7 @@ import furu
 import furu.migration.links as migration_links
 import furu.migration.resolution as migration_resolution
 from furu import Added, MovedFrom, Renamed, Retyped, Rewrite, Spec, Stale
-from furu.migration.steps import MigrationError
+from furu.migration.steps import MigrationError, _describe_step
 from furu.result.codec import Codec
 from furu.storage._layout import (
     compute_lock_path_in,
@@ -915,7 +915,7 @@ def test_added_default_pins_history_independently_of_the_field_default() -> None
     assert _COUNTER.calls == 0
 
 
-# --- Added derive= computes the backfill from each old run's own fields ------------
+# --- a callable Added default computes the backfill from each old run's fields -----
 
 
 @dataclass(frozen=True)
@@ -944,14 +944,14 @@ class _NestedModelRun(Spec[str]):
     width: int
     model: _ModelConfig = _ModelConfig(width=8)
 
-    migrations = (Added("model", derive=_model_from_width),)
+    migrations = (Added("model", default=_model_from_width),)
 
     def create(self) -> str:
         _COUNTER.calls += 1
         return "recomputed"
 
 
-def test_added_derive_backfills_an_object_from_the_old_runs_fields() -> None:
+def test_callable_added_default_backfills_an_object_from_the_old_runs_fields() -> None:
     for width in (4, 16):
         _FlatWidthDonor(dataset="cifar10", width=width).create()
     _transplant_generation(_FlatWidthDonor(dataset="cifar10", width=4), _NestedModelRun)
@@ -973,7 +973,7 @@ def test_added_derive_backfills_an_object_from_the_old_runs_fields() -> None:
     assert _COUNTER.calls == 0
     assert json.loads(result_link_path_in(matching._base_dir).read_text())[
         "migration_path"
-    ] == ["Added('model', derive=_model_from_width)"]
+    ] == ["Added('model', default=_model_from_width)"]
 
 
 def _model_from_missing_depth(fields: Mapping[str, JsonValue]) -> _ModelConfig:
@@ -985,13 +985,13 @@ class _BadDeriveRun(Spec[str]):
     width: int
     model: _ModelConfig = _ModelConfig(width=8)
 
-    migrations = (Added("model", derive=_model_from_missing_depth),)
+    migrations = (Added("model", default=_model_from_missing_depth),)
 
     def create(self) -> str:
         return "recomputed"
 
 
-def test_added_derive_sees_only_the_fields_present_at_that_step() -> None:
+def test_callable_added_default_sees_only_the_fields_present_at_that_step() -> None:
     donor = _FlatWidthDonor(dataset="cifar10", width=4)
     donor.create()
     _transplant_generation(donor, _BadDeriveRun)
@@ -1000,6 +1000,31 @@ def test_added_derive_sees_only_the_fields_present_at_that_step() -> None:
         _ = _BadDeriveRun(
             dataset="cifar10", width=4, model=_ModelConfig(width=4)
         ).status
+
+
+class _Optimizer:
+    pass
+
+
+class _TypedRun(Spec[str]):
+    dataset: str
+    optimizer: type[_Optimizer] = _Optimizer
+
+    migrations = (Added("optimizer", default=_Optimizer),)
+
+    def create(self) -> str:
+        return "recomputed"
+
+
+def test_class_added_default_is_a_value_not_a_derivation() -> None:
+    donor = _RetriesDonor(dataset="cifar10")
+    donor.create()
+    _transplant_generation(donor, _TypedRun)
+
+    assert _TypedRun(dataset="cifar10").status == "done"
+    assert _describe_step(_TypedRun.migrations[0]) == (
+        f"Added('optimizer', default={_Optimizer!r})"
+    )
 
 
 # --- phase one: validation at class creation ---------------------------------------
@@ -1033,20 +1058,8 @@ def test_added_typo_fails_at_class_creation() -> None:
                 return 0
 
 
-def test_added_with_both_default_and_derive_fails_at_class_creation() -> None:
-    with pytest.raises(TypeError, match="exactly one of default="):
-
-        class _AddedBoth(Spec[int]):
-            seed: int
-
-            migrations = (Added("seed", default=0, derive=lambda fields: 0),)
-
-            def create(self) -> int:
-                return 0
-
-
 def test_added_without_default_fails_at_class_creation() -> None:
-    with pytest.raises(TypeError, match="exactly one of default="):
+    with pytest.raises(TypeError, match="needs default="):
 
         class _AddedNoDefault(Spec[int]):
             seed: int
