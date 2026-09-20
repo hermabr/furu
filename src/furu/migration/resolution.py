@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import typing
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, is_dataclass
 from dataclasses import fields as dataclass_fields
 from pathlib import Path
@@ -37,7 +37,6 @@ if TYPE_CHECKING:
 
 type _FieldExpectation = tuple[Literal["exact", "shape", "any"], JsonValue]
 _ANY: _FieldExpectation = ("any", None)
-type _Backfill = Callable[[Mapping[str, JsonValue]], JsonValue]
 
 
 def _shape_of(schema: JsonValue) -> JsonValue:
@@ -70,7 +69,8 @@ class _Chain:
     steps: tuple[MigrationStep, ...]
     generations: tuple[_Generation, ...]
     last_breaking: int
-    added_values: Mapping[int, _Backfill]
+    added_types: Mapping[int, object]  # declared type of each non-breaking Added
+    artifact_serializers: tuple[type[Serializer], ...]
     current_schema: JsonValue
 
     @property
@@ -151,22 +151,6 @@ def validate_embedded_migration_declarations(cls: type[Spec]) -> None:
         validate_migration_declaration(cast("type[Spec]", child))
 
 
-def _constant(value: JsonValue) -> _Backfill:
-    return lambda _fields: value
-
-
-def _derived(
-    derive: Callable[[Mapping[str, JsonValue]], object],
-    declared_type: object,
-    artifact_serializers: tuple[type[Serializer], ...],
-) -> _Backfill:
-    return lambda fields: to_json(
-        derive(fields),
-        declared_type=declared_type,
-        artifact_serializers=artifact_serializers,
-    )
-
-
 def _build_chain(
     cls: type, artifact_serializers: tuple[type[Serializer], ...]
 ) -> _Chain:
@@ -186,7 +170,7 @@ def _build_chain(
     hints = typing.get_type_hints(cls, include_extras=True)
     expectations = dict(current_fields)
     current_name_of = {name: name for name in expectations}
-    added_values: dict[int, _Backfill] = {}
+    added_types: dict[int, object] = {}
     pinned: dict[str, JsonValue] = {}
     rewritten = False
     generations: list[_Generation] = []
@@ -199,21 +183,14 @@ def _build_chain(
             case Added(field=field) as step:
                 name = current_name_of.pop(field)
                 del expectations[field]
-                if step.breaking:
-                    pass
-                elif step.derive is not None:
-                    added_values[index] = _derived(
-                        step.derive, hints[name], artifact_serializers
-                    )
-                else:
-                    value = to_json(
-                        step.default,
-                        declared_type=hints[name],
-                        artifact_serializers=artifact_serializers,
-                    )
-                    added_values[index] = _constant(value)
-                    if not rewritten:
-                        pinned[name] = value
+                if not step.breaking:
+                    added_types[index] = hints[name]
+                    if not rewritten and step.derive is None:
+                        pinned[name] = to_json(
+                            step.default,
+                            declared_type=hints[name],
+                            artifact_serializers=artifact_serializers,
+                        )
             case Retyped(field=field) as step:
                 expectations[field] = (
                     "shape",
@@ -285,7 +262,8 @@ def _build_chain(
             (index for index, step in enumerate(steps) if _is_breaking(step)),
             default=-1,
         ),
-        added_values=added_values,
+        added_types=added_types,
+        artifact_serializers=artifact_serializers,
         current_schema=current_schema,
     )
 
@@ -462,9 +440,12 @@ def _apply_steps(chain: _Chain, start: int, source_fields: JsonFields) -> JsonFi
                         f"stored fields: {sorted(fields)}"
                     )
                 fields[to] = fields.pop(field)
-            case Added(field=field):
-                fields[field] = chain.added_values[index](
-                    _SourceFields(fields, description)
+            case Added(field=field) as step:
+                source = _SourceFields(fields, description)
+                fields[field] = to_json(
+                    step.derive(source) if step.derive else step.default,
+                    declared_type=chain.added_types[index],
+                    artifact_serializers=chain.artifact_serializers,
                 )
             case Retyped() | MovedFrom():
                 pass

@@ -1023,7 +1023,7 @@ def test_class_added_default_is_a_value_not_a_derivation() -> None:
 
     assert _TypedRun(dataset="cifar10").status == "done"
     assert _describe_step(_TypedRun.migrations[0]) == (
-        f"Added('optimizer', default={_Optimizer!r})"
+        "Added('optimizer', default=_Optimizer)"
     )
 
 

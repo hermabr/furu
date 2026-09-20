@@ -93,12 +93,10 @@ def _describe_step(step: MigrationStep) -> str:
     match step:
         case Renamed(field=field, to=to):
             body = f"{field!r}, to={to!r}"
-        case Added(field=field, default=default) as step:
+        case Added(field=field, default=default):
             body = f"{field!r}"
-            if step.derive is not None:
+            if default is not _NO_DEFAULT:
                 body += f", default={getattr(default, '__qualname__', repr(default))}"
-            elif default is not _NO_DEFAULT:
-                body += f", default={default!r}"
         case MovedFrom(fully_qualified_name=name):
             body = f"{name!r}"
         case Retyped(field=field, was=was):
