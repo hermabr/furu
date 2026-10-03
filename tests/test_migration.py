@@ -1780,6 +1780,43 @@ def test_embedded_dataclass_chain_is_validated_when_a_spec_embeds_it() -> None:
                 return 0
 
 
+class _SelfNestedRunV0(Spec[str]):
+    width: int
+    init: _SelfNestedRunV0 | None = None
+
+    def create(self) -> str:
+        _COUNTER.calls += 1
+        return f"width={self.width}"
+
+
+class _SelfNestedRun(Spec[str]):
+    width: int
+    init: _SelfNestedRun | None = None
+    depth: int = 1
+
+    migrations = (Added("depth", default=1),)
+
+    def create(self) -> str:
+        _COUNTER.calls += 1
+        return "recomputed"
+
+
+def test_own_chain_migrates_nested_instances_of_the_same_class() -> None:
+    old = _SelfNestedRunV0(
+        width=2, init=_SelfNestedRunV0(width=1, init=_SelfNestedRunV0(width=0))
+    )
+    old.create()
+    _transplant_generation(old, _SelfNestedRun)
+    _COUNTER.calls = 0
+
+    run = _SelfNestedRun(
+        width=2, init=_SelfNestedRun(width=1, init=_SelfNestedRun(width=0))
+    )
+    assert run.status == "done"
+    assert run.create() == "width=2"
+    assert _COUNTER.calls == 0
+
+
 # --- result_rewrite: old results come back in today's shape -------------------------
 
 

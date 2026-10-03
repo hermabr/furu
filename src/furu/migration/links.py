@@ -13,6 +13,7 @@ from furu.metadata import CompletedMetadata
 from furu.migration.resolution import (
     _apply_child_moves,
     _apply_steps,
+    _ChildMove,
     _class_resolution,
     _ClassResolution,
     _Covered,
@@ -92,6 +93,13 @@ def _migrated_sources(
     key = (cls, covered.schema_directory)
     if (sources := _SOURCES_CACHE.get(key)) is None:
         sources = {}
+        # Nested instances of the class itself share the outer generation.
+        moves = {
+            **covered.child_moves,
+            covered.generation.class_name: _ChildMove(
+                resolution.own, covered.generation.start
+            ),
+        }
         if covered.schema_directory.exists():
             for artifact_dir in sorted(covered.schema_directory.iterdir()):
                 if not result_manifest_path_in(artifact_dir).exists():
@@ -109,11 +117,10 @@ def _migrated_sources(
                     base_dir=artifact_dir,
                 )
                 fields = cast(JsonFields, artifact.artifact_data[FIELDSMARKER])
-                if covered.child_moves:
-                    fields = {
-                        name: _apply_child_moves(value, covered.child_moves)
-                        for name, value in fields.items()
-                    }
+                fields = {
+                    name: _apply_child_moves(value, moves)
+                    for name, value in fields.items()
+                }
                 fields = _apply_steps(resolution.own, covered.generation.start, fields)
                 sources.setdefault(_stable_json_dump(fields), []).append(source)
         _SOURCES_CACHE[key] = sources
