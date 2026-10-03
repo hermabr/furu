@@ -39,17 +39,19 @@ def _custom_schema(serializer: type[Serializer], declared_type: object) -> JsonV
 def schema_class(
     tp: type,
     field_names: list[str],
-    seen: set[type],
+    seen: dict[type, bool],
     *,
     artifact_serializers: tuple[type[Serializer], ...],
     for_hash: bool,
 ) -> JsonValue:
-    if tp in seen:
+    # seen maps every visited class to whether it is still being expanded, so
+    # only a real cycle (tp is its own ancestor) collapses to a bare name.
+    if seen.get(tp):
         return {CLASSMARKER: fully_qualified_name(tp)}
-    seen.add(tp)
+    seen[tp] = True
 
     hints = get_type_hints(tp, include_extras=True)
-    return {
+    schema: JsonValue = {
         CLASSMARKER: fully_qualified_name(tp),
         FIELDSMARKER: {
             name: schema_type(
@@ -62,11 +64,13 @@ def schema_class(
             if not (for_hash and has_skip_hash(hints[name]))
         },
     }
+    seen[tp] = False
+    return schema
 
 
 def schema_dataclass(
     tp: type,
-    seen: set[type],
+    seen: dict[type, bool],
     *,
     artifact_serializers: tuple[type[Serializer], ...],
     for_hash: bool,
@@ -83,7 +87,7 @@ def schema_dataclass(
 
 def schema_pydantic_model(
     tp: type[PydanticBaseModel],
-    seen: set[type],
+    seen: dict[type, bool],
     *,
     artifact_serializers: tuple[type[Serializer], ...],
     for_hash: bool,
@@ -99,7 +103,7 @@ def schema_pydantic_model(
 
 def schema_type(
     tp: Any,
-    seen: set[type],
+    seen: dict[type, bool],
     *,
     artifact_serializers: tuple[type[Serializer], ...],
     for_hash: bool = False,

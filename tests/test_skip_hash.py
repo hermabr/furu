@@ -83,8 +83,8 @@ def test_non_skip_field_still_changes_hash() -> None:
 
 
 def test_skip_hash_field_omitted_from_hash_schema_only() -> None:
-    full = schema_type(_SkipScalar, set(), artifact_serializers=())
-    hashed = schema_type(_SkipScalar, set(), artifact_serializers=(), for_hash=True)
+    full = schema_type(_SkipScalar, {}, artifact_serializers=())
+    hashed = schema_type(_SkipScalar, {}, artifact_serializers=(), for_hash=True)
 
     assert "debug" in _fields(full)
     assert "debug" not in _fields(hashed)
