@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Generator, Iterator, Sequence
+from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import fields, is_dataclass
+from dataclasses import fields
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, Self, overload
 
-from pydantic import BaseModel as PydanticBaseModel
+from furu._tree import specs_in
 
 if TYPE_CHECKING:
     from furu.core import Spec
@@ -44,37 +44,17 @@ def dependency[TSpec: Spec, T](
     return dependency if func is None else _CachedDependency(func)
 
 
-def find_nested_furu_objects(value: object) -> Iterator[Spec]:
-    from furu.core import Spec
-
-    match value:
-        case Spec():
-            yield value
-        case _ if is_dataclass(value) and not isinstance(value, type):
-            for field in fields(value):
-                yield from find_nested_furu_objects(getattr(value, field.name))
-        case PydanticBaseModel():
-            for name in type(value).model_fields:
-                yield from find_nested_furu_objects(getattr(value, name))
-        case tuple() | list() | set() | frozenset():
-            for item in value:
-                yield from find_nested_furu_objects(item)
-        case dict():
-            for item in value.values():
-                yield from find_nested_furu_objects(item)
-
-
 def collect_declared_refs(obj: Spec) -> tuple[Spec, ...]:
     refs_by_id: dict[str, Spec] = {}
 
     for field in fields(obj):
-        for ref in find_nested_furu_objects(getattr(obj, field.name)):
+        for ref in specs_in(getattr(obj, field.name)):
             refs_by_id.setdefault(ref.object_id, ref)
 
     for base in reversed(type(obj).__mro__):
         for name, value in base.__dict__.items():
             if getattr(value, "__furu_dependency__", False):
-                for ref in find_nested_furu_objects(getattr(obj, name)):
+                for ref in specs_in(getattr(obj, name)):
                     refs_by_id.setdefault(ref.object_id, ref)
 
     return tuple(

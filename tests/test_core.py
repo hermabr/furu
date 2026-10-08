@@ -1180,13 +1180,27 @@ def test_top_level_create_accepts_single_spec_and_sequence() -> None:
     assert furu.create(nodes) == ["Node(top-create-a)", "Node(top-create-b)"]
 
 
-def test_top_level_load_existing_rejects_single_furu_object() -> None:
-    node = Node(name="single-load")
+@dataclass(frozen=True)
+class _TreePair:
+    left: Node
+    right: list[Node]
 
-    assert node.create() == "Node(single-load)"
 
-    with pytest.raises(TypeError, match="expected a sequence of Spec objects"):
-        furu.load_existing(node)  # ty:ignore[invalid-argument-type]
+def test_create_and_load_existing_map_specs_through_pytrees() -> None:
+    a, b = Node(name="tree-a"), Node(name="tree-b")
+    tree = {"pair": _TreePair(left=a, right=[b, a]), "rest": (b, 3, "x")}
+    expected = {
+        "pair": {"left": "Node(tree-a)", "right": ["Node(tree-b)", "Node(tree-a)"]},
+        "rest": ("Node(tree-b)", 3, "x"),
+    }
+
+    assert furu.create(tree) == expected
+    assert furu.load_existing(tree) == expected
+    assert furu.load_existing(a) == "Node(tree-a)"
+    assert furu.create(_TreePair(left=a, right=[])) == {
+        "left": "Node(tree-a)",
+        "right": [],
+    }
 
 
 def test_top_level_load_existing_accepts_list_and_logs_once(tmp_path: Path) -> None:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, assert_type
+from typing import TYPE_CHECKING, Any, assert_type
 
 import furu
 
@@ -53,6 +53,20 @@ if TYPE_CHECKING:
     assert_type(TypingChild().create(), int)
     assert_type(TypingBatched(key=1).create(), str)
     assert_type(furu.create([TypingBatched(key=1)]), list[str])
+    child, batched = TypingChild(), TypingBatched(key=1)
+    children: list[TypingChild] = [child]
+    by_name: dict[str, TypingChild] = {"a": child}
+    assert_type(furu.create(children), list[int])
+    assert_type(furu.create((child, batched)), tuple[int, str])
+    assert_type(furu.create((child, batched, child)), tuple[int, str, int])
+    assert_type(furu.create(by_name), dict[str, int])
+    assert_type(furu.create({"a": child}), dict[str, int])
+    assert_type(furu.load_existing(child), int)
+    assert_type(furu.load_existing((child, batched)), tuple[int, str])
+    # Shapes Python's type system cannot map Spec[T] -> T through are Any.
+    assert_type(furu.create([[child]]), Any)
+    assert_type(furu.create({"a": [child]}), Any)
+    assert_type(furu.create(TypingRefOutput(weights=furu.ref([1]))), dict[str, Any])
     typed_ref = furu.ref([1, 2, 3])
     assert_type(typed_ref, furu.Ref[list[int]])
     assert_type(typed_ref.load(), list[int])
