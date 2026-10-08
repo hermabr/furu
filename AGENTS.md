@@ -4,7 +4,8 @@ I love to build. I focus on building complex things as simple as possible. I lov
 
 Channel "measure twice, cut once", "yagni" and "one-liner solutions". Fight scope creep. Try to honor the dev's intent in both a minimal and realistic fashion.
 
-Furu is pre-release with no users. Prefer solutions that will improve the long term maintainability of the codebase. Never keep a feature just because it already exists.
+Furu is pre-release with no users. Prefer solutions that will improve the long term maintainability of the codebase. Never keep a feature just because it already exists. Break APIs freely and don't add deprecation shims.
 
 Think of these instructions less as "hard rules", more as "good defaults". If a rule here fights the task in front of you, say so loudly and get a human sign-off before breaking it.
 
+We use `uv`, such as `uv run python` and you should always check that `uv run ruff check && uv run ty check && uv run pytest` pass.
