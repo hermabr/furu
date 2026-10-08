@@ -40,7 +40,8 @@ dev = [
 "tests/**" = ["BLE001", "DTZ001", "TRY004"]
 
 [tool.pytest.ini_options]
-addopts = "-n auto --dist worksteal"
+addopts = "-n 6 --dist worksteal"
 markers = [
     "slurm_integration: opt-in Docker-backed tests that run against a real local Slurm daemon",
+    "real_probes: run the real git, nvidia-smi and uv probes instead of tests/conftest.py's canned ones",
 ]
