@@ -4,6 +4,12 @@ from pathlib import Path
 import pytest
 from canned_probes import CANNED_PROBES
 
+# Process start-up dominates the suite. OpenBLAS spins up a thread per core
+# when numpy is imported (about 1.5s of CPU per process), and pydantic scans
+# every installed package's entry points for plugins; tests need neither.
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("PYDANTIC_DISABLE_PLUGINS", "__all__")
+
 
 @pytest.fixture(autouse=True)
 def _child_import_path(monkeypatch: pytest.MonkeyPatch) -> None:

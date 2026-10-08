@@ -32,7 +32,6 @@ from furu.result.codec import (
 from furu.storage._layout import data_dir_in, result_dir_in, result_manifest_path_in
 
 np = pytest.importorskip("numpy")
-pl = pytest.importorskip("polars")
 
 
 def _save_result_bundle(
@@ -1332,15 +1331,21 @@ def test_numpy_array_reloads_as_plain_array() -> None:
 
 class PolarsResult(Spec[dict[str, object]]):
     def create(self) -> dict[str, object]:
+        import polars as pl
+
         return {"frame": pl.DataFrame({"x": [1, 2, 3], "y": ["a", "b", "c"]})}
 
 
 class PolarsRefResult(Spec[Ref[Any]]):
     def create(self) -> Ref[Any]:
+        import polars as pl
+
         return furu.ref(pl.DataFrame({"x": [1, 2]}))
 
 
 def test_polars_dataframe_round_trips() -> None:
+    import polars as pl
+
     obj = PolarsResult()
     loaded = obj.create()
 
@@ -1363,6 +1368,8 @@ def test_polars_dataframe_round_trips() -> None:
 def test_polars_whole_value_routes_through_registry_and_loads_eagerly(
     tmp_path: Path,
 ) -> None:
+    import polars as pl
+
     bundle_dir = tmp_path / "bundle"
     frame = pl.DataFrame({"x": [1, 2, 3]})
 
@@ -1374,6 +1381,8 @@ def test_polars_whole_value_routes_through_registry_and_loads_eagerly(
 
 
 def test_polars_ref_result_round_trips() -> None:
+    import polars as pl
+
     obj = PolarsRefResult()
 
     created = obj.create()
