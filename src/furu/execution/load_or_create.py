@@ -143,7 +143,7 @@ def _load_or_create(tree: object) -> Any:
     _require_uv()
     if isinstance(tree, Spec):
         tree.logger.debug(".create called for %s", tree)
-    objs = list(specs_in(tree))
+    objs = specs_in(tree)
     for obj in objs:
         record_dependency_call(obj)
     if _in_worker_execution.get():
@@ -223,7 +223,7 @@ def create(tree: object, /, *, on: Sequence[WorkerBackend] | None = None) -> Any
     if on is not None:
         from furu.execution.execution_coordinator import ExecutionCoordinator
 
-        ExecutionCoordinator.run(list(specs_in(tree)), worker_backends=tuple(on))
+        ExecutionCoordinator.run(specs_in(tree), worker_backends=tuple(on))
     return _load_or_create(tree)
 
 
@@ -246,7 +246,7 @@ def load_existing(tree: DataclassInstance | BaseModel, /) -> dict[str, Any]: ...
 @overload
 def load_existing(tree: object, /) -> Any: ...
 def load_existing(tree: object, /) -> Any:
-    objs = list(specs_in(tree))
+    objs = specs_in(tree)
     loaded: dict[str, Any] = {}
     missing: list[Spec] = []
     for obj in objs:
