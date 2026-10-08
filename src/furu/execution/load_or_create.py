@@ -3,16 +3,18 @@ from __future__ import annotations
 import json
 import shutil
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
 from typing import (
     TYPE_CHECKING,
+    Any,
     cast,
     overload,
 )
 
 from furu._batched import _BatchedHook
 from furu._declared_types import declared_result_type
+from furu._tree import map_specs, specs_in
 from furu.config import get_config
 from furu.core import Missing, Spec
 from furu.dependencies import (
@@ -53,6 +55,9 @@ from furu.worker.context import (
 )
 
 if TYPE_CHECKING:
+    from _typeshed import DataclassInstance
+    from pydantic import BaseModel
+
     from furu.worker.backends.protocol import WorkerBackend
 
 type HasLock = Callable[[], bool]
@@ -131,24 +136,22 @@ def _store_result[T](
 
 
 @overload
-def _load_or_create[T](obj: Spec[T]) -> T: ...
-
-
+def _load_or_create[T](tree: Spec[T]) -> T: ...
 @overload
-def _load_or_create[T](objs: Sequence[Spec[T]]) -> list[T]: ...
-
-
-def _load_or_create[T](obj_or_objs: Spec[T] | Sequence[Spec[T]]) -> T | list[T]:
+def _load_or_create(tree: object) -> Any: ...
+def _load_or_create(tree: object) -> Any:
     _require_uv()
-    objs, unwrap = _normalize_load_or_create_input(obj_or_objs)
+    if isinstance(tree, Spec):
+        tree.logger.debug(".create called for %s", tree)
+    objs = specs_in(tree)
+    for obj in objs:
+        record_dependency_call(obj)
     if _in_worker_execution.get():
         outputs = _load_or_create_worker(objs)
     else:
-        outputs = _load_or_create_local(objs, announce=unwrap)
-    if unwrap:
-        (output,) = outputs
-        return output
-    return outputs
+        outputs = _load_or_create_local(objs, announce=isinstance(tree, Spec))
+    results = {obj.object_id: output for obj, output in zip(objs, outputs)}
+    return map_specs(lambda obj: results[obj.object_id], tree)
 
 
 def _ensure_group_result[T](
@@ -179,55 +182,80 @@ def _ensure_group_result[T](
             )
 
 
-def _normalize_load_or_create_input[T](
-    obj_or_objs: Spec[T] | Sequence[Spec[T]],
-) -> tuple[list[Spec[T]], bool]:
-    match obj_or_objs:
-        case Spec() as obj:
-            assert not isinstance(obj, Sequence)
-            record_dependency_call(obj)
-            obj.logger.debug(".create called for %s", obj)
-            return [obj], True
-        case Sequence() as objs:
-            for obj in objs:
-                record_dependency_call(obj)
-            return list(objs), False
-
-
+# Python cannot map Spec[T] -> T through an arbitrary structure, so the shapes
+# it can express get exact types and every other pytree is Any. Dataclasses and
+# pydantic models come back as dicts of their fields.
 @overload
-def create[T](obj: Spec[T], *, on: Sequence[WorkerBackend] | None = None) -> T: ...
+def create[T](tree: Spec[T], /, *, on: Sequence[WorkerBackend] | None = None) -> T: ...
 @overload
-def create[T](
-    objs: Sequence[Spec[T]], *, on: Sequence[WorkerBackend] | None = None
-) -> list[T]: ...
-def create[T](
-    obj_or_objs: Spec[T] | Sequence[Spec[T]],
+def create[T0, T1](
+    tree: tuple[Spec[T0], Spec[T1]], /, *, on: Sequence[WorkerBackend] | None = None
+) -> tuple[T0, T1]: ...
+@overload
+def create[T0, T1, T2](
+    tree: tuple[Spec[T0], Spec[T1], Spec[T2]],
+    /,
     *,
     on: Sequence[WorkerBackend] | None = None,
-) -> T | list[T]:
+) -> tuple[T0, T1, T2]: ...
+@overload
+def create[T](
+    tree: tuple[Spec[T], ...], /, *, on: Sequence[WorkerBackend] | None = None
+) -> tuple[T, ...]: ...
+@overload
+def create[T](
+    tree: Sequence[Spec[T]], /, *, on: Sequence[WorkerBackend] | None = None
+) -> list[T]: ...
+@overload
+def create[K, T](
+    tree: Mapping[K, Spec[T]], /, *, on: Sequence[WorkerBackend] | None = None
+) -> dict[K, T]: ...
+@overload
+def create(
+    tree: DataclassInstance | BaseModel,
+    /,
+    *,
+    on: Sequence[WorkerBackend] | None = None,
+) -> dict[str, Any]: ...
+@overload
+def create(tree: object, /, *, on: Sequence[WorkerBackend] | None = None) -> Any: ...
+def create(tree: object, /, *, on: Sequence[WorkerBackend] | None = None) -> Any:
     if on is not None:
         from furu.execution.execution_coordinator import ExecutionCoordinator
 
-        objs = [obj_or_objs] if isinstance(obj_or_objs, Spec) else list(obj_or_objs)
-        ExecutionCoordinator.run(objs, worker_backends=tuple(on))
-    return _load_or_create(obj_or_objs)
+        ExecutionCoordinator.run(specs_in(tree), worker_backends=tuple(on))
+    return _load_or_create(tree)
 
 
-def load_existing[T](objs: Sequence[Spec[T]]) -> list[T]:
-    if not isinstance(objs, Sequence):
-        raise TypeError("load_existing() expected a sequence of Spec objects")
-    objs = list(objs)
-    if any(not isinstance(obj, Spec) for obj in objs):
-        raise TypeError("load_existing() expected Spec objects")
-    loaded: list[T] = []
-    missing: list[Spec[T]] = []
+@overload
+def load_existing[T](tree: Spec[T], /) -> T: ...
+@overload
+def load_existing[T0, T1](tree: tuple[Spec[T0], Spec[T1]], /) -> tuple[T0, T1]: ...
+@overload
+def load_existing[T0, T1, T2](
+    tree: tuple[Spec[T0], Spec[T1], Spec[T2]], /
+) -> tuple[T0, T1, T2]: ...
+@overload
+def load_existing[T](tree: tuple[Spec[T], ...], /) -> tuple[T, ...]: ...
+@overload
+def load_existing[T](tree: Sequence[Spec[T]], /) -> list[T]: ...
+@overload
+def load_existing[K, T](tree: Mapping[K, Spec[T]], /) -> dict[K, T]: ...
+@overload
+def load_existing(tree: DataclassInstance | BaseModel, /) -> dict[str, Any]: ...
+@overload
+def load_existing(tree: object, /) -> Any: ...
+def load_existing(tree: object, /) -> Any:
+    objs = specs_in(tree)
+    loaded: dict[str, Any] = {}
+    missing: list[Spec] = []
     for obj in objs:
         record_dependency_call(obj)
         if (result_dir := result_dir_for_loading(obj)) is None:
             raise_if_stale(obj)
             missing.append(obj)
             continue
-        loaded.append(load_stored_result(obj, result_dir))
+        loaded[obj.object_id] = load_stored_result(obj, result_dir)
     if missing:
         first = missing[0]
         raise Missing(
@@ -237,11 +265,11 @@ def load_existing[T](objs: Sequence[Spec[T]]) -> list[T]:
         )
     if objs:
         get_logger().info(
-            "loaded %d furu objects including %s", len(loaded), objs[0]._log_label
+            "loaded %d furu objects including %s", len(objs), objs[0]._log_label
         )
     else:
         get_logger().info("loaded 0 furu objects")
-    return loaded
+    return map_specs(lambda obj: loaded[obj.object_id], tree)
 
 
 def _cached_to_build_msg(cached: list[Spec], to_build: list[Spec]) -> str:
