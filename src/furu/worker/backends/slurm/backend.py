@@ -19,6 +19,7 @@ from furu.config import (
 )
 from furu.resources import Worker
 from furu.snapshot import CodeLocation
+from furu.storage._layout import slurm_worker_log_path_in
 from furu.utils import (
     _hash_dict_deterministically,
     overwrite_file_in_place,
@@ -142,14 +143,18 @@ class SlurmWorkerBackend:
         if pre_worker_script:
             pre_worker_script += "\n"
 
-        log_dir = worker_dir / "logs"
-        log_dir.mkdir()
+        # Workers are named after their Slurm job so `sacct -j <worker>` works.
+        job_id = (
+            "${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
+            if self.use_job_arrays
+            else "${SLURM_JOB_ID}"
+        )
+        # One file per worker: stdout and stderr, merged as Slurm does by default.
+        log_path = slurm_worker_log_path_in(
+            worker_dir, "%A_%a" if self.use_job_arrays else "%j"
+        )
+        log_path.parent.mkdir()
         script_path = worker_dir / "worker.sh"
-        if self.use_job_arrays:
-            component_line = 'furu_worker_component="slurm-worker-${SLURM_ARRAY_JOB_ID}a${SLURM_ARRAY_TASK_ID}"\n'
-        else:
-            component_line = 'furu_worker_component="slurm-worker-${SLURM_JOB_ID}"\n'
-
         write_private_file(
             script_path,
             (
@@ -159,7 +164,7 @@ class SlurmWorkerBackend:
                 "export "
                 f"{_WORKER_JSON_CONFIG_FILE_ENV_VAR}={shlex.quote(str(config_file))}\n"
                 "\n"
-                f"{component_line}"
+                f'furu_worker_component="{job_id}"\n'
                 "\n"
                 f"{pre_worker_script}"
                 # Do not leak the submit environment into snapshot workers.
@@ -170,8 +175,6 @@ class SlurmWorkerBackend:
                 "    python -m furu.worker._cli \\\n"
                 f"    --coordinator-file {shlex.quote(str(config_file))} \\\n"
                 '    --component "${furu_worker_component}" \\\n'
-                f"    --log-file {shlex.quote(str(log_dir))}"
-                '/"${furu_worker_component}.log" \\\n'
                 "    --backend slurm \\\n"
                 f"    --idle-timeout {self.worker_idle_timeout} \\\n"
                 f"    --max-failures {self.max_failures_per_worker} \\\n"
@@ -179,8 +182,6 @@ class SlurmWorkerBackend:
             ),
             mode=0o700,
         )
-
-        log_name = "furu-worker-%A_%a" if self.use_job_arrays else "furu-worker-%j"
 
         export_sbatch_arg: tuple[str, ...]
         match self.export:
@@ -195,8 +196,7 @@ class SlurmWorkerBackend:
 
         sbatch_base_args = (
             f"--chdir={code.cwd}",
-            f"--output={log_dir / f'{log_name}.out'}",
-            f"--error={log_dir / f'{log_name}.err'}",
+            f"--output={log_path}",
             f"--job-name={self.job_name}",
             *self.resources.to_sbatch_args(),
             *export_sbatch_arg,

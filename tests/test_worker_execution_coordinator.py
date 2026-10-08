@@ -30,6 +30,7 @@ from furu.execution.execution_coordinator import (
 )
 from furu.execution.server import execution_coordinator_server, request_takeover
 from furu.locking import lock
+from furu.logging import _display_path
 from furu.metadata import ArtifactSpec
 from furu.provenance import (
     EnvironmentIdentity,
@@ -39,7 +40,8 @@ from furu.provenance import (
 )
 from furu.storage._layout import (
     compute_lock_path_in,
-    execution_coordinator_log_path_in,
+    execution_log_path_in,
+    run_log_path_in,
 )
 from furu.testing import override_config
 from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
@@ -86,11 +88,14 @@ def _submit_provenance() -> SubmitProvenance:
     )
 
 
-def _job(obj: Spec) -> Job:
+def _job(*objs: Spec) -> Job:
     return Job(
-        artifacts=[ArtifactSpec.from_furu(obj)],
+        artifacts=[ArtifactSpec.from_furu(obj) for obj in objs],
+        run_logs=[run_log_path_in(obj._base_dir) for obj in objs],
+        attempt=1,
+        execution_log=get_config().run_directories.executions / "e1" / "execution.log",
         provenance=_submit_provenance(),
-        process=ProcessSettings.from_metadata(obj._metadata),
+        process=ProcessSettings.from_metadata(objs[0]._metadata),
     )
 
 
@@ -105,7 +110,7 @@ def _captured_furu_logs(caplog: pytest.LogCaptureFixture) -> Generator[None]:
     furu_logger = logging.getLogger("furu")
     furu_logger.addHandler(caplog.handler)
     try:
-        caplog.set_level(logging.INFO, logger="furu")
+        caplog.set_level(logging.DEBUG, logger="furu")
         yield
     finally:
         furu_logger.removeHandler(caplog.handler)
@@ -591,13 +596,16 @@ def test_execution_coordinator_re_leases_blocked_job_after_dependency_completes(
     assert set(coordinator.completed) == {dependency.object_id}
 
 
-def test_execution_coordinator_job_result_failed_finishes_with_error() -> None:
+def test_execution_coordinator_job_result_failed_finishes_with_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
     coordinator = _new_execution_coordinator([leaf], max_retries_per_object=0)
     job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
     assert isinstance(job, Job)
 
-    coordinator.job_result(leaf.object_id, JobFailedResult(error="boom"))
+    with _captured_furu_logs(caplog):
+        coordinator.job_result(leaf.object_id, JobFailedResult(error="boom"))
 
     assert coordinator.running == {}
     assert set(coordinator.failed) == {leaf.object_id}
@@ -606,14 +614,16 @@ def test_execution_coordinator_job_result_failed_finishes_with_error() -> None:
     assert isinstance(failed_job, FailedJob)
     assert failed_job.node.obj is leaf
     assert failed_job.error == "boom"
-    log_text = execution_coordinator_log_path_in(coordinator.executor_dir).read_text(
-        encoding="utf-8"
+    failed_record = next(
+        record for record in caplog.records if record.message.startswith("failed ")
     )
-    assert f"failed {leaf._log_label}" in log_text
-    assert "will retry" not in log_text
-    assert "boom" in log_text
-    assert "furu execution coordinator finished with error" in log_text
-    with pytest.raises(RuntimeError, match="failed jobs"):
+    assert failed_record.levelno == logging.ERROR
+    assert failed_record.message == f"failed {leaf._log_label} · attempt 1/0 · boom"
+    assert failed_record.__dict__["path"] == run_log_path_in(leaf._base_dir)
+    assert (
+        caplog.messages[-1] == f"run failed · 1 spec failed · {leaf._log_label} · boom"
+    )
+    with pytest.raises(RuntimeError, match="1 spec failed, 0 blocked"):
         coordinator.raise_for_failure()
 
 
@@ -658,19 +668,69 @@ def test_execution_coordinator_job_result_failed_retries_before_finishing(
     assert failed_job.failed_attempts == 3
     assert failed_job.error == "boom 3"
     assert coordinator.done.is_set()
-    log_text = execution_coordinator_log_path_in(coordinator.executor_dir).read_text(
-        encoding="utf-8"
+    assert f"failed {leaf._log_label} · attempt 1/2 · boom 1" in caplog.messages
+    assert f"failed {leaf._log_label} · attempt 2/2 · boom 2" in caplog.messages
+
+
+def test_execution_coordinator_retries_with_the_same_error_say_so(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    leaf = ExecutionCoordinatorLeaf(value=1)
+    coordinator = _new_execution_coordinator([leaf], max_retries_per_object=3)
+    errors = [
+        "Traceback (most recent call last):\n  File a\nValueError: bad shape\n",
+        "Traceback (most recent call last):\n  File b\nValueError: bad shape\n",
+        "Traceback (most recent call last):\nOSError: disk full\n\n",
+        "subprocess died: killed by signal 9 (SIGKILL)",
+    ]
+
+    with _captured_furu_logs(caplog):
+        for error in errors:
+            assert isinstance(_lease_job(coordinator), Job)
+            coordinator.job_result(leaf.object_id, JobFailedResult(error=error))
+
+    label = leaf._log_label
+    assert [
+        message for message in caplog.messages if message.startswith("failed ")
+    ] == [
+        f"failed {label} · attempt 1/3 · ValueError: bad shape",
+        f"failed {label} · attempt 2/3 · same error",
+        f"failed {label} · attempt 3/3 · OSError: disk full",
+        f"failed {label} · attempt 4/3 · subprocess died: killed by signal 9 (SIGKILL)",
+    ]
+    assert all("Traceback" not in message for message in caplog.messages)
+    assert caplog.messages[-1] == (
+        f"run failed · 1 spec failed · {label} · "
+        "subprocess died: killed by signal 9 (SIGKILL)"
     )
-    assert log_text.count("will retry") == 2
-    assert any(
-        "will retry" in message and "boom 1" in message for message in caplog.messages
+
+
+def test_execution_coordinator_error_lists_one_line_per_failed_and_blocked_spec() -> (
+    None
+):
+    leaf = ExecutionCoordinatorLeaf(value=1)
+    other = ExecutionCoordinatorLeaf(value=2)
+    parent = ExecutionCoordinatorParent(child=leaf)
+    coordinator = _new_execution_coordinator([parent, other], max_retries_per_object=1)
+
+    for _ in range(2):
+        for obj in (leaf, other):
+            assert isinstance(_lease_job(coordinator), Job)
+            coordinator.job_result(
+                obj.object_id,
+                JobFailedResult(error=f"Traceback\n  File x\nValueError: {obj.value}"),
+            )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        coordinator.raise_for_failure()
+    lines = str(excinfo.value).splitlines()
+    assert lines[0] == "2 specs failed, 1 blocked"
+    assert sorted(lines[1:3]) == sorted(
+        f"  {obj._log_label} · 2 attempts · ValueError: {obj.value} → "
+        f"{_display_path(run_log_path_in(obj._base_dir))}"
+        for obj in (leaf, other)
     )
-    assert any(
-        "will retry" in message and "boom 2" in message for message in caplog.messages
-    )
-    assert f"object_id={leaf.object_id}" in log_text
-    assert "failed_retry=1 failed=0" in log_text
-    assert "failed_retry=0 failed=1" in log_text
+    assert lines[3:] == [f"  {parent._log_label} · blocked"]
 
 
 def test_execution_coordinator_job_result_failed_retry_can_later_complete() -> None:
@@ -901,9 +961,8 @@ def test_lease_job_assembles_same_key_batched_group_into_one_job(
         coordinator.running
     )
     assert coordinator.ready == {}
-    detail = caplog.records[-1].__dict__["_furu_detail"]
-    assert detail["object_ids"] == ",".join(obj.object_id for obj in objs)
-    assert detail["member_count"] == 3
+    assert caplog.messages[-1].startswith(f"leased {objs[0]._log_label} ×3 to ")
+    assert job.run_logs == [run_log_path_in(obj._base_dir) for obj in objs]
 
     for artifact in job.artifacts:
         coordinator.job_result(artifact.object_id, JobCompletedResult())
@@ -1214,7 +1273,6 @@ def test_execution_coordinator_run_fails_when_local_worker_crashes(
         component: str,
         backend: str,
         materialize_snapshot: bool,
-        log_file: Path,
     ) -> None:
         raise RuntimeError("worker boom")
 
@@ -1334,26 +1392,29 @@ def test_execution_coordinator_run_writes_log_to_executor_dir() -> None:
     ExecutionCoordinator.run([leaf], worker_backends=(LocalThreadWorkerBackend(),))
 
     (executor_dir,) = executions_dir.iterdir()
-    log_path = execution_coordinator_log_path_in(executor_dir)
-    assert log_path.parent == executor_dir
+    log_path = execution_log_path_in(executor_dir)
+    assert log_path == executor_dir / "execution.log"
+    # Local workers write no files of their own; their lines are in here.
+    assert not (executor_dir / "workers").exists()
 
-    log_text = log_path.read_text(encoding="utf-8")
-    assert "starting exec=" in log_text
-    assert "server listening on " in log_text
-    assert f"creating {leaf._log_label}" not in log_text
-    assert f"(object_id={leaf.object_id})" not in log_text
-    assert f"leased {leaf._log_label} ×1 to local-worker-0" in log_text
-    assert "worker=local-worker-0" in log_text
-    assert leaf.object_id in log_text
-
-    worker_log = (executor_dir / "workers" / "local-worker-0.log").read_text(
-        encoding="utf-8"
+    lines = log_path.read_text(encoding="utf-8").splitlines()
+    assert any(
+        f" I coord starting exec {executor_dir.name[:5]} · " in line for line in lines
     )
-    assert f'comp=local-worker-0 msg="received {leaf._log_label}"' in worker_log
-    assert f"completed {leaf._log_label} ok" in log_text
-    assert "progress 1/1 · 0 running" in log_text
-    assert "failed_retry=0 failed=0" in log_text
-    assert "furu execution coordinator finished successfully" in log_text
+    assert any(" I coord server listening on " in line for line in lines)
+    assert any(
+        line.endswith(
+            f" I coord leased {leaf._log_label} to w0 → {run_log_path_in(leaf._base_dir)}"
+        )
+        for line in lines
+    )
+    assert any(" D w0    spawned child " in line for line in lines)
+    assert any(f" I coord completed {leaf._log_label} ok · " in line for line in lines)
+    assert any(line.endswith(" I coord progress 1/1 · 0 running") for line in lines)
+    assert any(line.endswith(" I coord run finished ok") for line in lines)
+    log_text = "\n".join(lines)
+    assert f"creating {leaf._log_label}" not in log_text
+    assert "received" not in log_text
 
 
 def test_execution_coordinator_run_returns_when_all_objects_are_already_completed() -> (
@@ -1828,7 +1889,6 @@ def test_worker_loop_raises_when_server_is_unavailable(tmp_path: Path) -> None:
             component="test-worker",
             backend="test",
             materialize_snapshot=False,
-            log_file=tmp_path / "worker.log",
         )
 
 
@@ -1842,7 +1902,6 @@ def test_worker_loop_exits_after_idle_timeout(tmp_path: Path) -> None:
             component="test-worker",
             backend="test",
             materialize_snapshot=False,
-            log_file=tmp_path / "worker.log",
         )
 
         assert len(server.hellos) == 1
@@ -1870,10 +1929,9 @@ def test_worker_loop_exits_non_zero_after_consecutive_failures(tmp_path: Path) -
             component="test-worker",
             backend="test",
             materialize_snapshot=False,
-            log_file=tmp_path / "worker.log",
         )
 
-    assert exc_info.value.code == "2 jobs failed in a row; worker exiting"
+    assert exc_info.value.code == "test-worker exited after 2 failed jobs in a row"
     # Every result reaches the coordinator before the worker gives up.
     assert [result.status for result in server.results] == [
         "failed",
@@ -1894,7 +1952,7 @@ def test_execution_coordinator_run_fails_when_local_worker_gives_up() -> None:
         override_config(two_failures),
         pytest.raises(
             RuntimeError,
-            match="local worker thread crashed: SystemExit: 2 jobs failed in a row",
+            match="w0 exited after 2 failed jobs in a row",
         ),
     ):
         ExecutionCoordinator.run(
@@ -1903,18 +1961,14 @@ def test_execution_coordinator_run_fails_when_local_worker_gives_up() -> None:
         )
 
 
-def test_worker_loop_logs_received_task_and_result(
+def test_worker_with_its_own_log_notes_what_it_ran_there(
     caplog: pytest.LogCaptureFixture,
     tmp_path: Path,
 ) -> None:
     leaf = BatchedCoordinatorLeaf(value=1)
     other_leaf = BatchedCoordinatorLeaf(value=2)
-    job = Job(
-        artifacts=[ArtifactSpec.from_furu(leaf), ArtifactSpec.from_furu(other_leaf)],
-        provenance=_submit_provenance(),
-        process=ProcessSettings.from_metadata(leaf._metadata),
-    )
-    log_path = tmp_path / "worker.log"
+    job = _job(leaf, other_leaf)
+    worker_log = tmp_path / "logs" / "100_0.log"
 
     with _scripted_worker_server([job]) as server, _captured_furu_logs(caplog):
         worker_loop(
@@ -1922,26 +1976,30 @@ def test_worker_loop_logs_received_task_and_result(
             pool="cpu",
             idle_timeout=get_config().worker.idle_timeout_seconds,
             max_failures=get_config().worker.max_failures_per_worker,
-            component="test-worker",
+            component="100_0",
             backend="test",
             materialize_snapshot=False,
-            log_file=log_path,
+            worker_log=worker_log,
         )
 
         assert server.results == [JobCompletedResult()]
+        (hello,) = server.hellos
+        assert hello.log == worker_log
 
     assert (leaf.create(), other_leaf.create()) == (1, 2)
-    assert f"received {leaf._log_label} ×2" in caplog.messages
-    assert any(
-        message.startswith(f"finished {leaf._log_label} ×2 ok ·")
-        for message in caplog.messages
-    )
-    assert "server closed the connection; worker exiting" in caplog.messages
-    received_line = next(
-        line for line in log_path.read_text().splitlines() if 'msg="received ' in line
-    )
-    assert f"object_ids={leaf.object_id},{other_leaf.object_id}" in received_line
-    assert "comp=test-worker" in received_line
+    worker_records = [
+        (record.levelno, record.message, getattr(record, "path", None))
+        for record in caplog.records
+        if record.name == "furu.100_0" and record.levelno >= logging.INFO
+    ]
+    assert worker_records == [
+        (logging.INFO, "connected · exec e1", job.execution_log),
+        (logging.INFO, f"running {leaf._log_label} ×2", job.run_logs[0]),
+        (logging.INFO, "server closed the connection; exiting", None),
+    ]
+    run_log = job.run_logs[0].read_text()
+    assert f"   worker log → {worker_log}\n" in run_log
+    assert f"   batched with {leaf._log_label} → " in job.run_logs[1].read_text()
 
 
 def test_worker_loop_does_not_swallow_keyboard_interrupt(
@@ -1965,7 +2023,6 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
                 component="test-worker",
                 backend="test",
                 materialize_snapshot=False,
-                log_file=tmp_path / "worker.log",
             )
 
         assert server.results == []
@@ -2002,13 +2059,18 @@ def test_server_message_adapter_discriminates_job_and_cancel() -> None:
     )
 
 
-def test_hello_running_adopts_job_this_run_still_wants() -> None:
+def test_hello_running_adopts_job_this_run_still_wants(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
     coordinator = _new_execution_coordinator([leaf])
 
-    with execution_coordinator_server(
-        coordinator, bind_host="127.0.0.1", port=0
-    ) as server:
+    with (
+        _captured_furu_logs(caplog),
+        execution_coordinator_server(
+            coordinator, bind_host="127.0.0.1", port=0
+        ) as server,
+    ):
         connection = connect(
             coordinator_url(
                 host="127.0.0.1", port=server.bound_port, auth_token=server.auth_token
@@ -2032,23 +2094,26 @@ def test_hello_running_adopts_job_this_run_still_wants() -> None:
                 connection.recv(timeout=5)
 
     assert set(coordinator.completed) == {leaf.object_id}
-    log_text = execution_coordinator_log_path_in(coordinator.executor_dir).read_text(
-        encoding="utf-8"
-    )
     assert (
-        f"worker connected · inherited-worker · running {leaf._log_label}" in log_text
+        f"worker connected · inherited-worker · running {leaf._log_label}"
+        in caplog.messages
     )
-    assert f"adopted {leaf._log_label} ×1 from inherited-worker" in log_text
+    assert f"adopted {leaf._log_label} from inherited-worker" in caplog.messages
 
 
-def test_hello_running_cancels_job_not_in_this_run() -> None:
+def test_hello_running_cancels_job_not_in_this_run(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
     stranger = ExecutionCoordinatorLeaf(value=2)
     coordinator = _new_execution_coordinator([leaf])
 
-    with execution_coordinator_server(
-        coordinator, bind_host="127.0.0.1", port=0
-    ) as server:
+    with (
+        _captured_furu_logs(caplog),
+        execution_coordinator_server(
+            coordinator, bind_host="127.0.0.1", port=0
+        ) as server,
+    ):
         connection = connect(
             coordinator_url(
                 host="127.0.0.1", port=server.bound_port, auth_token=server.auth_token
@@ -2079,11 +2144,9 @@ def test_hello_running_cancels_job_not_in_this_run() -> None:
 
     assert coordinator.failed == {}
     assert set(coordinator.completed) == {leaf.object_id}
-    log_text = execution_coordinator_log_path_in(coordinator.executor_dir).read_text(
-        encoding="utf-8"
-    )
-    assert f"cancelled {stranger._log_label} on inherited-worker: not in this run" in (
-        log_text
+    assert (
+        f"cancelled {stranger._log_label} on inherited-worker: not in this run"
+        in caplog.messages
     )
 
 
@@ -2106,12 +2169,11 @@ def test_worker_loop_cancel_kills_running_job(tmp_path: Path) -> None:
             component="test-worker",
             backend="test",
             materialize_snapshot=False,
-            log_file=tmp_path / "worker.log",
         )
 
     (result,) = results
     assert isinstance(result, JobFailedResult)
-    assert result.error.startswith("subprocess died: signal 9 (SIGKILL)")
+    assert result.error.endswith("subprocess died: killed by signal 9 (SIGKILL)")
     assert leaf.status != "done"
 
 
@@ -2149,7 +2211,6 @@ def test_worker_loop_reconnects_when_worker_config_url_changes(
                 component="test-worker",
                 backend="test",
                 materialize_snapshot=False,
-                log_file=tmp_path / "worker.log",
                 disconnect_grace=0,
             )
 
@@ -2157,7 +2218,7 @@ def test_worker_loop_reconnects_when_worker_config_url_changes(
     assert [hello.running for hello in hellos["new"]] == [[]]
     assert results == [JobCompletedResult()]
     assert "coordinator moved; reconnecting" in caplog.messages
-    assert "server closed the connection; worker exiting" in caplog.messages
+    assert "server closed the connection; exiting" in caplog.messages
 
 
 def test_worker_loop_reads_unchanged_worker_config_only_after_disconnect(
@@ -2189,7 +2250,6 @@ def test_worker_loop_reads_unchanged_worker_config_only_after_disconnect(
             component="test-worker",
             backend="test",
             materialize_snapshot=False,
-            log_file=tmp_path / "worker.log",
             disconnect_grace=0,
         )
 
@@ -2215,7 +2275,6 @@ def test_worker_loop_fails_when_worker_config_disappears(tmp_path: Path) -> None
             component="test-worker",
             backend="test",
             materialize_snapshot=False,
-            log_file=tmp_path / "worker.log",
         )
 
     assert leaf.status != "done"
@@ -2251,7 +2310,6 @@ def test_worker_loop_carries_running_job_to_new_coordinator(tmp_path: Path) -> N
                 component="test-worker",
                 backend="test",
                 materialize_snapshot=False,
-                log_file=tmp_path / "worker.log",
                 disconnect_grace=0,
             )
 
@@ -2308,7 +2366,6 @@ def test_worker_loop_exits_when_worker_config_changes(
                 component="test-worker",
                 backend="test",
                 materialize_snapshot=False,
-                log_file=tmp_path / "worker.log",
             )
 
     assert new_hellos == []
@@ -2335,7 +2392,6 @@ def test_worker_loop_kills_job_when_coordinator_disappears(
             component="test-worker",
             backend="test",
             materialize_snapshot=False,
-            log_file=tmp_path / "worker.log",
         )
 
     assert time.monotonic() - started < 10
@@ -2344,7 +2400,7 @@ def test_worker_loop_kills_job_when_coordinator_disappears(
         f"server closed the connection mid-job; killing {leaf._log_label}"
         in caplog.messages
     )
-    assert "server closed the connection; worker exiting" in caplog.messages
+    assert "server closed the connection; exiting" in caplog.messages
 
 
 def test_worker_loop_keeps_job_while_waiting_for_moved_coordinator(
@@ -2382,7 +2438,6 @@ def test_worker_loop_keeps_job_while_waiting_for_moved_coordinator(
                 component="test-worker",
                 backend="test",
                 materialize_snapshot=False,
-                log_file=tmp_path / "worker.log",
                 disconnect_grace=5,
             )
 
@@ -2414,7 +2469,6 @@ def test_worker_loop_kills_job_when_worker_config_never_changes(
             component="test-worker",
             backend="test",
             materialize_snapshot=False,
-            log_file=tmp_path / "worker.log",
             disconnect_grace=2,
         )
 
@@ -2459,7 +2513,6 @@ def test_worker_loop_ignores_truncated_worker_config_while_waiting(
                 component="test-worker",
                 backend="test",
                 materialize_snapshot=False,
-                log_file=tmp_path / "worker.log",
                 disconnect_grace=5,
             )
 
@@ -2760,8 +2813,6 @@ def test_execution_coordinator_run_inherits_pools_on_takeover() -> None:
     assert str(error) == f"execution taken over by exec={new.executor_id[:5]}"
     assert (old_backend.pool.handoffs, old_backend.pool.stops) == (1, 1)
     assert new_backend.handoffs == [PoolHandoff(job_ids=["100_0", "100_1"])]
-    new_log = execution_coordinator_log_path_in(new.executor_dir).read_text(
-        encoding="utf-8"
-    )
+    new_log = execution_log_path_in(new.executor_dir).read_text(encoding="utf-8")
     assert f"taking over exec={old.executor_id[:5]} · inherited 2 workers" in new_log
     assert "pool started · InertBackend · inherited 2 workers" in new_log

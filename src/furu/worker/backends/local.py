@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from furu.config import get_config
-from furu.logging import _scoped_component, get_logger
+from furu.logging import get_logger
 from furu.resources import Worker
 from furu.utils import _hash_dict_deterministically
 from furu.worker.protocol import PoolHandoff, coordinator_url
@@ -17,8 +17,6 @@ from furu.worker.protocol import PoolHandoff, coordinator_url
 if TYPE_CHECKING:
     from furu.core import Spec
     from furu.execution.execution_coordinator import ExecutionCoordinator
-
-logger = get_logger()
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,10 +54,9 @@ class LocalThreadWorkerBackend:
                     "coordinator": coordinator,
                     "coordinator_url": url,
                     "pool": self.pool_key,
-                    "index": index,
-                    "log_file": executor_dir / "workers" / f"local-worker-{index}.log",
+                    "component": f"w{index}",
                 },
-                name=f"local-worker-{index}",
+                name=f"furu-local-worker-{index}",
             )
             threads.append(thread)
             thread.start()
@@ -71,12 +68,10 @@ def _run_worker(
     coordinator: ExecutionCoordinator,
     coordinator_url: str,
     pool: str,
-    index: int,
-    log_file: Path,
+    component: str,
 ) -> None:
     from furu.worker.loop import worker_loop
 
-    component = f"local-worker-{index}"
     try:
         worker_loop(
             coordinator=coordinator_url,
@@ -88,11 +83,11 @@ def _run_worker(
             component=component,
             backend="local-thread",
             materialize_snapshot=False,
-            log_file=log_file,
         )
-    except (Exception, SystemExit) as exc:
-        with _scoped_component(component):
-            logger.exception("local worker thread crashed")
+    except SystemExit as exc:  # gave up after too many failures; already logged
+        coordinator.fail(str(exc.code))
+    except Exception as exc:  # noqa: BLE001 -- fault barrier: fail the run instead
+        get_logger(component).exception("local worker thread crashed")
         coordinator.fail(
             "local worker thread crashed: "
             + traceback.format_exception_only(type(exc), exc)[-1].strip()

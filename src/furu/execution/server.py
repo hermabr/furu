@@ -12,7 +12,7 @@ from websockets.sync.client import connect
 from websockets.sync.server import ServerConnection, basic_auth, serve
 
 from furu.execution.execution_coordinator import ExecutionCoordinator
-from furu.logging import get_logger, log_detail
+from furu.logging import get_logger
 from furu.worker.backends.protocol import WorkerPool
 from furu.worker.protocol import (
     CancelMessage,
@@ -28,7 +28,7 @@ from furu.worker.protocol import (
 
 _TAKEOVER_REPLY_TIMEOUT_S = 120.0
 
-logger = get_logger()
+logger = get_logger("coord")
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,43 +122,35 @@ def _serve_worker(
     connection: ServerConnection,
     hello: HelloMessage,
 ) -> None:
-    with coordinator.log_context():
-        worker = hello.worker
-        logger.info(
-            "worker connected · %s%s",
-            worker,
-            f" · running {hello.running[0].log_label}" if hello.running else "",
-            extra=log_detail(worker=worker, backend=hello.backend),
-        )
-        try:
-            if hello.running:
-                if not coordinator.adopt(hello.running, worker=worker):
-                    connection.send(CancelMessage().model_dump_json())
-                result = job_result_adapter.validate_json(connection.recv())
-                for artifact in hello.running:
-                    coordinator.job_result(artifact.object_id, result)
-            backend = coordinator.backends.get(hello.pool)
-            if backend is None:
-                logger.warning(
-                    "worker %s belongs to no pool of this run; closing", worker
-                )
+    worker = hello.worker
+    logger.info(
+        "worker connected · %s%s",
+        worker,
+        f" · running {hello.running[0].log_label}" if hello.running else "",
+    )
+    try:
+        if hello.running:
+            if not coordinator.adopt(hello.running, worker=worker):
+                connection.send(CancelMessage().model_dump_json())
+            result = job_result_adapter.validate_json(connection.recv())
+            for artifact in hello.running:
+                coordinator.job_result(artifact.object_id, result)
+        backend = coordinator.backends.get(hello.pool)
+        if backend is None:
+            logger.warning("worker %s belongs to no pool of this run; closing", worker)
+            return
+        while True:
+            job = coordinator.lease_job(backend=backend, worker=worker)
+            if job is None:
                 return
-            while True:
-                job = coordinator.lease_job(backend=backend, worker=worker)
-                if job is None:
-                    return
-                connection.send(job.model_dump_json())
-                result = job_result_adapter.validate_json(connection.recv())
-                for artifact in job.artifacts:
-                    coordinator.job_result(artifact.object_id, result)
-        except ConnectionClosed:
-            logger.warning(
-                "worker disconnected · %s",
-                worker,
-                extra=log_detail(worker=worker),
-            )
-        finally:
-            coordinator.worker_lost(worker)
+            connection.send(job.model_dump_json())
+            result = job_result_adapter.validate_json(connection.recv())
+            for artifact in job.artifacts:
+                coordinator.job_result(artifact.object_id, result)
+    except ConnectionClosed:
+        logger.warning("lost %s", worker, extra={"path": hello.log})
+    finally:
+        coordinator.worker_lost(worker)
 
 
 @contextmanager
@@ -173,17 +165,16 @@ def execution_coordinator_server(
         with connections_changed:
             connections.add(connection)
         try:
-            with coordinator.log_context():
-                first_message = first_message_adapter.validate_json(
-                    connection.recv(timeout=10.0)
-                )
-                match first_message:
-                    case HelloMessage() as hello:
-                        _serve_worker(coordinator, connection, hello)
-                    case TakeoverRequest() as request:
-                        _serve_takeover(coordinator, connection, request)
-                    case _ as unreachable:
-                        assert_never(unreachable)
+            first_message = first_message_adapter.validate_json(
+                connection.recv(timeout=10.0)
+            )
+            match first_message:
+                case HelloMessage() as hello:
+                    _serve_worker(coordinator, connection, hello)
+                case TakeoverRequest() as request:
+                    _serve_takeover(coordinator, connection, request)
+                case _ as unreachable:
+                    assert_never(unreachable)
         finally:
             with connections_changed:
                 connections.discard(connection)

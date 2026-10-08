@@ -39,8 +39,14 @@ def run_log_path_in(base_dir: Path) -> Path:
     return base_dir / "run.log"
 
 
-def execution_coordinator_log_path_in(executor_dir: Path) -> Path:
-    return executor_dir / "execution_coordinator.log"
+def execution_log_path_in(executor_dir: Path) -> Path:
+    return executor_dir / "execution.log"
+
+
+def slurm_worker_log_path_in(worker_dir: Path, worker: str) -> Path:
+    # sbatch --output names the file after the job, and the worker is named
+    # after the same job id, so either side can find it.
+    return worker_dir / "logs" / f"{worker}.log"
 
 
 def compute_lock_path_in(base_dir: Path) -> Path:

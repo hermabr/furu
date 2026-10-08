@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import time
+import traceback
 from collections.abc import Callable, Sequence
 from contextlib import nullcontext
 from typing import (
@@ -22,7 +23,12 @@ from furu.dependencies import (
     under_creation,
 )
 from furu.locking import lock
-from furu.logging import _scoped_log_files, get_logger
+from furu.logging import (
+    _close_sections,
+    _open_sections,
+    _run_log_scope,
+    get_logger,
+)
 from furu.metadata import RunningMetadata
 from furu.migration.links import load_stored_result, result_dir_for_loading
 from furu.migration.stale import raise_if_stale
@@ -46,7 +52,12 @@ from furu.storage._layout import (
     schema_snapshot_path_in,
     scratch_dir_in,
 )
-from furu.utils import atomic_write_text, format_duration, nfs_safe_unique_name
+from furu.utils import (
+    atomic_write_text,
+    error_summary,
+    format_duration,
+    nfs_safe_unique_name,
+)
 from furu.worker.context import (
     _DependencyNotReady,
     _in_worker_execution,
@@ -112,8 +123,6 @@ def _store_result[T](
         provenance_path_in(obj._base_dir), provenance.model_dump_json(indent=2)
     )
 
-    obj.logger.debug("stored result bundle at %s", result_dir)
-
     for binding in dump_state.ref_bindings:
         binding.ref._bind_stored(
             metadata=binding.metadata,
@@ -144,7 +153,7 @@ def _load_or_create[T](obj_or_objs: Spec[T] | Sequence[Spec[T]]) -> T | list[T]:
     if _in_worker_execution.get():
         outputs = _load_or_create_worker(objs)
     else:
-        outputs = _load_or_create_local(objs, announce=unwrap)
+        outputs = _load_or_create_local(objs)
     if unwrap:
         (output,) = outputs
         return output
@@ -277,10 +286,7 @@ def _load_or_create_worker[T](objs: list[Spec[T]]) -> list[T]:
 
 
 def _load_or_create_local[T](
-    objs: list[Spec[T]],
-    *,
-    announce: bool = False,
-    dependents: Sequence[Spec] = (),
+    objs: list[Spec[T]], *, dependents: Sequence[Spec] = ()
 ) -> list[T]:
     if not objs:
         return []
@@ -349,31 +355,57 @@ def _load_or_create_local[T](
                 "%d became ready while waiting, %d to build", late_hits, len(pending)
             )
 
-        direct_create_started = announce and bool(pending)
-        create_started_at = time.monotonic()
-        if direct_create_started:
-            objs[0].logger.info("creating %s", objs[0]._log_label)
-
         if pending:
             submit_provenance = capture_submit_provenance(
                 snapshot=get_config().provenance.snapshot
             )
 
             for group in _grouped_pending(pending):
-                _create_and_store_group(
+                _create_in_process(
                     group,
                     has_lock=has_lock,
                     results_by_object_id=results_by_object_id,
                     submit_provenance=submit_provenance,
                 )
 
-    if direct_create_started:
-        objs[0].logger.info(
-            "finished %s ok · %s",
-            objs[0]._log_label,
-            format_duration(time.monotonic() - create_started_at),
-        )
     return [results_by_object_id[obj.object_id] for obj in objs]
+
+
+def _create_in_process[T](
+    group: list[Spec[T]],
+    *,
+    has_lock: HasLock,
+    results_by_object_id: dict[str, T],
+    submit_provenance: SubmitProvenance,
+) -> None:
+    """Create one group in this process, announced on the terminal.
+
+    The lead's run.log gets this attempt's log records, framed by a header and
+    a footer; the other members' run.logs point at it.
+    """
+    lead = group[0]
+    label = lead._log_label + (f" ×{len(group)}" if len(group) > 1 else "")
+    run_logs = [(obj._log_label, run_log_path_in(obj._base_dir)) for obj in group]
+    # Inside another create(), this line lands in that one's run.log.
+    lead.logger.info("creating %s", label, extra={"path": run_logs[0][1]})
+    started_at = time.monotonic()
+    with _run_log_scope(run_logs[0][1]) as run_log:
+        _open_sections(run_logs, run_log, "in-process")
+        try:
+            _create_and_store_group(
+                group,
+                has_lock=has_lock,
+                results_by_object_id=results_by_object_id,
+                submit_provenance=submit_provenance,
+            )
+        except BaseException as exc:
+            duration = format_duration(time.monotonic() - started_at)
+            summary = error_summary("".join(traceback.format_exception_only(exc)))
+            _close_sections(run_logs, run_log, f"failed · {duration} · {summary}")
+            raise
+        duration = format_duration(time.monotonic() - started_at)
+        _close_sections(run_logs, run_log, f"ok · {duration}")
+    lead.logger.info("finished %s ok · %s", label, duration)
 
 
 def _batch_group(obj: Spec, worker: Worker) -> tuple[object, int] | None:
@@ -416,79 +448,56 @@ def _create_and_store_group[T](
     results_by_object_id: dict[str, T],
     submit_provenance: SubmitProvenance,
 ) -> None:
-    log_paths = tuple(run_log_path_in(obj._base_dir) for obj in group)
-
     metadata = [RunningMetadata.write_for(obj) for obj in group]
 
-    with _scoped_log_files(log_paths):
-        logger = group[0].logger
-        logger.debug("create start")
-        group_started_at = time.monotonic()
-        try:
-            match getattr(type(group[0]), "_furu_create_hook", None):
-                case None:
-                    raise TypeError(
-                        f"{type(group[0]).__qualname__} cannot create missing results "
-                        "because it does not define create()"
-                    )
-                case _BatchedHook(func=create_hook):
-                    logger.debug("running batched create() hook")
-                    with dependency_recorder() as recorder, under_creation(group):
-                        results = create_hook(group)
-                    observed = recorder.finalize()
-                    logger.debug("batched create() hook returned")
-                    if not isinstance(results, list):
-                        raise TypeError(
-                            f"{type(group[0]).__name__}.create() must return a list"
-                        )
-                    # TODO: Track dependency calls per object during batched execution.
-                    # This currently assigns dependencies observed anywhere in the batch
-                    # to every object.
-                    observed_dependencies = [observed for _ in group]
-                case create_hook:
-                    logger.debug("running sequential create() fallback")
-                    results = []
-                    observed_dependencies = []
-                    for obj in group:
-                        with dependency_recorder() as recorder, under_creation([obj]):
-                            results.append(create_hook(obj))
-                        observed_dependencies.append(recorder.finalize())
-                    logger.debug("sequential create() fallback returned")
-
-            if len(results) != len(group):
+    try:
+        match getattr(type(group[0]), "_furu_create_hook", None):
+            case None:
                 raise TypeError(
-                    f"{type(group[0]).__name__} returned {len(results)} results for {len(group)} objects"
+                    f"{type(group[0]).__qualname__} cannot create missing results "
+                    "because it does not define create()"
                 )
+            case _BatchedHook(func=create_hook):
+                with dependency_recorder() as recorder, under_creation(group):
+                    results = create_hook(group)
+                observed = recorder.finalize()
+                if not isinstance(results, list):
+                    raise TypeError(
+                        f"{type(group[0]).__name__}.create() must return a list"
+                    )
+                # TODO: Track dependency calls per object during batched execution.
+                # This currently assigns dependencies observed anywhere in the batch
+                # to every object.
+                observed_dependencies = [observed for _ in group]
+            case create_hook:
+                results = []
+                observed_dependencies = []
+                for obj in group:
+                    with dependency_recorder() as recorder, under_creation([obj]):
+                        results.append(create_hook(obj))
+                    observed_dependencies.append(recorder.finalize())
 
-            for obj, result, observed_dependency_ids, obj_metadata in zip(
-                group,
-                results,
-                observed_dependencies,
-                metadata,
-                strict=True,
-            ):
-                results_by_object_id[obj.object_id] = _store_result(
-                    obj,
-                    result,
-                    metadata=obj_metadata,
-                    observed_dependencies=observed_dependency_ids,
-                    has_lock=has_lock,
-                    submit_provenance=submit_provenance,
-                )
-                shutil.rmtree(scratch_dir_in(obj._base_dir), ignore_errors=True)
+        if len(results) != len(group):
+            raise TypeError(
+                f"{type(group[0]).__name__} returned {len(results)} results for {len(group)} objects"
+            )
 
-            logger.debug(
-                "create complete · %s",
-                format_duration(time.monotonic() - group_started_at),
+        for obj, result, observed_dependency_ids, obj_metadata in zip(
+            group,
+            results,
+            observed_dependencies,
+            metadata,
+            strict=True,
+        ):
+            results_by_object_id[obj.object_id] = _store_result(
+                obj,
+                result,
+                metadata=obj_metadata,
+                observed_dependencies=observed_dependency_ids,
+                has_lock=has_lock,
+                submit_provenance=submit_provenance,
             )
-        except _DependencyNotReady as exc:
-            logger.debug(
-                "create deferred: %d missing dependency/dependencies",
-                len(exc.dependencies),
-            )
-            raise
-        except Exception:
-            logger.exception(
-                "create failed for %s", group[0]._log_label, stack_info=True
-            )
-            raise
+            shutil.rmtree(scratch_dir_in(obj._base_dir), ignore_errors=True)
+    except Exception:
+        group[0].logger.exception("create failed for %s", group[0]._log_label)
+        raise

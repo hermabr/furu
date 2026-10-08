@@ -1,5 +1,7 @@
 import json
+import logging
 import os
+import re
 import types
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -27,7 +29,7 @@ from furu.config import _Config, _FuruDirectories, get_config
 from furu.dependencies import collect_declared_refs
 from furu.execution.load_or_create import _load_or_create
 from furu.locking import LockManifest, lock
-from furu.logging import _scoped_log_files
+from furu.logging import _display_path, _run_log_scope
 from furu.metadata import ArtifactSpec
 from furu.result.bundle import _save_result_bundle, load_result_bundle
 from furu.serializer.artifact import _from_json, to_json
@@ -268,6 +270,14 @@ class LoggedLeaf(Spec[str]):
     def create(self) -> str:
         self.logger.info("leaf detail for %s", self.name)
         return f"leaf:{self.name}"
+
+
+class StdlibLoggingLeaf(Spec[str]):
+    name: str
+
+    def create(self) -> str:
+        logging.getLogger("some_library").warning("stdlib warning for %s", self.name)
+        return f"stdlib:{self.name}"
 
 
 class LoggedParent(Spec[dict[str, str]]):
@@ -1104,11 +1114,15 @@ def test_declared_dependencies_are_created_before_the_create_hook(
     parent = LoadsDeclaredDependencyParent(child=Node(name="declared"))
 
     log_path = tmp_path / "create.log"
-    with _scoped_log_files((log_path,)):
+    with _run_log_scope(log_path):
         assert parent.create() == "Node(declared)"
 
     log_text = log_path.read_text(encoding="utf-8")
     assert f"building 1 dependency of {parent._log_label}" in log_text
+    # Every spec actually built is announced, dependencies included.
+    for obj in (parent.child, parent):
+        assert f" I creating {obj._log_label} → " in log_text
+        assert f" I finished {obj._log_label} ok · " in log_text
 
 
 def test_computed_dependency_is_cached_property_and_eager_loaded_dependency() -> None:
@@ -1195,17 +1209,17 @@ def test_top_level_load_existing_accepts_list_and_logs_once(tmp_path: Path) -> N
     assert [node.create() for node in nodes] == ["Node(load-a)", "Node(load-b)"]
 
     log_path = tmp_path / "load-existing.log"
-    with _scoped_log_files((log_path,)):
+    with _run_log_scope(log_path):
         assert furu.load_existing(nodes) == ["Node(load-a)", "Node(load-b)"]
 
     info_lines = [
         line
         for line in log_path.read_text(encoding="utf-8").splitlines()
-        if "level=info" in line
+        if " I " in line
     ]
     assert len(info_lines) == 1
     assert info_lines[0].endswith(
-        f'msg="loaded 2 furu objects including {nodes[0]._log_label}"'
+        f" I loaded 2 furu objects including {nodes[0]._log_label}"
     )
 
 
@@ -1687,6 +1701,17 @@ def test_log_file_is_written_to_base_dir() -> None:
     assert "leaf detail for x" in log_text
 
 
+def test_in_process_run_log_captures_stdlib_logging_without_touching_root() -> None:
+    node = StdlibLoggingLeaf(name="x")
+    root_level = logging.getLogger().level
+
+    assert node.create() == "stdlib:x"
+
+    log_text = run_log_path_in(node._base_dir).read_text(encoding="utf-8")
+    assert " W some_library stdlib warning for x  [" in log_text
+    assert logging.getLogger().level == root_level
+
+
 def test_nested_create_scopes_logs_to_child_file() -> None:
     child = LoggedLeaf(name="child")
     parent = LoggedParent(child_name="child")
@@ -1697,7 +1722,8 @@ def test_nested_create_scopes_logs_to_child_file() -> None:
     child_log = run_log_path_in(child._base_dir).read_text(encoding="utf-8")
 
     assert "parent before child" in parent_log
-    assert f"creating {child._log_label}" in parent_log
+    child_pointer = _display_path(run_log_path_in(child._base_dir))
+    assert f"creating {child._log_label} → {child_pointer}" in parent_log
     assert f"(object_id={child.object_id})" not in parent_log
     assert f"finished {child._log_label} ok" in parent_log
     assert "parent after child" in parent_log
@@ -1706,7 +1732,7 @@ def test_nested_create_scopes_logs_to_child_file() -> None:
     assert "leaf detail for child" in child_log
 
 
-def test_cached_create_logs_debug_call_and_only_cache_hit_info(
+def test_cached_create_logs_only_cache_hit_info(
     tmp_path: Path,
 ) -> None:
     ObjectIdStorageValue.storage_override = tmp_path / "objects"
@@ -1715,19 +1741,15 @@ def test_cached_create_logs_debug_call_and_only_cache_hit_info(
     assert obj.create() == "object-id:1"
 
     log_path = tmp_path / "cached-create.log"
-    with _scoped_log_files((log_path,)):
+    with _run_log_scope(log_path):
         assert obj.create() == "object-id:1"
 
     log_text = log_path.read_text(encoding="utf-8")
-    assert f".create called for {obj}" in log_text
-    assert f"cached {obj._log_label}" in log_text
     assert "building" not in log_text
     assert "creating " not in log_text
     assert "finished " not in log_text
-
-    info_lines = [line for line in log_text.splitlines() if "level=info" in line]
-    assert len(info_lines) == 1
-    assert info_lines[0].endswith(f'msg="cached {obj._log_label}"')
+    (line,) = log_text.splitlines()
+    assert line.endswith(f" I cached {obj._log_label}")
 
 
 def test_small_cache_summary_logs_labels_for_cached_and_missing_items(
@@ -1740,7 +1762,7 @@ def test_small_cache_summary_logs_labels_for_cached_and_missing_items(
     assert cached.create() == "object-id:1"
 
     log_path = tmp_path / "mixed-create.log"
-    with _scoped_log_files((log_path,)):
+    with _run_log_scope(log_path):
         assert _load_or_create([cached, missing]) == ["object-id:1", "object-id:2"]
 
     assert (
@@ -2107,35 +2129,33 @@ def test_batched_compute_writes_result_layout_per_object() -> None:
         )
 
 
-def test_batched_compute_writes_shared_logs_to_every_participant() -> None:
+def test_batched_compute_logs_to_the_lead_and_points_the_others_at_it() -> None:
     objs = [LoggedBatchValue(key=1), LoggedBatchValue(key=2)]
 
     assert _load_or_create(objs) == ["logged-batch:1", "logged-batch:2"]
 
-    for obj in objs:
-        log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
-        assert "batched detail for 1,2" in log_text
-        for persisted_obj in objs:
-            assert (
-                f"stored result bundle at {result_dir_in(persisted_obj._base_dir)}"
-                in log_text
-            )
+    lead_log, other_log = (
+        run_log_path_in(obj._base_dir).read_text(encoding="utf-8") for obj in objs
+    )
+    assert lead_log.startswith(f"── {objs[0]._log_label} · in-process · host ")
+    assert "batched detail for 1,2" in lead_log
+    assert lead_log.rstrip("\n").splitlines()[-1].startswith("── ok · ")
+    assert other_log.startswith(f"── {objs[1]._log_label} · in-process · host ")
+    assert f"   batched with {objs[0]._log_label} → " in other_log
+    assert "batched detail" not in other_log
 
 
-def test_sequential_group_compute_writes_shared_logs_to_every_participant() -> None:
+def test_sequential_group_compute_logs_every_member_to_the_lead() -> None:
     objs = [LoggedSingleValue(key=1), LoggedSingleValue(key=2)]
 
     assert _load_or_create(objs) == ["logged-single:1", "logged-single:2"]
 
-    for obj in objs:
-        log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
-        assert "single detail for 1" in log_text
-        assert "single detail for 2" in log_text
-        for persisted_obj in objs:
-            assert (
-                f"stored result bundle at {result_dir_in(persisted_obj._base_dir)}"
-                in log_text
-            )
+    lead_log, other_log = (
+        run_log_path_in(obj._base_dir).read_text(encoding="utf-8") for obj in objs
+    )
+    assert "single detail for 1" in lead_log
+    assert "single detail for 2" in lead_log
+    assert f"batched with {objs[0]._log_label}" in other_log
 
 
 def test_batched_failure_writes_error_details_to_run_log_for_every_participant() -> (
@@ -2146,29 +2166,38 @@ def test_batched_failure_writes_error_details_to_run_log_for_every_participant()
     with pytest.raises(RuntimeError, match="failed batch"):
         _load_or_create(objs)
 
-    for obj in objs:
-        log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
-        assert "create failed" in log_text
-        assert "failed batch for [1, 2]" in log_text
+    lead_log, other_log = (
+        run_log_path_in(obj._base_dir).read_text(encoding="utf-8") for obj in objs
+    )
+    assert "create failed" in lead_log
+    assert "Traceback (most recent call last):" in lead_log
+    assert "create failed" not in other_log
+    for log_text in (lead_log, other_log):
+        assert (
+            log_text.rstrip("\n")
+            .splitlines()[-1]
+            .endswith(" · RuntimeError: failed batch for [1, 2]")
+        )
         assert "furu-local-debug-value-should-not-leak" not in log_text
+    for obj in objs:
         assert list(obj._base_dir.glob("error-*.log")) == []
 
 
-def test_create_failure_run_log_includes_user_create_call_stack() -> None:
+def test_create_failure_run_log_has_the_traceback_once_inside_its_section() -> None:
     obj = FailingSingleValue(key=1)
 
-    def _main() -> None:
+    with pytest.raises(RuntimeError, match="failed single"):
         obj.create()
 
-    with pytest.raises(RuntimeError, match="failed single"):
-        _main()
-
-    log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
-    assert "Traceback (most recent call last):" in log_text
-    assert "failed single for 1" in log_text
-    assert "Stack (most recent call last):" in log_text
-    assert "in _main" in log_text
-    assert "obj.create()" in log_text
+    lines = run_log_path_in(obj._base_dir).read_text(encoding="utf-8").splitlines()
+    assert lines[0].startswith(f"── {obj._log_label} · in-process · ")
+    assert re.match(rf"^\S+ E create failed for {re.escape(obj._log_label)}$", lines[1])
+    assert lines[2] == "    Traceback (most recent call last):"
+    assert lines.count("    RuntimeError: failed single for 1") == 1
+    assert "Stack (most recent call last):" not in "\n".join(lines)
+    assert re.fullmatch(
+        r"── failed · \S+ · RuntimeError: failed single for 1", lines[-2]
+    )
 
 
 def test_base_exception_does_not_log_as_load_failure() -> None:

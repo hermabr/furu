@@ -146,3 +146,10 @@ def format_duration(seconds: float) -> str:
         return f"{minutes}m{secs:02d}s"
     hours, minutes = divmod(minutes, 60)
     return f"{hours}h{minutes:02d}m"
+
+
+def error_summary(error: str) -> str:
+    """The last non-empty line of an error, e.g. ``ValueError: bad shape``."""
+    return next(
+        (line.strip() for line in reversed(error.splitlines()) if line.strip()), ""
+    )

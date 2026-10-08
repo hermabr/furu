@@ -8,14 +8,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from furu.logging import _scoped_component, get_logger
+from furu.logging import get_logger
 from furu.worker.protocol import PoolHandoff
 
 if TYPE_CHECKING:
     from furu.execution.execution_coordinator import ExecutionCoordinator
     from furu.worker.backends.slurm.backend import SlurmWorkerBackend
 
-logger = get_logger()
+logger = get_logger("slurm")
 
 _SLURM_COMMAND_TIMEOUT_S = 60.0
 
@@ -55,42 +55,38 @@ class SlurmWorkerPool:
     _completed_seen: int = 0
 
     def handoff(self) -> PoolHandoff:
-        with _scoped_component("slurm"):
-            self._stop_event.set()
-            self._scale_thread.join()
-            job_ids, self._job_ids[:] = list(self._job_ids), []
-            logger.info("handed off %d slurm workers", len(job_ids))
-            return PoolHandoff(job_ids=job_ids, worker_files=sorted(self._worker_files))
+        self._stop_event.set()
+        self._scale_thread.join()
+        job_ids, self._job_ids[:] = list(self._job_ids), []
+        logger.info("handed off %d slurm workers", len(job_ids))
+        return PoolHandoff(job_ids=job_ids, worker_files=sorted(self._worker_files))
 
     def stop(self, *, timeout: float) -> None:
-        with _scoped_component("slurm"):
-            self._stop_event.set()
-            self._scale_thread.join(timeout=timeout)
+        self._stop_event.set()
+        self._scale_thread.join(timeout=timeout)
 
-            deadline = time.monotonic() + timeout
-            while time.monotonic() < deadline:
-                active_job_states = self._active_job_states()
-                if active_job_states is not None and not active_job_states:
-                    return
-                time.sleep(
-                    min(self._poll_interval, max(0.0, deadline - time.monotonic()))
-                )
-
-            if not self._job_ids:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            active_job_states = self._active_job_states()
+            if active_job_states is not None and not active_job_states:
                 return
-            result = subprocess.run(
-                ["scancel", *self._job_ids],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=_SLURM_COMMAND_TIMEOUT_S,
+            time.sleep(min(self._poll_interval, max(0.0, deadline - time.monotonic())))
+
+        if not self._job_ids:
+            return
+        result = subprocess.run(
+            ["scancel", *self._job_ids],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=_SLURM_COMMAND_TIMEOUT_S,
+        )
+        if result.returncode != 0:
+            logger.error(
+                "scancel failed for slurm worker jobs %s: %s",
+                ",".join(self._job_ids),
+                result.stderr.strip(),
             )
-            if result.returncode != 0:
-                logger.error(
-                    "scancel failed for slurm worker jobs %s: %s",
-                    ",".join(self._job_ids),
-                    result.stderr.strip(),
-                )
 
     def _scale_once(self) -> None:
         active_job_states = self._active_job_states()
@@ -131,7 +127,7 @@ class SlurmWorkerPool:
         with self._coordinator.lock:
             busy = len(
                 {job.worker for job in self._coordinator.running.values()}
-                & {f"slurm-worker-{j.replace('_', 'a')}" for j in self._job_ids}
+                & set(self._job_ids)
             )
             # Ready leases need capacity in addition to workers already busy.
             demand = min(
@@ -303,20 +299,17 @@ class SlurmWorkerPool:
         return states
 
     def _scale_loop(self) -> None:
-        with _scoped_component("slurm"):
-            try:
-                while not self._stop_event.is_set():
-                    self._scale_once()
-                    self._stop_event.wait(timeout=self._poll_interval)
-            except Exception as exc:  # noqa: BLE001 -- fault barrier: any crash is reported
-                self._report_failure(
-                    "slurm worker pool scale loop crashed: "
-                    + "".join(
-                        traceback.format_exception(type(exc), exc, exc.__traceback__)
-                    )
-                )
+        try:
+            while not self._stop_event.is_set():
+                self._scale_once()
+                self._stop_event.wait(timeout=self._poll_interval)
+        except Exception as exc:
+            logger.exception("scale loop crashed")
+            self._report_failure(
+                "slurm worker pool scale loop crashed: "
+                + traceback.format_exception_only(type(exc), exc)[-1].strip()
+            )
 
     def _report_failure(self, message: str) -> None:
-        logger.error("slurm worker pool failure: %s", message)
         self._stop_event.set()
         self._coordinator.fail(message)

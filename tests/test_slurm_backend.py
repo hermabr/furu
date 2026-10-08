@@ -155,7 +155,7 @@ def test_worker_cli_passes_coordinator_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[Path, str, float | None]] = []
+    calls: list[tuple[Path, str, float | None, Path | None]] = []
     coordinator_file = tmp_path / "coordinator.url"
     coordinator_file.write_text("ws://furu:secret@execution-coordinator.test:1\n\n")
 
@@ -168,9 +168,9 @@ def test_worker_cli_passes_coordinator_file(
         backend: str,
         materialize_snapshot: bool,
         max_failures: int,
-        log_file: Path,
+        worker_log: Path | None,
     ) -> None:
-        calls.append((coordinator, pool, idle_timeout))
+        calls.append((coordinator, pool, idle_timeout, worker_log))
 
     monkeypatch.setattr(_cli, "worker_loop", worker_loop)
 
@@ -185,8 +185,6 @@ def test_worker_cli_passes_coordinator_file(
                 "60",
                 "--max-failures",
                 "3",
-                "--log-file",
-                "worker.log",
                 "--component",
                 "test-worker",
                 "--backend",
@@ -196,7 +194,10 @@ def test_worker_cli_passes_coordinator_file(
         == 0
     )
 
-    assert calls == [(coordinator_file, "slurm:abc", 60.0)]
+    # The worker's own log is its sbatch --output file, named after the worker.
+    assert calls == [
+        (coordinator_file, "slurm:abc", 60.0, tmp_path / "logs" / "test-worker.log")
+    ]
 
 
 def test_worker_cli_reads_pool(
@@ -216,7 +217,7 @@ def test_worker_cli_reads_pool(
         backend: str,
         materialize_snapshot: bool,
         max_failures: int,
-        log_file: Path,
+        worker_log: Path | None,
     ) -> None:
         calls.append((pool, idle_timeout))
 
@@ -233,8 +234,6 @@ def test_worker_cli_reads_pool(
                 "30",
                 "--max-failures",
                 "3",
-                "--log-file",
-                "worker.log",
                 "--component",
                 "test-worker",
                 "--backend",
@@ -264,7 +263,7 @@ def test_worker_cli_reads_idle_timeout_and_max_failures(
         backend: str,
         materialize_snapshot: bool,
         max_failures: int,
-        log_file: Path,
+        worker_log: Path | None,
     ) -> None:
         calls.append((idle_timeout, max_failures))
 
@@ -281,8 +280,6 @@ def test_worker_cli_reads_idle_timeout_and_max_failures(
                 "0.25",
                 "--max-failures",
                 "3",
-                "--log-file",
-                "worker.log",
                 "--component",
                 "test-worker",
                 "--backend",
@@ -311,7 +308,7 @@ def _run_worker_cli_capturing_component(
         backend: str,
         materialize_snapshot: bool,
         max_failures: int,
-        log_file: Path,
+        worker_log: Path | None,
     ) -> None:
         captured.append(component)
 
@@ -328,8 +325,6 @@ def _run_worker_cli_capturing_component(
                 "60",
                 "--max-failures",
                 "3",
-                "--log-file",
-                "worker.log",
                 "--backend",
                 "slurm",
                 *extra_args,
@@ -371,7 +366,7 @@ def test_worker_cli_requires_component(
         backend: str,
         materialize_snapshot: bool,
         max_failures: int,
-        log_file: Path,
+        worker_log: Path | None,
     ) -> None:
         raise AssertionError("worker_loop should not be called")
 
@@ -388,8 +383,6 @@ def test_worker_cli_requires_component(
                 "60",
                 "--max-failures",
                 "3",
-                "--log-file",
-                "worker.log",
             ]
         )
 
@@ -423,8 +416,6 @@ def test_worker_cli_requires_pool(
                 "60",
                 "--max-failures",
                 "3",
-                "--log-file",
-                "worker.log",
                 "--component",
                 "test-worker",
             ]
@@ -456,8 +447,6 @@ def test_worker_cli_requires_coordinator_file(monkeypatch: pytest.MonkeyPatch) -
                 "60",
                 "--max-failures",
                 "3",
-                "--log-file",
-                "worker.log",
                 "--component",
                 "test-worker",
             ]
@@ -528,8 +517,6 @@ def test_worker_cli_rejects_auth_token_argument(
                 "60",
                 "--max-failures",
                 "3",
-                "--log-file",
-                "worker.log",
                 "--component",
                 "test-worker",
                 "--auth-token",
@@ -589,8 +576,9 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     argv = sbatch_records[0]["argv"]
     assert "--parsable" in argv
     assert f"--chdir={_code_dir(provenance)}" in argv
-    assert f"--output={log_dir.resolve() / 'furu-worker-%A_%a.out'}" in argv
-    assert f"--error={log_dir.resolve() / 'furu-worker-%A_%a.err'}" in argv
+    # One file per worker, named like the worker: stdout and stderr merged.
+    assert f"--output={log_dir.resolve() / '%A_%a.log'}" in argv
+    assert not any(arg.startswith(("--error", "--log-file")) for arg in argv)
     assert "--job-name=furu-worker" in argv
     assert "--array=0-1" in argv
     assert not any(arg.startswith("--export") for arg in argv)
@@ -618,14 +606,10 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert "SLURM_ARRAY_TASK_ID" in script
     assert "SLURM_ARRAY_JOB_ID" in script
     assert (
-        'furu_worker_component="slurm-worker-${SLURM_ARRAY_JOB_ID}a${SLURM_ARRAY_TASK_ID}"'
-        in script
+        'furu_worker_component="${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"' in script
     )
     assert '--component "${furu_worker_component}"' in script
-    assert (
-        f"--log-file {shlex.quote(str(worker_dir / 'logs'))}"
-        '/"${furu_worker_component}.log"'
-    ) in script
+    assert "--log-file" not in script
     assert "--idle-timeout 0.25" in script
     assert "--max-failures 2" in script
     assert f"--pool {shlex.quote(backend.pool_key)}" in script
@@ -692,12 +676,9 @@ def test_slurm_backend_isolates_worker_files_between_pools(
 @pytest.mark.parametrize(
     ("job_id", "expected"),
     [
-        ("7", "slurm-worker-7"),
-        ("42", "slurm-worker-42"),
-        ("999", "slurm-worker-999"),
-        ("1000", "slurm-worker-1000"),
-        ("12345", "slurm-worker-12345"),
-        ("1234567", "slurm-worker-1234567"),
+        ("7", "7"),
+        ("42", "42"),
+        ("1234567", "1234567"),
     ],
 )
 def test_slurm_worker_component_label_derivation_under_bash(
@@ -787,7 +768,7 @@ def test_slurm_array_worker_component_label_derivation_under_bash(
         check=True,
     )
 
-    assert result.stdout == "slurm-worker-100a7"
+    assert result.stdout == "100_7"
 
 
 @pytest.mark.parametrize(
@@ -898,12 +879,11 @@ def test_slurm_backend_can_submit_workers_as_job_array(
     sbatch_records = [record for record in records if record["executable"] == "sbatch"]
     assert len(sbatch_records) == 1
     assert "--array=0-2" in sbatch_records[0]["argv"]
+    argv = sbatch_records[0]["argv"]
     assert any(
-        arg.endswith("furu-worker-%A_%a.out") for arg in sbatch_records[0]["argv"]
+        arg.startswith("--output=") and arg.endswith("/logs/%A_%a.log") for arg in argv
     )
-    assert any(
-        arg.endswith("furu-worker-%A_%a.err") for arg in sbatch_records[0]["argv"]
-    )
+    assert not any(arg.startswith(("--error", "--log-file")) for arg in argv)
     assert "SLURM_ARRAY_TASK_ID" in Path(sbatch_records[0]["argv"][-1]).read_text()
 
 
@@ -1413,13 +1393,9 @@ def test_slurm_pool_scales_for_ready_work_while_workers_are_busy(
     original_ids = list(pool._job_ids)
     assert len(original_ids) == 2
     active_file.write_text("".join(f"{job_id} RUNNING\n" for job_id in original_ids))
-    workers = (
-        ["slurm-worker-100a0", "slurm-worker-100a1"]
-        if use_job_arrays
-        else ["slurm-worker-100", "slurm-worker-101"]
-    )
+    workers = ["100_0", "100_1"] if use_job_arrays else ["100", "101"]
     # A batch occupies one worker; another pool's work adds no demand here.
-    for i, worker in enumerate([*workers, workers[0], "slurm-worker-999"]):
+    for i, worker in enumerate([*workers, workers[0], "999"]):
         coordinator.running[str(i)] = RunningJob(
             node=cast(DagNode, object()), started_at=0, worker=worker
         )

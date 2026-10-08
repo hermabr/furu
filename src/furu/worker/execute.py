@@ -1,26 +1,20 @@
 from __future__ import annotations
 
-import contextvars
 import os
-import queue
 import signal
 import subprocess
 import threading
-from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 from typing import assert_never
 
 from furu.config import get_config
-from furu.logging import get_logger
+from furu.logging import _append, get_logger
 from furu.provenance import EnvironmentIdentity
 from furu.snapshot import CodeLocation
 from furu.worker.protocol import Job, JobFailedResult, JobResult, job_result_adapter
 
-logger = get_logger("worker.execute")
-
-_STDERR_TAIL_LINES = 200
-_STDERR_TAIL_CHARS = 32 * 1024
-_STDERR_QUEUE_LINES = 1000
+_RUN_LOG_TAIL_BYTES = 32 * 1024
 _RETIRE_TIMEOUT_SECONDS = 5.0
 
 
@@ -30,8 +24,6 @@ class _Child:
     environment: dict[str, str]
     code: CodeLocation
     spec_name: str
-    stderr_thread: threading.Thread
-    stderr_tail: deque[str]
 
 
 class ChildSlot:
@@ -44,7 +36,17 @@ class ChildSlot:
 
     _child: _Child | None
 
-    def __init__(self, *, backend: str, materialize_snapshot: bool) -> None:
+    def __init__(
+        self,
+        *,
+        worker: str,
+        backend: str,
+        materialize_snapshot: bool,
+        worker_log: Path | None = None,
+    ) -> None:
+        self._worker = worker
+        self._worker_log = worker_log
+        self._logger = get_logger(worker)
         self._backend = backend
         self._materialize_snapshot = materialize_snapshot
         self._child = None
@@ -68,6 +70,9 @@ class ChildSlot:
 
         settings = job.process
         environment = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
+        # Progress bars redraw up to 10 times a second, and every redraw lands
+        # in run.log; tqdm >= 4.66 reads this unless you set your own.
+        environment.setdefault("TQDM_MININTERVAL", "30")
         for name, value in settings.environment.items():
             if value is None:
                 environment.pop(name, None)
@@ -104,12 +109,12 @@ class ChildSlot:
                 self.close()
                 child = None
         if child is None:
-            child = self._child = _spawn(environment, code=code, backend=self._backend)
+            child = self._child = self._spawn(environment, code=code)
         child.spec_name = spec_name
 
         if cancelled.is_set():
             child.process.kill()
-        result = _request(child, job)
+        result = self._request(child, job)
         if settings.reuse == "never" or child.process.poll() is not None:
             self.close()
         return result
@@ -132,111 +137,68 @@ class ChildSlot:
         except subprocess.TimeoutExpired:
             child.process.kill()
             child.process.wait()
-        child.stderr_thread.join(timeout=_RETIRE_TIMEOUT_SECONDS)
-        logger.debug("retired child %d", child.process.pid)
+        self._logger.debug("retired child %d", child.process.pid)
 
+    def _spawn(self, environment: dict[str, str], *, code: CodeLocation) -> _Child:
+        # The child's stderr is ours: each job points it at its run.log, and
+        # anything written between jobs lands in this worker's own output.
+        process = subprocess.Popen(
+            [str(code.python), "-m", "furu.worker._child"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            cwd=code.cwd,
+            env=environment,
+            text=True,
+        )
+        assert process.stdin is not None
+        process.stdin.write(get_config().model_dump_json() + "\n")
+        process.stdin.write(self._backend + "\n")
+        process.stdin.write(self._worker + "\n")
+        process.stdin.write(f"{self._worker_log or ''}\n")
+        process.stdin.flush()
+        self._logger.debug("spawned child %d", process.pid)
+        return _Child(process=process, environment=environment, code=code, spec_name="")
 
-def _spawn(environment: dict[str, str], *, code: CodeLocation, backend: str) -> _Child:
-    process = subprocess.Popen(
-        [str(code.python), "-m", "furu.worker._child"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        cwd=code.cwd,
-        env=environment,
-        text=True,
-    )
-    assert process.stdin is not None
-    process.stdin.write(get_config().model_dump_json() + "\n")
-    process.stdin.write(backend + "\n")
-    process.stdin.flush()
-    stderr_tail: deque[str] = deque(maxlen=_STDERR_TAIL_LINES)
-    stderr_thread = _relay_stderr(process, stderr_tail)
-    logger.debug("spawned child %d", process.pid)
-    return _Child(
-        process=process,
-        environment=environment,
-        code=code,
-        spec_name="",
-        stderr_thread=stderr_thread,
-        stderr_tail=stderr_tail,
-    )
-
-
-def _relay_stderr(
-    process: subprocess.Popen[str], stderr_tail: deque[str]
-) -> threading.Thread:
-    assert process.stderr is not None
-    stderr = process.stderr
-    lines: queue.Queue[str | None] = queue.Queue()
-    dropped = 0
-
-    def read_stderr() -> None:
-        nonlocal dropped
-        for line in stderr:
-            stderr_tail.append(line)
-            if lines.qsize() < _STDERR_QUEUE_LINES:
-                lines.put_nowait(line)
-            else:
-                dropped += 1
-        lines.put_nowait(None)
-
-    def forward_stderr() -> None:
-        reported = 0
-
-        def report_dropped() -> None:
-            nonlocal reported
-            if count := dropped - reported:
-                logger.warning(
-                    "child %d: dropped %d stderr lines (log sinks stalled)",
-                    process.pid,
-                    count,
-                )
-                reported += count
-
-        while (line := lines.get()) is not None:
-            report_dropped()
-            logger.info("child %d: %s", process.pid, line.rstrip("\n"))
-        report_dropped()
-
-    threading.Thread(
-        target=read_stderr,
-        name=f"furu-child-stderr-read-{process.pid}",
-        daemon=True,
-    ).start()
-    consumer = threading.Thread(
-        target=contextvars.copy_context().run,
-        args=(forward_stderr,),
-        name=f"furu-child-stderr-{process.pid}",
-        daemon=True,
-    )
-    consumer.start()
-    return consumer
-
-
-def _request(child: _Child, job: Job) -> JobResult:
-    assert child.process.stdin is not None
-    assert child.process.stdout is not None
-    try:
-        child.process.stdin.write(job.model_dump_json() + "\n")
-        child.process.stdin.flush()
-        line = child.process.stdout.readline()
-    except OSError:
-        line = ""
-    if line:
-        return job_result_adapter.validate_json(line)
-
-    returncode = child.process.wait()
-    child.stderr_thread.join(timeout=_RETIRE_TIMEOUT_SECONDS)
-    if returncode < 0:
+    def _request(self, child: _Child, job: Job) -> JobResult:
+        assert child.process.stdin is not None
+        assert child.process.stdout is not None
         try:
-            reason = f"signal {-returncode} ({signal.Signals(-returncode).name})"
-        except ValueError:
-            reason = f"signal {-returncode}"
-    else:
-        reason = f"exit code {returncode}"
-    logger.warning("child %d died with %s", child.process.pid, reason)
-    error = f"subprocess died: {reason}"
-    if tail := "".join(child.stderr_tail)[-_STDERR_TAIL_CHARS:]:
-        error += f"\nstderr tail:\n{tail}"
-    return JobFailedResult(error=error)
+            child.process.stdin.write(job.model_dump_json() + "\n")
+            child.process.stdin.flush()
+            line = child.process.stdout.readline()
+        except OSError:
+            line = ""
+        if line:
+            return job_result_adapter.validate_json(line)
+
+        returncode = child.process.wait()
+        if returncode < 0:
+            try:
+                name = signal.Signals(-returncode).name
+                reason = f"killed by signal {-returncode} ({name})"
+            except ValueError:
+                reason = f"killed by signal {-returncode}"
+        else:
+            reason = f"exited with code {returncode}"
+        self._logger.warning(
+            "child %d %s while running %s",
+            child.process.pid,
+            reason,
+            job.artifacts[0].log_label,
+        )
+        # The child never wrote its footer; the run.log tail is its last words,
+        # and the reason goes last so it reads as the error's summary.
+        tail = _tail(job.run_logs[0])
+        for run_log in job.run_logs:
+            _append(run_log, f"── died · {reason}\n\n")
+        return JobFailedResult(error=f"{tail}subprocess died: {reason}")
+
+
+def _tail(path: Path) -> str:
+    try:
+        with path.open("rb") as file:
+            file.seek(max(0, file.seek(0, os.SEEK_END) - _RUN_LOG_TAIL_BYTES))
+            tail = file.read().decode(errors="replace")
+    except OSError:
+        return ""
+    return tail if not tail or tail.endswith("\n") else tail + "\n"
