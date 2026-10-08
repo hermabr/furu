@@ -18,7 +18,7 @@ from typing import (
 
 import pydantic
 
-from furu._declared_types import child_declared_type, strip_annotated, type_hints
+from furu._declared_types import cached_type_hints, child_declared_type, strip_annotated
 from furu.constants import FIELDSMARKER, KINDMARKER, TYPEMARKER
 from furu.result.codec import Codec, CodecMeta
 from furu.result.ref import Ref
@@ -262,7 +262,7 @@ def _dump_value(
             }
         case pydantic.BaseModel():
             fields_out: dict[str, JsonValue] = {}
-            field_types = type_hints(value.__class__)
+            field_types = cached_type_hints(value.__class__)
             for raw_name in value.__class__.model_fields:
                 name = _validate_result_path_segment(
                     raw_name, parent_value_path=value_path
@@ -284,7 +284,7 @@ def _dump_value(
             }
         case _ if dataclasses.is_dataclass(value) and not isinstance(value, type):
             fields_out: dict[str, JsonValue] = {}
-            field_types = type_hints(type(value))
+            field_types = cached_type_hints(type(value))
             for field in dataclasses.fields(cast(Any, value)):
                 name = _validate_result_path_segment(
                     field.name, parent_value_path=value_path
@@ -536,7 +536,7 @@ def _load_validated_fields(
     missing = expected - actual
     extra = actual - expected
     if not missing and not extra:
-        field_types = type_hints(cls)
+        field_types = cached_type_hints(cls)
         return {
             name: _load_value(
                 child,

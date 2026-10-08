@@ -34,12 +34,7 @@ def has_skip_hash(declared_type: object) -> bool:
 
 
 @cache
-def type_hints(cls: type) -> Mapping[str, Any]:
-    """``get_type_hints(cls, include_extras=True)``, once per class.
-
-    Evaluating string annotations is slow, and a class's hints are fixed once it
-    is defined.
-    """
+def cached_type_hints(cls: type) -> Mapping[str, Any]:
     return get_type_hints(cls, include_extras=True)
 
 

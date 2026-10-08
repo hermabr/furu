@@ -10,7 +10,7 @@ from typing import (
 
 from pydantic import BaseModel as PydanticBaseModel
 
-from furu._declared_types import has_skip_hash, strip_annotated, type_hints
+from furu._declared_types import cached_type_hints, has_skip_hash, strip_annotated
 from furu.constants import (
     ARGSMARKER,
     CLASSMARKER,
@@ -47,7 +47,7 @@ def schema_class(
         return {CLASSMARKER: fully_qualified_name(tp)}
     seen.add(tp)
 
-    hints = type_hints(tp)
+    hints = cached_type_hints(tp)
     return {
         CLASSMARKER: fully_qualified_name(tp),
         FIELDSMARKER: {
