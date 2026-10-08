@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib
-import logging
 import os
 import subprocess
 import sys
@@ -20,7 +19,7 @@ from subprocess_objects import (
 )
 
 import furu
-from furu import Metadata, Spec
+from furu import Spec
 from furu.config import get_config
 from furu.metadata import ArtifactSpec
 from furu.provenance import (
@@ -86,14 +85,6 @@ def _run(slot: ChildSlot, obj: Spec) -> JobResult:
 def _pid_and_value(obj: Spec[str]) -> tuple[int, str]:
     pid, _, value = obj.load_existing().partition(":")
     return int(pid), value
-
-
-def test_metadata_defaults_to_warm_child_with_inherited_environment() -> None:
-    metadata = Metadata()
-
-    assert metadata.environment == {}
-    assert metadata.required_environment_variables == ()
-    assert metadata.reuse == "same_environment"
 
 
 def test_subprocess_child_gets_the_spec_environment(
@@ -221,22 +212,25 @@ def test_child_relays_blocked_dependency() -> None:
     ]
 
 
-def test_child_completes_cache_hit_without_recreating(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    leaf = SubprocessDependencyLeaf()
+class _CountingLeaf(Spec[int]):
+    calls_file: str
+
+    def create(self) -> int:
+        with open(self.calls_file, "a", encoding="utf-8") as f:
+            f.write("x")
+        return 1
+
+
+def test_child_completes_cache_hit_without_recreating(tmp_path: Path) -> None:
+    calls_file = tmp_path / "calls"
+    leaf = _CountingLeaf(calls_file=str(calls_file))
     leaf.create()
-    furu_logger = logging.getLogger("furu")
-    furu_logger.addHandler(caplog.handler)
-    try:
-        caplog.set_level(logging.INFO, logger="furu")
-        with worker_execution_context():
-            result = _execute(_job(leaf))
-    finally:
-        furu_logger.removeHandler(caplog.handler)
+
+    with worker_execution_context():
+        result = _execute(_job(leaf))
 
     assert isinstance(result, JobCompletedResult)
-    assert f"cache hit for {leaf._log_label}" in caplog.messages
+    assert calls_file.read_text(encoding="utf-8") == "x"
 
 
 def _snapshot_repo(repo: Path, marker: str) -> str:

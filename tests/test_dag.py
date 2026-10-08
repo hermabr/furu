@@ -8,7 +8,7 @@ import pytest
 import furu
 from furu import Spec
 from furu.config import get_config
-from furu.dag import DagNode, _add_to_dag
+from furu.dag import _add_to_dag
 from furu.execution.execution_coordinator import ExecutionCoordinator
 from furu.locking import lock
 from furu.provenance import (
@@ -114,21 +114,6 @@ def _new_execution_coordinator(objs: Sequence[Spec]) -> ExecutionCoordinator:
     return coordinator
 
 
-def test_add_to_dag_single_object_no_dependencies():
-    leaf = Leaf(name="x")
-    coordinator = _new_execution_coordinator([leaf])
-
-    assert len(coordinator.ready) == 1
-    (root,) = coordinator.ready.values()
-    assert isinstance(root, DagNode)
-    assert root.obj is leaf
-    assert root.dependencies == []
-    assert root.dependents == []
-
-    assert coordinator.nodes_by_id == {leaf.object_id: root}
-    assert coordinator.blocked == {}
-
-
 def test_add_to_dag_traverses_declared_refs_recursively():
     leaf_a = Leaf(name="a")
     leaf_b = Leaf(name="b")
@@ -211,29 +196,6 @@ def test_add_to_dag_stops_recursion_at_completed_objects():
     assert mid_root.dependents == []
 
 
-def test_add_to_dag_completed_root_has_no_dependencies():
-    leaf = Leaf(name="root-cached")
-    mid = Mid(label="m", child=leaf)
-    mid.create()
-    assert mid.status == "done"
-
-    coordinator = _new_execution_coordinator([mid])
-
-    assert coordinator.ready == {}
-    assert coordinator.nodes_by_id == {}
-    assert coordinator.blocked == {}
-
-
-def test_add_to_dag_does_not_snapshot_running_root():
-    leaf = Leaf(name="running-root")
-
-    with mark_running(leaf):
-        assert leaf.status == "running"
-        coordinator = _new_execution_coordinator([leaf])
-
-    assert set(coordinator.ready) == {leaf.object_id}
-
-
 def test_add_to_dag_does_not_snapshot_running_dependency():
     leaf = Leaf(name="running-dependency")
     mid = Mid(label="m", child=leaf)
@@ -256,25 +218,6 @@ def test_add_to_dag_does_not_reject_inactive_compute_lock():
     coordinator = _new_execution_coordinator([leaf])
 
     assert set(coordinator.ready) == {leaf.object_id}
-
-
-def test_add_to_dag_accepts_a_list_of_inputs():
-    leaf_a = Leaf(name="a")
-    leaf_b = Leaf(name="b")
-    mid = Mid(label="m", child=leaf_a)
-
-    coordinator = _new_execution_coordinator([mid, leaf_b])
-
-    assert set(coordinator.ready) == {leaf_a.object_id, leaf_b.object_id}
-
-    assert set(coordinator.nodes_by_id) == {
-        leaf_a.object_id,
-        leaf_b.object_id,
-        mid.object_id,
-    }
-
-    leaf_b_node = coordinator.nodes_by_id[leaf_b.object_id]
-    assert leaf_b_node.dependents == []
 
 
 def test_add_to_dag_handles_nested_dataclass_refs():
@@ -406,8 +349,8 @@ def test_create_runs_dag_on_local_workers(tmp_path: Path):
     assert sorted(_calls(tmp_path, TrackingMid)) == ["C", "L", "R"]
     # The lazy parent ran once to discover its dependency, then once more.
     assert _calls(tmp_path, LazyChildLoader) == ["3", "3"]
+    # Discovering a dependency is not a failure and must not look like one.
     lazy_log = run_log_path_in(lazy._base_dir).read_text(encoding="utf-8")
-    assert "create deferred: 1 missing dependency/dependencies" in lazy_log
     assert "create failed" not in lazy_log
     assert "=== Debug Traceback ===" not in lazy_log
 

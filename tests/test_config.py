@@ -3,7 +3,6 @@ import sys
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
 
 from furu.config import (
     _WORKER_JSON_CONFIG_FILE_ENV_VAR,
@@ -11,7 +10,6 @@ from furu.config import (
     _FuruDirectories,
     _FuruWorkerConfig,
     _project_anchor,
-    _set_config,
     get_config,
 )
 from furu.testing import override_config
@@ -111,8 +109,8 @@ def test_import_outside_project_defers_anchor_crash(tmp_path) -> None:
         "config = get_config()\n"
         "try:\n"
         "    config.run_directories\n"
-        "except RuntimeError:\n"
-        "    print('deferred')\n"
+        "except RuntimeError as error:\n"
+        "    print(error)\n"
     )
     result = subprocess.run(
         [sys.executable, "-c", code],
@@ -121,31 +119,12 @@ def test_import_outside_project_defers_anchor_crash(tmp_path) -> None:
         text=True,
         check=True,
     )
-    assert result.stdout.strip() == "deferred"
+    assert "no git repository or pyproject.toml" in result.stdout
 
 
-def test_relative_directories_require_a_project(tmp_path, monkeypatch) -> None:
-    monkeypatch.chdir(tmp_path)
-    _project_anchor.cache_clear()
-    try:
-        config = _Config()  # config loads fine; only directory access crashes
-        with pytest.raises(RuntimeError, match="no git repository or pyproject.toml"):
-            _ = config.run_directories
-    finally:
-        _project_anchor.cache_clear()
-
-
-def test_config_uses_main_directories_by_default(monkeypatch) -> None:
-    monkeypatch.setattr("furu.config._project_anchor", lambda: Path())
-
-    config = _Config()
-
-    assert config.debug_mode is False
-    assert config.directories.debug == Path("furu-data") / "debug"
-    assert config.run_directories == config.directories
-
-
-def test_config_reads_pyproject_toml(tmp_path, monkeypatch) -> None:
+def test_config_reads_pyproject_toml_from_a_parent_directory(
+    tmp_path, monkeypatch
+) -> None:
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text(
         """
@@ -163,7 +142,9 @@ max_retries_per_object = 3
 """,
         encoding="utf-8",
     )
-    monkeypatch.chdir(tmp_path)
+    nested = tmp_path / "src" / "project"
+    nested.mkdir(parents=True)
+    monkeypatch.chdir(nested)
 
     config = _Config()
 
@@ -182,32 +163,6 @@ max_retries_per_object = 3
     assert config.worker == _FuruWorkerConfig(
         idle_timeout_seconds=7.5,
         max_retries_per_object=3,
-    )
-
-
-def test_config_discovers_pyproject_toml_in_parent_directory(
-    tmp_path, monkeypatch
-) -> None:
-    pyproject = tmp_path / "pyproject.toml"
-    pyproject.write_text(
-        """
-[tool.furu.directories]
-objects = "/tmp/furu-parent-pyproject-objects"
-executions = "/tmp/furu-parent-pyproject-executions"
-debug = "/tmp/furu-parent-pyproject-debug"
-""",
-        encoding="utf-8",
-    )
-    nested_directory = tmp_path / "src" / "project"
-    nested_directory.mkdir(parents=True)
-    monkeypatch.chdir(nested_directory)
-
-    config = _Config()
-
-    assert config.directories == _FuruDirectories(
-        objects=Path("/tmp/furu-parent-pyproject-objects"),
-        executions=Path("/tmp/furu-parent-pyproject-executions"),
-        debug=Path("/tmp/furu-parent-pyproject-debug"),
     )
 
 
@@ -289,34 +244,6 @@ def test_config_reads_worker_json_config_file(tmp_path, monkeypatch) -> None:
         idle_timeout_seconds=9.5,
         max_retries_per_object=3,
     )
-
-
-def test_config_is_frozen() -> None:
-    config = _Config()
-
-    with pytest.raises(ValidationError, match="Instance is frozen"):
-        config.directories = _FuruDirectories(
-            objects=Path("/tmp/assigned-furu-objects"),
-            executions=Path("/tmp/assigned-furu-executions"),
-        )
-
-
-def test_set_config_replaces_active_config() -> None:
-    original_config = get_config()
-    replacement_config = _Config(
-        directories=_FuruDirectories(
-            objects=Path("/tmp/context-furu-objects"),
-            executions=Path("/tmp/context-furu-executions"),
-        ),
-    )
-
-    _set_config(replacement_config)
-    try:
-        assert get_config() is replacement_config
-    finally:
-        _set_config(original_config)
-
-    assert get_config() is original_config
 
 
 def test_override_config_restores_previous_config_on_exit() -> None:

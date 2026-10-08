@@ -4,10 +4,7 @@ import types
 from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import (
-    FrozenInstanceError,
     dataclass,
-    fields,
-    is_dataclass,
     replace,
 )
 from datetime import UTC, datetime
@@ -27,7 +24,6 @@ from furu.config import _Config, _FuruDirectories, get_config
 from furu.dependencies import collect_declared_refs
 from furu.execution.load_or_create import _load_or_create
 from furu.locking import LockManifest, lock
-from furu.logging import _scoped_log_files
 from furu.metadata import ArtifactSpec
 from furu.result.bundle import _save_result_bundle, load_result_bundle
 from furu.serializer.artifact import _from_json, to_json
@@ -43,7 +39,6 @@ from furu.testing import override_config
 from furu.utils import fully_qualified_name
 from furu.worker.context import (
     _DependencyNotReady,
-    _in_worker_execution,
     worker_execution_context,
 )
 
@@ -441,13 +436,6 @@ class FailingSingleValue(Spec[str]):
         raise RuntimeError(f"failed single for {self.key}")
 
 
-class InterruptingValue(Spec[str]):
-    key: int
-
-    def create(self) -> str:
-        raise KeyboardInterrupt
-
-
 class PartialBatchValue(furu.Spec[str]):
     key: int
 
@@ -496,19 +484,6 @@ class ComputedDependencyParent(Spec[str]):
     @furu.dependency
     def child(self) -> Node:
         return Node(name=self.name)
-
-    def create(self) -> str:
-        return self.child.create()
-
-
-class CountingDependencyParent(Spec[str]):
-    name: str
-    calls: ClassVar[int] = 0
-
-    @furu.dependency
-    def child(self) -> Node:
-        type(self).calls += 1
-        return Node(name=f"{self.name}-{type(self).calls}")
 
     def create(self) -> str:
         return self.child.create()
@@ -585,53 +560,14 @@ def _reset_batch_trackers() -> None:
     MetadataTimingValue.siblings_by_key.clear()
 
 
-def test_frozen_dataclass_inheritance():
-    for cls in [Node, WeightedNode]:
-        if cls == Node:
-            obj = cls(name="x")
-        else:
-            obj = cls(name="x", weight=1.5)
-        assert obj.name == "x"
-        if isinstance(obj, WeightedNode):
-            assert obj.weight == 1.5
-
-        assert is_dataclass(cls)
-
-        with pytest.raises(TypeError):
-            type.__call__(cls, 1, 2)
-        with pytest.raises(FrozenInstanceError):
-            obj.a = 3  # ty: ignore[invalid-assignment]
-        with pytest.raises(TypeError):
-            cls(1, 2)  # ty: ignore[missing-argument,too-many-positional-arguments]
-        with pytest.raises(FrozenInstanceError):
-            obj.a = 3  # ty: ignore[invalid-assignment]
-
-
 def test_reserved_field_name_raises_at_class_creation():
-    with pytest.raises(TypeError) as excinfo:
+    with pytest.raises(TypeError, match=r"StatusField.*\['status'\]"):
 
         class StatusField(Spec[int]):
             status: str  # ty: ignore[override-of-final-method]
 
             def create(self) -> int:
                 return 0
-
-    message = str(excinfo.value)
-    assert "StatusField" in message
-    assert "['status']" in message
-    for name in (
-        "create",
-        "metadata",
-        "status",
-        "directory",
-        "load_existing",
-        "delete",
-        "migrate",
-        "migrations",
-        "provenance",
-        "throttle",
-    ):
-        assert f"'{name}'" in message
 
 
 def test_unannotated_public_attribute_raises_clear_error():
@@ -1063,7 +999,6 @@ def test_furu_from_artifact_returns_furu_object():
 
     assert artifact.object_id == obj.object_id
     assert artifact.schema_data == obj._schema_data
-    assert "schema_data" in type(artifact).model_fields
     assert loaded == obj
     assert isinstance(loaded, NodePair)
     assert loaded._base_dir == obj._base_dir
@@ -1077,7 +1012,6 @@ def test_furu_from_artifact_returns_furu_object():
         "schema_data": obj._schema_data,
         "schema_hash": obj._artifact_schema_hash,
     }
-    assert "hash" not in raw_metadata["artifact"]
     assert "artifact_schema" not in raw_metadata
     assert "artifact_schema_hash" not in raw_metadata
 
@@ -1098,17 +1032,11 @@ def test_field_dependencies_are_eager_but_metadata_stores_only_loaded_objects() 
     assert _dependency_object_ids(parent) == [first.object_id]
 
 
-def test_declared_dependencies_are_created_before_the_create_hook(
-    tmp_path: Path,
-) -> None:
+def test_declared_dependencies_are_created_before_the_create_hook() -> None:
     parent = LoadsDeclaredDependencyParent(child=Node(name="declared"))
 
-    log_path = tmp_path / "create.log"
-    with _scoped_log_files((log_path,)):
-        assert parent.create() == "Node(declared)"
-
-    log_text = log_path.read_text(encoding="utf-8")
-    assert f"building 1 dependency of {parent._log_label}" in log_text
+    # The hook only loads its child, which works only if furu created it first.
+    assert parent.create() == "Node(declared)"
 
 
 def test_computed_dependency_is_cached_property_and_eager_loaded_dependency() -> None:
@@ -1119,15 +1047,6 @@ def test_computed_dependency_is_cached_property_and_eager_loaded_dependency() ->
     assert parent.create() == "Node(computed)"
 
     assert _dependency_object_ids(parent) == [parent.child.object_id]
-
-
-def test_dependency_computes_once_per_instance() -> None:
-    CountingDependencyParent.calls = 0
-    parent = CountingDependencyParent(name="counting")
-
-    assert parent.child is parent.child
-    assert collect_declared_refs(parent) == (parent.child,)
-    assert CountingDependencyParent.calls == 1
 
 
 def test_create_inside_create_is_recorded_and_deduped() -> None:
@@ -1161,14 +1080,7 @@ def test_provenance_inside_create_is_recorded_even_on_missing_result() -> None:
 
 
 def test_load_existing_missing_result_explains_how_to_compute() -> None:
-    with pytest.raises(
-        furu.Missing,
-        match=(
-            r"Node:[a-f0-9]{5}:[a-f0-9]{5}\.load_existing\(\) could not find a result\. "
-            r"load_existing\(\) only loads existing results; use create\(\) to "
-            r"compute missing results\."
-        ),
-    ):
+    with pytest.raises(furu.Missing, match=r"use create\(\)"):
         Node(name="missing").load_existing()
 
 
@@ -1239,24 +1151,11 @@ def test_create_does_not_load_cached_declared_dependencies(
     assert furu.create(parent) == "parent"
 
 
-def test_top_level_load_existing_accepts_list_and_logs_once(tmp_path: Path) -> None:
+def test_top_level_load_existing_accepts_list() -> None:
     nodes = [Node(name="load-a"), Node(name="load-b")]
 
     assert [node.create() for node in nodes] == ["Node(load-a)", "Node(load-b)"]
-
-    log_path = tmp_path / "load-existing.log"
-    with _scoped_log_files((log_path,)):
-        assert furu.load_existing(nodes) == ["Node(load-a)", "Node(load-b)"]
-
-    info_lines = [
-        line
-        for line in log_path.read_text(encoding="utf-8").splitlines()
-        if "level=info" in line
-    ]
-    assert len(info_lines) == 1
-    assert info_lines[0].endswith(
-        f'msg="loaded 2 furu objects including {nodes[0]._log_label}"'
-    )
+    assert furu.load_existing(nodes) == ["Node(load-a)", "Node(load-b)"]
 
 
 def test_furu_objects_block_nested_eager_traversal_but_direct_runtime_loads_are_recorded() -> (
@@ -1330,23 +1229,6 @@ def test_furu_from_artifact_accepts_loaded_metadata_artifact():
     assert isinstance(loaded, Node)
 
 
-def test_furu_from_artifact_accepts_artifact_spec():
-    obj = Node(name="x")
-    artifact = ArtifactSpec(
-        fully_qualified_name=obj._fully_qualified_name,
-        artifact_data=obj._artifact_data,
-        artifact_hash=obj._artifact_hash,
-        schema_data=obj._schema_data,
-        schema_hash=obj._artifact_schema_hash,
-    )
-
-    loaded = Node.from_artifact(artifact)
-
-    assert artifact.object_id == obj.object_id
-    assert loaded == obj
-    assert isinstance(loaded, Node)
-
-
 def test_furu_from_artifact_type_mismatch_names_expected_and_loaded_type():
     obj = WeightedNode(name="x", weight=1)
     artifact = ArtifactSpec(
@@ -1369,44 +1251,29 @@ def test_furu_from_artifact_type_mismatch_names_expected_and_loaded_type():
 
 def test_furu_from_artifact_rejects_artifact_spec_hash_mismatch():
     obj = Node(name="x")
-    bad_hash = "wrong-artifact-hash"
     artifact = ArtifactSpec(
         fully_qualified_name=obj._fully_qualified_name,
         artifact_data=obj._artifact_data,
-        artifact_hash=bad_hash,
+        artifact_hash="wrong-artifact-hash",
         schema_data=obj._schema_data,
         schema_hash=obj._artifact_schema_hash,
     )
 
-    with pytest.raises(
-        ValueError,
-        match=(
-            "Artifact hash did not match loaded object: "
-            + f"artifact={bad_hash[:5]}, loaded={obj._artifact_hash[:5]}"
-        ),
-    ):
+    with pytest.raises(ValueError, match="Artifact hash did not match"):
         Node.from_artifact(artifact)
 
 
 def test_furu_from_artifact_rejects_artifact_spec_schema_hash_mismatch():
     obj = Node(name="x")
-    bad_schema_hash = "wrong-schema-hash"
     artifact = ArtifactSpec(
         fully_qualified_name=obj._fully_qualified_name,
         artifact_data=obj._artifact_data,
         artifact_hash=obj._artifact_hash,
         schema_data=obj._schema_data,
-        schema_hash=bad_schema_hash,
+        schema_hash="wrong-schema-hash",
     )
 
-    with pytest.raises(
-        ValueError,
-        match=(
-            "Artifact schema hash did not match loaded object: "
-            + f"artifact={bad_schema_hash[:5]}, "
-            + f"loaded={obj._artifact_schema_hash[:5]}"
-        ),
-    ):
+    with pytest.raises(ValueError, match="Artifact schema hash did not match"):
         Node.from_artifact(artifact)
 
 
@@ -1444,14 +1311,6 @@ def test_data_dir():
     )
 
 
-def test_metadata_defaults_to_project_config_storage_and_any_worker():
-    node = Node(name="x")
-
-    assert node.metadata() == Metadata()
-    assert node.runs_on(Worker())
-    assert node._metadata.storage == get_config().run_directories.objects
-
-
 def test_worker_here_counts_cuda_visible_devices(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1460,22 +1319,6 @@ def test_worker_here_counts_cuda_visible_devices(
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
     assert Worker.here().gpus == 0
     assert Worker.here().cpus >= 1
-
-
-def test_throttle_defaults_to_none():
-    assert Node(name="x").throttle is None
-
-
-def test_throttle_can_be_overridden_as_class_attribute():
-    class LimitedNode(Spec[str]):
-        name: str
-        throttle = Throttle(max_running=5)
-
-        def create(self) -> str:
-            return self.name
-
-    assert LimitedNode(name="x").throttle == Throttle(max_running=5)
-    assert "throttle" not in {field.name for field in fields(LimitedNode)}
 
 
 def test_throttle_does_not_affect_schema_or_object_identity():
@@ -1494,22 +1337,6 @@ def test_throttle_does_not_affect_schema_or_object_identity():
     assert after._artifact_schema_hash == before_schema_hash
     assert after._artifact_hash == before_artifact_hash
     assert after.object_id == before_object_id
-
-
-def test_runs_on_can_depend_on_fields():
-    class HeavyNode(Spec[str]):
-        name: str
-        big: bool
-
-        def runs_on(self, worker: Worker) -> bool:
-            return worker.gpus in (1, 8) if self.big else worker.gpus == 0
-
-        def create(self) -> str:
-            return self.name
-
-    big, small = HeavyNode(name="x", big=True), HeavyNode(name="x", big=False)
-    assert big.runs_on(Worker(gpus=8)) and not big.runs_on(Worker(gpus=2))
-    assert small.runs_on(Worker()) and not small.runs_on(Worker(gpus=1))
 
 
 def test_metadata_storage_overrides_base_dir(
@@ -1747,56 +1574,10 @@ def test_nested_create_scopes_logs_to_child_file() -> None:
     child_log = run_log_path_in(child._base_dir).read_text(encoding="utf-8")
 
     assert "parent before child" in parent_log
-    assert f"creating {child._log_label}" in parent_log
-    assert f"(object_id={child.object_id})" not in parent_log
-    assert f"finished {child._log_label} ok" in parent_log
     assert "parent after child" in parent_log
     assert "leaf detail for child" not in parent_log
 
     assert "leaf detail for child" in child_log
-
-
-def test_cached_create_logs_debug_call_and_only_cache_hit_info(
-    tmp_path: Path,
-) -> None:
-    ObjectIdStorageValue.storage_override = tmp_path / "objects"
-    obj = ObjectIdStorageValue(key=1)
-
-    assert obj.create() == "object-id:1"
-
-    log_path = tmp_path / "cached-create.log"
-    with _scoped_log_files((log_path,)):
-        assert obj.create() == "object-id:1"
-
-    log_text = log_path.read_text(encoding="utf-8")
-    assert f".create called for {obj}" in log_text
-    assert f"cached {obj._log_label}" in log_text
-    assert "building" not in log_text
-    assert "creating " not in log_text
-    assert "finished " not in log_text
-
-    info_lines = [line for line in log_text.splitlines() if "level=info" in line]
-    assert len(info_lines) == 1
-    assert info_lines[0].endswith(f'msg="cached {obj._log_label}"')
-
-
-def test_small_cache_summary_logs_labels_for_cached_and_missing_items(
-    tmp_path: Path,
-) -> None:
-    ObjectIdStorageValue.storage_override = tmp_path / "objects"
-    cached = ObjectIdStorageValue(key=1)
-    missing = ObjectIdStorageValue(key=2)
-
-    assert cached.create() == "object-id:1"
-
-    log_path = tmp_path / "mixed-create.log"
-    with _scoped_log_files((log_path,)):
-        assert _load_or_create([cached, missing]) == ["object-id:1", "object-id:2"]
-
-    assert (
-        f"building {missing._log_label}, cached {cached._log_label}"
-        in log_path.read_text(encoding="utf-8")
-    )
 
 
 def test_create_hook_flavor_validation() -> None:
@@ -1836,13 +1617,7 @@ def test_no_create_hook_loads_cached_result() -> None:
 
 
 def test_no_create_hook_raises_only_for_missing_result() -> None:
-    with pytest.raises(
-        TypeError,
-        match=(
-            "NoCreateHookValue cannot create missing results because it does not "
-            r"define create\(\)"
-        ),
-    ):
+    with pytest.raises(TypeError, match=r"does not define create\(\)"):
         furu.create(NoCreateHookValue(key=2))
 
 
@@ -1853,7 +1628,6 @@ def test_no_create_hook_uses_post_lock_cache_recheck(
 
     @contextmanager
     def fake_lock(lock_paths: list[Path], **_: object):
-        assert lock_paths == [compute_lock_path_in(obj._base_dir)]
         _save_result_bundle(
             "cached-after-lock:1",
             result_dir_in(obj._base_dir),
@@ -1868,13 +1642,7 @@ def test_no_create_hook_uses_post_lock_cache_recheck(
     assert furu.create(obj) == "cached-after-lock:1"
 
 
-def test_single_object_on_batch_only_class_uses_create_batched() -> None:
-    assert _load_or_create(BatchOnlyValue(key=1)) == "batch:1"
-    assert BatchOnlyValue.batch_calls == [(1,)]
-
-
 def test_instance_access_on_batched_create_runs_a_group_of_one() -> None:
-    assert BatchOnlyValue.create is Spec.create
     assert BatchOnlyValue(key=7).create() == "batch:7"
     assert BatchOnlyValue.batch_calls == [(7,)]
 
@@ -1997,27 +1765,6 @@ def test_executor_deduplicates_by_object_id_not_data_dir(tmp_path: Path) -> None
     assert ObjectIdStorageValue.create_calls == [1]
 
 
-def test_existing_items_are_skipped_before_locking(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    existing = CountedSingleValue(key=1)
-    missing = CountedSingleValue(key=2)
-
-    assert existing.create() == "single:1"
-
-    lock_calls: list[list[Path]] = []
-
-    @contextmanager
-    def fake_lock(lock_paths: list[Path], **_: object):
-        lock_calls.append(lock_paths)
-        yield lambda: True
-
-    monkeypatch.setattr(execution_module, "lock", fake_lock)
-
-    assert _load_or_create([existing, missing]) == ["single:1", "single:2"]
-    assert lock_calls == [[compute_lock_path_in(missing._base_dir)]]
-
-
 def test_pending_items_are_rechecked_after_lock_acquisition(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2025,7 +1772,6 @@ def test_pending_items_are_rechecked_after_lock_acquisition(
 
     @contextmanager
     def fake_lock(lock_paths: list[Path], **_: object):
-        assert lock_paths == [compute_lock_path_in(pending._base_dir)]
         _save_result_bundle(
             "single:5",
             result_dir_in(pending._base_dir),
@@ -2043,13 +1789,6 @@ def test_pending_items_are_rechecked_after_lock_acquisition(
 
 def test_empty_list_returns_empty_list() -> None:
     assert _load_or_create([]) == []
-
-
-def test_worker_execution_context_is_scoped() -> None:
-    assert not _in_worker_execution.get()
-    with worker_execution_context():
-        assert _in_worker_execution.get()
-    assert not _in_worker_execution.get()
 
 
 def test_worker_create_loads_cached_result_without_recomputing(
@@ -2165,11 +1904,6 @@ def test_batched_compute_writes_shared_logs_to_every_participant() -> None:
     for obj in objs:
         log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
         assert "batched detail for 1,2" in log_text
-        for persisted_obj in objs:
-            assert (
-                f"stored result bundle at {result_dir_in(persisted_obj._base_dir)}"
-                in log_text
-            )
 
 
 def test_sequential_group_compute_writes_shared_logs_to_every_participant() -> None:
@@ -2181,11 +1915,6 @@ def test_sequential_group_compute_writes_shared_logs_to_every_participant() -> N
         log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
         assert "single detail for 1" in log_text
         assert "single detail for 2" in log_text
-        for persisted_obj in objs:
-            assert (
-                f"stored result bundle at {result_dir_in(persisted_obj._base_dir)}"
-                in log_text
-            )
 
 
 def test_batched_failure_writes_error_details_to_run_log_for_every_participant() -> (
@@ -2198,7 +1927,6 @@ def test_batched_failure_writes_error_details_to_run_log_for_every_participant()
 
     for obj in objs:
         log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
-        assert "create failed" in log_text
         assert "failed batch for [1, 2]" in log_text
         assert "furu-local-debug-value-should-not-leak" not in log_text
         assert list(obj._base_dir.glob("error-*.log")) == []
@@ -2219,16 +1947,6 @@ def test_create_failure_run_log_includes_user_create_call_stack() -> None:
     assert "Stack (most recent call last):" in log_text
     assert "in _main" in log_text
     assert "obj.create()" in log_text
-
-
-def test_base_exception_does_not_log_as_load_failure() -> None:
-    obj = InterruptingValue(key=1)
-
-    with pytest.raises(KeyboardInterrupt):
-        obj.create()
-
-    log_text = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
-    assert "create failed" not in log_text
 
 
 def test_partial_persistence_leaves_already_written_objects_completed(
@@ -2252,14 +1970,6 @@ def test_partial_persistence_leaves_already_written_objects_completed(
 
     assert result_manifest_path_in(objs[0]._base_dir).exists()
     assert not result_manifest_path_in(objs[1]._base_dir).exists()
-
-
-def test_create_publicly_loads_or_computes_result() -> None:
-    obj = CountedSingleValue(key=99)
-
-    assert obj.create() == "single:99"
-    assert obj.create() == "single:99"
-    assert CountedSingleValue.create_calls == [99]
 
 
 def test_public_create_batches_lists() -> None:

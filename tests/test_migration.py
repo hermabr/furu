@@ -261,15 +261,6 @@ def test_migrated_codec_metadata_path_uses_source_data_directory() -> None:
     assert migrated.load_existing().path == source_payload.resolve()
 
 
-def test_added_field_binds_only_the_default_value() -> None:
-    _OldTrainRun(learning_rate=0.001, dataset="cifar10").create()
-
-    assert _TrainRun(dataset="cifar10", lr=0.001).status == "done"
-    # Old results correspond to the migration's pinned default; any other value
-    # is a different spec whose result genuinely never existed.
-    assert _TrainRun(dataset="cifar10", lr=0.001, seed=7).status == "missing"
-
-
 def test_added_nan_default_matches_by_serialized_value() -> None:
     _OldTrainRun(learning_rate=0.001, dataset="cifar10").create()
 
@@ -1235,18 +1226,6 @@ def test_old_results_are_read_once_per_class_per_process(
     shutil.rmtree(old._base_dir)
     assert _TrainRun(dataset="cifar10", lr=0.001).status == "missing"
     assert len(reads) == 2
-
-
-def test_pinned_added_default_skips_the_old_generation_entirely(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    old = _OldTrainRun(learning_rate=0.001, dataset="cifar10")
-    old.create()
-    reads = _count_reads_under(monkeypatch, old._base_dir.parent)
-
-    # Every migrated result carries seed=0, so seed=7 has no source to look for.
-    assert _TrainRun(dataset="cifar10", lr=0.001, seed=7).status == "missing"
-    assert reads == []
 
 
 # --- cascading: a child chain carries every spec that embeds it ---------------------

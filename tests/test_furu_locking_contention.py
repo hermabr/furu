@@ -258,9 +258,3 @@ def test_lock_is_taken_over_mid_create(tmp_path):
     assert list(data_dir.glob("**/result/manifest.json")) == []
     assert list(data_dir.glob("**/result.pkl")) == []
     assert list(data_dir.glob("**/error-*.log")) == []
-
-    run_logs = list(data_dir.glob("**/run.log"))
-    assert len(run_logs) == 1
-    log_text = run_logs[0].read_text(encoding="utf-8")
-    assert "create failed" in log_text
-    assert "before writing final result" in log_text

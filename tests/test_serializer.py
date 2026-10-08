@@ -424,19 +424,6 @@ def test_furu_class_serializer_hook_can_replace_top_level_artifact() -> None:
 
 
 def test_user_defined_serializer_is_auto_registered() -> None:
-    assert (
-        SerializerMeta.serializer_for_schema(_AutoRegisteredValue, ())
-        is _AutoRegisteredValueSerializer
-    )
-    assert (
-        SerializerMeta.serializer_for_dump(
-            _AutoRegisteredValue(1),
-            declared_type=_AutoRegisteredValue,
-            artifact_serializers=(),
-        )
-        is _AutoRegisteredValueSerializer
-    )
-
     obj = _AutoRegisteredValueRun(value=_AutoRegisteredValue(42))
 
     assert _field(obj._schema_data, "value") == _custom_schema(

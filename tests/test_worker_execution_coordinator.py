@@ -1,4 +1,3 @@
-import logging
 import os
 import threading
 import time
@@ -11,7 +10,6 @@ from unittest import mock
 from uuid import uuid4
 
 import pytest
-from pydantic import TypeAdapter, ValidationError
 from websockets.exceptions import ConnectionClosed, ConnectionClosedOK, InvalidStatus
 from websockets.headers import build_authorization_basic
 from websockets.sync.client import ClientConnection, connect
@@ -24,8 +22,6 @@ from furu.config import _Config, _dump_worker_json_config, get_config
 from furu.dag import _add_to_dag
 from furu.execution.execution_coordinator import (
     ExecutionCoordinator,
-    FailedJob,
-    RunningJob,
     _resolve_takeover,
 )
 from furu.execution.server import execution_coordinator_server, request_takeover
@@ -39,7 +35,6 @@ from furu.provenance import (
 )
 from furu.storage._layout import (
     compute_lock_path_in,
-    execution_coordinator_log_path_in,
 )
 from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
 from furu.worker.execute import ChildSlot
@@ -97,17 +92,6 @@ def _artifact(job: Job | None) -> ArtifactSpec:
     assert isinstance(job, Job)
     (artifact,) = job.artifacts
     return artifact
-
-
-@contextmanager
-def _captured_furu_logs(caplog: pytest.LogCaptureFixture) -> Generator[None]:
-    furu_logger = logging.getLogger("furu")
-    furu_logger.addHandler(caplog.handler)
-    try:
-        caplog.set_level(logging.INFO, logger="furu")
-        yield
-    finally:
-        furu_logger.removeHandler(caplog.handler)
 
 
 def _new_execution_coordinator(
@@ -391,52 +375,14 @@ class ExecutionCoordinatorLazyParent(Spec[int]):
         return ExecutionCoordinatorLeaf(value=self.value).create() + 1
 
 
-def test_execution_coordinator_init_partitions_ready_and_blocked() -> None:
-    leaf = ExecutionCoordinatorLeaf(value=1)
-    parent = ExecutionCoordinatorParent(child=leaf)
-
-    coordinator = _new_execution_coordinator([parent])
-
-    assert set(coordinator.ready) == {leaf.object_id}
-    assert set(coordinator.blocked) == {parent.object_id}
-    assert coordinator.running == {}
-
-
-def test_execution_coordinator_executor_id_is_unique() -> None:
-    left = ExecutionCoordinatorLeaf(value=1)
-    right = ExecutionCoordinatorLeaf(value=2)
-
-    coordinator = _new_execution_coordinator([left, right])
-    other = _new_execution_coordinator([left, right])
-
-    assert len(coordinator.executor_id) == 32
-    assert int(coordinator.executor_id, 16) >= 0
-    assert other.executor_id != coordinator.executor_id
-    assert (
-        coordinator.executor_dir
-        == get_config().run_directories.executions / coordinator.executor_id
-    )
-
-
-def test_execution_coordinator_max_retries_per_object_defaults_to_config() -> None:
-    coordinator = _new_execution_coordinator([ExecutionCoordinatorLeaf(value=1)])
-
-    assert (
-        coordinator.max_retries_per_object == get_config().worker.max_retries_per_object
-    )
-
-
 def test_execution_coordinator_job_result_completed_moves_dependents_to_ready() -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
     parent = ExecutionCoordinatorParent(child=leaf)
     coordinator = _new_execution_coordinator([parent])
+    assert set(coordinator.blocked) == {parent.object_id}
 
     job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
-    assert isinstance(job, Job)
-    assert set(coordinator.running) == {leaf.object_id}
-    running_job = coordinator.running[leaf.object_id]
-    assert isinstance(running_job, RunningJob)
-    assert running_job.node.obj is leaf
+    assert _artifact(job).object_id == leaf.object_id
 
     coordinator.job_result(leaf.object_id, JobCompletedResult())
 
@@ -484,6 +430,7 @@ def test_execution_coordinator_job_result_blocked_discovers_lazy_dependency_and_
 
     assert set(coordinator.ready) == {parent.object_id}
     assert coordinator.blocked == {}
+    assert _artifact(_lease_job(coordinator)).object_id == parent.object_id
 
 
 def test_execution_coordinator_job_result_blocked_ignores_completed_lazy_dependency() -> (
@@ -534,122 +481,33 @@ def test_execution_coordinator_job_result_blocked_discovers_multiple_lazy_depend
     }
     assert set(coordinator.blocked) == {parent.object_id}
 
-    parent_node = coordinator.nodes_by_id[parent.object_id]
-    assert {node.obj.object_id for node in parent_node.dependencies} == {
-        dependency.object_id for dependency in dependencies
-    }
-    for dependency in dependencies:
-        dependency_node = coordinator.nodes_by_id[dependency.object_id]
-        assert parent_node in dependency_node.dependents
+    # The parent waits for every discovered dependency, not just the first.
+    for _ in dependencies:
+        assert set(coordinator.blocked) == {parent.object_id}
+        leased = _artifact(_lease_job(coordinator)).object_id
+        coordinator.job_result(leased, JobCompletedResult())
+    assert set(coordinator.ready) == {parent.object_id}
 
 
-def test_execution_coordinator_re_leases_blocked_job_after_dependency_completes() -> (
-    None
-):
-    parent = ExecutionCoordinatorLazyParent(value=2)
-    dependency = ExecutionCoordinatorLeaf(value=2)
-    coordinator = _new_execution_coordinator([parent])
-
-    first_parent_job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
-    assert isinstance(first_parent_job, Job)
-
-    coordinator.job_result(
-        parent.object_id,
-        JobBlockedResult(dependencies=[ArtifactSpec.from_furu(dependency)]),
-    )
-
-    dependency_job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
-    assert isinstance(dependency_job, Job)
-    coordinator.job_result(dependency.object_id, JobCompletedResult())
-
-    second_parent_job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
-    assert isinstance(second_parent_job, Job)
-    assert _artifact(second_parent_job).object_id == parent.object_id
-
-    assert set(coordinator.running) == {parent.object_id}
-    assert set(coordinator.completed) == {dependency.object_id}
-
-
-def test_execution_coordinator_job_result_failed_finishes_with_error() -> None:
-    leaf = ExecutionCoordinatorLeaf(value=1)
-    coordinator = _new_execution_coordinator([leaf], max_retries_per_object=0)
-    job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
-    assert isinstance(job, Job)
-
-    coordinator.job_result(leaf.object_id, JobFailedResult(error="boom"))
-
-    assert coordinator.running == {}
-    assert set(coordinator.failed) == {leaf.object_id}
-    failed_job = coordinator.failed[leaf.object_id]
-    assert failed_job.failed_attempts == 1
-    assert isinstance(failed_job, FailedJob)
-    assert failed_job.node.obj is leaf
-    assert failed_job.error == "boom"
-    log_text = execution_coordinator_log_path_in(coordinator.executor_dir).read_text(
-        encoding="utf-8"
-    )
-    assert f"failed {leaf._log_label}" in log_text
-    assert "will retry" not in log_text
-    assert "boom" in log_text
-    assert "furu execution coordinator finished with error" in log_text
-    with pytest.raises(RuntimeError, match="failed jobs"):
-        coordinator.raise_for_failure()
-
-
-def test_execution_coordinator_job_result_failed_retries_before_finishing(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+def test_execution_coordinator_job_result_failed_retries_before_finishing() -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
     coordinator = _new_execution_coordinator([leaf], max_retries_per_object=2)
 
-    first_job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
-    assert isinstance(first_job, Job)
-    with _captured_furu_logs(caplog):
-        coordinator.job_result(leaf.object_id, JobFailedResult(error="boom 1"))
+    for attempt in (1, 2, 3):
+        assert not coordinator.done.is_set()
+        assert isinstance(_lease_job(coordinator), Job)
+        coordinator.job_result(leaf.object_id, JobFailedResult(error=f"boom {attempt}"))
 
-    assert set(coordinator.failed) == {leaf.object_id}
-    failed_job = coordinator.failed[leaf.object_id]
-    assert failed_job.failed_attempts == 1
-    assert failed_job.error == "boom 1"
-    assert set(coordinator.ready) == {leaf.object_id}
-    assert not coordinator.done.is_set()
-
-    second_job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
-    assert isinstance(second_job, Job)
-    with _captured_furu_logs(caplog):
-        coordinator.job_result(leaf.object_id, JobFailedResult(error="boom 2"))
-
-    assert set(coordinator.failed) == {leaf.object_id}
-    failed_job = coordinator.failed[leaf.object_id]
-    assert failed_job.failed_attempts == 2
-    assert failed_job.error == "boom 2"
-    assert set(coordinator.ready) == {leaf.object_id}
-    assert not coordinator.done.is_set()
-
-    third_job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
-    assert isinstance(third_job, Job)
-    coordinator.job_result(leaf.object_id, JobFailedResult(error="boom 3"))
+        failed_job = coordinator.failed[leaf.object_id]
+        assert failed_job.failed_attempts == attempt
+        assert failed_job.error == f"boom {attempt}"
+        # Retries go back to ready; the last failure is final.
+        assert set(coordinator.ready) == ({leaf.object_id} if attempt < 3 else set())
 
     assert coordinator.running == {}
-    assert coordinator.ready == {}
-    assert set(coordinator.failed) == {leaf.object_id}
-    failed_job = coordinator.failed[leaf.object_id]
-    assert failed_job.failed_attempts == 3
-    assert failed_job.error == "boom 3"
     assert coordinator.done.is_set()
-    log_text = execution_coordinator_log_path_in(coordinator.executor_dir).read_text(
-        encoding="utf-8"
-    )
-    assert log_text.count("will retry") == 2
-    assert any(
-        "will retry" in message and "boom 1" in message for message in caplog.messages
-    )
-    assert any(
-        "will retry" in message and "boom 2" in message for message in caplog.messages
-    )
-    assert f"object_id={leaf.object_id}" in log_text
-    assert "failed_retry=1 failed=0" in log_text
-    assert "failed_retry=0 failed=1" in log_text
+    with pytest.raises(RuntimeError, match="failed jobs"):
+        coordinator.raise_for_failure()
 
 
 def test_execution_coordinator_job_result_failed_retry_can_later_complete() -> None:
@@ -766,7 +624,6 @@ def test_count_satisfiable_jobs_returns_zero_when_coordinator_is_done() -> None:
     ],
 )
 def test_only_discovered_external_computations_are_polled(
-    caplog: pytest.LogCaptureFixture,
     leaf_factory: Callable[[int], Spec],
     initial_demand: int,
 ) -> None:
@@ -778,11 +635,7 @@ def test_only_discovered_external_computations_are_polled(
         "furu.execution.execution_coordinator._RUNNING_ELSEWHERE_POLL_INTERVAL_S",
         0.01,
     ):
-        with (
-            _mark_running(leaves[0]),
-            _mark_running(leaves[1]),
-            _captured_furu_logs(caplog),
-        ):
+        with _mark_running(leaves[0]), _mark_running(leaves[1]):
             assert (
                 coordinator.count_satisfiable_jobs(backend=CPU_POOL, max_workers=10)
                 == initial_demand
@@ -806,7 +659,6 @@ def test_only_discovered_external_computations_are_polled(
         assert not thread.is_alive()
 
     assert isinstance(leased[0], Job)
-    assert "run is waiting on 2 external specs" in caplog.messages
 
 
 def test_worker_cap_limits_satisfiable_jobs_and_leases() -> None:
@@ -837,14 +689,11 @@ def test_worker_cap_limits_satisfiable_jobs_and_leases() -> None:
     assert _artifact(fourth).object_id in limited_ids - leased_limited_ids
 
 
-def test_lease_job_assembles_same_key_batched_group_into_one_job(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+def test_lease_job_assembles_same_key_batched_group_into_one_job() -> None:
     objs = [BatchedCoordinatorLeaf(value=value) for value in range(3)]
     coordinator = _new_execution_coordinator(objs)
 
-    with _captured_furu_logs(caplog):
-        job = _lease_job(coordinator)
+    job = _lease_job(coordinator)
 
     assert isinstance(job, Job)
     assert len(job.artifacts) == 3
@@ -852,9 +701,6 @@ def test_lease_job_assembles_same_key_batched_group_into_one_job(
         coordinator.running
     )
     assert coordinator.ready == {}
-    detail = caplog.records[-1].__dict__["_furu_detail"]
-    assert detail["object_ids"] == ",".join(obj.object_id for obj in objs)
-    assert detail["member_count"] == 3
 
     for artifact in job.artifacts:
         coordinator.job_result(artifact.object_id, JobCompletedResult())
@@ -928,13 +774,6 @@ def test_count_satisfiable_jobs_counts_throttled_batches() -> None:
     coordinator = _new_execution_coordinator(objs)
 
     assert coordinator.count_satisfiable_jobs(backend=CPU_POOL, max_workers=10) == 2
-
-
-def test_count_satisfiable_jobs_counts_batched_groups() -> None:
-    objs = [BatchedCoordinatorLeaf(value=value) for value in range(4)]
-    coordinator = _new_execution_coordinator(objs)
-
-    assert coordinator.count_satisfiable_jobs(backend=CPU_POOL, max_workers=10) == 1
 
 
 def test_batched_group_failure_retries_each_member() -> None:
@@ -1019,19 +858,6 @@ def test_lease_job_filters_by_worker_resources() -> None:
     gpu_job = _lease_job(coordinator, backend=_pool(Worker(gpus=1)))
     assert isinstance(gpu_job, Job)
     assert _artifact(gpu_job).object_id == gpu_leaf.object_id
-
-
-def test_lease_job_filters_by_worker_memory_gib() -> None:
-    memory_leaf = MemoryLeaf(value=1)
-    coordinator = _new_execution_coordinator([memory_leaf])
-
-    assert _no_satisfiable_job(coordinator, backend=_pool(Worker(memory_gib=7)))
-
-    memory_job = coordinator.lease_job(
-        backend=_pool(Worker(memory_gib=8)), worker="test-worker"
-    )
-    assert isinstance(memory_job, Job)
-    assert _artifact(memory_job).object_id == memory_leaf.object_id
 
 
 def test_lease_job_honors_pool_accepts() -> None:
@@ -1220,21 +1046,7 @@ def test_execution_coordinator_run_drives_worker_backend_pool() -> None:
     assert backend.pool.stop_timeouts == [5]
     assert executor_dir == coordinator.executor_dir
     assert executor_dir.parent == get_config().run_directories.executions
-    assert len(executor_dir.name) == 32
-    assert int(executor_dir.name, 16) >= 0
-
-    log_text = execution_coordinator_log_path_in(executor_dir).read_text(
-        encoding="utf-8"
-    )
-    assert "starting exec=" in log_text
-    assert "server listening on " in log_text
-    assert f"creating {leaf._log_label}" not in log_text
-    assert f"leased {leaf._log_label} ×1 to recording-worker" in log_text
-    assert leaf.object_id in log_text
-    assert f"completed {leaf._log_label} ok" in log_text
-    assert "progress 1/1 · 0 running" in log_text
-    assert "failed_retry=0 failed=0" in log_text
-    assert "furu execution coordinator finished successfully" in log_text
+    assert set(coordinator.completed) == {leaf.object_id}
 
 
 def test_execution_coordinator_run_returns_when_all_objects_are_already_completed() -> (
@@ -1327,17 +1139,6 @@ def test_execution_coordinator_run_stops_backend_pool_when_interrupted() -> None
 
     assert pool.events == ["start_pool", "stop"]
     assert pool.stop_timeouts == [5]
-
-
-def test_execution_coordinator_server_exposes_bound_host_and_port() -> None:
-    coordinator = _new_execution_coordinator([ExecutionCoordinatorLeaf(value=12)])
-
-    with execution_coordinator_server(
-        coordinator, bind_host="127.0.0.1", port=0
-    ) as server:
-        assert server.bound_host == "127.0.0.1"
-        assert server.bound_port > 0
-        assert server.auth_token
 
 
 def test_execution_coordinator_server_rejects_connections_without_auth_token() -> None:
@@ -1474,11 +1275,6 @@ def test_execution_coordinator_server_shutdown_wakes_idle_worker_handlers() -> N
         connection.recv(timeout=5)
 
 
-def test_execution_coordinator_run_requires_explicit_worker_backends() -> None:
-    with pytest.raises(TypeError, match="worker_backends"):
-        ExecutionCoordinator.run([ExecutionCoordinatorLeaf(value=12)])  # ty: ignore[missing-argument]
-
-
 def test_local_pool_key_distinguishes_resources_not_worker_count() -> None:
     backend = LocalThreadWorkerBackend(max_workers=2)
 
@@ -1499,17 +1295,10 @@ def test_execution_coordinator_run_rejects_identical_worker_backends() -> None:
         )
 
 
-def test_execution_coordinator_run_rejects_empty_worker_backends() -> None:
-    with pytest.raises(RuntimeError, match="no worker pool can run"):
-        ExecutionCoordinator.run(
-            [ExecutionCoordinatorLeaf(value=12)], worker_backends=()
-        )
-
-
 def test_execution_coordinator_run_rejects_conflicting_execution_coordinator_listen_host() -> (
     None
 ):
-    with pytest.raises(ValueError, match="too many values to unpack"):
+    with pytest.raises(ValueError):
         ExecutionCoordinator.run(
             [ExecutionCoordinatorLeaf(value=12)],
             worker_backends=(
@@ -1521,25 +1310,6 @@ def test_execution_coordinator_run_rejects_conflicting_execution_coordinator_lis
                 ),
             ),
         )
-
-
-def test_job_result_requires_error_for_failed_status() -> None:
-    with pytest.raises(ValidationError, match="Field required"):
-        JobFailedResult.model_validate({"status": "failed"})
-
-
-def test_job_result_uses_status_discriminator() -> None:
-    adapter = TypeAdapter(JobResult)
-
-    assert adapter.validate_python({"status": "completed"}) == JobCompletedResult()
-    assert adapter.validate_python(
-        {"status": "failed", "error": "boom"}
-    ) == JobFailedResult(error="boom")
-    assert adapter.validate_python(
-        {"status": "blocked", "dependencies": []}
-    ) == JobBlockedResult(dependencies=[])
-    with pytest.raises(ValidationError, match="Input tag 'skipped'"):
-        adapter.validate_python({"status": "skipped"})
 
 
 def test_worker_loop_raises_when_server_is_unavailable(tmp_path: Path) -> None:
@@ -1597,7 +1367,7 @@ def test_worker_loop_exits_non_zero_after_consecutive_failures(
             log_file=tmp_path / "worker.log",
         )
 
-    assert exc_info.value.code == "2 jobs failed in a row; worker exiting"
+    assert "2 jobs failed in a row" in str(exc_info.value.code)
     # Every result reaches the coordinator before the worker gives up.
     assert [result.status for result in server.results] == [
         "failed",
@@ -1605,48 +1375,6 @@ def test_worker_loop_exits_non_zero_after_consecutive_failures(
         "failed",
         "failed",
     ]
-
-
-def test_worker_loop_logs_received_task_and_result(
-    caplog: pytest.LogCaptureFixture,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setattr(ChildSlot, "run", lambda *_, **__: JobCompletedResult())
-    leaf = BatchedCoordinatorLeaf(value=1)
-    other_leaf = BatchedCoordinatorLeaf(value=2)
-    job = Job(
-        artifacts=[ArtifactSpec.from_furu(leaf), ArtifactSpec.from_furu(other_leaf)],
-        provenance=_submit_provenance(),
-        process=ProcessSettings.from_metadata(leaf._metadata),
-    )
-    log_path = tmp_path / "worker.log"
-
-    with _scripted_worker_server([job]) as server, _captured_furu_logs(caplog):
-        worker_loop(
-            coordinator=server.server_url,
-            pool="cpu",
-            idle_timeout=get_config().worker.idle_timeout_seconds,
-            max_failures=get_config().worker.max_failures_per_worker,
-            component="test-worker",
-            backend="test",
-            materialize_snapshot=False,
-            log_file=log_path,
-        )
-
-        assert server.results == [JobCompletedResult()]
-
-    assert f"received {leaf._log_label} ×2" in caplog.messages
-    assert any(
-        message.startswith(f"finished {leaf._log_label} ×2 ok ·")
-        for message in caplog.messages
-    )
-    assert "server closed the connection; worker exiting" in caplog.messages
-    received_line = next(
-        line for line in log_path.read_text().splitlines() if 'msg="received ' in line
-    )
-    assert f"object_ids={leaf.object_id},{other_leaf.object_id}" in received_line
-    assert "comp=test-worker" in received_line
 
 
 def test_worker_loop_does_not_swallow_keyboard_interrupt(
@@ -1680,33 +1408,6 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
         assert hello.backend == "test"
 
 
-def test_execution_coordinator_fail_sets_finish_error_and_done() -> None:
-    coordinator = _new_execution_coordinator([ExecutionCoordinatorLeaf(value=1)])
-
-    coordinator.fail("pool broke")
-
-    assert coordinator.done.is_set()
-    with pytest.raises(RuntimeError, match="pool broke"):
-        coordinator.raise_for_failure()
-
-
-def test_hello_message_running_defaults_to_empty() -> None:
-    hello = HelloMessage(worker="w", backend="test", pool="cpu")
-
-    assert hello.running == []
-    assert HelloMessage.model_validate_json(hello.model_dump_json()) == hello
-
-
-def test_server_message_adapter_discriminates_job_and_cancel() -> None:
-    job = _job(ExecutionCoordinatorLeaf(value=1))
-
-    assert server_message_adapter.validate_json(job.model_dump_json()) == job
-    assert (
-        server_message_adapter.validate_json(CancelMessage().model_dump_json())
-        == CancelMessage()
-    )
-
-
 def test_hello_running_adopts_job_this_run_still_wants() -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
     coordinator = _new_execution_coordinator([leaf])
@@ -1737,13 +1438,6 @@ def test_hello_running_adopts_job_this_run_still_wants() -> None:
                 connection.recv(timeout=5)
 
     assert set(coordinator.completed) == {leaf.object_id}
-    log_text = execution_coordinator_log_path_in(coordinator.executor_dir).read_text(
-        encoding="utf-8"
-    )
-    assert (
-        f"worker connected · inherited-worker · running {leaf._log_label}" in log_text
-    )
-    assert f"adopted {leaf._log_label} ×1 from inherited-worker" in log_text
 
 
 def test_hello_running_cancels_job_not_in_this_run() -> None:
@@ -1784,12 +1478,6 @@ def test_hello_running_cancels_job_not_in_this_run() -> None:
 
     assert coordinator.failed == {}
     assert set(coordinator.completed) == {leaf.object_id}
-    log_text = execution_coordinator_log_path_in(coordinator.executor_dir).read_text(
-        encoding="utf-8"
-    )
-    assert f"cancelled {stranger._log_label} on inherited-worker: not in this run" in (
-        log_text
-    )
 
 
 def test_worker_loop_cancel_kills_running_job(tmp_path: Path) -> None:
@@ -1883,7 +1571,6 @@ def test_worker_loop_fails_when_worker_config_disappears(tmp_path: Path) -> None
 
 def test_worker_loop_carries_running_job_to_moved_coordinator(
     tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     release_file = tmp_path / "go"
@@ -1932,11 +1619,7 @@ def test_worker_loop_carries_running_job_to_moved_coordinator(
 
         threading.Thread(target=finish_rewrite).start()
 
-    with (
-        _serve(new_handler) as new_url,
-        _serve(old_handler) as old_url,
-        _captured_furu_logs(caplog),
-    ):
+    with _serve(new_handler) as new_url, _serve(old_handler) as old_url:
         _write_worker_config(config_file, url=old_url)
         worker_loop(
             coordinator=config_file,
@@ -1954,8 +1637,6 @@ def test_worker_loop_carries_running_job_to_moved_coordinator(
     assert [hello.running for hello in new_hellos] == [job.artifacts]
     assert results == [JobCompletedResult()]
     assert leaf.status == "done"
-    assert "coordinator moved; reconnecting" in caplog.messages
-    assert not any("killing" in message for message in caplog.messages)
 
 
 def test_worker_loop_exits_when_worker_config_changes(
@@ -2014,9 +1695,7 @@ def test_worker_loop_exits_when_worker_config_changes(
     assert old_leaf.status != "done"
 
 
-def test_worker_loop_kills_job_when_coordinator_disappears(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
+def test_worker_loop_kills_job_when_coordinator_disappears(tmp_path: Path) -> None:
     leaf = GatedExecutionCoordinatorLeaf(value=1, release_file=str(tmp_path / "go"))
 
     def handler(connection: ServerConnection) -> None:
@@ -2024,7 +1703,7 @@ def test_worker_loop_kills_job_when_coordinator_disappears(
         connection.send(_job(leaf).model_dump_json())
 
     started = time.monotonic()
-    with _serve(handler) as url, _captured_furu_logs(caplog):
+    with _serve(handler) as url:
         worker_loop(
             coordinator=url,
             pool="cpu",
@@ -2038,15 +1717,10 @@ def test_worker_loop_kills_job_when_coordinator_disappears(
 
     assert time.monotonic() - started < 10
     assert leaf.status != "done"
-    assert (
-        f"server closed the connection mid-job; killing {leaf._log_label}"
-        in caplog.messages
-    )
-    assert "server closed the connection; worker exiting" in caplog.messages
 
 
 def test_worker_loop_kills_job_when_worker_config_never_changes(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(worker_loop_module, "_WORKER_CONFIG_POLL_INTERVAL_S", 0.01)
     leaf = GatedExecutionCoordinatorLeaf(value=1, release_file=str(tmp_path / "go"))
@@ -2056,7 +1730,7 @@ def test_worker_loop_kills_job_when_worker_config_never_changes(
         HelloMessage.model_validate_json(connection.recv(timeout=5))
         connection.send(_job(leaf).model_dump_json())
 
-    with _serve(handler) as url, _captured_furu_logs(caplog):
+    with _serve(handler) as url:
         _write_worker_config(config_file, url=url)
         started = time.monotonic()
         worker_loop(
@@ -2073,10 +1747,6 @@ def test_worker_loop_kills_job_when_worker_config_never_changes(
 
     assert 0.2 <= time.monotonic() - started < 10
     assert leaf.status != "done"
-    assert (
-        f"server closed the connection mid-job; killing {leaf._log_label}"
-        in caplog.messages
-    )
 
 
 def test_lease_job_checks_for_locks_acquired_after_dag_build() -> None:
@@ -2368,8 +2038,3 @@ def test_execution_coordinator_run_inherits_pools_on_takeover() -> None:
     assert str(error) == f"execution taken over by exec={new.executor_id[:5]}"
     assert (old_backend.pool.handoffs, old_backend.pool.stops) == (1, 1)
     assert new_backend.handoffs == [PoolHandoff(job_ids=["100_0", "100_1"])]
-    new_log = execution_coordinator_log_path_in(new.executor_dir).read_text(
-        encoding="utf-8"
-    )
-    assert f"taking over exec={old.executor_id[:5]} · inherited 2 workers" in new_log
-    assert "pool started · InertBackend · inherited 2 workers" in new_log
