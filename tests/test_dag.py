@@ -425,10 +425,7 @@ def test_execution_coordinator_run_discovers_lazy_dependencies_and_reruns_parent
     assert _calls(tmp_path, LazyChildLoader) == ["7", "7"]
     assert parent.create() == 21
     parent_log = run_log_path_in(parent._base_dir).read_text(encoding="utf-8")
-    assert (
-        "create deferred: create discovered 1 missing dependency/dependencies"
-        in parent_log
-    )
+    assert "create deferred: 1 missing dependency/dependencies" in parent_log
     assert "create failed" not in parent_log
     assert "=== Debug Traceback ===" not in parent_log
 

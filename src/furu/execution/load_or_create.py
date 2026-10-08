@@ -16,6 +16,7 @@ from furu._declared_types import declared_result_type
 from furu.config import get_config
 from furu.core import Missing, Spec
 from furu.dependencies import (
+    collect_declared_refs,
     dependency_recorder,
     record_dependency_call,
     under_creation,
@@ -130,24 +131,24 @@ def _store_result[T](
 
 
 @overload
-def _load_or_create[T](obj: Spec[T], *, use_lock: bool = True) -> T: ...
+def _load_or_create[T](obj: Spec[T]) -> T: ...
 
 
 @overload
-def _load_or_create[T](
-    objs: Sequence[Spec[T]], *, use_lock: bool = True
-) -> list[T]: ...
+def _load_or_create[T](objs: Sequence[Spec[T]]) -> list[T]: ...
 
 
-def _load_or_create[T](
-    obj_or_objs: Spec[T] | Sequence[Spec[T]],
-    *,
-    use_lock: bool = True,
-) -> T | list[T]:
+def _load_or_create[T](obj_or_objs: Spec[T] | Sequence[Spec[T]]) -> T | list[T]:
     _require_uv()
+    objs, unwrap = _normalize_load_or_create_input(obj_or_objs)
     if _in_worker_execution.get():
-        return _load_or_create_worker(obj_or_objs)
-    return _load_or_create_local(obj_or_objs, use_lock=use_lock)
+        outputs = _load_or_create_worker(objs)
+    else:
+        outputs = _load_or_create_local(objs, announce=unwrap)
+    if unwrap:
+        (output,) = outputs
+        return output
+    return outputs
 
 
 def _ensure_group_result[T](
@@ -228,8 +229,6 @@ def load_existing[T](objs: Sequence[Spec[T]]) -> list[T]:
             continue
         loaded.append(load_stored_result(obj, result_dir))
     if missing:
-        if _in_worker_execution.get():
-            raise _DependencyNotReady(dependencies=missing, call_kind="load_existing")
         first = missing[0]
         raise Missing(
             f"{first._log_label}.load_existing() could not find a result. "
@@ -255,11 +254,7 @@ def _cached_to_build_msg(cached: list[Spec], to_build: list[Spec]) -> str:
     return f"building {fmt(to_build)}, {msg}" if to_build else msg
 
 
-def _load_or_create_worker[T](
-    obj_or_objs: Spec[T] | Sequence[Spec[T]],
-) -> T | list[T]:
-    objs, unwrap = _normalize_load_or_create_input(obj_or_objs)
-
+def _load_or_create_worker[T](objs: list[Spec[T]]) -> list[T]:
     loaded: list[T] = []
     cached: list[Spec[T]] = []
     missing: list[Spec[T]] = []
@@ -276,24 +271,17 @@ def _load_or_create_worker[T](
         objs[0].logger.info("%s", _cached_to_build_msg(cached, missing))
 
     if missing:
-        raise _DependencyNotReady(
-            dependencies=missing,
-            call_kind="create",
-        )
+        raise _DependencyNotReady(dependencies=missing)
 
-    if unwrap:
-        (result,) = loaded
-        return result
     return loaded
 
 
 def _load_or_create_local[T](
-    obj_or_objs: Spec[T] | Sequence[Spec[T]],
+    objs: list[Spec[T]],
     *,
-    use_lock: bool = True,
-) -> T | list[T]:
-    objs, unwrap = _normalize_load_or_create_input(obj_or_objs)
-
+    announce: bool = False,
+    dependents: Sequence[Spec] = (),
+) -> list[T]:
     if not objs:
         return []
 
@@ -312,26 +300,42 @@ def _load_or_create_local[T](
             )
         else:
             raise_if_stale(obj)
-            obj._base_dir.mkdir(parents=True, exist_ok=True)
             missing.append(obj)
 
     if results_by_object_id:
         cached = [o for o in unique if o.object_id in results_by_object_id]
         unique[0].logger.info("%s", _cached_to_build_msg(cached, missing))
 
+    if dependents and missing:
+        others = f" and {len(dependents) - 1} others" if len(dependents) > 1 else ""
+        dependents[0].logger.info(
+            "building %d %s of %s%s",
+            len(missing),
+            "dependency" if len(missing) == 1 else "dependencies",
+            dependents[0]._log_label,
+            others,
+        )
+
+    # Declared dependencies are built first, matching the coordinator's DAG.
+    _load_or_create_local(
+        [ref for obj in missing for ref in collect_declared_refs(obj)],
+        dependents=missing,
+    )
+    for obj in missing:
+        obj._base_dir.mkdir(parents=True, exist_ok=True)
+
     lock_ctx = (
         lock([compute_lock_path_in(obj._base_dir) for obj in missing])
-        if use_lock and missing
-        else nullcontext()
+        if missing
+        else nullcontext(lambda: True)
     )
 
-    with lock_ctx as maybe_has_lock:
-        has_lock = maybe_has_lock or (lambda: True)
+    with lock_ctx as has_lock:
         pending: list[Spec[T]] = []
         late_hits = 0
         for obj in missing:
             if (
-                cached_result_dir := result_dir_for_loading(obj, has_lock=use_lock)
+                cached_result_dir := result_dir_for_loading(obj, has_lock=True)
             ) is not None:
                 late_hits += 1
                 results_by_object_id[obj.object_id] = load_stored_result(
@@ -345,7 +349,7 @@ def _load_or_create_local[T](
                 "%d became ready while waiting, %d to build", late_hits, len(pending)
             )
 
-        direct_create_started = unwrap and bool(pending)
+        direct_create_started = announce and bool(pending)
         create_started_at = time.monotonic()
         if direct_create_started:
             objs[0].logger.info("creating %s", objs[0]._log_label)
@@ -363,19 +367,13 @@ def _load_or_create_local[T](
                     submit_provenance=submit_provenance,
                 )
 
-    outputs = [results_by_object_id[obj.object_id] for obj in objs]
-
-    if unwrap:
-        (obj,) = objs
-        (output,) = outputs
-        if direct_create_started:
-            obj.logger.info(
-                "finished %s ok · %s",
-                obj._log_label,
-                format_duration(time.monotonic() - create_started_at),
-            )
-        return output
-    return outputs
+    if direct_create_started:
+        objs[0].logger.info(
+            "finished %s ok · %s",
+            objs[0]._log_label,
+            format_duration(time.monotonic() - create_started_at),
+        )
+    return [results_by_object_id[obj.object_id] for obj in objs]
 
 
 def _batch_group(obj: Spec, worker: Worker) -> tuple[object, int] | None:
@@ -485,8 +483,7 @@ def _create_and_store_group[T](
             )
         except _DependencyNotReady as exc:
             logger.debug(
-                "create deferred: %s discovered %d missing dependency/dependencies",
-                exc.call_kind,
+                "create deferred: %d missing dependency/dependencies",
                 len(exc.dependencies),
             )
             raise

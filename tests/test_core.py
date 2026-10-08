@@ -271,11 +271,11 @@ class LoggedLeaf(Spec[str]):
 
 
 class LoggedParent(Spec[dict[str, str]]):
-    child: LoggedLeaf
+    child_name: str
 
     def create(self) -> dict[str, str]:
         self.logger.info("parent before child")
-        child_result = self.child.create()
+        child_result = LoggedLeaf(name=self.child_name).create()
         self.logger.info("parent after child")
         return {"child": child_result}
 
@@ -512,6 +512,13 @@ class CountingDependencyParent(Spec[str]):
 
     def create(self) -> str:
         return self.child.create()
+
+
+class LoadsDeclaredDependencyParent(Spec[str]):
+    child: Node
+
+    def create(self) -> str:
+        return self.child.load_existing()
 
 
 class LazyDependencyParent(Spec[str]):
@@ -1087,7 +1094,21 @@ def test_field_dependencies_are_eager_but_metadata_stores_only_loaded_objects() 
 
     assert collect_declared_refs(parent) == (first, second)
     assert parent.create() == "Node(nested)"
+    assert second.status == "done"
     assert _dependency_object_ids(parent) == [first.object_id]
+
+
+def test_declared_dependencies_are_created_before_the_create_hook(
+    tmp_path: Path,
+) -> None:
+    parent = LoadsDeclaredDependencyParent(child=Node(name="declared"))
+
+    log_path = tmp_path / "create.log"
+    with _scoped_log_files((log_path,)):
+        assert parent.create() == "Node(declared)"
+
+    log_text = log_path.read_text(encoding="utf-8")
+    assert f"building 1 dependency of {parent._log_label}" in log_text
 
 
 def test_computed_dependency_is_cached_property_and_eager_loaded_dependency() -> None:
@@ -1668,7 +1689,7 @@ def test_log_file_is_written_to_base_dir() -> None:
 
 def test_nested_create_scopes_logs_to_child_file() -> None:
     child = LoggedLeaf(name="child")
-    parent = LoggedParent(child=child)
+    parent = LoggedParent(child_name="child")
 
     assert parent.create() == {"child": "leaf:child"}
 
@@ -1831,7 +1852,7 @@ def test_sequential_fallback_writes_running_metadata_per_object() -> None:
     second = MetadataTimingValue(key=2)
     MetadataTimingValue.siblings_by_key.update({1: first, 2: second})
 
-    assert _load_or_create([first, second], use_lock=False) == ["timed:1", "timed:2"]
+    assert _load_or_create([first, second]) == ["timed:1", "timed:2"]
     assert MetadataTimingValue.create_events == [
         (1, True, True),
         (2, True, True),
@@ -2009,63 +2030,23 @@ def test_worker_create_reports_all_missing_dependencies(
     ):
         _load_or_create([first, second])
 
-    exc = exc_info.value
-    assert exc.call_kind == "create"
-    assert exc.dependencies == (first, second)
+    assert exc_info.value.dependencies == (first, second)
     assert ObjectIdStorageValue.create_calls == []
     assert not result_manifest_path_in(first._base_dir).exists()
     assert not result_manifest_path_in(second._base_dir).exists()
 
 
-def test_worker_load_existing_reports_missing_dependency(tmp_path: Path) -> None:
+def test_worker_load_existing_and_provenance_raise_missing(tmp_path: Path) -> None:
     ObjectIdStorageValue.storage_override = tmp_path / "data"
     missing = ObjectIdStorageValue(key=13)
 
-    with (
-        worker_execution_context(),
-        pytest.raises(_DependencyNotReady) as exc_info,
-    ):
-        missing.load_existing()
-
-    exc = exc_info.value
-    assert exc.call_kind == "load_existing"
-    assert exc.dependencies == (missing,)
-
-
-def test_worker_provenance_reports_missing_dependency(tmp_path: Path) -> None:
-    ObjectIdStorageValue.storage_override = tmp_path / "data"
-    missing = ObjectIdStorageValue(key=17)
-
-    with (
-        worker_execution_context(),
-        pytest.raises(_DependencyNotReady) as exc_info,
-    ):
-        missing.provenance()
-
-    exc = exc_info.value
-    assert exc.call_kind == "provenance"
-    assert exc.dependencies == (missing,)
-
-
-def test_worker_top_level_load_existing_reports_all_missing_dependencies(
-    tmp_path: Path,
-) -> None:
-    ObjectIdStorageValue.storage_override = tmp_path / "data"
-    missing_first = ObjectIdStorageValue(key=21)
-    ready = ObjectIdStorageValue(key=22)
-    missing_second = ObjectIdStorageValue(key=23)
-
-    assert ready.create() == "object-id:22"
-
-    with (
-        worker_execution_context(),
-        pytest.raises(_DependencyNotReady) as exc_info,
-    ):
-        furu.load_existing([missing_first, ready, missing_second])
-
-    exc = exc_info.value
-    assert exc.call_kind == "load_existing"
-    assert exc.dependencies == (missing_first, missing_second)
+    with worker_execution_context():
+        with pytest.raises(furu.Missing):
+            missing.load_existing()
+        with pytest.raises(furu.Missing):
+            missing.provenance()
+        with pytest.raises(furu.Missing):
+            furu.load_existing([missing])
 
 
 def test_worker_dependency_not_ready_is_not_caught_as_exception(
@@ -2076,7 +2057,7 @@ def test_worker_dependency_not_ready_is_not_caught_as_exception(
 
     with pytest.raises(_DependencyNotReady), worker_execution_context():
         try:
-            missing.load_existing()
+            missing.create()
         except Exception as exc:  # pragma: no cover
             raise AssertionError("ordinary Exception handler caught signal") from exc
 

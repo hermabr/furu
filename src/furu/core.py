@@ -191,28 +191,13 @@ class Spec[T](_FuruDataclassTransform, ABC):
         )
 
     @final
-    def _load_or_create(self, use_lock: bool = True) -> T:
-        from furu.execution.load_or_create import _load_or_create
-
-        return _load_or_create(self, use_lock=use_lock)
-
-    @final
     def load_existing(self) -> T:
         from furu.dependencies import record_dependency_call
-        from furu.worker.context import (
-            _DependencyNotReady,
-            _in_worker_execution,
-        )
 
         record_dependency_call(self)
         if (result_dir := result_dir_for_loading(self)) is not None:
             return load_stored_result(self, result_dir)
         raise_if_stale(self)
-        if _in_worker_execution.get():
-            raise _DependencyNotReady(
-                dependencies=[self],
-                call_kind="load_existing",
-            )
         raise Missing(
             f"{self._log_label}.load_existing() could not find a result. "
             "load_existing() only loads existing results; use create() to compute "
@@ -222,19 +207,10 @@ class Spec[T](_FuruDataclassTransform, ABC):
     @final
     def provenance(self) -> Provenance:
         from furu.dependencies import record_dependency_call
-        from furu.worker.context import (
-            _DependencyNotReady,
-            _in_worker_execution,
-        )
 
         record_dependency_call(self)
         if (result_dir := result_dir_for_loading(self)) is None:
             raise_if_stale(self)
-            if _in_worker_execution.get():
-                raise _DependencyNotReady(
-                    dependencies=[self],
-                    call_kind="provenance",
-                )
             raise Missing(
                 f"{self._log_label}.provenance() could not find a result. "
                 "Provenance is recorded when a result is computed; use create() "
