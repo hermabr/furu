@@ -624,7 +624,6 @@ def test_reserved_field_name_raises_at_class_creation():
         "metadata",
         "status",
         "directory",
-        "explain",
         "load_existing",
         "delete",
         "migrate",

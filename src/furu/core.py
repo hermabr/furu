@@ -20,8 +20,6 @@ from typing import (
 
 from furu._batched import _BatchedCreate, _BatchedHook, batched
 from furu.config import get_config
-from furu.explain import ExplainDepth
-from furu.explain import explain as _explain
 from furu.locking import LockError, is_active_lock, lock
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
@@ -77,7 +75,6 @@ _RESERVED_FIELD_NAMES = frozenset(
         "metadata",
         "status",
         "directory",
-        "explain",
         "load_existing",
         "delete",
         "migrate",
@@ -260,10 +257,6 @@ class Spec[T](_FuruDataclassTransform, ABC):
         if self._base_dir.exists() and not has_result_link:
             return "failed"
         return sideways_status(self)
-
-    @final
-    def explain(self, depth: ExplainDepth = 0) -> str:
-        return _explain(self, depth=depth)
 
     @final
     def delete(self, mode: Literal["prompt", "force"] = "prompt") -> bool:
