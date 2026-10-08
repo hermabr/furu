@@ -1394,7 +1394,7 @@ def test_gib_is_frozen_slots_value_object():
     assert memory.count == 16
     assert not hasattr(memory, "__dict__")
     with pytest.raises(FrozenInstanceError):
-        memory.count = 32
+        memory.count = 32  # ty: ignore[invalid-assignment]
     with pytest.raises(ValueError, match="GiB count must be non-negative"):
         GiB(-1)
 

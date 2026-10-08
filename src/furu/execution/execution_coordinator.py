@@ -4,7 +4,7 @@ import os
 import secrets
 import threading
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Generator, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
@@ -225,7 +225,7 @@ class ExecutionCoordinator:
         return get_config().run_directories.executions / self.executor_id
 
     @contextmanager
-    def log_context(self) -> Iterator[None]:
+    def log_context(self) -> Generator[None]:
         with (
             _scoped_component("coord"),
             _scoped_log_files((execution_coordinator_log_path_in(self.executor_dir),)),

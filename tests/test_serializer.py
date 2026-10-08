@@ -53,11 +53,13 @@ class _HexSecretSerializer(Serializer[_Secret]):
 
     @classmethod
     def load(cls, value: JsonValue, *, declared_type: object) -> _Secret:
-        if not isinstance(value, dict) or not isinstance(value.get("hex"), str):
+        if not isinstance(value, dict) or not isinstance(
+            field := value.get("hex"), str
+        ):
             raise ValueError("expected hex secret artifact")
 
         loaded_type = declared_type if isinstance(declared_type, type) else _Secret
-        return loaded_type(int(value["hex"], 16))
+        return loaded_type(int(field, 16))
 
 
 class _DecimalSecretSerializer(Serializer[_Secret]):
@@ -81,9 +83,11 @@ class _DecimalSecretSerializer(Serializer[_Secret]):
 
     @classmethod
     def load(cls, value: JsonValue, *, declared_type: object) -> _Secret:
-        if not isinstance(value, dict) or not isinstance(value.get("decimal"), int):
+        if not isinstance(value, dict) or not isinstance(
+            field := value.get("decimal"), int
+        ):
             raise ValueError("expected decimal secret artifact")
-        return _Secret(value["decimal"])
+        return _Secret(field)
 
 
 class _RegistrySecretSerializer(_DecimalSecretSerializer):
@@ -99,9 +103,11 @@ class _RegistrySecretSerializer(_DecimalSecretSerializer):
 
     @classmethod
     def load(cls, value: JsonValue, *, declared_type: object) -> _Secret:
-        if not isinstance(value, dict) or not isinstance(value.get("registry"), int):
+        if not isinstance(value, dict) or not isinstance(
+            field := value.get("registry"), int
+        ):
             raise ValueError("expected registry secret artifact")
-        return _Secret(value["registry"])
+        return _Secret(field)
 
 
 class _AnnotatedSecretRun(Spec[int]):
@@ -168,7 +174,9 @@ class _TopLevelRunSerializer(Serializer[_TopLevelSerializedRun]):
         *,
         declared_type: object,
     ) -> _TopLevelSerializedRun:
-        if not isinstance(value, dict) or not isinstance(value.get("doubled"), int):
+        if not isinstance(value, dict) or not isinstance(
+            field := value.get("doubled"), int
+        ):
             raise ValueError("expected top-level run artifact")
         loaded_type = (
             declared_type
@@ -176,7 +184,7 @@ class _TopLevelRunSerializer(Serializer[_TopLevelSerializedRun]):
             and issubclass(declared_type, _TopLevelSerializedRun)
             else _TopLevelSerializedRun
         )
-        return loaded_type(value=value["doubled"] // 2)
+        return loaded_type(value=field // 2)
 
 
 class _AutoRegisteredValue:
@@ -216,9 +224,11 @@ class _AutoRegisteredValueSerializer(Serializer[_AutoRegisteredValue]):
         *,
         declared_type: object,
     ) -> _AutoRegisteredValue:
-        if not isinstance(value, dict) or not isinstance(value.get("auto"), int):
+        if not isinstance(value, dict) or not isinstance(
+            field := value.get("auto"), int
+        ):
             raise ValueError("expected auto value artifact")
-        return _AutoRegisteredValue(value["auto"])
+        return _AutoRegisteredValue(field)
 
 
 class _RegistryAutoRegisteredValueSerializer(Serializer[_AutoRegisteredValue]):
@@ -252,9 +262,11 @@ class _RegistryAutoRegisteredValueSerializer(Serializer[_AutoRegisteredValue]):
         *,
         declared_type: object,
     ) -> _AutoRegisteredValue:
-        if not isinstance(value, dict) or not isinstance(value.get("registry"), int):
+        if not isinstance(value, dict) or not isinstance(
+            field := value.get("registry"), int
+        ):
             raise ValueError("expected registry auto value artifact")
-        return _AutoRegisteredValue(value["registry"])
+        return _AutoRegisteredValue(field)
 
 
 class _OptOutRegisteredValue:

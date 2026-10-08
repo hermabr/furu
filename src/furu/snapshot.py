@@ -7,7 +7,7 @@ import stat
 import subprocess
 import sys
 import tarfile
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,7 +36,7 @@ class SnapshotManifest(BaseModel):
 
 
 @contextmanager
-def publish_dir_atomically(final_dir: Path) -> Iterator[Path]:
+def publish_dir_atomically(final_dir: Path) -> Generator[Path]:
     """Yield a fresh temp dir to build in; on clean exit rename it to ``final_dir``.
 
     A concurrent builder of the same content may win the rename first, in which case
