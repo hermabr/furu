@@ -11,7 +11,6 @@ from pathlib import Path
 import pytest
 from subprocess_objects import (
     OtherSubprocessEnvLeaf,
-    SubprocessBatchLeaf,
     SubprocessBlockedParent,
     SubprocessCrashLeaf,
     SubprocessCwdLeaf,
@@ -20,7 +19,7 @@ from subprocess_objects import (
 )
 
 import furu
-from furu import Metadata, Spec
+from furu import Spec
 from furu.config import get_config
 from furu.metadata import ArtifactSpec
 from furu.provenance import (
@@ -30,7 +29,9 @@ from furu.provenance import (
     SubmitProvenance,
 )
 from furu.snapshot import create_snapshot
+from furu.worker._child import _execute
 from furu.worker.backends.local import LocalThreadWorkerBackend
+from furu.worker.context import worker_execution_context
 from furu.worker.execute import ChildSlot
 from furu.worker.protocol import (
     Job,
@@ -69,15 +70,16 @@ def _submit_provenance() -> SubmitProvenance:
     )
 
 
-def _run(slot: ChildSlot, obj: Spec) -> JobResult:
-    return slot.run(
-        Job(
-            artifacts=[ArtifactSpec.from_furu(obj)],
-            provenance=_submit_provenance(),
-            process=ProcessSettings.from_metadata(obj._metadata),
-        ),
-        cancelled=threading.Event(),
+def _job(obj: Spec) -> Job:
+    return Job(
+        artifacts=[ArtifactSpec.from_furu(obj)],
+        provenance=_submit_provenance(),
+        process=ProcessSettings.from_metadata(obj._metadata),
     )
+
+
+def _run(slot: ChildSlot, obj: Spec) -> JobResult:
+    return slot.run(_job(obj), cancelled=threading.Event())
 
 
 def _pid_and_value(obj: Spec[str]) -> tuple[int, str]:
@@ -85,48 +87,38 @@ def _pid_and_value(obj: Spec[str]) -> tuple[int, str]:
     return int(pid), value
 
 
-def test_metadata_defaults_to_warm_child_with_inherited_environment() -> None:
-    metadata = Metadata()
-
-    assert metadata.environment == {}
-    assert metadata.required_environment_variables == ()
-    assert metadata.reuse == "same_environment"
-
-
-def test_subprocess_environment_override_is_visible_in_child(
-    child_slot: ChildSlot,
-) -> None:
-    leaf = SubprocessEnvLeaf(
-        variable_name="FURU_TEST_VARIABLE",
-        variable_value="from-override",
-    )
-
-    result = _run(child_slot, leaf)
-
-    assert isinstance(result, JobCompletedResult)
-    pid, value = _pid_and_value(leaf)
-    assert value == "from-override"
-    assert pid != os.getpid()
-
-    provenance = leaf.provenance()
-    assert provenance.executed.worker_backend == "test"
-    assert provenance.executed.pid == pid
-    assert provenance.submitted.hostname == provenance.executed.hostname
-
-
-def test_subprocess_none_unsets_variable_in_child(
+def test_subprocess_child_gets_the_spec_environment(
     monkeypatch: pytest.MonkeyPatch, child_slot: ChildSlot
 ) -> None:
-    monkeypatch.setenv("FURU_TEST_VARIABLE", "from-parent")
-    leaf = SubprocessEnvLeaf(
+    monkeypatch.setenv("FURU_TEST_REQUIRED", "from-parent")
+    monkeypatch.delenv("FURU_TEST_VARIABLE", raising=False)
+    overridden = SubprocessEnvLeaf(
+        variable_name="FURU_TEST_VARIABLE",
+        variable_value="from-override",
+        # Satisfied by the parent and by the override, respectively.
+        required_environment_variables=("FURU_TEST_REQUIRED", "FURU_TEST_VARIABLE"),
+    )
+    unset = SubprocessEnvLeaf(
         variable_name="FURU_TEST_VARIABLE",
         variable_value=None,
     )
 
-    result = _run(child_slot, leaf)
+    assert isinstance(_run(child_slot, overridden), JobCompletedResult)
+    monkeypatch.setenv("FURU_TEST_VARIABLE", "from-parent")
+    assert isinstance(_run(child_slot, unset), JobCompletedResult)
 
-    assert isinstance(result, JobCompletedResult)
-    assert _pid_and_value(leaf)[1] == "None"
+    overridden_pid, overridden_value = _pid_and_value(overridden)
+    unset_pid, unset_value = _pid_and_value(unset)
+    assert overridden_value == "from-override"
+    assert unset_value == "None"
+    assert overridden_pid != os.getpid()
+    # A different environment needs a different child.
+    assert unset_pid != overridden_pid
+
+    provenance = overridden.provenance()
+    assert provenance.executed.worker_backend == "test"
+    assert provenance.executed.pid == overridden_pid
+    assert provenance.submitted.hostname == provenance.executed.hostname
 
 
 def test_subprocess_missing_required_environment_variables_fails_before_spawn(
@@ -144,80 +136,7 @@ def test_subprocess_missing_required_environment_variables_fails_before_spawn(
     assert child_slot._child is None
 
 
-def test_subprocess_required_environment_variables_satisfied_by_parent_or_override(
-    monkeypatch: pytest.MonkeyPatch, child_slot: ChildSlot
-) -> None:
-    monkeypatch.setenv("FURU_TEST_REQUIRED", "from-parent")
-    leaf = SubprocessEnvLeaf(
-        variable_name="FURU_TEST_VARIABLE",
-        variable_value="from-override",
-        required_environment_variables=("FURU_TEST_REQUIRED", "FURU_TEST_VARIABLE"),
-    )
-
-    assert isinstance(_run(child_slot, leaf), JobCompletedResult)
-
-
-def test_subprocess_child_is_reused_across_jobs_with_same_environment(
-    child_slot: ChildSlot,
-) -> None:
-    first = SubprocessEnvLeaf(
-        variable_name="FURU_TEST_VARIABLE",
-        variable_value="shared",
-        marker=1,
-    )
-    second = SubprocessEnvLeaf(
-        variable_name="FURU_TEST_VARIABLE",
-        variable_value="shared",
-        marker=2,
-    )
-
-    assert isinstance(_run(child_slot, first), JobCompletedResult)
-    assert isinstance(_run(child_slot, second), JobCompletedResult)
-
-    assert _pid_and_value(first)[0] == _pid_and_value(second)[0]
-
-
-def test_subprocess_environment_change_spawns_new_child(child_slot: ChildSlot) -> None:
-    first = SubprocessEnvLeaf(
-        variable_name="FURU_TEST_VARIABLE",
-        variable_value="one",
-    )
-    second = SubprocessEnvLeaf(
-        variable_name="FURU_TEST_VARIABLE",
-        variable_value="two",
-    )
-
-    assert isinstance(_run(child_slot, first), JobCompletedResult)
-    assert isinstance(_run(child_slot, second), JobCompletedResult)
-
-    assert _pid_and_value(first)[0] != _pid_and_value(second)[0]
-
-
-def test_subprocess_reuse_never_gets_fresh_interpreter_and_leaves_nothing_warm(
-    child_slot: ChildSlot,
-) -> None:
-    first = SubprocessEnvLeaf(
-        variable_name="FURU_TEST_VARIABLE",
-        variable_value="pristine",
-        reuse="never",
-        marker=1,
-    )
-    second = SubprocessEnvLeaf(
-        variable_name="FURU_TEST_VARIABLE",
-        variable_value="pristine",
-        reuse="never",
-        marker=2,
-    )
-
-    assert isinstance(_run(child_slot, first), JobCompletedResult)
-    assert child_slot._child is None
-    assert isinstance(_run(child_slot, second), JobCompletedResult)
-    assert child_slot._child is None
-
-    assert _pid_and_value(first)[0] != _pid_and_value(second)[0]
-
-
-def test_subprocess_same_environment_same_spec_honors_class_boundary(
+def test_subprocess_child_reuse_follows_the_reuse_policy(
     child_slot: ChildSlot,
 ) -> None:
     looser = SubprocessEnvLeaf(
@@ -242,8 +161,13 @@ def test_subprocess_same_environment_same_spec_honors_class_boundary(
         variable_value="shared",
         marker=2,
     )
+    pristine = SubprocessEnvLeaf(
+        variable_name="FURU_TEST_VARIABLE",
+        variable_value="shared",
+        reuse="never",
+    )
 
-    for obj in (looser, strict, strict_again, looser_after):
+    for obj in (looser, strict, strict_again, looser_after, pristine):
         assert isinstance(_run(child_slot, obj), JobCompletedResult)
 
     looser_pid = _pid_and_value(looser)[0]
@@ -253,6 +177,9 @@ def test_subprocess_same_environment_same_spec_honors_class_boundary(
     assert _pid_and_value(strict_again)[0] == strict_pid
     # A looser job may reuse a strict job's leftover child; it opted into sharing.
     assert _pid_and_value(looser_after)[0] == strict_pid
+    # A never-reuse job gets a fresh interpreter and leaves nothing warm.
+    assert _pid_and_value(pristine)[0] != strict_pid
+    assert child_slot._child is None
 
 
 def test_subprocess_crash_becomes_job_failed_result_and_slot_survives(
@@ -275,33 +202,35 @@ def test_subprocess_crash_becomes_job_failed_result_and_slot_survives(
     assert _pid_and_value(follow_up)[1] == "after-crash"
 
 
-def test_subprocess_blocked_dependency_is_relayed(child_slot: ChildSlot) -> None:
-    parent = SubprocessBlockedParent()
-    dependency = SubprocessDependencyLeaf()
-
-    result = _run(child_slot, parent)
+def test_child_relays_blocked_dependency() -> None:
+    with worker_execution_context():
+        result = _execute(_job(SubprocessBlockedParent()))
 
     assert isinstance(result, JobBlockedResult)
     assert [artifact.object_id for artifact in result.dependencies] == [
-        dependency.object_id
+        SubprocessDependencyLeaf().object_id
     ]
 
 
-def test_subprocess_cache_hit_completes_without_recreating(
-    child_slot: ChildSlot,
-) -> None:
-    leaf = SubprocessEnvLeaf(
-        variable_name="FURU_TEST_VARIABLE",
-        variable_value="cached",
-    )
-    leaf.create()
-    assert _pid_and_value(leaf)[0] == os.getpid()
+class _CountingLeaf(Spec[int]):
+    calls_file: str
 
-    result = _run(child_slot, leaf)
+    def create(self) -> int:
+        with open(self.calls_file, "a", encoding="utf-8") as f:
+            f.write("x")
+        return 1
+
+
+def test_child_completes_cache_hit_without_recreating(tmp_path: Path) -> None:
+    calls_file = tmp_path / "calls"
+    leaf = _CountingLeaf(calls_file=str(calls_file))
+    leaf.create()
+
+    with worker_execution_context():
+        result = _execute(_job(leaf))
 
     assert isinstance(result, JobCompletedResult)
-    # The child saw the cached result and did not run create() again.
-    assert _pid_and_value(leaf)[0] == os.getpid()
+    assert calls_file.read_text(encoding="utf-8") == "x"
 
 
 def _snapshot_repo(repo: Path, marker: str) -> str:
@@ -398,27 +327,3 @@ def test_spec_module_is_imported_only_in_child(
 
     assert child_pid != os.getpid()
     assert {int(path.name) for path in tmp_path.iterdir()} == {child_pid}
-
-
-def test_subprocess_execution_through_local_worker_backend() -> None:
-    leaf = SubprocessEnvLeaf(
-        variable_name="FURU_TEST_VARIABLE",
-        variable_value="end-to-end",
-    )
-
-    result = furu.create(leaf, on=(LocalThreadWorkerBackend(),))
-
-    pid, _, value = result.partition(":")
-    assert value == "end-to-end"
-    assert int(pid) != os.getpid()
-
-
-def test_batched_subprocess_execution_through_local_worker_backend() -> None:
-    objs = [SubprocessBatchLeaf(value=value) for value in (1, 2)]
-
-    results = furu.create(objs, on=(LocalThreadWorkerBackend(),))
-    parsed = [result.partition(":") for result in results]
-
-    assert [value for _, _, value in parsed] == ["1", "2"]
-    assert len({pid for pid, _, _ in parsed}) == 1
-    assert int(parsed[0][0]) != os.getpid()

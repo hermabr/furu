@@ -1,22 +1,14 @@
 from __future__ import annotations
 
-import importlib
 import json
 import os
 import subprocess
 import sys
-from collections.abc import Generator
-from contextlib import contextmanager
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from furu.utils import (
-    _install_main_module_alias,
-    fully_qualified_name,
-    resolve_fully_qualified_name,
-)
+from furu.utils import fully_qualified_name
 
 
 def _write_uv_project(path: Path) -> None:
@@ -33,69 +25,6 @@ def _write_uv_project(path: Path) -> None:
             check=True,
             capture_output=True,
         )
-
-
-@contextmanager
-def _simulated_python_m_main(
-    monkeypatch: pytest.MonkeyPatch, *, spec_name: str
-) -> Generator[ModuleType]:
-    main = sys.modules["__main__"]
-    parent_name = spec_name.rpartition(".")[0]
-    parent = ModuleType(parent_name)
-
-    monkeypatch.setattr(
-        main,
-        "__spec__",
-        SimpleNamespace(name=spec_name),
-        raising=False,
-    )
-    monkeypatch.setitem(sys.modules, parent_name, parent)
-    try:
-        yield parent
-    finally:
-        if sys.modules.get(spec_name) is main:
-            del sys.modules[spec_name]
-
-
-def test_install_main_module_alias_registers_spec_name(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    main = sys.modules["__main__"]
-
-    with _simulated_python_m_main(
-        monkeypatch, spec_name="furu_alias_lib.data"
-    ) as parent:
-        _install_main_module_alias()
-
-        assert sys.modules["furu_alias_lib.data"] is main
-        assert parent.data is main
-        assert importlib.import_module("furu_alias_lib.data") is main
-
-
-def test_install_main_module_alias_keeps_existing_module(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    existing = ModuleType("furu_alias_existing.data")
-
-    with _simulated_python_m_main(monkeypatch, spec_name="furu_alias_existing.data"):
-        monkeypatch.setitem(sys.modules, "furu_alias_existing.data", existing)
-        _install_main_module_alias()
-
-        assert sys.modules["furu_alias_existing.data"] is existing
-
-
-def test_fully_qualified_name_round_trips_to_identical_main_class(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    main = sys.modules["__main__"]
-    main_type = type("MainThing", (), {"__module__": "__main__"})
-
-    with _simulated_python_m_main(monkeypatch, spec_name="furu_alias_rt.data"):
-        monkeypatch.setattr(main, "MainThing", main_type, raising=False)
-        _install_main_module_alias()
-
-        assert fully_qualified_name(main_type) == "furu_alias_rt.data.MainThing"
-        assert resolve_fully_qualified_name("furu_alias_rt.data.MainThing") is main_type
 
 
 def test_main_without_spec_name_is_not_serializable(

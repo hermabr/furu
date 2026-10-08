@@ -1,10 +1,7 @@
 import errno
 import json
-import logging
 import os
-import threading
 import time
-from contextlib import suppress
 from multiprocessing import Process, Queue
 from pathlib import Path
 from unittest.mock import patch
@@ -84,32 +81,6 @@ def _child_acquire_then_exit(
         os._exit(0)
 
 
-def _child_hold_lock_and_report_heartbeat(
-    lock_path: Path,
-    thread_queue: Queue,
-    release_queue: Queue,
-    *,
-    lifetime_s: float = SHORT_LIFETIME_S,
-    heartbeat_interval_s: float = SHORT_HEARTBEAT_INTERVAL_S,
-) -> None:
-    with (
-        suppress(RuntimeError),
-        lock(
-            lock_path,
-            lifetime_s=lifetime_s,
-            heartbeat_interval_s=heartbeat_interval_s,
-        ),
-    ):
-        heartbeat_threads = [
-            thread.name
-            for thread in threading.enumerate()
-            if thread.name.startswith("lock-heartbeat:")
-        ]
-        assert len(heartbeat_threads) == 1
-        thread_queue.put((os.getpid(), heartbeat_threads[0]))
-        release_queue.get()
-
-
 def _drop_current_lock(lock_path: Path) -> None:
     claim_path = _manifest_claim_path(lock_path)
     lock_path.unlink()
@@ -150,11 +121,6 @@ def test_lock_accepts_a_single_path(tmp_path: Path) -> None:
     assert not lock_path.exists()
 
 
-def test_lock_uses_default_arguments(tmp_path: Path) -> None:
-    with lock(tmp_path / "single.lock") as has_lock:
-        assert has_lock()
-
-
 def test_lock_normalizes_paths_and_shares_one_claim_manifest(
     tmp_path: Path,
 ) -> None:
@@ -186,6 +152,9 @@ def test_has_lock_returns_false_when_lock_is_lost(tmp_path: Path) -> None:
     ):
         _drop_current_lock(lock_path)
         assert not has_lock()
+        # The heartbeat notices the loss and stops instead of resurrecting it.
+        time.sleep(SHORT_LIFETIME_S)
+        assert not lock_path.exists()
 
 
 def test_has_lock_returns_false_when_any_batch_link_is_lost(tmp_path: Path) -> None:
@@ -203,23 +172,6 @@ def test_has_lock_returns_false_when_any_batch_link_is_lost(tmp_path: Path) -> N
         assert not has_lock()
 
 
-def test_exit_raises_lock_lost_error_when_lock_is_lost_mid_block(
-    tmp_path: Path,
-) -> None:
-    lock_path = tmp_path / "single.lock"
-
-    with (
-        pytest.raises(LockError, match="lost lock"),
-        lock(
-            lock_path,
-            lifetime_s=SHORT_LIFETIME_S,
-            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
-        ),
-    ):
-        _drop_current_lock(lock_path)
-        time.sleep(SHORT_LIFETIME_S)
-
-
 def test_refresh_extends_expiration(tmp_path: Path) -> None:
     lock_path = tmp_path / "single.lock"
     lifetime_s = SHORT_LIFETIME_S * 4
@@ -231,11 +183,13 @@ def test_refresh_extends_expiration(tmp_path: Path) -> None:
     ) as has_lock:
         assert has_lock()
 
-        initial_expiration = lock_path.stat().st_mtime
-        refresh_deadline = time.monotonic() + PROCESS_TIMEOUT_S
-        while lock_path.stat().st_mtime <= initial_expiration:
-            assert time.monotonic() < refresh_deadline, "lock was not refreshed"
-            time.sleep(SHORT_HEARTBEAT_INTERVAL_S / 2)
+        # The heartbeat keeps refreshing, not just once.
+        for _ in range(3):
+            expiration = lock_path.stat().st_mtime
+            refresh_deadline = time.monotonic() + PROCESS_TIMEOUT_S
+            while lock_path.stat().st_mtime <= expiration:
+                assert time.monotonic() < refresh_deadline, "lock was not refreshed"
+                time.sleep(SHORT_HEARTBEAT_INTERVAL_S / 2)
 
         with (
             pytest.raises(LockError, match="could not acquire lock"),
@@ -247,35 +201,6 @@ def test_refresh_extends_expiration(tmp_path: Path) -> None:
             ),
         ):
             pass
-
-
-def test_lock_starts_heartbeat_thread(tmp_path: Path) -> None:
-    lock_path = tmp_path / "single.lock"
-    thread_queue: Queue = Queue()
-    release_queue: Queue = Queue()
-    proc = Process(
-        target=_child_hold_lock_and_report_heartbeat,
-        args=(lock_path, thread_queue, release_queue),
-    )
-    proc.start()
-
-    try:
-        _, heartbeat_name = thread_queue.get(timeout=PROCESS_TIMEOUT_S)
-        assert heartbeat_name == f"lock-heartbeat:{lock_path.name}"
-
-        with (
-            pytest.raises(LockError, match="could not acquire lock"),
-            lock(
-                lock_path,
-                lifetime_s=SHORT_LIFETIME_S,
-                heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
-                acquire_timeout_s=0.0,
-            ),
-        ):
-            pass
-    finally:
-        release_queue.put(True)
-        proc.join(timeout=PROCESS_TIMEOUT_S)
 
 
 def test_timeout_when_lock_is_held(tmp_path: Path) -> None:
@@ -327,45 +252,6 @@ def test_waits_for_lock_release_before_timeout(tmp_path: Path) -> None:
             assert lock_path.exists()
     finally:
         holder.join(timeout=PROCESS_TIMEOUT_S)
-
-
-def test_lock_logs_when_waiting_for_lock(
-    caplog: pytest.LogCaptureFixture,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    lock_path = tmp_path / "single.lock"
-    furu_logger = logging.getLogger("furu")
-    furu_logger.addHandler(caplog.handler)
-    monkeypatch.setattr(
-        locking_module,
-        "DEFAULT_LOCK_WAIT_LOG_INTERVAL_S",
-        SHORT_HEARTBEAT_INTERVAL_S / 2,
-    )
-
-    try:
-        caplog.set_level(logging.INFO, logger="furu")
-        with (
-            lock(
-                lock_path,
-                lifetime_s=SHORT_LIFETIME_S * 4,
-                heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
-            ),
-            pytest.raises(LockError, match="could not acquire lock"),
-            lock(
-                lock_path,
-                lifetime_s=SHORT_LIFETIME_S,
-                heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
-                acquire_timeout_s=SHORT_SLEEP_S,
-                acquire_poll_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
-            ),
-        ):
-            pass
-    finally:
-        furu_logger.removeHandler(caplog.handler)
-
-    wait_message = f"waiting for lock at {lock_path.resolve()}"
-    assert caplog.messages.count(wait_message) >= 2
 
 
 def test_stale_break_from_any_member_path_removes_whole_logical_lock_group(

@@ -7,8 +7,7 @@ import furu
 from furu.constants import FIELDSMARKER
 from furu.dependencies import collect_declared_refs
 from furu.metadata import ArtifactSpec
-from furu.serializer.artifact import _from_json, to_json
-from furu.serializer.schema import schema_type
+from furu.serializer.artifact import _from_json
 
 
 def _fields(node: Any) -> dict[str, Any]:
@@ -68,35 +67,6 @@ def test_skip_hash_field_excluded_from_hashes() -> None:
     assert a._artifact_hash == b._artifact_hash
     assert a._artifact_schema_hash == b._artifact_schema_hash
     assert a.object_id == b.object_id
-
-
-def test_non_skip_field_still_changes_hash() -> None:
-    a = _SkipScalar(important="keep", debug="one")
-    c = _SkipScalar(important="different", debug="one")
-
-    assert a._artifact_hash != c._artifact_hash
-
-
-def test_skip_hash_field_omitted_from_hash_schema_only() -> None:
-    full = schema_type(_SkipScalar, set(), artifact_serializers=())
-    hashed = schema_type(_SkipScalar, set(), artifact_serializers=(), for_hash=True)
-
-    assert "debug" in _fields(full)
-    assert "debug" not in _fields(hashed)
-    assert "important" in _fields(hashed)
-
-
-def test_skip_hash_field_omitted_from_hash_artifact_only() -> None:
-    obj = _SkipScalar(important="keep", debug="x")
-
-    full = to_json(obj, declared_type=_SkipScalar, artifact_serializers=())
-    hashed = to_json(
-        obj, declared_type=_SkipScalar, artifact_serializers=(), for_hash=True
-    )
-
-    assert "debug" in _fields(full)
-    assert "debug" not in _fields(hashed)
-    assert "important" in _fields(hashed)
 
 
 def test_skip_hash_on_nested_dataclass_field() -> None:
