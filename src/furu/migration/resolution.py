@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
-import typing
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, is_dataclass
 from dataclasses import fields as dataclass_fields
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
+from furu._declared_types import type_hints
 from furu.constants import CLASSMARKER, FIELDSMARKER, KINDMARKER
 from furu.migration.steps import (
     Added,
@@ -125,7 +125,7 @@ def _embedded_migratable_classes(
     """
     assert is_dataclass(cls)
     seen: set[type] = {cls}
-    hints = typing.get_type_hints(cls, include_extras=True)
+    hints = type_hints(cls)
     for field in dataclass_fields(cls):
         schema_type(hints[field.name], seen, artifact_serializers=artifact_serializers)
     return tuple(
@@ -167,7 +167,7 @@ def _build_chain(
         ).items()
     }
 
-    hints = typing.get_type_hints(cls, include_extras=True)
+    hints = type_hints(cls)
     expectations = dict(current_fields)
     current_name_of = {name: name for name in expectations}
     added_types: dict[int, object] = {}

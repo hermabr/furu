@@ -1,7 +1,17 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from functools import cache
-from typing import TYPE_CHECKING, Annotated, Any, Final, TypeVar, get_args, get_origin
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    Any,
+    Final,
+    TypeVar,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 if TYPE_CHECKING:
     from furu.core import Spec
@@ -21,6 +31,16 @@ def has_skip_hash(declared_type: object) -> bool:
     if get_origin(declared_type) is not Annotated:
         return False
     return any(metadata is skip_hash for metadata in get_args(declared_type)[1:])
+
+
+@cache
+def type_hints(cls: type) -> Mapping[str, Any]:
+    """``get_type_hints(cls, include_extras=True)``, once per class.
+
+    Evaluating string annotations is slow, and a class's hints are fixed once it
+    is defined.
+    """
+    return get_type_hints(cls, include_extras=True)
 
 
 def strip_annotated(declared_type: object) -> object:
