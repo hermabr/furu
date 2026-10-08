@@ -3,12 +3,10 @@ from __future__ import annotations
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from furu.core import Spec
-
-type DependencyCallKind = Literal["create", "load_existing", "provenance"]
 
 
 _in_worker_execution: ContextVar[bool] = ContextVar(
@@ -29,18 +27,11 @@ def worker_execution_context() -> Iterator[None]:
 
 class _DependencyNotReady(BaseException):
     dependencies: tuple[Spec, ...]
-    call_kind: DependencyCallKind
 
-    def __init__[T](
-        self,
-        dependencies: Sequence[Spec[T]],
-        *,
-        call_kind: DependencyCallKind,
-    ) -> None:
+    def __init__[T](self, dependencies: Sequence[Spec[T]]) -> None:
         self.dependencies = tuple(dependencies)
-        self.call_kind = call_kind
 
         super().__init__(
-            f"{call_kind} discovered "
-            f"{len(self.dependencies)} missing dependency/dependencies"
+            f"create discovered {len(self.dependencies)} missing "
+            "dependency/dependencies"
         )

@@ -343,6 +343,23 @@ class BatchSizeCoordinatorLeaf(furu.Spec[int]):
         return [len(objs)] * len(objs)
 
 
+class OptionalLoadLeaf(furu.Spec[str]):
+    name: str
+
+    def create(self) -> str:
+        return self.name
+
+
+class OptionalLoadParent(furu.Spec[str]):
+    name: str
+
+    def create(self) -> str:
+        try:
+            return OptionalLoadLeaf(name=self.name).load_existing()
+        except furu.Missing:
+            return "missing"
+
+
 class ThrottledBatchedCoordinatorLeaf(furu.Spec[int]):
     value: int
     throttle = Throttle(max_running=2)
@@ -983,6 +1000,13 @@ def test_execution_coordinator_runs_batched_specs_as_one_batch() -> None:
     objs = [BatchSizeCoordinatorLeaf(value=value) for value in range(3)]
 
     assert furu.create(objs, on=[LocalThreadWorkerBackend()]) == [3, 3, 3]
+
+
+def test_load_existing_in_worker_does_not_build_missing_spec() -> None:
+    parent = OptionalLoadParent(name="optional")
+
+    assert furu.create(parent, on=[LocalThreadWorkerBackend()]) == "missing"
+    assert OptionalLoadLeaf(name="optional").status == "missing"
 
 
 def test_worker_lost_requeues_running_lease_without_counting_failure() -> None:

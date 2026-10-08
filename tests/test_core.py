@@ -1875,7 +1875,7 @@ def test_sequential_fallback_writes_running_metadata_per_object() -> None:
     second = MetadataTimingValue(key=2)
     MetadataTimingValue.siblings_by_key.update({1: first, 2: second})
 
-    assert _load_or_create([first, second], use_lock=False) == ["timed:1", "timed:2"]
+    assert _load_or_create([first, second]) == ["timed:1", "timed:2"]
     assert MetadataTimingValue.create_events == [
         (1, True, True),
         (2, True, True),
@@ -2037,63 +2037,23 @@ def test_worker_create_reports_all_missing_dependencies(
     ):
         _load_or_create([first, second])
 
-    exc = exc_info.value
-    assert exc.call_kind == "create"
-    assert exc.dependencies == (first, second)
+    assert exc_info.value.dependencies == (first, second)
     assert ObjectIdStorageValue.create_calls == []
     assert not result_manifest_path_in(first._base_dir).exists()
     assert not result_manifest_path_in(second._base_dir).exists()
 
 
-def test_worker_load_existing_reports_missing_dependency(tmp_path: Path) -> None:
+def test_worker_load_existing_and_provenance_raise_missing(tmp_path: Path) -> None:
     ObjectIdStorageValue.storage_override = tmp_path / "data"
     missing = ObjectIdStorageValue(key=13)
 
-    with (
-        worker_execution_context(),
-        pytest.raises(_DependencyNotReady) as exc_info,
-    ):
-        missing.load_existing()
-
-    exc = exc_info.value
-    assert exc.call_kind == "load_existing"
-    assert exc.dependencies == (missing,)
-
-
-def test_worker_provenance_reports_missing_dependency(tmp_path: Path) -> None:
-    ObjectIdStorageValue.storage_override = tmp_path / "data"
-    missing = ObjectIdStorageValue(key=17)
-
-    with (
-        worker_execution_context(),
-        pytest.raises(_DependencyNotReady) as exc_info,
-    ):
-        missing.provenance()
-
-    exc = exc_info.value
-    assert exc.call_kind == "provenance"
-    assert exc.dependencies == (missing,)
-
-
-def test_worker_top_level_load_existing_reports_all_missing_dependencies(
-    tmp_path: Path,
-) -> None:
-    ObjectIdStorageValue.storage_override = tmp_path / "data"
-    missing_first = ObjectIdStorageValue(key=21)
-    ready = ObjectIdStorageValue(key=22)
-    missing_second = ObjectIdStorageValue(key=23)
-
-    assert ready.create() == "object-id:22"
-
-    with (
-        worker_execution_context(),
-        pytest.raises(_DependencyNotReady) as exc_info,
-    ):
-        furu.load_existing([missing_first, ready, missing_second])
-
-    exc = exc_info.value
-    assert exc.call_kind == "load_existing"
-    assert exc.dependencies == (missing_first, missing_second)
+    with worker_execution_context():
+        with pytest.raises(furu.Missing):
+            missing.load_existing()
+        with pytest.raises(furu.Missing):
+            missing.provenance()
+        with pytest.raises(furu.Missing):
+            furu.load_existing([missing])
 
 
 def test_worker_dependency_not_ready_is_not_caught_as_exception(
@@ -2104,7 +2064,7 @@ def test_worker_dependency_not_ready_is_not_caught_as_exception(
 
     with pytest.raises(_DependencyNotReady), worker_execution_context():
         try:
-            missing.load_existing()
+            missing.create()
         except Exception as exc:  # pragma: no cover
             raise AssertionError("ordinary Exception handler caught signal") from exc
 

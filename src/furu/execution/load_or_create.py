@@ -130,26 +130,20 @@ def _store_result[T](
 
 
 @overload
-def _load_or_create[T](obj: Spec[T], *, use_lock: bool = True) -> T: ...
+def _load_or_create[T](obj: Spec[T]) -> T: ...
 
 
 @overload
-def _load_or_create[T](
-    objs: Sequence[Spec[T]], *, use_lock: bool = True
-) -> list[T]: ...
+def _load_or_create[T](objs: Sequence[Spec[T]]) -> list[T]: ...
 
 
-def _load_or_create[T](
-    obj_or_objs: Spec[T] | Sequence[Spec[T]],
-    *,
-    use_lock: bool = True,
-) -> T | list[T]:
+def _load_or_create[T](obj_or_objs: Spec[T] | Sequence[Spec[T]]) -> T | list[T]:
     _require_uv()
     objs, unwrap = _normalize_load_or_create_input(obj_or_objs)
     if _in_worker_execution.get():
         outputs = _load_or_create_worker(objs)
     else:
-        outputs = _load_or_create_local(objs, use_lock=use_lock, announce=unwrap)
+        outputs = _load_or_create_local(objs, announce=unwrap)
     if unwrap:
         (output,) = outputs
         return output
@@ -234,8 +228,6 @@ def load_existing[T](objs: Sequence[Spec[T]]) -> list[T]:
             continue
         loaded.append(load_stored_result(obj, result_dir))
     if missing:
-        if _in_worker_execution.get():
-            raise _DependencyNotReady(dependencies=missing, call_kind="load_existing")
         first = missing[0]
         raise Missing(
             f"{first._log_label}.load_existing() could not find a result. "
@@ -278,20 +270,12 @@ def _load_or_create_worker[T](objs: list[Spec[T]]) -> list[T]:
         objs[0].logger.info("%s", _cached_to_build_msg(cached, missing))
 
     if missing:
-        raise _DependencyNotReady(
-            dependencies=missing,
-            call_kind="create",
-        )
+        raise _DependencyNotReady(dependencies=missing)
 
     return loaded
 
 
-def _load_or_create_local[T](
-    objs: list[Spec[T]],
-    *,
-    use_lock: bool,
-    announce: bool,
-) -> list[T]:
+def _load_or_create_local[T](objs: list[Spec[T]], *, announce: bool) -> list[T]:
     if not objs:
         return []
 
@@ -319,7 +303,6 @@ def _load_or_create_local[T](
     # Declared dependencies are built first, matching the coordinator's DAG.
     _load_or_create_local(
         [ref for obj in missing for ref in collect_declared_refs(obj)],
-        use_lock=use_lock,
         announce=False,
     )
     for obj in missing:
@@ -327,17 +310,16 @@ def _load_or_create_local[T](
 
     lock_ctx = (
         lock([compute_lock_path_in(obj._base_dir) for obj in missing])
-        if use_lock and missing
-        else nullcontext()
+        if missing
+        else nullcontext(lambda: True)
     )
 
-    with lock_ctx as maybe_has_lock:
-        has_lock = maybe_has_lock or (lambda: True)
+    with lock_ctx as has_lock:
         pending: list[Spec[T]] = []
         late_hits = 0
         for obj in missing:
             if (
-                cached_result_dir := result_dir_for_loading(obj, has_lock=use_lock)
+                cached_result_dir := result_dir_for_loading(obj, has_lock=True)
             ) is not None:
                 late_hits += 1
                 results_by_object_id[obj.object_id] = load_stored_result(
@@ -484,8 +466,7 @@ def _create_and_store_group[T](
             )
         except _DependencyNotReady as exc:
             logger.debug(
-                "create deferred: %s discovered %d missing dependency/dependencies",
-                exc.call_kind,
+                "create deferred: %d missing dependency/dependencies",
                 len(exc.dependencies),
             )
             raise
