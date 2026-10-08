@@ -1006,6 +1006,14 @@ def test_execution_coordinator_runs_batched_specs_as_one_batch() -> None:
     assert furu.create(objs, on=[LocalThreadWorkerBackend()]) == [3, 3, 3]
 
 
+def test_build_on_workers_leaves_results_on_disk() -> None:
+    objs = [BatchSizeCoordinatorLeaf(value=value) for value in range(3)]
+
+    furu.build(objs, on=[LocalThreadWorkerBackend()])
+
+    assert [obj.status for obj in objs] == ["done", "done", "done"]
+
+
 def test_load_existing_in_worker_does_not_build_missing_spec() -> None:
     parent = OptionalLoadParent(name="optional")
 

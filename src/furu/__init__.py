@@ -4,7 +4,7 @@ from furu._batched import batched
 from furu._declared_types import skip_hash
 from furu.core import Missing, Spec
 from furu.dependencies import dependency
-from furu.execution.load_or_create import create, load_existing
+from furu.execution.load_or_create import build, create, load_existing
 from furu.logging import get_logger
 from furu.migration.steps import (
     Added,
@@ -46,6 +46,7 @@ __all__ = [
     "Worker",
     "__version__",
     "batched",
+    "build",
     "create",
     "dependency",
     "get_logger",
