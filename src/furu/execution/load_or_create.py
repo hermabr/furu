@@ -16,6 +16,7 @@ from furu._declared_types import declared_result_type
 from furu.config import get_config
 from furu.core import Missing, Spec
 from furu.dependencies import (
+    collect_declared_refs,
     dependency_recorder,
     record_dependency_call,
     under_creation,
@@ -144,9 +145,15 @@ def _load_or_create[T](
     use_lock: bool = True,
 ) -> T | list[T]:
     _require_uv()
+    objs, unwrap = _normalize_load_or_create_input(obj_or_objs)
     if _in_worker_execution.get():
-        return _load_or_create_worker(obj_or_objs)
-    return _load_or_create_local(obj_or_objs, use_lock=use_lock)
+        outputs = _load_or_create_worker(objs)
+    else:
+        outputs = _load_or_create_local(objs, use_lock=use_lock, announce=unwrap)
+    if unwrap:
+        (output,) = outputs
+        return output
+    return outputs
 
 
 def _ensure_group_result[T](
@@ -254,11 +261,7 @@ def _cached_to_build_msg(cached: list[Spec], to_build: list[Spec]) -> str:
     return f"building {fmt(to_build)}, {msg}" if to_build else msg
 
 
-def _load_or_create_worker[T](
-    obj_or_objs: Spec[T] | Sequence[Spec[T]],
-) -> T | list[T]:
-    objs, unwrap = _normalize_load_or_create_input(obj_or_objs)
-
+def _load_or_create_worker[T](objs: list[Spec[T]]) -> list[T]:
     loaded: list[T] = []
     cached: list[Spec[T]] = []
     missing: list[Spec[T]] = []
@@ -280,19 +283,15 @@ def _load_or_create_worker[T](
             call_kind="create",
         )
 
-    if unwrap:
-        (result,) = loaded
-        return result
     return loaded
 
 
 def _load_or_create_local[T](
-    obj_or_objs: Spec[T] | Sequence[Spec[T]],
+    objs: list[Spec[T]],
     *,
-    use_lock: bool = True,
-) -> T | list[T]:
-    objs, unwrap = _normalize_load_or_create_input(obj_or_objs)
-
+    use_lock: bool,
+    announce: bool,
+) -> list[T]:
     if not objs:
         return []
 
@@ -311,12 +310,20 @@ def _load_or_create_local[T](
             )
         else:
             raise_if_stale(obj)
-            obj._base_dir.mkdir(parents=True, exist_ok=True)
             missing.append(obj)
 
     if results_by_object_id:
         cached = [o for o in unique if o.object_id in results_by_object_id]
         unique[0].logger.info("%s", _cached_to_build_msg(cached, missing))
+
+    # Declared dependencies are built first, matching the coordinator's DAG.
+    _load_or_create_local(
+        [ref for obj in missing for ref in collect_declared_refs(obj)],
+        use_lock=use_lock,
+        announce=False,
+    )
+    for obj in missing:
+        obj._base_dir.mkdir(parents=True, exist_ok=True)
 
     lock_ctx = (
         lock([compute_lock_path_in(obj._base_dir) for obj in missing])
@@ -344,7 +351,7 @@ def _load_or_create_local[T](
                 "%d became ready while waiting, %d to build", late_hits, len(pending)
             )
 
-        direct_create_started = unwrap and bool(pending)
+        direct_create_started = announce and bool(pending)
         create_started_at = time.monotonic()
         if direct_create_started:
             objs[0].logger.info("creating %s", objs[0]._log_label)
@@ -362,19 +369,13 @@ def _load_or_create_local[T](
                     submit_provenance=submit_provenance,
                 )
 
-    outputs = [results_by_object_id[obj.object_id] for obj in objs]
-
-    if unwrap:
-        (obj,) = objs
-        (output,) = outputs
-        if direct_create_started:
-            obj.logger.info(
-                "finished %s ok · %s",
-                obj._log_label,
-                format_duration(time.monotonic() - create_started_at),
-            )
-        return output
-    return outputs
+    if direct_create_started:
+        objs[0].logger.info(
+            "finished %s ok · %s",
+            objs[0]._log_label,
+            format_duration(time.monotonic() - create_started_at),
+        )
+    return [results_by_object_id[obj.object_id] for obj in objs]
 
 
 def _batch_group(obj: Spec) -> tuple[object, int] | None:

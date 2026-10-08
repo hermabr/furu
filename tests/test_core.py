@@ -278,11 +278,11 @@ class LoggedLeaf(Spec[str]):
 
 
 class LoggedParent(Spec[dict[str, str]]):
-    child: LoggedLeaf
+    child_name: str
 
     def create(self) -> dict[str, str]:
         self.logger.info("parent before child")
-        child_result = self.child.create()
+        child_result = LoggedLeaf(name=self.child_name).create()
         self.logger.info("parent after child")
         return {"child": child_result}
 
@@ -519,6 +519,13 @@ class CountingDependencyParent(Spec[str]):
 
     def create(self) -> str:
         return self.child.create()
+
+
+class LoadsDeclaredDependencyParent(Spec[str]):
+    child: Node
+
+    def create(self) -> str:
+        return self.child.load_existing()
 
 
 class LazyDependencyParent(Spec[str]):
@@ -1094,7 +1101,14 @@ def test_field_dependencies_are_eager_but_metadata_stores_only_loaded_objects() 
 
     assert collect_declared_refs(parent) == (first, second)
     assert parent.create() == "Node(nested)"
+    assert second.status == "done"
     assert _dependency_object_ids(parent) == [first.object_id]
+
+
+def test_declared_dependencies_are_created_before_the_create_hook() -> None:
+    parent = LoadsDeclaredDependencyParent(child=Node(name="declared"))
+
+    assert parent.create() == "Node(declared)"
 
 
 def test_computed_dependency_is_cached_property_and_eager_loaded_dependency() -> None:
@@ -1698,7 +1712,7 @@ def test_log_file_is_written_to_base_dir() -> None:
 
 def test_nested_create_scopes_logs_to_child_file() -> None:
     child = LoggedLeaf(name="child")
-    parent = LoggedParent(child=child)
+    parent = LoggedParent(child_name="child")
 
     assert parent.create() == {"child": "leaf:child"}
 
