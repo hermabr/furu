@@ -223,6 +223,23 @@ class VariadicTuple(Spec[None]):
         pass
 
 
+class SchemaLeaf(Spec[None]):
+    x: int
+
+
+class SchemaMid(Spec[None]):
+    leaf: SchemaLeaf
+
+
+class SchemaTop(Spec[None]):
+    a_leaf: SchemaLeaf
+    mid: SchemaMid
+
+
+class SchemaCycle(Spec[None]):
+    child: "SchemaCycle | None"
+
+
 class UsesPath(Spec[str]):
     path: Path
 
@@ -1347,6 +1364,25 @@ def test_schema_with_ellipsis_type_arg():
                 "|origin": "builtins.tuple",
                 "|args": ["builtins.ellipsis", "builtins.int"],
             }
+        },
+    }
+
+
+def test_schema_expands_repeated_types_and_collapses_only_cycles():
+    leaf = {"|class": "test_core.SchemaLeaf", "|fields": {"x": "builtins.int"}}
+    top = SchemaTop(a_leaf=SchemaLeaf(x=1), mid=SchemaMid(leaf=SchemaLeaf(x=2)))
+
+    assert top._schema_data == {
+        "|class": "test_core.SchemaTop",
+        "|fields": {
+            "a_leaf": leaf,
+            "mid": {"|class": "test_core.SchemaMid", "|fields": {"leaf": leaf}},
+        },
+    }
+    assert SchemaCycle(child=None)._schema_data == {
+        "|class": "test_core.SchemaCycle",
+        "|fields": {
+            "child": ["builtins.NoneType", {"|class": "test_core.SchemaCycle"}]
         },
     }
 

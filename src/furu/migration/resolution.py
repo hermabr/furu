@@ -118,13 +118,13 @@ def _embedded_migratable_classes(
 ) -> tuple[type, ...]:
     """Classes embedded in cls's schema that declare a migration chain.
 
-    ``schema_type`` records every class it visits in ``seen``, so this is by
-    construction the set of classes that actually appear in the schema. cls's
+    ``schema_type`` records every class it visits as a key of ``seen``, so this
+    is by construction the set of classes that actually appear in the schema. cls's
     field types are walked directly so cls's own name (which need not be
     importable when this runs at class definition) is never serialized.
     """
     assert is_dataclass(cls)
-    seen: set[type] = {cls}
+    seen: dict[type, bool] = {cls: True}
     hints = typing.get_type_hints(cls, include_extras=True)
     for field in dataclass_fields(cls):
         schema_type(hints[field.name], seen, artifact_serializers=artifact_serializers)
@@ -158,7 +158,7 @@ def _build_chain(
     class_name = fully_qualified_name(cls)
     current_schema = cast(
         "dict[str, JsonValue]",
-        schema_type(cls, set(), artifact_serializers=artifact_serializers),
+        schema_type(cls, {}, artifact_serializers=artifact_serializers),
     )
     current_fields: dict[str, _FieldExpectation] = {
         name: ("exact", schema)
@@ -197,7 +197,7 @@ def _build_chain(
                     _shape_of(
                         schema_type(
                             step.was,
-                            set(),
+                            {},
                             artifact_serializers=artifact_serializers,
                         )
                     ),
