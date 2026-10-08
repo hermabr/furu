@@ -38,7 +38,7 @@ from furu.provenance import (
     SubmitContext,
     SubmitProvenance,
 )
-from furu.resources import ResourceFloor, ResourceRequest, resource_request_adapter
+from furu.resources import Worker
 from furu.snapshot import create_snapshot
 from furu.testing import override_config
 from furu.utils import write_private_file
@@ -76,13 +76,13 @@ class _StubCoordinator(ExecutionCoordinator):
     def __init__(self, count: Callable[[int], int] | int = 0) -> None:
         super().__init__(
             max_retries_per_object=0,
-            pool_resources=(),
+            backends={},
             submit_provenance=_submit_provenance(),
         )
         self._count = count
         self.failures: list[str] = []
 
-    def count_satisfiable_jobs(self, *, resources: object, max_workers: int) -> int:
+    def count_satisfiable_jobs(self, *, backend: object, max_workers: int) -> int:
         if isinstance(self._count, int):
             return self._count
         return self._count(max_workers)
@@ -155,14 +155,14 @@ def test_worker_cli_passes_coordinator_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[Path, ResourceRequest, float | None]] = []
+    calls: list[tuple[Path, str, float | None]] = []
     coordinator_file = tmp_path / "coordinator.url"
     coordinator_file.write_text("ws://furu:secret@execution-coordinator.test:1\n\n")
 
     def worker_loop(
         *,
         coordinator: Path,
-        resource_request: ResourceRequest,
+        pool: str,
         idle_timeout: float | None,
         component: str,
         backend: str,
@@ -170,7 +170,7 @@ def test_worker_cli_passes_coordinator_file(
         max_failures: int,
         log_file: Path,
     ) -> None:
-        calls.append((coordinator, resource_request, idle_timeout))
+        calls.append((coordinator, pool, idle_timeout))
 
     monkeypatch.setattr(_cli, "worker_loop", worker_loop)
 
@@ -179,8 +179,8 @@ def test_worker_cli_passes_coordinator_file(
             [
                 "--coordinator-file",
                 str(coordinator_file),
-                "--resources",
-                '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
+                "--pool",
+                "slurm:abc",
                 "--idle-timeout",
                 "60",
                 "--max-failures",
@@ -196,21 +196,21 @@ def test_worker_cli_passes_coordinator_file(
         == 0
     )
 
-    assert calls == [(coordinator_file, ResourceRequest(), 60.0)]
+    assert calls == [(coordinator_file, "slurm:abc", 60.0)]
 
 
-def test_worker_cli_reads_resource_request(
+def test_worker_cli_reads_pool(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[ResourceRequest, float | None]] = []
+    calls: list[tuple[str, float | None]] = []
     coordinator_file = tmp_path / "coordinator.url"
     coordinator_file.write_text("ws://furu:secret@execution-coordinator.test:1")
 
     def worker_loop(
         *,
         coordinator: Path,
-        resource_request: ResourceRequest,
+        pool: str,
         idle_timeout: float | None,
         component: str,
         backend: str,
@@ -218,7 +218,7 @@ def test_worker_cli_reads_resource_request(
         max_failures: int,
         log_file: Path,
     ) -> None:
-        calls.append((resource_request, idle_timeout))
+        calls.append((pool, idle_timeout))
 
     monkeypatch.setattr(_cli, "worker_loop", worker_loop)
 
@@ -227,8 +227,8 @@ def test_worker_cli_reads_resource_request(
             [
                 "--coordinator-file",
                 str(coordinator_file),
-                "--resources",
-                '{"cpus": 4, "gpus": 1, "memory_gib": 16, "reserve_for": {"memory_gib": 8}}',
+                "--pool",
+                "slurm:abc",
                 "--idle-timeout",
                 "30",
                 "--max-failures",
@@ -244,17 +244,7 @@ def test_worker_cli_reads_resource_request(
         == 0
     )
 
-    assert calls == [
-        (
-            ResourceRequest(
-                cpus=4,
-                gpus=1,
-                memory_gib=16,
-                reserve_for=ResourceFloor(memory_gib=8),
-            ),
-            30.0,
-        )
-    ]
+    assert calls == [("slurm:abc", 30.0)]
 
 
 def test_worker_cli_reads_idle_timeout_and_max_failures(
@@ -268,7 +258,7 @@ def test_worker_cli_reads_idle_timeout_and_max_failures(
     def worker_loop(
         *,
         coordinator: Path,
-        resource_request: ResourceRequest,
+        pool: str,
         idle_timeout: float | None,
         component: str,
         backend: str,
@@ -285,8 +275,8 @@ def test_worker_cli_reads_idle_timeout_and_max_failures(
             [
                 "--coordinator-file",
                 str(coordinator_file),
-                "--resources",
-                '{"cpus": 4, "gpus": 1, "memory_gib": 0}',
+                "--pool",
+                "slurm:abc",
                 "--idle-timeout",
                 "0.25",
                 "--max-failures",
@@ -315,7 +305,7 @@ def _run_worker_cli_capturing_component(
     def worker_loop(
         *,
         coordinator: Path,
-        resource_request: ResourceRequest,
+        pool: str,
         idle_timeout: float | None,
         component: str,
         backend: str,
@@ -332,8 +322,8 @@ def _run_worker_cli_capturing_component(
             [
                 "--coordinator-file",
                 str(coordinator_file),
-                "--resources",
-                '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
+                "--pool",
+                "slurm:abc",
                 "--idle-timeout",
                 "60",
                 "--max-failures",
@@ -375,7 +365,7 @@ def test_worker_cli_requires_component(
     def worker_loop(
         *,
         coordinator: Path,
-        resource_request: ResourceRequest,
+        pool: str,
         idle_timeout: float | None,
         component: str,
         backend: str,
@@ -392,8 +382,8 @@ def test_worker_cli_requires_component(
             [
                 "--coordinator-file",
                 str(coordinator_file),
-                "--resources",
-                '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
+                "--pool",
+                "slurm:abc",
                 "--idle-timeout",
                 "60",
                 "--max-failures",
@@ -406,21 +396,21 @@ def test_worker_cli_requires_component(
     assert exc_info.value.code == 2
 
 
-def test_worker_cli_requires_resource_request(
+def test_worker_cli_requires_pool(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[ResourceRequest] = []
+    calls: list[str] = []
     coordinator_file = tmp_path / "coordinator.url"
     coordinator_file.write_text("ws://furu:secret@execution-coordinator.test:1")
 
     def worker_loop(
         *,
         coordinator: Path,
-        resource_request: ResourceRequest,
+        pool: str,
         idle_timeout: float | None,
     ) -> None:
-        calls.append(resource_request)
+        calls.append(pool)
 
     monkeypatch.setattr(_cli, "worker_loop", worker_loop)
 
@@ -450,7 +440,7 @@ def test_worker_cli_requires_coordinator_file(monkeypatch: pytest.MonkeyPatch) -
     def worker_loop(
         *,
         coordinator: Path,
-        resource_request: ResourceRequest,
+        pool: str,
         idle_timeout: float | None,
     ) -> None:
         calls.append(str(coordinator))
@@ -460,8 +450,8 @@ def test_worker_cli_requires_coordinator_file(monkeypatch: pytest.MonkeyPatch) -
     with pytest.raises(SystemExit) as exc_info:
         _cli.main(
             [
-                "--resources",
-                '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
+                "--pool",
+                "slurm:abc",
                 "--idle-timeout",
                 "60",
                 "--max-failures",
@@ -488,7 +478,7 @@ def test_worker_cli_requires_idle_timeout(
     def worker_loop(
         *,
         coordinator: Path,
-        resource_request: ResourceRequest,
+        pool: str,
         idle_timeout: float | None,
     ) -> None:
         calls.append(idle_timeout)
@@ -500,8 +490,8 @@ def test_worker_cli_requires_idle_timeout(
             [
                 "--coordinator-file",
                 str(coordinator_file),
-                "--resources",
-                '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
+                "--pool",
+                "slurm:abc",
             ]
         )
 
@@ -520,7 +510,7 @@ def test_worker_cli_rejects_auth_token_argument(
     def worker_loop(
         *,
         coordinator: Path,
-        resource_request: ResourceRequest,
+        pool: str,
         idle_timeout: float | None,
     ) -> None:
         calls.append(str(coordinator))
@@ -532,8 +522,8 @@ def test_worker_cli_rejects_auth_token_argument(
             [
                 "--coordinator-file",
                 str(coordinator_file),
-                "--resources",
-                '{"cpus": 1, "gpus": 0, "memory_gib": 0}',
+                "--pool",
+                "slurm:abc",
                 "--idle-timeout",
                 "60",
                 "--max-failures",
@@ -574,7 +564,7 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
         worker_idle_timeout=0.25,
         max_failures_per_worker=2,
         pre_worker_commands=('echo "Hello" > /tmp/hey',),
-        reserve_for=ResourceFloor(memory_gib=4),
+        labels=("hopper",),
     )
 
     provenance = _submit_provenance()
@@ -638,15 +628,8 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     ) in script
     assert "--idle-timeout 0.25" in script
     assert "--max-failures 2" in script
-    resources_json = resource_request_adapter.dump_json(
-        ResourceRequest(
-            cpus=4,
-            gpus=1,
-            memory_gib=8,
-            reserve_for=ResourceFloor(memory_gib=4),
-        )
-    ).decode()
-    assert f"--resources {shlex.quote(resources_json)}" in script
+    assert f"--pool {shlex.quote(backend.pool_key)}" in script
+    assert backend.worker == Worker(cpus=4, gpus=1, memory_gib=8, labels=("hopper",))
     assert "FURU_DIRECTORIES__OBJECTS" not in script
     assert "FURU_DIRECTORIES__EXECUTIONS" not in script
 
@@ -2191,7 +2174,7 @@ def test_slurm_pool_key_ignores_where_and_how_many() -> None:
                 partition="debug", cpus_per_worker=4, memory=MemoryPerNode(8)
             )
         },
-        {"reserve_for": ResourceFloor(memory_gib=8)},
+        {"labels": ("hopper",)},
         {"pre_worker_commands": ("module load cuda",)},
         {"export": "NIL"},
         {"export": ("HF_TOKEN",)},

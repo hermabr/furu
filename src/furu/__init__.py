@@ -16,17 +16,11 @@ from furu.migration.steps import (
     Stale,
 )
 from furu.provenance import Provenance
+from furu.resources import Worker
 from furu.result.codec import Codec
 from furu.result.ref import Ref, ref
 from furu.serializer.registry import Serializer
-from furu.spec_metadata import (
-    GiB,
-    Metadata,
-    Requires,
-    Throttle,
-    at_least,
-    between,
-)
+from furu.spec_metadata import Metadata, Throttle
 from furu.utils import _install_main_module_alias
 
 _install_main_module_alias()
@@ -36,7 +30,6 @@ __version__ = version("furu")
 __all__ = [
     "Added",
     "Codec",
-    "GiB",
     "Metadata",
     "MigrationStep",
     "Missing",
@@ -44,17 +37,15 @@ __all__ = [
     "Provenance",
     "Ref",
     "Renamed",
-    "Requires",
     "Retyped",
     "Rewrite",
     "Serializer",
     "Spec",
     "Stale",
     "Throttle",
+    "Worker",
     "__version__",
-    "at_least",
     "batched",
-    "between",
     "create",
     "dependency",
     "get_logger",

@@ -23,9 +23,9 @@ from furu.logging import (
 )
 from furu.metadata import ArtifactSpec
 from furu.provenance import SubmitProvenance, capture_submit_provenance
-from furu.resources import ResourceRequest, resource_request_satisfies
 from furu.storage._layout import execution_coordinator_log_path_in
 from furu.utils import format_duration
+from furu.worker.backends.protocol import can_run
 from furu.worker.protocol import (
     Job,
     JobBlockedResult,
@@ -64,7 +64,7 @@ class ExecutionCoordinator:
     max_retries_per_object: int = field(
         default_factory=lambda: get_config().worker.max_retries_per_object
     )
-    pool_resources: tuple[ResourceRequest, ...]
+    backends: dict[str, WorkerBackend]
     submit_provenance: SubmitProvenance
     executor_id: str = field(default_factory=lambda: secrets.token_hex(16))
     nodes_by_id: dict[str, DagNode] = field(default_factory=dict)
@@ -119,10 +119,14 @@ class ExecutionCoordinator:
             if (prefix := os.environ.get("FURU_TAKEOVER")) is not None
             else None
         )
+        backends = {backend.pool_key: backend for backend in worker_backends}
+        if len(backends) != len(worker_backends):
+            raise ValueError(
+                "worker backends with identical configuration; "
+                "use one backend with a larger max_workers instead"
+            )
         coordinator = cls(
-            pool_resources=tuple(
-                backend.resource_request for backend in worker_backends
-            ),
+            backends=backends,
             submit_provenance=capture_submit_provenance(
                 snapshot=get_config().provenance.snapshot
             ),
@@ -140,13 +144,6 @@ class ExecutionCoordinator:
         (bind_host,) = {
             backend.execution_coordinator_listen_host for backend in worker_backends
         }
-        pool_keys = [backend.pool_key for backend in worker_backends]
-        if len(set(pool_keys)) != len(pool_keys):
-            raise ValueError(
-                "worker backends with identical configuration; "
-                "use one backend with a larger max_workers instead"
-            )
-
         from furu.execution.server import (
             execution_coordinator_server,
             request_takeover,
@@ -173,7 +170,7 @@ class ExecutionCoordinator:
                             executor_id=coordinator.executor_id,
                             source_id=takeover[0],
                             url=takeover[1],
-                            pool_keys=pool_keys,
+                            pool_keys=list(backends),
                         )
                         if takeover is not None
                         else nullcontext({})
@@ -187,9 +184,9 @@ class ExecutionCoordinator:
                                 takeover[0][:5],
                                 sum(len(h.job_ids) for h in handoffs.values()),
                             )
-                        for backend in worker_backends:
-                            handoff = handoffs.get(backend.pool_key, PoolHandoff())
-                            coordinator.pools[backend.pool_key] = backend.start_pool(
+                        for pool_key, backend in backends.items():
+                            handoff = handoffs.get(pool_key, PoolHandoff())
+                            coordinator.pools[pool_key] = backend.start_pool(
                                 coordinator=coordinator,
                                 bound_port=server.bound_port,
                                 auth_token=server.auth_token,
@@ -232,13 +229,13 @@ class ExecutionCoordinator:
         ):
             yield
 
-    def lease_job(self, *, resources: ResourceRequest, worker: str) -> Job | None:
+    def lease_job(self, *, backend: WorkerBackend, worker: str) -> Job | None:
         with self.log_context(), self.lock:
             while True:
                 if self.done.is_set() or self.taken_over_by is not None:
                     return None
                 running_elsewhere: set[str] = set()
-                for node, member_ids in self._satisfiable_leases_locked(resources):
+                for node, member_ids in self._satisfiable_leases_locked(backend):
                     object_ids: list[str] = []
                     for object_id in (node.obj.object_id, *member_ids):
                         if self.nodes_by_id[object_id].obj.status == "running":
@@ -339,18 +336,17 @@ class ExecutionCoordinator:
             self.lock.notify_all()
 
     def count_satisfiable_jobs(
-        self, *, resources: ResourceRequest, max_workers: int
+        self, *, backend: WorkerBackend, max_workers: int
     ) -> int:
         with self.log_context(), self.lock:
             if self.done.is_set():
                 return 0
             return sum(
-                1
-                for _ in islice(self._satisfiable_leases_locked(resources), max_workers)
+                1 for _ in islice(self._satisfiable_leases_locked(backend), max_workers)
             )
 
     def _satisfiable_leases_locked(
-        self, resources: ResourceRequest
+        self, backend: WorkerBackend
     ) -> Iterator[tuple[DagNode, list[str]]]:
         """Yield (node, batch member ids) for each lease that could start now.
 
@@ -367,7 +363,7 @@ class ExecutionCoordinator:
         for object_id, node in self.ready.items():
             if object_id in consumed or object_id in self.running_elsewhere:
                 continue
-            if not resource_request_satisfies(resources, node.obj._metadata.requires):
+            if not can_run(backend, node.obj):
                 continue
             throttle = node.obj.throttle
             if (
@@ -377,8 +373,8 @@ class ExecutionCoordinator:
                 continue
             consumed.add(object_id)
             member_ids: list[str] = []
-            if node.batch_group is not None:
-                group_key, cap = node.batch_group
+            if (group := node.batch_group(backend.worker)) is not None:
+                group_key, cap = group
                 for other_id, other in self.ready.items():
                     if len(member_ids) + 1 >= cap:
                         break
@@ -386,7 +382,10 @@ class ExecutionCoordinator:
                         continue
                     if other_id in self.running_elsewhere:
                         continue
-                    if other.batch_group is None or other.batch_group[0] != group_key:
+                    other_group = other.batch_group(backend.worker)
+                    if other_group is None or other_group[0] != group_key:
+                        continue
+                    if not can_run(backend, other.obj):
                         continue
                     member_ids.append(other_id)
                 consumed.update(member_ids)

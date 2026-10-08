@@ -28,6 +28,7 @@ from furu.migration.resolution import validate_embedded_migration_declarations
 from furu.migration.stale import raise_if_stale, sideways_status
 from furu.migration.steps import MigrationStep, validate_migration_declaration
 from furu.provenance import Provenance
+from furu.resources import Worker
 from furu.result.codec import Codec
 from furu.serializer.artifact import to_json as _to_json
 from furu.serializer.registry import Serializer
@@ -83,6 +84,7 @@ _RESERVED_FIELD_NAMES = frozenset(
         "throttle",
         "result_codecs",
         "artifact_serializers",
+        "runs_on",
     }
 )
 
@@ -145,6 +147,10 @@ class Spec[T](_FuruDataclassTransform, ABC):
 
     def metadata(self) -> Metadata:
         return Metadata()
+
+    def runs_on(self, worker: Worker) -> bool:
+        """Whether a worker can run this spec, e.g. ``worker.gpus >= 1``."""
+        return True
 
     @final
     @cached_property

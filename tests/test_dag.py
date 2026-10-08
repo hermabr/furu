@@ -17,7 +17,7 @@ from furu.provenance import (
     SubmitContext,
     SubmitProvenance,
 )
-from furu.resources import ResourceRequest
+from furu.resources import Worker
 from furu.storage._layout import (
     compute_lock_path_in,
     run_log_path_in,
@@ -100,7 +100,7 @@ def _submit_provenance() -> SubmitProvenance:
 
 def _new_execution_coordinator(objs: Sequence[Spec]) -> ExecutionCoordinator:
     coordinator = ExecutionCoordinator(
-        pool_resources=(ResourceRequest(),),
+        backends={"local": LocalThreadWorkerBackend(worker=Worker())},
         submit_provenance=_submit_provenance(),
     )
     _add_to_dag(coordinator, objs)

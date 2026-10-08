@@ -19,7 +19,7 @@ from websockets.sync.server import ServerConnection, serve
 
 import furu
 import furu.worker.loop as worker_loop_module
-from furu import GiB, Metadata, Requires, Spec, Throttle, at_least
+from furu import Spec, Throttle, Worker
 from furu.config import _Config, _dump_worker_json_config, get_config
 from furu.dag import _add_to_dag
 from furu.execution.execution_coordinator import (
@@ -37,7 +37,6 @@ from furu.provenance import (
     SubmitContext,
     SubmitProvenance,
 )
-from furu.resources import ResourceFloor, ResourceRequest
 from furu.storage._layout import (
     compute_lock_path_in,
     execution_coordinator_log_path_in,
@@ -61,8 +60,12 @@ from furu.worker.protocol import (
     server_message_adapter,
 )
 
-ANY_RESOURCES = ResourceRequest()
-TEST_POOL_RESOURCES = (ResourceRequest(gpus=1, memory_gib=16),)
+CPU_POOL = LocalThreadWorkerBackend(worker=Worker())
+GPU_POOL = LocalThreadWorkerBackend(worker=Worker(gpus=1, memory_gib=16))
+
+
+def _pool(worker: Worker) -> LocalThreadWorkerBackend:
+    return LocalThreadWorkerBackend(worker=worker)
 
 
 def _submit_provenance() -> SubmitProvenance:
@@ -117,7 +120,7 @@ def _new_execution_coordinator(
         max_retries_per_object = get_config().worker.max_retries_per_object
     coordinator = ExecutionCoordinator(
         max_retries_per_object=max_retries_per_object,
-        pool_resources=TEST_POOL_RESOURCES,
+        backends={"cpu": CPU_POOL, "gpu": GPU_POOL},
         submit_provenance=_submit_provenance(),
     )
     _add_to_dag(coordinator, objs)
@@ -125,15 +128,19 @@ def _new_execution_coordinator(
 
 
 def _lease_job(
-    coordinator: ExecutionCoordinator, *, resources: ResourceRequest = ANY_RESOURCES
+    coordinator: ExecutionCoordinator,
+    *,
+    backend: LocalThreadWorkerBackend = CPU_POOL,
 ) -> Job | None:
-    return coordinator.lease_job(resources=resources, worker=f"test-worker-{uuid4()}")
+    return coordinator.lease_job(backend=backend, worker=f"test-worker-{uuid4()}")
 
 
 def _no_satisfiable_job(
-    coordinator: ExecutionCoordinator, *, resources: ResourceRequest = ANY_RESOURCES
+    coordinator: ExecutionCoordinator,
+    *,
+    backend: LocalThreadWorkerBackend = CPU_POOL,
 ) -> bool:
-    return coordinator.count_satisfiable_jobs(resources=resources, max_workers=1) == 0
+    return coordinator.count_satisfiable_jobs(backend=backend, max_workers=1) == 0
 
 
 @dataclass(slots=True)
@@ -196,7 +203,7 @@ def _connect_worker(
     *,
     auth_token: str | None = None,
     worker: str = "raw-test-worker",
-    resources: ResourceRequest | None = None,
+    pool: str = "cpu",
 ) -> ClientConnection:
     token = server.auth_token if auth_token is None else auth_token
     connection = connect(
@@ -207,7 +214,7 @@ def _connect_worker(
         HelloMessage(
             worker=worker,
             backend="test",
-            resources=resources or ResourceRequest(),
+            pool=pool,
         ).model_dump_json()
     )
     return connection
@@ -250,7 +257,7 @@ def _wait_until(condition: Callable[[], bool], *, timeout: float = 10.0) -> None
         time.sleep(0.01)
 
 
-def _complete_one_job_over_ws(server_url: str, auth_token: str) -> None:
+def _complete_one_job_over_ws(server_url: str, auth_token: str, pool: str) -> None:
     connection = connect(
         server_url,
         additional_headers={
@@ -262,7 +269,7 @@ def _complete_one_job_over_ws(server_url: str, auth_token: str) -> None:
             HelloMessage(
                 worker="recording-worker",
                 backend="test",
-                resources=ResourceRequest(),
+                pool=pool,
             ).model_dump_json()
         )
         while True:
@@ -327,7 +334,7 @@ class BatchedCoordinatorLeaf(furu.Spec[int]):
     group: str = "g"
     cap: int = 10
 
-    def batch_key(self) -> tuple[str, int]:
+    def batch_key(self, worker: furu.Worker) -> tuple[str, int]:
         return (self.group, self.cap)
 
     @furu.batched(batch_key)
@@ -338,16 +345,27 @@ class BatchedCoordinatorLeaf(furu.Spec[int]):
 class BatchSizeCoordinatorLeaf(furu.Spec[int]):
     value: int
 
-    @furu.batched(lambda _: (None, 10))
+    @furu.batched(lambda _, __: (None, 10))
     def create(objs: list["BatchSizeCoordinatorLeaf"]) -> list[int]:
         return [len(objs)] * len(objs)
+
+
+class GpuBatchedLeaf(furu.Spec[int]):
+    value: int
+
+    def runs_on(self, worker: Worker) -> bool:
+        return worker.gpus in (1, 8)
+
+    @furu.batched(lambda _, worker: (None, worker.gpus))
+    def create(objs: list["GpuBatchedLeaf"]) -> list[int]:
+        return [obj.value for obj in objs]
 
 
 class ThrottledBatchedCoordinatorLeaf(furu.Spec[int]):
     value: int
     throttle = Throttle(max_running=2)
 
-    def batch_key(self) -> tuple[None, int]:
+    def batch_key(self, worker: furu.Worker) -> tuple[None, int]:
         return (None, 3)
 
     @furu.batched(batch_key)
@@ -409,7 +427,7 @@ def test_execution_coordinator_job_result_completed_moves_dependents_to_ready() 
     parent = ExecutionCoordinatorParent(child=leaf)
     coordinator = _new_execution_coordinator([parent])
 
-    job = coordinator.lease_job(resources=ANY_RESOURCES, worker="test-worker")
+    job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
     assert isinstance(job, Job)
     assert set(coordinator.running) == {leaf.object_id}
     running_job = coordinator.running[leaf.object_id]
@@ -445,7 +463,7 @@ def test_execution_coordinator_job_result_blocked_discovers_lazy_dependency_and_
     dependency = ExecutionCoordinatorLeaf(value=2)
     coordinator = _new_execution_coordinator([parent])
 
-    parent_job = coordinator.lease_job(resources=ANY_RESOURCES, worker="test-worker")
+    parent_job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
     assert isinstance(parent_job, Job)
 
     coordinator.job_result(
@@ -456,9 +474,7 @@ def test_execution_coordinator_job_result_blocked_discovers_lazy_dependency_and_
     assert set(coordinator.ready) == {dependency.object_id}
     assert set(coordinator.blocked) == {parent.object_id}
 
-    dependency_job = coordinator.lease_job(
-        resources=ANY_RESOURCES, worker="test-worker"
-    )
+    dependency_job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
     assert isinstance(dependency_job, Job)
     coordinator.job_result(dependency.object_id, JobCompletedResult())
 
@@ -474,7 +490,7 @@ def test_execution_coordinator_job_result_blocked_ignores_completed_lazy_depende
     dependency.create()
     coordinator = _new_execution_coordinator([parent])
 
-    parent_job = coordinator.lease_job(resources=ANY_RESOURCES, worker="test-worker")
+    parent_job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
     assert isinstance(parent_job, Job)
 
     coordinator.job_result(
@@ -497,7 +513,7 @@ def test_execution_coordinator_job_result_blocked_discovers_multiple_lazy_depend
     ]
     coordinator = _new_execution_coordinator([parent])
 
-    parent_job = coordinator.lease_job(resources=ANY_RESOURCES, worker="test-worker")
+    parent_job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
     assert isinstance(parent_job, Job)
 
     coordinator.job_result(
@@ -530,9 +546,7 @@ def test_execution_coordinator_re_leases_blocked_job_after_dependency_completes(
     dependency = ExecutionCoordinatorLeaf(value=2)
     coordinator = _new_execution_coordinator([parent])
 
-    first_parent_job = coordinator.lease_job(
-        resources=ANY_RESOURCES, worker="test-worker"
-    )
+    first_parent_job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
     assert isinstance(first_parent_job, Job)
 
     coordinator.job_result(
@@ -540,15 +554,11 @@ def test_execution_coordinator_re_leases_blocked_job_after_dependency_completes(
         JobBlockedResult(dependencies=[ArtifactSpec.from_furu(dependency)]),
     )
 
-    dependency_job = coordinator.lease_job(
-        resources=ANY_RESOURCES, worker="test-worker"
-    )
+    dependency_job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
     assert isinstance(dependency_job, Job)
     coordinator.job_result(dependency.object_id, JobCompletedResult())
 
-    second_parent_job = coordinator.lease_job(
-        resources=ANY_RESOURCES, worker="test-worker"
-    )
+    second_parent_job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
     assert isinstance(second_parent_job, Job)
     assert _artifact(second_parent_job).object_id == parent.object_id
 
@@ -559,7 +569,7 @@ def test_execution_coordinator_re_leases_blocked_job_after_dependency_completes(
 def test_execution_coordinator_job_result_failed_finishes_with_error() -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
     coordinator = _new_execution_coordinator([leaf], max_retries_per_object=0)
-    job = coordinator.lease_job(resources=ANY_RESOURCES, worker="test-worker")
+    job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
     assert isinstance(job, Job)
 
     coordinator.job_result(leaf.object_id, JobFailedResult(error="boom"))
@@ -588,7 +598,7 @@ def test_execution_coordinator_job_result_failed_retries_before_finishing(
     leaf = ExecutionCoordinatorLeaf(value=1)
     coordinator = _new_execution_coordinator([leaf], max_retries_per_object=2)
 
-    first_job = coordinator.lease_job(resources=ANY_RESOURCES, worker="test-worker")
+    first_job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
     assert isinstance(first_job, Job)
     with _captured_furu_logs(caplog):
         coordinator.job_result(leaf.object_id, JobFailedResult(error="boom 1"))
@@ -600,7 +610,7 @@ def test_execution_coordinator_job_result_failed_retries_before_finishing(
     assert set(coordinator.ready) == {leaf.object_id}
     assert not coordinator.done.is_set()
 
-    second_job = coordinator.lease_job(resources=ANY_RESOURCES, worker="test-worker")
+    second_job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
     assert isinstance(second_job, Job)
     with _captured_furu_logs(caplog):
         coordinator.job_result(leaf.object_id, JobFailedResult(error="boom 2"))
@@ -612,7 +622,7 @@ def test_execution_coordinator_job_result_failed_retries_before_finishing(
     assert set(coordinator.ready) == {leaf.object_id}
     assert not coordinator.done.is_set()
 
-    third_job = coordinator.lease_job(resources=ANY_RESOURCES, worker="test-worker")
+    third_job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
     assert isinstance(third_job, Job)
     coordinator.job_result(leaf.object_id, JobFailedResult(error="boom 3"))
 
@@ -642,14 +652,14 @@ def test_execution_coordinator_job_result_failed_retry_can_later_complete() -> N
     leaf = ExecutionCoordinatorLeaf(value=1)
     coordinator = _new_execution_coordinator([leaf], max_retries_per_object=1)
 
-    first_job = coordinator.lease_job(resources=ANY_RESOURCES, worker="test-worker")
+    first_job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
     assert isinstance(first_job, Job)
     coordinator.job_result(leaf.object_id, JobFailedResult(error="boom"))
 
     failed_job = coordinator.failed[leaf.object_id]
     assert failed_job.failed_attempts == 1
 
-    retry_job = coordinator.lease_job(resources=ANY_RESOURCES, worker="test-worker")
+    retry_job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
     assert isinstance(retry_job, Job)
     coordinator.job_result(leaf.object_id, JobCompletedResult())
 
@@ -678,8 +688,8 @@ def test_execution_coordinator_run_retries_failed_worker_result(
 class GpuLeaf(Spec[int]):
     value: int
 
-    def metadata(self) -> Metadata:
-        return Metadata(requires=Requires(gpus=at_least(1)))
+    def runs_on(self, worker: Worker) -> bool:
+        return worker.gpus >= 1
 
     def create(self) -> int:
         return self.value
@@ -695,8 +705,8 @@ class CpuOnlyLeaf(Spec[int]):
 class MemoryLeaf(Spec[int]):
     value: int
 
-    def metadata(self) -> Metadata:
-        return Metadata(requires=Requires(memory=GiB(8)))
+    def runs_on(self, worker: Worker) -> bool:
+        return worker.memory_gib >= 8
 
     def create(self) -> int:
         return self.value
@@ -713,8 +723,8 @@ class DynamicGpuAfterSeed(Spec[int]):
     parent: DynamicCpuSeed
     value: int
 
-    def metadata(self) -> Metadata:
-        return Metadata(requires=Requires(gpus=at_least(1)))
+    def runs_on(self, worker: Worker) -> bool:
+        return worker.gpus >= 1
 
     def create(self) -> int:
         return self.parent.create() + self.value
@@ -732,8 +742,8 @@ class DynamicGpuAfterCpu(Spec[int]):
     parent: DynamicCpuAfterGpu
     value: int
 
-    def metadata(self) -> Metadata:
-        return Metadata(requires=Requires(gpus=at_least(1)))
+    def runs_on(self, worker: Worker) -> bool:
+        return worker.gpus >= 1
 
     def create(self) -> int:
         return self.parent.create() + self.value
@@ -750,23 +760,14 @@ def test_count_satisfiable_jobs_caps_at_max_workers_and_filters_by_requirements(
         ]
     )
 
-    assert (
-        coordinator.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=10)
-        == 2
-    )
-    assert (
-        coordinator.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=1)
-        == 1
-    )
-    assert (
-        coordinator.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=0)
-        == 0
-    )
+    assert coordinator.count_satisfiable_jobs(backend=CPU_POOL, max_workers=10) == 2
+    assert coordinator.count_satisfiable_jobs(backend=CPU_POOL, max_workers=1) == 1
+    assert coordinator.count_satisfiable_jobs(backend=CPU_POOL, max_workers=0) == 0
     with pytest.raises(ValueError):
-        coordinator.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=-1)
+        coordinator.count_satisfiable_jobs(backend=CPU_POOL, max_workers=-1)
     assert (
         coordinator.count_satisfiable_jobs(
-            resources=ResourceRequest(gpus=1), max_workers=10
+            backend=_pool(Worker(gpus=1)), max_workers=10
         )
         == 3
     )
@@ -774,17 +775,11 @@ def test_count_satisfiable_jobs_caps_at_max_workers_and_filters_by_requirements(
 
 def test_count_satisfiable_jobs_returns_zero_when_coordinator_is_done() -> None:
     coordinator = _new_execution_coordinator([ExecutionCoordinatorLeaf(value=1)])
-    assert (
-        coordinator.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=10)
-        == 1
-    )
+    assert coordinator.count_satisfiable_jobs(backend=CPU_POOL, max_workers=10) == 1
 
     coordinator.fail("execution interrupted")
 
-    assert (
-        coordinator.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=10)
-        == 0
-    )
+    assert coordinator.count_satisfiable_jobs(backend=CPU_POOL, max_workers=10) == 0
 
 
 @pytest.mark.parametrize(
@@ -813,9 +808,7 @@ def test_only_discovered_external_computations_are_polled(
             _captured_furu_logs(caplog),
         ):
             assert (
-                coordinator.count_satisfiable_jobs(
-                    resources=ResourceRequest(), max_workers=10
-                )
+                coordinator.count_satisfiable_jobs(backend=CPU_POOL, max_workers=10)
                 == initial_demand
             )
             thread = threading.Thread(
@@ -829,9 +822,7 @@ def test_only_discovered_external_computations_are_polled(
                 )
             )
             assert (
-                coordinator.count_satisfiable_jobs(
-                    resources=ResourceRequest(), max_workers=10
-                )
+                coordinator.count_satisfiable_jobs(backend=CPU_POOL, max_workers=10)
                 == 0
             )
 
@@ -847,14 +838,11 @@ def test_worker_cap_limits_satisfiable_jobs_and_leases() -> None:
     uncapped = ExecutionCoordinatorLeaf(value=10)
     coordinator = _new_execution_coordinator([*limited, uncapped])
 
-    assert (
-        coordinator.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=10)
-        == 3
-    )
+    assert coordinator.count_satisfiable_jobs(backend=CPU_POOL, max_workers=10) == 3
 
-    first = _lease_job(coordinator, resources=ResourceRequest())
-    second = _lease_job(coordinator, resources=ResourceRequest())
-    third = _lease_job(coordinator, resources=ResourceRequest())
+    first = _lease_job(coordinator, backend=CPU_POOL)
+    second = _lease_job(coordinator, backend=CPU_POOL)
+    third = _lease_job(coordinator, backend=CPU_POOL)
 
     assert isinstance(first, Job)
     assert isinstance(second, Job)
@@ -863,14 +851,11 @@ def test_worker_cap_limits_satisfiable_jobs_and_leases() -> None:
     leased_limited_ids = {_artifact(first).object_id, _artifact(second).object_id}
     assert leased_limited_ids < limited_ids
     assert _artifact(third).object_id == uncapped.object_id
-    assert (
-        coordinator.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=10)
-        == 0
-    )
-    assert _no_satisfiable_job(coordinator, resources=ResourceRequest())
+    assert coordinator.count_satisfiable_jobs(backend=CPU_POOL, max_workers=10) == 0
+    assert _no_satisfiable_job(coordinator, backend=CPU_POOL)
 
     coordinator.job_result(_artifact(first).object_id, JobCompletedResult())
-    fourth = _lease_job(coordinator, resources=ResourceRequest())
+    fourth = _lease_job(coordinator, backend=CPU_POOL)
 
     assert isinstance(fourth, Job)
     assert _artifact(fourth).object_id in limited_ids - leased_limited_ids
@@ -930,6 +915,21 @@ def test_lease_job_chunks_batched_group_to_the_cap() -> None:
     assert coordinator.ready == {}
 
 
+def test_batch_cap_follows_the_leasing_worker() -> None:
+    objs = [GpuBatchedLeaf(value=value) for value in range(10)]
+    coordinator = _new_execution_coordinator(objs)
+    one_gpu, eight_gpus = _pool(Worker(gpus=1)), _pool(Worker(gpus=8))
+
+    assert coordinator.count_satisfiable_jobs(backend=one_gpu, max_workers=20) == 10
+    assert coordinator.count_satisfiable_jobs(backend=eight_gpus, max_workers=20) == 2
+    assert _no_satisfiable_job(coordinator, backend=_pool(Worker(gpus=4)))
+
+    big = _lease_job(coordinator, backend=eight_gpus)
+    small = _lease_job(coordinator, backend=one_gpu)
+    assert isinstance(big, Job) and len(big.artifacts) == 8
+    assert isinstance(small, Job) and len(small.artifacts) == 1
+
+
 def test_throttle_limits_concurrent_batches_not_members() -> None:
     objs = [ThrottledBatchedCoordinatorLeaf(value=value) for value in range(8)]
     coordinator = _new_execution_coordinator(objs)
@@ -951,18 +951,14 @@ def test_count_satisfiable_jobs_counts_throttled_batches() -> None:
     objs = [ThrottledBatchedCoordinatorLeaf(value=value) for value in range(9)]
     coordinator = _new_execution_coordinator(objs)
 
-    assert (
-        coordinator.count_satisfiable_jobs(resources=ANY_RESOURCES, max_workers=10) == 2
-    )
+    assert coordinator.count_satisfiable_jobs(backend=CPU_POOL, max_workers=10) == 2
 
 
 def test_count_satisfiable_jobs_counts_batched_groups() -> None:
     objs = [BatchedCoordinatorLeaf(value=value) for value in range(4)]
     coordinator = _new_execution_coordinator(objs)
 
-    assert (
-        coordinator.count_satisfiable_jobs(resources=ANY_RESOURCES, max_workers=10) == 1
-    )
+    assert coordinator.count_satisfiable_jobs(backend=CPU_POOL, max_workers=10) == 1
 
 
 def test_batched_group_failure_retries_each_member() -> None:
@@ -989,31 +985,25 @@ def test_worker_lost_requeues_running_lease_without_counting_failure() -> None:
     objs = [LimitedExecutionCoordinatorLeaf(value=value) for value in range(3)]
     coordinator = _new_execution_coordinator(objs)
 
-    first = coordinator.lease_job(resources=ResourceRequest(), worker="worker-1")
-    second = coordinator.lease_job(resources=ResourceRequest(), worker="worker-2")
+    first = coordinator.lease_job(backend=CPU_POOL, worker="worker-1")
+    second = coordinator.lease_job(backend=CPU_POOL, worker="worker-2")
 
     assert isinstance(first, Job)
     assert isinstance(second, Job)
-    assert (
-        coordinator.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=10)
-        == 0
-    )
+    assert coordinator.count_satisfiable_jobs(backend=CPU_POOL, max_workers=10) == 0
 
     coordinator.worker_lost("worker-1")
 
     assert set(coordinator.running) == {_artifact(second).object_id}
     assert _artifact(first).object_id in coordinator.ready
     assert coordinator.failed == {}
-    assert (
-        coordinator.count_satisfiable_jobs(resources=ResourceRequest(), max_workers=10)
-        == 1
-    )
+    assert coordinator.count_satisfiable_jobs(backend=CPU_POOL, max_workers=10) == 1
 
 
 def test_job_result_after_worker_lost_is_ignored() -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
     coordinator = _new_execution_coordinator([leaf])
-    job = coordinator.lease_job(resources=ResourceRequest(), worker="worker-1")
+    job = coordinator.lease_job(backend=CPU_POOL, worker="worker-1")
     assert isinstance(job, Job)
 
     coordinator.worker_lost("worker-1")
@@ -1029,13 +1019,13 @@ def test_lease_job_filters_by_worker_resources() -> None:
     gpu_leaf = GpuLeaf(value=2)
     coordinator = _new_execution_coordinator([cpu_leaf, gpu_leaf])
 
-    cpu_job = _lease_job(coordinator, resources=ResourceRequest(gpus=0))
+    cpu_job = _lease_job(coordinator, backend=CPU_POOL)
     assert isinstance(cpu_job, Job)
     assert _artifact(cpu_job).object_id == cpu_leaf.object_id
 
-    assert _no_satisfiable_job(coordinator, resources=ResourceRequest(gpus=0))
+    assert _no_satisfiable_job(coordinator, backend=CPU_POOL)
 
-    gpu_job = _lease_job(coordinator, resources=ResourceRequest(gpus=1))
+    gpu_job = _lease_job(coordinator, backend=_pool(Worker(gpus=1)))
     assert isinstance(gpu_job, Job)
     assert _artifact(gpu_job).object_id == gpu_leaf.object_id
 
@@ -1044,43 +1034,46 @@ def test_lease_job_filters_by_worker_memory_gib() -> None:
     memory_leaf = MemoryLeaf(value=1)
     coordinator = _new_execution_coordinator([memory_leaf])
 
-    assert _no_satisfiable_job(coordinator, resources=ResourceRequest(memory_gib=7))
+    assert _no_satisfiable_job(coordinator, backend=_pool(Worker(memory_gib=7)))
 
     memory_job = coordinator.lease_job(
-        resources=ResourceRequest(memory_gib=8), worker="test-worker"
+        backend=_pool(Worker(memory_gib=8)), worker="test-worker"
     )
     assert isinstance(memory_job, Job)
     assert _artifact(memory_job).object_id == memory_leaf.object_id
 
 
-def test_lease_job_honors_worker_reserve_for() -> None:
+def test_lease_job_honors_pool_accepts() -> None:
     cpu_leaf = CpuOnlyLeaf(value=1)
     memory_leaf = MemoryLeaf(value=2)
     coordinator = _new_execution_coordinator([cpu_leaf, memory_leaf])
-    reserved = ResourceRequest(memory_gib=16, reserve_for=ResourceFloor(memory_gib=8))
+    reserved = LocalThreadWorkerBackend(
+        worker=Worker(memory_gib=16),
+        accepts=lambda spec: isinstance(spec, MemoryLeaf),
+    )
 
-    memory_job = _lease_job(coordinator, resources=reserved)
+    memory_job = _lease_job(coordinator, backend=reserved)
     assert isinstance(memory_job, Job)
     assert _artifact(memory_job).object_id == memory_leaf.object_id
-    assert _no_satisfiable_job(coordinator, resources=reserved)
+    assert _no_satisfiable_job(coordinator, backend=reserved)
 
-    cpu_job = _lease_job(coordinator, resources=ResourceRequest(memory_gib=16))
+    cpu_job = _lease_job(coordinator, backend=_pool(Worker(memory_gib=16)))
     assert isinstance(cpu_job, Job)
     assert _artifact(cpu_job).object_id == cpu_leaf.object_id
 
 
 def test_execution_coordinator_run_fails_fast_when_no_pool_can_run_a_job() -> None:
-    with pytest.raises(RuntimeError, match=r"no worker pool can run.*worker resources"):
+    with pytest.raises(RuntimeError, match=r"no worker pool can run.*workers: Worker"):
         ExecutionCoordinator.run(
             [MemoryLeaf(value=uuid4().int)],
-            worker_backends=(LocalThreadWorkerBackend(),),
+            worker_backends=(LocalThreadWorkerBackend(worker=Worker()),),
         )
 
 
 def test_execution_coordinator_fails_when_no_pool_can_run_a_lazy_dependency() -> None:
     parent = ExecutionCoordinatorLazyParent(value=uuid4().int)
     coordinator = _new_execution_coordinator([parent])
-    coordinator.pool_resources = (ResourceRequest(),)
+    coordinator.backends = {"cpu": CPU_POOL}
     assert isinstance(_lease_job(coordinator), Job)
 
     coordinator.job_result(
@@ -1102,11 +1095,10 @@ def test_execution_coordinator_splits_work_across_open_and_reserved_pools() -> N
     ExecutionCoordinator.run(
         [cpu_leaf, memory_leaf],
         worker_backends=(
-            LocalThreadWorkerBackend(),
+            LocalThreadWorkerBackend(worker=Worker()),
             LocalThreadWorkerBackend(
-                resource_request=ResourceRequest(
-                    memory_gib=16, reserve_for=ResourceFloor(memory_gib=8)
-                )
+                worker=Worker(memory_gib=16),
+                accepts=lambda spec: isinstance(spec, MemoryLeaf),
             ),
         ),
     )
@@ -1131,11 +1123,11 @@ def test_execution_coordinator_run_completes_later_resource_stages_on_local_work
         worker_backends=(
             LocalThreadWorkerBackend(
                 max_workers=1,
-                resource_request=ResourceRequest(gpus=0),
+                worker=Worker(gpus=0),
             ),
             LocalThreadWorkerBackend(
                 max_workers=3,
-                resource_request=ResourceRequest(gpus=1),
+                worker=Worker(gpus=1),
             ),
         ),
     )
@@ -1153,7 +1145,7 @@ def test_execution_coordinator_run_fails_when_local_worker_crashes(
     def crashing_worker_loop(
         *,
         coordinator: str | Path,
-        resource_request: ResourceRequest,
+        pool: str,
         idle_timeout: float | None,
         max_failures: int,
         component: str,
@@ -1178,8 +1170,9 @@ def test_execution_coordinator_run_fails_when_local_worker_crashes(
 def test_execution_coordinator_run_uses_worker_backend() -> None:
     class RecordingBackend:
         execution_coordinator_listen_host = "0.0.0.0"
-        resource_request = ResourceRequest()
-        pool_key = "test-pool"
+        worker = Worker()
+        accepts = None
+        pool_key = CPU_POOL.pool_key
 
         def __init__(self) -> None:
             self.bound_ports: list[int] = []
@@ -1198,10 +1191,7 @@ def test_execution_coordinator_run_uses_worker_backend() -> None:
             self.bound_ports.append(bound_port)
             self.auth_tokens.append(auth_token)
             self.provenances.append(coordinator.submit_provenance)
-            return LocalThreadWorkerBackend(
-                max_workers=1,
-                resource_request=ResourceRequest(),
-            ).start_pool(
+            return CPU_POOL.start_pool(
                 coordinator=coordinator,
                 bound_port=bound_port,
                 auth_token=auth_token,
@@ -1229,8 +1219,9 @@ def test_execution_coordinator_run_uses_worker_backend() -> None:
 def test_execution_coordinator_run_passes_executor_dir_to_worker_backend() -> None:
     class RecordingBackend:
         execution_coordinator_listen_host = "127.0.0.1"
-        resource_request = ResourceRequest()
-        pool_key = "test-pool"
+        worker = Worker()
+        accepts = None
+        pool_key = CPU_POOL.pool_key
 
         def __init__(self) -> None:
             self.executor_dirs: list[Path] = []
@@ -1245,10 +1236,7 @@ def test_execution_coordinator_run_passes_executor_dir_to_worker_backend() -> No
             handoff: PoolHandoff,
         ) -> LocalThreadWorkerPool:
             self.executor_dirs.append(executor_dir)
-            return LocalThreadWorkerBackend(
-                max_workers=1,
-                resource_request=ResourceRequest(),
-            ).start_pool(
+            return CPU_POOL.start_pool(
                 coordinator=coordinator,
                 bound_port=bound_port,
                 auth_token=auth_token,
@@ -1310,7 +1298,8 @@ def test_execution_coordinator_run_returns_when_all_objects_are_already_complete
 ):
     class UnexpectedBackend:
         execution_coordinator_listen_host = "127.0.0.1"
-        resource_request = ResourceRequest()
+        worker = Worker()
+        accepts = None
         pool_key = "test-pool"
 
         def start_pool(
@@ -1360,7 +1349,8 @@ def test_execution_coordinator_run_starts_backend_pool_and_stops_and_joins_when_
 
     class RecordingBackend:
         execution_coordinator_listen_host = "127.0.0.1"
-        resource_request = ResourceRequest()
+        worker = Worker()
+        accepts = None
         pool_key = "test-pool"
 
         def __init__(self, pool: RecordingPool) -> None:
@@ -1380,7 +1370,7 @@ def test_execution_coordinator_run_starts_backend_pool_and_stops_and_joins_when_
 
             def complete_job() -> None:
                 try:
-                    _complete_one_job_over_ws(server_url, auth_token)
+                    _complete_one_job_over_ws(server_url, auth_token, self.pool_key)
                 except BaseException as exc:
                     coordinator.fail(f"recording backend failed: {exc!r}")
 
@@ -1424,7 +1414,8 @@ def test_execution_coordinator_run_stops_backend_pool_when_interrupted() -> None
 
     class RecordingBackend:
         execution_coordinator_listen_host = "127.0.0.1"
-        resource_request = ResourceRequest()
+        worker = Worker()
+        accepts = None
         pool_key = "test-pool"
 
         def __init__(self, pool: RecordingPool) -> None:
@@ -1470,7 +1461,8 @@ def test_execution_coordinator_run_uses_worker_backend_execution_coordinator_lis
 
     class RecordingBackend:
         execution_coordinator_listen_host = "127.0.0.1"
-        resource_request = ResourceRequest()
+        worker = Worker()
+        accepts = None
         pool_key = "test-pool"
 
         def __init__(self) -> None:
@@ -1491,7 +1483,7 @@ def test_execution_coordinator_run_uses_worker_backend_execution_coordinator_lis
 
             def complete_job() -> None:
                 try:
-                    _complete_one_job_over_ws(server_url, auth_token)
+                    _complete_one_job_over_ws(server_url, auth_token, self.pool_key)
                 except BaseException as exc:
                     coordinator.fail(f"recording backend failed: {exc!r}")
 
@@ -1558,7 +1550,7 @@ def test_execution_coordinator_server_accepts_token_in_url() -> None:
                 HelloMessage(
                     worker="url-auth-worker",
                     backend="test",
-                    resources=ResourceRequest(),
+                    pool="cpu",
                 ).model_dump_json()
             )
             Job.model_validate_json(connection.recv(timeout=5))
@@ -1646,7 +1638,7 @@ def test_execution_coordinator_server_shutdown_wakes_idle_worker_handlers() -> N
     ) as server:
         # No leasable job for a CPU-only worker, so its handler waits inside
         # lease_job without touching the socket.
-        connection = _connect_worker(server, resources=ResourceRequest(gpus=0))
+        connection = _connect_worker(server, pool="cpu")
 
     assert time.monotonic() - started < 5
     assert coordinator.finish_error is not None
@@ -1666,9 +1658,7 @@ def test_local_pool_key_distinguishes_resources_not_worker_count() -> None:
     assert LocalThreadWorkerBackend(max_workers=2).pool_key == backend.pool_key
     assert LocalThreadWorkerBackend(max_workers=3).pool_key == backend.pool_key
     assert (
-        LocalThreadWorkerBackend(
-            max_workers=2, resource_request=ResourceRequest(gpus=1)
-        ).pool_key
+        LocalThreadWorkerBackend(max_workers=2, worker=Worker(gpus=1)).pool_key
         != backend.pool_key
     )
 
@@ -1684,8 +1674,9 @@ def test_execution_coordinator_run_rejects_identical_worker_backends() -> None:
 def test_execution_coordinator_run_registers_pools_by_key() -> None:
     class RecordingBackend:
         execution_coordinator_listen_host = "127.0.0.1"
-        resource_request = ResourceRequest()
-        pool_key = "recording"
+        worker = Worker()
+        accepts = None
+        pool_key = CPU_POOL.pool_key
 
         def __init__(self) -> None:
             self.coordinators: list[ExecutionCoordinator] = []
@@ -1701,7 +1692,7 @@ def test_execution_coordinator_run_registers_pools_by_key() -> None:
             handoff: PoolHandoff,
         ) -> LocalThreadWorkerPool:
             self.coordinators.append(coordinator)
-            pool = LocalThreadWorkerBackend().start_pool(
+            pool = CPU_POOL.start_pool(
                 coordinator=coordinator,
                 bound_port=bound_port,
                 auth_token=auth_token,
@@ -1718,7 +1709,7 @@ def test_execution_coordinator_run_registers_pools_by_key() -> None:
     )
 
     (coordinator,) = backend.coordinators
-    assert coordinator.pools == {"recording": backend.pools[0]}
+    assert coordinator.pools == {CPU_POOL.pool_key: backend.pools[0]}
 
 
 def test_execution_coordinator_run_rejects_empty_worker_backends() -> None:
@@ -1735,8 +1726,12 @@ def test_execution_coordinator_run_rejects_conflicting_execution_coordinator_lis
         ExecutionCoordinator.run(
             [ExecutionCoordinatorLeaf(value=12)],
             worker_backends=(
-                LocalThreadWorkerBackend(execution_coordinator_listen_host="127.0.0.1"),
-                LocalThreadWorkerBackend(execution_coordinator_listen_host="0.0.0.0"),
+                LocalThreadWorkerBackend(
+                    worker=Worker(), execution_coordinator_listen_host="127.0.0.1"
+                ),
+                LocalThreadWorkerBackend(
+                    worker=Worker(gpus=1), execution_coordinator_listen_host="0.0.0.0"
+                ),
             ),
         )
 
@@ -1764,7 +1759,7 @@ def test_worker_loop_raises_when_server_is_unavailable(tmp_path: Path) -> None:
     with pytest.raises(OSError):
         worker_loop(
             coordinator="ws://127.0.0.1:1",
-            resource_request=ResourceRequest(),
+            pool="cpu",
             idle_timeout=get_config().worker.idle_timeout_seconds,
             max_failures=get_config().worker.max_failures_per_worker,
             component="test-worker",
@@ -1778,7 +1773,7 @@ def test_worker_loop_exits_after_idle_timeout(tmp_path: Path) -> None:
     with _scripted_worker_server([], hold_open=True) as server:
         worker_loop(
             coordinator=server.server_url,
-            resource_request=ResourceRequest(),
+            pool="cpu",
             idle_timeout=0.05,
             max_failures=get_config().worker.max_failures_per_worker,
             component="test-worker",
@@ -1806,7 +1801,7 @@ def test_worker_loop_exits_non_zero_after_consecutive_failures(tmp_path: Path) -
     ):
         worker_loop(
             coordinator=server.server_url,
-            resource_request=ResourceRequest(),
+            pool="cpu",
             idle_timeout=get_config().worker.idle_timeout_seconds,
             max_failures=2,
             component="test-worker",
@@ -1861,7 +1856,7 @@ def test_worker_loop_logs_received_task_and_result(
     with _scripted_worker_server([job]) as server, _captured_furu_logs(caplog):
         worker_loop(
             coordinator=server.server_url,
-            resource_request=ResourceRequest(),
+            pool="cpu",
             idle_timeout=get_config().worker.idle_timeout_seconds,
             max_failures=get_config().worker.max_failures_per_worker,
             component="test-worker",
@@ -1901,7 +1896,7 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
         with pytest.raises(KeyboardInterrupt):
             worker_loop(
                 coordinator=server.server_url,
-                resource_request=ResourceRequest(gpus=1),
+                pool="gpu",
                 idle_timeout=get_config().worker.idle_timeout_seconds,
                 max_failures=get_config().worker.max_failures_per_worker,
                 component="test-worker",
@@ -1912,7 +1907,7 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
 
         assert server.results == []
         (hello,) = server.hellos
-        assert hello.resources == ResourceRequest(gpus=1)
+        assert hello.pool == "gpu"
         assert hello.worker == "test-worker"
         assert hello.backend == "test"
 
@@ -1928,7 +1923,7 @@ def test_execution_coordinator_fail_sets_finish_error_and_done() -> None:
 
 
 def test_hello_message_running_defaults_to_empty() -> None:
-    hello = HelloMessage(worker="w", backend="test", resources=ResourceRequest())
+    hello = HelloMessage(worker="w", backend="test", pool="cpu")
 
     assert hello.running == []
     assert HelloMessage.model_validate_json(hello.model_dump_json()) == hello
@@ -1961,7 +1956,7 @@ def test_hello_running_adopts_job_this_run_still_wants() -> None:
                 HelloMessage(
                     worker="inherited-worker",
                     backend="test",
-                    resources=ResourceRequest(),
+                    pool="cpu",
                     running=[ArtifactSpec.from_furu(leaf)],
                 ).model_dump_json()
             )
@@ -2001,7 +1996,7 @@ def test_hello_running_cancels_job_not_in_this_run() -> None:
                 HelloMessage(
                     worker="inherited-worker",
                     backend="test",
-                    resources=ResourceRequest(),
+                    pool="cpu",
                     running=[ArtifactSpec.from_furu(stranger)],
                 ).model_dump_json()
             )
@@ -2042,7 +2037,7 @@ def test_worker_loop_cancel_kills_running_job(tmp_path: Path) -> None:
     with _serve(handler) as url:
         worker_loop(
             coordinator=url,
-            resource_request=ResourceRequest(),
+            pool="cpu",
             idle_timeout=5,
             max_failures=get_config().worker.max_failures_per_worker,
             component="test-worker",
@@ -2085,7 +2080,7 @@ def test_worker_loop_reconnects_when_worker_config_url_changes(
             _write_worker_config(config_file, url=old_url)
             worker_loop(
                 coordinator=config_file,
-                resource_request=ResourceRequest(),
+                pool="cpu",
                 idle_timeout=5,
                 max_failures=get_config().worker.max_failures_per_worker,
                 component="test-worker",
@@ -2125,7 +2120,7 @@ def test_worker_loop_reads_unchanged_worker_config_only_after_disconnect(
         _write_worker_config(config_file, url=url)
         worker_loop(
             coordinator=config_file,
-            resource_request=ResourceRequest(),
+            pool="cpu",
             idle_timeout=5,
             max_failures=get_config().worker.max_failures_per_worker,
             component="test-worker",
@@ -2151,7 +2146,7 @@ def test_worker_loop_fails_when_worker_config_disappears(tmp_path: Path) -> None
         _write_worker_config(config_file, url=url)
         worker_loop(
             coordinator=config_file,
-            resource_request=ResourceRequest(),
+            pool="cpu",
             idle_timeout=5,
             max_failures=get_config().worker.max_failures_per_worker,
             component="test-worker",
@@ -2187,7 +2182,7 @@ def test_worker_loop_carries_running_job_to_new_coordinator(tmp_path: Path) -> N
             _write_worker_config(config_file, url=old_url)
             worker_loop(
                 coordinator=config_file,
-                resource_request=ResourceRequest(),
+                pool="cpu",
                 idle_timeout=5,
                 max_failures=get_config().worker.max_failures_per_worker,
                 component="test-worker",
@@ -2244,7 +2239,7 @@ def test_worker_loop_exits_when_worker_config_changes(
             )
             worker_loop(
                 coordinator=config_file,
-                resource_request=ResourceRequest(),
+                pool="cpu",
                 idle_timeout=5,
                 max_failures=get_config().worker.max_failures_per_worker,
                 component="test-worker",
@@ -2271,7 +2266,7 @@ def test_worker_loop_kills_job_when_coordinator_disappears(
     with _serve(handler) as url, _captured_furu_logs(caplog):
         worker_loop(
             coordinator=url,
-            resource_request=ResourceRequest(),
+            pool="cpu",
             idle_timeout=5,
             max_failures=get_config().worker.max_failures_per_worker,
             component="test-worker",
@@ -2318,7 +2313,7 @@ def test_worker_loop_keeps_job_while_waiting_for_moved_coordinator(
         with _captured_furu_logs(caplog):
             worker_loop(
                 coordinator=config_file,
-                resource_request=ResourceRequest(),
+                pool="cpu",
                 idle_timeout=5,
                 max_failures=get_config().worker.max_failures_per_worker,
                 component="test-worker",
@@ -2350,7 +2345,7 @@ def test_worker_loop_kills_job_when_worker_config_never_changes(
         started = time.monotonic()
         worker_loop(
             coordinator=config_file,
-            resource_request=ResourceRequest(),
+            pool="cpu",
             idle_timeout=5,
             max_failures=get_config().worker.max_failures_per_worker,
             component="test-worker",
@@ -2395,7 +2390,7 @@ def test_worker_loop_ignores_truncated_worker_config_while_waiting(
             _write_worker_config(config_file, url=old_url)
             worker_loop(
                 coordinator=config_file,
-                resource_request=ResourceRequest(),
+                pool="cpu",
                 idle_timeout=5,
                 max_failures=get_config().worker.max_failures_per_worker,
                 component="test-worker",
@@ -2637,7 +2632,8 @@ def test_resolve_takeover_matches_unique_prefix() -> None:
 def test_execution_coordinator_run_inherits_pools_on_takeover() -> None:
     class InertBackend:
         execution_coordinator_listen_host = "127.0.0.1"
-        resource_request = ResourceRequest(gpus=1)
+        worker = Worker(gpus=1)
+        accepts = None
         pool_key = "inert"
 
         def __init__(self) -> None:

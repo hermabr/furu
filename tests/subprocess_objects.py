@@ -59,7 +59,7 @@ class OtherSubprocessEnvLeaf(Spec[str]):
 class SubprocessBatchLeaf(Spec[str]):
     value: int
 
-    @batched(lambda _: (None, 8))
+    @batched(lambda _, __: (None, 8))
     def create(objs: list[SubprocessBatchLeaf]) -> list[str]:
         return [f"{os.getpid()}:{obj.value}" for obj in objs]
 

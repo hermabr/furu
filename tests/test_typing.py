@@ -29,7 +29,7 @@ class TypingParent(furu.Spec[str]):
 class TypingBatched(furu.Spec[str]):
     key: int
 
-    def batch_key(self) -> tuple[int, int]:
+    def batch_key(self, worker: furu.Worker) -> tuple[int, int]:
         return (self.key % 2, 1_000)
 
     @furu.batched(batch_key)
