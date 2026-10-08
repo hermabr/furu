@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
+    from furu.core import Spec
     from furu.execution.execution_coordinator import ExecutionCoordinator
-    from furu.resources import ResourceRequest
+    from furu.resources import Worker
     from furu.worker.protocol import PoolHandoff
 
 
@@ -14,8 +16,13 @@ class WorkerBackend(Protocol):
     def execution_coordinator_listen_host(self) -> str: ...
 
     @property
-    def resource_request(self) -> ResourceRequest:
-        """The resources presented by every worker in this pool."""
+    def worker(self) -> Worker:
+        """What every worker in this pool offers."""
+        ...
+
+    @property
+    def accepts(self) -> Callable[[Spec], bool] | None:
+        """Which specs this pool's workers take; None takes every spec."""
         ...
 
     @property
@@ -36,3 +43,9 @@ class WorkerPool(Protocol):
     def stop(self, *, timeout: float) -> None: ...
 
     def handoff(self) -> PoolHandoff: ...
+
+
+def can_run(backend: WorkerBackend, spec: Spec) -> bool:
+    return (backend.accepts is None or backend.accepts(spec)) and spec.runs_on(
+        backend.worker
+    )

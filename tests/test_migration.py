@@ -1138,7 +1138,7 @@ def test_migrations_must_be_a_tuple_of_steps() -> None:
         class _ListMigrations(Spec[int]):
             n: int
 
-            migrations = [Renamed("m", to="n")]  # noqa: RUF012
+            migrations = [Renamed("m", to="n")]  # noqa: RUF012  # ty: ignore[invalid-assignment]
 
             def create(self) -> int:
                 return 0

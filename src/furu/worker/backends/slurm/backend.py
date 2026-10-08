@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import dataclasses
 import os
 import secrets
 import shlex
 import socket
 import subprocess
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,7 +17,7 @@ from furu.config import (
     _dump_worker_json_config,
     get_config,
 )
-from furu.resources import ResourceFloor, ResourceRequest, resource_request_adapter
+from furu.resources import Worker
 from furu.snapshot import CodeLocation
 from furu.utils import (
     _hash_dict_deterministically,
@@ -29,6 +29,7 @@ from furu.worker.backends.slurm.resources import SlurmResources
 from furu.worker.protocol import PoolHandoff, coordinator_url
 
 if TYPE_CHECKING:
+    from furu.core import Spec
     from furu.execution.execution_coordinator import ExecutionCoordinator
 
 type SlurmExport = Literal["NIL", "ALL"] | tuple[str, ...] | None
@@ -55,7 +56,8 @@ class SlurmWorkerBackend:
     pre_worker_commands: tuple[str, ...] = ()
     export: SlurmExport = None
     use_job_arrays: bool = True
-    reserve_for: ResourceFloor = field(default_factory=ResourceFloor)
+    labels: tuple[str, ...] = ()
+    accepts: Callable[[Spec], bool] | None = None
 
     def __post_init__(self) -> None:
         if not get_config().provenance.snapshot:
@@ -65,12 +67,12 @@ class SlurmWorkerBackend:
             )
 
     @property
-    def resource_request(self) -> ResourceRequest:
-        return ResourceRequest(
+    def worker(self) -> Worker:
+        return Worker(
             cpus=self.resources.cpus_per_worker,
             gpus=self.resources.gpus,
             memory_gib=self.resources.memory_gib,
-            reserve_for=self.reserve_for,
+            labels=self.labels,
         )
 
     @property
@@ -79,7 +81,7 @@ class SlurmWorkerBackend:
         return "slurm:" + _hash_dict_deterministically(
             {
                 "sbatch": self.resources.to_sbatch_args(),
-                "reserve_for": dataclasses.asdict(self.reserve_for),
+                "labels": list(self.labels),
                 "pre_worker_commands": list(self.pre_worker_commands),
                 "export": export,
                 "use_job_arrays": self.use_job_arrays,
@@ -134,8 +136,6 @@ class SlurmWorkerBackend:
         worker_files = {config_file, *inherited_files}
         job_ids = list(handoff.job_ids)
 
-        resource_request = self.resource_request
-        resources_json = resource_request_adapter.dump_json(resource_request).decode()
         pre_worker_script = "".join(
             f"{command}\n" for command in self.pre_worker_commands
         )
@@ -175,7 +175,7 @@ class SlurmWorkerBackend:
                 "    --backend slurm \\\n"
                 f"    --idle-timeout {self.worker_idle_timeout} \\\n"
                 f"    --max-failures {self.max_failures_per_worker} \\\n"
-                f"    --resources {shlex.quote(resources_json)}\n"
+                f"    --pool {shlex.quote(self.pool_key)}\n"
             ),
             mode=0o700,
         )
@@ -208,7 +208,7 @@ class SlurmWorkerBackend:
             _script_path=script_path,
             _max_workers=self.max_workers,
             _max_failed_workers=self.max_failed_workers,
-            _resource_request=resource_request,
+            _backend=self,
             _poll_interval=self.poll_interval,
             _coordinator=coordinator,
             _stop_event=threading.Event(),

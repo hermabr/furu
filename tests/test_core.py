@@ -22,14 +22,7 @@ from pydantic import BaseModel, ConfigDict
 
 import furu
 import furu.execution.load_or_create as execution_module
-from furu import (
-    GiB,
-    Metadata,
-    Requires,
-    Spec,
-    Throttle,
-    between,
-)
+from furu import Metadata, Spec, Throttle, Worker
 from furu.config import _Config, _FuruDirectories, get_config
 from furu.dependencies import collect_declared_refs
 from furu.execution.load_or_create import _load_or_create
@@ -146,7 +139,7 @@ class DirectoryPeekingValue(Spec[str]):
 class BatchedDirectoryValue(Spec[str]):
     key: int
 
-    def batch_key(self) -> tuple[None, int]:
+    def batch_key(self, worker: furu.Worker) -> tuple[None, int]:
         return (None, 1024)
 
     @furu.batched(batch_key)
@@ -312,15 +305,15 @@ class CountedSingleValue(Spec[str]):
         return f"single:{self.key}"
 
 
-class UnsatisfiableRequiresNode(Spec[str]):
+class NoWorkerNode(Spec[str]):
     name: str
     storage_override: ClassVar[Path] = Path("unsatisfiable-root")
 
     def metadata(self) -> Metadata:
-        return Metadata(
-            storage=type(self).storage_override,
-            requires=Requires(gpus=between(64, 128), memory=GiB(1024 * 1024)),
-        )
+        return Metadata(storage=type(self).storage_override)
+
+    def runs_on(self, worker: Worker) -> bool:
+        return False
 
     def create(self) -> str:
         return self.name
@@ -347,7 +340,7 @@ class BatchOnlyValue(furu.Spec[str]):
     key: int
     batch_calls: ClassVar[list[tuple[int, ...]]] = []
 
-    def batch_key(self) -> tuple[None, int]:
+    def batch_key(self, worker: furu.Worker) -> tuple[None, int]:
         return (None, 1024)
 
     @furu.batched(batch_key)
@@ -367,7 +360,7 @@ class KeyedBatchValue(furu.Spec[str]):
     cap: int = 1024
     batch_calls: ClassVar[list[tuple[str, tuple[int, ...]]]] = []
 
-    def batch_key(self) -> tuple[str, int]:
+    def batch_key(self, worker: furu.Worker) -> tuple[str, int]:
         return (self.group, self.cap)
 
     @furu.batched(batch_key)
@@ -382,7 +375,7 @@ class GroupBatchA(furu.Spec[str]):
     key: int
     batch_calls: ClassVar[list[tuple[int, ...]]] = []
 
-    def batch_key(self) -> tuple[None, int]:
+    def batch_key(self, worker: furu.Worker) -> tuple[None, int]:
         return (None, 1024)
 
     @furu.batched(batch_key)
@@ -397,7 +390,7 @@ class GroupBatchB(furu.Spec[str]):
     key: int
     batch_calls: ClassVar[list[tuple[int, ...]]] = []
 
-    def batch_key(self) -> tuple[None, int]:
+    def batch_key(self, worker: furu.Worker) -> tuple[None, int]:
         return (None, 1024)
 
     @furu.batched(batch_key)
@@ -411,7 +404,7 @@ class GroupBatchB(furu.Spec[str]):
 class LoggedBatchValue(furu.Spec[str]):
     key: int
 
-    def batch_key(self) -> tuple[None, int]:
+    def batch_key(self, worker: furu.Worker) -> tuple[None, int]:
         return (None, 1024)
 
     @furu.batched(batch_key)
@@ -432,7 +425,7 @@ class LoggedSingleValue(Spec[str]):
 class FailingBatchValue(furu.Spec[str]):
     key: int
 
-    def batch_key(self) -> tuple[None, int]:
+    def batch_key(self, worker: furu.Worker) -> tuple[None, int]:
         return (None, 1024)
 
     @furu.batched(batch_key)
@@ -458,7 +451,7 @@ class InterruptingValue(Spec[str]):
 class PartialBatchValue(furu.Spec[str]):
     key: int
 
-    def batch_key(self) -> tuple[None, int]:
+    def batch_key(self, worker: furu.Worker) -> tuple[None, int]:
         return (None, 1024)
 
     @furu.batched(batch_key)
@@ -568,7 +561,7 @@ class BatchDependencyParent(furu.Spec[str]):
     key: int
     eager: Node
 
-    def batch_key(self) -> tuple[None, int]:
+    def batch_key(self, worker: furu.Worker) -> tuple[None, int]:
         return (None, 1024)
 
     @furu.batched(batch_key)
@@ -1394,23 +1387,22 @@ def test_data_dir():
     )
 
 
-def test_metadata_defaults_to_project_config_storage_and_empty_requires():
+def test_metadata_defaults_to_project_config_storage_and_any_worker():
     node = Node(name="x")
 
     assert node.metadata() == Metadata()
-    assert node.metadata().requires == Requires(cpus=None, gpus=None, memory=None)
+    assert node.runs_on(Worker())
     assert node._metadata.storage == get_config().run_directories.objects
 
 
-def test_gib_is_frozen_slots_value_object():
-    memory = GiB(16)
-
-    assert memory.count == 16
-    assert not hasattr(memory, "__dict__")
-    with pytest.raises(FrozenInstanceError):
-        memory.count = 32
-    with pytest.raises(ValueError, match="GiB count must be non-negative"):
-        GiB(-1)
+def test_worker_here_counts_cuda_visible_devices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,3")
+    assert Worker.here().gpus == 2
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    assert Worker.here().gpus == 0
+    assert Worker.here().cpus >= 1
 
 
 def test_throttle_defaults_to_none():
@@ -1447,42 +1439,20 @@ def test_throttle_does_not_affect_schema_or_object_identity():
     assert after.object_id == before_object_id
 
 
-def test_metadata_requires_can_depend_on_fields():
+def test_runs_on_can_depend_on_fields():
     class HeavyNode(Spec[str]):
         name: str
         big: bool
 
-        def metadata(self) -> Metadata:
-            return Metadata(
-                requires=Requires(
-                    gpus=between(1, 8) if self.big else 0,
-                    cpus=4,
-                    memory=GiB(16),
-                )
-            )
+        def runs_on(self, worker: Worker) -> bool:
+            return worker.gpus in (1, 8) if self.big else worker.gpus == 0
 
         def create(self) -> str:
             return self.name
 
-    assert HeavyNode(name="x", big=True)._metadata.requires == (
-        Requires(gpus=between(1, 8), cpus=4, memory=GiB(16))
-    )
-    assert HeavyNode(name="x", big=False)._metadata.requires == (
-        Requires(gpus=0, cpus=4, memory=GiB(16))
-    )
-
-
-def test_metadata_requires_accepts_memory_range():
-    class MemoryRangeNode(Spec[str]):
-        def metadata(self) -> Metadata:
-            return Metadata(requires=Requires(memory=between(GiB(16), GiB(64))))
-
-        def create(self) -> str:
-            return "x"
-
-    assert MemoryRangeNode()._metadata.requires == Requires(
-        memory=between(GiB(16), GiB(64))
-    )
+    big, small = HeavyNode(name="x", big=True), HeavyNode(name="x", big=False)
+    assert big.runs_on(Worker(gpus=8)) and not big.runs_on(Worker(gpus=2))
+    assert small.runs_on(Worker()) and not small.runs_on(Worker(gpus=1))
 
 
 def test_metadata_storage_overrides_base_dir(
@@ -1501,17 +1471,17 @@ def test_metadata_storage_overrides_base_dir(
     assert data_dir_in(node._base_dir) == node._base_dir / "data"
 
 
-def test_load_path_reads_metadata_storage_without_touching_requires(
+def test_in_process_create_ignores_runs_on(
     tmp_path: Path,
 ) -> None:
-    UnsatisfiableRequiresNode.storage_override = tmp_path / "store"
-    node = UnsatisfiableRequiresNode(name="x")
+    NoWorkerNode.storage_override = tmp_path / "store"
+    node = NoWorkerNode(name="x")
 
     assert node.status == "missing"
     node.create()
     assert node._base_dir.is_relative_to(tmp_path / "store")
     assert node.status == "done"
-    assert UnsatisfiableRequiresNode(name="x").load_existing() == "x"
+    assert NoWorkerNode(name="x").load_existing() == "x"
 
 
 def test_debug_mode_ignores_storage_override(monkeypatch) -> None:
@@ -1786,7 +1756,7 @@ def test_create_hook_flavor_validation() -> None:
     with pytest.raises(TypeError, match=r"can only decorate create\(\)"):
 
         class BatchedNonCreateMethod(Spec[int]):
-            @furu.batched(lambda _: (None, 1))
+            @furu.batched(lambda _, __: (None, 1))
             def run(objs: list["BatchedNonCreateMethod"]) -> list[int]:
                 return [1 for _ in objs]
 
@@ -1917,6 +1887,22 @@ def test_batch_key_cap_chunks_batched_create_calls() -> None:
         ("x", (2, 3)),
         ("x", (4,)),
     ]
+
+
+class PerGpuBatch(furu.Spec[int]):
+    key: int
+
+    @furu.batched(lambda _, worker: (None, worker.gpus))
+    def create(objs: list["PerGpuBatch"]) -> list[int]:
+        return [len(objs)] * len(objs)
+
+
+def test_in_process_batch_cap_sees_this_machine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+
+    assert _load_or_create([PerGpuBatch(key=key) for key in range(3)]) == [2, 2, 1]
 
 
 def test_batch_key_cap_must_be_a_positive_int() -> None:

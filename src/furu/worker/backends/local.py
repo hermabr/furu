@@ -1,18 +1,21 @@
 from __future__ import annotations
 
+import dataclasses
 import threading
 import traceback
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from furu.config import get_config
 from furu.logging import _scoped_component, get_logger
-from furu.resources import ResourceRequest, resource_request_adapter
+from furu.resources import Worker
 from furu.utils import _hash_dict_deterministically
 from furu.worker.protocol import PoolHandoff, coordinator_url
 
 if TYPE_CHECKING:
+    from furu.core import Spec
     from furu.execution.execution_coordinator import ExecutionCoordinator
 
 logger = get_logger()
@@ -21,17 +24,14 @@ logger = get_logger()
 @dataclass(frozen=True, slots=True)
 class LocalThreadWorkerBackend:
     max_workers: int = 1
-    resource_request: ResourceRequest = field(default_factory=ResourceRequest)
+    worker: Worker = field(default_factory=Worker.here)
+    accepts: Callable[[Spec], bool] | None = None
     execution_coordinator_listen_host: str = "127.0.0.1"
 
     @property
     def pool_key(self) -> str:
         return "local:" + _hash_dict_deterministically(
-            {
-                "resources": resource_request_adapter.dump_python(
-                    self.resource_request, mode="json"
-                ),
-            }
+            {"worker": dataclasses.asdict(self.worker)}
         )
 
     def start_pool(
@@ -55,7 +55,7 @@ class LocalThreadWorkerBackend:
                 kwargs={
                     "coordinator": coordinator,
                     "coordinator_url": url,
-                    "resource_request": self.resource_request,
+                    "pool": self.pool_key,
                     "index": index,
                     "log_file": executor_dir / "workers" / f"local-worker-{index}.log",
                 },
@@ -70,7 +70,7 @@ def _run_worker(
     *,
     coordinator: ExecutionCoordinator,
     coordinator_url: str,
-    resource_request: ResourceRequest,
+    pool: str,
     index: int,
     log_file: Path,
 ) -> None:
@@ -80,7 +80,7 @@ def _run_worker(
     try:
         worker_loop(
             coordinator=coordinator_url,
-            resource_request=resource_request,
+            pool=pool,
             # Local threads are cheap to keep connected; they stay until the
             # server closes the connection.
             idle_timeout=None,

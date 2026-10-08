@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from functools import cached_property
 from typing import TYPE_CHECKING, assert_never
 
 from furu.core import Spec
 from furu.dependencies import collect_declared_refs
 from furu.metadata import ArtifactSpec
 from furu.migration.stale import raise_if_stale
-from furu.resources import resource_request_satisfies
+from furu.resources import Worker
+from furu.worker.backends.protocol import can_run
 
 if TYPE_CHECKING:
     from furu.execution.execution_coordinator import ExecutionCoordinator
@@ -21,11 +21,14 @@ class DagNode:
     dependencies: list[DagNode] = field(default_factory=list)
     dependents: list[DagNode] = field(default_factory=list)
 
-    @cached_property
-    def batch_group(self) -> tuple[object, int] | None:
+    _batch_groups: dict[Worker, tuple[object, int] | None] = field(default_factory=dict)
+
+    def batch_group(self, worker: Worker) -> tuple[object, int] | None:
         from furu.execution.load_or_create import _batch_group
 
-        return _batch_group(self.obj)
+        if worker not in self._batch_groups:
+            self._batch_groups[worker] = _batch_group(self.obj, worker)
+        return self._batch_groups[worker]
 
 
 def _add_to_dag(coordinator: ExecutionCoordinator, objs: Sequence[Spec]) -> None:
@@ -60,21 +63,30 @@ def _add_to_dag(coordinator: ExecutionCoordinator, objs: Sequence[Spec]) -> None
         refs_by_id[obj.object_id] = refs
         pending.extend(refs)
 
-    unsatisfiable = [
-        f"{node.obj._log_label} requires {node.obj._metadata.requires}"
+    runnable_on = {
+        node: [
+            backend
+            for backend in coordinator.backends.values()
+            if can_run(backend, node.obj)
+        ]
         for node in newly_added
-        if not any(
-            resource_request_satisfies(resources, node.obj._metadata.requires)
-            for resources in coordinator.pool_resources
-        )
+    }
+    unsatisfiable = [
+        node.obj._log_label for node, backends in runnable_on.items() if not backends
     ]
     if unsatisfiable:
-        worker_resources = ", ".join(map(str, coordinator.pool_resources)) or "none"
+        workers = ", ".join(
+            str(backend.worker) for backend in coordinator.backends.values()
+        )
         raise RuntimeError(
             "no worker pool can run: "
-            + "; ".join(sorted(unsatisfiable))
-            + f"; worker resources: {worker_resources}"
+            + ", ".join(sorted(unsatisfiable))
+            + f"; workers: {workers or 'none'}"
         )
+    # Batch caps depend on the worker; surface bad ones before any pool starts.
+    for node, backends in runnable_on.items():
+        for backend in backends:
+            node.batch_group(backend.worker)
 
     for node in newly_added:
         coordinator.nodes_by_id[node.obj.object_id] = node

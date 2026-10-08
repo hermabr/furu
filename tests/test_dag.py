@@ -1,4 +1,4 @@
-from collections.abc import Iterator, Sequence
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,7 +17,7 @@ from furu.provenance import (
     SubmitContext,
     SubmitProvenance,
 )
-from furu.resources import ResourceRequest
+from furu.resources import Worker
 from furu.storage._layout import (
     compute_lock_path_in,
     run_log_path_in,
@@ -75,7 +75,7 @@ class ComputedParent(Spec[str]):
 
 
 @contextmanager
-def mark_running(obj: Spec) -> Iterator[None]:
+def mark_running(obj: Spec) -> Generator[None]:
     obj._base_dir.mkdir(parents=True, exist_ok=True)
     with lock([compute_lock_path_in(obj._base_dir)]):
         yield
@@ -100,7 +100,7 @@ def _submit_provenance() -> SubmitProvenance:
 
 def _new_execution_coordinator(objs: Sequence[Spec]) -> ExecutionCoordinator:
     coordinator = ExecutionCoordinator(
-        pool_resources=(ResourceRequest(),),
+        backends={"local": LocalThreadWorkerBackend(worker=Worker())},
         submit_provenance=_submit_provenance(),
     )
     _add_to_dag(coordinator, objs)

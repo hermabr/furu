@@ -316,6 +316,12 @@ class _CustomTimezone(tzinfo):
     def utcoffset(self, dt: datetime | None) -> timedelta:
         return timedelta(hours=1)
 
+    def tzname(self, dt: datetime | None) -> str:
+        return "custom"
+
+    def dst(self, dt: datetime | None) -> timedelta:
+        return timedelta(0)
+
 
 class _DatetimeSubclass(datetime):
     pass

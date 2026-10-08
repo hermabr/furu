@@ -4,7 +4,7 @@ import os
 import secrets
 import shutil
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -17,7 +17,7 @@ from furu.config import _Config, _FuruDirectories, _set_config, get_config
 
 
 @contextmanager
-def override_config(config: _Config) -> Iterator[None]:
+def override_config(config: _Config) -> Generator[None]:
     previous = get_config()
     _set_config(config)
     try:

@@ -9,11 +9,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from furu.logging import _scoped_component, get_logger
-from furu.resources import ResourceRequest
 from furu.worker.protocol import PoolHandoff
 
 if TYPE_CHECKING:
     from furu.execution.execution_coordinator import ExecutionCoordinator
+    from furu.worker.backends.slurm.backend import SlurmWorkerBackend
 
 logger = get_logger()
 
@@ -43,7 +43,7 @@ class SlurmWorkerPool:
     _script_path: Path
     _max_workers: int
     _max_failed_workers: int
-    _resource_request: ResourceRequest
+    _backend: SlurmWorkerBackend
     _poll_interval: float
     _coordinator: ExecutionCoordinator
     _stop_event: threading.Event
@@ -137,7 +137,7 @@ class SlurmWorkerPool:
             demand = min(
                 busy
                 + self._coordinator.count_satisfiable_jobs(
-                    resources=self._resource_request,
+                    backend=self._backend,
                     max_workers=self._max_workers,
                 ),
                 self._max_workers,

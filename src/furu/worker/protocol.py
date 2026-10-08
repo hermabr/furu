@@ -7,7 +7,6 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from furu.metadata import ArtifactSpec
 from furu.provenance import SubmitProvenance
-from furu.resources import ResourceRequest
 from furu.spec_metadata import Metadata, Reuse
 
 
@@ -81,7 +80,7 @@ class HelloMessage(BaseModel):
     kind: Literal["hello"] = "hello"
     worker: str
     backend: str
-    resources: ResourceRequest
+    pool: str
     running: list[ArtifactSpec] = Field(default_factory=list)
 
 

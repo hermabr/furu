@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Iterator, Sequence
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from secrets import token_urlsafe
@@ -90,7 +90,7 @@ def request_takeover(
     source_id: str,
     url: str,
     pool_keys: Sequence[str],
-) -> Iterator[dict[str, PoolHandoff]]:
+) -> Generator[dict[str, PoolHandoff]]:
     """Inherit ``source_id``'s matching pools; closing the connection commits."""
     try:
         connection = connect(url, max_size=None)
@@ -137,8 +137,14 @@ def _serve_worker(
                 result = job_result_adapter.validate_json(connection.recv())
                 for artifact in hello.running:
                     coordinator.job_result(artifact.object_id, result)
+            backend = coordinator.backends.get(hello.pool)
+            if backend is None:
+                logger.warning(
+                    "worker %s belongs to no pool of this run; closing", worker
+                )
+                return
             while True:
-                job = coordinator.lease_job(resources=hello.resources, worker=worker)
+                job = coordinator.lease_job(backend=backend, worker=worker)
                 if job is None:
                     return
                 connection.send(job.model_dump_json())
@@ -158,7 +164,7 @@ def _serve_worker(
 @contextmanager
 def execution_coordinator_server(
     coordinator: ExecutionCoordinator, *, bind_host: str, port: int
-) -> Iterator[ExecutionCoordinatorServer]:
+) -> Generator[ExecutionCoordinatorServer]:
     auth_token = token_urlsafe(32)
     connections: set[ServerConnection] = set()
     connections_changed = threading.Condition()
