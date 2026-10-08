@@ -14,7 +14,6 @@ from websockets.sync.client import ClientConnection, connect
 
 from furu.config import _Config, _read_worker_json_config, get_config
 from furu.logging import _scoped_component, _scoped_log_files, get_logger, log_detail
-from furu.resources import ResourceRequest
 from furu.utils import format_duration
 from furu.worker import protocol
 from furu.worker.execute import ChildSlot
@@ -95,7 +94,7 @@ def _read_target(coordinator: str | Path) -> tuple[str, _Config | None]:
 def worker_loop(
     *,
     coordinator: str | Path,
-    resource_request: ResourceRequest,
+    pool: str,
     idle_timeout: float | None,
     max_failures: int,
     component: str,
@@ -125,7 +124,7 @@ def worker_loop(
                         protocol.HelloMessage(
                             worker=component,
                             backend=backend,
-                            resources=resource_request,
+                            pool=pool,
                             running=job.artifacts if job is not None else [],
                         ).model_dump_json()
                     )

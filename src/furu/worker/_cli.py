@@ -2,7 +2,6 @@ import argparse
 from collections.abc import Sequence
 from pathlib import Path
 
-from furu.resources import resource_request_adapter
 from furu.worker.loop import worker_loop
 
 
@@ -15,10 +14,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="worker config file holding the execution coordinator URL",
     )
     parser.add_argument(
-        "--resources",
+        "--pool",
         required=True,
-        type=resource_request_adapter.validate_json,
-        help="this worker's ResourceRequest as JSON",
+        help="key of the worker pool this worker belongs to",
     )
     parser.add_argument(
         "--idle-timeout",
@@ -52,7 +50,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     worker_loop(
         coordinator=args.coordinator_file,
-        resource_request=args.resources,
+        pool=args.pool,
         idle_timeout=args.idle_timeout,
         max_failures=args.max_failures,
         component=args.component,

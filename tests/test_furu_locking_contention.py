@@ -40,7 +40,7 @@ class SlowProbe(Spec[int]):
 class SlowBatchProbe(furu.Spec[int]):
     key: int
 
-    def batch_key(self) -> tuple[None, int]:
+    def batch_key(self, worker: furu.Worker) -> tuple[None, int]:
         return (None, 1024)
 
     @furu.batched(batch_key)
