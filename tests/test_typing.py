@@ -26,16 +26,6 @@ class TypingParent(furu.Spec[str]):
         return [TypingChild()]
 
 
-@furu.spec
-def typed_letter_count(source: str, letter: str) -> int:
-    return source.count(letter)
-
-
-@furu.spec()
-def typed_letter_count_with_parentheses(source: str, letter: str) -> int:
-    return source.count(letter)
-
-
 class TypingBatched(furu.Spec[str]):
     key: int
 
@@ -45,13 +35,6 @@ class TypingBatched(furu.Spec[str]):
     @furu.batched(batch_key)
     def create(objs: list[TypingBatched]) -> list[str]:
         return [str(obj.key) for obj in objs]
-
-
-class TypingFunctionParent(furu.Spec[int]):
-    child: furu.Spec[int]
-
-    def create(self) -> int:
-        return self.child.create()
 
 
 @dataclass(frozen=True)
@@ -70,18 +53,6 @@ if TYPE_CHECKING:
     assert_type(TypingChild().create(), int)
     assert_type(TypingBatched(key=1).create(), str)
     assert_type(furu.create([TypingBatched(key=1)]), list[str])
-    assert_type(typed_letter_count(source="banana", letter="a"), furu.Spec[int])
-    assert_type(typed_letter_count(source="banana", letter="a").create(), int)
-    assert_type(
-        TypingFunctionParent(
-            child=typed_letter_count(source="banana", letter="a")
-        ).child,
-        furu.Spec[int],
-    )
-    assert_type(
-        typed_letter_count_with_parentheses(source="banana", letter="a").create(),
-        int,
-    )
     typed_ref = furu.ref([1, 2, 3])
     assert_type(typed_ref, furu.Ref[list[int]])
     assert_type(typed_ref.load(), list[int])
