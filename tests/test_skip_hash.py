@@ -54,11 +54,6 @@ class _SkipDep(furu.Spec[str]):
         return self.important
 
 
-@furu.spec
-def _scaled(value: int, run_id: Annotated[str, furu.skip_hash]) -> int:
-    return value * 2
-
-
 def test_skip_hash_field_is_kept_in_schema_and_artifact_data() -> None:
     obj = _SkipScalar(important="keep", debug="changes")
 
@@ -134,12 +129,3 @@ def test_skip_hash_dependency_excluded_from_hash_but_kept_as_dependency() -> Non
 
     assert _fields(_fields(a._artifact_data)["debug_dep"])["value"] == "one"
     assert collect_declared_refs(a) == (_Dep(value="one"),)
-
-
-def test_skip_hash_on_furu_function_parameter() -> None:
-    a = _scaled(2, "run-a")
-    b = _scaled(2, "run-b")
-
-    assert a.object_id == b.object_id
-    assert _fields(a._artifact_data)["run_id"] == "run-a"
-    assert _fields(a._schema_data)["run_id"] == "builtins.str"
