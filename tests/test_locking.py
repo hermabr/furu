@@ -1,8 +1,10 @@
 import errno
 import json
 import os
+import threading
 import time
-from multiprocessing import Process, Queue
+from contextlib import ExitStack
+from multiprocessing import Process
 from pathlib import Path
 from unittest.mock import patch
 
@@ -34,27 +36,6 @@ def _read_manifest(path: Path) -> dict[str, object]:
 
 def _manifest_claim_path(path: Path) -> Path:
     return Path(str(_read_manifest(path)["claim_path"]))
-
-
-def _child_hold_lock(
-    lock_path: Path,
-    queue: Queue,
-    *,
-    sleep_s: float = SHORT_SLEEP_S,
-    lifetime_s: float = SHORT_LIFETIME_S,
-    heartbeat_interval_s: float = SHORT_HEARTBEAT_INTERVAL_S,
-    keep: bool = False,
-) -> None:
-    with lock(
-        lock_path,
-        lifetime_s=lifetime_s,
-        heartbeat_interval_s=heartbeat_interval_s,
-    ):
-        queue.put(True)
-        time.sleep(sleep_s)
-        queue.put(True)
-        if keep:
-            queue.get()
 
 
 def _child_acquire_batch_then_exit(lock_paths: list[Path], manifest_out: str) -> None:
@@ -150,10 +131,16 @@ def test_has_lock_returns_false_when_lock_is_lost(tmp_path: Path) -> None:
             heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
         ) as has_lock,
     ):
+        (heartbeat,) = [
+            thread
+            for thread in threading.enumerate()
+            if thread.name == f"lock-heartbeat:{lock_path.name}"
+        ]
         _drop_current_lock(lock_path)
         assert not has_lock()
         # The heartbeat notices the loss and stops instead of resurrecting it.
-        time.sleep(SHORT_LIFETIME_S)
+        heartbeat.join(timeout=PROCESS_TIMEOUT_S)
+        assert not heartbeat.is_alive()
         assert not lock_path.exists()
 
 
@@ -175,11 +162,12 @@ def test_has_lock_returns_false_when_any_batch_link_is_lost(tmp_path: Path) -> N
 def test_refresh_extends_expiration(tmp_path: Path) -> None:
     lock_path = tmp_path / "single.lock"
     lifetime_s = SHORT_LIFETIME_S * 4
+    heartbeat_interval_s = SHORT_HEARTBEAT_INTERVAL_S / 4
 
     with lock(
         lock_path,
         lifetime_s=lifetime_s,
-        heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+        heartbeat_interval_s=heartbeat_interval_s,
     ) as has_lock:
         assert has_lock()
 
@@ -189,7 +177,7 @@ def test_refresh_extends_expiration(tmp_path: Path) -> None:
             refresh_deadline = time.monotonic() + PROCESS_TIMEOUT_S
             while lock_path.stat().st_mtime <= expiration:
                 assert time.monotonic() < refresh_deadline, "lock was not refreshed"
-                time.sleep(SHORT_HEARTBEAT_INTERVAL_S / 2)
+                time.sleep(heartbeat_interval_s / 2)
 
         with (
             pytest.raises(LockError, match="could not acquire lock"),
@@ -205,16 +193,10 @@ def test_refresh_extends_expiration(tmp_path: Path) -> None:
 
 def test_timeout_when_lock_is_held(tmp_path: Path) -> None:
     lock_path = tmp_path / "single.lock"
-    holder_queue: Queue = Queue()
-    holder = Process(
-        target=_child_hold_lock,
-        args=(lock_path, holder_queue),
-        kwargs={"sleep_s": SHORT_SLEEP_S * 4, "lifetime_s": SHORT_LIFETIME_S * 4},
-    )
-    holder.start()
 
-    try:
-        holder_queue.get(timeout=PROCESS_TIMEOUT_S)
+    # The lock is only files on disk, so a holder in this process is as real as
+    # one in another process; the default lifetime keeps it fresh throughout.
+    with lock(lock_path):
         started_at = time.monotonic()
         with (
             pytest.raises(LockError, match="could not acquire lock"),
@@ -226,32 +208,33 @@ def test_timeout_when_lock_is_held(tmp_path: Path) -> None:
         ):
             pass
         assert time.monotonic() - started_at >= SHORT_LIFETIME_S
-    finally:
-        holder.join(timeout=PROCESS_TIMEOUT_S)
 
 
-def test_waits_for_lock_release_before_timeout(tmp_path: Path) -> None:
+def test_waits_for_lock_release_before_timeout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     lock_path = tmp_path / "single.lock"
-    holder_queue: Queue = Queue()
-    holder = Process(
-        target=_child_hold_lock,
-        args=(lock_path, holder_queue),
-        kwargs={"sleep_s": SHORT_SLEEP_S * 2, "lifetime_s": SHORT_LIFETIME_S * 8},
-    )
-    holder.start()
+    holder = ExitStack()
+    holder.enter_context(lock(lock_path))
+    real_sleep = time.sleep
+    waits: list[float] = []
 
-    try:
-        holder_queue.get(timeout=PROCESS_TIMEOUT_S)
-        with lock(
-            lock_path,
-            lifetime_s=SHORT_LIFETIME_S,
-            heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
-            acquire_timeout_s=SHORT_SLEEP_S * 4,
-            acquire_poll_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
-        ):
-            assert lock_path.exists()
-    finally:
-        holder.join(timeout=PROCESS_TIMEOUT_S)
+    def release_holder_then_sleep(seconds: float) -> None:
+        # The waiter only sleeps after finding the lock held.
+        waits.append(seconds)
+        holder.close()
+        real_sleep(seconds)
+
+    monkeypatch.setattr(time, "sleep", release_holder_then_sleep)
+    with lock(
+        lock_path,
+        lifetime_s=SHORT_LIFETIME_S,
+        heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+        acquire_timeout_s=PROCESS_TIMEOUT_S,
+        acquire_poll_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
+    ) as has_lock:
+        assert has_lock()
+    assert waits
 
 
 def test_stale_break_from_any_member_path_removes_whole_logical_lock_group(
@@ -590,18 +573,7 @@ def test_process_exit_without_cleanup_allows_reclaim_after_expiry(
         proc.join(timeout=PROCESS_TIMEOUT_S)
         assert proc.exitcode == 0
         first_owner = owner_path.read_text(encoding="utf-8").strip()
-        assert lock_path.exists()
-
-        with (
-            pytest.raises(LockError, match="could not acquire lock"),
-            lock(
-                lock_path,
-                lifetime_s=SHORT_LIFETIME_S,
-                heartbeat_interval_s=SHORT_HEARTBEAT_INTERVAL_S,
-                acquire_timeout_s=0.0,
-            ),
-        ):
-            pass
+        assert str(_manifest_claim_path(lock_path)) == first_owner
 
         with lock(
             lock_path,

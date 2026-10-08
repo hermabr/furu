@@ -5,7 +5,10 @@ import time
 from multiprocessing import get_context
 from pathlib import Path
 
+import pytest
+
 import furu
+import furu.locking as locking_module
 from furu import Spec
 from furu.config import (
     _Config,
@@ -14,16 +17,19 @@ from furu.config import (
     _set_config,
 )
 from furu.execution.load_or_create import _load_or_create
-from furu.locking import DEFAULT_ACQUIRE_POLL_INTERVAL_S
 from furu.result.bundle import load_result_bundle
 from furu.storage._layout import data_dir_in
 
-TEST_TIMING_SCALE = 4.0 if os.environ.get("GITHUB_ACTIONS") == "true" else 1.0
-OVERLAP_SLEEP_S = 0.01 * TEST_TIMING_SCALE
-POLL_INTERVAL_S = 0.005 * TEST_TIMING_SCALE
-PROCESS_TIMEOUT_S = 0.5 * TEST_TIMING_SCALE
-MID_CREATE_TIMEOUT_S = 1.0 * TEST_TIMING_SCALE
-WAIT_FOR_LOCK_RESULT_TIMEOUT_S = DEFAULT_ACQUIRE_POLL_INTERVAL_S + PROCESS_TIMEOUT_S
+OVERLAP_SLEEP_S = 0.01
+POLL_INTERVAL_S = 0.005
+# Only bounds a hung test; passing runs never wait for it, so keep it generous.
+TIMEOUT_S = 10.0
+
+
+@pytest.fixture(autouse=True)
+def _fast_lock_polling(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Forked workers inherit this, so the loser notices the release quickly.
+    monkeypatch.setattr(locking_module, "DEFAULT_ACQUIRE_POLL_INTERVAL_S", 0.005)
 
 
 class SlowProbe(Spec[int]):
@@ -62,7 +68,7 @@ class MidRunTakeoverProbe(Spec[int]):
 
     def create(self) -> int:
         Path(self.entered_path).touch()
-        deadline = time.monotonic() + MID_CREATE_TIMEOUT_S
+        deadline = time.monotonic() + TIMEOUT_S
         while not Path(self.release_path).exists():
             assert time.monotonic() < deadline
             time.sleep(POLL_INTERVAL_S)
@@ -138,30 +144,30 @@ def _steal_lock(lock: Path) -> None:
     os.link(claim_path, lock)
 
 
-def test_two_processes_competing_for_same_furu_object(tmp_path):
+def test_two_processes_competing_for_same_furu_object(tmp_path, monkeypatch):
     data_dir = tmp_path / "data"
     marker_dir = tmp_path / "markers"
-    os.environ["FURU_TEST_MARKER_DIR"] = str(marker_dir)
-    ctx = get_context("spawn")
+    monkeypatch.setenv("FURU_TEST_MARKER_DIR", str(marker_dir))
+    ctx = get_context("fork")
     start_evt = ctx.Event()
     out_q = ctx.Queue()
     procs = [
-        ctx.Process(target=_worker, args=(str(data_dir), start_evt, out_q))
+        ctx.Process(target=_worker, args=(str(data_dir), start_evt, out_q), daemon=True)
         for _ in range(2)
     ]
     for proc in procs:
         proc.start()
 
-    ready = [out_q.get(timeout=PROCESS_TIMEOUT_S), out_q.get(timeout=PROCESS_TIMEOUT_S)]
+    ready = [out_q.get(timeout=TIMEOUT_S), out_q.get(timeout=TIMEOUT_S)]
     assert all(tag == "ready" for tag, *_ in ready)
     start_evt.set()
 
     results = [
-        out_q.get(timeout=WAIT_FOR_LOCK_RESULT_TIMEOUT_S),
-        out_q.get(timeout=WAIT_FOR_LOCK_RESULT_TIMEOUT_S),
+        out_q.get(timeout=TIMEOUT_S),
+        out_q.get(timeout=TIMEOUT_S),
     ]
     for proc in procs:
-        proc.join(timeout=WAIT_FOR_LOCK_RESULT_TIMEOUT_S)
+        proc.join(timeout=TIMEOUT_S)
         assert proc.exitcode == 0
 
     oks = [result for result in results if result[0] == "ok"]
@@ -182,36 +188,40 @@ def test_two_processes_competing_for_same_furu_object(tmp_path):
     assert list(data_dir.glob("**/result.pkl")) == []
 
 
-def test_overlapping_batch_acquisitions_do_not_deadlock_or_duplicate_compute(tmp_path):
+def test_overlapping_batch_acquisitions_do_not_deadlock_or_duplicate_compute(
+    tmp_path, monkeypatch
+):
     data_dir = tmp_path / "data"
     marker_dir = tmp_path / "markers"
-    os.environ["FURU_TEST_MARKER_DIR"] = str(marker_dir)
-    ctx = get_context("spawn")
+    monkeypatch.setenv("FURU_TEST_MARKER_DIR", str(marker_dir))
+    ctx = get_context("fork")
     start_evt = ctx.Event()
     out_q = ctx.Queue()
     procs = [
         ctx.Process(
             target=_batch_worker,
             args=(str(data_dir), [1, 2], start_evt, out_q),
+            daemon=True,
         ),
         ctx.Process(
             target=_batch_worker,
             args=(str(data_dir), [2, 3], start_evt, out_q),
+            daemon=True,
         ),
     ]
     for proc in procs:
         proc.start()
 
-    ready = [out_q.get(timeout=PROCESS_TIMEOUT_S), out_q.get(timeout=PROCESS_TIMEOUT_S)]
+    ready = [out_q.get(timeout=TIMEOUT_S), out_q.get(timeout=TIMEOUT_S)]
     assert all(tag == "ready" for tag, *_ in ready)
     start_evt.set()
 
     results = [
-        out_q.get(timeout=WAIT_FOR_LOCK_RESULT_TIMEOUT_S),
-        out_q.get(timeout=WAIT_FOR_LOCK_RESULT_TIMEOUT_S),
+        out_q.get(timeout=TIMEOUT_S),
+        out_q.get(timeout=TIMEOUT_S),
     ]
     for proc in procs:
-        proc.join(timeout=WAIT_FOR_LOCK_RESULT_TIMEOUT_S)
+        proc.join(timeout=TIMEOUT_S)
         assert proc.exitcode == 0
 
     assert sorted(result[2] for result in results if result[0] == "ok") == [
@@ -230,15 +240,16 @@ def test_lock_is_taken_over_mid_create(tmp_path):
     data_dir = tmp_path / "data"
     entered_path = tmp_path / "entered"
     release_path = tmp_path / "release"
-    ctx = get_context("spawn")
+    ctx = get_context("fork")
     out_q = ctx.Queue()
     proc = ctx.Process(
         target=_takeover_worker,
         args=(str(data_dir), str(entered_path), str(release_path), out_q),
+        daemon=True,
     )
     proc.start()
 
-    deadline = time.monotonic() + PROCESS_TIMEOUT_S
+    deadline = time.monotonic() + TIMEOUT_S
     while not entered_path.exists():
         assert time.monotonic() < deadline
         time.sleep(POLL_INTERVAL_S)
@@ -249,8 +260,8 @@ def test_lock_is_taken_over_mid_create(tmp_path):
     _steal_lock(lock_paths[0])
     release_path.touch()
 
-    result = out_q.get(timeout=PROCESS_TIMEOUT_S)
-    proc.join(timeout=PROCESS_TIMEOUT_S)
+    result = out_q.get(timeout=TIMEOUT_S)
+    proc.join(timeout=TIMEOUT_S)
     assert proc.exitcode == 0
     assert result[0] == "err"
     assert result[2] == RuntimeError.__name__
