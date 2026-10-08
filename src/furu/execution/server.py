@@ -137,8 +137,14 @@ def _serve_worker(
                 result = job_result_adapter.validate_json(connection.recv())
                 for artifact in hello.running:
                     coordinator.job_result(artifact.object_id, result)
+            backend = coordinator.backends.get(hello.pool)
+            if backend is None:
+                logger.warning(
+                    "worker %s belongs to no pool of this run; closing", worker
+                )
+                return
             while True:
-                job = coordinator.lease_job(resources=hello.resources, worker=worker)
+                job = coordinator.lease_job(backend=backend, worker=worker)
                 if job is None:
                     return
                 connection.send(job.model_dump_json())

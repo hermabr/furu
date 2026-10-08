@@ -1,47 +1,51 @@
-from furu import GiB, Requires, at_least, between
-from furu.resources import ResourceFloor, ResourceRequest, resource_request_satisfies
-
-RESERVED = ResourceRequest(
-    cpus=8,
-    gpus=2,
-    memory_gib=600,
-    reserve_for=ResourceFloor(memory_gib=200, gpus=1),
-)
+from furu import Spec, Worker
+from furu.worker.backends.local import LocalThreadWorkerBackend
+from furu.worker.backends.protocol import can_run
 
 
-def test_reserve_for_requires_every_reserved_dimension_to_be_declared() -> None:
-    assert resource_request_satisfies(RESERVED, Requires(memory=GiB(200), gpus=2))
-    assert resource_request_satisfies(
-        RESERVED, Requires(memory=at_least(GiB(300)), gpus=at_least(1))
-    )
-    assert resource_request_satisfies(
-        RESERVED, Requires(memory=between(GiB(200), GiB(600)), gpus=between(1, 2))
-    )
-    assert not resource_request_satisfies(RESERVED, Requires())
-    assert not resource_request_satisfies(RESERVED, Requires(memory=GiB(200)))
-    assert not resource_request_satisfies(RESERVED, Requires(gpus=2))
-    assert not resource_request_satisfies(RESERVED, Requires(memory=GiB(199), gpus=2))
-    assert not resource_request_satisfies(
-        RESERVED, Requires(memory=between(GiB(100), GiB(600)), gpus=2)
-    )
-    assert not resource_request_satisfies(RESERVED, Requires(memory=GiB(200), gpus=0))
+class Generate(Spec[str]):
+    def runs_on(self, worker: Worker) -> bool:
+        return worker.gpus in (1, 8) and "hopper" in worker.labels
+
+    def create(self) -> str:
+        return "x"
 
 
-def test_reserve_for_still_enforces_worker_capacity() -> None:
-    assert not resource_request_satisfies(RESERVED, Requires(memory=GiB(601), gpus=2))
-    assert not resource_request_satisfies(RESERVED, Requires(memory=GiB(200), gpus=3))
+class Tokenize(Spec[str]):
+    def create(self) -> str:
+        return "x"
 
 
-def test_reserve_for_uses_the_job_range_lower_bound() -> None:
-    request = ResourceRequest(memory_gib=400, reserve_for=ResourceFloor(memory_gib=200))
+def _pool(worker: Worker) -> LocalThreadWorkerBackend:
+    return LocalThreadWorkerBackend(worker=worker)
 
-    assert resource_request_satisfies(
-        request, Requires(memory=between(GiB(200), GiB(400)))
-    )
-    assert not resource_request_satisfies(
-        request, Requires(memory=between(GiB(100), GiB(400)))
+
+def test_runs_on_sees_the_pool_worker() -> None:
+    assert can_run(_pool(Worker(gpus=1, labels=("hopper",))), Generate())
+    assert can_run(_pool(Worker(gpus=8, labels=("hopper", "ib"))), Generate())
+    assert not can_run(_pool(Worker(gpus=4, labels=("hopper",))), Generate())
+    assert not can_run(_pool(Worker(gpus=8, labels=("ampere",))), Generate())
+
+
+def test_specs_run_anywhere_by_default() -> None:
+    assert can_run(_pool(Worker()), Tokenize())
+    assert can_run(_pool(Worker(gpus=8, labels=("hopper",))), Tokenize())
+
+
+def test_accepts_reserves_a_pool_for_chosen_specs() -> None:
+    cpu_pool = LocalThreadWorkerBackend(
+        worker=Worker(cpus=64), accepts=lambda spec: isinstance(spec, Tokenize)
     )
 
+    assert can_run(cpu_pool, Tokenize())
+    assert not can_run(cpu_pool, Generate())
 
-def test_unreserved_worker_accepts_unconstrained_jobs() -> None:
-    assert resource_request_satisfies(ResourceRequest(), Requires())
+
+def test_accepts_and_runs_on_must_both_hold() -> None:
+    gpu_pool = LocalThreadWorkerBackend(
+        worker=Worker(gpus=8, labels=("hopper",)),
+        accepts=lambda spec: not isinstance(spec, Tokenize),
+    )
+
+    assert can_run(gpu_pool, Generate())
+    assert not can_run(gpu_pool, Tokenize())

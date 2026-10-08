@@ -32,6 +32,7 @@ from furu.provenance import (
     _require_uv,
     capture_submit_provenance,
 )
+from furu.resources import Worker
 from furu.result.bundle import _save_result_bundle, load_result_bundle
 from furu.storage._layout import (
     compute_lock_path_in,
@@ -377,15 +378,15 @@ def _load_or_create_local[T](
     return outputs
 
 
-def _batch_group(obj: Spec) -> tuple[object, int] | None:
+def _batch_group(obj: Spec, worker: Worker) -> tuple[object, int] | None:
     hook = getattr(type(obj), "_furu_create_hook", None)
     if not isinstance(hook, _BatchedHook):
         return None
-    group_hash, cap = hook.batch_fn(obj)
+    group_hash, cap = hook.batch_fn(obj, worker)
     if type(cap) is not int or cap < 1:
         raise TypeError(
             f"{type(obj).__qualname__} batch key cap must be a positive int, "
-            f"got {cap!r}"
+            f"got {cap!r} on {worker}"
         )
     key = (type(obj), group_hash, cap, obj._metadata)
     return key, cap
@@ -393,9 +394,10 @@ def _batch_group(obj: Spec) -> tuple[object, int] | None:
 
 def _grouped_pending[T](pending: list[Spec[T]]) -> list[list[Spec[T]]]:
     """Partition by (type, batch_key, metadata), chunked to the cap."""
+    here = Worker.here()
     groups: list[tuple[object, int | None, list[Spec[T]]]] = []
     for obj in pending:
-        key, cap = _batch_group(obj) or (type(obj), None)
+        key, cap = _batch_group(obj, here) or (type(obj), None)
         for existing_key, _, group in groups:
             if existing_key == key:
                 group.append(obj)
