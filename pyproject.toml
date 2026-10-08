@@ -40,7 +40,7 @@ dev = [
 "tests/**" = ["BLE001", "DTZ001", "TRY004"]
 
 [tool.pytest.ini_options]
-addopts = "-n auto --dist worksteal"
+addopts = "-n 4 --dist worksteal"
 markers = [
     "slurm_integration: opt-in Docker-backed tests that run against a real local Slurm daemon",
 ]
