@@ -19,22 +19,22 @@ logger = get_logger()
 
 _SLURM_COMMAND_TIMEOUT_S = 60.0
 
-_UNFINISHED_STATES = frozenset(
+# States a job never leaves. Anything else, including a state this code has
+# never seen, keeps the worker owned until Slurm reports one of these.
+# Preempted jobs are requeued, so PREEMPTED is not one of them.
+_FINISHED_STATES = frozenset(
     {
-        "COMPLETING",
-        "PENDING",
-        "PREEMPTED",
-        "REQUEUED",
-        "RUNNING",
-        "UNKNOWN",
+        "BOOT_FAIL",
+        "CANCELLED",
+        "COMPLETED",
+        "DEADLINE",
+        "FAILED",
+        "NODE_FAIL",
+        "OUT_OF_MEMORY",
+        "REVOKED",
+        "TIMEOUT",
     }
 )
-
-_PRUNABLE_STATES = frozenset({"COMPLETED"})
-
-
-def _is_failed_state(state: str) -> bool:
-    return state not in _UNFINISHED_STATES and state not in _PRUNABLE_STATES
 
 
 @dataclass(slots=True)
@@ -94,22 +94,22 @@ class SlurmWorkerPool:
 
     def _scale_once(self) -> None:
         active_job_states = self._active_job_states()
-        states = self._task_states()
-        failed = {
+        if active_job_states is None:
+            return  # squeue unavailable: keep every worker and retry next tick
+        # squeue decides liveness; accounting only explains why a job left it.
+        states = self._task_states() | active_job_states
+        finished = {
             job_id: state
             for job_id in self._job_ids
-            if (state := states.get(job_id)) is not None and _is_failed_state(state)
+            if (state := states.get(job_id)) in _FINISHED_STATES
         }
-        self._job_ids[:] = [
-            job_id
-            for job_id in self._job_ids
-            if job_id not in failed
-            and (
-                job_id in active_job_states
-                if active_job_states is not None
-                else states.get(job_id) not in (None, *_PRUNABLE_STATES)
+        failed = {j: s for j, s in finished.items() if s != "COMPLETED"}
+        if finished:
+            logger.info(
+                "forgetting finished slurm workers: %s",
+                ", ".join(f"{j} {s}" for j, s in sorted(finished.items())),
             )
-        ]
+            self._job_ids[:] = [j for j in self._job_ids if j not in finished]
         if failed:
             if len(self._coordinator.completed) > self._completed_seen:
                 self._completed_seen = len(self._coordinator.completed)
@@ -145,7 +145,7 @@ class SlurmWorkerPool:
         to_spawn = demand - len(self._job_ids)
         if to_spawn <= 0:
             if to_spawn < 0:
-                self._cancel_queued_workers(-to_spawn, active_job_states or {})
+                self._cancel_queued_workers(-to_spawn, active_job_states)
             return
 
         for _ in range(1 if self._use_job_arrays else to_spawn):
@@ -303,7 +303,7 @@ class SlurmWorkerPool:
         return states
 
     def _scale_loop(self) -> None:
-        with _scoped_component("slurm"):
+        with self._coordinator.log_context(), _scoped_component("slurm"):
             try:
                 while not self._stop_event.is_set():
                     self._scale_once()
