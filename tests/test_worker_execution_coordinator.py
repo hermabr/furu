@@ -2003,8 +2003,6 @@ def test_execution_coordinator_run_inherits_pools_on_takeover() -> None:
             executor_dir: Path,
             handoff: PoolHandoff,
         ) -> _InertPool:
-            self.coordinators.append(coordinator)
-            self.handoffs.append(handoff)
             worker_file = _pool_worker_file(executor_dir, self.pool_key)
             worker_file.parent.mkdir(parents=True)
             _write_worker_config(
@@ -2013,6 +2011,10 @@ def test_execution_coordinator_run_inherits_pools_on_takeover() -> None:
                     host="127.0.0.1", port=bound_port, auth_token=auth_token
                 ),
             )
+            # Recorded last: the test starts the takeover once it sees this,
+            # and the takeover needs the worker file to exist.
+            self.coordinators.append(coordinator)
+            self.handoffs.append(handoff)
             return self.pool
 
     leaf = ExecutionCoordinatorLeaf(value=uuid4().int)
