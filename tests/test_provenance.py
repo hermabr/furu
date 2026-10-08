@@ -4,6 +4,7 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic import ByteSize
@@ -19,6 +20,8 @@ from furu.provenance import (
     SubmitContext,
     SubmitProvenance,
 )
+
+pytestmark = pytest.mark.real_probes
 
 EXAMPLE_PROVENANCE_JSON = """
 {
@@ -278,12 +281,15 @@ def test_capture_environment_identity_requires_uv_lock(
 
 def test_require_uv_runs_lock_check_once(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[list[str]] = []
+    real_run = subprocess.run
 
-    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+    def counting_run(
+        args: list[str], **kwargs: Any
+    ) -> subprocess.CompletedProcess[str]:
         calls.append(args)
-        return subprocess.CompletedProcess(args, 0, "", "")
+        return real_run(args, **kwargs)
 
-    monkeypatch.setattr(provenance.subprocess, "run", fake_run)
+    monkeypatch.setattr(provenance.subprocess, "run", counting_run)
     provenance._require_uv.cache_clear()
     try:
         provenance._require_uv()

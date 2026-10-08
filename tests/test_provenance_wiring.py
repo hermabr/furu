@@ -76,6 +76,7 @@ def test_pytest_harness_disables_snapshot_by_default() -> None:
     assert get_config().provenance.snapshot is False
 
 
+@pytest.mark.real_probes
 def test_create_writes_provenance_next_to_metadata(
     git_repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -147,6 +148,7 @@ def test_result_without_provenance_loads_but_provenance_raises(
         node.provenance()
 
 
+@pytest.mark.real_probes
 def test_outside_git_repo_fails_before_compute(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
