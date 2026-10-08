@@ -94,11 +94,11 @@ def spec_label(fully_qualified_name: str, schema_hash: str, artifact_hash: str) 
     return f"{class_name}:{schema_hash[:5]}:{artifact_hash[:5]}"
 
 
-def _stable_json_dump(x: JsonValue) -> str:
+def _stable_json_dump(x: object) -> str:
     return json.dumps(x, sort_keys=True, separators=(",", ":"))
 
 
-def _hash_dict_deterministically(obj: JsonValue) -> str:
+def _hash_dict_deterministically(obj: object) -> str:
     json_str = _stable_json_dump(obj)
 
     return hashlib.blake2s(

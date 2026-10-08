@@ -2,7 +2,7 @@ import logging
 import os
 import threading
 import time
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -101,7 +101,7 @@ def _artifact(job: Job | None) -> ArtifactSpec:
 
 
 @contextmanager
-def _captured_furu_logs(caplog: pytest.LogCaptureFixture) -> Iterator[None]:
+def _captured_furu_logs(caplog: pytest.LogCaptureFixture) -> Generator[None]:
     furu_logger = logging.getLogger("furu")
     furu_logger.addHandler(caplog.handler)
     try:
@@ -157,7 +157,7 @@ def _scripted_worker_server(
     jobs: Sequence[Job],
     *,
     hold_open: bool = False,
-) -> Iterator[_ScriptedServer]:
+) -> Generator[_ScriptedServer]:
     record = _ScriptedServer(server_url="")
 
     def handler(connection: ServerConnection) -> None:
@@ -187,7 +187,7 @@ def _scripted_worker_server(
 
 
 @contextmanager
-def _serve(handler: Callable[[ServerConnection], None]) -> Iterator[str]:
+def _serve(handler: Callable[[ServerConnection], None]) -> Generator[str]:
     server = serve(handler, "127.0.0.1", 0)
     thread = threading.Thread(target=server.serve_forever)
     thread.start()
@@ -221,14 +221,14 @@ def _connect_worker(
 
 
 @contextmanager
-def _mark_running(obj: Spec) -> Iterator[None]:
+def _mark_running(obj: Spec) -> Generator[None]:
     obj._base_dir.mkdir(parents=True, exist_ok=True)
     with lock([compute_lock_path_in(obj._base_dir)]):
         yield
 
 
 @contextmanager
-def _taking_over(prefix: str) -> Iterator[None]:
+def _taking_over(prefix: str) -> Generator[None]:
     with mock.patch.dict(os.environ, {"FURU_TAKEOVER": prefix}):
         yield
 

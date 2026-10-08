@@ -7,7 +7,7 @@ import shutil
 import sys
 import textwrap
 import traceback
-from collections.abc import Iterator, Mapping
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import UTC, datetime
@@ -403,7 +403,7 @@ def log_detail(**fields: object) -> dict[str, dict[str, object]]:
 
 
 @contextmanager
-def _scoped_log_files(log_paths: tuple[Path, ...]) -> Iterator[None]:
+def _scoped_log_files(log_paths: tuple[Path, ...]) -> Generator[None]:
     token = _CURRENT_LOG_PATHS.set(tuple(dict.fromkeys(log_paths)))
     try:
         yield
@@ -412,7 +412,7 @@ def _scoped_log_files(log_paths: tuple[Path, ...]) -> Iterator[None]:
 
 
 @contextmanager
-def _scoped_component(component: str) -> Iterator[None]:
+def _scoped_component(component: str) -> Generator[None]:
     token = _CURRENT_COMPONENT.set(component)
     try:
         yield

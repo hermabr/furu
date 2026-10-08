@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Literal
@@ -18,7 +18,7 @@ _in_worker_execution: ContextVar[bool] = ContextVar(
 
 
 @contextmanager
-def worker_execution_context() -> Iterator[None]:
+def worker_execution_context() -> Generator[None]:
     token = _in_worker_execution.set(True)
 
     try:

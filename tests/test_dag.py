@@ -1,4 +1,4 @@
-from collections.abc import Iterator, Sequence
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -75,7 +75,7 @@ class ComputedParent(Spec[str]):
 
 
 @contextmanager
-def mark_running(obj: Spec) -> Iterator[None]:
+def mark_running(obj: Spec) -> Generator[None]:
     obj._base_dir.mkdir(parents=True, exist_ok=True)
     with lock([compute_lock_path_in(obj._base_dir)]):
         yield

@@ -4,7 +4,7 @@ import errno
 import os
 import threading
 import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Generator, Iterable
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -367,7 +367,7 @@ def lock(
     heartbeat_interval_s: float = DEFAULT_HEARTBEAT_INTERVAL_S,
     acquire_timeout_s: float | None = None,
     acquire_poll_interval_s: float | None = None,
-) -> Iterator[Callable[[], bool]]:
+) -> Generator[Callable[[], bool]]:
     if isinstance(lock_paths, Path):
         lock_paths = [lock_paths]
     lock_paths = normalize_lock_paths(lock_paths)

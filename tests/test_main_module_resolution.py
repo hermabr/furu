@@ -5,7 +5,7 @@ import json
 import os
 import subprocess
 import sys
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -38,7 +38,7 @@ def _write_uv_project(path: Path) -> None:
 @contextmanager
 def _simulated_python_m_main(
     monkeypatch: pytest.MonkeyPatch, *, spec_name: str
-) -> Iterator[ModuleType]:
+) -> Generator[ModuleType]:
     main = sys.modules["__main__"]
     parent_name = spec_name.rpartition(".")[0]
     parent = ModuleType(parent_name)
