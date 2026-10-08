@@ -2,11 +2,12 @@ import enum
 from dataclasses import fields, is_dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast, get_type_hints
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel as PydanticBaseModel
 
 from furu._declared_types import (
+    cached_type_hints,
     child_declared_type,
     has_skip_hash,
     strip_annotated,
@@ -139,7 +140,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                 for k, v in obj.items()
             }
         case x if is_dataclass(x):
-            hints = get_type_hints(type(x), include_extras=True)
+            hints = cached_type_hints(type(x))
             return {
                 KINDMARKER: "instance",
                 CLASSMARKER: fully_qualified_name(type(x)),
@@ -157,7 +158,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
         case PydanticBaseModel():
             model_cls = type(obj)
             model_fields = model_cls.model_fields
-            hints = get_type_hints(model_cls, include_extras=True)
+            hints = cached_type_hints(model_cls)
             return {
                 KINDMARKER: "instance",
                 CLASSMARKER: fully_qualified_name(model_cls),
@@ -280,7 +281,7 @@ def _from_json(value: JsonValue) -> Any:
                 and isinstance(field_values, dict)
             ):
                 cls = _resolve_serialized_type(class_name)
-                hints = get_type_hints(cls, include_extras=True)
+                hints = cached_type_hints(cls)
                 converted_fields = {
                     name: _from_json_field(field_value, hints.get(name, Any))
                     for name, field_value in field_values.items()
