@@ -276,7 +276,12 @@ def _load_or_create_worker[T](objs: list[Spec[T]]) -> list[T]:
     return loaded
 
 
-def _load_or_create_local[T](objs: list[Spec[T]], *, announce: bool) -> list[T]:
+def _load_or_create_local[T](
+    objs: list[Spec[T]],
+    *,
+    announce: bool = False,
+    dependents: Sequence[Spec] = (),
+) -> list[T]:
     if not objs:
         return []
 
@@ -301,10 +306,20 @@ def _load_or_create_local[T](objs: list[Spec[T]], *, announce: bool) -> list[T]:
         cached = [o for o in unique if o.object_id in results_by_object_id]
         unique[0].logger.info("%s", _cached_to_build_msg(cached, missing))
 
+    if dependents and missing:
+        others = f" and {len(dependents) - 1} others" if len(dependents) > 1 else ""
+        dependents[0].logger.info(
+            "building %d %s of %s%s",
+            len(missing),
+            "dependency" if len(missing) == 1 else "dependencies",
+            dependents[0]._log_label,
+            others,
+        )
+
     # Declared dependencies are built first, matching the coordinator's DAG.
     _load_or_create_local(
         [ref for obj in missing for ref in collect_declared_refs(obj)],
-        announce=False,
+        dependents=missing,
     )
     for obj in missing:
         obj._base_dir.mkdir(parents=True, exist_ok=True)

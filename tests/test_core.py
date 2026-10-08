@@ -1098,10 +1098,17 @@ def test_field_dependencies_are_eager_but_metadata_stores_only_loaded_objects() 
     assert _dependency_object_ids(parent) == [first.object_id]
 
 
-def test_declared_dependencies_are_created_before_the_create_hook() -> None:
+def test_declared_dependencies_are_created_before_the_create_hook(
+    tmp_path: Path,
+) -> None:
     parent = LoadsDeclaredDependencyParent(child=Node(name="declared"))
 
-    assert parent.create() == "Node(declared)"
+    log_path = tmp_path / "create.log"
+    with _scoped_log_files((log_path,)):
+        assert parent.create() == "Node(declared)"
+
+    log_text = log_path.read_text(encoding="utf-8")
+    assert f"building 1 dependency of {parent._log_label}" in log_text
 
 
 def test_computed_dependency_is_cached_property_and_eager_loaded_dependency() -> None:
