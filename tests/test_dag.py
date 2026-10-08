@@ -63,6 +63,13 @@ class NestedParent(Spec[str]):
         return self.bundle.a.create()
 
 
+class CollectionParent(Spec[str]):
+    children: tuple[Leaf, ...]
+
+    def create(self) -> str:
+        return ",".join(child.create() for child in self.children)
+
+
 class ComputedParent(Spec[str]):
     name: str
 
@@ -286,6 +293,17 @@ def test_add_to_dag_handles_nested_dataclass_refs():
     }
 
 
+def test_add_to_dag_walks_refs_inside_collections():
+    leaf_a = Leaf(name="a")
+    leaf_b = Leaf(name="b")
+    parent = CollectionParent(children=(leaf_a, leaf_b))
+
+    coordinator = _new_execution_coordinator([parent])
+
+    assert set(coordinator.ready) == {leaf_a.object_id, leaf_b.object_id}
+    assert set(coordinator.blocked) == {parent.object_id}
+
+
 def test_add_to_dag_walks_computed_dependencies():
     parent = ComputedParent(name="p")
 
@@ -355,101 +373,64 @@ class DependsOnFailing(Spec[int]):
         return self.child.create() + 1
 
 
-def test_execution_coordinator_run_runs_single_zero_dependency_node(tmp_path: Path):
-    leaf = TrackingLeaf(n=3, calls_dir=str(tmp_path))
+class FlakyLeaf(Spec[int]):
+    attempts_file: str
 
-    ExecutionCoordinator.run([leaf], worker_backends=(LocalThreadWorkerBackend(),))
-
-    assert _calls(tmp_path, TrackingLeaf) == ["3"]
-    assert leaf.status == "done"
-    assert leaf.create() == 6
-
-
-def test_execution_coordinator_run_runs_static_dependencies_in_order(tmp_path: Path):
-    leaf = TrackingLeaf(n=4, calls_dir=str(tmp_path))
-    mid = TrackingMid(label="m", child=leaf, calls_dir=str(tmp_path))
-
-    ExecutionCoordinator.run([mid], worker_backends=(LocalThreadWorkerBackend(),))
-
-    assert _calls(tmp_path, TrackingLeaf) == ["4"]
-    assert _calls(tmp_path, TrackingMid) == ["m"]
-    assert mid.create() == 9
+    def create(self) -> int:
+        with open(self.attempts_file, "a", encoding="utf-8") as f:
+            f.write("x")
+        if Path(self.attempts_file).read_text(encoding="utf-8") == "x":
+            raise RuntimeError("temporary failure")
+        return 1
 
 
-def test_execution_coordinator_run_handles_shared_dependency_only_once(
-    tmp_path: Path,
-):
-    shared = TrackingLeaf(n=5, calls_dir=str(tmp_path))
-    left = TrackingMid(label="L", child=shared, calls_dir=str(tmp_path))
-    right = TrackingMid(label="R", child=shared, calls_dir=str(tmp_path))
+def test_create_runs_dag_on_local_workers(tmp_path: Path):
+    calls_dir = str(tmp_path)
+    cached = TrackingLeaf(n=1, calls_dir=calls_dir)
+    cached.create()
+    shared = TrackingLeaf(n=2, calls_dir=calls_dir)
+    left = TrackingMid(label="L", child=shared, calls_dir=calls_dir)
+    right = TrackingMid(label="R", child=shared, calls_dir=calls_dir)
+    on_cached = TrackingMid(label="C", child=cached, calls_dir=calls_dir)
+    lazy = LazyChildLoader(base=3, calls_dir=calls_dir)
 
-    ExecutionCoordinator.run(
-        [left, right], worker_backends=(LocalThreadWorkerBackend(),)
-    )
+    assert furu.create(
+        [left, right, on_cached, lazy],
+        on=(LocalThreadWorkerBackend(max_workers=2),),
+    ) == [5, 5, 3, 9]
 
-    assert _calls(tmp_path, TrackingLeaf) == ["5"]
-    assert sorted(_calls(tmp_path, TrackingMid)) == ["L", "R"]
-
-
-def test_execution_coordinator_run_with_multiple_workers_runs_independent_nodes(
-    tmp_path: Path,
-):
-    leaves = [TrackingLeaf(n=i, calls_dir=str(tmp_path)) for i in range(8)]
-
-    ExecutionCoordinator.run(
-        leaves, worker_backends=(LocalThreadWorkerBackend(max_workers=4),)
-    )
-
-    assert sorted(_calls(tmp_path, TrackingLeaf), key=int) == [str(i) for i in range(8)]
-    for leaf in leaves:
-        assert leaf.status == "done"
-
-
-def test_execution_coordinator_run_discovers_lazy_dependencies_and_reruns_parent(
-    tmp_path: Path,
-):
-    parent = LazyChildLoader(base=7, calls_dir=str(tmp_path))
-
-    ExecutionCoordinator.run([parent], worker_backends=(LocalThreadWorkerBackend(),))
-
-    assert _calls(tmp_path, TrackingLeaf) == ["7"]
-    # Parent's create() is called once to discover the lazy dep (raising
-    # _DependencyNotReady), then once more after the dep completes.
-    assert _calls(tmp_path, LazyChildLoader) == ["7", "7"]
-    assert parent.create() == 21
-    parent_log = run_log_path_in(parent._base_dir).read_text(encoding="utf-8")
-    assert "create deferred: 1 missing dependency/dependencies" in parent_log
-    assert "create failed" not in parent_log
-    assert "=== Debug Traceback ===" not in parent_log
+    # Each leaf ran once: the cached one only in-process above, the shared one
+    # once for both parents, the lazy one once after its parent discovered it.
+    assert sorted(_calls(tmp_path, TrackingLeaf)) == ["1", "2", "3"]
+    # Static dependencies finished first, so no parent was ever blocked.
+    assert sorted(_calls(tmp_path, TrackingMid)) == ["C", "L", "R"]
+    # The lazy parent ran once to discover its dependency, then once more.
+    assert _calls(tmp_path, LazyChildLoader) == ["3", "3"]
+    lazy_log = run_log_path_in(lazy._base_dir).read_text(encoding="utf-8")
+    assert "create deferred: 1 missing dependency/dependencies" in lazy_log
+    assert "create failed" not in lazy_log
+    assert "=== Debug Traceback ===" not in lazy_log
 
 
-def test_execution_coordinator_run_skips_already_completed_objects(tmp_path: Path):
-    leaf = TrackingLeaf(n=8, calls_dir=str(tmp_path))
-    leaf.create()
-    mid = TrackingMid(label="cached-child", child=leaf, calls_dir=str(tmp_path))
-
-    ExecutionCoordinator.run([mid], worker_backends=(LocalThreadWorkerBackend(),))
-
-    # Only the in-process create above; the worker never recomputed the leaf.
-    assert _calls(tmp_path, TrackingLeaf) == ["8"]
-    assert _calls(tmp_path, TrackingMid) == ["cached-child"]
-
-
-def test_execution_coordinator_run_reports_worker_failures():
+def test_execution_coordinator_run_retries_then_reports_failed_jobs(tmp_path: Path):
+    attempts_file = tmp_path / "attempts"
+    flaky = FlakyLeaf(attempts_file=str(attempts_file))
     failing = AlwaysFails(name="boom")
     parent = DependsOnFailing(label="p", child=failing)
 
     config = get_config()
-    no_retries = config.model_copy(
+    one_retry = config.model_copy(
         update={
-            "worker": config.worker.model_copy(update={"max_retries_per_object": 0})
+            "worker": config.worker.model_copy(update={"max_retries_per_object": 1})
         }
     )
-    with override_config(no_retries), pytest.raises(RuntimeError, match="failed jobs"):
+    with override_config(one_retry), pytest.raises(RuntimeError, match="failed jobs"):
         ExecutionCoordinator.run(
-            [parent],
+            [flaky, parent],
             worker_backends=(LocalThreadWorkerBackend(),),
         )
 
+    assert attempts_file.read_text(encoding="utf-8") == "xx"
+    assert flaky.status == "done"
     assert failing.status == "failed"
     assert parent.status == "missing"

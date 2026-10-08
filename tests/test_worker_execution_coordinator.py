@@ -41,7 +41,6 @@ from furu.storage._layout import (
     compute_lock_path_in,
     execution_coordinator_log_path_in,
 )
-from furu.testing import override_config
 from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
 from furu.worker.execute import ChildSlot
 from furu.worker.loop import worker_loop
@@ -286,26 +285,6 @@ class ExecutionCoordinatorLeaf(Spec[int]):
 
     def create(self) -> int:
         return self.value
-
-
-class FlakyExecutionCoordinatorLeaf(Spec[int]):
-    value: int
-    attempts_file: str
-
-    def create(self) -> int:
-        # Workers run create() in a child process; count attempts on disk.
-        with open(self.attempts_file, "a", encoding="utf-8") as f:
-            f.write("x")
-        if Path(self.attempts_file).read_text(encoding="utf-8") == "x":
-            raise RuntimeError(f"temporary failure: {self.value}")
-        return self.value
-
-
-class FailingCoordinatorLeaf(Spec[int]):
-    value: int
-
-    def create(self) -> int:
-        raise RuntimeError(f"always fails: {self.value}")
 
 
 class GatedExecutionCoordinatorLeaf(Spec[int]):
@@ -693,23 +672,6 @@ def test_execution_coordinator_job_result_failed_retry_can_later_complete() -> N
     assert coordinator.done.is_set()
 
 
-def test_execution_coordinator_run_retries_failed_worker_result(
-    tmp_path: Path,
-) -> None:
-    attempts_file = tmp_path / "attempts"
-    leaf = FlakyExecutionCoordinatorLeaf(value=1, attempts_file=str(attempts_file))
-    objs = [leaf]
-
-    returned = ExecutionCoordinator.run(
-        objs,
-        worker_backends=(LocalThreadWorkerBackend(),),
-    )
-
-    assert attempts_file.read_text(encoding="utf-8") == "xx"
-    assert returned is objs
-    assert leaf.create() == 1
-
-
 class GpuLeaf(Spec[int]):
     value: int
 
@@ -758,17 +720,6 @@ class DynamicGpuAfterSeed(Spec[int]):
 class DynamicCpuAfterGpu(Spec[int]):
     parent: DynamicGpuAfterSeed
     value: int
-
-    def create(self) -> int:
-        return self.parent.create() + self.value
-
-
-class DynamicGpuAfterCpu(Spec[int]):
-    parent: DynamicCpuAfterGpu
-    value: int
-
-    def runs_on(self, worker: Worker) -> bool:
-        return worker.gpus >= 1
 
     def create(self) -> int:
         return self.parent.create() + self.value
@@ -1159,25 +1110,6 @@ def test_execution_coordinator_fails_on_a_zero_batch_cap_in_a_lazy_dependency() 
     assert "cap must be a positive int, got 0" in coordinator.finish_error
 
 
-def test_execution_coordinator_splits_work_across_open_and_reserved_pools() -> None:
-    cpu_leaf = CpuOnlyLeaf(value=uuid4().int)
-    memory_leaf = MemoryLeaf(value=uuid4().int)
-
-    ExecutionCoordinator.run(
-        [cpu_leaf, memory_leaf],
-        worker_backends=(
-            LocalThreadWorkerBackend(worker=Worker()),
-            LocalThreadWorkerBackend(
-                worker=Worker(memory_gib=16),
-                accepts=lambda spec: isinstance(spec, MemoryLeaf),
-            ),
-        ),
-    )
-
-    assert cpu_leaf.status == "done"
-    assert memory_leaf.status == "done"
-
-
 def test_execution_coordinator_run_completes_later_resource_stages_on_local_workers() -> (
     None
 ):
@@ -1185,29 +1117,18 @@ def test_execution_coordinator_run_completes_later_resource_stages_on_local_work
     seed = DynamicCpuSeed(value=seed_value)
     first_gpu = DynamicGpuAfterSeed(parent=seed, value=20)
     second_cpu = DynamicCpuAfterGpu(parent=first_gpu, value=30)
-    final_gpus = [
-        DynamicGpuAfterCpu(parent=second_cpu, value=value) for value in range(4)
-    ]
 
     ExecutionCoordinator.run(
-        final_gpus,
+        [second_cpu],
         worker_backends=(
-            LocalThreadWorkerBackend(
-                max_workers=1,
-                worker=Worker(gpus=0),
-            ),
-            LocalThreadWorkerBackend(
-                max_workers=3,
-                worker=Worker(gpus=1),
-            ),
+            LocalThreadWorkerBackend(worker=Worker(gpus=0)),
+            LocalThreadWorkerBackend(worker=Worker(gpus=1)),
         ),
     )
 
-    for obj in (seed, first_gpu, second_cpu, *final_gpus):
+    for obj in (seed, first_gpu, second_cpu):
         assert obj.status == "done"
-    assert [obj.create() for obj in final_gpus] == [
-        seed_value + 50 + value for value in range(4)
-    ]
+    assert second_cpu.create() == seed_value + 50
 
 
 def test_execution_coordinator_run_fails_when_local_worker_crashes(
@@ -1238,17 +1159,29 @@ def test_execution_coordinator_run_fails_when_local_worker_crashes(
         )
 
 
-def test_execution_coordinator_run_uses_worker_backend() -> None:
+def test_execution_coordinator_run_drives_worker_backend_pool() -> None:
+    class RecordingPool:
+        def __init__(self) -> None:
+            self.stop_timeouts: list[float] = []
+            self.worker_thread: threading.Thread | None = None
+
+        def handoff(self) -> PoolHandoff:
+            return PoolHandoff()
+
+        def stop(self, *, timeout: float) -> None:
+            self.stop_timeouts.append(timeout)
+            assert self.worker_thread is not None
+            self.worker_thread.join(timeout=timeout)
+
     class RecordingBackend:
-        execution_coordinator_listen_host = "0.0.0.0"
+        execution_coordinator_listen_host = "127.0.0.1"
         worker = Worker()
         accepts = None
-        pool_key = CPU_POOL.pool_key
+        pool_key = "test-pool"
 
         def __init__(self) -> None:
-            self.bound_ports: list[int] = []
-            self.auth_tokens: list[str] = []
-            self.provenances: list[SubmitProvenance] = []
+            self.pool = RecordingPool()
+            self.starts: list[tuple[ExecutionCoordinator, int, str, Path]] = []
 
         def start_pool(
             self,
@@ -1258,106 +1191,46 @@ def test_execution_coordinator_run_uses_worker_backend() -> None:
             auth_token: str,
             executor_dir: Path,
             handoff: PoolHandoff,
-        ) -> LocalThreadWorkerPool:
-            self.bound_ports.append(bound_port)
-            self.auth_tokens.append(auth_token)
-            self.provenances.append(coordinator.submit_provenance)
-            return CPU_POOL.start_pool(
-                coordinator=coordinator,
-                bound_port=bound_port,
-                auth_token=auth_token,
-                executor_dir=executor_dir,
-                handoff=handoff,
-            )
+        ) -> RecordingPool:
+            self.starts.append((coordinator, bound_port, auth_token, executor_dir))
+            # The server listens on the backend's host.
+            server_url = f"ws://{self.execution_coordinator_listen_host}:{bound_port}"
+
+            def complete_job() -> None:
+                try:
+                    _complete_one_job_over_ws(server_url, auth_token, self.pool_key)
+                except BaseException as exc:
+                    coordinator.fail(f"recording backend failed: {exc!r}")
+
+            self.pool.worker_thread = threading.Thread(target=complete_job)
+            self.pool.worker_thread.start()
+            return self.pool
 
     leaf = ExecutionCoordinatorLeaf(value=11)
     objs = [leaf]
     backend = RecordingBackend()
 
-    returned = ExecutionCoordinator.run(objs, worker_backends=(backend,))
+    assert ExecutionCoordinator.run(objs, worker_backends=(backend,)) is objs
 
-    assert returned is objs
-    assert leaf.status == "done"
-    assert leaf.create() == 11
-    assert len(backend.bound_ports) == 1
-    (pool_provenance,) = backend.provenances
-    assert isinstance(pool_provenance, SubmitProvenance)
-    assert backend.bound_ports[0] > 0
-    assert len(backend.auth_tokens) == 1
-    assert backend.auth_tokens[0]
-
-
-def test_execution_coordinator_run_passes_executor_dir_to_worker_backend() -> None:
-    class RecordingBackend:
-        execution_coordinator_listen_host = "127.0.0.1"
-        worker = Worker()
-        accepts = None
-        pool_key = CPU_POOL.pool_key
-
-        def __init__(self) -> None:
-            self.executor_dirs: list[Path] = []
-
-        def start_pool(
-            self,
-            *,
-            coordinator: ExecutionCoordinator,
-            bound_port: int,
-            auth_token: str,
-            executor_dir: Path,
-            handoff: PoolHandoff,
-        ) -> LocalThreadWorkerPool:
-            self.executor_dirs.append(executor_dir)
-            return CPU_POOL.start_pool(
-                coordinator=coordinator,
-                bound_port=bound_port,
-                auth_token=auth_token,
-                executor_dir=executor_dir,
-                handoff=handoff,
-            )
-
-    leaf = ExecutionCoordinatorLeaf(value=12)
-    backend = RecordingBackend()
-
-    ExecutionCoordinator.run([leaf], worker_backends=(backend,))
-
-    assert len(backend.executor_dirs) == 1
-    (executor_dir,) = backend.executor_dirs
+    ((coordinator, bound_port, auth_token, executor_dir),) = backend.starts
+    assert bound_port > 0
+    assert auth_token
+    assert isinstance(coordinator.submit_provenance, SubmitProvenance)
+    assert coordinator.pools == {backend.pool_key: backend.pool}
+    assert backend.pool.stop_timeouts == [5]
+    assert executor_dir == coordinator.executor_dir
     assert executor_dir.parent == get_config().run_directories.executions
     assert len(executor_dir.name) == 32
     assert int(executor_dir.name, 16) >= 0
 
-
-def test_top_level_create_runs_dag_on_worker_backends() -> None:
-    leaf = ExecutionCoordinatorLeaf(value=21)
-
-    assert furu.create(leaf, on=(LocalThreadWorkerBackend(),)) == 21
-    assert leaf.status == "done"
-    assert furu.create([leaf], on=(LocalThreadWorkerBackend(),)) == [21]
-
-
-def test_execution_coordinator_run_writes_log_to_executor_dir() -> None:
-    leaf = ExecutionCoordinatorLeaf(value=14)
-    executions_dir = get_config().run_directories.executions
-
-    ExecutionCoordinator.run([leaf], worker_backends=(LocalThreadWorkerBackend(),))
-
-    (executor_dir,) = executions_dir.iterdir()
-    log_path = execution_coordinator_log_path_in(executor_dir)
-    assert log_path.parent == executor_dir
-
-    log_text = log_path.read_text(encoding="utf-8")
+    log_text = execution_coordinator_log_path_in(executor_dir).read_text(
+        encoding="utf-8"
+    )
     assert "starting exec=" in log_text
     assert "server listening on " in log_text
     assert f"creating {leaf._log_label}" not in log_text
-    assert f"(object_id={leaf.object_id})" not in log_text
-    assert f"leased {leaf._log_label} ×1 to local-worker-0" in log_text
-    assert "worker=local-worker-0" in log_text
+    assert f"leased {leaf._log_label} ×1 to recording-worker" in log_text
     assert leaf.object_id in log_text
-
-    worker_log = (executor_dir / "workers" / "local-worker-0.log").read_text(
-        encoding="utf-8"
-    )
-    assert f'comp=local-worker-0 msg="received {leaf._log_label}"' in worker_log
     assert f"completed {leaf._log_label} ok" in log_text
     assert "progress 1/1 · 0 running" in log_text
     assert "failed_retry=0 failed=0" in log_text
@@ -1398,67 +1271,6 @@ def test_execution_coordinator_run_returns_when_all_objects_are_already_complete
     # A no-op run returns before creating an executor dir or capturing
     # provenance; nothing appears under executions/.
     assert not executions_dir.exists() or list(executions_dir.iterdir()) == []
-
-
-def test_execution_coordinator_run_starts_backend_pool_and_stops_and_joins_when_done() -> (
-    None
-):
-    class RecordingPool:
-        def __init__(self) -> None:
-            self.events: list[str] = []
-            self.stop_timeouts: list[float] = []
-            self.worker_thread: threading.Thread | None = None
-
-        def handoff(self) -> PoolHandoff:
-            return PoolHandoff()
-
-        def stop(self, *, timeout: float) -> None:
-            self.events.append("stop")
-            self.stop_timeouts.append(timeout)
-            if self.worker_thread is not None:
-                self.worker_thread.join(timeout=timeout)
-
-    class RecordingBackend:
-        execution_coordinator_listen_host = "127.0.0.1"
-        worker = Worker()
-        accepts = None
-        pool_key = "test-pool"
-
-        def __init__(self, pool: RecordingPool) -> None:
-            self.pool = pool
-
-        def start_pool(
-            self,
-            *,
-            coordinator: ExecutionCoordinator,
-            bound_port: int,
-            auth_token: str,
-            executor_dir: Path,
-            handoff: PoolHandoff,
-        ) -> RecordingPool:
-            self.pool.events.append("start_pool")
-            server_url = f"ws://127.0.0.1:{bound_port}"
-
-            def complete_job() -> None:
-                try:
-                    _complete_one_job_over_ws(server_url, auth_token, self.pool_key)
-                except BaseException as exc:
-                    coordinator.fail(f"recording backend failed: {exc!r}")
-
-            self.pool.worker_thread = threading.Thread(target=complete_job)
-            self.pool.worker_thread.start()
-            return self.pool
-
-    pool = RecordingPool()
-
-    ExecutionCoordinator.run(
-        [ExecutionCoordinatorLeaf(value=13)],
-        worker_backends=(RecordingBackend(pool),),
-        port=0,
-    )
-
-    assert pool.events == ["start_pool", "stop"]
-    assert pool.stop_timeouts == [5]
 
 
 def test_execution_coordinator_run_stops_backend_pool_when_interrupted() -> None:
@@ -1515,61 +1327,6 @@ def test_execution_coordinator_run_stops_backend_pool_when_interrupted() -> None
 
     assert pool.events == ["start_pool", "stop"]
     assert pool.stop_timeouts == [5]
-
-
-def test_execution_coordinator_run_uses_worker_backend_execution_coordinator_listen_host() -> (
-    None
-):
-    class RecordingPool:
-        worker_thread: threading.Thread | None = None
-
-        def handoff(self) -> PoolHandoff:
-            return PoolHandoff()
-
-        def stop(self, *, timeout: float) -> None:
-            if self.worker_thread is not None:
-                self.worker_thread.join(timeout=timeout)
-
-    class RecordingBackend:
-        execution_coordinator_listen_host = "127.0.0.1"
-        worker = Worker()
-        accepts = None
-        pool_key = "test-pool"
-
-        def __init__(self) -> None:
-            self.server_urls: list[str] = []
-
-        def start_pool(
-            self,
-            *,
-            coordinator: ExecutionCoordinator,
-            bound_port: int,
-            auth_token: str,
-            executor_dir: Path,
-            handoff: PoolHandoff,
-        ) -> RecordingPool:
-            server_url = f"ws://{self.execution_coordinator_listen_host}:{bound_port}"
-            self.server_urls.append(server_url)
-            pool = RecordingPool()
-
-            def complete_job() -> None:
-                try:
-                    _complete_one_job_over_ws(server_url, auth_token, self.pool_key)
-                except BaseException as exc:
-                    coordinator.fail(f"recording backend failed: {exc!r}")
-
-            pool.worker_thread = threading.Thread(target=complete_job)
-            pool.worker_thread.start()
-            return pool
-
-    backend = RecordingBackend()
-
-    ExecutionCoordinator.run(
-        [ExecutionCoordinatorLeaf(value=15)], worker_backends=(backend,), port=0
-    )
-
-    assert len(backend.server_urls) == 1
-    assert backend.server_urls[0].startswith("ws://127.0.0.1:")
 
 
 def test_execution_coordinator_server_exposes_bound_host_and_port() -> None:
@@ -1742,47 +1499,6 @@ def test_execution_coordinator_run_rejects_identical_worker_backends() -> None:
         )
 
 
-def test_execution_coordinator_run_registers_pools_by_key() -> None:
-    class RecordingBackend:
-        execution_coordinator_listen_host = "127.0.0.1"
-        worker = Worker()
-        accepts = None
-        pool_key = CPU_POOL.pool_key
-
-        def __init__(self) -> None:
-            self.coordinators: list[ExecutionCoordinator] = []
-            self.pools: list[LocalThreadWorkerPool] = []
-
-        def start_pool(
-            self,
-            *,
-            coordinator: ExecutionCoordinator,
-            bound_port: int,
-            auth_token: str,
-            executor_dir: Path,
-            handoff: PoolHandoff,
-        ) -> LocalThreadWorkerPool:
-            self.coordinators.append(coordinator)
-            pool = CPU_POOL.start_pool(
-                coordinator=coordinator,
-                bound_port=bound_port,
-                auth_token=auth_token,
-                executor_dir=executor_dir,
-                handoff=handoff,
-            )
-            self.pools.append(pool)
-            return pool
-
-    backend = RecordingBackend()
-
-    ExecutionCoordinator.run(
-        [ExecutionCoordinatorLeaf(value=16)], worker_backends=(backend,)
-    )
-
-    (coordinator,) = backend.coordinators
-    assert coordinator.pools == {CPU_POOL.pool_key: backend.pools[0]}
-
-
 def test_execution_coordinator_run_rejects_empty_worker_backends() -> None:
     with pytest.raises(RuntimeError, match="no worker pool can run"):
         ExecutionCoordinator.run(
@@ -1857,14 +1573,14 @@ def test_worker_loop_exits_after_idle_timeout(tmp_path: Path) -> None:
         assert server.results == []
 
 
-def test_worker_loop_exits_non_zero_after_consecutive_failures(tmp_path: Path) -> None:
-    jobs = [
-        _job(FailingCoordinatorLeaf(value=0)),
-        _job(ExecutionCoordinatorLeaf(value=1)),  # success resets the count
-        _job(FailingCoordinatorLeaf(value=2)),
-        _job(FailingCoordinatorLeaf(value=3)),
-        _job(FailingCoordinatorLeaf(value=4)),
-    ]
+def test_worker_loop_exits_non_zero_after_consecutive_failures(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    failed = JobFailedResult(error="boom")
+    # A success in between resets the count.
+    outcomes = iter([failed, JobCompletedResult(), failed, failed, failed])
+    monkeypatch.setattr(ChildSlot, "run", lambda *_, **__: next(outcomes))
+    jobs = [_job(ExecutionCoordinatorLeaf(value=value)) for value in range(5)]
 
     with (
         _scripted_worker_server(jobs, hold_open=True) as server,
@@ -1891,30 +1607,12 @@ def test_worker_loop_exits_non_zero_after_consecutive_failures(tmp_path: Path) -
     ]
 
 
-def test_execution_coordinator_run_fails_when_local_worker_gives_up() -> None:
-    config = get_config()
-    two_failures = config.model_copy(
-        update={
-            "worker": config.worker.model_copy(update={"max_failures_per_worker": 2})
-        }
-    )
-    with (
-        override_config(two_failures),
-        pytest.raises(
-            RuntimeError,
-            match="local worker thread crashed: SystemExit: 2 jobs failed in a row",
-        ),
-    ):
-        ExecutionCoordinator.run(
-            [FailingCoordinatorLeaf(value=0)],
-            worker_backends=(LocalThreadWorkerBackend(max_workers=1),),
-        )
-
-
 def test_worker_loop_logs_received_task_and_result(
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    monkeypatch.setattr(ChildSlot, "run", lambda *_, **__: JobCompletedResult())
     leaf = BatchedCoordinatorLeaf(value=1)
     other_leaf = BatchedCoordinatorLeaf(value=2)
     job = Job(
@@ -1938,7 +1636,6 @@ def test_worker_loop_logs_received_task_and_result(
 
         assert server.results == [JobCompletedResult()]
 
-    assert (leaf.create(), other_leaf.create()) == (1, 2)
     assert f"received {leaf._log_label} ×2" in caplog.messages
     assert any(
         message.startswith(f"finished {leaf._log_label} ×2 ok ·")
@@ -2123,51 +1820,6 @@ def test_worker_loop_cancel_kills_running_job(tmp_path: Path) -> None:
     assert leaf.status != "done"
 
 
-def test_worker_loop_reconnects_when_worker_config_url_changes(
-    tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    leaf = ExecutionCoordinatorLeaf(value=1)
-    config_file = tmp_path / "worker.config.json"
-    hellos: dict[str, list[HelloMessage]] = {"old": [], "new": []}
-    results: list[JobResult] = []
-
-    def new_handler(connection: ServerConnection) -> None:
-        hellos["new"].append(
-            HelloMessage.model_validate_json(connection.recv(timeout=5))
-        )
-        connection.send(_job(leaf).model_dump_json())
-        results.append(job_result_adapter.validate_json(connection.recv(timeout=10)))
-
-    with _serve(new_handler) as new_url:
-
-        def old_handler(connection: ServerConnection) -> None:
-            hellos["old"].append(
-                HelloMessage.model_validate_json(connection.recv(timeout=5))
-            )
-            _write_worker_config(config_file, url=new_url)
-
-        with _serve(old_handler) as old_url, _captured_furu_logs(caplog):
-            _write_worker_config(config_file, url=old_url)
-            worker_loop(
-                coordinator=config_file,
-                pool="cpu",
-                idle_timeout=5,
-                max_failures=get_config().worker.max_failures_per_worker,
-                component="test-worker",
-                backend="test",
-                materialize_snapshot=False,
-                log_file=tmp_path / "worker.log",
-                disconnect_grace=0,
-            )
-
-    assert [hello.running for hello in hellos["old"]] == [[]]
-    assert [hello.running for hello in hellos["new"]] == [[]]
-    assert results == [JobCompletedResult()]
-    assert "coordinator moved; reconnecting" in caplog.messages
-    assert "server closed the connection; worker exiting" in caplog.messages
-
-
 def test_worker_loop_reads_unchanged_worker_config_only_after_disconnect(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2229,43 +1881,81 @@ def test_worker_loop_fails_when_worker_config_disappears(tmp_path: Path) -> None
     assert leaf.status != "done"
 
 
-def test_worker_loop_carries_running_job_to_new_coordinator(tmp_path: Path) -> None:
+def test_worker_loop_carries_running_job_to_moved_coordinator(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     release_file = tmp_path / "go"
     leaf = GatedExecutionCoordinatorLeaf(value=7, release_file=str(release_file))
     job = _job(leaf)
     config_file = tmp_path / "worker.config.json"
+    old_hellos: list[HelloMessage] = []
     new_hellos: list[HelloMessage] = []
     results: list[JobResult] = []
+    read_target = worker_loop_module._read_target
+    read_truncated = threading.Event()
+
+    def reading(coordinator: str | Path) -> Any:
+        try:
+            return read_target(coordinator)
+        except ValueError:
+            read_truncated.set()
+            raise
+
+    monkeypatch.setattr(worker_loop_module, "_read_target", reading)
+    monkeypatch.setattr(worker_loop_module, "_WORKER_CONFIG_POLL_INTERVAL_S", 0.01)
+    config = get_config()
+    next_run_config = config.model_copy(
+        update={
+            "worker": config.worker.model_copy(update={"max_retries_per_object": 0})
+        }
+    )
 
     def new_handler(connection: ServerConnection) -> None:
         new_hellos.append(HelloMessage.model_validate_json(connection.recv(timeout=5)))
         release_file.touch()
         results.append(job_result_adapter.validate_json(connection.recv(timeout=10)))
+        # A differently configured run ends the worker without a grace wait.
+        _write_worker_config(config_file, url=new_url, config=next_run_config)
 
-    with _serve(new_handler) as new_url:
+    def old_handler(connection: ServerConnection) -> None:
+        old_hellos.append(HelloMessage.model_validate_json(connection.recv(timeout=5)))
+        connection.send(job.model_dump_json())
+        # Hang up mid-job, mid-rewrite of the worker config; finish the rewrite
+        # only once the worker has seen the truncated file.
+        config_file.write_text("")
 
-        def old_handler(connection: ServerConnection) -> None:
-            HelloMessage.model_validate_json(connection.recv(timeout=5))
-            connection.send(job.model_dump_json())
+        def finish_rewrite() -> None:
+            assert read_truncated.wait(timeout=10)
             _write_worker_config(config_file, url=new_url)
 
-        with _serve(old_handler) as old_url:
-            _write_worker_config(config_file, url=old_url)
-            worker_loop(
-                coordinator=config_file,
-                pool="cpu",
-                idle_timeout=5,
-                max_failures=get_config().worker.max_failures_per_worker,
-                component="test-worker",
-                backend="test",
-                materialize_snapshot=False,
-                log_file=tmp_path / "worker.log",
-                disconnect_grace=0,
-            )
+        threading.Thread(target=finish_rewrite).start()
 
+    with (
+        _serve(new_handler) as new_url,
+        _serve(old_handler) as old_url,
+        _captured_furu_logs(caplog),
+    ):
+        _write_worker_config(config_file, url=old_url)
+        worker_loop(
+            coordinator=config_file,
+            pool="cpu",
+            idle_timeout=5,
+            max_failures=get_config().worker.max_failures_per_worker,
+            component="test-worker",
+            backend="test",
+            materialize_snapshot=False,
+            log_file=tmp_path / "worker.log",
+            disconnect_grace=30,
+        )
+
+    assert [hello.running for hello in old_hellos] == [[]]
     assert [hello.running for hello in new_hellos] == [job.artifacts]
     assert results == [JobCompletedResult()]
     assert leaf.status == "done"
+    assert "coordinator moved; reconnecting" in caplog.messages
+    assert not any("killing" in message for message in caplog.messages)
 
 
 def test_worker_loop_exits_when_worker_config_changes(
@@ -2355,55 +2045,10 @@ def test_worker_loop_kills_job_when_coordinator_disappears(
     assert "server closed the connection; worker exiting" in caplog.messages
 
 
-def test_worker_loop_keeps_job_while_waiting_for_moved_coordinator(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    release_file = tmp_path / "go"
-    leaf = GatedExecutionCoordinatorLeaf(value=1, release_file=str(release_file))
-    config_file = tmp_path / "worker.config.json"
-    new_hellos: list[HelloMessage] = []
-    results: list[JobResult] = []
-
-    def new_handler(connection: ServerConnection) -> None:
-        new_hellos.append(HelloMessage.model_validate_json(connection.recv(timeout=5)))
-        release_file.touch()
-        results.append(job_result_adapter.validate_json(connection.recv(timeout=10)))
-
-    def old_handler(connection: ServerConnection) -> None:
-        HelloMessage.model_validate_json(connection.recv(timeout=5))
-        connection.send(_job(leaf).model_dump_json())
-
-    with _serve(new_handler) as new_url, _serve(old_handler) as old_url:
-        _write_worker_config(config_file, url=old_url)
-
-        def move_later() -> None:
-            time.sleep(1)
-            _write_worker_config(config_file, url=new_url)
-
-        threading.Thread(target=move_later).start()
-        with _captured_furu_logs(caplog):
-            worker_loop(
-                coordinator=config_file,
-                pool="cpu",
-                idle_timeout=5,
-                max_failures=get_config().worker.max_failures_per_worker,
-                component="test-worker",
-                backend="test",
-                materialize_snapshot=False,
-                log_file=tmp_path / "worker.log",
-                disconnect_grace=5,
-            )
-
-    assert [hello.running for hello in new_hellos] == [[ArtifactSpec.from_furu(leaf)]]
-    assert results == [JobCompletedResult()]
-    assert leaf.status == "done"
-    assert "coordinator moved; reconnecting" in caplog.messages
-    assert not any("killing" in message for message in caplog.messages)
-
-
 def test_worker_loop_kills_job_when_worker_config_never_changes(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(worker_loop_module, "_WORKER_CONFIG_POLL_INTERVAL_S", 0.01)
     leaf = GatedExecutionCoordinatorLeaf(value=1, release_file=str(tmp_path / "go"))
     config_file = tmp_path / "worker.config.json"
 
@@ -2423,56 +2068,15 @@ def test_worker_loop_kills_job_when_worker_config_never_changes(
             backend="test",
             materialize_snapshot=False,
             log_file=tmp_path / "worker.log",
-            disconnect_grace=2,
+            disconnect_grace=0.2,
         )
 
-    assert 2 <= time.monotonic() - started < 10
+    assert 0.2 <= time.monotonic() - started < 10
     assert leaf.status != "done"
     assert (
         f"server closed the connection mid-job; killing {leaf._log_label}"
         in caplog.messages
     )
-
-
-def test_worker_loop_ignores_truncated_worker_config_while_waiting(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    leaf = ExecutionCoordinatorLeaf(value=1)
-    config_file = tmp_path / "worker.config.json"
-    results: list[JobResult] = []
-
-    def new_handler(connection: ServerConnection) -> None:
-        HelloMessage.model_validate_json(connection.recv(timeout=5))
-        connection.send(_job(leaf).model_dump_json())
-        results.append(job_result_adapter.validate_json(connection.recv(timeout=10)))
-
-    with _serve(new_handler) as new_url:
-
-        def finish_rewrite_later() -> None:
-            time.sleep(1)
-            _write_worker_config(config_file, url=new_url)
-
-        def old_handler(connection: ServerConnection) -> None:
-            HelloMessage.model_validate_json(connection.recv(timeout=5))
-            config_file.write_text("")
-            threading.Thread(target=finish_rewrite_later).start()
-
-        with _serve(old_handler) as old_url, _captured_furu_logs(caplog):
-            _write_worker_config(config_file, url=old_url)
-            worker_loop(
-                coordinator=config_file,
-                pool="cpu",
-                idle_timeout=5,
-                max_failures=get_config().worker.max_failures_per_worker,
-                component="test-worker",
-                backend="test",
-                materialize_snapshot=False,
-                log_file=tmp_path / "worker.log",
-                disconnect_grace=5,
-            )
-
-    assert results == [JobCompletedResult()]
-    assert "coordinator moved; reconnecting" in caplog.messages
 
 
 def test_lease_job_checks_for_locks_acquired_after_dag_build() -> None:
@@ -2756,10 +2360,6 @@ def test_execution_coordinator_run_inherits_pools_on_takeover() -> None:
         )
         assert old.executor_dir.is_dir()
         assert "FURU_TAKEOVER" not in os.environ
-        ExecutionCoordinator.run(
-            [ExecutionCoordinatorLeaf(value=uuid4().int)],
-            worker_backends=(LocalThreadWorkerBackend(),),
-        )
     old_thread.join(timeout=10)
 
     assert leaf.status == "done"

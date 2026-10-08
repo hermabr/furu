@@ -20,6 +20,8 @@ from furu.worker.execute import ChildSlot
 
 logger = get_logger("worker.loop")
 
+_WORKER_CONFIG_POLL_INTERVAL_S = 1.0
+
 type _Event = protocol.ServerMessage | protocol.JobResult | BaseException | None
 
 
@@ -205,7 +207,7 @@ def worker_loop(
                         new_target = _read_target(coordinator)
                     if new_target != target or time.monotonic() >= deadline:
                         break
-                    time.sleep(1)
+                    time.sleep(_WORKER_CONFIG_POLL_INTERVAL_S)
                 if new_target != target:
                     if new_target[1] != target[1]:
                         if job is not None and result is None:

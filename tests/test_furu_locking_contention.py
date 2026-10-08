@@ -123,8 +123,7 @@ def _config_for_data(data_dir: str) -> _Config:
     )
 
 
-def _steal_lock(lock_path: str, out_q) -> None:
-    lock = Path(lock_path)
+def _steal_lock(lock: Path) -> None:
     claim_path = lock.with_name(f"{lock.name}.stolen.{os.getpid()}.claim").resolve()
     manifest = {
         "claim_path": str(claim_path),
@@ -137,7 +136,6 @@ def _steal_lock(lock_path: str, out_q) -> None:
         os.fsync(f.fileno())
     lock.unlink()
     os.link(claim_path, lock)
-    out_q.put(("stolen", os.getpid()))
 
 
 def test_two_processes_competing_for_same_furu_object(tmp_path):
@@ -248,13 +246,7 @@ def test_lock_is_taken_over_mid_create(tmp_path):
     lock_paths = list(data_dir.glob("**/compute.lock"))
     assert len(lock_paths) == 1
 
-    steal_q = ctx.Queue()
-    stealer = ctx.Process(target=_steal_lock, args=(str(lock_paths[0]), steal_q))
-    stealer.start()
-    assert steal_q.get(timeout=PROCESS_TIMEOUT_S)[0] == "stolen"
-    stealer.join(timeout=PROCESS_TIMEOUT_S)
-    assert stealer.exitcode == 0
-
+    _steal_lock(lock_paths[0])
     release_path.touch()
 
     result = out_q.get(timeout=PROCESS_TIMEOUT_S)
