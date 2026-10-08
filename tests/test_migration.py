@@ -605,6 +605,9 @@ def test_second_widening_leaves_intermediate_generation_stale() -> None:
     assert _COUNTER.calls == 0
 
 
+# --- dead steps and ambiguity are rejected, never searched -------------------------
+
+
 class _DeadRetyped(Spec[str]):
     optimizer: _SGD
     lr: float
@@ -613,17 +616,6 @@ class _DeadRetyped(Spec[str]):
 
     def create(self) -> str:
         return "current"
-
-
-def test_retyped_without_type_change_is_a_dead_step() -> None:
-    spec = _DeadRetyped(optimizer=_SGD(momentum=0.9), lr=0.1)
-    with pytest.raises(MigrationError, match="dead step"):
-        _ = spec.status
-    with pytest.raises(MigrationError, match="dead step"):
-        spec.create()
-
-
-# --- ambiguity is rejected, never searched -----------------------------------------
 
 
 class _AmbiguousChains(Spec[int]):
@@ -638,9 +630,50 @@ class _AmbiguousChains(Spec[int]):
         return self.n
 
 
-def test_two_chains_claiming_the_same_source_schema_are_rejected() -> None:
-    with pytest.raises(MigrationError, match="ambiguous"):
-        _ = _AmbiguousChains(n=1).status
+class _CascadeAmbiguousTokenizer(Spec[int]):
+    n: int
+
+    migrations = (
+        MovedFrom(fully_qualified_name(_LegacyRun)),
+        MovedFrom(fully_qualified_name(_LegacyRun)),
+    )
+
+    def create(self) -> int:
+        return 0
+
+
+class _CascadeAmbiguousModel(Spec[int]):
+    tokenizer: _CascadeAmbiguousTokenizer
+
+    def create(self) -> int:
+        return 0
+
+
+@pytest.mark.parametrize(
+    ("spec", "match"),
+    [
+        pytest.param(
+            _DeadRetyped(optimizer=_SGD(momentum=0.9), lr=0.1),
+            "dead step",
+            id="retyped-without-type-change",
+        ),
+        pytest.param(
+            _AmbiguousChains(n=1),
+            "ambiguous",
+            id="two-chains-claim-the-same-source-schema",
+        ),
+        pytest.param(
+            _CascadeAmbiguousModel(tokenizer=_CascadeAmbiguousTokenizer(n=1)),
+            "ambiguous",
+            id="ambiguous-embedded-child-chain",
+        ),
+    ],
+)
+def test_unresolvable_chain_is_rejected(spec: Spec, match: str) -> None:
+    with pytest.raises(MigrationError, match=match):
+        _ = spec.status
+    with pytest.raises(MigrationError, match=match):
+        spec.create()
 
 
 def _identity_rewrite(fields: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
@@ -790,15 +823,6 @@ class _RewriteWallsRun(Spec[dict[str, str]]):
         return {}
 
 
-def test_rewrite_walls_reject_unknown_source_fields() -> None:
-    donor = _RewriteDonor(dataset="cifar10", version=2.0)
-    donor.create()
-    _transplant_generation(donor, _RewriteWallsRun)
-
-    with pytest.raises(KeyError, match="not a source field"):
-        _ = _RewriteWallsRun(dataset="cifar10", version=2).status
-
-
 def _renames_a_field(fields: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
     return {"dataset2": fields["dataset"], "version": fields["version"]}
 
@@ -813,13 +837,31 @@ class _RewriteRenamesRun(Spec[dict[str, str]]):
         return {}
 
 
-def test_rewrite_must_preserve_field_names() -> None:
+@pytest.mark.parametrize(
+    ("target", "error", "match"),
+    [
+        pytest.param(
+            _RewriteWallsRun, KeyError, "not a source field", id="reads-unknown-field"
+        ),
+        pytest.param(
+            _RewriteRenamesRun,
+            MigrationError,
+            "must preserve field names",
+            id="renames-a-field",
+        ),
+    ],
+)
+def test_bad_rewrite_is_rejected(
+    target: type[_RewriteWallsRun | _RewriteRenamesRun],
+    error: type[Exception],
+    match: str,
+) -> None:
     donor = _RewriteDonor(dataset="cifar10", version=2.0)
     donor.create()
-    _transplant_generation(donor, _RewriteRenamesRun)
+    _transplant_generation(donor, target)
 
-    with pytest.raises(MigrationError, match="must preserve field names"):
-        _ = _RewriteRenamesRun(dataset="cifar10", version=2).status
+    with pytest.raises(error, match=match):
+        _ = target(dataset="cifar10", version=2).status
 
 
 # --- breaking: old results are superseded, never reused or stale --------------------
@@ -1047,89 +1089,58 @@ def test_added_default_factory_sees_only_the_fields_present_at_that_step() -> No
 # --- phase one: validation at class creation ---------------------------------------
 
 
-def test_renamed_typo_fails_at_class_creation_naming_valid_fields() -> None:
-    with pytest.raises(TypeError) as excinfo:
+@pytest.mark.parametrize(
+    ("steps", "match"),
+    [
+        pytest.param(
+            (Renamed("learning_rate", to="lrx"),),
+            r"'lrx' is not a field; fields at that point in the chain: \['lr', ",
+            id="renamed-typo-names-valid-fields",
+        ),
+        pytest.param(
+            (Added("sed", default=0),), "'sed' is not a field", id="added-typo"
+        ),
+        pytest.param(
+            (Retyped("optimizr", was=_SGD),),
+            "'optimizr' is not a field",
+            id="retyped-typo",
+        ),
+        pytest.param(
+            (Added("seed", default=0, default_factory=lambda fields: 0),),
+            "exactly one of default=",
+            id="added-with-default-and-factory",
+        ),
+        pytest.param(
+            (Added("seed"),), "exactly one of default=", id="added-without-default"
+        ),
+        pytest.param(
+            (Added("seed", default=0, breaking=True),),
+            "never backfill",
+            id="breaking-added-with-default",
+        ),
+        pytest.param(
+            (Added("seed", breaking=True, result_rewrite=lambda result: result),),
+            "breaking step discards old results",
+            id="result-rewrite-on-breaking-step",
+        ),
+        pytest.param(
+            [Renamed("learning_rate", to="lr")],
+            "must be a tuple",
+            id="migrations-is-a-list",
+        ),
+    ],
+)
+def test_invalid_migrations_fail_at_class_creation(
+    steps: tuple[furu.MigrationStep, ...], match: str
+) -> None:
+    with pytest.raises(TypeError, match=match):
 
-        class _BadRename(Spec[int]):
+        class _Bad(Spec[int]):
             lr: float
-
-            migrations = (Renamed("learning_rate", to="lrx"),)
-
-            def create(self) -> int:
-                return 0
-
-    message = str(excinfo.value)
-    assert "'lrx' is not a field" in message
-    assert "['lr']" in message
-
-
-def test_added_typo_fails_at_class_creation() -> None:
-    with pytest.raises(TypeError, match="'sed' is not a field"):
-
-        class _BadAdded(Spec[int]):
             seed: int = 0
+            optimizer: _SGD | None = None
 
-            migrations = (Added("sed", default=0),)
-
-            def create(self) -> int:
-                return 0
-
-
-def test_added_with_default_and_factory_fails_at_class_creation() -> None:
-    with pytest.raises(TypeError, match="exactly one of default="):
-
-        class _AddedBoth(Spec[int]):
-            seed: int
-
-            migrations = (Added("seed", default=0, default_factory=lambda fields: 0),)
-
-            def create(self) -> int:
-                return 0
-
-
-def test_added_without_default_fails_at_class_creation() -> None:
-    with pytest.raises(TypeError, match="exactly one of default="):
-
-        class _AddedNoDefault(Spec[int]):
-            seed: int
-
-            migrations = (Added("seed"),)
-
-            def create(self) -> int:
-                return 0
-
-
-def test_breaking_added_with_default_fails_at_class_creation() -> None:
-    with pytest.raises(TypeError, match="never backfill"):
-
-        class _BreakingWithDefault(Spec[int]):
-            seed: int = 0
-
-            migrations = (Added("seed", default=0, breaking=True),)
-
-            def create(self) -> int:
-                return 0
-
-
-def test_retyped_typo_fails_at_class_creation() -> None:
-    with pytest.raises(TypeError, match="'optimizr' is not a field"):
-
-        class _BadRetyped(Spec[int]):
-            optimizer: _SGD
-
-            migrations = (Retyped("optimizr", was=_SGD),)
-
-            def create(self) -> int:
-                return 0
-
-
-def test_migrations_must_be_a_tuple_of_steps() -> None:
-    with pytest.raises(TypeError, match="must be a tuple"):
-
-        class _ListMigrations(Spec[int]):
-            n: int
-
-            migrations = [Renamed("m", to="n")]  # noqa: RUF012  # ty: ignore[invalid-assignment]
+            migrations = steps
 
             def create(self) -> int:
                 return 0
@@ -1716,30 +1727,6 @@ def test_stale_report_attributes_the_diff_to_the_embedded_class() -> None:
     assert "_CascadeSilentTokenizer.migrations" in message
 
 
-class _CascadeAmbiguousTokenizer(Spec[int]):
-    n: int
-
-    migrations = (
-        MovedFrom(fully_qualified_name(_LegacyRun)),
-        MovedFrom(fully_qualified_name(_LegacyRun)),
-    )
-
-    def create(self) -> int:
-        return 0
-
-
-class _CascadeAmbiguousModel(Spec[int]):
-    tokenizer: _CascadeAmbiguousTokenizer
-
-    def create(self) -> int:
-        return 0
-
-
-def test_ambiguous_child_chain_is_rejected_at_parent_resolution() -> None:
-    with pytest.raises(MigrationError, match="ambiguous"):
-        _ = _CascadeAmbiguousModel(tokenizer=_CascadeAmbiguousTokenizer(n=1)).status
-
-
 @dataclass(frozen=True)
 class _CascadeBrokenOptimizer:
     lr: float
@@ -1899,20 +1886,6 @@ def test_result_rewrites_grow_a_dataclass_field_by_field_before_it_is_built() ->
         loss=0.25, val_loss=None, checkpoint=None
     )
     assert _COUNTER.calls == 0
-
-
-def test_result_rewrite_on_a_breaking_step_fails_at_class_creation() -> None:
-    with pytest.raises(TypeError, match="breaking step discards old results"):
-
-        class _Bad(Spec[int]):
-            seed: int
-
-            migrations = (
-                Added("seed", breaking=True, result_rewrite=lambda result: result),
-            )
-
-            def create(self) -> int:
-                return 0
 
 
 @dataclass(frozen=True)

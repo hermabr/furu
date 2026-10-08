@@ -1,4 +1,4 @@
-from collections.abc import Generator, Sequence
+from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -220,31 +220,32 @@ def test_add_to_dag_does_not_reject_inactive_compute_lock():
     assert set(coordinator.ready) == {leaf.object_id}
 
 
-def test_add_to_dag_handles_nested_dataclass_refs():
+@pytest.mark.parametrize(
+    "make_parent",
+    [
+        pytest.param(
+            lambda a, b: NestedParent(bundle=LeafBundle(a=a, b=b)),
+            id="nested-dataclass",
+        ),
+        pytest.param(lambda a, b: CollectionParent(children=(a, b)), id="tuple"),
+    ],
+)
+def test_add_to_dag_finds_refs_inside_containers(
+    make_parent: Callable[[Leaf, Leaf], Spec],
+):
     leaf_a = Leaf(name="a")
     leaf_b = Leaf(name="b")
-    parent = NestedParent(bundle=LeafBundle(a=leaf_a, b=leaf_b))
-
-    coordinator = _new_execution_coordinator([parent])
-
-    assert set(coordinator.ready) == {leaf_a.object_id, leaf_b.object_id}
-
-    assert set(coordinator.nodes_by_id) == {
-        leaf_a.object_id,
-        leaf_b.object_id,
-        parent.object_id,
-    }
-
-
-def test_add_to_dag_walks_refs_inside_collections():
-    leaf_a = Leaf(name="a")
-    leaf_b = Leaf(name="b")
-    parent = CollectionParent(children=(leaf_a, leaf_b))
+    parent = make_parent(leaf_a, leaf_b)
 
     coordinator = _new_execution_coordinator([parent])
 
     assert set(coordinator.ready) == {leaf_a.object_id, leaf_b.object_id}
     assert set(coordinator.blocked) == {parent.object_id}
+    assert set(coordinator.nodes_by_id) == {
+        leaf_a.object_id,
+        leaf_b.object_id,
+        parent.object_id,
+    }
 
 
 def test_add_to_dag_walks_computed_dependencies():

@@ -59,139 +59,96 @@ def load_result_bundle(bundle_dir: Path, *, declared_type: object = Any) -> obje
     )
 
 
-class JsonResult(Spec[dict[str, object]]):
-    def create(self) -> dict[str, object]:
-        return {
-            "metrics": {"loss": 0.12, "ok": True},
-            "items": [1, 2, None, "x"],
-        }
-
-
-def test_json_only_bundle_round_trips() -> None:
-    obj = JsonResult()
-
-    expected = {
-        "metrics": {"loss": 0.12, "ok": True},
-        "items": [1, 2, None, "x"],
-    }
-
-    result = obj.create()
-    assert result == expected
-
-    assert result_manifest_path_in(obj._base_dir).exists()
-    assert not (result_dir_in(obj._base_dir) / "artifacts").exists()
-
-    manifest = json.loads(result_manifest_path_in(obj._base_dir).read_text())
-    assert manifest == expected
-
-
-class ScalarResult(Spec[int]):
-    def create(self) -> int:
-        return 5
-
-
-def test_scalar_root_manifest_is_just_the_value() -> None:
-    obj = ScalarResult()
-
-    assert obj.create() == 5
-    text = result_manifest_path_in(obj._base_dir).read_text()
-    assert json.loads(text) == 5
-
-
-class PathResult(Spec[dict[str, Path]]):
-    def create(self) -> dict[str, Path]:
-        return {
-            "relative": Path("outputs/model.bin"),
-            "absolute": Path("/tmp/furu/model.bin"),
-        }
-
-
-def test_path_values_round_trip() -> None:
-    obj = PathResult()
-
-    result = obj.create()
-
-    assert result == {
-        "relative": Path("outputs/model.bin"),
-        "absolute": Path("/tmp/furu/model.bin"),
-    }
-
-    manifest = json.loads(result_manifest_path_in(obj._base_dir).read_text())
-    assert manifest == {
-        "relative": {
-            "$furu": {
-                "|kind": "path",
-                "value": "outputs/model.bin",
-            }
-        },
-        "absolute": {
-            "$furu": {
-                "|kind": "path",
-                "value": "/tmp/furu/model.bin",
-            }
-        },
-    }
-
-
-def test_path_root_value_round_trips(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "value, manifest",
+    [
+        pytest.param(
+            {"metrics": {"loss": 0.12, "ok": True}, "items": [1, 2, None, "x"]},
+            {"metrics": {"loss": 0.12, "ok": True}, "items": [1, 2, None, "x"]},
+            id="json",
+        ),
+        pytest.param(5, 5, id="scalar-root"),
+        pytest.param(
+            Path("outputs/model.bin"),
+            {"$furu": {"|kind": "path", "value": "outputs/model.bin"}},
+            id="path-root",
+        ),
+        pytest.param(
+            {
+                "relative": Path("outputs/model.bin"),
+                "absolute": Path("/tmp/furu/model.bin"),
+            },
+            {
+                "relative": {"$furu": {"|kind": "path", "value": "outputs/model.bin"}},
+                "absolute": {
+                    "$furu": {"|kind": "path", "value": "/tmp/furu/model.bin"}
+                },
+            },
+            id="paths",
+        ),
+        pytest.param(
+            (1, 2, 3),
+            {"$furu": {"|kind": "tuple", "items": [1, 2, 3]}},
+            id="tuple-root",
+        ),
+        pytest.param(
+            {
+                "tuple": (1, "x", Path("model.bin")),
+                "set": {3, 1, 2},
+                "frozenset": frozenset({"b", "a"}),
+            },
+            {
+                "tuple": {
+                    "$furu": {
+                        "|kind": "tuple",
+                        "items": [
+                            1,
+                            "x",
+                            {"$furu": {"|kind": "path", "value": "model.bin"}},
+                        ],
+                    }
+                },
+                "set": {"$furu": {"|kind": "set", "items": [1, 2, 3]}},
+                "frozenset": {"$furu": {"|kind": "frozenset", "items": ["a", "b"]}},
+            },
+            id="tuple-set-frozenset",
+        ),
+        pytest.param(
+            {
+                "naive": datetime(2026, 9, 1, 12, 30, 45, 123456),
+                "aware": datetime(2026, 9, 1, 12, 30, tzinfo=UTC),
+                "fixed": datetime(
+                    2026, 9, 1, 12, 30, tzinfo=timezone(timedelta(hours=5, minutes=30))
+                ),
+            },
+            {
+                "naive": {
+                    "$furu": {
+                        "|kind": "datetime",
+                        "value": "2026-09-01T12:30:45.123456",
+                    }
+                },
+                "aware": {
+                    "$furu": {"|kind": "datetime", "value": "2026-09-01T12:30:00+00:00"}
+                },
+                "fixed": {
+                    "$furu": {"|kind": "datetime", "value": "2026-09-01T12:30:00+05:30"}
+                },
+            },
+            id="datetimes",
+        ),
+    ],
+)
+def test_native_values_round_trip_through_json_manifest(
+    tmp_path: Path, value: object, manifest: object
+) -> None:
     bundle_dir = tmp_path / "bundle"
-    value = Path("outputs/model.bin")
 
     _save_result_bundle(value, bundle_dir, result_codecs=())
 
     assert load_result_bundle(bundle_dir) == value
-
-
-def test_tuple_set_and_frozenset_round_trip(tmp_path: Path) -> None:
-    bundle_dir = tmp_path / "bundle"
-    value = {
-        "tuple": (1, "x", Path("model.bin")),
-        "set": {3, 1, 2},
-        "frozenset": frozenset({"b", "a"}),
-    }
-
-    _save_result_bundle(value, bundle_dir, result_codecs=())
-
-    assert load_result_bundle(bundle_dir) == value
-    manifest = json.loads((bundle_dir / "manifest.json").read_text())
-    assert manifest["tuple"] == {
-        "$furu": {
-            "|kind": "tuple",
-            "items": [
-                1,
-                "x",
-                {"$furu": {"|kind": "path", "value": "model.bin"}},
-            ],
-        }
-    }
-    assert manifest["set"]["$furu"] == {"|kind": "set", "items": [1, 2, 3]}
-    assert manifest["frozenset"]["$furu"] == {
-        "|kind": "frozenset",
-        "items": ["a", "b"],
-    }
-
-
-def test_set_of_values_without_value_based_repr_is_rejected(tmp_path: Path) -> None:
-    class AddressRepr:
-        __hash__ = object.__hash__
-
-    bundle_dir = tmp_path / "bundle"
-
-    with pytest.raises(ValueError, match="no value-based repr"):
-        _save_result_bundle(
-            {AddressRepr(), AddressRepr()}, bundle_dir, result_codecs=()
-        )
-
-
-def test_tuple_root_value_uses_furu_wrapper(tmp_path: Path) -> None:
-    bundle_dir = tmp_path / "bundle"
-    value = (1, 2, 3)
-
-    _save_result_bundle(value, bundle_dir, result_codecs=())
-
-    assert load_result_bundle(bundle_dir) == value
-    manifest = json.loads((bundle_dir / "manifest.json").read_text())
-    assert manifest == {"$furu": {"|kind": "tuple", "items": [1, 2, 3]}}
+    assert json.loads((bundle_dir / "manifest.json").read_text()) == manifest
+    assert not (bundle_dir / "artifacts").exists()
 
 
 class NonFiniteFloatResult(Spec[dict[str, float]]):
@@ -216,37 +173,6 @@ def test_non_finite_floats_round_trip() -> None:
     assert "NaN" in text
     assert "Infinity" in text
     assert "-Infinity" in text
-
-
-def test_datetime_values_round_trip(tmp_path: Path) -> None:
-    bundle_dir = tmp_path / "bundle"
-    value = {
-        "naive": datetime(2026, 9, 1, 12, 30, 45, 123456),
-        "aware": datetime(2026, 9, 1, 12, 30, tzinfo=UTC),
-        "fixed": datetime(
-            2026,
-            9,
-            1,
-            12,
-            30,
-            tzinfo=timezone(timedelta(hours=5, minutes=30)),
-        ),
-    }
-
-    _save_result_bundle(value, bundle_dir, result_codecs=())
-
-    loaded = cast(dict[str, datetime], load_result_bundle(bundle_dir))
-    assert loaded == value
-    assert not (bundle_dir / "artifacts").exists()
-    manifest = json.loads((bundle_dir / "manifest.json").read_text())
-    assert manifest["naive"]["$furu"] == {
-        "|kind": "datetime",
-        "value": "2026-09-01T12:30:45.123456",
-    }
-    assert manifest["aware"]["$furu"] == {
-        "|kind": "datetime",
-        "value": "2026-09-01T12:30:00+00:00",
-    }
 
 
 class _CustomTimezone(tzinfo):
@@ -323,10 +249,6 @@ def test_explicit_codec_overrides_native_datetime_storage(tmp_path: Path) -> Non
     assert isinstance(cast(datetime, loaded).tzinfo, _CustomTimezone)
     manifest = json.loads((bundle_dir / "manifest.json").read_text())
     assert manifest["$furu"]["codec"] == _CustomTimezoneDatetimeCodec._codec_id()
-
-
-class _CustomTensor:
-    pass
 
 
 class _CountingValue:
@@ -685,27 +607,22 @@ def test_auto_registered_codec_takes_priority_over_builtin_codec(
     assert manifest["$furu"]["codec"] == _AutoRegisteredArrayCodec._codec_id()
 
 
-def test_task_result_codecs_take_priority_over_auto_registered_codec() -> None:
-    obj = RegistryAutoRegisteredValueResult()
+@pytest.mark.parametrize(
+    "spec_cls, expected",
+    [
+        pytest.param(RegistryAutoRegisteredValueResult, 10, id="result-codecs"),
+        pytest.param(AnnotatedAutoRegisteredValueResult, 11, id="annotated"),
+    ],
+)
+def test_explicit_codec_takes_priority_over_auto_registered_codec(
+    spec_cls: type[Spec[_AutoRegisteredValue]], expected: int
+) -> None:
+    obj = spec_cls()
 
     loaded = obj.create()
 
     assert isinstance(loaded, _AutoRegisteredValue)
-    assert loaded.value == 10
-    artifact_dir = result_dir_in(obj._base_dir) / "artifacts" / "root"
-    assert (artifact_dir / "registry.txt").exists()
-    assert not (artifact_dir / "auto.txt").exists()
-    manifest = json.loads(result_manifest_path_in(obj._base_dir).read_text())
-    assert manifest["$furu"]["codec"] == _CoreRegistryAutoValueCodec._codec_id()
-
-
-def test_annotated_codec_takes_priority_over_auto_registered_codec() -> None:
-    obj = AnnotatedAutoRegisteredValueResult()
-
-    loaded = obj.create()
-
-    assert isinstance(loaded, _AutoRegisteredValue)
-    assert loaded.value == 11
+    assert loaded.value == expected
     artifact_dir = result_dir_in(obj._base_dir) / "artifacts" / "root"
     assert (artifact_dir / "registry.txt").exists()
     assert not (artifact_dir / "auto.txt").exists()
@@ -1049,36 +966,35 @@ def test_codec_metadata_path_outside_data_dir_raises_at_save(tmp_path: Path) -> 
         )
 
 
+@pytest.mark.parametrize(
+    "path_value, match",
+    [
+        pytest.param("/tmp/outside", "must be relative", id="absolute"),
+        pytest.param("../outside", "escapes data dir", id="escaping"),
+    ],
+)
 def test_codec_metadata_rejects_load_path_outside_data_dir(
-    tmp_path: Path,
+    tmp_path: Path, path_value: str, match: str
 ) -> None:
     result_dir = tmp_path / "object" / "result"
-    artifact_dir = result_dir / "artifacts" / "root"
-    artifact_dir.mkdir(parents=True)
-
-    def write_manifest(path_value: str) -> None:
-        (result_dir / "manifest.json").write_text(
-            json.dumps(
-                {
-                    "$furu": {
-                        "|kind": "artifact",
-                        "codec": _DataDirPathCodec._codec_id(),
-                        "path": "artifacts/root",
-                        "metadata": {
-                            "path": {"$furu": {"|kind": "path", "value": path_value}}
-                        },
-                    }
+    (result_dir / "artifacts" / "root").mkdir(parents=True)
+    (result_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "$furu": {
+                    "|kind": "artifact",
+                    "codec": _DataDirPathCodec._codec_id(),
+                    "path": "artifacts/root",
+                    "metadata": {
+                        "path": {"$furu": {"|kind": "path", "value": path_value}}
+                    },
                 }
-            ),
-            encoding="utf-8",
-        )
+            }
+        ),
+        encoding="utf-8",
+    )
 
-    write_manifest("/tmp/outside")
-    with pytest.raises(ValueError, match="must be relative"):
-        load_result_bundle(result_dir)
-
-    write_manifest("../outside")
-    with pytest.raises(ValueError, match="escapes data dir"):
+    with pytest.raises(ValueError, match=match):
         load_result_bundle(result_dir)
 
 
@@ -1118,60 +1034,47 @@ def test_task_result_codecs_must_not_be_ambiguous() -> None:
         AmbiguousRegistryCountingResult().create()
 
 
-class UnsupportedRootResult(Spec[object]):
-    def create(self) -> object:
-        return _CustomTensor()
+class _CustomTensor:
+    pass
 
 
-def test_unsupported_custom_object_fails_with_root_path(tmp_path) -> None:
-    bundle_dir = tmp_path / "bundle"
-    with pytest.raises(ValueError) as exc_info:
-        _save_result_bundle(_CustomTensor(), bundle_dir, result_codecs=())
-    msg = str(exc_info.value)
-    assert "<root>" in msg
-    assert "_CustomTensor" in msg
+class _AddressRepr:
+    __hash__ = object.__hash__
 
 
-def test_unsupported_nested_path_includes_padded_index(tmp_path) -> None:
-    bundle_dir = tmp_path / "bundle"
-    layers = [{} for _ in range(10)]
-    layers[3] = {"weights": _CustomTensor()}
-
-    with pytest.raises(ValueError) as exc_info:
-        _save_result_bundle({"layers": layers}, bundle_dir, result_codecs=())
-    assert "layers/03/weights" in str(exc_info.value)
-
-
-def test_reserved_furu_dict_key_fails(tmp_path) -> None:
-    bundle_dir = tmp_path / "bundle"
-    with pytest.raises(ValueError, match="reserved"):
-        _save_result_bundle({"$furu": "user data"}, bundle_dir, result_codecs=())
-
-
-def test_non_string_dict_key_fails(tmp_path) -> None:
-    bundle_dir = tmp_path / "bundle"
-    with pytest.raises(ValueError, match="must be strings"):
-        _save_result_bundle({1: "x"}, bundle_dir, result_codecs=())
-
-
-def test_unsafe_dict_key_fails(tmp_path) -> None:
-    bundle_dir = tmp_path / "bundle"
-    with pytest.raises(ValueError) as exc_info:
-        _save_result_bundle({"bad/key": "x"}, bundle_dir, result_codecs=())
-    assert "artifact path segment" in str(exc_info.value)
-
-
-def test_empty_dict_key_fails(tmp_path) -> None:
-    bundle_dir = tmp_path / "bundle"
-    with pytest.raises(ValueError) as exc_info:
-        _save_result_bundle({"": "x"}, bundle_dir, result_codecs=())
-    assert "artifact path segment" in str(exc_info.value)
-
-
-def test_dotdot_dict_key_fails(tmp_path) -> None:
-    bundle_dir = tmp_path / "bundle"
-    with pytest.raises(ValueError, match="artifact path segment"):
-        _save_result_bundle({"..": "x"}, bundle_dir, result_codecs=())
+@pytest.mark.parametrize(
+    "value, match",
+    [
+        pytest.param(
+            _CustomTensor(), r"(?s)<root>.*_CustomTensor", id="unsupported-root"
+        ),
+        pytest.param(
+            {"layers": [{}] * 3 + [{"weights": _CustomTensor()}] + [{}] * 6},
+            "layers/03/weights",
+            id="unsupported-nested-padded-index",
+        ),
+        pytest.param({"$furu": "user data"}, "reserved", id="reserved-key"),
+        pytest.param({1: "x"}, "must be strings", id="non-string-key"),
+        pytest.param({"bad/key": "x"}, "artifact path segment", id="unsafe-key"),
+        pytest.param({"": "x"}, "artifact path segment", id="empty-key"),
+        pytest.param({"..": "x"}, "artifact path segment", id="dotdot-key"),
+        pytest.param(
+            {_AddressRepr(), _AddressRepr()},
+            "no value-based repr",
+            id="set-without-value-repr",
+        ),
+        pytest.param(
+            {"weights": np.array([object()], dtype=object)},
+            "allow_pickle=False",
+            id="numpy-object-dtype",
+        ),
+    ],
+)
+def test_unstorable_values_are_rejected_at_save(
+    tmp_path: Path, value: object, match: str
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        _save_result_bundle(value, tmp_path / "bundle", result_codecs=())
 
 
 @dataclass(frozen=True)
@@ -1480,17 +1383,6 @@ def test_polars_ref_result_round_trips() -> None:
     assert created.load().equals(pl.DataFrame({"x": [1, 2]}))
     assert isinstance(loaded, Ref)
     assert loaded.load().equals(pl.DataFrame({"x": [1, 2]}))
-
-
-def test_numpy_object_dtype_is_rejected(tmp_path) -> None:
-    bundle_dir = tmp_path / "bundle"
-
-    with pytest.raises(ValueError, match="allow_pickle=False"):
-        _save_result_bundle(
-            {"weights": np.array([object()], dtype=object)},
-            bundle_dir,
-            result_codecs=(),
-        )
 
 
 class NestedNumpyResult(Spec[dict[str, list[dict[str, object]]]]):

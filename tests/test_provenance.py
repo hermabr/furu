@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -167,30 +168,37 @@ def test_capture_environment_identity_finds_project_root_from_child(
         EnvironmentIdentity.capture.cache_clear()
 
 
-def test_capture_environment_identity_missing_project_root_raises(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    EnvironmentIdentity.capture.cache_clear()
-    with pytest.raises(RuntimeError, match="no pyproject.toml"):
-        EnvironmentIdentity.capture()
-    EnvironmentIdentity.capture.cache_clear()
+_PYPROJECT = {"pyproject.toml": "[project]\n"}
+_LOCKED = {**_PYPROJECT, "uv.lock": "version = 1\n"}
 
 
-@pytest.mark.parametrize("pyvenv_cfg", ["home = /x\nimplementation = CPython\n", None])
-def test_capture_environment_identity_requires_uv_managed_python(
-    pyvenv_cfg: str | None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("files", "match"),
+    [
+        pytest.param({}, "no pyproject.toml", id="no-project-root"),
+        pytest.param(_PYPROJECT, "uv sync", id="no-uv-lock"),
+        pytest.param(_LOCKED, "not managed by uv", id="no-pyvenv-cfg"),
+        pytest.param(
+            {**_LOCKED, "pyvenv.cfg": "home = /x\nimplementation = CPython\n"},
+            "not managed by uv",
+            id="pyvenv-cfg-without-uv",
+        ),
+    ],
+)
+def test_capture_environment_identity_refuses_unmanaged_projects(
+    files: dict[str, str],
+    match: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    (tmp_path / "pyproject.toml").write_text("[project]\n")
-    (tmp_path / "uv.lock").write_text("version = 1\n")
-    if pyvenv_cfg is not None:
-        (tmp_path / "pyvenv.cfg").write_text(pyvenv_cfg)
+    for name, text in files.items():
+        (tmp_path / name).write_text(text)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "prefix", str(tmp_path))
     monkeypatch.delenv("PYTEST_VERSION", raising=False)
     EnvironmentIdentity.capture.cache_clear()
     try:
-        with pytest.raises(RuntimeError, match="not managed by uv"):
+        with pytest.raises(RuntimeError, match=match):
             EnvironmentIdentity.capture()
     finally:
         EnvironmentIdentity.capture.cache_clear()
@@ -228,40 +236,28 @@ def test_capture_environment_identity_is_populated() -> None:
         EnvironmentIdentity.capture.cache_clear()
 
 
-def test_capture_environment_identity_requires_uv_lock(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def _stale_lock(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(args, 1, "", "The lockfile is outdated")
+
+
+def _no_uv_binary(args: list[str], **kwargs: object) -> object:
+    raise FileNotFoundError("uv")
+
+
+@pytest.mark.parametrize(
+    ("fake_run", "match"),
+    [
+        pytest.param(_stale_lock, "The lockfile is outdated", id="stale-lock"),
+        pytest.param(_no_uv_binary, "uv executable not found", id="missing-uv-binary"),
+    ],
+)
+def test_require_uv_raises(
+    fake_run: Callable[..., object], match: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    (tmp_path / "pyproject.toml").write_text("[project]\n")
-    monkeypatch.chdir(tmp_path)
-    EnvironmentIdentity.capture.cache_clear()
-    try:
-        with pytest.raises(RuntimeError, match="uv sync"):
-            EnvironmentIdentity.capture()
-    finally:
-        EnvironmentIdentity.capture.cache_clear()
-
-
-def test_require_uv_stale_lock_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(args, 1, "", "The lockfile is outdated")
-
     monkeypatch.setattr(provenance.subprocess, "run", fake_run)
     provenance._require_uv.cache_clear()
     try:
-        with pytest.raises(RuntimeError, match="The lockfile is outdated"):
-            provenance._require_uv()
-    finally:
-        provenance._require_uv.cache_clear()
-
-
-def test_require_uv_missing_uv_binary_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        raise FileNotFoundError("uv")
-
-    monkeypatch.setattr(provenance.subprocess, "run", fake_run)
-    provenance._require_uv.cache_clear()
-    try:
-        with pytest.raises(RuntimeError, match="uv executable not found"):
+        with pytest.raises(RuntimeError, match=match):
             provenance._require_uv()
     finally:
         provenance._require_uv.cache_clear()

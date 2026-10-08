@@ -14,35 +14,134 @@ from furu.config import (
 )
 from furu.testing import override_config
 
+_PYPROJECT_TOML = """
+[tool.furu]
+debug_mode = true
 
-def test_config_reads_environment(monkeypatch) -> None:
-    monkeypatch.setenv("FURU_DEBUG_MODE", "true")
-    monkeypatch.setenv("FURU_DIRECTORIES__OBJECTS", "/tmp/furu-objects")
-    monkeypatch.setenv("FURU_DIRECTORIES__EXECUTIONS", "/tmp/furu-executions")
-    monkeypatch.setenv("FURU_DIRECTORIES__DEBUG", "/tmp/furu-debug")
-    monkeypatch.setenv("FURU_WORKER__CONNECT_HOST", "login01.cluster")
-    monkeypatch.setenv("FURU_WORKER__IDLE_TIMEOUT_SECONDS", "12.5")
-    monkeypatch.setenv("FURU_WORKER__MAX_RETRIES_PER_OBJECT", "3")
+[tool.furu.directories]
+objects = "/tmp/furu-pyproject-objects"
+executions = "/tmp/furu-pyproject-executions"
+debug = "/tmp/furu-pyproject-debug"
+
+[tool.furu.worker]
+idle_timeout_seconds = 7.5
+max_retries_per_object = 3
+"""
+
+_DEBUG_OFF_PYPROJECT_TOML = """
+[tool.furu]
+debug_mode = false
+
+[tool.furu.directories]
+objects = "/tmp/furu-pyproject-objects"
+executions = "/tmp/furu-pyproject-executions"
+debug = "/tmp/furu-pyproject-debug"
+"""
+
+_WORKER_JSON = """
+{
+  "coordinator_url": "ws://furu:secret@coordinator.test:1",
+  "debug_mode": true,
+  "directories": {
+    "objects": "/tmp/furu-json-objects",
+    "executions": "/tmp/furu-json-executions",
+    "debug": "/tmp/furu-json-debug"
+  },
+  "worker": {
+    "idle_timeout_seconds": 9.5,
+    "max_retries_per_object": 3
+  }
+}
+"""
+
+
+def _debug_env(prefix: str) -> dict[str, str]:
+    return {
+        "FURU_DEBUG_MODE": "true",
+        "FURU_DIRECTORIES__OBJECTS": f"{prefix}-objects",
+        "FURU_DIRECTORIES__EXECUTIONS": f"{prefix}-executions",
+        "FURU_DIRECTORIES__DEBUG": f"{prefix}-debug",
+    }
+
+
+@pytest.mark.parametrize(
+    ("files", "env", "prefix", "worker"),
+    [
+        pytest.param(
+            {},
+            {
+                **_debug_env("/tmp/furu"),
+                "FURU_WORKER__CONNECT_HOST": "login01.cluster",
+                "FURU_WORKER__IDLE_TIMEOUT_SECONDS": "12.5",
+                "FURU_WORKER__MAX_RETRIES_PER_OBJECT": "3",
+            },
+            "/tmp/furu",
+            _FuruWorkerConfig(
+                connect_host="login01.cluster",
+                idle_timeout_seconds=12.5,
+                max_retries_per_object=3,
+            ),
+            id="environment",
+        ),
+        pytest.param(
+            {"pyproject.toml": _PYPROJECT_TOML},
+            {},
+            "/tmp/furu-pyproject",
+            _FuruWorkerConfig(idle_timeout_seconds=7.5, max_retries_per_object=3),
+            id="pyproject-toml-in-a-parent-directory",
+        ),
+        pytest.param(
+            {"pyproject.toml": _DEBUG_OFF_PYPROJECT_TOML},
+            _debug_env("/tmp/furu-env"),
+            "/tmp/furu-env",
+            _FuruWorkerConfig(),
+            id="environment-overrides-pyproject-toml",
+        ),
+        pytest.param(
+            {"worker.config.json": _WORKER_JSON},
+            {"FURU_DEBUG_MODE": "false", "FURU_WORKER__IDLE_TIMEOUT_SECONDS": "12.5"},
+            "/tmp/furu-json",
+            _FuruWorkerConfig(idle_timeout_seconds=9.5, max_retries_per_object=3),
+            id="worker-json-overrides-environment",
+        ),
+    ],
+)
+def test_config_sources(
+    files: dict[str, str],
+    env: dict[str, str],
+    prefix: str,
+    worker: _FuruWorkerConfig,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    for name, text in files.items():
+        (tmp_path / name).write_text(text, encoding="utf-8")
+    nested = tmp_path / "src" / "project"
+    nested.mkdir(parents=True)
+    monkeypatch.chdir(nested)
+    # Only the worker-json case writes this file; a missing file adds nothing.
+    monkeypatch.setenv(
+        _WORKER_JSON_CONFIG_FILE_ENV_VAR, str(tmp_path / "worker.config.json")
+    )
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
 
     config = _Config()
 
     assert config.debug_mode is True
     assert config.directories == _FuruDirectories(
-        objects=Path("/tmp/furu-objects"),
-        executions=Path("/tmp/furu-executions"),
-        debug=Path("/tmp/furu-debug"),
+        objects=Path(f"{prefix}-objects"),
+        executions=Path(f"{prefix}-executions"),
+        debug=Path(f"{prefix}-debug"),
     )
+    debug = Path(f"{prefix}-debug")
     assert config.run_directories == _FuruDirectories(
-        objects=Path("/tmp/furu-debug") / "objects",
-        executions=Path("/tmp/furu-debug") / "executions",
-        snapshots=Path("/tmp/furu-debug") / "snapshots",
-        debug=Path("/tmp/furu-debug"),
+        objects=debug / "objects",
+        executions=debug / "executions",
+        snapshots=debug / "snapshots",
+        debug=debug,
     )
-    assert config.worker == _FuruWorkerConfig(
-        connect_host="login01.cluster",
-        idle_timeout_seconds=12.5,
-        max_retries_per_object=3,
-    )
+    assert config.worker == worker
 
 
 def test_debug_mode_uses_default_debug_directory(monkeypatch) -> None:
@@ -120,130 +219,6 @@ def test_import_outside_project_defers_anchor_crash(tmp_path) -> None:
         check=True,
     )
     assert "no git repository or pyproject.toml" in result.stdout
-
-
-def test_config_reads_pyproject_toml_from_a_parent_directory(
-    tmp_path, monkeypatch
-) -> None:
-    pyproject = tmp_path / "pyproject.toml"
-    pyproject.write_text(
-        """
-[tool.furu]
-debug_mode = true
-
-[tool.furu.directories]
-objects = "/tmp/furu-pyproject-objects"
-executions = "/tmp/furu-pyproject-executions"
-debug = "/tmp/furu-pyproject-debug"
-
-[tool.furu.worker]
-idle_timeout_seconds = 7.5
-max_retries_per_object = 3
-""",
-        encoding="utf-8",
-    )
-    nested = tmp_path / "src" / "project"
-    nested.mkdir(parents=True)
-    monkeypatch.chdir(nested)
-
-    config = _Config()
-
-    assert config.debug_mode is True
-    assert config.directories == _FuruDirectories(
-        objects=Path("/tmp/furu-pyproject-objects"),
-        executions=Path("/tmp/furu-pyproject-executions"),
-        debug=Path("/tmp/furu-pyproject-debug"),
-    )
-    assert config.run_directories == _FuruDirectories(
-        objects=Path("/tmp/furu-pyproject-debug") / "objects",
-        executions=Path("/tmp/furu-pyproject-debug") / "executions",
-        snapshots=Path("/tmp/furu-pyproject-debug") / "snapshots",
-        debug=Path("/tmp/furu-pyproject-debug"),
-    )
-    assert config.worker == _FuruWorkerConfig(
-        idle_timeout_seconds=7.5,
-        max_retries_per_object=3,
-    )
-
-
-def test_environment_overrides_pyproject_toml(tmp_path, monkeypatch) -> None:
-    pyproject = tmp_path / "pyproject.toml"
-    pyproject.write_text(
-        """
-[tool.furu]
-debug_mode = false
-
-[tool.furu.directories]
-objects = "/tmp/furu-pyproject-objects"
-executions = "/tmp/furu-pyproject-executions"
-debug = "/tmp/furu-pyproject-debug"
-""",
-        encoding="utf-8",
-    )
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("FURU_DEBUG_MODE", "true")
-    monkeypatch.setenv("FURU_DIRECTORIES__OBJECTS", "/tmp/furu-env-objects")
-    monkeypatch.setenv("FURU_DIRECTORIES__EXECUTIONS", "/tmp/furu-env-executions")
-    monkeypatch.setenv("FURU_DIRECTORIES__DEBUG", "/tmp/furu-env-debug")
-
-    config = _Config()
-
-    assert config.debug_mode is True
-    assert config.directories == _FuruDirectories(
-        objects=Path("/tmp/furu-env-objects"),
-        executions=Path("/tmp/furu-env-executions"),
-        debug=Path("/tmp/furu-env-debug"),
-    )
-    assert config.run_directories == _FuruDirectories(
-        objects=Path("/tmp/furu-env-debug") / "objects",
-        executions=Path("/tmp/furu-env-debug") / "executions",
-        snapshots=Path("/tmp/furu-env-debug") / "snapshots",
-        debug=Path("/tmp/furu-env-debug"),
-    )
-
-
-def test_config_reads_worker_json_config_file(tmp_path, monkeypatch) -> None:
-    config_file = tmp_path / "worker.config.json"
-    config_file.write_text(
-        """
-{
-  "coordinator_url": "ws://furu:secret@coordinator.test:1",
-  "debug_mode": true,
-  "directories": {
-    "objects": "/tmp/furu-json-objects",
-    "executions": "/tmp/furu-json-executions",
-    "debug": "/tmp/furu-json-debug"
-  },
-  "worker": {
-    "idle_timeout_seconds": 9.5,
-    "max_retries_per_object": 3
-  }
-}
-""",
-        encoding="utf-8",
-    )
-    monkeypatch.setenv(_WORKER_JSON_CONFIG_FILE_ENV_VAR, str(config_file))
-    monkeypatch.setenv("FURU_DEBUG_MODE", "false")
-    monkeypatch.setenv("FURU_WORKER__IDLE_TIMEOUT_SECONDS", "12.5")
-
-    config = _Config()
-
-    assert config.debug_mode is True
-    assert config.directories == _FuruDirectories(
-        objects=Path("/tmp/furu-json-objects"),
-        executions=Path("/tmp/furu-json-executions"),
-        debug=Path("/tmp/furu-json-debug"),
-    )
-    assert config.run_directories == _FuruDirectories(
-        objects=Path("/tmp/furu-json-debug") / "objects",
-        executions=Path("/tmp/furu-json-debug") / "executions",
-        snapshots=Path("/tmp/furu-json-debug") / "snapshots",
-        debug=Path("/tmp/furu-json-debug"),
-    )
-    assert config.worker == _FuruWorkerConfig(
-        idle_timeout_seconds=9.5,
-        max_retries_per_object=3,
-    )
 
 
 def test_override_config_restores_previous_config_on_exit() -> None:

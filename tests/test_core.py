@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict
 import furu
 import furu.execution.load_or_create as execution_module
 from furu import Metadata, Spec, Throttle, Worker
-from furu.config import _Config, _FuruDirectories, get_config
+from furu.config import _Config, get_config
 from furu.dependencies import collect_declared_refs
 from furu.execution.load_or_create import _load_or_create
 from furu.locking import LockManifest, lock
@@ -560,38 +560,31 @@ def _reset_batch_trackers() -> None:
     MetadataTimingValue.siblings_by_key.clear()
 
 
-def test_reserved_field_name_raises_at_class_creation():
-    with pytest.raises(TypeError, match=r"StatusField.*\['status'\]"):
-
-        class StatusField(Spec[int]):
-            status: str  # ty: ignore[override-of-final-method]
-
-            def create(self) -> int:
-                return 0
-
-
-def test_unannotated_public_attribute_raises_clear_error():
-    with pytest.raises(
-        TypeError, match="UnannotatedParameter.a must have a type annotation"
-    ):
-
-        class UnannotatedParameter(Spec[int]):
-            a = 1
-
-            def create(self) -> int:
-                return self.a
-
-
-def test_unannotated_private_attribute_raises_clear_error():
-    with pytest.raises(
-        TypeError, match="UnannotatedPrivate._a must have a type annotation"
-    ):
-
-        class UnannotatedPrivate(Spec[int]):
-            _a = 1
-
-            def create(self) -> int:
-                return self._a
+@pytest.mark.parametrize(
+    "body, match",
+    [
+        pytest.param(
+            {"__annotations__": {"status": str}},
+            r"BadSpec.*\['status'\]",
+            id="reserved-field-name",
+        ),
+        pytest.param(
+            {"a": 1},
+            r"BadSpec\.a must have a type annotation",
+            id="unannotated-public",
+        ),
+        pytest.param(
+            {"_a": 1},
+            r"BadSpec\._a must have a type annotation",
+            id="unannotated-private",
+        ),
+    ],
+)
+def test_invalid_spec_class_raises_at_class_creation(
+    body: dict[str, object], match: str
+) -> None:
+    with pytest.raises(TypeError, match=match):
+        types.new_class("BadSpec", (Spec[int],), exec_body=lambda ns: ns.update(body))
 
 
 def test_hashes_and_data_dir():
@@ -803,117 +796,128 @@ def expected_schema_for_B_like(
             },
             id="UsesFalseLiteral",
         ),
+        pytest.param(
+            lambda: VariadicTuple(t=(1, 2, 3)),
+            {
+                "|class": "test_core.VariadicTuple",
+                "|fields": {
+                    "t": {
+                        "|origin": "builtins.tuple",
+                        "|args": ["builtins.ellipsis", "builtins.int"],
+                    }
+                },
+            },
+            id="VariadicTuple",
+        ),
     ],
 )
 def test_schema(make: Callable[[], Spec], expected):
     assert make()._schema_data == expected
 
 
-def test_to_json():
-    node_pair = NodePair(
-        name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
-    )
-    expected = {
-        "|kind": "instance",
-        "|class": "test_core.NodePair",
-        "|fields": {
-            "node1": {
+@pytest.mark.parametrize(
+    "obj, expected",
+    [
+        pytest.param(
+            NodePair(
+                name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
+            ),
+            {
                 "|kind": "instance",
-                "|class": "test_core.Node",
-                "|fields": {"name": "y"},
+                "|class": "test_core.NodePair",
+                "|fields": {
+                    "node1": {
+                        "|kind": "instance",
+                        "|class": "test_core.Node",
+                        "|fields": {"name": "y"},
+                    },
+                    "node2": {
+                        "|kind": "instance",
+                        "|class": "test_core.WeightedNode",
+                        "|fields": {"name": "z", "weight": 1},
+                    },
+                    "name": "x",
+                },
             },
-            "node2": {
+            id="nested-specs",
+        ),
+        pytest.param(
+            B(
+                a=A(x=1, z="123", w=[6, 7]),
+                y={"hey": 123, "ney": 1},
+                t=("123", 12),
+                maybe_val=None,
+            ),
+            {
                 "|kind": "instance",
-                "|class": "test_core.WeightedNode",
-                "|fields": {"name": "z", "weight": 1},
+                "|class": "test_core.B",
+                "|fields": {
+                    "a": {
+                        "|kind": "instance",
+                        "|class": "test_core.A",
+                        "|fields": {"x": 1, "z": "123", "w": [6, 7], "some_obj": "a"},
+                    },
+                    "y": {"hey": 123, "ney": 1},
+                    "t": {"|kind": "tuple", "|value": ["123", 12]},
+                    "maybe_val": None,
+                },
             },
-            "name": "x",
-        },
-    }
-    assert _to_json(node_pair, NodePair) == expected
-    assert _to_json(node_pair, NodePair) == node_pair._artifact_data
-    assert node_pair._artifact_data == expected
-
-
-def test_to_json_with_none_field():
-    obj = B(
-        a=A(x=1, z="123", w=[6, 7]),
-        y={"hey": 123, "ney": 1},
-        t=("123", 12),
-        maybe_val=None,
-    )
-
-    expected = {
-        "|kind": "instance",
-        "|class": "test_core.B",
-        "|fields": {
-            "a": {
+            id="none-field",
+        ),
+        pytest.param(
+            UsesClassValue(node_cls=Node),
+            {
                 "|kind": "instance",
-                "|class": "test_core.A",
-                "|fields": {"x": 1, "z": "123", "w": [6, 7], "some_obj": "a"},
+                "|class": "test_core.UsesClassValue",
+                "|fields": {
+                    "node_cls": {"|kind": "type_ref", "|class": "test_core.Node"}
+                },
             },
-            "y": {"hey": 123, "ney": 1},
-            "t": {"|kind": "tuple", "|value": ["123", 12]},
-            "maybe_val": None,
-        },
-    }
-
-    assert _to_json(obj, B) == expected
-
-
-def test_to_json_with_class_field_value():
-    obj = UsesClassValue(node_cls=Node)
-
-    assert _to_json(Node, type) == {"|kind": "type_ref", "|class": "test_core.Node"}
-    assert obj._artifact_data == {
-        "|kind": "instance",
-        "|class": "test_core.UsesClassValue",
-        "|fields": {"node_cls": {"|kind": "type_ref", "|class": "test_core.Node"}},
-    }
-    assert isinstance(obj._artifact_hash, str)
-
-
-def test_to_json_with_pydantic_field_value():
-    obj = PydanticFields(pydantic_obj=PydanticSubclass(field1=1))
-
-    expected = {
-        "|kind": "instance",
-        "|class": "test_core.PydanticFields",
-        "|fields": {
-            "pydantic_obj": {
+            id="class-field",
+        ),
+        pytest.param(
+            PydanticFields(pydantic_obj=PydanticSubclass(field1=1)),
+            {
                 "|kind": "instance",
-                "|class": "test_core.PydanticSubclass",
-                "|fields": {"field1": 1},
-            }
-        },
-    }
-
-    assert _to_json(obj, PydanticFields) == expected
+                "|class": "test_core.PydanticFields",
+                "|fields": {
+                    "pydantic_obj": {
+                        "|kind": "instance",
+                        "|class": "test_core.PydanticSubclass",
+                        "|fields": {"field1": 1},
+                    }
+                },
+            },
+            id="pydantic-field",
+        ),
+    ],
+)
+def test_to_json(obj: Spec, expected: dict[str, object]) -> None:
+    assert _to_json(obj, type(obj)) == expected
     assert obj._artifact_data == expected
     assert isinstance(obj._artifact_hash, str)
 
 
-def test_furu_object_round_trips_from_json_artifact():
-    obj = NodePair(
-        name="x",
-        node1=Node(name="y"),
-        node2=WeightedNode(name="z", weight=1),
-    )
-
+@pytest.mark.parametrize(
+    "obj",
+    [
+        pytest.param(
+            NodePair(
+                name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
+            ),
+            id="nested-specs",
+        ),
+        pytest.param(UsesPath(path=Path("/tmp/out")), id="path-field"),
+        pytest.param(UsesClassValue(node_cls=Node), id="class-field"),
+    ],
+)
+def test_furu_object_round_trips_from_json_artifact(obj: Spec) -> None:
     loaded = _from_json(obj._artifact_data)
 
+    # Spec equality is dataclass equality: same class and equal field values,
+    # so a str where a Path belongs would not compare equal.
     assert loaded == obj
-    assert isinstance(loaded, NodePair)
     assert loaded.object_id == obj.object_id
-
-
-def test_furu_object_with_typed_fields_round_trips_from_json_artifact():
-    path_obj = UsesPath(path=Path("/tmp/out"))
-    class_obj = UsesClassValue(node_cls=Node)
-
-    assert _from_json(path_obj._artifact_data) == path_obj
-    assert _from_json(class_obj._artifact_data) == class_obj
-    assert isinstance(cast(UsesPath, _from_json(path_obj._artifact_data)).path, Path)
 
 
 def test_datetime_field_round_trips_from_json_artifact():
@@ -1229,64 +1233,46 @@ def test_furu_from_artifact_accepts_loaded_metadata_artifact():
     assert isinstance(loaded, Node)
 
 
-def test_furu_from_artifact_type_mismatch_names_expected_and_loaded_type():
-    obj = WeightedNode(name="x", weight=1)
-    artifact = ArtifactSpec(
-        fully_qualified_name=obj._fully_qualified_name,
-        artifact_data=obj._artifact_data,
-        artifact_hash=obj._artifact_hash,
-        schema_data=obj._schema_data,
-        schema_hash=obj._artifact_schema_hash,
-    )
-
-    with pytest.raises(
-        TypeError,
-        match=(
-            r"Artifact described test_core\.WeightedNode, "
-            r"expected test_core\.NodePair"
+@pytest.mark.parametrize(
+    "obj, target, tampered, error, match",
+    [
+        pytest.param(
+            WeightedNode(name="x", weight=1),
+            NodePair,
+            {},
+            TypeError,
+            r"Artifact described test_core\.WeightedNode, expected test_core\.NodePair",
+            id="type-mismatch",
         ),
-    ):
-        NodePair.from_artifact(artifact)
+        pytest.param(
+            Node(name="x"),
+            Node,
+            {"artifact_hash": "wrong-artifact-hash"},
+            ValueError,
+            "Artifact hash did not match",
+            id="artifact-hash-mismatch",
+        ),
+        pytest.param(
+            Node(name="x"),
+            Node,
+            {"schema_hash": "wrong-schema-hash"},
+            ValueError,
+            "Artifact schema hash did not match",
+            id="schema-hash-mismatch",
+        ),
+    ],
+)
+def test_furu_from_artifact_rejects_mismatched_artifact(
+    obj: Spec,
+    target: type[Spec],
+    tampered: dict[str, str],
+    error: type[Exception],
+    match: str,
+) -> None:
+    artifact = ArtifactSpec.from_furu(obj).model_copy(update=tampered)
 
-
-def test_furu_from_artifact_rejects_artifact_spec_hash_mismatch():
-    obj = Node(name="x")
-    artifact = ArtifactSpec(
-        fully_qualified_name=obj._fully_qualified_name,
-        artifact_data=obj._artifact_data,
-        artifact_hash="wrong-artifact-hash",
-        schema_data=obj._schema_data,
-        schema_hash=obj._artifact_schema_hash,
-    )
-
-    with pytest.raises(ValueError, match="Artifact hash did not match"):
-        Node.from_artifact(artifact)
-
-
-def test_furu_from_artifact_rejects_artifact_spec_schema_hash_mismatch():
-    obj = Node(name="x")
-    artifact = ArtifactSpec(
-        fully_qualified_name=obj._fully_qualified_name,
-        artifact_data=obj._artifact_data,
-        artifact_hash=obj._artifact_hash,
-        schema_data=obj._schema_data,
-        schema_hash="wrong-schema-hash",
-    )
-
-    with pytest.raises(ValueError, match="Artifact schema hash did not match"):
-        Node.from_artifact(artifact)
-
-
-def test_schema_with_ellipsis_type_arg():
-    assert VariadicTuple(t=(1, 2, 3))._schema_data == {
-        "|class": "test_core.VariadicTuple",
-        "|fields": {
-            "t": {
-                "|origin": "builtins.tuple",
-                "|args": ["builtins.ellipsis", "builtins.int"],
-            }
-        },
-    }
+    with pytest.raises(error, match=match):
+        target.from_artifact(artifact)
 
 
 def test_data_dir():
@@ -1311,13 +1297,12 @@ def test_data_dir():
     )
 
 
+@pytest.mark.parametrize("visible, gpus", [("0,3", 2), ("", 0)])
 def test_worker_here_counts_cuda_visible_devices(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, visible: str, gpus: int
 ) -> None:
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,3")
-    assert Worker.here().gpus == 2
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
-    assert Worker.here().gpus == 0
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", visible)
+    assert Worker.here().gpus == gpus
     assert Worker.here().cpus >= 1
 
 
@@ -1368,39 +1353,33 @@ def test_in_process_create_ignores_runs_on(
     assert NoWorkerNode(name="x").load_existing() == "x"
 
 
-def test_debug_mode_ignores_storage_override(monkeypatch) -> None:
-    monkeypatch.setattr("furu.config._project_anchor", lambda: Path())
-    with override_config(_Config(debug_mode=True)):
-        node = CustomStorageNode(name="x")
-
-        assert node.metadata().storage == Path("custom/data/location")
-        assert node._base_dir == (
-            Path("furu-data")
-            / "debug"
-            / "objects"
-            / "test_core"
-            / "CustomStorageNode"
-            / node._artifact_schema_hash
-            / node._artifact_hash
-        )
-
-
-def test_debug_mode_uses_configured_debug_directory(monkeypatch) -> None:
-    monkeypatch.setattr("furu.config._project_anchor", lambda: Path())
-    config = _Config(
-        debug_mode=True,
-        directories=_FuruDirectories(
-            objects=Path("main/objects"),
-            executions=Path("main/executions"),
-            debug=Path("custom/debug"),
+@pytest.mark.parametrize(
+    "overrides, debug_dir",
+    [
+        pytest.param({}, Path("furu-data/debug"), id="default-debug-dir"),
+        pytest.param(
+            {
+                "directories": {
+                    "objects": "main/objects",
+                    "executions": "main/executions",
+                    "debug": "custom/debug",
+                }
+            },
+            Path("custom/debug"),
+            id="configured-debug-dir",
         ),
-    )
-    with override_config(config):
+    ],
+)
+def test_debug_mode_uses_debug_dir_over_storage_override(
+    monkeypatch: pytest.MonkeyPatch, overrides: dict[str, object], debug_dir: Path
+) -> None:
+    monkeypatch.setattr("furu.config._project_anchor", lambda: Path())
+    with override_config(_Config.model_validate({"debug_mode": True, **overrides})):
         node = CustomStorageNode(name="x")
 
         assert node.metadata().storage == Path("custom/data/location")
         assert node._base_dir == (
-            Path("custom/debug")
+            debug_dir
             / "objects"
             / "test_core"
             / "CustomStorageNode"
@@ -1493,21 +1472,20 @@ def test_status_is_running_while_compute_lock_is_held() -> None:
         assert node.status == "running"
 
 
-def test_status_is_failed_when_compute_lock_is_not_active() -> None:
-    node = Node(name="inactive-lock")
+@pytest.mark.parametrize(
+    "leave_lock",
+    [
+        pytest.param(Path.touch, id="inactive"),
+        pytest.param(write_stale_lock, id="stale"),
+    ],
+)
+def test_status_is_failed_when_compute_lock_is_left_behind(
+    leave_lock: Callable[[Path], None],
+) -> None:
+    node = Node(name="left-lock")
     node._base_dir.mkdir(parents=True, exist_ok=True)
 
-    compute_lock_path_in(node._base_dir).touch()
-
-    assert node.status == "failed"
-
-
-def test_status_is_failed_when_compute_lock_is_stale() -> None:
-    node = Node(name="stale-lock")
-    node._base_dir.mkdir(parents=True, exist_ok=True)
-    lock_path = compute_lock_path_in(node._base_dir)
-
-    write_stale_lock(lock_path)
+    leave_lock(compute_lock_path_in(node._base_dir))
 
     assert node.status == "failed"
 
@@ -1730,11 +1708,10 @@ def test_in_process_batch_cap_sees_this_machine(
     assert _load_or_create([PerGpuBatch(key=key) for key in range(3)]) == [2, 2, 1]
 
 
-def test_batch_key_cap_must_be_a_positive_int() -> None:
+@pytest.mark.parametrize("cap", [0, True])
+def test_batch_key_cap_must_be_a_positive_int(cap: int) -> None:
     with pytest.raises(TypeError, match="cap must be a positive int"):
-        _load_or_create([KeyedBatchValue(key=1, group="x", cap=0)])
-    with pytest.raises(TypeError, match="cap must be a positive int"):
-        _load_or_create([KeyedBatchValue(key=1, group="x", cap=True)])
+        _load_or_create([KeyedBatchValue(key=1, group="x", cap=cap)])
 
 
 def test_duplicate_cache_identities_compute_once_and_preserve_input_order() -> None:

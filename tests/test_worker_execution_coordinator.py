@@ -37,6 +37,7 @@ from furu.storage._layout import (
     compute_lock_path_in,
 )
 from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
+from furu.worker.backends.protocol import WorkerBackend
 from furu.worker.execute import ChildSlot
 from furu.worker.loop import worker_loop
 from furu.worker.protocol import (
@@ -844,96 +845,128 @@ def test_job_result_after_worker_lost_is_ignored() -> None:
     assert coordinator.completed == {}
 
 
-def test_lease_job_filters_by_worker_resources() -> None:
-    cpu_leaf = CpuOnlyLeaf(value=1)
-    gpu_leaf = GpuLeaf(value=2)
-    coordinator = _new_execution_coordinator([cpu_leaf, gpu_leaf])
+@pytest.mark.parametrize(
+    ("first_pool", "first_leaf", "second_pool", "second_leaf"),
+    [
+        pytest.param(
+            CPU_POOL, CpuOnlyLeaf, _pool(Worker(gpus=1)), GpuLeaf, id="resources"
+        ),
+        pytest.param(
+            LocalThreadWorkerBackend(
+                worker=Worker(memory_gib=16),
+                accepts=lambda spec: isinstance(spec, MemoryLeaf),
+            ),
+            MemoryLeaf,
+            _pool(Worker(memory_gib=16)),
+            CpuOnlyLeaf,
+            id="pool-accepts",
+        ),
+    ],
+)
+def test_lease_job_leases_each_job_to_a_pool_that_can_run_it(
+    first_pool: LocalThreadWorkerBackend,
+    first_leaf: Callable[..., Spec[int]],
+    second_pool: LocalThreadWorkerBackend,
+    second_leaf: Callable[..., Spec[int]],
+) -> None:
+    first, second = first_leaf(value=1), second_leaf(value=2)
+    coordinator = _new_execution_coordinator([first, second])
 
-    cpu_job = _lease_job(coordinator, backend=CPU_POOL)
-    assert isinstance(cpu_job, Job)
-    assert _artifact(cpu_job).object_id == cpu_leaf.object_id
+    first_job = _lease_job(coordinator, backend=first_pool)
+    assert _artifact(first_job).object_id == first.object_id
+    assert _no_satisfiable_job(coordinator, backend=first_pool)
 
-    assert _no_satisfiable_job(coordinator, backend=CPU_POOL)
-
-    gpu_job = _lease_job(coordinator, backend=_pool(Worker(gpus=1)))
-    assert isinstance(gpu_job, Job)
-    assert _artifact(gpu_job).object_id == gpu_leaf.object_id
-
-
-def test_lease_job_honors_pool_accepts() -> None:
-    cpu_leaf = CpuOnlyLeaf(value=1)
-    memory_leaf = MemoryLeaf(value=2)
-    coordinator = _new_execution_coordinator([cpu_leaf, memory_leaf])
-    reserved = LocalThreadWorkerBackend(
-        worker=Worker(memory_gib=16),
-        accepts=lambda spec: isinstance(spec, MemoryLeaf),
-    )
-
-    memory_job = _lease_job(coordinator, backend=reserved)
-    assert isinstance(memory_job, Job)
-    assert _artifact(memory_job).object_id == memory_leaf.object_id
-    assert _no_satisfiable_job(coordinator, backend=reserved)
-
-    cpu_job = _lease_job(coordinator, backend=_pool(Worker(memory_gib=16)))
-    assert isinstance(cpu_job, Job)
-    assert _artifact(cpu_job).object_id == cpu_leaf.object_id
-
-
-def test_execution_coordinator_run_fails_fast_when_no_pool_can_run_a_job() -> None:
-    with pytest.raises(RuntimeError, match=r"no worker pool can run.*workers: Worker"):
-        ExecutionCoordinator.run(
-            [MemoryLeaf(value=uuid4().int)],
-            worker_backends=(LocalThreadWorkerBackend(worker=Worker()),),
-        )
+    second_job = _lease_job(coordinator, backend=second_pool)
+    assert _artifact(second_job).object_id == second.object_id
 
 
-def test_execution_coordinator_fails_when_no_pool_can_run_a_lazy_dependency() -> None:
+@pytest.mark.parametrize(
+    ("spec", "backends", "error", "match"),
+    [
+        pytest.param(
+            MemoryLeaf,
+            lambda: (LocalThreadWorkerBackend(worker=Worker()),),
+            RuntimeError,
+            r"no worker pool can run.*workers: Worker",
+            id="no-pool-can-run-a-job",
+        ),
+        pytest.param(
+            PerGpuBatchedLeaf,
+            lambda: (
+                LocalThreadWorkerBackend(worker=Worker(gpus=1)),
+                LocalThreadWorkerBackend(worker=Worker()),
+            ),
+            TypeError,
+            r"cap must be a positive int, got 0 on Worker",
+            id="zero-batch-cap",
+        ),
+        pytest.param(
+            ExecutionCoordinatorLeaf,
+            lambda: (LocalThreadWorkerBackend(), LocalThreadWorkerBackend()),
+            ValueError,
+            "identical configuration",
+            id="identical-backends",
+        ),
+        pytest.param(
+            ExecutionCoordinatorLeaf,
+            lambda: (
+                LocalThreadWorkerBackend(
+                    worker=Worker(), execution_coordinator_listen_host="127.0.0.1"
+                ),
+                LocalThreadWorkerBackend(
+                    worker=Worker(gpus=1), execution_coordinator_listen_host="0.0.0.0"
+                ),
+            ),
+            ValueError,
+            None,
+            id="conflicting-listen-hosts",
+        ),
+    ],
+)
+def test_execution_coordinator_run_rejects_unusable_setup_up_front(
+    spec: Callable[..., Spec[int]],
+    backends: Callable[[], tuple[LocalThreadWorkerBackend, ...]],
+    error: type[Exception],
+    match: str | None,
+) -> None:
+    with pytest.raises(error, match=match):
+        ExecutionCoordinator.run([spec(value=uuid4().int)], worker_backends=backends())
+
+
+@pytest.mark.parametrize(
+    ("dependency", "backends", "message"),
+    [
+        pytest.param(
+            MemoryLeaf, {"cpu": CPU_POOL}, "no worker pool can run", id="no-pool"
+        ),
+        pytest.param(
+            PerGpuBatchedLeaf,
+            {"cpu": CPU_POOL, "gpu": GPU_POOL},
+            "cap must be a positive int, got 0",
+            id="zero-batch-cap",
+        ),
+    ],
+)
+def test_execution_coordinator_fails_on_unrunnable_lazy_dependency(
+    dependency: Callable[..., Spec[int]],
+    backends: dict[str, WorkerBackend],
+    message: str,
+) -> None:
     parent = ExecutionCoordinatorLazyParent(value=uuid4().int)
     coordinator = _new_execution_coordinator([parent])
-    coordinator.backends = {"cpu": CPU_POOL}
+    coordinator.backends = backends
     assert isinstance(_lease_job(coordinator), Job)
 
     coordinator.job_result(
         parent.object_id,
         JobBlockedResult(
-            dependencies=[ArtifactSpec.from_furu(MemoryLeaf(value=uuid4().int))]
+            dependencies=[ArtifactSpec.from_furu(dependency(value=uuid4().int))]
         ),
     )
 
     assert coordinator.done.is_set()
     assert coordinator.finish_error is not None
-    assert "no worker pool can run" in coordinator.finish_error
-
-
-def test_execution_coordinator_run_rejects_a_zero_batch_cap_before_starting_pools() -> (
-    None
-):
-    with pytest.raises(TypeError, match=r"cap must be a positive int, got 0 on Worker"):
-        ExecutionCoordinator.run(
-            [PerGpuBatchedLeaf(value=uuid4().int)],
-            worker_backends=(
-                LocalThreadWorkerBackend(worker=Worker(gpus=1)),
-                LocalThreadWorkerBackend(worker=Worker()),
-            ),
-        )
-
-
-def test_execution_coordinator_fails_on_a_zero_batch_cap_in_a_lazy_dependency() -> None:
-    parent = ExecutionCoordinatorLazyParent(value=uuid4().int)
-    coordinator = _new_execution_coordinator([parent])
-    job = _lease_job(coordinator)
-    assert isinstance(job, Job)
-
-    coordinator.job_result(
-        parent.object_id,
-        JobBlockedResult(
-            dependencies=[ArtifactSpec.from_furu(PerGpuBatchedLeaf(value=1))]
-        ),
-    )
-
-    assert coordinator.done.is_set()
-    assert coordinator.finish_error is not None
-    assert "cap must be a positive int, got 0" in coordinator.finish_error
+    assert message in coordinator.finish_error
 
 
 def test_execution_coordinator_run_completes_later_resource_stages_on_local_workers() -> (
@@ -1285,31 +1318,6 @@ def test_local_pool_key_distinguishes_resources_not_worker_count() -> None:
         LocalThreadWorkerBackend(max_workers=2, worker=Worker(gpus=1)).pool_key
         != backend.pool_key
     )
-
-
-def test_execution_coordinator_run_rejects_identical_worker_backends() -> None:
-    with pytest.raises(ValueError, match="identical configuration"):
-        ExecutionCoordinator.run(
-            [ExecutionCoordinatorLeaf(value=12)],
-            worker_backends=(LocalThreadWorkerBackend(), LocalThreadWorkerBackend()),
-        )
-
-
-def test_execution_coordinator_run_rejects_conflicting_execution_coordinator_listen_host() -> (
-    None
-):
-    with pytest.raises(ValueError):
-        ExecutionCoordinator.run(
-            [ExecutionCoordinatorLeaf(value=12)],
-            worker_backends=(
-                LocalThreadWorkerBackend(
-                    worker=Worker(), execution_coordinator_listen_host="127.0.0.1"
-                ),
-                LocalThreadWorkerBackend(
-                    worker=Worker(gpus=1), execution_coordinator_listen_host="0.0.0.0"
-                ),
-            ),
-        )
 
 
 def test_worker_loop_raises_when_server_is_unavailable(tmp_path: Path) -> None:
