@@ -136,10 +136,20 @@ def _store_result[T](
 
 
 @overload
-def _load_or_create[T](tree: Spec[T]) -> T: ...
+def _load_or_create[T](
+    tree: Spec[T], *, on: Sequence[WorkerBackend] | None = None, load: bool = True
+) -> T: ...
 @overload
-def _load_or_create(tree: object) -> Any: ...
-def _load_or_create(tree: object) -> Any:
+def _load_or_create(
+    tree: object, *, on: Sequence[WorkerBackend] | None = None, load: bool = True
+) -> Any: ...
+def _load_or_create(
+    tree: object, *, on: Sequence[WorkerBackend] | None = None, load: bool = True
+) -> Any:
+    if on is not None:
+        from furu.execution.execution_coordinator import ExecutionCoordinator
+
+        ExecutionCoordinator.run(specs_in(tree), worker_backends=tuple(on))
     _require_uv()
     if isinstance(tree, Spec):
         tree.logger.debug(".create called for %s", tree)
@@ -147,9 +157,13 @@ def _load_or_create(tree: object) -> Any:
     for obj in objs:
         record_dependency_call(obj)
     if _in_worker_execution.get():
-        outputs = _load_or_create_worker(objs)
+        outputs = _load_or_create_worker(objs, load=load)
     else:
-        outputs = _load_or_create_local(objs, announce=isinstance(tree, Spec))
+        outputs = _load_or_create_local(
+            objs, announce=isinstance(tree, Spec), load=load
+        )
+    if not load:
+        return None
     results = {obj.object_id: output for obj, output in zip(objs, outputs)}
     return map_specs(lambda obj: results[obj.object_id], tree)
 
@@ -220,11 +234,12 @@ def create(
 @overload
 def create(tree: object, /, *, on: Sequence[WorkerBackend] | None = None) -> Any: ...
 def create(tree: object, /, *, on: Sequence[WorkerBackend] | None = None) -> Any:
-    if on is not None:
-        from furu.execution.execution_coordinator import ExecutionCoordinator
+    return _load_or_create(tree, on=on)
 
-        ExecutionCoordinator.run(specs_in(tree), worker_backends=tuple(on))
-    return _load_or_create(tree)
+
+def build(tree: object, /, *, on: Sequence[WorkerBackend] | None = None) -> None:
+    """Like create(), but leaves the results on disk instead of loading them."""
+    _load_or_create(tree, on=on, load=False)
 
 
 @overload
@@ -282,20 +297,21 @@ def _cached_to_build_msg(cached: list[Spec], to_build: list[Spec]) -> str:
     return f"building {fmt(to_build)}, {msg}" if to_build else msg
 
 
-def _load_or_create_worker[T](objs: list[Spec[T]]) -> list[T]:
+def _load_or_create_worker[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
     loaded: list[T] = []
     cached: list[Spec[T]] = []
     missing: list[Spec[T]] = []
 
     for obj in objs:
         if (cached_result_dir := result_dir_for_loading(obj)) is not None:
-            loaded.append(load_stored_result(obj, cached_result_dir))
+            if load:
+                loaded.append(load_stored_result(obj, cached_result_dir))
             cached.append(obj)
         else:
             raise_if_stale(obj)
             missing.append(obj)
 
-    if loaded:
+    if cached:
         objs[0].logger.info("%s", _cached_to_build_msg(cached, missing))
 
     if missing:
@@ -309,6 +325,7 @@ def _load_or_create_local[T](
     *,
     announce: bool = False,
     dependents: Sequence[Spec] = (),
+    load: bool = True,
 ) -> list[T]:
     if not objs:
         return []
@@ -319,19 +336,21 @@ def _load_or_create_local[T](
     unique = list(unique_by_object_id.values())
 
     results_by_object_id: dict[str, T] = {}
+    cached: list[Spec[T]] = []
     missing: list[Spec[T]] = []
 
     for obj in unique:
         if (cached_result_dir := result_dir_for_loading(obj)) is not None:
-            results_by_object_id[obj.object_id] = load_stored_result(
-                obj, cached_result_dir
-            )
+            cached.append(obj)
+            if load:
+                results_by_object_id[obj.object_id] = load_stored_result(
+                    obj, cached_result_dir
+                )
         else:
             raise_if_stale(obj)
             missing.append(obj)
 
-    if results_by_object_id:
-        cached = [o for o in unique if o.object_id in results_by_object_id]
+    if cached:
         unique[0].logger.info("%s", _cached_to_build_msg(cached, missing))
 
     if dependents and missing:
@@ -348,6 +367,7 @@ def _load_or_create_local[T](
     _load_or_create_local(
         [ref for obj in missing for ref in collect_declared_refs(obj)],
         dependents=missing,
+        load=False,
     )
     for obj in missing:
         obj._base_dir.mkdir(parents=True, exist_ok=True)
@@ -366,9 +386,10 @@ def _load_or_create_local[T](
                 cached_result_dir := result_dir_for_loading(obj, has_lock=True)
             ) is not None:
                 late_hits += 1
-                results_by_object_id[obj.object_id] = load_stored_result(
-                    obj, cached_result_dir
-                )
+                if load:
+                    results_by_object_id[obj.object_id] = load_stored_result(
+                        obj, cached_result_dir
+                    )
             else:
                 pending.append(obj)
 
@@ -391,7 +412,7 @@ def _load_or_create_local[T](
                 _create_and_store_group(
                     group,
                     has_lock=has_lock,
-                    results_by_object_id=results_by_object_id,
+                    results_by_object_id=results_by_object_id if load else {},
                     submit_provenance=submit_provenance,
                 )
 
@@ -401,6 +422,8 @@ def _load_or_create_local[T](
             objs[0]._log_label,
             format_duration(time.monotonic() - create_started_at),
         )
+    if not load:
+        return []
     return [results_by_object_id[obj.object_id] for obj in objs]
 
 

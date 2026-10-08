@@ -1203,6 +1203,42 @@ def test_create_and_load_existing_map_specs_through_pytrees() -> None:
     }
 
 
+class _ParentIgnoringChild(Spec[str]):
+    child: Node
+
+    def create(self) -> str:
+        return "parent"
+
+
+def _forbid_loading(monkeypatch: pytest.MonkeyPatch) -> None:
+    def load_stored_result(obj: Spec, result_dir: Path) -> object:
+        raise AssertionError(f"unexpected load of {obj._log_label}")
+
+    monkeypatch.setattr(execution_module, "load_stored_result", load_stored_result)
+
+
+def test_build_stores_results_without_loading_them(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cached, fresh = Node(name="build-cached"), Node(name="build-fresh")
+    furu.create(cached)
+    _forbid_loading(monkeypatch)
+
+    furu.build({"cached": cached, "fresh": [fresh]})
+
+    assert fresh.status == "done"
+
+
+def test_create_does_not_load_cached_declared_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = _ParentIgnoringChild(child=Node(name="cached-child"))
+    furu.create(parent.child)
+    _forbid_loading(monkeypatch)
+
+    assert furu.create(parent) == "parent"
+
+
 def test_top_level_load_existing_accepts_list_and_logs_once(tmp_path: Path) -> None:
     nodes = [Node(name="load-a"), Node(name="load-b")]
 
