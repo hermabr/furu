@@ -386,7 +386,7 @@ def _batch_group(obj: Spec, worker: Worker) -> tuple[object, int] | None:
     if type(cap) is not int or cap < 1:
         raise TypeError(
             f"{type(obj).__qualname__} batch key cap must be a positive int, "
-            f"got {cap!r}"
+            f"got {cap!r} on {worker}"
         )
     key = (type(obj), group_hash, cap, obj._metadata)
     return key, cap

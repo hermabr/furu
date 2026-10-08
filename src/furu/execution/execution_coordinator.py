@@ -482,8 +482,8 @@ class ExecutionCoordinator:
                         _update_dag_blocking_dependencies(
                             self, running_job.node, dependencies
                         )
-                    except RuntimeError as exc:
-                        self.fail(str(exc))
+                    except Exception as exc:  # noqa: BLE001 -- runs user runs_on, accepts and batch fns
+                        self.fail(f"{type(exc).__name__}: {exc}")
                         return
                     logger.info(
                         "blocked %s · %d deps",

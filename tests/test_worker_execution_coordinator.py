@@ -361,6 +361,14 @@ class GpuBatchedLeaf(furu.Spec[int]):
         return [obj.value for obj in objs]
 
 
+class PerGpuBatchedLeaf(furu.Spec[int]):
+    value: int
+
+    @furu.batched(lambda _, worker: (None, worker.gpus))
+    def create(objs: list["PerGpuBatchedLeaf"]) -> list[int]:
+        return [obj.value for obj in objs]
+
+
 class ThrottledBatchedCoordinatorLeaf(furu.Spec[int]):
     value: int
     throttle = Throttle(max_running=2)
@@ -1086,6 +1094,37 @@ def test_execution_coordinator_fails_when_no_pool_can_run_a_lazy_dependency() ->
     assert coordinator.done.is_set()
     assert coordinator.finish_error is not None
     assert "no worker pool can run" in coordinator.finish_error
+
+
+def test_execution_coordinator_run_rejects_a_zero_batch_cap_before_starting_pools() -> (
+    None
+):
+    with pytest.raises(TypeError, match=r"cap must be a positive int, got 0 on Worker"):
+        ExecutionCoordinator.run(
+            [PerGpuBatchedLeaf(value=uuid4().int)],
+            worker_backends=(
+                LocalThreadWorkerBackend(worker=Worker(gpus=1)),
+                LocalThreadWorkerBackend(worker=Worker()),
+            ),
+        )
+
+
+def test_execution_coordinator_fails_on_a_zero_batch_cap_in_a_lazy_dependency() -> None:
+    parent = ExecutionCoordinatorLazyParent(value=uuid4().int)
+    coordinator = _new_execution_coordinator([parent])
+    job = _lease_job(coordinator)
+    assert isinstance(job, Job)
+
+    coordinator.job_result(
+        parent.object_id,
+        JobBlockedResult(
+            dependencies=[ArtifactSpec.from_furu(PerGpuBatchedLeaf(value=1))]
+        ),
+    )
+
+    assert coordinator.done.is_set()
+    assert coordinator.finish_error is not None
+    assert "cap must be a positive int, got 0" in coordinator.finish_error
 
 
 def test_execution_coordinator_splits_work_across_open_and_reserved_pools() -> None:

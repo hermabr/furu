@@ -63,12 +63,16 @@ def _add_to_dag(coordinator: ExecutionCoordinator, objs: Sequence[Spec]) -> None
         refs_by_id[obj.object_id] = refs
         pending.extend(refs)
 
-    unsatisfiable = [
-        node.obj._log_label
+    runnable_on = {
+        node: [
+            backend
+            for backend in coordinator.backends.values()
+            if can_run(backend, node.obj)
+        ]
         for node in newly_added
-        if not any(
-            can_run(backend, node.obj) for backend in coordinator.backends.values()
-        )
+    }
+    unsatisfiable = [
+        node.obj._log_label for node, backends in runnable_on.items() if not backends
     ]
     if unsatisfiable:
         workers = ", ".join(
@@ -79,6 +83,10 @@ def _add_to_dag(coordinator: ExecutionCoordinator, objs: Sequence[Spec]) -> None
             + ", ".join(sorted(unsatisfiable))
             + f"; workers: {workers or 'none'}"
         )
+    # Batch caps depend on the worker; surface bad ones before any pool starts.
+    for node, backends in runnable_on.items():
+        for backend in backends:
+            node.batch_group(backend.worker)
 
     for node in newly_added:
         coordinator.nodes_by_id[node.obj.object_id] = node
