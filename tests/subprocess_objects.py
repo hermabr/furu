@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from typing import Literal
 
-from furu import Metadata, Spec, batched
+from furu import Metadata, Spec
 
 type Reuse = Literal["never", "same_environment", "same_environment_same_spec"]
 
@@ -54,14 +54,6 @@ class OtherSubprocessEnvLeaf(Spec[str]):
 
     def create(self) -> str:
         return _pid_and_variable(self.variable_name)
-
-
-class SubprocessBatchLeaf(Spec[str]):
-    value: int
-
-    @batched(lambda _, __: (None, 8))
-    def create(objs: list[SubprocessBatchLeaf]) -> list[str]:
-        return [f"{os.getpid()}:{obj.value}" for obj in objs]
 
 
 class SubprocessCwdLeaf(Spec[str]):

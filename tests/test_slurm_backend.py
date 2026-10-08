@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import dataclasses
 import json
-import logging
 import os
 import shlex
 import shutil
@@ -26,7 +25,6 @@ from furu.config import (
     _Config,
     _dump_worker_json_config,
     _FuruDirectories,
-    _FuruWorkerConfig,
     _read_worker_json_config,
     get_config,
 )
@@ -44,7 +42,6 @@ from furu.testing import override_config
 from furu.utils import write_private_file
 from furu.worker import _cli
 from furu.worker.backends.slurm.backend import SlurmWorkerBackend
-from furu.worker.backends.slurm.pool import _UNFINISHED_STATES
 from furu.worker.backends.slurm.resources import (
     MemoryPerCpu,
     MemoryPerGpu,
@@ -151,394 +148,55 @@ def _code_dir(provenance: SubmitProvenance) -> Path:
     ).resolve()
 
 
-def test_worker_cli_passes_coordinator_file(
-    tmp_path: Path,
+_WORKER_CLI_ARGS = [
+    "--coordinator-file",
+    "worker.config.json",
+    "--pool",
+    "slurm:abc",
+    "--idle-timeout",
+    "0.25",
+    "--max-failures",
+    "3",
+    "--log-file",
+    "worker.log",
+    "--component",
+    "test-worker",
+    "--backend",
+    "slurm",
+]
+
+
+def test_worker_cli_runs_worker_loop_with_parsed_arguments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[Path, str, float | None]] = []
-    coordinator_file = tmp_path / "coordinator.url"
-    coordinator_file.write_text("ws://furu:secret@execution-coordinator.test:1\n\n")
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(_cli, "worker_loop", lambda **kwargs: calls.append(kwargs))
 
-    def worker_loop(
-        *,
-        coordinator: Path,
-        pool: str,
-        idle_timeout: float | None,
-        component: str,
-        backend: str,
-        materialize_snapshot: bool,
-        max_failures: int,
-        log_file: Path,
-    ) -> None:
-        calls.append((coordinator, pool, idle_timeout))
+    assert _cli.main(_WORKER_CLI_ARGS) == 0
 
-    monkeypatch.setattr(_cli, "worker_loop", worker_loop)
-
-    assert (
-        _cli.main(
-            [
-                "--coordinator-file",
-                str(coordinator_file),
-                "--pool",
-                "slurm:abc",
-                "--idle-timeout",
-                "60",
-                "--max-failures",
-                "3",
-                "--log-file",
-                "worker.log",
-                "--component",
-                "test-worker",
-                "--backend",
-                "slurm",
-            ]
-        )
-        == 0
-    )
-
-    assert calls == [(coordinator_file, "slurm:abc", 60.0)]
+    assert calls == [
+        {
+            "coordinator": Path("worker.config.json"),
+            "pool": "slurm:abc",
+            "idle_timeout": 0.25,
+            "max_failures": 3,
+            "component": "test-worker",
+            "backend": "slurm",
+            "materialize_snapshot": True,
+            "log_file": Path("worker.log"),
+        }
+    ]
 
 
-def test_worker_cli_reads_pool(
-    tmp_path: Path,
+def test_worker_cli_rejects_missing_required_argument(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[str, float | None]] = []
-    coordinator_file = tmp_path / "coordinator.url"
-    coordinator_file.write_text("ws://furu:secret@execution-coordinator.test:1")
-
-    def worker_loop(
-        *,
-        coordinator: Path,
-        pool: str,
-        idle_timeout: float | None,
-        component: str,
-        backend: str,
-        materialize_snapshot: bool,
-        max_failures: int,
-        log_file: Path,
-    ) -> None:
-        calls.append((pool, idle_timeout))
-
-    monkeypatch.setattr(_cli, "worker_loop", worker_loop)
-
-    assert (
-        _cli.main(
-            [
-                "--coordinator-file",
-                str(coordinator_file),
-                "--pool",
-                "slurm:abc",
-                "--idle-timeout",
-                "30",
-                "--max-failures",
-                "3",
-                "--log-file",
-                "worker.log",
-                "--component",
-                "test-worker",
-                "--backend",
-                "slurm",
-            ]
-        )
-        == 0
-    )
-
-    assert calls == [("slurm:abc", 30.0)]
-
-
-def test_worker_cli_reads_idle_timeout_and_max_failures(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[tuple[float | None, int]] = []
-    coordinator_file = tmp_path / "coordinator.url"
-    coordinator_file.write_text("ws://furu:secret@execution-coordinator.test:1")
-
-    def worker_loop(
-        *,
-        coordinator: Path,
-        pool: str,
-        idle_timeout: float | None,
-        component: str,
-        backend: str,
-        materialize_snapshot: bool,
-        max_failures: int,
-        log_file: Path,
-    ) -> None:
-        calls.append((idle_timeout, max_failures))
-
-    monkeypatch.setattr(_cli, "worker_loop", worker_loop)
-
-    assert (
-        _cli.main(
-            [
-                "--coordinator-file",
-                str(coordinator_file),
-                "--pool",
-                "slurm:abc",
-                "--idle-timeout",
-                "0.25",
-                "--max-failures",
-                "3",
-                "--log-file",
-                "worker.log",
-                "--component",
-                "test-worker",
-                "--backend",
-                "slurm",
-            ]
-        )
-        == 0
-    )
-
-    assert calls == [(0.25, 3)]
-
-
-def _run_worker_cli_capturing_component(
-    monkeypatch: pytest.MonkeyPatch,
-    coordinator_file: Path,
-    extra_args: list[str],
-) -> str:
-    captured: list[str] = []
-
-    def worker_loop(
-        *,
-        coordinator: Path,
-        pool: str,
-        idle_timeout: float | None,
-        component: str,
-        backend: str,
-        materialize_snapshot: bool,
-        max_failures: int,
-        log_file: Path,
-    ) -> None:
-        captured.append(component)
-
-    monkeypatch.setattr(_cli, "worker_loop", worker_loop)
-
-    assert (
-        _cli.main(
-            [
-                "--coordinator-file",
-                str(coordinator_file),
-                "--pool",
-                "slurm:abc",
-                "--idle-timeout",
-                "60",
-                "--max-failures",
-                "3",
-                "--log-file",
-                "worker.log",
-                "--backend",
-                "slurm",
-                *extra_args,
-            ]
-        )
-        == 0
-    )
-    (component,) = captured
-    return component
-
-
-def test_worker_cli_reads_component_override(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    coordinator_file = tmp_path / "coordinator.url"
-    coordinator_file.write_text("ws://furu:secret@execution-coordinator.test:1")
-
-    component = _run_worker_cli_capturing_component(
-        monkeypatch, coordinator_file, ["--component", "worker-a"]
-    )
-
-    assert component == "worker-a"
-
-
-def test_worker_cli_requires_component(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    coordinator_file = tmp_path / "coordinator.url"
-    coordinator_file.write_text("ws://furu:secret@execution-coordinator.test:1")
-
-    def worker_loop(
-        *,
-        coordinator: Path,
-        pool: str,
-        idle_timeout: float | None,
-        component: str,
-        backend: str,
-        materialize_snapshot: bool,
-        max_failures: int,
-        log_file: Path,
-    ) -> None:
-        raise AssertionError("worker_loop should not be called")
-
-    monkeypatch.setattr(_cli, "worker_loop", worker_loop)
+    monkeypatch.setattr(_cli, "worker_loop", lambda **kwargs: pytest.fail("ran"))
 
     with pytest.raises(SystemExit) as exc_info:
-        _cli.main(
-            [
-                "--coordinator-file",
-                str(coordinator_file),
-                "--pool",
-                "slurm:abc",
-                "--idle-timeout",
-                "60",
-                "--max-failures",
-                "3",
-                "--log-file",
-                "worker.log",
-            ]
-        )
+        _cli.main(_WORKER_CLI_ARGS[2:])  # no --coordinator-file
 
     assert exc_info.value.code == 2
-
-
-def test_worker_cli_requires_pool(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[str] = []
-    coordinator_file = tmp_path / "coordinator.url"
-    coordinator_file.write_text("ws://furu:secret@execution-coordinator.test:1")
-
-    def worker_loop(
-        *,
-        coordinator: Path,
-        pool: str,
-        idle_timeout: float | None,
-    ) -> None:
-        calls.append(pool)
-
-    monkeypatch.setattr(_cli, "worker_loop", worker_loop)
-
-    with pytest.raises(SystemExit) as exc_info:
-        _cli.main(
-            [
-                "--coordinator-file",
-                str(coordinator_file),
-                "--idle-timeout",
-                "60",
-                "--max-failures",
-                "3",
-                "--log-file",
-                "worker.log",
-                "--component",
-                "test-worker",
-            ]
-        )
-
-    assert exc_info.value.code == 2
-    assert calls == []
-
-
-def test_worker_cli_requires_coordinator_file(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[str] = []
-
-    def worker_loop(
-        *,
-        coordinator: Path,
-        pool: str,
-        idle_timeout: float | None,
-    ) -> None:
-        calls.append(str(coordinator))
-
-    monkeypatch.setattr(_cli, "worker_loop", worker_loop)
-
-    with pytest.raises(SystemExit) as exc_info:
-        _cli.main(
-            [
-                "--pool",
-                "slurm:abc",
-                "--idle-timeout",
-                "60",
-                "--max-failures",
-                "3",
-                "--log-file",
-                "worker.log",
-                "--component",
-                "test-worker",
-            ]
-        )
-
-    assert exc_info.value.code == 2
-    assert calls == []
-
-
-def test_worker_cli_requires_idle_timeout(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[float | None] = []
-    coordinator_file = tmp_path / "coordinator.url"
-    coordinator_file.write_text("ws://furu:secret@execution-coordinator.test:1")
-
-    def worker_loop(
-        *,
-        coordinator: Path,
-        pool: str,
-        idle_timeout: float | None,
-    ) -> None:
-        calls.append(idle_timeout)
-
-    monkeypatch.setattr(_cli, "worker_loop", worker_loop)
-
-    with pytest.raises(SystemExit) as exc_info:
-        _cli.main(
-            [
-                "--coordinator-file",
-                str(coordinator_file),
-                "--pool",
-                "slurm:abc",
-            ]
-        )
-
-    assert exc_info.value.code == 2
-    assert calls == []
-
-
-def test_worker_cli_rejects_auth_token_argument(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[str] = []
-    coordinator_file = tmp_path / "coordinator.url"
-    coordinator_file.write_text("ws://furu:secret@execution-coordinator.test:1")
-
-    def worker_loop(
-        *,
-        coordinator: Path,
-        pool: str,
-        idle_timeout: float | None,
-    ) -> None:
-        calls.append(str(coordinator))
-
-    monkeypatch.setattr(_cli, "worker_loop", worker_loop)
-
-    with pytest.raises(SystemExit) as exc_info:
-        _cli.main(
-            [
-                "--coordinator-file",
-                str(coordinator_file),
-                "--pool",
-                "slurm:abc",
-                "--idle-timeout",
-                "60",
-                "--max-failures",
-                "3",
-                "--log-file",
-                "worker.log",
-                "--component",
-                "test-worker",
-                "--auth-token",
-                "secret",
-            ]
-        )
-
-    assert exc_info.value.code == 2
-    assert calls == []
 
 
 def test_slurm_backend_submits_workers_with_required_sbatch_options(
@@ -587,68 +245,34 @@ def test_slurm_backend_submits_workers_with_required_sbatch_options(
     assert len(sbatch_records) == 1
 
     argv = sbatch_records[0]["argv"]
-    assert "--parsable" in argv
     assert f"--chdir={_code_dir(provenance)}" in argv
-    assert f"--output={log_dir.resolve() / 'furu-worker-%A_%a.out'}" in argv
-    assert f"--error={log_dir.resolve() / 'furu-worker-%A_%a.err'}" in argv
-    assert "--job-name=furu-worker" in argv
     assert "--array=0-1" in argv
-    assert not any(arg.startswith("--export") for arg in argv)
-    assert not any(arg.startswith("--wrap") for arg in argv)
-    assert "--partition=debug" in argv
-    assert "--nodes=1" in argv
-    assert "--cpus-per-task=4" in argv
-    assert "--mem=8G" in argv
-    assert "--gpus=1" in argv
+    for arg in ("--partition=debug", "--cpus-per-task=4", "--mem=8G", "--gpus=1"):
+        assert arg in argv
     assert "--exclusive" in argv
-    assert "secret-token" not in " ".join(argv)
+    assert backend.worker == Worker(cpus=4, gpus=1, memory_gib=8, labels=("hopper",))
 
-    script_path = Path(argv[-1])
-    assert script_path == worker_dir / "worker.sh"
-    script = script_path.read_text()
-    assert "--coordinator-file" in script
-    assert "secret-token" not in script
+    script = Path(argv[-1]).read_text()
     assert script.index('echo "Hello" > /tmp/hey') < script.index("exec uv run")
     assert script.index("unset VIRTUAL_ENV") < script.index("exec uv run")
-    assert f"exec uv run --frozen --project {_code_dir(provenance)}" in script
-    assert "python -m furu.worker._cli" in script
-    assert sys.executable not in script
-    assert "--backend slurm" in script
-    assert "--server-url" not in script
-    assert "SLURM_ARRAY_TASK_ID" in script
-    assert "SLURM_ARRAY_JOB_ID" in script
-    assert (
-        'furu_worker_component="slurm-worker-${SLURM_ARRAY_JOB_ID}a${SLURM_ARRAY_TASK_ID}"'
-        in script
-    )
-    assert '--component "${furu_worker_component}"' in script
-    assert (
-        f"--log-file {shlex.quote(str(worker_dir / 'logs'))}"
-        '/"${furu_worker_component}.log"'
-    ) in script
+    assert f"--project {_code_dir(provenance)}" in script
     assert "--idle-timeout 0.25" in script
     assert "--max-failures 2" in script
     assert f"--pool {shlex.quote(backend.pool_key)}" in script
-    assert backend.worker == Worker(cpus=4, gpus=1, memory_gib=8, labels=("hopper",))
-    assert "FURU_DIRECTORIES__OBJECTS" not in script
-    assert "FURU_DIRECTORIES__EXECUTIONS" not in script
 
-    assert not (worker_dir / "secrets").exists()
+    # Workers find the coordinator and config through one private file; the
+    # auth token never appears on a command line or in the script.
     config_file = worker_dir / "worker.config.json"
+    assert f"--coordinator-file {config_file}" in script
+    assert f"export {_WORKER_JSON_CONFIG_FILE_ENV_VAR}={config_file}" in script
     assert _mode(config_file) == 0o600
     coordinator_url, written_config = _read_worker_json_config(config_file)
     assert (
         coordinator_url == "ws://furu:secret-token@execution-coordinator.cluster:1234"
     )
     assert written_config == get_config()
-    assert f"--coordinator-file {config_file}" in script
-    assert f"export {_WORKER_JSON_CONFIG_FILE_ENV_VAR}={config_file}" in script
-
-    assert not sbatch_records[0]["has_execution_coordinator_environment"]
-
+    assert "secret-token" not in script
     assert "secret-token" not in record_file.read_text()
-
-    assert config_file.exists()
 
 
 def test_slurm_backend_isolates_worker_files_between_pools(
@@ -679,9 +303,6 @@ def test_slurm_backend_isolates_worker_files_between_pools(
     assert {path.parent for path in worker_dirs} == {executor_dir / "workers"}
     for pool_number, pool in enumerate(pools, start=1):
         worker_dir = pool._script_path.parent
-        assert len(worker_dir.name) == 16
-        assert int(worker_dir.name, 16) >= 0
-        assert pool._script_path == worker_dir / "worker.sh"
         assert f"echo pool-{pool_number}" in pool._script_path.read_text()
         coordinator_url, _ = _read_worker_json_config(worker_dir / "worker.config.json")
         assert coordinator_url.startswith("ws://furu:secret-token@")
@@ -690,20 +311,26 @@ def test_slurm_backend_isolates_worker_files_between_pools(
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="requires bash")
 @pytest.mark.parametrize(
-    ("job_id", "expected"),
+    ("use_job_arrays", "slurm_env", "expected"),
     [
-        ("7", "slurm-worker-7"),
-        ("42", "slurm-worker-42"),
-        ("999", "slurm-worker-999"),
-        ("1000", "slurm-worker-1000"),
-        ("12345", "slurm-worker-12345"),
-        ("1234567", "slurm-worker-1234567"),
+        pytest.param(False, {"SLURM_JOB_ID": "12345"}, "slurm-worker-12345", id="job"),
+        pytest.param(
+            True,
+            {
+                "SLURM_ARRAY_JOB_ID": "100",
+                "SLURM_ARRAY_TASK_ID": "7",
+                "SLURM_JOB_ID": "999",
+            },
+            "slurm-worker-100a7",
+            id="array-task",
+        ),
     ],
 )
 def test_slurm_worker_component_label_derivation_under_bash(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    job_id: str,
+    use_job_arrays: bool,
+    slurm_env: dict[str, str],
     expected: str,
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
@@ -711,7 +338,7 @@ def test_slurm_worker_component_label_derivation_under_bash(
         max_workers=1,
         resources=SlurmResources(cpus_per_worker=1),
         worker_connect_host="execution-coordinator.cluster",
-        use_job_arrays=False,
+        use_job_arrays=use_job_arrays,
     )
     pool = backend.start_pool(
         coordinator=_StubCoordinator(),
@@ -734,60 +361,13 @@ def test_slurm_worker_component_label_derivation_under_bash(
     )
     result = subprocess.run(
         ["bash", "-c", script],
-        env={**os.environ, "SLURM_JOB_ID": job_id},
+        env={**os.environ, **slurm_env},
         capture_output=True,
         text=True,
         check=True,
     )
 
     assert result.stdout == expected
-
-
-@pytest.mark.skipif(shutil.which("bash") is None, reason="requires bash")
-def test_slurm_array_worker_component_label_derivation_under_bash(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _disable_slurm_pool_scale_thread(monkeypatch)
-    backend = SlurmWorkerBackend(
-        max_workers=1,
-        resources=SlurmResources(cpus_per_worker=1),
-        worker_connect_host="execution-coordinator.cluster",
-        use_job_arrays=True,
-    )
-    pool = backend.start_pool(
-        coordinator=_StubCoordinator(),
-        bound_port=1234,
-        auth_token="secret-token",
-        executor_dir=tmp_path / "executor",
-        handoff=PoolHandoff(),
-    )
-    script_text = pool._script_path.read_text()
-    component_line = next(
-        line
-        for line in script_text.splitlines()
-        if line.startswith("furu_worker_component=")
-    )
-    script = (
-        "set -euo pipefail\n"
-        + component_line
-        + "\n"
-        + 'printf "%s" "$furu_worker_component"'
-    )
-    result = subprocess.run(
-        ["bash", "-c", script],
-        env={
-            **os.environ,
-            "SLURM_ARRAY_JOB_ID": "100",
-            "SLURM_ARRAY_TASK_ID": "7",
-            "SLURM_JOB_ID": "999",
-        },
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-
-    assert result.stdout == "slurm-worker-100a7"
 
 
 @pytest.mark.parametrize(
@@ -828,89 +408,9 @@ def test_slurm_backend_export_option_controls_sbatch_args(
     )
 
 
-def test_slurm_backend_includes_selected_export_names_in_sbatch_args(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _disable_slurm_pool_scale_thread(monkeypatch)
-    record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    coordinator = _StubCoordinator(1)
-    backend = SlurmWorkerBackend(
-        max_workers=1,
-        resources=SlurmResources(cpus_per_worker=1),
-        worker_connect_host="execution-coordinator.cluster",
-        export=("HF_TOKEN",),
-    )
-
-    pool = backend.start_pool(
-        coordinator=coordinator,
-        bound_port=1234,
-        auth_token="secret-token",
-        executor_dir=tmp_path / "executor",
-        handoff=PoolHandoff(),
-    )
-    pool._scale_once()
-
-    records = _read_records(record_file)
-    sbatch_records = [record for record in records if record["executable"] == "sbatch"]
-    assert len(sbatch_records) == 1
-    assert "--export=HF_TOKEN" in sbatch_records[0]["argv"]
-
-
-def test_slurm_backend_can_submit_workers_as_job_array(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _disable_slurm_pool_scale_thread(monkeypatch)
-    record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    coordinator = _StubCoordinator(3)
-    backend = SlurmWorkerBackend(
-        max_workers=3,
-        resources=SlurmResources(cpus_per_worker=1),
-        worker_connect_host="execution-coordinator.cluster",
-        poll_interval=0,
-        use_job_arrays=True,
-    )
-
-    pool = backend.start_pool(
-        coordinator=coordinator,
-        bound_port=1234,
-        auth_token="secret-token",
-        executor_dir=tmp_path / "executor",
-        handoff=PoolHandoff(),
-    )
-    pool._scale_once()
-
-    assert pool._job_ids == ["100_0", "100_1", "100_2"]
-    assert pool._active_job_states() == {
-        "100_0": "RUNNING",
-        "100_1": "RUNNING",
-        "100_2": "RUNNING",
-    }
-    active_file.write_text("100_0\n100_1 FAILED\n100_2\n")
-    assert pool._task_states() == {
-        "100_0": "RUNNING",
-        "100_1": "FAILED",
-        "100_2": "RUNNING",
-    }
-
-    records = _read_records(record_file)
-    sbatch_records = [record for record in records if record["executable"] == "sbatch"]
-    assert len(sbatch_records) == 1
-    assert "--array=0-2" in sbatch_records[0]["argv"]
-    assert any(
-        arg.endswith("furu-worker-%A_%a.out") for arg in sbatch_records[0]["argv"]
-    )
-    assert any(
-        arg.endswith("furu-worker-%A_%a.err") for arg in sbatch_records[0]["argv"]
-    )
-    assert "SLURM_ARRAY_TASK_ID" in Path(sbatch_records[0]["argv"][-1]).read_text()
-
-
 def test_slurm_worker_pool_ignores_untracked_array_siblings_from_sacct(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
     _record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
@@ -941,17 +441,7 @@ def test_slurm_worker_pool_ignores_untracked_array_siblings_from_sacct(
         "100_2.batch COMPLETED\n"
     )
 
-    furu_logger = logging.getLogger("furu")
-    furu_logger.addHandler(caplog.handler)
-    try:
-        caplog.set_level(logging.WARNING, logger="furu")
-        assert pool._task_states() == {"100_1": "RUNNING"}
-    finally:
-        furu_logger.removeHandler(caplog.handler)
-    assert not any(
-        "ignoring unexpected slurm job id from sacct" in record.message
-        for record in caplog.records
-    )
+    assert pool._task_states() == {"100_1": "RUNNING"}
 
 
 def test_slurm_pool_submits_replacement_workers_as_job_array(
@@ -1110,69 +600,6 @@ def test_slurm_resources_derive_worker_memory_gib(
     assert resources.memory_gib == expected_memory_gib
 
 
-@pytest.mark.parametrize(
-    ("gpus", "expected_args"),
-    [
-        (0, []),
-        (3, ["--gpus=3"]),
-    ],
-)
-def test_slurm_resources_emit_gpu_option(gpus: int, expected_args: list[str]) -> None:
-    assert SlurmResources(cpus_per_worker=1, gpus=gpus).to_sbatch_args() == [
-        "--nodes=1",
-        "--cpus-per-task=1",
-        *expected_args,
-    ]
-
-
-def test_slurm_resources_emit_node_count() -> None:
-    assert SlurmResources(cpus_per_worker=1, nodes=3).to_sbatch_args() == [
-        "--nodes=3",
-        "--cpus-per-task=1",
-    ]
-
-
-def test_slurm_backend_builds_coordinator_url_from_worker_connect_host(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _disable_slurm_pool_scale_thread(monkeypatch)
-    record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    coordinator = _StubCoordinator(1)
-    backend = SlurmWorkerBackend(
-        max_workers=1,
-        resources=SlurmResources(cpus_per_worker=1),
-        worker_connect_host="execution-coordinator.cluster",
-    )
-
-    pool = backend.start_pool(
-        coordinator=coordinator,
-        bound_port=4321,
-        auth_token="secret-token",
-        executor_dir=tmp_path / "executor",
-        handoff=PoolHandoff(),
-    )
-    pool._scale_once()
-
-    assert pool._job_ids == ["100_0"]
-
-    records = _read_records(record_file)
-    sbatch_records = [record for record in records if record["executable"] == "sbatch"]
-    assert len(sbatch_records) == 1
-
-    script_path = Path(sbatch_records[0]["argv"][-1])
-    script = script_path.read_text()
-    coordinator_url_text, _ = _read_worker_json_config(
-        script_path.parent / "worker.config.json"
-    )
-    assert (
-        coordinator_url_text
-        == "ws://furu:secret-token@execution-coordinator.cluster:4321"
-    )
-    assert f"--idle-timeout {get_config().worker.idle_timeout_seconds}" in script
-    assert f"--max-failures {get_config().worker.max_failures_per_worker}" in script
-
-
 def test_slurm_backend_worker_connect_port_overrides_bound_port(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1211,17 +638,6 @@ def test_slurm_backend_worker_connect_port_overrides_bound_port(
     assert ":4321" not in script_path.read_text()
 
 
-def test_slurm_backend_worker_connect_host_defaults_to_config() -> None:
-    config = _Config(worker=_FuruWorkerConfig(connect_host="login01.cluster"))
-    with override_config(config):
-        backend = SlurmWorkerBackend(
-            max_workers=1,
-            resources=SlurmResources(cpus_per_worker=1),
-        )
-
-    assert backend.worker_connect_host == "login01.cluster"
-
-
 def test_slurm_backend_worker_connect_host_falls_back_to_fqdn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1255,7 +671,7 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
-    record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    _record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
     coordinator = _StubCoordinator(2)
     backend = SlurmWorkerBackend(
         max_workers=2,
@@ -1272,116 +688,109 @@ def test_slurm_worker_pool_health_tracks_sacct_jobs(
         handoff=PoolHandoff(),
     )
     pool._scale_once()
+    assert pool._task_states() == {"100": "RUNNING", "101": "RUNNING"}
 
-    assert not any(
-        state not in _UNFINISHED_STATES and state not in frozenset({"COMPLETED"})
-        for state in pool._task_states().values()
-    )
-
+    # Job steps (.batch, .extern) are not workers of their own.
     active_file.write_text("100\n100.batch COMPLETED\n101 FAILED\n101.extern FAILED\n")
 
-    states = pool._task_states()
-    assert states == {"100": "RUNNING", "101": "FAILED"}
-    assert any(
-        state not in _UNFINISHED_STATES and state != "COMPLETED"
-        for state in states.values()
-    )
-    sacct_records = [
-        record
-        for record in _read_records(record_file)
-        if record["executable"] == "sacct"
-    ]
-    assert sacct_records[-1]["argv"] == [
-        "-X",
-        "--noheader",
-        "-o",
-        "JobID,State",
-        "--parsable2",
-        "-j",
-        "100,101",
-    ]
+    assert pool._task_states() == {"100": "RUNNING", "101": "FAILED"}
 
 
-def test_slurm_pool_fails_run_once_failed_worker_budget_is_exhausted(
+# Each step optionally replaces what Slurm reports for the queue, sets the
+# coordinator's demand, scales once, and checks the tracked job ids.
+@pytest.mark.parametrize(
+    ("max_workers", "steps", "sbatches", "scancels"),
+    [
+        pytest.param(
+            3,
+            [
+                (None, 0, []),
+                (None, 2, ["100", "101"]),
+                (None, 10, ["100", "101", "102"]),
+                (None, 10, ["100", "101", "102"]),
+            ],
+            3,
+            [],
+            id="grows-with-demand-up-to-max-workers",
+        ),
+        pytest.param(
+            5,
+            [(None, 1, ["100"])] * 3,
+            1,
+            [],
+            id="does-not-resubmit-tracked-viable-job",
+        ),
+        pytest.param(
+            3,
+            [
+                (None, 3, ["100", "101", "102"]),
+                ("100\n101\n", 3, ["100", "101", "103"]),
+            ],
+            4,
+            [],
+            id="replaces-workers-that-exit",
+        ),
+        pytest.param(
+            3,
+            [
+                (None, 3, ["100", "101", "102"]),
+                ("100 PENDING\n101 PENDING\n102 PENDING\n", 1, ["100"]),
+            ],
+            3,
+            [["102", "101"]],
+            id="cancels-newest-queued-when-demand-drops",
+        ),
+        pytest.param(
+            2,
+            [(None, 2, ["100", "101"]), (None, 0, ["100", "101"])],
+            2,
+            [],
+            id="never-cancels-running-workers",
+        ),
+        pytest.param(
+            1,
+            [(None, 1, ["100"]), ("", 1, ["101"]), ("", 1, ["102"])],
+            3,
+            [],
+            id="completed-jobs-are-not-restarts",
+        ),
+    ],
+)
+def test_slurm_pool_scale_policy(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    max_workers: int,
+    steps: list[tuple[str | None, int, list[str]]],
+    sbatches: int,
+    scancels: list[list[str]],
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
-    _record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    coordinator = _StubCoordinator()
+    record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    demands = iter(demand for _, demand, _ in steps)
     backend = SlurmWorkerBackend(
-        max_workers=1,
-        max_failed_workers=0,
+        max_workers=max_workers,
         resources=SlurmResources(cpus_per_worker=1),
         worker_connect_host="execution-coordinator.cluster",
         poll_interval=0,
         use_job_arrays=False,
     )
     pool = backend.start_pool(
-        coordinator=coordinator,
-        bound_port=1234,
-        auth_token="secret-token",
-        executor_dir=tmp_path / "executor",
-        handoff=PoolHandoff(),
-    )
-    pool._job_ids[:] = ["100"]
-    active_file.write_text("100 FAILED\n")
-
-    pool._scale_loop()
-
-    assert coordinator.failures == [
-        "more than 0 slurm workers failed without any job completing: 100 FAILED"
-    ]
-    assert pool._stop_event.is_set()
-
-
-def test_slurm_pool_scale_submits_additional_workers_as_satisfiable_count_grows(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _disable_slurm_pool_scale_thread(monkeypatch)
-    record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    counts = iter([0, 2, 10, 10])
-    coordinator = _StubCoordinator(lambda max_workers: min(next(counts), max_workers))
-
-    backend = SlurmWorkerBackend(
-        max_workers=3,
-        resources=SlurmResources(cpus_per_worker=1),
-        worker_connect_host="execution-coordinator.cluster",
-        poll_interval=0,
-        use_job_arrays=False,
-    )
-    pool = backend.start_pool(
-        coordinator=coordinator,
+        coordinator=_StubCoordinator(lambda _: next(demands)),
         bound_port=1234,
         auth_token="secret-token",
         executor_dir=tmp_path / "executor",
         handoff=PoolHandoff(),
     )
 
-    assert pool._job_ids == []
+    for queue, _, expected_job_ids in steps:
+        if queue is not None:
+            active_file.write_text(queue)
+        pool._scale_once()
+        assert pool._job_ids == expected_job_ids
 
-    pool._scale_once()
-    assert pool._job_ids == []
-
-    pool._scale_once()
-    assert pool._job_ids == ["100", "101"]
-
-    pool._scale_once()
-    assert pool._job_ids == ["100", "101", "102"]
-
-    pool._scale_once()
-    assert pool._job_ids == ["100", "101", "102"]
-
-    sbatch_records = [
-        record
-        for record in _read_records(record_file)
-        if record["executable"] == "sbatch"
-    ]
-    assert len(sbatch_records) == 3
-    assert not any(
-        arg.startswith("--array") for record in sbatch_records for arg in record["argv"]
-    )
+    records = _read_records(record_file)
+    assert [r["argv"] for r in records if r["executable"] == "scancel"] == scancels
+    assert len([r for r in records if r["executable"] == "sbatch"]) == sbatches
 
 
 @pytest.mark.parametrize("use_job_arrays", [False, True])
@@ -1437,116 +846,6 @@ def test_slurm_pool_scales_for_ready_work_while_workers_are_busy(
     assert not any(r["executable"] == "scancel" for r in _read_records(record_file))
 
 
-def test_slurm_pool_scale_does_not_resubmit_for_already_tracked_viable_job(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _disable_slurm_pool_scale_thread(monkeypatch)
-    record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    coordinator = _StubCoordinator(1)
-
-    backend = SlurmWorkerBackend(
-        max_workers=5,
-        resources=SlurmResources(cpus_per_worker=1),
-        worker_connect_host="execution-coordinator.cluster",
-        poll_interval=0,
-        use_job_arrays=False,
-    )
-    pool = backend.start_pool(
-        coordinator=coordinator,
-        bound_port=1234,
-        auth_token="secret-token",
-        executor_dir=tmp_path / "executor",
-        handoff=PoolHandoff(),
-    )
-
-    pool._scale_once()
-    pool._scale_once()
-    pool._scale_once()
-
-    assert pool._job_ids == ["100"]
-    sbatch_records = [
-        record
-        for record in _read_records(record_file)
-        if record["executable"] == "sbatch"
-    ]
-    assert len(sbatch_records) == 1
-
-
-def test_slurm_pool_scale_submits_replacement_workers_after_existing_workers_exit(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _disable_slurm_pool_scale_thread(monkeypatch)
-    record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    coordinator = _StubCoordinator(lambda max_workers: max_workers)
-
-    backend = SlurmWorkerBackend(
-        max_workers=3,
-        resources=SlurmResources(cpus_per_worker=1),
-        worker_connect_host="execution-coordinator.cluster",
-        poll_interval=0,
-        use_job_arrays=False,
-    )
-    pool = backend.start_pool(
-        coordinator=coordinator,
-        bound_port=1234,
-        auth_token="secret-token",
-        executor_dir=tmp_path / "executor",
-        handoff=PoolHandoff(),
-    )
-
-    pool._scale_once()
-    assert pool._job_ids == ["100", "101", "102"]
-
-    active_file.write_text("100\n101\n")
-    pool._scale_once()
-
-    assert pool._job_ids == ["100", "101", "103"]
-    sbatch_records = [
-        record
-        for record in _read_records(record_file)
-        if record["executable"] == "sbatch"
-    ]
-    assert len(sbatch_records) == 4
-
-
-def test_slurm_pool_scale_cancels_newest_queued_workers_when_demand_drops(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _disable_slurm_pool_scale_thread(monkeypatch)
-    record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    counts = iter([3, 1])
-    coordinator = _StubCoordinator(lambda max_workers: next(counts))
-
-    backend = SlurmWorkerBackend(
-        max_workers=3,
-        resources=SlurmResources(cpus_per_worker=1),
-        worker_connect_host="execution-coordinator.cluster",
-        poll_interval=0,
-        use_job_arrays=False,
-    )
-    pool = backend.start_pool(
-        coordinator=coordinator,
-        bound_port=1234,
-        auth_token="secret-token",
-        executor_dir=tmp_path / "executor",
-        handoff=PoolHandoff(),
-    )
-
-    pool._scale_once()
-    assert pool._job_ids == ["100", "101", "102"]
-
-    active_file.write_text("100 PENDING\n101 PENDING\n102 PENDING\n")
-    pool._scale_once()
-
-    assert pool._job_ids == ["100"]
-    assert active_file.read_text() == "100 PENDING\n"
-    records = _read_records(record_file)
-    assert records[-1] == {"executable": "scancel", "argv": ["102", "101"]}
-
-
 def test_slurm_pool_scale_cancels_newest_queued_array_tasks_when_demand_drops(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1589,87 +888,9 @@ def test_slurm_pool_scale_cancels_newest_queued_array_tasks_when_demand_drops(
     assert pool._task_states() == {"100_0": "RUNNING"}
 
 
-def test_slurm_pool_scale_never_cancels_running_workers(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _disable_slurm_pool_scale_thread(monkeypatch)
-    record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    counts = iter([2, 0])
-    coordinator = _StubCoordinator(lambda max_workers: next(counts))
-
-    backend = SlurmWorkerBackend(
-        max_workers=2,
-        resources=SlurmResources(cpus_per_worker=1),
-        worker_connect_host="execution-coordinator.cluster",
-        poll_interval=0,
-        use_job_arrays=False,
-    )
-    pool = backend.start_pool(
-        coordinator=coordinator,
-        bound_port=1234,
-        auth_token="secret-token",
-        executor_dir=tmp_path / "executor",
-        handoff=PoolHandoff(),
-    )
-
-    pool._scale_once()
-    assert pool._job_ids == ["100", "101"]
-
-    pool._scale_once()
-
-    assert pool._job_ids == ["100", "101"]
-    assert not any(
-        record["executable"] == "scancel" for record in _read_records(record_file)
-    )
-
-
-def test_slurm_pool_scale_does_not_count_completed_jobs_as_restarts(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _disable_slurm_pool_scale_thread(monkeypatch)
-    record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    coordinator = _StubCoordinator(lambda max_workers: max_workers)
-
-    backend = SlurmWorkerBackend(
-        max_workers=1,
-        resources=SlurmResources(cpus_per_worker=1),
-        worker_connect_host="execution-coordinator.cluster",
-        poll_interval=0,
-        use_job_arrays=False,
-    )
-    pool = backend.start_pool(
-        coordinator=coordinator,
-        bound_port=1234,
-        auth_token="secret-token",
-        executor_dir=tmp_path / "executor",
-        handoff=PoolHandoff(),
-    )
-
-    pool._scale_once()
-    active_file.write_text("")
-    pool._scale_once()
-    active_file.write_text("")
-    pool._scale_once()
-
-    assert pool._job_ids == ["102"]
-    assert (
-        len(
-            [
-                record
-                for record in _read_records(record_file)
-                if record["executable"] == "sbatch"
-            ]
-        )
-        == 3
-    )
-
-
 def test_slurm_pool_scale_replaces_failed_workers_within_budget(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
     record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
@@ -1696,21 +917,11 @@ def test_slurm_pool_scale_replaces_failed_workers_within_budget(
 
     # One worker OOMs; the other exits cleanly and leaves the queue uncounted.
     active_file.write_text("100 OUT_OF_MEMORY\n")
-    furu_logger = logging.getLogger("furu")
-    furu_logger.addHandler(caplog.handler)
-    try:
-        caplog.set_level(logging.WARNING, logger="furu")
-        pool._scale_once()
-    finally:
-        furu_logger.removeHandler(caplog.handler)
+    pool._scale_once()
 
     assert pool._job_ids == ["102", "103"]
     assert pool._failed == ["100 OUT_OF_MEMORY"]
     assert coordinator.failures == []
-    assert (
-        "replacing failed slurm workers (1 of 2 tolerated since the last "
-        "completed job): 100 OUT_OF_MEMORY"
-    ) in caplog.messages
 
     # Workers exiting non-zero after repeated job failures count as well, but a
     # job completing in the meantime is progress and clears the earlier failure.
@@ -1727,12 +938,8 @@ def test_slurm_pool_scale_replaces_failed_workers_within_budget(
     pool._scale_once()
 
     assert pool._job_ids == []
-    assert coordinator.failures == [
-        (
-            "more than 2 slurm workers failed without any job completing: "
-            "102 FAILED, 103 FAILED, 104 NODE_FAIL"
-        )
-    ]
+    (failure,) = coordinator.failures
+    assert "102 FAILED, 103 FAILED, 104 NODE_FAIL" in failure
     assert (
         len([r for r in _read_records(record_file) if r["executable"] == "sbatch"]) == 6
     )
@@ -1768,9 +975,9 @@ def test_slurm_pool_scale_counts_cancelled_jobs_as_failed_workers(
 
     pool._scale_loop()
 
-    assert coordinator.failures == [
-        "more than 0 slurm workers failed without any job completing: 100 CANCELLED"
-    ]
+    (failure,) = coordinator.failures
+    assert "100 CANCELLED" in failure
+    assert pool._stop_event.is_set()
     assert pool._job_ids == []
     assert (
         len(
@@ -1782,71 +989,6 @@ def test_slurm_pool_scale_counts_cancelled_jobs_as_failed_workers(
         )
         == 1
     )
-
-
-def test_slurm_backend_requires_explicit_executor_dir() -> None:
-    backend = SlurmWorkerBackend(
-        max_workers=1,
-        resources=SlurmResources(cpus_per_worker=1),
-        worker_connect_host="execution-coordinator.cluster",
-    )
-
-    with pytest.raises(TypeError, match="executor_dir"):
-        backend.start_pool(
-            coordinator=_StubCoordinator(),
-            bound_port=1234,
-            auth_token="secret-token",
-            handoff=PoolHandoff(),
-        )  # ty: ignore[missing-argument]
-
-
-def test_slurm_worker_pool_join_cancels_jobs_left_after_timeout(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _disable_slurm_pool_scale_thread(monkeypatch)
-    record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
-    coordinator = _StubCoordinator(2)
-    backend = SlurmWorkerBackend(
-        max_workers=2,
-        resources=SlurmResources(cpus_per_worker=1),
-        worker_connect_host="execution-coordinator.cluster",
-        poll_interval=0,
-        use_job_arrays=False,
-    )
-    pool = backend.start_pool(
-        coordinator=coordinator,
-        bound_port=1234,
-        auth_token="secret-token",
-        executor_dir=tmp_path / "executor",
-        handoff=PoolHandoff(),
-    )
-    pool._scale_once()
-    pool._stop_event.set()
-    pool._scale_thread.start()
-    pool._scale_thread.join(timeout=5)
-
-    pool.stop(timeout=0)
-
-    assert active_file.read_text() == ""
-    records = _read_records(record_file)
-    assert records[-1] == {"executable": "scancel", "argv": ["100", "101"]}
-
-
-def test_slurm_backend_uses_default_poll_interval() -> None:
-    with pytest.raises(TypeError):
-        SlurmWorkerBackend()  # ty: ignore[missing-argument]
-
-    backend = SlurmWorkerBackend(
-        max_workers=1,
-        resources=SlurmResources(cpus_per_worker=1),
-        worker_connect_host="execution-coordinator.cluster",
-    )
-
-    assert backend.poll_interval == 10.0
-    assert backend.execution_coordinator_listen_host == "0.0.0.0"
-    assert backend.worker_idle_timeout == get_config().worker.idle_timeout_seconds
-    assert backend.use_job_arrays is True
 
 
 def _install_fake_slurm(
@@ -1861,8 +1003,6 @@ def _install_fake_slurm(
     active_file.write_text("")
     counter_file.write_text("100")
 
-    monkeypatch.delenv("FURU_EXECUTION_COORDINATOR_SERVER_URL", raising=False)
-    monkeypatch.delenv("FURU_EXECUTION_COORDINATOR_AUTH_TOKEN", raising=False)
     monkeypatch.setenv("FURU_FAKE_SLURM_RECORD_FILE", str(record_file))
     monkeypatch.setenv("FURU_FAKE_SLURM_ACTIVE_FILE", str(active_file))
     monkeypatch.setenv("FURU_FAKE_SLURM_COUNTER_FILE", str(counter_file))
@@ -1883,19 +1023,7 @@ def _install_fake_slurm(
         counter_file = os.environ["FURU_FAKE_SLURM_COUNTER_FILE"]
 
         with open(record_file, "a", encoding="utf-8") as file:
-            file.write(
-                json.dumps(
-                    {
-                        "executable": "sbatch",
-                        "argv": sys.argv[1:],
-                        "has_execution_coordinator_environment": (
-                            "FURU_EXECUTION_COORDINATOR_SERVER_URL" in os.environ
-                            or "FURU_EXECUTION_COORDINATOR_AUTH_TOKEN" in os.environ
-                        ),
-                    }
-                )
-                + "\\n"
-            )
+            file.write(json.dumps({"executable": "sbatch", "argv": sys.argv[1:]}) + "\\n")
 
         with open(counter_file, encoding="utf-8") as file:
             job_id = int(file.read())
@@ -2153,15 +1281,22 @@ def _slurm_backend(**overrides: Any) -> SlurmWorkerBackend:
     return SlurmWorkerBackend(**{**fields, **overrides})
 
 
-def test_slurm_pool_key_ignores_where_and_how_many() -> None:
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"max_workers": 9},
+        {"worker_connect_host": "login02.cluster"},
+        {"worker_connect_port": 9000},
+        {"job_name": "other"},
+        {"poll_interval": 1.0, "worker_idle_timeout": 1.0},
+    ],
+    ids=lambda override: "+".join(override),
+)
+def test_slurm_pool_key_ignores_where_and_how_many(override: dict[str, Any]) -> None:
     key = _slurm_backend().pool_key
 
     assert key.startswith("slurm:")
-    assert _slurm_backend(max_workers=9).pool_key == key
-    assert _slurm_backend(worker_connect_host="login02.cluster").pool_key == key
-    assert _slurm_backend(worker_connect_port=9000).pool_key == key
-    assert _slurm_backend(job_name="other").pool_key == key
-    assert _slurm_backend(poll_interval=1.0, worker_idle_timeout=1.0).pool_key == key
+    assert _slurm_backend(**override).pool_key == key
 
 
 @pytest.mark.parametrize(

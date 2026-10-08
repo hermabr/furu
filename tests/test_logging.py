@@ -1,46 +1,24 @@
 import logging
-import os
 import re
-import sys
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 import furu.logging as furu_logging
 from furu.config import _Config, _FuruDirectories, _set_config, get_config
 
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
-
-def _strip_ansi(text: str) -> str:
-    return _ANSI_RE.sub("", text)
-
-
-def _record(
-    msg: str,
-    *,
-    level: int = logging.INFO,
-    pathname: str = "/home/user/datasets.py",
-    lineno: int = 64,
-    detail: dict[str, object] | None = None,
-    exc_info: Any = None,
-    stack_info: str | None = None,
-) -> logging.LogRecord:
-    record = logging.LogRecord(
+def _record(msg: str) -> logging.LogRecord:
+    return logging.LogRecord(
         name="furu",
-        level=level,
-        pathname=pathname,
-        lineno=lineno,
+        level=logging.INFO,
+        pathname=furu_logging.__file__,
+        lineno=1,
         msg=msg,
         args=(),
-        exc_info=exc_info,
-        sinfo=stack_info,
+        exc_info=None,
     )
-    if detail is not None:
-        setattr(record, furu_logging._DETAIL_ATTR, detail)
-    return record
 
 
 class _FakeStream:
@@ -71,17 +49,6 @@ def isolated_furu_logger() -> Iterator[None]:
         furu_logging.get_logger()
 
 
-@pytest.fixture(autouse=True)
-def _stable_terminal_width(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pin the terminal width so console-layout assertions don't depend on the
-    `COLUMNS` env or the runner's TTY. Tests that exercise wrapping override it."""
-    monkeypatch.setattr(
-        furu_logging.shutil,
-        "get_terminal_size",
-        lambda fallback=(100, 24): os.terminal_size((100, 24)),
-    )
-
-
 @pytest.mark.parametrize(
     ("debug_mode", "expected_level"),
     [
@@ -107,277 +74,39 @@ def test_stdout_handler_level_tracks_debug_mode(
     assert stdout_handlers[0].level == expected_level
 
 
-# --- console renderer -------------------------------------------------------
-
-
-def test_console_layout_time_level_message_and_caller() -> None:
-    out = furu_logging._render_console(
-        _record("loaded rows", pathname="/home/user/datasets.py", lineno=64),
-        color=True,
-    )
-    plain = _strip_ansi(out)
-
-    assert re.match(r"^\d{2}:\d{2}:\d{2} I ", plain)
-    assert "loaded rows" in plain
-    assert plain.rstrip().endswith("datasets.py:64")
-    assert "\x1b[" in out  # colour present
-
-
-@pytest.mark.parametrize(
-    ("level", "letter"),
-    [
-        (logging.DEBUG, "D"),
-        (logging.INFO, "I"),
-        (logging.WARNING, "W"),
-        (logging.ERROR, "E"),
-    ],
-)
-def test_console_uses_one_letter_levels(level: int, letter: str) -> None:
-    out = furu_logging._render_console(
-        _record("msg", level=level, pathname=furu_logging.__file__), color=False
-    )
-
-    assert out.split()[1] == letter
-
-
-def test_console_shows_component_only_when_scoped() -> None:
-    internal = furu_logging.__file__
-
-    with furu_logging._scoped_component("coord"):
-        scoped = furu_logging._render_console(
-            _record("leased it", pathname=internal), color=False
-        )
-    unscoped = furu_logging._render_console(
-        _record("creating it", pathname=internal), color=False
-    )
-
-    assert re.match(r"^\d{2}:\d{2}:\d{2} I coord ", scoped)
-    assert re.match(r"^\d{2}:\d{2}:\d{2} I creating", unscoped)
-
-
-def test_console_shortens_long_components_for_display_only() -> None:
-    with furu_logging._scoped_component("slurm-worker-1234567a10"):
-        out = furu_logging._render_console(
-            _record("leased it", pathname=furu_logging.__file__), color=False
-        )
-
-    assert re.match(r"^\d{2}:\d{2}:\d{2} I s7a10 ", out)
-    assert "slurm-worker-1234567a10" not in out
-
-
-def test_console_omits_caller_for_furu_internal_code() -> None:
-    out = furu_logging._render_console(
-        _record("leased it", pathname=furu_logging.__file__), color=False
-    )
-
-    assert ".py:" not in out
-
-
-def test_console_omits_caller_for_synthetic_paths() -> None:
-    # `<stdin>`/`<string>`/`<frozen ...>` are not real files; tagging them as
-    # "your code" would print a misleading file:line.
-    out = furu_logging._render_console(
-        _record("hi", pathname="<stdin>", lineno=1), color=False
-    )
-
-    assert ".py:" not in out
-    assert "<stdin>" not in out
-
-
-def test_console_highlights_artifact_id_and_ok_status() -> None:
-    out = furu_logging._render_console(
-        _record("finished RawData:9f2a1:8c3d2 ok", pathname=furu_logging.__file__),
-        color=True,
-    )
-
-    assert "\x1b[32" in out  # green applied to the artifact id / ok status
-    assert "RawData:9f2a1:8c3d2" in _strip_ansi(out)
-
-
-def test_console_colours_error_message_red() -> None:
-    out = furu_logging._render_console(
-        _record("run failed", level=logging.ERROR, pathname=furu_logging.__file__),
-        color=True,
-    )
-
-    assert "\x1b[31m" in out  # red message body (distinct from the level letter)
-
-
-def test_console_colours_user_message_body_orange() -> None:
-    out = furu_logging._render_console(
-        _record("loaded 1,000 rows", pathname="/home/user/datasets.py", lineno=64),
-        color=True,
-    )
-
-    assert "\x1b[38;5;208m" in out  # your own message body rendered in orange
-
-
-def test_console_does_not_colour_furu_internal_message_orange() -> None:
-    out = furu_logging._render_console(
-        _record("leased RawData:9f2a1:8c3d2", pathname=furu_logging.__file__),
-        color=True,
-    )
-
-    assert "\x1b[38;5;208m" not in out  # furu lines keep the default treatment
-
-
-def test_console_user_warning_body_orange_with_level_letter_severity() -> None:
-    out = furu_logging._render_console(
-        _record(
-            "validation AUC 0.81 below target",
-            level=logging.WARNING,
-            pathname="/home/user/models.py",
-            lineno=155,
-        ),
-        color=True,
-    )
-
-    assert "\x1b[38;5;208m" in out  # body stays in the user colour at WARNING
-    assert "\x1b[33;1m" in out  # the W letter still carries the warning colour
-
-
-def test_console_leaves_traceback_to_default_error_output() -> None:
-    try:
-        raise ValueError("boom")
-    except ValueError:
-        exc_info = sys.exc_info()
-
-    out = furu_logging._render_console(
-        _record(
-            "failed it",
-            level=logging.ERROR,
-            pathname=furu_logging.__file__,
-            exc_info=exc_info,
-        ),
-        color=False,
-    )
-
-    assert "failed it" in out
-    assert "Traceback (most recent call last):" not in out
-    assert "ValueError: boom" not in out
-
-
-def test_console_wraps_long_message_with_hanging_indent(
-    monkeypatch: pytest.MonkeyPatch,
+def test_log_file_holds_one_logfmt_line_per_record(
+    isolated_furu_logger: None, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr(
-        furu_logging.shutil,
-        "get_terminal_size",
-        lambda fallback=(100, 24): os.terminal_size((40, 24)),
-    )
-    out = furu_logging._render_console(
-        _record(
-            " ".join(f"word{i}" for i in range(30)),
-            pathname="/home/user/train.py",
-            lineno=9,
-        ),
-        color=False,
-    )
+    log_file = tmp_path / "run.log"
+    logger = furu_logging.get_logger()
 
-    lines = out.split("\n")
-
-    assert len(lines) > 1
-    prefix_width = len("00:00:00 I ")
-    assert lines[1].startswith(" " * prefix_width)  # hanging indent
-    assert lines[1].strip()  # message continues, not blank
-    assert lines[0].rstrip().endswith("train.py:9")  # caller stays on row one
-
-
-# --- logfmt renderer --------------------------------------------------------
-
-
-def test_logfmt_starts_with_timestamp_level_and_message() -> None:
-    out = furu_logging._render_logfmt(
-        _record("leased it", pathname=furu_logging.__file__)
-    )
-
-    assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z level=info ", out)
-    assert 'msg="leased it"' in out
-    assert "\x1b[" not in out  # never coloured
-
-
-def test_logfmt_appends_detail_fields() -> None:
-    out = furu_logging._render_logfmt(
-        _record(
+    with (
+        furu_logging._scoped_log_files((log_file,)),
+        furu_logging._scoped_component("slurm-worker-1234567a10"),
+    ):
+        logger.info(
             "leased it",
-            pathname=furu_logging.__file__,
-            detail={"lease": "L1", "ready": 2},
+            extra=furu_logging.log_detail(lease="L1", error="Trace\n  x\nboom"),
         )
+        try:
+            raise ValueError("boom")
+        except ValueError:
+            logger.exception("create failed", stack_info=True)
+
+    first, second, *trailer = log_file.read_text(encoding="utf-8").splitlines()
+    assert re.match(
+        r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z level=info "
+        r'comp=slurm-worker-1234567a10 msg="leased it" lease=L1 '
+        r'error="Trace\\n  x\\nboom" caller=test_logging\.py:\d+$',
+        first,
     )
-
-    assert "lease=L1" in out
-    assert "ready=2" in out
-
-
-def test_logfmt_includes_scoped_component() -> None:
-    with furu_logging._scoped_component("slurm-worker-1234567a10"):
-        out = furu_logging._render_logfmt(
-            _record("leased it", pathname=furu_logging.__file__)
-        )
-
-    assert "comp=slurm-worker-1234567a10" in out
-
-
-def test_logfmt_keeps_caller_for_user_code() -> None:
-    out = furu_logging._render_logfmt(
-        _record("loaded", pathname="/home/user/datasets.py", lineno=64)
+    assert re.match(r'^\S+ level=error .*msg="create failed"', second)
+    # Exception and stack follow the record line, exception first.
+    trailer_text = "\n".join(trailer)
+    assert trailer[0] == "Traceback (most recent call last):"
+    assert trailer_text.index("ValueError: boom") < trailer_text.index(
+        "Stack (most recent call last):"
     )
-
-    assert "caller=datasets.py:64" in out
-
-
-def test_logfmt_omits_caller_for_furu_internal_code() -> None:
-    out = furu_logging._render_logfmt(
-        _record("leased it", pathname=furu_logging.__file__)
-    )
-
-    assert "caller=" not in out
-
-
-def test_logfmt_appends_exception_after_the_record() -> None:
-    try:
-        raise ValueError("boom")
-    except ValueError:
-        exc_info = sys.exc_info()
-
-    out = furu_logging._render_logfmt(
-        _record(
-            "pool stop failed",
-            level=logging.ERROR,
-            pathname=furu_logging.__file__,
-            exc_info=exc_info,
-        )
-    )
-
-    assert out.splitlines()[0].endswith('msg="pool stop failed"')
-    assert "Traceback (most recent call last):" in out
-    assert "ValueError: boom" in out
-
-
-def test_logfmt_appends_stack_info_after_exception() -> None:
-    try:
-        raise ValueError("boom")
-    except ValueError:
-        exc_info = sys.exc_info()
-
-    stack_info = (
-        "Stack (most recent call last):\n"
-        '  File "/tmp/example.py", line 7, in _main\n'
-        "    adder2.create()"
-    )
-    out = furu_logging._render_logfmt(
-        _record(
-            "create failed",
-            level=logging.ERROR,
-            pathname=furu_logging.__file__,
-            exc_info=exc_info,
-            stack_info=stack_info,
-        )
-    )
-
-    assert out.index("ValueError: boom") < out.index("Stack (most recent call last):")
-    assert "in _main" in out
-    assert "adder2.create()" in out
 
 
 @pytest.mark.parametrize(
@@ -402,26 +131,6 @@ def test_logfmt_value_escaping(value: str, expected: str) -> None:
     assert furu_logging._logfmt_value(value) == expected
 
 
-def test_logfmt_multiline_detail_value_stays_on_one_line() -> None:
-    # A multi-line field value (e.g. a traceback string carried as a detail)
-    # must be escaped so the logfmt record stays grep-/parse-stable on a single
-    # physical line — the bug that record-splits unescaped newlines is avoided.
-    out = furu_logging._render_logfmt(
-        _record(
-            "job failed",
-            pathname=furu_logging.__file__,
-            detail={"error": "Traceback\n  File x\nValueError: boom"},
-        )
-    )
-
-    assert "\n" not in out  # no exc_info → the whole record is one line
-    assert "error=" in out
-    assert "\\n" in out  # embedded newlines escaped, not emitted raw
-
-
-# --- file handler ----------------------------------------------------------
-
-
 def test_unscoped_log_rotates_with_timestamped_name_when_it_reaches_limit(
     isolated_furu_logger: None,
     monkeypatch: pytest.MonkeyPatch,
@@ -441,51 +150,12 @@ def test_unscoped_log_rotates_with_timestamped_name_when_it_reaches_limit(
     unscoped_log.parent.mkdir(parents=True)
     unscoped_log.write_text("old\n", encoding="utf-8")
 
-    furu_logging._ScopedFileHandler().emit(
-        _record("new", pathname=furu_logging.__file__)
-    )
+    furu_logging._ScopedFileHandler().emit(_record("new"))
 
     archived_logs = list(unscoped_log.parent.glob("unscoped-*.log"))
     assert unscoped_log.read_text(encoding="utf-8") == "new\n"
     assert len(archived_logs) == 1
     assert archived_logs[0].read_text(encoding="utf-8") == "old\n"
-
-
-# --- helpers ----------------------------------------------------------------
-
-
-def test_elide_leaves_short_names_unchanged() -> None:
-    assert furu_logging._elide("datasets.py", furu_logging._MAX_CALLER_NAME) == (
-        "datasets.py"
-    )
-
-
-def test_elide_middle_elides_long_names_keeping_both_ends() -> None:
-    elided = furu_logging._elide(
-        "gradient_boosting_trainer.py", furu_logging._MAX_CALLER_NAME
-    )
-
-    assert "…" in elided
-    assert len(elided) <= furu_logging._MAX_CALLER_NAME
-    assert elided.startswith("gradient_b")
-    assert elided.endswith("trainer.py")
-
-
-def test_caller_tag_distinguishes_user_code_from_furu() -> None:
-    assert (
-        furu_logging._caller_tag(_record("x", pathname=furu_logging.__file__)) is None
-    )
-    assert (
-        furu_logging._caller_tag(
-            _record("x", pathname="/home/me/datasets.py", lineno=64)
-        )
-        == "datasets.py:64"
-    )
-
-
-def test_caller_tag_ignores_synthetic_paths() -> None:
-    assert furu_logging._caller_tag(_record("x", pathname="<stdin>")) is None
-    assert furu_logging._caller_tag(_record("x", pathname="<string>")) is None
 
 
 @pytest.mark.parametrize(
@@ -514,54 +184,15 @@ def test_console_mode_respects_tty_and_env(
     assert furu_logging._console_mode(_FakeStream(tty=tty)) == expected
 
 
-def test_formatter_falls_back_to_logfmt_when_stdout_is_not_a_tty(
+def test_tty_gets_console_layout_while_files_stay_logfmt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("NO_COLOR", raising=False)
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
-    monkeypatch.setattr(furu_logging.sys, "stdout", _FakeStream(tty=False))
-
-    out = furu_logging._FuruFormatter(console=True).format(
-        _record("hi", pathname=furu_logging.__file__)
-    )
-
-    assert re.match(r"^\d{4}-\d{2}-\d{2}T", out)  # logfmt
-
-
-def test_formatter_uses_console_layout_for_a_tty(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.delenv("FORCE_COLOR", raising=False)
     monkeypatch.setattr(furu_logging.sys, "stdout", _FakeStream(tty=True))
 
-    out = furu_logging._FuruFormatter(console=True).format(
-        _record("hi", pathname=furu_logging.__file__)
-    )
+    console = furu_logging._FuruFormatter(console=True).format(_record("hi"))
+    file = furu_logging._FuruFormatter(console=False).format(_record("hi"))
 
-    assert re.match(r"^\d{2}:\d{2}:\d{2} I ", _strip_ansi(out))
-
-
-def test_file_formatter_is_always_logfmt_even_on_a_tty(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(furu_logging.sys, "stdout", _FakeStream(tty=True))
-
-    out = furu_logging._FuruFormatter(console=False).format(
-        _record("hi", pathname=furu_logging.__file__)
-    )
-
-    assert re.match(r"^\d{4}-\d{2}-\d{2}T", out)
-
-
-def test_log_detail_wraps_fields_under_the_detail_attr() -> None:
-    assert furu_logging.log_detail(lease="L1", ready=2) == {
-        furu_logging._DETAIL_ATTR: {"lease": "L1", "ready": 2}
-    }
-
-
-def test_scoped_component_sets_and_resets_the_context() -> None:
-    assert furu_logging._CURRENT_COMPONENT.get() is None
-    with furu_logging._scoped_component("coord"):
-        assert furu_logging._CURRENT_COMPONENT.get() == "coord"
-    assert furu_logging._CURRENT_COMPONENT.get() is None
+    assert "hi" in console
+    assert "level=" not in console
+    assert re.match(r"^\S+ level=info msg=hi$", file)

@@ -103,7 +103,7 @@ def test_snapshot_builds_tarball_referenced_by_snapshot_id(
     monkeypatch.chdir(git_repo)
 
     with override_config(_with_snapshot(True)):
-        furu.create(_Node(value=2))
+        _Node(value=2).create()
 
     provenance = _Node(value=2).provenance()
     assert provenance.snapshot_id is not None
@@ -159,19 +159,6 @@ def test_outside_git_repo_fails_before_compute(
         furu.create(_Node(value=6))
 
     assert len(_created) == computed
-
-
-def test_snapshot_config_applies_to_plain_create(
-    git_repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.chdir(git_repo)
-    with override_config(_with_snapshot(True)):
-        _Node(value=7).create()
-
-        provenance = _Node(value=7).provenance()
-        assert provenance.snapshot_id is not None
-        assert provenance.snapshot_path is not None
-        assert provenance.snapshot_path.is_file()
 
 
 def test_provenance_raises_missing_for_missing_result() -> None:

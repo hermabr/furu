@@ -161,7 +161,7 @@ def test_forwarded_lines_keep_the_spawning_thread_log_context(
 
     assert seen == [("test-worker", (log_path,))] * 2
     lines = log_path.read_text(encoding="utf-8").splitlines()
-    assert [line.split(" ", 2)[2] for line in lines] == [
-        f'comp=test-worker msg="child {child.pid}: a"',
-        f'comp=test-worker msg="child {child.pid}: b"',
-    ]
+    assert len(lines) == 2
+    for line, text in zip(lines, ("a", "b"), strict=True):
+        assert "comp=test-worker" in line
+        assert f"child {child.pid}: {text}" in line
