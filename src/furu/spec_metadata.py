@@ -21,6 +21,9 @@ class Throttle:
 class Metadata:
     """Where a spec stores results and how the worker runs its create().
 
+    For storage inside your repo, use furu.submitting_repo_root(), not
+    __file__: workers run code from a snapshot.
+
     Workers run create() in a child Python process. A None value in
     environment removes the variable from the child, as opposed to setting it
     to the empty string. Variables named in required_environment_variables (e.g.

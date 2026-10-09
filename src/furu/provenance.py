@@ -276,6 +276,27 @@ def _require_uv() -> None:
 
 
 _worker_backend: ContextVar[str] = ContextVar("_furu_worker_backend", default="local")
+_submitted_repo_root: Path | None = None
+
+
+def submitting_repo_root() -> Path:
+    """Root of the repo checkout that called furu.create.
+
+    In a worktree this is the worktree, not the main repo. On workers it is
+    still the original checkout, not the code snapshot, so use it instead of
+    __file__ for paths like `submitting_repo_root() / "final-results"`.
+    """
+    return _submitted_repo_root or _repo_root(Path.cwd())
+
+
+def _set_submitted_repo_root(path: Path) -> None:
+    global _submitted_repo_root
+    _submitted_repo_root = path
+
+
+@functools.cache
+def _repo_root(cwd: Path) -> Path:
+    return Path(GitIdentity.capture(cwd).repo_root)
 
 
 def _run_git(args: list[str], *, cwd: Path, input: str | None = None) -> str:

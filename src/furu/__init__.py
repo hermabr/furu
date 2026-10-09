@@ -15,7 +15,7 @@ from furu.migration.steps import (
     Rewrite,
     Stale,
 )
-from furu.provenance import Provenance
+from furu.provenance import Provenance, submitting_repo_root
 from furu.resources import Worker
 from furu.result.codec import Codec
 from furu.result.ref import Ref, ref
@@ -53,4 +53,5 @@ __all__ = [
     "load_existing",
     "ref",
     "skip_hash",
+    "submitting_repo_root",
 ]

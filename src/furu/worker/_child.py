@@ -19,7 +19,7 @@ from furu.logging import (
     _open_sections,
 )
 from furu.metadata import ArtifactSpec
-from furu.provenance import _worker_backend
+from furu.provenance import _set_submitted_repo_root, _worker_backend
 from furu.utils import error_summary, format_duration
 from furu.worker.context import _DependencyNotReady, worker_execution_context
 from furu.worker.protocol import (
@@ -32,6 +32,7 @@ from furu.worker.protocol import (
 
 
 def _execute(job: Job) -> JobResult:
+    _set_submitted_repo_root(Path(job.provenance.git.repo_root))
     try:
         objs = [Spec.from_artifact(artifact) for artifact in job.artifacts]
         _ensure_group_result(objs, submit_provenance=job.provenance)
