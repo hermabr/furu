@@ -102,20 +102,44 @@ def dependency_recorder() -> Generator[DependencyRecorder]:
         _active_dependency_recorder.reset(token)
 
 
-_specs_under_creation: ContextVar[frozenset[str]] = ContextVar(
+_specs_under_creation: ContextVar[tuple[Spec, ...]] = ContextVar(
     "_specs_under_creation",
-    default=frozenset(),
+    default=(),
 )
 
 
+def specs_under_creation() -> tuple[Spec, ...]:
+    return _specs_under_creation.get()
+
+
 def is_under_creation(obj: Spec) -> bool:
-    return obj.object_id in _specs_under_creation.get()
+    return any(spec.object_id == obj.object_id for spec in specs_under_creation())
 
 
 @contextmanager
 def under_creation(objs: Sequence[Spec]) -> Generator[None]:
-    token = _specs_under_creation.set(frozenset(obj.object_id for obj in objs))
+    token = _specs_under_creation.set(tuple(objs))
     try:
         yield
     finally:
         _specs_under_creation.reset(token)
+
+
+class _DependencyNotReady(BaseException):
+    """create() inside a create hook found missing results.
+
+    A BaseException so user ``except Exception`` blocks don't swallow it. The
+    caller builds ``dependencies``, then reruns ``dependents`` from scratch.
+    """
+
+    def __init__(self, dependencies: Sequence[Spec], dependents: Sequence[Spec]):
+        self.dependencies = tuple(dependencies)
+        self.dependents = tuple(dependents)
+        super().__init__(
+            f"{self.dependents[0]._log_label} is blocked on "
+            + missing_dependencies(len(self.dependencies))
+        )
+
+
+def missing_dependencies(count: int) -> str:
+    return f"{count} missing {'dependency' if count == 1 else 'dependencies'}"

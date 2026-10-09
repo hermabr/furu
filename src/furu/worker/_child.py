@@ -11,6 +11,7 @@ from typing import assert_never
 
 from furu.config import _Config, _set_config
 from furu.core import Spec
+from furu.dependencies import _DependencyNotReady, missing_dependencies
 from furu.execution.load_or_create import _ensure_group_result
 from furu.logging import (
     _close_sections,
@@ -21,7 +22,6 @@ from furu.logging import (
 from furu.metadata import ArtifactSpec
 from furu.provenance import _set_submitted_repo_root, _worker_backend
 from furu.utils import error_summary, format_duration
-from furu.worker.context import _DependencyNotReady, worker_execution_context
 from furu.worker.protocol import (
     Job,
     JobBlockedResult,
@@ -90,8 +90,9 @@ def _run(job: Job, *, worker: str, worker_log: Path | None) -> JobResult:
         case JobFailedResult(error=error):
             outcome = f"failed · {duration} · {error_summary(error)}"
         case JobBlockedResult(dependencies=dependencies):
-            missing = "dependency" if len(dependencies) == 1 else "dependencies"
-            outcome = f"blocked · {duration} · {len(dependencies)} missing {missing}"
+            outcome = (
+                f"blocked · {duration} · {missing_dependencies(len(dependencies))}"
+            )
         case _:
             assert_never(result)
     _close_sections(run_logs, sys.stderr, outcome)
@@ -114,13 +115,12 @@ def main() -> int:
     worker_log = Path(line) if (line := sys.stdin.readline().rstrip("\n")) else None
     _configure_child_logging()
 
-    with worker_execution_context():
-        for line in sys.stdin:
-            job = Job.model_validate_json(line)
-            with _output_to(job.run_logs[0], restore_fd=worker_stderr):
-                result = _run(job, worker=worker, worker_log=worker_log)
-            protocol_out.write(result.model_dump_json() + "\n")
-            protocol_out.flush()
+    for line in sys.stdin:
+        job = Job.model_validate_json(line)
+        with _output_to(job.run_logs[0], restore_fd=worker_stderr):
+            result = _run(job, worker=worker, worker_log=worker_log)
+        protocol_out.write(result.model_dump_json() + "\n")
+        protocol_out.flush()
     return 0
 
 
