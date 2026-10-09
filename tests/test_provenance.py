@@ -52,7 +52,9 @@ EXAMPLE_PROVENANCE_JSON = """
     "accelerators": ["NVIDIA H100 80GB HBM3 ×4"],
     "slurm_job_id": "48213977",
     "worker_backend": "slurm",
-    "pid": 219482
+    "pid": 219482,
+    "started_at": "2026-07-05T14:03:40Z",
+    "completed_at": "2026-07-05T15:12:08Z"
   }
 }
 """
@@ -367,7 +369,9 @@ def test_capture_execute_context_defaults_to_local(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("SLURM_JOB_ID", raising=False)
-    context = ExecuteContext.capture()
+    started_at = datetime.now(UTC)
+    context = ExecuteContext.capture(started_at=started_at)
+    assert context.started_at == started_at <= context.completed_at
     assert context.worker_backend == "local"
     assert context.pid == os.getpid()
     assert context.cpu_count > 0

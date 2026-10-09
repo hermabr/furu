@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import assert_never
 
+from furu.code_trace import _REPO_ROOT_ENV_VAR
 from furu.config import get_config
 from furu.logging import _append, get_logger
 from furu.provenance import EnvironmentIdentity
@@ -52,6 +53,14 @@ class ChildSlot:
         self._child = None
 
     def run(self, job: Job, *, cancelled: threading.Event) -> JobResult:
+        result = self._run(job, cancelled=cancelled)
+        if isinstance(result, JobFailedResult) and result.stale_code:
+            # The warm child imported code that has since changed on disk.
+            self.close()
+            result = self._run(job, cancelled=cancelled)
+        return result
+
+    def _run(self, job: Job, *, cancelled: threading.Event) -> JobResult:
         if self._materialize_snapshot:
             code = CodeLocation.from_snapshot(job.provenance)
         else:
@@ -115,7 +124,11 @@ class ChildSlot:
         if cancelled.is_set():
             child.process.kill()
         result = self._request(child, job)
-        if settings.reuse == "never" or child.process.poll() is not None:
+        if (
+            settings.reuse == "never"
+            or child.process.poll() is not None
+            or (isinstance(result, JobFailedResult) and result.stale_code)
+        ):
             self.close()
         return result
 
@@ -142,12 +155,15 @@ class ChildSlot:
     def _spawn(self, environment: dict[str, str], *, code: CodeLocation) -> _Child:
         # The child's stderr is ours: each job points it at its run.log, and
         # anything written between jobs lands in this worker's own output.
+        child_environment = environment
+        if code.repo_root is not None:  # traced code paths are relative to it
+            child_environment = environment | {_REPO_ROOT_ENV_VAR: str(code.repo_root)}
         process = subprocess.Popen(
             [str(code.python), "-m", "furu.worker._child"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             cwd=code.cwd,
-            env=environment,
+            env=child_environment,
             text=True,
         )
         assert process.stdin is not None

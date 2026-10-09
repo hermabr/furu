@@ -1,42 +1,60 @@
 from pathlib import Path
 
-
-def data_dir_in(base_dir: Path) -> Path:
-    return base_dir / "data"
-
-
-def scratch_dir_in(base_dir: Path) -> Path:
-    return base_dir / "scratch"
+# An identity directory {storage}/{fqn}/{schema_hash}/{artifact_hash} holds
+# spec.json, compute.lock, run.log (every attempt's log), the in-progress
+# attempt/ and one published version directory per code version (v-<hash>,
+# v-fixed or v-fixed-<hash>). attempt/ and every version directory share the
+# run-directory layout below.
 
 
-def result_dir_in(base_dir: Path) -> Path:
-    return base_dir / "result"
+def spec_path_in(identity_dir: Path) -> Path:
+    return identity_dir / "spec.json"
 
 
-def result_manifest_path_in(base_dir: Path) -> Path:
-    return result_dir_in(base_dir) / "manifest.json"
+def attempt_dir_in(identity_dir: Path) -> Path:
+    return identity_dir / "attempt"
 
 
-def metadata_path_in(base_dir: Path) -> Path:
-    return base_dir / "metadata.json"
+def data_dir_in(run_dir: Path) -> Path:
+    return run_dir / "data"
 
 
-def provenance_path_in(base_dir: Path) -> Path:
-    return base_dir / "provenance.json"
+def scratch_dir_in(run_dir: Path) -> Path:
+    return run_dir / "scratch"
 
 
-def schema_snapshot_path_in(base_dir: Path) -> Path:
-    # base_dir is {fqn}/{schema_hash}/{artifact_hash}; the snapshot is written
-    # once per (class, schema-hash), beside the artifact directories.
-    return schema_snapshot_path_in_schema_directory(base_dir.parent)
+def result_dir_in(run_dir: Path) -> Path:
+    return run_dir / "result"
+
+
+def result_manifest_path_in(run_dir: Path) -> Path:
+    return result_dir_in(run_dir) / "manifest.json"
+
+
+def provenance_path_in(run_dir: Path) -> Path:
+    return run_dir / "provenance.json"
+
+
+def trace_path_in(run_dir: Path) -> Path:
+    return run_dir / "trace.json"
+
+
+def trace_log_path_in(run_dir: Path) -> Path:
+    return run_dir / "trace.log"
+
+
+def run_log_path_in(identity_dir: Path) -> Path:
+    return identity_dir / "run.log"
+
+
+def schema_snapshot_path_in(identity_dir: Path) -> Path:
+    # identity_dir is {fqn}/{schema_hash}/{artifact_hash}; the snapshot is
+    # written once per (class, schema-hash), beside the identity directories.
+    return schema_snapshot_path_in_schema_directory(identity_dir.parent)
 
 
 def schema_snapshot_path_in_schema_directory(schema_directory: Path) -> Path:
     return schema_directory / "schema.json"
-
-
-def run_log_path_in(base_dir: Path) -> Path:
-    return base_dir / "run.log"
 
 
 def execution_log_path_in(executor_dir: Path) -> Path:
@@ -49,9 +67,9 @@ def slurm_worker_log_path_in(worker_dir: Path, worker: str) -> Path:
     return worker_dir / "logs" / f"{worker}.log"
 
 
-def compute_lock_path_in(base_dir: Path) -> Path:
-    return base_dir / "compute.lock"
+def compute_lock_path_in(identity_dir: Path) -> Path:
+    return identity_dir / "compute.lock"
 
 
-def result_link_path_in(base_dir: Path) -> Path:
-    return base_dir / "result-link.json"
+def result_link_path_in(identity_dir: Path) -> Path:
+    return identity_dir / "result-link.json"
