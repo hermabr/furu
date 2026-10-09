@@ -474,11 +474,14 @@ def _batch_group(obj: Spec, worker: Worker) -> tuple[object, int] | None:
 
 
 def _grouped_pending[T](pending: list[Spec[T]]) -> list[list[Spec[T]]]:
-    """Partition by (type, batch_key, metadata), chunked to the cap."""
+    """Partition by (type, batch_key, metadata), chunked to the cap.
+
+    Unbatched specs run alone, so each is stored as soon as it finishes.
+    """
     here = Worker.here()
-    groups: list[tuple[object, int | None, list[Spec[T]]]] = []
+    groups: list[tuple[object, int, list[Spec[T]]]] = []
     for obj in pending:
-        key, cap = _batch_group(obj, here) or (type(obj), None)
+        key, cap = _batch_group(obj, here) or (type(obj), 1)
         for existing_key, _, group in groups:
             if existing_key == key:
                 group.append(obj)
@@ -486,9 +489,9 @@ def _grouped_pending[T](pending: list[Spec[T]]) -> list[list[Spec[T]]]:
         else:
             groups.append((key, cap, [obj]))
     return [
-        group[i : i + (cap or len(group))]
+        group[i : i + cap]
         for _, cap, group in groups
-        for i in range(0, len(group), cap or len(group))
+        for i in range(0, len(group), cap)
     ]
 
 
