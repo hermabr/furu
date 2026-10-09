@@ -1194,13 +1194,63 @@ def test_top_level_create_accepts_single_spec_and_sequence() -> None:
     assert furu.create(nodes) == ["Node(top-create-a)", "Node(top-create-b)"]
 
 
-def test_top_level_load_existing_rejects_single_furu_object() -> None:
-    node = Node(name="single-load")
+@dataclass(frozen=True)
+class _TreePair:
+    left: Node
+    right: list[Node]
 
-    assert node.create() == "Node(single-load)"
 
-    with pytest.raises(TypeError, match="expected a sequence of Spec objects"):
-        furu.load_existing(node)  # ty:ignore[invalid-argument-type]
+def test_create_and_load_existing_map_specs_through_pytrees() -> None:
+    a, b = Node(name="tree-a"), Node(name="tree-b")
+    tree = {"pair": _TreePair(left=a, right=[b, a]), "rest": (b, 3, "x")}
+    expected = {
+        "pair": {"left": "Node(tree-a)", "right": ["Node(tree-b)", "Node(tree-a)"]},
+        "rest": ("Node(tree-b)", 3, "x"),
+    }
+
+    assert furu.create(tree) == expected
+    assert furu.load_existing(tree) == expected
+    assert furu.load_existing(a) == "Node(tree-a)"
+    assert furu.create(_TreePair(left=a, right=[])) == {
+        "left": "Node(tree-a)",
+        "right": [],
+    }
+
+
+class _ParentIgnoringChild(Spec[str]):
+    child: Node
+
+    def create(self) -> str:
+        return "parent"
+
+
+def _forbid_loading(monkeypatch: pytest.MonkeyPatch) -> None:
+    def load_stored_result(obj: Spec, result_dir: Path) -> object:
+        raise AssertionError(f"unexpected load of {obj._log_label}")
+
+    monkeypatch.setattr(execution_module, "load_stored_result", load_stored_result)
+
+
+def test_build_stores_results_without_loading_them(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cached, fresh = Node(name="build-cached"), Node(name="build-fresh")
+    furu.create(cached)
+    _forbid_loading(monkeypatch)
+
+    furu.build({"cached": cached, "fresh": [fresh]})
+
+    assert fresh.status == "done"
+
+
+def test_create_does_not_load_cached_declared_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent = _ParentIgnoringChild(child=Node(name="cached-child"))
+    furu.create(parent.child)
+    _forbid_loading(monkeypatch)
+
+    assert furu.create(parent) == "parent"
 
 
 def test_top_level_load_existing_accepts_list_and_logs_once(tmp_path: Path) -> None:

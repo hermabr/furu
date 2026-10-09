@@ -4,16 +4,18 @@ import json
 import shutil
 import time
 import traceback
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
 from typing import (
     TYPE_CHECKING,
+    Any,
     cast,
     overload,
 )
 
 from furu._batched import _BatchedHook
 from furu._declared_types import declared_result_type
+from furu._tree import map_specs, specs_in
 from furu.config import get_config
 from furu.core import Missing, Spec
 from furu.dependencies import (
@@ -64,6 +66,9 @@ from furu.worker.context import (
 )
 
 if TYPE_CHECKING:
+    from _typeshed import DataclassInstance
+    from pydantic import BaseModel
+
     from furu.worker.backends.protocol import WorkerBackend
 
 type HasLock = Callable[[], bool]
@@ -140,24 +145,34 @@ def _store_result[T](
 
 
 @overload
-def _load_or_create[T](obj: Spec[T]) -> T: ...
-
-
+def _load_or_create[T](
+    tree: Spec[T], *, on: Sequence[WorkerBackend] | None = None, load: bool = True
+) -> T: ...
 @overload
-def _load_or_create[T](objs: Sequence[Spec[T]]) -> list[T]: ...
+def _load_or_create(
+    tree: object, *, on: Sequence[WorkerBackend] | None = None, load: bool = True
+) -> Any: ...
+def _load_or_create(
+    tree: object, *, on: Sequence[WorkerBackend] | None = None, load: bool = True
+) -> Any:
+    if on is not None:
+        from furu.execution.execution_coordinator import ExecutionCoordinator
 
-
-def _load_or_create[T](obj_or_objs: Spec[T] | Sequence[Spec[T]]) -> T | list[T]:
+        ExecutionCoordinator.run(specs_in(tree), worker_backends=tuple(on))
     _require_uv()
-    objs, unwrap = _normalize_load_or_create_input(obj_or_objs)
+    if isinstance(tree, Spec):
+        tree.logger.debug(".create called for %s", tree)
+    objs = specs_in(tree)
+    for obj in objs:
+        record_dependency_call(obj)
     if _in_worker_execution.get():
-        outputs = _load_or_create_worker(objs)
+        outputs = _load_or_create_worker(objs, load=load)
     else:
-        outputs = _load_or_create_local(objs)
-    if unwrap:
-        (output,) = outputs
-        return output
-    return outputs
+        outputs = _load_or_create_local(objs, load=load)
+    if not load:
+        return None
+    results = {obj.object_id: output for obj, output in zip(objs, outputs)}
+    return map_specs(lambda obj: results[obj.object_id], tree)
 
 
 def _ensure_group_result[T](
@@ -188,55 +203,81 @@ def _ensure_group_result[T](
             )
 
 
-def _normalize_load_or_create_input[T](
-    obj_or_objs: Spec[T] | Sequence[Spec[T]],
-) -> tuple[list[Spec[T]], bool]:
-    match obj_or_objs:
-        case Spec() as obj:
-            assert not isinstance(obj, Sequence)
-            record_dependency_call(obj)
-            obj.logger.debug(".create called for %s", obj)
-            return [obj], True
-        case Sequence() as objs:
-            for obj in objs:
-                record_dependency_call(obj)
-            return list(objs), False
-
-
+# Python cannot map Spec[T] -> T through an arbitrary structure, so the shapes
+# it can express get exact types and every other pytree is Any. Dataclasses and
+# pydantic models come back as dicts of their fields.
 @overload
-def create[T](obj: Spec[T], *, on: Sequence[WorkerBackend] | None = None) -> T: ...
+def create[T](tree: Spec[T], /, *, on: Sequence[WorkerBackend] | None = None) -> T: ...
 @overload
-def create[T](
-    objs: Sequence[Spec[T]], *, on: Sequence[WorkerBackend] | None = None
-) -> list[T]: ...
-def create[T](
-    obj_or_objs: Spec[T] | Sequence[Spec[T]],
+def create[T0, T1](
+    tree: tuple[Spec[T0], Spec[T1]], /, *, on: Sequence[WorkerBackend] | None = None
+) -> tuple[T0, T1]: ...
+@overload
+def create[T0, T1, T2](
+    tree: tuple[Spec[T0], Spec[T1], Spec[T2]],
+    /,
     *,
     on: Sequence[WorkerBackend] | None = None,
-) -> T | list[T]:
-    if on is not None:
-        from furu.execution.execution_coordinator import ExecutionCoordinator
+) -> tuple[T0, T1, T2]: ...
+@overload
+def create[T](
+    tree: tuple[Spec[T], ...], /, *, on: Sequence[WorkerBackend] | None = None
+) -> tuple[T, ...]: ...
+@overload
+def create[T](
+    tree: Sequence[Spec[T]], /, *, on: Sequence[WorkerBackend] | None = None
+) -> list[T]: ...
+@overload
+def create[K, T](
+    tree: Mapping[K, Spec[T]], /, *, on: Sequence[WorkerBackend] | None = None
+) -> dict[K, T]: ...
+@overload
+def create(
+    tree: DataclassInstance | BaseModel,
+    /,
+    *,
+    on: Sequence[WorkerBackend] | None = None,
+) -> dict[str, Any]: ...
+@overload
+def create(tree: object, /, *, on: Sequence[WorkerBackend] | None = None) -> Any: ...
+def create(tree: object, /, *, on: Sequence[WorkerBackend] | None = None) -> Any:
+    return _load_or_create(tree, on=on)
 
-        objs = [obj_or_objs] if isinstance(obj_or_objs, Spec) else list(obj_or_objs)
-        ExecutionCoordinator.run(objs, worker_backends=tuple(on))
-    return _load_or_create(obj_or_objs)
+
+def build(tree: object, /, *, on: Sequence[WorkerBackend] | None = None) -> None:
+    """Like create(), but leaves the results on disk instead of loading them."""
+    _load_or_create(tree, on=on, load=False)
 
 
-def load_existing[T](objs: Sequence[Spec[T]]) -> list[T]:
-    if not isinstance(objs, Sequence):
-        raise TypeError("load_existing() expected a sequence of Spec objects")
-    objs = list(objs)
-    if any(not isinstance(obj, Spec) for obj in objs):
-        raise TypeError("load_existing() expected Spec objects")
-    loaded: list[T] = []
-    missing: list[Spec[T]] = []
+@overload
+def load_existing[T](tree: Spec[T], /) -> T: ...
+@overload
+def load_existing[T0, T1](tree: tuple[Spec[T0], Spec[T1]], /) -> tuple[T0, T1]: ...
+@overload
+def load_existing[T0, T1, T2](
+    tree: tuple[Spec[T0], Spec[T1], Spec[T2]], /
+) -> tuple[T0, T1, T2]: ...
+@overload
+def load_existing[T](tree: tuple[Spec[T], ...], /) -> tuple[T, ...]: ...
+@overload
+def load_existing[T](tree: Sequence[Spec[T]], /) -> list[T]: ...
+@overload
+def load_existing[K, T](tree: Mapping[K, Spec[T]], /) -> dict[K, T]: ...
+@overload
+def load_existing(tree: DataclassInstance | BaseModel, /) -> dict[str, Any]: ...
+@overload
+def load_existing(tree: object, /) -> Any: ...
+def load_existing(tree: object, /) -> Any:
+    objs = specs_in(tree)
+    loaded: dict[str, Any] = {}
+    missing: list[Spec] = []
     for obj in objs:
         record_dependency_call(obj)
         if (result_dir := result_dir_for_loading(obj)) is None:
             raise_if_stale(obj)
             missing.append(obj)
             continue
-        loaded.append(load_stored_result(obj, result_dir))
+        loaded[obj.object_id] = load_stored_result(obj, result_dir)
     if missing:
         first = missing[0]
         raise Missing(
@@ -246,11 +287,11 @@ def load_existing[T](objs: Sequence[Spec[T]]) -> list[T]:
         )
     if objs:
         get_logger().info(
-            "loaded %d furu objects including %s", len(loaded), objs[0]._log_label
+            "loaded %d furu objects including %s", len(objs), objs[0]._log_label
         )
     else:
         get_logger().info("loaded 0 furu objects")
-    return loaded
+    return map_specs(lambda obj: loaded[obj.object_id], tree)
 
 
 def _cached_to_build_msg(cached: list[Spec], to_build: list[Spec]) -> str:
@@ -263,20 +304,21 @@ def _cached_to_build_msg(cached: list[Spec], to_build: list[Spec]) -> str:
     return f"building {fmt(to_build)}, {msg}" if to_build else msg
 
 
-def _load_or_create_worker[T](objs: list[Spec[T]]) -> list[T]:
+def _load_or_create_worker[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
     loaded: list[T] = []
     cached: list[Spec[T]] = []
     missing: list[Spec[T]] = []
 
     for obj in objs:
         if (cached_result_dir := result_dir_for_loading(obj)) is not None:
-            loaded.append(load_stored_result(obj, cached_result_dir))
+            if load:
+                loaded.append(load_stored_result(obj, cached_result_dir))
             cached.append(obj)
         else:
             raise_if_stale(obj)
             missing.append(obj)
 
-    if loaded:
+    if cached:
         objs[0].logger.info("%s", _cached_to_build_msg(cached, missing))
 
     if missing:
@@ -286,7 +328,10 @@ def _load_or_create_worker[T](objs: list[Spec[T]]) -> list[T]:
 
 
 def _load_or_create_local[T](
-    objs: list[Spec[T]], *, dependents: Sequence[Spec] = ()
+    objs: list[Spec[T]],
+    *,
+    dependents: Sequence[Spec] = (),
+    load: bool = True,
 ) -> list[T]:
     if not objs:
         return []
@@ -297,19 +342,21 @@ def _load_or_create_local[T](
     unique = list(unique_by_object_id.values())
 
     results_by_object_id: dict[str, T] = {}
+    cached: list[Spec[T]] = []
     missing: list[Spec[T]] = []
 
     for obj in unique:
         if (cached_result_dir := result_dir_for_loading(obj)) is not None:
-            results_by_object_id[obj.object_id] = load_stored_result(
-                obj, cached_result_dir
-            )
+            cached.append(obj)
+            if load:
+                results_by_object_id[obj.object_id] = load_stored_result(
+                    obj, cached_result_dir
+                )
         else:
             raise_if_stale(obj)
             missing.append(obj)
 
-    if results_by_object_id:
-        cached = [o for o in unique if o.object_id in results_by_object_id]
+    if cached:
         unique[0].logger.info("%s", _cached_to_build_msg(cached, missing))
 
     if dependents and missing:
@@ -326,6 +373,7 @@ def _load_or_create_local[T](
     _load_or_create_local(
         [ref for obj in missing for ref in collect_declared_refs(obj)],
         dependents=missing,
+        load=False,
     )
     for obj in missing:
         obj._base_dir.mkdir(parents=True, exist_ok=True)
@@ -344,9 +392,10 @@ def _load_or_create_local[T](
                 cached_result_dir := result_dir_for_loading(obj, has_lock=True)
             ) is not None:
                 late_hits += 1
-                results_by_object_id[obj.object_id] = load_stored_result(
-                    obj, cached_result_dir
-                )
+                if load:
+                    results_by_object_id[obj.object_id] = load_stored_result(
+                        obj, cached_result_dir
+                    )
             else:
                 pending.append(obj)
 
@@ -364,10 +413,12 @@ def _load_or_create_local[T](
                 _create_in_process(
                     group,
                     has_lock=has_lock,
-                    results_by_object_id=results_by_object_id,
+                    results_by_object_id=results_by_object_id if load else {},
                     submit_provenance=submit_provenance,
                 )
 
+    if not load:
+        return []
     return [results_by_object_id[obj.object_id] for obj in objs]
 
 

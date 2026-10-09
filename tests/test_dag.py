@@ -301,13 +301,6 @@ def test_add_to_dag_walks_computed_dependencies():
     }
 
 
-def test_add_to_dag_rejects_non_furu_values():
-    with pytest.raises(TypeError, match="expected Spec objects"):
-        _new_execution_coordinator(
-            [Leaf(name="ok"), "not-a-furu"]  # ty: ignore[invalid-argument-type]
-        )
-
-
 def _record_call(calls_dir: str, cls: type, value: object) -> None:
     # Workers run create() in a child process, so calls are recorded on disk.
     with (Path(calls_dir) / cls.__name__).open("a", encoding="utf-8") as f:
