@@ -2,6 +2,7 @@ import argparse
 from collections.abc import Sequence
 from pathlib import Path
 
+from furu.storage._layout import slurm_worker_log_path_in
 from furu.worker.loop import worker_loop
 
 
@@ -40,24 +41,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         required=True,
         help="worker backend name recorded in provenance (e.g. slurm)",
     )
-    parser.add_argument(
-        "--log-file",
-        required=True,
-        type=Path,
-        help="file this worker appends its log records to",
-    )
     args = parser.parse_args(argv)
 
-    worker_loop(
-        coordinator=args.coordinator_file,
-        pool=args.pool,
-        idle_timeout=args.idle_timeout,
-        max_failures=args.max_failures,
-        component=args.component,
-        backend=args.backend,
-        materialize_snapshot=True,
-        log_file=args.log_file,
-    )
+    try:
+        worker_loop(
+            coordinator=args.coordinator_file,
+            pool=args.pool,
+            idle_timeout=args.idle_timeout,
+            max_failures=args.max_failures,
+            component=args.component,
+            backend=args.backend,
+            materialize_snapshot=True,
+            # This process's own output, which sbatch sends to this file.
+            worker_log=slurm_worker_log_path_in(
+                args.coordinator_file.parent, args.component
+            ),
+        )
+    except SystemExit:  # gave up after too many failures; already logged
+        return 1
     return 0
 
 

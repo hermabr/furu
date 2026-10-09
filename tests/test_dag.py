@@ -418,7 +418,7 @@ def test_execution_coordinator_run_discovers_lazy_dependencies_and_reruns_parent
     assert _calls(tmp_path, LazyChildLoader) == ["7", "7"]
     assert parent.create() == 21
     parent_log = run_log_path_in(parent._base_dir).read_text(encoding="utf-8")
-    assert "create deferred: 1 missing dependency/dependencies" in parent_log
+    assert " · 1 missing dependency\n" in parent_log
     assert "create failed" not in parent_log
     assert "=== Debug Traceback ===" not in parent_log
 
@@ -445,7 +445,10 @@ def test_execution_coordinator_run_reports_worker_failures():
             "worker": config.worker.model_copy(update={"max_retries_per_object": 0})
         }
     )
-    with override_config(no_retries), pytest.raises(RuntimeError, match="failed jobs"):
+    with (
+        override_config(no_retries),
+        pytest.raises(RuntimeError, match="1 spec failed"),
+    ):
         ExecutionCoordinator.run(
             [parent],
             worker_backends=(LocalThreadWorkerBackend(),),

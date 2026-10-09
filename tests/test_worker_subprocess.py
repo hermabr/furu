@@ -13,6 +13,7 @@ from subprocess_objects import (
     OtherSubprocessEnvLeaf,
     SubprocessBatchLeaf,
     SubprocessBlockedParent,
+    SubprocessChattyLeaf,
     SubprocessCrashLeaf,
     SubprocessCwdLeaf,
     SubprocessDependencyLeaf,
@@ -30,6 +31,7 @@ from furu.provenance import (
     SubmitProvenance,
 )
 from furu.snapshot import create_snapshot
+from furu.storage._layout import run_log_path_in
 from furu.worker.backends.local import LocalThreadWorkerBackend
 from furu.worker.execute import ChildSlot
 from furu.worker.protocol import (
@@ -44,7 +46,7 @@ from furu.worker.protocol import (
 
 @pytest.fixture
 def child_slot() -> Iterator[ChildSlot]:
-    slot = ChildSlot(backend="test", materialize_snapshot=False)
+    slot = ChildSlot(worker="w0", backend="test", materialize_snapshot=False)
     try:
         yield slot
     finally:
@@ -69,15 +71,25 @@ def _submit_provenance() -> SubmitProvenance:
     )
 
 
-def _run(slot: ChildSlot, obj: Spec) -> JobResult:
-    return slot.run(
-        Job(
-            artifacts=[ArtifactSpec.from_furu(obj)],
-            provenance=_submit_provenance(),
-            process=ProcessSettings.from_metadata(obj._metadata),
-        ),
-        cancelled=threading.Event(),
+def _job(
+    objs: list[Spec], *, provenance: SubmitProvenance | None = None, attempt: int = 1
+) -> Job:
+    return Job(
+        artifacts=[ArtifactSpec.from_furu(obj) for obj in objs],
+        run_logs=[run_log_path_in(obj._base_dir) for obj in objs],
+        attempt=attempt,
+        execution_log=get_config().run_directories.executions / "e1" / "execution.log",
+        provenance=provenance or _submit_provenance(),
+        process=ProcessSettings.from_metadata(objs[0]._metadata),
     )
+
+
+def _run(slot: ChildSlot, obj: Spec) -> JobResult:
+    return slot.run(_job([obj]), cancelled=threading.Event())
+
+
+def _run_log(obj: Spec) -> str:
+    return run_log_path_in(obj._base_dir).read_text()
 
 
 def _pid_and_value(obj: Spec[str]) -> tuple[int, str]:
@@ -263,8 +275,12 @@ def test_subprocess_crash_becomes_job_failed_result_and_slot_survives(
     result = _run(child_slot, crashing)
 
     assert isinstance(result, JobFailedResult)
-    assert "subprocess died: signal 9 (SIGKILL)" in result.error
-    assert "crash-leaf about to die" in result.error
+    # The run.log tail comes first, so the reason is the error's last line.
+    tail, reason = result.error.rstrip("\n").rsplit("\n", 1)
+    assert reason == "subprocess died: killed by signal 9 (SIGKILL)"
+    assert tail.startswith(f"── {crashing._log_label} · attempt 1 · w0 · ")
+    assert tail.endswith("crash-leaf about to die")
+    assert _run_log(crashing).endswith("── died · killed by signal 9 (SIGKILL)\n\n")
     assert child_slot._child is None
 
     follow_up = SubprocessEnvLeaf(
@@ -327,7 +343,7 @@ def _snapshot_repo(repo: Path, marker: str) -> str:
 
 
 def test_materializing_slot_runs_each_job_from_its_snapshot(tmp_path: Path) -> None:
-    slot = ChildSlot(backend="test", materialize_snapshot=True)
+    slot = ChildSlot(worker="w0", backend="test", materialize_snapshot=True)
     pids_and_cwds: list[tuple[int, str]] = []
     code_dirs: list[Path] = []
     try:
@@ -359,12 +375,7 @@ def test_materializing_slot_runs_each_job_from_its_snapshot(tmp_path: Path) -> N
                 submitted=SubmitContext.capture().model_copy(update={"cwd": str(repo)}),
             )
             result = slot.run(
-                Job(
-                    artifacts=[ArtifactSpec.from_furu(leaf)],
-                    provenance=provenance,
-                    process=ProcessSettings.from_metadata(leaf._metadata),
-                ),
-                cancelled=threading.Event(),
+                _job([leaf], provenance=provenance), cancelled=threading.Event()
             )
             assert isinstance(result, JobCompletedResult)
             pids_and_cwds.append(_pid_and_value(leaf))
@@ -422,3 +433,46 @@ def test_batched_subprocess_execution_through_local_worker_backend() -> None:
     assert [value for _, _, value in parsed] == ["1", "2"]
     assert len({pid for pid, _, _ in parsed}) == 1
     assert int(parsed[0][0]) != os.getpid()
+
+
+def test_job_output_lands_in_its_own_run_log_on_a_reused_child(
+    child_slot: ChildSlot,
+) -> None:
+    first, second = SubprocessChattyLeaf(marker=1), SubprocessChattyLeaf(marker=2)
+
+    assert isinstance(_run(child_slot, first), JobCompletedResult)
+    assert isinstance(_run(child_slot, second), JobCompletedResult)
+    assert _pid_and_value(first)[0] == _pid_and_value(second)[0]
+
+    for obj, other in ((first, second), (second, first)):
+        lines = _run_log(obj).rstrip("\n").splitlines()
+        assert lines[0].startswith(f"── {obj._log_label} · attempt 1 · w0 · host ")
+        assert lines[1].startswith("   exec e1 → ")
+        assert f"print from job {obj.marker}" in lines
+        assert f"I chatty stdlib info from job {obj.marker}  [" in _run_log(obj)
+        assert f"raw fd 2 from job {obj.marker}" in lines
+        assert lines[-1].startswith("── ok · ")
+        assert f"job {other.marker}" not in _run_log(obj)
+
+
+def test_batched_job_output_goes_to_the_first_run_log_and_others_point_at_it(
+    child_slot: ChildSlot,
+) -> None:
+    lead, member = SubprocessBatchLeaf(value=11), SubprocessBatchLeaf(value=12)
+
+    result = child_slot.run(
+        _job([lead, member], attempt=3), cancelled=threading.Event()
+    )
+
+    assert isinstance(result, JobCompletedResult)
+    lead_lines = _run_log(lead).rstrip("\n").splitlines()
+    assert lead_lines[0].startswith(f"── {lead._log_label} · attempt 3 · w0 · ")
+    assert lead_lines[-1].startswith("── ok · ")
+    member_lines = _run_log(member).rstrip("\n").splitlines()
+    assert member_lines[0].startswith(f"── {member._log_label} · attempt 3 · w0 · ")
+    assert member_lines[1] == (
+        f"   batched with {lead._log_label} → "
+        f"{furu.logging._display_path(run_log_path_in(lead._base_dir))}"
+    )
+    assert member_lines[2] == lead_lines[-1]
+    assert len(member_lines) == 3

@@ -226,9 +226,12 @@ def test_worker_fails_job_on_stale_uv_lock_hash(
     )
 
     with pytest.raises(RuntimeError, match="worker uv.lock does not match") as excinfo:
-        ChildSlot(backend="test", materialize_snapshot=False).run(
+        ChildSlot(worker="w0", backend="test", materialize_snapshot=False).run(
             Job(
                 artifacts=[ArtifactSpec.from_furu(node)],
+                run_logs=[git_repo / "run.log"],
+                attempt=1,
+                execution_log=git_repo / "execution.log",
                 provenance=stale,
                 process=ProcessSettings.from_metadata(node._metadata),
             ),

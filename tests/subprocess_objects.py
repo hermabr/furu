@@ -7,6 +7,7 @@ directory on the child's PYTHONPATH.
 
 from __future__ import annotations
 
+import logging
 import os
 import signal
 import sys
@@ -92,3 +93,15 @@ class SubprocessBlockedParent(Spec[str]):
 
     def create(self) -> str:
         return SubprocessDependencyLeaf(marker=self.marker).create()
+
+
+class SubprocessChattyLeaf(Spec[str]):
+    """Writes through every channel a job has: print, stdlib logging, raw fd 2."""
+
+    marker: int = 0
+
+    def create(self) -> str:
+        print(f"print from job {self.marker}")
+        logging.getLogger("chatty").info("stdlib info from job %d", self.marker)
+        os.write(2, f"raw fd 2 from job {self.marker}\n".encode())
+        return _pid_and_variable("FURU_TEST_VARIABLE")

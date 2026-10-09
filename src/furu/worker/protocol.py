@@ -31,6 +31,11 @@ class Job(BaseModel):
 
     kind: Literal["job"] = "job"
     artifacts: list[ArtifactSpec]
+    # One run.log per artifact; the worker cannot compute them without
+    # importing the spec classes.
+    run_logs: list[Path]
+    attempt: int
+    execution_log: Path
     provenance: SubmitProvenance
     process: ProcessSettings
 
@@ -82,6 +87,7 @@ class HelloMessage(BaseModel):
     backend: str
     pool: str
     running: list[ArtifactSpec] = Field(default_factory=list)
+    log: Path | None = None  # the worker's own log file, if it has one
 
 
 class TakeoverRequest(BaseModel):
