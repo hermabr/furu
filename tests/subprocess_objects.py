@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 from typing import Literal
 
+import furu
 from furu import Metadata, Spec, batched
 
 type Reuse = Literal["never", "same_environment", "same_environment_same_spec"]
@@ -69,7 +70,7 @@ class SubprocessCwdLeaf(Spec[str]):
     marker: int = 0
 
     def create(self) -> str:
-        return f"{os.getpid()}:{Path.cwd()}"
+        return f"{os.getpid()}:{Path.cwd()}\n{furu.submitting_repo_root()}"
 
 
 class SubprocessCrashLeaf(Spec[str]):

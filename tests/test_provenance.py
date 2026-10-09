@@ -161,6 +161,16 @@ def test_git_identity_outside_repo(tmp_path: Path) -> None:
         GitIdentity.capture(tmp_path)
 
 
+def test_submitting_repo_root_is_the_worktree_not_the_main_repo(
+    git_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worktree = tmp_path / "worktree"
+    _git(git_repo, "worktree", "add", "-q", str(worktree))
+    (worktree / "sub").mkdir()
+    monkeypatch.chdir(worktree / "sub")
+    assert furu.submitting_repo_root() == worktree.resolve()
+
+
 def test_capture_environment_identity_finds_project_root_from_child(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

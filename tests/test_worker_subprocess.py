@@ -346,6 +346,7 @@ def test_materializing_slot_runs_each_job_from_its_snapshot(tmp_path: Path) -> N
     slot = ChildSlot(worker="w0", backend="test", materialize_snapshot=True)
     pids_and_cwds: list[tuple[int, str]] = []
     code_dirs: list[Path] = []
+    repo_roots: list[Path] = []
     try:
         for marker in (1, 2):
             repo = tmp_path / f"repo-{marker}"
@@ -378,7 +379,10 @@ def test_materializing_slot_runs_each_job_from_its_snapshot(tmp_path: Path) -> N
                 _job([leaf], provenance=provenance), cancelled=threading.Event()
             )
             assert isinstance(result, JobCompletedResult)
-            pids_and_cwds.append(_pid_and_value(leaf))
+            pid, value = _pid_and_value(leaf)
+            cwd, repo_root = value.split("\n")
+            pids_and_cwds.append((pid, cwd))
+            repo_roots.append(Path(repo_root))
             code_dirs.append(
                 (
                     get_config().run_directories.snapshots / snapshot_id / "code"
@@ -390,6 +394,8 @@ def test_materializing_slot_runs_each_job_from_its_snapshot(tmp_path: Path) -> N
     # Each child ran inside its own job's extracted snapshot...
     assert [Path(cwd) for _, cwd in pids_and_cwds] == code_dirs
     assert code_dirs[0] != code_dirs[1]
+    # ...yet sees the checkout it was submitted from, not the snapshot.
+    assert repo_roots == [tmp_path / "repo-1", tmp_path / "repo-2"]
     # ...so the warm first child was retired when the code changed.
     assert pids_and_cwds[0][0] != pids_and_cwds[1][0]
 
