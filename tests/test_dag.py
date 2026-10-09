@@ -19,6 +19,7 @@ from furu.provenance import (
 )
 from furu.resources import Worker
 from furu.storage._layout import (
+    attempt_dir_in,
     compute_lock_path_in,
     run_log_path_in,
 )
@@ -241,7 +242,7 @@ def test_add_to_dag_does_not_snapshot_running_dependency():
 
 def test_add_to_dag_does_not_reject_inactive_compute_lock():
     leaf = Leaf(name="inactive-lock")
-    leaf._base_dir.mkdir(parents=True, exist_ok=True)
+    attempt_dir_in(leaf._base_dir).mkdir(parents=True)
     lock_path = compute_lock_path_in(leaf._base_dir)
     lock_path.touch()
 

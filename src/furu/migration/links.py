@@ -7,9 +7,10 @@ from typing import TYPE_CHECKING, cast
 from pydantic import BaseModel, ConfigDict
 
 from furu._declared_types import declared_result_type
+from furu.code_trace import is_valid, valid_version
 from furu.constants import FIELDSMARKER
 from furu.locking import lock, read_text_or_none
-from furu.metadata import CompletedMetadata
+from furu.metadata import ArtifactSpec
 from furu.migration.resolution import (
     _apply_child_moves,
     _apply_steps,
@@ -22,10 +23,9 @@ from furu.result.bundle import load_result_bundle
 from furu.storage._layout import (
     compute_lock_path_in,
     data_dir_in,
-    metadata_path_in,
     result_dir_in,
     result_link_path_in,
-    result_manifest_path_in,
+    spec_path_in,
 )
 from furu.utils import JsonFields, _stable_json_dump, atomic_write_text
 
@@ -48,7 +48,7 @@ class _ResultLinkSource(BaseModel):
     fully_qualified_name: str
     schema_hash: str
     artifact_hash: str
-    base_dir: Path
+    version_dir: Path
 
 
 class _ResultLink(BaseModel):
@@ -76,38 +76,37 @@ def _read_link(obj: Spec) -> _ResultLink | None:
     if (link_text := read_text_or_none(result_link_path_in(obj._base_dir))) is None:
         return None
     link = _ResultLink.model_validate_json(link_text)
-    if not result_manifest_path_in(link.source.base_dir).exists():
+    if not is_valid(link.source.version_dir, storage_root=obj._metadata.storage):
         return None
-    if _covered_in(_class_resolution(obj), link.source.base_dir.parent) is None:
+    schema_directory = link.source.version_dir.parent.parent
+    if _covered_in(_class_resolution(obj), schema_directory) is None:
         return None
     return link
 
 
-_SOURCES_CACHE: dict[tuple[type, Path], Mapping[str, list[_ResultLinkSource]]] = {}
+_SOURCES_CACHE: dict[
+    tuple[type, Path], Mapping[str, list[tuple[ArtifactSpec, Path]]]
+] = {}
 
 
 def _migrated_sources(
     cls: type, resolution: _ClassResolution, covered: _Covered
-) -> Mapping[str, list[_ResultLinkSource]]:
+) -> Mapping[str, list[tuple[ArtifactSpec, Path]]]:
+    """Source identities in a covered schema directory, keyed by migrated fields."""
     key = (cls, covered.schema_directory)
     if (sources := _SOURCES_CACHE.get(key)) is None:
         sources = {}
         if covered.schema_directory.exists():
-            for artifact_dir in sorted(covered.schema_directory.iterdir()):
-                if not result_manifest_path_in(artifact_dir).exists():
+            for identity_dir in sorted(covered.schema_directory.iterdir()):
+                if not identity_dir.is_dir():
                     continue
-                metadata_path = metadata_path_in(artifact_dir)
-                if not metadata_path.exists():
+                spec_path = spec_path_in(identity_dir)
+                if not spec_path.exists():
                     continue
-                artifact = CompletedMetadata.model_validate_json(
-                    metadata_path.read_text(encoding="utf-8")
-                ).artifact
-                source = _ResultLinkSource(
-                    fully_qualified_name=artifact.fully_qualified_name,
-                    schema_hash=artifact.schema_hash,
-                    artifact_hash=artifact.artifact_hash,
-                    base_dir=artifact_dir,
+                artifact = ArtifactSpec.model_validate_json(
+                    spec_path.read_text(encoding="utf-8")
                 )
+                source = (artifact, identity_dir)
                 fields = cast(JsonFields, artifact.artifact_data[FIELDSMARKER])
                 if covered.child_moves:
                     fields = {
@@ -133,8 +132,11 @@ def _find_source(obj: Spec, resolution: _ClassResolution) -> _ResultLink | None:
         ):
             continue
         sources = _migrated_sources(type(obj), resolution, covered)
-        for source in sources.get(target_key, ()):
-            if not result_manifest_path_in(source.base_dir).exists():
+        for artifact, identity_dir in sources.get(target_key, ()):
+            version = valid_version(
+                identity_dir, None, storage_root=obj._metadata.storage
+            )
+            if version is None:
                 continue
             return _ResultLink(
                 current=_ResultLinkCurrent(
@@ -143,7 +145,12 @@ def _find_source(obj: Spec, resolution: _ClassResolution) -> _ResultLink | None:
                     artifact_hash=obj._artifact_hash,
                     fields=target_fields,
                 ),
-                source=source,
+                source=_ResultLinkSource(
+                    fully_qualified_name=artifact.fully_qualified_name,
+                    schema_hash=artifact.schema_hash,
+                    artifact_hash=artifact.artifact_hash,
+                    version_dir=version,
+                ),
                 migration_path=tuple(
                     f"{move.chain.label}: {_describe_step(step)}"
                     for move in covered.child_moves.values()
@@ -157,11 +164,20 @@ def _find_source(obj: Spec, resolution: _ClassResolution) -> _ResultLink | None:
     return None
 
 
-def result_dir_for_loading(obj: Spec, *, has_lock: bool = False) -> Path | None:
-    if result_manifest_path_in(obj._base_dir).exists():
-        return result_dir_in(obj._base_dir)
+def own_version(obj: Spec) -> Path | None:
+    return valid_version(
+        obj._base_dir,
+        obj._metadata.code_version,
+        storage_root=obj._metadata.storage,
+    )
+
+
+def version_for_loading(obj: Spec, *, has_lock: bool = False) -> Path | None:
+    """The version directory to load obj from: its own, or a migration source."""
+    if (version := own_version(obj)) is not None:
+        return version
     if link := _read_link(obj):
-        return result_dir_in(link.source.base_dir)
+        return link.source.version_dir
     link = _find_source(obj, _class_resolution(obj))
     if link is None:
         return None
@@ -169,7 +185,7 @@ def result_dir_for_loading(obj: Spec, *, has_lock: bool = False) -> Path | None:
     obj._base_dir.mkdir(parents=True, exist_ok=True)
     if not has_lock:
         with lock(compute_lock_path_in(obj._base_dir)):
-            return result_dir_for_loading(obj, has_lock=True)
+            return version_for_loading(obj, has_lock=True)
 
     from furu.execution.load_or_create import _record_schema_snapshot
 
@@ -177,21 +193,20 @@ def result_dir_for_loading(obj: Spec, *, has_lock: bool = False) -> Path | None:
         result_link_path_in(obj._base_dir), link.model_dump_json(indent=2)
     )
     _record_schema_snapshot(obj)
-    return result_dir_in(link.source.base_dir)
+    return link.source.version_dir
 
 
-def load_stored_result[T](obj: Spec[T], result_dir: Path) -> T:
-    base_dir = result_dir.parent
+def load_stored_result[T](obj: Spec[T], version: Path) -> T:
     steps: tuple[MigrationStep, ...] = ()
-    if base_dir != obj._base_dir:
+    if version.parent != obj._base_dir:
         resolution = _class_resolution(obj)
-        covered = _covered_in(resolution, base_dir.parent)
-        # result_dir_for_loading only hands out covered sources.
-        assert covered is not None, f"{base_dir} is not covered by {obj._log_label}"
+        covered = _covered_in(resolution, version.parent.parent)
+        # version_for_loading only hands out covered sources.
+        assert covered is not None, f"{version} is not covered by {obj._log_label}"
         steps = resolution.own.steps[covered.generation.start :]
     value = load_result_bundle(
-        result_dir,
-        data_dir=data_dir_in(base_dir),
+        result_dir_in(version),
+        data_dir=data_dir_in(version),
         declared_type=declared_result_type(type(obj)),
         rewrites=[
             step.result_rewrite for step in steps if step.result_rewrite is not None

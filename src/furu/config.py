@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ByteSize, ConfigDict, Field
 from pydantic_settings import (
@@ -14,6 +15,10 @@ from pydantic_settings import (
 )
 
 _WORKER_JSON_CONFIG_FILE_ENV_VAR = "_FURU_WORKER_JSON_CONFIG_FILE"
+
+# "fixed": a result is valid until you bump a field. "traced": furu derives the
+# code version from the repo code create() ran (see furu.code_trace).
+type CodeVersion = Literal["fixed", "traced"]
 
 
 @functools.cache
@@ -85,6 +90,7 @@ class _Config(BaseSettings):
     )
 
     debug_mode: bool = False
+    code_version: CodeVersion = "fixed"
     directories: _FuruDirectories = Field(default_factory=_FuruDirectories)
     worker: _FuruWorkerConfig = Field(default_factory=_FuruWorkerConfig)
     provenance: _FuruProvenanceConfig = Field(default_factory=_FuruProvenanceConfig)

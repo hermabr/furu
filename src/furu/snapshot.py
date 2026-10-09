@@ -207,6 +207,7 @@ class CodeLocation:
     python: Path
     project_root: Path
     cwd: Path
+    repo_root: Path | None = None  # the snapshot's code dir; None: git finds it
 
     @classmethod
     def here(cls) -> CodeLocation:
@@ -232,6 +233,7 @@ class CodeLocation:
             python=project_root / ".venv" / "bin" / "python",
             project_root=project_root,
             cwd=code_dir / Path(provenance.submitted.cwd).relative_to(repo_root),
+            repo_root=code_dir,
         )
 
 

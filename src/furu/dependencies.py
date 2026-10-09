@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import fields
 from functools import cached_property
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self, overload
 
 from furu._tree import specs_in
@@ -67,14 +69,28 @@ def collect_declared_refs(obj: Spec) -> tuple[Spec, ...]:
 
 
 class DependencyRecorder:
-    def __init__(self) -> None:
-        self._observed_ids: set[str] = set()
+    """Which version of each dependency a create() loaded.
 
-    def record[T](self, obj: Spec[T]) -> None:
-        self._observed_ids.add(obj.object_id)
+    Versions are stored relative to the creating spec's storage root, so a
+    lookup can re-check them without a Spec object.
+    """
 
-    def finalize(self) -> tuple[str, ...]:
-        return tuple(sorted(self._observed_ids))
+    def __init__(
+        self,
+        storage_root: Path,
+        versions: dict[str, str],
+        log: Callable[[list[str]], None] | None,
+    ) -> None:
+        self._storage_root = storage_root
+        self.versions = versions
+        self._log = log
+
+    def record(self, obj: Spec, version: Path) -> None:
+        relative = os.path.relpath(version, self._storage_root)
+        if self.versions.get(obj.object_id) != relative:
+            self.versions[obj.object_id] = relative
+            if self._log is not None:
+                self._log(["dependency", obj.object_id, relative])
 
 
 # TODO: ContextVar state does not propagate to new threads. If a create()
@@ -86,15 +102,19 @@ _active_dependency_recorder: ContextVar[DependencyRecorder | None] = ContextVar(
 )
 
 
-def record_dependency_call[T](obj: Spec[T]) -> None:
+def record_dependency(obj: Spec, version: Path) -> None:
     recorder = _active_dependency_recorder.get()
     if recorder is not None:
-        recorder.record(obj)
+        recorder.record(obj, version)
 
 
 @contextmanager
-def dependency_recorder() -> Generator[DependencyRecorder]:
-    recorder = DependencyRecorder()
+def dependency_recorder(
+    storage_root: Path,
+    versions: dict[str, str],
+    log: Callable[[list[str]], None] | None,
+) -> Generator[DependencyRecorder]:
+    recorder = DependencyRecorder(storage_root, versions, log)
     token = _active_dependency_recorder.set(recorder)
     try:
         yield recorder

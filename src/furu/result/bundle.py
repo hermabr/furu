@@ -35,6 +35,7 @@ type WrapperKind = Literal[
     "dataclass",
     "datetime",
     "path",
+    "data_path",
     "pydantic",
     "tuple",
     "set",
@@ -45,7 +46,7 @@ type WrapperKind = Literal[
 @dataclasses.dataclass
 class _RefBinding:
     ref: Ref[Any]
-    metadata: Mapping[str, object]
+    encoded_metadata: JsonValue
     artifact_relative_path: Path
 
 
@@ -248,12 +249,23 @@ def _dump_value(
             return out
         case Path():
             scratch_dir = scratch_dir_in(dump_state.data_dir.parent)
-            if value.resolve().is_relative_to(scratch_dir.resolve()):
+            resolved = value.resolve()
+            if resolved.is_relative_to(scratch_dir.resolve()):
                 raise ValueError(
                     f"Result path at {_value_path_display(value_path)} must not "
                     f"point into the scratch dir {scratch_dir}, which is deleted "
                     f"once the result is stored: {value}"
                 )
+            data_dir = dump_state.data_dir.resolve()
+            if resolved.is_relative_to(data_dir):
+                # The data dir moves when the attempt is published.
+                dump_state.should_reload_value_after_save = True
+                return {
+                    WRAPPER_KEY: {
+                        KINDMARKER: "data_path",
+                        "value": resolved.relative_to(data_dir).as_posix(),
+                    }
+                }
             return {
                 WRAPPER_KEY: {
                     KINDMARKER: "path",
@@ -348,16 +360,12 @@ def _dump_artifact(
         dump_state.ref_bindings.append(
             _RefBinding(
                 ref=ref,
-                metadata=cast(
-                    dict[str, object],
-                    _decode_codec_metadata_value(
-                        encoded_metadata, data_dir=dump_state.data_dir
-                    ),
-                ),
+                encoded_metadata=encoded_metadata,
                 artifact_relative_path=artifact_rel,
             )
         )
-    elif codec.reload_value_after_save:
+    elif codec.reload_value_after_save or _holds_path(codec_metadata):
+        # Data-dir paths move when the attempt is published.
         dump_state.should_reload_value_after_save = True
 
     return {
@@ -368,6 +376,17 @@ def _dump_artifact(
             "metadata": encoded_metadata,
         }
     }
+
+
+def _holds_path(value: object) -> bool:
+    match value:
+        case Path():
+            return True
+        case Mapping():
+            return any(_holds_path(item) for item in value.values())
+        case list() | tuple() | set() | frozenset():
+            return any(_holds_path(item) for item in value)
+    return False
 
 
 def _encode_codec_metadata_value(
@@ -648,6 +667,8 @@ def _load_wrapper(
             return datetime.fromisoformat(body["value"])
         case "path":
             return Path(body["value"])
+        case "data_path":
+            return data_dir / body["value"]
         case "tuple":
             return tuple(
                 _load_value(
@@ -732,6 +753,20 @@ def _save_result_bundle(
         encoding="utf-8",
     )
     return dump_state
+
+
+def bind_refs(dump_state: _DumpState, bundle_dir: Path, *, data_dir: Path) -> None:
+    """Point the refs a create() returned at their stored artifacts."""
+    for binding in dump_state.ref_bindings:
+        binding.ref._bind_stored(
+            metadata=cast(
+                dict[str, object],
+                _decode_codec_metadata_value(
+                    binding.encoded_metadata, data_dir=data_dir
+                ),
+            ),
+            artifact_directory=bundle_dir / binding.artifact_relative_path,
+        )
 
 
 def load_result_bundle(
