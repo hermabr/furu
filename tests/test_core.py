@@ -1919,14 +1919,14 @@ def test_list_input_on_single_only_class_uses_sequential_create() -> None:
     assert CountedSingleValue.create_calls == [1, 2, 3]
 
 
-def test_sequential_fallback_writes_running_metadata_per_object() -> None:
+def test_unbatched_specs_run_alone_with_their_own_running_metadata() -> None:
     first = MetadataTimingValue(key=1)
     second = MetadataTimingValue(key=2)
     MetadataTimingValue.siblings_by_key.update({1: first, 2: second})
 
     assert _load_or_create([first, second]) == ["timed:1", "timed:2"]
     assert MetadataTimingValue.create_events == [
-        (1, True, True),
+        (1, True, False),
         (2, True, True),
     ]
 
@@ -2195,17 +2195,18 @@ def test_batched_compute_logs_to_the_lead_and_points_the_others_at_it() -> None:
     assert "batched detail" not in other_log
 
 
-def test_sequential_group_compute_logs_every_member_to_the_lead() -> None:
+def test_unbatched_specs_log_to_their_own_run_log() -> None:
     objs = [LoggedSingleValue(key=1), LoggedSingleValue(key=2)]
 
     assert _load_or_create(objs) == ["logged-single:1", "logged-single:2"]
 
-    lead_log, other_log = (
+    first_log, second_log = (
         run_log_path_in(obj._base_dir).read_text(encoding="utf-8") for obj in objs
     )
-    assert "single detail for 1" in lead_log
-    assert "single detail for 2" in lead_log
-    assert f"batched with {objs[0]._log_label}" in other_log
+    assert "single detail for 1" in first_log
+    assert "single detail for 2" not in first_log
+    assert "single detail for 2" in second_log
+    assert "batched with" not in second_log
 
 
 def test_batched_failure_writes_error_details_to_run_log_for_every_participant() -> (
