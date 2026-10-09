@@ -1,16 +1,12 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from functools import cached_property
-from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict
 
-from furu.storage._layout import metadata_path_in
 from furu.utils import (
     JsonValue,
-    atomic_write_text,
     object_id_from_parts,
     spec_label,
 )
@@ -20,6 +16,8 @@ if TYPE_CHECKING:
 
 
 class ArtifactSpec(BaseModel):
+    """Which spec an identity directory holds; stored there as spec.json."""
+
     model_config = ConfigDict(
         extra="forbid",
         frozen=True,
@@ -55,57 +53,3 @@ class ArtifactSpec(BaseModel):
         return spec_label(
             self.fully_qualified_name, self.schema_hash, self.artifact_hash
         )
-
-
-class RunningMetadata(BaseModel):
-    model_config = ConfigDict(
-        extra="forbid",
-        frozen=True,
-        strict=True,
-    )
-    kind: Literal["running"] = "running"
-    artifact: ArtifactSpec
-    base_path: Path
-    started_at: datetime
-
-    @classmethod
-    def write_for[T](
-        cls,
-        obj: Spec[T],
-    ) -> RunningMetadata:
-        metadata = cls(
-            artifact=ArtifactSpec.from_furu(obj),
-            base_path=obj._base_dir,
-            started_at=datetime.now(UTC),
-        )
-        atomic_write_text(
-            metadata_path_in(obj._base_dir), metadata.model_dump_json(indent=2)
-        )
-        return metadata
-
-    def to_complete(
-        self,
-        *,
-        observed_dependencies: tuple[str, ...],
-    ) -> CompletedMetadata:
-        return CompletedMetadata(
-            artifact=self.artifact,
-            base_path=self.base_path,
-            started_at=self.started_at,
-            completed_at=datetime.now(UTC),
-            observed_dependencies=observed_dependencies,
-        )
-
-
-class CompletedMetadata(BaseModel):
-    model_config = ConfigDict(
-        extra="forbid",
-        frozen=True,
-        strict=True,
-    )
-    kind: Literal["completed"] = "completed"
-    artifact: ArtifactSpec
-    base_path: Path
-    started_at: datetime
-    completed_at: datetime
-    observed_dependencies: tuple[str, ...]

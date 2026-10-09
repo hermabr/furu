@@ -151,6 +151,7 @@ def test_config_reads_pyproject_toml(tmp_path, monkeypatch) -> None:
         """
 [tool.furu]
 debug_mode = true
+code_version = "traced"
 
 [tool.furu.directories]
 objects = "/tmp/furu-pyproject-objects"
@@ -168,6 +169,7 @@ max_retries_per_object = 3
     config = _Config()
 
     assert config.debug_mode is True
+    assert config.code_version == "traced"
     assert config.directories == _FuruDirectories(
         objects=Path("/tmp/furu-pyproject-objects"),
         executions=Path("/tmp/furu-pyproject-executions"),

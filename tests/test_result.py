@@ -104,10 +104,12 @@ def test_json_only_bundle_round_trips() -> None:
     result = obj.create()
     assert result == expected
 
-    assert result_manifest_path_in(obj._base_dir).exists()
-    assert not (result_dir_in(obj._base_dir) / "artifacts").exists()
+    assert result_manifest_path_in(obj._base_dir / "v-fixed").exists()
+    assert not (result_dir_in(obj._base_dir / "v-fixed") / "artifacts").exists()
 
-    manifest = json.loads(result_manifest_path_in(obj._base_dir).read_text())
+    manifest = json.loads(
+        result_manifest_path_in(obj._base_dir / "v-fixed").read_text()
+    )
     assert "format" not in manifest
     assert "root" not in manifest
     assert manifest == expected
@@ -157,7 +159,7 @@ def test_scalar_root_manifest_is_just_the_value() -> None:
     obj = ScalarResult()
 
     assert obj.create() == 5
-    text = result_manifest_path_in(obj._base_dir).read_text()
+    text = result_manifest_path_in(obj._base_dir / "v-fixed").read_text()
     assert json.loads(text) == 5
 
 
@@ -179,7 +181,9 @@ def test_path_values_round_trip() -> None:
         "absolute": Path("/tmp/furu/model.bin"),
     }
 
-    manifest = json.loads(result_manifest_path_in(obj._base_dir).read_text())
+    manifest = json.loads(
+        result_manifest_path_in(obj._base_dir / "v-fixed").read_text()
+    )
     assert manifest == {
         "relative": {
             "$furu": {
@@ -274,7 +278,7 @@ def test_non_finite_floats_round_trip() -> None:
     assert result["pos_inf"] == float("inf")
     assert result["neg_inf"] == float("-inf")
 
-    text = result_manifest_path_in(obj._base_dir).read_text()
+    text = result_manifest_path_in(obj._base_dir / "v-fixed").read_text()
     # Python's standard library writes these as JSON extensions.
     assert "NaN" in text
     assert "Infinity" in text
@@ -691,8 +695,8 @@ def test_scratch_files_survive_until_codec_save() -> None:
 
     value = obj.create()
 
-    assert not (obj._base_dir / "scratch").exists()
-    assert value.source.is_relative_to(result_dir_in(obj._base_dir))
+    assert not (obj._base_dir / "v-fixed" / "scratch").exists()
+    assert value.source.is_relative_to(result_dir_in(obj._base_dir / "v-fixed"))
     assert value.source.read_text(encoding="utf-8") == "lazy"
 
 
@@ -771,10 +775,12 @@ def test_task_result_codecs_take_priority_over_auto_registered_codec() -> None:
 
     assert isinstance(loaded, _AutoRegisteredValue)
     assert loaded.value == 10
-    artifact_dir = result_dir_in(obj._base_dir) / "artifacts" / "root"
+    artifact_dir = result_dir_in(obj._base_dir / "v-fixed") / "artifacts" / "root"
     assert (artifact_dir / "registry.txt").exists()
     assert not (artifact_dir / "auto.txt").exists()
-    manifest = json.loads(result_manifest_path_in(obj._base_dir).read_text())
+    manifest = json.loads(
+        result_manifest_path_in(obj._base_dir / "v-fixed").read_text()
+    )
     assert manifest["$furu"]["codec"] == _CoreRegistryAutoValueCodec._codec_id()
 
 
@@ -785,10 +791,12 @@ def test_annotated_codec_takes_priority_over_auto_registered_codec() -> None:
 
     assert isinstance(loaded, _AutoRegisteredValue)
     assert loaded.value == 11
-    artifact_dir = result_dir_in(obj._base_dir) / "artifacts" / "root"
+    artifact_dir = result_dir_in(obj._base_dir / "v-fixed") / "artifacts" / "root"
     assert (artifact_dir / "registry.txt").exists()
     assert not (artifact_dir / "auto.txt").exists()
-    manifest = json.loads(result_manifest_path_in(obj._base_dir).read_text())
+    manifest = json.loads(
+        result_manifest_path_in(obj._base_dir / "v-fixed").read_text()
+    )
     assert manifest["$furu"]["codec"] == _CoreRegistryAutoValueCodec._codec_id()
 
 
@@ -1011,7 +1019,7 @@ def test_annotated_codec_selects_artifact_storage() -> None:
     assert isinstance(loaded, AnnotatedArrayOutput)
     assert np.array_equal(loaded.weights, np.arange(3, dtype=np.int64))
     assert (
-        result_dir_in(obj._base_dir) / "artifacts" / "weights" / "data.npy"
+        result_dir_in(obj._base_dir / "v-fixed") / "artifacts" / "weights" / "data.npy"
     ).exists()
 
 
@@ -1029,7 +1037,7 @@ def test_strict_pydantic_annotated_codec_selects_artifact_storage() -> None:
     assert isinstance(loaded, StrictAnnotatedArrayOutput)
     assert np.array_equal(loaded.weights, np.arange(3, dtype=np.int64))
     assert (
-        result_dir_in(obj._base_dir) / "artifacts" / "weights" / "data.npy"
+        result_dir_in(obj._base_dir / "v-fixed") / "artifacts" / "weights" / "data.npy"
     ).exists()
 
     loaded_again = obj.create()
@@ -1080,7 +1088,7 @@ def test_ref_field_resolves_codec_from_registry_and_loads_on_demand() -> None:
     assert isinstance(created.weights, Ref)
     assert np.array_equal(created.weights.load(), np.arange(4))
     assert (
-        result_dir_in(obj._base_dir) / "artifacts" / "weights" / "data.npy"
+        result_dir_in(obj._base_dir / "v-fixed") / "artifacts" / "weights" / "data.npy"
     ).exists()
 
     loaded_again = obj.create()
@@ -1138,20 +1146,22 @@ def test_ref_codec_conflicts_with_different_annotated_codec() -> None:
 def test_codec_metadata_path_round_trips_shared_data_dir_path() -> None:
     obj = DataDirPathResult()
     loaded = obj.create()
-    data_path = data_dir_in(obj._base_dir) / "data.zarr"
+    data_path = data_dir_in(obj._base_dir / "v-fixed") / "data.zarr"
 
     assert loaded["first"].path.resolve() == data_path.resolve()
-    # The creating run keeps the handle it put in, rebound to storage.
-    second = cast(Ref[_DataDirPathValue], loaded["second"])
-    assert isinstance(second, Ref)
-    assert second.load().path.resolve() == data_path.resolve()
+    # Data-dir paths move when the attempt is published, so the creating run
+    # gets the stored value back, exactly as a later load would.
+    assert isinstance(loaded["second"], _DataDirPathValue)
+    assert loaded["second"].path.resolve() == data_path.resolve()
 
-    manifest = json.loads(result_manifest_path_in(obj._base_dir).read_text())
+    manifest = json.loads(
+        result_manifest_path_in(obj._base_dir / "v-fixed").read_text()
+    )
     assert manifest["first"]["$furu"]["metadata"] == {
         "path": {"$furu": {"|kind": "path", "value": "data.zarr"}}
     }
     assert not (
-        result_dir_in(obj._base_dir) / "artifacts" / "first" / "data.zarr"
+        result_dir_in(obj._base_dir / "v-fixed") / "artifacts" / "first" / "data.zarr"
     ).exists()
 
     loaded_again = obj.load_existing()
@@ -1337,7 +1347,9 @@ def test_dataclass_round_trip() -> None:
     assert isinstance(loaded, TrainOutput)
     assert loaded == TrainOutput(metrics={"loss": 0.12}, values=[1, 2, 3])
 
-    manifest = json.loads(result_manifest_path_in(obj._base_dir).read_text())
+    manifest = json.loads(
+        result_manifest_path_in(obj._base_dir / "v-fixed").read_text()
+    )
     assert manifest["$furu"]["|kind"] == "dataclass"
     assert manifest["$furu"]["|type"] == "test_result.TrainOutput"
     assert manifest["$furu"]["|fields"] == {
@@ -1541,14 +1553,16 @@ def test_numpy_array_round_trips() -> None:
     loaded = obj.create()
 
     assert (
-        result_dir_in(obj._base_dir) / "artifacts" / "weights" / "data.npy"
+        result_dir_in(obj._base_dir / "v-fixed") / "artifacts" / "weights" / "data.npy"
     ).exists()
     assert isinstance(loaded, dict)
     weights = cast(Any, loaded["weights"])
     assert weights.dtype == np.float32
     assert np.array_equal(weights, np.arange(10, dtype=np.float32))
 
-    manifest = json.loads(result_manifest_path_in(obj._base_dir).read_text())
+    manifest = json.loads(
+        result_manifest_path_in(obj._base_dir / "v-fixed").read_text()
+    )
     assert manifest["weights"]["$furu"]["|kind"] == "artifact"
     assert manifest["weights"]["$furu"]["codec"] == (
         f"{NumpyNpyCodec.__module__}.{NumpyNpyCodec.__qualname__}"
@@ -1565,10 +1579,12 @@ def test_result_codecs_take_priority_over_builtin_codec() -> None:
 
     assert np.array_equal(loaded, np.arange(10, dtype=np.float32))
     assert np.array_equal(loaded_again, np.arange(10, dtype=np.float32))
-    artifact_dir = result_dir_in(obj._base_dir) / "artifacts" / "root"
+    artifact_dir = result_dir_in(obj._base_dir / "v-fixed") / "artifacts" / "root"
     assert (artifact_dir / "registry.npy").exists()
     assert not (artifact_dir / "data.npy").exists()
-    manifest = json.loads(result_manifest_path_in(obj._base_dir).read_text())
+    manifest = json.loads(
+        result_manifest_path_in(obj._base_dir / "v-fixed").read_text()
+    )
     assert manifest["$furu"]["codec"] == _RegistryNumpyCodec._codec_id()
 
 
@@ -1601,14 +1617,19 @@ def test_polars_dataframe_round_trips() -> None:
     loaded = obj.create()
 
     assert (
-        result_dir_in(obj._base_dir) / "artifacts" / "frame" / "data.parquet"
+        result_dir_in(obj._base_dir / "v-fixed")
+        / "artifacts"
+        / "frame"
+        / "data.parquet"
     ).exists()
     assert isinstance(loaded, dict)
     frame = loaded["frame"]
     assert isinstance(frame, pl.DataFrame)
     assert frame.equals(pl.DataFrame({"x": [1, 2, 3], "y": ["a", "b", "c"]}))
 
-    manifest = json.loads(result_manifest_path_in(obj._base_dir).read_text())
+    manifest = json.loads(
+        result_manifest_path_in(obj._base_dir / "v-fixed").read_text()
+    )
     assert manifest["frame"]["$furu"]["|kind"] == "artifact"
     assert manifest["frame"]["$furu"]["codec"] == (
         f"{PolarsParquetCodec.__module__}.{PolarsParquetCodec.__qualname__}"
@@ -1663,7 +1684,7 @@ def test_nested_numpy_paths_use_list_length_padded_indexes() -> None:
     obj = NestedNumpyResult()
     loaded = obj.create()
 
-    layers_dir = result_dir_in(obj._base_dir) / "artifacts" / "layers"
+    layers_dir = result_dir_in(obj._base_dir / "v-fixed") / "artifacts" / "layers"
     for i in range(10):
         weights_file = layers_dir / f"{i:02d}" / "weights" / "data.npy"
         assert weights_file.exists(), f"missing {weights_file}"
@@ -1904,7 +1925,9 @@ def test_mixed_eager_ref_and_inline_fields_round_trip() -> None:
     assert loaded.history.load().value == 3
 
     # The inline field is readable straight from the manifest.
-    manifest = json.loads(result_manifest_path_in(obj._base_dir).read_text())
+    manifest = json.loads(
+        result_manifest_path_in(obj._base_dir / "v-fixed").read_text()
+    )
     assert manifest["$furu"]["|fields"]["loss"] == 0.25
 
 
