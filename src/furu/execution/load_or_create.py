@@ -5,7 +5,6 @@ import shutil
 import time
 import traceback
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import nullcontext
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -19,9 +18,12 @@ from furu._tree import map_specs, specs_in
 from furu.config import get_config
 from furu.core import Missing, Spec
 from furu.dependencies import (
+    _DependencyNotReady,
     collect_declared_refs,
     dependency_recorder,
+    missing_dependencies,
     record_dependency_call,
+    specs_under_creation,
     under_creation,
 )
 from furu.locking import lock
@@ -59,10 +61,6 @@ from furu.utils import (
     error_summary,
     format_duration,
     nfs_safe_unique_name,
-)
-from furu.worker.context import (
-    _DependencyNotReady,
-    _in_worker_execution,
 )
 
 if TYPE_CHECKING:
@@ -165,8 +163,8 @@ def _load_or_create(
     objs = specs_in(tree)
     for obj in objs:
         record_dependency_call(obj)
-    if _in_worker_execution.get():
-        outputs = _load_or_create_worker(objs, load=load)
+    if creating := specs_under_creation():
+        outputs = _load_or_block(objs, load=load, dependents=creating)
     else:
         outputs = _load_or_create_local(objs, load=load)
     if not load:
@@ -304,7 +302,14 @@ def _cached_to_build_msg(cached: list[Spec], to_build: list[Spec]) -> str:
     return f"building {fmt(to_build)}, {msg}" if to_build else msg
 
 
-def _load_or_create_worker[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
+def _load_or_block[T](
+    objs: list[Spec[T]], *, load: bool, dependents: Sequence[Spec]
+) -> list[T]:
+    """Load ``objs`` inside ``dependents``' create hook, or block it if missing.
+
+    Blocking aborts the hook; the caller builds the missing specs and reruns it
+    from scratch, so specs never build inside another spec's create.
+    """
     loaded: list[T] = []
     cached: list[Spec[T]] = []
     missing: list[Spec[T]] = []
@@ -322,7 +327,7 @@ def _load_or_create_worker[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
         objs[0].logger.info("%s", _cached_to_build_msg(cached, missing))
 
     if missing:
-        raise _DependencyNotReady(dependencies=missing)
+        raise _DependencyNotReady(dependencies=missing, dependents=dependents)
 
     return loaded
 
@@ -330,9 +335,17 @@ def _load_or_create_worker[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
 def _load_or_create_local[T](
     objs: list[Spec[T]],
     *,
-    dependents: Sequence[Spec] = (),
     load: bool = True,
+    dependents: Sequence[Spec] = (),
+    waiting: tuple[Spec, ...] = (),
 ) -> list[T]:
+    """Load or build ``objs`` in this process.
+
+    ``dependents`` are the specs this call builds for and ``waiting`` the ones
+    further up the stack; meeting one of them again is a dependency cycle. A
+    create that blocks on missing specs is aborted with its locks released,
+    they are built, and it reruns from scratch, like on a worker.
+    """
     if not objs:
         return []
 
@@ -369,22 +382,60 @@ def _load_or_create_local[T](
             others,
         )
 
+    waiting = (*waiting, *dependents)
+    waiting_ids = [spec.object_id for spec in waiting]
+    for obj in missing:
+        if obj.object_id in waiting_ids:
+            cycle = (*waiting[waiting_ids.index(obj.object_id) :], obj)
+            raise RuntimeError(
+                "dependency cycle: " + " → ".join(spec._log_label for spec in cycle)
+            )
+
     # Declared dependencies are built first, matching the coordinator's DAG.
     _load_or_create_local(
         [ref for obj in missing for ref in collect_declared_refs(obj)],
-        dependents=missing,
         load=False,
+        dependents=missing,
+        waiting=waiting,
     )
     for obj in missing:
         obj._base_dir.mkdir(parents=True, exist_ok=True)
 
-    lock_ctx = (
-        lock([compute_lock_path_in(obj._base_dir) for obj in missing])
-        if missing
-        else nullcontext(lambda: True)
-    )
+    built: set[str] = set()
+    while missing:
+        try:
+            _create_missing(missing, results_by_object_id, load=load)
+            break
+        except _DependencyNotReady as exc:
+            blocked = exc
+        # The locks are released: build what the create asked for, then rerun.
+        parent = blocked.dependents[0]._log_label
+        for dep in blocked.dependencies:
+            if dep.object_id in built:
+                raise RuntimeError(
+                    f"{parent} still finds {dep._log_label} missing after building it"
+                )
+        try:
+            _load_or_create_local(
+                list(blocked.dependencies),
+                load=False,
+                dependents=blocked.dependents,
+                waiting=waiting,
+            )
+        except Exception as exc:
+            exc.add_note(f"while building dependencies of {parent}")
+            raise
+        built.update(dep.object_id for dep in blocked.dependencies)
 
-    with lock_ctx as has_lock:
+    if not load:
+        return []
+    return [results_by_object_id[obj.object_id] for obj in objs]
+
+
+def _create_missing[T](
+    missing: list[Spec[T]], results_by_object_id: dict[str, T], *, load: bool
+) -> None:
+    with lock([compute_lock_path_in(obj._base_dir) for obj in missing]) as has_lock:
         pending: list[Spec[T]] = []
         late_hits = 0
         for obj in missing:
@@ -400,7 +451,7 @@ def _load_or_create_local[T](
                 pending.append(obj)
 
         if late_hits:
-            objs[0].logger.info(
+            missing[0].logger.info(
                 "%d became ready while waiting, %d to build", late_hits, len(pending)
             )
 
@@ -416,10 +467,6 @@ def _load_or_create_local[T](
                     results_by_object_id=results_by_object_id if load else {},
                     submit_provenance=submit_provenance,
                 )
-
-    if not load:
-        return []
-    return [results_by_object_id[obj.object_id] for obj in objs]
 
 
 def _create_in_process[T](
@@ -437,7 +484,6 @@ def _create_in_process[T](
     lead = group[0]
     label = lead._log_label + (f" ×{len(group)}" if len(group) > 1 else "")
     run_logs = [(obj._log_label, run_log_path_in(obj._base_dir)) for obj in group]
-    # Inside another create(), this line lands in that one's run.log.
     lead.logger.info("creating %s", label, extra={"path": run_logs[0][1]})
     started_at = time.monotonic()
     with _run_log_scope(run_logs[0][1]) as run_log:
@@ -449,6 +495,12 @@ def _create_in_process[T](
                 results_by_object_id=results_by_object_id,
                 submit_provenance=submit_provenance,
             )
+        except _DependencyNotReady as exc:
+            duration = format_duration(time.monotonic() - started_at)
+            missing = missing_dependencies(len(exc.dependencies))
+            lead.logger.info("blocked %s · %s", label, missing)
+            _close_sections(run_logs, run_log, f"blocked · {duration} · {missing}")
+            raise
         except BaseException as exc:
             duration = format_duration(time.monotonic() - started_at)
             summary = error_summary("".join(traceback.format_exception_only(exc)))
@@ -474,11 +526,14 @@ def _batch_group(obj: Spec, worker: Worker) -> tuple[object, int] | None:
 
 
 def _grouped_pending[T](pending: list[Spec[T]]) -> list[list[Spec[T]]]:
-    """Partition by (type, batch_key, metadata), chunked to the cap."""
+    """Partition by (type, batch_key, metadata), chunked to the cap.
+
+    Unbatched specs run alone, so each is stored as soon as it finishes.
+    """
     here = Worker.here()
-    groups: list[tuple[object, int | None, list[Spec[T]]]] = []
+    groups: list[tuple[object, int, list[Spec[T]]]] = []
     for obj in pending:
-        key, cap = _batch_group(obj, here) or (type(obj), None)
+        key, cap = _batch_group(obj, here) or (type(obj), 1)
         for existing_key, _, group in groups:
             if existing_key == key:
                 group.append(obj)
@@ -486,9 +541,9 @@ def _grouped_pending[T](pending: list[Spec[T]]) -> list[list[Spec[T]]]:
         else:
             groups.append((key, cap, [obj]))
     return [
-        group[i : i + (cap or len(group))]
+        group[i : i + cap]
         for _, cap, group in groups
-        for i in range(0, len(group), cap or len(group))
+        for i in range(0, len(group), cap)
     ]
 
 

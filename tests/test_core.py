@@ -26,10 +26,14 @@ import furu
 import furu.execution.load_or_create as execution_module
 from furu import Metadata, Spec, Throttle, Worker
 from furu.config import _Config, _FuruDirectories, get_config
-from furu.dependencies import collect_declared_refs
+from furu.dependencies import (
+    _DependencyNotReady,
+    collect_declared_refs,
+    under_creation,
+)
 from furu.execution.load_or_create import _load_or_create
 from furu.locking import LockManifest, lock
-from furu.logging import _display_path, _run_log_scope
+from furu.logging import _run_log_scope
 from furu.metadata import ArtifactSpec
 from furu.result.bundle import _save_result_bundle, load_result_bundle
 from furu.serializer.artifact import _from_json, to_json
@@ -43,11 +47,6 @@ from furu.storage._layout import (
 )
 from furu.testing import override_config
 from furu.utils import fully_qualified_name
-from furu.worker.context import (
-    _DependencyNotReady,
-    _in_worker_execution,
-    worker_execution_context,
-)
 
 type SOME_TYPE = Literal["a", "b"] | int
 
@@ -1762,24 +1761,31 @@ def test_in_process_run_log_captures_stdlib_logging_without_touching_root() -> N
     assert logging.getLogger().level == root_level
 
 
-def test_nested_create_scopes_logs_to_child_file() -> None:
+def test_nested_create_blocks_the_parent_and_logs_the_child_on_its_own(
+    tmp_path: Path,
+) -> None:
     child = LoggedLeaf(name="child")
     parent = LoggedParent(child_name="child")
 
-    assert parent.create() == {"child": "leaf:child"}
+    log_path = tmp_path / "create.log"
+    with _run_log_scope(log_path):
+        assert parent.create() == {"child": "leaf:child"}
 
     parent_log = run_log_path_in(parent._base_dir).read_text(encoding="utf-8")
     child_log = run_log_path_in(child._base_dir).read_text(encoding="utf-8")
+    top_log = log_path.read_text(encoding="utf-8")
 
-    assert "parent before child" in parent_log
-    child_pointer = _display_path(run_log_path_in(child._base_dir))
-    assert f"creating {child._log_label} → {child_pointer}" in parent_log
-    assert f"(object_id={child.object_id})" not in parent_log
-    assert f"finished {child._log_label} ok" in parent_log
-    assert "parent after child" in parent_log
+    # The first attempt blocks, the second reruns from scratch and finishes.
+    assert parent_log.count("parent before child") == 2
+    assert parent_log.count("parent after child") == 1
+    assert " · 1 missing dependency\n" in parent_log
+    assert "failed" not in parent_log
+    assert f"creating {child._log_label}" not in parent_log
     assert "leaf detail for child" not in parent_log
-
     assert "leaf detail for child" in child_log
+    assert f"blocked {parent._log_label} · 1 missing dependency" in parent_log
+    assert f"building 1 dependency of {parent._log_label}" in top_log
+    assert f"finished {child._log_label} ok" in top_log
 
 
 def test_cached_create_logs_only_cache_hit_info(
@@ -1919,14 +1925,14 @@ def test_list_input_on_single_only_class_uses_sequential_create() -> None:
     assert CountedSingleValue.create_calls == [1, 2, 3]
 
 
-def test_sequential_fallback_writes_running_metadata_per_object() -> None:
+def test_unbatched_specs_run_alone_with_their_own_running_metadata() -> None:
     first = MetadataTimingValue(key=1)
     second = MetadataTimingValue(key=2)
     MetadataTimingValue.siblings_by_key.update({1: first, 2: second})
 
     assert _load_or_create([first, second]) == ["timed:1", "timed:2"]
     assert MetadataTimingValue.create_events == [
-        (1, True, True),
+        (1, True, False),
         (2, True, True),
     ]
 
@@ -2067,14 +2073,7 @@ def test_empty_list_returns_empty_list() -> None:
     assert _load_or_create([]) == []
 
 
-def test_worker_execution_context_is_scoped() -> None:
-    assert not _in_worker_execution.get()
-    with worker_execution_context():
-        assert _in_worker_execution.get()
-    assert not _in_worker_execution.get()
-
-
-def test_worker_create_loads_cached_result_without_recomputing(
+def test_nested_create_loads_cached_result_without_recomputing(
     tmp_path: Path,
 ) -> None:
     ObjectIdStorageValue.storage_override = tmp_path / "data"
@@ -2083,36 +2082,36 @@ def test_worker_create_loads_cached_result_without_recomputing(
     assert cached.create() == "object-id:10"
     ObjectIdStorageValue.create_calls.clear()
 
-    with worker_execution_context():
+    with under_creation([ObjectIdStorageValue(key=0)]):
         assert cached.create() == "object-id:10"
 
     assert ObjectIdStorageValue.create_calls == []
 
 
-def test_worker_create_reports_all_missing_dependencies(
+def test_nested_create_reports_all_missing_dependencies(
     tmp_path: Path,
 ) -> None:
     ObjectIdStorageValue.storage_override = tmp_path / "data"
     first = ObjectIdStorageValue(key=11)
     second = ObjectIdStorageValue(key=12)
 
-    with (
-        worker_execution_context(),
-        pytest.raises(_DependencyNotReady) as exc_info,
-    ):
+    parent = ObjectIdStorageValue(key=0)
+
+    with under_creation([parent]), pytest.raises(_DependencyNotReady) as exc_info:
         _load_or_create([first, second])
 
     assert exc_info.value.dependencies == (first, second)
+    assert exc_info.value.dependents == (parent,)
     assert ObjectIdStorageValue.create_calls == []
     assert not result_manifest_path_in(first._base_dir).exists()
     assert not result_manifest_path_in(second._base_dir).exists()
 
 
-def test_worker_load_existing_and_provenance_raise_missing(tmp_path: Path) -> None:
+def test_nested_load_existing_and_provenance_raise_missing(tmp_path: Path) -> None:
     ObjectIdStorageValue.storage_override = tmp_path / "data"
     missing = ObjectIdStorageValue(key=13)
 
-    with worker_execution_context():
+    with under_creation([ObjectIdStorageValue(key=0)]):
         with pytest.raises(furu.Missing):
             missing.load_existing()
         with pytest.raises(furu.Missing):
@@ -2121,13 +2120,16 @@ def test_worker_load_existing_and_provenance_raise_missing(tmp_path: Path) -> No
             furu.load_existing([missing])
 
 
-def test_worker_dependency_not_ready_is_not_caught_as_exception(
+def test_dependency_not_ready_is_not_caught_as_exception(
     tmp_path: Path,
 ) -> None:
     ObjectIdStorageValue.storage_override = tmp_path / "data"
     missing = ObjectIdStorageValue(key=14)
 
-    with pytest.raises(_DependencyNotReady), worker_execution_context():
+    with (
+        pytest.raises(_DependencyNotReady),
+        under_creation([ObjectIdStorageValue(key=0)]),
+    ):
         try:
             missing.create()
         except Exception as exc:  # pragma: no cover
@@ -2195,17 +2197,18 @@ def test_batched_compute_logs_to_the_lead_and_points_the_others_at_it() -> None:
     assert "batched detail" not in other_log
 
 
-def test_sequential_group_compute_logs_every_member_to_the_lead() -> None:
+def test_unbatched_specs_log_to_their_own_run_log() -> None:
     objs = [LoggedSingleValue(key=1), LoggedSingleValue(key=2)]
 
     assert _load_or_create(objs) == ["logged-single:1", "logged-single:2"]
 
-    lead_log, other_log = (
+    first_log, second_log = (
         run_log_path_in(obj._base_dir).read_text(encoding="utf-8") for obj in objs
     )
-    assert "single detail for 1" in lead_log
-    assert "single detail for 2" in lead_log
-    assert f"batched with {objs[0]._log_label}" in other_log
+    assert "single detail for 1" in first_log
+    assert "single detail for 2" not in first_log
+    assert "single detail for 2" in second_log
+    assert "batched with" not in second_log
 
 
 def test_batched_failure_writes_error_details_to_run_log_for_every_participant() -> (
