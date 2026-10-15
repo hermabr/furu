@@ -15,7 +15,8 @@ from typing import TYPE_CHECKING, assert_never
 
 from furu.config import get_config
 from furu.core import Spec
-from furu.dag import DagNode, _add_to_dag, _update_dag_blocking_dependencies
+from furu.dag import Dag, DagNode
+from furu.dependencies import missing_dependencies
 from furu.logging import _display_path, _execution_log, get_logger
 from furu.metadata import ArtifactSpec
 from furu.provenance import SubmitProvenance, capture_submit_provenance
@@ -56,19 +57,15 @@ class FailedJob:
 
 
 @dataclass(slots=True, kw_only=True)
-class ExecutionCoordinator:
+class ExecutionCoordinator(Dag):
     max_retries_per_object: int = field(
         default_factory=lambda: get_config().worker.max_retries_per_object
     )
     backends: dict[str, WorkerBackend]
     submit_provenance: SubmitProvenance
     executor_id: str = field(default_factory=lambda: secrets.token_hex(16))
-    nodes_by_id: dict[str, DagNode] = field(default_factory=dict)
-    ready: dict[str, DagNode] = field(default_factory=dict)
     running_elsewhere: set[str] = field(default_factory=set)
-    blocked: dict[str, DagNode] = field(default_factory=dict)
     running: dict[str, RunningJob] = field(default_factory=dict)
-    completed: dict[str, DagNode] = field(default_factory=dict)
     failed: dict[str, FailedJob] = field(default_factory=dict)
     pools: dict[str, WorkerPool] = field(default_factory=dict)
     lock: threading.Condition = field(default_factory=threading.Condition)
@@ -114,7 +111,7 @@ class ExecutionCoordinator:
                 snapshot=get_config().provenance.snapshot
             ),
         )
-        _add_to_dag(coordinator, objs)
+        coordinator.add(objs)
 
         if not coordinator.nodes_by_id:
             logger.info(
@@ -195,6 +192,34 @@ class ExecutionCoordinator:
                             )
         coordinator.raise_for_failure()
         return objs
+
+    def _check_new(self, nodes: Sequence[DagNode]) -> None:
+        runnable_on = {
+            node: [
+                backend
+                for backend in self.backends.values()
+                if can_run(backend, node.obj)
+            ]
+            for node in nodes
+        }
+        unsatisfiable = [
+            node.obj._log_label
+            for node, backends in runnable_on.items()
+            if not backends
+        ]
+        if unsatisfiable:
+            workers = ", ".join(
+                str(backend.worker) for backend in self.backends.values()
+            )
+            raise RuntimeError(
+                "no worker pool can run: "
+                + ", ".join(sorted(unsatisfiable))
+                + f"; workers: {workers or 'none'}"
+            )
+        # Batch caps depend on the worker; surface bad ones before any pool starts.
+        for node, backends in runnable_on.items():
+            for backend in backends:
+                node.batch_group(backend.worker)
 
     @property
     def executor_dir(self) -> Path:
@@ -372,14 +397,7 @@ class ExecutionCoordinator:
             match request:
                 case JobCompletedResult():
                     self.failed.pop(object_id, None)
-                    self.completed[object_id] = running_job.node
-                    for dependent in tuple(running_job.node.dependents):
-                        if running_job.node in dependent.dependencies:
-                            dependent.dependencies.remove(running_job.node)
-
-                        dependent_id = dependent.obj.object_id
-                        if not dependent.dependencies and dependent_id in self.blocked:
-                            self.ready[dependent_id] = self.blocked.pop(dependent_id)
+                    self.complete(running_job.node)
                     logger.info(
                         "completed %s ok · %s",
                         running_job.node.obj._log_label,
@@ -416,16 +434,17 @@ class ExecutionCoordinator:
                     )
                 case JobBlockedResult(dependencies=dependencies):
                     try:
-                        _update_dag_blocking_dependencies(
-                            self, running_job.node, dependencies
+                        self.block(
+                            running_job.node,
+                            [Spec.from_artifact(dep) for dep in dependencies],
                         )
                     except Exception as exc:  # noqa: BLE001 -- runs user runs_on, accepts and batch fns
                         self.fail(f"{type(exc).__name__}: {exc}")
                         return
                     logger.info(
-                        "blocked %s · %d deps",
+                        "blocked %s · %s",
                         running_job.node.obj._log_label,
-                        len(dependencies),
+                        missing_dependencies(len(dependencies)),
                     )
                 case _:
                     assert_never(request)
