@@ -2,17 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, assert_never
+from typing import assert_never
 
 from furu.core import Spec
 from furu.dependencies import collect_declared_refs
-from furu.metadata import ArtifactSpec
 from furu.migration.stale import raise_if_stale
 from furu.resources import Worker
-from furu.worker.backends.protocol import can_run
-
-if TYPE_CHECKING:
-    from furu.execution.execution_coordinator import ExecutionCoordinator
 
 
 @dataclass(eq=False)
@@ -31,110 +26,106 @@ class DagNode:
         return self._batch_groups[worker]
 
 
-def _add_to_dag(coordinator: ExecutionCoordinator, objs: Sequence[Spec]) -> None:
-    refs_by_id: dict[str, tuple[Spec, ...]] = {}
-    newly_added: list[DagNode] = []
-    # TODO: detect cycles and raise a clear error
-    pending = list(reversed(objs))
-    seen_object_ids = set(coordinator.nodes_by_id)
+@dataclass(slots=True, kw_only=True)
+class Dag:
+    """Specs still to build and what each waits on, shared by local and worker runs.
 
-    while pending:
-        obj = pending.pop()
-        if obj.object_id in seen_object_ids:
-            continue
-        seen_object_ids.add(obj.object_id)
-        match obj.status:
-            case "done":
+    The runner takes nodes out of ``ready``, then hands each back through
+    ``complete`` or ``block``.
+    """
+
+    nodes_by_id: dict[str, DagNode] = field(default_factory=dict)
+    ready: dict[str, DagNode] = field(default_factory=dict)
+    blocked: dict[str, DagNode] = field(default_factory=dict)
+    completed: dict[str, DagNode] = field(default_factory=dict)
+
+    def _check_new(self, nodes: Sequence[DagNode]) -> None:
+        """Reject new nodes before they join the graph; runners override this."""
+
+    def add(self, objs: Sequence[Spec]) -> None:
+        """Add the missing ``objs`` and, recursively, their declared dependencies."""
+        refs_by_id: dict[str, tuple[Spec, ...]] = {}
+        new: list[DagNode] = []
+        pending = list(reversed(objs))
+        seen_object_ids = set(self.nodes_by_id)
+
+        while pending:
+            obj = pending.pop()
+            if obj.object_id in seen_object_ids:
                 continue
-            case "running" | "missing" | "failed":
-                pass
-            case "stale":
-                raise_if_stale(obj)
-            case x:
-                assert_never(x)
-        node = DagNode(obj=obj)
-        newly_added.append(node)
-        refs = collect_declared_refs(obj)
-        refs_by_id[obj.object_id] = refs
-        pending.extend(refs)
+            seen_object_ids.add(obj.object_id)
+            match obj.status:
+                case "done":
+                    continue
+                case "running" | "missing" | "failed":
+                    pass
+                case "stale":
+                    raise_if_stale(obj)
+                case x:
+                    assert_never(x)
+            new.append(DagNode(obj=obj))
+            refs = collect_declared_refs(obj)
+            refs_by_id[obj.object_id] = refs
+            pending.extend(refs)
 
-    runnable_on = {
-        node: [
-            backend
-            for backend in coordinator.backends.values()
-            if can_run(backend, node.obj)
+        self._check_new(new)
+        for node in new:
+            self.nodes_by_id[node.obj.object_id] = node
+        for node in new:
+            for ref in refs_by_id[node.obj.object_id]:
+                if dep := self.nodes_by_id.get(ref.object_id):
+                    self._link(node, dep)
+        for node in new:
+            (self.blocked if node.dependencies else self.ready)[node.obj.object_id] = (
+                node
+            )
+
+    def block(self, node: DagNode, dependencies: Sequence[Spec]) -> None:
+        """``node`` found ``dependencies`` missing; rerun it once they're built."""
+        dependencies = [
+            dep for dep in dependencies if dep.object_id not in self.completed
         ]
-        for node in newly_added
-    }
-    unsatisfiable = [
-        node.obj._log_label for node, backends in runnable_on.items() if not backends
-    ]
-    if unsatisfiable:
-        workers = ", ".join(
-            str(backend.worker) for backend in coordinator.backends.values()
-        )
-        raise RuntimeError(
-            "no worker pool can run: "
-            + ", ".join(sorted(unsatisfiable))
-            + f"; workers: {workers or 'none'}"
-        )
-    # Batch caps depend on the worker; surface bad ones before any pool starts.
-    for node, backends in runnable_on.items():
-        for backend in backends:
-            node.batch_group(backend.worker)
+        self.add(dependencies)
+        for dep in dependencies:
+            dep_node = self.nodes_by_id.get(dep.object_id)
+            if dep_node is not None and dep_node.obj.status != "done":
+                self._link(node, dep_node)
+        (self.blocked if node.dependencies else self.ready)[node.obj.object_id] = node
 
-    for node in newly_added:
-        coordinator.nodes_by_id[node.obj.object_id] = node
+    def complete(self, node: DagNode) -> None:
+        self.completed[node.obj.object_id] = node
+        for dependent in node.dependents:
+            if node in dependent.dependencies:
+                dependent.dependencies.remove(node)
+            dependent_id = dependent.obj.object_id
+            if not dependent.dependencies and dependent_id in self.blocked:
+                self.ready[dependent_id] = self.blocked.pop(dependent_id)
 
-    for obj_id, refs in refs_by_id.items():
-        node = coordinator.nodes_by_id[obj_id]
-        for ref in refs:
-            if dep_node := coordinator.nodes_by_id.get(ref.object_id):
-                node.dependencies.append(dep_node)
-                dep_node.dependents.append(node)
-
-    for node in newly_added:
-        if node.dependencies:
-            coordinator.blocked[node.obj.object_id] = node
-        else:
-            coordinator.ready[node.obj.object_id] = node
+    def _link(self, node: DagNode, dep: DagNode) -> None:
+        if dep in node.dependencies:
+            return
+        if (path := _path(dep, node)) is not None:
+            raise RuntimeError(
+                "dependency cycle: "
+                + " → ".join(step.obj._log_label for step in (*path, dep))
+            )
+        node.dependencies.append(dep)
+        dep.dependents.append(node)
 
 
-def _update_dag_blocking_dependencies(
-    coordinator: ExecutionCoordinator,
-    node: DagNode,
-    dependencies: Sequence[ArtifactSpec],
-) -> None:
-    dependency_ids: dict[str, None] = {}
-    missing_dependencies: list[Spec] = []
-    for artifact in dependencies:
-        object_id = artifact.object_id
-        if object_id in coordinator.completed or object_id in dependency_ids:
-            continue
-
-        dep_node = coordinator.nodes_by_id.get(object_id)
-        if dep_node is not None:
-            if dep_node.obj.status != "done":
-                dependency_ids[object_id] = None
-            continue
-
-        dependency = Spec.from_artifact(artifact)
-        if dependency.status == "done":
-            continue
-
-        dependency_ids[object_id] = None
-        missing_dependencies.append(dependency)
-
-    _add_to_dag(coordinator, missing_dependencies)
-
-    for dependency_id in dependency_ids:
-        dep_node = coordinator.nodes_by_id[dependency_id]
-        if dep_node not in node.dependencies:
-            node.dependencies.append(dep_node)
-        if node not in dep_node.dependents:
-            dep_node.dependents.append(node)
-
-    if node.dependencies:
-        coordinator.blocked[node.obj.object_id] = node
-    else:
-        coordinator.ready[node.obj.object_id] = node
+def _path(start: DagNode, goal: DagNode) -> list[DagNode] | None:
+    """The nodes from ``start`` to ``goal`` along dependency edges, if any."""
+    parents: dict[int, DagNode | None] = {id(start): None}
+    stack = [start]
+    while stack:
+        node = stack.pop()
+        if node is goal:
+            path = [node]
+            while (parent := parents[id(path[-1])]) is not None:
+                path.append(parent)
+            return path[::-1]
+        for dep in node.dependencies:
+            if id(dep) not in parents:
+                parents[id(dep)] = node
+                stack.append(dep)
+    return None

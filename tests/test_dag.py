@@ -8,16 +8,9 @@ import pytest
 import furu
 from furu import Spec
 from furu.config import get_config
-from furu.dag import DagNode, _add_to_dag
+from furu.dag import Dag, DagNode
 from furu.execution.execution_coordinator import ExecutionCoordinator
 from furu.locking import lock
-from furu.provenance import (
-    EnvironmentIdentity,
-    GitIdentity,
-    SubmitContext,
-    SubmitProvenance,
-)
-from furu.resources import Worker
 from furu.storage._layout import (
     compute_lock_path_in,
     run_log_path_in,
@@ -81,64 +74,44 @@ def mark_running(obj: Spec) -> Generator[None]:
         yield
 
 
-def _submit_provenance() -> SubmitProvenance:
-    # Stub halves throughout; these tests only exercise DAG structure.
-    return SubmitProvenance(
-        git=GitIdentity(
-            commit="0" * 40,
-            branch=None,
-            remote=None,
-            repo_root=".",
-            dirty=False,
-            diff_stats=None,
-        ),
-        environment=EnvironmentIdentity.capture(),
-        snapshot_id=None,
-        submitted=SubmitContext.capture(),
-    )
+def _new_dag(objs: Sequence[Spec]) -> Dag:
+    dag = Dag()
+    dag.add(objs)
+    return dag
 
 
-def _new_execution_coordinator(objs: Sequence[Spec]) -> ExecutionCoordinator:
-    coordinator = ExecutionCoordinator(
-        backends={"local": LocalThreadWorkerBackend(worker=Worker())},
-        submit_provenance=_submit_provenance(),
-    )
-    _add_to_dag(coordinator, objs)
-    return coordinator
-
-
-def test_add_to_dag_single_object_no_dependencies():
+def test_dag_add_single_object_no_dependencies():
     leaf = Leaf(name="x")
-    coordinator = _new_execution_coordinator([leaf])
+    dag = _new_dag([leaf])
 
-    assert len(coordinator.ready) == 1
-    (root,) = coordinator.ready.values()
+    assert len(dag.ready) == 1
+    (root,) = dag.ready.values()
     assert isinstance(root, DagNode)
     assert root.obj is leaf
     assert root.dependencies == []
     assert root.dependents == []
 
-    assert coordinator.nodes_by_id == {leaf.object_id: root}
-    assert coordinator.blocked == {}
+    assert dag.nodes_by_id == {leaf.object_id: root}
+    assert dag.blocked == {}
 
 
-def test_add_to_dag_traverses_declared_refs_recursively():
+def test_dag_add_traverses_declared_refs_recursively():
     leaf_a = Leaf(name="a")
     leaf_b = Leaf(name="b")
     mid_left = Mid(label="L", child=leaf_a)
     mid_right = Mid(label="R", child=leaf_b)
     top = Top(name="t", left=mid_left, right=mid_right)
 
-    coordinator = _new_execution_coordinator([top])
+    dag = _new_dag([top])
 
-    assert set(coordinator.ready) == {leaf_a.object_id, leaf_b.object_id}
-    assert set(coordinator.blocked) == {
+    assert set(dag.ready) == {leaf_a.object_id, leaf_b.object_id}
+    assert set(dag.blocked) == {
         mid_left.object_id,
         mid_right.object_id,
         top.object_id,
     }
 
-    assert set(coordinator.nodes_by_id) == {
+    assert set(dag.nodes_by_id) == {
         leaf_a.object_id,
         leaf_b.object_id,
         mid_left.object_id,
@@ -146,9 +119,9 @@ def test_add_to_dag_traverses_declared_refs_recursively():
         top.object_id,
     }
 
-    leaf_a_node = coordinator.nodes_by_id[leaf_a.object_id]
-    mid_left_node = coordinator.nodes_by_id[mid_left.object_id]
-    top_node = coordinator.nodes_by_id[top.object_id]
+    leaf_a_node = dag.nodes_by_id[leaf_a.object_id]
+    mid_left_node = dag.nodes_by_id[mid_left.object_id]
+    top_node = dag.nodes_by_id[top.object_id]
 
     assert leaf_a_node.dependencies == []
     assert leaf_a_node.dependents == [mid_left_node]
@@ -161,16 +134,16 @@ def test_add_to_dag_traverses_declared_refs_recursively():
     assert top_node.dependents == []
 
 
-def test_add_to_dag_shared_dependency_has_multiple_dependents():
+def test_dag_add_shared_dependency_has_multiple_dependents():
     shared = Leaf(name="shared")
     mid_left = Mid(label="L", child=shared)
     mid_right = Mid(label="R", child=shared)
     top = Top(name="t", left=mid_left, right=mid_right)
 
-    coordinator = _new_execution_coordinator([top])
+    dag = _new_dag([top])
 
-    assert len(coordinator.ready) == 1
-    (shared_root,) = coordinator.ready.values()
+    assert len(dag.ready) == 1
+    (shared_root,) = dag.ready.values()
     assert shared_root.obj is shared
     assert shared_root.dependencies == []
     assert {n.obj.object_id for n in shared_root.dependents} == {
@@ -178,124 +151,124 @@ def test_add_to_dag_shared_dependency_has_multiple_dependents():
         mid_right.object_id,
     }
 
-    assert set(coordinator.nodes_by_id) == {
+    assert set(dag.nodes_by_id) == {
         shared.object_id,
         mid_left.object_id,
         mid_right.object_id,
         top.object_id,
     }
-    assert coordinator.nodes_by_id[shared.object_id] is shared_root
+    assert dag.nodes_by_id[shared.object_id] is shared_root
 
 
-def test_add_to_dag_stops_recursion_at_completed_objects():
+def test_dag_add_stops_recursion_at_completed_objects():
     leaf = Leaf(name="cached")
     mid = Mid(label="m", child=leaf)
     leaf.create()
     assert leaf.status == "done"
 
-    coordinator = _new_execution_coordinator([mid])
+    dag = _new_dag([mid])
 
-    assert len(coordinator.ready) == 1
-    (mid_root,) = coordinator.ready.values()
+    assert len(dag.ready) == 1
+    (mid_root,) = dag.ready.values()
     assert mid_root.obj is mid
     assert mid_root.dependencies == []
 
-    assert set(coordinator.nodes_by_id) == {mid.object_id}
+    assert set(dag.nodes_by_id) == {mid.object_id}
     assert mid_root.dependents == []
 
 
-def test_add_to_dag_completed_root_has_no_dependencies():
+def test_dag_add_completed_root_has_no_dependencies():
     leaf = Leaf(name="root-cached")
     mid = Mid(label="m", child=leaf)
     mid.create()
     assert mid.status == "done"
 
-    coordinator = _new_execution_coordinator([mid])
+    dag = _new_dag([mid])
 
-    assert coordinator.ready == {}
-    assert coordinator.nodes_by_id == {}
-    assert coordinator.blocked == {}
+    assert dag.ready == {}
+    assert dag.nodes_by_id == {}
+    assert dag.blocked == {}
 
 
-def test_add_to_dag_does_not_snapshot_running_root():
+def test_dag_add_does_not_snapshot_running_root():
     leaf = Leaf(name="running-root")
 
     with mark_running(leaf):
         assert leaf.status == "running"
-        coordinator = _new_execution_coordinator([leaf])
+        dag = _new_dag([leaf])
 
-    assert set(coordinator.ready) == {leaf.object_id}
+    assert set(dag.ready) == {leaf.object_id}
 
 
-def test_add_to_dag_does_not_snapshot_running_dependency():
+def test_dag_add_does_not_snapshot_running_dependency():
     leaf = Leaf(name="running-dependency")
     mid = Mid(label="m", child=leaf)
 
     with mark_running(leaf):
         assert leaf.status == "running"
-        coordinator = _new_execution_coordinator([mid])
+        dag = _new_dag([mid])
 
-    assert set(coordinator.ready) == {leaf.object_id}
-    assert set(coordinator.blocked) == {mid.object_id}
+    assert set(dag.ready) == {leaf.object_id}
+    assert set(dag.blocked) == {mid.object_id}
 
 
-def test_add_to_dag_does_not_reject_inactive_compute_lock():
+def test_dag_add_does_not_reject_inactive_compute_lock():
     leaf = Leaf(name="inactive-lock")
     leaf._base_dir.mkdir(parents=True, exist_ok=True)
     lock_path = compute_lock_path_in(leaf._base_dir)
     lock_path.touch()
 
     assert leaf.status == "failed"
-    coordinator = _new_execution_coordinator([leaf])
+    dag = _new_dag([leaf])
 
-    assert set(coordinator.ready) == {leaf.object_id}
+    assert set(dag.ready) == {leaf.object_id}
 
 
-def test_add_to_dag_accepts_a_list_of_inputs():
+def test_dag_add_accepts_a_list_of_inputs():
     leaf_a = Leaf(name="a")
     leaf_b = Leaf(name="b")
     mid = Mid(label="m", child=leaf_a)
 
-    coordinator = _new_execution_coordinator([mid, leaf_b])
+    dag = _new_dag([mid, leaf_b])
 
-    assert set(coordinator.ready) == {leaf_a.object_id, leaf_b.object_id}
+    assert set(dag.ready) == {leaf_a.object_id, leaf_b.object_id}
 
-    assert set(coordinator.nodes_by_id) == {
+    assert set(dag.nodes_by_id) == {
         leaf_a.object_id,
         leaf_b.object_id,
         mid.object_id,
     }
 
-    leaf_b_node = coordinator.nodes_by_id[leaf_b.object_id]
+    leaf_b_node = dag.nodes_by_id[leaf_b.object_id]
     assert leaf_b_node.dependents == []
 
 
-def test_add_to_dag_handles_nested_dataclass_refs():
+def test_dag_add_handles_nested_dataclass_refs():
     leaf_a = Leaf(name="a")
     leaf_b = Leaf(name="b")
     parent = NestedParent(bundle=LeafBundle(a=leaf_a, b=leaf_b))
 
-    coordinator = _new_execution_coordinator([parent])
+    dag = _new_dag([parent])
 
-    assert set(coordinator.ready) == {leaf_a.object_id, leaf_b.object_id}
+    assert set(dag.ready) == {leaf_a.object_id, leaf_b.object_id}
 
-    assert set(coordinator.nodes_by_id) == {
+    assert set(dag.nodes_by_id) == {
         leaf_a.object_id,
         leaf_b.object_id,
         parent.object_id,
     }
 
 
-def test_add_to_dag_walks_computed_dependencies():
+def test_dag_add_walks_computed_dependencies():
     parent = ComputedParent(name="p")
 
-    coordinator = _new_execution_coordinator([parent])
+    dag = _new_dag([parent])
 
-    assert len(coordinator.ready) == 1
-    (child_root,) = coordinator.ready.values()
+    assert len(dag.ready) == 1
+    (child_root,) = dag.ready.values()
     assert child_root.obj.object_id == parent.computed_child.object_id
     assert {n.obj.object_id for n in child_root.dependents} == {parent.object_id}
-    assert set(coordinator.nodes_by_id) == {
+    assert set(dag.nodes_by_id) == {
         parent.object_id,
         parent.computed_child.object_id,
     }

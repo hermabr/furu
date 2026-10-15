@@ -21,7 +21,6 @@ import furu
 import furu.worker.loop as worker_loop_module
 from furu import Spec, Throttle, Worker
 from furu.config import _Config, _dump_worker_json_config, get_config
-from furu.dag import _add_to_dag
 from furu.execution.execution_coordinator import (
     ExecutionCoordinator,
     FailedJob,
@@ -128,7 +127,7 @@ def _new_execution_coordinator(
         backends={"cpu": CPU_POOL, "gpu": GPU_POOL},
         submit_provenance=_submit_provenance(),
     )
-    _add_to_dag(coordinator, objs)
+    coordinator.add(objs)
     return coordinator
 
 
@@ -594,6 +593,28 @@ def test_execution_coordinator_re_leases_blocked_job_after_dependency_completes(
 
     assert set(coordinator.running) == {parent.object_id}
     assert set(coordinator.completed) == {dependency.object_id}
+
+
+def test_execution_coordinator_fails_the_run_on_a_dependency_cycle() -> None:
+    parent = ExecutionCoordinatorLazyParent(value=2)
+    dependency = ExecutionCoordinatorLeaf(value=2)
+    coordinator = _new_execution_coordinator([parent])
+
+    coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
+    coordinator.job_result(
+        parent.object_id,
+        JobBlockedResult(dependencies=[ArtifactSpec.from_furu(dependency)]),
+    )
+    coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
+    coordinator.job_result(
+        dependency.object_id,
+        JobBlockedResult(dependencies=[ArtifactSpec.from_furu(parent)]),
+    )
+
+    assert coordinator.finish_error == (
+        f"RuntimeError: dependency cycle: {parent._log_label} → "
+        f"{dependency._log_label} → {parent._log_label}"
+    )
 
 
 def test_execution_coordinator_job_result_failed_finishes_with_error(
