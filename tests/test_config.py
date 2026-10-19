@@ -90,10 +90,13 @@ def test_relative_directories_anchor_to_main_worktree(tmp_path, monkeypatch) -> 
         _project_anchor.cache_clear()
 
 
-def test_relative_directories_anchor_to_pyproject_root(tmp_path, monkeypatch) -> None:
-    (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
-    nested = tmp_path / "src" / "deep"
+def test_relative_directories_anchor_to_git_root_from_project_subdirectory(
+    tmp_path, monkeypatch
+) -> None:
+    nested = tmp_path / "ml" / "src"
     nested.mkdir(parents=True)
+    (tmp_path / "ml" / "pyproject.toml").write_text("", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
 
     monkeypatch.chdir(nested)
     _project_anchor.cache_clear()
@@ -124,13 +127,31 @@ def test_import_outside_project_defers_anchor_crash(tmp_path) -> None:
     assert result.stdout.strip() == "deferred"
 
 
-def test_relative_directories_require_a_project(tmp_path, monkeypatch) -> None:
+def test_relative_directories_require_a_git_repository(tmp_path, monkeypatch) -> None:
+    (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     _project_anchor.cache_clear()
     try:
         config = _Config()  # config loads fine; only directory access crashes
-        with pytest.raises(RuntimeError, match="no git repository or pyproject.toml"):
+        with pytest.raises(RuntimeError, match="no git repository"):
             _ = config.run_directories
+    finally:
+        _project_anchor.cache_clear()
+
+
+def test_relative_directories_require_a_pyproject_in_the_repository(
+    tmp_path, monkeypatch
+) -> None:
+    # A pyproject.toml above the git root does not count.
+    (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    monkeypatch.chdir(repo)
+    _project_anchor.cache_clear()
+    try:
+        with pytest.raises(RuntimeError, match="no pyproject.toml"):
+            _ = _Config().run_directories
     finally:
         _project_anchor.cache_clear()
 
