@@ -114,11 +114,9 @@ class SlurmWorkerBackend:
         worker_dir = executor_dir.resolve() / "workers" / secrets.token_hex(8)
         worker_dir.mkdir(parents=True)
 
-        config = get_config()
-        config = config.model_copy(
-            update={"directories": config.directories.anchored()}
+        config_contents = _dump_worker_json_config(
+            get_config().anchored(), coordinator_url=url
         )
-        config_contents = _dump_worker_json_config(config, coordinator_url=url)
         config_file = worker_dir / "worker.config.json"
         write_private_file(
             config_file,

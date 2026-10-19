@@ -16,13 +16,14 @@ from subprocess_objects import (
     SubprocessChattyLeaf,
     SubprocessCrashLeaf,
     SubprocessCwdLeaf,
+    SubprocessDebugDirectoryLeaf,
     SubprocessDependencyLeaf,
     SubprocessEnvLeaf,
 )
 
 import furu
 from furu import Metadata, Spec
-from furu.config import get_config
+from furu.config import _project_anchor, get_config
 from furu.metadata import ArtifactSpec
 from furu.provenance import (
     EnvironmentIdentity,
@@ -32,6 +33,7 @@ from furu.provenance import (
 )
 from furu.snapshot import create_snapshot
 from furu.storage._layout import run_log_path_in
+from furu.testing import override_config
 from furu.worker.backends.local import LocalThreadWorkerBackend
 from furu.worker.execute import ChildSlot
 from furu.worker.protocol import (
@@ -340,6 +342,16 @@ def _snapshot_repo(repo: Path, marker: str) -> str:
             capture_output=True,
         )
     return create_snapshot(repo)
+
+
+def test_child_receives_anchored_directories(child_slot: ChildSlot) -> None:
+    # A child's cwd may be a snapshot, so it must not anchor relative paths itself.
+    config = get_config()
+    relative = config.directories.model_copy(update={"debug": Path("furu-data/debug")})
+    leaf = SubprocessDebugDirectoryLeaf()
+    with override_config(config.model_copy(update={"directories": relative})):
+        assert isinstance(_run(child_slot, leaf), JobCompletedResult)
+    assert _pid_and_value(leaf)[1] == str(_project_anchor() / "furu-data" / "debug")
 
 
 def test_materializing_slot_runs_each_job_from_its_snapshot(tmp_path: Path) -> None:
