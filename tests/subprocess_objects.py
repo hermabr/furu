@@ -16,6 +16,7 @@ from typing import Literal
 
 import furu
 from furu import Metadata, Spec, batched
+from furu.config import get_config
 
 type Reuse = Literal["never", "same_environment", "same_environment_same_spec"]
 
@@ -71,6 +72,11 @@ class SubprocessCwdLeaf(Spec[str]):
 
     def create(self) -> str:
         return f"{os.getpid()}:{Path.cwd()}\n{furu.submitting_repo_root()}"
+
+
+class SubprocessDebugDirectoryLeaf(Spec[str]):
+    def create(self) -> str:
+        return f"{os.getpid()}:{get_config().directories.debug}"
 
 
 class SubprocessCrashLeaf(Spec[str]):
