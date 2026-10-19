@@ -151,7 +151,7 @@ class ChildSlot:
             text=True,
         )
         assert process.stdin is not None
-        process.stdin.write(get_config().model_dump_json() + "\n")
+        process.stdin.write(get_config().anchored().model_dump_json() + "\n")
         process.stdin.write(self._backend + "\n")
         process.stdin.write(self._worker + "\n")
         process.stdin.write(f"{self._worker_log or ''}\n")
