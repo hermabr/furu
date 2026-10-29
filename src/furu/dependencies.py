@@ -93,9 +93,9 @@ class DependencyRecorder:
                 self._log(["dependency", obj.object_id, relative])
 
 
-# TODO: ContextVar state does not propagate to new threads. If a create()
-# hook runs child loads in worker threads, those loads will not be
-# recorded unless recorder context is propagated explicitly.
+# TODO: dependencies loaded in threads a create() starts aren't recorded
+# (ContextVar state doesn't reach them). Workaround: submit the work with
+# contextvars.copy_context().run. Check with a human before adding such threads.
 _active_dependency_recorder: ContextVar[DependencyRecorder | None] = ContextVar(
     "_active_dependency_recorder",
     default=None,
