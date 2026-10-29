@@ -100,6 +100,11 @@ class _Config(BaseSettings):
             )
         return directories.anchored()
 
+    def anchored(self) -> "_Config":
+        """This config with absolute directories, for processes whose working
+        directory (e.g. a snapshot) must not decide where data lives."""
+        return self.model_copy(update={"directories": self.directories.anchored()})
+
     @classmethod
     def settings_customise_sources(
         cls,
