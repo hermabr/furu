@@ -13,7 +13,6 @@ from furu.constants import (
     VALUEMARKER,
 )
 from furu.metadata import ArtifactSpec
-from furu.serializer.artifact import _from_json
 from furu.serializer.registry import SerializerMeta
 from furu.utils import JsonValue
 
@@ -363,48 +362,71 @@ def _field(node: JsonValue, name: str) -> Any:
     return fields[name]
 
 
-def test_annotated_serializer_defines_schema_and_artifact() -> None:
-    obj = _AnnotatedSecretRun(secret=_Secret(42))
-
-    assert _field(obj._schema_data, "secret") == _custom_schema(
-        _HexSecretSerializer,
-        {"type": "secret", "format": "hex"},
-    )
-    assert _field(obj._artifact_data, "secret") == _custom_artifact(
-        _HexSecretSerializer,
-        {"hex": "0x2a"},
-    )
-    assert _from_json(obj._artifact_data) == obj
-
-
-def test_furu_artifact_serializers_define_schema_and_artifact() -> None:
-    obj = _RegistrySecretRun(secret=_Secret(42))
-
-    assert _field(obj._schema_data, "secret") == _custom_schema(
-        _RegistrySecretSerializer,
-        {"type": "secret", "format": "registry"},
-    )
-    assert _field(obj._artifact_data, "secret") == _custom_artifact(
-        _RegistrySecretSerializer,
-        {"registry": 42},
-    )
-    assert _RegistrySecretRun.from_artifact(ArtifactSpec.from_furu(obj)) == obj
-
-
-def test_class_serializer_hook_defines_schema_and_artifact() -> None:
-    obj = _ClassHookSecretRun(secret=_ClassHookSecret(42))
-
-    assert _field(obj._schema_data, "secret") == _custom_schema(
-        _HexSecretSerializer,
-        {"type": "secret", "format": "hex"},
-    )
-    assert _field(obj._artifact_data, "secret") == _custom_artifact(
-        _HexSecretSerializer,
-        {"hex": "0x2a"},
-    )
-    loaded = _from_json(obj._artifact_data)
+@pytest.mark.parametrize(
+    "obj, field, serializer, schema, dumped",
+    [
+        pytest.param(
+            _AnnotatedSecretRun(secret=_Secret(42)),
+            "secret",
+            _HexSecretSerializer,
+            {"type": "secret", "format": "hex"},
+            {"hex": "0x2a"},
+            id="annotated",
+        ),
+        pytest.param(
+            _RegistrySecretRun(secret=_Secret(42)),
+            "secret",
+            _RegistrySecretSerializer,
+            {"type": "secret", "format": "registry"},
+            {"registry": 42},
+            id="artifact-serializers",
+        ),
+        pytest.param(
+            _ClassHookSecretRun(secret=_ClassHookSecret(42)),
+            "secret",
+            _HexSecretSerializer,
+            {"type": "secret", "format": "hex"},
+            {"hex": "0x2a"},
+            id="class-hook",
+        ),
+        pytest.param(
+            _AutoRegisteredValueRun(value=_AutoRegisteredValue(42)),
+            "value",
+            _AutoRegisteredValueSerializer,
+            {"type": "auto-value", "format": "auto"},
+            {"auto": 42},
+            id="auto-registered",
+        ),
+        pytest.param(
+            _RegistryAutoRegisteredValueRun(value=_AutoRegisteredValue(42)),
+            "value",
+            _RegistryAutoRegisteredValueSerializer,
+            {"type": "auto-value", "format": "registry"},
+            {"registry": 42},
+            id="artifact-serializers-beat-auto-registered",
+        ),
+        pytest.param(
+            _AnnotatedAutoRegisteredValueRun(value=_AutoRegisteredValue(42)),
+            "value",
+            _RegistryAutoRegisteredValueSerializer,
+            {"type": "auto-value", "format": "registry"},
+            {"registry": 42},
+            id="annotated-beats-auto-registered",
+        ),
+    ],
+)
+def test_serializer_defines_field_schema_and_artifact(
+    obj: Spec,
+    field: str,
+    serializer: type[Serializer],
+    schema: JsonValue,
+    dumped: JsonValue,
+) -> None:
+    assert _field(obj._schema_data, field) == _custom_schema(serializer, schema)
+    assert _field(obj._artifact_data, field) == _custom_artifact(serializer, dumped)
+    loaded = type(obj).from_artifact(ArtifactSpec.from_furu(obj))
     assert loaded == obj
-    assert isinstance(loaded.secret, _ClassHookSecret)
+    assert type(getattr(loaded, field)) is type(getattr(obj, field))
 
 
 def test_furu_class_serializer_hook_can_replace_top_level_artifact() -> None:
@@ -421,33 +443,6 @@ def test_furu_class_serializer_hook_can_replace_top_level_artifact() -> None:
     artifact = ArtifactSpec.from_furu(obj)
     assert _TopLevelSerializedRun.from_artifact(artifact) == obj
     assert Spec.from_artifact(artifact) == obj
-
-
-def test_user_defined_serializer_is_auto_registered() -> None:
-    assert (
-        SerializerMeta.serializer_for_schema(_AutoRegisteredValue, ())
-        is _AutoRegisteredValueSerializer
-    )
-    assert (
-        SerializerMeta.serializer_for_dump(
-            _AutoRegisteredValue(1),
-            declared_type=_AutoRegisteredValue,
-            artifact_serializers=(),
-        )
-        is _AutoRegisteredValueSerializer
-    )
-
-    obj = _AutoRegisteredValueRun(value=_AutoRegisteredValue(42))
-
-    assert _field(obj._schema_data, "value") == _custom_schema(
-        _AutoRegisteredValueSerializer,
-        {"type": "auto-value", "format": "auto"},
-    )
-    assert _field(obj._artifact_data, "value") == _custom_artifact(
-        _AutoRegisteredValueSerializer,
-        {"auto": 42},
-    )
-    assert _from_json(obj._artifact_data) == obj
 
 
 def test_auto_register_false_opts_out_of_auto_registered_serializers() -> None:
@@ -504,36 +499,6 @@ def test_artifact_serializers_must_not_be_ambiguous() -> None:
     dump_message = str(dump_error.value)
     assert "_HexSecretSerializer" in dump_message
     assert "_DecimalSecretSerializer" in dump_message
-
-
-def test_furu_artifact_serializers_take_priority_over_auto_registered_serializer() -> (
-    None
-):
-    obj = _RegistryAutoRegisteredValueRun(value=_AutoRegisteredValue(42))
-
-    assert _field(obj._schema_data, "value") == _custom_schema(
-        _RegistryAutoRegisteredValueSerializer,
-        {"type": "auto-value", "format": "registry"},
-    )
-    assert _field(obj._artifact_data, "value") == _custom_artifact(
-        _RegistryAutoRegisteredValueSerializer,
-        {"registry": 42},
-    )
-    assert _from_json(obj._artifact_data) == obj
-
-
-def test_annotated_serializer_takes_priority_over_auto_registered_serializer() -> None:
-    obj = _AnnotatedAutoRegisteredValueRun(value=_AutoRegisteredValue(42))
-
-    assert _field(obj._schema_data, "value") == _custom_schema(
-        _RegistryAutoRegisteredValueSerializer,
-        {"type": "auto-value", "format": "registry"},
-    )
-    assert _field(obj._artifact_data, "value") == _custom_artifact(
-        _RegistryAutoRegisteredValueSerializer,
-        {"registry": 42},
-    )
-    assert _from_json(obj._artifact_data) == obj
 
 
 def test_serializer_defined_after_default_cache_is_auto_registered() -> None:
