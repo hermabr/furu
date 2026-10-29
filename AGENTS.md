@@ -8,4 +8,4 @@ Furu is pre-release with no users. Prefer solutions that will improve the long t
 
 Think of these instructions less as "hard rules", more as "good defaults". If a rule here fights the task in front of you, say so loudly and get a human sign-off before breaking it.
 
-We use `uv`, such as `uv run python` and you should always check that `uv run ruff check && uv run ty check && uv run pytest` pass.
+We use `uv`, such as `uv run python`.
