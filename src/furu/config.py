@@ -18,7 +18,13 @@ _WORKER_JSON_CONFIG_FILE_ENV_VAR = "_FURU_WORKER_JSON_CONFIG_FILE"
 
 @functools.cache
 def _project_anchor() -> Path:
-    """The main worktree's root, so all worktrees share one set of data directories."""
+    """The main worktree's root, so all worktrees share one set of data directories.
+
+    furu requires a git repository with a pyproject.toml inside it. The
+    pyproject.toml never moves the anchor; it is required because provenance
+    records the nearest one (with its uv.lock), and code snapshots only carry
+    files under the git root.
+    """
     cwd = Path.cwd().resolve()
     try:
         toplevel, common_dir = subprocess.run(
@@ -36,14 +42,15 @@ def _project_anchor() -> Path:
     except (OSError, subprocess.CalledProcessError) as exc:
         raise RuntimeError(
             f"no git repository found from {cwd} upward.\n"
-            "furu anchors its data directories to a uv project in git. Create one with:\n"
+            "furu anchors its data directories at the git root. Create one with:\n"
             "  git init"
         ) from exc
     within_repo = (cwd, *cwd.parents)[: len(cwd.relative_to(toplevel).parts) + 1]
     if not any((d / "pyproject.toml").is_file() for d in within_repo):
         raise RuntimeError(
             f"no pyproject.toml found from {cwd} up to the git root {toplevel}.\n"
-            "furu anchors its data directories to a uv project in git. Create one with:\n"
+            "furu requires a uv project inside the git repository so results are "
+            "reproducible. Create one with:\n"
             "  uv init"
         )
     return Path(common_dir).parent
