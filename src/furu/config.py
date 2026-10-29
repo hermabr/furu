@@ -53,7 +53,7 @@ def _project_anchor() -> Path:
             "reproducible. Create one with:\n"
             "  uv init"
         )
-    return Path(common_dir).parent
+    return Path(common_dir).parent if common_dir.endswith("/.git") else Path(toplevel)
 
 
 class _FuruDirectories(BaseModel):

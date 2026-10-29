@@ -107,6 +107,34 @@ def test_relative_directories_anchor_to_git_root_from_project_subdirectory(
         _project_anchor.cache_clear()
 
 
+def test_relative_directories_anchor_to_submodule_root(tmp_path, monkeypatch) -> None:
+    git = ["git", "-c", "user.email=t@t", "-c", "user.name=t"]
+    for name in ("inner", "outer"):
+        subprocess.run([*git, "init", "-q", name], cwd=tmp_path, check=True)
+        subprocess.run(
+            [*git, "commit", "-q", "--allow-empty", "-m", "init"],
+            cwd=tmp_path / name,
+            check=True,
+        )
+    outer = tmp_path / "outer"
+    subprocess.run(
+        [*git, "-c", "protocol.file.allow=always", "submodule", "add", "-q"]
+        + [str(tmp_path / "inner"), "inner"],
+        cwd=outer,
+        check=True,
+    )
+    (outer / "inner" / "pyproject.toml").write_text("", encoding="utf-8")
+
+    # The submodule's git dir lives in outer/.git/modules, not in its checkout.
+    monkeypatch.chdir(outer / "inner")
+    _project_anchor.cache_clear()
+    try:
+        expected = (outer / "inner").resolve() / "furu-data" / "objects"
+        assert _Config().run_directories.objects == expected
+    finally:
+        _project_anchor.cache_clear()
+
+
 def test_import_outside_project_defers_anchor_crash(tmp_path) -> None:
     code = (
         "import furu\n"
