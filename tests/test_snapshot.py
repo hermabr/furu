@@ -210,3 +210,69 @@ def test_concurrent_extractor_losing_the_rename_discards_its_work(
 def test_extract_missing_snapshot_raises(git_repo: Path) -> None:
     with pytest.raises(subprocess.CalledProcessError):
         extract_snapshot("0" * 40, repo=git_repo)
+
+
+def _with_push(enabled: bool) -> _Config:
+    data = get_config().model_dump()
+    data["provenance"]["push"] = enabled
+    return _Config.model_validate(data)
+
+
+@pytest.fixture
+def origin(git_repo: Path, tmp_path: Path) -> Path:
+    bare = tmp_path / "origin.git"
+    _git(tmp_path, "init", "-q", "--bare", str(bare))
+    _git(git_repo, "remote", "add", "origin", str(bare))
+    return bare
+
+
+def test_snapshot_is_pushed_to_origin_outside_refs_heads(
+    git_repo: Path, origin: Path
+) -> None:
+    (git_repo / "tracked.txt").write_text("dirty\n")
+
+    with override_config(_with_push(True)):
+        sha = create_snapshot(git_repo)
+
+    assert _git(origin, "rev-parse", f"refs/furu/{sha}") == sha
+    assert _git(origin, "for-each-ref", "refs/heads/") == ""
+
+
+def test_clean_tree_pushes_head_even_when_head_was_never_pushed(
+    git_repo: Path, origin: Path
+) -> None:
+    head = _git(git_repo, "rev-parse", "HEAD")
+
+    with override_config(_with_push(True)):
+        assert create_snapshot(git_repo) == head
+
+    assert _git(origin, "rev-parse", f"refs/furu/{head}") == head
+
+
+def test_pinned_snapshot_is_not_pushed_again(git_repo: Path, origin: Path) -> None:
+    with override_config(_with_push(True)):
+        sha = create_snapshot(git_repo)
+        _git(git_repo, "remote", "set-url", "origin", str(git_repo / "gone"))
+
+        assert create_snapshot(git_repo) == sha
+
+
+def test_push_disabled_keeps_the_snapshot_local(git_repo: Path, origin: Path) -> None:
+    # The furu pytest plugin already sets provenance.push = False.
+    sha = create_snapshot(git_repo)
+
+    assert _git(git_repo, "rev-parse", f"refs/furu/{sha}") == sha
+    assert _git(origin, "for-each-ref", "refs/furu/") == ""
+
+
+def test_missing_origin_fails_and_names_the_escape_hatch(git_repo: Path) -> None:
+    with (
+        override_config(_with_push(True)),
+        pytest.raises(
+            RuntimeError,
+            match=r"(?s)could not push.*origin.*FURU_PROVENANCE__PUSH=false",
+        ),
+    ):
+        create_snapshot(git_repo)
+
+    assert _git(git_repo, "for-each-ref", "refs/furu/") == ""
