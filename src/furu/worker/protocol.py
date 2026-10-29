@@ -86,7 +86,7 @@ class HelloMessage(BaseModel):
     worker: str
     backend: str
     pool: str
-    running: list[ArtifactSpec] = Field(default_factory=list)
+    running: Job | None = None
     log: Path | None = None  # the worker's own log file, if it has one
 
 
