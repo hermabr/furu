@@ -315,7 +315,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
     ) -> JsonValue:
         return _schema_type(
             type(self),
-            set(),
+            {},
             artifact_serializers=self.artifact_serializers,
         )
 
@@ -325,7 +325,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
         return _hash_dict_deterministically(
             _schema_type(
                 type(self),
-                set(),
+                {},
                 artifact_serializers=self.artifact_serializers,
                 for_hash=True,
             )
