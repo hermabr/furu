@@ -18,13 +18,7 @@ _WORKER_JSON_CONFIG_FILE_ENV_VAR = "_FURU_WORKER_JSON_CONFIG_FILE"
 
 @functools.cache
 def _project_anchor() -> Path:
-    """The main worktree's root, so all worktrees share one set of data directories.
-
-    furu requires a git repository without submodules and with a pyproject.toml
-    inside it. The pyproject.toml never moves the anchor; it is required because
-    provenance records the nearest one (with its uv.lock), and code snapshots
-    only carry files under the git root.
-    """
+    """The main worktree's root, so all worktrees share one set of data directories."""
     cwd = Path.cwd().resolve()
     try:
         toplevel, common_dir, *superproject = subprocess.run(
