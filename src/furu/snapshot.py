@@ -14,7 +14,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ByteSize, ConfigDict
 
-from furu.config import get_config
+from furu.config import _reject_submodules, get_config
 from furu.provenance import EnvironmentIdentity, SubmitProvenance, _run_git
 from furu.utils import _hash_dict_deterministically, nfs_safe_unique_name
 
@@ -68,6 +68,7 @@ def create_snapshot(worktree: Path) -> str:
             "Snapshots use git's index as the manifest, so snapshotting requires "
             "a git repository."
         ) from exc
+    _reject_submodules(repo_root)
 
     # Split the manifest paths into clean files (path -> index blob hash) and
     # dirty files (paths whose worktree bytes must be hashed). The two are disjoint.
@@ -75,9 +76,7 @@ def create_snapshot(worktree: Path) -> str:
     dirty_paths: set[str] = set()
     for line in _split_z(_run_git(["ls-files", "-s", "-z"], cwd=repo_root)):
         meta, _, path = line.partition("\t")
-        mode, blob, stage = meta.split()
-        if mode == "160000":  # gitlink (submodule): no worktree bytes to archive
-            continue
+        _mode, blob, stage = meta.split()
         if stage == "0":
             clean_blobs[path] = blob
         else:  # unmerged (conflict): the index blob is ambiguous, hash the worktree

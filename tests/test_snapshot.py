@@ -224,6 +224,17 @@ def test_extract_snapshot_reuses_an_existing_extraction(git_repo: Path) -> None:
     assert (code_dir / "witness.txt").read_text() == "kept\n"
 
 
+def test_snapshot_rejects_submodules(git_repo: Path) -> None:
+    vendored = git_repo / "vendored"
+    vendored.mkdir()
+    _git(vendored, "init", "-q")
+    _git(vendored, "commit", "-q", "--allow-empty", "-m", "init")
+    _git(git_repo, "add", "vendored")
+
+    with pytest.raises(RuntimeError, match="contains:\n  vendored\n"):
+        create_snapshot(git_repo)
+
+
 def test_extract_missing_snapshot_raises(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         extract_snapshot("0" * 20)

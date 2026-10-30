@@ -16,14 +16,46 @@ from pydantic_settings import (
 _WORKER_JSON_CONFIG_FILE_ENV_VAR = "_FURU_WORKER_JSON_CONFIG_FILE"
 
 
+def _reject_submodules(repo_root: Path) -> None:
+    """Crash if ``repo_root`` is or contains a git submodule.
+
+    Provenance and code snapshots only see one repository's files, so code in
+    a submodule would silently go unrecorded.
+    """
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", *args], cwd=repo_root, capture_output=True, text=True, check=True
+        ).stdout.strip()
+
+    superproject = git("rev-parse", "--show-superproject-working-tree")
+    if superproject:
+        raise RuntimeError(
+            f"furu does not support git submodules, but {repo_root} is a "
+            f"submodule of {superproject}.\n"
+            "Are you sure you put your project in the correct place?"
+        )
+    submodules = [
+        line.partition("\t")[2]
+        for line in git("ls-files", "-s", "-z").split("\0")
+        if line.startswith("160000 ")
+    ]
+    if submodules:
+        raise RuntimeError(
+            f"furu does not support git submodules, but {repo_root} contains:\n"
+            + "".join(f"  {path}\n" for path in submodules)
+            + "Are you sure you put them in the correct place?"
+        )
+
+
 @functools.cache
 def _project_anchor() -> Path:
     """The main worktree's root, so all worktrees share one set of data directories.
 
-    furu requires a git repository with a pyproject.toml inside it. The
-    pyproject.toml never moves the anchor; it is required because provenance
-    records the nearest one (with its uv.lock), and code snapshots only carry
-    files under the git root.
+    furu requires a git repository without submodules and with a pyproject.toml
+    inside it. The pyproject.toml never moves the anchor; it is required because
+    provenance records the nearest one (with its uv.lock), and code snapshots
+    only carry files under the git root.
     """
     cwd = Path.cwd().resolve()
     try:
@@ -45,6 +77,7 @@ def _project_anchor() -> Path:
             "furu anchors its data directories at the git root. Create one with:\n"
             "  git init"
         ) from exc
+    _reject_submodules(Path(toplevel))
     within_repo = (cwd, *cwd.parents)[: len(cwd.relative_to(toplevel).parts) + 1]
     if not any((d / "pyproject.toml").is_file() for d in within_repo):
         raise RuntimeError(
@@ -53,7 +86,7 @@ def _project_anchor() -> Path:
             "reproducible. Create one with:\n"
             "  uv init"
         )
-    return Path(common_dir).parent if common_dir.endswith("/.git") else Path(toplevel)
+    return Path(common_dir).parent
 
 
 class _FuruDirectories(BaseModel):

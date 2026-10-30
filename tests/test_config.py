@@ -107,7 +107,7 @@ def test_relative_directories_anchor_to_git_root_from_project_subdirectory(
         _project_anchor.cache_clear()
 
 
-def test_relative_directories_anchor_to_submodule_root(tmp_path, monkeypatch) -> None:
+def test_submodule_is_rejected(tmp_path, monkeypatch) -> None:
     git = ["git", "-c", "user.email=t@t", "-c", "user.name=t"]
     for name in ("inner", "outer"):
         subprocess.run([*git, "init", "-q", name], cwd=tmp_path, check=True)
@@ -125,12 +125,18 @@ def test_relative_directories_anchor_to_submodule_root(tmp_path, monkeypatch) ->
     )
     (outer / "inner" / "pyproject.toml").write_text("", encoding="utf-8")
 
-    # The submodule's git dir lives in outer/.git/modules, not in its checkout.
     monkeypatch.chdir(outer / "inner")
     _project_anchor.cache_clear()
     try:
-        expected = (outer / "inner").resolve() / "furu-data" / "objects"
-        assert _Config().run_directories.objects == expected
+        with pytest.raises(RuntimeError, match="inner is a submodule of"):
+            _project_anchor()
+
+        # The superproject is rejected too, from anywhere inside it.
+        (outer / "pyproject.toml").write_text("", encoding="utf-8")
+        monkeypatch.chdir(outer)
+        _project_anchor.cache_clear()
+        with pytest.raises(RuntimeError, match="contains:\n  inner\n"):
+            _project_anchor()
     finally:
         _project_anchor.cache_clear()
 
