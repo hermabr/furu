@@ -141,6 +141,13 @@ class Spec[T](_FuruDataclassTransform, ABC):
                 del cls.create  # unshadow the inherited create verb
 
     def create(self) -> T:
+        """Return this spec's result, building it first if it's missing.
+
+        Declare the specs a create depends on as fields or ``@furu.dependency`` so
+        the executor can plan them. Specs only known at runtime belong in a single
+        ``furu.create([...])`` call: every call that finds a missing spec restarts
+        the create from the top.
+        """
         from furu.execution.load_or_create import _load_or_create
 
         return _load_or_create(self)
