@@ -76,8 +76,11 @@ def create_snapshot(worktree: Path) -> str:
     for line in _split_z(_run_git(["ls-files", "-s", "-z"], cwd=repo_root)):
         meta, _, path = line.partition("\t")
         mode, blob, stage = meta.split()
-        if mode == "160000":  # gitlink (submodule): no worktree bytes to archive
-            continue
+        if mode == "160000":  # gitlink: its files live in another repository
+            raise RuntimeError(
+                f"{path} is a git submodule, which furu does not support.\n"
+                "Are you sure you put it in the correct place?"
+            )
         if stage == "0":
             clean_blobs[path] = blob
         else:  # unmerged (conflict): the index blob is ambiguous, hash the worktree

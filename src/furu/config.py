@@ -18,25 +18,42 @@ _WORKER_JSON_CONFIG_FILE_ENV_VAR = "_FURU_WORKER_JSON_CONFIG_FILE"
 
 @functools.cache
 def _project_anchor() -> Path:
+    """The main worktree's root, so all worktrees share one set of data directories."""
+    cwd = Path.cwd().resolve()
     try:
-        common_dir = subprocess.run(
-            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        toplevel, common_dir, *superproject = subprocess.run(
+            [
+                "git",
+                "rev-parse",
+                "--path-format=absolute",
+                "--show-toplevel",
+                "--git-common-dir",
+                "--show-superproject-working-tree",
+            ],
             capture_output=True,
             text=True,
             check=True,
-        ).stdout.strip()
-        return Path(common_dir).parent
-    except (OSError, subprocess.CalledProcessError):
-        pass
-    cwd = Path.cwd()
-    for directory in (cwd, *cwd.parents):
-        if (directory / "pyproject.toml").is_file():
-            return directory
-    raise RuntimeError(
-        f"no git repository or pyproject.toml found from {cwd} upward.\n"
-        "furu anchors its data directories to the project root. Create one with:\n"
-        "  uv init"
-    )
+        ).stdout.splitlines()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError(
+            f"no git repository found from {cwd} upward.\n"
+            "furu anchors its data directories at the git root. Create one with:\n"
+            "  git init"
+        ) from exc
+    if superproject or (Path(toplevel) / ".gitmodules").exists():
+        raise RuntimeError(
+            f"{toplevel} is or contains a git submodule, which furu does not "
+            "support.\nAre you sure you put it in the correct place?"
+        )
+    within_repo = (cwd, *cwd.parents)[: len(cwd.relative_to(toplevel).parts) + 1]
+    if not any((d / "pyproject.toml").is_file() for d in within_repo):
+        raise RuntimeError(
+            f"no pyproject.toml found from {cwd} up to the git root {toplevel}.\n"
+            "furu requires a uv project inside the git repository so results are "
+            "reproducible. Create one with:\n"
+            "  uv init"
+        )
+    return Path(common_dir).parent
 
 
 class _FuruDirectories(BaseModel):
