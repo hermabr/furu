@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, cast
 from pydantic import BaseModel, ConfigDict
 
 from furu._declared_types import declared_result_type
+from furu.code_trace import is_valid, valid_version
 from furu.constants import FIELDSMARKER
 from furu.locking import lock, read_text_or_none
 from furu.metadata import ArtifactSpec
@@ -26,7 +27,6 @@ from furu.storage._layout import (
     result_dir_in,
     result_link_path_in,
     spec_path_in,
-    version_dir_in,
 )
 from furu.utils import JsonFields, _stable_json_dump, atomic_write_text
 
@@ -77,7 +77,7 @@ def _read_link(obj: Spec) -> _ResultLink | None:
     if (link_text := read_text_or_none(result_link_path_in(obj._base_dir))) is None:
         return None
     link = _ResultLink.model_validate_json(link_text)
-    if not link.source.version_dir.is_dir():
+    if not is_valid(link.source.version_dir, storage_root=obj._metadata.storage):
         return None
     schema_directory = link.source.version_dir.parent.parent
     if _covered_in(_class_resolution(obj), schema_directory) is None:
@@ -140,8 +140,10 @@ def _find_source(obj: Spec, resolution: _ClassResolution) -> _ResultLink | None:
             continue
         sources = _migrated_sources(type(obj), resolution, covered)
         for artifact, identity_dir in sources.get(target_key, ()):
-            version = version_dir_in(identity_dir)
-            if not version.is_dir():
+            version = valid_version(
+                identity_dir, None, storage_root=obj._metadata.storage
+            )
+            if version is None:
                 continue
             return _ResultLink(
                 current=_ResultLinkCurrent(
@@ -169,9 +171,17 @@ def _find_source(obj: Spec, resolution: _ClassResolution) -> _ResultLink | None:
     return None
 
 
+def own_version(obj: Spec) -> Path | None:
+    return valid_version(
+        obj._base_dir,
+        obj._metadata.code_version,
+        storage_root=obj._metadata.storage,
+    )
+
+
 def version_for_loading(obj: Spec, *, has_lock: bool = False) -> Path | None:
     """The version directory to load obj from: its own, or a migration source."""
-    if (version := version_dir_in(obj._base_dir)).is_dir():
+    if (version := own_version(obj)) is not None:
         return version
     if link := _read_link(obj):
         return link.source.version_dir

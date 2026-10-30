@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from furu import code_trace
 from furu.config import get_config
 from furu.provenance import (
     EnvironmentIdentity,
@@ -109,6 +110,7 @@ class CodeLocation:
     python: Path
     project_root: Path
     cwd: Path
+    repo_root: Path  # traced code paths are relative to it
 
     @classmethod
     def here(cls) -> CodeLocation:
@@ -116,6 +118,7 @@ class CodeLocation:
             python=Path(sys.executable),
             project_root=Path(EnvironmentIdentity.capture().project_root),
             cwd=Path.cwd(),
+            repo_root=code_trace.repo_root(),
         )
 
     @classmethod
@@ -129,6 +132,7 @@ class CodeLocation:
             python=project_root / ".venv" / "bin" / "python",
             project_root=project_root,
             cwd=code_dir / Path(provenance.submitted.cwd).relative_to(repo_root),
+            repo_root=code_dir,
         )
 
 

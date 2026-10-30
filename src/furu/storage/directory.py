@@ -11,7 +11,6 @@ class SpecDirectory:
 
     @cached_property
     def data(self) -> Path:
-        """Moves when the result is published: store relative paths in files and symlinks here."""
         data_dir = data_dir_in(self._base_dir)
         data_dir.mkdir(parents=True, exist_ok=True)
         return data_dir

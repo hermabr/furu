@@ -2,6 +2,7 @@ import functools
 import subprocess
 from importlib.metadata import version
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import (
@@ -10,6 +11,10 @@ from pydantic_settings import (
     PyprojectTomlConfigSettingsSource,
     SettingsConfigDict,
 )
+
+# "fixed": a result is valid until you bump a field. "traced": furu derives the
+# code version from the repo code create() ran (see furu.code_trace).
+type CodeVersion = Literal["fixed", "traced"]
 
 
 @functools.cache
@@ -93,6 +98,7 @@ class _Config(BaseSettings):
     # subdirectory; scripts on compute nodes read it, so point it at storage
     # they can see.
     manager_dir: Path = Path.home() / ".furu" / "manager"
+    code_version: CodeVersion = "fixed"
     directories: _FuruDirectories = Field(default_factory=_FuruDirectories)
     worker: _FuruWorkerConfig = Field(default_factory=_FuruWorkerConfig)
 
