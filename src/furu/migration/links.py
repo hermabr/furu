@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, cast
 from pydantic import BaseModel, ConfigDict
 
 from furu._declared_types import declared_result_type
+from furu.code_trace import is_valid, valid_version
 from furu.constants import FIELDSMARKER
 from furu.locking import lock, read_text_or_none
 from furu.metadata import ArtifactSpec
@@ -76,7 +77,7 @@ def _read_link(obj: Spec) -> _ResultLink | None:
     if (link_text := read_text_or_none(result_link_path_in(obj._base_dir))) is None:
         return None
     link = _ResultLink.model_validate_json(link_text)
-    if not link.source.version_dir.is_dir():
+    if not is_valid(link.source.version_dir, storage_root=obj._metadata.storage):
         return None
     schema_directory = link.source.version_dir.parent.parent
     if _covered_in(_class_resolution(obj), schema_directory) is None:
@@ -139,7 +140,10 @@ def _find_source(obj: Spec, resolution: _ClassResolution) -> _ResultLink | None:
             continue
         sources = _migrated_sources(type(obj), resolution, covered)
         for artifact, identity_dir in sources.get(target_key, ()):
-            if (version := _published(identity_dir)) is None:
+            version = valid_version(
+                identity_dir, None, storage_root=obj._metadata.storage
+            )
+            if version is None:
                 continue
             return _ResultLink(
                 current=_ResultLinkCurrent(
@@ -167,13 +171,12 @@ def _find_source(obj: Spec, resolution: _ClassResolution) -> _ResultLink | None:
     return None
 
 
-def _published(identity_dir: Path) -> Path | None:
-    version = identity_dir / "v-fixed"
-    return version if version.is_dir() else None
-
-
 def own_version(obj: Spec) -> Path | None:
-    return _published(obj._base_dir)
+    return valid_version(
+        obj._base_dir,
+        obj._metadata.code_version,
+        storage_root=obj._metadata.storage,
+    )
 
 
 def version_for_loading(obj: Spec, *, has_lock: bool = False) -> Path | None:

@@ -14,6 +14,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ByteSize, ConfigDict
 
+from furu import code_trace
 from furu.config import get_config
 from furu.provenance import EnvironmentIdentity, SubmitProvenance, _run_git
 from furu.utils import _hash_dict_deterministically, nfs_safe_unique_name
@@ -210,6 +211,7 @@ class CodeLocation:
     python: Path
     project_root: Path
     cwd: Path
+    repo_root: Path  # traced code paths are relative to it
 
     @classmethod
     def here(cls) -> CodeLocation:
@@ -217,6 +219,7 @@ class CodeLocation:
             python=Path(sys.executable),
             project_root=Path(EnvironmentIdentity.capture().project_root),
             cwd=Path.cwd(),
+            repo_root=code_trace.repo_root(),
         )
 
     @classmethod
@@ -235,6 +238,7 @@ class CodeLocation:
             python=project_root / ".venv" / "bin" / "python",
             project_root=project_root,
             cwd=code_dir / Path(provenance.submitted.cwd).relative_to(repo_root),
+            repo_root=code_dir,
         )
 
 

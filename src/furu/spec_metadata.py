@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from furu.config import get_config
+from furu.config import CodeVersion, get_config
 
 type Reuse = Literal["never", "same_environment", "same_environment_same_spec"]
 
@@ -29,9 +29,12 @@ class Metadata:
     to the empty string. Variables named in required_environment_variables (e.g.
     HF_TOKEN) must be set in the child environment; the job fails before
     spawning otherwise. reuse controls when a warm child is kept between jobs.
+    code_version "traced" ties the result to the repo code its create() ran;
+    the default comes from [tool.furu] code_version (or FURU_CODE_VERSION).
     """
 
     storage: Path = field(default_factory=lambda: get_config().run_directories.objects)
     environment: Mapping[str, str | None] = field(default_factory=dict)
     required_environment_variables: tuple[str, ...] = ()
     reuse: Reuse = "same_environment"
+    code_version: CodeVersion = field(default_factory=lambda: get_config().code_version)

@@ -62,6 +62,8 @@ class JobFailedResult(BaseModel):
 
     status: Literal["failed"] = "failed"
     error: str
+    # A traced file changed after the child imported it: retry in a fresh child.
+    stale_code: bool = False
 
 
 class JobBlockedResult(BaseModel):

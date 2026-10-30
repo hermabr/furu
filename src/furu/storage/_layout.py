@@ -2,8 +2,9 @@ from pathlib import Path
 
 # An identity directory {storage}/{fqn}/{schema_hash}/{artifact_hash} holds
 # spec.json, compute.lock, run.log (every attempt's log), the in-progress
-# attempt/ and the published version directory v-fixed/, which attempt/ is
-# renamed to once its result is stored. Both share the run-directory layout below.
+# attempt/ and one published version directory per code version (v-<hash>,
+# v-fixed or v-fixed-<hash>). attempt/ and every version directory share the
+# run-directory layout below.
 
 
 def spec_path_in(identity_dir: Path) -> Path:
@@ -36,6 +37,10 @@ def provenance_path_in(run_dir: Path) -> Path:
 
 def trace_path_in(run_dir: Path) -> Path:
     return run_dir / "trace.json"
+
+
+def trace_log_path_in(run_dir: Path) -> Path:
+    return run_dir / "trace.log"
 
 
 def run_log_path_in(identity_dir: Path) -> Path:

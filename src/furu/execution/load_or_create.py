@@ -17,11 +17,18 @@ from typing import (
 from furu._batched import _BatchedHook
 from furu._declared_types import declared_result_type
 from furu._tree import map_specs, specs_in
+from furu.code_trace import (
+    LogState,
+    Recording,
+    build_trace,
+    recording,
+    why_not_resumable,
+    why_outdated,
+)
 from furu.config import get_config
 from furu.core import Missing, Spec
 from furu.dag import Dag
 from furu.dependencies import (
-    DependencyRecorder,
     _DependencyNotReady,
     any_under_creation,
     dependency_recorder,
@@ -64,6 +71,7 @@ from furu.storage._layout import (
     schema_snapshot_path_in,
     scratch_dir_in,
     spec_path_in,
+    trace_log_path_in,
     trace_path_in,
 )
 from furu.utils import atomic_write_text, error_summary, format_duration
@@ -86,33 +94,60 @@ def _record_schema_snapshot(obj: Spec) -> None:
     )
 
 
-def _prepare_attempt(obj: Spec) -> None:
-    """Write spec.json and create attempt/, resuming one left by an earlier try."""
+def _prepare_attempt(obj: Spec) -> LogState:
+    """Write spec.json and decide whether attempt/ from an earlier try resumes.
+
+    Fixed specs always resume. A traced spec resumes only if the code its
+    earlier attempts ran (recorded in trace.log) is unchanged on disk.
+    """
     if not (spec_path := spec_path_in(obj._base_dir)).exists():
         atomic_write_text(
             spec_path, ArtifactSpec.from_furu(obj).model_dump_json(indent=2)
         )
-    attempt_dir_in(obj._base_dir).mkdir(exist_ok=True)
+    metadata = obj._metadata
+    if why := why_outdated(
+        obj._base_dir, metadata.code_version, storage_root=metadata.storage
+    ):
+        obj.logger.info("rerunning %s: %s", obj._log_label, why)
+    attempt = attempt_dir_in(obj._base_dir)
+    resumed = LogState()
+    if metadata.code_version == "traced" and attempt.exists():
+        logged = LogState.read(trace_log_path_in(attempt))
+        if why := why_not_resumable(logged, storage_root=metadata.storage):
+            obj.logger.info("starting %s over: %s", obj._log_label, why)
+            shutil.rmtree(attempt)
+        else:
+            assert logged is not None
+            resumed = logged
+    attempt.mkdir(exist_ok=True)
+    return resumed
 
 
 @contextmanager
-def _recording(objs: Sequence[Spec]) -> Generator[DependencyRecorder]:
-    """Record the dependency versions one create() call loads."""
-    storage = objs[0]._metadata.storage  # a batch shares its metadata
-    with dependency_recorder(storage) as recorder, under_creation(objs):
-        yield recorder
+def _recording(objs: Sequence[Spec], resumed: LogState) -> Generator[Recording]:
+    """Trace one create() call and record the dependency versions it loads."""
+    metadata = objs[0]._metadata  # a batch shares its metadata
+    log_paths = [trace_log_path_in(attempt_dir_in(obj._base_dir)) for obj in objs]
+    with (
+        recording(
+            log_paths, code_version=metadata.code_version, resumed=resumed
+        ) as run,
+        dependency_recorder(metadata.storage, run.dependencies, run.log),
+        under_creation(objs),
+    ):
+        yield run
 
 
 def _store_result[T](
     obj: Spec[T],
     result: T,
     *,
-    dependencies: Mapping[str, str],
+    run: Recording,
     has_lock: HasLock,
     submit_provenance: SubmitProvenance,
     started_at: datetime,
-) -> _DumpState:
-    """Store the result and the dependency versions it loaded in attempt/."""
+) -> tuple[str, _DumpState]:
+    """Store the result and its trace in attempt/; return the version name."""
     attempt = attempt_dir_in(obj._base_dir)
     lock_path = compute_lock_path_in(obj._base_dir)
     if not has_lock():
@@ -128,33 +163,38 @@ def _store_result[T](
         data_dir=data_dir_in(attempt),
     )
 
+    trace = build_trace(run, label=obj._log_label, warn=obj.logger.warning)
     atomic_write_text(
-        trace_path_in(attempt),
-        json.dumps({"dependencies": dict(sorted(dependencies.items()))}, indent=2),
+        trace_path_in(attempt), trace.model_dump_json(indent=2, exclude_none=True)
     )
     provenance = Provenance.merge(
         submit_provenance, ExecuteContext.capture(started_at=started_at)
     )
     atomic_write_text(provenance_path_in(attempt), provenance.model_dump_json(indent=2))
     _record_schema_snapshot(obj)
-    return dump_state
+
+    version_name = trace.version_name()
+    obj.logger.debug("stored %s as %s", obj._log_label, version_name)
+    return version_name, dump_state
 
 
 def _publish[T](
     obj: Spec[T],
     result: T,
     *,
+    version_name: str,
     dump_state: _DumpState,
     has_lock: HasLock,
 ) -> T:
-    """Rename attempt/ to v-fixed/; return the value to hand out."""
+    """Rename attempt/ to its version directory; return the value to hand out."""
     attempt = attempt_dir_in(obj._base_dir)
     shutil.rmtree(scratch_dir_in(attempt), ignore_errors=True)
+    trace_log_path_in(attempt).unlink(missing_ok=True)
     if not has_lock():
         raise RuntimeError(
             f"lost lock at {compute_lock_path_in(obj._base_dir)} before publishing"
         )
-    version = obj._base_dir / "v-fixed"
+    version = obj._base_dir / version_name
     reload = dump_state.should_reload_value_after_save
     try:
         attempt.rename(version)
@@ -507,8 +547,7 @@ def _create_and_store_group[T](
     submit_provenance: SubmitProvenance,
 ) -> None:
     started_at = datetime.now(UTC)
-    for obj in group:
-        _prepare_attempt(obj)
+    resumed = [_prepare_attempt(obj) for obj in group]
     try:
         match getattr(type(group[0]), "_furu_create_hook", None):
             case None:
@@ -517,35 +556,36 @@ def _create_and_store_group[T](
                     "because it does not define create()"
                 )
             case _BatchedHook(func=create_hook):
-                with _recording(group) as recorder:
+                union = LogState()
+                for state in resumed:
+                    union.merge(state)
+                with _recording(group, union) as run:
                     results = create_hook(group)
                 if not isinstance(results, list):
                     raise TypeError(
                         f"{type(group[0]).__name__}.create() must return a list"
                     )
-                # TODO: Record dependencies per object during batched execution.
-                # Every object currently shares the batch's dependencies.
-                dependencies = [recorder.versions for _ in group]
+                # TODO: Trace code and dependencies per object during batched
+                # execution. Every object currently shares the batch's trace.
+                runs = [run for _ in group]
             case create_hook:
                 results = []
-                dependencies = []
-                for obj in group:
-                    with _recording([obj]) as recorder:
+                runs = []
+                for obj, state in zip(group, resumed, strict=True):
+                    with _recording([obj], state) as run:
                         results.append(create_hook(obj))
-                    dependencies.append(recorder.versions)
+                    runs.append(run)
 
         if len(results) != len(group):
             raise TypeError(
                 f"{type(group[0]).__name__} returned {len(results)} results for {len(group)} objects"
             )
 
-        for obj, result, obj_dependencies in zip(
-            group, results, dependencies, strict=True
-        ):
-            dump_state = _store_result(
+        for obj, result, run in zip(group, results, runs, strict=True):
+            version_name, dump_state = _store_result(
                 obj,
                 result,
-                dependencies=obj_dependencies,
+                run=run,
                 has_lock=has_lock,
                 submit_provenance=submit_provenance,
                 started_at=started_at,
@@ -553,6 +593,7 @@ def _create_and_store_group[T](
             results_by_object_id[obj.object_id] = _publish(
                 obj,
                 result,
+                version_name=version_name,
                 dump_state=dump_state,
                 has_lock=has_lock,
             )

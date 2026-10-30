@@ -71,15 +71,26 @@ def collect_declared_refs(obj: Spec) -> tuple[Spec, ...]:
 class DependencyRecorder:
     """Which version of each dependency a create() loaded.
 
-    Versions are stored relative to the creating spec's storage root.
+    Versions are stored relative to the creating spec's storage root, so a
+    lookup can re-check them without a Spec object.
     """
 
-    def __init__(self, storage_root: Path) -> None:
+    def __init__(
+        self,
+        storage_root: Path,
+        versions: dict[str, str],
+        log: Callable[[list[str]], None] | None,
+    ) -> None:
         self._storage_root = storage_root
-        self.versions: dict[str, str] = {}
+        self.versions = versions
+        self._log = log
 
     def record(self, obj: Spec, version: Path) -> None:
-        self.versions[obj.object_id] = os.path.relpath(version, self._storage_root)
+        relative = os.path.relpath(version, self._storage_root)
+        if self.versions.get(obj.object_id) != relative:
+            self.versions[obj.object_id] = relative
+            if self._log is not None:
+                self._log(["dependency", obj.object_id, relative])
 
 
 # TODO: dependencies loaded in threads a create() starts aren't recorded
@@ -98,8 +109,12 @@ def record_dependency(obj: Spec, version: Path) -> None:
 
 
 @contextmanager
-def dependency_recorder(storage_root: Path) -> Generator[DependencyRecorder]:
-    recorder = DependencyRecorder(storage_root)
+def dependency_recorder(
+    storage_root: Path,
+    versions: dict[str, str],
+    log: Callable[[list[str]], None] | None,
+) -> Generator[DependencyRecorder]:
+    recorder = DependencyRecorder(storage_root, versions, log)
     token = _active_dependency_recorder.set(recorder)
     try:
         yield recorder
