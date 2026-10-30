@@ -26,4 +26,5 @@ class SpecDirectory:
 
     @cached_property
     def run_log(self) -> Path:
-        return run_log_path_in(self._base_dir)
+        # _base_dir is attempt/; run.log logs every attempt, beside it.
+        return run_log_path_in(self._base_dir.parent)
