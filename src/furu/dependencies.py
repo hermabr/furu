@@ -112,6 +112,10 @@ def is_under_creation(obj: Spec) -> bool:
     return obj.object_id in _specs_under_creation.get()
 
 
+def any_under_creation() -> bool:
+    return bool(_specs_under_creation.get())
+
+
 @contextmanager
 def under_creation(objs: Sequence[Spec]) -> Generator[None]:
     token = _specs_under_creation.set(frozenset(obj.object_id for obj in objs))
@@ -119,3 +123,19 @@ def under_creation(objs: Sequence[Spec]) -> Generator[None]:
         yield
     finally:
         _specs_under_creation.reset(token)
+
+
+class _DependencyNotReady(BaseException):
+    """create() inside a create hook found missing results.
+
+    A BaseException so user ``except Exception`` blocks don't swallow it. The
+    runner builds ``dependencies``, then reruns the blocked create from scratch.
+    """
+
+    def __init__(self, dependencies: Sequence[Spec]):
+        self.dependencies = tuple(dependencies)
+        super().__init__(missing_dependencies(len(self.dependencies)))
+
+
+def missing_dependencies(count: int) -> str:
+    return f"{count} missing {'dependency' if count == 1 else 'dependencies'}"

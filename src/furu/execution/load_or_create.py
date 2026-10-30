@@ -5,7 +5,6 @@ import shutil
 import time
 import traceback
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import nullcontext
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -18,9 +17,12 @@ from furu._declared_types import declared_result_type
 from furu._tree import map_specs, specs_in
 from furu.config import get_config
 from furu.core import Missing, Spec
+from furu.dag import Dag
 from furu.dependencies import (
-    collect_declared_refs,
+    _DependencyNotReady,
+    any_under_creation,
     dependency_recorder,
+    missing_dependencies,
     record_dependency_call,
     under_creation,
 )
@@ -59,10 +61,6 @@ from furu.utils import (
     error_summary,
     format_duration,
     nfs_safe_unique_name,
-)
-from furu.worker.context import (
-    _DependencyNotReady,
-    _in_worker_execution,
 )
 
 if TYPE_CHECKING:
@@ -165,8 +163,8 @@ def _load_or_create(
     objs = specs_in(tree)
     for obj in objs:
         record_dependency_call(obj)
-    if _in_worker_execution.get():
-        outputs = _load_or_create_worker(objs, load=load)
+    if any_under_creation():
+        outputs = _load_or_block(objs, load=load)
     else:
         outputs = _load_or_create_local(objs, load=load)
     if not load:
@@ -176,7 +174,10 @@ def _load_or_create(
 
 
 def _ensure_group_result[T](
-    objs: Sequence[Spec[T]], *, submit_provenance: SubmitProvenance
+    objs: Sequence[Spec[T]],
+    *,
+    results_by_object_id: dict[str, T],
+    submit_provenance: SubmitProvenance,
 ) -> None:
     missing: list[Spec[T]] = []
     for obj in objs:
@@ -198,7 +199,7 @@ def _ensure_group_result[T](
             _create_and_store_group(
                 pending,
                 has_lock=has_lock,
-                results_by_object_id={},
+                results_by_object_id=results_by_object_id,
                 submit_provenance=submit_provenance,
             )
 
@@ -304,7 +305,12 @@ def _cached_to_build_msg(cached: list[Spec], to_build: list[Spec]) -> str:
     return f"building {fmt(to_build)}, {msg}" if to_build else msg
 
 
-def _load_or_create_worker[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
+def _load_or_block[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
+    """Load ``objs`` inside a create hook, or block that create if any are missing.
+
+    Blocking aborts the hook; the caller builds the missing specs and reruns it
+    from scratch, so specs never build inside another spec's create.
+    """
     loaded: list[T] = []
     cached: list[Spec[T]] = []
     missing: list[Spec[T]] = []
@@ -322,110 +328,89 @@ def _load_or_create_worker[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
         objs[0].logger.info("%s", _cached_to_build_msg(cached, missing))
 
     if missing:
-        raise _DependencyNotReady(dependencies=missing)
+        raise _DependencyNotReady(missing)
 
     return loaded
 
 
-def _load_or_create_local[T](
-    objs: list[Spec[T]],
-    *,
-    dependents: Sequence[Spec] = (),
-    load: bool = True,
-) -> list[T]:
-    if not objs:
-        return []
+def _load_or_create_local[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
+    """Build what ``objs`` need in this process, then return their results.
 
-    unique_by_object_id: dict[str, Spec[T]] = {}
-    for obj in objs:
-        unique_by_object_id.setdefault(obj.object_id, obj)
-    unique = list(unique_by_object_id.values())
-
-    results_by_object_id: dict[str, T] = {}
-    cached: list[Spec[T]] = []
-    missing: list[Spec[T]] = []
-
-    for obj in unique:
-        if (cached_result_dir := result_dir_for_loading(obj)) is not None:
-            cached.append(obj)
-            if load:
-                results_by_object_id[obj.object_id] = load_stored_result(
-                    obj, cached_result_dir
-                )
-        else:
-            raise_if_stale(obj)
-            missing.append(obj)
-
+    Runs the same graph as a worker run: a create that blocks on missing specs
+    is aborted with its locks released, they are built, and it reruns.
+    """
+    dag = Dag()
+    dag.add(objs)
+    cached = [obj for obj in objs if obj.object_id not in dag.nodes_by_id]
     if cached:
-        unique[0].logger.info("%s", _cached_to_build_msg(cached, missing))
+        to_build = [obj for obj in objs if obj.object_id in dag.nodes_by_id]
+        objs[0].logger.info("%s", _cached_to_build_msg(cached, to_build))
 
-    if dependents and missing:
-        others = f" and {len(dependents) - 1} others" if len(dependents) > 1 else ""
-        dependents[0].logger.info(
-            "building %d %s of %s%s",
-            len(missing),
-            "dependency" if len(missing) == 1 else "dependencies",
-            dependents[0]._log_label,
-            others,
-        )
-
-    # Declared dependencies are built first, matching the coordinator's DAG.
-    _load_or_create_local(
-        [ref for obj in missing for ref in collect_declared_refs(obj)],
-        dependents=missing,
-        load=False,
-    )
-    for obj in missing:
-        obj._base_dir.mkdir(parents=True, exist_ok=True)
-
-    lock_ctx = (
-        lock([compute_lock_path_in(obj._base_dir) for obj in missing])
-        if missing
-        else nullcontext(lambda: True)
-    )
-
-    with lock_ctx as has_lock:
-        pending: list[Spec[T]] = []
-        late_hits = 0
-        for obj in missing:
-            if (
-                cached_result_dir := result_dir_for_loading(obj, has_lock=True)
-            ) is not None:
-                late_hits += 1
-                if load:
-                    results_by_object_id[obj.object_id] = load_stored_result(
-                        obj, cached_result_dir
-                    )
-            else:
-                pending.append(obj)
-
-        if late_hits:
-            objs[0].logger.info(
-                "%d became ready while waiting, %d to build", late_hits, len(pending)
-            )
-
-        if pending:
-            submit_provenance = capture_submit_provenance(
-                snapshot=get_config().provenance.snapshot
-            )
-
-            for group in _grouped_pending(pending):
-                _create_in_process(
-                    group,
-                    has_lock=has_lock,
-                    results_by_object_id=results_by_object_id if load else {},
-                    submit_provenance=submit_provenance,
-                )
-
+    wanted = {obj.object_id for obj in objs} if load else set()
+    results: dict[str, T] = _run_in_process(dag, keep=wanted) if dag.ready else {}
     if not load:
         return []
-    return [results_by_object_id[obj.object_id] for obj in objs]
+    return [
+        results[obj.object_id] if obj.object_id in results else obj.load_existing()
+        for obj in objs
+    ]
+
+
+def _run_in_process(dag: Dag, *, keep: set[str]) -> dict[str, Any]:
+    """Create every ready spec in ``dag`` and return the results in ``keep``."""
+    submit_provenance = capture_submit_provenance(
+        snapshot=get_config().provenance.snapshot
+    )
+    here = Worker.here()
+    results: dict[str, Any] = {}
+    while dag.ready:
+        lead = next(iter(dag.ready.values()))
+        group = [lead]
+        if (batch := lead.batch_group(here)) is not None:
+            group = [n for n in dag.ready.values() if n.batch_group(here) == batch]
+            group = group[: batch[1]]
+        for node in group:
+            del dag.ready[node.obj.object_id]
+
+        group_results: dict[str, Any] = {}
+        try:
+            _create_in_process(
+                [node.obj for node in group],
+                results_by_object_id=group_results,
+                submit_provenance=submit_provenance,
+            )
+        except _DependencyNotReady as exc:
+            lead.obj.logger.info(
+                "blocked %s%s · %s",
+                lead.obj._log_label,
+                f" ×{len(group)}" if len(group) > 1 else "",
+                missing_dependencies(len(exc.dependencies)),
+            )
+            for dep in exc.dependencies:
+                if dep.object_id in dag.completed:
+                    raise RuntimeError(
+                        f"{lead.obj._log_label} still finds {dep._log_label} "
+                        "missing after building it"
+                    ) from None
+            for node in group:
+                dag.block(node, exc.dependencies)
+            continue
+        except Exception as exc:
+            if lead.dependents:
+                exc.add_note(
+                    "while building dependencies of "
+                    + lead.dependents[0].obj._log_label
+                )
+            raise
+        for node in group:
+            dag.complete(node)
+        results.update((k, v) for k, v in group_results.items() if k in keep)
+    return results
 
 
 def _create_in_process[T](
     group: list[Spec[T]],
     *,
-    has_lock: HasLock,
     results_by_object_id: dict[str, T],
     submit_provenance: SubmitProvenance,
 ) -> None:
@@ -437,18 +422,23 @@ def _create_in_process[T](
     lead = group[0]
     label = lead._log_label + (f" ×{len(group)}" if len(group) > 1 else "")
     run_logs = [(obj._log_label, run_log_path_in(obj._base_dir)) for obj in group]
-    # Inside another create(), this line lands in that one's run.log.
+    for obj in group:
+        obj._base_dir.mkdir(parents=True, exist_ok=True)
     lead.logger.info("creating %s", label, extra={"path": run_logs[0][1]})
     started_at = time.monotonic()
     with _run_log_scope(run_logs[0][1]) as run_log:
         _open_sections(run_logs, run_log, "in-process")
         try:
-            _create_and_store_group(
+            _ensure_group_result(
                 group,
-                has_lock=has_lock,
                 results_by_object_id=results_by_object_id,
                 submit_provenance=submit_provenance,
             )
+        except _DependencyNotReady as exc:
+            duration = format_duration(time.monotonic() - started_at)
+            missing = missing_dependencies(len(exc.dependencies))
+            _close_sections(run_logs, run_log, f"blocked · {duration} · {missing}")
+            raise
         except BaseException as exc:
             duration = format_duration(time.monotonic() - started_at)
             summary = error_summary("".join(traceback.format_exception_only(exc)))
@@ -471,25 +461,6 @@ def _batch_group(obj: Spec, worker: Worker) -> tuple[object, int] | None:
         )
     key = (type(obj), group_hash, cap, obj._metadata)
     return key, cap
-
-
-def _grouped_pending[T](pending: list[Spec[T]]) -> list[list[Spec[T]]]:
-    """Partition by (type, batch_key, metadata), chunked to the cap."""
-    here = Worker.here()
-    groups: list[tuple[object, int | None, list[Spec[T]]]] = []
-    for obj in pending:
-        key, cap = _batch_group(obj, here) or (type(obj), None)
-        for existing_key, _, group in groups:
-            if existing_key == key:
-                group.append(obj)
-                break
-        else:
-            groups.append((key, cap, [obj]))
-    return [
-        group[i : i + (cap or len(group))]
-        for _, cap, group in groups
-        for i in range(0, len(group), cap or len(group))
-    ]
 
 
 def _create_and_store_group[T](
