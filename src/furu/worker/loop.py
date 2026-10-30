@@ -116,7 +116,7 @@ def worker_loop(
                         worker=component,
                         backend=backend,
                         pool=pool,
-                        running=job.artifacts if job is not None else [],
+                        running=job,
                         log=worker_log,
                     ).model_dump_json()
                 )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+import json
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -8,8 +9,8 @@ from pydantic import BaseModel, ConfigDict
 
 from furu._declared_types import declared_result_type
 from furu.constants import FIELDSMARKER
-from furu.locking import lock, read_text_or_none
-from furu.metadata import CompletedMetadata
+from furu.locking import is_active_lock, lock, read_text_or_none
+from furu.metadata import ArtifactSpec
 from furu.migration.resolution import (
     _apply_child_moves,
     _apply_steps,
@@ -90,6 +91,11 @@ _SOURCES_CACHE: dict[tuple[type, Path], Mapping[str, list[_ResultLinkSource]]] =
 def _migrated_sources(
     cls: type, resolution: _ClassResolution, covered: _Covered
 ) -> Mapping[str, list[_ResultLinkSource]]:
+    """Artifacts under ``covered`` by migrated fields, done or still computing.
+
+    Callers check the manifest (done) or compute lock (running) live, so the
+    index stays valid as jobs finish.
+    """
     key = (cls, covered.schema_directory)
     if (sources := _SOURCES_CACHE.get(key)) is None:
         sources = {}
@@ -102,14 +108,14 @@ def _migrated_sources(
         }
         if covered.schema_directory.exists():
             for artifact_dir in sorted(covered.schema_directory.iterdir()):
-                if not result_manifest_path_in(artifact_dir).exists():
+                if not artifact_dir.is_dir():
                     continue
-                metadata_path = metadata_path_in(artifact_dir)
-                if not metadata_path.exists():
+                metadata_text = read_text_or_none(metadata_path_in(artifact_dir))
+                if metadata_text is None:
                     continue
-                artifact = CompletedMetadata.model_validate_json(
-                    metadata_path.read_text(encoding="utf-8")
-                ).artifact
+                artifact = ArtifactSpec.model_validate(
+                    json.loads(metadata_text)["artifact"]
+                )
                 source = _ResultLinkSource(
                     fully_qualified_name=artifact.fully_qualified_name,
                     schema_hash=artifact.schema_hash,
@@ -127,9 +133,8 @@ def _migrated_sources(
     return sources
 
 
-def _find_source(obj: Spec, resolution: _ClassResolution) -> _ResultLink | None:
-    if not resolution.covered:
-        return None
+def _sources(obj: Spec, resolution: _ClassResolution) -> Iterator[_ResultLink]:
+    """Artifacts under older schemas that migrate to obj's, done or running."""
     target_fields = cast(JsonFields, obj._artifact_data[FIELDSMARKER])
     target_key = _stable_json_dump(target_fields)
     for covered in resolution.covered:
@@ -141,9 +146,7 @@ def _find_source(obj: Spec, resolution: _ClassResolution) -> _ResultLink | None:
             continue
         sources = _migrated_sources(type(obj), resolution, covered)
         for source in sources.get(target_key, ()):
-            if not result_manifest_path_in(source.base_dir).exists():
-                continue
-            return _ResultLink(
+            yield _ResultLink(
                 current=_ResultLinkCurrent(
                     fully_qualified_name=obj._fully_qualified_name,
                     schema_hash=obj._artifact_schema_hash,
@@ -161,7 +164,37 @@ def _find_source(obj: Spec, resolution: _ClassResolution) -> _ResultLink | None:
                     for step in resolution.own.steps[covered.generation.start :]
                 ),
             )
-    return None
+
+
+def _find_source(obj: Spec, resolution: _ClassResolution) -> _ResultLink | None:
+    return next(
+        (
+            link
+            for link in _sources(obj, resolution)
+            if result_manifest_path_in(link.source.base_dir).exists()
+        ),
+        None,
+    )
+
+
+def _is_running_elsewhere(obj: Spec, resolution: _ClassResolution) -> bool:
+    return any(
+        is_active_lock(compute_lock_path_in(link.source.base_dir))
+        for link in _sources(obj, resolution)
+    )
+
+
+def computes(artifact: ArtifactSpec, obj: Spec) -> bool:
+    """Whether a job storing ``artifact`` yields obj's result after migration."""
+    return any(
+        (
+            link.source.fully_qualified_name,
+            link.source.schema_hash,
+            link.source.artifact_hash,
+        )
+        == (artifact.fully_qualified_name, artifact.schema_hash, artifact.artifact_hash)
+        for link in _sources(obj, _class_resolution(obj))
+    )
 
 
 def result_dir_for_loading(obj: Spec, *, has_lock: bool = False) -> Path | None:

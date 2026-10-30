@@ -116,8 +116,6 @@ def _store_result[T](
     tmp_result_dir.rename(result_dir)
     result_link_path_in(obj._base_dir).unlink(missing_ok=True)
 
-    _record_schema_snapshot(obj)
-
     metadata_text = metadata.to_complete(
         observed_dependencies=observed_dependencies
     ).model_dump_json(indent=2)
@@ -499,6 +497,9 @@ def _create_and_store_group[T](
     results_by_object_id: dict[str, T],
     submit_provenance: SubmitProvenance,
 ) -> None:
+    # Recorded at start so runs under newer schemas can see this job.
+    for obj in group:
+        _record_schema_snapshot(obj)
     metadata = [RunningMetadata.write_for(obj) for obj in group]
 
     try:

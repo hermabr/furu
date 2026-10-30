@@ -19,7 +19,7 @@ from websockets.sync.server import ServerConnection, serve
 
 import furu
 import furu.worker.loop as worker_loop_module
-from furu import Spec, Throttle, Worker
+from furu import Added, MovedFrom, Spec, Throttle, Worker
 from furu.config import _Config, _dump_worker_json_config, get_config
 from furu.dag import _add_to_dag
 from furu.execution.execution_coordinator import (
@@ -28,10 +28,11 @@ from furu.execution.execution_coordinator import (
     RunningJob,
     _resolve_takeover,
 )
+from furu.execution.load_or_create import _record_schema_snapshot
 from furu.execution.server import execution_coordinator_server, request_takeover
 from furu.locking import lock
 from furu.logging import _display_path
-from furu.metadata import ArtifactSpec
+from furu.metadata import ArtifactSpec, RunningMetadata
 from furu.provenance import (
     EnvironmentIdentity,
     GitIdentity,
@@ -44,6 +45,7 @@ from furu.storage._layout import (
     run_log_path_in,
 )
 from furu.testing import override_config
+from furu.utils import fully_qualified_name
 from furu.worker.backends.local import LocalThreadWorkerBackend, LocalThreadWorkerPool
 from furu.worker.execute import ChildSlot
 from furu.worker.loop import worker_loop
@@ -136,8 +138,12 @@ def _lease_job(
     coordinator: ExecutionCoordinator,
     *,
     backend: LocalThreadWorkerBackend = CPU_POOL,
+    worker: str | None = None,
 ) -> Job | None:
-    return coordinator.lease_job(backend=backend, worker=f"test-worker-{uuid4()}")
+    leased = coordinator.lease_job(
+        backend=backend, worker=worker or f"test-worker-{uuid4()}"
+    )
+    return None if leased is None else leased[0]
 
 
 def _no_satisfiable_job(
@@ -233,6 +239,15 @@ def _mark_running(obj: Spec) -> Generator[None]:
 
 
 @contextmanager
+def _mark_running_under_old_schema(obj: Spec) -> Generator[None]:
+    """A job in progress as a real worker leaves it: lock, metadata, snapshot."""
+    with _mark_running(obj):
+        _record_schema_snapshot(obj)
+        RunningMetadata.write_for(obj)
+        yield
+
+
+@contextmanager
 def _taking_over(prefix: str) -> Generator[None]:
     with mock.patch.dict(os.environ, {"FURU_TAKEOVER": prefix}):
         yield
@@ -291,6 +306,26 @@ class ExecutionCoordinatorLeaf(Spec[int]):
 
     def create(self) -> int:
         return self.value
+
+
+class OldSchemaLeaf(Spec[int]):
+    value: int
+
+    def create(self) -> int:
+        return self.value
+
+
+class MigratedLeaf(Spec[int]):
+    value: int
+    seed: int = 0
+
+    migrations = (
+        MovedFrom(fully_qualified_name(OldSchemaLeaf)),
+        Added("seed", default=0),
+    )
+
+    def create(self) -> int:
+        return self.value + self.seed
 
 
 class FlakyExecutionCoordinatorLeaf(Spec[int]):
@@ -457,7 +492,7 @@ def test_execution_coordinator_job_result_completed_moves_dependents_to_ready() 
     parent = ExecutionCoordinatorParent(child=leaf)
     coordinator = _new_execution_coordinator([parent])
 
-    job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
+    job = _lease_job(coordinator, backend=CPU_POOL, worker="test-worker")
     assert isinstance(job, Job)
     assert set(coordinator.running) == {leaf.object_id}
     running_job = coordinator.running[leaf.object_id]
@@ -493,7 +528,7 @@ def test_execution_coordinator_job_result_blocked_discovers_lazy_dependency_and_
     dependency = ExecutionCoordinatorLeaf(value=2)
     coordinator = _new_execution_coordinator([parent])
 
-    parent_job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
+    parent_job = _lease_job(coordinator, backend=CPU_POOL, worker="test-worker")
     assert isinstance(parent_job, Job)
 
     coordinator.job_result(
@@ -504,7 +539,7 @@ def test_execution_coordinator_job_result_blocked_discovers_lazy_dependency_and_
     assert set(coordinator.ready) == {dependency.object_id}
     assert set(coordinator.blocked) == {parent.object_id}
 
-    dependency_job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
+    dependency_job = _lease_job(coordinator, backend=CPU_POOL, worker="test-worker")
     assert isinstance(dependency_job, Job)
     coordinator.job_result(dependency.object_id, JobCompletedResult())
 
@@ -520,7 +555,7 @@ def test_execution_coordinator_job_result_blocked_ignores_completed_lazy_depende
     dependency.create()
     coordinator = _new_execution_coordinator([parent])
 
-    parent_job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
+    parent_job = _lease_job(coordinator, backend=CPU_POOL, worker="test-worker")
     assert isinstance(parent_job, Job)
 
     coordinator.job_result(
@@ -543,7 +578,7 @@ def test_execution_coordinator_job_result_blocked_discovers_multiple_lazy_depend
     ]
     coordinator = _new_execution_coordinator([parent])
 
-    parent_job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
+    parent_job = _lease_job(coordinator, backend=CPU_POOL, worker="test-worker")
     assert isinstance(parent_job, Job)
 
     coordinator.job_result(
@@ -576,7 +611,7 @@ def test_execution_coordinator_re_leases_blocked_job_after_dependency_completes(
     dependency = ExecutionCoordinatorLeaf(value=2)
     coordinator = _new_execution_coordinator([parent])
 
-    first_parent_job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
+    first_parent_job = _lease_job(coordinator, backend=CPU_POOL, worker="test-worker")
     assert isinstance(first_parent_job, Job)
 
     coordinator.job_result(
@@ -584,11 +619,11 @@ def test_execution_coordinator_re_leases_blocked_job_after_dependency_completes(
         JobBlockedResult(dependencies=[ArtifactSpec.from_furu(dependency)]),
     )
 
-    dependency_job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
+    dependency_job = _lease_job(coordinator, backend=CPU_POOL, worker="test-worker")
     assert isinstance(dependency_job, Job)
     coordinator.job_result(dependency.object_id, JobCompletedResult())
 
-    second_parent_job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
+    second_parent_job = _lease_job(coordinator, backend=CPU_POOL, worker="test-worker")
     assert isinstance(second_parent_job, Job)
     assert _artifact(second_parent_job).object_id == parent.object_id
 
@@ -601,7 +636,7 @@ def test_execution_coordinator_job_result_failed_finishes_with_error(
 ) -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
     coordinator = _new_execution_coordinator([leaf], max_retries_per_object=0)
-    job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
+    job = _lease_job(coordinator, backend=CPU_POOL, worker="test-worker")
     assert isinstance(job, Job)
 
     with _captured_furu_logs(caplog):
@@ -633,7 +668,7 @@ def test_execution_coordinator_job_result_failed_retries_before_finishing(
     leaf = ExecutionCoordinatorLeaf(value=1)
     coordinator = _new_execution_coordinator([leaf], max_retries_per_object=2)
 
-    first_job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
+    first_job = _lease_job(coordinator, backend=CPU_POOL, worker="test-worker")
     assert isinstance(first_job, Job)
     with _captured_furu_logs(caplog):
         coordinator.job_result(leaf.object_id, JobFailedResult(error="boom 1"))
@@ -645,7 +680,7 @@ def test_execution_coordinator_job_result_failed_retries_before_finishing(
     assert set(coordinator.ready) == {leaf.object_id}
     assert not coordinator.done.is_set()
 
-    second_job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
+    second_job = _lease_job(coordinator, backend=CPU_POOL, worker="test-worker")
     assert isinstance(second_job, Job)
     with _captured_furu_logs(caplog):
         coordinator.job_result(leaf.object_id, JobFailedResult(error="boom 2"))
@@ -657,7 +692,7 @@ def test_execution_coordinator_job_result_failed_retries_before_finishing(
     assert set(coordinator.ready) == {leaf.object_id}
     assert not coordinator.done.is_set()
 
-    third_job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
+    third_job = _lease_job(coordinator, backend=CPU_POOL, worker="test-worker")
     assert isinstance(third_job, Job)
     coordinator.job_result(leaf.object_id, JobFailedResult(error="boom 3"))
 
@@ -737,14 +772,14 @@ def test_execution_coordinator_job_result_failed_retry_can_later_complete() -> N
     leaf = ExecutionCoordinatorLeaf(value=1)
     coordinator = _new_execution_coordinator([leaf], max_retries_per_object=1)
 
-    first_job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
+    first_job = _lease_job(coordinator, backend=CPU_POOL, worker="test-worker")
     assert isinstance(first_job, Job)
     coordinator.job_result(leaf.object_id, JobFailedResult(error="boom"))
 
     failed_job = coordinator.failed[leaf.object_id]
     assert failed_job.failed_attempts == 1
 
-    retry_job = coordinator.lease_job(backend=CPU_POOL, worker="test-worker")
+    retry_job = _lease_job(coordinator, backend=CPU_POOL, worker="test-worker")
     assert isinstance(retry_job, Job)
     coordinator.job_result(leaf.object_id, JobCompletedResult())
 
@@ -1084,8 +1119,8 @@ def test_worker_lost_requeues_running_lease_without_counting_failure() -> None:
     objs = [LimitedExecutionCoordinatorLeaf(value=value) for value in range(3)]
     coordinator = _new_execution_coordinator(objs)
 
-    first = coordinator.lease_job(backend=CPU_POOL, worker="worker-1")
-    second = coordinator.lease_job(backend=CPU_POOL, worker="worker-2")
+    first = _lease_job(coordinator, backend=CPU_POOL, worker="worker-1")
+    second = _lease_job(coordinator, backend=CPU_POOL, worker="worker-2")
 
     assert isinstance(first, Job)
     assert isinstance(second, Job)
@@ -1102,7 +1137,7 @@ def test_worker_lost_requeues_running_lease_without_counting_failure() -> None:
 def test_job_result_after_worker_lost_is_ignored() -> None:
     leaf = ExecutionCoordinatorLeaf(value=1)
     coordinator = _new_execution_coordinator([leaf])
-    job = coordinator.lease_job(backend=CPU_POOL, worker="worker-1")
+    job = _lease_job(coordinator, backend=CPU_POOL, worker="worker-1")
     assert isinstance(job, Job)
 
     coordinator.worker_lost("worker-1")
@@ -1135,8 +1170,8 @@ def test_lease_job_filters_by_worker_memory_gib() -> None:
 
     assert _no_satisfiable_job(coordinator, backend=_pool(Worker(memory_gib=7)))
 
-    memory_job = coordinator.lease_job(
-        backend=_pool(Worker(memory_gib=8)), worker="test-worker"
+    memory_job = _lease_job(
+        coordinator, backend=_pool(Worker(memory_gib=8)), worker="test-worker"
     )
     assert isinstance(memory_job, Job)
     assert _artifact(memory_job).object_id == memory_leaf.object_id
@@ -2050,10 +2085,10 @@ def test_execution_coordinator_fail_sets_finish_error_and_done() -> None:
         coordinator.raise_for_failure()
 
 
-def test_hello_message_running_defaults_to_empty() -> None:
+def test_hello_message_running_defaults_to_none() -> None:
     hello = HelloMessage(worker="w", backend="test", pool="cpu")
 
-    assert hello.running == []
+    assert hello.running is None
     assert HelloMessage.model_validate_json(hello.model_dump_json()) == hello
 
 
@@ -2090,7 +2125,7 @@ def test_hello_running_adopts_job_this_run_still_wants(
                     worker="inherited-worker",
                     backend="test",
                     pool="cpu",
-                    running=[ArtifactSpec.from_furu(leaf)],
+                    running=_job(leaf),
                 ).model_dump_json()
             )
             _wait_until(lambda: leaf.object_id in coordinator.running)
@@ -2133,7 +2168,7 @@ def test_hello_running_cancels_job_not_in_this_run(
                     worker="inherited-worker",
                     backend="test",
                     pool="cpu",
-                    running=[ArtifactSpec.from_furu(stranger)],
+                    running=_job(stranger),
                 ).model_dump_json()
             )
             assert (
@@ -2222,8 +2257,8 @@ def test_worker_loop_reconnects_when_worker_config_url_changes(
                 disconnect_grace=0,
             )
 
-    assert [hello.running for hello in hellos["old"]] == [[]]
-    assert [hello.running for hello in hellos["new"]] == [[]]
+    assert [hello.running for hello in hellos["old"]] == [None]
+    assert [hello.running for hello in hellos["new"]] == [None]
     assert results == [JobCompletedResult()]
     assert "coordinator moved; reconnecting" in caplog.messages
     assert "server closed the connection; exiting" in caplog.messages
@@ -2321,7 +2356,7 @@ def test_worker_loop_carries_running_job_to_new_coordinator(tmp_path: Path) -> N
                 disconnect_grace=0,
             )
 
-    assert [hello.running for hello in new_hellos] == [job.artifacts]
+    assert [hello.running for hello in new_hellos] == [job]
     assert results == [JobCompletedResult()]
     assert leaf.status == "done"
 
@@ -2416,6 +2451,7 @@ def test_worker_loop_keeps_job_while_waiting_for_moved_coordinator(
 ) -> None:
     release_file = tmp_path / "go"
     leaf = GatedExecutionCoordinatorLeaf(value=1, release_file=str(release_file))
+    job = _job(leaf)
     config_file = tmp_path / "worker.config.json"
     new_hellos: list[HelloMessage] = []
     results: list[JobResult] = []
@@ -2427,7 +2463,7 @@ def test_worker_loop_keeps_job_while_waiting_for_moved_coordinator(
 
     def old_handler(connection: ServerConnection) -> None:
         HelloMessage.model_validate_json(connection.recv(timeout=5))
-        connection.send(_job(leaf).model_dump_json())
+        connection.send(job.model_dump_json())
 
     with _serve(new_handler) as new_url, _serve(old_handler) as old_url:
         _write_worker_config(config_file, url=old_url)
@@ -2449,7 +2485,7 @@ def test_worker_loop_keeps_job_while_waiting_for_moved_coordinator(
                 disconnect_grace=5,
             )
 
-    assert [hello.running for hello in new_hellos] == [[ArtifactSpec.from_furu(leaf)]]
+    assert [hello.running for hello in new_hellos] == [job]
     assert results == [JobCompletedResult()]
     assert leaf.status == "done"
     assert "coordinator moved; reconnecting" in caplog.messages
@@ -2559,9 +2595,157 @@ def test_adopt_accepts_job_started_after_dag_build() -> None:
     coordinator = _new_execution_coordinator([held])
 
     with _mark_running(held):
-        assert coordinator.adopt([ArtifactSpec.from_furu(held)], worker="w") is True
+        assert coordinator.adopt(_job(held), worker="w") == [held.object_id]
 
     assert coordinator.running[held.object_id].worker == "w"
+
+
+def test_lease_job_waits_for_job_running_under_an_older_schema() -> None:
+    old = OldSchemaLeaf(value=1)
+    new = MigratedLeaf(value=1)
+    leased: list[Job | None] = []
+
+    with mock.patch(
+        "furu.execution.execution_coordinator._RUNNING_ELSEWHERE_POLL_INTERVAL_S",
+        0.01,
+    ):
+        with _mark_running_under_old_schema(old):
+            coordinator = _new_execution_coordinator([new])
+            assert set(coordinator.ready) == {new.object_id}
+            thread = threading.Thread(
+                target=lambda: leased.append(_lease_job(coordinator))
+            )
+            thread.start()
+            _wait_until(lambda: coordinator.running_elsewhere == {new.object_id})
+            time.sleep(0.1)
+            assert leased == []
+
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+    assert _artifact(leased[0]).object_id == new.object_id
+
+
+def test_adopt_maps_job_under_an_older_schema_to_its_migrated_node() -> None:
+    old = OldSchemaLeaf(value=1)
+    new = MigratedLeaf(value=1)
+
+    with _mark_running_under_old_schema(old):
+        coordinator = _new_execution_coordinator([new])
+        assert coordinator.adopt(_job(old), worker="w") == [new.object_id]
+    assert coordinator.running[new.object_id].worker == "w"
+
+    # The pinned default is what old jobs computed; other values are new work.
+    other = OldSchemaLeaf(value=2)
+    with _mark_running_under_old_schema(other):
+        coordinator = _new_execution_coordinator([MigratedLeaf(value=2, seed=7)])
+        assert coordinator.adopt(_job(other), worker="w") == []
+
+
+def test_hello_running_adopts_job_under_an_older_schema() -> None:
+    old = OldSchemaLeaf(value=1)
+    new = MigratedLeaf(value=1)
+
+    with _mark_running_under_old_schema(old):
+        coordinator = _new_execution_coordinator([new])
+        with execution_coordinator_server(
+            coordinator, bind_host="127.0.0.1", port=0
+        ) as server:
+            connection = connect(_url_for(server))
+            with connection:
+                connection.send(
+                    HelloMessage(
+                        worker="inherited-worker",
+                        backend="test",
+                        pool="cpu",
+                        running=_job(old),
+                    ).model_dump_json()
+                )
+                _wait_until(lambda: new.object_id in coordinator.running)
+                connection.send(JobCompletedResult().model_dump_json())
+                with pytest.raises(ConnectionClosedOK):
+                    connection.recv(timeout=5)
+
+    assert set(coordinator.completed) == {new.object_id}
+
+
+def test_adopted_job_resumes_with_its_own_code_after_worker_lost() -> None:
+    old = OldSchemaLeaf(value=1)
+    new = MigratedLeaf(value=1)
+    adopted = _job(old).model_copy(
+        update={
+            "attempt": 3,
+            "provenance": _submit_provenance().model_copy(
+                update={"snapshot_id": "old-run"}
+            ),
+        }
+    )
+
+    with _mark_running_under_old_schema(old):
+        coordinator = _new_execution_coordinator([new], max_retries_per_object=1)
+        assert coordinator.adopt(adopted, worker="inherited") == [new.object_id]
+    coordinator.worker_lost("inherited")
+
+    with (
+        execution_coordinator_server(
+            coordinator, bind_host="127.0.0.1", port=0
+        ) as server,
+        _connect_worker(server) as connection,
+    ):
+        resumed = Job.model_validate_json(connection.recv(timeout=5))
+        assert resumed == adopted.model_copy(
+            update={
+                "attempt": 4,
+                "execution_log": execution_log_path_in(coordinator.executor_dir),
+            }
+        )
+        connection.send(JobFailedResult(error="boom").model_dump_json())
+
+        # A real failure retries under this run's code and schema.
+        retry = Job.model_validate_json(connection.recv(timeout=5))
+        assert retry.artifacts == [ArtifactSpec.from_furu(new)]
+        assert retry.provenance == coordinator.submit_provenance
+        assert retry.attempt == 2
+        connection.send(JobCompletedResult().model_dump_json())
+        with pytest.raises(ConnectionClosedOK):
+            connection.recv(timeout=5)
+
+    assert set(coordinator.completed) == {new.object_id}
+
+
+def test_leased_job_after_worker_lost_is_leased_fresh() -> None:
+    leaf = ExecutionCoordinatorLeaf(value=1)
+    coordinator = _new_execution_coordinator([leaf])
+    first = _lease_job(coordinator, backend=CPU_POOL, worker="worker-1")
+
+    coordinator.worker_lost("worker-1")
+
+    assert isinstance(first, Job)
+    assert _lease_job(coordinator, backend=CPU_POOL, worker="worker-2") == first
+
+
+def test_adopted_batch_resumes_as_one_unit_after_worker_lost() -> None:
+    objs = [BatchedCoordinatorLeaf(value=value) for value in range(3)]
+    coordinator = _new_execution_coordinator(objs)
+    adopted = _job(objs[1], objs[2])
+    assert coordinator.adopt(adopted, worker="inherited") == [
+        objs[1].object_id,
+        objs[2].object_id,
+    ]
+
+    coordinator.worker_lost("inherited")
+
+    assert coordinator.count_satisfiable_jobs(backend=CPU_POOL, max_workers=10) == 2
+    fresh = _lease_job(coordinator, backend=CPU_POOL, worker="w1")
+    assert _artifact(fresh) == ArtifactSpec.from_furu(objs[0])
+    assert coordinator.lease_job(backend=CPU_POOL, worker="w2") == (
+        adopted.model_copy(
+            update={
+                "attempt": 2,
+                "execution_log": execution_log_path_in(coordinator.executor_dir),
+            }
+        ),
+        [objs[1].object_id, objs[2].object_id],
+    )
 
 
 def test_lease_job_checks_every_batch_member_for_active_locks() -> None:

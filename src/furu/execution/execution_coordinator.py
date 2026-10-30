@@ -18,6 +18,7 @@ from furu.core import Spec
 from furu.dag import DagNode, _add_to_dag, _update_dag_blocking_dependencies
 from furu.logging import _display_path, _execution_log, get_logger
 from furu.metadata import ArtifactSpec
+from furu.migration.links import computes
 from furu.provenance import SubmitProvenance, capture_submit_provenance
 from furu.storage._layout import execution_log_path_in, run_log_path_in
 from furu.utils import error_summary, format_duration
@@ -46,6 +47,8 @@ class RunningJob:
     node: DagNode
     started_at: float
     worker: str
+    # An adopted job keeps its own code and artifacts if its worker is lost.
+    resume: Job | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +71,8 @@ class ExecutionCoordinator:
     running_elsewhere: set[str] = field(default_factory=set)
     blocked: dict[str, DagNode] = field(default_factory=dict)
     running: dict[str, RunningJob] = field(default_factory=dict)
+    # Ready nodes whose adopted job lost its worker; each job is re-leased whole.
+    resumes: dict[str, Job] = field(default_factory=dict)
     completed: dict[str, DagNode] = field(default_factory=dict)
     failed: dict[str, FailedJob] = field(default_factory=dict)
     pools: dict[str, WorkerPool] = field(default_factory=dict)
@@ -200,7 +205,10 @@ class ExecutionCoordinator:
     def executor_dir(self) -> Path:
         return get_config().run_directories.executions / self.executor_id
 
-    def lease_job(self, *, backend: WorkerBackend, worker: str) -> Job | None:
+    def lease_job(
+        self, *, backend: WorkerBackend, worker: str
+    ) -> tuple[Job, list[str]] | None:
+        """The next job for ``worker`` and the node ids it covers."""
         with self.lock:
             while True:
                 if self.done.is_set() or self.taken_over_by is not None:
@@ -213,28 +221,42 @@ class ExecutionCoordinator:
                             running_elsewhere.add(object_id)
                         else:
                             object_ids.append(object_id)
-                    if not object_ids:
+                    resume = self.resumes.get(node.obj.object_id)
+                    if not object_ids or (
+                        resume is not None and len(object_ids) <= len(member_ids)
+                    ):
                         continue
                     self._defer_running_elsewhere_locked(running_elsewhere)
-                    nodes = self._start_locked(object_ids, worker=worker)
+                    execution_log = execution_log_path_in(self.executor_dir)
+                    if resume is not None:
+                        resume = resume.model_copy(
+                            update={
+                                "attempt": resume.attempt + 1,
+                                "execution_log": execution_log,
+                            }
+                        )
+                    nodes = self._start_locked(object_ids, worker=worker, resume=resume)
                     node = nodes[0]
-                    run_logs = [run_log_path_in(node.obj._base_dir) for node in nodes]
-                    logger.info(
-                        "leased %s%s to %s",
-                        node.obj._log_label,
-                        f" ×{len(nodes)}" if len(nodes) > 1 else "",
-                        worker,
-                        extra={"path": run_logs[0]},
-                    )
                     previous = self.failed.get(node.obj.object_id)
-                    return Job(
+                    job = resume or Job(
                         artifacts=[ArtifactSpec.from_furu(node.obj) for node in nodes],
-                        run_logs=run_logs,
+                        run_logs=[
+                            run_log_path_in(node.obj._base_dir) for node in nodes
+                        ],
                         attempt=(previous.failed_attempts if previous else 0) + 1,
-                        execution_log=execution_log_path_in(self.executor_dir),
+                        execution_log=execution_log,
                         provenance=self.submit_provenance,
                         process=ProcessSettings.from_metadata(node.obj._metadata),
                     )
+                    logger.info(
+                        "%s %s%s to %s",
+                        "leased" if resume is None else "resumed",
+                        node.obj._log_label,
+                        f" ×{len(nodes)}" if len(nodes) > 1 else "",
+                        worker,
+                        extra={"path": job.run_logs[0]},
+                    )
+                    return job, object_ids
                 self._defer_running_elsewhere_locked(running_elsewhere)
                 if not self.running_elsewhere:
                     self.lock.wait()
@@ -261,30 +283,50 @@ class ExecutionCoordinator:
             "" if len(newly_deferred) == 1 else "s",
         )
 
-    def _start_locked(self, object_ids: Sequence[str], *, worker: str) -> list[DagNode]:
+    def _start_locked(
+        self, object_ids: Sequence[str], *, worker: str, resume: Job | None = None
+    ) -> list[DagNode]:
         started_at = time.monotonic()
         self.running_elsewhere.difference_update(object_ids)
         nodes = [self.ready.pop(object_id) for object_id in object_ids]
         for node in nodes:
+            self.resumes.pop(node.obj.object_id, None)
             self.running[node.obj.object_id] = RunningJob(
-                node=node, started_at=started_at, worker=worker
+                node=node, started_at=started_at, worker=worker, resume=resume
             )
         return nodes
 
-    def adopt(self, artifacts: Sequence[ArtifactSpec], *, worker: str) -> bool:
+    def adopt(self, job: Job, *, worker: str) -> list[str]:
+        """Take a worker's in-flight job as this run's; the node ids it covers."""
         with self.lock:
-            object_ids = [artifact.object_id for artifact in artifacts]
+            artifacts = job.artifacts
+            object_ids = [
+                object_id
+                for artifact in artifacts
+                if (object_id := self._ready_id_locked(artifact)) is not None
+            ]
             label = artifacts[0].log_label
             if len(artifacts) > 1:
                 label += f" ×{len(artifacts)}"
-            if self.done.is_set() or any(
-                object_id not in self.ready for object_id in object_ids
-            ):
+            if self.done.is_set() or len(object_ids) != len(artifacts):
                 logger.info("cancelled %s on %s: not in this run", label, worker)
-                return False
-            self._start_locked(object_ids, worker=worker)
+                return []
+            self._start_locked(object_ids, worker=worker, resume=job)
             logger.info("adopted %s from %s", label, worker)
-            return True
+            return object_ids
+
+    def _ready_id_locked(self, artifact: ArtifactSpec) -> str | None:
+        """The ready node ``artifact`` computes, possibly under an older schema."""
+        if artifact.object_id in self.ready:
+            return artifact.object_id
+        return next(
+            (
+                node_id
+                for node_id, node in self.ready.items()
+                if computes(artifact, node.obj)
+            ),
+            None,
+        )
 
     def worker_lost(self, worker: str) -> None:
         with self.lock:
@@ -331,12 +373,18 @@ class ExecutionCoordinator:
                 continue
             consumed.add(object_id)
             member_ids: list[str] = []
-            if (group := node.batch_group(backend.worker)) is not None:
+            if (resume := self.resumes.get(object_id)) is not None:
+                member_ids = [
+                    other_id
+                    for other_id, other in self.resumes.items()
+                    if other is resume and other_id != object_id
+                ]
+            elif (group := node.batch_group(backend.worker)) is not None:
                 group_key, cap = group
                 for other_id, other in self.ready.items():
                     if len(member_ids) + 1 >= cap:
                         break
-                    if other_id in consumed:
+                    if other_id in consumed or other_id in self.resumes:
                         continue
                     if other_id in self.running_elsewhere:
                         continue
@@ -346,7 +394,7 @@ class ExecutionCoordinator:
                     if not can_run(backend, other.obj):
                         continue
                     member_ids.append(other_id)
-                consumed.update(member_ids)
+            consumed.update(member_ids)
             running_counts[type(node.obj)] = running_counts.get(type(node.obj), 0) + 1
             yield node, member_ids
 
@@ -356,6 +404,8 @@ class ExecutionCoordinator:
                 continue
             self.running.pop(object_id)
             self.ready[object_id] = running_job.node
+            if running_job.resume is not None:
+                self.resumes[object_id] = running_job.resume
             logger.warning(
                 "released %s from %s: %s",
                 running_job.node.obj._log_label,

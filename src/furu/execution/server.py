@@ -126,27 +126,29 @@ def _serve_worker(
     logger.info(
         "worker connected · %s%s",
         worker,
-        f" · running {hello.running[0].log_label}" if hello.running else "",
+        f" · running {hello.running.artifacts[0].log_label}" if hello.running else "",
     )
     try:
         if hello.running:
-            if not coordinator.adopt(hello.running, worker=worker):
+            adopted = coordinator.adopt(hello.running, worker=worker)
+            if not adopted:
                 connection.send(CancelMessage().model_dump_json())
             result = job_result_adapter.validate_json(connection.recv())
-            for artifact in hello.running:
-                coordinator.job_result(artifact.object_id, result)
+            for object_id in adopted:
+                coordinator.job_result(object_id, result)
         backend = coordinator.backends.get(hello.pool)
         if backend is None:
             logger.warning("worker %s belongs to no pool of this run; closing", worker)
             return
         while True:
-            job = coordinator.lease_job(backend=backend, worker=worker)
-            if job is None:
+            leased = coordinator.lease_job(backend=backend, worker=worker)
+            if leased is None:
                 return
+            job, object_ids = leased
             connection.send(job.model_dump_json())
             result = job_result_adapter.validate_json(connection.recv())
-            for artifact in job.artifacts:
-                coordinator.job_result(artifact.object_id, result)
+            for object_id in object_ids:
+                coordinator.job_result(object_id, result)
     except ConnectionClosed:
         logger.warning("lost %s", worker, extra={"path": hello.log})
     finally:
