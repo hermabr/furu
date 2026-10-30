@@ -22,7 +22,6 @@ from furu.result.codec import Codec
 from furu.storage._layout import (
     compute_lock_path_in,
     data_dir_in,
-    result_dir_in,
     result_link_path_in,
     result_manifest_path_in,
 )
@@ -129,7 +128,7 @@ def test_rename_plus_add_reuses_old_result_through_result_link() -> None:
 
     link_path = result_link_path_in(new._base_dir)
     link = json.loads(link_path.read_text())
-    assert link["source"]["base_dir"] == str(old._base_dir)
+    assert link["source"]["version_dir"] == str(old._base_dir / "v-fixed")
     assert link["source"]["schema_hash"] == old._artifact_schema_hash
     assert link["current"]["fully_qualified_name"] == new._fully_qualified_name
     assert link["current"]["schema_hash"] == new._artifact_schema_hash
@@ -153,9 +152,7 @@ def test_result_link_creation_rechecks_after_compute_lock(
     target = _TrainRun(dataset="cifar10", lr=0.001)
     link_path = result_link_path_in(target._base_dir)
 
-    assert migration_links.result_dir_for_loading(target) == result_dir_in(
-        source._base_dir
-    )
+    assert migration_links.version_for_loading(target) == (source._base_dir / "v-fixed")
     link_text = link_path.read_text(encoding="utf-8")
     link_path.unlink()
 
@@ -172,9 +169,7 @@ def test_result_link_creation_rechecks_after_compute_lock(
         lambda *_: pytest.fail("the competing worker's valid link was replaced"),
     )
 
-    assert migration_links.result_dir_for_loading(target) == result_dir_in(
-        source._base_dir
-    )
+    assert migration_links.version_for_loading(target) == (source._base_dir / "v-fixed")
 
 
 def test_result_link_read_gracefully_reresolves_estale(
@@ -183,7 +178,7 @@ def test_result_link_read_gracefully_reresolves_estale(
     source = _OldTrainRun(learning_rate=0.001, dataset="cifar10")
     source.create()
     target = _TrainRun(dataset="cifar10", lr=0.001)
-    assert migration_links.result_dir_for_loading(target) is not None
+    assert migration_links.version_for_loading(target) is not None
     link_path = result_link_path_in(target._base_dir)
     path_type = type(link_path)
     read_text = path_type.read_text
@@ -200,9 +195,7 @@ def test_result_link_read_gracefully_reresolves_estale(
 
     monkeypatch.setattr(path_type, "read_text", stale_once)
 
-    assert migration_links.result_dir_for_loading(target) == result_dir_in(
-        source._base_dir
-    )
+    assert migration_links.version_for_loading(target) == (source._base_dir / "v-fixed")
 
 
 class _PathValue:
@@ -256,7 +249,7 @@ def test_migrated_codec_metadata_path_uses_source_data_directory() -> None:
     source.create()
     migrated = _MigratedPathResult(key="contents")
 
-    source_payload = data_dir_in(source._base_dir) / "payload.txt"
+    source_payload = data_dir_in(source._base_dir / "v-fixed") / "payload.txt"
     assert migrated.create().path == source_payload.resolve()
     assert migrated.load_existing().path == source_payload.resolve()
 
@@ -310,7 +303,7 @@ def test_dangling_link_is_missing_and_recomputes(
 
     assert new.create() == {"dataset": "cifar10", "lr": "0.001", "seed": "0"}
     assert _COUNTER.calls == 1
-    assert result_manifest_path_in(new._base_dir).exists()
+    assert result_manifest_path_in(new._base_dir / "v-fixed").exists()
     assert not result_link_path_in(new._base_dir).exists()
 
 
@@ -379,7 +372,7 @@ def test_full_changelog_links_directly_at_the_ultimate_source() -> None:
     assert _COUNTER.calls == 0
 
     link = json.loads(result_link_path_in(final._base_dir).read_text())
-    assert link["source"]["base_dir"] == str(old._base_dir)
+    assert link["source"]["version_dir"] == str(old._base_dir / "v-fixed")
     assert link["source"]["fully_qualified_name"] == old._fully_qualified_name
     assert link["migration_path"] == [
         f"MovedFrom({old._fully_qualified_name!r})",
@@ -421,7 +414,7 @@ def test_link_to_a_source_the_chain_no_longer_covers_is_no_result() -> None:
                 fully_qualified_name=legacy._fully_qualified_name,
                 schema_hash=legacy._artifact_schema_hash,
                 artifact_hash=legacy._artifact_hash,
-                base_dir=legacy._base_dir,
+                version_dir=legacy._base_dir / "v-fixed",
             ),
             migration_path=(),
         ).model_dump_json()
@@ -1207,14 +1200,14 @@ def _count_reads_under(
     monkeypatch: pytest.MonkeyPatch, schema_directory: Path
 ) -> list[Path]:
     reads: list[Path] = []
-    real_metadata_path_in = migration_links.metadata_path_in
+    real_spec_path_in = migration_links.spec_path_in
 
     def counting(artifact_dir: Path) -> Path:
         if artifact_dir.parent == schema_directory:
             reads.append(artifact_dir)
-        return real_metadata_path_in(artifact_dir)
+        return real_spec_path_in(artifact_dir)
 
-    monkeypatch.setattr(migration_links, "metadata_path_in", counting)
+    monkeypatch.setattr(migration_links, "spec_path_in", counting)
     return reads
 
 
@@ -1311,7 +1304,9 @@ def test_child_migration_cascades_to_parent() -> None:
     assert _COUNTER.calls == 0
 
     link = json.loads(result_link_path_in(model._base_dir).read_text())
-    assert link["source"]["base_dir"] == str(old_directory / old._base_dir.name)
+    assert link["source"]["version_dir"] == str(
+        old_directory / old._base_dir.name / "v-fixed"
+    )
     assert link["migration_path"] == [
         "_CascadeTokenizer: Renamed('vocabulary_size', to='vocab_size')",
     ]

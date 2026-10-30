@@ -167,11 +167,15 @@ class ExecuteContext(BaseModel):
     slurm_job_id: str | None
     worker_backend: str
     pid: int
+    started_at: datetime
+    completed_at: datetime
 
     @classmethod
-    def capture(cls) -> ExecuteContext:
+    def capture(cls, *, started_at: datetime) -> ExecuteContext:
         cpu_count = getattr(os, "process_cpu_count", os.cpu_count)()
         return cls(
+            started_at=started_at,
+            completed_at=datetime.now(UTC),
             hostname=socket.gethostname(),
             cpu_count=cpu_count or 0,
             accelerators=_probe_accelerators(),

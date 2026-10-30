@@ -4,7 +4,9 @@ import json
 import shutil
 import time
 import traceback
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
+from contextlib import contextmanager
+from datetime import UTC, datetime
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -19,11 +21,12 @@ from furu.config import get_config
 from furu.core import Missing, Spec
 from furu.dag import Dag
 from furu.dependencies import (
+    DependencyRecorder,
     _DependencyNotReady,
     any_under_creation,
     dependency_recorder,
     missing_dependencies,
-    record_dependency_call,
+    record_dependency,
     under_creation,
 )
 from furu.locking import lock
@@ -33,8 +36,8 @@ from furu.logging import (
     _run_log_scope,
     get_logger,
 )
-from furu.metadata import RunningMetadata
-from furu.migration.links import load_stored_result, result_dir_for_loading
+from furu.metadata import ArtifactSpec
+from furu.migration.links import load_stored_result, version_for_loading
 from furu.migration.stale import raise_if_stale
 from furu.provenance import (
     ExecuteContext,
@@ -44,24 +47,26 @@ from furu.provenance import (
     capture_submit_provenance,
 )
 from furu.resources import Worker
-from furu.result.bundle import _save_result_bundle, load_result_bundle
+from furu.result.bundle import (
+    _DumpState,
+    _save_result_bundle,
+    bind_refs,
+    load_result_bundle,
+)
 from furu.storage._layout import (
+    attempt_dir_in,
     compute_lock_path_in,
     data_dir_in,
-    metadata_path_in,
     provenance_path_in,
     result_dir_in,
     result_link_path_in,
     run_log_path_in,
     schema_snapshot_path_in,
     scratch_dir_in,
+    spec_path_in,
+    trace_path_in,
 )
-from furu.utils import (
-    atomic_write_text,
-    error_summary,
-    format_duration,
-    nfs_safe_unique_name,
-)
+from furu.utils import atomic_write_text, error_summary, format_duration
 
 if TYPE_CHECKING:
     from _typeshed import DataclassInstance
@@ -81,62 +86,94 @@ def _record_schema_snapshot(obj: Spec) -> None:
     )
 
 
+def _prepare_attempt(obj: Spec) -> None:
+    """Write spec.json and create attempt/, resuming one left by an earlier try."""
+    if not (spec_path := spec_path_in(obj._base_dir)).exists():
+        atomic_write_text(
+            spec_path, ArtifactSpec.from_furu(obj).model_dump_json(indent=2)
+        )
+    attempt_dir_in(obj._base_dir).mkdir(exist_ok=True)
+
+
+@contextmanager
+def _recording(objs: Sequence[Spec]) -> Generator[DependencyRecorder]:
+    """Record the dependency versions one create() call loads."""
+    storage = objs[0]._metadata.storage  # a batch shares its metadata
+    with dependency_recorder(storage) as recorder, under_creation(objs):
+        yield recorder
+
+
 def _store_result[T](
     obj: Spec[T],
     result: T,
     *,
-    metadata: RunningMetadata,
-    observed_dependencies: tuple[str, ...],
+    dependencies: Mapping[str, str],
     has_lock: HasLock,
     submit_provenance: SubmitProvenance,
-) -> T:
+    started_at: datetime,
+) -> _DumpState:
+    """Store the result and the dependency versions it loaded in attempt/."""
+    attempt = attempt_dir_in(obj._base_dir)
     lock_path = compute_lock_path_in(obj._base_dir)
-    result_dir = result_dir_in(obj._base_dir)
     if not has_lock():
         raise RuntimeError(f"lost lock at {lock_path} before writing final result")
 
-    tmp_result_dir = nfs_safe_unique_name(result_dir, name="tmp")
-
-    declared_type = declared_result_type(type(obj))
-    data_dir = data_dir_in(obj._base_dir)
-
+    result_dir = result_dir_in(attempt)
+    shutil.rmtree(result_dir, ignore_errors=True)  # left by a crash mid-publish
     dump_state = _save_result_bundle(
         result,
-        tmp_result_dir,
-        declared_type=declared_type,
+        result_dir,
+        declared_type=declared_result_type(type(obj)),
         result_codecs=obj.result_codecs,
-        data_dir=data_dir,
+        data_dir=data_dir_in(attempt),
     )
 
-    if not has_lock():
-        raise RuntimeError(f"lost lock at {lock_path} after writing temporary result")
+    atomic_write_text(
+        trace_path_in(attempt),
+        json.dumps({"dependencies": dict(sorted(dependencies.items()))}, indent=2),
+    )
+    provenance = Provenance.merge(
+        submit_provenance, ExecuteContext.capture(started_at=started_at)
+    )
+    atomic_write_text(provenance_path_in(attempt), provenance.model_dump_json(indent=2))
+    _record_schema_snapshot(obj)
+    return dump_state
 
-    tmp_result_dir.rename(result_dir)
+
+def _publish[T](
+    obj: Spec[T],
+    result: T,
+    *,
+    dump_state: _DumpState,
+    has_lock: HasLock,
+) -> T:
+    """Rename attempt/ to v-fixed/; return the value to hand out."""
+    attempt = attempt_dir_in(obj._base_dir)
+    shutil.rmtree(scratch_dir_in(attempt), ignore_errors=True)
+    if not has_lock():
+        raise RuntimeError(
+            f"lost lock at {compute_lock_path_in(obj._base_dir)} before publishing"
+        )
+    version = obj._base_dir / "v-fixed"
+    reload = dump_state.should_reload_value_after_save
+    try:
+        attempt.rename(version)
+    except OSError:
+        if not version.is_dir():
+            raise
+        shutil.rmtree(attempt)  # the same version was published first; keep it
+        reload = True
     result_link_path_in(obj._base_dir).unlink(missing_ok=True)
 
-    _record_schema_snapshot(obj)
-
-    metadata_text = metadata.to_complete(
-        observed_dependencies=observed_dependencies
-    ).model_dump_json(indent=2)
-    atomic_write_text(metadata_path_in(obj._base_dir), metadata_text)
-
-    provenance = Provenance.merge(submit_provenance, ExecuteContext.capture())
-    atomic_write_text(
-        provenance_path_in(obj._base_dir), provenance.model_dump_json(indent=2)
-    )
-
-    for binding in dump_state.ref_bindings:
-        binding.ref._bind_stored(
-            metadata=binding.metadata,
-            artifact_directory=result_dir / binding.artifact_relative_path,
-        )
-
-    if dump_state.should_reload_value_after_save:
+    declared_type = declared_result_type(type(obj))
+    bind_refs(dump_state, result_dir_in(version), data_dir=data_dir_in(version))
+    if reload:
         return cast(
             T,
             load_result_bundle(
-                result_dir, data_dir=data_dir, declared_type=declared_type
+                result_dir_in(version),
+                data_dir=data_dir_in(version),
+                declared_type=declared_type,
             ),
         )
     return result
@@ -161,8 +198,6 @@ def _load_or_create(
     if isinstance(tree, Spec):
         tree.logger.debug(".create called for %s", tree)
     objs = specs_in(tree)
-    for obj in objs:
-        record_dependency_call(obj)
     if any_under_creation():
         outputs = _load_or_block(objs, load=load)
     else:
@@ -181,7 +216,7 @@ def _ensure_group_result[T](
 ) -> None:
     missing: list[Spec[T]] = []
     for obj in objs:
-        if result_dir_for_loading(obj) is not None:
+        if version_for_loading(obj) is not None:
             obj.logger.info("cache hit for %s", obj._log_label)
             continue
         raise_if_stale(obj)
@@ -193,7 +228,7 @@ def _ensure_group_result[T](
 
     with lock([compute_lock_path_in(obj._base_dir) for obj in missing]) as has_lock:
         pending = [
-            obj for obj in missing if result_dir_for_loading(obj, has_lock=True) is None
+            obj for obj in missing if version_for_loading(obj, has_lock=True) is None
         ]
         if pending:
             _create_and_store_group(
@@ -273,12 +308,12 @@ def load_existing(tree: object, /) -> Any:
     loaded: dict[str, Any] = {}
     missing: list[Spec] = []
     for obj in objs:
-        record_dependency_call(obj)
-        if (result_dir := result_dir_for_loading(obj)) is None:
+        if (version := version_for_loading(obj)) is None:
             raise_if_stale(obj)
             missing.append(obj)
             continue
-        loaded[obj.object_id] = load_stored_result(obj, result_dir)
+        record_dependency(obj, version)
+        loaded[obj.object_id] = load_stored_result(obj, version)
     if missing:
         first = missing[0]
         raise Missing(
@@ -316,9 +351,10 @@ def _load_or_block[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
     missing: list[Spec[T]] = []
 
     for obj in objs:
-        if (cached_result_dir := result_dir_for_loading(obj)) is not None:
+        if (version := version_for_loading(obj)) is not None:
+            record_dependency(obj, version)
             if load:
-                loaded.append(load_stored_result(obj, cached_result_dir))
+                loaded.append(load_stored_result(obj, version))
             cached.append(obj)
         else:
             raise_if_stale(obj)
@@ -470,8 +506,9 @@ def _create_and_store_group[T](
     results_by_object_id: dict[str, T],
     submit_provenance: SubmitProvenance,
 ) -> None:
-    metadata = [RunningMetadata.write_for(obj) for obj in group]
-
+    started_at = datetime.now(UTC)
+    for obj in group:
+        _prepare_attempt(obj)
     try:
         match getattr(type(group[0]), "_furu_create_hook", None):
             case None:
@@ -480,46 +517,45 @@ def _create_and_store_group[T](
                     "because it does not define create()"
                 )
             case _BatchedHook(func=create_hook):
-                with dependency_recorder() as recorder, under_creation(group):
+                with _recording(group) as recorder:
                     results = create_hook(group)
-                observed = recorder.finalize()
                 if not isinstance(results, list):
                     raise TypeError(
                         f"{type(group[0]).__name__}.create() must return a list"
                     )
-                # TODO: Track dependency calls per object during batched execution.
-                # This currently assigns dependencies observed anywhere in the batch
-                # to every object.
-                observed_dependencies = [observed for _ in group]
+                # TODO: Record dependencies per object during batched execution.
+                # Every object currently shares the batch's dependencies.
+                dependencies = [recorder.versions for _ in group]
             case create_hook:
                 results = []
-                observed_dependencies = []
+                dependencies = []
                 for obj in group:
-                    with dependency_recorder() as recorder, under_creation([obj]):
+                    with _recording([obj]) as recorder:
                         results.append(create_hook(obj))
-                    observed_dependencies.append(recorder.finalize())
+                    dependencies.append(recorder.versions)
 
         if len(results) != len(group):
             raise TypeError(
                 f"{type(group[0]).__name__} returned {len(results)} results for {len(group)} objects"
             )
 
-        for obj, result, observed_dependency_ids, obj_metadata in zip(
-            group,
-            results,
-            observed_dependencies,
-            metadata,
-            strict=True,
+        for obj, result, obj_dependencies in zip(
+            group, results, dependencies, strict=True
         ):
-            results_by_object_id[obj.object_id] = _store_result(
+            dump_state = _store_result(
                 obj,
                 result,
-                metadata=obj_metadata,
-                observed_dependencies=observed_dependency_ids,
+                dependencies=obj_dependencies,
                 has_lock=has_lock,
                 submit_provenance=submit_provenance,
+                started_at=started_at,
             )
-            shutil.rmtree(scratch_dir_in(obj._base_dir), ignore_errors=True)
+            results_by_object_id[obj.object_id] = _publish(
+                obj,
+                result,
+                dump_state=dump_state,
+                has_lock=has_lock,
+            )
     except Exception:
         group[0].logger.exception("create failed for %s", group[0]._log_label)
         raise
