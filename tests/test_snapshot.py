@@ -231,7 +231,7 @@ def test_snapshot_rejects_submodules(git_repo: Path) -> None:
     _git(vendored, "commit", "-q", "--allow-empty", "-m", "init")
     _git(git_repo, "add", "vendored")
 
-    with pytest.raises(RuntimeError, match="contains:\n  vendored\n"):
+    with pytest.raises(RuntimeError, match="vendored is a git submodule"):
         create_snapshot(git_repo)
 
 

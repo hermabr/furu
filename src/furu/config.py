@@ -16,38 +16,6 @@ from pydantic_settings import (
 _WORKER_JSON_CONFIG_FILE_ENV_VAR = "_FURU_WORKER_JSON_CONFIG_FILE"
 
 
-def _reject_submodules(repo_root: Path) -> None:
-    """Crash if ``repo_root`` is or contains a git submodule.
-
-    Provenance and code snapshots only see one repository's files, so code in
-    a submodule would silently go unrecorded.
-    """
-
-    def git(*args: str) -> str:
-        return subprocess.run(
-            ["git", *args], cwd=repo_root, capture_output=True, text=True, check=True
-        ).stdout.strip()
-
-    superproject = git("rev-parse", "--show-superproject-working-tree")
-    if superproject:
-        raise RuntimeError(
-            f"furu does not support git submodules, but {repo_root} is a "
-            f"submodule of {superproject}.\n"
-            "Are you sure you put your project in the correct place?"
-        )
-    submodules = [
-        line.partition("\t")[2]
-        for line in git("ls-files", "-s", "-z").split("\0")
-        if line.startswith("160000 ")
-    ]
-    if submodules:
-        raise RuntimeError(
-            f"furu does not support git submodules, but {repo_root} contains:\n"
-            + "".join(f"  {path}\n" for path in submodules)
-            + "Are you sure you put them in the correct place?"
-        )
-
-
 @functools.cache
 def _project_anchor() -> Path:
     """The main worktree's root, so all worktrees share one set of data directories.
@@ -59,13 +27,14 @@ def _project_anchor() -> Path:
     """
     cwd = Path.cwd().resolve()
     try:
-        toplevel, common_dir = subprocess.run(
+        toplevel, common_dir, *superproject = subprocess.run(
             [
                 "git",
                 "rev-parse",
                 "--path-format=absolute",
                 "--show-toplevel",
                 "--git-common-dir",
+                "--show-superproject-working-tree",
             ],
             capture_output=True,
             text=True,
@@ -77,7 +46,11 @@ def _project_anchor() -> Path:
             "furu anchors its data directories at the git root. Create one with:\n"
             "  git init"
         ) from exc
-    _reject_submodules(Path(toplevel))
+    if superproject or (Path(toplevel) / ".gitmodules").exists():
+        raise RuntimeError(
+            f"{toplevel} is or contains a git submodule, which furu does not "
+            "support.\nAre you sure you put it in the correct place?"
+        )
     within_repo = (cwd, *cwd.parents)[: len(cwd.relative_to(toplevel).parts) + 1]
     if not any((d / "pyproject.toml").is_file() for d in within_repo):
         raise RuntimeError(

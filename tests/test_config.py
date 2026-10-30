@@ -128,14 +128,14 @@ def test_submodule_is_rejected(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(outer / "inner")
     _project_anchor.cache_clear()
     try:
-        with pytest.raises(RuntimeError, match="inner is a submodule of"):
+        with pytest.raises(RuntimeError, match="inner is or contains a git submodule"):
             _project_anchor()
 
         # The superproject is rejected too, from anywhere inside it.
         (outer / "pyproject.toml").write_text("", encoding="utf-8")
         monkeypatch.chdir(outer)
         _project_anchor.cache_clear()
-        with pytest.raises(RuntimeError, match="contains:\n  inner\n"):
+        with pytest.raises(RuntimeError, match="outer is or contains a git submodule"):
             _project_anchor()
     finally:
         _project_anchor.cache_clear()
