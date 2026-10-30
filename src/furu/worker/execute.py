@@ -155,15 +155,12 @@ class ChildSlot:
     def _spawn(self, environment: dict[str, str], *, code: CodeLocation) -> _Child:
         # The child's stderr is ours: each job points it at its run.log, and
         # anything written between jobs lands in this worker's own output.
-        child_environment = environment
-        if code.repo_root is not None:  # traced code paths are relative to it
-            child_environment = environment | {_REPO_ROOT_ENV_VAR: str(code.repo_root)}
         process = subprocess.Popen(
             [str(code.python), "-m", "furu.worker._child"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             cwd=code.cwd,
-            env=child_environment,
+            env=environment | {_REPO_ROOT_ENV_VAR: str(code.repo_root)},
             text=True,
         )
         assert process.stdin is not None
