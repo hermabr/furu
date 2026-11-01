@@ -47,12 +47,6 @@ def _require_pushed(path: Path) -> None:
     require_pushed(GitIdentity.capture(path))
 
 
-def _with_max_snapshot_bytes(limit: int) -> _Config:
-    data = get_config().model_dump()
-    data["provenance"]["max_snapshot_bytes"] = limit
-    return _Config.model_validate(data)
-
-
 def test_clean_pushed_checkout_passes(git_repo: Path) -> None:
     _require_pushed(git_repo)
     _require_pushed(git_repo / "sub")
@@ -139,7 +133,9 @@ def test_detached_unpushed_head_suggests_pushing_to_a_branch(git_repo: Path) -> 
 def test_repo_without_origin_is_refused(git_repo: Path) -> None:
     _git(git_repo, "remote", "remove", "origin")
 
-    with pytest.raises(RuntimeError, match="no remote named origin"):
+    with pytest.raises(
+        RuntimeError, match=r"(?s)no remote named origin.*git remote add origin"
+    ):
         _require_pushed(git_repo)
 
 
@@ -154,29 +150,6 @@ def test_linked_worktree_is_checked_on_its_own(git_repo: Path, tmp_path: Path) -
     _require_pushed(git_repo)
 
 
-def test_oversize_commit_is_refused_before_asking_to_push(git_repo: Path) -> None:
-    (git_repo / "big.bin").write_bytes(b"x" * 4096)
-    _git(git_repo, "add", "big.bin")
-    _git(git_repo, "commit", "-qm", "big")
-
-    with (
-        override_config(_with_max_snapshot_bytes(1024)),
-        pytest.raises(RuntimeError, match=r"(?s)4\.0 KiB  big\.bin.*git rm --cached"),
-    ):
-        _require_pushed(git_repo)
-
-
-def test_submodules_are_refused(git_repo: Path) -> None:
-    vendored = git_repo / "vendored"
-    vendored.mkdir()
-    _git(vendored, "init", "-q")
-    _git(vendored, "commit", "-q", "--allow-empty", "-m", "init")
-    _commit_and_push(git_repo, "vendor")
-
-    with pytest.raises(RuntimeError, match="vendored is a git submodule"):
-        _require_pushed(git_repo)
-
-
 def test_extract_snapshot_materializes_the_commit(git_repo: Path) -> None:
     (git_repo / "run.sh").write_text("#!/bin/sh\n")
     (git_repo / "run.sh").chmod(0o744)
@@ -186,7 +159,7 @@ def test_extract_snapshot_materializes_the_commit(git_repo: Path) -> None:
 
     code_dir = extract_snapshot(commit, repo=git_repo)
 
-    assert code_dir == get_config().run_directories.snapshots / commit / "code"
+    assert code_dir == get_config().run_directories.snapshots / commit
     assert (code_dir / "tracked.txt").read_text() == "content\n"
     assert (code_dir / "sub" / "nested.txt").read_text() == "nested\n"
     assert (code_dir / "link.txt").readlink() == Path("tracked.txt")

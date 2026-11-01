@@ -395,7 +395,7 @@ def test_materializing_slot_runs_each_job_from_its_snapshot(tmp_path: Path) -> N
             pids_and_cwds.append((pid, cwd))
             repo_roots.append(Path(repo_root))
             code_dirs.append(
-                (get_config().run_directories.snapshots / commit / "code").resolve()
+                (get_config().run_directories.snapshots / commit).resolve()
             )
     finally:
         slot.close()

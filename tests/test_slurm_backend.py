@@ -109,9 +109,7 @@ def _submit_provenance() -> SubmitProvenance:
     """Provenance for a pretend repo at ``/repo``, backed by an already
     extracted empty snapshot so ``start_pool`` never runs git."""
     commit = "0" * 40
-    (get_config().run_directories.snapshots / commit / "code").mkdir(
-        parents=True, exist_ok=True
-    )
+    (get_config().run_directories.snapshots / commit).mkdir(parents=True, exist_ok=True)
     return SubmitProvenance(
         git=GitIdentity(
             commit=commit,
@@ -132,9 +130,7 @@ def _submit_provenance() -> SubmitProvenance:
 
 
 def _code_dir(provenance: SubmitProvenance) -> Path:
-    return (
-        get_config().run_directories.snapshots / provenance.git.commit / "code"
-    ).resolve()
+    return (get_config().run_directories.snapshots / provenance.git.commit).resolve()
 
 
 def test_worker_cli_passes_coordinator_file(

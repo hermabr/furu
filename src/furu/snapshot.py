@@ -10,8 +10,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from pydantic import ByteSize
-
 from furu.config import get_config
 from furu.provenance import (
     EnvironmentIdentity,
@@ -68,36 +66,28 @@ def require_pushed(git: GitIdentity) -> None:
             "Commit and push them (or add them to .gitignore):\n"
             f"  git add -A && git commit -m '...' && {_push_command(git)}"
         )
-    _check_size(repo_root, git.commit)
-    if git.remote is None:
-        raise RuntimeError(
-            f"{repo_root} has no remote named origin.\n"
-            "furu only runs pushed code, so every result points at a commit "
-            "others can fetch. Add a remote and push:\n"
-            "  git remote add origin <url>\n"
-            f"  {_push_command(git)}"
-        )
     pushed_to = _run_git(
         ["for-each-ref", "--contains", git.commit, "refs/remotes/origin"],
         cwd=repo_root,
     )
     if not pushed_to:
+        add_remote = "" if git.remote else "  git remote add origin <url>\n"
         raise RuntimeError(
             f"HEAD ({git.commit[:12]}) is not on any branch of origin "
-            f"({git.remote}).\n"
+            f"({git.remote or 'no remote named origin'}).\n"
             "furu only runs pushed code, so every result points at a commit "
             "others can fetch. Push it:\n"
-            f"  {_push_command(git)}"
+            f"{add_remote}  {_push_command(git)}"
         )
 
 
 def extract_snapshot(commit: str, *, repo: Path) -> Path:
     """Materialize ``commit`` from ``repo``'s objects; return the tree.
 
-    The tree lands in ``<snapshots>/<commit>/code`` once and is reused by every
-    later caller.
+    The tree lands in ``<snapshots>/<commit>`` once and is reused by every later
+    caller.
     """
-    code_dir = get_config().run_directories.snapshots / commit / "code"
+    code_dir = get_config().run_directories.snapshots / commit
     if code_dir.is_dir():
         return code_dir
     archive = subprocess.run(
@@ -146,40 +136,3 @@ def _push_command(git: GitIdentity) -> str:
     if git.branch is None:  # detached HEAD
         return "git push origin HEAD:refs/heads/<branch>"
     return f"git push -u origin {git.branch}"
-
-
-def _check_size(repo_root: Path, commit: str) -> None:
-    sizes: dict[str, int] = {}
-    for line in _split_z(
-        _run_git(["ls-tree", "-r", "-l", "-z", commit], cwd=repo_root)
-    ):
-        meta, _, path = line.partition("\t")
-        mode, _, _, size = meta.split()
-        if mode == "160000":  # gitlink: its files live in another repository
-            raise RuntimeError(
-                f"{path} is a git submodule, which furu does not support.\n"
-                "Are you sure you put it in the correct place?"
-            )
-        sizes[path] = int(size)
-    total_bytes = sum(sizes.values())
-    limit = get_config().provenance.max_snapshot_bytes
-    if total_bytes <= limit:
-        return
-    largest = sorted(sizes.items(), key=lambda item: item[1], reverse=True)
-    offenders = "\n".join(
-        f"  {ByteSize(size).human_readable(separator=' '):>10}  {path}"
-        for path, size in largest[:10]
-    )
-    total = ByteSize(total_bytes).human_readable(separator=" ")
-    limit_text = ByteSize(limit).human_readable(separator=" ")
-    raise RuntimeError(
-        f"code snapshot of {commit[:12]} would be {total} "
-        f"(limit: {limit_text}). Largest committed files:\n"
-        f"{offenders}\n"
-        "Remove them from git (git rm --cached <path>, then add them to .gitignore),\n"
-        "or raise [tool.furu.provenance] max_snapshot_bytes if this is intentional."
-    )
-
-
-def _split_z(output: str) -> list[str]:
-    return [token for token in output.split("\0") if token]
