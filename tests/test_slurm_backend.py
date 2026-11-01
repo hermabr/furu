@@ -9,11 +9,10 @@ import shutil
 import stat
 import subprocess
 import sys
-import tarfile
 import textwrap
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -39,7 +38,6 @@ from furu.provenance import (
     SubmitProvenance,
 )
 from furu.resources import Worker
-from furu.snapshot import create_snapshot
 from furu.testing import override_config
 from furu.utils import write_private_file
 from furu.worker import _cli
@@ -55,19 +53,13 @@ from furu.worker.protocol import PoolHandoff
 
 
 @pytest.fixture(autouse=True)
-def _slurm_needs_snapshots(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    # SlurmWorkerBackend requires snapshotting, which the test harness turns
-    # off; turn it back on and stub the submit-time ``uv sync`` (the fake
-    # snapshots below have no lock file to sync from).
+def _stub_submit_time_uv_sync(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The fake snapshots below have no lock file to sync from.
     monkeypatch.setattr(
         slurm_backend_module,
         "subprocess",
         SimpleNamespace(run=lambda *args, **kwargs: None),
     )
-    data = get_config().model_dump()
-    data["provenance"]["snapshot"] = True
-    with override_config(_Config.model_validate(data)):
-        yield
 
 
 class _StubCoordinator(ExecutionCoordinator):
@@ -114,22 +106,16 @@ def _disable_slurm_pool_scale_thread(
 
 
 def _submit_provenance() -> SubmitProvenance:
-    """Provenance for a pretend repo at ``/repo``, backed by an empty snapshot
-    tarball so ``start_pool`` can extract it."""
-    snapshot_id = "stub-snapshot"
-    snapshot_dir = get_config().run_directories.snapshots / snapshot_id
-    if not snapshot_dir.is_dir():
-        snapshot_dir.mkdir(parents=True)
-        with tarfile.open(snapshot_dir / "snapshot.tar.gz", "w:gz"):
-            pass
+    """Provenance for a pretend repo at ``/repo``, backed by an already
+    extracted empty snapshot so ``start_pool`` never runs git."""
+    commit = "0" * 40
+    (get_config().run_directories.snapshots / commit).mkdir(parents=True, exist_ok=True)
     return SubmitProvenance(
         git=GitIdentity(
-            commit="0" * 40,
+            commit=commit,
             branch=None,
             remote=None,
             repo_root="/repo",
-            dirty=False,
-            diff_stats=None,
         ),
         environment=EnvironmentIdentity(
             python="3.12.0",
@@ -139,16 +125,12 @@ def _submit_provenance() -> SubmitProvenance:
             pyproject_hash="blake2s:0",
             furu="0",
         ),
-        snapshot_id=snapshot_id,
         submitted=SubmitContext.capture().model_copy(update={"cwd": "/repo"}),
     )
 
 
 def _code_dir(provenance: SubmitProvenance) -> Path:
-    assert provenance.snapshot_id is not None
-    return (
-        get_config().run_directories.snapshots / provenance.snapshot_id / "code"
-    ).resolve()
+    return (get_config().run_directories.snapshots / provenance.git.commit).resolve()
 
 
 def test_worker_cli_passes_coordinator_file(
@@ -1216,20 +1198,6 @@ def test_slurm_backend_worker_connect_host_falls_back_to_fqdn(
     assert backend.worker_connect_host == "node17.cluster"
 
 
-def test_slurm_backend_requires_snapshotting_at_construction() -> None:
-    data = get_config().model_dump()
-    data["provenance"]["snapshot"] = False
-
-    with (
-        override_config(_Config.model_validate(data)),
-        pytest.raises(ValueError, match="snapshot = true"),
-    ):
-        SlurmWorkerBackend(
-            max_workers=1,
-            resources=SlurmResources(cpus_per_worker=1),
-        )
-
-
 def test_slurm_worker_pool_health_tracks_sacct_jobs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2016,6 +1984,7 @@ def _mode(path: Path) -> int:
 def _committed_repo(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()
+    (repo / "pyproject.toml").write_text('[project]\nname = "sut"\n')
     for args in (
         ["init", "-q", "-b", "main"],
         ["add", "-A"],
@@ -2036,7 +2005,6 @@ def test_slurm_backend_runs_workers_from_the_extracted_snapshot(
 ) -> None:
     _disable_slurm_pool_scale_thread(monkeypatch)
     repo = _committed_repo(tmp_path)
-    (repo / "pyproject.toml").write_text('[project]\nname = "sut"\n')
     monkeypatch.chdir(repo)
     provenance = SubmitProvenance(
         git=GitIdentity.capture(repo),
@@ -2050,14 +2018,13 @@ def test_slurm_backend_runs_workers_from_the_extracted_snapshot(
             pyproject_hash="blake2s:0",
             furu="0",
         ),
-        snapshot_id=create_snapshot(repo),
         submitted=SubmitContext.capture(),
     )
     uv_commands: list[list[str]] = []
     monkeypatch.setattr(
-        slurm_backend_module.subprocess,
-        "run",
-        lambda argv, **kwargs: uv_commands.append(argv),
+        slurm_backend_module,
+        "subprocess",
+        SimpleNamespace(run=lambda argv, **kwargs: uv_commands.append(argv)),
     )
     backend = SlurmWorkerBackend(
         max_workers=1,
@@ -2075,10 +2042,7 @@ def test_slurm_backend_runs_workers_from_the_extracted_snapshot(
         handoff=PoolHandoff(),
     )
 
-    assert provenance.snapshot_id is not None
-    code_dir = (
-        get_config().run_directories.snapshots / provenance.snapshot_id / "code"
-    ).resolve()
+    code_dir = _code_dir(provenance)
     assert (code_dir / "pyproject.toml").is_file()
     assert f"--chdir={code_dir}" in pool._sbatch_base_args
     script = pool._script_path.read_text()

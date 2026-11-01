@@ -6,11 +6,10 @@ from multiprocessing import get_context
 from pathlib import Path
 
 import furu
-from furu import Spec
+from furu import Spec, provenance
 from furu.config import (
     _Config,
     _FuruDirectories,
-    _FuruProvenanceConfig,
     _set_config,
 )
 from furu.execution.load_or_create import _load_or_create
@@ -70,7 +69,7 @@ class MidRunTakeoverProbe(Spec[int]):
 
 
 def _worker(data_dir: str, start_evt, out_q) -> None:
-    _set_config(_config_for_data(data_dir))
+    _configure_child(data_dir)
     obj = SlowProbe(key=1)
     out_q.put(("ready", os.getpid()))
     start_evt.wait()
@@ -82,7 +81,7 @@ def _worker(data_dir: str, start_evt, out_q) -> None:
 
 
 def _batch_worker(data_dir: str, keys: list[int], start_evt, out_q) -> None:
-    _set_config(_config_for_data(data_dir))
+    _configure_child(data_dir)
     objs = [SlowBatchProbe(key=key) for key in keys]
     out_q.put(("ready", os.getpid()))
     start_evt.wait()
@@ -99,7 +98,7 @@ def _takeover_worker(
     release_path: str,
     out_q,
 ) -> None:
-    _set_config(_config_for_data(data_dir))
+    _configure_child(data_dir)
     obj = MidRunTakeoverProbe(
         key=1,
         entered_path=entered_path,
@@ -112,14 +111,18 @@ def _takeover_worker(
         out_q.put(("err", os.getpid(), type(exc).__name__, str(exc)))
 
 
-def _config_for_data(data_dir: str) -> _Config:
+def _configure_child(data_dir: str) -> None:
+    # Spawned children skip the furu pytest plugin, so opt out of the
+    # committed-and-pushed check the way it does.
+    provenance._require_pushed_code = False
     data_path = Path(data_dir)
-    return _Config(
-        directories=_FuruDirectories(
-            objects=data_path,
-            executions=data_path.parent / "executions",
-        ),
-        provenance=_FuruProvenanceConfig(snapshot=False),
+    _set_config(
+        _Config(
+            directories=_FuruDirectories(
+                objects=data_path,
+                executions=data_path.parent / "executions",
+            ),
+        )
     )
 
 

@@ -78,11 +78,8 @@ def _submit_provenance() -> SubmitProvenance:
             branch=None,
             remote=None,
             repo_root=".",
-            dirty=False,
-            diff_stats=None,
         ),
         environment=EnvironmentIdentity.capture(),
-        snapshot_id=None,
         submitted=SubmitContext.capture(),
     )
 

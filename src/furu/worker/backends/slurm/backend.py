@@ -60,13 +60,6 @@ class SlurmWorkerBackend:
     labels: tuple[str, ...] = ()
     accepts: Callable[[Spec], bool] | None = None
 
-    def __post_init__(self) -> None:
-        if not get_config().provenance.snapshot:
-            raise ValueError(
-                "Slurm workers run from a code snapshot; "
-                "set [tool.furu.provenance] snapshot = true"
-            )
-
     @property
     def worker(self) -> Worker:
         return Worker(

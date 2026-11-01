@@ -107,9 +107,7 @@ class ExecutionCoordinator(Dag):
             )
         coordinator = cls(
             backends=backends,
-            submit_provenance=capture_submit_provenance(
-                snapshot=get_config().provenance.snapshot
-            ),
+            submit_provenance=capture_submit_provenance(),
         )
         coordinator.add(objs)
 

@@ -19,20 +19,34 @@ from furu.utils import (
 )
 
 
+def _git(path: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", "-c", "user.email=t@t.t", "-c", "user.name=t", *args],
+        cwd=path,
+        check=True,
+        capture_output=True,
+    )
+
+
 def _write_uv_project(path: Path) -> None:
-    """Make path a locked uv project in a git repo so spawned furu scripts run."""
+    """Make path a locked uv project in a git repo with an ``origin`` to push to."""
     (path / "pyproject.toml").write_text(
         '[project]\nname = "scratch"\nversion = "0"\nrequires-python = ">=3.12"\n',
         encoding="utf-8",
     )
+    (path / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
     subprocess.run(["uv", "lock"], cwd=path, check=True, capture_output=True)
-    for args in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "init"]):
-        subprocess.run(
-            ["git", "-c", "user.email=t@t.t", "-c", "user.name=t", *args],
-            cwd=path,
-            check=True,
-            capture_output=True,
-        )
+    origin = path.with_name(f"{path.name}-origin.git")
+    _git(path.parent, "init", "-q", "--bare", str(origin))
+    _git(path, "init", "-q")
+    _git(path, "remote", "add", "origin", str(origin))
+
+
+def _commit_and_push(path: Path) -> None:
+    """furu only runs committed, pushed code."""
+    _git(path, "add", "-A")
+    _git(path, "commit", "-qm", "scratch")
+    _git(path, "push", "-q", "origin", "HEAD")
 
 
 @contextmanager
@@ -163,8 +177,7 @@ if __name__ == "__main__":
         pythonpath.append(existing)
     env["FURU_DEBUG_MODE"] = "true"
     env["PYTHONPATH"] = os.pathsep.join(pythonpath)
-    # The scratch project is not a git repo, so snapshotting would refuse to run.
-    env["FURU_PROVENANCE__SNAPSHOT"] = "false"
+    _commit_and_push(tmp_path)
 
     result = subprocess.run(
         [sys.executable, str(script)],
@@ -319,8 +332,7 @@ if __name__ == "__main__":
     if existing := env.get("PYTHONPATH"):
         pythonpath.append(existing)
     env["PYTHONPATH"] = os.pathsep.join(pythonpath)
-    # The scratch project is not a git repo, so snapshotting would refuse to run.
-    env["FURU_PROVENANCE__SNAPSHOT"] = "false"
+    _commit_and_push(tmp_path)
 
     result = subprocess.run(
         [sys.executable, "-m", "my_lib.data"],

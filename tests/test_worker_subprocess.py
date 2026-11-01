@@ -31,7 +31,6 @@ from furu.provenance import (
     SubmitContext,
     SubmitProvenance,
 )
-from furu.snapshot import create_snapshot
 from furu.storage._layout import run_log_path_in
 from furu.testing import override_config
 from furu.worker.backends.local import LocalThreadWorkerBackend
@@ -64,11 +63,8 @@ def _submit_provenance() -> SubmitProvenance:
             branch=None,
             remote=None,
             repo_root=".",
-            dirty=False,
-            diff_stats=None,
         ),
         environment=EnvironmentIdentity.capture(),
-        snapshot_id=None,
         submitted=SubmitContext.capture(),
     )
 
@@ -341,7 +337,13 @@ def _snapshot_repo(repo: Path, marker: str) -> str:
             check=True,
             capture_output=True,
         )
-    return create_snapshot(repo)
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
 
 
 def test_child_receives_anchored_directories(child_slot: ChildSlot) -> None:
@@ -363,16 +365,14 @@ def test_materializing_slot_runs_each_job_from_its_snapshot(tmp_path: Path) -> N
         for marker in (1, 2):
             repo = tmp_path / f"repo-{marker}"
             repo.mkdir()
-            snapshot_id = _snapshot_repo(repo, marker=str(marker))
+            commit = _snapshot_repo(repo, marker=str(marker))
             leaf = SubprocessCwdLeaf(marker=marker)
             provenance = SubmitProvenance(
                 git=GitIdentity(
-                    commit="0" * 40,
+                    commit=commit,
                     branch=None,
                     remote=None,
                     repo_root=str(repo),
-                    dirty=False,
-                    diff_stats=None,
                 ),
                 # Stale lock hash: the job runs in its snapshot's venv, so the
                 # worker's own environment must not be checked.
@@ -384,7 +384,6 @@ def test_materializing_slot_runs_each_job_from_its_snapshot(tmp_path: Path) -> N
                     pyproject_hash="blake2s:0",
                     furu="0",
                 ),
-                snapshot_id=snapshot_id,
                 submitted=SubmitContext.capture().model_copy(update={"cwd": str(repo)}),
             )
             result = slot.run(
@@ -396,9 +395,7 @@ def test_materializing_slot_runs_each_job_from_its_snapshot(tmp_path: Path) -> N
             pids_and_cwds.append((pid, cwd))
             repo_roots.append(Path(repo_root))
             code_dirs.append(
-                (
-                    get_config().run_directories.snapshots / snapshot_id / "code"
-                ).resolve()
+                (get_config().run_directories.snapshots / commit).resolve()
             )
     finally:
         slot.close()

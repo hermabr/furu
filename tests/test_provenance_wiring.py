@@ -8,7 +8,7 @@ import pytest
 
 import furu
 from furu import Spec
-from furu.config import _Config, get_config
+from furu import provenance as furu_provenance
 from furu.metadata import ArtifactSpec
 from furu.provenance import (
     EnvironmentIdentity,
@@ -17,7 +17,6 @@ from furu.provenance import (
     capture_submit_provenance,
 )
 from furu.storage._layout import metadata_path_in, provenance_path_in
-from furu.testing import override_config
 from furu.worker.backends.local import LocalThreadWorkerBackend
 from furu.worker.execute import ChildSlot
 from furu.worker.protocol import Job, ProcessSettings
@@ -44,19 +43,24 @@ def _git(repo: Path, *args: str) -> str:
 
 @pytest.fixture
 def git_repo(tmp_path: Path) -> Path:
+    """A committed repo whose ``main`` is pushed to a bare ``origin``."""
+    origin = tmp_path / "origin.git"
+    _git(tmp_path, "init", "-q", "--bare", str(origin))
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "remote", "add", "origin", str(origin))
     (repo / "tracked.txt").write_text("content\n")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", "init")
+    _git(repo, "push", "-q", "origin", "main")
     return repo
 
 
-def _with_snapshot(enabled: bool) -> _Config:
-    data = get_config().model_dump()
-    data["provenance"]["snapshot"] = enabled
-    return _Config.model_validate(data)
+@pytest.fixture
+def require_pushed(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Undo the furu pytest plugin's opt-out for this test.
+    monkeypatch.setattr(furu_provenance, "_require_pushed_code", True)
 
 
 _created: list[str] = []
@@ -70,10 +74,10 @@ class _Node(Spec[int]):
         return self.value + 1
 
 
-def test_pytest_harness_disables_snapshot_by_default() -> None:
-    # The furu pytest plugin opts out of the snapshot-on-by-default policy;
-    # snapshot tests opt back in with override_config.
-    assert get_config().provenance.snapshot is False
+def test_pytest_harness_skips_the_pushed_check() -> None:
+    # Tests run whatever the working tree holds; tests of the check opt back
+    # in with the require_pushed fixture.
+    assert furu_provenance._require_pushed_code is False
 
 
 def test_create_writes_provenance_next_to_metadata(
@@ -88,27 +92,24 @@ def test_create_writes_provenance_next_to_metadata(
     assert path.parent == metadata_path_in(node._base_dir).parent
     provenance = Provenance.model_validate_json(path.read_text())
     assert provenance.git.commit == _git(git_repo, "rev-parse", "HEAD")
-    assert provenance.snapshot_id is None
     assert provenance.submitted.hostname == provenance.executed.hostname
     assert provenance.executed.worker_backend == "local"
     assert provenance.executed.pid == os.getpid()
     assert node.provenance() == provenance
-    assert provenance.snapshot_path is None
 
 
-def test_snapshot_builds_tarball_referenced_by_snapshot_id(
+@pytest.mark.usefixtures("require_pushed")
+def test_uncommitted_changes_fail_before_compute(
     git_repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(git_repo)
+    (git_repo / "tracked.txt").write_text("edited\n")
+    computed = len(_created)
 
-    with override_config(_with_snapshot(True)):
+    with pytest.raises(RuntimeError, match="uncommitted changes"):
         furu.create(_Node(value=2))
 
-    provenance = _Node(value=2).provenance()
-    assert provenance.snapshot_id is not None
-    assert provenance.snapshot_path is not None
-    assert provenance.snapshot_path.is_file()
-    assert provenance.snapshot_path.parent.name == provenance.snapshot_id
+    assert len(_created) == computed
 
 
 def test_cache_hit_performs_no_capture_and_no_writes(
@@ -127,8 +128,10 @@ def test_cache_hit_performs_no_capture_and_no_writes(
     )
 
     assert node.create() == 4
-    with override_config(_with_snapshot(True)):
-        assert furu.create(_Node(value=3)) == 4
+    # Loading needs no pushed code, even from a dirty tree.
+    monkeypatch.setattr(furu_provenance, "_require_pushed_code", True)
+    (git_repo / "tracked.txt").write_text("edited\n")
+    assert furu.create(_Node(value=3)) == 4
     assert provenance_path_in(node._base_dir).read_text() == original
 
 
@@ -159,17 +162,16 @@ def test_outside_git_repo_fails_before_compute(
     assert len(_created) == computed
 
 
-def test_snapshot_config_applies_to_plain_create(
+@pytest.mark.usefixtures("require_pushed")
+def test_pushed_commit_is_recorded(
     git_repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(git_repo)
-    with override_config(_with_snapshot(True)):
-        _Node(value=7).create()
+    _Node(value=7).create()
 
-        provenance = _Node(value=7).provenance()
-        assert provenance.snapshot_id is not None
-        assert provenance.snapshot_path is not None
-        assert provenance.snapshot_path.is_file()
+    provenance = _Node(value=7).provenance()
+    assert provenance.git.commit == _git(git_repo, "rev-parse", "origin/main")
+    assert provenance.git.remote == str(git_repo.parent / "origin.git")
 
 
 def test_provenance_raises_missing_for_missing_result() -> None:
@@ -177,6 +179,7 @@ def test_provenance_raises_missing_for_missing_result() -> None:
         _Node(value=9).provenance()
 
 
+@pytest.mark.usefixtures("require_pushed")
 def test_executor_sweep_captures_once_and_stamps_every_job(
     git_repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -191,17 +194,17 @@ def test_executor_sweep_captures_once_and_stamps_every_job(
     monkeypatch.setattr(GitIdentity, "capture", classmethod(counting_capture))
     nodes = [_Node(value=value) for value in (20, 21, 22)]
 
-    with override_config(_with_snapshot(True)):
-        assert furu.create(nodes, on=(LocalThreadWorkerBackend(max_workers=2),)) == [
-            21,
-            22,
-            23,
-        ]
+    assert furu.create(nodes, on=(LocalThreadWorkerBackend(max_workers=2),)) == [
+        21,
+        22,
+        23,
+    ]
 
     assert len(git_captures) == 1
     provenances = [node.provenance() for node in nodes]
-    snapshot_ids = {provenance.snapshot_id for provenance in provenances}
-    assert len(snapshot_ids) == 1 and None not in snapshot_ids
+    assert {provenance.git.commit for provenance in provenances} == {
+        _git(git_repo, "rev-parse", "HEAD")
+    }
     assert all(
         provenance.submitted == provenances[0].submitted for provenance in provenances
     )
@@ -216,7 +219,7 @@ def test_worker_fails_job_on_stale_uv_lock_hash(
 ) -> None:
     monkeypatch.chdir(git_repo)
     node = _Node(value=30)
-    submit = capture_submit_provenance(snapshot=False)
+    submit = capture_submit_provenance()
     stale = submit.model_copy(
         update={
             "environment": submit.environment.model_copy(

@@ -16,8 +16,6 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
-from furu.config import get_config
-
 _ACCELERATOR_PROBE_TIMEOUT_SECONDS = 2.0
 _HASH_PREFIX = "blake2s:"
 
@@ -29,8 +27,6 @@ class GitIdentity(BaseModel):
     branch: str | None
     remote: str | None
     repo_root: str
-    dirty: bool
-    diff_stats: str | None
 
     @classmethod
     def capture(cls, cwd: Path) -> GitIdentity:
@@ -48,19 +44,11 @@ class GitIdentity(BaseModel):
             remote = _run_git(["remote", "get-url", "origin"], cwd=cwd)
         except subprocess.CalledProcessError:
             remote = None
-        dirty = bool(_run_git(["status", "--porcelain"], cwd=cwd))
-        diff_stats = (
-            _run_git(["diff", "HEAD", "--shortstat"], cwd=cwd) or None
-            if dirty
-            else None
-        )
         return cls(
             commit=commit,
             branch=None if branch == "HEAD" else branch,
             remote=remote,
             repo_root=repo_root,
-            dirty=dirty,
-            diff_stats=diff_stats,
         )
 
 
@@ -188,7 +176,6 @@ class SubmitProvenance(BaseModel):
 
     git: GitIdentity
     environment: EnvironmentIdentity
-    snapshot_id: str | None
     submitted: SubmitContext
 
 
@@ -197,7 +184,6 @@ class Provenance(BaseModel):
 
     git: GitIdentity
     environment: EnvironmentIdentity
-    snapshot_id: str | None
     submitted: SubmitContext
     executed: ExecuteContext
 
@@ -206,35 +192,28 @@ class Provenance(BaseModel):
         return cls(
             git=submit.git,
             environment=submit.environment,
-            snapshot_id=submit.snapshot_id,
             submitted=submit.submitted,
             executed=executed,
         )
 
-    @property
-    def snapshot_path(self) -> Path | None:
-        if self.snapshot_id is None:
-            return None
-        return (
-            get_config().run_directories.snapshots
-            / self.snapshot_id
-            / "snapshot.tar.gz"
-        )
 
-
-def capture_submit_provenance(*, snapshot: bool) -> SubmitProvenance:
+def capture_submit_provenance() -> SubmitProvenance:
     """Capture the submit-side provenance half for a batch about to compute.
 
-    Callers own the once-per-batch discipline: call this only when there is
-    work to create, never on the cache-hit path.
+    Refuses unless the checkout is committed and pushed (see
+    ``furu.snapshot.require_pushed``). Callers own the once-per-batch
+    discipline: call this only when there is work to create, never on the
+    cache-hit path.
     """
-    from furu.snapshot import create_snapshot  # snapshot.py imports this module
+    from furu.snapshot import require_pushed  # snapshot.py imports this module
 
     cwd = Path.cwd()
+    git = GitIdentity.capture(cwd)
+    if _require_pushed_code:
+        require_pushed(git)
     return SubmitProvenance(
-        git=GitIdentity.capture(cwd),
+        git=git,
         environment=EnvironmentIdentity.capture(),
-        snapshot_id=create_snapshot(cwd) if snapshot else None,
         submitted=SubmitContext.capture(),
     )
 
@@ -275,6 +254,9 @@ def _require_uv() -> None:
         )
 
 
+# Off only under furu's pytest plugin: tests run whatever the working tree
+# holds and write results to throwaway directories.
+_require_pushed_code: bool = True
 _worker_backend: ContextVar[str] = ContextVar("_furu_worker_backend", default="local")
 _submitted_repo_root: Path | None = None
 
@@ -299,14 +281,13 @@ def _repo_root(cwd: Path) -> Path:
     return Path(GitIdentity.capture(cwd).repo_root)
 
 
-def _run_git(args: list[str], *, cwd: Path, input: str | None = None) -> str:
+def _run_git(args: list[str], *, cwd: Path) -> str:
     result = subprocess.run(
         ["git", *args],
         cwd=cwd,
         capture_output=True,
         text=True,
         check=True,
-        input=input,
     )
     return result.stdout.strip()
 
