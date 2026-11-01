@@ -39,6 +39,7 @@ from furu.logging import (
 )
 from furu.metadata import ArtifactSpec
 from furu.migration.links import load_stored_result, version_for_loading
+from furu.migration.resolution import _class_resolution
 from furu.migration.stale import raise_if_stale
 from furu.provenance import (
     ExecuteContext,
@@ -53,6 +54,7 @@ from furu.storage._layout import (
     attempt_dir_in,
     compute_lock_path_in,
     data_dir_in,
+    migrations_path_in_schema_directory,
     provenance_path_in,
     result_dir_in,
     result_link_path_in,
@@ -78,6 +80,11 @@ def _record_schema_snapshot(obj: Spec) -> None:
     schema_path = schema_snapshot_path_in(obj._base_dir)
     if schema_path.exists():
         return
+    # Before the snapshot, so whoever sees the snapshot also sees its steps.
+    atomic_write_text(
+        migrations_path_in_schema_directory(schema_path.parent),
+        json.dumps(sorted(_class_resolution(obj).declared_steps)),
+    )
     atomic_write_text(
         schema_path, json.dumps(obj._schema_data, indent=2, sort_keys=True)
     )

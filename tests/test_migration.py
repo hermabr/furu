@@ -1993,3 +1993,82 @@ def test_result_rewrite_on_an_embedded_dataclass_fails_at_class_creation() -> No
 
             def create(self) -> int:
                 return 0
+
+
+# --- parallel branches: worktrees share one store --------------------------------
+
+
+def _fresh_process() -> None:
+    """Forget what this process resolved, as a new worker would."""
+    migration_resolution._RESOLUTION_CACHE.clear()
+    migration_links._SOURCES_CACHE.clear()
+
+
+class _TrunkRun(Spec[str]):
+    a: int
+
+    def create(self) -> str:
+        return f"trunk a={self.a}"
+
+
+class _WarmupBranchRun(Spec[str]):
+    a: int
+    warmup: int = 0
+
+    migrations = (Added("warmup", default=0),)
+
+    def create(self) -> str:
+        return f"warmup a={self.a}"
+
+
+class _DropoutBranchRun(Spec[str]):
+    a: int
+    dropout: float = 0.0
+
+    migrations = (Added("dropout", default=0.0),)
+
+    def create(self) -> str:
+        return f"dropout a={self.a}"
+
+
+def _grow_branches() -> tuple[_TrunkRun, _WarmupBranchRun, _DropoutBranchRun]:
+    """A trunk result, then one result on each of two branches grown from it."""
+    trunk = _TrunkRun(a=1)
+    trunk.create()
+    _transplant_generation(trunk, _WarmupBranchRun)
+    warmup = _WarmupBranchRun(a=2)
+    warmup.create()
+    _transplant_generation(trunk, _DropoutBranchRun)
+    dropout = _DropoutBranchRun(a=3)
+    dropout.create()
+    return trunk, warmup, dropout
+
+
+def test_sibling_branch_schemas_are_not_stale() -> None:
+    _, warmup, dropout = _grow_branches()
+    _transplant_generation(warmup, _DropoutBranchRun)
+    _transplant_generation(warmup, _TrunkRun)
+    _transplant_generation(dropout, _TrunkRun)
+    _fresh_process()
+
+    assert _DropoutBranchRun(a=4).status == "missing"
+    assert _DropoutBranchRun(a=1).status == "done"
+    assert _DropoutBranchRun(a=1).load_existing() == "trunk a=1"
+    assert _TrunkRun(a=4).status == "missing"
+
+
+class _WarmupRetypedRun(Spec[str]):
+    a: int
+    warmup: float = 0.0
+
+    migrations = (Added("warmup", default=0.0),)
+
+    def create(self) -> str:
+        return f"a={self.a}"
+
+
+def test_undeclared_retype_of_an_added_field_stays_stale() -> None:
+    _, warmup, _ = _grow_branches()
+    _transplant_generation(warmup, _WarmupRetypedRun)
+
+    assert _WarmupRetypedRun(a=4).status == "stale"
