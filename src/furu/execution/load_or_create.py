@@ -4,8 +4,7 @@ import json
 import shutil
 import time
 import traceback
-from collections.abc import Callable, Generator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, overload
 
@@ -15,7 +14,6 @@ from furu._tree import map_specs, specs_in
 from furu.core import Missing, Spec
 from furu.dag import Dag
 from furu.dependencies import (
-    DependencyRecorder,
     _DependencyNotReady,
     any_under_creation,
     dependency_recorder,
@@ -73,23 +71,6 @@ def _record_schema_snapshot(obj: Spec) -> None:
     atomic_write_text(
         schema_path, json.dumps(obj._schema_data, indent=2, sort_keys=True)
     )
-
-
-def _prepare_attempt(obj: Spec) -> None:
-    """Write spec.json and create attempt/, resuming one left by an earlier try."""
-    if not (spec_path := spec_path_in(obj._base_dir)).exists():
-        atomic_write_text(
-            spec_path, ArtifactSpec.from_furu(obj).model_dump_json(indent=2)
-        )
-    attempt_dir_in(obj._base_dir).mkdir(exist_ok=True)
-
-
-@contextmanager
-def _recording(objs: Sequence[Spec]) -> Generator[DependencyRecorder]:
-    """Record the dependency versions one create() call loads."""
-    storage = objs[0]._metadata.storage  # a batch shares its metadata
-    with dependency_recorder(storage) as recorder, under_creation(objs):
-        yield recorder
 
 
 def _publish[T](
@@ -438,7 +419,12 @@ def _create_and_store_group[T](
 ) -> None:
     started_at = datetime.now(UTC)
     for obj in group:
-        _prepare_attempt(obj)
+        # Keep an attempt/ left by an earlier try so create() can resume it.
+        if not (spec_path := spec_path_in(obj._base_dir)).exists():
+            atomic_write_text(
+                spec_path, ArtifactSpec.from_furu(obj).model_dump_json(indent=2)
+            )
+        attempt_dir_in(obj._base_dir).mkdir(exist_ok=True)
     try:
         match getattr(type(group[0]), "_furu_create_hook", None):
             case None:
@@ -447,7 +433,8 @@ def _create_and_store_group[T](
                     "because it does not define create()"
                 )
             case _BatchedHook(func=create_hook):
-                with _recording(group) as recorder:
+                storage = group[0]._metadata.storage  # a batch shares its metadata
+                with dependency_recorder(storage) as recorder, under_creation(group):
                     results = create_hook(group)
                 if not isinstance(results, list):
                     raise TypeError(
@@ -460,7 +447,11 @@ def _create_and_store_group[T](
                 results = []
                 dependencies = []
                 for obj in group:
-                    with _recording([obj]) as recorder:
+                    storage = obj._metadata.storage
+                    with (
+                        dependency_recorder(storage) as recorder,
+                        under_creation([obj]),
+                    ):
                         results.append(create_hook(obj))
                     dependencies.append(recorder.versions)
 
