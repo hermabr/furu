@@ -2298,17 +2298,17 @@ def test_partial_persistence_leaves_already_written_objects_completed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     objs = [PartialBatchValue(key=1), PartialBatchValue(key=2)]
-    real_store_result = execution_module._store_result
+    real_publish = execution_module._publish
     call_count = 0
 
-    def flaky_store_result(*args, **kwargs):
+    def flaky_publish(*args, **kwargs):
         nonlocal call_count
         call_count += 1
         if call_count == 2:
             raise RuntimeError("stop after first store")
-        return real_store_result(*args, **kwargs)
+        return real_publish(*args, **kwargs)
 
-    monkeypatch.setattr(execution_module, "_store_result", flaky_store_result)
+    monkeypatch.setattr(execution_module, "_publish", flaky_publish)
 
     with pytest.raises(RuntimeError, match="stop after first store"):
         _load_or_create(objs)

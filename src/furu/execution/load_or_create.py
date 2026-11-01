@@ -7,12 +7,7 @@ import traceback
 from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    cast,
-    overload,
-)
+from typing import TYPE_CHECKING, Any, overload
 
 from furu._batched import _BatchedHook
 from furu._declared_types import declared_result_type
@@ -46,12 +41,7 @@ from furu.provenance import (
     capture_submit_provenance,
 )
 from furu.resources import Worker
-from furu.result.bundle import (
-    _DumpState,
-    _save_result_bundle,
-    bind_refs,
-    load_result_bundle,
-)
+from furu.result.bundle import _save_result_bundle
 from furu.storage._layout import (
     attempt_dir_in,
     compute_lock_path_in,
@@ -102,7 +92,7 @@ def _recording(objs: Sequence[Spec]) -> Generator[DependencyRecorder]:
         yield recorder
 
 
-def _store_result[T](
+def _publish[T](
     obj: Spec[T],
     result: T,
     *,
@@ -110,8 +100,8 @@ def _store_result[T](
     has_lock: HasLock,
     submit_provenance: SubmitProvenance,
     started_at: datetime,
-) -> _DumpState:
-    """Store the result and the dependency versions it loaded in attempt/."""
+) -> None:
+    """Store the result in attempt/, then publish it by renaming it to v-fixed/."""
     attempt = attempt_dir_in(obj._base_dir)
     lock_path = compute_lock_path_in(obj._base_dir)
     if not has_lock():
@@ -119,14 +109,13 @@ def _store_result[T](
 
     result_dir = result_dir_in(attempt)
     shutil.rmtree(result_dir, ignore_errors=True)  # left by a crash mid-publish
-    dump_state = _save_result_bundle(
+    _save_result_bundle(
         result,
         result_dir,
         declared_type=declared_result_type(type(obj)),
         result_codecs=obj.result_codecs,
         data_dir=data_dir_in(attempt),
     )
-
     atomic_write_text(
         trace_path_in(attempt),
         json.dumps({"dependencies": dict(sorted(dependencies.items()))}, indent=2),
@@ -136,46 +125,18 @@ def _store_result[T](
     )
     atomic_write_text(provenance_path_in(attempt), provenance.model_dump_json(indent=2))
     _record_schema_snapshot(obj)
-    return dump_state
-
-
-def _publish[T](
-    obj: Spec[T],
-    result: T,
-    *,
-    dump_state: _DumpState,
-    has_lock: HasLock,
-) -> T:
-    """Rename attempt/ to v-fixed/; return the value to hand out."""
-    attempt = attempt_dir_in(obj._base_dir)
     shutil.rmtree(scratch_dir_in(attempt), ignore_errors=True)
+
     if not has_lock():
-        raise RuntimeError(
-            f"lost lock at {compute_lock_path_in(obj._base_dir)} before publishing"
-        )
+        raise RuntimeError(f"lost lock at {lock_path} before publishing")
     version = obj._base_dir / "v-fixed"
-    reload = dump_state.should_reload_value_after_save
     try:
         attempt.rename(version)
     except OSError:
         if not version.is_dir():
             raise
         shutil.rmtree(attempt)  # the same version was published first; keep it
-        reload = True
     result_link_path_in(obj._base_dir).unlink(missing_ok=True)
-
-    declared_type = declared_result_type(type(obj))
-    bind_refs(dump_state, result_dir_in(version), data_dir=data_dir_in(version))
-    if reload:
-        return cast(
-            T,
-            load_result_bundle(
-                result_dir_in(version),
-                data_dir=data_dir_in(version),
-                declared_type=declared_type,
-            ),
-        )
-    return result
 
 
 @overload
@@ -208,10 +169,7 @@ def _load_or_create(
 
 
 def _ensure_group_result[T](
-    objs: Sequence[Spec[T]],
-    *,
-    results_by_object_id: dict[str, T],
-    submit_provenance: SubmitProvenance,
+    objs: Sequence[Spec[T]], *, submit_provenance: SubmitProvenance
 ) -> None:
     missing: list[Spec[T]] = []
     for obj in objs:
@@ -233,7 +191,6 @@ def _ensure_group_result[T](
             _create_and_store_group(
                 pending,
                 has_lock=has_lock,
-                results_by_object_id=results_by_object_id,
                 submit_provenance=submit_provenance,
             )
 
@@ -381,21 +338,24 @@ def _load_or_create_local[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
         to_build = [obj for obj in objs if obj.object_id in dag.nodes_by_id]
         objs[0].logger.info("%s", _cached_to_build_msg(cached, to_build))
 
-    wanted = {obj.object_id for obj in objs} if load else set()
-    results: dict[str, T] = _run_in_process(dag, keep=wanted) if dag.ready else {}
+    if dag.ready:
+        _run_in_process(dag)
     if not load:
         return []
-    return [
-        results[obj.object_id] if obj.object_id in results else obj.load_existing()
-        for obj in objs
-    ]
+    # Load the way a cache hit does, so the first run returns what every later
+    # load will. Specs sharing an object_id are one spec whatever their storage;
+    # like the dag, the first one stands in for the rest.
+    first: dict[str, Spec[T]] = {}
+    for obj in objs:
+        first.setdefault(obj.object_id, obj)
+    loaded = {object_id: obj.load_existing() for object_id, obj in first.items()}
+    return [loaded[obj.object_id] for obj in objs]
 
 
-def _run_in_process(dag: Dag, *, keep: set[str]) -> dict[str, Any]:
-    """Create every ready spec in ``dag`` and return the results in ``keep``."""
+def _run_in_process(dag: Dag) -> None:
+    """Create every ready spec in ``dag``."""
     submit_provenance = capture_submit_provenance()
     here = Worker.here()
-    results: dict[str, Any] = {}
     while dag.ready:
         lead = next(iter(dag.ready.values()))
         group = [lead]
@@ -405,12 +365,9 @@ def _run_in_process(dag: Dag, *, keep: set[str]) -> dict[str, Any]:
         for node in group:
             del dag.ready[node.obj.object_id]
 
-        group_results: dict[str, Any] = {}
         try:
             _create_in_process(
-                [node.obj for node in group],
-                results_by_object_id=group_results,
-                submit_provenance=submit_provenance,
+                [node.obj for node in group], submit_provenance=submit_provenance
             )
         except _DependencyNotReady as exc:
             lead.obj.logger.info(
@@ -437,15 +394,10 @@ def _run_in_process(dag: Dag, *, keep: set[str]) -> dict[str, Any]:
             raise
         for node in group:
             dag.complete(node)
-        results.update((k, v) for k, v in group_results.items() if k in keep)
-    return results
 
 
 def _create_in_process[T](
-    group: list[Spec[T]],
-    *,
-    results_by_object_id: dict[str, T],
-    submit_provenance: SubmitProvenance,
+    group: list[Spec[T]], *, submit_provenance: SubmitProvenance
 ) -> None:
     """Create one group in this process, announced on the terminal.
 
@@ -462,11 +414,7 @@ def _create_in_process[T](
     with _run_log_scope(run_logs[0][1]) as run_log:
         _open_sections(run_logs, run_log, "in-process")
         try:
-            _ensure_group_result(
-                group,
-                results_by_object_id=results_by_object_id,
-                submit_provenance=submit_provenance,
-            )
+            _ensure_group_result(group, submit_provenance=submit_provenance)
         except _DependencyNotReady as exc:
             duration = format_duration(time.monotonic() - started_at)
             missing = missing_dependencies(len(exc.dependencies))
@@ -486,7 +434,6 @@ def _create_and_store_group[T](
     group: list[Spec[T]],
     *,
     has_lock: HasLock,
-    results_by_object_id: dict[str, T],
     submit_provenance: SubmitProvenance,
 ) -> None:
     started_at = datetime.now(UTC)
@@ -506,8 +453,8 @@ def _create_and_store_group[T](
                     raise TypeError(
                         f"{type(group[0]).__name__}.create() must return a list"
                     )
-                # TODO: Record dependencies per object during batched execution.
-                # Every object currently shares the batch's dependencies.
+                # One create() call built the whole batch, so every object
+                # records the dependencies the batch loaded.
                 dependencies = [recorder.versions for _ in group]
             case create_hook:
                 results = []
@@ -525,19 +472,13 @@ def _create_and_store_group[T](
         for obj, result, obj_dependencies in zip(
             group, results, dependencies, strict=True
         ):
-            dump_state = _store_result(
+            _publish(
                 obj,
                 result,
                 dependencies=obj_dependencies,
                 has_lock=has_lock,
                 submit_provenance=submit_provenance,
                 started_at=started_at,
-            )
-            results_by_object_id[obj.object_id] = _publish(
-                obj,
-                result,
-                dump_state=dump_state,
-                has_lock=has_lock,
             )
     except Exception:
         group[0].logger.exception("create failed for %s", group[0]._log_label)

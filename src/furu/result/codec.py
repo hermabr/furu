@@ -90,7 +90,6 @@ class CodecMeta(ABCMeta):
 
 class Codec[T](ABC, metaclass=CodecMeta):
     auto_register: ClassVar[bool] = True
-    reload_value_after_save: ClassVar[bool] = False
 
     @final
     @classmethod

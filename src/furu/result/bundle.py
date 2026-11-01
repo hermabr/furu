@@ -43,20 +43,6 @@ type WrapperKind = Literal[
 ]
 
 
-@dataclasses.dataclass
-class _RefBinding:
-    ref: Ref[Any]
-    encoded_metadata: JsonValue
-    artifact_relative_path: Path
-
-
-@dataclasses.dataclass
-class _DumpState:
-    data_dir: Path
-    should_reload_value_after_save: bool = False
-    ref_bindings: list[_RefBinding] = dataclasses.field(default_factory=list)
-
-
 def _value_path_display(value_path: ValuePath) -> str:
     if not value_path:
         return "<root>"
@@ -100,7 +86,7 @@ def _dump_value(
     value_path: ValuePath,
     bundle_dir: Path,
     result_codecs: tuple[type[Codec], ...],
-    dump_state: _DumpState,
+    data_dir: Path,
 ) -> JsonValue:
     annotated_codec: type[Codec] | None = None
     if get_origin(declared_type) is Annotated:
@@ -121,8 +107,7 @@ def _dump_value(
                 codec=value._codec,
                 value_path=value_path,
                 bundle_dir=bundle_dir,
-                dump_state=dump_state,
-                ref=value,
+                data_dir=data_dir,
             )
         case _ if annotated_codec is not None:
             return _dump_artifact(
@@ -130,7 +115,7 @@ def _dump_value(
                 codec=annotated_codec,
                 value_path=value_path,
                 bundle_dir=bundle_dir,
-                dump_state=dump_state,
+                data_dir=data_dir,
             )
 
     match value:
@@ -143,7 +128,7 @@ def _dump_value(
                     codec=codec,
                     value_path=value_path,
                     bundle_dir=bundle_dir,
-                    dump_state=dump_state,
+                    data_dir=data_dir,
                 )
             encoded = value.isoformat()
             loaded = datetime.fromisoformat(encoded)
@@ -174,7 +159,7 @@ def _dump_value(
                     value_path=(*value_path, f"{i:0{width}d}"),
                     bundle_dir=bundle_dir,
                     result_codecs=result_codecs,
-                    dump_state=dump_state,
+                    data_dir=data_dir,
                 )
                 for i, item in enumerate(value)
             ]
@@ -190,7 +175,7 @@ def _dump_value(
                             value_path=(*value_path, f"{i:0{width}d}"),
                             bundle_dir=bundle_dir,
                             result_codecs=result_codecs,
-                            dump_state=dump_state,
+                            data_dir=data_dir,
                         )
                         for i, item in enumerate(value)
                     ],
@@ -225,7 +210,7 @@ def _dump_value(
                             value_path=(*value_path, f"{i:0{width}d}"),
                             bundle_dir=bundle_dir,
                             result_codecs=result_codecs,
-                            dump_state=dump_state,
+                            data_dir=data_dir,
                         )
                         for i, item in enumerate(items)
                     ],
@@ -244,11 +229,11 @@ def _dump_value(
                     value_path=(*value_path, key),
                     bundle_dir=bundle_dir,
                     result_codecs=result_codecs,
-                    dump_state=dump_state,
+                    data_dir=data_dir,
                 )
             return out
         case Path():
-            scratch_dir = scratch_dir_in(dump_state.data_dir.parent)
+            scratch_dir = scratch_dir_in(data_dir.parent)
             resolved = value.resolve()
             if resolved.is_relative_to(scratch_dir.resolve()):
                 raise ValueError(
@@ -256,14 +241,12 @@ def _dump_value(
                     f"point into the scratch dir {scratch_dir}, which is deleted "
                     f"once the result is stored: {value}"
                 )
-            data_dir = dump_state.data_dir.resolve()
-            if resolved.is_relative_to(data_dir):
+            if resolved.is_relative_to(data_dir.resolve()):
                 # The data dir moves when the attempt is published.
-                dump_state.should_reload_value_after_save = True
                 return {
                     WRAPPER_KEY: {
                         KINDMARKER: "data_path",
-                        "value": resolved.relative_to(data_dir).as_posix(),
+                        "value": resolved.relative_to(data_dir.resolve()).as_posix(),
                     }
                 }
             return {
@@ -285,7 +268,7 @@ def _dump_value(
                     value_path=(*value_path, name),
                     bundle_dir=bundle_dir,
                     result_codecs=result_codecs,
-                    dump_state=dump_state,
+                    data_dir=data_dir,
                 )
             return {
                 WRAPPER_KEY: {
@@ -307,7 +290,7 @@ def _dump_value(
                     value_path=(*value_path, name),
                     bundle_dir=bundle_dir,
                     result_codecs=result_codecs,
-                    dump_state=dump_state,
+                    data_dir=data_dir,
                 )
             return {
                 WRAPPER_KEY: {
@@ -323,7 +306,7 @@ def _dump_value(
                     codec=codec,
                     value_path=value_path,
                     bundle_dir=bundle_dir,
-                    dump_state=dump_state,
+                    data_dir=data_dir,
                 )
 
     raise ValueError(
@@ -338,8 +321,7 @@ def _dump_artifact(
     codec: type[Codec],
     value_path: ValuePath,
     bundle_dir: Path,
-    dump_state: _DumpState,
-    ref: Ref[Any] | None = None,
+    data_dir: Path,
 ) -> JsonValue:
     artifact_rel = Path(ARTIFACTS_DIR_NAME, *(value_path or (_ROOT_ARTIFACT_NAME,)))
     artifact_dir = bundle_dir / artifact_rel
@@ -352,22 +334,9 @@ def _dump_artifact(
             f"metadata mapping; got {type(codec_metadata).__name__!r}"
         )
     encoded_metadata = _encode_codec_metadata_value(
-        dict(codec_metadata), data_dir=dump_state.data_dir, value_path=value_path
+        dict(codec_metadata), data_dir=data_dir, value_path=value_path
     )
     assert isinstance(encoded_metadata, dict)
-
-    if ref is not None:
-        dump_state.ref_bindings.append(
-            _RefBinding(
-                ref=ref,
-                encoded_metadata=encoded_metadata,
-                artifact_relative_path=artifact_rel,
-            )
-        )
-    elif codec.reload_value_after_save or _holds_path(codec_metadata):
-        # Data-dir paths move when the attempt is published.
-        dump_state.should_reload_value_after_save = True
-
     return {
         WRAPPER_KEY: {
             KINDMARKER: "artifact",
@@ -376,17 +345,6 @@ def _dump_artifact(
             "metadata": encoded_metadata,
         }
     }
-
-
-def _holds_path(value: object) -> bool:
-    match value:
-        case Path():
-            return True
-        case Mapping():
-            return any(_holds_path(item) for item in value.values())
-        case list() | tuple() | set() | frozenset():
-            return any(_holds_path(item) for item in value)
-    return False
 
 
 def _encode_codec_metadata_value(
@@ -736,37 +694,21 @@ def _save_result_bundle(
     declared_type: object,
     result_codecs: tuple[type[Codec], ...],
     data_dir: Path,
-) -> _DumpState:
+) -> None:
     bundle_dir.mkdir(parents=True, exist_ok=False)
 
-    dump_state = _DumpState(data_dir=data_dir)
     manifest = _dump_value(
         value,
         declared_type=declared_type,
         value_path=(),
         bundle_dir=bundle_dir,
         result_codecs=result_codecs,
-        dump_state=dump_state,
+        data_dir=data_dir,
     )
     (bundle_dir / MANIFEST_FILE_NAME).write_text(
         json.dumps(manifest, indent=2),
         encoding="utf-8",
     )
-    return dump_state
-
-
-def bind_refs(dump_state: _DumpState, bundle_dir: Path, *, data_dir: Path) -> None:
-    """Point the refs a create() returned at their stored artifacts."""
-    for binding in dump_state.ref_bindings:
-        binding.ref._bind_stored(
-            metadata=cast(
-                dict[str, object],
-                _decode_codec_metadata_value(
-                    binding.encoded_metadata, data_dir=data_dir
-                ),
-            ),
-            artifact_directory=bundle_dir / binding.artifact_relative_path,
-        )
 
 
 def load_result_bundle(

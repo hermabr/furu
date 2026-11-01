@@ -16,9 +16,6 @@ import furu
 from furu import Ref, Spec
 from furu._declared_types import child_declared_type
 from furu.result.bundle import (
-    _DumpState,
-)
-from furu.result.bundle import (
     _save_result_bundle as _save_result_bundle_impl,
 )
 from furu.result.bundle import (
@@ -42,8 +39,8 @@ def _save_result_bundle(
     *,
     declared_type: object = Any,
     result_codecs: tuple[type[Codec], ...],
-) -> _DumpState:
-    return _save_result_bundle_impl(
+) -> None:
+    _save_result_bundle_impl(
         value,
         bundle_dir,
         declared_type=declared_type,
@@ -649,7 +646,6 @@ class _ScratchBackedValue:
 
 class _ScratchBackedCodec(Codec[_ScratchBackedValue]):
     auto_register: ClassVar[bool] = False
-    reload_value_after_save: ClassVar[bool] = True
 
     @classmethod
     def matches(cls, value: object) -> bool:
@@ -1106,7 +1102,7 @@ def test_ref_rebinds_to_storage_after_publish() -> None:
 
     assert isinstance(created.value, Ref)
     assert _CountingCodec.dump_calls == 1
-    # Rebound, not reloaded: publishing must not eagerly read the artifact back.
+    # Handed back from storage, but a Ref reads its artifact only on load().
     assert _CountingCodec.load_calls == 0
 
     first = created.value.load()
@@ -1261,12 +1257,13 @@ def test_task_result_codecs_are_used_for_save_inference_only() -> None:
     assert isinstance(loaded, _CountingValue)
     assert loaded.value == 8
     assert _CountingCodec.dump_calls == 1
-    assert _CountingCodec.load_calls == 0
+    assert _CountingCodec.load_calls == 1  # create() hands back the stored value
 
     loaded_again = obj.create()
     assert isinstance(loaded_again, _CountingValue)
     assert loaded_again.value == 8
-    assert _CountingCodec.load_calls == 1
+    assert _CountingCodec.dump_calls == 1
+    assert _CountingCodec.load_calls == 2
 
 
 def test_task_result_codecs_must_not_be_ambiguous() -> None:

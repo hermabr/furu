@@ -35,9 +35,7 @@ def _execute(job: Job) -> JobResult:
     _set_submitted_repo_root(Path(job.provenance.git.repo_root))
     try:
         objs = [Spec.from_artifact(artifact) for artifact in job.artifacts]
-        _ensure_group_result(
-            objs, results_by_object_id={}, submit_provenance=job.provenance
-        )
+        _ensure_group_result(objs, submit_provenance=job.provenance)
         return JobCompletedResult()
     except _DependencyNotReady as exc:
         return JobBlockedResult(
