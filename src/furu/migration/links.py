@@ -26,6 +26,7 @@ from furu.storage._layout import (
     result_dir_in,
     result_link_path_in,
     spec_path_in,
+    version_dir_in,
 )
 from furu.utils import JsonFields, _stable_json_dump, atomic_write_text
 
@@ -168,7 +169,7 @@ def _find_source(obj: Spec, resolution: _ClassResolution) -> _ResultLink | None:
 
 
 def _published(identity_dir: Path) -> Path | None:
-    version = identity_dir / "v-fixed"
+    version = version_dir_in(identity_dir)
     return version if version.is_dir() else None
 
 

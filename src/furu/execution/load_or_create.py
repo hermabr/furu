@@ -52,6 +52,7 @@ from furu.storage._layout import (
     scratch_dir_in,
     spec_path_in,
     trace_path_in,
+    version_dir_in,
 )
 from furu.utils import atomic_write_text, error_summary, format_duration
 
@@ -110,13 +111,7 @@ def _publish[T](
 
     if not has_lock():
         raise RuntimeError(f"lost lock at {lock_path} before publishing")
-    version = obj._base_dir / "v-fixed"
-    try:
-        attempt.rename(version)
-    except OSError:
-        if not version.is_dir():
-            raise
-        shutil.rmtree(attempt)  # the same version was published first; keep it
+    attempt.rename(version_dir_in(obj._base_dir))
     result_link_path_in(obj._base_dir).unlink(missing_ok=True)
 
 

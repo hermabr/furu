@@ -46,6 +46,7 @@ from furu.storage._layout import (
     run_log_path_in,
     spec_path_in,
     trace_path_in,
+    version_dir_in,
 )
 from furu.testing import override_config
 from furu.utils import fully_qualified_name
@@ -1106,7 +1107,7 @@ def test_furu_from_artifact_returns_furu_object():
 
 
 def _dependency_object_ids(obj: furu.Spec) -> list[str]:
-    trace = json.loads(trace_path_in(obj._base_dir / "v-fixed").read_text())
+    trace = json.loads(trace_path_in(version_dir_in(obj._base_dir)).read_text())
     return sorted(trace["dependencies"])
 
 
@@ -1645,7 +1646,7 @@ def test_data_dir_is_user_data_subdirectory() -> None:
 
     assert obj.create() == "payload"
 
-    version = obj._base_dir / "v-fixed"
+    version = version_dir_in(obj._base_dir)
     assert (data_dir_in(version) / "payload.txt").read_text(
         encoding="utf-8"
     ) == "payload"
@@ -1656,7 +1657,7 @@ def test_data_dir_is_user_data_subdirectory() -> None:
 
 def test_unused_data_dir_is_not_created_by_create() -> None:
     node = Node(name="unused-data")
-    user_data_path = node._base_dir / "v-fixed" / "data"
+    user_data_path = version_dir_in(node._base_dir) / "data"
 
     assert node.create() == "Node(unused-data)"
 
@@ -1699,7 +1700,7 @@ def test_scratch_survives_retries_and_is_deleted_after_create() -> None:
     assert obj.create() == "from-previous-attempt"
 
     assert not scratch_dir.exists()
-    assert not (obj._base_dir / "v-fixed" / "scratch").exists()
+    assert not (version_dir_in(obj._base_dir) / "scratch").exists()
     assert obj.status == "done"
 
 
@@ -1886,10 +1887,10 @@ def test_no_create_hook_loads_cached_result() -> None:
     obj = NoCreateHookValue(key=1)
     _save_result_bundle(
         "cached:1",
-        result_dir_in(obj._base_dir / "v-fixed"),
+        result_dir_in(version_dir_in(obj._base_dir)),
         declared_type=str,
         result_codecs=(),
-        data_dir=data_dir_in(obj._base_dir / "v-fixed"),
+        data_dir=data_dir_in(version_dir_in(obj._base_dir)),
     )
 
     assert furu.create(obj) == "cached:1"
@@ -1916,10 +1917,10 @@ def test_no_create_hook_uses_post_lock_cache_recheck(
         assert lock_paths == [compute_lock_path_in(obj._base_dir)]
         _save_result_bundle(
             "cached-after-lock:1",
-            result_dir_in(obj._base_dir / "v-fixed"),
+            result_dir_in(version_dir_in(obj._base_dir)),
             declared_type=str,
             result_codecs=(),
-            data_dir=data_dir_in(obj._base_dir / "v-fixed"),
+            data_dir=data_dir_in(version_dir_in(obj._base_dir)),
         )
         yield lambda: True
 
@@ -2088,10 +2089,10 @@ def test_pending_items_are_rechecked_after_lock_acquisition(
         assert lock_paths == [compute_lock_path_in(pending._base_dir)]
         _save_result_bundle(
             "single:5",
-            result_dir_in(pending._base_dir / "v-fixed"),
+            result_dir_in(version_dir_in(pending._base_dir)),
             declared_type=str,
             result_codecs=(),
-            data_dir=data_dir_in(pending._base_dir / "v-fixed"),
+            data_dir=data_dir_in(version_dir_in(pending._base_dir)),
         )
         yield lambda: True
 
@@ -2134,8 +2135,8 @@ def test_nested_create_reports_all_missing_dependencies(
 
     assert exc_info.value.dependencies == (first, second)
     assert ObjectIdStorageValue.create_calls == []
-    assert not result_manifest_path_in(first._base_dir / "v-fixed").exists()
-    assert not result_manifest_path_in(second._base_dir / "v-fixed").exists()
+    assert not result_manifest_path_in(version_dir_in(first._base_dir)).exists()
+    assert not result_manifest_path_in(version_dir_in(second._base_dir)).exists()
 
 
 def test_nested_load_existing_and_provenance_raise_missing(tmp_path: Path) -> None:
@@ -2199,13 +2200,13 @@ def test_batched_compute_writes_result_layout_per_object() -> None:
     assert _load_or_create(objs) == ["batch:1", "batch:2"]
 
     for obj, expected in zip(objs, ["batch:1", "batch:2"], strict=True):
-        assert result_manifest_path_in(obj._base_dir / "v-fixed").exists()
+        assert result_manifest_path_in(version_dir_in(obj._base_dir)).exists()
         assert spec_path_in(obj._base_dir).exists()
         assert run_log_path_in(obj._base_dir).exists()
         assert (
             load_result_bundle(
-                result_dir_in(obj._base_dir / "v-fixed"),
-                data_dir=data_dir_in(obj._base_dir / "v-fixed"),
+                result_dir_in(version_dir_in(obj._base_dir)),
+                data_dir=data_dir_in(version_dir_in(obj._base_dir)),
                 declared_type=str,
             )
             == expected
@@ -2313,8 +2314,8 @@ def test_partial_persistence_leaves_already_written_objects_completed(
     with pytest.raises(RuntimeError, match="stop after first store"):
         _load_or_create(objs)
 
-    assert result_manifest_path_in(objs[0]._base_dir / "v-fixed").exists()
-    assert not result_manifest_path_in(objs[1]._base_dir / "v-fixed").exists()
+    assert result_manifest_path_in(version_dir_in(objs[0]._base_dir)).exists()
+    assert not result_manifest_path_in(version_dir_in(objs[1]._base_dir)).exists()
 
 
 def test_create_publicly_loads_or_computes_result() -> None:

@@ -24,6 +24,7 @@ from furu.storage._layout import (
     data_dir_in,
     result_link_path_in,
     result_manifest_path_in,
+    version_dir_in,
 )
 from furu.utils import JsonFields, JsonValue, fully_qualified_name
 
@@ -128,7 +129,7 @@ def test_rename_plus_add_reuses_old_result_through_result_link() -> None:
 
     link_path = result_link_path_in(new._base_dir)
     link = json.loads(link_path.read_text())
-    assert link["source"]["version_dir"] == str(old._base_dir / "v-fixed")
+    assert link["source"]["version_dir"] == str(version_dir_in(old._base_dir))
     assert link["source"]["schema_hash"] == old._artifact_schema_hash
     assert link["current"]["fully_qualified_name"] == new._fully_qualified_name
     assert link["current"]["schema_hash"] == new._artifact_schema_hash
@@ -152,7 +153,9 @@ def test_result_link_creation_rechecks_after_compute_lock(
     target = _TrainRun(dataset="cifar10", lr=0.001)
     link_path = result_link_path_in(target._base_dir)
 
-    assert migration_links.version_for_loading(target) == (source._base_dir / "v-fixed")
+    assert migration_links.version_for_loading(target) == (
+        version_dir_in(source._base_dir)
+    )
     link_text = link_path.read_text(encoding="utf-8")
     link_path.unlink()
 
@@ -169,7 +172,9 @@ def test_result_link_creation_rechecks_after_compute_lock(
         lambda *_: pytest.fail("the competing worker's valid link was replaced"),
     )
 
-    assert migration_links.version_for_loading(target) == (source._base_dir / "v-fixed")
+    assert migration_links.version_for_loading(target) == (
+        version_dir_in(source._base_dir)
+    )
 
 
 def test_result_link_read_gracefully_reresolves_estale(
@@ -195,7 +200,9 @@ def test_result_link_read_gracefully_reresolves_estale(
 
     monkeypatch.setattr(path_type, "read_text", stale_once)
 
-    assert migration_links.version_for_loading(target) == (source._base_dir / "v-fixed")
+    assert migration_links.version_for_loading(target) == (
+        version_dir_in(source._base_dir)
+    )
 
 
 class _PathValue:
@@ -249,7 +256,7 @@ def test_migrated_codec_metadata_path_uses_source_data_directory() -> None:
     source.create()
     migrated = _MigratedPathResult(key="contents")
 
-    source_payload = data_dir_in(source._base_dir / "v-fixed") / "payload.txt"
+    source_payload = data_dir_in(version_dir_in(source._base_dir)) / "payload.txt"
     assert migrated.create().path == source_payload.resolve()
     assert migrated.load_existing().path == source_payload.resolve()
 
@@ -303,7 +310,7 @@ def test_dangling_link_is_missing_and_recomputes(
 
     assert new.create() == {"dataset": "cifar10", "lr": "0.001", "seed": "0"}
     assert _COUNTER.calls == 1
-    assert result_manifest_path_in(new._base_dir / "v-fixed").exists()
+    assert result_manifest_path_in(version_dir_in(new._base_dir)).exists()
     assert not result_link_path_in(new._base_dir).exists()
 
 
@@ -372,7 +379,7 @@ def test_full_changelog_links_directly_at_the_ultimate_source() -> None:
     assert _COUNTER.calls == 0
 
     link = json.loads(result_link_path_in(final._base_dir).read_text())
-    assert link["source"]["version_dir"] == str(old._base_dir / "v-fixed")
+    assert link["source"]["version_dir"] == str(version_dir_in(old._base_dir))
     assert link["source"]["fully_qualified_name"] == old._fully_qualified_name
     assert link["migration_path"] == [
         f"MovedFrom({old._fully_qualified_name!r})",
@@ -414,7 +421,7 @@ def test_link_to_a_source_the_chain_no_longer_covers_is_no_result() -> None:
                 fully_qualified_name=legacy._fully_qualified_name,
                 schema_hash=legacy._artifact_schema_hash,
                 artifact_hash=legacy._artifact_hash,
-                version_dir=legacy._base_dir / "v-fixed",
+                version_dir=version_dir_in(legacy._base_dir),
             ),
             migration_path=(),
         ).model_dump_json()
@@ -1305,7 +1312,7 @@ def test_child_migration_cascades_to_parent() -> None:
 
     link = json.loads(result_link_path_in(model._base_dir).read_text())
     assert link["source"]["version_dir"] == str(
-        old_directory / old._base_dir.name / "v-fixed"
+        version_dir_in(old_directory / old._base_dir.name)
     )
     assert link["migration_path"] == [
         "_CascadeTokenizer: Renamed('vocabulary_size', to='vocab_size')",

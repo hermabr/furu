@@ -14,6 +14,10 @@ def attempt_dir_in(identity_dir: Path) -> Path:
     return identity_dir / "attempt"
 
 
+def version_dir_in(identity_dir: Path) -> Path:
+    return identity_dir / "v-fixed"
+
+
 def data_dir_in(run_dir: Path) -> Path:
     return run_dir / "data"
 
