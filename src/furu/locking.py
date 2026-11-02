@@ -65,24 +65,6 @@ def _is_stale(stat_result: os.stat_result) -> bool:
     return stat_result.st_mtime + CLOCK_SLOP_S <= time.time()
 
 
-def _lock_timeout_message(lock_paths: list[Path], acquire_timeout_s: float) -> str:
-    if len(lock_paths) == 1:
-        return (
-            f"could not acquire lock at {lock_paths[0]} within "
-            f"{acquire_timeout_s:g} seconds"
-        )
-    return (
-        "could not acquire lock set within "
-        f"{acquire_timeout_s:g} seconds: " + ", ".join(str(path) for path in lock_paths)
-    )
-
-
-def _lock_lost_message(lock_paths: list[Path]) -> str:
-    if len(lock_paths) == 1:
-        return f"lost lock at {lock_paths[0]}"
-    return "lost lock for paths: " + ", ".join(str(path) for path in lock_paths)
-
-
 def _write_claim_file(manifest: LockManifest, *, lifetime_s: float) -> None:
     fd = os.open(manifest.claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -121,27 +103,6 @@ def unlink_if_exists(path: Path) -> None:
     except OSError as exc:
         if not _is_missing_or_stale(exc):
             raise
-
-
-def normalize_lock_paths(lock_paths: Iterable[Path]) -> list[Path]:
-    normalized = sorted(
-        {path.resolve(strict=False) for path in lock_paths},
-        key=lambda path: os.fspath(path),
-    )
-    if not normalized:
-        raise ValueError("at least one lock path is required")
-    return normalized
-
-
-def assert_same_filesystem(lock_paths: Iterable[Path]) -> None:
-    iterator = iter(lock_paths)
-    first_path = next(iterator)
-    first_device = first_path.parent.stat().st_dev
-    for lock_path in iterator:
-        if lock_path.parent.stat().st_dev != first_device:
-            raise LockError(
-                "hardlink-based locking requires every lock path to be on the same filesystem device"
-            )
 
 
 def read_manifest(path: Path) -> LockManifest | None:
@@ -370,8 +331,14 @@ def lock(
 ) -> Generator[Callable[[], bool]]:
     if isinstance(lock_paths, Path):
         lock_paths = [lock_paths]
-    lock_paths = normalize_lock_paths(lock_paths)
-    assert_same_filesystem(lock_paths)
+    lock_paths = sorted({path.resolve() for path in lock_paths}, key=os.fspath)
+    if not lock_paths:
+        raise ValueError("at least one lock path is required")
+    if len({path.parent.stat().st_dev for path in lock_paths}) > 1:
+        raise LockError(
+            "hardlink-based locking requires every lock path to be on the same filesystem device"
+        )
+    paths = ", ".join(map(str, lock_paths))
 
     if acquire_timeout_s is None:
         acquire_timeout_s = lifetime_s + CLOCK_SLOP_S
@@ -422,7 +389,9 @@ def lock(
             now = time.monotonic()
             remaining = deadline - now
             if remaining <= 0:
-                raise LockError(_lock_timeout_message(lock_paths, acquire_timeout_s))
+                raise LockError(
+                    f"could not acquire lock at {paths} within {acquire_timeout_s:g} seconds"
+                )
             if now >= next_wait_log_at:
                 if len(lock_paths) == 1:
                     logger.info("waiting for lock at %s", blocked)
@@ -476,6 +445,6 @@ def lock(
                 owner_stat=owner_stat,
             )
             if lost_lock and body_error is None:
-                raise LockError(_lock_lost_message(lock_paths))
+                raise LockError(f"lost lock at {paths}")
     finally:
         unlink_if_exists(claim_path)

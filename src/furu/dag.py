@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import assert_never
 
+from furu._batched import _BatchedHook
 from furu.core import Spec
 from furu.dependencies import collect_declared_refs
 from furu.migration.stale import raise_if_stale
@@ -19,11 +20,21 @@ class DagNode:
     _batch_groups: dict[Worker, tuple[object, int] | None] = field(default_factory=dict)
 
     def batch_group(self, worker: Worker) -> tuple[object, int] | None:
-        from furu.execution.load_or_create import _batch_group
-
-        if worker not in self._batch_groups:
-            self._batch_groups[worker] = _batch_group(self.obj, worker)
-        return self._batch_groups[worker]
+        if worker in self._batch_groups:
+            return self._batch_groups[worker]
+        obj = self.obj
+        group = None
+        hook = getattr(type(obj), "_furu_create_hook", None)
+        if isinstance(hook, _BatchedHook):
+            group_hash, cap = hook.batch_fn(obj, worker)
+            if type(cap) is not int or cap < 1:
+                raise TypeError(
+                    f"{type(obj).__qualname__} batch key cap must be a positive int, "
+                    f"got {cap!r} on {worker}"
+                )
+            group = (type(obj), group_hash, cap, obj._metadata), cap
+        self._batch_groups[worker] = group
+        return group
 
 
 @dataclass(slots=True, kw_only=True)

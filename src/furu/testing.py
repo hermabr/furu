@@ -39,10 +39,6 @@ def _is_furu_pytest_mode_enabled() -> bool:
     return os.environ.get("FURU_PYTEST_MODE", "on").strip().lower() != "off"
 
 
-def _keep_furu_data() -> bool:
-    return os.environ.get("FURU_PYTEST_KEEP", "clean").strip().lower() == "keep"
-
-
 def _replace_config_directories(
     config: _Config,
     directories: _FuruDirectories,
@@ -96,9 +92,10 @@ def pytest_unconfigure(config: pytest.Config) -> None:
     _set_config(state.original_config)
     provenance._require_pushed_code = True
 
+    keep = os.environ.get("FURU_PYTEST_KEEP", "clean").strip().lower() == "keep"
     for field_name in type(state.run_config.directories).model_fields:
         path = getattr(state.run_config.directories, field_name)
-        if _keep_furu_data():
+        if keep:
             print(f"kept furu {field_name} at {path}")
         else:
             shutil.rmtree(path, ignore_errors=True)

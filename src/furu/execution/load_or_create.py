@@ -446,20 +446,6 @@ def _create_in_process[T](
     lead.logger.info("finished %s ok · %s", label, duration)
 
 
-def _batch_group(obj: Spec, worker: Worker) -> tuple[object, int] | None:
-    hook = getattr(type(obj), "_furu_create_hook", None)
-    if not isinstance(hook, _BatchedHook):
-        return None
-    group_hash, cap = hook.batch_fn(obj, worker)
-    if type(cap) is not int or cap < 1:
-        raise TypeError(
-            f"{type(obj).__qualname__} batch key cap must be a positive int, "
-            f"got {cap!r} on {worker}"
-        )
-    key = (type(obj), group_hash, cap, obj._metadata)
-    return key, cap
-
-
 def _create_and_store_group[T](
     group: list[Spec[T]],
     *,

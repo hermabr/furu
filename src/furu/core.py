@@ -300,20 +300,17 @@ class Spec[T](_FuruDataclassTransform, ABC):
 
     @final
     @cached_property
-    def _artifact_data_for_hash(self) -> JsonValue:
-        return _to_json(
-            self,
-            declared_type=type(self),
-            artifact_serializers=self.artifact_serializers,
-            for_hash=True,
-        )
-
-    @final
-    @cached_property
     def _artifact_hash(  # TODO: should this be __hash__?
         self,
     ) -> str:
-        return _hash_dict_deterministically(self._artifact_data_for_hash)
+        return _hash_dict_deterministically(
+            _to_json(
+                self,
+                declared_type=type(self),
+                artifact_serializers=self.artifact_serializers,
+                for_hash=True,
+            )
+        )
 
     @final
     @cached_property
