@@ -207,9 +207,11 @@ def _connect_worker(
     pool: str = "cpu",
 ) -> ClientConnection:
     token = server.auth_token if auth_token is None else auth_token
+    # legacy=True: callers own the connection, some past the server's shutdown.
     connection = connect(
         server.server_url,
         additional_headers={"Authorization": build_authorization_basic("furu", token)},
+        legacy=True,
     )
     connection.send(
         HelloMessage(

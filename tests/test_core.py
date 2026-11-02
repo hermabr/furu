@@ -637,7 +637,7 @@ def test_reserved_field_name_raises_at_class_creation():
     with pytest.raises(TypeError) as excinfo:
 
         class StatusField(Spec[int]):
-            status: str  # ty: ignore[override-of-final-method]
+            status: str  # ty: ignore[override-of-final-method,invalid-property-type-override]
 
             def create(self) -> int:
                 return 0
@@ -1866,7 +1866,9 @@ def test_create_hook_flavor_validation() -> None:
 
         class BareBatchedDecorator(Spec[int]):
             @furu.batched  # ty: ignore[invalid-argument-type]
-            def create(objs: list["BareBatchedDecorator"]) -> list[int]:
+            def create(  # ty: ignore[invalid-attribute-override]
+                objs: list["BareBatchedDecorator"],
+            ) -> list[int]:
                 return [1 for _ in objs]
 
     with pytest.raises(TypeError, match="needs a batch key function"):
