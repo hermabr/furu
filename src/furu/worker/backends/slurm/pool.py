@@ -33,10 +33,6 @@ _UNFINISHED_STATES = frozenset(
 _PRUNABLE_STATES = frozenset({"COMPLETED"})
 
 
-def _is_failed_state(state: str) -> bool:
-    return state not in _UNFINISHED_STATES and state not in _PRUNABLE_STATES
-
-
 @dataclass(slots=True)
 class SlurmWorkerPool:
     _sbatch_base_args: tuple[str, ...]
@@ -94,7 +90,8 @@ class SlurmWorkerPool:
         failed = {
             job_id: state
             for job_id in self._job_ids
-            if (state := states.get(job_id)) is not None and _is_failed_state(state)
+            if (state := states.get(job_id)) is not None
+            and state not in _UNFINISHED_STATES | _PRUNABLE_STATES
         }
         self._job_ids[:] = [
             job_id

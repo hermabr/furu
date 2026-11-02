@@ -73,13 +73,6 @@ class ExecutionCoordinator(Dag):
     finish_error: str | None = None
     taken_over_by: str | None = None
 
-    def _failed_counts(self) -> tuple[int, int]:
-        failed_retry = sum(
-            record.failed_attempts <= self.max_retries_per_object
-            for record in self.failed.values()
-        )
-        return failed_retry, len(self.failed) - failed_retry
-
     @classmethod
     def run[ObjsT: Sequence[Spec]](
         cls,
@@ -313,7 +306,16 @@ class ExecutionCoordinator(Dag):
         with self.lock:
             if self.done.is_set():
                 return
-            self._release_worker_locked(worker, reason="worker is no longer active")
+            for object_id, running_job in tuple(self.running.items()):
+                if running_job.worker != worker:
+                    continue
+                self.running.pop(object_id)
+                self.ready[object_id] = running_job.node
+                logger.warning(
+                    "released %s from %s: worker is no longer active",
+                    running_job.node.obj._log_label,
+                    worker,
+                )
             self.lock.notify_all()
 
     def count_satisfiable_jobs(
@@ -372,19 +374,6 @@ class ExecutionCoordinator(Dag):
                 consumed.update(member_ids)
             running_counts[type(node.obj)] = running_counts.get(type(node.obj), 0) + 1
             yield node, member_ids
-
-    def _release_worker_locked(self, worker: str, *, reason: str) -> None:
-        for object_id, running_job in tuple(self.running.items()):
-            if running_job.worker != worker:
-                continue
-            self.running.pop(object_id)
-            self.ready[object_id] = running_job.node
-            logger.warning(
-                "released %s from %s: %s",
-                running_job.node.obj._log_label,
-                worker,
-                reason,
-            )
 
     def job_result(self, object_id: str, request: JobResult) -> None:
         with self.lock:
@@ -446,7 +435,11 @@ class ExecutionCoordinator(Dag):
                     )
                 case _:
                     assert_never(request)
-            failed_retry, failed = self._failed_counts()
+            failed_retry = sum(
+                record.failed_attempts <= self.max_retries_per_object
+                for record in self.failed.values()
+            )
+            failed = len(self.failed) - failed_retry
             parts = [f"{len(self.running)} running"]
             if self.ready:
                 parts.append(f"{len(self.ready)} ready")

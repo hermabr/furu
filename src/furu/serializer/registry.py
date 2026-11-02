@@ -41,18 +41,11 @@ class SerializerMeta(ABCMeta):
         SerializerMeta._default_serializers.cache_clear()
 
     @classmethod
-    def auto_registered_serializers(mcls) -> tuple[type[Serializer], ...]:
-        with mcls._auto_registered_serializers_lock:
-            return tuple(reversed(mcls._auto_registered_serializers))
-
-    @classmethod
     @cache
     def _default_serializers(mcls) -> tuple[type[Serializer], ...]:
-        return tuple(
-            serializer
-            for serializer in mcls.auto_registered_serializers()
-            if serializer.dependencies_available()
-        )
+        with mcls._auto_registered_serializers_lock:
+            serializers = tuple(reversed(mcls._auto_registered_serializers))
+        return tuple(s for s in serializers if s.dependencies_available())
 
     @classmethod
     def serializer_for_schema(

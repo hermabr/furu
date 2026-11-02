@@ -181,14 +181,6 @@ def _record_path(record: logging.LogRecord) -> str | None:
     return None if path is None else _display_path(path)
 
 
-def _exception_text(record: logging.LogRecord) -> str:
-    if record.exc_info:
-        return "".join(traceback.format_exception(*record.exc_info)).rstrip("\n")
-    if record.exc_text:
-        return record.exc_text.rstrip("\n")
-    return ""
-
-
 def _utc_timestamp(created: float) -> str:
     moment = datetime.fromtimestamp(created, tz=UTC)
     return moment.strftime("%Y-%m-%dT%H:%M:%S") + f".{moment.microsecond // 1000:03d}Z"
@@ -302,7 +294,10 @@ def _render_plain(record: logging.LogRecord) -> str:
         line += f" → {path}"
     if (pathname := _user_pathname(record)) is not None:
         line += f"  [{_display_path(pathname)}:{record.lineno}]"
-    rest += _exception_text(record).splitlines()
+    if record.exc_info:
+        rest += "".join(traceback.format_exception(*record.exc_info)).splitlines()
+    elif record.exc_text:
+        rest += record.exc_text.splitlines()
     rest += (record.stack_info or "").splitlines()
     return "\n".join([line, *(f"    {extra}" for extra in rest)])
 

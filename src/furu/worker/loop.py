@@ -20,15 +20,6 @@ from furu.worker.execute import ChildSlot
 type _Event = protocol.ServerMessage | protocol.JobResult | BaseException | None
 
 
-def _run_job(
-    job: protocol.Job, child_slot: ChildSlot, cancelled: threading.Event
-) -> protocol.JobResult:
-    try:
-        return child_slot.run(job, cancelled=cancelled)
-    except Exception as exc:  # noqa: BLE001 -- fault barrier: any crash fails the job
-        return protocol.JobFailedResult(error="".join(traceback.format_exception(exc)))
-
-
 def _read_messages(connection: ClientConnection, events: queue.Queue[_Event]) -> None:
     try:
         while True:
@@ -47,7 +38,10 @@ def _start_job_thread(
 ) -> threading.Thread:
     def run() -> None:
         try:
-            events.put(_run_job(job, child_slot, cancelled))
+            events.put(child_slot.run(job, cancelled=cancelled))
+        except Exception as exc:  # noqa: BLE001 -- fault barrier: any crash fails the job
+            error = "".join(traceback.format_exception(exc))
+            events.put(protocol.JobFailedResult(error=error))
         except BaseException as exc:  # noqa: BLE001 -- re-raised on the main thread
             events.put(exc)
 
