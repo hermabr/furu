@@ -140,7 +140,8 @@ def _find_source(obj: Spec, resolution: _ClassResolution) -> _ResultLink | None:
             continue
         sources = _migrated_sources(type(obj), resolution, covered)
         for artifact, identity_dir in sources.get(target_key, ()):
-            if (version := _published(identity_dir)) is None:
+            version = version_dir_in(identity_dir)
+            if not version.is_dir():
                 continue
             return _ResultLink(
                 current=_ResultLinkCurrent(
@@ -168,18 +169,9 @@ def _find_source(obj: Spec, resolution: _ClassResolution) -> _ResultLink | None:
     return None
 
 
-def _published(identity_dir: Path) -> Path | None:
-    version = version_dir_in(identity_dir)
-    return version if version.is_dir() else None
-
-
-def own_version(obj: Spec) -> Path | None:
-    return _published(obj._base_dir)
-
-
 def version_for_loading(obj: Spec, *, has_lock: bool = False) -> Path | None:
     """The version directory to load obj from: its own, or a migration source."""
-    if (version := own_version(obj)) is not None:
+    if (version := version_dir_in(obj._base_dir)).is_dir():
         return version
     if link := _read_link(obj):
         return link.source.version_dir

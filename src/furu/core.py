@@ -25,7 +25,6 @@ from furu.metadata import ArtifactSpec
 from furu.migration.links import (
     _read_link,
     load_stored_result,
-    own_version,
     version_for_loading,
 )
 from furu.migration.resolution import validate_embedded_migration_declarations
@@ -43,6 +42,7 @@ from furu.storage._layout import (
     compute_lock_path_in,
     provenance_path_in,
     spec_path_in,
+    version_dir_in,
 )
 from furu.storage.directory import SpecDirectory
 from furu.utils import (
@@ -239,7 +239,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
     @final
     @property
     def status(self) -> Literal["missing", "running", "failed", "done", "stale"]:
-        if own_version(self) is not None or _read_link(self) is not None:
+        if version_dir_in(self._base_dir).is_dir() or _read_link(self) is not None:
             return "done"
         if is_active_lock(compute_lock_path_in(self._base_dir)):
             return "running"
