@@ -149,7 +149,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
         Declare the specs a create depends on as fields or ``@furu.dependency`` so
         the executor can plan them. A missing spec known only at runtime restarts
         the create from the top, so keep these few and, where possible, request
-        them together in one ``furu.create([...])`` call.
+        them together in one ``furu.create([...])`` or ``furu.build([...])`` call.
         """
         from furu.execution.load_or_create import _load_or_create
 
