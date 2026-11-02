@@ -11,6 +11,7 @@ class SpecDirectory:
 
     @cached_property
     def data(self) -> Path:
+        """Moves when the result is published: store relative paths in files and symlinks here."""
         data_dir = data_dir_in(self._base_dir)
         data_dir.mkdir(parents=True, exist_ok=True)
         return data_dir
@@ -26,4 +27,5 @@ class SpecDirectory:
 
     @cached_property
     def run_log(self) -> Path:
-        return run_log_path_in(self._base_dir)
+        # _base_dir is attempt/; run.log logs every attempt, beside it.
+        return run_log_path_in(self._base_dir.parent)

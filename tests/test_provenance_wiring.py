@@ -16,7 +16,7 @@ from furu.provenance import (
     Provenance,
     capture_submit_provenance,
 )
-from furu.storage._layout import metadata_path_in, provenance_path_in
+from furu.storage._layout import provenance_path_in, version_dir_in
 from furu.worker.backends.local import LocalThreadWorkerBackend
 from furu.worker.execute import ChildSlot
 from furu.worker.protocol import Job, ProcessSettings
@@ -80,7 +80,7 @@ def test_pytest_harness_skips_the_pushed_check() -> None:
     assert furu_provenance._require_pushed_code is False
 
 
-def test_create_writes_provenance_next_to_metadata(
+def test_create_writes_provenance_into_the_version_directory(
     git_repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(git_repo)
@@ -88,8 +88,7 @@ def test_create_writes_provenance_next_to_metadata(
 
     assert node.create() == 2
 
-    path = provenance_path_in(node._base_dir)
-    assert path.parent == metadata_path_in(node._base_dir).parent
+    path = provenance_path_in(version_dir_in(node._base_dir))
     provenance = Provenance.model_validate_json(path.read_text())
     assert provenance.git.commit == _git(git_repo, "rev-parse", "HEAD")
     assert provenance.submitted.hostname == provenance.executed.hostname
@@ -118,7 +117,7 @@ def test_cache_hit_performs_no_capture_and_no_writes(
     monkeypatch.chdir(git_repo)
     node = _Node(value=3)
     node.create()
-    original = provenance_path_in(node._base_dir).read_text()
+    original = provenance_path_in(version_dir_in(node._base_dir)).read_text()
 
     def fail_capture(**kwargs: object) -> object:
         raise AssertionError("cache hits must not capture provenance")
@@ -132,7 +131,7 @@ def test_cache_hit_performs_no_capture_and_no_writes(
     monkeypatch.setattr(furu_provenance, "_require_pushed_code", True)
     (git_repo / "tracked.txt").write_text("edited\n")
     assert furu.create(_Node(value=3)) == 4
-    assert provenance_path_in(node._base_dir).read_text() == original
+    assert provenance_path_in(version_dir_in(node._base_dir)).read_text() == original
 
 
 def test_result_without_provenance_loads_but_provenance_raises(
@@ -142,7 +141,7 @@ def test_result_without_provenance_loads_but_provenance_raises(
     node = _Node(value=4)
     node.create()
     computed = len(_created)
-    provenance_path_in(node._base_dir).unlink()
+    provenance_path_in(version_dir_in(node._base_dir)).unlink()
 
     assert node.create() == 5
     assert len(_created) == computed

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import fields
 from functools import cached_property
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self, overload
 
 from furu._tree import specs_in
@@ -67,34 +69,37 @@ def collect_declared_refs(obj: Spec) -> tuple[Spec, ...]:
 
 
 class DependencyRecorder:
-    def __init__(self) -> None:
-        self._observed_ids: set[str] = set()
+    """Which version of each dependency a create() loaded.
 
-    def record[T](self, obj: Spec[T]) -> None:
-        self._observed_ids.add(obj.object_id)
+    Versions are stored relative to the creating spec's storage root.
+    """
 
-    def finalize(self) -> tuple[str, ...]:
-        return tuple(sorted(self._observed_ids))
+    def __init__(self, storage_root: Path) -> None:
+        self._storage_root = storage_root
+        self.versions: dict[str, str] = {}
+
+    def record(self, obj: Spec, version: Path) -> None:
+        self.versions[obj.object_id] = os.path.relpath(version, self._storage_root)
 
 
-# TODO: ContextVar state does not propagate to new threads. If a create()
-# hook runs child loads in worker threads, those loads will not be
-# recorded unless recorder context is propagated explicitly.
+# TODO: dependencies loaded in threads a create() starts aren't recorded
+# (ContextVar state doesn't reach them). Workaround: submit the work with
+# contextvars.copy_context().run. Check with a human before adding such threads.
 _active_dependency_recorder: ContextVar[DependencyRecorder | None] = ContextVar(
     "_active_dependency_recorder",
     default=None,
 )
 
 
-def record_dependency_call[T](obj: Spec[T]) -> None:
+def record_dependency(obj: Spec, version: Path) -> None:
     recorder = _active_dependency_recorder.get()
     if recorder is not None:
-        recorder.record(obj)
+        recorder.record(obj, version)
 
 
 @contextmanager
-def dependency_recorder() -> Generator[DependencyRecorder]:
-    recorder = DependencyRecorder()
+def dependency_recorder(storage_root: Path) -> Generator[DependencyRecorder]:
+    recorder = DependencyRecorder(storage_root)
     token = _active_dependency_recorder.set(recorder)
     try:
         yield recorder

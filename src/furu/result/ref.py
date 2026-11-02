@@ -45,17 +45,6 @@ class Ref[T]:
         obj._lock = threading.Lock()
         return obj
 
-    def _bind_stored(
-        self,
-        *,
-        metadata: Mapping[str, object],
-        artifact_directory: Path,
-    ) -> None:
-        with self._lock:
-            self._value = _UNLOADED
-            self._metadata = metadata
-            self._artifact_directory = artifact_directory
-
     def __repr__(self) -> str:
         if self._value is _UNLOADED:
             return "Ref(unloaded)"
