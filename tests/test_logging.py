@@ -102,7 +102,8 @@ def test_stdout_handler_level_tracks_debug_mode(
     stdout_handlers = [
         handler
         for handler in logger.handlers
-        if isinstance(handler, logging.StreamHandler)
+        # Exact type: pytest's LogCaptureHandler subclasses StreamHandler.
+        if type(handler) is logging.StreamHandler
     ]
     assert len(stdout_handlers) == 1
     assert stdout_handlers[0].level == expected_level
