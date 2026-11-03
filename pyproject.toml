@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.scripts]
-furu = "furu.execution.manager:main"
+furu = "furu.cli:main"
 
 [project.urls]
 Repository = "https://github.com/hermabr/furu"

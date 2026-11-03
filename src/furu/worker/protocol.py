@@ -51,6 +51,11 @@ class Job(_Message):
     config: _Config
     code: CodeLocation
 
+    @property
+    def label(self) -> str:
+        label = self.artifacts[0].log_label
+        return label + (f" ×{len(self.artifacts)}" if len(self.artifacts) > 1 else "")
+
 
 class CancelMessage(_Message):
     kind: Literal["cancel"] = "cancel"

@@ -7,16 +7,11 @@ from disk and resend. Run it with ``uvx furu@<version> manager``.
 
 from __future__ import annotations
 
-import argparse
-import json
-import os
-import socket
 import threading
 from collections import Counter
-from collections.abc import Generator, Iterator, Sequence
+from collections.abc import Generator, Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
-from importlib.metadata import version
 from itertools import islice
 from pathlib import Path
 from secrets import token_urlsafe
@@ -26,8 +21,7 @@ from websockets.exceptions import ConnectionClosed
 from websockets.protocol import State
 from websockets.sync.server import ServerConnection, basic_auth, serve
 
-from furu.config import get_config
-from furu.logging import _execution_log, get_logger
+from furu.logging import get_logger
 from furu.worker.backends.local import LocalThreadPool
 from furu.worker.backends.protocol import WorkerPool
 from furu.worker.backends.slurm.pool import SlurmWorkerPool
@@ -67,7 +61,7 @@ class _Script:
             self.connection.send(message.model_dump_json())
 
 
-@dataclass(eq=False)
+@dataclass(eq=False)  # compared by identity
 class _Queued:
     script: _Script
     submission: Submission
@@ -112,21 +106,8 @@ class Manager:
         cls, *, listen_host: str, connect_host: str, manager_dir: Path | None
     ) -> Generator[Manager]:
         token = token_urlsafe(32)
-        connections: set[ServerConnection] = set()
-        manager: Manager | None = None
-
-        def handler(connection: ServerConnection) -> None:
-            assert manager is not None
-            with manager.lock:
-                connections.add(connection)
-            try:
-                manager._serve(connection)
-            finally:
-                with manager.lock:
-                    connections.discard(connection)
-
         server = serve(
-            handler,
+            lambda connection: manager._serve(connection),
             listen_host,
             0,
             process_request=basic_auth(credentials=("furu", token)),
@@ -144,14 +125,9 @@ class Manager:
             with manager.lock:
                 manager.stopping = True
                 manager.lock.notify_all()
-                pools = list(manager.pools.values())
-            server.shutdown()
+            server.shutdown()  # closes every connection and waits for handlers
             thread.join(timeout=10)
-            with manager.lock:
-                open_connections = list(connections)
-            for connection in open_connections:
-                connection.close()
-            for pool in pools:
+            for pool in manager.pools.values():
                 pool.stop()
 
     def _serve(self, connection: ServerConnection) -> None:
@@ -192,17 +168,17 @@ class Manager:
             with self.lock:
                 self.scripts.remove(script)
                 dropped = self._drop_queued_locked(script)
-                running = 0
-                for lease in self.leases.values():
-                    if lease.script is script:
-                        lease.script = None
-                        running += 1
+                running = [
+                    lease for lease in self.leases.values() if lease.script is script
+                ]
+                for lease in running:
+                    lease.script = None
                 self.lock.notify_all()
             logger.info(
                 "script left · %s · dropped %d queued · %d still running",
                 _peer(connection),
                 dropped,
-                running,
+                len(running),
             )
 
     def _submit(self, script: _Script, message: SubmitMessage) -> None:
@@ -281,29 +257,16 @@ class Manager:
         logger.debug("worker connected · %s", worker)
         while (lease := self._lease(connection, pool=hello.pool)) is not None:
             job = lease.job
-            try:
-                connection.send(job.model_dump_json())
-            except ConnectionClosed:
-                with self.lock:
-                    del self.leases[connection]
-                    if lease.script in self.scripts:
-                        self.queue[:0] = lease.queued
-                    self.lock.notify_all()
-                return
-            label = job.artifacts[0].log_label
-            if len(job.artifacts) > 1:
-                label += f" ×{len(job.artifacts)}"
             logger.info(
-                "leased %s to %s", label, worker, extra={"path": job.run_logs[0]}
+                "leased %s to %s", job.label, worker, extra={"path": job.run_logs[0]}
             )
             result: JobResult
-            lost = False
             try:
+                connection.send(job.model_dump_json())
                 result = job_result_adapter.validate_json(connection.recv())
-            except ConnectionClosed:
+            except ConnectionClosed:  # the next _lease sees it and returns None
                 logger.warning("lost %s mid-job", worker, extra={"path": hello.log})
                 result = JobFailedResult(error=f"worker {worker} disconnected")
-                lost = True
             with self.lock:
                 del self.leases[connection]
                 if isinstance(result, JobCompletedResult):
@@ -317,20 +280,14 @@ class Manager:
                         result=result,
                     )
                 )
-            if lost:
-                return
 
     def _lease(self, connection: ServerConnection, *, pool: str) -> _Lease | None:
         with self.lock:
             while not self.stopping and connection.state is State.OPEN:
                 if (queued := next(self._leasable_locked(pool), None)) is not None:
-                    taken = set(map(id, queued))
-                    self.queue = [q for q in self.queue if id(q) not in taken]
-                    lease = self.leases[connection] = _Lease(
-                        script=queued[0].script,
-                        queued=queued,
-                        pool=pool,
-                    )
+                    self.queue = [q for q in self.queue if q not in queued]
+                    lease = _Lease(script=queued[0].script, queued=queued, pool=pool)
+                    self.leases[connection] = lease
                     return lease
                 self.lock.wait(timeout=_IDLE_CHECK_INTERVAL_S)
             return None
@@ -344,10 +301,10 @@ class Manager:
         running = Counter(
             lease.throttle for lease in self.leases.values() if lease.throttle
         )
-        taken: set[int] = set()
+        taken: set[_Queued] = set()
         for index, queued in enumerate(self.queue):
             submission = queued.submission
-            if id(queued) in taken or pool not in submission.pools:
+            if queued in taken or pool not in submission.pools:
                 continue
             throttle = submission.throttle
             if throttle is not None and running[throttle.key] >= throttle.max_running:
@@ -357,15 +314,13 @@ class Manager:
                 for other in self.queue[index + 1 :]:
                     if len(group) >= batch.cap:
                         break
-                    other_batch = other.submission.pools.get(pool)
                     if (
                         other.script is queued.script
-                        and id(other) not in taken
-                        and other_batch is not None
-                        and other_batch.batch == batch.batch
+                        and other not in taken
+                        and other.submission.pools.get(pool) == batch
                     ):
                         group.append(other)
-            taken.update(map(id, group))
+            taken.update(group)
             if throttle is not None:
                 running[throttle.key] += 1
             yield group
@@ -391,42 +346,3 @@ def _peer(connection: ServerConnection) -> str:
         host, port, *_ = connection.remote_address
         return f"{host}:{port}"
     return "?"
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="furu")
-    commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser(
-        "manager", help="run the queue and the worker pools for every furu run"
-    )
-    parser.parse_args(argv)
-
-    config = get_config()
-    manager_dir = config.manager_dir.resolve()
-    manager_dir.mkdir(parents=True, exist_ok=True)
-    with (
-        _execution_log(manager_dir / "manager.log"),
-        Manager.serve(
-            listen_host="0.0.0.0",
-            connect_host=config.worker.connect_host or socket.getfqdn(),
-            manager_dir=manager_dir,
-        ) as manager,
-    ):
-        # In place, not by rename: on NFS a file replaced by rename stays
-        # invisible to nodes that had it open.
-        address = manager_dir / "address.json"
-        fd = os.open(address, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as file:
-            json.dump({"url": manager.url, "furu_version": version("furu")}, file)
-        logger.info(
-            "manager listening on %s · furu %s",
-            manager.url.rpartition("@")[2],
-            version("furu"),
-            extra={"path": address},
-        )
-        try:
-            threading.Event().wait()
-        except KeyboardInterrupt:
-            logger.info("stopping; pending workers are cancelled, running ones finish")
-    return 0

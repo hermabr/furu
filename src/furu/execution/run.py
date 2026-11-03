@@ -1,42 +1,33 @@
 """The script's half of a worker run: the graph, retries and lock polling.
 
 Everything that needs your code (``runs_on``, ``accepts``, batch functions)
-runs here; the manager gets plain data. When the connection to the manager
-drops, the script plans again from disk, exactly as a requeued script does.
+runs here; the manager gets plain data.
 """
 
 from __future__ import annotations
 
-import json
 import logging
-import os
-import secrets
-import subprocess
 import time
 from collections.abc import Sequence
-from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
-from importlib.metadata import version
 from pathlib import Path
 from typing import assert_never
 
-from websockets.exceptions import ConnectionClosed, InvalidHandshake
-from websockets.sync.client import ClientConnection, connect
+from websockets.sync.client import ClientConnection
 
 from furu.config import _Config, get_config
 from furu.core import Spec
 from furu.dag import Dag, DagNode
 from furu.dependencies import missing_dependencies
-from furu.logging import _display_path, _execution_log, get_logger
+from furu.logging import _display_path, get_logger
 from furu.metadata import ArtifactSpec
-from furu.provenance import SubmitProvenance, capture_submit_provenance
+from furu.provenance import SubmitProvenance
 from furu.snapshot import CodeLocation
-from furu.storage._layout import execution_log_path_in, run_log_path_in
+from furu.storage._layout import run_log_path_in
 from furu.utils import error_summary, format_duration
 from furu.worker.backends.protocol import WorkerBackend, can_run
 from furu.worker.protocol import (
     Batch,
-    CancelMessage,
     ErrorMessage,
     Job,
     JobBlockedResult,
@@ -44,7 +35,6 @@ from furu.worker.protocol import (
     JobFailedResult,
     JobResult,
     JobThrottle,
-    LocalPool,
     ProcessSettings,
     ResultMessage,
     Submission,
@@ -56,7 +46,6 @@ from furu.worker.protocol import (
 logger = get_logger("run")
 
 _RUNNING_ELSEWHERE_POLL_INTERVAL_S = 5.0
-_MANAGER_RETRY_INTERVAL_S = 3.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,7 +69,8 @@ class Run(Dag):
     )
     placement: dict[str, dict[str, Batch | None]] = field(default_factory=dict)
     running: dict[str, tuple[DagNode, float]] = field(default_factory=dict)
-    running_elsewhere: set[str] = field(default_factory=set)
+    # Locked by another run; polled until the lock goes, then ready again.
+    running_elsewhere: dict[str, DagNode] = field(default_factory=dict)
     failed: dict[str, FailedJob] = field(default_factory=dict)
     batch_keys: list[object] = field(default_factory=list)
 
@@ -119,32 +109,27 @@ class Run(Dag):
     def take_submissions(self) -> list[Submission]:
         """Ready specs to send; ones done or locked elsewhere don't need us."""
         submissions: list[Submission] = []
-        waiting = len(self.running_elsewhere)
-        while pending := [
-            node
-            for object_id, node in self.ready.items()
-            if object_id not in self.running_elsewhere
-        ]:
-            for node in pending:
-                object_id = node.obj.object_id
-                match node.obj.status:
-                    case "done":
-                        del self.ready[object_id]
-                        self.complete(node)
-                        logger.info("found %s done", node.obj._log_label)
-                    case "running":
-                        self.running_elsewhere.add(object_id)
-                    case "missing" | "failed" | "stale":
-                        del self.ready[object_id]
-                        self.running[object_id] = (node, time.monotonic())
-                        submissions.append(self._submission(node))
-                    case unreachable:
-                        assert_never(unreachable)
-        if (newly := len(self.running_elsewhere) - waiting) > 0:
+        waiting = 0
+        while self.ready:  # completing one can make its dependents ready
+            object_id = next(iter(self.ready))
+            node = self.ready.pop(object_id)
+            match node.obj.status:
+                case "done":
+                    self.complete(node)
+                    logger.info("found %s done", node.obj._log_label)
+                case "running":
+                    self.running_elsewhere[object_id] = node
+                    waiting += 1
+                case "missing" | "failed" | "stale":
+                    self.running[object_id] = (node, time.monotonic())
+                    submissions.append(self._submission(node))
+                case unreachable:
+                    assert_never(unreachable)
+        if waiting:
             logger.info(
                 "waiting on %d spec%s running elsewhere",
-                newly,
-                "" if newly == 1 else "s",
+                waiting,
+                "" if waiting == 1 else "s",
             )
         return submissions
 
@@ -172,11 +157,9 @@ class Run(Dag):
         )
 
     def poll_running_elsewhere(self) -> None:
-        self.running_elsewhere = {
-            object_id
-            for object_id in self.running_elsewhere
-            if self.nodes_by_id[object_id].obj.status == "running"
-        }
+        for object_id, node in list(self.running_elsewhere.items()):
+            if node.obj.status != "running":
+                self.ready[object_id] = self.running_elsewhere.pop(object_id)
 
     def drive(self, connection: ClientConnection) -> None:
         """Submit ready work and apply results until the run ends."""
@@ -185,7 +168,7 @@ class Run(Dag):
         jobs = self.take_submissions()
         connection.send(SubmitMessage(pools=pools, jobs=jobs).model_dump_json())
         next_poll = time.monotonic() + _RUNNING_ELSEWHERE_POLL_INTERVAL_S
-        while self.ready or self.running:
+        while self.ready or self.running or self.running_elsewhere:
             try:
                 raw = connection.recv(timeout=max(0.0, next_poll - time.monotonic()))
             except TimeoutError:
@@ -318,112 +301,3 @@ class Run(Dag):
             headline += [record.node.obj._log_label, error_summary(record.error)]
         logger.error(" · ".join(headline), extra={"path": self.execution_log})
         raise RuntimeError("\n".join(lines))
-
-
-def run_on_workers(objs: Sequence[Spec], backends: Sequence[WorkerBackend]) -> None:
-    """Build ``objs`` on ``backends``' workers, through the furu manager."""
-    if not backends:
-        raise ValueError("on= needs at least one worker backend")
-    by_key = {backend.pool_key: backend for backend in backends}
-    if len(by_key) != len(backends):
-        raise ValueError(
-            "worker backends with identical configuration; "
-            "use one backend with a larger max_workers instead"
-        )
-    local = {isinstance(backend.pool(), LocalPool) for backend in backends}
-    if len(local) > 1:
-        raise ValueError(
-            "cannot mix local and Slurm worker backends: local threads run your "
-            "live worktree, Slurm workers run the pushed commit"
-        )
-    if all(obj.status == "done" for obj in objs):
-        logger.info("all objects already exist; nothing to run")
-        return
-
-    provenance = capture_submit_provenance()
-    code = CodeLocation.here() if local == {True} else _prepare_snapshot(provenance)
-    execution_log = execution_log_path_in(
-        get_config().run_directories.executions / secrets.token_hex(16)
-    )
-    from furu.execution.manager import Manager
-
-    in_process = (
-        Manager.serve(
-            listen_host="127.0.0.1", connect_host="127.0.0.1", manager_dir=None
-        )
-        if local == {True}
-        else nullcontext(None)
-    )
-    with _execution_log(execution_log), in_process as manager:
-        while True:
-            run = Run(
-                backends=by_key,
-                provenance=provenance,
-                code=code,
-                config=get_config().anchored(),
-                execution_log=execution_log,
-            )
-            run.add(objs)
-            if not run.nodes_by_id:
-                logger.info("run finished ok")
-                return
-            logger.info(
-                "planned exec %s · %d ready · %d blocked",
-                execution_log.parent.name[:5],
-                len(run.ready),
-                len(run.blocked),
-                extra={"path": execution_log},
-            )
-            with (
-                connect(manager.url, max_size=None)
-                if manager is not None
-                else _connect_to_manager()
-            ) as connection:
-                try:
-                    run.drive(connection)
-                    return
-                except ConnectionClosed:
-                    logger.warning("lost the manager; planning again from disk")
-                except BaseException:  # Ctrl-C or a failed run; never SIGTERM
-                    with suppress(ConnectionClosed):
-                        connection.send(CancelMessage().model_dump_json())
-                    raise
-
-
-def _prepare_snapshot(provenance: SubmitProvenance) -> CodeLocation:
-    """Extract the pushed commit and build its venv once, before workers race."""
-    code = CodeLocation.from_snapshot(provenance)
-    subprocess.run(
-        ["uv", "sync", "--frozen", "--project", str(code.project_root)],
-        env={k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"},
-        check=True,
-    )
-    return code
-
-
-def _connect_to_manager() -> ClientConnection:
-    """Connect to the running manager, waiting for one to start."""
-    address = get_config().manager_dir / "address.json"
-    ours = version("furu")
-    waiting = False
-    while True:
-        try:
-            published = json.loads(address.read_text(encoding="utf-8"))
-            if published["furu_version"] != ours:
-                raise RuntimeError(
-                    f"the furu manager runs furu {published['furu_version']}, this "
-                    f"script runs furu {ours}; restart the manager with:\n"
-                    f"  uvx furu@{ours} manager"
-                )
-            return connect(published["url"], max_size=None)
-        except (OSError, ValueError, InvalidHandshake) as exc:  # not up yet
-            if not waiting:
-                waiting = True
-                logger.warning(
-                    "waiting for the furu manager (start one with "
-                    "uvx furu@%s manager) · %s",
-                    ours,
-                    type(exc).__name__,
-                    extra={"path": address},
-                )
-            time.sleep(_MANAGER_RETRY_INTERVAL_S)

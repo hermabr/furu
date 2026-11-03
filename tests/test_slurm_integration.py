@@ -12,7 +12,7 @@ import pytest
 from slurm_objects import SlurmTaskKind, SlurmWorkloadTask
 
 import furu
-import furu.execution.run as run_module
+import furu.execution.run_on_workers as run_module
 import furu.worker.backends.slurm.pool as pool_module
 from furu.config import get_config
 from furu.execution.manager import Manager

@@ -45,11 +45,6 @@ def _start_job_thread(
     threading.Thread(target=run, name="furu-worker-job", daemon=True).start()
 
 
-def _label(job: protocol.Job) -> str:
-    label = job.artifacts[0].log_label
-    return label + (f" ×{len(job.artifacts)}" if len(job.artifacts) > 1 else "")
-
-
 def worker_loop(
     *,
     url: str,
@@ -101,7 +96,7 @@ def worker_loop(
                         if job is not None:
                             note(
                                 "lost the manager; finishing %s, then exiting",
-                                _label(job),
+                                job.label,
                             )
                     case BaseException():
                         raise event
@@ -118,14 +113,14 @@ def worker_loop(
                                 )
                             logger.info(
                                 "running %s",
-                                _label(job),
+                                job.label,
                                 extra={"path": job.run_logs[0]},
                             )
                         cancelled = threading.Event()
                         _start_job_thread(job, child_slot, cancelled, events)
                     case protocol.CancelMessage():
                         if job is not None:
-                            note("cancelled %s; killing child", _label(job))
+                            note("cancelled %s; killing child", job.label)
                             cancelled.set()
                             child_slot.kill()
                     case (

@@ -9,7 +9,7 @@ import furu
 from furu import Spec
 from furu.config import get_config
 from furu.dag import Dag, DagNode
-from furu.execution.run import run_on_workers
+from furu.execution.run_on_workers import run_on_workers
 from furu.locking import lock
 from furu.storage._layout import (
     attempt_dir_in,

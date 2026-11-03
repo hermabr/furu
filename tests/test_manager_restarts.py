@@ -20,6 +20,7 @@ import pytest
 
 import furu
 import furu.execution.run as run_module
+import furu.execution.run_on_workers as run_on_workers_module
 from furu import Spec
 from furu.config import get_config
 from furu.execution.manager import Manager
@@ -72,7 +73,7 @@ def manager_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Pat
     """Scripts with local backends use the shared manager, not their own."""
     monkeypatch.setattr(Manager, "serve", lambda **_: nullcontext(None))
     monkeypatch.setattr(run_module, "_RUNNING_ELSEWHERE_POLL_INTERVAL_S", 0.1)
-    monkeypatch.setattr(run_module, "_MANAGER_RETRY_INTERVAL_S", 0.1)
+    monkeypatch.setattr(run_on_workers_module, "_MANAGER_RETRY_INTERVAL_S", 0.1)
     directory = tmp_path / "manager"
     directory.mkdir()
     with override_config(get_config().model_copy(update={"manager_dir": directory})):

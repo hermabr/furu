@@ -127,7 +127,7 @@ def _load_or_create(
     tree: object, *, on: Sequence[WorkerBackend] | None = None, load: bool = True
 ) -> Any:
     if on is not None:
-        from furu.execution.run import run_on_workers
+        from furu.execution.run_on_workers import run_on_workers
 
         run_on_workers(specs_in(tree), on)
     _require_uv()

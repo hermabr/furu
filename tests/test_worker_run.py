@@ -19,7 +19,8 @@ import furu.worker.loop as worker_loop_module
 from furu import Spec, Throttle, Worker
 from furu.config import get_config
 from furu.execution.manager import Manager, _Lease, _Queued, _Script
-from furu.execution.run import Run, run_on_workers
+from furu.execution.run import Run
+from furu.execution.run_on_workers import run_on_workers
 from furu.locking import lock
 from furu.logging import _display_path
 from furu.metadata import ArtifactSpec
@@ -162,8 +163,7 @@ def _lease(
     queued = next(manager._leasable_locked(backend.pool_key), None)
     if queued is None:
         return None
-    taken = set(map(id, queued))
-    manager.queue = [q for q in manager.queue if id(q) not in taken]
+    manager.queue = [q for q in manager.queue if q not in queued]
     worker = cast(ServerConnection, object())
     lease = manager.leases[worker] = _Lease(
         script=queued[0].script, queued=queued, pool=backend.pool_key
@@ -739,12 +739,12 @@ def test_run_waits_on_specs_locked_elsewhere_until_their_lock_goes(
     with _mark_running(leaves[0]), _mark_running(leaves[1]):
         with _captured_furu_logs(caplog):
             assert run.take_submissions() == []
-        assert run.running_elsewhere == {leaf.object_id for leaf in leaves}
+        assert set(run.running_elsewhere) == {leaf.object_id for leaf in leaves}
         run.poll_running_elsewhere()
         assert run.take_submissions() == []
 
     run.poll_running_elsewhere()
-    assert run.running_elsewhere == set()
+    assert run.running_elsewhere == {}
     assert sorted(_submitted_ids(run)) == sorted(leaf.object_id for leaf in leaves)
     assert "waiting on 2 specs running elsewhere" in caplog.messages
 
