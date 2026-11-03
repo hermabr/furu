@@ -13,7 +13,6 @@ import threading
 import time
 from collections.abc import Callable, Generator, Iterator
 from contextlib import ExitStack, contextmanager, nullcontext
-from importlib.metadata import version
 from pathlib import Path
 
 import pytest
@@ -62,9 +61,9 @@ def _manager(manager_dir: Path) -> Generator[Manager]:
     with _serve(
         listen_host="127.0.0.1", connect_host="127.0.0.1", manager_dir=None
     ) as manager:
-        (manager_dir / "address.json").write_text(
-            json.dumps({"url": manager.url, "furu_version": version("furu")})
-        )
+        address = get_config().manager_version_dir / "address.json"
+        address.parent.mkdir(exist_ok=True)
+        address.write_text(json.dumps({"url": manager.url}))
         yield manager
 
 

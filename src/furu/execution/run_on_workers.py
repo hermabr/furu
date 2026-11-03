@@ -114,18 +114,11 @@ def _prepare_snapshot(provenance: SubmitProvenance) -> CodeLocation:
 
 def _connect_to_manager() -> ClientConnection:
     """Connect to the running manager, waiting for one to start."""
-    address = get_config().manager_dir / "address.json"
-    ours = version("furu")
+    address = get_config().manager_version_dir / "address.json"
     waiting = False
     while True:
         try:
             published = json.loads(address.read_text(encoding="utf-8"))
-            if published["furu_version"] != ours:
-                raise RuntimeError(
-                    f"the furu manager runs furu {published['furu_version']}, this "
-                    f"script runs furu {ours}; restart the manager with:\n"
-                    f"  uvx furu@{ours} manager"
-                )
             return connect(published["url"], max_size=None)
         except (OSError, ValueError, InvalidHandshake) as exc:  # not up yet
             if not waiting:
@@ -133,7 +126,7 @@ def _connect_to_manager() -> ClientConnection:
                 logger.warning(
                     "waiting for the furu manager (start one with "
                     "uvx furu@%s manager) · %s",
-                    ours,
+                    version("furu"),
                     type(exc).__name__,
                     extra={"path": address},
                 )

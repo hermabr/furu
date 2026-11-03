@@ -1,5 +1,6 @@
 import functools
 import subprocess
+from importlib.metadata import version
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -88,11 +89,17 @@ class _Config(BaseSettings):
     )
 
     debug_mode: bool = False
-    # Where the furu manager publishes address.json; scripts on compute nodes
-    # read it, so point it at storage they can see.
+    # Each furu version's manager publishes address.json in its own
+    # subdirectory; scripts on compute nodes read it, so point it at storage
+    # they can see.
     manager_dir: Path = Path.home() / ".furu" / "manager"
     directories: _FuruDirectories = Field(default_factory=_FuruDirectories)
     worker: _FuruWorkerConfig = Field(default_factory=_FuruWorkerConfig)
+
+    @property
+    def manager_version_dir(self) -> Path:
+        """This furu version's manager: one per version, so scripts never meet another."""
+        return self.manager_dir / version("furu")
 
     @property
     def run_directories(self) -> _FuruDirectories:

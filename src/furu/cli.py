@@ -23,7 +23,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.parse_args(argv)
 
-    manager_dir = get_config().manager_dir.resolve()
+    manager_dir = get_config().manager_version_dir.resolve()
     manager_dir.mkdir(parents=True, exist_ok=True)
     with (
         _execution_log(manager_dir / "manager.log"),
@@ -39,7 +39,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         fd = os.open(address, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as file:
-            json.dump({"url": manager.url, "furu_version": version("furu")}, file)
+            json.dump({"url": manager.url}, file)
         logger.info(
             "manager listening on %s · furu %s",
             manager.url.rpartition("@")[2],
