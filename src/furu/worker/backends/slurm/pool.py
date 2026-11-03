@@ -42,6 +42,16 @@ _UNFINISHED_STATES = frozenset(
 _PRUNABLE_STATES = frozenset({"COMPLETED"})
 
 
+def _slurm(*argv: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        argv,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=_SLURM_COMMAND_TIMEOUT_S,
+    )
+
+
 class SlurmWorkerPool:
     """One sbatch recipe's workers, sized to the manager's queue every 10 s."""
 
@@ -115,12 +125,7 @@ class SlurmWorkerPool:
             if state == "PENDING"
         ]
         if pending:
-            subprocess.run(
-                ["scancel", *pending],
-                check=False,
-                capture_output=True,
-                timeout=_SLURM_COMMAND_TIMEOUT_S,
-            )
+            _slurm("scancel", *pending)
 
     def _scale_once(self) -> None:
         active_job_states = self._active_job_states()
@@ -181,18 +186,12 @@ class SlurmWorkerPool:
         for _ in range(1 if self._use_job_arrays else to_spawn):
             if self._stop_event.is_set():
                 return
-            result = subprocess.run(
-                [
-                    "sbatch",
-                    "--parsable",
-                    *((f"--array=0-{to_spawn - 1}",) if self._use_job_arrays else ()),
-                    *self._sbatch_args,
-                    str(self._script_path),
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=_SLURM_COMMAND_TIMEOUT_S,
+            result = _slurm(
+                "sbatch",
+                "--parsable",
+                *((f"--array=0-{to_spawn - 1}",) if self._use_job_arrays else ()),
+                *self._sbatch_args,
+                str(self._script_path),
             )
             if result.returncode != 0:
                 logger.warning(
@@ -217,13 +216,7 @@ class SlurmWorkerPool:
         if not to_cancel:
             return
         try:
-            result = subprocess.run(
-                ["scancel", *to_cancel],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=_SLURM_COMMAND_TIMEOUT_S,
-            )
+            result = _slurm("scancel", *to_cancel)
         except subprocess.TimeoutExpired:
             logger.warning("scancel timed out; retrying on the next scale tick")
             return
@@ -242,24 +235,18 @@ class SlurmWorkerPool:
             return {}
 
         try:
-            result = subprocess.run(
-                [
-                    "squeue",
-                    "--noheader",
-                    "--jobs",
-                    ",".join(
-                        sorted({job_id.partition("_")[0] for job_id in self._job_ids})
-                    ),
-                    *(
-                        ("--array", "--format=%i %T")
-                        if self._use_job_arrays
-                        else ("--format=%A %T",)
-                    ),
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=_SLURM_COMMAND_TIMEOUT_S,
+            result = _slurm(
+                "squeue",
+                "--noheader",
+                "--jobs",
+                ",".join(
+                    sorted({job_id.partition("_")[0] for job_id in self._job_ids})
+                ),
+                *(
+                    ("--array", "--format=%i %T")
+                    if self._use_job_arrays
+                    else ("--format=%A %T",)
+                ),
             )
         except subprocess.TimeoutExpired:
             logger.warning("squeue timed out while checking slurm jobs")
@@ -283,21 +270,15 @@ class SlurmWorkerPool:
             job_id.partition("_")[0] for job_id in known_job_ids
         }
         try:
-            result = subprocess.run(
-                [
-                    "sacct",
-                    "-X",
-                    "--noheader",
-                    "-o",
-                    "JobID,State",
-                    "--parsable2",
-                    "-j",
-                    ",".join(sorted(known_allocation_job_ids)),
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=_SLURM_COMMAND_TIMEOUT_S,
+            result = _slurm(
+                "sacct",
+                "-X",
+                "--noheader",
+                "-o",
+                "JobID,State",
+                "--parsable2",
+                "-j",
+                ",".join(sorted(known_allocation_job_ids)),
             )
         except subprocess.TimeoutExpired:
             logger.warning("sacct timed out while checking slurm jobs")
