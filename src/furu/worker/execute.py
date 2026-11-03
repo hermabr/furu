@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import assert_never
 
+from furu.code_trace import _REPO_ROOT_ENV_VAR
 from furu.config import _Config
 from furu.logging import _append, get_logger
 from furu.snapshot import CodeLocation
@@ -45,6 +46,14 @@ class ChildSlot:
         self._child = None
 
     def run(self, job: Job, *, cancelled: threading.Event) -> JobResult:
+        result = self._run(job, cancelled=cancelled)
+        if isinstance(result, JobFailedResult) and result.stale_code:
+            # The warm child imported code that has since changed on disk.
+            self.close()
+            result = self._run(job, cancelled=cancelled)
+        return result
+
+    def _run(self, job: Job, *, cancelled: threading.Event) -> JobResult:
         settings = job.process
         environment = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
         # Progress bars redraw up to 10 times a second, and every redraw lands
@@ -93,7 +102,11 @@ class ChildSlot:
         if cancelled.is_set():
             child.process.kill()
         result = self._request(child, job)
-        if settings.reuse == "never" or child.process.poll() is not None:
+        if (
+            settings.reuse == "never"
+            or child.process.poll() is not None
+            or (isinstance(result, JobFailedResult) and result.stale_code)
+        ):
             self.close()
         return result
 
@@ -125,7 +138,7 @@ class ChildSlot:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             cwd=job.code.cwd,
-            env=environment,
+            env=environment | {_REPO_ROOT_ENV_VAR: str(job.code.repo_root)},
             text=True,
         )
         assert process.stdin is not None

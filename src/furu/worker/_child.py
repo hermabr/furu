@@ -9,6 +9,7 @@ from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import assert_never
 
+from furu.code_trace import StaleCodeError
 from furu.config import _Config, _set_config
 from furu.core import Spec
 from furu.dependencies import _DependencyNotReady, missing_dependencies
@@ -42,7 +43,10 @@ def _execute(job: Job) -> JobResult:
             dependencies=[ArtifactSpec.from_furu(dep) for dep in exc.dependencies]
         )
     except Exception as exc:  # noqa: BLE001 -- fault barrier: any crash fails the job
-        return JobFailedResult(error="".join(traceback.format_exception(exc)))
+        return JobFailedResult(
+            error="".join(traceback.format_exception(exc)),
+            stale_code=isinstance(exc, StaleCodeError),
+        )
 
 
 def _flush() -> None:
