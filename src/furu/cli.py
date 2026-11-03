@@ -23,14 +23,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.parse_args(argv)
 
-    config = get_config()
-    manager_dir = config.manager_dir.resolve()
+    manager_dir = get_config().manager_dir.resolve()
     manager_dir.mkdir(parents=True, exist_ok=True)
     with (
         _execution_log(manager_dir / "manager.log"),
         Manager.serve(
             listen_host="0.0.0.0",
-            connect_host=config.worker.connect_host or socket.getfqdn(),
+            connect_host=socket.getfqdn(),
             manager_dir=manager_dir,
         ) as manager,
     ):

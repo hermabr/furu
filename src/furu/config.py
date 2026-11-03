@@ -71,7 +71,6 @@ class _FuruDirectories(BaseModel):
 class _FuruWorkerConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    connect_host: str | None = None  # how workers reach the manager
     idle_timeout_seconds: float = 60.0
     max_retries_per_object: int = 10
 
