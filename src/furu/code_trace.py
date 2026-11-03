@@ -50,6 +50,7 @@ _PROCESS_START_NS = time.time_ns()
 _PYTHON = f"{sys.version_info.major}.{sys.version_info.minor}"
 _REPO_ROOT_ENV_VAR = "_FURU_REPO_ROOT"
 _DEFS = (ast.FunctionDef, ast.AsyncFunctionDef)
+_IMPORTS = (ast.Import, ast.ImportFrom)
 
 type Uses = frozenset[str] | Literal["all"]
 
@@ -167,6 +168,8 @@ class _Stmt:
 class _Parsed:
     stmts: tuple[_Stmt, ...]
     bound: frozenset[str]
+    # (name, import, alias) for imported names nothing else mentions.
+    bare_imports: tuple[tuple[str, ast.Import | ast.ImportFrom, ast.alias], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,7 +264,16 @@ def _parse(text: str) -> _Parsed | None:
         for name in (stmt.binds or {stmt.name})
         if name
     )
-    parsed = _PARSED[text] = _Parsed(tuple(stmts), bound)
+    mentioned = _mentions([s.node for s in stmts if not isinstance(s.node, _IMPORTS)])
+    bare = tuple(
+        (name, s.node, alias)
+        for s in stmts
+        if isinstance(s.node, _IMPORTS)
+        for alias in s.node.names
+        if (name := (alias.asname or alias.name).split(".")[0]) not in mentioned
+        and alias.name != "*"
+    )
+    parsed = _PARSED[text] = _Parsed(tuple(stmts), bound, bare)
     return parsed
 
 
@@ -425,6 +437,19 @@ def _code(
         file = getattr(sys.modules.get(name), "__file__", None)
         return _rel(file, root) if isinstance(file, str) else None
 
+    def imports_repo_code(
+        imp: ast.Import | ast.ImportFrom, alias: ast.alias, rel: str
+    ) -> bool:
+        if isinstance(imp, ast.Import):
+            return module_file(alias.name) is not None
+        try:
+            base = importlib.util.resolve_name(
+                "." * imp.level + (imp.module or ""), packages.get(rel) or ""
+            )
+        except (ImportError, ValueError):
+            return False
+        return any(module_file(name) for name in (base, f"{base}.{alias.name}"))
+
     uses: dict[str, set[str]] = {rel: set() for rel in ran}
     called: dict[str, set[str]] = {}  # names kept code calls at import
     everything: dict[str, str] = {}  # files that keep every name, and why
@@ -477,6 +502,9 @@ def _code(
                 *(header for _, header, _ in items),
                 *(facts.mentions for _, _, members in items for _, facts in members),
             )
+            for name, imp, alias in parsed.bare_imports:
+                if imports_repo_code(imp, alias, rel):  # kept for its side effects
+                    used.add(name)
             calls: set[str] = set()
             for node, _, _ in items:
                 _calls(node, calls)

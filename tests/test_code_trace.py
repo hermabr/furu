@@ -619,7 +619,7 @@ def test_star_import_uses_every_name_in_the_module(repo: Repo) -> None:
 SCALED = """\
 import furu
 
-from PKG import helpers
+from PKG import helpers, registry  # noqa: F401
 from PKG.helpers import offset
 
 
@@ -658,7 +658,7 @@ class Scaled(furu.Spec[str]):
         return furu.Metadata(code_version="traced")
 
     def create(self) -> str:
-        return f"{SCALE}:{BUILDERS['a']()}:{self.label}"
+        return f"{SCALE}:{BUILDERS['a']()}:{self.label}:{helpers.TABLE}"
 
 
 if __name__ == "__main__":
@@ -666,6 +666,9 @@ if __name__ == "__main__":
 """
 
 HELPERS = """\
+TABLE = []
+
+
 def offset():
     return 10
 
@@ -679,9 +682,17 @@ def unrelated():
 """
 
 
+REGISTRY = """\
+from PKG import helpers
+
+helpers.TABLE.append(5)
+"""
+
+
 @pytest.fixture
 def scaled(repo: Repo) -> ModuleType:
     repo.write("helpers.py", HELPERS)
+    repo.write("registry.py", REGISTRY)
     repo.write("scaled.py", SCALED)
     return repo.load("scaled")
 
@@ -691,7 +702,7 @@ def test_functions_called_at_import_count_as_ran(
 ) -> None:
     spec = scaled.Scaled()
 
-    assert spec.create() == "112:1:t"
+    assert spec.create() == "112:1:t:[5]"
 
     code = _trace(spec)["code"]
     assert code[f"{repo.package}/scaled.py"]["ran"] == [
@@ -712,6 +723,7 @@ def test_functions_called_at_import_count_as_ran(
         pytest.param("scaled.py", '"t"', '"u"', id="decorator"),
         pytest.param("helpers.py", "return 10", "return 20", id="imported"),
         pytest.param("helpers.py", "return 100", "return 200", id="module-attribute"),
+        pytest.param("registry.py", "append(5)", "append(6)", id="side-effect-import"),
     ],
 )
 def test_edits_to_code_run_at_import_rerun(
