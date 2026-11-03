@@ -22,7 +22,7 @@ class FailingValue(Spec[str]):
 
 def test_schema_snapshot_written_on_first_store_and_never_rewritten() -> None:
     first = SnapshotValue(name="first")
-    schema_path = schema_snapshot_path_in(first._base_dir)
+    schema_path = schema_snapshot_path_in(first._base_dir.parent)
     assert not schema_path.exists()
 
     first.create()
@@ -30,7 +30,7 @@ def test_schema_snapshot_written_on_first_store_and_never_rewritten() -> None:
 
     stat_before = schema_path.stat()
     second = SnapshotValue(name="second")
-    assert schema_snapshot_path_in(second._base_dir) == schema_path
+    assert schema_snapshot_path_in(second._base_dir.parent) == schema_path
     second.create()
     stat_after = schema_path.stat()
     assert (stat_after.st_ino, stat_after.st_mtime_ns) == (
@@ -43,4 +43,4 @@ def test_schema_snapshot_not_written_when_create_fails() -> None:
     failing = FailingValue(name="x")
     with pytest.raises(RuntimeError, match="boom"):
         failing.create()
-    assert not schema_snapshot_path_in(failing._base_dir).exists()
+    assert not schema_snapshot_path_in(failing._base_dir.parent).exists()

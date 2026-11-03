@@ -24,7 +24,7 @@ from furu.migration.steps import (
 from furu.serializer.artifact import to_json
 from furu.serializer.registry import Serializer
 from furu.serializer.schema import schema_type
-from furu.storage._layout import schema_snapshot_path_in_schema_directory
+from furu.storage._layout import schema_snapshot_path_in
 from furu.utils import (
     JsonFields,
     JsonValue,
@@ -345,7 +345,7 @@ def _resolve_class(obj: Spec) -> _ClassResolution:
                 and schema_directory.name == obj._artifact_schema_hash
             ):
                 continue
-            snapshot_path = schema_snapshot_path_in_schema_directory(schema_directory)
+            snapshot_path = schema_snapshot_path_in(schema_directory)
             if not snapshot_path.exists():
                 continue
             snapshot = cast(
