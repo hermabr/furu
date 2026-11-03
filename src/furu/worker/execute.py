@@ -4,6 +4,7 @@ import os
 import signal
 import subprocess
 import threading
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import assert_never
@@ -100,7 +101,7 @@ class ChildSlot:
         child.spec_name = spec_name
 
         if cancelled.is_set():
-            child.process.kill()
+            self.kill()
         result = self._request(child, job)
         if (
             settings.reuse == "never"
@@ -112,7 +113,7 @@ class ChildSlot:
 
     def kill(self) -> None:
         if (child := self._child) is not None:
-            child.process.kill()
+            _kill(child.process)
 
     def close(self) -> None:
         child, self._child = self._child, None
@@ -126,13 +127,14 @@ class ChildSlot:
         try:
             child.process.wait(timeout=_RETIRE_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
-            child.process.kill()
+            _kill(child.process)
             child.process.wait()
         self._logger.debug("retired child %d", child.process.pid)
 
     def _spawn(self, environment: dict[str, str], *, job: Job) -> _Child:
         # The child's stderr is ours: each job points it at its run.log, and
         # anything written between jobs lands in this worker's own output.
+        # Its own process group lets a kill reach everything the job started.
         process = subprocess.Popen(
             [str(job.code.python), "-m", "furu.worker._child"],
             stdin=subprocess.PIPE,
@@ -140,6 +142,7 @@ class ChildSlot:
             cwd=job.code.cwd,
             env=environment | {_REPO_ROOT_ENV_VAR: str(job.code.repo_root)},
             text=True,
+            process_group=0,
         )
         assert process.stdin is not None
         process.stdin.write(job.config.model_dump_json() + "\n")
@@ -189,6 +192,16 @@ class ChildSlot:
         for run_log in job.run_logs:
             _append(run_log, f"── died · {reason}\n\n")
         return JobFailedResult(error=f"{tail}subprocess died: {reason}")
+
+
+def _kill(process: subprocess.Popen[str]) -> None:
+    """SIGKILL the child and every process it started, e.g. DataLoader workers.
+
+    Helpers that outlive the child would keep its GPU memory and its end of the
+    protocol pipe, so the worker would hang waiting for the child's reply.
+    """
+    with suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGKILL)
 
 
 def _tail(path: Path) -> str:

@@ -1081,8 +1081,11 @@ def test_manager_shutdown_closes_busy_and_idle_workers_promptly() -> None:
 
     assert time.monotonic() - started < 5
     for connection in (script, busy, idle):
+        # The script may first hear that the busy worker was lost, if shutdown
+        # closed that worker's connection before the script's.
         with pytest.raises(ConnectionClosed):
-            connection.recv(timeout=5)
+            while True:
+                connection.recv(timeout=5)
 
 
 # --- create(..., on=[...]) end to end ------------------------------------------

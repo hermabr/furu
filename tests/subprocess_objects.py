@@ -11,6 +11,7 @@ import logging
 import os
 import signal
 import sys
+import time
 from pathlib import Path
 from typing import Literal
 
@@ -112,3 +113,18 @@ class SubprocessChattyLeaf(Spec[str]):
         logging.getLogger("chatty").info("stdlib info from job %d", self.marker)
         os.write(2, f"raw fd 2 from job {self.marker}\n".encode())
         return _pid_and_variable("FURU_TEST_VARIABLE")
+
+
+class SubprocessForkingLeaf(Spec[str]):
+    """Forks a helper that outlives the job, then waits to be cancelled."""
+
+    pid_file: str
+
+    def create(self) -> str:
+        if (helper := os.fork()) == 0:
+            time.sleep(30)  # holds every fd the child had, protocol pipe included
+            os._exit(0)
+        Path(self.pid_file + ".tmp").write_text(str(helper))
+        os.replace(self.pid_file + ".tmp", self.pid_file)
+        time.sleep(30)
+        return "unreachable"

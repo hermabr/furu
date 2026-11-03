@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import importlib
 import os
+import signal
 import sys
 import threading
+import time
 from collections.abc import Iterator
+from contextlib import suppress
 from pathlib import Path
 
 import pytest
@@ -19,6 +22,7 @@ from subprocess_objects import (
     SubprocessDebugDirectoryLeaf,
     SubprocessDependencyLeaf,
     SubprocessEnvLeaf,
+    SubprocessForkingLeaf,
 )
 
 import furu
@@ -293,6 +297,48 @@ def test_subprocess_crash_becomes_job_failed_result_and_slot_survives(
     )
     assert isinstance(_run(child_slot, follow_up), JobCompletedResult)
     assert _pid_and_value(follow_up)[1] == "after-crash"
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def test_kill_takes_down_what_the_job_forked(
+    child_slot: ChildSlot, tmp_path: Path
+) -> None:
+    # The helper inherits the child's end of the protocol pipe; if it survives
+    # the kill, the worker waits for it to exit before it sees the child died.
+    pid_file = tmp_path / "helper.pid"
+    results: list[JobResult] = []
+    job = threading.Thread(
+        target=lambda: results.append(
+            _run(child_slot, SubprocessForkingLeaf(pid_file=str(pid_file)))
+        )
+    )
+    job.start()
+    deadline = time.monotonic() + 10
+    while not pid_file.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    helper = int(pid_file.read_text())
+    try:
+        child_slot.kill()
+        job.join(timeout=5)
+        assert results, "the worker waited on the job's helper"
+        (result,) = results
+        assert isinstance(result, JobFailedResult)
+        assert result.error.endswith("subprocess died: killed by signal 9 (SIGKILL)")
+        deadline = time.monotonic() + 5
+        while _alive(helper) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not _alive(helper)
+    finally:
+        with suppress(ProcessLookupError):
+            os.kill(helper, signal.SIGKILL)
+        job.join()
 
 
 def test_subprocess_blocked_dependency_is_relayed(child_slot: ChildSlot) -> None:
