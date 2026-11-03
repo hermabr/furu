@@ -15,6 +15,8 @@ from furu.config import (
 )
 from furu.testing import override_config
 
+pytestmark = pytest.mark.usefixtures("fresh_caches")
+
 
 def test_config_reads_environment(monkeypatch) -> None:
     monkeypatch.setenv("FURU_DEBUG_MODE", "true")
@@ -64,27 +66,22 @@ def test_relative_directories_anchor_to_main_worktree(tmp_path, monkeypatch) -> 
     main = tmp_path / "main"
     main.mkdir()
     (main / "pyproject.toml").write_text("", encoding="utf-8")
-    git = ["git", "-c", "user.email=t@t", "-c", "user.name=t"]
-    subprocess.run([*git, "init", "-q"], cwd=main, check=True)
-    subprocess.run([*git, "add", "pyproject.toml"], cwd=main, check=True)
-    subprocess.run([*git, "commit", "-q", "-m", "init"], cwd=main, check=True)
+    subprocess.run(["git", "init", "-q"], cwd=main, check=True)
+    subprocess.run(["git", "add", "pyproject.toml"], cwd=main, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=main, check=True)
     subprocess.run(
-        [*git, "worktree", "add", "-q", str(tmp_path / "linked")], cwd=main, check=True
+        ["git", "worktree", "add", "-q", str(tmp_path / "linked")], cwd=main, check=True
     )
 
     # The linked worktree has its own pyproject.toml, but the git worktree
     # mapping wins so all worktrees share the main checkout's directories.
     monkeypatch.chdir(tmp_path / "linked")
-    _project_anchor.cache_clear()
-    try:
-        expected = main.resolve() / "furu-data" / "objects"
-        assert _Config().run_directories.objects == expected
+    expected = main.resolve() / "furu-data" / "objects"
+    assert _Config().run_directories.objects == expected
 
-        monkeypatch.chdir(main)
-        _project_anchor.cache_clear()
-        assert _Config().run_directories.objects == expected
-    finally:
-        _project_anchor.cache_clear()
+    monkeypatch.chdir(main)
+    _project_anchor.cache_clear()
+    assert _Config().run_directories.objects == expected
 
 
 def test_relative_directories_anchor_to_git_root_from_project_subdirectory(
@@ -96,26 +93,21 @@ def test_relative_directories_anchor_to_git_root_from_project_subdirectory(
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
 
     monkeypatch.chdir(nested)
-    _project_anchor.cache_clear()
-    try:
-        expected = tmp_path.resolve() / "furu-data" / "objects"
-        assert _Config().run_directories.objects == expected
-    finally:
-        _project_anchor.cache_clear()
+    expected = tmp_path.resolve() / "furu-data" / "objects"
+    assert _Config().run_directories.objects == expected
 
 
 def test_submodule_is_rejected(tmp_path, monkeypatch) -> None:
-    git = ["git", "-c", "user.email=t@t", "-c", "user.name=t"]
     for name in ("inner", "outer"):
-        subprocess.run([*git, "init", "-q", name], cwd=tmp_path, check=True)
+        subprocess.run(["git", "init", "-q", name], cwd=tmp_path, check=True)
         subprocess.run(
-            [*git, "commit", "-q", "--allow-empty", "-m", "init"],
+            ["git", "commit", "-q", "--allow-empty", "-m", "init"],
             cwd=tmp_path / name,
             check=True,
         )
     outer = tmp_path / "outer"
     subprocess.run(
-        [*git, "-c", "protocol.file.allow=always", "submodule", "add", "-q"]
+        ["git", "-c", "protocol.file.allow=always", "submodule", "add", "-q"]
         + [str(tmp_path / "inner"), "inner"],
         cwd=outer,
         check=True,
@@ -123,19 +115,15 @@ def test_submodule_is_rejected(tmp_path, monkeypatch) -> None:
     (outer / "inner" / "pyproject.toml").write_text("", encoding="utf-8")
 
     monkeypatch.chdir(outer / "inner")
-    _project_anchor.cache_clear()
-    try:
-        with pytest.raises(RuntimeError, match="inner is or contains a git submodule"):
-            _project_anchor()
+    with pytest.raises(RuntimeError, match="inner is or contains a git submodule"):
+        _project_anchor()
 
-        # The superproject is rejected too, from anywhere inside it.
-        (outer / "pyproject.toml").write_text("", encoding="utf-8")
-        monkeypatch.chdir(outer)
-        _project_anchor.cache_clear()
-        with pytest.raises(RuntimeError, match="outer is or contains a git submodule"):
-            _project_anchor()
-    finally:
-        _project_anchor.cache_clear()
+    # The superproject is rejected too, from anywhere inside it.
+    (outer / "pyproject.toml").write_text("", encoding="utf-8")
+    monkeypatch.chdir(outer)
+    _project_anchor.cache_clear()
+    with pytest.raises(RuntimeError, match="outer is or contains a git submodule"):
+        _project_anchor()
 
 
 def test_import_outside_project_defers_anchor_crash(tmp_path) -> None:
@@ -161,13 +149,9 @@ def test_import_outside_project_defers_anchor_crash(tmp_path) -> None:
 def test_relative_directories_require_a_git_repository(tmp_path, monkeypatch) -> None:
     (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
-    _project_anchor.cache_clear()
-    try:
-        config = _Config()  # config loads fine; only directory access crashes
-        with pytest.raises(RuntimeError, match="no git repository"):
-            _ = config.run_directories
-    finally:
-        _project_anchor.cache_clear()
+    config = _Config()  # config loads fine; only directory access crashes
+    with pytest.raises(RuntimeError, match="no git repository"):
+        _ = config.run_directories
 
 
 def test_relative_directories_require_a_pyproject_in_the_repository(
@@ -179,12 +163,8 @@ def test_relative_directories_require_a_pyproject_in_the_repository(
     repo.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
     monkeypatch.chdir(repo)
-    _project_anchor.cache_clear()
-    try:
-        with pytest.raises(RuntimeError, match="no pyproject.toml"):
-            _ = _Config().run_directories
-    finally:
-        _project_anchor.cache_clear()
+    with pytest.raises(RuntimeError, match="no pyproject.toml"):
+        _ = _Config().run_directories
 
 
 def test_config_uses_main_directories_by_default(monkeypatch) -> None:

@@ -1051,6 +1051,23 @@ def test_worker_disconnect_fails_its_job_for_the_script() -> None:
         )
 
 
+def test_worker_dropped_by_manager_shutdown_does_not_fail_its_job() -> None:
+    # Shutdown closes connections in any order; a worker carries on alone.
+    with (
+        Manager.serve(
+            listen_host="127.0.0.1", connect_host="127.0.0.1", manager_dir=None
+        ) as manager,
+        _submit_over(manager, RunLeaf(value=1)) as script,
+    ):
+        worker = _hello(manager.url)
+        Job.model_validate_json(worker.recv(timeout=5))
+        manager.stopping = True
+        worker.close()
+
+        with pytest.raises(TimeoutError):
+            script.recv(timeout=0.5)
+
+
 def test_manager_shutdown_closes_busy_and_idle_workers_promptly() -> None:
     started = time.monotonic()
     with Manager.serve(
