@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 import furu
+from furu import code_trace
 from furu.code_trace import StaleCodeError
 from furu.config import _Config, get_config
 from furu.migration.links import own_version
@@ -28,9 +29,9 @@ from furu.testing import override_config
 from furu.worker.execute import ChildSlot
 from furu.worker.protocol import JobCompletedResult, JobFailedResult
 
-# Source files get distinct mtimes in the past, so the stale-process guard
-# (any traced file modified after this process started) stays quiet unless a
-# test opts in, and every rewrite invalidates bytecode and parse caches.
+# Source files get distinct mtimes in the past, so furu trusts that a module
+# imported before tracing started matches the file on disk, and every rewrite
+# invalidates bytecode and parse caches.
 _MTIMES = itertools.count(1_000_000_000)
 
 
@@ -58,6 +59,7 @@ class Repo:
         """Import the package's current code, as a fresh process would."""
         for module in [m for m in sys.modules if m.split(".")[0] == self.package]:
             del sys.modules[module]
+        code_trace._IMPORTED.clear()
         importlib.invalidate_caches()
         return importlib.import_module(f"{self.package}.{name.removesuffix('.py')}")
 
@@ -727,9 +729,39 @@ def test_code_edited_after_import_is_not_published(
     plot = repo.load("plots").LossPlot(name="b")
     assert plot.create() == "loss:[16, 4, 99, 1]"
     assert (
-        f"starting {plot._log_label} over: {repo.package}/common.py changed while it ran"
+        f"starting {plot._log_label} over: {repo.package}/common.py changed"
         in _run_log(plot)
     )
+
+
+def test_touching_code_after_import_keeps_the_result(
+    repo: Repo, plots: ModuleType
+) -> None:
+    plots.LossPlot(name="a").create()
+    # A touch or a git checkout that lands on the same text changes only mtime.
+    common = repo.root / repo.package / "common.py"
+    common.write_text(common.read_text())
+
+    plot = plots.LossPlot(name="b")
+    assert plot.create() == "loss:[12, 4, 99, 1]"
+    assert plot.status == "done"
+
+
+def test_a_python_upgrade_reruns_and_says_so(
+    repo: Repo, plots: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plot = plots.LossPlot(name="a")
+    plot.create()
+    before = _version(plot)
+    assert _trace(plot)["python"] == code_trace._PYTHON
+
+    monkeypatch.setattr(code_trace, "_PYTHON", "3.99")
+    assert plot.status == "missing"
+    plot.create()
+
+    assert _version(plot) != before
+    assert f"rerunning {plot._log_label}: Python " in _run_log(plot)
+    assert "→ 3.99" in _run_log(plot)
 
 
 THREADED = """\

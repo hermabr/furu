@@ -9,7 +9,12 @@ A file's fingerprint is its AST with docstrings dropped, keeping only the
 functions that ran, the module-level bindings that kept code uses (a closure
 that follows imports between repo files), every other module-level statement,
 and every class that is used or has a method that ran (minus the methods that
-did not run).
+did not run). The hash also covers the Python minor version, since ast.dump
+output differs between them.
+
+Only .py files count: a YAML config, CSV or style file that create() reads is
+not traced, so editing one keeps the old result. Put what such a file decides
+in a spec field instead.
 """
 
 from __future__ import annotations
@@ -40,6 +45,7 @@ from furu.storage._layout import trace_path_in
 from furu.utils import _hash_dict_deterministically, spec_label
 
 _PROCESS_START_NS = time.time_ns()
+_PYTHON = f"{sys.version_info.major}.{sys.version_info.minor}"
 _REPO_ROOT_ENV_VAR = "_FURU_REPO_ROOT"
 _DEFS = (ast.FunctionDef, ast.AsyncFunctionDef)
 
@@ -118,15 +124,29 @@ def _read(path: Path) -> str | None:
     return text
 
 
-def _modified_since_start(path: Path) -> bool:
-    try:
-        return path.stat().st_mtime_ns > _PROCESS_START_NS
-    except OSError:
-        return True
-
-
-def _content_hash(text: str) -> str:
+def _content_hash(text: str | None) -> str | None:
+    if text is None:
+        return None
     return hashlib.blake2s(text.encode(), digest_size=10).hexdigest()
+
+
+# Each repo file's content hash as this process imported it; None if unknown.
+_IMPORTED: dict[str, str | None] = {}
+
+
+def _imported_hash(rel: str, path: Path, *, importing: bool) -> str | None:
+    """The hash of rel's code this process runs, recorded the first time we look.
+
+    A file imported before tracing started is trusted only if it is unchanged
+    since the process started; content, not mtime, decides after that.
+    """
+    if importing or rel not in _IMPORTED:
+        try:
+            fresh = importing or path.stat().st_mtime_ns <= _PROCESS_START_NS
+        except OSError:
+            fresh = False
+        _IMPORTED[rel] = _content_hash(_read(path)) if fresh else None
+    return _IMPORTED[rel]
 
 
 # --- pruning and the uses closure -------------------------------------------
@@ -481,6 +501,7 @@ class Trace(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     code_version: CodeVersion
+    python: str | None = None  # the minor version, for traced specs
     code: dict[str, FileTrace] | None = None
     # object_id -> its loaded version directory, relative to the storage root
     dependencies: dict[str, str] = {}
@@ -502,7 +523,11 @@ class Trace(BaseModel):
         if fingerprints is None:
             fingerprints = {rel: entry.fingerprint for rel, entry in self.code.items()}
         return "v-" + _hash_dict_deterministically(
-            {"code": dict(fingerprints), "dependencies": dependencies}
+            {
+                "python": self.python,
+                "code": dict(fingerprints),
+                "dependencies": dependencies,
+            }
         )
 
 
@@ -538,6 +563,8 @@ def _check_uncached(
         return f"{version} has no readable trace.json"
     fingerprints = None
     if trace.code is not None:
+        if trace.python != _PYTHON:
+            return f"Python {trace.python} → {_PYTHON}"
         root = repo_root()
         fingerprints = {
             rel: _fingerprint(_read(root / rel), frozenset(entry.ran), entry.uses_key)
@@ -607,9 +634,9 @@ class _TraceLog:
     """attempt/trace.log: an append-only record of what a traced create() ran.
 
     One JSON array per line: ["source", file, text] when a file first runs,
-    ["hash", file, digest] for repo modules already imported at the start,
+    ["hash", file, digest] for the code of a file imported earlier,
     ["ran", file, qualname], ["dependency", object_id, version] and
-    ["stale", file] when a file changed after the process imported it.
+    ["stale", file] when what the process imported is unknown.
     """
 
     def __init__(self, paths: Sequence[Path]) -> None:
@@ -690,21 +717,39 @@ class _Collector:
         self.root = root
         self.log = log
         self.ran = {rel: set(names) for rel, names in state.ran.items()}
-        self._sources = set(state.sources)
+        # Content hashes of the code each file ran: earlier attempts' as
+        # trace.log recorded them, and this process's own.
+        self.resumed = state.hashes | {
+            rel: _content_hash(text) for rel, text in state.sources.items()
+        }
+        self.hashes: dict[str, str | None] = {}
         self._lock = threading.Lock()
+
+    def record(self, rel: str, *, importing: bool) -> None:
+        path = Path(self.root, rel)
+        text = _read(path)
+        imported = self.hashes[rel] = _imported_hash(rel, path, importing=importing)
+        if imported is None:
+            self.log.write(["stale", rel])
+        elif rel in self.resumed:
+            pass  # trace.log keeps the first record of each file
+        elif text is not None and imported == _content_hash(text):
+            self.log.write(["source", rel, text])
+        else:
+            self.log.write(["hash", rel, imported])
+
+    def changed(self, rel: str) -> bool:
+        """Whether rel on disk differs from the code that ran."""
+        ran = self.hashes[rel] if rel in self.hashes else self.resumed.get(rel)
+        return ran is None or ran != _content_hash(_read(Path(self.root, rel)))
 
     def see(self, code: CodeType) -> None:
         if (rel := _rel(code.co_filename, self.root)) is None:
             return
         qualname = code.co_qualname.split(".<locals>", 1)[0]
         with self._lock:
-            if rel not in self._sources:
-                self._sources.add(rel)
-                path = Path(self.root, rel)
-                if _modified_since_start(path):
-                    self.log.write(["stale", rel])
-                if (text := _read(path)) is not None:
-                    self.log.write(["source", rel, text])
+            if rel not in self.hashes:
+                self.record(rel, importing=qualname == "<module>")
             if qualname.startswith("<"):  # module code, module-level lambdas
                 return
             names = self.ran.setdefault(rel, set())
@@ -777,16 +822,15 @@ def recording(
         raise RuntimeError("a traced create() is already running in this process")
     root = str(repo_root()) + os.sep
     log = _TraceLog(log_paths)
+    collector = _Collector(root, log, resumed)
     for module in list(sys.modules.values()):
         file = getattr(module, "__file__", None)
         if (
             isinstance(file, str)
             and (rel := _rel(file, root)) is not None
-            and rel not in resumed.hashes
-            and (text := _read(Path(root, rel))) is not None
+            and rel not in collector.hashes
         ):
-            log.write(["hash", rel, _content_hash(text)])
-    collector = _Collector(root, log, resumed)
+            collector.record(rel, importing=False)
     _trace_into(collector)
     try:
         yield Recording(code_version, dict(resumed.dependencies), log.write, collector)
@@ -812,9 +856,7 @@ def why_not_resumable(state: LogState | None, *, storage_root: Path) -> str | No
         if rel in state.sources:
             return state.sources[rel]
         text = _read(root / rel)
-        if rel in state.hashes and (
-            text is None or _content_hash(text) != state.hashes[rel]
-        ):
+        if rel in state.hashes and _content_hash(text) != state.hashes[rel]:
             raise Changed(rel)
         return text
 
@@ -856,7 +898,8 @@ def build_trace(run: Recording, *, label: str, warn: Callable[[str], None]) -> T
                 f"{fallback.what}, so every module-level name in {fallback.file} "
                 "counts toward its cache key. Editing any of them will rerun it."
             )
-    if stale := sorted(rel for rel in code if _modified_since_start(root / rel)):
+    assert run._collector is not None
+    if stale := sorted(rel for rel in code if run._collector.changed(rel)):
         raise StaleCodeError(
             f"{label}: {', '.join(stale)} changed after this process imported it, "
             "so the code that ran may not match the file on disk. Not publishing "
@@ -864,6 +907,7 @@ def build_trace(run: Recording, *, label: str, warn: Callable[[str], None]) -> T
         )
     return Trace(
         code_version="traced",
+        python=_PYTHON,
         code=code,
         dependencies=dict(sorted(run.dependencies.items())),
     )
