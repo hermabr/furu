@@ -2329,3 +2329,234 @@ def test_a_move_merges_with_a_field_added_under_the_old_name() -> None:
     assert _MovedMergedRun(dataset="m", learning_rate=0.1).load_existing() == {
         "branch": "moved"
     }
+
+
+# --- steps renamed or edited after a schema recorded them -------------------------
+
+
+class _EpochsRun(Spec[str]):
+    epochs: int
+
+    def create(self) -> str:
+        return f"epochs={self.epochs}"
+
+
+def _epochs_to_steps(fields: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
+    return {**fields, "steps": cast(int, fields["steps"]) * 100}
+
+
+def _scale_epochs(fields: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
+    return {**fields, "steps": cast(int, fields["steps"]) * 100}
+
+
+class _StepsRun(Spec[str]):
+    steps: int
+
+    migrations = (Renamed("epochs", to="steps"), Rewrite(_epochs_to_steps))
+
+    def create(self) -> str:
+        return f"steps={self.steps}"
+
+
+class _StepsRenamedFunctionRun(Spec[str]):
+    steps: int
+    warmup: int = 0
+
+    # _epochs_to_steps renamed in a refactor.
+    migrations = (
+        Renamed("epochs", to="steps"),
+        Rewrite(_scale_epochs),
+        Added("warmup", default=0),
+    )
+
+    def create(self) -> str:
+        return f"renamed steps={self.steps}"
+
+
+def test_a_renamed_rewrite_function_blocks_instead_of_recomputing() -> None:
+    epochs = _EpochsRun(epochs=3)
+    epochs.create()
+    _transplant_generation(epochs, _StepsRun)
+    steps = _StepsRun(steps=700)
+    steps.create()
+    _transplant_generation(epochs, _StepsRenamedFunctionRun)
+    _transplant_generation(steps, _StepsRenamedFunctionRun)
+    _fresh_process()
+
+    # The trunk schema recorded no steps, so it is migrated as usual.
+    assert _StepsRenamedFunctionRun(steps=300).load_existing() == "epochs=3"
+    blocked = _StepsRenamedFunctionRun(steps=700)
+    assert blocked.status == "stale"
+    with pytest.raises(Stale) as excinfo:
+        blocked.create()
+    message = str(excinfo.value)
+    assert (
+        f"records Rewrite({__name__}._epochs_to_steps) where "
+        "_StepsRenamedFunctionRun.migrations[1] is Rewrite(_scale_epochs)"
+    ) in message
+    assert "restore its old name" in message
+
+
+class _RatioRun(Spec[str]):
+    ratio: int
+
+    def create(self) -> str:
+        return f"ratio={self.ratio}"
+
+
+class _FloatRatioRun(Spec[str]):
+    ratio: float
+
+    migrations = (Retyped("ratio", was=int),)
+
+    def create(self) -> str:
+        return f"float ratio={self.ratio}"
+
+
+class _CorrectedWasRun(Spec[str]):
+    ratio: float
+    scale: int = 1
+
+    # was= corrected after _FloatRatioRun's results were stored.
+    migrations = (Retyped("ratio", was=int | None), Added("scale", default=1))
+
+    def create(self) -> str:
+        return f"corrected ratio={self.ratio}"
+
+
+def test_a_corrected_retyped_was_blocks_instead_of_recomputing() -> None:
+    ratio = _RatioRun(ratio=2)
+    ratio.create()
+    _transplant_generation(ratio, _FloatRatioRun)
+    float_ratio = _FloatRatioRun(ratio=0.5)
+    float_ratio.create()
+    _transplant_generation(float_ratio, _CorrectedWasRun)
+    _fresh_process()
+
+    with pytest.raises(Stale, match=r"records Retyped\(ratio, builtins.int\) where"):
+        _CorrectedWasRun(ratio=0.5).create()
+
+
+class _NoWarmupRun(Spec[str]):
+    a: int
+
+    def create(self) -> str:
+        return f"no warmup a={self.a}"
+
+
+def test_removing_a_field_with_its_added_recomputes_quietly() -> None:
+    # Documented on Added: the old results look like a sibling branch's.
+    _, warmup, _ = _grow_branches()
+    _transplant_generation(warmup, _NoWarmupRun)
+    _fresh_process()
+
+    assert _NoWarmupRun(a=2).status == "missing"
+
+
+class _XTrunk(Spec[str]):
+    a: int
+
+    def create(self) -> str:
+        return f"trunk a={self.a}"
+
+
+def _x_from_a(fields: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
+    return {**fields, "x": cast(int, fields["a"]) + 1}
+
+
+def _x_times_a(fields: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
+    return {**fields, "x": cast(int, fields["a"]) * 2}
+
+
+class _XPlusBranch(Spec[str]):
+    a: int
+    x: int = 0
+
+    migrations = (Added("x", default=0), Rewrite(_x_from_a))
+
+    def create(self) -> str:
+        return f"plus a={self.a}"
+
+
+class _XTimesBranch(Spec[str]):
+    a: int
+    x: int = 0
+
+    migrations = (Added("x", default=0), Rewrite(_x_times_a))
+
+    def create(self) -> str:
+        return f"times a={self.a}"
+
+
+def test_branches_sharing_a_schema_directory_do_not_block_each_other() -> None:
+    # Both branches add x, so they write one schema directory, which records
+    # whichever branch wrote first; it is each branch's current schema.
+    trunk = _XTrunk(a=1)
+    trunk.create()
+    _transplant_generation(trunk, _XPlusBranch)
+    _XPlusBranch(a=5, x=6).create()
+    _transplant_generation(trunk, _XTimesBranch)
+    plus_directory = _XPlusBranch(a=5, x=6)._base_dir.parent
+    times_directory = _XTimesBranch(a=5, x=6)._base_dir.parent
+    shutil.copytree(plus_directory, times_directory, dirs_exist_ok=True)
+    _fresh_process()
+
+    assert _XTimesBranch(a=1, x=2).load_existing() == "trunk a=1"
+    assert _XTimesBranch(a=7, x=14).status == "missing"
+
+
+def test_a_chain_that_dropped_older_steps_reuses_schemas_written_after_them() -> None:
+    # _MidRun's schema recorded MovedFrom/Renamed steps that _FinalRunViaMid no
+    # longer declares; it already had them, so only the steps it lacks apply.
+    _MidRun(dataset="imagenet", lr=0.1).create()
+    _COUNTER.calls = 0
+
+    final = _FinalRunViaMid(dataset="imagenet", lr=0.1)
+    assert final.load_existing() == {"dataset": "imagenet", "lr": "0.1"}
+    assert _COUNTER.calls == 0
+
+
+class _TwoRewritesV1Run(Spec[str]):
+    steps: int
+
+    migrations = (
+        Renamed("epochs", to="steps"),
+        Rewrite(_identity_rewrite),
+        Rewrite(_epochs_to_steps),
+    )
+
+    def create(self) -> str:
+        return f"v1 steps={self.steps}"
+
+
+class _TwoRewritesRun(Spec[str]):
+    steps: int
+    warmup: int = 0
+
+    migrations = (
+        Renamed("epochs", to="steps"),
+        Rewrite(_identity_rewrite),
+        Rewrite(_scale_epochs),
+        Added("warmup", default=0),
+    )
+
+    def create(self) -> str:
+        return f"v2 steps={self.steps}"
+
+
+def test_a_renamed_step_stands_in_only_for_a_step_the_schema_lacks() -> None:
+    # The record lists _epochs_to_steps before _identity_rewrite (it is sorted),
+    # yet _identity_rewrite is one the schema has, so only _scale_epochs is a
+    # candidate for the renamed step.
+    epochs = _EpochsRun(epochs=3)
+    epochs.create()
+    _transplant_generation(epochs, _TwoRewritesV1Run)
+    v1 = _TwoRewritesV1Run(steps=700)
+    v1.create()
+    _transplant_generation(v1, _TwoRewritesRun)
+    _fresh_process()
+
+    with pytest.raises(
+        Stale, match=r"_TwoRewritesRun.migrations\[2\] is Rewrite\(_scale_epochs\)"
+    ):
+        _TwoRewritesRun(steps=700).create()

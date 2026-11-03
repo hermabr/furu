@@ -121,6 +121,8 @@ class _Covered:
 class _Orphaned:
     schema_directory: Path
     clash: str | None  # set when branches made conflicting steps in parallel
+    # Recorded steps that may be a declared step renamed or edited since.
+    renamed: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -335,20 +337,55 @@ def _normalize_snapshot(
     return normalized, dict(sorted(moves.items()))
 
 
-def _recorded_steps(
-    schema_directory: Path, chains: tuple[_Chain, ...]
-) -> dict[str, set[tuple[str, ...]]] | None:
-    """The steps each chain's class had when this schema was written, or None
-    if the writing code took a step these chains never declare - the schema
-    then belongs to a sibling or newer branch sharing the store."""
+def _refactor_proof(identity: tuple[str, ...]) -> tuple[str, ...]:
+    """The part of a step's identity that survives renaming its function or
+    old type, or correcting ``was``."""
+    match identity:
+        case ("Rewrite", *_):
+            return ("Rewrite",)
+        case ("Retyped", field, *_):
+            return ("Retyped", field)
+    return identity
+
+
+@dataclass(frozen=True, slots=True)
+class _Recorded:
+    """The steps a schema's writing code declared, as these chains see them."""
+
+    had: dict[str, set[tuple[str, ...]]]  # per chain's class name
+    unrecognised: bool  # some recorded step matches no declared step
+    # Unrecognised steps that may be a declared step the schema lacks, renamed
+    # or edited since: counted in ``had`` so the schema can still be matched.
+    renamed: tuple[str, ...]
+
+
+def _recorded_steps(schema_directory: Path, chains: tuple[_Chain, ...]) -> _Recorded:
     had: dict[str, set[tuple[str, ...]]] = {chain.class_name: set() for chain in chains}
+    others: list[tuple[_Chain | None, tuple[str, ...]]] = []
     recorded = migrations_path_in(schema_directory)
-    for name, *identity in json.loads(read_text_or_none(recorded) or "[]"):
+    for name, *step in json.loads(read_text_or_none(recorded) or "[]"):
+        identity = tuple(step)
         chain = next((chain for chain in chains if name in chain.names), None)
-        if chain is None or tuple(identity) not in chain.identities:
-            return None
-        had[chain.class_name].add(tuple(identity))
-    return had
+        if chain is not None and identity in chain.identities:
+            had[chain.class_name].add(identity)
+        else:
+            others.append((chain, identity))
+    # Only once every recognised step is known can the rest stand in for the
+    # steps the schema really lacks.
+    renamed: list[str] = []
+    for chain, identity in others:
+        if chain is None:
+            continue
+        for index in chain.pending(had[chain.class_name]):
+            if _refactor_proof(chain.identities[index]) == _refactor_proof(identity):
+                had[chain.class_name].add(chain.identities[index])
+                renamed.append(
+                    f"records {identity[0]}({', '.join(identity[1:])}) where "
+                    f"{chain.label}.migrations[{index}] is "
+                    f"{_describe_step(chain.steps[index])}"
+                )
+                break
+    return _Recorded(had, bool(others), tuple(renamed))
 
 
 def _resolve_class(obj: Spec) -> _ClassResolution:
@@ -381,9 +418,8 @@ def _resolve_class(obj: Spec) -> _ClassResolution:
             snapshot_path = schema_snapshot_path_in(schema_directory)
             if not snapshot_path.exists():
                 continue
-            had = _recorded_steps(schema_directory, (own, *chains))
-            if had is None:
-                continue
+            recorded = _recorded_steps(schema_directory, (own, *chains))
+            had = recorded.had
             pending = own.pending(had[own.class_name])
             if any(_is_breaking(own.steps[index]) for index in pending):
                 continue  # superseded: recomputed, neither reused nor stale
@@ -408,8 +444,18 @@ def _resolve_class(obj: Spec) -> _ClassResolution:
                     snapshot, chains, child_generations
                 )
             generation = own.source(pending)
+            clash = "; ".join(clashes) or None
             if not _snapshot_matches(snapshot, generation):
-                orphaned.append(_Orphaned(schema_directory, "; ".join(clashes) or None))
+                # Steps this chain never declares, and fields it never
+                # produces: a sibling or newer branch's schema, neither ours
+                # nor stale.
+                if not recorded.unrecognised:
+                    orphaned.append(_Orphaned(schema_directory, clash))
+            elif recorded.renamed:
+                # This spec's own past, but furu can't tell whether the schema
+                # already took the declared step: reusing it could apply that
+                # step twice, or skip it.
+                orphaned.append(_Orphaned(schema_directory, clash, recorded.renamed))
             elif not any(move.generation.breaking for move in child_moves.values()):
                 covered.append(
                     _Covered(

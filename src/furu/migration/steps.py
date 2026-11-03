@@ -34,6 +34,11 @@ class Added:
     ``default`` is the one value every old run behaved as. ``default_factory``
     computes it per run from that run's stored fields (as ``Rewrite`` sees
     them): ``Added("model", default_factory=lambda f: ModelConfig(width=f["width"]))``.
+
+    Removing a field together with its ``Added`` makes the results stored with
+    that field recompute quietly instead of going stale: to furu they look like
+    a sibling branch's that added the field. Keep the step, or delete those
+    results, if you meant something else.
     """
 
     field: str
