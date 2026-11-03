@@ -1,55 +1,18 @@
 import os
-import subprocess
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from gitrepo import git
 
 import furu
 from furu import Spec
 from furu import provenance as furu_provenance
 from furu.provenance import (
-    EnvironmentIdentity,
     GitIdentity,
     Provenance,
 )
 from furu.storage._layout import provenance_path_in, version_dir_in
 from furu.worker.backends.local import LocalThreadWorkerBackend
-
-
-@pytest.fixture(autouse=True)
-def _primed_environment_identity() -> Iterator[None]:
-    # Environment capture is cwd-dependent and cached per process. Other test
-    # modules clear the cache; re-prime it from the project root before tests
-    # here chdir into scratch worktrees without a pyproject.toml.
-    EnvironmentIdentity.capture()
-    yield
-
-
-def _git(repo: Path, *args: str) -> str:
-    return subprocess.run(
-        ["git", "-c", "user.email=t@t.t", "-c", "user.name=t", *args],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-
-
-@pytest.fixture
-def git_repo(tmp_path: Path) -> Path:
-    """A committed repo whose ``main`` is pushed to a bare ``origin``."""
-    origin = tmp_path / "origin.git"
-    _git(tmp_path, "init", "-q", "--bare", str(origin))
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _git(repo, "init", "-q", "-b", "main")
-    _git(repo, "remote", "add", "origin", str(origin))
-    (repo / "tracked.txt").write_text("content\n")
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-qm", "init")
-    _git(repo, "push", "-q", "origin", "main")
-    return repo
 
 
 @pytest.fixture
@@ -85,7 +48,7 @@ def test_create_writes_provenance_into_the_version_directory(
 
     path = provenance_path_in(version_dir_in(node._base_dir))
     provenance = Provenance.model_validate_json(path.read_text())
-    assert provenance.git.commit == _git(git_repo, "rev-parse", "HEAD")
+    assert provenance.git.commit == git(git_repo, "rev-parse", "HEAD")
     assert provenance.submitted.hostname == provenance.executed.hostname
     assert provenance.executed.worker_backend == "local"
     assert provenance.executed.pid == os.getpid()
@@ -164,8 +127,8 @@ def test_pushed_commit_is_recorded(
     _Node(value=7).create()
 
     provenance = _Node(value=7).provenance()
-    assert provenance.git.commit == _git(git_repo, "rev-parse", "origin/main")
-    assert provenance.git.remote == str(git_repo.parent / "origin.git")
+    assert provenance.git.commit == git(git_repo, "rev-parse", "origin/main")
+    assert provenance.git.remote == str(git_repo.parent / "repo-origin.git")
 
 
 def test_provenance_raises_missing_for_missing_result() -> None:
@@ -197,7 +160,7 @@ def test_executor_sweep_captures_once_and_stamps_every_job(
     assert len(git_captures) == 1
     provenances = [node.provenance() for node in nodes]
     assert {provenance.git.commit for provenance in provenances} == {
-        _git(git_repo, "rev-parse", "HEAD")
+        git(git_repo, "rev-parse", "HEAD")
     }
     assert all(
         provenance.submitted == provenances[0].submitted for provenance in provenances

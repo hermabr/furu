@@ -33,6 +33,7 @@ from furu.dependencies import (
 from furu.locking import lock
 from furu.logging import (
     _close_sections,
+    _group_label,
     _open_sections,
     _run_log_scope,
     get_logger,
@@ -54,7 +55,7 @@ from furu.storage._layout import (
     attempt_dir_in,
     compute_lock_path_in,
     data_dir_in,
-    migrations_path_in_schema_directory,
+    migrations_path_in,
     provenance_path_in,
     result_dir_in,
     result_link_path_in,
@@ -77,12 +78,12 @@ type HasLock = Callable[[], bool]
 
 
 def _record_schema_snapshot(obj: Spec) -> None:
-    schema_path = schema_snapshot_path_in(obj._base_dir)
+    schema_path = schema_snapshot_path_in(obj._base_dir.parent)
     if schema_path.exists():
         return
     # Before the snapshot, so whoever sees the snapshot also sees its steps.
     atomic_write_text(
-        migrations_path_in_schema_directory(schema_path.parent),
+        migrations_path_in(schema_path.parent),
         json.dumps(sorted(_class_resolution(obj).declared_steps)),
     )
     atomic_write_text(
@@ -411,9 +412,8 @@ def _run_in_process(dag: Dag) -> None:
             )
         except _DependencyNotReady as exc:
             lead.obj.logger.info(
-                "blocked %s%s · %s",
-                lead.obj._log_label,
-                f" ×{len(group)}" if len(group) > 1 else "",
+                "blocked %s · %s",
+                _group_label(lead.obj._log_label, len(group)),
                 missing_dependencies(len(exc.dependencies)),
             )
             for dep in exc.dependencies:
@@ -445,7 +445,7 @@ def _create_in_process[T](
     a footer; the other members' run.logs point at it.
     """
     lead = group[0]
-    label = lead._log_label + (f" ×{len(group)}" if len(group) > 1 else "")
+    label = _group_label(lead._log_label, len(group))
     run_logs = [(obj._log_label, run_log_path_in(obj._base_dir)) for obj in group]
     for obj in group:
         obj._base_dir.mkdir(parents=True, exist_ok=True)

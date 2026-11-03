@@ -46,3 +46,7 @@ addopts = "-n auto --dist worksteal"
 markers = [
     "slurm_integration: opt-in Docker-backed tests that run against a real local Slurm daemon",
 ]
+filterwarnings = [
+    # Lock tests fork children that only touch files; xdist's threads are harmless.
+    "ignore:This process .* is multi-threaded, use of fork\\(\\) may lead to deadlocks:DeprecationWarning",
+]

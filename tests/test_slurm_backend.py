@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from gitrepo import init_repo
 from websockets.sync.client import connect
 
 import furu
@@ -33,7 +34,7 @@ from furu.snapshot import CodeLocation
 from furu.testing import override_config
 from furu.worker import _cli
 from furu.worker.backends.slurm.backend import SlurmExport, SlurmWorkerBackend
-from furu.worker.backends.slurm.pool import _UNFINISHED_STATES, SlurmWorkerPool
+from furu.worker.backends.slurm.pool import SlurmWorkerPool
 from furu.worker.backends.slurm.resources import (
     MemoryPerCpu,
     MemoryPerGpu,
@@ -279,7 +280,10 @@ def test_slurm_resources_emit_node_count() -> None:
 def test_prepare_snapshot_builds_the_extracted_commits_venv(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    repo = _committed_repo(tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "pyproject.toml").write_text('[project]\nname = "sut"\n')
+    init_repo(repo)
     monkeypatch.chdir(repo)
     provenance = SubmitProvenance(
         git=GitIdentity.capture(repo),
@@ -471,7 +475,7 @@ def test_slurm_pool_replaces_vanished_array_workers_as_one_array(
     pool._scale_once()
     assert pool._job_ids == ["100_0", "100_1", "100_2"]
 
-    active_file.write_text("100_0\n")
+    active_file.write_text("100_0\n100_1 COMPLETED\n100_2 COMPLETED\n")
     pool._scale_once()
 
     assert pool._job_ids == ["100_0", "101_0", "101_1"]
@@ -481,7 +485,7 @@ def test_slurm_pool_replaces_vanished_array_workers_as_one_array(
     ] == [["--array=0-2"], ["--array=0-1"]]
 
 
-def test_slurm_pool_replaces_requeued_array_workers_missing_from_squeue(
+def test_slurm_pool_keeps_preempted_and_requeued_array_workers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
@@ -498,9 +502,28 @@ def test_slurm_pool_replaces_requeued_array_workers_missing_from_squeue(
     )
     pool._scale_once()
 
-    assert pool._job_ids == ["100_0", "101_0", "101_1"]
-    assert manager.notes == []  # preempted is not failed
-    assert "--array=0-1" in _sbatch_argvs(record_file)[1]
+    assert pool._job_ids == ["100_0", "100_1", "100_2"]
+    assert manager.notes == []
+    assert len(_sbatch_argvs(record_file)) == 1
+
+
+def test_slurm_pool_keeps_every_worker_while_squeue_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record_file, active_file = _install_fake_slurm(tmp_path, monkeypatch)
+    manager = _StubManager(3)
+    pool = _pool(tmp_path, monkeypatch, manager, max_workers=3)
+    pool._scale_once()
+
+    # sacct reports still-queued array tasks as one grouped row, which gives
+    # the tasks no individual state; that must not look like an exit.
+    active_file.write_text("100_[0-1] PENDING\n100_2 FAILED\n")
+    monkeypatch.setattr(type(pool), "_active_job_states", lambda self: None)
+    pool._scale_once()
+
+    assert pool._job_ids == ["100_0", "100_1", "100_2"]
+    assert manager.notes == []
+    assert len(_sbatch_argvs(record_file)) == 1
 
 
 def test_slurm_pool_health_tracks_sacct_jobs(
@@ -510,7 +533,7 @@ def test_slurm_pool_health_tracks_sacct_jobs(
     pool = _pool(tmp_path, monkeypatch, _StubManager(2), use_job_arrays=False)
     pool._scale_once()
 
-    assert set(pool._task_states().values()) <= _UNFINISHED_STATES
+    assert pool._task_states() == {"100": "RUNNING", "101": "RUNNING"}
 
     active_file.write_text("100\n100.batch COMPLETED\n101 FAILED\n101.extern FAILED\n")
 
@@ -564,7 +587,7 @@ def test_slurm_pool_replaces_workers_that_exit_without_failing(
     pool._scale_once()
     assert pool._job_ids == ["100", "101", "102"]
 
-    active_file.write_text("100\n101\n")  # 102 finished and left sacct
+    active_file.write_text("100\n101\n102 COMPLETED\n")
     pool._scale_once()
 
     assert pool._job_ids == ["100", "101", "103"]
@@ -962,21 +985,3 @@ def _read_records(record_file: Path) -> list[dict[str, Any]]:
 
 def _mode(path: Path) -> int:
     return stat.S_IMODE(path.stat().st_mode)
-
-
-def _committed_repo(tmp_path: Path) -> Path:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / "pyproject.toml").write_text('[project]\nname = "sut"\n')
-    for args in (
-        ["init", "-q", "-b", "main"],
-        ["add", "-A"],
-        ["commit", "-qm", "init", "--allow-empty"],
-    ):
-        subprocess.run(
-            ["git", "-c", "user.email=t@t.t", "-c", "user.name=t", *args],
-            cwd=repo,
-            check=True,
-            capture_output=True,
-        )
-    return repo
