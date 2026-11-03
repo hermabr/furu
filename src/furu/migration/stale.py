@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator, Mapping
-from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
 from furu.constants import CLASSMARKER, FIELDSMARKER
 from furu.migration.links import _find_source
-from furu.migration.resolution import _class_resolution, _ClassResolution
+from furu.migration.resolution import _class_resolution, _ClassResolution, _Orphaned
 from furu.migration.steps import Stale
 from furu.storage._layout import schema_snapshot_path_in_schema_directory
 from furu.utils import JsonValue, _stable_json_dump
@@ -16,11 +15,11 @@ if TYPE_CHECKING:
     from furu.core import Spec
 
 
-def _orphaned_directories(resolution: _ClassResolution) -> list[Path]:
+def _orphaned_directories(resolution: _ClassResolution) -> list[_Orphaned]:
     return [
-        directory
-        for directory in resolution.orphaned
-        if schema_snapshot_path_in_schema_directory(directory).exists()
+        orphaned
+        for orphaned in resolution.orphaned
+        if schema_snapshot_path_in_schema_directory(orphaned.schema_directory).exists()
     ]
 
 
@@ -92,13 +91,16 @@ def raise_if_stale(obj: Spec) -> None:
         )
     ]
     owners: set[str] = set()
-    for directory in orphaned:
+    for entry in orphaned:
+        directory = entry.schema_directory
         snapshot_path = schema_snapshot_path_in_schema_directory(directory)
         snapshot = cast(
             dict[str, JsonValue],
             json.loads(snapshot_path.read_text(encoding="utf-8")),
         )
         lines.append(f"\norphaned: {directory}")
+        if entry.clash is not None:
+            lines.append(f"  {entry.clash}")
         old_fields = cast(dict[str, JsonValue], snapshot.get(FIELDSMARKER, {}))
         for line, owner in _field_diff(old_fields, current_fields, "", None):
             lines.append(line)
@@ -110,6 +112,13 @@ def raise_if_stale(obj: Spec) -> None:
         lines.append(
             f"\nThe change is inside embedded {named}. Declare the chain once "
             f"on {chains}; every spec embedding it will pick it up."
+        )
+    if any(entry.clash is not None for entry in orphaned):
+        lines.append(
+            "\nA conflict means two branches changed the same thing in parallel, "
+            "so no one order of steps fits both. Order the steps the way the "
+            "branch whose results you keep made them (the other branch's results "
+            "are then recomputed), or use one of the options below."
         )
     lines.append(
         f"\nEither declare a migration chain on {type(obj).__name__}.migrations "

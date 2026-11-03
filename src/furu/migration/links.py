@@ -101,7 +101,7 @@ def _migrated_sources(
         moves = {
             **covered.child_moves,
             covered.generation.class_name: _ChildMove(
-                resolution.own, covered.generation.start
+                resolution.own, covered.generation
             ),
         }
         if covered.schema_directory.exists():
@@ -120,7 +120,7 @@ def _migrated_sources(
                     name: _apply_child_moves(value, moves)
                     for name, value in fields.items()
                 }
-                fields = _apply_steps(resolution.own, covered.generation.start, fields)
+                fields = _apply_steps(resolution.own, covered.generation, fields)
                 sources.setdefault(_stable_json_dump(fields), []).append(source)
         _SOURCES_CACHE[key] = sources
     return sources
@@ -159,13 +159,13 @@ def _find_source(obj: Spec, resolution: _ClassResolution) -> _ResultLink | None:
                     version_dir=version,
                 ),
                 migration_path=tuple(
-                    f"{move.chain.label}: {_describe_step(step)}"
+                    f"{move.chain.label}: {_describe_step(move.chain.steps[index])}"
                     for move in covered.child_moves.values()
-                    for step in move.chain.steps[move.start :]
+                    for index in move.generation.pending
                 )
                 + tuple(
-                    _describe_step(step)
-                    for step in resolution.own.steps[covered.generation.start :]
+                    _describe_step(resolution.own.steps[index])
+                    for index in covered.generation.pending
                 ),
             )
     return None
@@ -210,7 +210,9 @@ def load_stored_result[T](obj: Spec[T], version: Path) -> T:
         covered = _covered_in(resolution, version.parent.parent)
         # version_for_loading only hands out covered sources.
         assert covered is not None, f"{version} is not covered by {obj._log_label}"
-        steps = resolution.own.steps[covered.generation.start :]
+        steps = tuple(
+            resolution.own.steps[index] for index in covered.generation.pending
+        )
     value = load_result_bundle(
         result_dir_in(version),
         data_dir=data_dir_in(version),
