@@ -616,6 +616,157 @@ def test_star_import_uses_every_name_in_the_module(repo: Repo) -> None:
     assert spec.status == "missing"
 
 
+SCALED = """\
+import furu
+
+from PKG import helpers, registry  # noqa: F401
+from PKG.helpers import offset
+
+
+def double(x):
+    return 2 * x
+
+
+def compute_scale():
+    return double(1)
+
+
+def tag(cls):
+    cls.label = "t"
+    return cls
+
+
+def build_a():
+    return 1
+
+
+def build_b():
+    return 2
+
+
+BUILDERS = {"a": build_a, "b": build_b}
+SCALE = compute_scale() + offset() + helpers.bump()
+
+
+def main():
+    return "launch"
+
+
+@tag
+class Scaled(furu.Spec[str]):
+    def metadata(self) -> furu.Metadata:
+        return furu.Metadata(code_version="traced")
+
+    def create(self) -> str:
+        return f"{SCALE}:{BUILDERS['a']()}:{self.label}:{helpers.TABLE}"
+
+
+if __name__ == "__main__":
+    main()
+"""
+
+HELPERS = """\
+TABLE = []
+
+
+def offset():
+    return 10
+
+
+def bump():
+    return 100
+
+
+def unrelated():
+    return 0
+"""
+
+
+REGISTRY = """\
+from PKG import helpers
+
+helpers.TABLE.append(5)
+"""
+
+
+@pytest.fixture
+def scaled(repo: Repo) -> ModuleType:
+    repo.write("helpers.py", HELPERS)
+    repo.write("registry.py", REGISTRY)
+    repo.write("scaled.py", SCALED)
+    return repo.load("scaled")
+
+
+def test_functions_called_at_import_count_as_ran(
+    repo: Repo, scaled: ModuleType
+) -> None:
+    spec = scaled.Scaled()
+
+    assert spec.create() == "112:1:t:[5]"
+
+    code = _trace(spec)["code"]
+    assert code[f"{repo.package}/scaled.py"]["ran"] == [
+        "Scaled.create",
+        "build_a",
+        "compute_scale",
+        "double",
+        "tag",
+    ]
+    assert code[f"{repo.package}/helpers.py"]["ran"] == ["bump", "offset"]
+
+
+@pytest.mark.parametrize(
+    ("file", "old", "new"),
+    [
+        pytest.param("scaled.py", "return double(1)", "return double(2)", id="call"),
+        pytest.param("scaled.py", "2 * x", "3 * x", id="called-by-a-call"),
+        pytest.param("scaled.py", '"t"', '"u"', id="decorator"),
+        pytest.param("helpers.py", "return 10", "return 20", id="imported"),
+        pytest.param("helpers.py", "return 100", "return 200", id="module-attribute"),
+        pytest.param("registry.py", "append(5)", "append(6)", id="side-effect-import"),
+    ],
+)
+def test_edits_to_code_run_at_import_rerun(
+    repo: Repo, scaled: ModuleType, file: str, old: str, new: str
+) -> None:
+    spec = scaled.Scaled()
+    before = spec.create()
+
+    repo.edit(file, old, new)
+
+    assert spec.status == "missing"
+    assert repo.load("scaled").Scaled().create() != before
+
+
+@pytest.mark.parametrize(
+    ("file", "old", "new"),
+    [
+        pytest.param(
+            "scaled.py",
+            "def build_b():\n    return 2",
+            "def build_b():\n    return 3",
+            id="referenced-not-called",
+        ),
+        pytest.param("scaled.py", '"launch"', '"go"', id="named-by-main-block"),
+        pytest.param(
+            "scaled.py", "    main()\n", "    main()\n    main()\n", id="main"
+        ),
+        pytest.param("helpers.py", "return 0", "return 1", id="unrelated"),
+    ],
+)
+def test_edits_to_code_not_run_at_import_keep_the_version(
+    repo: Repo, scaled: ModuleType, file: str, old: str, new: str
+) -> None:
+    spec = scaled.Scaled()
+    spec.create()
+    before = _version(spec)
+
+    repo.edit(file, old, new)
+
+    assert spec.status == "done"
+    assert _version(spec) == before
+
+
 RESUMABLE = """\
 import os
 

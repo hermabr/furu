@@ -7,10 +7,12 @@ version's trace.json and accepts it only if the hash still equals its name.
 
 A file's fingerprint is its AST with docstrings dropped, keeping only the
 functions that ran, the module-level bindings that kept code uses (a closure
-that follows imports between repo files), every other module-level statement,
-and every class that is used or has a method that ran (minus the methods that
-did not run). The hash also covers the Python minor version, since ast.dump
-output differs between them.
+that follows imports between repo files), every other module-level statement
+except an ``if __name__ == "__main__":`` block, and every class that is used or
+has a method that ran (minus the methods that did not run). A function that
+kept code calls at import (``X = f()``, ``@f``, a default) also counts as ran.
+The hash also covers the Python minor version, since ast.dump output differs
+between them.
 
 Only .py files count: a YAML config, CSV or style file that create() reads is
 not traced, so editing one keeps the old result. Put what such a file decides
@@ -31,7 +33,7 @@ import sys
 import sysconfig
 import threading
 import time
-from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -48,6 +50,7 @@ _PROCESS_START_NS = time.time_ns()
 _PYTHON = f"{sys.version_info.major}.{sys.version_info.minor}"
 _REPO_ROOT_ENV_VAR = "_FURU_REPO_ROOT"
 _DEFS = (ast.FunctionDef, ast.AsyncFunctionDef)
+_IMPORTS = (ast.Import, ast.ImportFrom)
 
 type Uses = frozenset[str] | Literal["all"]
 
@@ -165,6 +168,8 @@ class _Stmt:
 class _Parsed:
     stmts: tuple[_Stmt, ...]
     bound: frozenset[str]
+    # (name, import, alias) for imported names nothing else mentions.
+    bare_imports: tuple[tuple[str, ast.Import | ast.ImportFrom, ast.alias], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,6 +238,14 @@ def _parse(text: str) -> _Parsed | None:
     _strip_docstring(tree)
     stmts: list[_Stmt] = []
     for stmt in tree.body:
+        match stmt:
+            case ast.If(
+                test=ast.Compare(
+                    left=ast.Name(id="__name__"),
+                    comparators=[ast.Constant(value="__main__")],
+                )
+            ):
+                continue  # a worker imports the module, so this never runs
         if isinstance(stmt, ast.ClassDef):
             _strip_docstring(stmt)
             header = _mentions([*stmt.bases, *stmt.keywords, *stmt.decorator_list])
@@ -251,7 +264,16 @@ def _parse(text: str) -> _Parsed | None:
         for name in (stmt.binds or {stmt.name})
         if name
     )
-    parsed = _PARSED[text] = _Parsed(tuple(stmts), bound)
+    mentioned = _mentions([s.node for s in stmts if not isinstance(s.node, _IMPORTS)])
+    bare = tuple(
+        (name, s.node, alias)
+        for s in stmts
+        if isinstance(s.node, _IMPORTS)
+        for alias in s.node.names
+        if (name := (alias.asname or alias.name).split(".")[0]) not in mentioned
+        and alias.name != "*"
+    )
+    parsed = _PARSED[text] = _Parsed(tuple(stmts), bound, bare)
     return parsed
 
 
@@ -279,6 +301,25 @@ def _dynamic(node: ast.AST, mentions: set[str]) -> str | None:
         case ast.Attribute(value=ast.Name(id="sys"), attr="modules"):
             return "sys.modules"
     return None
+
+
+def _calls(node: ast.AST, calls: set[str]) -> None:
+    """Add the names running node calls: decorators and defaults, not def bodies."""
+    if isinstance(node, (ast.Call, *_DEFS, ast.ClassDef)):
+        for func in [node.func] if isinstance(node, ast.Call) else node.decorator_list:
+            match func:
+                case ast.Name(id=name) | ast.Attribute(attr=name):
+                    calls.add(name)
+    children: Iterable[ast.AST] = ast.iter_child_nodes(node)
+    if isinstance(node, (*_DEFS, ast.Lambda)):
+        args = node.args
+        children = [
+            *getattr(node, "decorator_list", ()),
+            *args.defaults,
+            *filter(None, args.kw_defaults),
+        ]
+    for child in children:
+        _calls(child, calls)
 
 
 _FACTS: dict[int, _Facts] = {}  # keyed by id(node); _PARSED keeps the nodes alive
@@ -396,18 +437,38 @@ def _code(
         file = getattr(sys.modules.get(name), "__file__", None)
         return _rel(file, root) if isinstance(file, str) else None
 
+    def imports_repo_code(
+        imp: ast.Import | ast.ImportFrom, alias: ast.alias, rel: str
+    ) -> bool:
+        if isinstance(imp, ast.Import):
+            return module_file(alias.name) is not None
+        try:
+            base = importlib.util.resolve_name(
+                "." * imp.level + (imp.module or ""), packages.get(rel) or ""
+            )
+        except (ImportError, ValueError):
+            return False
+        return any(module_file(name) for name in (base, f"{base}.{alias.name}"))
+
     uses: dict[str, set[str]] = {rel: set() for rel in ran}
+    called: dict[str, set[str]] = {}  # names kept code calls at import
     everything: dict[str, str] = {}  # files that keep every name, and why
     fallbacks: list[_Fallback] = []
-    scanned: set[str] = set()
+    scanned: set[tuple[str, str]] = set()
     changed = True
 
     def reach(
-        target: str | None, names: set[str] | frozenset[str] | None, why: str
+        target: str | None,
+        names: set[str] | frozenset[str] | None,
+        why: str,
+        calls: set[str] | frozenset[str] = frozenset(),
     ) -> None:
         nonlocal changed
         if target is None:
             return
+        if not calls <= called.setdefault(target, set()):
+            called[target] |= calls
+            changed = True
         if names is None:  # every name
             if target not in everything:
                 everything[target] = why
@@ -422,23 +483,34 @@ def _code(
         for rel in list(uses):
             if (text := source(rel)) is None or (parsed := _parse(text)) is None:
                 continue
-            ran_here = ran.get(rel, frozenset())
-            if rel not in scanned:  # functions that ran are kept whatever the uses
-                scanned.add(rel)
-                for _, _, members in _kept(parsed, ran_here, frozenset()):
-                    for qualname, facts in members:
-                        if qualname is not None and facts.dynamic is not None:
-                            what, line = facts.dynamic
-                            fallbacks.append(_Fallback(rel, qualname, what, line))
-                            everything.setdefault(rel, f"{what} in {qualname}")
+            at_import = called.setdefault(rel, set())
+            ran_here = frozenset(ran.get(rel, ())) | at_import
             every = everything.get(rel)
             items = list(
                 _kept(parsed, ran_here, "all" if every else frozenset(uses[rel]))
             )
+            for _, _, members in items:
+                for qualname, facts in members:
+                    if qualname is None or facts.dynamic is None:
+                        continue
+                    if (rel, qualname) not in scanned:
+                        scanned.add((rel, qualname))
+                        what, line = facts.dynamic
+                        fallbacks.append(_Fallback(rel, qualname, what, line))
+                        reach(rel, None, f"{what} in {qualname}")
             used = set().union(
                 *(header for _, header, _ in items),
                 *(facts.mentions for _, _, members in items for _, facts in members),
             )
+            for name, imp, alias in parsed.bare_imports:
+                if imports_repo_code(imp, alias, rel):  # kept for its side effects
+                    used.add(name)
+            calls: set[str] = set()
+            for node, _, _ in items:
+                _calls(node, calls)
+                if isinstance(node, _DEFS) and node.name in at_import:
+                    for stmt in node.body:  # it runs at import, so does what it calls
+                        _calls(stmt, calls)
             for _, _, members in items:
                 for _, facts in members:
                     for imp in facts.imports:
@@ -449,6 +521,7 @@ def _code(
                                         module_file(alias.name),
                                         None if every else used,
                                         every or "",
+                                        calls,
                                     )
                             continue
                         base = imp.module or ""
@@ -465,17 +538,27 @@ def _code(
                                     module_file(base),
                                     None,
                                     f"from {base} import * in {rel}",
+                                    calls,
                                 )
                             elif (alias.asname or alias.name) not in used:
                                 continue
                             elif (
                                 sub := module_file(f"{base}.{alias.name}")
                             ) is not None:
-                                reach(sub, None if every else used, every or "")
+                                reach(sub, None if every else used, every or "", calls)
                             else:
-                                reach(module_file(base), {alias.name}, "")
+                                bound_as = alias.asname or alias.name
+                                reach(
+                                    module_file(base),
+                                    {alias.name},
+                                    "",
+                                    {alias.name} if bound_as in calls else frozenset(),
+                                )
             if not used <= uses[rel]:
                 uses[rel] |= used
+                changed = True
+            if not calls <= at_import:
+                at_import |= calls
                 changed = True
 
     code: dict[str, FileTrace] = {}
@@ -484,7 +567,8 @@ def _code(
         parsed = _parse(text) if text is not None else None
         bound = parsed.bound if parsed is not None else frozenset()
         stored: Uses = "all" if rel in everything else frozenset(uses[rel] & bound)
-        ran_here = ran.get(rel, frozenset())
+        defs = {s.name for s in parsed.stmts if s.kind == "def"} if parsed else set()
+        ran_here = frozenset(ran.get(rel, ())) | (called.get(rel, set()) & defs)
         code[rel] = FileTrace(
             ran=tuple(sorted(ran_here)),
             uses="all" if stored == "all" else tuple(sorted(stored)),
