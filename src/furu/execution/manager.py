@@ -265,6 +265,8 @@ class Manager:
                 connection.send(job.model_dump_json())
                 result = job_result_adapter.validate_json(connection.recv())
             except ConnectionClosed:  # the next _lease sees it and returns None
+                if self.stopping:  # the worker finishes its job alone; it hasn't failed
+                    return
                 logger.warning("lost %s mid-job", worker, extra={"path": hello.log})
                 result = JobFailedResult(error=f"worker {worker} disconnected")
             with self.lock:
