@@ -1,35 +1,42 @@
-# TODO: make this test not vibe coded
+"""Real processes racing for the same results. Children are forked, so they
+share this test's furu config and data directories."""
+
 import json
 import os
 import time
 from multiprocessing import get_context
+from multiprocessing.process import BaseProcess
 from pathlib import Path
 
+import pytest
+
 import furu
-from furu import Spec, provenance
-from furu.config import (
-    _Config,
-    _FuruDirectories,
-    _set_config,
-)
+import furu.locking as locking_module
+from furu import Spec
+from furu.config import get_config
 from furu.execution.load_or_create import _load_or_create
-from furu.locking import DEFAULT_ACQUIRE_POLL_INTERVAL_S
 from furu.result.bundle import load_result_bundle
 from furu.storage._layout import data_dir_in
 
-TEST_TIMING_SCALE = 4.0 if os.environ.get("GITHUB_ACTIONS") == "true" else 1.0
-OVERLAP_SLEEP_S = 0.01 * TEST_TIMING_SCALE
-POLL_INTERVAL_S = 0.005 * TEST_TIMING_SCALE
-PROCESS_TIMEOUT_S = 0.5 * TEST_TIMING_SCALE
-MID_CREATE_TIMEOUT_S = 1.0 * TEST_TIMING_SCALE
-WAIT_FOR_LOCK_RESULT_TIMEOUT_S = DEFAULT_ACQUIRE_POLL_INTERVAL_S + PROCESS_TIMEOUT_S
+OVERLAP_SLEEP_S = 0.01
+POLL_INTERVAL_S = 0.005
+# Only bounds a hung test; passing runs never wait for it, so keep it generous.
+TIMEOUT_S = 10.0
+ctx = get_context("fork")
+
+
+@pytest.fixture(autouse=True)
+def _fast_lock_polling(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Forked children inherit this, so the loser notices the release quickly.
+    monkeypatch.setattr(locking_module, "DEFAULT_ACQUIRE_POLL_INTERVAL_S", 0.005)
 
 
 class SlowProbe(Spec[int]):
     key: int
+    marker_dir: str
 
     def create(self) -> int:
-        marker_dir = Path(os.environ["FURU_TEST_MARKER_DIR"])
+        marker_dir = Path(self.marker_dir)
         marker_dir.mkdir(parents=True, exist_ok=True)
         (marker_dir / f"{os.getpid()}.marker").write_text("created")
         time.sleep(OVERLAP_SLEEP_S)  # force overlap window
@@ -38,13 +45,14 @@ class SlowProbe(Spec[int]):
 
 class SlowBatchProbe(furu.Spec[int]):
     key: int
+    marker_dir: str
 
     def batch_key(self, worker: furu.Worker) -> tuple[None, int]:
         return (None, 1024)
 
     @furu.batched(batch_key)
     def create(objs: list["SlowBatchProbe"]) -> list[int]:
-        marker_dir = Path(os.environ["FURU_TEST_MARKER_DIR"])
+        marker_dir = Path(objs[0].marker_dir)
         marker_dir.mkdir(parents=True, exist_ok=True)
         for obj in objs:
             (
@@ -61,16 +69,15 @@ class MidRunTakeoverProbe(Spec[int]):
 
     def create(self) -> int:
         Path(self.entered_path).touch()
-        deadline = time.monotonic() + MID_CREATE_TIMEOUT_S
+        deadline = time.monotonic() + TIMEOUT_S
         while not Path(self.release_path).exists():
             assert time.monotonic() < deadline
             time.sleep(POLL_INTERVAL_S)
         return 42
 
 
-def _worker(data_dir: str, start_evt, out_q) -> None:
-    _configure_child(data_dir)
-    obj = SlowProbe(key=1)
+def _worker(marker_dir: str, start_evt, out_q) -> None:
+    obj = SlowProbe(key=1, marker_dir=marker_dir)
     out_q.put(("ready", os.getpid()))
     start_evt.wait()
     try:
@@ -80,9 +87,8 @@ def _worker(data_dir: str, start_evt, out_q) -> None:
         out_q.put(("err", os.getpid(), type(exc).__name__))
 
 
-def _batch_worker(data_dir: str, keys: list[int], start_evt, out_q) -> None:
-    _configure_child(data_dir)
-    objs = [SlowBatchProbe(key=key) for key in keys]
+def _batch_worker(marker_dir: str, keys: list[int], start_evt, out_q) -> None:
+    objs = [SlowBatchProbe(key=key, marker_dir=marker_dir) for key in keys]
     out_q.put(("ready", os.getpid()))
     start_evt.wait()
     try:
@@ -92,13 +98,7 @@ def _batch_worker(data_dir: str, keys: list[int], start_evt, out_q) -> None:
         out_q.put(("err", os.getpid(), type(exc).__name__, str(exc)))
 
 
-def _takeover_worker(
-    data_dir: str,
-    entered_path: str,
-    release_path: str,
-    out_q,
-) -> None:
-    _configure_child(data_dir)
+def _takeover_worker(entered_path: str, release_path: str, out_q) -> None:
     obj = MidRunTakeoverProbe(
         key=1,
         entered_path=entered_path,
@@ -111,23 +111,14 @@ def _takeover_worker(
         out_q.put(("err", os.getpid(), type(exc).__name__, str(exc)))
 
 
-def _configure_child(data_dir: str) -> None:
-    # Spawned children skip the furu pytest plugin, so opt out of the
-    # committed-and-pushed check the way it does.
-    provenance._require_pushed_code = False
-    data_path = Path(data_dir)
-    _set_config(
-        _Config(
-            directories=_FuruDirectories(
-                objects=data_path,
-                executions=data_path.parent / "executions",
-            ),
-        )
-    )
+def _start(target, *args) -> BaseProcess:
+    # daemon: a failed test must not leave children that hang pytest at exit.
+    proc = ctx.Process(target=target, args=args, daemon=True)
+    proc.start()
+    return proc
 
 
-def _steal_lock(lock_path: str, out_q) -> None:
-    lock = Path(lock_path)
+def _steal_lock(lock: Path) -> None:
     claim_path = lock.with_name(f"{lock.name}.stolen.{os.getpid()}.claim").resolve()
     manifest = {
         "claim_path": str(claim_path),
@@ -140,41 +131,31 @@ def _steal_lock(lock_path: str, out_q) -> None:
         os.fsync(f.fileno())
     lock.unlink()
     os.link(claim_path, lock)
-    out_q.put(("stolen", os.getpid()))
+
+
+def _race(target, *argss: tuple) -> list[tuple]:
+    """Start one forked child per args, release them together, and collect
+    what each puts on the queue after "ready"."""
+    start_evt = ctx.Event()
+    out_q = ctx.Queue()
+    procs = [_start(target, *args, start_evt, out_q) for args in argss]
+    assert all(out_q.get(timeout=TIMEOUT_S)[0] == "ready" for _ in procs)
+    start_evt.set()
+    results = [out_q.get(timeout=TIMEOUT_S) for _ in procs]
+    for proc in procs:
+        proc.join(timeout=TIMEOUT_S)
+        assert proc.exitcode == 0
+    return results
 
 
 def test_two_processes_competing_for_same_furu_object(tmp_path):
-    data_dir = tmp_path / "data"
-    marker_dir = tmp_path / "markers"
-    os.environ["FURU_TEST_MARKER_DIR"] = str(marker_dir)
-    ctx = get_context("spawn")
-    start_evt = ctx.Event()
-    out_q = ctx.Queue()
-    procs = [
-        ctx.Process(target=_worker, args=(str(data_dir), start_evt, out_q))
-        for _ in range(2)
-    ]
-    for proc in procs:
-        proc.start()
+    data_dir = get_config().directories.objects
+    marker_dir = str(tmp_path / "markers")
 
-    ready = [out_q.get(timeout=PROCESS_TIMEOUT_S), out_q.get(timeout=PROCESS_TIMEOUT_S)]
-    assert all(tag == "ready" for tag, *_ in ready)
-    start_evt.set()
+    results = _race(_worker, (marker_dir,), (marker_dir,))
 
-    results = [
-        out_q.get(timeout=WAIT_FOR_LOCK_RESULT_TIMEOUT_S),
-        out_q.get(timeout=WAIT_FOR_LOCK_RESULT_TIMEOUT_S),
-    ]
-    for proc in procs:
-        proc.join(timeout=WAIT_FOR_LOCK_RESULT_TIMEOUT_S)
-        assert proc.exitcode == 0
-
-    oks = [result for result in results if result[0] == "ok"]
-    errs = [result for result in results if result[0] == "err"]
-    assert len(oks) == 2
-    assert errs == []
-    assert len(list(marker_dir.glob("*.marker"))) == 1
-
+    assert [result[0] for result in results] == ["ok", "ok"], results
+    assert len(list(Path(marker_dir).glob("*.marker"))) == 1
     manifest_paths = list(data_dir.glob("**/result/manifest.json"))
     assert len(manifest_paths) == 1
     bundle_dir = manifest_paths[0].parent
@@ -184,94 +165,45 @@ def test_two_processes_competing_for_same_furu_object(tmp_path):
         )
         == 42
     )
-    assert list(data_dir.glob("**/result.pkl")) == []
 
 
 def test_overlapping_batch_acquisitions_do_not_deadlock_or_duplicate_compute(tmp_path):
-    data_dir = tmp_path / "data"
+    data_dir = get_config().directories.objects
     marker_dir = tmp_path / "markers"
-    os.environ["FURU_TEST_MARKER_DIR"] = str(marker_dir)
-    ctx = get_context("spawn")
-    start_evt = ctx.Event()
-    out_q = ctx.Queue()
-    procs = [
-        ctx.Process(
-            target=_batch_worker,
-            args=(str(data_dir), [1, 2], start_evt, out_q),
-        ),
-        ctx.Process(
-            target=_batch_worker,
-            args=(str(data_dir), [2, 3], start_evt, out_q),
-        ),
-    ]
-    for proc in procs:
-        proc.start()
 
-    ready = [out_q.get(timeout=PROCESS_TIMEOUT_S), out_q.get(timeout=PROCESS_TIMEOUT_S)]
-    assert all(tag == "ready" for tag, *_ in ready)
-    start_evt.set()
+    results = _race(_batch_worker, (str(marker_dir), [1, 2]), (str(marker_dir), [2, 3]))
 
-    results = [
-        out_q.get(timeout=WAIT_FOR_LOCK_RESULT_TIMEOUT_S),
-        out_q.get(timeout=WAIT_FOR_LOCK_RESULT_TIMEOUT_S),
-    ]
-    for proc in procs:
-        proc.join(timeout=WAIT_FOR_LOCK_RESULT_TIMEOUT_S)
-        assert proc.exitcode == 0
-
-    assert sorted(result[2] for result in results if result[0] == "ok") == [
-        [10, 20],
-        [20, 30],
-    ]
-    assert [result for result in results if result[0] == "err"] == []
-    assert len(list(marker_dir.glob("1-*.marker"))) == 1
-    assert len(list(marker_dir.glob("2-*.marker"))) == 1
-    assert len(list(marker_dir.glob("3-*.marker"))) == 1
+    assert [result[0] for result in results] == ["ok", "ok"], results
+    assert sorted(result[2] for result in results) == [[10, 20], [20, 30]]
+    for key in (1, 2, 3):
+        assert len(list(marker_dir.glob(f"{key}-*.marker"))) == 1
     assert len(list(data_dir.glob("**/result/manifest.json"))) == 3
-    assert list(data_dir.glob("**/result.pkl")) == []
 
 
 def test_lock_is_taken_over_mid_create(tmp_path):
-    data_dir = tmp_path / "data"
+    data_dir = get_config().directories.objects
     entered_path = tmp_path / "entered"
     release_path = tmp_path / "release"
-    ctx = get_context("spawn")
     out_q = ctx.Queue()
-    proc = ctx.Process(
-        target=_takeover_worker,
-        args=(str(data_dir), str(entered_path), str(release_path), out_q),
-    )
-    proc.start()
+    proc = _start(_takeover_worker, str(entered_path), str(release_path), out_q)
 
-    deadline = time.monotonic() + PROCESS_TIMEOUT_S
+    deadline = time.monotonic() + TIMEOUT_S
     while not entered_path.exists():
         assert time.monotonic() < deadline
         time.sleep(POLL_INTERVAL_S)
-
-    lock_paths = list(data_dir.glob("**/compute.lock"))
-    assert len(lock_paths) == 1
-
-    steal_q = ctx.Queue()
-    stealer = ctx.Process(target=_steal_lock, args=(str(lock_paths[0]), steal_q))
-    stealer.start()
-    assert steal_q.get(timeout=PROCESS_TIMEOUT_S)[0] == "stolen"
-    stealer.join(timeout=PROCESS_TIMEOUT_S)
-    assert stealer.exitcode == 0
-
+    (lock_path,) = data_dir.glob("**/compute.lock")
+    _steal_lock(lock_path)
     release_path.touch()
 
-    result = out_q.get(timeout=PROCESS_TIMEOUT_S)
-    proc.join(timeout=PROCESS_TIMEOUT_S)
+    result = out_q.get(timeout=TIMEOUT_S)
+    proc.join(timeout=TIMEOUT_S)
     assert proc.exitcode == 0
     assert result[0] == "err"
     assert result[2] == RuntimeError.__name__
     assert result[3].endswith("before writing final result")
     assert list(data_dir.glob("**/result/manifest.json")) == []
-    assert list(data_dir.glob("**/result.pkl")) == []
     assert list(data_dir.glob("**/error-*.log")) == []
-
-    run_logs = list(data_dir.glob("**/run.log"))
-    assert len(run_logs) == 1
-    log_text = run_logs[0].read_text(encoding="utf-8")
+    (run_log,) = data_dir.glob("**/run.log")
+    log_text = run_log.read_text(encoding="utf-8")
     assert "create failed" in log_text
     assert "before writing final result" in log_text

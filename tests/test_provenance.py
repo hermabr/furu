@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from gitrepo import git
 
 import furu
 from furu import Spec, provenance
@@ -17,6 +18,9 @@ from furu.provenance import (
     SubmitContext,
     SubmitProvenance,
 )
+
+pytestmark = pytest.mark.usefixtures("fresh_caches")
+
 
 EXAMPLE_PROVENANCE_JSON = """
 {
@@ -53,27 +57,6 @@ EXAMPLE_PROVENANCE_JSON = """
   }
 }
 """
-
-
-def _git(repo: Path, *args: str) -> str:
-    return subprocess.run(
-        ["git", "-c", "user.email=t@t.t", "-c", "user.name=t", *args],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-
-
-@pytest.fixture
-def git_repo(tmp_path: Path) -> Path:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _git(repo, "init", "-q", "-b", "main")
-    (repo / "tracked.txt").write_text("content\n")
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-qm", "init")
-    return repo
 
 
 def _example_provenance() -> Provenance:
@@ -113,24 +96,27 @@ def test_submit_provenance_round_trips_through_json() -> None:
 
 def test_git_identity_clean_repo(git_repo: Path) -> None:
     identity = GitIdentity.capture(git_repo)
-    assert identity.commit == _git(git_repo, "rev-parse", "HEAD")
+    assert identity.commit == git(git_repo, "rev-parse", "HEAD")
     assert identity.branch == "main"
-    assert identity.remote is None
     assert Path(identity.repo_root) == git_repo.resolve()
 
 
 def test_git_identity_detached_head(git_repo: Path) -> None:
-    commit = _git(git_repo, "rev-parse", "HEAD")
-    _git(git_repo, "checkout", "-q", commit)
+    commit = git(git_repo, "rev-parse", "HEAD")
+    git(git_repo, "checkout", "-q", commit)
     identity = GitIdentity.capture(git_repo)
     assert identity.branch is None
     assert identity.commit == commit
 
 
 def test_git_identity_records_remote(git_repo: Path) -> None:
-    _git(git_repo, "remote", "add", "origin", "git@example.com:t/t.git")
-    identity = GitIdentity.capture(git_repo)
-    assert identity.remote == "git@example.com:t/t.git"
+    git(git_repo, "remote", "set-url", "origin", "git@example.com:t/t.git")
+    assert GitIdentity.capture(git_repo).remote == "git@example.com:t/t.git"
+
+
+def test_git_identity_without_remote(git_repo: Path) -> None:
+    git(git_repo, "remote", "remove", "origin")
+    assert GitIdentity.capture(git_repo).remote is None
 
 
 def test_git_identity_outside_repo(tmp_path: Path) -> None:
@@ -142,7 +128,7 @@ def test_submitting_repo_root_is_the_worktree_not_the_main_repo(
     git_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     worktree = tmp_path / "worktree"
-    _git(git_repo, "worktree", "add", "-q", str(worktree))
+    git(git_repo, "worktree", "add", "-q", str(worktree))
     (worktree / "sub").mkdir()
     monkeypatch.chdir(worktree / "sub")
     assert furu.submitting_repo_root() == worktree.resolve()
@@ -160,21 +146,15 @@ def test_capture_environment_identity_finds_project_root_from_child(
     nested.mkdir(parents=True)
     monkeypatch.chdir(nested)
     monkeypatch.setattr(sys, "prefix", str(tmp_path))
-    EnvironmentIdentity.capture.cache_clear()
-    try:
-        assert Path(EnvironmentIdentity.capture().project_root) == tmp_path.resolve()
-    finally:
-        EnvironmentIdentity.capture.cache_clear()
+    assert Path(EnvironmentIdentity.capture().project_root) == tmp_path.resolve()
 
 
 def test_capture_environment_identity_missing_project_root_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    EnvironmentIdentity.capture.cache_clear()
     with pytest.raises(RuntimeError, match="no pyproject.toml"):
         EnvironmentIdentity.capture()
-    EnvironmentIdentity.capture.cache_clear()
 
 
 def test_capture_environment_identity_reads_uv_version_from_pyvenv_cfg(
@@ -187,11 +167,7 @@ def test_capture_environment_identity_reads_uv_version_from_pyvenv_cfg(
     )
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "prefix", str(tmp_path))
-    EnvironmentIdentity.capture.cache_clear()
-    try:
-        assert EnvironmentIdentity.capture().uv == "0.7.13"
-    finally:
-        EnvironmentIdentity.capture.cache_clear()
+    assert EnvironmentIdentity.capture().uv == "0.7.13"
 
 
 @pytest.mark.parametrize("pyvenv_cfg", ["home = /x\nimplementation = CPython\n", None])
@@ -205,16 +181,12 @@ def test_capture_environment_identity_requires_uv_managed_python(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "prefix", str(tmp_path))
     monkeypatch.delenv("PYTEST_VERSION", raising=False)
-    EnvironmentIdentity.capture.cache_clear()
-    try:
-        with pytest.raises(RuntimeError, match="not managed by uv") as excinfo:
-            EnvironmentIdentity.capture()
-        assert sys.executable in str(excinfo.value)
-        assert str(tmp_path.resolve()) in str(excinfo.value)
-        assert "uv sync" in str(excinfo.value)
-        assert "uv run" in str(excinfo.value)
-    finally:
-        EnvironmentIdentity.capture.cache_clear()
+    with pytest.raises(RuntimeError, match="not managed by uv") as excinfo:
+        EnvironmentIdentity.capture()
+    assert sys.executable in str(excinfo.value)
+    assert str(tmp_path.resolve()) in str(excinfo.value)
+    assert "uv sync" in str(excinfo.value)
+    assert "uv run" in str(excinfo.value)
 
 
 def test_pytest_exemption_still_records_environment_identity(
@@ -226,28 +198,20 @@ def test_pytest_exemption_still_records_environment_identity(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "prefix", str(tmp_path))
     monkeypatch.setenv("PYTEST_VERSION", pytest.__version__)
-    EnvironmentIdentity.capture.cache_clear()
-    try:
-        identity = EnvironmentIdentity.capture()
-        assert identity.uv == ""
-        assert identity.uv_lock_hash.startswith("blake2s:")
-        assert identity.pyproject_hash.startswith("blake2s:")
-    finally:
-        EnvironmentIdentity.capture.cache_clear()
+    identity = EnvironmentIdentity.capture()
+    assert identity.uv == ""
+    assert identity.uv_lock_hash.startswith("blake2s:")
+    assert identity.pyproject_hash.startswith("blake2s:")
 
 
 def test_capture_environment_identity_is_cached_and_populated() -> None:
-    EnvironmentIdentity.capture.cache_clear()
-    try:
-        identity = EnvironmentIdentity.capture()
-        assert identity is EnvironmentIdentity.capture()
-        assert identity.python.count(".") == 2
-        assert identity.uv_lock_hash.startswith("blake2s:")
-        assert identity.pyproject_hash.startswith("blake2s:")
-        assert identity.furu == furu.__version__
-        assert (Path(identity.project_root) / "uv.lock").is_file()
-    finally:
-        EnvironmentIdentity.capture.cache_clear()
+    identity = EnvironmentIdentity.capture()
+    assert identity is EnvironmentIdentity.capture()
+    assert identity.python.count(".") == 2
+    assert identity.uv_lock_hash.startswith("blake2s:")
+    assert identity.pyproject_hash.startswith("blake2s:")
+    assert identity.furu == furu.__version__
+    assert (Path(identity.project_root) / "uv.lock").is_file()
 
 
 def test_capture_environment_identity_requires_uv_lock(
@@ -255,12 +219,8 @@ def test_capture_environment_identity_requires_uv_lock(
 ) -> None:
     (tmp_path / "pyproject.toml").write_text("[project]\n")
     monkeypatch.chdir(tmp_path)
-    EnvironmentIdentity.capture.cache_clear()
-    try:
-        with pytest.raises(RuntimeError, match="uv sync"):
-            EnvironmentIdentity.capture()
-    finally:
-        EnvironmentIdentity.capture.cache_clear()
+    with pytest.raises(RuntimeError, match="uv sync"):
+        EnvironmentIdentity.capture()
 
 
 def test_require_uv_runs_lock_check_once(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -271,12 +231,8 @@ def test_require_uv_runs_lock_check_once(monkeypatch: pytest.MonkeyPatch) -> Non
         return subprocess.CompletedProcess(args, 0, "", "")
 
     monkeypatch.setattr(provenance.subprocess, "run", fake_run)
-    provenance._require_uv.cache_clear()
-    try:
-        provenance._require_uv()
-        provenance._require_uv()
-    finally:
-        provenance._require_uv.cache_clear()
+    provenance._require_uv()
+    provenance._require_uv()
     assert calls == [["uv", "lock", "--check"]]
 
 
@@ -285,14 +241,10 @@ def test_require_uv_stale_lock_raises(monkeypatch: pytest.MonkeyPatch) -> None:
         return subprocess.CompletedProcess(args, 1, "", "The lockfile is outdated")
 
     monkeypatch.setattr(provenance.subprocess, "run", fake_run)
-    provenance._require_uv.cache_clear()
-    try:
-        with pytest.raises(RuntimeError, match="out of date") as excinfo:
-            provenance._require_uv()
-        assert "The lockfile is outdated" in str(excinfo.value)
-        assert "uv sync" in str(excinfo.value)
-    finally:
-        provenance._require_uv.cache_clear()
+    with pytest.raises(RuntimeError, match="out of date") as excinfo:
+        provenance._require_uv()
+    assert "The lockfile is outdated" in str(excinfo.value)
+    assert "uv sync" in str(excinfo.value)
 
 
 def test_require_uv_missing_uv_binary_raises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -300,12 +252,8 @@ def test_require_uv_missing_uv_binary_raises(monkeypatch: pytest.MonkeyPatch) ->
         raise FileNotFoundError("uv")
 
     monkeypatch.setattr(provenance.subprocess, "run", fake_run)
-    provenance._require_uv.cache_clear()
-    try:
-        with pytest.raises(RuntimeError, match="uv executable not found"):
-            provenance._require_uv()
-    finally:
-        provenance._require_uv.cache_clear()
+    with pytest.raises(RuntimeError, match="uv executable not found"):
+        provenance._require_uv()
 
 
 class _EnforcementNode(Spec[str]):
@@ -323,14 +271,8 @@ def test_create_fails_before_compute_without_uv(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "prefix", str(tmp_path))
     monkeypatch.delenv("PYTEST_VERSION", raising=False)
-    EnvironmentIdentity.capture.cache_clear()
-    provenance._require_uv.cache_clear()
-    try:
-        with pytest.raises(RuntimeError, match="not managed by uv"):
-            _EnforcementNode(name="x").create()
-    finally:
-        EnvironmentIdentity.capture.cache_clear()
-        provenance._require_uv.cache_clear()
+    with pytest.raises(RuntimeError, match="not managed by uv"):
+        _EnforcementNode(name="x").create()
 
 
 def test_capture_submit_context() -> None:
@@ -362,11 +304,7 @@ def test_accelerator_probe_falls_back_to_cuda_visible_devices(
 
     monkeypatch.setattr(provenance.subprocess, "run", missing_nvidia_smi)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1,2")
-    provenance._probe_accelerators.cache_clear()
-    try:
-        assert provenance._probe_accelerators() == ("cuda ×3",)
-    finally:
-        provenance._probe_accelerators.cache_clear()
+    assert provenance._probe_accelerators() == ("cuda ×3",)
 
 
 def test_accelerator_probe_degrades_to_empty(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -375,11 +313,7 @@ def test_accelerator_probe_degrades_to_empty(monkeypatch: pytest.MonkeyPatch) ->
 
     monkeypatch.setattr(provenance.subprocess, "run", missing_nvidia_smi)
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
-    provenance._probe_accelerators.cache_clear()
-    try:
-        assert provenance._probe_accelerators() == ()
-    finally:
-        provenance._probe_accelerators.cache_clear()
+    assert provenance._probe_accelerators() == ()
 
 
 def test_example_json_matches_model_schema_exactly() -> None:

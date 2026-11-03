@@ -28,10 +28,7 @@ from furu.migration.steps import (
 from furu.serializer.artifact import to_json
 from furu.serializer.registry import Serializer
 from furu.serializer.schema import schema_type
-from furu.storage._layout import (
-    migrations_path_in_schema_directory,
-    schema_snapshot_path_in_schema_directory,
-)
+from furu.storage._layout import migrations_path_in, schema_snapshot_path_in
 from furu.utils import (
     JsonFields,
     JsonValue,
@@ -345,7 +342,7 @@ def _recorded_steps(
     if the writing code took a step these chains never declare - the schema
     then belongs to a sibling or newer branch sharing the store."""
     had: dict[str, set[tuple[str, ...]]] = {chain.class_name: set() for chain in chains}
-    recorded = migrations_path_in_schema_directory(schema_directory)
+    recorded = migrations_path_in(schema_directory)
     for name, *identity in json.loads(read_text_or_none(recorded) or "[]"):
         chain = next((chain for chain in chains if name in chain.names), None)
         if chain is None or tuple(identity) not in chain.identities:
@@ -381,7 +378,7 @@ def _resolve_class(obj: Spec) -> _ClassResolution:
                 and schema_directory.name == obj._artifact_schema_hash
             ):
                 continue
-            snapshot_path = schema_snapshot_path_in_schema_directory(schema_directory)
+            snapshot_path = schema_snapshot_path_in(schema_directory)
             if not snapshot_path.exists():
                 continue
             had = _recorded_steps(schema_directory, (own, *chains))

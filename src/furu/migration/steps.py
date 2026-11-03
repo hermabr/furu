@@ -184,71 +184,77 @@ def validate_migration_declaration(cls: type[Spec]) -> None:
                 "(name a Rewrite's transform instead of using a lambda)"
             )
 
-    names = {field.name: field.name for field in dataclasses.fields(cls)}
+    names = {field.name for field in dataclasses.fields(cls)}
 
     from furu.core import Spec
+
+    def invalid(index: int, problem: str) -> TypeError:
+        return TypeError(
+            f"{cls.__name__}.migrations[{index}] ({_describe_step(steps[index])}): "
+            f"{problem}"
+        )
+
+    def not_a_field(index: int, field: str) -> TypeError:
+        return invalid(
+            index,
+            f"{field!r} is not a field; fields at that point in the chain: "
+            f"{sorted(names)}",
+        )
 
     for index, step in enumerate(steps):
         if step.result_rewrite is None:
             continue
         if _is_breaking(step):
-            raise TypeError(
-                f"{cls.__name__}.migrations[{index}] ({_describe_step(step)}): "
+            raise invalid(
+                index,
                 "a breaking step discards old results, so result_rewrite can "
-                "never run; drop one of the two"
+                "never run; drop one of the two",
             )
         if not issubclass(cls, Spec):
-            raise TypeError(
-                f"{cls.__name__}.migrations[{index}] ({_describe_step(step)}): "
+            raise invalid(
+                index,
                 f"{cls.__name__} has no results to rewrite; result_rewrite "
-                "belongs on a Spec"
+                "belongs on a Spec",
             )
 
     for index in reversed(range(len(steps))):
         match steps[index]:
             case Renamed(field=field, to=to):
                 if to not in names:
-                    raise TypeError(
-                        f"{cls.__name__}.migrations[{index}] ({_describe_step(steps[index])}): "
-                        f"{to!r} is not a field; fields at that point in the chain: {sorted(names)}"
-                    )
+                    raise not_a_field(index, to)
                 if field in names:
-                    raise TypeError(
-                        f"{cls.__name__}.migrations[{index}] ({_describe_step(steps[index])}): "
-                        f"{field!r} already exists; fields at that point in the chain: {sorted(names)}"
+                    raise invalid(
+                        index,
+                        f"{field!r} already exists; fields at that point in the "
+                        f"chain: {sorted(names)}",
                     )
-                names[field] = names.pop(to)
+                names.remove(to)
+                names.add(field)
             case Added(field=field) as step:
                 if field not in names:
-                    raise TypeError(
-                        f"{cls.__name__}.migrations[{index}] ({_describe_step(steps[index])}): "
-                        f"{field!r} is not a field; fields at that point in the chain: {sorted(names)}"
-                    )
-                del names[field]
+                    raise not_a_field(index, field)
+                names.remove(field)
                 backfills = (step.default is not _NO_DEFAULT) + (
                     step.default_factory is not None
                 )
                 if step.breaking and backfills:
-                    raise TypeError(
-                        f"{cls.__name__}.migrations[{index}] ({_describe_step(steps[index])}): "
+                    raise invalid(
+                        index,
                         "a breaking Added discards old results, so a default can "
-                        "never backfill anything; drop one of the two"
+                        "never backfill anything; drop one of the two",
                     )
                 if not step.breaking and backfills != 1:
-                    raise TypeError(
-                        f"{cls.__name__}.migrations[{index}] ({_describe_step(steps[index])}): "
+                    raise invalid(
+                        index,
                         "Added needs exactly one of default= (the value old runs "
                         "behaved as, pinned independently of the field's own "
                         "default) or default_factory= (computing it from the old "
                         "run's stored fields), or breaking=True to discard the "
-                        "old results"
+                        "old results",
                     )
             case Retyped(field=field):
                 if field not in names:
-                    raise TypeError(
-                        f"{cls.__name__}.migrations[{index}] ({_describe_step(steps[index])}): "
-                        f"{field!r} is not a field; fields at that point in the chain: {sorted(names)}"
-                    )
+                    raise not_a_field(index, field)
             case MovedFrom() | Rewrite():
                 pass
             case unreachable:

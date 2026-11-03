@@ -8,7 +8,7 @@ from furu.constants import CLASSMARKER, FIELDSMARKER
 from furu.migration.links import _find_source
 from furu.migration.resolution import _class_resolution, _ClassResolution, _Orphaned
 from furu.migration.steps import Stale
-from furu.storage._layout import schema_snapshot_path_in_schema_directory
+from furu.storage._layout import schema_snapshot_path_in
 from furu.utils import JsonValue, _stable_json_dump
 
 if TYPE_CHECKING:
@@ -19,7 +19,7 @@ def _orphaned_directories(resolution: _ClassResolution) -> list[_Orphaned]:
     return [
         orphaned
         for orphaned in resolution.orphaned
-        if schema_snapshot_path_in_schema_directory(orphaned.schema_directory).exists()
+        if schema_snapshot_path_in(orphaned.schema_directory).exists()
     ]
 
 
@@ -93,7 +93,7 @@ def raise_if_stale(obj: Spec) -> None:
     owners: set[str] = set()
     for entry in orphaned:
         directory = entry.schema_directory
-        snapshot_path = schema_snapshot_path_in_schema_directory(directory)
+        snapshot_path = schema_snapshot_path_in(directory)
         snapshot = cast(
             dict[str, JsonValue],
             json.loads(snapshot_path.read_text(encoding="utf-8")),

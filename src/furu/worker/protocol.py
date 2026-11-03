@@ -12,6 +12,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from furu.config import _Config
+from furu.logging import _group_label
 from furu.metadata import ArtifactSpec
 from furu.provenance import SubmitProvenance
 from furu.snapshot import CodeLocation
@@ -53,8 +54,7 @@ class Job(_Message):
 
     @property
     def label(self) -> str:
-        label = self.artifacts[0].log_label
-        return label + (f" ×{len(self.artifacts)}" if len(self.artifacts) > 1 else "")
+        return _group_label(self.artifacts[0].log_label, len(self.artifacts))
 
 
 class CancelMessage(_Message):
