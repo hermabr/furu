@@ -1,3 +1,9 @@
+"""Every message between scripts, the manager and workers.
+
+A connection's first message says who is calling: a script sends ``submit``,
+a worker sends ``hello``.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -5,14 +11,18 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
+from furu.config import _Config
 from furu.metadata import ArtifactSpec
 from furu.provenance import SubmitProvenance
+from furu.snapshot import CodeLocation
 from furu.spec_metadata import Metadata, Reuse
 
 
-class ProcessSettings(BaseModel):
+class _Message(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
+
+class ProcessSettings(_Message):
     environment: dict[str, str | None]
     required_environment_variables: tuple[str, ...]
     reuse: Reuse
@@ -26,9 +36,7 @@ class ProcessSettings(BaseModel):
         )
 
 
-class Job(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-
+class Job(_Message):
     kind: Literal["job"] = "job"
     artifacts: list[ArtifactSpec]
     # One run.log per artifact; the worker cannot compute them without
@@ -38,35 +46,26 @@ class Job(BaseModel):
     execution_log: Path
     provenance: SubmitProvenance
     process: ProcessSettings
+    # The submitting repo's settings (absolute data directories) and code, so
+    # a worker serving many repos stores each result in the repo it came from.
+    config: _Config
+    code: CodeLocation
 
 
-class CancelMessage(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-
+class CancelMessage(_Message):
     kind: Literal["cancel"] = "cancel"
 
 
-type ServerMessage = Annotated[Job | CancelMessage, Field(discriminator="kind")]
-
-server_message_adapter: TypeAdapter[ServerMessage] = TypeAdapter(ServerMessage)
-
-
-class JobCompletedResult(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-
+class JobCompletedResult(_Message):
     status: Literal["completed"] = "completed"
 
 
-class JobFailedResult(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-
+class JobFailedResult(_Message):
     status: Literal["failed"] = "failed"
     error: str
 
 
-class JobBlockedResult(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-
+class JobBlockedResult(_Message):
     status: Literal["blocked"] = "blocked"
     dependencies: list[ArtifactSpec]
 
@@ -79,59 +78,98 @@ type JobResult = Annotated[
 job_result_adapter: TypeAdapter[JobResult] = TypeAdapter(JobResult)
 
 
-class HelloMessage(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+# --- worker <-> manager --------------------------------------------------------
 
+
+class HelloMessage(_Message):
     kind: Literal["hello"] = "hello"
     worker: str
     backend: str
     pool: str
-    running: list[ArtifactSpec] = Field(default_factory=list)
     log: Path | None = None  # the worker's own log file, if it has one
 
 
-class TakeoverRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+type ServerMessage = Annotated[Job | CancelMessage, Field(discriminator="kind")]
 
-    kind: Literal["takeover"] = "takeover"
-    executor_id: str
-    pool_keys: list[str]
+server_message_adapter: TypeAdapter[ServerMessage] = TypeAdapter(ServerMessage)
 
 
-type FirstMessage = Annotated[
-    HelloMessage | TakeoverRequest, Field(discriminator="kind")
+# --- script <-> manager --------------------------------------------------------
+
+
+class SlurmPool(_Message):
+    """How the manager starts a worker; identical recipes share one pool."""
+
+    kind: Literal["slurm"] = "slurm"
+    max_workers: int
+    sbatch_args: list[str]
+    pre_worker_commands: list[str]
+    use_job_arrays: bool
+
+
+class LocalPool(_Message):
+    """Threads in the script's own process, against its in-process manager."""
+
+    kind: Literal["local"] = "local"
+    max_workers: int
+
+
+type Pool = Annotated[SlurmPool | LocalPool, Field(discriminator="kind")]
+
+
+class Batch(_Message):
+    batch: str  # jobs of one script with the same id may share a worker call
+    cap: int
+
+
+class JobThrottle(_Message):
+    key: str
+    max_running: int
+
+
+class Submission(_Message):
+    job: Job
+    # The pools that can run this job; None runs it alone.
+    pools: dict[str, Batch | None]
+    throttle: JobThrottle | None
+
+
+class SubmitMessage(_Message):
+    kind: Literal["submit"] = "submit"
+    pools: dict[str, Pool]
+    jobs: list[Submission]
+
+
+type ScriptMessage = Annotated[
+    SubmitMessage | CancelMessage, Field(discriminator="kind")
 ]
 
-first_message_adapter: TypeAdapter[FirstMessage] = TypeAdapter(FirstMessage)
+script_message_adapter: TypeAdapter[ScriptMessage] = TypeAdapter(ScriptMessage)
 
 
-class PoolHandoff(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-
-    job_ids: list[str] = Field(default_factory=list)
-    worker_files: list[Path] = Field(default_factory=list)
-
-
-class TakeoverAccepted(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-
-    kind: Literal["accepted"] = "accepted"
-    handoffs: dict[str, PoolHandoff]
+class ResultMessage(_Message):
+    kind: Literal["result"] = "result"
+    object_ids: list[str]
+    result: JobResult
 
 
-class TakeoverRefused(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-
-    kind: Literal["refused"] = "refused"
+class WarningMessage(_Message):
+    kind: Literal["warning"] = "warning"
     reason: str
 
 
-type TakeoverResponse = Annotated[
-    TakeoverAccepted | TakeoverRefused, Field(discriminator="kind")
+class ErrorMessage(_Message):
+    kind: Literal["error"] = "error"
+    reason: str
+
+
+type ManagerMessage = Annotated[
+    ResultMessage | WarningMessage | ErrorMessage, Field(discriminator="kind")
 ]
 
-takeover_response_adapter: TypeAdapter[TakeoverResponse] = TypeAdapter(TakeoverResponse)
+manager_message_adapter: TypeAdapter[ManagerMessage] = TypeAdapter(ManagerMessage)
 
 
-def coordinator_url(*, host: str, port: int, auth_token: str) -> str:
-    return f"ws://furu:{auth_token}@{host}:{port}"
+type FirstMessage = Annotated[SubmitMessage | HelloMessage, Field(discriminator="kind")]
+
+first_message_adapter: TypeAdapter[FirstMessage] = TypeAdapter(FirstMessage)

@@ -1,6 +1,5 @@
 import os
 import subprocess
-import threading
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -9,17 +8,13 @@ import pytest
 import furu
 from furu import Spec
 from furu import provenance as furu_provenance
-from furu.metadata import ArtifactSpec
 from furu.provenance import (
     EnvironmentIdentity,
     GitIdentity,
     Provenance,
-    capture_submit_provenance,
 )
 from furu.storage._layout import provenance_path_in, version_dir_in
 from furu.worker.backends.local import LocalThreadWorkerBackend
-from furu.worker.execute import ChildSlot
-from furu.worker.protocol import Job, ProcessSettings
 
 
 @pytest.fixture(autouse=True)
@@ -211,35 +206,3 @@ def test_executor_sweep_captures_once_and_stamps_every_job(
         provenance.executed.worker_backend == "local-thread"
         for provenance in provenances
     )
-
-
-def test_worker_fails_job_on_stale_uv_lock_hash(
-    git_repo: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.chdir(git_repo)
-    node = _Node(value=30)
-    submit = capture_submit_provenance()
-    stale = submit.model_copy(
-        update={
-            "environment": submit.environment.model_copy(
-                update={"uv_lock_hash": "blake2s:stale"}
-            )
-        }
-    )
-
-    with pytest.raises(RuntimeError, match="worker uv.lock does not match") as excinfo:
-        ChildSlot(worker="w0", backend="test", materialize_snapshot=False).run(
-            Job(
-                artifacts=[ArtifactSpec.from_furu(node)],
-                run_logs=[git_repo / "run.log"],
-                attempt=1,
-                execution_log=git_repo / "execution.log",
-                provenance=stale,
-                process=ProcessSettings.from_metadata(node._metadata),
-            ),
-            cancelled=threading.Event(),
-        )
-
-    assert "blake2s:stale" in str(excinfo.value)
-    assert EnvironmentIdentity.capture().uv_lock_hash in str(excinfo.value)
-    assert node.status == "missing"

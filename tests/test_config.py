@@ -6,7 +6,6 @@ import pytest
 from pydantic import ValidationError
 
 from furu.config import (
-    _WORKER_JSON_CONFIG_FILE_ENV_VAR,
     _Config,
     _FuruDirectories,
     _FuruWorkerConfig,
@@ -299,50 +298,6 @@ debug = "/tmp/furu-pyproject-debug"
         executions=Path("/tmp/furu-env-debug") / "executions",
         snapshots=Path("/tmp/furu-env-debug") / "snapshots",
         debug=Path("/tmp/furu-env-debug"),
-    )
-
-
-def test_config_reads_worker_json_config_file(tmp_path, monkeypatch) -> None:
-    config_file = tmp_path / "worker.config.json"
-    config_file.write_text(
-        """
-{
-  "coordinator_url": "ws://furu:secret@coordinator.test:1",
-  "debug_mode": true,
-  "directories": {
-    "objects": "/tmp/furu-json-objects",
-    "executions": "/tmp/furu-json-executions",
-    "debug": "/tmp/furu-json-debug"
-  },
-  "worker": {
-    "idle_timeout_seconds": 9.5,
-    "max_retries_per_object": 3
-  }
-}
-""",
-        encoding="utf-8",
-    )
-    monkeypatch.setenv(_WORKER_JSON_CONFIG_FILE_ENV_VAR, str(config_file))
-    monkeypatch.setenv("FURU_DEBUG_MODE", "false")
-    monkeypatch.setenv("FURU_WORKER__IDLE_TIMEOUT_SECONDS", "12.5")
-
-    config = _Config()
-
-    assert config.debug_mode is True
-    assert config.directories == _FuruDirectories(
-        objects=Path("/tmp/furu-json-objects"),
-        executions=Path("/tmp/furu-json-executions"),
-        debug=Path("/tmp/furu-json-debug"),
-    )
-    assert config.run_directories == _FuruDirectories(
-        objects=Path("/tmp/furu-json-debug") / "objects",
-        executions=Path("/tmp/furu-json-debug") / "executions",
-        snapshots=Path("/tmp/furu-json-debug") / "snapshots",
-        debug=Path("/tmp/furu-json-debug"),
-    )
-    assert config.worker == _FuruWorkerConfig(
-        idle_timeout_seconds=9.5,
-        max_retries_per_object=3,
     )
 
 

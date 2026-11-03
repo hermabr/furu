@@ -8,9 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import assert_never
 
-from furu.config import get_config
+from furu.config import _Config
 from furu.logging import _append, get_logger
-from furu.provenance import EnvironmentIdentity
 from furu.snapshot import CodeLocation
 from furu.worker.protocol import Job, JobFailedResult, JobResult, job_result_adapter
 
@@ -23,51 +22,29 @@ class _Child:
     process: subprocess.Popen[str]
     environment: dict[str, str]
     code: CodeLocation
+    config: _Config
     spec_name: str
 
 
 class ChildSlot:
     """At most one warm child process, tagged with what it last ran.
 
-    A materializing slot (remote workers) spawns each child inside the job's
-    code snapshot, so a job always runs the code it was submitted with; a
-    non-materializing slot (local threads) runs children in the live worktree.
+    Each child runs in the job's code (its snapshot, or the live worktree for
+    local threads) with the job's settings, so one worker can serve any repo.
     """
 
     _child: _Child | None
 
     def __init__(
-        self,
-        *,
-        worker: str,
-        backend: str,
-        materialize_snapshot: bool,
-        worker_log: Path | None = None,
+        self, *, worker: str, backend: str, worker_log: Path | None = None
     ) -> None:
         self._worker = worker
         self._worker_log = worker_log
         self._logger = get_logger(worker)
         self._backend = backend
-        self._materialize_snapshot = materialize_snapshot
         self._child = None
 
     def run(self, job: Job, *, cancelled: threading.Event) -> JobResult:
-        if self._materialize_snapshot:
-            code = CodeLocation.from_snapshot(job.provenance)
-        else:
-            code = CodeLocation.here()
-            worker_hash = EnvironmentIdentity.capture().uv_lock_hash
-            submitted_hash = job.provenance.environment.uv_lock_hash
-            if worker_hash != submitted_hash:
-                raise RuntimeError(
-                    "worker uv.lock does not match the submitted environment\n"
-                    f"  submitted : {submitted_hash}\n"
-                    f"  worker    : {worker_hash}\n"
-                    "The worker's project checkout is out of sync with the "
-                    "submit host. Update the checkout (e.g. git pull) and run:\n"
-                    "  uv sync"
-                )
-
         settings = job.process
         environment = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
         # Progress bars redraw up to 10 times a second, and every redraw lands
@@ -94,7 +71,8 @@ class ChildSlot:
             same_process_context = (
                 child.process.poll() is None
                 and child.environment == environment
-                and child.code == code
+                and child.code == job.code
+                and child.config == job.config
             )
             match settings.reuse:
                 case "never":
@@ -109,7 +87,7 @@ class ChildSlot:
                 self.close()
                 child = None
         if child is None:
-            child = self._child = self._spawn(environment, code=code)
+            child = self._child = self._spawn(environment, job=job)
         child.spec_name = spec_name
 
         if cancelled.is_set():
@@ -139,25 +117,31 @@ class ChildSlot:
             child.process.wait()
         self._logger.debug("retired child %d", child.process.pid)
 
-    def _spawn(self, environment: dict[str, str], *, code: CodeLocation) -> _Child:
+    def _spawn(self, environment: dict[str, str], *, job: Job) -> _Child:
         # The child's stderr is ours: each job points it at its run.log, and
         # anything written between jobs lands in this worker's own output.
         process = subprocess.Popen(
-            [str(code.python), "-m", "furu.worker._child"],
+            [str(job.code.python), "-m", "furu.worker._child"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            cwd=code.cwd,
+            cwd=job.code.cwd,
             env=environment,
             text=True,
         )
         assert process.stdin is not None
-        process.stdin.write(get_config().anchored().model_dump_json() + "\n")
+        process.stdin.write(job.config.model_dump_json() + "\n")
         process.stdin.write(self._backend + "\n")
         process.stdin.write(self._worker + "\n")
         process.stdin.write(f"{self._worker_log or ''}\n")
         process.stdin.flush()
         self._logger.debug("spawned child %d", process.pid)
-        return _Child(process=process, environment=environment, code=code, spec_name="")
+        return _Child(
+            process=process,
+            environment=environment,
+            code=job.code,
+            config=job.config,
+            spec_name="",
+        )
 
     def _request(self, child: _Child, job: Job) -> JobResult:
         assert child.process.stdin is not None

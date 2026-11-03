@@ -31,6 +31,7 @@ from furu.provenance import (
     SubmitContext,
     SubmitProvenance,
 )
+from furu.snapshot import CodeLocation
 from furu.storage._layout import run_log_path_in
 from furu.testing import override_config
 from furu.worker.backends.local import LocalThreadWorkerBackend
@@ -47,7 +48,7 @@ from furu.worker.protocol import (
 
 @pytest.fixture
 def child_slot() -> Iterator[ChildSlot]:
-    slot = ChildSlot(worker="w0", backend="test", materialize_snapshot=False)
+    slot = ChildSlot(worker="w0", backend="test")
     try:
         yield slot
     finally:
@@ -55,8 +56,7 @@ def child_slot() -> Iterator[ChildSlot]:
 
 
 def _submit_provenance() -> SubmitProvenance:
-    # Real environment identity so the child's lock-hash verification passes;
-    # the git half is a stub.
+    # The git half is a stub; local children run the live worktree.
     return SubmitProvenance(
         git=GitIdentity(
             commit="0" * 40,
@@ -70,7 +70,11 @@ def _submit_provenance() -> SubmitProvenance:
 
 
 def _job(
-    objs: list[Spec], *, provenance: SubmitProvenance | None = None, attempt: int = 1
+    objs: list[Spec],
+    *,
+    provenance: SubmitProvenance | None = None,
+    code: CodeLocation | None = None,
+    attempt: int = 1,
 ) -> Job:
     return Job(
         artifacts=[ArtifactSpec.from_furu(obj) for obj in objs],
@@ -79,6 +83,8 @@ def _job(
         execution_log=get_config().run_directories.executions / "e1" / "execution.log",
         provenance=provenance or _submit_provenance(),
         process=ProcessSettings.from_metadata(objs[0]._metadata),
+        config=get_config().anchored(),
+        code=code or CodeLocation.here(),
     )
 
 
@@ -356,8 +362,8 @@ def test_child_receives_anchored_directories(child_slot: ChildSlot) -> None:
     assert _pid_and_value(leaf)[1] == str(_project_anchor() / "furu-data" / "debug")
 
 
-def test_materializing_slot_runs_each_job_from_its_snapshot(tmp_path: Path) -> None:
-    slot = ChildSlot(worker="w0", backend="test", materialize_snapshot=True)
+def test_one_worker_runs_jobs_from_two_repos_into_each_repo(tmp_path: Path) -> None:
+    slot = ChildSlot(worker="w0", backend="test")
     pids_and_cwds: list[tuple[int, str]] = []
     code_dirs: list[Path] = []
     repo_roots: list[Path] = []
@@ -366,31 +372,39 @@ def test_materializing_slot_runs_each_job_from_its_snapshot(tmp_path: Path) -> N
             repo = tmp_path / f"repo-{marker}"
             repo.mkdir()
             commit = _snapshot_repo(repo, marker=str(marker))
-            leaf = SubprocessCwdLeaf(marker=marker)
-            provenance = SubmitProvenance(
-                git=GitIdentity(
-                    commit=commit,
-                    branch=None,
-                    remote=None,
-                    repo_root=str(repo),
-                ),
-                # Stale lock hash: the job runs in its snapshot's venv, so the
-                # worker's own environment must not be checked.
-                environment=EnvironmentIdentity(
-                    python="3.12.0",
-                    uv="0",
-                    project_root=str(repo),
-                    uv_lock_hash="blake2s:stale",
-                    pyproject_hash="blake2s:0",
-                    furu="0",
-                ),
-                submitted=SubmitContext.capture().model_copy(update={"cwd": str(repo)}),
+            config = get_config().anchored()
+            config = config.model_copy(
+                update={
+                    "directories": config.directories.model_copy(
+                        update={"objects": repo / "furu-data" / "objects"}
+                    )
+                }
             )
-            result = slot.run(
-                _job([leaf], provenance=provenance), cancelled=threading.Event()
-            )
-            assert isinstance(result, JobCompletedResult)
-            pid, value = _pid_and_value(leaf)
+            with override_config(config):
+                leaf = SubprocessCwdLeaf(marker=marker)
+                provenance = SubmitProvenance(
+                    git=GitIdentity(
+                        commit=commit, branch=None, remote=None, repo_root=str(repo)
+                    ),
+                    environment=EnvironmentIdentity.capture().model_copy(
+                        update={"project_root": str(repo)}
+                    ),
+                    submitted=SubmitContext.capture().model_copy(
+                        update={"cwd": str(repo)}
+                    ),
+                )
+                result = slot.run(
+                    _job(
+                        [leaf],
+                        provenance=provenance,
+                        code=CodeLocation.from_snapshot(provenance),
+                    ),
+                    cancelled=threading.Event(),
+                )
+                assert isinstance(result, JobCompletedResult)
+                # The result lands in the repo that submitted it.
+                assert leaf._base_dir.is_relative_to(repo)
+                pid, value = _pid_and_value(leaf)
             cwd, repo_root = value.split("\n")
             pids_and_cwds.append((pid, cwd))
             repo_roots.append(Path(repo_root))

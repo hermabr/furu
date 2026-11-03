@@ -127,9 +127,9 @@ def _load_or_create(
     tree: object, *, on: Sequence[WorkerBackend] | None = None, load: bool = True
 ) -> Any:
     if on is not None:
-        from furu.execution.execution_coordinator import ExecutionCoordinator
+        from furu.execution.run import run_on_workers
 
-        ExecutionCoordinator.run(specs_in(tree), worker_backends=tuple(on))
+        run_on_workers(specs_in(tree), on)
     _require_uv()
     if isinstance(tree, Spec):
         tree.logger.debug(".create called for %s", tree)
