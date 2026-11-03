@@ -28,18 +28,22 @@ _REPLACE_INTERVAL_S = 60.0
 _BROKEN_AFTER_FAILURES = 10
 _BROKEN_AFTER_S = 30 * 60.0
 
-_UNFINISHED_STATES = frozenset(
+# States a job never leaves. Anything else, including no state at all or one
+# this code has never seen, keeps the worker owned until Slurm reports one of
+# these. Preempted jobs are requeued, so PREEMPTED is not one of them.
+_FINISHED_STATES = frozenset(
     {
-        "COMPLETING",
-        "PENDING",
-        "PREEMPTED",
-        "REQUEUED",
-        "RUNNING",
-        "UNKNOWN",
+        "BOOT_FAIL",
+        "CANCELLED",
+        "COMPLETED",
+        "DEADLINE",
+        "FAILED",
+        "NODE_FAIL",
+        "OUT_OF_MEMORY",
+        "REVOKED",
+        "TIMEOUT",
     }
 )
-
-_PRUNABLE_STATES = frozenset({"COMPLETED"})
 
 
 class SlurmWorkerPool:
@@ -124,23 +128,22 @@ class SlurmWorkerPool:
 
     def _scale_once(self) -> None:
         active_job_states = self._active_job_states()
-        states = self._task_states()
-        failed = {
+        if active_job_states is None:
+            return  # squeue unavailable: keep every worker and retry next tick
+        # squeue decides liveness; accounting only explains why a job left it.
+        states = self._task_states() | active_job_states
+        finished = {
             job_id: state
             for job_id in self._job_ids
-            if (state := states.get(job_id)) is not None
-            and state not in _UNFINISHED_STATES | _PRUNABLE_STATES
+            if (state := states.get(job_id)) in _FINISHED_STATES
         }
-        self._job_ids[:] = [
-            job_id
-            for job_id in self._job_ids
-            if job_id not in failed
-            and (
-                job_id in active_job_states
-                if active_job_states is not None
-                else states.get(job_id) not in (None, *_PRUNABLE_STATES)
+        failed = {j: s for j, s in finished.items() if s != "COMPLETED"}
+        if finished:
+            logger.info(
+                "forgetting finished slurm workers: %s",
+                ", ".join(f"{j} {s}" for j, s in sorted(finished.items())),
             )
-        ]
+            self._job_ids[:] = [j for j in self._job_ids if j not in finished]
         now = time.monotonic()
         if failed:
             if not self._streak:
@@ -168,7 +171,7 @@ class SlurmWorkerPool:
 
         to_spawn = self._manager.demand(self._key) - len(self._job_ids)
         if to_spawn < 0:
-            self._cancel_queued_workers(-to_spawn, active_job_states or {})
+            self._cancel_queued_workers(-to_spawn, active_job_states)
             return
         if to_spawn == 0:
             return
