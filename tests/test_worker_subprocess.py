@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import importlib
 import os
-import subprocess
 import sys
 import threading
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from gitrepo import git, init_repo
 from subprocess_objects import (
     OtherSubprocessEnvLeaf,
     SubprocessBatchLeaf,
@@ -332,24 +332,7 @@ def _snapshot_repo(repo: Path, marker: str) -> str:
     python.write_text(f'#!/bin/sh\nexec {sys.executable} "$@"\n')
     python.chmod(0o755)
     (repo / "marker.txt").write_text(marker)
-    for args in (
-        ["init", "-q", "-b", "main"],
-        ["add", "-Af"],  # -f: the user's global excludes may ignore .venv
-        ["commit", "-qm", "snap"],
-    ):
-        subprocess.run(
-            ["git", "-c", "user.email=t@t.t", "-c", "user.name=t", *args],
-            cwd=repo,
-            check=True,
-            capture_output=True,
-        )
-    return subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=repo,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
+    return git(init_repo(repo), "rev-parse", "HEAD")
 
 
 def test_child_receives_anchored_directories(child_slot: ChildSlot) -> None:

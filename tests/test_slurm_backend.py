@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from gitrepo import init_repo
 from websockets.sync.client import connect
 
 import furu
@@ -279,7 +280,10 @@ def test_slurm_resources_emit_node_count() -> None:
 def test_prepare_snapshot_builds_the_extracted_commits_venv(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    repo = _committed_repo(tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "pyproject.toml").write_text('[project]\nname = "sut"\n')
+    init_repo(repo)
     monkeypatch.chdir(repo)
     provenance = SubmitProvenance(
         git=GitIdentity.capture(repo),
@@ -962,21 +966,3 @@ def _read_records(record_file: Path) -> list[dict[str, Any]]:
 
 def _mode(path: Path) -> int:
     return stat.S_IMODE(path.stat().st_mode)
-
-
-def _committed_repo(tmp_path: Path) -> Path:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    (repo / "pyproject.toml").write_text('[project]\nname = "sut"\n')
-    for args in (
-        ["init", "-q", "-b", "main"],
-        ["add", "-A"],
-        ["commit", "-qm", "init", "--allow-empty"],
-    ):
-        subprocess.run(
-            ["git", "-c", "user.email=t@t.t", "-c", "user.name=t", *args],
-            cwd=repo,
-            check=True,
-            capture_output=True,
-        )
-    return repo
