@@ -1,59 +1,27 @@
 from __future__ import annotations
 
-import os
-import secrets
-import shlex
-import socket
-import subprocess
-import threading
 from collections.abc import Callable
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
-from pathlib import Path
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, assert_never
 
-from furu.config import (
-    _WORKER_JSON_CONFIG_FILE_ENV_VAR,
-    _dump_worker_json_config,
-    get_config,
-)
 from furu.resources import Worker
-from furu.snapshot import CodeLocation
-from furu.storage._layout import slurm_worker_log_path_in
-from furu.utils import (
-    _hash_dict_deterministically,
-    overwrite_file_in_place,
-    write_private_file,
-)
-from furu.worker.backends.slurm.pool import SlurmWorkerPool
+from furu.utils import _hash_dict_deterministically
 from furu.worker.backends.slurm.resources import SlurmResources
-from furu.worker.protocol import PoolHandoff, coordinator_url
+from furu.worker.protocol import SlurmPool
 
 if TYPE_CHECKING:
     from furu.core import Spec
-    from furu.execution.execution_coordinator import ExecutionCoordinator
 
 type SlurmExport = Literal["NIL", "ALL"] | tuple[str, ...] | None
 
 
 @dataclass(frozen=True, slots=True)
 class SlurmWorkerBackend:
+    """Slurm workers started by the furu manager; same recipe, same pool."""
+
     max_workers: int
     resources: SlurmResources
-    worker_connect_host: str = field(
-        default_factory=lambda: get_config().worker.connect_host or socket.getfqdn()
-    )
-    worker_connect_port: int | None = None
-    execution_coordinator_listen_host: str = "0.0.0.0"
     job_name: str = "furu-worker"
-    poll_interval: float = 10.0
-    worker_idle_timeout: float = field(
-        default_factory=lambda: get_config().worker.idle_timeout_seconds
-    )
-    max_failures_per_worker: int = field(
-        default_factory=lambda: get_config().worker.max_failures_per_worker
-    )
-    max_failed_workers: int = 10
     pre_worker_commands: tuple[str, ...] = ()
     export: SlurmExport = None
     use_job_arrays: bool = True
@@ -71,146 +39,28 @@ class SlurmWorkerBackend:
 
     @property
     def pool_key(self) -> str:
-        export = list(self.export) if isinstance(self.export, tuple) else self.export
+        recipe = self.pool().model_dump(exclude={"max_workers"})
         return "slurm:" + _hash_dict_deterministically(
-            {
-                "sbatch": self.resources.to_sbatch_args(),
-                "labels": list(self.labels),
-                "pre_worker_commands": list(self.pre_worker_commands),
-                "export": export,
-                "use_job_arrays": self.use_job_arrays,
-            }
+            {**recipe, "labels": list(self.labels)}
         )
 
-    def start_pool(
-        self,
-        *,
-        coordinator: ExecutionCoordinator,
-        bound_port: int,
-        auth_token: str,
-        executor_dir: Path,
-        handoff: PoolHandoff,
-    ) -> SlurmWorkerPool:
-        connect_port = (
-            bound_port if self.worker_connect_port is None else self.worker_connect_port
-        )
-        url = coordinator_url(
-            host=self.worker_connect_host, port=connect_port, auth_token=auth_token
-        )
-
-        code = CodeLocation.from_snapshot(coordinator.submit_provenance)
-        subprocess.run(
-            ["uv", "sync", "--frozen", "--project", str(code.project_root)],
-            env={k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"},
-            check=True,
-        )
-        worker_dir = executor_dir.resolve() / "workers" / secrets.token_hex(8)
-        worker_dir.mkdir(parents=True)
-
-        config_contents = _dump_worker_json_config(
-            get_config().anchored(), coordinator_url=url
-        )
-        config_file = worker_dir / "worker.config.json"
-        write_private_file(
-            config_file,
-            config_contents,
-            mode=0o600,
-        )
-        inherited_files = set(handoff.worker_files)
-        for inherited_file in inherited_files:
-            timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
-            backup_file = inherited_file.with_name(
-                f"{inherited_file.stem}.backup-{timestamp}-{secrets.token_hex(4)}"
-                f"{inherited_file.suffix}"
-            )
-            write_private_file(backup_file, inherited_file.read_text(), mode=0o600)
-            overwrite_file_in_place(inherited_file, config_contents)
-        worker_files = {config_file, *inherited_files}
-        job_ids = list(handoff.job_ids)
-
-        pre_worker_script = "".join(
-            f"{command}\n" for command in self.pre_worker_commands
-        )
-        if pre_worker_script:
-            pre_worker_script += "\n"
-
-        # Workers are named after their Slurm job so `sacct -j <worker>` works.
-        job_id = (
-            "${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
-            if self.use_job_arrays
-            else "${SLURM_JOB_ID}"
-        )
-        # One file per worker: stdout and stderr, merged as Slurm does by default.
-        log_path = slurm_worker_log_path_in(
-            worker_dir, "%A_%a" if self.use_job_arrays else "%j"
-        )
-        log_path.parent.mkdir()
-        script_path = worker_dir / "worker.sh"
-        write_private_file(
-            script_path,
-            (
-                "#!/bin/bash\n"
-                "set -euo pipefail\n"
-                "\n"
-                "export "
-                f"{_WORKER_JSON_CONFIG_FILE_ENV_VAR}={shlex.quote(str(config_file))}\n"
-                "\n"
-                f'furu_worker_component="{job_id}"\n'
-                "\n"
-                f"{pre_worker_script}"
-                # Do not leak the submit environment into snapshot workers.
-                "unset VIRTUAL_ENV\n"
-                "\n"
-                "exec uv run --frozen "
-                f"--project {shlex.quote(str(code.project_root))} \\\n"
-                "    python -m furu.worker._cli \\\n"
-                f"    --coordinator-file {shlex.quote(str(config_file))} \\\n"
-                '    --component "${furu_worker_component}" \\\n'
-                "    --backend slurm \\\n"
-                f"    --idle-timeout {self.worker_idle_timeout} \\\n"
-                f"    --max-failures {self.max_failures_per_worker} \\\n"
-                f"    --pool {shlex.quote(self.pool_key)}\n"
-            ),
-            mode=0o700,
-        )
-
-        export_sbatch_arg: tuple[str, ...]
+    def pool(self) -> SlurmPool:
         match self.export:
             case None | ():
-                export_sbatch_arg = ()
+                export_args = []
             case "NIL" | "ALL":
-                export_sbatch_arg = (f"--export={self.export}",)
+                export_args = [f"--export={self.export}"]
             case (*names,):
-                export_sbatch_arg = (f"--export={','.join(names)}",)
+                export_args = [f"--export={','.join(names)}"]
             case _:
                 assert_never(self.export)
-
-        sbatch_base_args = (
-            f"--chdir={code.cwd}",
-            f"--output={log_path}",
-            f"--job-name={self.job_name}",
-            *self.resources.to_sbatch_args(),
-            *export_sbatch_arg,
+        return SlurmPool(
+            max_workers=self.max_workers,
+            sbatch_args=[
+                f"--job-name={self.job_name}",
+                *self.resources.to_sbatch_args(),
+                *export_args,
+            ],
+            pre_worker_commands=list(self.pre_worker_commands),
+            use_job_arrays=self.use_job_arrays,
         )
-
-        pool_holder: list[SlurmWorkerPool] = []
-        pool = SlurmWorkerPool(
-            _sbatch_base_args=sbatch_base_args,
-            _script_path=script_path,
-            _max_workers=self.max_workers,
-            _max_failed_workers=self.max_failed_workers,
-            _backend=self,
-            _poll_interval=self.poll_interval,
-            _coordinator=coordinator,
-            _stop_event=threading.Event(),
-            _use_job_arrays=self.use_job_arrays,
-            _scale_thread=threading.Thread(
-                target=lambda: pool_holder[0]._scale_loop(),
-                name="furu-slurm-worker-pool-scale",
-            ),
-            _job_ids=job_ids,
-            _worker_files=worker_files,
-        )
-        pool_holder.append(pool)
-        pool._scale_thread.start()
-        return pool

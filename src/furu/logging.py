@@ -9,15 +9,15 @@ Three kinds of file exist:
   records there; ``print`` stays on your terminal. In a worker child
   (``worker/_child.py``) fds 1 and 2 point at it for the job, so prints,
   logging and C output all land there.
-- ``executions/<id>/execution.log``: the coordinator's story, written by a
-  ``FileHandler`` on the ``furu`` logger for the life of
-  ``ExecutionCoordinator.run``.
+- ``executions/<id>/execution.log``: a worker run's story, written by a
+  ``FileHandler`` on the ``furu`` logger for the life of ``run_on_workers``.
+  The furu manager keeps its own story the same way in ``manager.log``.
 - one file per Slurm worker (sbatch ``--output``): its boot output, what it ran
   where, and why it exited.
 
 The terminal is a view, not a home: Furu logs to stdout at INFO. An in-process
-run shows your ``furu.get_logger()`` lines; a worker run shows the coordinator's
-story and worker warnings. The component column is the logger name minus
+run shows your ``furu.get_logger()`` lines; a worker run shows the run's story
+and worker warnings. The component column is the logger name minus
 ``furu.``. Records may carry ``extra={"path": p}``, a pointer to where the
 details live.
 """

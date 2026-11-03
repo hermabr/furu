@@ -1,23 +1,32 @@
 from __future__ import annotations
 
+import shlex
 import subprocess
+import sys
 import threading
 import time
 import traceback
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from furu.config import get_config
 from furu.logging import get_logger
-from furu.worker.protocol import PoolHandoff
+from furu.utils import format_duration
+from furu.worker._cli import MANAGER_URL_ENV_VAR
+from furu.worker.protocol import ErrorMessage, SlurmPool, WarningMessage
 
 if TYPE_CHECKING:
-    from furu.execution.execution_coordinator import ExecutionCoordinator
-    from furu.worker.backends.slurm.backend import SlurmWorkerBackend
+    from furu.execution.manager import Manager
 
 logger = get_logger("slurm")
 
 _SLURM_COMMAND_TIMEOUT_S = 60.0
+_POLL_INTERVAL_S = 10.0
+# A failing pool replaces at most one worker per minute; it is broken once
+# more than 10 workers failed over at least 30 minutes with no job completing.
+_REPLACE_INTERVAL_S = 60.0
+_BROKEN_AFTER_FAILURES = 10
+_BROKEN_AFTER_S = 30 * 60.0
 
 _UNFINISHED_STATES = frozenset(
     {
@@ -33,55 +42,84 @@ _UNFINISHED_STATES = frozenset(
 _PRUNABLE_STATES = frozenset({"COMPLETED"})
 
 
-@dataclass(slots=True)
 class SlurmWorkerPool:
-    _sbatch_base_args: tuple[str, ...]
-    _script_path: Path
-    _max_workers: int
-    _max_failed_workers: int
-    _backend: SlurmWorkerBackend
-    _poll_interval: float
-    _coordinator: ExecutionCoordinator
-    _stop_event: threading.Event
-    _use_job_arrays: bool
-    _scale_thread: threading.Thread
-    _job_ids: list[str]
-    _worker_files: set[Path]
-    _failed: list[str] = field(default_factory=list)  # "<job id> <state>"
-    _completed_seen: int = 0
+    """One sbatch recipe's workers, sized to the manager's queue every 10 s."""
 
-    def handoff(self) -> PoolHandoff:
+    def __init__(
+        self,
+        *,
+        manager: Manager,
+        key: str,
+        definition: SlurmPool,
+        directory: Path,
+    ) -> None:
+        self._manager = manager
+        self._key = key
+        self._use_job_arrays = definition.use_job_arrays
+        self._job_ids: list[str] = []
+        self._streak: list[str] = []  # "<job id> <state>" since a job last completed
+        self._streak_started = 0.0
+        self._last_submit = -_REPLACE_INTERVAL_S
+        self._stop_event = threading.Event()
+
+        # Workers are named after their Slurm job so `sacct -j <worker>` works.
+        job_id = (
+            "${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
+            if self._use_job_arrays
+            else "${SLURM_JOB_ID}"
+        )
+        # One file per worker, named after its job, so either side can find it.
+        self._log_dir = log_dir = directory / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        self._script_path = directory / "worker.sh"
+        self._script_path.touch(mode=0o700)
+        self._script_path.chmod(0o700)
+        # Rewritten in place each time a manager starts; sbatch copies the
+        # script at submission, so queued workers keep their manager's URL.
+        self._script_path.write_text(
+            "#!/bin/bash\n"
+            "set -euo pipefail\n"
+            + "".join(f"{command}\n" for command in definition.pre_worker_commands)
+            # Do not leak the manager's environment into the job's snapshot.
+            + "unset VIRTUAL_ENV\n"
+            f"export {MANAGER_URL_ENV_VAR}={shlex.quote(manager.url)}\n"
+            f'component="{job_id}"\n'
+            # Workers run the manager's own furu, wherever it came from.
+            f"exec {shlex.quote(sys.executable)} -m furu.worker._cli \\\n"
+            f"    --pool {shlex.quote(key)} \\\n"
+            '    --component "${component}" \\\n'
+            f'    --log {shlex.quote(str(log_dir))}/"${{component}}.log" \\\n'
+            f"    --idle-timeout {get_config().worker.idle_timeout_seconds}\n"
+        )
+        self._sbatch_args = (
+            f"--chdir={directory}",
+            # stdout and stderr, merged as Slurm does by default.
+            f"--output={log_dir}/{'%A_%a' if self._use_job_arrays else '%j'}.log",
+            *definition.sbatch_args,
+        )
+        self._scale_thread = threading.Thread(
+            target=self._scale_loop, name="furu-slurm-worker-pool-scale"
+        )
+        self._scale_thread.start()
+
+    def job_completed(self) -> None:
+        self._streak.clear()
+
+    def stop(self) -> None:
+        """Stop scaling and cancel queued workers; running ones finish."""
         self._stop_event.set()
         self._scale_thread.join()
-        job_ids, self._job_ids[:] = list(self._job_ids), []
-        logger.info("handed off %d slurm workers", len(job_ids))
-        return PoolHandoff(job_ids=job_ids, worker_files=sorted(self._worker_files))
-
-    def stop(self, *, timeout: float) -> None:
-        self._stop_event.set()
-        self._scale_thread.join(timeout=timeout)
-
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            active_job_states = self._active_job_states()
-            if active_job_states is not None and not active_job_states:
-                return
-            time.sleep(min(self._poll_interval, max(0.0, deadline - time.monotonic())))
-
-        if not self._job_ids:
-            return
-        result = subprocess.run(
-            ["scancel", *self._job_ids],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=_SLURM_COMMAND_TIMEOUT_S,
-        )
-        if result.returncode != 0:
-            logger.error(
-                "scancel failed for slurm worker jobs %s: %s",
-                ",".join(self._job_ids),
-                result.stderr.strip(),
+        pending = [
+            job_id
+            for job_id, state in (self._active_job_states() or {}).items()
+            if state == "PENDING"
+        ]
+        if pending:
+            subprocess.run(
+                ["scancel", *pending],
+                check=False,
+                capture_output=True,
+                timeout=_SLURM_COMMAND_TIMEOUT_S,
             )
 
     def _scale_once(self) -> None:
@@ -103,43 +141,42 @@ class SlurmWorkerPool:
                 else states.get(job_id) not in (None, *_PRUNABLE_STATES)
             )
         ]
+        now = time.monotonic()
         if failed:
-            if len(self._coordinator.completed) > self._completed_seen:
-                self._completed_seen = len(self._coordinator.completed)
-                self._failed.clear()
-            self._failed += [f"{j} {s}" for j, s in sorted(failed.items())]
-            if len(self._failed) > self._max_failed_workers:
-                self._report_failure(
-                    f"more than {self._max_failed_workers} slurm workers failed "
-                    f"without any job completing: {', '.join(self._failed)}"
+            if not self._streak:
+                self._streak_started = now
+            for job_id, state in sorted(failed.items()):
+                self._streak.append(f"{job_id} {state}")
+                log = self._log_dir / f"{job_id}.log"
+                self._manager.notify(
+                    self._key,
+                    WarningMessage(reason=f"slurm worker {job_id} {state} → {log}"),
                 )
-                return
-            logger.warning(
-                "replacing failed slurm workers (%d of %d tolerated since the "
-                "last completed job): %s",
-                len(self._failed),
-                self._max_failed_workers,
-                ", ".join(self._failed),
-            )
-        with self._coordinator.lock:
-            busy = len(
-                {job.worker for job in self._coordinator.running.values()}
-                & set(self._job_ids)
-            )
-            # Ready leases need capacity in addition to workers already busy.
-            demand = min(
-                busy
-                + self._coordinator.count_satisfiable_jobs(
-                    backend=self._backend,
-                    max_workers=self._max_workers,
-                ),
-                self._max_workers,
-            )
-        to_spawn = demand - len(self._job_ids)
-        if to_spawn <= 0:
-            if to_spawn < 0:
-                self._cancel_queued_workers(-to_spawn, active_job_states or {})
+            if (
+                len(self._streak) > _BROKEN_AFTER_FAILURES
+                and now - self._streak_started >= _BROKEN_AFTER_S
+            ):
+                self._manager.notify(
+                    self._key,
+                    ErrorMessage(
+                        reason=f"slurm pool is broken: {len(self._streak)} workers "
+                        f"failed over {format_duration(now - self._streak_started)} "
+                        f"without a job completing: {', '.join(self._streak)}"
+                    ),
+                )
+                self._streak.clear()
+
+        to_spawn = self._manager.demand(self._key) - len(self._job_ids)
+        if to_spawn < 0:
+            self._cancel_queued_workers(-to_spawn, active_job_states or {})
             return
+        if to_spawn == 0:
+            return
+        if self._streak:
+            if now - self._last_submit < _REPLACE_INTERVAL_S:
+                return
+            to_spawn = 1
+            self._last_submit = now
 
         for _ in range(1 if self._use_job_arrays else to_spawn):
             if self._stop_event.is_set():
@@ -149,7 +186,7 @@ class SlurmWorkerPool:
                     "sbatch",
                     "--parsable",
                     *((f"--array=0-{to_spawn - 1}",) if self._use_job_arrays else ()),
-                    *self._sbatch_base_args,
+                    *self._sbatch_args,
                     str(self._script_path),
                 ],
                 check=False,
@@ -299,14 +336,13 @@ class SlurmWorkerPool:
         try:
             while not self._stop_event.is_set():
                 self._scale_once()
-                self._stop_event.wait(timeout=self._poll_interval)
+                self._stop_event.wait(timeout=_POLL_INTERVAL_S)
         except Exception as exc:
             logger.exception("scale loop crashed")
-            self._report_failure(
-                "slurm worker pool scale loop crashed: "
-                + traceback.format_exception_only(type(exc), exc)[-1].strip()
+            self._manager.notify(
+                self._key,
+                ErrorMessage(
+                    reason="slurm worker pool scale loop crashed: "
+                    + traceback.format_exception_only(type(exc), exc)[-1].strip()
+                ),
             )
-
-    def _report_failure(self, message: str) -> None:
-        self._stop_event.set()
-        self._coordinator.fail(message)

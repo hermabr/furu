@@ -1,19 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
     from furu.core import Spec
-    from furu.execution.execution_coordinator import ExecutionCoordinator
     from furu.resources import Worker
-    from furu.worker.protocol import PoolHandoff
+    from furu.worker.protocol import Pool
 
 
 class WorkerBackend(Protocol):
-    @property
-    def execution_coordinator_listen_host(self) -> str: ...
+    """What a script passes to ``create(..., on=[...])``: a pool's recipe."""
 
     @property
     def worker(self) -> Worker:
@@ -26,23 +23,21 @@ class WorkerBackend(Protocol):
         ...
 
     @property
-    def pool_key(self) -> str: ...
+    def pool_key(self) -> str:
+        """Equal for backends whose workers are interchangeable."""
+        ...
 
-    def start_pool(
-        self,
-        *,
-        coordinator: ExecutionCoordinator,
-        bound_port: int,
-        auth_token: str,
-        executor_dir: Path,
-        handoff: PoolHandoff,
-    ) -> WorkerPool: ...
+    def pool(self) -> Pool:
+        """The plain data the manager needs to start this pool's workers."""
+        ...
 
 
 class WorkerPool(Protocol):
-    def stop(self, *, timeout: float) -> None: ...
+    """A manager's running pool."""
 
-    def handoff(self) -> PoolHandoff: ...
+    def job_completed(self) -> None: ...
+
+    def stop(self) -> None: ...
 
 
 def can_run(backend: WorkerBackend, spec: Spec) -> bool:

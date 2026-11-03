@@ -1,19 +1,15 @@
 import functools
-import json
-import os
 import subprocess
+from importlib.metadata import version
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import (
     BaseSettings,
-    JsonConfigSettingsSource,
     PydanticBaseSettingsSource,
     PyprojectTomlConfigSettingsSource,
     SettingsConfigDict,
 )
-
-_WORKER_JSON_CONFIG_FILE_ENV_VAR = "_FURU_WORKER_JSON_CONFIG_FILE"
 
 
 @functools.cache
@@ -76,10 +72,8 @@ class _FuruDirectories(BaseModel):
 class _FuruWorkerConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    connect_host: str | None = None
     idle_timeout_seconds: float = 60.0
     max_retries_per_object: int = 10
-    max_failures_per_worker: int = 10
 
 
 class _Config(BaseSettings):
@@ -95,8 +89,17 @@ class _Config(BaseSettings):
     )
 
     debug_mode: bool = False
+    # Each furu version's manager publishes address.json in its own
+    # subdirectory; scripts on compute nodes read it, so point it at storage
+    # they can see.
+    manager_dir: Path = Path.home() / ".furu" / "manager"
     directories: _FuruDirectories = Field(default_factory=_FuruDirectories)
     worker: _FuruWorkerConfig = Field(default_factory=_FuruWorkerConfig)
+
+    @property
+    def manager_version_dir(self) -> Path:
+        """This furu version's manager: one per version, so scripts never meet another."""
+        return self.manager_dir / version("furu")
 
     @property
     def run_directories(self) -> _FuruDirectories:
@@ -125,11 +128,6 @@ class _Config(BaseSettings):
     ) -> tuple[PydanticBaseSettingsSource, ...]:
         return (
             init_settings,
-            JsonConfigSettingsSource(
-                settings_cls,
-                json_file=os.environ.get(_WORKER_JSON_CONFIG_FILE_ENV_VAR),
-                json_file_encoding="utf-8",
-            ),
             env_settings,
             dotenv_settings,
             PyprojectTomlConfigSettingsSource(settings_cls),
@@ -147,15 +145,3 @@ def get_config() -> _Config:
 def _set_config(config: _Config) -> None:
     global _config
     _config = config
-
-
-def _dump_worker_json_config(config: _Config, *, coordinator_url: str) -> str:
-    document = config.model_dump(mode="json")
-    document["coordinator_url"] = coordinator_url
-    return json.dumps(document, indent=2) + "\n"
-
-
-def _read_worker_json_config(path: Path) -> tuple[str, _Config]:
-    with path.open(encoding="utf-8") as file:
-        document = json.load(file)
-    return document.pop("coordinator_url"), _Config.model_validate(document)

@@ -2,16 +2,13 @@ from __future__ import annotations
 
 import queue
 import threading
-import time
 import traceback
-from contextlib import suppress
 from pathlib import Path
 from typing import assert_never
 
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import ClientConnection, connect
 
-from furu.config import _Config, _read_worker_json_config, get_config
 from furu.logging import get_logger
 from furu.utils import format_duration
 from furu.worker import protocol
@@ -35,7 +32,7 @@ def _start_job_thread(
     child_slot: ChildSlot,
     cancelled: threading.Event,
     events: queue.Queue[_Event],
-) -> threading.Thread:
+) -> None:
     def run() -> None:
         try:
             events.put(child_slot.run(job, cancelled=cancelled))
@@ -45,187 +42,104 @@ def _start_job_thread(
         except BaseException as exc:  # noqa: BLE001 -- re-raised on the main thread
             events.put(exc)
 
-    thread = threading.Thread(
-        target=run,
-        name="furu-worker-job",
-        daemon=True,
-    )
-    thread.start()
-    return thread
-
-
-def _label(job: protocol.Job) -> str:
-    label = job.artifacts[0].log_label
-    return label + (f" ×{len(job.artifacts)}" if len(job.artifacts) > 1 else "")
-
-
-def _read_target(coordinator: str | Path) -> tuple[str, _Config | None]:
-    if isinstance(coordinator, Path):
-        return _read_worker_json_config(coordinator)
-    return coordinator, None
+    threading.Thread(target=run, name="furu-worker-job", daemon=True).start()
 
 
 def worker_loop(
     *,
-    coordinator: str | Path,
+    url: str,
     pool: str,
     idle_timeout: float | None,
-    max_failures: int,
     component: str,
     backend: str,
-    materialize_snapshot: bool,
     worker_log: Path | None = None,
-    disconnect_grace: float = 120.0,
 ) -> None:
-    """Run jobs from the coordinator until it closes or this worker gives up.
+    """Run jobs from the manager that started this worker, then exit.
 
-    Only a worker with its own log (``worker_log``: a Slurm worker's output
-    file) notes what it ran there; a local worker's lines go to the
-    coordinator's execution.log, which already says it.
+    The worker never reconnects: when the connection drops it finishes its
+    current job and exits. Only a worker with its own log (``worker_log``: a
+    Slurm worker's output file) notes what it ran there.
     """
     logger = get_logger(component)
     note = logger.info if worker_log is not None else logger.debug
-    target = _read_target(coordinator)
-    if target[1] is not None and target[1] != get_config():
-        note("worker configuration changed before startup; exiting")
-        return
-    child_slot = ChildSlot(
-        worker=component,
-        backend=backend,
-        materialize_snapshot=materialize_snapshot,
-        worker_log=worker_log,
-    )
+    child_slot = ChildSlot(worker=component, backend=backend, worker_log=worker_log)
     events: queue.Queue[_Event] = queue.Queue()
     job: protocol.Job | None = None
-    job_thread: threading.Thread | None = None
     cancelled = threading.Event()  # replaced with each new job
-    result: protocol.JobResult | None = None
     execution_log: Path | None = None
-    failures = 0
+    connected = True
     try:
-        while True:
-            with connect(target[0], max_size=None) as connection:
-                connection.send(
-                    protocol.HelloMessage(
-                        worker=component,
-                        backend=backend,
-                        pool=pool,
-                        running=job.artifacts if job is not None else [],
-                        log=worker_log,
-                    ).model_dump_json()
-                )
-                threading.Thread(
-                    target=_read_messages,
-                    args=(connection, events),
-                    name="furu-worker-reader",
-                    daemon=True,
-                ).start()
-                if result is not None:
-                    events.put(result)  # finished while disconnected
-                while True:
-                    try:
-                        event = events.get(
-                            timeout=None if job is not None else idle_timeout
-                        )
-                    except queue.Empty:
-                        assert idle_timeout is not None
-                        note("no work for %s; exiting", format_duration(idle_timeout))
-                        return
-                    match event:
-                        case None:
-                            break
-                        case BaseException():
-                            raise event
-                        case protocol.Job():
-                            assert job is None
-                            job = event
-                            if worker_log is not None:
-                                if job.execution_log != execution_log:
-                                    execution_log = job.execution_log
-                                    logger.info(
-                                        "connected · exec %s",
-                                        execution_log.parent.name[:5],
-                                        extra={"path": execution_log},
-                                    )
-                                logger.info(
-                                    "running %s",
-                                    _label(job),
-                                    extra={"path": job.run_logs[0]},
-                                )
-                            cancelled = threading.Event()
-                            job_thread = _start_job_thread(
-                                job, child_slot, cancelled, events
+        with connect(url, max_size=None) as connection:
+            connection.send(
+                protocol.HelloMessage(
+                    worker=component, backend=backend, pool=pool, log=worker_log
+                ).model_dump_json()
+            )
+            threading.Thread(
+                target=_read_messages,
+                args=(connection, events),
+                name="furu-worker-reader",
+                daemon=True,
+            ).start()
+            while connected or job is not None:
+                try:
+                    event = events.get(
+                        timeout=None if job is not None else idle_timeout
+                    )
+                except queue.Empty:
+                    assert idle_timeout is not None
+                    note("no work for %s; exiting", format_duration(idle_timeout))
+                    return
+                match event:
+                    case None:
+                        connected = False
+                        if job is not None:
+                            note(
+                                "lost the manager; finishing %s, then exiting",
+                                job.label,
                             )
-                        case protocol.CancelMessage():
-                            if job is not None and result is None:
-                                note(
-                                    "cancelled %s; killing child",
-                                    job.artifacts[0].log_label,
+                    case BaseException():
+                        raise event
+                    case protocol.Job():
+                        assert job is None
+                        job = event
+                        if worker_log is not None:
+                            if job.execution_log != execution_log:
+                                execution_log = job.execution_log
+                                logger.info(
+                                    "serving exec %s",
+                                    execution_log.parent.name[:5],
+                                    extra={"path": execution_log},
                                 )
-                                cancelled.set()
-                                child_slot.kill()
-                        case (
-                            protocol.JobCompletedResult()
-                            | protocol.JobFailedResult()
-                            | protocol.JobBlockedResult()
-                        ):
-                            result = event
+                            logger.info(
+                                "running %s",
+                                job.label,
+                                extra={"path": job.run_logs[0]},
+                            )
+                        cancelled = threading.Event()
+                        _start_job_thread(job, child_slot, cancelled, events)
+                    case protocol.CancelMessage():
+                        if job is not None:
+                            note("cancelled %s; killing child", job.label)
+                            cancelled.set()
+                            child_slot.kill()
+                    case (
+                        protocol.JobCompletedResult()
+                        | protocol.JobFailedResult()
+                        | protocol.JobBlockedResult()
+                    ):
+                        job = None
+                        if connected:
                             try:
                                 connection.send(
                                     protocol.job_result_adapter.dump_json(
-                                        result
+                                        event
                                     ).decode()
                                 )
                             except ConnectionClosed:
-                                continue  # Wait for the reader's None before reconnecting.
-                            job = result = None
-                            job_thread = None
-                            failures = (
-                                failures + 1
-                                if isinstance(event, protocol.JobFailedResult)
-                                else 0
-                            )
-                            if failures == max_failures:
-                                logger.warning(
-                                    "exiting after %d failed jobs in a row", failures
-                                )
-                                raise SystemExit(
-                                    f"{component} exited after {failures} failed "
-                                    "jobs in a row"
-                                )
-                        case _:
-                            assert_never(event)
-
-            deadline = time.monotonic() + (
-                disconnect_grace if isinstance(coordinator, Path) else 0
-            )
-            new_target = target
-            while True:
-                with suppress(ValueError):  # truncated mid-rewrite
-                    new_target = _read_target(coordinator)
-                if new_target != target or time.monotonic() >= deadline:
-                    break
-                time.sleep(1)
-            if new_target != target:
-                if new_target[1] != target[1]:
-                    if job is not None and result is None:
-                        cancelled.set()
-                        child_slot.kill()
-                        assert job_thread is not None
-                        job_thread.join()
-                    note("worker configuration changed; exiting")
-                    return
-                target = new_target
-                note("coordinator moved; reconnecting")
-                continue
-            if job is not None and result is None:
-                logger.warning(
-                    "server closed the connection mid-job; killing %s",
-                    job.artifacts[0].log_label,
-                )
-                cancelled.set()
-                child_slot.kill()
-            note("server closed the connection; exiting")
-            return
+                                connected = False
+                    case _:
+                        assert_never(event)
+        note("manager closed the connection; exiting")
     finally:
         child_slot.close()

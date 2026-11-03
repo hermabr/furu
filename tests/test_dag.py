@@ -9,7 +9,7 @@ import furu
 from furu import Spec
 from furu.config import get_config
 from furu.dag import Dag, DagNode
-from furu.execution.execution_coordinator import ExecutionCoordinator
+from furu.execution.run_on_workers import run_on_workers
 from furu.locking import lock
 from furu.storage._layout import (
     attempt_dir_in,
@@ -329,62 +329,58 @@ class DependsOnFailing(Spec[int]):
         return self.child.create() + 1
 
 
-def test_execution_coordinator_run_runs_single_zero_dependency_node(tmp_path: Path):
+def test_worker_run_runs_single_zero_dependency_node(tmp_path: Path):
     leaf = TrackingLeaf(n=3, calls_dir=str(tmp_path))
 
-    ExecutionCoordinator.run([leaf], worker_backends=(LocalThreadWorkerBackend(),))
+    run_on_workers([leaf], [LocalThreadWorkerBackend()])
 
     assert _calls(tmp_path, TrackingLeaf) == ["3"]
     assert leaf.status == "done"
     assert leaf.create() == 6
 
 
-def test_execution_coordinator_run_runs_static_dependencies_in_order(tmp_path: Path):
+def test_worker_run_runs_static_dependencies_in_order(tmp_path: Path):
     leaf = TrackingLeaf(n=4, calls_dir=str(tmp_path))
     mid = TrackingMid(label="m", child=leaf, calls_dir=str(tmp_path))
 
-    ExecutionCoordinator.run([mid], worker_backends=(LocalThreadWorkerBackend(),))
+    run_on_workers([mid], [LocalThreadWorkerBackend()])
 
     assert _calls(tmp_path, TrackingLeaf) == ["4"]
     assert _calls(tmp_path, TrackingMid) == ["m"]
     assert mid.create() == 9
 
 
-def test_execution_coordinator_run_handles_shared_dependency_only_once(
+def test_worker_run_handles_shared_dependency_only_once(
     tmp_path: Path,
 ):
     shared = TrackingLeaf(n=5, calls_dir=str(tmp_path))
     left = TrackingMid(label="L", child=shared, calls_dir=str(tmp_path))
     right = TrackingMid(label="R", child=shared, calls_dir=str(tmp_path))
 
-    ExecutionCoordinator.run(
-        [left, right], worker_backends=(LocalThreadWorkerBackend(),)
-    )
+    run_on_workers([left, right], [LocalThreadWorkerBackend()])
 
     assert _calls(tmp_path, TrackingLeaf) == ["5"]
     assert sorted(_calls(tmp_path, TrackingMid)) == ["L", "R"]
 
 
-def test_execution_coordinator_run_with_multiple_workers_runs_independent_nodes(
+def test_worker_run_with_multiple_workers_runs_independent_nodes(
     tmp_path: Path,
 ):
     leaves = [TrackingLeaf(n=i, calls_dir=str(tmp_path)) for i in range(8)]
 
-    ExecutionCoordinator.run(
-        leaves, worker_backends=(LocalThreadWorkerBackend(max_workers=4),)
-    )
+    run_on_workers(leaves, [LocalThreadWorkerBackend(max_workers=4)])
 
     assert sorted(_calls(tmp_path, TrackingLeaf), key=int) == [str(i) for i in range(8)]
     for leaf in leaves:
         assert leaf.status == "done"
 
 
-def test_execution_coordinator_run_discovers_lazy_dependencies_and_reruns_parent(
+def test_worker_run_discovers_lazy_dependencies_and_reruns_parent(
     tmp_path: Path,
 ):
     parent = LazyChildLoader(base=7, calls_dir=str(tmp_path))
 
-    ExecutionCoordinator.run([parent], worker_backends=(LocalThreadWorkerBackend(),))
+    run_on_workers([parent], [LocalThreadWorkerBackend()])
 
     assert _calls(tmp_path, TrackingLeaf) == ["7"]
     # Parent's create() is called once to discover the lazy dep (raising
@@ -397,19 +393,19 @@ def test_execution_coordinator_run_discovers_lazy_dependencies_and_reruns_parent
     assert "=== Debug Traceback ===" not in parent_log
 
 
-def test_execution_coordinator_run_skips_already_completed_objects(tmp_path: Path):
+def test_worker_run_skips_already_completed_objects(tmp_path: Path):
     leaf = TrackingLeaf(n=8, calls_dir=str(tmp_path))
     leaf.create()
     mid = TrackingMid(label="cached-child", child=leaf, calls_dir=str(tmp_path))
 
-    ExecutionCoordinator.run([mid], worker_backends=(LocalThreadWorkerBackend(),))
+    run_on_workers([mid], [LocalThreadWorkerBackend()])
 
     # Only the in-process create above; the worker never recomputed the leaf.
     assert _calls(tmp_path, TrackingLeaf) == ["8"]
     assert _calls(tmp_path, TrackingMid) == ["cached-child"]
 
 
-def test_execution_coordinator_run_reports_worker_failures():
+def test_worker_run_reports_worker_failures():
     failing = AlwaysFails(name="boom")
     parent = DependsOnFailing(label="p", child=failing)
 
@@ -423,9 +419,9 @@ def test_execution_coordinator_run_reports_worker_failures():
         override_config(no_retries),
         pytest.raises(RuntimeError, match="1 spec failed"),
     ):
-        ExecutionCoordinator.run(
+        run_on_workers(
             [parent],
-            worker_backends=(LocalThreadWorkerBackend(),),
+            [LocalThreadWorkerBackend()],
         )
 
     assert failing.status == "failed"
