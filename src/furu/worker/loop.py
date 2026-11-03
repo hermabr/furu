@@ -12,7 +12,7 @@ from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import ClientConnection, connect
 
 from furu.config import _Config, _read_worker_json_config, get_config
-from furu.logging import get_logger
+from furu.logging import _group_label, get_logger
 from furu.utils import format_duration
 from furu.worker import protocol
 from furu.worker.execute import ChildSlot
@@ -52,11 +52,6 @@ def _start_job_thread(
     )
     thread.start()
     return thread
-
-
-def _label(job: protocol.Job) -> str:
-    label = job.artifacts[0].log_label
-    return label + (f" ×{len(job.artifacts)}" if len(job.artifacts) > 1 else "")
 
 
 def _read_target(coordinator: str | Path) -> tuple[str, _Config | None]:
@@ -149,7 +144,9 @@ def worker_loop(
                                     )
                                 logger.info(
                                     "running %s",
-                                    _label(job),
+                                    _group_label(
+                                        job.artifacts[0].log_label, len(job.artifacts)
+                                    ),
                                     extra={"path": job.run_logs[0]},
                                 )
                             cancelled = threading.Event()

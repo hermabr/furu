@@ -17,7 +17,7 @@ from furu.config import get_config
 from furu.core import Spec
 from furu.dag import Dag, DagNode
 from furu.dependencies import missing_dependencies
-from furu.logging import _display_path, _execution_log, get_logger
+from furu.logging import _display_path, _execution_log, _group_label, get_logger
 from furu.metadata import ArtifactSpec
 from furu.provenance import SubmitProvenance, capture_submit_provenance
 from furu.storage._layout import execution_log_path_in, run_log_path_in
@@ -236,9 +236,8 @@ class ExecutionCoordinator(Dag):
                     node = nodes[0]
                     run_logs = [run_log_path_in(node.obj._base_dir) for node in nodes]
                     logger.info(
-                        "leased %s%s to %s",
-                        node.obj._log_label,
-                        f" ×{len(nodes)}" if len(nodes) > 1 else "",
+                        "leased %s to %s",
+                        _group_label(node.obj._log_label, len(nodes)),
                         worker,
                         extra={"path": run_logs[0]},
                     )
@@ -290,9 +289,7 @@ class ExecutionCoordinator(Dag):
     def adopt(self, artifacts: Sequence[ArtifactSpec], *, worker: str) -> bool:
         with self.lock:
             object_ids = [artifact.object_id for artifact in artifacts]
-            label = artifacts[0].log_label
-            if len(artifacts) > 1:
-                label += f" ×{len(artifacts)}"
+            label = _group_label(artifacts[0].log_label, len(artifacts))
             if self.done.is_set() or any(
                 object_id not in self.ready for object_id in object_ids
             ):
@@ -361,9 +358,7 @@ class ExecutionCoordinator(Dag):
                 for other_id, other in self.ready.items():
                     if len(member_ids) + 1 >= cap:
                         break
-                    if other_id in consumed:
-                        continue
-                    if other_id in self.running_elsewhere:
+                    if other_id in consumed or other_id in self.running_elsewhere:
                         continue
                     other_group = other.batch_group(backend.worker)
                     if other_group is None or other_group[0] != group_key:

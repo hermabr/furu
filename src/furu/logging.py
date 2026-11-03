@@ -170,6 +170,11 @@ def _display_path(path: str | os.PathLike[str]) -> str:
         return str(path)
 
 
+def _group_label(label: str, count: int) -> str:
+    """``label`` for a batch of ``count`` specs led by it."""
+    return label + (f" ×{count}" if count > 1 else "")
+
+
 def _component(record: logging.LogRecord) -> str | None:
     if record.name in (_BASE_LOGGER_NAME, "root"):
         return None

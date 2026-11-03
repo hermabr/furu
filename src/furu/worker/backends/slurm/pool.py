@@ -33,22 +33,36 @@ _UNFINISHED_STATES = frozenset(
 _PRUNABLE_STATES = frozenset({"COMPLETED"})
 
 
+def _slurm(*argv: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        argv,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=_SLURM_COMMAND_TIMEOUT_S,
+    )
+
+
 @dataclass(slots=True)
 class SlurmWorkerPool:
+    """Keeps ``_backend.max_workers`` Slurm workers queued while there is work."""
+
+    _backend: SlurmWorkerBackend
+    _coordinator: ExecutionCoordinator
     _sbatch_base_args: tuple[str, ...]
     _script_path: Path
-    _max_workers: int
-    _max_failed_workers: int
-    _backend: SlurmWorkerBackend
-    _poll_interval: float
-    _coordinator: ExecutionCoordinator
-    _stop_event: threading.Event
-    _use_job_arrays: bool
-    _scale_thread: threading.Thread
     _job_ids: list[str]
     _worker_files: set[Path]
+    _stop_event: threading.Event = field(default_factory=threading.Event)
     _failed: list[str] = field(default_factory=list)  # "<job id> <state>"
     _completed_seen: int = 0
+    _scale_thread: threading.Thread = field(init=False)
+
+    def __post_init__(self) -> None:
+        self._scale_thread = threading.Thread(
+            target=self._scale_loop, name="furu-slurm-worker-pool-scale"
+        )
+        self._scale_thread.start()
 
     def handoff(self) -> PoolHandoff:
         self._stop_event.set()
@@ -66,17 +80,13 @@ class SlurmWorkerPool:
             active_job_states = self._active_job_states()
             if active_job_states is not None and not active_job_states:
                 return
-            time.sleep(min(self._poll_interval, max(0.0, deadline - time.monotonic())))
+            time.sleep(
+                min(self._backend.poll_interval, max(0.0, deadline - time.monotonic()))
+            )
 
         if not self._job_ids:
             return
-        result = subprocess.run(
-            ["scancel", *self._job_ids],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=_SLURM_COMMAND_TIMEOUT_S,
-        )
+        result = _slurm("scancel", *self._job_ids)
         if result.returncode != 0:
             logger.error(
                 "scancel failed for slurm worker jobs %s: %s",
@@ -108,9 +118,9 @@ class SlurmWorkerPool:
                 self._completed_seen = len(self._coordinator.completed)
                 self._failed.clear()
             self._failed += [f"{j} {s}" for j, s in sorted(failed.items())]
-            if len(self._failed) > self._max_failed_workers:
+            if len(self._failed) > self._backend.max_failed_workers:
                 self._report_failure(
-                    f"more than {self._max_failed_workers} slurm workers failed "
+                    f"more than {self._backend.max_failed_workers} slurm workers failed "
                     f"without any job completing: {', '.join(self._failed)}"
                 )
                 return
@@ -118,7 +128,7 @@ class SlurmWorkerPool:
                 "replacing failed slurm workers (%d of %d tolerated since the "
                 "last completed job): %s",
                 len(self._failed),
-                self._max_failed_workers,
+                self._backend.max_failed_workers,
                 ", ".join(self._failed),
             )
         with self._coordinator.lock:
@@ -131,9 +141,9 @@ class SlurmWorkerPool:
                 busy
                 + self._coordinator.count_satisfiable_jobs(
                     backend=self._backend,
-                    max_workers=self._max_workers,
+                    max_workers=self._backend.max_workers,
                 ),
-                self._max_workers,
+                self._backend.max_workers,
             )
         to_spawn = demand - len(self._job_ids)
         if to_spawn <= 0:
@@ -141,21 +151,16 @@ class SlurmWorkerPool:
                 self._cancel_queued_workers(-to_spawn, active_job_states or {})
             return
 
-        for _ in range(1 if self._use_job_arrays else to_spawn):
+        use_job_arrays = self._backend.use_job_arrays
+        for _ in range(1 if use_job_arrays else to_spawn):
             if self._stop_event.is_set():
                 return
-            result = subprocess.run(
-                [
-                    "sbatch",
-                    "--parsable",
-                    *((f"--array=0-{to_spawn - 1}",) if self._use_job_arrays else ()),
-                    *self._sbatch_base_args,
-                    str(self._script_path),
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=_SLURM_COMMAND_TIMEOUT_S,
+            result = _slurm(
+                "sbatch",
+                "--parsable",
+                *((f"--array=0-{to_spawn - 1}",) if use_job_arrays else ()),
+                *self._sbatch_base_args,
+                str(self._script_path),
             )
             if result.returncode != 0:
                 logger.warning(
@@ -164,7 +169,7 @@ class SlurmWorkerPool:
                 )
                 return
             job_id = result.stdout.strip().split(";", maxsplit=1)[0]
-            if self._use_job_arrays:
+            if use_job_arrays:
                 self._job_ids.extend(f"{job_id}_{arr_i}" for arr_i in range(to_spawn))
             else:
                 self._job_ids.append(job_id)
@@ -180,13 +185,7 @@ class SlurmWorkerPool:
         if not to_cancel:
             return
         try:
-            result = subprocess.run(
-                ["scancel", *to_cancel],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=_SLURM_COMMAND_TIMEOUT_S,
-            )
+            result = _slurm("scancel", *to_cancel)
         except subprocess.TimeoutExpired:
             logger.warning("scancel timed out; retrying on the next scale tick")
             return
@@ -205,24 +204,18 @@ class SlurmWorkerPool:
             return {}
 
         try:
-            result = subprocess.run(
-                [
-                    "squeue",
-                    "--noheader",
-                    "--jobs",
-                    ",".join(
-                        sorted({job_id.partition("_")[0] for job_id in self._job_ids})
-                    ),
-                    *(
-                        ("--array", "--format=%i %T")
-                        if self._use_job_arrays
-                        else ("--format=%A %T",)
-                    ),
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=_SLURM_COMMAND_TIMEOUT_S,
+            result = _slurm(
+                "squeue",
+                "--noheader",
+                "--jobs",
+                ",".join(
+                    sorted({job_id.partition("_")[0] for job_id in self._job_ids})
+                ),
+                *(
+                    ("--array", "--format=%i %T")
+                    if self._backend.use_job_arrays
+                    else ("--format=%A %T",)
+                ),
             )
         except subprocess.TimeoutExpired:
             logger.warning("squeue timed out while checking slurm jobs")
@@ -246,21 +239,15 @@ class SlurmWorkerPool:
             job_id.partition("_")[0] for job_id in known_job_ids
         }
         try:
-            result = subprocess.run(
-                [
-                    "sacct",
-                    "-X",
-                    "--noheader",
-                    "-o",
-                    "JobID,State",
-                    "--parsable2",
-                    "-j",
-                    ",".join(sorted(known_allocation_job_ids)),
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=_SLURM_COMMAND_TIMEOUT_S,
+            result = _slurm(
+                "sacct",
+                "-X",
+                "--noheader",
+                "-o",
+                "JobID,State",
+                "--parsable2",
+                "-j",
+                ",".join(sorted(known_allocation_job_ids)),
             )
         except subprocess.TimeoutExpired:
             logger.warning("sacct timed out while checking slurm jobs")
@@ -280,7 +267,7 @@ class SlurmWorkerPool:
             if separator and allocation_job_id in known_job_ids:
                 continue
             if job_id not in known_job_ids:
-                if self._use_job_arrays:
+                if self._backend.use_job_arrays:
                     array_allocation_job_id = allocation_job_id.partition("_")[0]
                     if (
                         "[" in job_id
@@ -299,7 +286,7 @@ class SlurmWorkerPool:
         try:
             while not self._stop_event.is_set():
                 self._scale_once()
-                self._stop_event.wait(timeout=self._poll_interval)
+                self._stop_event.wait(timeout=self._backend.poll_interval)
         except Exception as exc:
             logger.exception("scale loop crashed")
             self._report_failure(

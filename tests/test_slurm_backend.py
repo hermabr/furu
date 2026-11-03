@@ -20,6 +20,7 @@ from typing import Any, cast
 import pytest
 
 import furu.worker.backends.slurm.backend as slurm_backend_module
+import furu.worker.backends.slurm.pool as slurm_pool_module
 from furu.config import (
     _WORKER_JSON_CONFIG_FILE_ENV_VAR,
     _Config,
@@ -96,10 +97,10 @@ def _disable_slurm_pool_scale_thread(
         def join(self, timeout: float | None = None) -> None:
             pass
 
-    # Only the backend module's view of `threading`: other threads (the log
+    # Only the pool module's view of `threading`: other threads (the log
     # writer, for one) must keep working during the test.
     monkeypatch.setattr(
-        slurm_backend_module,
+        slurm_pool_module,
         "threading",
         SimpleNamespace(Thread=NoopThread, Event=threading.Event),
     )

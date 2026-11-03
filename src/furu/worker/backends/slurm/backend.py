@@ -5,7 +5,6 @@ import secrets
 import shlex
 import socket
 import subprocess
-import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -125,8 +124,6 @@ class SlurmWorkerBackend:
             )
             write_private_file(backup_file, inherited_file.read_text(), mode=0o600)
             overwrite_file_in_place(inherited_file, config_contents)
-        worker_files = {config_file, *inherited_files}
-        job_ids = list(handoff.job_ids)
 
         pre_worker_script = "".join(
             f"{command}\n" for command in self.pre_worker_commands
@@ -193,24 +190,11 @@ class SlurmWorkerBackend:
             *export_sbatch_arg,
         )
 
-        pool_holder: list[SlurmWorkerPool] = []
-        pool = SlurmWorkerPool(
+        return SlurmWorkerPool(
+            _backend=self,
+            _coordinator=coordinator,
             _sbatch_base_args=sbatch_base_args,
             _script_path=script_path,
-            _max_workers=self.max_workers,
-            _max_failed_workers=self.max_failed_workers,
-            _backend=self,
-            _poll_interval=self.poll_interval,
-            _coordinator=coordinator,
-            _stop_event=threading.Event(),
-            _use_job_arrays=self.use_job_arrays,
-            _scale_thread=threading.Thread(
-                target=lambda: pool_holder[0]._scale_loop(),
-                name="furu-slurm-worker-pool-scale",
-            ),
-            _job_ids=job_ids,
-            _worker_files=worker_files,
+            _job_ids=list(handoff.job_ids),
+            _worker_files={config_file, *inherited_files},
         )
-        pool_holder.append(pool)
-        pool._scale_thread.start()
-        return pool
