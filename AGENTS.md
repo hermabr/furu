@@ -27,4 +27,4 @@ Before calling something done, do a subtraction pass: what can be deleted, inlin
 
 ## Pull requests
 
-Keep PRs under about 500 changed lines outside tests; split larger ones before asking for review. Open the PR description with the decisions I need to make, if any.
+Split a PR where the pieces can be decided and merged independently, such as a refactor that the feature builds on. Don't split one design just to hit a line count. Open the PR description with the decisions I need to make, if any.
