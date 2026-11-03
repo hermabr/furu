@@ -19,10 +19,11 @@ from furu.migration.steps import (
     Renamed,
     Retyped,
     Rewrite,
+    _chain_identities,
     _commutes,
+    _describe_identity,
     _describe_step,
     _is_breaking,
-    _step_identity,
     validate_migration_declaration,
 )
 from furu.serializer.artifact import to_json
@@ -69,7 +70,7 @@ class _Chain:
     class_name: str
     names: frozenset[str]  # the current name and every name it moved from
     steps: tuple[MigrationStep, ...]
-    identities: tuple[tuple[str, ...], ...]  # _step_identity of each step
+    identities: tuple[tuple[str, ...], ...]  # see _chain_identities
     added_types: Mapping[int, object]  # declared type of each non-breaking Added
     artifact_serializers: tuple[type[Serializer], ...]
     current_schema: JsonValue
@@ -121,8 +122,8 @@ class _Covered:
 class _Orphaned:
     schema_directory: Path
     clash: str | None  # set when branches made conflicting steps in parallel
-    # Recorded steps that may be a declared step renamed or edited since.
-    renamed: tuple[str, ...] = ()
+    # Recorded Rewrites that may be a declared one that now follows another step.
+    moved: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -274,7 +275,7 @@ def _build_chain(
             )
         ),
         steps=steps,
-        identities=tuple(_step_identity(step) for step in steps),
+        identities=_chain_identities(steps),
         added_types=added_types,
         artifact_serializers=artifact_serializers,
         current_schema=current_schema,
@@ -337,26 +338,16 @@ def _normalize_snapshot(
     return normalized, dict(sorted(moves.items()))
 
 
-def _refactor_proof(identity: tuple[str, ...]) -> tuple[str, ...]:
-    """The part of a step's identity that survives renaming its function or
-    old type, or correcting ``was``."""
-    match identity:
-        case ("Rewrite", *_):
-            return ("Rewrite",)
-        case ("Retyped", field, *_):
-            return ("Retyped", field)
-    return identity
-
-
 @dataclass(frozen=True, slots=True)
 class _Recorded:
     """The steps a schema's writing code declared, as these chains see them."""
 
     had: dict[str, set[tuple[str, ...]]]  # per chain's class name
     unrecognised: bool  # some recorded step matches no declared step
-    # Unrecognised steps that may be a declared step the schema lacks, renamed
-    # or edited since: counted in ``had`` so the schema can still be matched.
-    renamed: tuple[str, ...]
+    # Unrecognised Rewrites taken as a declared Rewrite the schema lacks, which
+    # now follows another step (steps reordered or dropped around it): counted
+    # in ``had`` so the schema can still be matched.
+    moved: tuple[str, ...]
 
 
 def _recorded_steps(schema_directory: Path, chains: tuple[_Chain, ...]) -> _Recorded:
@@ -370,22 +361,22 @@ def _recorded_steps(schema_directory: Path, chains: tuple[_Chain, ...]) -> _Reco
             had[chain.class_name].add(identity)
         else:
             others.append((chain, identity))
-    # Only once every recognised step is known can the rest stand in for the
-    # steps the schema really lacks.
-    renamed: list[str] = []
+    # Only once every recognised step is known can a recorded Rewrite stand in
+    # for one the schema really lacks.
+    moved: list[str] = []
     for chain, identity in others:
-        if chain is None:
+        if chain is None or identity[0] != "Rewrite":
             continue
         for index in chain.pending(had[chain.class_name]):
-            if _refactor_proof(chain.identities[index]) == _refactor_proof(identity):
+            if chain.identities[index][0] == "Rewrite":
                 had[chain.class_name].add(chain.identities[index])
-                renamed.append(
-                    f"records {identity[0]}({', '.join(identity[1:])}) where "
+                moved.append(
+                    f"records {_describe_identity(identity)}, but "
                     f"{chain.label}.migrations[{index}] is "
-                    f"{_describe_step(chain.steps[index])}"
+                    f"{_describe_identity(chain.identities[index])}"
                 )
                 break
-    return _Recorded(had, bool(others), tuple(renamed))
+    return _Recorded(had, bool(others), tuple(moved))
 
 
 def _resolve_class(obj: Spec) -> _ClassResolution:
@@ -451,11 +442,11 @@ def _resolve_class(obj: Spec) -> _ClassResolution:
                 # nor stale.
                 if not recorded.unrecognised:
                     orphaned.append(_Orphaned(schema_directory, clash))
-            elif recorded.renamed:
+            elif recorded.moved:
                 # This spec's own past, but furu can't tell whether the schema
-                # already took the declared step: reusing it could apply that
-                # step twice, or skip it.
-                orphaned.append(_Orphaned(schema_directory, clash, recorded.renamed))
+                # already took the declared Rewrite: reusing it could apply the
+                # Rewrite twice, or skip it.
+                orphaned.append(_Orphaned(schema_directory, clash, recorded.moved))
             elif not any(move.generation.breaking for move in child_moves.values()):
                 covered.append(
                     _Covered(

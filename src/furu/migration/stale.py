@@ -101,8 +101,8 @@ def raise_if_stale(obj: Spec) -> None:
         lines.append(f"\norphaned: {directory}")
         if entry.clash is not None:
             lines.append(f"  {entry.clash}")
-        for renamed in entry.renamed:
-            lines.append(f"  {renamed}")
+        for moved in entry.moved:
+            lines.append(f"  {moved}")
         old_fields = cast(dict[str, JsonValue], snapshot.get(FIELDSMARKER, {}))
         for line, owner in _field_diff(old_fields, current_fields, "", None):
             lines.append(line)
@@ -122,14 +122,13 @@ def raise_if_stale(obj: Spec) -> None:
             "branch whose results you keep made them (the other branch's results "
             "are then recomputed), or use one of the options below."
         )
-    if any(entry.renamed for entry in orphaned):
+    if any(entry.moved for entry in orphaned):
         lines.append(
-            "\nA recorded step that differs from a declared one only by its "
-            "function or was= type usually means the step was renamed or edited "
-            "after those results were stored, so furu can't tell whether they "
-            "already took it. If the step still does the same thing, restore its "
-            "old name to keep reusing them; otherwise delete the directory to "
-            "recompute them."
+            "\nFuru recognises a Rewrite by the step before it. A recorded Rewrite "
+            "that now follows another step means steps were reordered or dropped "
+            "around it after those results were stored (say in a merge), so furu "
+            "can't tell whether they already took it. Restore the old order to "
+            "keep reusing them, or delete the directory to recompute them."
         )
     lines.append(
         f"\nEither declare a migration chain on {type(obj).__name__}.migrations "

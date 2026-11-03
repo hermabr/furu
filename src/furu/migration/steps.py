@@ -68,6 +68,13 @@ class Retyped:
 
 @dataclass(frozen=True, slots=True)
 class Rewrite:
+    """Reshape old results' stored fields with ``transform``.
+
+    Furu recognises a Rewrite by the step just before it, not by its function,
+    so a lambda is fine and renaming the function changes nothing. Once results
+    depend on it, keep what it does: an edited ``transform`` goes unnoticed.
+    """
+
     transform: Callable[[Mapping[str, JsonValue]], Mapping[str, JsonValue]]
     _: dataclasses.KW_ONLY
     result_rewrite: ResultRewrite | None = None
@@ -122,22 +129,46 @@ def _describe_step(step: MigrationStep) -> str:
     return f"{type(step).__name__}({body}{suffix})"
 
 
-def _step_identity(step: MigrationStep) -> tuple[str, ...]:
-    """What a step does to a stored schema, so the same step declared on two
-    branches is recognized as one. Defaults and ``breaking`` are left out: they
-    say how to migrate a schema without the step, not what the step did."""
-    match step:
-        case Renamed(field=field, to=to):
-            return ("Renamed", field, to)
-        case Added(field=field):
-            return ("Added", field)
-        case Retyped(field=field, was=was):
-            return ("Retyped", field, _type_label(was))
-        case MovedFrom(fully_qualified_name=name):
-            return ("MovedFrom", name)
-        case Rewrite(transform=transform):
-            module = getattr(transform, "__module__", "")
-            return ("Rewrite", f"{module}.{_callable_label(transform)}")
+def _chain_identities(steps: tuple[MigrationStep, ...]) -> tuple[tuple[str, ...], ...]:
+    """What each step does to a stored schema, so the same step declared on two
+    branches is recognised as one.
+
+    Defaults, ``breaking``, ``was=`` types and functions are left out, so
+    editing or renaming them keeps a step's identity. A Retyped is told apart
+    from earlier retypes of its field by count: the retype shows in the stored
+    schema, so a mix-up is caught there. A Rewrite shows in no schema, so it is
+    identified by the step before it, which two branches rarely share.
+    """
+    identities: list[tuple[str, ...]] = []
+    retypes: dict[str, int] = {}
+    for step in steps:
+        match step:
+            case Renamed(field=field, to=to):
+                identity: tuple[str, ...] = ("Renamed", field, to)
+            case Added(field=field):
+                identity = ("Added", field)
+            case Retyped(field=field):
+                retypes[field] = retypes.get(field, 0) + 1
+                identity = ("Retyped", field, str(retypes[field]))
+            case MovedFrom(fully_qualified_name=name):
+                identity = ("MovedFrom", name)
+            case Rewrite():
+                identity = ("Rewrite", *(identities[-1] if identities else ()))
+        identities.append(identity)
+    return tuple(identities)
+
+
+def _describe_identity(identity: tuple[str, ...]) -> str:
+    match identity:
+        case ():
+            return "the start of the chain"
+        case ("Rewrite", *before):
+            return f"a Rewrite after {_describe_identity(tuple(before))}"
+        case ("Retyped", field, count):
+            return f"retype {count} of {field!r}"
+        case _:
+            kind, *fields = identity
+            return f"{kind}({', '.join(repr(field) for field in fields)})"
 
 
 def _touched_fields(step: MigrationStep) -> frozenset[str] | None:
@@ -180,13 +211,13 @@ def validate_migration_declaration(cls: type[Spec]) -> None:
         )
 
     seen: dict[tuple[str, ...], int] = {}
-    for index, step in enumerate(steps):
-        if (first := seen.setdefault(_step_identity(step), index)) != index:
+    for index, identity in enumerate(_chain_identities(steps)):
+        if (first := seen.setdefault(identity, index)) != index:
             raise TypeError(
-                f"{cls.__name__}.migrations[{index}] ({_describe_step(step)}) "
-                f"repeats migrations[{first}]; furu tells which steps a stored "
-                "schema already has by what they do, so each step must differ "
-                "(name a Rewrite's transform instead of using a lambda)"
+                f"{cls.__name__}.migrations[{index}] "
+                f"({_describe_step(steps[index])}) repeats migrations[{first}]; "
+                "furu tells which steps a stored schema already has by what they "
+                "do, so each step must differ"
             )
 
     names = {field.name for field in dataclasses.fields(cls)}

@@ -2331,7 +2331,7 @@ def test_a_move_merges_with_a_field_added_under_the_old_name() -> None:
     }
 
 
-# --- steps renamed or edited after a schema recorded them -------------------------
+# --- step identities: functions and was= types are left out ----------------------
 
 
 class _EpochsRun(Spec[str]):
@@ -2373,28 +2373,50 @@ class _StepsRenamedFunctionRun(Spec[str]):
         return f"renamed steps={self.steps}"
 
 
-def test_a_renamed_rewrite_function_blocks_instead_of_recomputing() -> None:
+def _grow_steps(target: type[Spec]) -> None:
+    """epochs=3 under the trunk, steps=700 under _StepsRun; both moved to target."""
     epochs = _EpochsRun(epochs=3)
     epochs.create()
     _transplant_generation(epochs, _StepsRun)
     steps = _StepsRun(steps=700)
     steps.create()
-    _transplant_generation(epochs, _StepsRenamedFunctionRun)
-    _transplant_generation(steps, _StepsRenamedFunctionRun)
+    _transplant_generation(epochs, target)
+    _transplant_generation(steps, target)
     _fresh_process()
 
-    # The trunk schema recorded no steps, so it is migrated as usual.
+
+def test_renaming_a_rewrite_function_keeps_reusing_results() -> None:
+    _grow_steps(_StepsRenamedFunctionRun)
+
     assert _StepsRenamedFunctionRun(steps=300).load_existing() == "epochs=3"
-    blocked = _StepsRenamedFunctionRun(steps=700)
+    assert _StepsRenamedFunctionRun(steps=700).load_existing() == "steps=700"
+
+
+class _StepsDroppedRenameRun(Spec[str]):
+    steps: int
+    warmup: int = 0
+
+    # The Renamed before the Rewrite was dropped from the chain.
+    migrations = (Rewrite(_epochs_to_steps), Added("warmup", default=0))
+
+    def create(self) -> str:
+        return f"dropped steps={self.steps}"
+
+
+def test_a_rewrite_that_now_follows_another_step_blocks() -> None:
+    _grow_steps(_StepsDroppedRenameRun)
+
+    blocked = _StepsDroppedRenameRun(steps=700)
     assert blocked.status == "stale"
     with pytest.raises(Stale) as excinfo:
         blocked.create()
     message = str(excinfo.value)
     assert (
-        f"records Rewrite({__name__}._epochs_to_steps) where "
-        "_StepsRenamedFunctionRun.migrations[1] is Rewrite(_scale_epochs)"
+        "records a Rewrite after Renamed('epochs', 'steps'), but "
+        "_StepsDroppedRenameRun.migrations[0] is a Rewrite after the start of the "
+        "chain"
     ) in message
-    assert "restore its old name" in message
+    assert "Restore the old order" in message
 
 
 class _RatioRun(Spec[str]):
@@ -2424,7 +2446,7 @@ class _CorrectedWasRun(Spec[str]):
         return f"corrected ratio={self.ratio}"
 
 
-def test_a_corrected_retyped_was_blocks_instead_of_recomputing() -> None:
+def test_correcting_retyped_was_keeps_reusing_results() -> None:
     ratio = _RatioRun(ratio=2)
     ratio.create()
     _transplant_generation(ratio, _FloatRatioRun)
@@ -2433,8 +2455,100 @@ def test_a_corrected_retyped_was_blocks_instead_of_recomputing() -> None:
     _transplant_generation(float_ratio, _CorrectedWasRun)
     _fresh_process()
 
-    with pytest.raises(Stale, match=r"records Retyped\(ratio, builtins.int\) where"):
-        _CorrectedWasRun(ratio=0.5).create()
+    assert _CorrectedWasRun(ratio=0.5).load_existing() == "float ratio=0.5"
+
+
+class _OptionalRatioRun(Spec[str]):
+    ratio: int | None
+
+    migrations = (Retyped("ratio", was=int),)
+
+    def create(self) -> str:
+        return f"optional ratio={self.ratio}"
+
+
+class _RetypedTwiceRun(Spec[str]):
+    ratio: int | str | None
+
+    migrations = (Retyped("ratio", was=int), Retyped("ratio", was=int | None))
+
+    def create(self) -> str:
+        return f"twice ratio={self.ratio}"
+
+
+def test_a_field_retyped_twice_tells_its_retypes_apart() -> None:
+    ratio = _RatioRun(ratio=2)
+    ratio.create()
+    _transplant_generation(ratio, _OptionalRatioRun)
+    optional = _OptionalRatioRun(ratio=None)
+    optional.create()
+    for donor in (ratio, optional):
+        _transplant_generation(donor, _RetypedTwiceRun)
+    _fresh_process()
+
+    assert _RetypedTwiceRun(ratio=2).load_existing() == "ratio=2"
+    assert _RetypedTwiceRun(ratio=None).load_existing() == "optional ratio=None"
+
+
+class _XTrunk(Spec[str]):
+    a: int
+
+    def create(self) -> str:
+        return f"trunk a={self.a}"
+
+
+class _XBranch(Spec[str]):
+    a: int
+    x: int = 0
+
+    migrations = (Added("x", default=0), Rewrite(lambda f: {**f, "x": f["a"]}))
+
+    def create(self) -> str:
+        return f"x a={self.a}"
+
+
+class _YBranch(Spec[str]):
+    a: int
+    y: int = 0
+
+    migrations = (Added("y", default=0), Rewrite(lambda f: {**f, "y": f["a"]}))
+
+    def create(self) -> str:
+        return f"y a={self.a}"
+
+
+class _XYMerged(Spec[str]):
+    a: int
+    x: int = 0
+    y: int = 0
+
+    migrations = (
+        Added("x", default=0),
+        Rewrite(lambda f: {**f, "x": f["a"]}),
+        Added("y", default=0),
+        Rewrite(lambda f: {**f, "y": f["a"]}),
+    )
+
+    def create(self) -> str:
+        return f"merged a={self.a}"
+
+
+def test_lambda_rewrites_on_two_branches_merge() -> None:
+    trunk = _XTrunk(a=1)
+    trunk.create()
+    for branch, a in ((_XBranch, 2), (_YBranch, 3)):
+        _transplant_generation(trunk, branch)
+        run = branch(a=a, **{"x" if branch is _XBranch else "y": a})
+        run.create()
+        _transplant_generation(run, _XYMerged)
+    _transplant_generation(trunk, _XYMerged)
+    _fresh_process()
+
+    assert _XYMerged(a=1, x=1, y=1).load_existing() == "trunk a=1"
+    assert _XYMerged(a=2, x=2, y=2).load_existing() == "x a=2"
+    # The y branch already has its Rewrite, so the x branch's would run after
+    # it, and Rewrites never swap order.
+    assert _XYMerged(a=3, x=3, y=3).status == "stale"
 
 
 class _NoWarmupRun(Spec[str]):
@@ -2453,18 +2567,11 @@ def test_removing_a_field_with_its_added_recomputes_quietly() -> None:
     assert _NoWarmupRun(a=2).status == "missing"
 
 
-class _XTrunk(Spec[str]):
-    a: int
-
-    def create(self) -> str:
-        return f"trunk a={self.a}"
-
-
-def _x_from_a(fields: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
+def _x_plus_one(fields: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
     return {**fields, "x": cast(int, fields["a"]) + 1}
 
 
-def _x_times_a(fields: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
+def _x_times_two(fields: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
     return {**fields, "x": cast(int, fields["a"]) * 2}
 
 
@@ -2472,7 +2579,7 @@ class _XPlusBranch(Spec[str]):
     a: int
     x: int = 0
 
-    migrations = (Added("x", default=0), Rewrite(_x_from_a))
+    migrations = (Added("x", default=0), Rewrite(_x_plus_one))
 
     def create(self) -> str:
         return f"plus a={self.a}"
@@ -2482,7 +2589,7 @@ class _XTimesBranch(Spec[str]):
     a: int
     x: int = 0
 
-    migrations = (Added("x", default=0), Rewrite(_x_times_a))
+    migrations = (Added("x", default=0), Rewrite(_x_times_two))
 
     def create(self) -> str:
         return f"times a={self.a}"
@@ -2514,49 +2621,3 @@ def test_a_chain_that_dropped_older_steps_reuses_schemas_written_after_them() ->
     final = _FinalRunViaMid(dataset="imagenet", lr=0.1)
     assert final.load_existing() == {"dataset": "imagenet", "lr": "0.1"}
     assert _COUNTER.calls == 0
-
-
-class _TwoRewritesV1Run(Spec[str]):
-    steps: int
-
-    migrations = (
-        Renamed("epochs", to="steps"),
-        Rewrite(_identity_rewrite),
-        Rewrite(_epochs_to_steps),
-    )
-
-    def create(self) -> str:
-        return f"v1 steps={self.steps}"
-
-
-class _TwoRewritesRun(Spec[str]):
-    steps: int
-    warmup: int = 0
-
-    migrations = (
-        Renamed("epochs", to="steps"),
-        Rewrite(_identity_rewrite),
-        Rewrite(_scale_epochs),
-        Added("warmup", default=0),
-    )
-
-    def create(self) -> str:
-        return f"v2 steps={self.steps}"
-
-
-def test_a_renamed_step_stands_in_only_for_a_step_the_schema_lacks() -> None:
-    # The record lists _epochs_to_steps before _identity_rewrite (it is sorted),
-    # yet _identity_rewrite is one the schema has, so only _scale_epochs is a
-    # candidate for the renamed step.
-    epochs = _EpochsRun(epochs=3)
-    epochs.create()
-    _transplant_generation(epochs, _TwoRewritesV1Run)
-    v1 = _TwoRewritesV1Run(steps=700)
-    v1.create()
-    _transplant_generation(v1, _TwoRewritesRun)
-    _fresh_process()
-
-    with pytest.raises(
-        Stale, match=r"_TwoRewritesRun.migrations\[2\] is Rewrite\(_scale_epochs\)"
-    ):
-        _TwoRewritesRun(steps=700).create()
