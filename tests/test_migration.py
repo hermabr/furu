@@ -2329,3 +2329,295 @@ def test_a_move_merges_with_a_field_added_under_the_old_name() -> None:
     assert _MovedMergedRun(dataset="m", learning_rate=0.1).load_existing() == {
         "branch": "moved"
     }
+
+
+# --- step identities: functions and was= types are left out ----------------------
+
+
+class _EpochsRun(Spec[str]):
+    epochs: int
+
+    def create(self) -> str:
+        return f"epochs={self.epochs}"
+
+
+def _epochs_to_steps(fields: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
+    return {**fields, "steps": cast(int, fields["steps"]) * 100}
+
+
+def _scale_epochs(fields: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
+    return {**fields, "steps": cast(int, fields["steps"]) * 100}
+
+
+class _StepsRun(Spec[str]):
+    steps: int
+
+    migrations = (Renamed("epochs", to="steps"), Rewrite(_epochs_to_steps))
+
+    def create(self) -> str:
+        return f"steps={self.steps}"
+
+
+class _StepsRenamedFunctionRun(Spec[str]):
+    steps: int
+    warmup: int = 0
+
+    # _epochs_to_steps renamed in a refactor.
+    migrations = (
+        Renamed("epochs", to="steps"),
+        Rewrite(_scale_epochs),
+        Added("warmup", default=0),
+    )
+
+    def create(self) -> str:
+        return f"renamed steps={self.steps}"
+
+
+def _grow_steps(target: type[Spec]) -> None:
+    """epochs=3 under the trunk, steps=700 under _StepsRun; both moved to target."""
+    epochs = _EpochsRun(epochs=3)
+    epochs.create()
+    _transplant_generation(epochs, _StepsRun)
+    steps = _StepsRun(steps=700)
+    steps.create()
+    _transplant_generation(epochs, target)
+    _transplant_generation(steps, target)
+    _fresh_process()
+
+
+def test_renaming_a_rewrite_function_keeps_reusing_results() -> None:
+    _grow_steps(_StepsRenamedFunctionRun)
+
+    assert _StepsRenamedFunctionRun(steps=300).load_existing() == "epochs=3"
+    assert _StepsRenamedFunctionRun(steps=700).load_existing() == "steps=700"
+
+
+class _StepsDroppedRenameRun(Spec[str]):
+    steps: int
+    warmup: int = 0
+
+    # The Renamed before the Rewrite was dropped from the chain.
+    migrations = (Rewrite(_epochs_to_steps), Added("warmup", default=0))
+
+    def create(self) -> str:
+        return f"dropped steps={self.steps}"
+
+
+def test_a_rewrite_that_now_follows_another_step_blocks() -> None:
+    _grow_steps(_StepsDroppedRenameRun)
+
+    blocked = _StepsDroppedRenameRun(steps=700)
+    assert blocked.status == "stale"
+    with pytest.raises(Stale) as excinfo:
+        blocked.create()
+    message = str(excinfo.value)
+    assert (
+        "records a Rewrite after Renamed('epochs', 'steps'), but "
+        "_StepsDroppedRenameRun.migrations[0] is a Rewrite after the start of the "
+        "chain"
+    ) in message
+    assert "Restore the old order" in message
+
+
+class _RatioRun(Spec[str]):
+    ratio: int
+
+    def create(self) -> str:
+        return f"ratio={self.ratio}"
+
+
+class _FloatRatioRun(Spec[str]):
+    ratio: float
+
+    migrations = (Retyped("ratio", was=int),)
+
+    def create(self) -> str:
+        return f"float ratio={self.ratio}"
+
+
+class _CorrectedWasRun(Spec[str]):
+    ratio: float
+    scale: int = 1
+
+    # was= corrected after _FloatRatioRun's results were stored.
+    migrations = (Retyped("ratio", was=int | None), Added("scale", default=1))
+
+    def create(self) -> str:
+        return f"corrected ratio={self.ratio}"
+
+
+def test_correcting_retyped_was_keeps_reusing_results() -> None:
+    ratio = _RatioRun(ratio=2)
+    ratio.create()
+    _transplant_generation(ratio, _FloatRatioRun)
+    float_ratio = _FloatRatioRun(ratio=0.5)
+    float_ratio.create()
+    _transplant_generation(float_ratio, _CorrectedWasRun)
+    _fresh_process()
+
+    assert _CorrectedWasRun(ratio=0.5).load_existing() == "float ratio=0.5"
+
+
+class _OptionalRatioRun(Spec[str]):
+    ratio: int | None
+
+    migrations = (Retyped("ratio", was=int),)
+
+    def create(self) -> str:
+        return f"optional ratio={self.ratio}"
+
+
+class _RetypedTwiceRun(Spec[str]):
+    ratio: int | str | None
+
+    migrations = (Retyped("ratio", was=int), Retyped("ratio", was=int | None))
+
+    def create(self) -> str:
+        return f"twice ratio={self.ratio}"
+
+
+def test_a_field_retyped_twice_tells_its_retypes_apart() -> None:
+    ratio = _RatioRun(ratio=2)
+    ratio.create()
+    _transplant_generation(ratio, _OptionalRatioRun)
+    optional = _OptionalRatioRun(ratio=None)
+    optional.create()
+    for donor in (ratio, optional):
+        _transplant_generation(donor, _RetypedTwiceRun)
+    _fresh_process()
+
+    assert _RetypedTwiceRun(ratio=2).load_existing() == "ratio=2"
+    assert _RetypedTwiceRun(ratio=None).load_existing() == "optional ratio=None"
+
+
+class _XTrunk(Spec[str]):
+    a: int
+
+    def create(self) -> str:
+        return f"trunk a={self.a}"
+
+
+class _XBranch(Spec[str]):
+    a: int
+    x: int = 0
+
+    migrations = (Added("x", default=0), Rewrite(lambda f: {**f, "x": f["a"]}))
+
+    def create(self) -> str:
+        return f"x a={self.a}"
+
+
+class _YBranch(Spec[str]):
+    a: int
+    y: int = 0
+
+    migrations = (Added("y", default=0), Rewrite(lambda f: {**f, "y": f["a"]}))
+
+    def create(self) -> str:
+        return f"y a={self.a}"
+
+
+class _XYMerged(Spec[str]):
+    a: int
+    x: int = 0
+    y: int = 0
+
+    migrations = (
+        Added("x", default=0),
+        Rewrite(lambda f: {**f, "x": f["a"]}),
+        Added("y", default=0),
+        Rewrite(lambda f: {**f, "y": f["a"]}),
+    )
+
+    def create(self) -> str:
+        return f"merged a={self.a}"
+
+
+def test_lambda_rewrites_on_two_branches_merge() -> None:
+    trunk = _XTrunk(a=1)
+    trunk.create()
+    for branch, a in ((_XBranch, 2), (_YBranch, 3)):
+        _transplant_generation(trunk, branch)
+        run = branch(a=a, **{"x" if branch is _XBranch else "y": a})
+        run.create()
+        _transplant_generation(run, _XYMerged)
+    _transplant_generation(trunk, _XYMerged)
+    _fresh_process()
+
+    assert _XYMerged(a=1, x=1, y=1).load_existing() == "trunk a=1"
+    assert _XYMerged(a=2, x=2, y=2).load_existing() == "x a=2"
+    # The y branch already has its Rewrite, so the x branch's would run after
+    # it, and Rewrites never swap order.
+    assert _XYMerged(a=3, x=3, y=3).status == "stale"
+
+
+class _NoWarmupRun(Spec[str]):
+    a: int
+
+    def create(self) -> str:
+        return f"no warmup a={self.a}"
+
+
+def test_removing_a_field_with_its_added_recomputes_quietly() -> None:
+    # Documented on Added: the old results look like a sibling branch's.
+    _, warmup, _ = _grow_branches()
+    _transplant_generation(warmup, _NoWarmupRun)
+    _fresh_process()
+
+    assert _NoWarmupRun(a=2).status == "missing"
+
+
+def _x_plus_one(fields: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
+    return {**fields, "x": cast(int, fields["a"]) + 1}
+
+
+def _x_times_two(fields: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
+    return {**fields, "x": cast(int, fields["a"]) * 2}
+
+
+class _XPlusBranch(Spec[str]):
+    a: int
+    x: int = 0
+
+    migrations = (Added("x", default=0), Rewrite(_x_plus_one))
+
+    def create(self) -> str:
+        return f"plus a={self.a}"
+
+
+class _XTimesBranch(Spec[str]):
+    a: int
+    x: int = 0
+
+    migrations = (Added("x", default=0), Rewrite(_x_times_two))
+
+    def create(self) -> str:
+        return f"times a={self.a}"
+
+
+def test_branches_sharing_a_schema_directory_do_not_block_each_other() -> None:
+    # Both branches add x, so they write one schema directory, which records
+    # whichever branch wrote first; it is each branch's current schema.
+    trunk = _XTrunk(a=1)
+    trunk.create()
+    _transplant_generation(trunk, _XPlusBranch)
+    _XPlusBranch(a=5, x=6).create()
+    _transplant_generation(trunk, _XTimesBranch)
+    plus_directory = _XPlusBranch(a=5, x=6)._base_dir.parent
+    times_directory = _XTimesBranch(a=5, x=6)._base_dir.parent
+    shutil.copytree(plus_directory, times_directory, dirs_exist_ok=True)
+    _fresh_process()
+
+    assert _XTimesBranch(a=1, x=2).load_existing() == "trunk a=1"
+    assert _XTimesBranch(a=7, x=14).status == "missing"
+
+
+def test_a_chain_that_dropped_older_steps_reuses_schemas_written_after_them() -> None:
+    # _MidRun's schema recorded MovedFrom/Renamed steps that _FinalRunViaMid no
+    # longer declares; it already had them, so only the steps it lacks apply.
+    _MidRun(dataset="imagenet", lr=0.1).create()
+    _COUNTER.calls = 0
+
+    final = _FinalRunViaMid(dataset="imagenet", lr=0.1)
+    assert final.load_existing() == {"dataset": "imagenet", "lr": "0.1"}
+    assert _COUNTER.calls == 0
