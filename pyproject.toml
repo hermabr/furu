@@ -34,8 +34,8 @@ dev = [
     "pre-commit>=4.6.0",
     "pytest>=9.0.2",
     "pytest-xdist>=3.8.0",
-    "ruff>=0.16.10",
-    "ty>=0.0.85",
+    "ruff>=0.17.3",
+    "ty>=0.0.97",
 ]
 
 [tool.ruff.lint.per-file-ignores]
