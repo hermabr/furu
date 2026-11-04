@@ -34,6 +34,9 @@ class Added:
     ``default`` is the one value every old run behaved as. ``default_factory``
     computes it per run from that run's stored fields (as ``Rewrite`` sees
     them): ``Added("model", default_factory=lambda f: ModelConfig(width=f["width"]))``.
+
+    An embedded config that gains a field declares ``migrations`` on its own
+    class; every spec embedding it then migrates without declaring anything.
     """
 
     field: str

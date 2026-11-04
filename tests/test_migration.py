@@ -1053,6 +1053,76 @@ def test_added_default_factory_sees_only_the_fields_present_at_that_step() -> No
         ).status
 
 
+# --- an embedded config gains a sub-config by declaring Added itself ---------------
+
+
+@dataclass(frozen=True)
+class _Optimizer:
+    momentum: float = 0.9
+
+
+@dataclass(frozen=True)
+class _TrainConfigV0:
+    epochs: int
+
+
+@dataclass(frozen=True)
+class _TrainConfig:
+    epochs: int
+    optimizer: _Optimizer = _Optimizer()
+
+    migrations = (Added("optimizer", default=_Optimizer()),)
+
+
+class _SubConfigRunV0(Spec[str]):
+    train: _TrainConfigV0
+    sweep: list[_TrainConfigV0]
+
+    def create(self) -> str:
+        _COUNTER.calls += 1
+        return "old-run"
+
+
+class _SubConfigRun(Spec[str]):
+    train: _TrainConfig  # nothing declared here; the config carries its own chain
+    sweep: list[_TrainConfig]
+
+    def create(self) -> str:
+        _COUNTER.calls += 1
+        return "recomputed"
+
+
+def test_embedded_config_gains_a_dataclass_valued_field_without_rewrite() -> None:
+    old = _SubConfigRunV0(
+        train=_TrainConfigV0(epochs=3),
+        sweep=[_TrainConfigV0(epochs=1), _TrainConfigV0(epochs=2)],
+    )
+    old.create()
+    _transplant_generation(
+        old,
+        _SubConfigRun,
+        renames={
+            fully_qualified_name(_TrainConfigV0): fully_qualified_name(_TrainConfig)
+        },
+    )
+    _COUNTER.calls = 0
+
+    current = _SubConfigRun(
+        train=_TrainConfig(epochs=3),
+        sweep=[_TrainConfig(epochs=1), _TrainConfig(epochs=2)],
+    )
+    assert current.status == "done"
+    assert current.create() == "old-run"
+    assert (
+        _SubConfigRun(
+            train=_TrainConfig(epochs=3, optimizer=_Optimizer(momentum=0.5)),
+            sweep=[_TrainConfig(epochs=1), _TrainConfig(epochs=2)],
+        ).status
+        == "missing"
+    )
+    assert _COUNTER.calls == 0
+
+
 # --- phase one: validation at class creation ---------------------------------------
 
 
