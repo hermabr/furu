@@ -828,9 +828,11 @@ class _Collector:
         self.root = root
         self.log = log
         # furu's own data directories may live in the repo; reading them is fine.
+        # A snapshot worker's root lies inside one, so skip those.
         self.data_dirs = tuple(
-            _realpath(str(path)) + os.sep
-            for _, path in get_config().directories.anchored()
+            path
+            for _, anchored in get_config().directories.anchored()
+            if not root.startswith(path := _realpath(str(anchored)) + os.sep)
         )
         self.opened: set[str] = set()  # repo files besides .py that create() read
         self.ran = {rel: set(names) for rel, names in state.ran.items()}
@@ -866,7 +868,7 @@ class _Collector:
         name = os.path.abspath(os.fsdecode(path))
         if name.endswith((".py", ".pyc")) or not name.startswith(self.root):
             return
-        real = _realpath(name)
+        real = os.path.realpath(name)  # not _realpath: its cache would keep every file
         if (
             real.startswith(self.root)
             and not real.startswith((*_excluded(), *self.data_dirs))
@@ -1034,10 +1036,12 @@ def build_trace(run: Recording, *, label: str, warn: Callable[[str], None]) -> T
     root = repo_root()
     code, warnings = _code(run.ran, lambda rel: _read(root / rel), str(root) + os.sep)
     assert run._collector is not None
-    warnings += [
-        f"create() read {rel}, which furu does not trace: {_KEEPS_OLD_RESULT}"
-        for rel in sorted(run._collector.opened)
-    ]
+    if opened := sorted(run._collector.opened):
+        more = f" and {len(opened) - 3} more" if len(opened) > 3 else ""
+        warnings.append(
+            f"create() read {', '.join(opened[:3])}{more}, which furu does not "
+            f"trace: {_KEEPS_OLD_RESULT}"
+        )
     for warning in warnings:
         if warning not in _WARNED:  # once per process
             _WARNED.add(warning)

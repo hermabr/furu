@@ -612,6 +612,8 @@ class ReadsConfig(furu.Spec[str]):
     def create(self) -> str:
         here = Path(__file__).parent
         (here / "out.txt").write_text("written")  # a write is not an input
+        for name in "abcde":
+            (here / f"{name}.csv").read_text()
         return (here / "config.yaml").read_text()
 
 
@@ -624,14 +626,29 @@ class ReadsEnv(furu.Spec[str]):
 """
 
 
-def test_reading_a_repo_file_warns_and_keeps_the_result(repo: Repo) -> None:
+@pytest.mark.parametrize("snapshot", [False, True])
+def test_reading_a_repo_file_warns_and_keeps_the_result(
+    repo: Repo, snapshot: bool
+) -> None:
     repo.write("config.yaml", "lr: 1\n")
+    for name in "abcde":
+        repo.write(f"{name}.csv", "")
     repo.write("untraced.py", UNTRACED)
-    module = repo.load("untraced")
-    spec = module.ReadsConfig()
-    spec.create()
+    spec = repo.load("untraced").ReadsConfig()
+    config = get_config()
+    if snapshot:  # a snapshot worker's repo root is inside furu's data directories
+        directories = config.directories.model_copy(
+            update={"snapshots": repo.root.parent}
+        )
+        config = config.model_copy(update={"directories": directories})
+    with override_config(config):
+        spec.create()
 
-    warning = f"create() read {repo.package}/config.yaml, which furu does not trace"
+    package = repo.package
+    warning = (
+        f"create() read {package}/a.csv, {package}/b.csv, {package}/c.csv "
+        "and 3 more, which furu does not trace"
+    )
     assert warning in _run_log(spec)
     assert "out.txt" not in _run_log(spec)
     assert f"{repo.package}/config.yaml" not in _trace(spec)["code"]
@@ -646,7 +663,7 @@ def test_reading_the_environment_warns(repo: Repo) -> None:
     spec.create()
 
     assert (
-        f"ReadsEnv.create ({repo.package}/untraced.py:23) reads os.environ, "
+        f"ReadsEnv.create ({repo.package}/untraced.py:25) reads os.environ, "
         "which furu does not trace"
     ) in _run_log(spec)
 
