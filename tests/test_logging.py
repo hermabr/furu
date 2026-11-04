@@ -1,5 +1,4 @@
 import logging
-import os
 import re
 import sys
 from collections.abc import Iterator
@@ -72,17 +71,6 @@ def isolated_furu_logger() -> Iterator[None]:
         furu_logging.get_logger()
 
 
-@pytest.fixture(autouse=True)
-def _stable_terminal_width(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pin the terminal width so console-layout assertions don't depend on the
-    `COLUMNS` env or the runner's TTY. Tests that exercise wrapping override it."""
-    monkeypatch.setattr(
-        furu_logging.shutil,
-        "get_terminal_size",
-        lambda fallback=(100, 24): os.terminal_size((100, 24)),
-    )
-
-
 def test_stdout_handler_logs_info(isolated_furu_logger: None) -> None:
     logger = furu_logging.get_logger()
 
@@ -96,20 +84,31 @@ def test_stdout_handler_logs_info(isolated_furu_logger: None) -> None:
     assert stdout_handlers[0].level == logging.INFO
 
 
-# --- console renderer -------------------------------------------------------
+# --- rendering --------------------------------------------------------------
+
+_INTERNAL = furu_logging.__file__
 
 
-def test_console_layout_time_level_message_and_caller() -> None:
-    out = furu_logging._render_console(
-        _record("loaded rows", pathname="/home/user/datasets.py", lineno=64),
-        color=True,
+def _plain(record: logging.LogRecord) -> str:
+    return furu_logging._render(record, console=False, color=False)
+
+
+def _console(record: logging.LogRecord, *, color: bool = False) -> str:
+    return furu_logging._render(record, console=True, color=color)
+
+
+@pytest.fixture(autouse=True)
+def _not_a_rank(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("WORLD_SIZE", raising=False)
+    monkeypatch.delenv("RANK", raising=False)
+
+
+def test_plain_line_has_utc_timestamp_level_component_and_message() -> None:
+    out = _plain(_record("leased it", pathname=_INTERNAL, name="furu.w0"))
+
+    assert re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z I w0    leased it", out
     )
-    plain = _strip_ansi(out)
-
-    assert re.match(r"^\d{2}:\d{2}:\d{2} I ", plain)
-    assert "loaded rows" in plain
-    assert plain.rstrip().endswith("datasets.py:64")
-    assert "\x1b[" in out  # colour present
 
 
 @pytest.mark.parametrize(
@@ -121,207 +120,46 @@ def test_console_layout_time_level_message_and_caller() -> None:
         (logging.ERROR, "E"),
     ],
 )
-def test_console_uses_one_letter_levels(level: int, letter: str) -> None:
-    out = furu_logging._render_console(
-        _record("msg", level=level, pathname=furu_logging.__file__), color=False
-    )
+def test_lines_use_one_letter_levels(level: int, letter: str) -> None:
+    record = _record("msg", level=level, pathname=_INTERNAL)
 
-    assert out.split()[1] == letter
-
-
-def test_console_shows_logger_name_as_component() -> None:
-    internal = furu_logging.__file__
-
-    named = furu_logging._render_console(
-        _record("leased it", pathname=internal, name="furu.coord"), color=False
-    )
-    base = furu_logging._render_console(
-        _record("creating it", pathname=internal), color=False
-    )
-    slurm = furu_logging._render_console(
-        _record("running it", pathname=internal, name="furu.1234567_10"),
-        color=False,
-    )
-
-    assert re.match(r"^\d{2}:\d{2}:\d{2} I coord leased it", named)
-    assert re.match(r"^\d{2}:\d{2}:\d{2} I creating", base)
-    assert re.match(r"^\d{2}:\d{2}:\d{2} I 1234567_10 running it", slurm)
+    assert _plain(record).split()[1] == letter
+    assert _console(record).split()[1] == letter
 
 
-def test_console_shows_path_only_for_warnings_and_errors(tmp_path: Path) -> None:
-    run_log = tmp_path / "run.log"
-    internal = furu_logging.__file__
+def test_component_is_the_logger_name_minus_furu() -> None:
+    def plain(name: str) -> str:
+        return _plain(_record("ran it", pathname=_INTERNAL, name=name))
 
-    info = furu_logging._render_console(
-        _record("leased it", pathname=internal, path=run_log), color=False
-    )
-    warning = furu_logging._render_console(
-        _record("failed it", level=logging.WARNING, pathname=internal, path=run_log),
-        color=False,
-    )
-
-    assert str(run_log) not in info
-    first, second = warning.split("\n")
-    assert first.endswith("failed it")
-    assert second == " " * len("00:00:00 W ") + f"→ {run_log}"
+    assert re.fullmatch(r"\S+ I ran it", plain("furu"))
+    assert re.fullmatch(r"\S+ I 1234567_10 ran it", plain("furu.1234567_10"))
+    assert re.fullmatch(r"\S+ I some_library ran it", plain("some_library"))
 
 
-def test_console_omits_caller_for_furu_internal_code() -> None:
-    out = furu_logging._render_console(
-        _record("leased it", pathname=furu_logging.__file__), color=False
-    )
+def test_console_line_has_local_time_and_no_utc_suffix() -> None:
+    out = _console(_record("leased it", pathname=_INTERNAL, name="furu.coord"))
 
-    assert ".py:" not in out
+    assert re.fullmatch(r"\d{2}:\d{2}:\d{2} I coord leased it", out)
 
 
-def test_console_omits_caller_for_synthetic_paths() -> None:
-    # `<stdin>`/`<string>`/`<frozen ...>` are not real files; tagging them as
-    # "your code" would print a misleading file:line.
-    out = furu_logging._render_console(
-        _record("hi", pathname="<stdin>", lineno=1), color=False
-    )
-
-    assert ".py:" not in out
-    assert "<stdin>" not in out
-
-
-def test_console_highlights_artifact_id_and_ok_status() -> None:
-    out = furu_logging._render_console(
-        _record("finished RawData:9f2a1:8c3d2 ok", pathname=furu_logging.__file__),
-        color=True,
-    )
-
-    assert "\x1b[32" in out  # green applied to the artifact id / ok status
-    assert "RawData:9f2a1:8c3d2" in _strip_ansi(out)
-
-
-def test_console_colours_error_message_red() -> None:
-    out = furu_logging._render_console(
-        _record("run failed", level=logging.ERROR, pathname=furu_logging.__file__),
-        color=True,
-    )
-
-    assert "\x1b[31m" in out  # red message body (distinct from the level letter)
-
-
-def test_console_colours_user_message_body_orange() -> None:
-    out = furu_logging._render_console(
-        _record("loaded 1,000 rows", pathname="/home/user/datasets.py", lineno=64),
-        color=True,
-    )
-
-    assert "\x1b[38;5;208m" in out  # your own message body rendered in orange
-
-
-def test_console_does_not_colour_furu_internal_message_orange() -> None:
-    out = furu_logging._render_console(
-        _record("leased RawData:9f2a1:8c3d2", pathname=furu_logging.__file__),
-        color=True,
-    )
-
-    assert "\x1b[38;5;208m" not in out  # furu lines keep the default treatment
-
-
-def test_console_user_warning_body_orange_with_level_letter_severity() -> None:
-    out = furu_logging._render_console(
-        _record(
-            "validation AUC 0.81 below target",
-            level=logging.WARNING,
-            pathname="/home/user/models.py",
-            lineno=155,
-        ),
-        color=True,
-    )
-
-    assert "\x1b[38;5;208m" in out  # body stays in the user colour at WARNING
-    assert "\x1b[33;1m" in out  # the W letter still carries the warning colour
-
-
-def test_console_leaves_traceback_to_default_error_output() -> None:
-    try:
-        raise ValueError("boom")
-    except ValueError:
-        exc_info = sys.exc_info()
-
-    out = furu_logging._render_console(
-        _record(
-            "failed it",
-            level=logging.ERROR,
-            pathname=furu_logging.__file__,
-            exc_info=exc_info,
-        ),
-        color=False,
-    )
-
-    assert "failed it" in out
-    assert "Traceback (most recent call last):" not in out
-    assert "ValueError: boom" not in out
-
-
-def test_console_wraps_long_message_with_hanging_indent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        furu_logging.shutil,
-        "get_terminal_size",
-        lambda fallback=(100, 24): os.terminal_size((40, 24)),
-    )
-    out = furu_logging._render_console(
-        _record(
-            " ".join(f"word{i}" for i in range(30)),
-            pathname="/home/user/train.py",
-            lineno=9,
-        ),
-        color=False,
-    )
-
-    lines = out.split("\n")
-
-    assert len(lines) > 1
-    prefix_width = len("00:00:00 I ")
-    assert lines[1].startswith(" " * prefix_width)  # hanging indent
-    assert lines[1].strip()  # message continues, not blank
-    assert lines[0].rstrip().endswith("train.py:9")  # caller stays on row one
-
-
-# --- plain renderer ---------------------------------------------------------
-
-
-def test_plain_line_has_utc_timestamp_level_component_and_message() -> None:
-    out = furu_logging._render_plain(
-        _record("leased it", pathname=furu_logging.__file__, name="furu.w0")
-    )
-
-    assert re.fullmatch(
-        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z I w0    leased it", out
-    )
-
-
-def test_plain_line_omits_component_for_the_base_logger() -> None:
-    out = furu_logging._render_plain(
-        _record("creating it", pathname=furu_logging.__file__)
-    )
-
-    assert re.fullmatch(r"\S+ I creating it", out)
-
-
-def test_plain_line_tags_user_code_relative_to_cwd(
+def test_lines_tag_user_code_relative_to_cwd(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.chdir(tmp_path)
 
-    inside = furu_logging._render_plain(
-        _record("loaded", pathname=str(tmp_path / "pkg" / "datasets.py"), lineno=64)
-    )
-    outside = furu_logging._render_plain(
-        _record("loaded", pathname="/elsewhere/datasets.py", lineno=64)
-    )
+    inside = _record("loaded", pathname=str(tmp_path / "pkg" / "datasets.py"))
+    outside = _record("loaded", pathname="/elsewhere/datasets.py")
 
-    assert inside.endswith("loaded  [pkg/datasets.py:64]")
-    assert outside.endswith("loaded  [/elsewhere/datasets.py:64]")
-    assert ".py:" not in furu_logging._render_plain(
-        _record("leased it", pathname=furu_logging.__file__)
-    )
+    assert _plain(inside).endswith("loaded  [pkg/datasets.py:64]")
+    assert _console(inside).endswith("loaded  [pkg/datasets.py:64]")
+    assert _plain(outside).endswith("loaded  [/elsewhere/datasets.py:64]")
+
+
+@pytest.mark.parametrize("pathname", [_INTERNAL, "<stdin>", "<string>"])
+def test_lines_omit_caller_outside_user_files(pathname: str) -> None:
+    out = _plain(_record("leased it", pathname=pathname))
+
+    assert out.endswith("leased it")
 
 
 def test_plain_line_appends_path_pointer(
@@ -329,10 +167,10 @@ def test_plain_line_appends_path_pointer(
 ) -> None:
     monkeypatch.chdir(tmp_path)
 
-    out = furu_logging._render_plain(
+    out = _plain(
         _record(
             "leased it",
-            pathname=furu_logging.__file__,
+            pathname=_INTERNAL,
             name="furu.coord",
             path=tmp_path / "objects" / "run.log",
         )
@@ -341,17 +179,29 @@ def test_plain_line_appends_path_pointer(
     assert out.endswith("I coord leased it → objects/run.log")
 
 
+def test_console_shows_path_only_for_warnings_and_errors(tmp_path: Path) -> None:
+    run_log = tmp_path / "run.log"
+
+    info = _console(_record("leased it", pathname=_INTERNAL, path=run_log))
+    warning = _console(
+        _record("failed it", level=logging.WARNING, pathname=_INTERNAL, path=run_log)
+    )
+
+    assert info.endswith("leased it")
+    assert warning.endswith(f"failed it → {run_log}")
+
+
 def test_plain_indents_continuation_lines_so_grep_can_drop_them() -> None:
     try:
         raise ValueError("boom")
     except ValueError:
         exc_info = sys.exc_info()
 
-    out = furu_logging._render_plain(
+    out = _plain(
         _record(
             "create failed\nfor two reasons",
             level=logging.ERROR,
-            pathname=furu_logging.__file__,
+            pathname=_INTERNAL,
             exc_info=exc_info,
             stack_info="Stack (most recent call last):\n  File x",
         )
@@ -365,6 +215,84 @@ def test_plain_indents_continuation_lines_so_grep_can_drop_them() -> None:
     assert rest[-1] == "      File x"
     assert all(line.startswith("    ") for line in rest)
     assert "\x1b[" not in out
+
+
+def test_console_leaves_traceback_to_the_files() -> None:
+    try:
+        raise ValueError("boom")
+    except ValueError:
+        exc_info = sys.exc_info()
+
+    out = _console(
+        _record("failed it", level=logging.ERROR, pathname=_INTERNAL, exc_info=exc_info)
+    )
+
+    assert out.endswith("E failed it")
+
+
+def test_console_colours_user_lines_orange_until_they_are_errors() -> None:
+    user = _console(_record("AUC 0.81", level=logging.WARNING), color=True)
+    error = _console(_record("diverged", level=logging.ERROR), color=True)
+    furu = _console(_record("leased it", pathname=_INTERNAL), color=True)
+
+    assert "\x1b[38;5;208mAUC 0.81" in user
+    assert "\x1b[33;1mW" in user  # the level letter still carries severity
+    assert "\x1b[31mdiverged" in error
+    assert "\x1b[38;5;208m" not in furu
+    assert _strip_ansi(user) == _console(_record("AUC 0.81", level=logging.WARNING))
+
+
+def test_ranks_of_a_torchrun_job_tag_their_lines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record = _record("loss 0.3", pathname=_INTERNAL, name="furu.train")
+    monkeypatch.setenv("RANK", "3")
+    monkeypatch.setenv("WORLD_SIZE", "1")
+    assert " rank" not in _plain(record)
+
+    monkeypatch.setenv("WORLD_SIZE", "8")
+    assert _plain(record).split()[1:4] == ["I", "rank3", "train"]
+    assert _console(record).split()[1:4] == ["I", "rank3", "train"]
+
+
+@pytest.mark.parametrize(
+    ("tty", "no_color", "force_color", "console", "color"),
+    [
+        (True, False, False, True, True),  # interactive terminal
+        (True, True, False, True, False),  # NO_COLOR keeps the view, drops colour
+        (False, False, False, False, False),  # piped / captured → plain
+        (False, False, True, True, True),  # FORCE_COLOR forces view + colour
+    ],
+)
+def test_stdout_formatter_follows_tty_and_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tty: bool,
+    no_color: bool,
+    force_color: bool,
+    console: bool,
+    color: bool,
+) -> None:
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    if no_color:
+        monkeypatch.setenv("NO_COLOR", "1")
+    if force_color:
+        monkeypatch.setenv("FORCE_COLOR", "1")
+    monkeypatch.setattr(furu_logging.sys, "stdout", _FakeStream(tty=tty))
+    record = _record("hi", pathname=_INTERNAL)
+
+    assert furu_logging._Formatter(console=True).format(record) == (
+        furu_logging._render(record, console=console, color=color)
+    )
+
+
+def test_file_formatter_is_always_plain_even_on_a_tty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(furu_logging.sys, "stdout", _FakeStream(tty=True))
+    record = _record("hi", pathname=_INTERNAL)
+
+    assert furu_logging._Formatter().format(record) == _plain(record)
 
 
 # --- run.log scope ------------------------------------------------------------
@@ -453,106 +381,3 @@ def test_sections_frame_the_lead_and_point_batch_members_at_it(
         "── ok · 3ms",
         "",
     ]
-
-
-# --- helpers ----------------------------------------------------------------
-
-
-def test_elide_leaves_short_names_unchanged() -> None:
-    assert furu_logging._elide("datasets.py", furu_logging._MAX_CALLER_NAME) == (
-        "datasets.py"
-    )
-
-
-def test_elide_middle_elides_long_names_keeping_both_ends() -> None:
-    elided = furu_logging._elide(
-        "gradient_boosting_trainer.py", furu_logging._MAX_CALLER_NAME
-    )
-
-    assert "…" in elided
-    assert len(elided) <= furu_logging._MAX_CALLER_NAME
-    assert elided.startswith("gradient_b")
-    assert elided.endswith("trainer.py")
-
-
-def test_caller_tag_distinguishes_user_code_from_furu() -> None:
-    assert (
-        furu_logging._caller_tag(_record("x", pathname=furu_logging.__file__)) is None
-    )
-    assert (
-        furu_logging._caller_tag(
-            _record("x", pathname="/home/me/datasets.py", lineno=64)
-        )
-        == "datasets.py:64"
-    )
-
-
-def test_caller_tag_ignores_synthetic_paths() -> None:
-    assert furu_logging._caller_tag(_record("x", pathname="<stdin>")) is None
-    assert furu_logging._caller_tag(_record("x", pathname="<string>")) is None
-
-
-@pytest.mark.parametrize(
-    ("tty", "no_color", "force_color", "expected"),
-    [
-        (True, False, False, (True, True)),  # interactive terminal
-        (True, True, False, (True, False)),  # NO_COLOR keeps layout, drops colour
-        (False, False, False, (False, False)),  # piped / captured → plain
-        (False, False, True, (True, True)),  # FORCE_COLOR forces layout + colour
-    ],
-)
-def test_console_mode_respects_tty_and_env(
-    monkeypatch: pytest.MonkeyPatch,
-    tty: bool,
-    no_color: bool,
-    force_color: bool,
-    expected: tuple[bool, bool],
-) -> None:
-    monkeypatch.delenv("NO_COLOR", raising=False)
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
-    if no_color:
-        monkeypatch.setenv("NO_COLOR", "1")
-    if force_color:
-        monkeypatch.setenv("FORCE_COLOR", "1")
-
-    assert furu_logging._console_mode(_FakeStream(tty=tty)) == expected
-
-
-def test_formatter_falls_back_to_plain_when_stdout_is_not_a_tty(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("NO_COLOR", raising=False)
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
-    monkeypatch.setattr(furu_logging.sys, "stdout", _FakeStream(tty=False))
-
-    out = furu_logging._Formatter(console=True).format(
-        _record("hi", pathname=furu_logging.__file__)
-    )
-
-    assert re.match(r"^\d{4}-\d{2}-\d{2}T", out)
-
-
-def test_formatter_uses_console_layout_for_a_tty(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("NO_COLOR", raising=False)
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
-    monkeypatch.setattr(furu_logging.sys, "stdout", _FakeStream(tty=True))
-
-    out = furu_logging._Formatter(console=True).format(
-        _record("hi", pathname=furu_logging.__file__)
-    )
-
-    assert re.match(r"^\d{2}:\d{2}:\d{2} I ", _strip_ansi(out))
-
-
-def test_file_formatter_is_always_plain_even_on_a_tty(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(furu_logging.sys, "stdout", _FakeStream(tty=True))
-
-    out = furu_logging._Formatter(console=False).format(
-        _record("hi", pathname=furu_logging.__file__)
-    )
-
-    assert re.match(r"^\d{4}-\d{2}-\d{2}T", out)
