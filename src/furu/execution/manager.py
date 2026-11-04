@@ -123,6 +123,13 @@ class Manager:
             yield manager
         finally:
             with manager.lock:
+                # A script that just left may still be forwarding its cancel.
+                manager.lock.wait_for(
+                    lambda: all(
+                        s.connection.state is State.OPEN for s in manager.scripts
+                    ),
+                    timeout=5,
+                )
                 manager.stopping = True
                 manager.lock.notify_all()
             server.shutdown()  # closes every connection and waits for handlers
