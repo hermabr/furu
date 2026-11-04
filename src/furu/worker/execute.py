@@ -13,7 +13,7 @@ from furu.code_trace import _REPO_ROOT_ENV_VAR
 from furu.config import _Config
 from furu.logging import _append, get_logger
 from furu.snapshot import CodeLocation
-from furu.worker.protocol import Job, JobFailedResult, JobResult, job_result_adapter
+from furu.worker.messages import Job, JobFailedResult, JobResult, job_result_adapter
 
 _RUN_LOG_TAIL_BYTES = 32 * 1024
 _RETIRE_TIMEOUT_SECONDS = 5.0

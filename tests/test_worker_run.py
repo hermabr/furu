@@ -41,7 +41,7 @@ from furu.worker.backends.slurm.backend import SlurmWorkerBackend
 from furu.worker.backends.slurm.resources import SlurmResources
 from furu.worker.execute import ChildSlot
 from furu.worker.loop import worker_loop
-from furu.worker.protocol import (
+from furu.worker.messages import (
     CancelMessage,
     HelloMessage,
     Job,

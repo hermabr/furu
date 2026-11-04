@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Literal, assert_never
 from furu.resources import Worker
 from furu.utils import _hash_dict_deterministically
 from furu.worker.backends.slurm.resources import SlurmResources
-from furu.worker.protocol import SlurmPool
+from furu.worker.messages import SlurmPool
 
 if TYPE_CHECKING:
     from furu.core import Spec

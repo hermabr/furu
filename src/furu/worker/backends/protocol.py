@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Protocol
 if TYPE_CHECKING:
     from furu.core import Spec
     from furu.resources import Worker
-    from furu.worker.protocol import Pool
+    from furu.worker.messages import Pool
 
 
 class WorkerBackend(Protocol):

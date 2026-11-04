@@ -26,7 +26,7 @@ from furu.snapshot import CodeLocation
 from furu.storage._layout import run_log_path_in
 from furu.utils import error_summary, format_duration
 from furu.worker.backends.protocol import WorkerBackend, can_run
-from furu.worker.protocol import (
+from furu.worker.messages import (
     Batch,
     ErrorMessage,
     Job,

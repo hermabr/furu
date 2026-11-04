@@ -13,7 +13,7 @@ from furu.config import get_config
 from furu.logging import get_logger
 from furu.utils import format_duration
 from furu.worker._cli import MANAGER_URL_ENV_VAR
-from furu.worker.protocol import ErrorMessage, SlurmPool, WarningMessage
+from furu.worker.messages import ErrorMessage, SlurmPool, WarningMessage
 
 if TYPE_CHECKING:
     from furu.execution.manager import Manager

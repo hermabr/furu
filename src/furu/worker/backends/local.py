@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 from furu.logging import get_logger
 from furu.resources import Worker
 from furu.utils import _hash_dict_deterministically
-from furu.worker.protocol import ErrorMessage, LocalPool
+from furu.worker.messages import ErrorMessage, LocalPool
 
 if TYPE_CHECKING:
     from furu.core import Spec

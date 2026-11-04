@@ -20,7 +20,7 @@ from furu.provenance import SubmitProvenance, capture_submit_provenance
 from furu.snapshot import CodeLocation
 from furu.storage._layout import execution_log_path_in
 from furu.worker.backends.protocol import WorkerBackend
-from furu.worker.protocol import CancelMessage, LocalPool
+from furu.worker.messages import CancelMessage, LocalPool
 
 logger = get_logger("run")
 

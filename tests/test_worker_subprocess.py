@@ -40,7 +40,7 @@ from furu.storage._layout import run_log_path_in
 from furu.testing import override_config
 from furu.worker.backends.local import LocalThreadWorkerBackend
 from furu.worker.execute import ChildSlot
-from furu.worker.protocol import (
+from furu.worker.messages import (
     Job,
     JobBlockedResult,
     JobCompletedResult,

@@ -23,7 +23,7 @@ from furu.logging import (
 from furu.metadata import ArtifactSpec
 from furu.provenance import _set_submitted_repo_root, _worker_backend
 from furu.utils import error_summary, format_duration
-from furu.worker.protocol import (
+from furu.worker.messages import (
     Job,
     JobBlockedResult,
     JobCompletedResult,
