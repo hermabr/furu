@@ -6,7 +6,11 @@ from gitrepo import commit_and_push, git
 
 from furu.config import _Config, get_config
 from furu.provenance import GitIdentity
-from furu.snapshot import extract_snapshot, require_pushed
+from furu.snapshot import (
+    extract_snapshot,
+    require_path_dependencies_in_repo,
+    require_pushed,
+)
 from furu.testing import override_config
 
 
@@ -123,6 +127,48 @@ def test_linked_worktree_is_checked_on_its_own(git_repo: Path, tmp_path: Path) -
     with pytest.raises(RuntimeError, match="uncommitted changes"):
         _require_pushed(linked)
     _require_pushed(git_repo)
+
+
+def _write_lock(project: Path, *sources: str) -> None:
+    project.mkdir(parents=True, exist_ok=True)
+    (project / "uv.lock").write_text(
+        "version = 1\n"
+        + "".join(
+            f'[[package]]\nname = "pkg{i}"\nsource = {source}\n'
+            for i, source in enumerate(sources)
+        )
+    )
+
+
+def test_path_dependencies_inside_the_repo_pass(git_repo: Path) -> None:
+    project = git_repo / "ml"
+    _write_lock(
+        project,
+        '{ virtual = "." }',
+        '{ editable = "../libs/shared" }',
+        '{ directory = "vendored" }',
+        '{ path = "../wheels/x-1.0-py3-none-any.whl" }',
+        '{ registry = "https://pypi.org/simple" }',
+        '{ git = "https://example.com/x.git" }',
+    )
+    require_path_dependencies_in_repo(GitIdentity.capture(git_repo), project)
+
+
+def test_path_dependencies_outside_the_repo_are_refused(
+    git_repo: Path, tmp_path: Path
+) -> None:
+    _write_lock(
+        git_repo,
+        '{ editable = "." }',
+        '{ editable = "../shared" }',
+        f'{{ path = "{tmp_path / "x.whl"}" }}',
+    )
+    with pytest.raises(
+        RuntimeError,
+        match=r"(?s)outside the git repository.*pkg1: \.\./shared\n  pkg2: .*x\.whl",
+    ) as excinfo:
+        require_path_dependencies_in_repo(GitIdentity.capture(git_repo), git_repo)
+    assert "pkg0" not in str(excinfo.value)
 
 
 def test_extract_snapshot_materializes_the_commit(git_repo: Path) -> None:

@@ -1,8 +1,9 @@
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
-from gitrepo import git
+from gitrepo import commit_and_push, git
 
 import furu
 from furu import Spec
@@ -16,9 +17,17 @@ from furu.worker.backends.local import LocalThreadWorkerBackend
 
 
 @pytest.fixture
-def require_pushed(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Undo the furu pytest plugin's opt-out for this test.
+def require_pushed(
+    git_repo: Path, fresh_caches: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Undo the furu pytest plugin's opt-out for this test, in a real uv project:
+    # submitting also checks the lock's path dependencies against the repo.
     monkeypatch.setattr(furu_provenance, "_require_pushed_code", True)
+    (git_repo / "pyproject.toml").write_text(
+        '[project]\nname = "repo"\nversion = "0"\nrequires-python = ">=3.12"\n'
+    )
+    subprocess.run(["uv", "lock", "-q", "--offline"], cwd=git_repo, check=True)
+    commit_and_push(git_repo)
 
 
 _created: list[str] = []

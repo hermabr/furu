@@ -204,20 +204,23 @@ class Provenance(BaseModel):
 def capture_submit_provenance() -> SubmitProvenance:
     """Capture the submit-side provenance half for a batch about to compute.
 
-    Refuses unless the checkout is committed and pushed (see
-    ``furu.snapshot.require_pushed``). Callers own the once-per-batch
+    Refuses unless the checkout is committed and pushed and its path
+    dependencies live inside the repo (see ``furu.snapshot``). Callers own the once-per-batch
     discipline: call this only when there is work to create, never on the
     cache-hit path.
     """
-    from furu.snapshot import require_pushed  # snapshot.py imports this module
+    # snapshot.py imports this module
+    from furu.snapshot import require_path_dependencies_in_repo, require_pushed
 
     cwd = Path.cwd()
     git = GitIdentity.capture(cwd)
+    environment = EnvironmentIdentity.capture()
     if _require_pushed_code:
         require_pushed(git)
+        require_path_dependencies_in_repo(git, Path(environment.project_root))
     return SubmitProvenance(
         git=git,
-        environment=EnvironmentIdentity.capture(),
+        environment=environment,
         submitted=SubmitContext.capture(),
     )
 
