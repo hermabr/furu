@@ -71,8 +71,11 @@ class Rewrite:
     """Reshape old results' stored fields with ``transform``.
 
     Furu recognises a Rewrite by the step just before it, not by its function,
-    so a lambda is fine and renaming the function changes nothing. Once results
-    depend on it, keep what it does: an edited ``transform`` goes unnoticed.
+    so a lambda is fine and renaming the function changes nothing. Moving it
+    after another step recomputes the results that took it. Once results depend
+    on it, keep what it does: an edited ``transform`` goes unnoticed. And keep
+    the steps before it: dropping an earlier Rewrite can give this one the dropped
+    one's identity, so results that took only that one would skip this one.
     """
 
     transform: Callable[[Mapping[str, JsonValue]], Mapping[str, JsonValue]]
@@ -137,7 +140,8 @@ def _chain_identities(steps: tuple[MigrationStep, ...]) -> tuple[tuple[str, ...]
     editing or renaming them keeps a step's identity. A Retyped is told apart
     from earlier retypes of its field by count: the retype shows in the stored
     schema, so a mix-up is caught there. A Rewrite shows in no schema, so it is
-    identified by the step before it, which two branches rarely share.
+    identified by the step before it, which two branches rarely share. A
+    recorded identity that matches no declared step makes its schema recompute.
     """
     identities: list[tuple[str, ...]] = []
     retypes: dict[str, int] = {}
@@ -156,19 +160,6 @@ def _chain_identities(steps: tuple[MigrationStep, ...]) -> tuple[tuple[str, ...]
                 identity = ("Rewrite", *(identities[-1] if identities else ()))
         identities.append(identity)
     return tuple(identities)
-
-
-def _describe_identity(identity: tuple[str, ...]) -> str:
-    match identity:
-        case ():
-            return "the start of the chain"
-        case ("Rewrite", *before):
-            return f"a Rewrite after {_describe_identity(tuple(before))}"
-        case ("Retyped", field, count):
-            return f"retype {count} of {field!r}"
-        case _:
-            kind, *fields = identity
-            return f"{kind}({', '.join(repr(field) for field in fields)})"
 
 
 def _touched_fields(step: MigrationStep) -> frozenset[str] | None:

@@ -2403,20 +2403,15 @@ class _StepsDroppedRenameRun(Spec[str]):
         return f"dropped steps={self.steps}"
 
 
-def test_a_rewrite_that_now_follows_another_step_blocks() -> None:
-    _grow_steps(_StepsDroppedRenameRun)
+def test_a_rewrite_that_now_follows_another_step_recomputes() -> None:
+    # The recorded Rewrite (after the Renamed) matches no declared step, so the
+    # schema is skipped rather than risk applying the Rewrite twice.
+    steps = _StepsRun(steps=700)
+    steps.create()
+    _transplant_generation(steps, _StepsDroppedRenameRun)
+    _fresh_process()
 
-    blocked = _StepsDroppedRenameRun(steps=700)
-    assert blocked.status == "stale"
-    with pytest.raises(Stale) as excinfo:
-        blocked.create()
-    message = str(excinfo.value)
-    assert (
-        "records a Rewrite after Renamed('epochs', 'steps'), but "
-        "_StepsDroppedRenameRun.migrations[0] is a Rewrite after the start of the "
-        "chain"
-    ) in message
-    assert "Restore the old order" in message
+    assert _StepsDroppedRenameRun(steps=700).status == "missing"
 
 
 class _RatioRun(Spec[str]):
@@ -2474,6 +2469,28 @@ class _RetypedTwiceRun(Spec[str]):
 
     def create(self) -> str:
         return f"twice ratio={self.ratio}"
+
+
+class _StrRatioRun(Spec[str]):
+    ratio: str
+
+    # The int -> float retype was dropped from the chain.
+    migrations = (Retyped("ratio", was=float),)
+
+    def create(self) -> str:
+        return f"str ratio={self.ratio}"
+
+
+def test_dropping_an_earlier_retype_of_a_field_is_stale() -> None:
+    # Retypes are counted, so the float -> str retype takes the dropped one's
+    # identity and the stored schema seems to have it; its float field then
+    # doesn't fit, which blocks instead of reusing.
+    float_ratio = _FloatRatioRun(ratio=0.5)
+    float_ratio.create()
+    _transplant_generation(float_ratio, _StrRatioRun)
+    _fresh_process()
+
+    assert _StrRatioRun(ratio="0.5").status == "stale"
 
 
 def test_a_field_retyped_twice_tells_its_retypes_apart() -> None:
@@ -2610,14 +2627,3 @@ def test_branches_sharing_a_schema_directory_do_not_block_each_other() -> None:
 
     assert _XTimesBranch(a=1, x=2).load_existing() == "trunk a=1"
     assert _XTimesBranch(a=7, x=14).status == "missing"
-
-
-def test_a_chain_that_dropped_older_steps_reuses_schemas_written_after_them() -> None:
-    # _MidRun's schema recorded MovedFrom/Renamed steps that _FinalRunViaMid no
-    # longer declares; it already had them, so only the steps it lacks apply.
-    _MidRun(dataset="imagenet", lr=0.1).create()
-    _COUNTER.calls = 0
-
-    final = _FinalRunViaMid(dataset="imagenet", lr=0.1)
-    assert final.load_existing() == {"dataset": "imagenet", "lr": "0.1"}
-    assert _COUNTER.calls == 0
