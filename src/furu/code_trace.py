@@ -15,8 +15,11 @@ The hash also covers the Python minor version, since ast.dump output differs
 between them.
 
 Only .py files count: a YAML config, CSV or style file that create() reads is
-not traced, so editing one keeps the old result. Put what such a file decides
-in a spec field instead.
+not traced, and neither are environment variables or sys.argv, so changing one
+keeps the old result. Hashing them would rerun results on edits and environment
+changes that do not matter. Instead furu warns when create() reads a repo file
+other than .py, or a function that ran mentions os.environ, os.getenv or
+sys.argv. Put what they decide in a spec field.
 """
 
 from __future__ import annotations
@@ -42,7 +45,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from furu.config import CodeVersion
+from furu.config import CodeVersion, get_config
 from furu.storage._layout import trace_path_in
 from furu.utils import _hash_dict_deterministically, spec_label
 
@@ -51,6 +54,9 @@ _PYTHON = f"{sys.version_info.major}.{sys.version_info.minor}"
 _REPO_ROOT_ENV_VAR = "_FURU_REPO_ROOT"
 _DEFS = (ast.FunctionDef, ast.AsyncFunctionDef)
 _IMPORTS = (ast.Import, ast.ImportFrom)
+_KEEPS_OLD_RESULT = (
+    "changing it keeps the old result. Put what it decides in a spec field instead."
+)
 
 type Uses = frozenset[str] | Literal["all"]
 
@@ -177,6 +183,7 @@ class _Facts:
     mentions: frozenset[str]
     imports: tuple[ast.Import | ast.ImportFrom, ...]
     dynamic: tuple[str, int] | None  # (what, line) of the first dynamic lookup
+    untraced: tuple[str, int] | None  # (what, line) of the first env or argv read
 
 
 def _strip_docstring(
@@ -303,6 +310,16 @@ def _dynamic(node: ast.AST, mentions: set[str]) -> str | None:
     return None
 
 
+def _untraced(node: ast.AST) -> str | None:
+    """Name a read of an input furu does not trace: the environment or argv."""
+    match node:
+        case ast.Attribute(value=ast.Name(id="os"), attr="environ" | "getenv" as attr):
+            return f"os.{attr}"
+        case ast.Attribute(value=ast.Name(id="sys"), attr="argv"):
+            return "sys.argv"
+    return None
+
+
 def _calls(node: ast.AST, calls: set[str]) -> None:
     """Add the names running node calls: decorators and defaults, not def bodies."""
     if isinstance(node, (ast.Call, *_DEFS, ast.ClassDef)):
@@ -331,6 +348,7 @@ def _facts(node: ast.AST) -> _Facts:
         mentions: set[str] = set()
         imports: list[ast.Import | ast.ImportFrom] = []
         dynamic: tuple[str, int] | None = None
+        untraced: tuple[str, int] | None = None
         for child in ast.walk(node):
             if isinstance(child, ast.Name):
                 mentions.add(child.id)
@@ -342,7 +360,11 @@ def _facts(node: ast.AST) -> _Facts:
                 _strip_docstring(child)
             if (what := _dynamic(child, mentions)) and dynamic is None:
                 dynamic = (what, getattr(child, "lineno", 0))
-        facts = _FACTS[id(node)] = _Facts(frozenset(mentions), tuple(imports), dynamic)
+            if (what := _untraced(child)) and untraced is None:
+                untraced = (what, getattr(child, "lineno", 0))
+        facts = _FACTS[id(node)] = _Facts(
+            frozenset(mentions), tuple(imports), dynamic, untraced
+        )
     return facts
 
 
@@ -399,14 +421,6 @@ def _fingerprint(text: str | None, ran: frozenset[str], uses: Uses) -> str | Non
     return fingerprint
 
 
-@dataclass(frozen=True, slots=True)
-class _Fallback:
-    file: str
-    qualname: str
-    what: str
-    line: int
-
-
 class FileTrace(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -424,8 +438,11 @@ def _code(
     ran: Mapping[str, frozenset[str]],
     source: Callable[[str], str | None],
     root: str,
-) -> tuple[dict[str, FileTrace], list[_Fallback]]:
-    """Fingerprint every repo file reached from the functions that ran."""
+) -> tuple[dict[str, FileTrace], list[str]]:
+    """Fingerprint every repo file reached from the functions that ran.
+
+    Also returns warnings about what the fingerprints cannot see.
+    """
     packages = {
         rel: getattr(module, "__package__", None)
         for module in list(sys.modules.values())
@@ -453,7 +470,7 @@ def _code(
     uses: dict[str, set[str]] = {rel: set() for rel in ran}
     called: dict[str, set[str]] = {}  # names kept code calls at import
     everything: dict[str, str] = {}  # files that keep every name, and why
-    fallbacks: list[_Fallback] = []
+    warnings: list[str] = []
     scanned: set[tuple[str, str]] = set()
     changed = True
 
@@ -491,13 +508,23 @@ def _code(
             )
             for _, _, members in items:
                 for qualname, facts in members:
-                    if qualname is None or facts.dynamic is None:
+                    if qualname is None or (rel, qualname) in scanned:
                         continue
-                    if (rel, qualname) not in scanned:
-                        scanned.add((rel, qualname))
+                    scanned.add((rel, qualname))
+                    if facts.dynamic is not None:
                         what, line = facts.dynamic
-                        fallbacks.append(_Fallback(rel, qualname, what, line))
+                        warnings.append(
+                            f"{qualname} ({rel}:{line}) uses {what}, so every "
+                            f"module-level name in {rel} counts toward its cache "
+                            "key. Editing any of them will rerun it."
+                        )
                         reach(rel, None, f"{what} in {qualname}")
+                    if facts.untraced is not None:
+                        what, line = facts.untraced
+                        warnings.append(
+                            f"{qualname} ({rel}:{line}) reads {what}, which furu "
+                            f"does not trace: {_KEEPS_OLD_RESULT}"
+                        )
             used = set().union(
                 *(header for _, header, _ in items),
                 *(facts.mentions for _, _, members in items for _, facts in members),
@@ -575,7 +602,7 @@ def _code(
             reason=everything.get(rel),
             fingerprint=_fingerprint(text, ran_here, stored),
         )
-    return code, fallbacks
+    return code, warnings
 
 
 # --- trace.json and lookup --------------------------------------------------
@@ -800,6 +827,12 @@ class _Collector:
     def __init__(self, root: str, log: _TraceLog, state: LogState) -> None:
         self.root = root
         self.log = log
+        # furu's own data directories may live in the repo; reading them is fine.
+        self.data_dirs = tuple(
+            _realpath(str(path)) + os.sep
+            for _, path in get_config().directories.anchored()
+        )
+        self.opened: set[str] = set()  # repo files besides .py that create() read
         self.ran = {rel: set(names) for rel, names in state.ran.items()}
         # Content hashes of the code each file ran: earlier attempts' as
         # trace.log recorded them, and this process's own.
@@ -826,6 +859,20 @@ class _Collector:
         """Whether rel on disk differs from the code that ran."""
         ran = self.hashes[rel] if rel in self.hashes else self.resumed.get(rel)
         return ran is None or ran != _content_hash(_read(Path(self.root, rel)))
+
+    def open(self, path: object, flags: int) -> None:
+        if not isinstance(path, str | bytes) or flags & os.O_ACCMODE == os.O_WRONLY:
+            return  # an fd, or a write
+        name = os.path.abspath(os.fsdecode(path))
+        if name.endswith((".py", ".pyc")) or not name.startswith(self.root):
+            return
+        real = _realpath(name)
+        if (
+            real.startswith(self.root)
+            and not real.startswith((*_excluded(), *self.data_dirs))
+            and os.path.isfile(real)
+        ):
+            self.opened.add(real[len(self.root) :])
 
     def see(self, code: CodeType) -> None:
         if (rel := _rel(code.co_filename, self.root)) is None:
@@ -855,6 +902,17 @@ def _on_py_start(code: CodeType, offset: int) -> object:
     return sys.monitoring.DISABLE
 
 
+def _on_audit(event: str, args: tuple[object, ...]) -> None:
+    # Python runs this for every audit event in the process, forever.
+    if event == "open" and (collector := _active) is not None:
+        try:
+            path, _, flags = args
+            assert isinstance(flags, int)
+            collector.open(path, flags)
+        except Exception:  # noqa: BLE001, S110 -- never break the code being traced
+            pass
+
+
 def _trace_into(collector: _Collector | None) -> None:
     """Send PY_START events to collector; None stops tracing."""
     global _active, _tool_id
@@ -868,6 +926,7 @@ def _trace_into(collector: _Collector | None) -> None:
             )
         monitoring.use_tool_id(_tool_id, "furu")
         monitoring.register_callback(_tool_id, monitoring.events.PY_START, _on_py_start)
+        sys.addaudithook(_on_audit)  # cannot be removed, so it checks _active
     _active = collector
     monitoring.set_events(_tool_id, monitoring.events.PY_START if collector else 0)
     # _on_py_start disables each code object it sees; re-arm them all.
@@ -963,7 +1022,7 @@ def why_not_resumable(state: LogState | None, *, storage_root: Path) -> str | No
     return None
 
 
-_WARNED: set[tuple[str, str]] = set()
+_WARNED: set[str] = set()
 
 
 def build_trace(run: Recording, *, label: str, warn: Callable[[str], None]) -> Trace:
@@ -973,16 +1032,16 @@ def build_trace(run: Recording, *, label: str, warn: Callable[[str], None]) -> T
             code_version="fixed", dependencies=dict(sorted(run.dependencies.items()))
         )
     root = repo_root()
-    code, fallbacks = _code(run.ran, lambda rel: _read(root / rel), str(root) + os.sep)
-    for fallback in fallbacks:
-        if (fallback.file, fallback.qualname) not in _WARNED:
-            _WARNED.add((fallback.file, fallback.qualname))
-            warn(
-                f"{label}: {fallback.qualname} ({fallback.file}:{fallback.line}) uses "
-                f"{fallback.what}, so every module-level name in {fallback.file} "
-                "counts toward its cache key. Editing any of them will rerun it."
-            )
+    code, warnings = _code(run.ran, lambda rel: _read(root / rel), str(root) + os.sep)
     assert run._collector is not None
+    warnings += [
+        f"create() read {rel}, which furu does not trace: {_KEEPS_OLD_RESULT}"
+        for rel in sorted(run._collector.opened)
+    ]
+    for warning in warnings:
+        if warning not in _WARNED:  # once per process
+            _WARNED.add(warning)
+            warn(f"{label}: {warning}")
     if stale := sorted(rel for rel in code if run._collector.changed(rel)):
         raise StaleCodeError(
             f"{label}: {', '.join(stale)} changed after this process imported it, "

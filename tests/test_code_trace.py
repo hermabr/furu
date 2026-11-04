@@ -597,6 +597,60 @@ def test_literal_getattr_is_not_a_dynamic_lookup(repo: Repo) -> None:
     assert spec.status == "done"
 
 
+UNTRACED = """\
+import os
+import sys
+from pathlib import Path
+
+import furu
+
+
+class ReadsConfig(furu.Spec[str]):
+    def metadata(self) -> furu.Metadata:
+        return furu.Metadata(code_version="traced")
+
+    def create(self) -> str:
+        here = Path(__file__).parent
+        (here / "out.txt").write_text("written")  # a write is not an input
+        return (here / "config.yaml").read_text()
+
+
+class ReadsEnv(furu.Spec[str]):
+    def metadata(self) -> furu.Metadata:
+        return furu.Metadata(code_version="traced")
+
+    def create(self) -> str:
+        return os.environ.get("HOME", "") + str(len(sys.argv))
+"""
+
+
+def test_reading_a_repo_file_warns_and_keeps_the_result(repo: Repo) -> None:
+    repo.write("config.yaml", "lr: 1\n")
+    repo.write("untraced.py", UNTRACED)
+    module = repo.load("untraced")
+    spec = module.ReadsConfig()
+    spec.create()
+
+    warning = f"create() read {repo.package}/config.yaml, which furu does not trace"
+    assert warning in _run_log(spec)
+    assert "out.txt" not in _run_log(spec)
+    assert f"{repo.package}/config.yaml" not in _trace(spec)["code"]
+
+    repo.edit("config.yaml", "lr: 1", "lr: 2")
+    assert spec.status == "done"
+
+
+def test_reading_the_environment_warns(repo: Repo) -> None:
+    repo.write("untraced.py", UNTRACED)
+    spec = repo.load("untraced").ReadsEnv()
+    spec.create()
+
+    assert (
+        f"ReadsEnv.create ({repo.package}/untraced.py:23) reads os.environ, "
+        "which furu does not trace"
+    ) in _run_log(spec)
+
+
 def test_star_import_uses_every_name_in_the_module(repo: Repo) -> None:
     repo.write("consts.py", "A = 1\nB = 2\n")
     repo.write(
