@@ -58,16 +58,12 @@ def fully_qualified_name(value: object) -> str:
     if mod == "__main__":
         mod = _running_main_module_name()
         if mod is None:
-            from furu.config import get_config
-
-            if not get_config().debug_mode:
-                raise ValueError(
-                    f"Cannot serialize object __main__.{qualname} from the __main__ module. "
-                    "Run the file as `python -m package.module`, or re-import "
-                    "the class from its own module inside the "
-                    '`if __name__ == "__main__":` block.'
-                )
-            mod = "__main__"
+            raise ValueError(
+                f"Cannot serialize object __main__.{qualname} from the __main__ module. "
+                "Run the file as `python -m package.module`, or re-import "
+                "the class from its own module inside the "
+                '`if __name__ == "__main__":` block.'
+            )
 
     return f"{mod}.{qualname}"
 

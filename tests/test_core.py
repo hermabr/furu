@@ -25,7 +25,7 @@ from pydantic import BaseModel, ConfigDict
 import furu
 import furu.execution.load_or_create as execution_module
 from furu import Metadata, Spec, Throttle, Worker
-from furu.config import _Config, _FuruDirectories, get_config
+from furu.config import get_config
 from furu.dependencies import (
     _DependencyNotReady,
     collect_declared_refs,
@@ -48,7 +48,6 @@ from furu.storage._layout import (
     trace_path_in,
     version_dir_in,
 )
-from furu.testing import override_config
 from furu.utils import fully_qualified_name
 
 type SOME_TYPE = Literal["a", "b"] | int
@@ -1471,7 +1470,7 @@ def test_data_dir():
         name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
     )
     assert node_pair._base_dir == (
-        get_config().run_directories.objects
+        get_config().directories.anchored().objects
         / "test_core"
         / "NodePair"
         / "21733b1febfab88b565c"
@@ -1479,7 +1478,7 @@ def test_data_dir():
     )
     assert data_dir_in(node_pair._base_dir) == node_pair._base_dir / "data"
     assert data_dir_in(node_pair._base_dir) == Path(
-        get_config().run_directories.objects
+        get_config().directories.anchored().objects
         / "test_core"
         / "NodePair"
         / node_pair._artifact_schema_hash
@@ -1493,7 +1492,7 @@ def test_metadata_defaults_to_project_config_storage_and_any_worker():
 
     assert node.metadata() == Metadata()
     assert node.runs_on(Worker())
-    assert node._metadata.storage == get_config().run_directories.objects
+    assert node._metadata.storage == get_config().directories.anchored().objects
 
 
 def test_worker_here_counts_cuda_visible_devices(
@@ -1583,47 +1582,6 @@ def test_in_process_create_ignores_runs_on(
     assert node._base_dir.is_relative_to(tmp_path / "store")
     assert node.status == "done"
     assert NoWorkerNode(name="x").load_existing() == "x"
-
-
-def test_debug_mode_ignores_storage_override(monkeypatch) -> None:
-    monkeypatch.setattr("furu.config._project_anchor", lambda: Path())
-    with override_config(_Config(debug_mode=True)):
-        node = CustomStorageNode(name="x")
-
-        assert node.metadata().storage == Path("custom/data/location")
-        assert node._base_dir == (
-            Path("furu-data")
-            / "debug"
-            / "objects"
-            / "test_core"
-            / "CustomStorageNode"
-            / node._artifact_schema_hash
-            / node._artifact_hash
-        )
-
-
-def test_debug_mode_uses_configured_debug_directory(monkeypatch) -> None:
-    monkeypatch.setattr("furu.config._project_anchor", lambda: Path())
-    config = _Config(
-        debug_mode=True,
-        directories=_FuruDirectories(
-            objects=Path("main/objects"),
-            executions=Path("main/executions"),
-            debug=Path("custom/debug"),
-        ),
-    )
-    with override_config(config):
-        node = CustomStorageNode(name="x")
-
-        assert node.metadata().storage == Path("custom/data/location")
-        assert node._base_dir == (
-            Path("custom/debug")
-            / "objects"
-            / "test_core"
-            / "CustomStorageNode"
-            / node._artifact_schema_hash
-            / node._artifact_hash
-        )
 
 
 def test_create_object_and_exists():

@@ -4,7 +4,7 @@ import logging
 import shutil
 from abc import ABC
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from functools import cached_property
 from inspect import get_annotations
 from pathlib import Path
@@ -18,7 +18,6 @@ from typing import (
 )
 
 from furu._batched import _BatchedCreate, _BatchedHook, batched
-from furu.config import get_config
 from furu.locking import LockError, is_active_lock, lock
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
@@ -165,11 +164,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
     @final
     @cached_property
     def _metadata(self) -> Metadata:
-        metadata = self.metadata()
-        config = get_config()
-        if config.debug_mode:
-            return replace(metadata, storage=config.run_directories.objects)
-        return metadata
+        return self.metadata()
 
     @property
     def logger(self) -> logging.Logger:

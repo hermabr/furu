@@ -390,7 +390,6 @@ def test_worker_run_discovers_lazy_dependencies_and_reruns_parent(
     parent_log = run_log_path_in(parent._base_dir).read_text(encoding="utf-8")
     assert " · 1 missing dependency\n" in parent_log
     assert "create failed" not in parent_log
-    assert "=== Debug Traceback ===" not in parent_log
 
 
 def test_worker_run_skips_already_completed_objects(tmp_path: Path):

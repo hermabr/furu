@@ -134,7 +134,7 @@ def test_extract_snapshot_materializes_the_commit(git_repo: Path) -> None:
 
     code_dir = extract_snapshot(commit, repo=git_repo)
 
-    assert code_dir == get_config().run_directories.snapshots / commit
+    assert code_dir == get_config().directories.anchored().snapshots / commit
     assert (code_dir / "tracked.txt").read_text() == "content\n"
     assert (code_dir / "sub" / "nested.txt").read_text() == "nested\n"
     assert (code_dir / "link.txt").readlink() == Path("tracked.txt")

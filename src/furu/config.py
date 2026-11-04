@@ -63,7 +63,6 @@ class _FuruDirectories(BaseModel):
     objects: Path = Path("furu-data") / "objects"
     executions: Path = Path("furu-data") / "executions"
     snapshots: Path = Path("furu-data") / "snapshots"
-    debug: Path = Path("furu-data") / "debug"
 
     def anchored(self) -> "_FuruDirectories":
         return _FuruDirectories(
@@ -93,7 +92,6 @@ class _Config(BaseSettings):
         frozen=True,
     )
 
-    debug_mode: bool = False
     # Each furu version's manager publishes address.json in its own
     # subdirectory; scripts on compute nodes read it, so point it at storage
     # they can see.
@@ -106,17 +104,6 @@ class _Config(BaseSettings):
     def manager_version_dir(self) -> Path:
         """This furu version's manager: one per version, so scripts never meet another."""
         return self.manager_dir / version("furu")
-
-    @property
-    def run_directories(self) -> _FuruDirectories:
-        directories = self.directories
-        if self.debug_mode:
-            debug = directories.debug
-            directories = _FuruDirectories(
-                **{name: debug / name for name in _FuruDirectories.model_fields}
-                | {"debug": debug}
-            )
-        return directories.anchored()
 
     def anchored(self) -> "_Config":
         """This config with absolute directories, for processes whose working

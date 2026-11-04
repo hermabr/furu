@@ -33,7 +33,9 @@ class Metadata:
     the default comes from [tool.furu] code_version (or FURU_CODE_VERSION).
     """
 
-    storage: Path = field(default_factory=lambda: get_config().run_directories.objects)
+    storage: Path = field(
+        default_factory=lambda: get_config().directories.anchored().objects
+    )
     environment: Mapping[str, str | None] = field(default_factory=dict)
     required_environment_variables: tuple[str, ...] = ()
     reuse: Reuse = "same_environment"

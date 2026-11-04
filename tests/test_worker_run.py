@@ -80,7 +80,9 @@ def _job(*objs: Spec) -> Job:
         artifacts=[ArtifactSpec.from_furu(obj) for obj in objs],
         run_logs=[run_log_path_in(obj._base_dir) for obj in objs],
         attempt=1,
-        execution_log=get_config().run_directories.executions / "e1" / "execution.log",
+        execution_log=get_config().directories.anchored().executions
+        / "e1"
+        / "execution.log",
         provenance=_submit_provenance(),
         process=ProcessSettings.from_metadata(objs[0]._metadata),
         config=get_config().anchored(),
@@ -110,7 +112,9 @@ def _new_run(
         provenance=_submit_provenance(),
         code=CodeLocation.here(),
         config=get_config().anchored(),
-        execution_log=get_config().run_directories.executions / "e1" / "execution.log",
+        execution_log=get_config().directories.anchored().executions
+        / "e1"
+        / "execution.log",
         max_retries_per_object=get_config().worker.max_retries_per_object
         if max_retries_per_object is None
         else max_retries_per_object,
@@ -1206,7 +1210,7 @@ def test_run_fails_when_local_worker_crashes(
 
 def test_run_writes_log_to_its_execution_dir() -> None:
     leaf = RunLeaf(value=14)
-    executions_dir = get_config().run_directories.executions
+    executions_dir = get_config().directories.anchored().executions
 
     run_on_workers([leaf], [LocalThreadWorkerBackend()])
 
@@ -1235,7 +1239,7 @@ def test_run_writes_log_to_its_execution_dir() -> None:
 def test_run_returns_when_all_objects_are_already_completed() -> None:
     leaf = RunLeaf(value=15)
     leaf.create()
-    executions_dir = get_config().run_directories.executions
+    executions_dir = get_config().directories.anchored().executions
 
     run_on_workers([leaf], [LocalThreadWorkerBackend()])
 

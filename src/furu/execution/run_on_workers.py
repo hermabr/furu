@@ -54,7 +54,7 @@ def run_on_workers(objs: Sequence[Spec], backends: Sequence[WorkerBackend]) -> N
     provenance = capture_submit_provenance()
     code = CodeLocation.here() if local == {True} else _prepare_snapshot(provenance)
     execution_log = execution_log_path_in(
-        get_config().run_directories.executions / secrets.token_hex(16)
+        get_config().directories.anchored().executions / secrets.token_hex(16)
     )
     from furu.execution.manager import Manager
 
