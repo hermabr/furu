@@ -57,6 +57,12 @@ def schema_snapshot_path_in(schema_dir: Path) -> Path:
     return schema_dir / "schema.json"
 
 
+def migrations_path_in(schema_dir: Path) -> Path:
+    # The migration steps declared by the code that first wrote this schema;
+    # written once, just before the schema snapshot.
+    return schema_dir / "migrations.json"
+
+
 def execution_log_path_in(executor_dir: Path) -> Path:
     return executor_dir / "execution.log"
 

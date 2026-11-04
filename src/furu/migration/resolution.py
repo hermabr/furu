@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from furu._declared_types import cached_type_hints
 from furu.constants import CLASSMARKER, FIELDSMARKER, KINDMARKER
+from furu.locking import read_text_or_none
 from furu.migration.steps import (
     Added,
     MigrationError,
@@ -19,12 +20,13 @@ from furu.migration.steps import (
     Rewrite,
     _describe_step,
     _is_breaking,
+    _step_identity,
     validate_migration_declaration,
 )
 from furu.serializer.artifact import to_json
 from furu.serializer.registry import Serializer
 from furu.serializer.schema import schema_type
-from furu.storage._layout import schema_snapshot_path_in
+from furu.storage._layout import migrations_path_in, schema_snapshot_path_in
 from furu.utils import (
     JsonFields,
     JsonValue,
@@ -96,6 +98,8 @@ class _ClassResolution:
     own: _Chain
     covered: tuple[_Covered, ...]
     orphaned: tuple[Path, ...]
+    # Identities of every step in own's and embedded classes' chains.
+    declared_steps: frozenset[tuple[str, ...]]
 
 
 def _snapshot_matches(snapshot: JsonValue, generation: _Generation) -> bool:
@@ -329,6 +333,9 @@ def _resolve_class(obj: Spec) -> _ClassResolution:
     for child in children:
         validate_migration_declaration(cast("type[Spec]", child))
     chains = tuple(_build_chain(child, obj.artifact_serializers) for child in children)
+    declared_steps = frozenset(
+        _step_identity(step) for chain in (own, *chains) for step in chain.steps
+    )
 
     covered: list[_Covered] = []
     orphaned: list[Path] = []
@@ -370,7 +377,14 @@ def _resolve_class(obj: Spec) -> _ClassResolution:
                     "current schema"
                 )
             if not matches:
-                orphaned.append(schema_directory)
+                recorded = migrations_path_in(schema_directory)
+                # A schema made by a step this code never took is a sibling or
+                # newer branch's, not this spec's past: neither ours nor stale.
+                if all(
+                    tuple(step) in declared_steps
+                    for step in json.loads(read_text_or_none(recorded) or "[]")
+                ):
+                    orphaned.append(schema_directory)
             elif matches[0].start > own.last_breaking and all(
                 move.start > move.chain.last_breaking for move in child_moves.values()
             ):
@@ -386,6 +400,7 @@ def _resolve_class(obj: Spec) -> _ClassResolution:
         own=own,
         covered=tuple(covered),
         orphaned=tuple(orphaned),
+        declared_steps=declared_steps,
     )
 
 

@@ -117,6 +117,18 @@ def _describe_step(step: MigrationStep) -> str:
     return f"{type(step).__name__}({body}{suffix})"
 
 
+def _step_identity(step: MigrationStep) -> tuple[str, ...]:
+    """What a step does, ignoring defaults and callables, so the same step
+    declared on two branches is recognized as one."""
+    match step:
+        case Renamed(field=field, to=to):
+            return ("Renamed", field, to)
+        case Added(field=field) | Retyped(field=field):
+            return (type(step).__name__, field)
+        case MovedFrom() | Rewrite():
+            return (type(step).__name__,)
+
+
 def validate_migration_declaration(cls: type[Spec]) -> None:
     steps = cls.migrations
     if not isinstance(steps, tuple) or not all(
