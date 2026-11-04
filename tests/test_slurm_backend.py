@@ -41,7 +41,7 @@ from furu.worker.backends.slurm.resources import (
     MemoryPerNode,
     SlurmResources,
 )
-from furu.worker.protocol import ErrorMessage, WarningMessage
+from furu.worker.messages import ErrorMessage, WarningMessage
 
 _URL = "ws://furu:secret-token@manager.cluster:1234"
 

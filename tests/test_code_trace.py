@@ -27,7 +27,7 @@ from furu.storage._layout import (
 )
 from furu.testing import override_config
 from furu.worker.execute import ChildSlot
-from furu.worker.protocol import JobCompletedResult, JobFailedResult
+from furu.worker.messages import JobCompletedResult, JobFailedResult
 
 # Source files get distinct mtimes in the past, so furu trusts that a module
 # imported before tracing started matches the file on disk, and every rewrite

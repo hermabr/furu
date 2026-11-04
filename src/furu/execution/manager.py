@@ -25,7 +25,7 @@ from furu.logging import get_logger
 from furu.worker.backends.local import LocalThreadPool
 from furu.worker.backends.protocol import WorkerPool
 from furu.worker.backends.slurm.pool import SlurmWorkerPool
-from furu.worker.protocol import (
+from furu.worker.messages import (
     CancelMessage,
     ErrorMessage,
     HelloMessage,

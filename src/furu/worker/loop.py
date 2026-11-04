@@ -11,16 +11,16 @@ from websockets.sync.client import ClientConnection, connect
 
 from furu.logging import get_logger
 from furu.utils import format_duration
-from furu.worker import protocol
+from furu.worker import messages
 from furu.worker.execute import ChildSlot
 
-type _Event = protocol.ServerMessage | protocol.JobResult | BaseException | None
+type _Event = messages.ServerMessage | messages.JobResult | BaseException | None
 
 
 def _read_messages(connection: ClientConnection, events: queue.Queue[_Event]) -> None:
     try:
         while True:
-            events.put(protocol.server_message_adapter.validate_json(connection.recv()))
+            events.put(messages.server_message_adapter.validate_json(connection.recv()))
     except ConnectionClosed:
         events.put(None)
     except Exception as exc:  # noqa: BLE001 -- re-raised on the main thread
@@ -28,7 +28,7 @@ def _read_messages(connection: ClientConnection, events: queue.Queue[_Event]) ->
 
 
 def _start_job_thread(
-    job: protocol.Job,
+    job: messages.Job,
     child_slot: ChildSlot,
     cancelled: threading.Event,
     events: queue.Queue[_Event],
@@ -38,7 +38,7 @@ def _start_job_thread(
             events.put(child_slot.run(job, cancelled=cancelled))
         except Exception as exc:  # noqa: BLE001 -- fault barrier: any crash fails the job
             error = "".join(traceback.format_exception(exc))
-            events.put(protocol.JobFailedResult(error=error))
+            events.put(messages.JobFailedResult(error=error))
         except BaseException as exc:  # noqa: BLE001 -- re-raised on the main thread
             events.put(exc)
 
@@ -64,14 +64,14 @@ def worker_loop(
     note = logger.info if worker_log is not None else logger.debug
     child_slot = ChildSlot(worker=component, backend=backend, worker_log=worker_log)
     events: queue.Queue[_Event] = queue.Queue()
-    job: protocol.Job | None = None
+    job: messages.Job | None = None
     cancelled = threading.Event()  # replaced with each new job
     execution_log: Path | None = None
     connected = True
     try:
         with connect(url, max_size=None) as connection:
             connection.send(
-                protocol.HelloMessage(
+                messages.HelloMessage(
                     worker=component, backend=backend, pool=pool, log=worker_log
                 ).model_dump_json()
             )
@@ -100,7 +100,7 @@ def worker_loop(
                             )
                     case BaseException():
                         raise event
-                    case protocol.Job():
+                    case messages.Job():
                         assert job is None
                         job = event
                         if worker_log is not None:
@@ -118,21 +118,21 @@ def worker_loop(
                             )
                         cancelled = threading.Event()
                         _start_job_thread(job, child_slot, cancelled, events)
-                    case protocol.CancelMessage():
+                    case messages.CancelMessage():
                         if job is not None:
                             note("cancelled %s; killing child", job.label)
                             cancelled.set()
                             child_slot.kill()
                     case (
-                        protocol.JobCompletedResult()
-                        | protocol.JobFailedResult()
-                        | protocol.JobBlockedResult()
+                        messages.JobCompletedResult()
+                        | messages.JobFailedResult()
+                        | messages.JobBlockedResult()
                     ):
                         job = None
                         if connected:
                             try:
                                 connection.send(
-                                    protocol.job_result_adapter.dump_json(
+                                    messages.job_result_adapter.dump_json(
                                         event
                                     ).decode()
                                 )
