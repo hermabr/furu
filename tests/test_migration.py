@@ -544,6 +544,8 @@ class _WidenGen1(Spec[str]):
     optimizer: _SGD | _AdamW
     lr: float
 
+    migrations = (Retyped("optimizer", was=_SGD),)
+
     def create(self) -> str:
         _COUNTER.calls += 1
         return "gen1"
@@ -632,31 +634,29 @@ def test_retyped_without_type_change_is_a_dead_step() -> None:
         spec.create()
 
 
-# --- ambiguity is rejected, never searched -----------------------------------------
+# --- the recorded steps pick the chain, never a search ------------------------------
 
 
-class _AmbiguousChains(Spec[int]):
-    n: int
+def test_a_repeated_step_is_rejected_at_class_creation() -> None:
+    with pytest.raises(TypeError, match=r"migrations\[1\].*repeats migrations\[0\]"):
 
-    migrations = (
-        MovedFrom(fully_qualified_name(_LegacyRun)),
-        MovedFrom(fully_qualified_name(_LegacyRun)),
-    )
+        class _RepeatedMove(Spec[int]):
+            n: int
 
-    def create(self) -> int:
-        return self.n
+            migrations = (
+                MovedFrom(fully_qualified_name(_LegacyRun)),
+                MovedFrom(fully_qualified_name(_LegacyRun)),
+            )
 
-
-def test_two_chains_claiming_the_same_source_schema_are_rejected() -> None:
-    with pytest.raises(MigrationError, match="ambiguous"):
-        _ = _AmbiguousChains(n=1).status
+            def create(self) -> int:
+                return self.n
 
 
 def _identity_rewrite(fields: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
     return dict(fields)
 
 
-class _AmbiguousViaRewrite(Spec[str]):
+class _RewriteThenRetype(Spec[str]):
     optimizer: _SGD | _AdamW
     lr: float
 
@@ -669,13 +669,21 @@ class _AmbiguousViaRewrite(Spec[str]):
         return "current"
 
 
-def test_snapshot_matching_two_chains_is_rejected() -> None:
+def test_recorded_steps_pick_one_chain_where_shapes_alone_cannot() -> None:
+    """The Rewrite's wildcard also fits gen0's shape after Retyped alone; the
+    steps gen0 recorded (none) say both still apply."""
     gen0 = _WidenGen0(optimizer=_SGD(momentum=0.9), lr=0.1)
     gen0.create()
-    _transplant_generation(gen0, _AmbiguousViaRewrite)
+    _transplant_generation(gen0, _RewriteThenRetype)
 
-    with pytest.raises(MigrationError, match="ambiguous"):
-        _ = _AmbiguousViaRewrite(optimizer=_SGD(momentum=0.9), lr=0.1).status
+    spec = _RewriteThenRetype(optimizer=_SGD(momentum=0.9), lr=0.1)
+    assert spec.status == "done"
+    assert spec.load_existing() == "gen0"
+    link = json.loads(result_link_path_in(spec._base_dir).read_text())
+    assert link["migration_path"] == [
+        "Rewrite(_identity_rewrite)",
+        f"Retyped('optimizer', was={fully_qualified_name(_SGD)})",
+    ]
 
 
 class _RewriteThenChildAddedV0(Spec[str]):
@@ -865,6 +873,8 @@ class _PostBreakDonor(Spec[str]):
     dataset: str
     learning_rate: float
     seed: int
+
+    migrations = (Added("seed", breaking=True),)
 
     def create(self) -> str:
         _COUNTER.calls += 1
@@ -1739,30 +1749,6 @@ def test_stale_report_attributes_the_diff_to_the_embedded_class() -> None:
     assert "_CascadeSilentTokenizer.migrations" in message
 
 
-class _CascadeAmbiguousTokenizer(Spec[int]):
-    n: int
-
-    migrations = (
-        MovedFrom(fully_qualified_name(_LegacyRun)),
-        MovedFrom(fully_qualified_name(_LegacyRun)),
-    )
-
-    def create(self) -> int:
-        return 0
-
-
-class _CascadeAmbiguousModel(Spec[int]):
-    tokenizer: _CascadeAmbiguousTokenizer
-
-    def create(self) -> int:
-        return 0
-
-
-def test_ambiguous_child_chain_is_rejected_at_parent_resolution() -> None:
-    with pytest.raises(MigrationError, match="ambiguous"):
-        _ = _CascadeAmbiguousModel(tokenizer=_CascadeAmbiguousTokenizer(n=1)).status
-
-
 @dataclass(frozen=True)
 class _CascadeBrokenOptimizer:
     lr: float
@@ -1904,6 +1890,8 @@ class _MetricsRunV0(Spec[_MetricsV0]):
 class _MetricsRunV1(Spec[_MetricsV1]):
     dataset: str
     evaluate: bool = False
+
+    migrations = (Added("evaluate", default=False),)
 
     def create(self) -> _MetricsV1:
         return _MetricsV1(loss=0.25, val_loss=0.3 if self.evaluate else None)
@@ -2072,3 +2060,272 @@ def test_undeclared_retype_of_an_added_field_stays_stale() -> None:
     _transplant_generation(warmup, _WarmupRetypedRun)
 
     assert _WarmupRetypedRun(a=4).status == "stale"
+
+
+# --- merged branches: the recorded steps say what each schema still needs ----------
+
+
+class _MergedRun(Spec[str]):
+    a: int
+    warmup: int = 0
+    dropout: float = 0.0
+    seed: int = 0
+
+    migrations = (
+        Added("warmup", default=0),
+        Added("dropout", default=0.0),
+        Added("seed", default=0),
+    )
+
+    def create(self) -> str:
+        return f"merged a={self.a}"
+
+
+class _MergedReversedRun(Spec[str]):
+    a: int
+    warmup: int = 0
+    dropout: float = 0.0
+
+    migrations = (Added("dropout", default=0.0), Added("warmup", default=0))
+
+    def create(self) -> str:
+        return f"merged a={self.a}"
+
+
+@pytest.mark.parametrize("merged", [_MergedRun, _MergedReversedRun])
+def test_merged_branches_reuse_every_branch_in_any_order(
+    merged: type[_MergedRun | _MergedReversedRun],
+) -> None:
+    for donor in _grow_branches():
+        _transplant_generation(donor, merged)
+
+    assert [merged(a=a).load_existing() for a in (1, 2, 3)] == [
+        "trunk a=1",
+        "warmup a=2",
+        "dropout a=3",
+    ]
+    assert merged(a=4).status == "missing"
+
+
+def test_a_merged_schema_gets_only_the_steps_it_lacks() -> None:
+    for donor in _grow_branches():
+        _transplant_generation(donor, _MergedRun)
+
+    # The dropout branch lacks warmup, declared before the dropout step it has.
+    assert _MergedRun(a=3).load_existing() == "dropout a=3"
+    link = json.loads(result_link_path_in(_MergedRun(a=3)._base_dir).read_text())
+    assert link["migration_path"] == [
+        "Added('warmup', default=0)",
+        "Added('seed', default=0)",
+    ]
+
+
+class _LrTrunk(Spec[str]):
+    a: int
+    lr: int = 1
+
+    def create(self) -> str:
+        return f"trunk a={self.a}"
+
+
+class _LrRenamedBranch(Spec[str]):
+    a: int
+    learning_rate: int = 1
+
+    migrations = (Renamed("lr", to="learning_rate"),)
+
+    def create(self) -> str:
+        return f"renamed a={self.a}"
+
+
+class _LrRetypedBranch(Spec[str]):
+    a: int
+    lr: int | None = 1
+
+    migrations = (Retyped("lr", was=int),)
+
+    def create(self) -> str:
+        return f"retyped a={self.a}"
+
+
+class _LrMerged(Spec[str]):
+    a: int
+    learning_rate: int | None = 1
+
+    migrations = (Retyped("lr", was=int), Renamed("lr", to="learning_rate"))
+
+    def create(self) -> str:
+        return f"merged a={self.a}"
+
+
+class _LrMergedKeepingRenamed(Spec[str]):
+    a: int
+    learning_rate: int | None = 1
+
+    migrations = (
+        Renamed("lr", to="learning_rate"),
+        Retyped("learning_rate", was=int),
+    )
+
+    def create(self) -> str:
+        return f"merged a={self.a}"
+
+
+class _LrMergedBreaking(Spec[str]):
+    a: int
+    learning_rate: int | None = 1
+
+    migrations = (
+        Retyped("lr", was=int, breaking=True),
+        Renamed("lr", to="learning_rate"),
+    )
+
+    def create(self) -> str:
+        return f"merged a={self.a}"
+
+
+def _grow_lr_branches(merged: type[Spec]) -> None:
+    """Trunk a=1; the retyped branch ran a=2 and the renamed branch a=3."""
+    trunk = _LrTrunk(a=1)
+    trunk.create()
+    _transplant_generation(trunk, merged)
+    for branch, a in ((_LrRetypedBranch, 2), (_LrRenamedBranch, 3)):
+        _transplant_generation(trunk, branch)
+        run = branch(a=a)
+        run.create()
+        _transplant_generation(run, merged)
+
+
+def test_branches_changing_the_same_field_block_with_both_steps_named() -> None:
+    _grow_lr_branches(_LrMerged)
+
+    assert _LrMerged(a=1).load_existing() == "trunk a=1"
+    assert _LrMerged(a=2).load_existing() == "retyped a=2"
+    # The renamed branch's schema already has the rename, so the retype would
+    # land after a rename of the same field.
+    blocked = _LrMerged(a=3)
+    assert blocked.status == "stale"
+    with pytest.raises(Stale) as excinfo:
+        blocked.create()
+    message = str(excinfo.value)
+    assert (
+        "migrations[0] (Retyped('lr', was=builtins.int)) would have to run after "
+        "migrations[1] (Renamed('lr', to='learning_rate')), which this schema "
+        "already has"
+    ) in message
+    assert "two branches changed the same thing in parallel" in message
+
+
+def test_ordering_steps_like_one_branch_keeps_its_results() -> None:
+    _grow_lr_branches(_LrMergedKeepingRenamed)
+
+    assert _LrMergedKeepingRenamed(a=3).load_existing() == "renamed a=3"
+    assert _LrMergedKeepingRenamed(a=1).load_existing() == "trunk a=1"
+    # The retyped branch recorded Retyped('lr'), which no longer exists: its
+    # results are recomputed, as a sibling branch's would be.
+    assert _LrMergedKeepingRenamed(a=2).status == "missing"
+
+
+def test_a_breaking_step_resolves_a_clash_by_recomputing() -> None:
+    _grow_lr_branches(_LrMergedBreaking)
+
+    assert _LrMergedBreaking(a=2).load_existing() == "retyped a=2"
+    assert _LrMergedBreaking(a=3).status == "missing"
+    assert _LrMergedBreaking(a=1).status == "missing"
+
+
+class _WidthTrunk(Spec[str]):
+    a: int
+    width: int = 3
+
+    def create(self) -> str:
+        return f"trunk a={self.a}"
+
+
+class _SizeBranch(Spec[str]):
+    a: int
+    size: int = 3
+
+    migrations = (Renamed("width", to="size"),)
+
+    def create(self) -> str:
+        return f"size a={self.a}"
+
+
+class _DepthMerged(Spec[str]):
+    a: int
+    size: int = 3
+    depth: int = 6
+
+    migrations = (
+        Added("depth", default_factory=lambda fields: cast(int, fields["width"]) * 2),
+        Renamed("width", to="size"),
+    )
+
+    def create(self) -> str:
+        return f"merged a={self.a}"
+
+
+def test_a_default_factory_never_runs_after_a_step_it_was_declared_before() -> None:
+    trunk = _WidthTrunk(a=1)
+    trunk.create()
+    _transplant_generation(trunk, _DepthMerged)
+    _transplant_generation(trunk, _SizeBranch)
+    size = _SizeBranch(a=2, size=4)
+    size.create()
+    _transplant_generation(size, _DepthMerged)
+
+    assert _DepthMerged(a=1).load_existing() == "trunk a=1"
+    # The factory reads width, which the size branch already renamed.
+    assert _DepthMerged(a=2, size=4, depth=8).status == "stale"
+
+
+class _MovedFromWarmupDonor(Spec[dict[str, str]]):
+    dataset: str
+    learning_rate: float
+    warmup: int = 0
+
+    migrations = (Added("warmup", default=0),)
+
+    def create(self) -> dict[str, str]:
+        return {"branch": "warmup"}
+
+
+class _MovedDonor(Spec[dict[str, str]]):
+    dataset: str
+    learning_rate: float
+
+    migrations = (MovedFrom(fully_qualified_name(_LegacyRun)),)
+
+    def create(self) -> dict[str, str]:
+        return {"branch": "moved"}
+
+
+class _MovedMergedRun(Spec[dict[str, str]]):
+    dataset: str
+    learning_rate: float
+    warmup: int = 0
+
+    migrations = (
+        MovedFrom(fully_qualified_name(_LegacyRun)),
+        Added("warmup", default=0),
+    )
+
+    def create(self) -> dict[str, str]:
+        return {"branch": "merged"}
+
+
+def test_a_move_merges_with_a_field_added_under_the_old_name() -> None:
+    warmup = _MovedFromWarmupDonor(dataset="w", learning_rate=0.1)
+    warmup.create()
+    _transplant_generation(warmup, _LegacyRun)
+    moved = _MovedDonor(dataset="m", learning_rate=0.1)
+    moved.create()
+    _transplant_generation(moved, _MovedMergedRun)
+
+    assert _MovedMergedRun(dataset="w", learning_rate=0.1).load_existing() == {
+        "branch": "warmup"
+    }
+    assert _MovedMergedRun(dataset="m", learning_rate=0.1).load_existing() == {
+        "branch": "moved"
+    }

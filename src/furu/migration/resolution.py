@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import functools
 import json
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, is_dataclass
 from dataclasses import fields as dataclass_fields
 from pathlib import Path
@@ -18,6 +19,7 @@ from furu.migration.steps import (
     Renamed,
     Retyped,
     Rewrite,
+    _commutes,
     _describe_step,
     _is_breaking,
     _step_identity,
@@ -53,7 +55,8 @@ def _shape_of(schema: JsonValue) -> JsonValue:
 
 @dataclass(frozen=True, slots=True)
 class _Generation:
-    start: int
+    pending: tuple[int, ...]  # indices into the chain's steps, applied in order
+    breaking: bool  # a pending step discards old results instead of migrating
     class_name: str
     expectations: Mapping[str, _FieldExpectation]
     pinned: Mapping[str, JsonValue]
@@ -61,29 +64,50 @@ class _Generation:
 
 @dataclass(frozen=True, slots=True)
 class _Chain:
-    """One class's migration chain, resolved against its current schema.
-
-    ``generations[i]`` describes the source schema that ``steps[i:]`` migrates
-    to current; ``generations[-1]`` is the current schema itself.
-    """
+    """One class's migration chain, resolved against its current schema."""
 
     class_name: str
+    names: frozenset[str]  # the current name and every name it moved from
     steps: tuple[MigrationStep, ...]
-    generations: tuple[_Generation, ...]
-    last_breaking: int
+    identities: tuple[tuple[str, ...], ...]  # _step_identity of each step
     added_types: Mapping[int, object]  # declared type of each non-breaking Added
     artifact_serializers: tuple[type[Serializer], ...]
     current_schema: JsonValue
+    # The old schema that the given pending steps migrate to current.
+    source: Callable[[tuple[int, ...]], _Generation]
 
     @property
     def label(self) -> str:
         return self.class_name.rsplit(".", 1)[-1]
 
+    def pending(self, had: set[tuple[str, ...]]) -> tuple[int, ...]:
+        return tuple(
+            index
+            for index, identity in enumerate(self.identities)
+            if identity not in had
+        )
+
+    def clash(self, had: set[tuple[str, ...]]) -> str | None:
+        """Why the steps a schema lacks can't run after the ones it has, if so."""
+        for index in self.pending(had):
+            for later in range(index + 1, len(self.steps)):
+                if self.identities[later] in had and not _commutes(
+                    self.steps[index], self.steps[later]
+                ):
+                    return (
+                        f"{self.label}.migrations[{index}] "
+                        f"({_describe_step(self.steps[index])}) would have to run "
+                        f"after migrations[{later}] "
+                        f"({_describe_step(self.steps[later])}), which this "
+                        "schema already has, and the two conflict"
+                    )
+        return None
+
 
 @dataclass(frozen=True, slots=True)
 class _ChildMove:
     chain: _Chain
-    start: int
+    generation: _Generation
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,11 +118,18 @@ class _Covered:
 
 
 @dataclass(frozen=True, slots=True)
+class _Orphaned:
+    schema_directory: Path
+    clash: str | None  # set when branches made conflicting steps in parallel
+
+
+@dataclass(frozen=True, slots=True)
 class _ClassResolution:
     own: _Chain
     covered: tuple[_Covered, ...]
-    orphaned: tuple[Path, ...]
-    # Identities of every step in own's and embedded classes' chains.
+    orphaned: tuple[_Orphaned, ...]
+    # (class name, *step identity) for every step in own's and embedded
+    # classes' chains; recorded beside each schema snapshot.
     declared_steps: frozenset[tuple[str, ...]]
 
 
@@ -172,111 +203,91 @@ def _build_chain(
     }
 
     hints = cached_type_hints(cls)
-    expectations = dict(current_fields)
-    current_name_of = {name: name for name in expectations}
     added_types: dict[int, object] = {}
-    pinned: dict[str, JsonValue] = {}
-    rewritten = False
-    generations: list[_Generation] = []
-    class_at = class_name
-    for index in reversed(range(len(steps))):
-        match steps[index]:
-            case Renamed(field=field, to=to):
-                expectations[field] = expectations.pop(to)
-                current_name_of[field] = current_name_of.pop(to)
-            case Added(field=field) as step:
-                name = current_name_of.pop(field)
-                del expectations[field]
-                if not step.breaking:
-                    added_types[index] = hints[name]
-                    if not rewritten and step.default_factory is None:
-                        pinned[name] = to_json(
-                            step.default,
-                            declared_type=hints[name],
-                            artifact_serializers=artifact_serializers,
-                        )
-            case Retyped(field=field) as step:
-                expectations[field] = (
-                    "shape",
-                    _shape_of(
+
+    @functools.cache
+    def source(pending: tuple[int, ...]) -> _Generation:
+        expectations = dict(current_fields)
+        current_name_of = {name: name for name in expectations}
+        pinned: dict[str, JsonValue] = {}
+        rewritten = False
+        class_at = class_name
+        for index in reversed(pending):
+            match steps[index]:
+                case Renamed(field=field, to=to):
+                    expectations[field] = expectations.pop(to)
+                    current_name_of[field] = current_name_of.pop(to)
+                case Added(field=field) as step:
+                    name = current_name_of.pop(field)
+                    del expectations[field]
+                    if not step.breaking:
+                        added_types[index] = hints[name]
+                        if not rewritten and step.default_factory is None:
+                            pinned[name] = to_json(
+                                step.default,
+                                declared_type=hints[name],
+                                artifact_serializers=artifact_serializers,
+                            )
+                case Retyped(field=field) as step:
+                    was_shape = _shape_of(
                         schema_type(
                             step.was,
                             {},
                             artifact_serializers=artifact_serializers,
                         )
-                    ),
-                )
-            case MovedFrom(fully_qualified_name=name):
-                class_at = name
-            case Rewrite():
-                expectations = dict.fromkeys(expectations, _ANY)
-                rewritten = True
-        generations.append(
-            _Generation(
-                start=index,
-                class_name=class_at,
-                expectations=dict(expectations),
-                pinned=dict(pinned),
-            )
+                    )
+                    kind, value = expectations[field]
+                    if kind != "any" and was_shape == (
+                        _shape_of(value) if kind == "exact" else value
+                    ):
+                        raise MigrationError(
+                            f"{cls.__name__}.migrations[{index}] "
+                            f"({_describe_step(step)}) is a dead step: {field!r} "
+                            "already has that type, so the step can never migrate "
+                            "anything. If old stored values need reshaping - say a "
+                            "field's class itself changed - that is Rewrite's job."
+                        )
+                    expectations[field] = ("shape", was_shape)
+                case MovedFrom(fully_qualified_name=name):
+                    class_at = name
+                case Rewrite():
+                    expectations = dict.fromkeys(expectations, _ANY)
+                    rewritten = True
+        return _Generation(
+            pending=pending,
+            breaking=any(_is_breaking(steps[index]) for index in pending),
+            class_name=class_at,
+            expectations=expectations,
+            pinned=pinned,
         )
-    generations.reverse()
-    generations.append(
-        _Generation(
-            start=len(steps),
-            class_name=class_name,
-            expectations=current_fields,
-            pinned={},
-        )
-    )
 
-    for position, generation in enumerate(generations):
-        for other in generations[position + 1 :]:
-            if (
-                generation.class_name == other.class_name
-                and generation.expectations == other.expectations
-            ):
-                raise MigrationError(
-                    f"{cls.__name__}.migrations is ambiguous: the chains starting "
-                    f"at steps[{generation.start}] and steps[{other.start}] "
-                    "describe the same source schema; every source schema must "
-                    "have exactly one chain to the current schema"
-                )
-
-    for index, step in enumerate(steps):
-        if not isinstance(step, Retyped):
-            continue
-        kind, value = generations[index + 1].expectations[step.field]
-        if kind == "any":
-            continue
-        post_shape = _shape_of(value) if kind == "exact" else value
-        _, was_shape = generations[index].expectations[step.field]
-        if post_shape == was_shape:
-            raise MigrationError(
-                f"{cls.__name__}.migrations[{index}] ({_describe_step(step)}) is a "
-                f"dead step: {step.field!r} already has that type, so the step can "
-                "never migrate anything. If old stored values need reshaping - "
-                "say a field's class itself changed - that is Rewrite's job."
-            )
-
+    # Walk the whole chain once: it checks for dead steps and fills added_types.
+    source(tuple(range(len(steps))))
     return _Chain(
         class_name=class_name,
-        steps=steps,
-        generations=tuple(generations),
-        last_breaking=max(
-            (index for index, step in enumerate(steps) if _is_breaking(step)),
-            default=-1,
+        names=frozenset(
+            (
+                class_name,
+                *(s.fully_qualified_name for s in steps if isinstance(s, MovedFrom)),
+            )
         ),
+        steps=steps,
+        identities=tuple(_step_identity(step) for step in steps),
         added_types=added_types,
         artifact_serializers=artifact_serializers,
         current_schema=current_schema,
+        source=source,
     )
 
 
 def _normalize_snapshot(
-    snapshot: JsonValue, chains: tuple[_Chain, ...]
+    snapshot: JsonValue,
+    chains: tuple[_Chain, ...],
+    generations: Mapping[str, _Generation],
 ) -> tuple[JsonValue, Mapping[str, _ChildMove]]:
     """Rewrite embedded old-generation sub-schemas to their current spelling.
 
+    ``generations`` holds, per chain, the old schema the stored steps point to.
     Returns the normalized snapshot plus one move per recognized source class
     name; the caller replays those moves on the stored values.
     """
@@ -296,34 +307,48 @@ def _normalize_snapshot(
             # a Rewrite generation expects any field schema, current included.
             return out
         matches = [
-            (chain, generation)
+            _ChildMove(chain, generation)
             for chain in chains
-            for generation in chain.generations[:-1]
-            if _snapshot_matches(out, generation)
+            if (generation := generations.get(chain.class_name)) is not None
+            and generation.pending
+            and _snapshot_matches(out, generation)
         ]
         if not matches:
             return out
         if len(matches) > 1:
-            (first_chain, first), (second_chain, second) = matches[:2]
             raise MigrationError(
                 f"embedded migrations are ambiguous: the recorded sub-schema for "
-                f"{out.get(CLASSMARKER)!r} matches "
-                f"{first_chain.label}.migrations[{first.start}:] and "
-                f"{second_chain.label}.migrations[{second.start}:]; every source "
-                "schema must have exactly one chain to the current schema"
+                f"{out.get(CLASSMARKER)!r} matches both {matches[0].chain.label} "
+                f"and {matches[1].chain.label}; every source schema must have "
+                "exactly one chain to the current schema"
             )
-        (chain, generation) = matches[0]
-        move = _ChildMove(chain=chain, start=generation.start)
-        if moves.setdefault(generation.class_name, move) != move:
+        (move,) = matches
+        if moves.setdefault(move.generation.class_name, move) != move:
             raise MigrationError(
-                f"embedded migrations are ambiguous: {generation.class_name!r} "
-                "appears in the recorded schema at two different chain positions, "
-                "so its stored values cannot be replayed uniformly"
+                f"embedded migrations are ambiguous: {move.generation.class_name!r} "
+                "is claimed by two different classes' chains, so its stored "
+                "values cannot be replayed uniformly"
             )
-        return chain.current_schema
+        return move.chain.current_schema
 
     normalized = normalize(snapshot)
     return normalized, dict(sorted(moves.items()))
+
+
+def _recorded_steps(
+    schema_directory: Path, chains: tuple[_Chain, ...]
+) -> dict[str, set[tuple[str, ...]]] | None:
+    """The steps each chain's class had when this schema was written, or None
+    if the writing code took a step these chains never declare - the schema
+    then belongs to a sibling or newer branch sharing the store."""
+    had: dict[str, set[tuple[str, ...]]] = {chain.class_name: set() for chain in chains}
+    recorded = migrations_path_in(schema_directory)
+    for name, *identity in json.loads(read_text_or_none(recorded) or "[]"):
+        chain = next((chain for chain in chains if name in chain.names), None)
+        if chain is None or tuple(identity) not in chain.identities:
+            return None
+        had[chain.class_name].add(tuple(identity))
+    return had
 
 
 def _resolve_class(obj: Spec) -> _ClassResolution:
@@ -334,13 +359,14 @@ def _resolve_class(obj: Spec) -> _ClassResolution:
         validate_migration_declaration(cast("type[Spec]", child))
     chains = tuple(_build_chain(child, obj.artifact_serializers) for child in children)
     declared_steps = frozenset(
-        _step_identity(step) for chain in (own, *chains) for step in chain.steps
+        (chain.class_name, *identity)
+        for chain in (own, *chains)
+        for identity in chain.identities
     )
 
     covered: list[_Covered] = []
-    orphaned: list[Path] = []
-    trees = {generation.class_name for generation in own.generations}
-    for tree_name in sorted(trees):
+    orphaned: list[_Orphaned] = []
+    for tree_name in sorted(own.names):
         tree_directory = obj._metadata.storage / Path(*tree_name.split("."))
         if not tree_directory.exists():
             continue
@@ -355,47 +381,44 @@ def _resolve_class(obj: Spec) -> _ClassResolution:
             snapshot_path = schema_snapshot_path_in(schema_directory)
             if not snapshot_path.exists():
                 continue
+            had = _recorded_steps(schema_directory, (own, *chains))
+            if had is None:
+                continue
+            pending = own.pending(had[own.class_name])
+            if any(_is_breaking(own.steps[index]) for index in pending):
+                continue  # superseded: recomputed, neither reused nor stale
+            if clash := own.clash(had[own.class_name]):
+                orphaned.append(_Orphaned(schema_directory, clash))
+                continue
+            clashes: list[str] = []
+            child_generations: dict[str, _Generation] = {}
+            for chain in chains:
+                if child_clash := chain.clash(had[chain.class_name]):
+                    clashes.append(child_clash)
+                else:
+                    child_generations[chain.class_name] = chain.source(
+                        chain.pending(had[chain.class_name])
+                    )
             snapshot = cast(
                 JsonValue, json.loads(snapshot_path.read_text(encoding="utf-8"))
             )
             child_moves: Mapping[str, _ChildMove] = {}
             if chains:
-                snapshot, child_moves = _normalize_snapshot(snapshot, chains)
-            matches = [
-                generation
-                for generation in own.generations
-                if _snapshot_matches(snapshot, generation)
-            ]
-            if own.generations[-1] in matches:
-                matches = [own.generations[-1]]
-            if len(matches) > 1:
-                raise MigrationError(
-                    f"{cls.__name__}.migrations is ambiguous: the recorded schema "
-                    f"at {schema_directory} matches the chains starting at "
-                    f"steps[{matches[0].start}] and steps[{matches[1].start}]; "
-                    "every source schema must have exactly one chain to the "
-                    "current schema"
+                snapshot, child_moves = _normalize_snapshot(
+                    snapshot, chains, child_generations
                 )
-            if not matches:
-                recorded = migrations_path_in(schema_directory)
-                # A schema made by a step this code never took is a sibling or
-                # newer branch's, not this spec's past: neither ours nor stale.
-                if all(
-                    tuple(step) in declared_steps
-                    for step in json.loads(read_text_or_none(recorded) or "[]")
-                ):
-                    orphaned.append(schema_directory)
-            elif matches[0].start > own.last_breaking and all(
-                move.start > move.chain.last_breaking for move in child_moves.values()
-            ):
+            generation = own.source(pending)
+            if not _snapshot_matches(snapshot, generation):
+                orphaned.append(_Orphaned(schema_directory, "; ".join(clashes) or None))
+            elif not any(move.generation.breaking for move in child_moves.values()):
                 covered.append(
                     _Covered(
-                        generation=matches[0],
+                        generation=generation,
                         child_moves=child_moves,
                         schema_directory=schema_directory,
                     )
                 )
-    covered.sort(key=lambda entry: entry.generation.start, reverse=True)
+    covered.sort(key=lambda entry: len(entry.generation.pending))
     return _ClassResolution(
         own=own,
         covered=tuple(covered),
@@ -442,9 +465,11 @@ class _SourceFields(Mapping[str, JsonValue]):
         return len(self._fields)
 
 
-def _apply_steps(chain: _Chain, start: int, source_fields: JsonFields) -> JsonFields:
+def _apply_steps(
+    chain: _Chain, generation: _Generation, source_fields: JsonFields
+) -> JsonFields:
     fields = dict(source_fields)
-    for index in range(start, len(chain.steps)):
+    for index in generation.pending:
         step = chain.steps[index]
         description = _describe_step(step)
         match step:
@@ -489,7 +514,7 @@ def _apply_child_moves(value: JsonValue, moves: Mapping[str, _ChildMove]) -> Jso
             out[FIELDSMARKER] = cast(
                 JsonValue,
                 _apply_steps(
-                    move.chain, move.start, cast(JsonFields, out[FIELDSMARKER])
+                    move.chain, move.generation, cast(JsonFields, out[FIELDSMARKER])
                 ),
             )
     return out

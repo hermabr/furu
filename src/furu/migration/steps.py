@@ -118,15 +118,50 @@ def _describe_step(step: MigrationStep) -> str:
 
 
 def _step_identity(step: MigrationStep) -> tuple[str, ...]:
-    """What a step does, ignoring defaults and callables, so the same step
-    declared on two branches is recognized as one."""
+    """What a step does to a stored schema, so the same step declared on two
+    branches is recognized as one. Defaults and ``breaking`` are left out: they
+    say how to migrate a schema without the step, not what the step did."""
     match step:
         case Renamed(field=field, to=to):
             return ("Renamed", field, to)
-        case Added(field=field) | Retyped(field=field):
-            return (type(step).__name__, field)
-        case MovedFrom() | Rewrite():
-            return (type(step).__name__,)
+        case Added(field=field):
+            return ("Added", field)
+        case Retyped(field=field, was=was):
+            return ("Retyped", field, _type_label(was))
+        case MovedFrom(fully_qualified_name=name):
+            return ("MovedFrom", name)
+        case Rewrite(transform=transform):
+            module = getattr(transform, "__module__", "")
+            return ("Rewrite", f"{module}.{_callable_label(transform)}")
+
+
+def _touched_fields(step: MigrationStep) -> frozenset[str] | None:
+    """The fields a step reads or writes; None when it sees the whole record."""
+    match step:
+        case Renamed(field=field, to=to):
+            return frozenset((field, to))
+        case Added(field=field, default_factory=factory):
+            return None if factory is not None else frozenset((field,))
+        case Retyped(field=field):
+            return frozenset((field,))
+        case MovedFrom():
+            return frozenset()
+        case Rewrite():
+            return None
+
+
+def _commutes(earlier: MigrationStep, later: MigrationStep) -> bool:
+    """Whether ``earlier`` may run after ``later`` without changing the result,
+    as when two branches made them in parallel."""
+    if earlier.result_rewrite is not None and later.result_rewrite is not None:
+        return False
+    if isinstance(earlier, MovedFrom) or isinstance(later, MovedFrom):
+        # A move only changes where old schemas live, not their fields.
+        return not (isinstance(earlier, MovedFrom) and isinstance(later, MovedFrom))
+    earlier_fields, later_fields = _touched_fields(earlier), _touched_fields(later)
+    if earlier_fields is None or later_fields is None:
+        return False
+    return not earlier_fields & later_fields
 
 
 def validate_migration_declaration(cls: type[Spec]) -> None:
@@ -138,6 +173,16 @@ def validate_migration_declaration(cls: type[Spec]) -> None:
             f"{cls.__name__}.migrations must be a tuple of "
             "Renamed/Added/MovedFrom/Retyped/Rewrite steps"
         )
+
+    seen: dict[tuple[str, ...], int] = {}
+    for index, step in enumerate(steps):
+        if (first := seen.setdefault(_step_identity(step), index)) != index:
+            raise TypeError(
+                f"{cls.__name__}.migrations[{index}] ({_describe_step(step)}) "
+                f"repeats migrations[{first}]; furu tells which steps a stored "
+                "schema already has by what they do, so each step must differ "
+                "(name a Rewrite's transform instead of using a lambda)"
+            )
 
     names = {field.name for field in dataclasses.fields(cls)}
 
