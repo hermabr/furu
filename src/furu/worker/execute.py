@@ -134,7 +134,7 @@ class ChildSlot:
     def _spawn(self, environment: dict[str, str], *, job: Job) -> _Child:
         # The child's stderr is ours: each job points it at its run.log, and
         # anything written between jobs lands in this worker's own output.
-        # Its own process group lets a kill reach everything the job started.
+        # Its own process group lets a kill reach what the job started.
         process = subprocess.Popen(
             [str(job.code.python), "-m", "furu.worker._child"],
             stdin=subprocess.PIPE,
@@ -195,10 +195,11 @@ class ChildSlot:
 
 
 def _kill(process: subprocess.Popen[str]) -> None:
-    """SIGKILL the child and every process it started, e.g. DataLoader workers.
+    """SIGKILL the child's process group, e.g. its DataLoader workers.
 
     Helpers that outlive the child would keep its GPU memory and its end of the
     protocol pipe, so the worker would hang waiting for the child's reply.
+    Processes in their own session escape, e.g. the ranks torchrun starts.
     """
     with suppress(ProcessLookupError):
         os.killpg(process.pid, signal.SIGKILL)

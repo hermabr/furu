@@ -1085,11 +1085,34 @@ def test_manager_shutdown_closes_busy_and_idle_workers_promptly() -> None:
 
     assert time.monotonic() - started < 5
     for connection in (script, busy, idle):
-        # The script may first hear that the busy worker was lost, if shutdown
-        # closed that worker's connection before the script's.
         with pytest.raises(ConnectionClosed):
-            while True:
-                connection.recv(timeout=5)
+            connection.recv(timeout=5)
+
+
+def test_manager_shutdown_forwards_the_cancel_of_a_script_that_just_left(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A Ctrl-C'd script cancels, then shuts its in-process manager down while
+    # the script's handler may still be forwarding; make it slow to force that.
+    cancel = Manager._cancel
+
+    def slow_cancel(self: Manager, script: _Script) -> None:
+        time.sleep(0.5)
+        cancel(self, script)
+
+    monkeypatch.setattr(Manager, "_cancel", slow_cancel)
+    with Manager.serve(
+        listen_host="127.0.0.1", connect_host="127.0.0.1", manager_dir=None
+    ) as manager:
+        script = _submit_over(manager, RunLeaf(value=1))
+        worker = _hello(manager.url)
+        Job.model_validate_json(worker.recv(timeout=5))
+        script.send(CancelMessage().model_dump_json())
+        script.close()
+
+    assert server_message_adapter.validate_json(worker.recv(timeout=5)) == (
+        CancelMessage()
+    )
 
 
 # --- create(..., on=[...]) end to end ------------------------------------------
