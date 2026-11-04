@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tomllib
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -79,6 +80,28 @@ def require_pushed(git: GitIdentity) -> None:
             "furu only runs pushed code, so every result points at a commit "
             "others can fetch. Push it:\n"
             f"{add_remote}  {_push_command(git)}"
+        )
+
+
+def require_path_dependencies_in_repo(git: GitIdentity, project_root: Path) -> None:
+    """Refuse uv.lock path dependencies outside the repo: workers run a git
+    archive of the commit, which would not contain them."""
+    repo_root = Path(git.repo_root).resolve()
+    lock = tomllib.loads((project_root / "uv.lock").read_text(encoding="utf-8"))
+    outside = [
+        f"  {package['name']}: {path}"
+        for package in lock.get("package", [])
+        for kind in ("editable", "directory", "path", "virtual")
+        if (path := package.get("source", {}).get(kind)) is not None
+        and not (project_root / path).resolve().is_relative_to(repo_root)
+    ]
+    if outside:
+        raise RuntimeError(
+            f"path dependencies outside the git repository {repo_root}:\n"
+            + "\n".join(outside)
+            + "\nfuru runs workers from a snapshot of the commit, which would not "
+            "contain them.\nMove them inside the repository, or depend on them "
+            "through git or a package index."
         )
 
 
