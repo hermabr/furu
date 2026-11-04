@@ -230,7 +230,7 @@ def test_config_is_frozen() -> None:
     config = _Config()
 
     with pytest.raises(ValidationError, match="Instance is frozen"):
-        config.directories = _FuruDirectories(
+        config.directories = _FuruDirectories(  # ty: ignore[invalid-assignment]
             objects=Path("/tmp/assigned-furu-objects"),
             executions=Path("/tmp/assigned-furu-executions"),
         )
