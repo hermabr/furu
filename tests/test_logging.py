@@ -83,20 +83,7 @@ def _stable_terminal_width(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-@pytest.mark.parametrize(
-    ("debug_mode", "expected_level"),
-    [
-        (False, logging.INFO),
-        (True, logging.DEBUG),
-    ],
-)
-def test_stdout_handler_level_tracks_debug_mode(
-    isolated_furu_logger: None,
-    debug_mode: bool,
-    expected_level: int,
-) -> None:
-    _set_config(get_config().model_copy(update={"debug_mode": debug_mode}))
-
+def test_stdout_handler_logs_info(isolated_furu_logger: None) -> None:
     logger = furu_logging.get_logger()
 
     stdout_handlers = [
@@ -106,7 +93,7 @@ def test_stdout_handler_level_tracks_debug_mode(
         if type(handler) is logging.StreamHandler
     ]
     assert len(stdout_handlers) == 1
-    assert stdout_handlers[0].level == expected_level
+    assert stdout_handlers[0].level == logging.INFO
 
 
 # --- console renderer -------------------------------------------------------

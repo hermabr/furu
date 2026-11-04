@@ -157,7 +157,7 @@ def test_ctrl_c_cancels_running_jobs_and_sigterm_leaves_them(
     tmp_path: Path, manager_dir: Path, sig: signal.Signals, finishes: bool
 ) -> None:
     leaf = GatedLeaf(gate=str(tmp_path), value=3)
-    directories = get_config().run_directories
+    directories = get_config().directories.anchored()
     env = os.environ | {
         "FURU_MANAGER_DIR": str(manager_dir),
         **{

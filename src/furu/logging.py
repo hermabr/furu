@@ -42,8 +42,6 @@ from functools import cache
 from pathlib import Path
 from typing import TextIO
 
-from furu.config import get_config
-
 _BASE_LOGGER_NAME = "furu"
 
 # The directory that holds furu's own source. Log records whose call site lives
@@ -435,14 +433,12 @@ def _append(path: Path, text: str) -> None:
 @cache
 def _base_logger() -> logging.Logger:
     logger = logging.getLogger(_BASE_LOGGER_NAME)
-    level = logging.DEBUG if get_config().debug_mode else logging.INFO
-
     stdout_handler = logging.StreamHandler(sys.stdout)
-    stdout_handler.setLevel(level)
+    stdout_handler.setLevel(logging.INFO)
     stdout_handler.setFormatter(_Formatter(console=True))
     logger.addHandler(stdout_handler)
 
-    _run_log_handler.setLevel(level)
+    _run_log_handler.setLevel(logging.INFO)
     logger.addHandler(_run_log_handler)
 
     logger.setLevel(logging.DEBUG)

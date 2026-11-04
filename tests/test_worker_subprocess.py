@@ -19,10 +19,10 @@ from subprocess_objects import (
     SubprocessChattyLeaf,
     SubprocessCrashLeaf,
     SubprocessCwdLeaf,
-    SubprocessDebugDirectoryLeaf,
     SubprocessDependencyLeaf,
     SubprocessEnvLeaf,
     SubprocessForkingLeaf,
+    SubprocessSnapshotsDirectoryLeaf,
 )
 
 import furu
@@ -84,7 +84,9 @@ def _job(
         artifacts=[ArtifactSpec.from_furu(obj) for obj in objs],
         run_logs=[run_log_path_in(obj._base_dir) for obj in objs],
         attempt=attempt,
-        execution_log=get_config().run_directories.executions / "e1" / "execution.log",
+        execution_log=get_config().directories.anchored().executions
+        / "e1"
+        / "execution.log",
         provenance=provenance or _submit_provenance(),
         process=ProcessSettings.from_metadata(objs[0]._metadata),
         config=get_config().anchored(),
@@ -384,11 +386,15 @@ def _snapshot_repo(repo: Path, marker: str) -> str:
 def test_child_receives_anchored_directories(child_slot: ChildSlot) -> None:
     # A child's cwd may be a snapshot, so it must not anchor relative paths itself.
     config = get_config()
-    relative = config.directories.model_copy(update={"debug": Path("furu-data/debug")})
-    leaf = SubprocessDebugDirectoryLeaf()
+    relative = config.directories.model_copy(
+        update={"snapshots": Path("furu-data/anchor-probe")}
+    )
+    leaf = SubprocessSnapshotsDirectoryLeaf()
     with override_config(config.model_copy(update={"directories": relative})):
         assert isinstance(_run(child_slot, leaf), JobCompletedResult)
-    assert _pid_and_value(leaf)[1] == str(_project_anchor() / "furu-data" / "debug")
+    assert _pid_and_value(leaf)[1] == str(
+        _project_anchor() / "furu-data" / "anchor-probe"
+    )
 
 
 def test_one_worker_runs_jobs_from_two_repos_into_each_repo(tmp_path: Path) -> None:
@@ -438,7 +444,7 @@ def test_one_worker_runs_jobs_from_two_repos_into_each_repo(tmp_path: Path) -> N
             pids_and_cwds.append((pid, cwd))
             repo_roots.append(Path(repo_root))
             code_dirs.append(
-                (get_config().run_directories.snapshots / commit).resolve()
+                (get_config().directories.anchored().snapshots / commit).resolve()
             )
     finally:
         slot.close()

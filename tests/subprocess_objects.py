@@ -75,9 +75,9 @@ class SubprocessCwdLeaf(Spec[str]):
         return f"{os.getpid()}:{Path.cwd()}\n{furu.submitting_repo_root()}"
 
 
-class SubprocessDebugDirectoryLeaf(Spec[str]):
+class SubprocessSnapshotsDirectoryLeaf(Spec[str]):
     def create(self) -> str:
-        return f"{os.getpid()}:{get_config().directories.debug}"
+        return f"{os.getpid()}:{get_config().directories.snapshots}"
 
 
 class SubprocessCrashLeaf(Spec[str]):

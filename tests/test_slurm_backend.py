@@ -304,7 +304,7 @@ def test_prepare_snapshot_builds_the_extracted_commits_venv(
     code = run_module._prepare_snapshot(provenance)
 
     code_dir = (
-        get_config().run_directories.snapshots / provenance.git.commit
+        get_config().directories.anchored().snapshots / provenance.git.commit
     ).resolve()
     assert code == CodeLocation(
         python=code_dir / ".venv" / "bin" / "python",

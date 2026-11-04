@@ -19,46 +19,20 @@ pytestmark = pytest.mark.usefixtures("fresh_caches")
 
 
 def test_config_reads_environment(monkeypatch) -> None:
-    monkeypatch.setenv("FURU_DEBUG_MODE", "true")
     monkeypatch.setenv("FURU_DIRECTORIES__OBJECTS", "/tmp/furu-objects")
     monkeypatch.setenv("FURU_DIRECTORIES__EXECUTIONS", "/tmp/furu-executions")
-    monkeypatch.setenv("FURU_DIRECTORIES__DEBUG", "/tmp/furu-debug")
     monkeypatch.setenv("FURU_WORKER__IDLE_TIMEOUT_SECONDS", "12.5")
     monkeypatch.setenv("FURU_WORKER__MAX_RETRIES_PER_OBJECT", "3")
 
     config = _Config()
 
-    assert config.debug_mode is True
     assert config.directories == _FuruDirectories(
         objects=Path("/tmp/furu-objects"),
         executions=Path("/tmp/furu-executions"),
-        debug=Path("/tmp/furu-debug"),
-    )
-    assert config.run_directories == _FuruDirectories(
-        objects=Path("/tmp/furu-debug") / "objects",
-        executions=Path("/tmp/furu-debug") / "executions",
-        snapshots=Path("/tmp/furu-debug") / "snapshots",
-        debug=Path("/tmp/furu-debug"),
     )
     assert config.worker == _FuruWorkerConfig(
         idle_timeout_seconds=12.5,
         max_retries_per_object=3,
-    )
-
-
-def test_debug_mode_uses_default_debug_directory(monkeypatch) -> None:
-    monkeypatch.setenv("FURU_DEBUG_MODE", "true")
-    monkeypatch.setattr("furu.config._project_anchor", lambda: Path())
-
-    config = _Config()
-
-    assert config.debug_mode is True
-    assert config.directories.debug == Path("furu-data") / "debug"
-    assert config.run_directories == _FuruDirectories(
-        objects=Path("furu-data") / "debug" / "objects",
-        executions=Path("furu-data") / "debug" / "executions",
-        snapshots=Path("furu-data") / "debug" / "snapshots",
-        debug=Path("furu-data") / "debug",
     )
 
 
@@ -77,11 +51,11 @@ def test_relative_directories_anchor_to_main_worktree(tmp_path, monkeypatch) -> 
     # mapping wins so all worktrees share the main checkout's directories.
     monkeypatch.chdir(tmp_path / "linked")
     expected = main.resolve() / "furu-data" / "objects"
-    assert _Config().run_directories.objects == expected
+    assert _Config().directories.anchored().objects == expected
 
     monkeypatch.chdir(main)
     _project_anchor.cache_clear()
-    assert _Config().run_directories.objects == expected
+    assert _Config().directories.anchored().objects == expected
 
 
 def test_relative_directories_anchor_to_git_root_from_project_subdirectory(
@@ -94,7 +68,7 @@ def test_relative_directories_anchor_to_git_root_from_project_subdirectory(
 
     monkeypatch.chdir(nested)
     expected = tmp_path.resolve() / "furu-data" / "objects"
-    assert _Config().run_directories.objects == expected
+    assert _Config().directories.anchored().objects == expected
 
 
 def test_submodule_is_rejected(tmp_path, monkeypatch) -> None:
@@ -132,7 +106,7 @@ def test_import_outside_project_defers_anchor_crash(tmp_path) -> None:
         "from furu.config import get_config\n"
         "config = get_config()\n"
         "try:\n"
-        "    config.run_directories\n"
+        "    config.directories.anchored()\n"
         "except RuntimeError:\n"
         "    print('deferred')\n"
     )
@@ -151,7 +125,7 @@ def test_relative_directories_require_a_git_repository(tmp_path, monkeypatch) ->
     monkeypatch.chdir(tmp_path)
     config = _Config()  # config loads fine; only directory access crashes
     with pytest.raises(RuntimeError, match="no git repository"):
-        _ = config.run_directories
+        _ = config.directories.anchored()
 
 
 def test_relative_directories_require_a_pyproject_in_the_repository(
@@ -164,7 +138,7 @@ def test_relative_directories_require_a_pyproject_in_the_repository(
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
     monkeypatch.chdir(repo)
     with pytest.raises(RuntimeError, match="no pyproject.toml"):
-        _ = _Config().run_directories
+        _ = _Config().directories.anchored()
 
 
 def test_config_uses_main_directories_by_default(monkeypatch) -> None:
@@ -172,9 +146,7 @@ def test_config_uses_main_directories_by_default(monkeypatch) -> None:
 
     config = _Config()
 
-    assert config.debug_mode is False
-    assert config.directories.debug == Path("furu-data") / "debug"
-    assert config.run_directories == config.directories
+    assert config.directories.anchored() == config.directories
 
 
 def test_config_reads_pyproject_toml(tmp_path, monkeypatch) -> None:
@@ -182,13 +154,11 @@ def test_config_reads_pyproject_toml(tmp_path, monkeypatch) -> None:
     pyproject.write_text(
         """
 [tool.furu]
-debug_mode = true
 code_version = "traced"
 
 [tool.furu.directories]
 objects = "/tmp/furu-pyproject-objects"
 executions = "/tmp/furu-pyproject-executions"
-debug = "/tmp/furu-pyproject-debug"
 
 [tool.furu.worker]
 idle_timeout_seconds = 7.5
@@ -200,18 +170,10 @@ max_retries_per_object = 3
 
     config = _Config()
 
-    assert config.debug_mode is True
     assert config.code_version == "traced"
     assert config.directories == _FuruDirectories(
         objects=Path("/tmp/furu-pyproject-objects"),
         executions=Path("/tmp/furu-pyproject-executions"),
-        debug=Path("/tmp/furu-pyproject-debug"),
-    )
-    assert config.run_directories == _FuruDirectories(
-        objects=Path("/tmp/furu-pyproject-debug") / "objects",
-        executions=Path("/tmp/furu-pyproject-debug") / "executions",
-        snapshots=Path("/tmp/furu-pyproject-debug") / "snapshots",
-        debug=Path("/tmp/furu-pyproject-debug"),
     )
     assert config.worker == _FuruWorkerConfig(
         idle_timeout_seconds=7.5,
@@ -228,7 +190,6 @@ def test_config_discovers_pyproject_toml_in_parent_directory(
 [tool.furu.directories]
 objects = "/tmp/furu-parent-pyproject-objects"
 executions = "/tmp/furu-parent-pyproject-executions"
-debug = "/tmp/furu-parent-pyproject-debug"
 """,
         encoding="utf-8",
     )
@@ -241,7 +202,6 @@ debug = "/tmp/furu-parent-pyproject-debug"
     assert config.directories == _FuruDirectories(
         objects=Path("/tmp/furu-parent-pyproject-objects"),
         executions=Path("/tmp/furu-parent-pyproject-executions"),
-        debug=Path("/tmp/furu-parent-pyproject-debug"),
     )
 
 
@@ -249,35 +209,20 @@ def test_environment_overrides_pyproject_toml(tmp_path, monkeypatch) -> None:
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text(
         """
-[tool.furu]
-debug_mode = false
-
 [tool.furu.directories]
 objects = "/tmp/furu-pyproject-objects"
 executions = "/tmp/furu-pyproject-executions"
-debug = "/tmp/furu-pyproject-debug"
 """,
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("FURU_DEBUG_MODE", "true")
     monkeypatch.setenv("FURU_DIRECTORIES__OBJECTS", "/tmp/furu-env-objects")
-    monkeypatch.setenv("FURU_DIRECTORIES__EXECUTIONS", "/tmp/furu-env-executions")
-    monkeypatch.setenv("FURU_DIRECTORIES__DEBUG", "/tmp/furu-env-debug")
 
     config = _Config()
 
-    assert config.debug_mode is True
     assert config.directories == _FuruDirectories(
         objects=Path("/tmp/furu-env-objects"),
-        executions=Path("/tmp/furu-env-executions"),
-        debug=Path("/tmp/furu-env-debug"),
-    )
-    assert config.run_directories == _FuruDirectories(
-        objects=Path("/tmp/furu-env-debug") / "objects",
-        executions=Path("/tmp/furu-env-debug") / "executions",
-        snapshots=Path("/tmp/furu-env-debug") / "snapshots",
-        debug=Path("/tmp/furu-env-debug"),
+        executions=Path("/tmp/furu-pyproject-executions"),
     )
 
 
@@ -311,7 +256,7 @@ def test_set_config_replaces_active_config() -> None:
 
 def test_override_config_restores_previous_config_on_exit() -> None:
     original_config = get_config()
-    replacement_config = _Config(debug_mode=True)
+    replacement_config = _Config(code_version="traced")
 
     with override_config(replacement_config):
         assert get_config() is replacement_config
