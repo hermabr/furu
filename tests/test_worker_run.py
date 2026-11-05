@@ -724,6 +724,45 @@ def test_run_failed_retry_can_later_complete() -> None:
     run.finish()
 
 
+def test_run_failed_retry_found_done_elsewhere_stops_retrying(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    leaf = RunLeaf(value=1)
+    other = RunLeaf(value=2)
+    run = _new_run([leaf, other], max_retries_per_object=1)
+
+    run.take_submissions()
+    run.job_result(leaf.object_id, JobFailedResult(error="boom"))
+    leaf.create()  # another run builds it
+    run.take_submissions()
+    assert run.failures == {}
+    _assert_one_state(run)
+
+    caplog.set_level(logging.INFO, logger="furu.run")
+    run.job_result(other.object_id, JobCompletedResult())
+    assert caplog.messages[-1] == "progress 2/2 · 0 running"
+
+
+def test_run_error_lists_failed_specs_in_order_of_first_failure() -> None:
+    first, second = RunLeaf(value=1), RunLeaf(value=2)
+    run = _new_run([first, second], max_retries_per_object=1)
+
+    run.take_submissions()
+    for obj in (first, second):
+        run.job_result(obj.object_id, JobFailedResult(error=f"boom {obj.value}"))
+    run.take_submissions()
+    for obj in (second, first):  # second runs out of retries first
+        run.job_result(obj.object_id, JobFailedResult(error=f"boom {obj.value}"))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        run.finish()
+    lines = str(excinfo.value).splitlines()
+    assert [line.split(" · ")[0].strip() for line in lines[1:]] == [
+        first._log_label,
+        second._log_label,
+    ]
+
+
 def test_run_ignores_a_result_for_a_spec_it_is_not_running() -> None:
     leaf = RunLeaf(value=1)
     run = _new_run([leaf])

@@ -194,7 +194,6 @@ class Run(Dag):
         node, started_at = running
         match result:
             case JobCompletedResult():
-                self.failures.pop(object_id, None)
                 self.complete(node)
                 logger.info(
                     "completed %s ok · %s",
@@ -247,6 +246,11 @@ class Run(Dag):
             " · ".join(parts),
         )
 
+    def complete(self, node: DagNode) -> None:
+        # Here or found done elsewhere, it is no longer retrying.
+        self.failures.pop(node.obj.object_id, None)
+        Dag.complete(self, node)  # slots dataclasses break zero-argument super()
+
     def fail(self, message: str) -> None:
         logger.error("run failed · %s", message, extra={"path": self.execution_log})
         raise RuntimeError(message)
@@ -260,9 +264,14 @@ class Run(Dag):
         def plural(count: int) -> str:
             return f"{count} spec{'' if count == 1 else 's'}"
 
-        lines = [f"{plural(len(self.failed))} failed, {len(self.blocked)} blocked"]
-        for object_id, node in self.failed.items():
-            obj, errors = node.obj, self.failures[object_id]
+        # In order of first failure, like the run's log.
+        failed = [
+            (self.failed[object_id].obj, errors)
+            for object_id, errors in self.failures.items()
+            if object_id in self.failed
+        ]
+        lines = [f"{plural(len(failed))} failed, {len(self.blocked)} blocked"]
+        for obj, errors in failed:
             lines.append(
                 f"  {obj._log_label} · {len(errors)} attempt"
                 f"{'' if len(errors) == 1 else 's'} · "
@@ -274,15 +283,12 @@ class Run(Dag):
         ]
 
         headline = ["run failed"]
-        if self.failed:
-            headline.append(f"{plural(len(self.failed))} failed")
+        if failed:
+            headline.append(f"{plural(len(failed))} failed")
         if self.blocked:
             headline.append(f"{plural(len(self.blocked))} blocked")
-        if len(self.failed) == 1:
-            ((object_id, node),) = self.failed.items()
-            headline += [
-                node.obj._log_label,
-                error_summary(self.failures[object_id][-1]),
-            ]
+        if len(failed) == 1:
+            ((obj, errors),) = failed
+            headline += [obj._log_label, error_summary(errors[-1])]
         logger.error(" · ".join(headline), extra={"path": self.execution_log})
         raise RuntimeError("\n".join(lines))
