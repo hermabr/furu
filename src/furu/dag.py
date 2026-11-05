@@ -129,9 +129,14 @@ class Dag:
             for dep in dependencies:
                 waited = now - node.unseen_since.setdefault(dep.object_id, now)
                 if waited > self.unseen_grace_s:
+                    span = (
+                        f"for {format_duration(waited)}"
+                        if self.unseen_grace_s
+                        else "after a rerun"
+                    )
                     return (
-                        f"has found {dep._log_label} missing for "
-                        f"{format_duration(waited)}, though this run sees it built"
+                        f"still finds {dep._log_label} missing {span}, "
+                        "though this run sees it built"
                     )
         self.add(unbuilt)
         for dep in unbuilt:

@@ -1,6 +1,5 @@
 """A create() that finds missing specs is aborted and rerun once they're built."""
 
-import re
 import shutil
 
 import pytest
@@ -56,6 +55,7 @@ class CycleB(Spec[int]):
 
 class LosesItsLeaf(Spec[int]):
     def create(self) -> int:
+        CALLS.append("loses")
         leaf = Leaf(n=7)
         shutil.rmtree(leaf._base_dir, ignore_errors=True)
         return leaf.create()
@@ -171,18 +171,19 @@ def test_dependency_still_missing_after_it_was_built_raises() -> None:
     with pytest.raises(RuntimeError) as exc_info:
         parent.create()
 
-    assert re.fullmatch(
-        rf"{re.escape(parent._log_label)} has found {re.escape(Leaf(n=7)._log_label)} "
-        r"missing for \S+, though this run sees it built",
-        str(exc_info.value),
+    assert str(exc_info.value) == (
+        f"{parent._log_label} still finds {Leaf(n=7)._log_label} missing after a "
+        "rerun, though this run sees it built"
     )
+    # Built here, then one rerun in case the create raced a publish.
+    assert CALLS == ["loses", "leaf 7", "loses", "loses"]
 
 
 def test_dependency_another_run_built_but_create_cannot_see_raises() -> None:
     Leaf(n=8).create()  # another run built it
     parent = CannotSeeItsLeaf()
 
-    with pytest.raises(RuntimeError, match="has found .* missing for"):
+    with pytest.raises(RuntimeError, match="still finds .* missing after a rerun"):
         parent.create()
     # One rerun in case another run published it just after create() looked.
     assert CALLS == ["leaf 8", "cannot see", "cannot see"]

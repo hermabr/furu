@@ -241,7 +241,7 @@ class Run(Dag):
                     if dependencies:
                         why += (
                             "; its worker may not see the storage it was written "
-                            "to, or may judge it stale for the worker's code"
+                            "to, or may be running different code than this run"
                         )
                     self.failures.setdefault(object_id, []).append(why)
                     self.failed[object_id] = node

@@ -650,9 +650,9 @@ def test_run_fails_a_spec_that_keeps_missing_built_dependencies(
     assert str(excinfo.value).splitlines()[0] == "2 specs failed, 0 blocked"
     for parent in parents:
         assert re.fullmatch(
-            r"has found \S+ missing for \S+, though this run sees it built; its "
-            r"worker may not see the storage it was written to, or may judge it "
-            r"stale for the worker's code",
+            r"still finds \S+ missing after a rerun, though this run sees it built; its "
+            r"worker may not see the storage it was written to, or may be running "
+            r"different code than this run",
             run.failures[parent.object_id][-1],
         )
 
@@ -689,6 +689,9 @@ def test_run_fails_a_spec_once_its_grace_on_a_built_dependency_runs_out(
     _rerun_after_a_poll(run, parent, _blocked(dependency))
 
     assert set(run.failed) == {parent.object_id}
+    assert run.failures[parent.object_id][-1].startswith(
+        f"still finds {dependency._log_label} missing for 2m05s, though"
+    )
 
 
 def test_run_does_not_reset_the_grace_for_alternating_dependencies(
