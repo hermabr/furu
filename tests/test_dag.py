@@ -219,7 +219,7 @@ def test_dag_add_does_not_reject_inactive_compute_lock():
     lock_path = compute_lock_path_in(leaf._base_dir)
     lock_path.touch()
 
-    assert leaf.status == "failed"
+    assert leaf.status == "incomplete"
     dag = _new_dag([leaf])
 
     assert set(dag.ready) == {leaf.object_id}
@@ -423,5 +423,5 @@ def test_worker_run_reports_worker_failures():
             [LocalThreadWorkerBackend()],
         )
 
-    assert failing.status == "failed"
+    assert failing.status == "incomplete"
     assert parent.status == "missing"

@@ -120,7 +120,7 @@ class Run(Dag):
                 case "running":
                     self.running_elsewhere[object_id] = node
                     waiting += 1
-                case "missing" | "failed" | "stale":
+                case "missing" | "incomplete" | "stale":
                     self.running[object_id] = (node, time.monotonic())
                     submissions.append(self._submission(node))
                 case unreachable:

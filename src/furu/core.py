@@ -233,13 +233,15 @@ class Spec[T](_FuruDataclassTransform, ABC):
 
     @final
     @property
-    def status(self) -> Literal["missing", "running", "failed", "done", "stale"]:
+    def status(self) -> Literal["missing", "running", "incomplete", "done", "stale"]:
         if own_version(self) is not None or _read_link(self) is not None:
             return "done"
         if is_active_lock(compute_lock_path_in(self._base_dir)):
             return "running"
         if attempt_dir_in(self._base_dir).exists():
-            return "failed"
+            # An attempt started and did not finish (crashed, failed, or
+            # blocked on a dependency).
+            return "incomplete"
         return sideways_status(self)
 
     @final

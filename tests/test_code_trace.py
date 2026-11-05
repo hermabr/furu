@@ -877,7 +877,7 @@ def test_preempted_traced_spec_resumes_when_its_code_is_unchanged(
     monkeypatch.setenv("FURU_TEST_PREEMPT", "1")
     with pytest.raises(RuntimeError, match="preempted"):
         spec.create()
-    assert spec.status == "failed"
+    assert spec.status == "incomplete"
     log = (attempt_dir_in(spec._base_dir) / "trace.log").read_text()
     assert '"ran", "' + f"{repo.package}/resumable.py" + '", "step_one"]' in log
 
@@ -943,7 +943,7 @@ def test_code_edited_after_import_is_not_published(
     with pytest.raises(StaleCodeError, match="common.py changed after this process"):
         plot.create()
 
-    assert plot.status == "failed"
+    assert plot.status == "incomplete"
     assert own_version(plot) is None
     # A fresh process imports the edited file and starts over, since the code
     # the failed attempt ran is not what is on disk.
