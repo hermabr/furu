@@ -68,7 +68,7 @@ class Dag:
             match obj.status:
                 case "done":
                     continue
-                case "running" | "missing" | "failed":
+                case "running" | "missing" | "incomplete":
                     pass
                 case "stale":
                     raise_if_stale(obj)

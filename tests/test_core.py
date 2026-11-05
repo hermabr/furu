@@ -1629,7 +1629,7 @@ def test_directory_is_only_available_inside_own_create() -> None:
         _ = node.directory
 
     # Outside access must not fabricate storage (it would flip status to
-    # "failed" for a spec that never ran).
+    # "incomplete" for a spec that never ran).
     assert not node._base_dir.exists()
     assert node.status == "missing"
 
@@ -1670,32 +1670,32 @@ def test_status_is_running_while_compute_lock_is_held() -> None:
         assert node.status == "running"
 
 
-def test_status_is_failed_when_compute_lock_is_not_active() -> None:
+def test_status_is_incomplete_when_compute_lock_is_not_active() -> None:
     node = Node(name="inactive-lock")
     attempt_dir_in(node._base_dir).mkdir(parents=True)
 
     compute_lock_path_in(node._base_dir).touch()
 
-    assert node.status == "failed"
+    assert node.status == "incomplete"
 
 
-def test_status_is_failed_when_compute_lock_is_stale() -> None:
+def test_status_is_incomplete_when_compute_lock_is_stale() -> None:
     node = Node(name="stale-lock")
     attempt_dir_in(node._base_dir).mkdir(parents=True)
     lock_path = compute_lock_path_in(node._base_dir)
 
     write_stale_lock(lock_path)
 
-    assert node.status == "failed"
+    assert node.status == "incomplete"
 
 
-def test_status_is_failed_after_create_error() -> None:
+def test_status_is_incomplete_after_create_error() -> None:
     obj = FailingSingleValue(key=1)
 
     with pytest.raises(RuntimeError, match="failed single for 1"):
         obj.create()
 
-    assert obj.status == "failed"
+    assert obj.status == "incomplete"
 
 
 def test_creating_and_loading_random_result_furu_obj():
