@@ -6,7 +6,10 @@ import pytest
 
 import furu
 from furu import Spec
+from furu.dependencies import _DependencyNotReady
+from furu.provenance import SubmitProvenance
 from furu.storage._layout import run_log_path_in
+from furu.worker.backends.local import LocalThreadWorkerBackend
 
 CALLS: list[str] = []
 
@@ -52,9 +55,47 @@ class CycleB(Spec[int]):
 
 class LosesItsLeaf(Spec[int]):
     def create(self) -> int:
+        CALLS.append("loses")
         leaf = Leaf(n=7)
         shutil.rmtree(leaf._base_dir, ignore_errors=True)
         return leaf.create()
+
+
+class CannotSeeItsLeaf(Spec[int]):
+    """Its create() keeps finding Leaf(n=8) missing, like code reading elsewhere."""
+
+    def create(self) -> int:
+        CALLS.append("cannot see")
+        if len(CALLS) > 20:
+            raise AssertionError("reran without bound")
+        raise _DependencyNotReady([Leaf(n=8)])
+
+
+class MissesEachLeafOnce(Spec[int]):
+    """Finds each leaf missing once, as if another run published it meanwhile."""
+
+    count: int
+
+    def create(self) -> int:
+        misses = sum(call.startswith("misses") for call in CALLS)
+        CALLS.append(f"misses {misses}")
+        if misses < self.count:
+            raise _DependencyNotReady([Leaf(n=misses)])
+        return sum(Leaf(n=n).create() for n in range(self.count))
+
+
+class AddsOne(Spec[int]):
+    leaf: Leaf
+
+    def create(self) -> int:
+        return self.leaf.create() + 1
+
+
+class LazyParent(Spec[int]):
+    n: int
+
+    def create(self) -> int:
+        return AddsOne(leaf=Leaf(n=self.n)).create()
 
 
 class BatchedParent(furu.Spec[int]):
@@ -131,9 +172,83 @@ def test_dependency_still_missing_after_it_was_built_raises() -> None:
         parent.create()
 
     assert str(exc_info.value) == (
-        f"{parent._log_label} still finds {Leaf(n=7)._log_label} missing after "
-        "building it"
+        f"{parent._log_label} still finds {Leaf(n=7)._log_label} missing after a "
+        "rerun, though this run sees it built"
     )
+    # Built here, then one rerun in case the create raced a publish.
+    assert CALLS == ["loses", "leaf 7", "loses", "loses"]
+
+
+def test_dependency_another_run_built_but_create_cannot_see_raises() -> None:
+    Leaf(n=8).create()  # another run built it
+    parent = CannotSeeItsLeaf()
+
+    with pytest.raises(RuntimeError, match="still finds .* missing after a rerun"):
+        parent.create()
+    # One rerun in case another run published it just after create() looked.
+    assert CALLS == ["leaf 8", "cannot see", "cannot see"]
+
+
+def test_dependencies_published_while_create_looks_rerun_it_each_time() -> None:
+    parent = MissesEachLeafOnce(count=3)
+    furu.create([Leaf(n=n) for n in range(3)])
+
+    assert parent.create() == 3
+    assert CALLS[-4:] == ["misses 0", "misses 1", "misses 2", "misses 3"]
+
+
+def test_create_blocked_without_naming_a_dependency_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import furu.execution.load_or_create as load_or_create_module
+
+    def create(group: object, **kwargs: object) -> None:
+        raise _DependencyNotReady([])
+
+    monkeypatch.setattr(load_or_create_module, "_create_in_process", create)
+    parent = SumOfLeaves(count=1)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        parent.create()
+    assert str(exc_info.value) == (
+        f"{parent._log_label} reported itself blocked without naming a missing "
+        "dependency"
+    )
+
+
+def test_create_misses_a_dependency_again_after_building_another(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import furu.execution.load_or_create as load_or_create_module
+
+    seen, missing = Leaf(n=0), Leaf(n=1)
+    seen.create()
+    real_create = load_or_create_module._create_in_process
+    attempts: list[str] = []
+
+    def create(group: list[Spec], *, submit_provenance: SubmitProvenance) -> None:
+        if group[0] != parent:
+            return real_create(group, submit_provenance=submit_provenance)
+        attempts.append("parent")
+        # A race on seen, a real block on missing, then a race on seen again.
+        if len(attempts) in (1, 3):
+            raise _DependencyNotReady([seen])
+        if len(attempts) == 2:
+            raise _DependencyNotReady([missing])
+        return real_create(group, submit_provenance=submit_provenance)
+
+    monkeypatch.setattr(load_or_create_module, "_create_in_process", create)
+    parent = SumOfLeaves(count=2)
+
+    assert parent.create() == 1
+    assert len(attempts) == 4
+
+
+@pytest.mark.parametrize("on_workers", [False, True])
+def test_spec_discovered_after_its_dependency_was_built_runs(on_workers: bool) -> None:
+    on = [LocalThreadWorkerBackend()] if on_workers else None
+
+    assert furu.create([Leaf(n=3), LazyParent(n=3)], on=on) == [3, 4]
 
 
 def test_batched_group_reruns_as_a_whole() -> None:

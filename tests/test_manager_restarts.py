@@ -71,7 +71,7 @@ def _manager(manager_dir: Path) -> Generator[Manager]:
 def manager_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """Scripts with local backends use the shared manager, not their own."""
     monkeypatch.setattr(Manager, "serve", lambda **_: nullcontext(None))
-    monkeypatch.setattr(run_module, "_RUNNING_ELSEWHERE_POLL_INTERVAL_S", 0.1)
+    monkeypatch.setattr(run_module, "_POLL_INTERVAL_S", 0.1)
     monkeypatch.setattr(run_on_workers_module, "_MANAGER_RETRY_INTERVAL_S", 0.1)
     directory = tmp_path / "manager"
     directory.mkdir()
