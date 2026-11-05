@@ -189,13 +189,19 @@ class SlurmWorkerPool:
         for _ in range(1 if self._use_job_arrays else to_spawn):
             if self._stop_event.is_set():
                 return
-            result = _slurm(
-                "sbatch",
-                "--parsable",
-                *((f"--array=0-{to_spawn - 1}",) if self._use_job_arrays else ()),
-                *self._sbatch_args,
-                str(self._script_path),
-            )
+            try:
+                result = _slurm(
+                    "sbatch",
+                    "--parsable",
+                    *((f"--array=0-{to_spawn - 1}",) if self._use_job_arrays else ()),
+                    *self._sbatch_args,
+                    str(self._script_path),
+                )
+            except subprocess.TimeoutExpired:
+                # Slurm may have queued it anyway; such a worker still serves
+                # this pool, but goes uncounted until its idle timeout.
+                logger.warning("sbatch timed out; retrying on the next scale tick")
+                return
             if result.returncode != 0:
                 logger.warning(
                     "sbatch failed; retrying on the next scale tick: %s",
@@ -317,16 +323,18 @@ class SlurmWorkerPool:
         return states
 
     def _scale_loop(self) -> None:
-        try:
-            while not self._stop_event.is_set():
+        # A failed tick fails the scripts using the pool now, but the pool keeps
+        # its workers and retries, so it still serves the scripts that come later.
+        while not self._stop_event.is_set():
+            try:
                 self._scale_once()
-                self._stop_event.wait(timeout=_POLL_INTERVAL_S)
-        except Exception as exc:
-            logger.exception("scale loop crashed")
-            self._manager.notify(
-                self._key,
-                ErrorMessage(
-                    reason="slurm worker pool scale loop crashed: "
-                    + traceback.format_exception_only(type(exc), exc)[-1].strip()
-                ),
-            )
+            except Exception as exc:
+                logger.exception("scale tick failed; retrying on the next tick")
+                self._manager.notify(
+                    self._key,
+                    ErrorMessage(
+                        reason="slurm worker pool scale tick failed: "
+                        + traceback.format_exception_only(type(exc), exc)[-1].strip()
+                    ),
+                )
+            self._stop_event.wait(timeout=_POLL_INTERVAL_S)

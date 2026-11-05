@@ -732,6 +732,45 @@ def test_slurm_pool_is_broken_after_many_failures_over_a_long_time(
     assert pool._streak == []
 
 
+def test_slurm_pool_retries_an_sbatch_timeout_without_failing_scripts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = _StubManager(1)
+    pool = _pool(tmp_path, monkeypatch, manager)
+
+    def slurm(*argv: str) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(argv, 60.0)
+
+    monkeypatch.setattr(pool_module, "_slurm", slurm)
+    pool._scale_once()
+
+    assert manager.notes == []
+    assert pool._job_ids == []
+
+
+def test_slurm_pool_keeps_scaling_after_a_scale_tick_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(pool_module, "_POLL_INTERVAL_S", 0.0)
+    manager = _StubManager()
+    pool = _pool(tmp_path, monkeypatch, manager)
+    ticks: list[int] = []
+
+    def scale_once() -> None:
+        ticks.append(len(ticks))
+        if len(ticks) == 1:
+            raise RuntimeError("boom")
+        pool._stop_event.set()
+
+    monkeypatch.setattr(pool, "_scale_once", scale_once)
+    pool._scale_loop()
+
+    assert ticks == [0, 1]
+    assert manager.notes == [
+        ErrorMessage(reason="slurm worker pool scale tick failed: RuntimeError: boom")
+    ]
+
+
 # --- end to end --------------------------------------------------------------------
 
 
