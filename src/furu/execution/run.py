@@ -17,7 +17,7 @@ from websockets.sync.client import ClientConnection
 
 from furu.config import _Config, get_config
 from furu.core import Spec
-from furu.dag import Dag, DagNode
+from furu.dag import Dag, DagNode, DependencyVisibilityError
 from furu.dependencies import missing_dependencies
 from furu.logging import _display_path, get_logger
 from furu.metadata import ArtifactSpec
@@ -106,21 +106,22 @@ class Run(Dag):
         """Ready specs to send; ones done or locked elsewhere don't need us."""
         submissions: list[Submission] = []
         waiting = 0
-        while self.ready:  # completing one can make its dependents ready
-            object_id = next(iter(self.ready))
-            node = self.ready.pop(object_id)
-            match node.obj.status:
-                case "done":
-                    self.complete(node)
-                    logger.info("found %s done", node.obj._log_label)
-                case "running":
-                    self.running_elsewhere[object_id] = node
-                    waiting += 1
-                case "missing" | "incomplete" | "stale":
-                    self.running[object_id] = (node, time.monotonic())
-                    submissions.append(self._submission(node))
-                case unreachable:
-                    assert_never(unreachable)
+        while runnable := self.runnable():  # completing one can release dependents
+            for candidate in runnable:
+                object_id = candidate.obj.object_id
+                node = self.ready.pop(object_id)
+                match node.obj.status:
+                    case "done":
+                        self.complete(node)
+                        logger.info("found %s done", node.obj._log_label)
+                    case "running":
+                        self.running_elsewhere[object_id] = node
+                        waiting += 1
+                    case "missing" | "incomplete" | "stale":
+                        self.running[object_id] = (node, time.monotonic())
+                        submissions.append(self._submission(node))
+                    case unreachable:
+                        assert_never(unreachable)
         if waiting:
             logger.info(
                 "waiting on %d spec%s running elsewhere",
@@ -221,6 +222,10 @@ class Run(Dag):
             case JobBlockedResult(dependencies=dependencies):
                 try:
                     self.block(node, [Spec.from_artifact(dep) for dep in dependencies])
+                except DependencyVisibilityError as exc:
+                    self.failed[object_id] = node
+                    self.failures.setdefault(object_id, []).append(str(exc))
+                    logger.error("failed %s · %s", node.obj._log_label, exc)
                 except Exception as exc:  # noqa: BLE001 -- runs user runs_on, accepts and batch fns
                     self.fail(f"{type(exc).__name__}: {exc}")
                 logger.info(

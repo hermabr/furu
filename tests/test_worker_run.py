@@ -539,6 +539,7 @@ def test_run_blocked_result_ignores_completed_lazy_dependency() -> None:
 
     assert set(run.ready) == {parent.object_id}
     assert run.blocked == {}
+    assert _submitted_ids(run) == []  # Wait for filesystem visibility.
     assert dependency.object_id not in run.nodes_by_id
 
 
@@ -1535,3 +1536,112 @@ def test_worker_finishes_its_job_after_losing_the_manager_then_exits(
         in caplog.messages
     )
     assert "manager closed the connection; exiting" in caplog.messages
+
+
+@pytest.mark.parametrize("pattern", [((0,),), ((0,), (1,)), ((0, 1), (1, 2)), ((),)])
+@pytest.mark.parametrize("completed_here", [False, True])
+def test_blocked_replays_are_bounded_across_dependency_sets(
+    monkeypatch: pytest.MonkeyPatch,
+    pattern: tuple[tuple[int, ...], ...],
+    completed_here: bool,
+) -> None:
+    from types import SimpleNamespace
+
+    import furu.dag as dag_module
+
+    now = [0.0]
+    monkeypatch.setattr(
+        dag_module, "time", SimpleNamespace(monotonic=lambda: now[0]), raising=False
+    )
+    parents = [BatchedRunLeaf(value=i + 20) for i in range(2)]
+    deps = [RunLeaf(value=i) for i in range(3)]
+    run = _new_run([*parents, *deps] if completed_here else parents)
+    _submitted_ids(run)
+    for dep in deps:
+        if completed_here:
+            run.job_result(dep.object_id, JobCompletedResult())
+        else:
+            dep.create()
+    for attempt in range(25):
+        if attempt == 10:
+            # Real progress between contradictory results must not reset the bound.
+            fresh = RunLeaf(value=100)
+            mixed = JobBlockedResult(
+                dependencies=[
+                    ArtifactSpec.from_furu(fresh),
+                    ArtifactSpec.from_furu(deps[0]),
+                ]
+            )
+            for parent in parents:
+                run.job_result(parent.object_id, mixed)
+                _assert_one_state(run)
+            assert _submitted_ids(run) == [fresh.object_id]
+            run.job_result(fresh.object_id, JobCompletedResult())
+            _assert_one_state(run)
+            assert set(_submitted_ids(run)) == {p.object_id for p in parents}
+        result = JobBlockedResult(
+            dependencies=[
+                ArtifactSpec.from_furu(deps[i]) for i in pattern[attempt % len(pattern)]
+            ]
+        )
+        # A batch applies the same result to members one at a time.
+        for parent in parents:
+            run.job_result(parent.object_id, result)
+            _assert_one_state(run)
+        assert _submitted_ids(run) == []
+        if attempt < 24:
+            now[0] += 5
+            assert set(_submitted_ids(run)) == {p.object_id for p in parents}
+    assert now[0] == 120
+    assert set(run.failed) == {p.object_id for p in parents}
+    with pytest.raises(RuntimeError, match="still reports missing dependencies"):
+        run.finish()
+
+
+def test_visibility_delay_allows_nfs_lag_and_successive_publication_races(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    import furu.dag as dag_module
+
+    now = [0.0]
+    monkeypatch.setattr(
+        dag_module, "time", SimpleNamespace(monotonic=lambda: now[0]), raising=False
+    )
+    parent = RunLazyParent(value=42)
+    run = _new_run([parent], max_retries_per_object=0)
+    _submitted_ids(run)
+    for i in range(14):
+        # Another process publishes a different dependency after the lookup.
+        dep = RunLeaf(value=i)
+        dep.create()
+        run.job_result(
+            parent.object_id,
+            JobBlockedResult(dependencies=[ArtifactSpec.from_furu(dep)]),
+        )
+        _assert_one_state(run)
+        assert _submitted_ids(run) == []
+        now[0] += 5
+        assert _submitted_ids(run) == [parent.object_id]
+    assert now[0] == 70
+    run.job_result(parent.object_id, JobCompletedResult())
+    _assert_one_state(run)
+    run.finish()
+
+
+def test_failed_dependency_built_elsewhere_does_not_trap_late_discovery() -> None:
+    dep = RunLeaf(value=77)
+    parent = RunLazyParent(value=77)
+    run = _new_run([dep, parent], max_retries_per_object=0)
+    _submitted_ids(run)
+    run.job_result(dep.object_id, JobFailedResult(error="gave up"))
+    dep.create()
+    # Discover a node with a declared edge to the previously failed dependency.
+    late = RunParent(child=dep)
+    run.job_result(
+        parent.object_id, JobBlockedResult(dependencies=[ArtifactSpec.from_furu(late)])
+    )
+    assert late.object_id in run.ready
+    assert not run.nodes_by_id[late.object_id].dependencies
+    _assert_one_state(run)

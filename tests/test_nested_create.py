@@ -124,15 +124,22 @@ def test_dependency_cycle_raises_instead_of_looping() -> None:
     )
 
 
-def test_dependency_still_missing_after_it_was_built_raises() -> None:
+def test_dependency_still_missing_after_it_was_built_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import furu.dag as dag_module
+
+    monkeypatch.setattr(dag_module, "_VISIBILITY_RETRY_SECONDS", 0)
     parent = LosesItsLeaf()
 
     with pytest.raises(RuntimeError) as exc_info:
         parent.create()
 
     assert str(exc_info.value) == (
-        f"{parent._log_label} still finds {Leaf(n=7)._log_label} missing after "
-        "building it"
+        f"{parent._log_label} still reports missing dependencies "
+        f"({Leaf(n=7)._log_label}) that the runner considers built after "
+        "24 delayed reruns (0s waiting). "
+        "Check filesystem visibility, storage mounts, and code versions."
     )
 
 

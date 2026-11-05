@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import assert_never
@@ -10,12 +11,24 @@ from furu.dependencies import collect_declared_refs
 from furu.migration.stale import raise_if_stale
 from furu.resources import Worker
 
+# Allow two minutes of delayed replays for cross-node filesystem visibility.
+_VISIBILITY_RETRY_SECONDS = 5.0
+_MAX_VISIBILITY_RETRIES = 24
+
+
+class DependencyVisibilityError(RuntimeError):
+    """The creator persistently cannot load dependencies the runner sees built."""
+
 
 @dataclass(eq=False)
 class DagNode:
     obj: Spec
     dependencies: list[DagNode] = field(default_factory=list)
     dependents: list[DagNode] = field(default_factory=list)
+
+    # Never reset on dependency changes or progress elsewhere in the graph.
+    visibility_retries: int = 0
+    ready_at: float = 0.0
 
     _batch_groups: dict[Worker, tuple[object, int] | None] = field(default_factory=dict)
 
@@ -49,6 +62,11 @@ class Dag:
     ready: dict[str, DagNode] = field(default_factory=dict)
     blocked: dict[str, DagNode] = field(default_factory=dict)
     completed: dict[str, DagNode] = field(default_factory=dict)
+
+    def runnable(self) -> list[DagNode]:
+        """Ready nodes whose filesystem visibility delay has elapsed."""
+        now = time.monotonic()
+        return [node for node in self.ready.values() if node.ready_at <= now]
 
     def _check_new(self, nodes: Sequence[DagNode]) -> None:
         """Reject new nodes before they join the graph; runners override this."""
@@ -93,14 +111,27 @@ class Dag:
 
     def block(self, node: DagNode, dependencies: Sequence[Spec]) -> None:
         """``node`` found ``dependencies`` missing; rerun it once they're built."""
-        dependencies = [
-            dep for dep in dependencies if dep.object_id not in self.completed
-        ]
         self.add(dependencies)
         for dep in dependencies:
             dep_node = self.nodes_by_id.get(dep.object_id)
-            if dep_node is not None and dep_node.obj.status != "done":
+            if dep_node is not None:
                 self._link(node, dep_node)
+        if not node.dependencies:
+            # Nothing to build: let remote directory listings catch up, finitely.
+            if node.visibility_retries >= _MAX_VISIBILITY_RETRIES:
+                labels = (
+                    ", ".join(dep._log_label for dep in dependencies)
+                    or "reported dependencies"
+                )
+                raise DependencyVisibilityError(
+                    f"{node.obj._log_label} still reports missing dependencies "
+                    f"({labels}) that the runner considers built after "
+                    f"{_MAX_VISIBILITY_RETRIES} delayed reruns "
+                    f"({_MAX_VISIBILITY_RETRIES * _VISIBILITY_RETRY_SECONDS:g}s waiting). "
+                    "Check filesystem visibility, storage mounts, and code versions."
+                )
+            node.visibility_retries += 1
+            node.ready_at = time.monotonic() + _VISIBILITY_RETRY_SECONDS
         (self.blocked if node.dependencies else self.ready)[node.obj.object_id] = node
 
     def complete(self, node: DagNode) -> None:
@@ -113,6 +144,8 @@ class Dag:
                 self.ready[dependent_id] = self.blocked.pop(dependent_id)
 
     def _link(self, node: DagNode, dep: DagNode) -> None:
+        if dep.obj.object_id in self.completed or dep.obj.status == "done":
+            return
         if dep in node.dependencies:
             return
         if (path := _path(dep, node)) is not None:

@@ -425,3 +425,79 @@ def test_worker_run_reports_worker_failures():
 
     assert failing.status == "incomplete"
     assert parent.status == "missing"
+
+
+class LazyMidLoader(Spec[str]):
+    name: str
+
+    def create(self) -> str:
+        return Mid(label="lazy", child=Leaf(name=self.name)).create()
+
+
+@pytest.mark.parametrize("workers", [False, True])
+def test_late_discovery_skips_a_dependency_completed_in_this_run(workers: bool):
+    leaf = Leaf(name="late")
+    parent = LazyMidLoader(name="late")
+    on = [LocalThreadWorkerBackend(max_workers=1)] if workers else None
+    assert furu.create([leaf, parent], on=on) == ["leaf:late", "mid:lazy:leaf:late"]
+
+
+def test_dag_add_skips_existing_node_built_elsewhere():
+    leaf = Leaf(name="external")
+    dag = _new_dag([leaf])
+    dag.ready.pop(leaf.object_id)  # A runner gave up; another process builds it.
+    leaf.create()
+    parent = Mid(label="later", child=leaf)
+    dag.add([parent])
+    assert parent.object_id in dag.ready
+    assert not dag.nodes_by_id[parent.object_id].dependencies
+
+
+@pytest.mark.parametrize("completed_here", [False, True])
+@pytest.mark.parametrize("visible_after", [65, None])
+def test_in_process_bounds_invisible_dependency_replays(
+    monkeypatch: pytest.MonkeyPatch, completed_here: bool, visible_after: int | None
+):
+    import importlib
+    from types import SimpleNamespace
+
+    import furu.dag as dag_module
+    from furu.dependencies import _DependencyNotReady
+
+    local = importlib.import_module("furu.execution.load_or_create")
+    leaf = Leaf(name="invisible")
+    parent = LazyMidLoader(name="invisible")
+    dag = _new_dag([parent, leaf] if completed_here else [parent])
+    if completed_here:
+        dag.complete(dag.ready.pop(leaf.object_id))
+    else:
+        leaf.create()
+    now = [0.0]
+    attempts = [0]
+
+    def sleep(seconds: float):
+        assert seconds > 0
+        now[0] += seconds
+
+    def create(*args, **kwargs):
+        attempts[0] += 1
+        # Fail promptly on main instead of hanging forever.
+        assert attempts[0] <= 26, "unbounded blocked reruns"
+        if visible_after is None or now[0] < visible_after:
+            raise _DependencyNotReady([leaf])
+
+    monkeypatch.setattr(
+        dag_module, "time", SimpleNamespace(monotonic=lambda: now[0]), raising=False
+    )
+    monkeypatch.setattr(
+        local, "time", SimpleNamespace(monotonic=lambda: now[0], sleep=sleep)
+    )
+    monkeypatch.setattr(local, "_create_in_process", create)
+    if visible_after is None:
+        with pytest.raises(RuntimeError, match="still reports missing dependencies"):
+            local._run_in_process(dag)
+        assert now[0] == 120
+    else:
+        local._run_in_process(dag)
+        assert parent.object_id in dag.completed
+        assert now[0] == 65
