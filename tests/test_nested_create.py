@@ -109,6 +109,8 @@ def test_dependency_failure_propagates_and_names_the_parent() -> None:
     parent_log = run_log_path_in(parent._base_dir).read_text(encoding="utf-8")
     assert parent_log.rstrip("\n").endswith(" · 1 missing dependency")
     assert "failed" not in parent_log
+    # It only blocked, so its leftover attempt/ reads as incomplete, not failed.
+    assert parent.status == "incomplete"
 
 
 def test_dependency_cycle_raises_instead_of_looping() -> None:
