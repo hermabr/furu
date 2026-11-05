@@ -80,16 +80,18 @@ class Dag:
             pending.extend(refs)
 
         self._check_new(new)
-        new_ids = {node.obj.object_id for node in new}
+        # Nodes from an earlier add may be built by now; check each just once.
+        built = {node.obj.object_id: False for node in new}
         for node in new:
             self.nodes_by_id[node.obj.object_id] = node
         for node in new:
             for ref in refs_by_id[node.obj.object_id]:
                 dep = self.nodes_by_id.get(ref.object_id)
-                # A node from an earlier add may be built by now.
-                if dep is not None and (
-                    ref.object_id in new_ids or not self._built(dep)
-                ):
+                if dep is None:
+                    continue
+                if ref.object_id not in built:
+                    built[ref.object_id] = self._built(dep)
+                if not built[ref.object_id]:
                     self._link(node, dep)
         for node in new:
             (self.blocked if node.dependencies else self.ready)[node.obj.object_id] = (
@@ -98,9 +100,6 @@ class Dag:
 
     def block(self, node: DagNode, dependencies: Sequence[Spec]) -> None:
         """``node`` found ``dependencies`` missing; rerun it once they're built."""
-        dependencies = [
-            dep for dep in dependencies if dep.object_id not in self.completed
-        ]
         self.add(dependencies)
         for dep in dependencies:
             dep_node = self.nodes_by_id.get(dep.object_id)

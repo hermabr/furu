@@ -57,6 +57,20 @@ class LosesItsLeaf(Spec[int]):
         return leaf.create()
 
 
+class AddsOne(Spec[int]):
+    leaf: Leaf
+
+    def create(self) -> int:
+        return self.leaf.create() + 1
+
+
+class LazilyAddsOne(Spec[int]):
+    n: int
+
+    def create(self) -> int:
+        return AddsOne(leaf=Leaf(n=self.n)).create()
+
+
 class BatchedParent(furu.Spec[int]):
     key: int
 
@@ -161,6 +175,38 @@ def test_dependency_built_elsewhere_but_still_missing_raises(
     assert str(exc_info.value) == (
         f"{parent._log_label} still finds {leaf._log_label} missing after it was built"
     )
+
+
+def test_spec_found_after_its_dependency_was_built_here_still_runs() -> None:
+    # Leaf builds first, then the lazy parent finds AddsOne, which declares it.
+    assert furu.create([Leaf(n=3), LazilyAddsOne(n=3)]) == [3, 4]
+
+
+def test_dependencies_built_elsewhere_one_after_another_do_not_raise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import furu.execution.load_or_create as load_or_create_module
+    from furu.dag import Dag
+    from furu.dependencies import _DependencyNotReady
+
+    parent, first, second = SumOfLeaves(count=2), Leaf(n=0), Leaf(n=1)
+    first.create()
+    second.create()
+    dag = Dag()
+    dag.add([parent])
+    attempts: list[object] = []
+
+    def create(group: object, **kwargs: object) -> None:
+        attempts.append(group)
+        # Each one is published just as the parent looks for it.
+        if len(attempts) <= 2:
+            raise _DependencyNotReady([(first, second)[len(attempts) - 1]])
+
+    monkeypatch.setattr(load_or_create_module, "_create_in_process", create)
+    load_or_create_module._run_in_process(dag)
+
+    assert len(attempts) == 3
+    assert set(dag.completed) == {parent.object_id}
 
 
 def test_batched_group_reruns_as_a_whole() -> None:

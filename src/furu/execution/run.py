@@ -68,9 +68,9 @@ class Run(Dag):
     # Polled, then ready again: locked by another run, or blocked on
     # dependencies that are built but its worker could not see yet.
     waiting: dict[str, DagNode] = field(default_factory=dict)
-    # Since when each spec has blocked, result after result, on the same
-    # built dependencies; any other result starts the clock over.
-    unseen_since: dict[str, tuple[frozenset[str], float]] = field(default_factory=dict)
+    # Per spec blocking, result after result, on built dependencies: when it
+    # first named each one. Any other result starts the clocks over.
+    unseen_since: dict[str, dict[str, float]] = field(default_factory=dict)
     # Gave up after max_retries_per_object retries.
     failed: dict[str, DagNode] = field(default_factory=dict)
     # Each failed attempt's error, per spec not yet completed.
@@ -261,23 +261,28 @@ class Run(Dag):
         node: DagNode,
         dependencies: list[ArtifactSpec],
         *,
-        unseen: tuple[frozenset[str], float] | None,
+        unseen: dict[str, float] | None,
     ) -> None:
         """Rerun ``node`` after a poll, or fail it once that has gone on too long.
 
-        ``unseen`` is the dependencies its previous result named and since when,
-        if that result was such a block too.
+        ``unseen`` is when it first named each dependency, if its previous
+        result was such a block too. A dependency new to it gets the full grace.
         """
         object_id = node.obj.object_id
-        names = frozenset(dep.object_id for dep in dependencies)
         now = time.monotonic()
-        since = unseen[1] if unseen is not None and unseen[0] == names else now
+        unseen = (unseen or {}) | {
+            dep.object_id: now
+            for dep in dependencies
+            if dep.object_id not in (unseen or {})
+        }
+        oldest = min(dependencies, key=lambda dep: unseen[dep.object_id])
+        since = unseen[oldest.object_id]
         if now - since <= _UNSEEN_DEPENDENCY_TIMEOUT_S:
-            self.unseen_since[object_id] = (names, since)
+            self.unseen_since[object_id] = unseen
             self.waiting[object_id] = self.ready.pop(object_id)
             return
         error = (
-            f"still finds {dependencies[0].log_label} missing after it was built, "
+            f"still finds {oldest.log_label} missing after it was built, "
             f"for {format_duration(now - since)}; its workers may "
             "not see the storage it was written to"
         )

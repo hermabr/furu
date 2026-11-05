@@ -615,6 +615,27 @@ def test_run_starts_the_unseen_dependency_clock_over_for_a_new_dependency(
     assert run.failed == {}
 
 
+def test_run_bounds_blocks_alternating_between_built_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = [0.0]
+    monkeypatch.setattr(run_module.time, "monotonic", lambda: clock[0])
+    parent = RunLazyParent(value=2)
+    first, second = RunLeaf(value=2), RunLeaf(value=3)
+    first.create()
+    second.create()
+    run = _new_run([parent])
+
+    for at, dependency in ((0.0, first), (1.0, second), (301.0, first)):
+        clock[0] = at
+        run.poll_waiting()
+        run.take_submissions()
+        run.job_result(parent.object_id, _blocked_on(dependency))
+
+    assert set(run.failed) == {parent.object_id}
+    assert first._log_label in run.failures[parent.object_id][-1]
+
+
 def test_run_schedules_a_new_spec_whose_failed_dependency_was_built_elsewhere() -> None:
     parent = RunLazyParent(value=2)
     dependency = RunLeaf(value=2)
