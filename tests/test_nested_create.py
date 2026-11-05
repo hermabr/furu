@@ -8,6 +8,7 @@ import pytest
 import furu
 from furu import Spec
 from furu.dependencies import _DependencyNotReady
+from furu.provenance import SubmitProvenance
 from furu.storage._layout import run_log_path_in
 from furu.worker.backends.local import LocalThreadWorkerBackend
 
@@ -193,6 +194,53 @@ def test_dependencies_published_while_create_looks_rerun_it_each_time() -> None:
 
     assert parent.create() == 3
     assert CALLS[-4:] == ["misses 0", "misses 1", "misses 2", "misses 3"]
+
+
+def test_create_blocked_without_naming_a_dependency_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import furu.execution.load_or_create as load_or_create_module
+
+    def create(group: object, **kwargs: object) -> None:
+        raise _DependencyNotReady([])
+
+    monkeypatch.setattr(load_or_create_module, "_create_in_process", create)
+    parent = SumOfLeaves(count=1)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        parent.create()
+    assert str(exc_info.value) == (
+        f"{parent._log_label} reported itself blocked without naming a missing "
+        "dependency"
+    )
+
+
+def test_create_misses_a_dependency_again_after_building_another(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import furu.execution.load_or_create as load_or_create_module
+
+    seen, missing = Leaf(n=0), Leaf(n=1)
+    seen.create()
+    real_create = load_or_create_module._create_in_process
+    attempts: list[str] = []
+
+    def create(group: list[Spec], *, submit_provenance: SubmitProvenance) -> None:
+        if group[0] != parent:
+            return real_create(group, submit_provenance=submit_provenance)
+        attempts.append("parent")
+        # A race on seen, a real block on missing, then a race on seen again.
+        if len(attempts) in (1, 3):
+            raise _DependencyNotReady([seen])
+        if len(attempts) == 2:
+            raise _DependencyNotReady([missing])
+        return real_create(group, submit_provenance=submit_provenance)
+
+    monkeypatch.setattr(load_or_create_module, "_create_in_process", create)
+    parent = SumOfLeaves(count=2)
+
+    assert parent.create() == 1
+    assert len(attempts) == 4
 
 
 @pytest.mark.parametrize("on_workers", [False, True])

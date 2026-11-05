@@ -207,6 +207,7 @@ class Run(Dag):
                     format_duration(time.monotonic() - started_at),
                 )
             case JobFailedResult(error=error):
+                node.unseen_since.clear()  # its earlier misses are behind it
                 errors = self.failures.setdefault(object_id, [])
                 errors.append(error)
                 will_retry = len(errors) <= self.max_retries_per_object
@@ -237,6 +238,11 @@ class Run(Dag):
                     missing_dependencies(len(dependencies)),
                 )
                 if why is not None:
+                    if dependencies:
+                        why += (
+                            "; its worker may not see the storage it was written "
+                            "to, or may judge it stale for the worker's code"
+                        )
                     self.failures.setdefault(object_id, []).append(why)
                     self.failed[object_id] = node
                     logger.error(

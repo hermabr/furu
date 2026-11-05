@@ -18,7 +18,8 @@ class DagNode:
     obj: Spec
     dependencies: list[DagNode] = field(default_factory=list)
     dependents: list[DagNode] = field(default_factory=list)
-    # When it first found missing each dependency its run sees built.
+    # When it first found missing each dependency its run sees built, since it
+    # last got anywhere: a block on unbuilt ones or a failed attempt clears it.
     unseen_since: dict[str, float] = field(default_factory=dict)
 
     _batch_groups: dict[Worker, tuple[object, int] | None] = field(default_factory=dict)
@@ -95,11 +96,15 @@ class Dag:
         self._check_new(new)
         for node in new:
             self.nodes_by_id[node.obj.object_id] = node
+        # New nodes were just found unbuilt; older ones may be built by now.
+        built = dict.fromkeys(refs_by_id, False)
         for node in new:
             for ref in refs_by_id[node.obj.object_id]:
-                dep = self.nodes_by_id.get(ref.object_id)
-                # New nodes were just found unbuilt; older ones may be built.
-                if dep and (ref.object_id in refs_by_id or not self.built(dep.obj)):
+                if (dep := self.nodes_by_id.get(ref.object_id)) is None:
+                    continue
+                if ref.object_id not in built:
+                    built[ref.object_id] = self.built(dep.obj)
+                if not built[ref.object_id]:
                     self._link(node, dep)
         for node in new:
             (self.blocked if node.dependencies else self.ready)[node.obj.object_id] = (
@@ -109,22 +114,25 @@ class Dag:
     def block(self, node: DagNode, dependencies: Sequence[Spec]) -> str | None:
         """``node`` found ``dependencies`` missing; rerun it once they're built.
 
-        Ones this run sees built may not be visible to ``node`` yet, so it just
-        reruns; once it has found one missing for over ``unseen_grace_s``, this
-        returns why ``node`` can't run and leaves it to the caller.
+        Ones this run sees built may not be visible to ``node`` yet, so if it
+        names only those it just reruns; once it has found one missing for over
+        ``unseen_grace_s`` without getting anywhere in between, this returns why
+        ``node`` can't run and leaves it to the caller.
         """
-        now = time.monotonic()
-        unbuilt = []
-        for dep in dependencies:
-            if not self.built(dep):
-                unbuilt.append(dep)
-            elif (waited := now - node.unseen_since.setdefault(dep.object_id, now)) > (
-                self.unseen_grace_s
-            ):
-                return (
-                    f"has found {dep._log_label} missing for "
-                    f"{format_duration(waited)}, though this run sees it built"
-                )
+        if not dependencies:
+            return "reported itself blocked without naming a missing dependency"
+        unbuilt = [dep for dep in dependencies if not self.built(dep)]
+        if unbuilt:
+            node.unseen_since.clear()  # it got somewhere: start its clocks over
+        else:
+            now = time.monotonic()
+            for dep in dependencies:
+                waited = now - node.unseen_since.setdefault(dep.object_id, now)
+                if waited > self.unseen_grace_s:
+                    return (
+                        f"has found {dep._log_label} missing for "
+                        f"{format_duration(waited)}, though this run sees it built"
+                    )
         self.add(unbuilt)
         for dep in unbuilt:
             if dep_node := self.nodes_by_id.get(dep.object_id):
