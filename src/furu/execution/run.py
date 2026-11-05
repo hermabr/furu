@@ -11,7 +11,7 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import assert_never
+from typing import ClassVar, NoReturn, assert_never
 
 from websockets.sync.client import ClientConnection
 
@@ -45,7 +45,7 @@ from furu.worker.messages import (
 
 logger = get_logger("run")
 
-_RUNNING_ELSEWHERE_POLL_INTERVAL_S = 5.0
+_POLL_INTERVAL_S = 5.0
 
 
 @dataclass(slots=True, kw_only=True)
@@ -62,13 +62,19 @@ class Run(Dag):
     )
     placement: dict[str, dict[str, Batch | None]] = field(default_factory=dict)
     running: dict[str, tuple[DagNode, float]] = field(default_factory=dict)
-    # Locked by another run; polled until the lock goes, then ready again.
-    running_elsewhere: dict[str, DagNode] = field(default_factory=dict)
+    # Polled until no other run holds their lock, then ready again: specs
+    # locked elsewhere, and ones that found missing only specs this run sees
+    # built (their worker's filesystem may not show those yet).
+    waiting: dict[str, DagNode] = field(default_factory=dict)
     # Gave up after max_retries_per_object retries.
     failed: dict[str, DagNode] = field(default_factory=dict)
     # Each failed attempt's error, per spec not yet completed.
     failures: dict[str, list[str]] = field(default_factory=dict)
     batch_keys: list[object] = field(default_factory=list)
+
+    # A worker's filesystem can take about a minute to show a version another
+    # node just published (NFS caches directory listings).
+    unseen_grace_s: ClassVar[float] = 120.0
 
     def _check_new(self, nodes: Sequence[DagNode]) -> None:
         unsatisfiable = []
@@ -105,7 +111,7 @@ class Run(Dag):
     def take_submissions(self) -> list[Submission]:
         """Ready specs to send; ones done or locked elsewhere don't need us."""
         submissions: list[Submission] = []
-        waiting = 0
+        locked = 0
         while self.ready:  # completing one can make its dependents ready
             object_id = next(iter(self.ready))
             node = self.ready.pop(object_id)
@@ -114,18 +120,18 @@ class Run(Dag):
                     self.complete(node)
                     logger.info("found %s done", node.obj._log_label)
                 case "running":
-                    self.running_elsewhere[object_id] = node
-                    waiting += 1
+                    self.waiting[object_id] = node
+                    locked += 1
                 case "missing" | "incomplete" | "stale":
                     self.running[object_id] = (node, time.monotonic())
                     submissions.append(self._submission(node))
                 case unreachable:
                     assert_never(unreachable)
-        if waiting:
+        if locked:
             logger.info(
                 "waiting on %d spec%s running elsewhere",
-                waiting,
-                "" if waiting == 1 else "s",
+                locked,
+                "" if locked == 1 else "s",
             )
         return submissions
 
@@ -151,10 +157,10 @@ class Run(Dag):
             ),
         )
 
-    def poll_running_elsewhere(self) -> None:
-        for object_id, node in list(self.running_elsewhere.items()):
+    def poll_waiting(self) -> None:
+        for object_id, node in list(self.waiting.items()):
             if node.obj.status != "running":
-                self.ready[object_id] = self.running_elsewhere.pop(object_id)
+                self.ready[object_id] = self.waiting.pop(object_id)
 
     def drive(self, connection: ClientConnection) -> None:
         """Submit ready work and apply results until the run ends."""
@@ -162,8 +168,8 @@ class Run(Dag):
         # The first message always goes, so the manager knows who we are.
         jobs = self.take_submissions()
         connection.send(SubmitMessage(pools=pools, jobs=jobs).model_dump_json())
-        next_poll = time.monotonic() + _RUNNING_ELSEWHERE_POLL_INTERVAL_S
-        while self.ready or self.running or self.running_elsewhere:
+        next_poll = time.monotonic() + _POLL_INTERVAL_S
+        while self.ready or self.running or self.waiting:
             try:
                 raw = connection.recv(timeout=max(0.0, next_poll - time.monotonic()))
             except TimeoutError:
@@ -180,8 +186,8 @@ class Run(Dag):
                     case _ as unreachable:
                         assert_never(unreachable)
             if time.monotonic() >= next_poll:
-                self.poll_running_elsewhere()
-                next_poll = time.monotonic() + _RUNNING_ELSEWHERE_POLL_INTERVAL_S
+                self.poll_waiting()
+                next_poll = time.monotonic() + _POLL_INTERVAL_S
             if jobs := self.take_submissions():
                 connection.send(SubmitMessage(pools=pools, jobs=jobs).model_dump_json())
         self.finish()
@@ -220,7 +226,9 @@ class Run(Dag):
                 )
             case JobBlockedResult(dependencies=dependencies):
                 try:
-                    self.block(node, [Spec.from_artifact(dep) for dep in dependencies])
+                    why = self.block(
+                        node, [Spec.from_artifact(dep) for dep in dependencies]
+                    )
                 except Exception as exc:  # noqa: BLE001 -- runs user runs_on, accepts and batch fns
                     self.fail(f"{type(exc).__name__}: {exc}")
                 logger.info(
@@ -228,6 +236,18 @@ class Run(Dag):
                     node.obj._log_label,
                     missing_dependencies(len(dependencies)),
                 )
+                if why is not None:
+                    self.failures.setdefault(object_id, []).append(why)
+                    self.failed[object_id] = node
+                    logger.error(
+                        "failed %s · %s",
+                        node.obj._log_label,
+                        why,
+                        extra={"path": run_log_path_in(node.obj._base_dir)},
+                    )
+                elif object_id in self.ready:
+                    # Rerunning at once would likely miss the same specs again.
+                    self.waiting[object_id] = self.ready.pop(object_id)
             case _:
                 assert_never(result)
         parts = [f"{len(self.running)} running"]
@@ -251,7 +271,7 @@ class Run(Dag):
         self.failures.pop(node.obj.object_id, None)
         Dag.complete(self, node)  # slots dataclasses break zero-argument super()
 
-    def fail(self, message: str) -> None:
+    def fail(self, message: str) -> NoReturn:
         logger.error("run failed · %s", message, extra={"path": self.execution_log})
         raise RuntimeError(message)
 

@@ -1,12 +1,15 @@
 """A create() that finds missing specs is aborted and rerun once they're built."""
 
+import re
 import shutil
 
 import pytest
 
 import furu
 from furu import Spec
+from furu.dependencies import _DependencyNotReady
 from furu.storage._layout import run_log_path_in
+from furu.worker.backends.local import LocalThreadWorkerBackend
 
 CALLS: list[str] = []
 
@@ -55,6 +58,43 @@ class LosesItsLeaf(Spec[int]):
         leaf = Leaf(n=7)
         shutil.rmtree(leaf._base_dir, ignore_errors=True)
         return leaf.create()
+
+
+class CannotSeeItsLeaf(Spec[int]):
+    """Its create() keeps finding Leaf(n=8) missing, like code reading elsewhere."""
+
+    def create(self) -> int:
+        CALLS.append("cannot see")
+        if len(CALLS) > 20:
+            raise AssertionError("reran without bound")
+        raise _DependencyNotReady([Leaf(n=8)])
+
+
+class MissesEachLeafOnce(Spec[int]):
+    """Finds each leaf missing once, as if another run published it meanwhile."""
+
+    count: int
+
+    def create(self) -> int:
+        misses = sum(call.startswith("misses") for call in CALLS)
+        CALLS.append(f"misses {misses}")
+        if misses < self.count:
+            raise _DependencyNotReady([Leaf(n=misses)])
+        return sum(Leaf(n=n).create() for n in range(self.count))
+
+
+class AddsOne(Spec[int]):
+    leaf: Leaf
+
+    def create(self) -> int:
+        return self.leaf.create() + 1
+
+
+class LazyParent(Spec[int]):
+    n: int
+
+    def create(self) -> int:
+        return AddsOne(leaf=Leaf(n=self.n)).create()
 
 
 class BatchedParent(furu.Spec[int]):
@@ -130,10 +170,36 @@ def test_dependency_still_missing_after_it_was_built_raises() -> None:
     with pytest.raises(RuntimeError) as exc_info:
         parent.create()
 
-    assert str(exc_info.value) == (
-        f"{parent._log_label} still finds {Leaf(n=7)._log_label} missing after "
-        "building it"
+    assert re.fullmatch(
+        rf"{re.escape(parent._log_label)} has found {re.escape(Leaf(n=7)._log_label)} "
+        r"missing for \S+, though this run sees it built",
+        str(exc_info.value),
     )
+
+
+def test_dependency_another_run_built_but_create_cannot_see_raises() -> None:
+    Leaf(n=8).create()  # another run built it
+    parent = CannotSeeItsLeaf()
+
+    with pytest.raises(RuntimeError, match="has found .* missing for"):
+        parent.create()
+    # One rerun in case another run published it just after create() looked.
+    assert CALLS == ["leaf 8", "cannot see", "cannot see"]
+
+
+def test_dependencies_published_while_create_looks_rerun_it_each_time() -> None:
+    parent = MissesEachLeafOnce(count=3)
+    furu.create([Leaf(n=n) for n in range(3)])
+
+    assert parent.create() == 3
+    assert CALLS[-4:] == ["misses 0", "misses 1", "misses 2", "misses 3"]
+
+
+@pytest.mark.parametrize("on_workers", [False, True])
+def test_spec_discovered_after_its_dependency_was_built_runs(on_workers: bool) -> None:
+    on = [LocalThreadWorkerBackend()] if on_workers else None
+
+    assert furu.create([Leaf(n=3), LazyParent(n=3)], on=on) == [3, 4]
 
 
 def test_batched_group_reruns_as_a_whole() -> None:

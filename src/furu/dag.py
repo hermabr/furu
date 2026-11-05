@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import assert_never
+from typing import ClassVar, assert_never
 
 from furu._batched import _BatchedHook
 from furu.core import Spec
 from furu.dependencies import collect_declared_refs
 from furu.migration.stale import raise_if_stale
 from furu.resources import Worker
+from furu.utils import format_duration
 
 
 @dataclass(eq=False)
@@ -16,6 +18,8 @@ class DagNode:
     obj: Spec
     dependencies: list[DagNode] = field(default_factory=list)
     dependents: list[DagNode] = field(default_factory=list)
+    # When it first found missing each dependency its run sees built.
+    unseen_since: dict[str, float] = field(default_factory=dict)
 
     _batch_groups: dict[Worker, tuple[object, int] | None] = field(default_factory=dict)
 
@@ -49,6 +53,15 @@ class Dag:
     ready: dict[str, DagNode] = field(default_factory=dict)
     blocked: dict[str, DagNode] = field(default_factory=dict)
     completed: dict[str, DagNode] = field(default_factory=dict)
+
+    # How long a spec may keep finding missing a dependency the run sees built.
+    # In one process that can only be a race with another run publishing it,
+    # which one rerun settles.
+    unseen_grace_s: ClassVar[float] = 0.0
+
+    def built(self, obj: Spec) -> bool:
+        """Completed by this run, or done on disk (perhaps by another run)."""
+        return obj.object_id in self.completed or obj.status == "done"
 
     def _check_new(self, nodes: Sequence[DagNode]) -> None:
         """Reject new nodes before they join the graph; runners override this."""
@@ -84,24 +97,40 @@ class Dag:
             self.nodes_by_id[node.obj.object_id] = node
         for node in new:
             for ref in refs_by_id[node.obj.object_id]:
-                if dep := self.nodes_by_id.get(ref.object_id):
+                dep = self.nodes_by_id.get(ref.object_id)
+                # New nodes were just found unbuilt; older ones may be built.
+                if dep and (ref.object_id in refs_by_id or not self.built(dep.obj)):
                     self._link(node, dep)
         for node in new:
             (self.blocked if node.dependencies else self.ready)[node.obj.object_id] = (
                 node
             )
 
-    def block(self, node: DagNode, dependencies: Sequence[Spec]) -> None:
-        """``node`` found ``dependencies`` missing; rerun it once they're built."""
-        dependencies = [
-            dep for dep in dependencies if dep.object_id not in self.completed
-        ]
-        self.add(dependencies)
+    def block(self, node: DagNode, dependencies: Sequence[Spec]) -> str | None:
+        """``node`` found ``dependencies`` missing; rerun it once they're built.
+
+        Ones this run sees built may not be visible to ``node`` yet, so it just
+        reruns; once it has found one missing for over ``unseen_grace_s``, this
+        returns why ``node`` can't run and leaves it to the caller.
+        """
+        now = time.monotonic()
+        unbuilt = []
         for dep in dependencies:
-            dep_node = self.nodes_by_id.get(dep.object_id)
-            if dep_node is not None and dep_node.obj.status != "done":
+            if not self.built(dep):
+                unbuilt.append(dep)
+            elif (waited := now - node.unseen_since.setdefault(dep.object_id, now)) > (
+                self.unseen_grace_s
+            ):
+                return (
+                    f"has found {dep._log_label} missing for "
+                    f"{format_duration(waited)}, though this run sees it built"
+                )
+        self.add(unbuilt)
+        for dep in unbuilt:
+            if dep_node := self.nodes_by_id.get(dep.object_id):
                 self._link(node, dep_node)
         (self.blocked if node.dependencies else self.ready)[node.obj.object_id] = node
+        return None
 
     def complete(self, node: DagNode) -> None:
         self.completed[node.obj.object_id] = node

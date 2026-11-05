@@ -1,4 +1,5 @@
 import logging
+import re
 import threading
 import time
 from collections.abc import Callable, Generator, Sequence
@@ -130,7 +131,7 @@ def _assert_one_state(run: Run) -> None:
         run.blocked,
         run.completed,
         run.running,
-        run.running_elsewhere,
+        run.waiting,
         run.failed,
     )
     ids = [object_id for state in states for object_id in state]
@@ -525,21 +526,153 @@ def test_run_blocked_result_discovers_lazy_dependency_and_reruns_parent() -> Non
     assert set(run.completed) == {dependency.object_id}
 
 
-def test_run_blocked_result_ignores_completed_lazy_dependency() -> None:
+def _blocked(*dependencies: Spec) -> JobBlockedResult:
+    return JobBlockedResult(
+        dependencies=[ArtifactSpec.from_furu(dependency) for dependency in dependencies]
+    )
+
+
+def _answer_until_idle(
+    run: Run, answer: Callable[[str, int], JobResult], *, max_rounds: int = 50
+) -> None:
+    """Answer each round of submissions, polling in between, until none come."""
+    for round_ in range(max_rounds):
+        run.poll_waiting()
+        object_ids = _submitted_ids(run)
+        if not object_ids:
+            return
+        for object_id in object_ids:
+            run.job_result(object_id, answer(object_id, round_))
+            _assert_one_state(run)
+    raise AssertionError(f"still submitting after {max_rounds} rounds")
+
+
+def test_run_reruns_a_spec_blocked_on_a_built_dependency_after_a_poll() -> None:
     parent = RunLazyParent(value=2)
     dependency = RunLeaf(value=2)
     dependency.create()
     run = _new_run([parent])
 
     run.take_submissions()
-    run.job_result(
-        parent.object_id,
-        JobBlockedResult(dependencies=[ArtifactSpec.from_furu(dependency)]),
-    )
+    run.job_result(parent.object_id, _blocked(dependency))
+
+    assert dependency.object_id not in run.nodes_by_id
+    assert set(run.waiting) == {parent.object_id}
+    assert run.take_submissions() == []
+    _assert_one_state(run)
+    run.poll_waiting()
+    assert _submitted_ids(run) == [parent.object_id]
+
+
+def test_run_keeps_rerunning_specs_whose_worker_lags_within_the_grace() -> None:
+    dependency = RunLeaf(value=uuid4().int)
+    parents = [BatchedRunLeaf(value=value) for value in range(2)]
+    run = _new_run([dependency, *parents])
+
+    def answer(object_id: str, round_: int) -> JobResult:
+        if object_id == dependency.object_id:
+            dependency.create()
+            return JobCompletedResult()
+        # Its worker misses the dependency for a few reruns, then sees it.
+        return _blocked(dependency) if round_ < 4 else JobCompletedResult()
+
+    _answer_until_idle(run, answer)
+
+    assert set(run.completed) == {dependency.object_id} | {
+        parent.object_id for parent in parents
+    }
+    run.finish()
+
+
+def test_run_reruns_a_spec_once_per_dependency_published_meanwhile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(Run, "unseen_grace_s", 0.0)
+    parent = RunLazyParent(value=uuid4().int)
+    dependencies = [RunLeaf(value=uuid4().int) for _ in range(3)]
+    for dependency in dependencies:
+        dependency.create()
+    run = _new_run([parent])
+
+    def answer(object_id: str, round_: int) -> JobResult:
+        # Each lookup races another run publishing the next dependency.
+        if round_ < len(dependencies):
+            return _blocked(dependencies[round_])
+        return JobCompletedResult()
+
+    _answer_until_idle(run, answer)
+
+    assert set(run.completed) == {parent.object_id}
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        pytest.param(lambda a, b, c, round_: [a], id="same"),
+        pytest.param(lambda a, b, c, round_: [(a, b)[round_ % 2]], id="alternating"),
+        pytest.param(
+            lambda a, b, c, round_: [(a, b), (b, c), (c, a)][round_ % 3],
+            id="overlapping",
+        ),
+        pytest.param(lambda a, b, c, round_: [a, b, c][: round_ + 1], id="growing"),
+    ],
+)
+def test_run_fails_a_spec_that_keeps_missing_built_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+    missing: Callable[[Spec, Spec, Spec, int], Sequence[Spec]],
+) -> None:
+    monkeypatch.setattr(Run, "unseen_grace_s", 0.0)
+    parents = [BatchedRunLeaf(value=value) for value in range(2)]
+    built_here = RunLeaf(value=uuid4().int)
+    built_elsewhere = [RunLeaf(value=uuid4().int) for _ in range(2)]
+    for dependency in built_elsewhere:
+        dependency.create()
+    other = RunLeaf(value=uuid4().int)
+    run = _new_run([built_here, *parents, other], max_retries_per_object=1)
+
+    def answer(object_id: str, round_: int) -> JobResult:
+        if object_id == built_here.object_id:
+            built_here.create()
+            return JobCompletedResult()
+        if object_id == other.object_id:
+            return (
+                JobFailedResult(error="boom") if round_ == 0 else JobCompletedResult()
+            )
+        return _blocked(*missing(built_here, *built_elsewhere, round_))
+
+    _answer_until_idle(run, answer)
+
+    assert set(run.failed) == {parent.object_id for parent in parents}
+    with pytest.raises(RuntimeError) as excinfo:
+        run.finish()
+    lines = str(excinfo.value).splitlines()
+    assert lines[0] == "2 specs failed, 0 blocked"
+    for line in lines[1:]:
+        assert re.search(
+            r" · has found \S+ missing for \S+, though this run sees it built → ", line
+        )
+
+
+@pytest.mark.parametrize("built_here", [True, False])
+def test_run_does_not_wait_on_a_built_dependency_of_a_new_spec(
+    built_here: bool,
+) -> None:
+    leaf = RunLeaf(value=uuid4().int)
+    lazy = RunLazyParent(value=uuid4().int)
+    run = _new_run([leaf, lazy], max_retries_per_object=0)
+
+    run.take_submissions()
+    if built_here:
+        run.job_result(leaf.object_id, JobCompletedResult())
+    else:
+        run.job_result(leaf.object_id, JobFailedResult(error="boom"))
+        leaf.create()  # another run builds it after this one gave up
+    parent = RunParent(child=leaf)
+    run.job_result(lazy.object_id, _blocked(parent))
 
     assert set(run.ready) == {parent.object_id}
-    assert run.blocked == {}
-    assert dependency.object_id not in run.nodes_by_id
+    assert run.nodes_by_id[parent.object_id].dependencies == []
+    _assert_one_state(run)
 
 
 def test_run_blocked_result_discovers_multiple_lazy_dependencies_together() -> None:
@@ -803,12 +936,12 @@ def test_run_waits_on_specs_locked_elsewhere_until_their_lock_goes(
     with _mark_running(leaves[0]), _mark_running(leaves[1]):
         with _captured_furu_logs(caplog):
             assert run.take_submissions() == []
-        assert set(run.running_elsewhere) == {leaf.object_id for leaf in leaves}
-        run.poll_running_elsewhere()
+        assert set(run.waiting) == {leaf.object_id for leaf in leaves}
+        run.poll_waiting()
         assert run.take_submissions() == []
 
-    run.poll_running_elsewhere()
-    assert run.running_elsewhere == {}
+    run.poll_waiting()
+    assert run.waiting == {}
     assert sorted(_submitted_ids(run)) == sorted(leaf.object_id for leaf in leaves)
     assert "waiting on 2 specs running elsewhere" in caplog.messages
 

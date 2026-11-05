@@ -416,14 +416,9 @@ def _run_in_process(dag: Dag) -> None:
                 _group_label(lead.obj._log_label, len(group)),
                 missing_dependencies(len(exc.dependencies)),
             )
-            for dep in exc.dependencies:
-                if dep.object_id in dag.completed:
-                    raise RuntimeError(
-                        f"{lead.obj._log_label} still finds {dep._log_label} "
-                        "missing after building it"
-                    ) from None
             for node in group:
-                dag.block(node, exc.dependencies)
+                if (why := dag.block(node, exc.dependencies)) is not None:
+                    raise RuntimeError(f"{node.obj._log_label} {why}") from None
             continue
         except Exception as exc:
             if lead.dependents:
