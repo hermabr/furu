@@ -48,13 +48,6 @@ logger = get_logger("run")
 _RUNNING_ELSEWHERE_POLL_INTERVAL_S = 5.0
 
 
-@dataclass(frozen=True, slots=True)
-class FailedJob:
-    failed_attempts: int
-    node: DagNode
-    error: str
-
-
 @dataclass(slots=True, kw_only=True)
 class Run(Dag):
     """One plan of a worker run, driven over one connection to the manager."""
@@ -71,7 +64,10 @@ class Run(Dag):
     running: dict[str, tuple[DagNode, float]] = field(default_factory=dict)
     # Locked by another run; polled until the lock goes, then ready again.
     running_elsewhere: dict[str, DagNode] = field(default_factory=dict)
-    failed: dict[str, FailedJob] = field(default_factory=dict)
+    # Gave up after max_retries_per_object retries.
+    failed: dict[str, DagNode] = field(default_factory=dict)
+    # Each failed attempt's error, per spec not yet completed.
+    failures: dict[str, list[str]] = field(default_factory=dict)
     batch_keys: list[object] = field(default_factory=list)
 
     def _check_new(self, nodes: Sequence[DagNode]) -> None:
@@ -135,13 +131,12 @@ class Run(Dag):
 
     def _submission(self, node: DagNode) -> Submission:
         obj = node.obj
-        previous = self.failed.get(obj.object_id)
         artifact = ArtifactSpec.from_furu(obj)
         return Submission(
             job=Job(
                 artifacts=[artifact],
                 run_logs=[run_log_path_in(obj._base_dir)],
-                attempt=(previous.failed_attempts if previous else 0) + 1,
+                attempt=len(self.failures.get(obj.object_id, ())) + 1,
                 execution_log=self.execution_log,
                 provenance=self.provenance,
                 process=ProcessSettings.from_metadata(obj._metadata),
@@ -199,7 +194,6 @@ class Run(Dag):
         node, started_at = running
         match result:
             case JobCompletedResult():
-                self.failed.pop(object_id, None)
                 self.complete(node)
                 logger.info(
                     "completed %s ok · %s",
@@ -207,23 +201,19 @@ class Run(Dag):
                     format_duration(time.monotonic() - started_at),
                 )
             case JobFailedResult(error=error):
-                previous = self.failed.get(object_id)
-                failed_attempts = (previous.failed_attempts if previous else 0) + 1
-                self.failed[object_id] = FailedJob(
-                    failed_attempts=failed_attempts, node=node, error=error
-                )
-                will_retry = failed_attempts <= self.max_retries_per_object
-                if will_retry:
-                    self.ready[object_id] = node
+                errors = self.failures.setdefault(object_id, [])
+                errors.append(error)
+                will_retry = len(errors) <= self.max_retries_per_object
+                (self.ready if will_retry else self.failed)[object_id] = node
                 # The traceback lives in run.log; repeats say so instead.
                 summary = error_summary(error)
-                if previous and error_summary(previous.error) == summary:
+                if len(errors) > 1 and error_summary(errors[-2]) == summary:
                     summary = "same error"
                 logger.log(
                     logging.WARNING if will_retry else logging.ERROR,
                     "failed %s · attempt %d/%d · %s",
                     node.obj._log_label,
-                    failed_attempts,
+                    len(errors),
                     self.max_retries_per_object,
                     summary,
                     extra={"path": run_log_path_in(node.obj._base_dir)},
@@ -240,18 +230,14 @@ class Run(Dag):
                 )
             case _:
                 assert_never(result)
-        retrying = sum(
-            record.failed_attempts <= self.max_retries_per_object
-            for record in self.failed.values()
-        )
         parts = [f"{len(self.running)} running"]
         if self.ready:
             parts.append(f"{len(self.ready)} ready")
         if self.blocked:
             parts.append(f"{len(self.blocked)} blocked")
-        if failed := len(self.failed) - retrying:
-            parts.append(f"{failed} failed")
-        if retrying:
+        if self.failed:
+            parts.append(f"{len(self.failed)} failed")
+        if retrying := len(self.failures) - len(self.failed):
             parts.append(f"{retrying} retrying")
         logger.info(
             "progress %d/%d · %s",
@@ -260,31 +246,36 @@ class Run(Dag):
             " · ".join(parts),
         )
 
+    def complete(self, node: DagNode) -> None:
+        # Here or found done elsewhere, it is no longer retrying.
+        self.failures.pop(node.obj.object_id, None)
+        Dag.complete(self, node)  # slots dataclasses break zero-argument super()
+
     def fail(self, message: str) -> None:
         logger.error("run failed · %s", message, extra={"path": self.execution_log})
         raise RuntimeError(message)
 
     def finish(self) -> None:
         """Nothing is ready or running: succeed, or say what failed and why."""
-        terminal = [
-            record
-            for record in self.failed.values()
-            if record.failed_attempts > self.max_retries_per_object
-        ]
-        if not terminal and not self.blocked:
+        if not self.failed and not self.blocked:
             logger.info("run finished ok")
             return
 
         def plural(count: int) -> str:
             return f"{count} spec{'' if count == 1 else 's'}"
 
-        lines = [f"{plural(len(terminal))} failed, {len(self.blocked)} blocked"]
-        for record in terminal:
-            obj = record.node.obj
+        # In order of first failure, like the run's log.
+        failed = [
+            (self.failed[object_id].obj, errors)
+            for object_id, errors in self.failures.items()
+            if object_id in self.failed
+        ]
+        lines = [f"{plural(len(failed))} failed, {len(self.blocked)} blocked"]
+        for obj, errors in failed:
             lines.append(
-                f"  {obj._log_label} · {record.failed_attempts} attempt"
-                f"{'' if record.failed_attempts == 1 else 's'} · "
-                f"{error_summary(record.error)} → "
+                f"  {obj._log_label} · {len(errors)} attempt"
+                f"{'' if len(errors) == 1 else 's'} · "
+                f"{error_summary(errors[-1])} → "
                 f"{_display_path(run_log_path_in(obj._base_dir))}"
             )
         lines += [
@@ -292,12 +283,12 @@ class Run(Dag):
         ]
 
         headline = ["run failed"]
-        if terminal:
-            headline.append(f"{plural(len(terminal))} failed")
+        if failed:
+            headline.append(f"{plural(len(failed))} failed")
         if self.blocked:
             headline.append(f"{plural(len(self.blocked))} blocked")
-        if len(terminal) == 1:
-            (record,) = terminal
-            headline += [record.node.obj._log_label, error_summary(record.error)]
+        if len(failed) == 1:
+            ((obj, errors),) = failed
+            headline += [obj._log_label, error_summary(errors[-1])]
         logger.error(" · ".join(headline), extra={"path": self.execution_log})
         raise RuntimeError("\n".join(lines))

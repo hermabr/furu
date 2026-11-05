@@ -123,6 +123,20 @@ def _new_run(
     return run
 
 
+def _assert_one_state(run: Run) -> None:
+    """Every node is in exactly one state dict."""
+    states = (
+        run.ready,
+        run.blocked,
+        run.completed,
+        run.running,
+        run.running_elsewhere,
+        run.failed,
+    )
+    ids = [object_id for state in states for object_id in state]
+    assert sorted(ids) == sorted(run.nodes_by_id)
+
+
 def _submitted_ids(run: Run) -> list[str]:
     return [
         submission.job.artifacts[0].object_id for submission in run.take_submissions()
@@ -589,10 +603,9 @@ def test_run_failed_result_finishes_with_error(
             run.finish()
 
     assert run.running == {}
-    failed_job = run.failed[leaf.object_id]
-    assert failed_job.failed_attempts == 1
-    assert failed_job.node.obj is leaf
-    assert failed_job.error == "boom"
+    assert run.failed[leaf.object_id].obj is leaf
+    assert run.failures[leaf.object_id] == ["boom"]
+    _assert_one_state(run)
     failed_record = next(
         record for record in caplog.records if record.message.startswith("failed ")
     )
@@ -615,13 +628,18 @@ def test_run_failed_result_retries_before_finishing(
             (submission,) = run.take_submissions()
             assert submission.job.attempt == attempt
             run.job_result(leaf.object_id, JobFailedResult(error=f"boom {attempt}"))
-            assert run.failed[leaf.object_id].failed_attempts == attempt
-            assert run.failed[leaf.object_id].error == f"boom {attempt}"
+            assert run.failures[leaf.object_id] == [
+                f"boom {n}" for n in range(1, attempt + 1)
+            ]
             assert set(run.ready) == ({leaf.object_id} if attempt < 3 else set())
+            assert set(run.failed) == ({leaf.object_id} if attempt == 3 else set())
+            _assert_one_state(run)
 
     assert run.running == {}
     assert f"failed {leaf._log_label} · attempt 1/2 · boom 1" in caplog.messages
     assert f"failed {leaf._log_label} · attempt 2/2 · boom 2" in caplog.messages
+    assert "progress 0/1 · 0 running · 1 ready · 1 retrying" in caplog.messages
+    assert caplog.messages[-1] == "progress 0/1 · 0 running · 1 failed"
     with pytest.raises(RuntimeError, match="1 spec failed"):
         run.finish()
 
@@ -675,6 +693,7 @@ def test_run_error_lists_one_line_per_failed_and_blocked_spec() -> None:
                 JobFailedResult(error=f"Traceback\n  File x\nValueError: {obj.value}"),
             )
 
+    _assert_one_state(run)
     with pytest.raises(RuntimeError) as excinfo:
         run.finish()
     lines = str(excinfo.value).splitlines()
@@ -693,14 +712,55 @@ def test_run_failed_retry_can_later_complete() -> None:
 
     run.take_submissions()
     run.job_result(leaf.object_id, JobFailedResult(error="boom"))
-    assert run.failed[leaf.object_id].failed_attempts == 1
+    assert run.failures[leaf.object_id] == ["boom"]
+    assert run.failed == {}
 
     run.take_submissions()
     run.job_result(leaf.object_id, JobCompletedResult())
 
-    assert run.failed == {}
+    assert run.failures == {}
+    _assert_one_state(run)
     assert set(run.completed) == {leaf.object_id}
     run.finish()
+
+
+def test_run_failed_retry_found_done_elsewhere_stops_retrying(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    leaf = RunLeaf(value=1)
+    other = RunLeaf(value=2)
+    run = _new_run([leaf, other], max_retries_per_object=1)
+
+    run.take_submissions()
+    run.job_result(leaf.object_id, JobFailedResult(error="boom"))
+    leaf.create()  # another run builds it
+    run.take_submissions()
+    assert run.failures == {}
+    _assert_one_state(run)
+
+    caplog.set_level(logging.INFO, logger="furu.run")
+    run.job_result(other.object_id, JobCompletedResult())
+    assert caplog.messages[-1] == "progress 2/2 · 0 running"
+
+
+def test_run_error_lists_failed_specs_in_order_of_first_failure() -> None:
+    first, second = RunLeaf(value=1), RunLeaf(value=2)
+    run = _new_run([first, second], max_retries_per_object=1)
+
+    run.take_submissions()
+    for obj in (first, second):
+        run.job_result(obj.object_id, JobFailedResult(error=f"boom {obj.value}"))
+    run.take_submissions()
+    for obj in (second, first):  # second runs out of retries first
+        run.job_result(obj.object_id, JobFailedResult(error=f"boom {obj.value}"))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        run.finish()
+    lines = str(excinfo.value).splitlines()
+    assert [line.split(" · ")[0].strip() for line in lines[1:]] == [
+        first._log_label,
+        second._log_label,
+    ]
 
 
 def test_run_ignores_a_result_for_a_spec_it_is_not_running() -> None:
@@ -721,9 +781,9 @@ def test_batched_group_failure_retries_each_member() -> None:
     for obj in objs:
         run.job_result(obj.object_id, JobFailedResult(error="boom"))
 
-    assert set(run.failed) == {obj.object_id for obj in objs}
-    assert all(record.failed_attempts == 1 for record in run.failed.values())
+    assert run.failures == {obj.object_id: ["boom"] for obj in objs}
     assert set(run.ready) == {obj.object_id for obj in objs}
+    _assert_one_state(run)
 
 
 @pytest.mark.parametrize(
