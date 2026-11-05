@@ -270,11 +270,9 @@ class Run(Dag):
         """
         object_id = node.obj.object_id
         now = time.monotonic()
-        unseen = (unseen or {}) | {
-            dep.object_id: now
-            for dep in dependencies
-            if dep.object_id not in (unseen or {})
-        }
+        unseen = unseen or {}
+        for dep in dependencies:
+            unseen.setdefault(dep.object_id, now)
         oldest = min(dependencies, key=lambda dep: unseen[dep.object_id])
         since = unseen[oldest.object_id]
         if now - since <= _UNSEEN_DEPENDENCY_TIMEOUT_S:

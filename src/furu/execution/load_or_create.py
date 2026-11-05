@@ -397,8 +397,9 @@ def _run_in_process(dag: Dag) -> None:
     """Create every ready spec in ``dag``."""
     submit_provenance = capture_submit_provenance()
     here = Worker.here()
-    # What each lead's last block named, if all of it was built, so it reran.
-    stalled: dict[str, frozenset[str]] = {}
+    # Per lead whose blocks, one after another, named only built specs: every
+    # spec they named. Each rerun may meet one just published, but only once.
+    stalled: dict[str, set[str]] = {}
     while dag.ready:
         lead = next(iter(dag.ready.values()))
         group = [lead]
@@ -427,16 +428,17 @@ def _run_in_process(dag: Dag) -> None:
             for node in group:
                 dag.block(node, exc.dependencies)
             lead_id = lead.obj.object_id
-            names = frozenset(dep.object_id for dep in exc.dependencies)
             if lead_id not in dag.ready:
                 stalled.pop(lead_id, None)
-            elif stalled.get(lead_id) == names:  # built elsewhere; still missing
-                raise RuntimeError(
-                    f"{lead.obj._log_label} still finds "
-                    f"{exc.dependencies[0]._log_label} missing after it was built"
-                ) from None
-            else:
-                stalled[lead_id] = names
+                continue
+            named = stalled.setdefault(lead_id, set())
+            for dep in exc.dependencies:
+                if dep.object_id in named:  # built elsewhere; still missing
+                    raise RuntimeError(
+                        f"{lead.obj._log_label} still finds {dep._log_label} "
+                        "missing after it was built"
+                    ) from None
+            named.update(dep.object_id for dep in exc.dependencies)
             continue
         except Exception as exc:
             if lead.dependents:

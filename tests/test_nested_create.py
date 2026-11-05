@@ -209,6 +209,37 @@ def test_dependencies_built_elsewhere_one_after_another_do_not_raise(
     assert set(dag.completed) == {parent.object_id}
 
 
+@pytest.mark.parametrize(
+    "blocks", [[(0,), (1,), (0,)], [(0,), (0, 1)]], ids=["alternating", "overlapping"]
+)
+def test_dependency_built_elsewhere_and_named_again_raises(
+    monkeypatch: pytest.MonkeyPatch, blocks: list[tuple[int, ...]]
+) -> None:
+    import furu.execution.load_or_create as load_or_create_module
+    from furu.dag import Dag
+    from furu.dependencies import _DependencyNotReady
+
+    parent, leaves = SumOfLeaves(count=2), [Leaf(n=0), Leaf(n=1)]
+    furu.create(leaves)
+    dag = Dag()
+    dag.add([parent])
+    attempts: list[object] = []
+
+    def create(group: object, **kwargs: object) -> None:
+        attempts.append(group)
+        raise _DependencyNotReady([leaves[n] for n in blocks[len(attempts) - 1]])
+
+    monkeypatch.setattr(load_or_create_module, "_create_in_process", create)
+    with pytest.raises(RuntimeError) as exc_info:
+        load_or_create_module._run_in_process(dag)
+
+    assert len(attempts) == len(blocks)
+    assert str(exc_info.value) == (
+        f"{parent._log_label} still finds {leaves[0]._log_label} missing after it "
+        "was built"
+    )
+
+
 def test_batched_group_reruns_as_a_whole() -> None:
     objs = [BatchedParent(key=1), BatchedParent(key=2)]
 
