@@ -136,6 +136,33 @@ def test_dependency_still_missing_after_it_was_built_raises() -> None:
     )
 
 
+def test_dependency_built_elsewhere_but_still_missing_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import furu.execution.load_or_create as load_or_create_module
+    from furu.dag import Dag
+    from furu.dependencies import _DependencyNotReady
+
+    parent, leaf = SumOfLeaves(count=1), Leaf(n=0)
+    leaf.create()  # done on disk, so never joins the graph
+    dag = Dag()
+    dag.add([parent])
+    attempts: list[object] = []
+
+    def blocked(group: object, **kwargs: object) -> None:
+        attempts.append(group)
+        raise _DependencyNotReady([leaf])
+
+    monkeypatch.setattr(load_or_create_module, "_create_in_process", blocked)
+    with pytest.raises(RuntimeError) as exc_info:
+        load_or_create_module._run_in_process(dag)
+
+    assert len(attempts) == 2  # one rerun, in case it was built just then
+    assert str(exc_info.value) == (
+        f"{parent._log_label} still finds {leaf._log_label} missing after it was built"
+    )
+
+
 def test_batched_group_reruns_as_a_whole() -> None:
     objs = [BatchedParent(key=1), BatchedParent(key=2)]
 

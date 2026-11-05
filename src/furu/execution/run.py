@@ -68,9 +68,9 @@ class Run(Dag):
     # Polled, then ready again: locked by another run, or blocked on
     # dependencies that are built but its worker could not see yet.
     waiting: dict[str, DagNode] = field(default_factory=dict)
-    # When each spec began blocking, result after result, only on built
-    # dependencies; any other result starts the clock over.
-    unseen_since: dict[str, float] = field(default_factory=dict)
+    # Since when each spec has blocked, result after result, on the same
+    # built dependencies; any other result starts the clock over.
+    unseen_since: dict[str, tuple[frozenset[str], float]] = field(default_factory=dict)
     # Gave up after max_retries_per_object retries.
     failed: dict[str, DagNode] = field(default_factory=dict)
     # Each failed attempt's error, per spec not yet completed.
@@ -199,7 +199,7 @@ class Run(Dag):
             logger.info("ignoring result for %s: not running", object_id)
             return
         node, started_at = running
-        unseen_since = self.unseen_since.pop(object_id, None)
+        unseen = self.unseen_since.pop(object_id, None)
         match result:
             case JobCompletedResult():
                 self.complete(node)
@@ -237,7 +237,7 @@ class Run(Dag):
                     missing_dependencies(len(dependencies)),
                 )
                 if object_id in self.ready:  # every one it named is built
-                    self._wait_for_unseen(node, dependencies, since=unseen_since)
+                    self._wait_for_unseen(node, dependencies, unseen=unseen)
             case _:
                 assert_never(result)
         parts = [f"{len(self.running)} running"]
@@ -257,17 +257,23 @@ class Run(Dag):
         )
 
     def _wait_for_unseen(
-        self, node: DagNode, dependencies: list[ArtifactSpec], *, since: float | None
+        self,
+        node: DagNode,
+        dependencies: list[ArtifactSpec],
+        *,
+        unseen: tuple[frozenset[str], float] | None,
     ) -> None:
         """Rerun ``node`` after a poll, or fail it once that has gone on too long.
 
-        ``since`` is when its unbroken run of such blocks began, if one had.
+        ``unseen`` is the dependencies its previous result named and since when,
+        if that result was such a block too.
         """
         object_id = node.obj.object_id
+        names = frozenset(dep.object_id for dep in dependencies)
         now = time.monotonic()
-        since = now if since is None else since
+        since = unseen[1] if unseen is not None and unseen[0] == names else now
         if now - since <= _UNSEEN_DEPENDENCY_TIMEOUT_S:
-            self.unseen_since[object_id] = since
+            self.unseen_since[object_id] = (names, since)
             self.waiting[object_id] = self.ready.pop(object_id)
             return
         error = (

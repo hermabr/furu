@@ -80,12 +80,16 @@ class Dag:
             pending.extend(refs)
 
         self._check_new(new)
+        new_ids = {node.obj.object_id for node in new}
         for node in new:
             self.nodes_by_id[node.obj.object_id] = node
         for node in new:
             for ref in refs_by_id[node.obj.object_id]:
                 dep = self.nodes_by_id.get(ref.object_id)
-                if dep is not None and ref.object_id not in self.completed:
+                # A node from an earlier add may be built by now.
+                if dep is not None and (
+                    ref.object_id in new_ids or not self._built(dep)
+                ):
                     self._link(node, dep)
         for node in new:
             (self.blocked if node.dependencies else self.ready)[node.obj.object_id] = (
@@ -100,9 +104,13 @@ class Dag:
         self.add(dependencies)
         for dep in dependencies:
             dep_node = self.nodes_by_id.get(dep.object_id)
-            if dep_node is not None and dep_node.obj.status != "done":
+            if dep_node is not None and not self._built(dep_node):
                 self._link(node, dep_node)
         (self.blocked if node.dependencies else self.ready)[node.obj.object_id] = node
+
+    def _built(self, node: DagNode) -> bool:
+        """Built here, or by anyone else since it joined the graph."""
+        return node.obj.object_id in self.completed or node.obj.status == "done"
 
     def complete(self, node: DagNode) -> None:
         self.completed[node.obj.object_id] = node

@@ -397,6 +397,8 @@ def _run_in_process(dag: Dag) -> None:
     """Create every ready spec in ``dag``."""
     submit_provenance = capture_submit_provenance()
     here = Worker.here()
+    # Leads whose last block named only specs that are built, so it reran.
+    stalled: set[str] = set()
     while dag.ready:
         lead = next(iter(dag.ready.values()))
         group = [lead]
@@ -424,6 +426,16 @@ def _run_in_process(dag: Dag) -> None:
                     ) from None
             for node in group:
                 dag.block(node, exc.dependencies)
+            lead_id = lead.obj.object_id
+            if lead_id not in dag.ready:
+                stalled.discard(lead_id)
+            elif lead_id in stalled:  # another process built them; still missing
+                raise RuntimeError(
+                    f"{lead.obj._log_label} still finds "
+                    f"{exc.dependencies[0]._log_label} missing after it was built"
+                ) from None
+            else:
+                stalled.add(lead_id)
             continue
         except Exception as exc:
             if lead.dependents:

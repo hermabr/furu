@@ -593,6 +593,43 @@ def test_run_restarts_the_unseen_dependency_clock_after_another_result(
     assert run.failed == {}
 
 
+def test_run_starts_the_unseen_dependency_clock_over_for_a_new_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = [0.0]
+    monkeypatch.setattr(run_module.time, "monotonic", lambda: clock[0])
+    parent = RunLazyParent(value=2)
+    first, second = RunLeaf(value=2), RunLeaf(value=3)
+    first.create()
+    run = _new_run([parent])
+
+    run.take_submissions()
+    run.job_result(parent.object_id, _blocked_on(first))
+    clock[0] = run_module._UNSEEN_DEPENDENCY_TIMEOUT_S + 1
+    second.create()  # just published: its first miss, not first's sixth minute
+    run.poll_waiting()
+    run.take_submissions()
+    run.job_result(parent.object_id, _blocked_on(second))
+
+    assert set(run.waiting) == {parent.object_id}
+    assert run.failed == {}
+
+
+def test_run_schedules_a_new_spec_whose_failed_dependency_was_built_elsewhere() -> None:
+    parent = RunLazyParent(value=2)
+    dependency = RunLeaf(value=2)
+    run = _new_run([parent, dependency], max_retries_per_object=0)
+    run.take_submissions()
+    run.job_result(dependency.object_id, JobFailedResult(error="boom"))
+    dependency.create()  # another run builds it after this one gave up
+
+    mid = RunParent(child=dependency)
+    run.job_result(parent.object_id, _blocked_on(mid))
+
+    assert set(run.ready) == {mid.object_id}
+    _assert_one_state(run)
+
+
 def test_run_bounds_reruns_on_a_failed_dependency_built_elsewhere(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
