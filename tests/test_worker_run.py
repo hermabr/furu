@@ -15,6 +15,7 @@ from websockets.sync.client import ClientConnection, connect
 from websockets.sync.server import ServerConnection, serve
 
 import furu
+import furu.execution.run as run_module
 import furu.worker.loop as worker_loop_module
 from furu import Spec, Throttle, Worker
 from furu.config import get_config
@@ -130,7 +131,7 @@ def _assert_one_state(run: Run) -> None:
         run.blocked,
         run.completed,
         run.running,
-        run.running_elsewhere,
+        run.waiting,
         run.failed,
     )
     ids = [object_id for state in states for object_id in state]
@@ -525,21 +526,107 @@ def test_run_blocked_result_discovers_lazy_dependency_and_reruns_parent() -> Non
     assert set(run.completed) == {dependency.object_id}
 
 
-def test_run_blocked_result_ignores_completed_lazy_dependency() -> None:
+def _blocked_on(*dependencies: Spec) -> JobBlockedResult:
+    return JobBlockedResult(
+        dependencies=[ArtifactSpec.from_furu(dep) for dep in dependencies]
+    )
+
+
+def test_run_blocked_result_on_a_built_dependency_reruns_after_a_poll() -> None:
     parent = RunLazyParent(value=2)
     dependency = RunLeaf(value=2)
     dependency.create()
     run = _new_run([parent])
 
     run.take_submissions()
-    run.job_result(
-        parent.object_id,
-        JobBlockedResult(dependencies=[ArtifactSpec.from_furu(dependency)]),
-    )
+    run.job_result(parent.object_id, _blocked_on(dependency))
 
-    assert set(run.ready) == {parent.object_id}
+    # The worker may not see it yet; rerunning at once could spin.
+    assert set(run.waiting) == {parent.object_id}
     assert run.blocked == {}
     assert dependency.object_id not in run.nodes_by_id
+    _assert_one_state(run)
+    run.poll_waiting()
+    assert set(run.ready) == {parent.object_id}
+
+
+def test_run_fails_a_spec_that_keeps_missing_a_built_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(run_module, "_UNSEEN_DEPENDENCY_TIMEOUT_S", 0.0)
+    parent = RunLazyParent(value=2)
+    dependency = RunLeaf(value=2)
+    dependency.create()
+    run = _new_run([parent])
+
+    for _ in range(2):
+        run.take_submissions()
+        run.job_result(parent.object_id, _blocked_on(dependency))
+        run.poll_waiting()
+
+    assert set(run.failed) == {parent.object_id}
+    _assert_one_state(run)
+    with pytest.raises(RuntimeError) as excinfo:
+        run.finish()
+    assert f"still finds {dependency._log_label} missing after it was built" in str(
+        excinfo.value
+    )
+
+
+def test_run_restarts_the_unseen_dependency_clock_after_another_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(run_module, "_UNSEEN_DEPENDENCY_TIMEOUT_S", 0.0)
+    parent = RunLazyParent(value=2)
+    dependency = RunLeaf(value=2)
+    dependency.create()
+    run = _new_run([parent])
+
+    for result in (_blocked_on(dependency), JobFailedResult(error="boom")):
+        run.take_submissions()
+        run.job_result(parent.object_id, result)
+        run.poll_waiting()
+    run.take_submissions()
+    run.job_result(parent.object_id, _blocked_on(dependency))
+
+    assert set(run.waiting) == {parent.object_id}
+    assert run.failed == {}
+
+
+def test_run_bounds_reruns_on_a_failed_dependency_built_elsewhere(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(run_module, "_UNSEEN_DEPENDENCY_TIMEOUT_S", 0.0)
+    parent = RunLazyParent(value=2)
+    dependency = RunLeaf(value=2)
+    run = _new_run([parent, dependency], max_retries_per_object=0)
+    run.take_submissions()
+    run.job_result(dependency.object_id, JobFailedResult(error="boom"))
+    dependency.create()  # another run builds it after this one gave up
+
+    run.job_result(parent.object_id, _blocked_on(dependency))
+    run.poll_waiting()
+    run.take_submissions()
+    run.job_result(parent.object_id, _blocked_on(dependency))
+
+    assert set(run.failed) == {parent.object_id, dependency.object_id}
+    _assert_one_state(run)
+
+
+def test_run_schedules_a_new_spec_whose_dependency_this_run_built() -> None:
+    parent = RunLazyParent(value=2)
+    dependency = RunLeaf(value=2)
+    run = _new_run([parent, dependency])
+    run.take_submissions()
+    run.job_result(dependency.object_id, JobCompletedResult())
+    dependency.create()
+
+    mid = RunParent(child=dependency)
+    run.job_result(parent.object_id, _blocked_on(mid))
+
+    assert set(run.ready) == {mid.object_id}
+    assert set(run.blocked) == {parent.object_id}
+    _assert_one_state(run)
 
 
 def test_run_blocked_result_discovers_multiple_lazy_dependencies_together() -> None:
@@ -803,12 +890,12 @@ def test_run_waits_on_specs_locked_elsewhere_until_their_lock_goes(
     with _mark_running(leaves[0]), _mark_running(leaves[1]):
         with _captured_furu_logs(caplog):
             assert run.take_submissions() == []
-        assert set(run.running_elsewhere) == {leaf.object_id for leaf in leaves}
-        run.poll_running_elsewhere()
+        assert set(run.waiting) == {leaf.object_id for leaf in leaves}
+        run.poll_waiting()
         assert run.take_submissions() == []
 
-    run.poll_running_elsewhere()
-    assert run.running_elsewhere == {}
+    run.poll_waiting()
+    assert run.waiting == {}
     assert sorted(_submitted_ids(run)) == sorted(leaf.object_id for leaf in leaves)
     assert "waiting on 2 specs running elsewhere" in caplog.messages
 

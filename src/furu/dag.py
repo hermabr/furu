@@ -84,7 +84,8 @@ class Dag:
             self.nodes_by_id[node.obj.object_id] = node
         for node in new:
             for ref in refs_by_id[node.obj.object_id]:
-                if dep := self.nodes_by_id.get(ref.object_id):
+                dep = self.nodes_by_id.get(ref.object_id)
+                if dep is not None and ref.object_id not in self.completed:
                     self._link(node, dep)
         for node in new:
             (self.blocked if node.dependencies else self.ready)[node.obj.object_id] = (

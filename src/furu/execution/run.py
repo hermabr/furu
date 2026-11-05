@@ -45,7 +45,10 @@ from furu.worker.messages import (
 
 logger = get_logger("run")
 
-_RUNNING_ELSEWHERE_POLL_INTERVAL_S = 5.0
+_WAITING_POLL_INTERVAL_S = 5.0
+# A worker may not see a dependency another node just built: NFS caches
+# directory listings for up to a minute. Past this, it is not going to.
+_UNSEEN_DEPENDENCY_TIMEOUT_S = 300.0
 
 
 @dataclass(slots=True, kw_only=True)
@@ -62,8 +65,12 @@ class Run(Dag):
     )
     placement: dict[str, dict[str, Batch | None]] = field(default_factory=dict)
     running: dict[str, tuple[DagNode, float]] = field(default_factory=dict)
-    # Locked by another run; polled until the lock goes, then ready again.
-    running_elsewhere: dict[str, DagNode] = field(default_factory=dict)
+    # Polled, then ready again: locked by another run, or blocked on
+    # dependencies that are built but its worker could not see yet.
+    waiting: dict[str, DagNode] = field(default_factory=dict)
+    # When each spec began blocking, result after result, only on built
+    # dependencies; any other result starts the clock over.
+    unseen_since: dict[str, float] = field(default_factory=dict)
     # Gave up after max_retries_per_object retries.
     failed: dict[str, DagNode] = field(default_factory=dict)
     # Each failed attempt's error, per spec not yet completed.
@@ -114,7 +121,7 @@ class Run(Dag):
                     self.complete(node)
                     logger.info("found %s done", node.obj._log_label)
                 case "running":
-                    self.running_elsewhere[object_id] = node
+                    self.waiting[object_id] = node
                     waiting += 1
                 case "missing" | "incomplete" | "stale":
                     self.running[object_id] = (node, time.monotonic())
@@ -151,10 +158,10 @@ class Run(Dag):
             ),
         )
 
-    def poll_running_elsewhere(self) -> None:
-        for object_id, node in list(self.running_elsewhere.items()):
+    def poll_waiting(self) -> None:
+        for object_id, node in list(self.waiting.items()):
             if node.obj.status != "running":
-                self.ready[object_id] = self.running_elsewhere.pop(object_id)
+                self.ready[object_id] = self.waiting.pop(object_id)
 
     def drive(self, connection: ClientConnection) -> None:
         """Submit ready work and apply results until the run ends."""
@@ -162,8 +169,8 @@ class Run(Dag):
         # The first message always goes, so the manager knows who we are.
         jobs = self.take_submissions()
         connection.send(SubmitMessage(pools=pools, jobs=jobs).model_dump_json())
-        next_poll = time.monotonic() + _RUNNING_ELSEWHERE_POLL_INTERVAL_S
-        while self.ready or self.running or self.running_elsewhere:
+        next_poll = time.monotonic() + _WAITING_POLL_INTERVAL_S
+        while self.ready or self.running or self.waiting:
             try:
                 raw = connection.recv(timeout=max(0.0, next_poll - time.monotonic()))
             except TimeoutError:
@@ -180,8 +187,8 @@ class Run(Dag):
                     case _ as unreachable:
                         assert_never(unreachable)
             if time.monotonic() >= next_poll:
-                self.poll_running_elsewhere()
-                next_poll = time.monotonic() + _RUNNING_ELSEWHERE_POLL_INTERVAL_S
+                self.poll_waiting()
+                next_poll = time.monotonic() + _WAITING_POLL_INTERVAL_S
             if jobs := self.take_submissions():
                 connection.send(SubmitMessage(pools=pools, jobs=jobs).model_dump_json())
         self.finish()
@@ -192,6 +199,7 @@ class Run(Dag):
             logger.info("ignoring result for %s: not running", object_id)
             return
         node, started_at = running
+        unseen_since = self.unseen_since.pop(object_id, None)
         match result:
             case JobCompletedResult():
                 self.complete(node)
@@ -228,6 +236,8 @@ class Run(Dag):
                     node.obj._log_label,
                     missing_dependencies(len(dependencies)),
                 )
+                if object_id in self.ready:  # every one it named is built
+                    self._wait_for_unseen(node, dependencies, since=unseen_since)
             case _:
                 assert_never(result)
         parts = [f"{len(self.running)} running"]
@@ -246,9 +256,33 @@ class Run(Dag):
             " · ".join(parts),
         )
 
+    def _wait_for_unseen(
+        self, node: DagNode, dependencies: list[ArtifactSpec], *, since: float | None
+    ) -> None:
+        """Rerun ``node`` after a poll, or fail it once that has gone on too long.
+
+        ``since`` is when its unbroken run of such blocks began, if one had.
+        """
+        object_id = node.obj.object_id
+        now = time.monotonic()
+        since = now if since is None else since
+        if now - since <= _UNSEEN_DEPENDENCY_TIMEOUT_S:
+            self.unseen_since[object_id] = since
+            self.waiting[object_id] = self.ready.pop(object_id)
+            return
+        error = (
+            f"still finds {dependencies[0].log_label} missing after it was built, "
+            f"for {format_duration(now - since)}; its workers may "
+            "not see the storage it was written to"
+        )
+        logger.error("failed %s · %s", node.obj._log_label, error)
+        self.failures.setdefault(object_id, []).append(error)
+        self.failed[object_id] = self.ready.pop(object_id)
+
     def complete(self, node: DagNode) -> None:
         # Here or found done elsewhere, it is no longer retrying.
         self.failures.pop(node.obj.object_id, None)
+        self.unseen_since.pop(node.obj.object_id, None)
         Dag.complete(self, node)  # slots dataclasses break zero-argument super()
 
     def fail(self, message: str) -> None:
