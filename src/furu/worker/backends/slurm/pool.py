@@ -317,16 +317,18 @@ class SlurmWorkerPool:
         return states
 
     def _scale_loop(self) -> None:
-        try:
-            while not self._stop_event.is_set():
+        # A crash fails the scripts using the pool now, but the pool keeps its
+        # workers and retries, so it still serves the scripts that come later.
+        while not self._stop_event.is_set():
+            try:
                 self._scale_once()
-                self._stop_event.wait(timeout=_POLL_INTERVAL_S)
-        except Exception as exc:
-            logger.exception("scale loop crashed")
-            self._manager.notify(
-                self._key,
-                ErrorMessage(
-                    reason="slurm worker pool scale loop crashed: "
-                    + traceback.format_exception_only(type(exc), exc)[-1].strip()
-                ),
-            )
+            except Exception as exc:
+                logger.exception("scale loop crashed; retrying on the next tick")
+                self._manager.notify(
+                    self._key,
+                    ErrorMessage(
+                        reason="slurm worker pool scale loop crashed: "
+                        + traceback.format_exception_only(type(exc), exc)[-1].strip()
+                    ),
+                )
+            self._stop_event.wait(timeout=_POLL_INTERVAL_S)

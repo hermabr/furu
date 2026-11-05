@@ -732,6 +732,29 @@ def test_slurm_pool_is_broken_after_many_failures_over_a_long_time(
     assert pool._streak == []
 
 
+def test_slurm_pool_keeps_scaling_after_its_scale_loop_crashes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(pool_module, "_POLL_INTERVAL_S", 0.0)
+    manager = _StubManager()
+    pool = _pool(tmp_path, monkeypatch, manager)
+    ticks: list[int] = []
+
+    def scale_once() -> None:
+        ticks.append(len(ticks))
+        if len(ticks) == 1:
+            raise RuntimeError("boom")
+        pool._stop_event.set()
+
+    monkeypatch.setattr(pool, "_scale_once", scale_once)
+    pool._scale_loop()
+
+    assert ticks == [0, 1]
+    assert manager.notes == [
+        ErrorMessage(reason="slurm worker pool scale loop crashed: RuntimeError: boom")
+    ]
+
+
 # --- end to end --------------------------------------------------------------------
 
 
