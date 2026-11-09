@@ -1682,7 +1682,7 @@ def test_worker_loop_raises_when_manager_is_unavailable() -> None:
         worker_loop(
             url="ws://127.0.0.1:1",
             pool="cpu",
-            idle_timeout=get_config().worker.idle_timeout_seconds,
+            idle_timeout=60.0,
             component="test-worker",
             backend="test",
         )
@@ -1715,7 +1715,7 @@ def test_worker_with_its_own_log_notes_what_it_ran_there(
         worker_loop(
             url=server.server_url,
             pool="cpu",
-            idle_timeout=get_config().worker.idle_timeout_seconds,
+            idle_timeout=60.0,
             component="100_0",
             backend="test",
             worker_log=worker_log,
@@ -1753,7 +1753,7 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
             worker_loop(
                 url=server.server_url,
                 pool="gpu",
-                idle_timeout=get_config().worker.idle_timeout_seconds,
+                idle_timeout=60.0,
                 component="test-worker",
                 backend="test",
             )

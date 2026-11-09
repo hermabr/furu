@@ -49,6 +49,8 @@ logger = get_logger("manager")
 
 # How often an idle worker's handler checks that the worker is still there.
 _IDLE_CHECK_INTERVAL_S = 5.0
+# Not part of a pool's key: its first script sets them and later ones must agree.
+_SETTINGS = {"job_name", "idle_timeout_seconds"}
 
 
 @dataclass(eq=False)
@@ -190,13 +192,24 @@ class Manager:
 
     def _submit(self, script: _Script, message: SubmitMessage) -> None:
         with self.lock:
-            script.pools = message.pools
-            for key, definition in message.pools.items():
-                if key not in self.pools:
-                    self.pools[key] = self._start_pool(key, definition)
-            self.queue += [_Queued(script, job) for job in message.jobs]
-            self.lock.notify_all()
-        if message.jobs:
+            clashes = [
+                f"pool {key} already runs with {first}, not {asked}"
+                for key, definition in message.pools.items()
+                if key in self.pools
+                and (first := self.pools[key].definition.model_dump(include=_SETTINGS))
+                != (asked := definition.model_dump(include=_SETTINGS))
+            ]
+            if not clashes:
+                script.pools = message.pools
+                for key, definition in message.pools.items():
+                    if key not in self.pools:
+                        self.pools[key] = self._start_pool(key, definition)
+                self.queue += [_Queued(script, job) for job in message.jobs]
+                self.lock.notify_all()
+        if clashes:
+            hint = "; restart the manager to change them"
+            script.send(ErrorMessage(reason="; ".join(clashes) + hint))
+        elif message.jobs:
             logger.info(
                 "queued %d jobs from %s", len(message.jobs), _peer(script.connection)
             )

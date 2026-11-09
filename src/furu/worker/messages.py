@@ -112,6 +112,8 @@ class SlurmPool(_Message):
     sbatch_args: list[str]
     pre_worker_commands: list[str]
     use_job_arrays: bool
+    job_name: str
+    idle_timeout_seconds: float
 
 
 class LocalPool(_Message):

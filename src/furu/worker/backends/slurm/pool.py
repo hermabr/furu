@@ -9,11 +9,10 @@ import traceback
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from furu.config import get_config
 from furu.logging import get_logger
 from furu.utils import format_duration
 from furu.worker._cli import MANAGER_URL_ENV_VAR
-from furu.worker.messages import ErrorMessage, SlurmPool, WarningMessage
+from furu.worker.messages import ErrorMessage, Pool, SlurmPool, WarningMessage
 
 if TYPE_CHECKING:
     from furu.execution.manager import Manager
@@ -67,6 +66,7 @@ class SlurmWorkerPool:
         definition: SlurmPool,
         directory: Path,
     ) -> None:
+        self.definition: Pool = definition
         self._manager = manager
         self._key = key
         self._use_job_arrays = definition.use_job_arrays
@@ -103,12 +103,13 @@ class SlurmWorkerPool:
             f"    --pool {shlex.quote(key)} \\\n"
             '    --component "${component}" \\\n'
             f'    --log {shlex.quote(str(log_dir))}/"${{component}}.log" \\\n'
-            f"    --idle-timeout {get_config().worker.idle_timeout_seconds}\n"
+            f"    --idle-timeout {definition.idle_timeout_seconds}\n"
         )
         self._sbatch_args = (
             f"--chdir={directory}",
             # stdout and stderr, merged as Slurm does by default.
             f"--output={log_dir}/{'%A_%a' if self._use_job_arrays else '%j'}.log",
+            f"--job-name={definition.job_name}",
             *definition.sbatch_args,
         )
         self._scale_thread = threading.Thread(
