@@ -39,6 +39,7 @@ class LocalThreadPool:
     """``max_workers`` threads that stay until the manager closes."""
 
     def __init__(self, *, manager: Manager, key: str, definition: LocalPool) -> None:
+        self.definition = definition
         self._threads = [
             threading.Thread(
                 target=_run_worker,

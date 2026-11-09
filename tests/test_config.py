@@ -21,7 +21,6 @@ pytestmark = pytest.mark.usefixtures("fresh_caches")
 def test_config_reads_environment(monkeypatch) -> None:
     monkeypatch.setenv("FURU_DIRECTORIES__OBJECTS", "/tmp/furu-objects")
     monkeypatch.setenv("FURU_DIRECTORIES__EXECUTIONS", "/tmp/furu-executions")
-    monkeypatch.setenv("FURU_WORKER__IDLE_TIMEOUT_SECONDS", "12.5")
     monkeypatch.setenv("FURU_WORKER__MAX_RETRIES_PER_OBJECT", "3")
 
     config = _Config()
@@ -31,7 +30,6 @@ def test_config_reads_environment(monkeypatch) -> None:
         executions=Path("/tmp/furu-executions"),
     )
     assert config.worker == _FuruWorkerConfig(
-        idle_timeout_seconds=12.5,
         max_retries_per_object=3,
     )
 
@@ -161,7 +159,6 @@ objects = "/tmp/furu-pyproject-objects"
 executions = "/tmp/furu-pyproject-executions"
 
 [tool.furu.worker]
-idle_timeout_seconds = 7.5
 max_retries_per_object = 3
 """,
         encoding="utf-8",
@@ -176,7 +173,6 @@ max_retries_per_object = 3
         executions=Path("/tmp/furu-pyproject-executions"),
     )
     assert config.worker == _FuruWorkerConfig(
-        idle_timeout_seconds=7.5,
         max_retries_per_object=3,
     )
 

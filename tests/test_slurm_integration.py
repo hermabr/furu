@@ -14,9 +14,7 @@ from slurm_objects import SlurmTaskKind, SlurmWorkloadTask
 import furu
 import furu.execution.run_on_workers as run_module
 import furu.worker.backends.slurm.pool as pool_module
-from furu.config import get_config
 from furu.execution.manager import Manager
-from furu.testing import override_config
 from furu.worker.backends.slurm.backend import SlurmWorkerBackend
 from furu.worker.backends.slurm.resources import SlurmResources
 
@@ -76,18 +74,11 @@ def test_slurm_backend_runs_worker_job_end_to_end(
         duration_seconds=TASK_DURATION_SECONDS,
     )
     monkeypatch.setattr(pool_module, "_POLL_INTERVAL_S", 0.1)
-    config = get_config()
-    worker = config.worker.model_copy(
-        update={"idle_timeout_seconds": worker_idle_timeout}
-    )
-    with (
-        override_config(config.model_copy(update={"worker": worker})),
-        Manager.serve(
-            listen_host="0.0.0.0",
-            connect_host="127.0.0.1",
-            manager_dir=tmp_path / "manager",
-        ) as manager,
-    ):
+    with Manager.serve(
+        listen_host="0.0.0.0",
+        connect_host="127.0.0.1",
+        manager_dir=tmp_path / "manager",
+    ) as manager:
         monkeypatch.setattr(
             run_module,
             "_connect_to_manager",
@@ -100,12 +91,14 @@ def test_slurm_backend_runs_worker_job_end_to_end(
                     max_workers=A_WORKER_COUNT,
                     resources=SlurmResources(partition="debug", cpus_per_worker=1),
                     job_name="furu-worker-a",
+                    idle_timeout_seconds=worker_idle_timeout,
                     use_job_arrays=use_job_arrays,
                 ),
                 SlurmWorkerBackend(
                     max_workers=B_WORKER_COUNT,
                     resources=SlurmResources(partition="debug", cpus_per_worker=2),
                     job_name="furu-worker-b",
+                    idle_timeout_seconds=worker_idle_timeout,
                     use_job_arrays=use_job_arrays,
                 ),
             ],

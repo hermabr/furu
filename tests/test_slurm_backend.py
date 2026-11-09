@@ -8,6 +8,7 @@ import subprocess
 import sys
 import textwrap
 import threading
+import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,7 +32,6 @@ from furu.provenance import (
 )
 from furu.resources import Worker
 from furu.snapshot import CodeLocation
-from furu.testing import override_config
 from furu.worker import _cli
 from furu.worker.backends.slurm.backend import SlurmExport, SlurmWorkerBackend
 from furu.worker.backends.slurm.pool import SlurmWorkerPool
@@ -41,7 +41,12 @@ from furu.worker.backends.slurm.resources import (
     MemoryPerNode,
     SlurmResources,
 )
-from furu.worker.messages import ErrorMessage, WarningMessage
+from furu.worker.messages import (
+    ErrorMessage,
+    SubmitMessage,
+    WarningMessage,
+    manager_message_adapter,
+)
 
 _URL = "ws://furu:secret-token@manager.cluster:1234"
 
@@ -185,11 +190,8 @@ def test_slurm_backend_export_option_controls_sbatch_args(
     assert [arg for arg in sbatch_args if arg.startswith("--export")] == expected_args
 
 
-def test_slurm_pool_key_ignores_how_many() -> None:
-    key = _slurm_backend().pool_key
-
-    assert key.startswith("slurm:")
-    assert _slurm_backend(max_workers=9).pool_key == key
+def test_slurm_pool_key_names_its_backend() -> None:
+    assert _slurm_backend().pool_key.startswith("slurm:")
 
 
 @pytest.mark.parametrize(
@@ -207,12 +209,22 @@ def test_slurm_pool_key_ignores_how_many() -> None:
         {"export": "NIL"},
         {"export": ("HF_TOKEN",)},
         {"use_job_arrays": False},
-        {"job_name": "other"},
     ],
     ids=lambda override: next(iter(override)),
 )
 def test_slurm_pool_key_changes_with_the_recipe(override: dict[str, Any]) -> None:
     assert _slurm_backend(**override).pool_key != _slurm_backend().pool_key
+
+
+@pytest.mark.parametrize(
+    "override",
+    [{"max_workers": 9}, {"job_name": "other"}, {"idle_timeout_seconds": 5.0}],
+    ids=lambda override: next(iter(override)),
+)
+def test_slurm_pool_key_ignores_what_is_not_the_recipe(
+    override: dict[str, Any],
+) -> None:
+    assert _slurm_backend(**override).pool_key == _slurm_backend().pool_key
 
 
 def test_slurm_pool_key_distinguishes_memory_kinds() -> None:
@@ -336,6 +348,7 @@ def test_slurm_pool_submits_workers_that_run_the_managers_furu(
             extra_sbatch_args=("--exclusive",),
         ),
         pre_worker_commands=('echo "Hello" > /tmp/hey',),
+        idle_timeout_seconds=7.5,
     )
     pool._scale_once()
 
@@ -371,7 +384,7 @@ def test_slurm_pool_submits_workers_that_run_the_managers_furu(
     assert f"--pool {pool._key}" in script
     assert '--component "${component}"' in script
     assert f'--log {worker_dir / "logs"}/"${{component}}.log"' in script
-    assert f"--idle-timeout {get_config().worker.idle_timeout_seconds}" in script
+    assert "--idle-timeout 7.5\n" in script
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="requires bash")
@@ -787,23 +800,18 @@ def test_create_on_slurm_goes_through_the_manager_to_a_worker(
     record_file, _active_file = _install_fake_slurm(tmp_path, monkeypatch)
     monkeypatch.setenv("FURU_FAKE_SLURM_LAUNCH", "1")
     monkeypatch.setattr(run_module, "_prepare_snapshot", lambda _: CodeLocation.here())
-    config = get_config()
-    quick_idle = config.model_copy(
-        update={
-            "worker": config.worker.model_copy(update={"idle_timeout_seconds": 5.0})
-        }
+    backend = _slurm_backend(
+        max_workers=1,
+        resources=SlurmResources(cpus_per_worker=1),
+        idle_timeout_seconds=5.0,
     )
-    backend = _slurm_backend(max_workers=1, resources=SlurmResources(cpus_per_worker=1))
     leaf = SlurmEndToEndLeaf(value=7)
 
-    with (
-        override_config(quick_idle),
-        Manager.serve(
-            listen_host="127.0.0.1",
-            connect_host="127.0.0.1",
-            manager_dir=tmp_path / "manager",
-        ) as manager,
-    ):
+    with Manager.serve(
+        listen_host="127.0.0.1",
+        connect_host="127.0.0.1",
+        manager_dir=tmp_path / "manager",
+    ) as manager:
         monkeypatch.setattr(
             run_module,
             "_connect_to_manager",
@@ -817,6 +825,53 @@ def test_create_on_slurm_goes_through_the_manager_to_a_worker(
     assert f"--chdir={worker_dir}" in argv
     assert "--job-name=furu-worker" in argv
     assert argv[-1] == str(worker_dir / "worker.sh")
+
+
+@pytest.mark.parametrize(
+    "override",
+    [{"job_name": "other"}, {"idle_timeout_seconds": 5.0}],
+    ids=lambda override: next(iter(override)),
+)
+def test_manager_refuses_a_pool_that_disagrees_with_the_one_running(
+    tmp_path: Path, override: dict[str, Any]
+) -> None:
+    first = _slurm_backend()
+    key = first.pool_key
+
+    def submit(backend: SlurmWorkerBackend) -> str:
+        return SubmitMessage(pools={key: backend.pool()}, jobs=[]).model_dump_json()
+
+    def wait_for_scripts_with_pools(count: int) -> None:
+        deadline = time.monotonic() + 5
+        while sum(bool(script.pools) for script in manager.scripts) != count:
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+
+    with (
+        Manager.serve(
+            listen_host="127.0.0.1",
+            connect_host="127.0.0.1",
+            manager_dir=tmp_path / "manager",
+        ) as manager,
+        connect(manager.url) as defines,
+        connect(manager.url) as resizes,
+        connect(manager.url) as disagrees,
+    ):
+        defines.send(submit(first))
+        wait_for_scripts_with_pools(1)
+        resizes.send(submit(_slurm_backend(max_workers=9)))
+        wait_for_scripts_with_pools(2)
+
+        disagrees.send(submit(_slurm_backend(**override)))
+        refusal = manager_message_adapter.validate_json(disagrees.recv(timeout=5))
+
+        (name,) = override
+        assert isinstance(refusal, ErrorMessage)
+        assert f"{name} {getattr(first, name)!r}, not {override[name]!r}" in (
+            refusal.reason
+        )
+        assert manager.pools[key].definition == first.pool()
+        wait_for_scripts_with_pools(2)  # the refused script joined no pool
 
 
 # --- fake Slurm ----------------------------------------------------------------------

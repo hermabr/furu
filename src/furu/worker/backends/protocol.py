@@ -35,6 +35,11 @@ class WorkerBackend(Protocol):
 class WorkerPool(Protocol):
     """A manager's running pool."""
 
+    @property
+    def definition(self) -> Pool:
+        """The pool as the first script to use it sent it."""
+        ...
+
     def job_completed(self) -> None: ...
 
     def stop(self) -> None: ...

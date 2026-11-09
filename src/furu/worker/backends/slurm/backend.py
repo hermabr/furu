@@ -22,6 +22,8 @@ class SlurmWorkerBackend:
     max_workers: int
     resources: SlurmResources
     job_name: str = "furu-worker"
+    # How long a worker waits without a job before it exits.
+    idle_timeout_seconds: float = 60.0
     pre_worker_commands: tuple[str, ...] = ()
     export: SlurmExport = None
     use_job_arrays: bool = True
@@ -39,7 +41,11 @@ class SlurmWorkerBackend:
 
     @property
     def pool_key(self) -> str:
-        recipe = self.pool().model_dump(exclude={"max_workers"})
+        # What makes workers interchangeable: not how many there are, what
+        # Slurm calls them or how long they idle.
+        recipe = self.pool().model_dump(
+            exclude={"max_workers", "job_name", "idle_timeout_seconds"}
+        )
         return "slurm:" + _hash_dict_deterministically(
             {**recipe, "labels": list(self.labels)}
         )
@@ -56,11 +62,9 @@ class SlurmWorkerBackend:
                 assert_never(self.export)
         return SlurmPool(
             max_workers=self.max_workers,
-            sbatch_args=[
-                f"--job-name={self.job_name}",
-                *self.resources.to_sbatch_args(),
-                *export_args,
-            ],
+            sbatch_args=[*self.resources.to_sbatch_args(), *export_args],
             pre_worker_commands=list(self.pre_worker_commands),
             use_job_arrays=self.use_job_arrays,
+            job_name=self.job_name,
+            idle_timeout_seconds=self.idle_timeout_seconds,
         )

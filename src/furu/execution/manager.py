@@ -190,13 +190,27 @@ class Manager:
 
     def _submit(self, script: _Script, message: SubmitMessage) -> None:
         with self.lock:
-            script.pools = message.pools
-            for key, definition in message.pools.items():
-                if key not in self.pools:
-                    self.pools[key] = self._start_pool(key, definition)
-            self.queue += [_Queued(script, job) for job in message.jobs]
-            self.lock.notify_all()
-        if message.jobs:
+            refused = [
+                f"pool {key} already runs with {difference}"
+                for key, definition in message.pools.items()
+                if key in self.pools
+                and (difference := _difference(self.pools[key].definition, definition))
+            ]
+            if not refused:
+                script.pools = message.pools
+                for key, definition in message.pools.items():
+                    if key not in self.pools:
+                        self.pools[key] = self._start_pool(key, definition)
+                self.queue += [_Queued(script, job) for job in message.jobs]
+                self.lock.notify_all()
+        if refused:
+            reason = (
+                "; ".join(refused)
+                + ". Use the same values, or restart the manager to change them."
+            )
+            logger.error("refused %s · %s", _peer(script.connection), reason)
+            script.send(ErrorMessage(reason=reason))
+        elif message.jobs:
             logger.info(
                 "queued %d jobs from %s", len(message.jobs), _peer(script.connection)
             )
@@ -348,6 +362,23 @@ class Manager:
             busy = sum(1 for lease in self.leases.values() if lease.pool == pool)
             startable = sum(1 for _ in islice(self._leasable_locked(pool), max_workers))
             return min(busy + startable, max_workers)
+
+
+def _difference(running: Pool, asked: Pool) -> str | None:
+    """How ``asked`` differs from the ``running`` pool it shares a key with.
+
+    The key covers the recipe and each script brings its own ``max_workers``;
+    the rest is set by the first script to define the pool.
+    """
+    was, now = (pool.model_dump(exclude={"max_workers"}) for pool in (running, asked))
+    return (
+        ", ".join(
+            f"{name} {was[name]!r}, not {now.get(name)!r}"
+            for name in was
+            if was[name] != now.get(name)
+        )
+        or None
+    )
 
 
 def _peer(connection: ServerConnection) -> str:
