@@ -48,7 +48,7 @@ from furu.storage._layout import (
     trace_path_in,
     version_dir_in,
 )
-from furu.utils import fully_qualified_name
+from furu.utils import _hash_dict_deterministically, fully_qualified_name
 
 type SOME_TYPE = Literal["a", "b"] | int
 
@@ -527,6 +527,19 @@ class ComputedDependencyParent(Spec[str]):
 
     def create(self) -> str:
         return self.child.create()
+
+
+class TreeDependencyParent(Spec[str]):
+    names: tuple[str, ...]
+
+    @furu.dependency
+    def by_name(self) -> dict[str, tuple[Node, ...] | None]:
+        return {name: (Node(name=name), Node(name="shared")) for name in self.names} | {
+            "none": None
+        }
+
+    def create(self) -> str:
+        return ""
 
 
 class CountingDependencyParent(Spec[str]):
@@ -1137,23 +1150,79 @@ def test_declared_dependencies_are_created_before_the_create_hook(
         assert f" I finished {obj._log_label} ok · " in log_text
 
 
-def test_computed_dependency_is_cached_property_and_eager_loaded_dependency() -> None:
+def test_a_dependency_is_planned_and_recorded_when_loaded() -> None:
     parent = ComputedDependencyParent(name="computed")
 
-    assert parent.child is parent.child
     assert collect_declared_refs(parent) == (parent.child,)
     assert parent.create() == "Node(computed)"
 
     assert _dependency_object_ids(parent) == [parent.child.object_id]
 
 
-def test_dependency_computes_once_per_instance() -> None:
+def test_a_dependency_is_computed_once_at_construction() -> None:
     CountingDependencyParent.calls = 0
     parent = CountingDependencyParent(name="counting")
 
+    assert CountingDependencyParent.calls == 1
     assert parent.child is parent.child
     assert collect_declared_refs(parent) == (parent.child,)
     assert CountingDependencyParent.calls == 1
+
+
+def test_a_dependency_is_stored_and_hashed_as_a_field() -> None:
+    parent = ComputedDependencyParent(name="x")
+
+    assert parent._artifact_data["|fields"] == {
+        "name": "x",
+        "child": Node(name="x")._artifact_data,
+    }
+    schema = cast(Any, parent._schema_data)
+    assert schema["|fields"]["child"] == Node(name="x")._schema_data
+    with pytest.raises(TypeError, match="unexpected keyword argument 'child'"):
+        ComputedDependencyParent(name="x", child=Node(name="y"))  # ty: ignore[unknown-argument]
+
+
+def test_a_dependency_returning_a_tree_plans_every_spec_in_it() -> None:
+    parent = TreeDependencyParent(names=("b", "a"))
+
+    refs = cast(tuple[Node, ...], collect_declared_refs(parent))
+    assert {ref.name for ref in refs} == {"a", "b", "shared"}
+    assert cast(Any, parent._artifact_data)["|fields"]["by_name"]["none"] is None
+
+
+def test_a_spec_with_a_dependency_round_trips_through_its_artifact() -> None:
+    parent = ComputedDependencyParent(name="x")
+
+    assert Spec.from_artifact(ArtifactSpec.from_furu(parent)) == parent
+
+
+def test_loading_an_artifact_whose_dependency_is_now_derived_differently_fails() -> (
+    None
+):
+    artifact = ArtifactSpec.from_furu(ComputedDependencyParent(name="x"))
+    data = json.loads(json.dumps(artifact.artifact_data))
+    data["|fields"]["child"]["|fields"]["name"] = "what-the-old-code-derived"
+    stored = artifact.model_copy(
+        update={
+            "artifact_data": data,
+            "artifact_hash": _hash_dict_deterministically(data),
+        }
+    )
+
+    with pytest.raises(ValueError, match="@furu.dependency"):
+        Spec.from_artifact(stored)
+
+
+def test_a_dependency_without_a_return_annotation_is_rejected() -> None:
+    with pytest.raises(TypeError, match="needs a return annotation"):
+
+        class Untyped(Spec[str]):
+            @furu.dependency
+            def child(self):
+                return Node(name="x")
+
+            def create(self) -> str:
+                return ""
 
 
 def test_create_inside_create_is_recorded_and_deduped() -> None:

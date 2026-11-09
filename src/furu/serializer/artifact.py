@@ -282,9 +282,17 @@ def _from_json(value: JsonValue) -> Any:
             ):
                 cls = _resolve_serialized_type(class_name)
                 hints = cached_type_hints(cls)
+                # Fields the class fills in itself (@furu.dependency) are
+                # derived again; _from_artifact's hash check catches a change.
+                derived = (
+                    {f.name for f in fields(cls) if not f.init}
+                    if is_dataclass(cls)
+                    else ()
+                )
                 converted_fields = {
                     name: _from_json_field(field_value, hints.get(name, Any))
                     for name, field_value in field_values.items()
+                    if name not in derived
                 }
                 return cls(**converted_fields)
             return {key: _from_json(child) for key, child in value.items()}
@@ -312,7 +320,9 @@ def _from_artifact[T: Spec](artifact: ArtifactSpec, expected_type: type[T]) -> T
         raise ValueError(
             "Artifact hash did not match loaded object: "
             + f"artifact={artifact.artifact_hash[:5]}, "
-            + f"loaded={furu_obj._artifact_hash[:5]}"
+            + f"loaded={furu_obj._artifact_hash[:5]}. A @furu.dependency "
+            + "that now returns something else than when the spec was stored "
+            + "causes this."
         )
     if artifact.schema_hash != furu_obj._artifact_schema_hash:
         raise ValueError(

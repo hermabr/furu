@@ -18,6 +18,13 @@ from typing import (
 )
 
 from furu._batched import _BatchedCreate, _BatchedHook, batched
+from furu.dependencies import (
+    _Dependency,
+    dependency_field,
+    fill_dependencies,
+    is_under_creation,
+    record_dependency,
+)
 from furu.locking import LockError, is_active_lock, lock
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
@@ -104,6 +111,13 @@ class Spec[T](_FuruDataclassTransform, ABC):
             return
 
         annotations = get_annotations(cls, eval_str=False)
+        for name, value in list(cls.__dict__.items()):
+            if isinstance(value, _Dependency):
+                setattr(cls, name, dependency_field(cls, name, value))
+                annotations[name] = value.func.__annotations__["return"]
+        # Assigned, not edited in place: reading cls.__annotations__ on a class
+        # without its own can return a dict shared with other classes.
+        cls.__annotations__ = annotations
         if reserved := _RESERVED_FIELD_NAMES & annotations.keys():
             raise TypeError(
                 f"{cls.__name__} declares field(s) {sorted(reserved)} that shadow "
@@ -142,6 +156,10 @@ class Spec[T](_FuruDataclassTransform, ABC):
                 cls._furu_create_hook = hook
                 del cls.create  # unshadow the inherited create verb
 
+    def __post_init__(self) -> None:
+        """Fill in the ``@furu.dependency`` fields; an override must call this."""
+        fill_dependencies(self)
+
     def create(self) -> T:
         """Return this spec's result, building it first if it's missing.
 
@@ -173,8 +191,6 @@ class Spec[T](_FuruDataclassTransform, ABC):
     @final
     @property
     def directory(self) -> SpecDirectory:
-        from furu.dependencies import is_under_creation
-
         if not is_under_creation(self):
             raise RuntimeError(
                 f"{self._log_label}.directory is only available inside this "
@@ -197,8 +213,6 @@ class Spec[T](_FuruDataclassTransform, ABC):
 
     @final
     def load_existing(self) -> T:
-        from furu.dependencies import record_dependency
-
         if (version := version_for_loading(self)) is not None:
             record_dependency(self, version)
             return load_stored_result(self, version)
@@ -211,8 +225,6 @@ class Spec[T](_FuruDataclassTransform, ABC):
 
     @final
     def provenance(self) -> Provenance:
-        from furu.dependencies import record_dependency
-
         if (version := version_for_loading(self)) is None:
             raise_if_stale(self)
             raise Missing(
