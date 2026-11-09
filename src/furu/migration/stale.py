@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator, Mapping
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, cast
 
 from furu.constants import CLASSMARKER, FIELDSMARKER
-from furu.migration.links import _find_source
 from furu.migration.resolution import _class_resolution, _ClassResolution, _Orphaned
 from furu.migration.steps import Stale
 from furu.storage._layout import schema_snapshot_path_in
@@ -23,13 +22,8 @@ def _orphaned_directories(resolution: _ClassResolution) -> list[_Orphaned]:
     ]
 
 
-def sideways_status(obj: Spec) -> Literal["done", "stale", "missing"]:
-    resolution = _class_resolution(obj)
-    if _find_source(obj, resolution) is not None:
-        return "done"
-    if _orphaned_directories(resolution):
-        return "stale"
-    return "missing"
+def is_stale(obj: Spec) -> bool:
+    return bool(_orphaned_directories(_class_resolution(obj)))
 
 
 def _field_diff(

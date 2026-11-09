@@ -69,7 +69,3 @@ def execution_log_path_in(executor_dir: Path) -> Path:
 
 def compute_lock_path_in(identity_dir: Path) -> Path:
     return identity_dir / "compute.lock"
-
-
-def result_link_path_in(identity_dir: Path) -> Path:
-    return identity_dir / "result-link.json"

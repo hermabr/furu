@@ -17,7 +17,7 @@ import furu
 from furu import code_trace
 from furu.code_trace import StaleCodeError
 from furu.config import _Config, get_config
-from furu.migration.links import own_version
+from furu.migration.stored import own_version
 from furu.spec_metadata import Metadata
 from furu.storage._layout import (
     attempt_dir_in,

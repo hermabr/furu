@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import errno
-import json
 import shutil
 from collections.abc import Callable, Mapping
-from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, cast
@@ -12,21 +9,19 @@ from typing import ClassVar, cast
 import pytest
 
 import furu
-import furu.migration.links as migration_links
 import furu.migration.resolution as migration_resolution
+import furu.migration.stored as migration_stored
 from furu import Added, MovedFrom, Renamed, Retyped, Rewrite, Spec, Stale
 from furu.constants import FIELDSMARKER
-from furu.migration.steps import MigrationError
+from furu.migration.steps import MigrationError, _describe_step
 from furu.result.bundle import WRAPPER_KEY
 from furu.result.codec import Codec
 from furu.storage._layout import (
-    compute_lock_path_in,
     data_dir_in,
-    result_link_path_in,
     result_manifest_path_in,
     version_dir_in,
 )
-from furu.utils import JsonFields, JsonValue, fully_qualified_name
+from furu.utils import JsonValue, fully_qualified_name
 
 
 class _Counter:
@@ -70,6 +65,26 @@ def _transplant_generation(
             text = text.replace(old, new)
         path.write_text(text)
     return target_schema_directory
+
+
+def _migration_path(spec: Spec) -> list[str]:
+    """The steps applied to reuse spec's stored result, child chains first."""
+    version = migration_stored.stored_version(spec)
+    assert version is not None
+    resolution = migration_resolution._class_resolution(spec)
+    (covered,) = (
+        entry
+        for entry in resolution.covered
+        if entry.schema_directory == version.parent.parent
+    )
+    return [
+        f"{move.chain.label}: {_describe_step(move.chain.steps[index])}"
+        for move in covered.child_moves.values()
+        for index in move.generation.pending
+    ] + [
+        _describe_step(resolution.own.steps[index])
+        for index in covered.generation.pending
+    ]
 
 
 # --- rename + add through a class move -------------------------------------------
@@ -118,7 +133,7 @@ class _NaNDefaultTrainRun(Spec[dict[str, str]]):
         return {"dataset": self.dataset, "lr": str(self.lr)}
 
 
-def test_rename_plus_add_reuses_old_result_through_result_link() -> None:
+def test_rename_plus_add_reuses_old_result_without_writing() -> None:
     old = _OldTrainRun(learning_rate=0.001, dataset="cifar10")
     assert old.create() == {"dataset": "cifar10", "learning_rate": "0.001"}
     _COUNTER.calls = 0
@@ -127,14 +142,10 @@ def test_rename_plus_add_reuses_old_result_through_result_link() -> None:
     assert new.create() == {"dataset": "cifar10", "learning_rate": "0.001"}
     assert _COUNTER.calls == 0
 
-    link_path = result_link_path_in(new._base_dir)
-    link = json.loads(link_path.read_text())
-    assert link["source"]["version_dir"] == str(version_dir_in(old._base_dir))
-    assert link["source"]["schema_hash"] == old._artifact_schema_hash
-    assert link["current"]["fully_qualified_name"] == new._fully_qualified_name
-    assert link["current"]["schema_hash"] == new._artifact_schema_hash
-    assert link["current"]["artifact_hash"] == new._artifact_hash
-    assert link["migration_path"] == [
+    assert migration_stored.stored_version(new) == version_dir_in(old._base_dir)
+    # Finding the source is a pure query: nothing is written for the new spec.
+    assert not new._base_dir.parent.exists()
+    assert _migration_path(new) == [
         f"MovedFrom({old._fully_qualified_name!r})",
         "Renamed('learning_rate', to='lr')",
         "Added('seed', default=0)",
@@ -145,64 +156,17 @@ def test_rename_plus_add_reuses_old_result_through_result_link() -> None:
     assert _COUNTER.calls == 0
 
 
-def test_result_link_creation_rechecks_after_compute_lock(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_source_published_after_a_miss_is_found() -> None:
+    _OldTrainRun(learning_rate=0.01, dataset="mnist").create()
+    target = _TrainRun(dataset="cifar10", lr=0.001)
+    assert target.status == "missing"
+
+    # Another process (say, a branch still on the old schema) publishes it.
     source = _OldTrainRun(learning_rate=0.001, dataset="cifar10")
     source.create()
-    target = _TrainRun(dataset="cifar10", lr=0.001)
-    link_path = result_link_path_in(target._base_dir)
 
-    assert migration_links.version_for_loading(target) == (
-        version_dir_in(source._base_dir)
-    )
-    link_text = link_path.read_text(encoding="utf-8")
-    link_path.unlink()
-
-    @contextmanager
-    def competing_writer(lock_path: Path):
-        assert lock_path == compute_lock_path_in(target._base_dir)
-        link_path.write_text(link_text, encoding="utf-8")
-        yield lambda: True
-
-    monkeypatch.setattr(migration_links, "lock", competing_writer)
-    monkeypatch.setattr(
-        migration_links,
-        "atomic_write_text",
-        lambda *_: pytest.fail("the competing worker's valid link was replaced"),
-    )
-
-    assert migration_links.version_for_loading(target) == (
-        version_dir_in(source._base_dir)
-    )
-
-
-def test_result_link_read_gracefully_reresolves_estale(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source = _OldTrainRun(learning_rate=0.001, dataset="cifar10")
-    source.create()
-    target = _TrainRun(dataset="cifar10", lr=0.001)
-    assert migration_links.version_for_loading(target) is not None
-    link_path = result_link_path_in(target._base_dir)
-    path_type = type(link_path)
-    read_text = path_type.read_text
-    stale = True
-
-    def stale_once(
-        path: Path, encoding: str | None = None, errors: str | None = None
-    ) -> str:
-        nonlocal stale
-        if path == link_path and stale:
-            stale = False
-            raise OSError(errno.ESTALE, "stale file handle")
-        return read_text(path, encoding=encoding, errors=errors)
-
-    monkeypatch.setattr(path_type, "read_text", stale_once)
-
-    assert migration_links.version_for_loading(target) == (
-        version_dir_in(source._base_dir)
-    )
+    assert migration_stored.stored_version(target) == version_dir_in(source._base_dir)
+    assert target.status == "done"
 
 
 class _PathValue:
@@ -284,7 +248,6 @@ def test_no_matching_source_computes_fresh() -> None:
     assert new.status == "missing"
     assert new.create() == {"dataset": "mnist", "lr": "0.5", "seed": "0"}
     assert _COUNTER.calls == 1
-    assert not result_link_path_in(new._base_dir).exists()
 
 
 @pytest.mark.parametrize(
@@ -292,7 +255,7 @@ def test_no_matching_source_computes_fresh() -> None:
     [False, True],
     ids=["source-artifact", "source-schema-directory"],
 )
-def test_dangling_link_is_missing_and_recomputes(
+def test_deleted_source_is_missing_and_recomputes(
     delete_schema_directory: bool,
 ) -> None:
     old = _OldTrainRun(learning_rate=0.001, dataset="cifar10")
@@ -311,10 +274,9 @@ def test_dangling_link_is_missing_and_recomputes(
     assert new.create() == {"dataset": "cifar10", "lr": "0.001", "seed": "0"}
     assert _COUNTER.calls == 1
     assert result_manifest_path_in(version_dir_in(new._base_dir)).exists()
-    assert not result_link_path_in(new._base_dir).exists()
 
 
-# --- multi-hop through an existing link -------------------------------------------
+# --- multi-hop through an intermediate class -------------------------------------------
 
 
 class _MidRun(Spec[dict[str, str]]):
@@ -366,7 +328,7 @@ class _FinalRunViaMid(Spec[dict[str, str]]):
         return {"dataset": self.dataset, "lr": str(self.lr), "seed": str(self.seed)}
 
 
-def test_full_changelog_links_directly_at_the_ultimate_source() -> None:
+def test_full_changelog_reuses_the_ultimate_source() -> None:
     old = _OldTrainRun(learning_rate=0.001, dataset="cifar10")
     old.create()
     _COUNTER.calls = 0
@@ -378,10 +340,8 @@ def test_full_changelog_links_directly_at_the_ultimate_source() -> None:
     assert final.create() == {"dataset": "cifar10", "learning_rate": "0.001"}
     assert _COUNTER.calls == 0
 
-    link = json.loads(result_link_path_in(final._base_dir).read_text())
-    assert link["source"]["version_dir"] == str(version_dir_in(old._base_dir))
-    assert link["source"]["fully_qualified_name"] == old._fully_qualified_name
-    assert link["migration_path"] == [
+    assert migration_stored.stored_version(final) == version_dir_in(old._base_dir)
+    assert _migration_path(final) == [
         f"MovedFrom({old._fully_qualified_name!r})",
         "Renamed('learning_rate', to='lr')",
         f"MovedFrom({mid._fully_qualified_name!r})",
@@ -389,9 +349,10 @@ def test_full_changelog_links_directly_at_the_ultimate_source() -> None:
     ]
 
 
-def test_a_directory_holding_only_a_link_is_not_a_source() -> None:
-    # _MidRun's directory links at _OldTrainRun's result; a chain that reaches
-    # _MidRun but not _OldTrainRun cannot explain that result, so it recomputes.
+def test_a_directory_holding_no_results_is_not_a_source() -> None:
+    # _MidRun reuses _OldTrainRun's result and stores nothing of its own; a
+    # chain that reaches _MidRun but not _OldTrainRun cannot explain that
+    # result, so it recomputes.
     old = _OldTrainRun(learning_rate=0.001, dataset="cifar10")
     old.create()
     _MidRun(dataset="cifar10", lr=0.001).create()
@@ -400,36 +361,6 @@ def test_a_directory_holding_only_a_link_is_not_a_source() -> None:
     final = _FinalRunViaMid(dataset="cifar10", lr=0.001)
     assert final.status == "missing"
     assert final.create() == {"dataset": "cifar10", "lr": "0.001", "seed": "0"}
-    assert _COUNTER.calls == 1
-    assert not result_link_path_in(final._base_dir).exists()
-
-
-def test_link_to_a_source_the_chain_no_longer_covers_is_no_result() -> None:
-    legacy = _LegacyRun(dataset="cifar10", learning_rate=0.001)
-    legacy.create()
-    target = _TrainRun(dataset="cifar10", lr=0.001)
-    target._base_dir.mkdir(parents=True)
-    result_link_path_in(target._base_dir).write_text(
-        migration_links._ResultLink(
-            current=migration_links._ResultLinkCurrent(
-                fully_qualified_name=target._fully_qualified_name,
-                schema_hash=target._artifact_schema_hash,
-                artifact_hash=target._artifact_hash,
-                fields=cast(JsonFields, target._artifact_data[FIELDSMARKER]),
-            ),
-            source=migration_links._ResultLinkSource(
-                fully_qualified_name=legacy._fully_qualified_name,
-                schema_hash=legacy._artifact_schema_hash,
-                artifact_hash=legacy._artifact_hash,
-                version_dir=version_dir_in(legacy._base_dir),
-            ),
-            migration_path=(),
-        ).model_dump_json()
-    )
-    _COUNTER.calls = 0
-
-    assert target.status == "missing"
-    assert target.create() == {"dataset": "cifar10", "lr": "0.001", "seed": "0"}
     assert _COUNTER.calls == 1
 
 
@@ -503,11 +434,9 @@ def test_declared_chain_lifts_the_stale_block() -> None:
 
     spec = _EvolvedWithChain(dataset="cifar10", lr=0.001)
     assert spec.status == "done"
-    assert not result_link_path_in(spec._base_dir).exists()
 
     assert spec.create() == {"dataset": "cifar10", "learning_rate": "0.001"}
     assert _COUNTER.calls == 0
-    assert result_link_path_in(spec._base_dir).exists()
 
     # A covered generation is not an orphan: unmatched specs are simply missing.
     assert _EvolvedWithChain(dataset="cifar10", lr=0.5).status == "missing"
@@ -587,11 +516,9 @@ def test_widened_union_reuses_old_results_through_retyped() -> None:
     assert spec.create() == "gen0"
     assert _COUNTER.calls == 0
 
-    link = json.loads(result_link_path_in(spec._base_dir).read_text())
-    assert len(link["migration_path"]) == 2
-    assert all(
-        step.startswith("Retyped('optimizer'") for step in link["migration_path"]
-    )
+    path = _migration_path(spec)
+    assert len(path) == 2
+    assert all(step.startswith("Retyped('optimizer'") for step in path)
 
 
 def test_second_widening_leaves_intermediate_generation_stale() -> None:
@@ -679,8 +606,7 @@ def test_recorded_steps_pick_one_chain_where_shapes_alone_cannot() -> None:
     spec = _RewriteThenRetype(optimizer=_SGD(momentum=0.9), lr=0.1)
     assert spec.status == "done"
     assert spec.load_existing() == "gen0"
-    link = json.loads(result_link_path_in(spec._base_dir).read_text())
-    assert link["migration_path"] == [
+    assert _migration_path(spec) == [
         "Rewrite(_identity_rewrite)",
         f"Retyped('optimizer', was={fully_qualified_name(_SGD)})",
     ]
@@ -864,7 +790,6 @@ def test_breaking_added_supersedes_old_results() -> None:
     assert spec.status == "missing"
     assert spec.create() == {"dataset": "cifar10", "seed": "1"}
     assert _COUNTER.calls == 1
-    assert not result_link_path_in(spec._base_dir).exists()
     # Superseded data is never deleted by furu; cleanup stays a deliberate act.
     assert old_directory.exists()
 
@@ -1032,9 +957,9 @@ def test_added_default_factory_backfills_an_object_from_the_old_runs_fields() ->
         == "missing"
     )
     assert _COUNTER.calls == 0
-    assert json.loads(result_link_path_in(matching._base_dir).read_text())[
-        "migration_path"
-    ] == ["Added('model', default_factory=_model_from_width)"]
+    assert _migration_path(matching) == [
+        "Added('model', default_factory=_model_from_width)"
+    ]
 
 
 def _model_from_missing_depth(fields: Mapping[str, JsonValue]) -> _ModelConfig:
@@ -1217,14 +1142,14 @@ def _count_reads_under(
     monkeypatch: pytest.MonkeyPatch, schema_directory: Path
 ) -> list[Path]:
     reads: list[Path] = []
-    real_spec_path_in = migration_links.spec_path_in
+    real_spec_path_in = migration_stored.spec_path_in
 
     def counting(artifact_dir: Path) -> Path:
         if artifact_dir.parent == schema_directory:
             reads.append(artifact_dir)
         return real_spec_path_in(artifact_dir)
 
-    monkeypatch.setattr(migration_links, "spec_path_in", counting)
+    monkeypatch.setattr(migration_stored, "spec_path_in", counting)
     return reads
 
 
@@ -1320,11 +1245,10 @@ def test_child_migration_cascades_to_parent() -> None:
     assert model.load_existing() == {"model": "layers=12"}
     assert _COUNTER.calls == 0
 
-    link = json.loads(result_link_path_in(model._base_dir).read_text())
-    assert link["source"]["version_dir"] == str(
-        version_dir_in(old_directory / old._base_dir.name)
+    assert migration_stored.stored_version(model) == version_dir_in(
+        old_directory / old._base_dir.name
     )
-    assert link["migration_path"] == [
+    assert _migration_path(model) == [
         "_CascadeTokenizer: Renamed('vocabulary_size', to='vocab_size')",
     ]
 
@@ -1379,8 +1303,7 @@ def test_cascade_resolves_transitively_through_the_dag() -> None:
     assert pipeline.create() == "old-eval"
     assert _COUNTER.calls == 0
 
-    link = json.loads(result_link_path_in(pipeline._base_dir).read_text())
-    assert link["migration_path"] == [
+    assert _migration_path(pipeline) == [
         "_CascadeTokenizer: Renamed('vocabulary_size', to='vocab_size')",
     ]
 
@@ -1426,8 +1349,7 @@ def test_child_and_parent_steps_compose_innermost_first() -> None:
     assert trainer.create() == "old-train"
     assert _COUNTER.calls == 0
 
-    link = json.loads(result_link_path_in(trainer._base_dir).read_text())
-    assert link["migration_path"] == [
+    assert _migration_path(trainer) == [
         "_CascadeTokenizer: Renamed('vocabulary_size', to='vocab_size')",
         "Renamed('learning_rate', to='lr')",
     ]
@@ -1533,7 +1455,6 @@ def test_breaking_child_step_cuts_the_parent_to_recompute() -> None:
     assert model.status == "missing"
     assert model.create() == "recomputed"
     assert _COUNTER.calls == 1
-    assert not result_link_path_in(model._base_dir).exists()
     assert old_directory.exists()
 
 
@@ -1631,8 +1552,7 @@ def test_child_movedfrom_rewrites_the_embedded_class_marker() -> None:
     assert model.create() == "old"
     assert _COUNTER.calls == 0
 
-    link = json.loads(result_link_path_in(model._base_dir).read_text())
-    assert link["migration_path"] == [
+    assert _migration_path(model) == [
         (
             "_CascadeMovedTokenizer: "
             f"MovedFrom({fully_qualified_name(_CascadeRelocatedTokenizer)!r})"
@@ -1691,8 +1611,7 @@ def test_plain_dataclass_child_cascades_like_a_spec() -> None:
     assert run.create() == "old"
     assert _COUNTER.calls == 0
 
-    link = json.loads(result_link_path_in(run._base_dir).read_text())
-    assert link["migration_path"] == [
+    assert _migration_path(run) == [
         "_CascadeOptimizer: Renamed('learning_rate', to='lr')",
     ]
 
@@ -1849,8 +1768,7 @@ def test_result_rewrite_reshapes_migrated_results_on_every_load() -> None:
     assert _TripleRun(dataset="cifar10").create() == ("cifar10", 0.5, None)
     assert _COUNTER.calls == 0
 
-    link = json.loads(result_link_path_in(spec._base_dir).read_text())
-    assert link["migration_path"] == [
+    assert _migration_path(spec) == [
         f"MovedFrom({donor._fully_qualified_name!r})",
         "Added('eval', default=False, result_rewrite=_widen_to_triple)",
     ]
@@ -1989,7 +1907,7 @@ def test_result_rewrite_on_an_embedded_dataclass_fails_at_class_creation() -> No
 def _fresh_process() -> None:
     """Forget what this process resolved, as a new worker would."""
     migration_resolution._RESOLUTION_CACHE.clear()
-    migration_links._SOURCES_CACHE.clear()
+    migration_stored._MIGRATED_KEYS.clear()
 
 
 class _TrunkRun(Spec[str]):
@@ -2113,8 +2031,7 @@ def test_a_merged_schema_gets_only_the_steps_it_lacks() -> None:
 
     # The dropout branch lacks warmup, declared before the dropout step it has.
     assert _MergedRun(a=3).load_existing() == "dropout a=3"
-    link = json.loads(result_link_path_in(_MergedRun(a=3)._base_dir).read_text())
-    assert link["migration_path"] == [
+    assert _migration_path(_MergedRun(a=3)) == [
         "Added('warmup', default=0)",
         "Added('seed', default=0)",
     ]

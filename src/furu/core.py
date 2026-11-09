@@ -21,15 +21,10 @@ from furu._batched import _BatchedCreate, _BatchedHook, batched
 from furu.locking import LockError, is_active_lock, lock
 from furu.logging import get_logger
 from furu.metadata import ArtifactSpec
-from furu.migration.links import (
-    _read_link,
-    load_stored_result,
-    own_version,
-    version_for_loading,
-)
 from furu.migration.resolution import validate_embedded_migration_declarations
-from furu.migration.stale import raise_if_stale, sideways_status
+from furu.migration.stale import is_stale, raise_if_stale
 from furu.migration.steps import MigrationStep, validate_migration_declaration
+from furu.migration.stored import load_stored_result, stored_version
 from furu.provenance import Provenance
 from furu.resources import Worker
 from furu.result.codec import Codec
@@ -196,31 +191,37 @@ class Spec[T](_FuruDataclassTransform, ABC):
         )
 
     @final
-    def load_existing(self) -> T:
+    def _read_version(self, method: str, hint: str) -> Path:
+        """The version to read this spec's result from, recorded as a dependency.
+
+        Raises Stale if only orphaned schemas hold results, else Missing.
+        """
         from furu.dependencies import record_dependency
 
-        if (version := version_for_loading(self)) is not None:
-            record_dependency(self, version)
-            return load_stored_result(self, version)
-        raise_if_stale(self)
-        raise Missing(
-            f"{self._log_label}.load_existing() could not find a result. "
+        if (version := stored_version(self)) is None:
+            raise_if_stale(self)
+            raise Missing(
+                f"{self._log_label}.{method}() could not find a result. {hint}"
+            )
+        record_dependency(self, version)
+        return version
+
+    @final
+    def load_existing(self) -> T:
+        version = self._read_version(
+            "load_existing",
             "load_existing() only loads existing results; use create() to compute "
-            "missing results."
+            "missing results.",
         )
+        return load_stored_result(self, version)
 
     @final
     def provenance(self) -> Provenance:
-        from furu.dependencies import record_dependency
-
-        if (version := version_for_loading(self)) is None:
-            raise_if_stale(self)
-            raise Missing(
-                f"{self._log_label}.provenance() could not find a result. "
-                "Provenance is recorded when a result is computed; use create() "
-                "to compute it first."
-            )
-        record_dependency(self, version)
+        version = self._read_version(
+            "provenance",
+            "Provenance is recorded when a result is computed; use create() to "
+            "compute it first.",
+        )
         path = provenance_path_in(version)
         if not path.exists():
             raise Missing(
@@ -234,7 +235,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
     @final
     @property
     def status(self) -> Literal["missing", "running", "incomplete", "done", "stale"]:
-        if own_version(self) is not None or _read_link(self) is not None:
+        if stored_version(self) is not None:
             return "done"
         if is_active_lock(compute_lock_path_in(self._base_dir)):
             return "running"
@@ -242,7 +243,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
             # An attempt started and did not finish (crashed, failed, or
             # blocked on a dependency).
             return "incomplete"
-        return sideways_status(self)
+        return "stale" if is_stale(self) else "missing"
 
     @final
     def delete(self, mode: Literal["prompt", "force"] = "prompt") -> bool:
