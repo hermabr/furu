@@ -111,7 +111,6 @@ class SlurmPool(_Message):
     max_workers: int
     sbatch_args: list[str]
     pre_worker_commands: list[str]
-    use_job_arrays: bool
 
 
 class LocalPool(_Message):

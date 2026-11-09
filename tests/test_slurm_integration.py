@@ -35,11 +35,6 @@ pytestmark = [
 
 
 @pytest.mark.parametrize(
-    ("use_job_arrays", "mode"),
-    [(True, "array"), (False, "non-array")],
-    ids=["array", "non-array"],
-)
-@pytest.mark.parametrize(
     ("scenario_name", "worker_idle_timeout", "expect_worker_restarts"),
     [
         ("long-idle", 60.0, False),
@@ -50,8 +45,6 @@ pytestmark = [
 def test_slurm_backend_runs_worker_job_end_to_end(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    use_job_arrays: bool,
-    mode: str,
     scenario_name: str,
     worker_idle_timeout: float,
     expect_worker_restarts: bool,
@@ -70,7 +63,7 @@ def test_slurm_backend_runs_worker_job_end_to_end(
     tests_dir = Path(__file__).parent.resolve()
     monkeypatch.chdir(tests_dir)
 
-    scenario_id = f"{mode}-{scenario_name}"
+    scenario_id = scenario_name
     all_tasks, final_tasks = _build_workload(
         scenario_id=scenario_id,
         duration_seconds=TASK_DURATION_SECONDS,
@@ -100,13 +93,11 @@ def test_slurm_backend_runs_worker_job_end_to_end(
                     max_workers=A_WORKER_COUNT,
                     resources=SlurmResources(partition="debug", cpus_per_worker=1),
                     job_name="furu-worker-a",
-                    use_job_arrays=use_job_arrays,
                 ),
                 SlurmWorkerBackend(
                     max_workers=B_WORKER_COUNT,
                     resources=SlurmResources(partition="debug", cpus_per_worker=2),
                     job_name="furu-worker-b",
-                    use_job_arrays=use_job_arrays,
                 ),
             ],
         )
@@ -137,14 +128,8 @@ def test_slurm_backend_runs_worker_job_end_to_end(
         assert _str(result["task_id"]) == task.task_id
         assert _str(result["kind"]) == task.kind
         assert _str(result["slurm_job_id"]).isdigit()
-        array_job_id = _str_or_none(result["slurm_array_job_id"])
-        array_task_id = _str_or_none(result["slurm_array_task_id"])
-        if use_job_arrays:
-            assert array_job_id is not None and array_job_id.isdigit()
-            assert array_task_id is not None and array_task_id.isdigit()
-        else:
-            assert array_job_id is None
-            assert array_task_id is None
+        assert _str(result["slurm_array_job_id"]).isdigit()
+        assert _str(result["slurm_array_task_id"]).isdigit()
 
         job_name = _str(result["slurm_job_name"])
         cpus_per_task = _int(result["slurm_cpus_per_task"])
@@ -160,33 +145,29 @@ def test_slurm_backend_runs_worker_job_end_to_end(
                 assert cpus_per_task in {1, 2}
 
         if job_name == "furu-worker-a":
-            a_worker_jobs.add(_worker_job_id(result, use_job_arrays=use_job_arrays))
+            a_worker_jobs.add(_worker_job_id(result))
         elif job_name == "furu-worker-b":
-            b_worker_jobs.add(_worker_job_id(result, use_job_arrays=use_job_arrays))
+            b_worker_jobs.add(_worker_job_id(result))
 
     root_b_jobs = _worker_jobs_for(
         results,
         prefixes=("b0", "s0"),
         job_name="furu-worker-b",
-        use_job_arrays=use_job_arrays,
     )
     stage1_b_jobs = _worker_jobs_for(
         results,
         prefixes=("b1",),
         job_name="furu-worker-b",
-        use_job_arrays=use_job_arrays,
     )
     pre_b_gate_a_jobs = _worker_jobs_for(
         results,
         prefixes=("a0", "s0", "ag", "a1", "s1"),
         job_name="furu-worker-a",
-        use_job_arrays=use_job_arrays,
     )
     stage2_a_jobs = _worker_jobs_for(
         results,
         prefixes=("a2",),
         job_name="furu-worker-a",
-        use_job_arrays=use_job_arrays,
     )
     if expect_worker_restarts:
         assert len(a_worker_jobs) > A_WORKER_COUNT
@@ -197,10 +178,7 @@ def test_slurm_backend_runs_worker_job_end_to_end(
         assert stage1_b_jobs <= root_b_jobs
         assert stage2_a_jobs <= pre_b_gate_a_jobs
 
-    _assert_worker_jobs_are_no_longer_active(
-        a_worker_jobs | b_worker_jobs,
-        use_job_arrays=use_job_arrays,
-    )
+    _assert_worker_jobs_are_no_longer_active(a_worker_jobs | b_worker_jobs)
 
 
 def _build_workload(
@@ -328,11 +306,6 @@ def _str(value: object) -> str:
     return value
 
 
-def _str_or_none(value: object) -> str | None:
-    assert value is None or isinstance(value, str)
-    return value
-
-
 def _int(value: object) -> int:
     assert isinstance(value, int)
     return value
@@ -352,35 +325,22 @@ def _worker_jobs_for(
     results: dict[str, dict[str, object]],
     *,
     prefixes: tuple[str, ...],
-    use_job_arrays: bool,
     job_name: str | None = None,
 ) -> set[str]:
     return {
-        _worker_job_id(result, use_job_arrays=use_job_arrays)
+        _worker_job_id(result)
         for task_id, result in results.items()
         if task_id.startswith(prefixes)
         and (job_name is None or result["slurm_job_name"] == job_name)
     }
 
 
-def _worker_job_id(
-    result: dict[str, object],
-    *,
-    use_job_arrays: bool,
-) -> str:
-    if not use_job_arrays:
-        return _str(result["slurm_job_id"])
+def _worker_job_id(result: dict[str, object]) -> str:
     return f"{_str(result['slurm_array_job_id'])}_{_str(result['slurm_array_task_id'])}"
 
 
-def _assert_worker_jobs_are_no_longer_active(
-    job_ids: set[str],
-    *,
-    use_job_arrays: bool,
-) -> None:
-    query_job_ids = (
-        {job_id.partition("_")[0] for job_id in job_ids} if use_job_arrays else job_ids
-    )
+def _assert_worker_jobs_are_no_longer_active(job_ids: set[str]) -> None:
+    query_job_ids = {job_id.partition("_")[0] for job_id in job_ids}
     # Workers exit once the manager closes their connection.
     deadline = time.monotonic() + 30
     while True:
@@ -390,7 +350,8 @@ def _assert_worker_jobs_are_no_longer_active(
                 "--noheader",
                 "--jobs",
                 ",".join(sorted(query_job_ids)),
-                *(("--array", "--format=%i") if use_job_arrays else ("--format=%A",)),
+                "--array",
+                "--format=%i",
             ],
             check=True,
             capture_output=True,

@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 import traceback
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -46,6 +47,43 @@ _FINISHED_STATES = frozenset(
 )
 
 
+@dataclass(slots=True)
+class _Degraded:
+    """Workers failed since a job last completed; the pool replaces them slowly.
+
+    A completed job makes the pool healthy again. Once it is broken, the scripts
+    hear so and a new streak starts: the pool stays degraded and reports again
+    if the failures go on.
+    """
+
+    since: float
+    failures: list[str] = field(default_factory=list)  # "<job id> <state>"
+    last_submit: float = -_REPLACE_INTERVAL_S
+
+    def fail(self, failures: list[str], now: float) -> str | None:
+        """Record failed workers; say why the pool is broken, if it now is."""
+        self.failures += failures
+        if (
+            len(self.failures) <= _BROKEN_AFTER_FAILURES
+            or now - self.since < _BROKEN_AFTER_S
+        ):
+            return None
+        reason = (
+            f"slurm pool is broken: {len(self.failures)} workers failed over "
+            f"{format_duration(now - self.since)} without a job completing: "
+            + ", ".join(self.failures)
+        )
+        self.since, self.failures = now, []
+        return reason
+
+    def may_submit(self, now: float) -> bool:
+        """Allow one replacement per interval."""
+        if now - self.last_submit < _REPLACE_INTERVAL_S:
+            return False
+        self.last_submit = now
+        return True
+
+
 def _slurm(*argv: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         argv,
@@ -69,19 +107,12 @@ class SlurmWorkerPool:
     ) -> None:
         self._manager = manager
         self._key = key
-        self._use_job_arrays = definition.use_job_arrays
-        self._job_ids: list[str] = []
-        self._streak: list[str] = []  # "<job id> <state>" since a job last completed
-        self._streak_started = 0.0
-        self._last_submit = -_REPLACE_INTERVAL_S
+        self._job_ids: list[str] = []  # "<array job id>_<task id>"
+        # None while healthy. Set by the scale thread, cleared by the manager's.
+        self._degraded: _Degraded | None = None
+        self._degraded_lock = threading.Lock()
         self._stop_event = threading.Event()
 
-        # Workers are named after their Slurm job so `sacct -j <worker>` works.
-        job_id = (
-            "${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
-            if self._use_job_arrays
-            else "${SLURM_JOB_ID}"
-        )
         # One file per worker, named after its job, so either side can find it.
         self._log_dir = log_dir = directory / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -97,7 +128,8 @@ class SlurmWorkerPool:
             # Do not leak the manager's environment into the job's snapshot.
             + "unset VIRTUAL_ENV\n"
             f"export {MANAGER_URL_ENV_VAR}={shlex.quote(manager.url)}\n"
-            f'component="{job_id}"\n'
+            # Named after its Slurm array task so `sacct -j <worker>` works.
+            'component="${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"\n'
             # Workers run the manager's own furu, wherever it came from.
             f"exec {shlex.quote(sys.executable)} -m furu.worker._cli \\\n"
             f"    --pool {shlex.quote(key)} \\\n"
@@ -108,7 +140,7 @@ class SlurmWorkerPool:
         self._sbatch_args = (
             f"--chdir={directory}",
             # stdout and stderr, merged as Slurm does by default.
-            f"--output={log_dir}/{'%A_%a' if self._use_job_arrays else '%j'}.log",
+            f"--output={log_dir}/%A_%a.log",
             *definition.sbatch_args,
         )
         self._scale_thread = threading.Thread(
@@ -117,7 +149,8 @@ class SlurmWorkerPool:
         self._scale_thread.start()
 
     def job_completed(self) -> None:
-        self._streak.clear()
+        with self._degraded_lock:
+            self._degraded = None
 
     def stop(self) -> None:
         """Stop scaling and cancel queued workers; running ones finish."""
@@ -150,29 +183,21 @@ class SlurmWorkerPool:
             )
             self._job_ids[:] = [j for j in self._job_ids if j not in finished]
         now = time.monotonic()
+        for job_id, state in sorted(failed.items()):
+            log = self._log_dir / f"{job_id}.log"
+            self._manager.notify(
+                self._key,
+                WarningMessage(reason=f"slurm worker {job_id} {state} → {log}"),
+            )
+        broken = None
         if failed:
-            if not self._streak:
-                self._streak_started = now
-            for job_id, state in sorted(failed.items()):
-                self._streak.append(f"{job_id} {state}")
-                log = self._log_dir / f"{job_id}.log"
-                self._manager.notify(
-                    self._key,
-                    WarningMessage(reason=f"slurm worker {job_id} {state} → {log}"),
+            with self._degraded_lock:
+                self._degraded = self._degraded or _Degraded(since=now)
+                broken = self._degraded.fail(
+                    [f"{j} {s}" for j, s in sorted(failed.items())], now
                 )
-            if (
-                len(self._streak) > _BROKEN_AFTER_FAILURES
-                and now - self._streak_started >= _BROKEN_AFTER_S
-            ):
-                self._manager.notify(
-                    self._key,
-                    ErrorMessage(
-                        reason=f"slurm pool is broken: {len(self._streak)} workers "
-                        f"failed over {format_duration(now - self._streak_started)} "
-                        f"without a job completing: {', '.join(self._streak)}"
-                    ),
-                )
-                self._streak.clear()
+        if broken is not None:
+            self._manager.notify(self._key, ErrorMessage(reason=broken))
 
         to_spawn = self._manager.demand(self._key) - len(self._job_ids)
         if to_spawn < 0:
@@ -180,39 +205,35 @@ class SlurmWorkerPool:
             return
         if to_spawn == 0:
             return
-        if self._streak:
-            if now - self._last_submit < _REPLACE_INTERVAL_S:
-                return
-            to_spawn = 1
-            self._last_submit = now
+        with self._degraded_lock:
+            if self._degraded is not None:
+                if not self._degraded.may_submit(now):
+                    return
+                to_spawn = 1
 
-        for _ in range(1 if self._use_job_arrays else to_spawn):
-            if self._stop_event.is_set():
-                return
-            try:
-                result = _slurm(
-                    "sbatch",
-                    "--parsable",
-                    *((f"--array=0-{to_spawn - 1}",) if self._use_job_arrays else ()),
-                    *self._sbatch_args,
-                    str(self._script_path),
-                )
-            except subprocess.TimeoutExpired:
-                # Slurm may have queued it anyway; such a worker still serves
-                # this pool, but goes uncounted until its idle timeout.
-                logger.warning("sbatch timed out; retrying on the next scale tick")
-                return
-            if result.returncode != 0:
-                logger.warning(
-                    "sbatch failed; retrying on the next scale tick: %s",
-                    result.stderr.strip(),
-                )
-                return
-            job_id = result.stdout.strip().split(";", maxsplit=1)[0]
-            if self._use_job_arrays:
-                self._job_ids.extend(f"{job_id}_{arr_i}" for arr_i in range(to_spawn))
-            else:
-                self._job_ids.append(job_id)
+        if self._stop_event.is_set():
+            return
+        try:
+            result = _slurm(
+                "sbatch",
+                "--parsable",
+                f"--array=0-{to_spawn - 1}",
+                *self._sbatch_args,
+                str(self._script_path),
+            )
+        except subprocess.TimeoutExpired:
+            # Slurm may have queued it anyway; such workers still serve this
+            # pool, but go uncounted until their idle timeout.
+            logger.warning("sbatch timed out; retrying on the next scale tick")
+            return
+        if result.returncode != 0:
+            logger.warning(
+                "sbatch failed; retrying on the next scale tick: %s",
+                result.stderr.strip(),
+            )
+            return
+        job_id = result.stdout.strip().split(";", maxsplit=1)[0]
+        self._job_ids.extend(f"{job_id}_{task}" for task in range(to_spawn))
 
     def _cancel_queued_workers(
         self, excess: int, active_job_states: dict[str, str]
@@ -251,11 +272,8 @@ class SlurmWorkerPool:
                 ",".join(
                     sorted({job_id.partition("_")[0] for job_id in self._job_ids})
                 ),
-                *(
-                    ("--array", "--format=%i %T")
-                    if self._use_job_arrays
-                    else ("--format=%A %T",)
-                ),
+                "--array",
+                "--format=%i %T",
             )
         except subprocess.TimeoutExpired:
             logger.warning("squeue timed out while checking slurm jobs")
@@ -274,10 +292,6 @@ class SlurmWorkerPool:
         if not self._job_ids:
             return {}
 
-        known_job_ids = set(self._job_ids)
-        known_allocation_job_ids = {
-            job_id.partition("_")[0] for job_id in known_job_ids
-        }
         try:
             result = _slurm(
                 "sacct",
@@ -287,7 +301,9 @@ class SlurmWorkerPool:
                 "JobID,State",
                 "--parsable2",
                 "-j",
-                ",".join(sorted(known_allocation_job_ids)),
+                ",".join(
+                    sorted({job_id.partition("_")[0] for job_id in self._job_ids})
+                ),
             )
         except subprocess.TimeoutExpired:
             logger.warning("sacct timed out while checking slurm jobs")
@@ -296,30 +312,14 @@ class SlurmWorkerPool:
             logger.warning("sacct failed while checking slurm jobs: %s", result.stderr)
             return {}
 
+        # Only lines naming one of our tasks count: sacct also reports untracked
+        # siblings and still-queued tasks grouped as "<job id>_[1-3]".
         states: dict[str, str] = {}
+        known_job_ids = set(self._job_ids)
         for line in result.stdout.splitlines():
-            parts = line.split("|")
-            if len(parts) < 2:
-                logger.warning("ignoring malformed sacct line: %r", line)
-                continue
-            job_id, state = parts[0], parts[1]
-            allocation_job_id, separator, _step_id = job_id.partition(".")
-            if separator and allocation_job_id in known_job_ids:
-                continue
-            if job_id not in known_job_ids:
-                if self._use_job_arrays:
-                    array_allocation_job_id = allocation_job_id.partition("_")[0]
-                    if (
-                        "[" in job_id
-                        or job_id in known_allocation_job_ids
-                        or array_allocation_job_id in known_allocation_job_ids
-                    ):
-                        continue
-                logger.warning(
-                    "ignoring unexpected slurm job id from sacct: %r", job_id
-                )
-                continue
-            states[job_id] = state.upper().split(maxsplit=1)[0].removesuffix("+")
+            job_id, _, state = line.partition("|")
+            if job_id in known_job_ids and state.strip():
+                states[job_id] = state.upper().split()[0].removesuffix("+")
         return states
 
     def _scale_loop(self) -> None:

@@ -24,7 +24,6 @@ class SlurmWorkerBackend:
     job_name: str = "furu-worker"
     pre_worker_commands: tuple[str, ...] = ()
     export: SlurmExport = None
-    use_job_arrays: bool = True
     labels: tuple[str, ...] = ()
     accepts: Callable[[Spec], bool] | None = None
 
@@ -62,5 +61,4 @@ class SlurmWorkerBackend:
                 *export_args,
             ],
             pre_worker_commands=list(self.pre_worker_commands),
-            use_job_arrays=self.use_job_arrays,
         )
