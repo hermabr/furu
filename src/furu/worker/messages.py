@@ -112,8 +112,6 @@ class SlurmPool(_Message):
     sbatch_args: list[str]
     pre_worker_commands: list[str]
     use_job_arrays: bool
-    # Not part of the recipe: the first script to define a pool sets these,
-    # and the manager refuses a later one that disagrees.
     job_name: str
     idle_timeout_seconds: float
 

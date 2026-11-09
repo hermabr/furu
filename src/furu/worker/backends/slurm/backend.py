@@ -22,7 +22,6 @@ class SlurmWorkerBackend:
     max_workers: int
     resources: SlurmResources
     job_name: str = "furu-worker"
-    # How long a worker waits without a job before it exits.
     idle_timeout_seconds: float = 60.0
     pre_worker_commands: tuple[str, ...] = ()
     export: SlurmExport = None
@@ -41,8 +40,6 @@ class SlurmWorkerBackend:
 
     @property
     def pool_key(self) -> str:
-        # What makes workers interchangeable: not how many there are, what
-        # Slurm calls them or how long they idle.
         recipe = self.pool().model_dump(
             exclude={"max_workers", "job_name", "idle_timeout_seconds"}
         )

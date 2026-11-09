@@ -49,6 +49,8 @@ logger = get_logger("manager")
 
 # How often an idle worker's handler checks that the worker is still there.
 _IDLE_CHECK_INTERVAL_S = 5.0
+# Not part of a pool's key: its first script sets them and later ones must agree.
+_SETTINGS = {"job_name", "idle_timeout_seconds"}
 
 
 @dataclass(eq=False)
@@ -190,26 +192,23 @@ class Manager:
 
     def _submit(self, script: _Script, message: SubmitMessage) -> None:
         with self.lock:
-            refused = [
-                f"pool {key} already runs with {difference}"
+            clashes = [
+                f"pool {key} already runs with {first}, not {asked}"
                 for key, definition in message.pools.items()
                 if key in self.pools
-                and (difference := _difference(self.pools[key].definition, definition))
+                and (first := self.pools[key].definition.model_dump(include=_SETTINGS))
+                != (asked := definition.model_dump(include=_SETTINGS))
             ]
-            if not refused:
+            if not clashes:
                 script.pools = message.pools
                 for key, definition in message.pools.items():
                     if key not in self.pools:
                         self.pools[key] = self._start_pool(key, definition)
                 self.queue += [_Queued(script, job) for job in message.jobs]
                 self.lock.notify_all()
-        if refused:
-            reason = (
-                "; ".join(refused)
-                + ". Use the same values, or restart the manager to change them."
-            )
-            logger.error("refused %s · %s", _peer(script.connection), reason)
-            script.send(ErrorMessage(reason=reason))
+        if clashes:
+            hint = "; restart the manager to change them"
+            script.send(ErrorMessage(reason="; ".join(clashes) + hint))
         elif message.jobs:
             logger.info(
                 "queued %d jobs from %s", len(message.jobs), _peer(script.connection)
@@ -362,23 +361,6 @@ class Manager:
             busy = sum(1 for lease in self.leases.values() if lease.pool == pool)
             startable = sum(1 for _ in islice(self._leasable_locked(pool), max_workers))
             return min(busy + startable, max_workers)
-
-
-def _difference(running: Pool, asked: Pool) -> str | None:
-    """How ``asked`` differs from the ``running`` pool it shares a key with.
-
-    The key covers the recipe and each script brings its own ``max_workers``;
-    the rest is set by the first script to define the pool.
-    """
-    was, now = (pool.model_dump(exclude={"max_workers"}) for pool in (running, asked))
-    return (
-        ", ".join(
-            f"{name} {was[name]!r}, not {now.get(name)!r}"
-            for name in was
-            if was[name] != now.get(name)
-        )
-        or None
-    )
 
 
 def _peer(connection: ServerConnection) -> str:

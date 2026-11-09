@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from furu.logging import get_logger
 from furu.utils import format_duration
 from furu.worker._cli import MANAGER_URL_ENV_VAR
-from furu.worker.messages import ErrorMessage, SlurmPool, WarningMessage
+from furu.worker.messages import ErrorMessage, Pool, SlurmPool, WarningMessage
 
 if TYPE_CHECKING:
     from furu.execution.manager import Manager
@@ -66,7 +66,7 @@ class SlurmWorkerPool:
         definition: SlurmPool,
         directory: Path,
     ) -> None:
-        self.definition = definition
+        self.definition: Pool = definition
         self._manager = manager
         self._key = key
         self._use_job_arrays = definition.use_job_arrays
