@@ -221,6 +221,24 @@ def test_traced_result_is_published_under_its_code_hash(
             'def style_axes(values):\n    """Scale the axes."""\n',
             id="docstring",
         ),
+        pytest.param(
+            "plots.py",
+            "from typing import ClassVar\n",
+            '"""Plots."""\n\nfrom typing import ClassVar\n',
+            id="module-docstring",
+        ),
+        pytest.param(
+            "plots.py",
+            "    name: str\n",
+            '    """A plot."""\n\n    name: str\n',
+            id="class-docstring",
+        ),
+        pytest.param(
+            "plots.py",
+            "    def create(self) -> str:\n",
+            '    def create(self) -> str:\n        """Draw it."""\n',
+            id="method-docstring",
+        ),
         pytest.param("plots.py", "return x - 1", "return x - 100", id="unused-body"),
         pytest.param(
             "plots.py",
