@@ -30,7 +30,7 @@ from furu.dependencies import (
     record_dependency,
     under_creation,
 )
-from furu.locking import lock
+from furu.locking import LockTimeout, lock
 from furu.logging import (
     _close_sections,
     _group_label,
@@ -428,6 +428,15 @@ def _run_in_process(dag: Dag) -> None:
                     why := dag.block(node, exc.dependencies, unseen_grace_s=0)
                 ) is not None:
                     raise RuntimeError(f"{node.obj._log_label} {why}") from None
+            continue
+        except LockTimeout:
+            # Another run took the lock just after we found the spec free.
+            lead.obj.logger.info(
+                "waiting on %s, running elsewhere",
+                _group_label(lead.obj._log_label, len(group)),
+            )
+            for node in group:
+                dag.lost_lock_race(node)
             continue
         except Exception as exc:
             if lead.dependents:

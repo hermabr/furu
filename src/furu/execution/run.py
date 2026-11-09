@@ -246,13 +246,8 @@ class Run:
         for state in (State.READY, State.BLOCKED, State.FAILED):
             if count := len(dag.nodes(state)):
                 parts.append(f"{count} {state}")
-        retrying = sum(
-            1
-            for node in dag.nodes_by_id.values()
-            if node.attempts and node.state not in (State.DONE, State.FAILED)
-        )
-        if retrying:
-            parts.append(f"{retrying} retrying")
+        if dag.retrying:
+            parts.append(f"{dag.retrying} retrying")
         logger.info(
             "progress %d/%d · %s",
             len(dag.nodes(State.DONE)),

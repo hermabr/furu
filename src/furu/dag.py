@@ -9,6 +9,7 @@ checks it against ``TRANSITIONS``::
     locked   → ready                       poll: the other run let go of it
     deferred → ready                       poll: rerun it
     running  → done                        it built
+    running  → locked                      another run took its lock first
     running  → ready | failed              a failed attempt: retry, or out of retries
     running  → blocked | deferred | failed it found dependencies missing
 
@@ -53,7 +54,14 @@ TRANSITIONS: dict[State | None, frozenset[State]] = {
     State.LOCKED: frozenset({State.READY}),
     State.DEFERRED: frozenset({State.READY}),
     State.RUNNING: frozenset(
-        {State.DONE, State.READY, State.FAILED, State.BLOCKED, State.DEFERRED}
+        {
+            State.DONE,
+            State.LOCKED,
+            State.READY,
+            State.FAILED,
+            State.BLOCKED,
+            State.DEFERRED,
+        }
     ),
     State.DONE: frozenset(),
     State.FAILED: frozenset(),
@@ -112,6 +120,8 @@ class Dag:
     _by_state: dict[State, dict[str, DagNode]] = field(
         default_factory=lambda: {state: {} for state in State}
     )
+    # Nodes with a failed attempt that are neither done nor failed.
+    retrying: int = 0
 
     def nodes(self, state: State) -> Mapping[str, DagNode]:
         """The nodes in ``state``, in the order they entered it."""
@@ -136,6 +146,8 @@ class Dag:
         object_id = node.obj.object_id
         if node.state is not None:
             del self._by_state[node.state][object_id]
+        if node.attempts and state in (State.DONE, State.FAILED):
+            self.retrying -= 1
         node.state = state
         self._by_state[state][object_id] = node
 
@@ -213,10 +225,16 @@ class Dag:
             if not dependent.dependencies and dependent.state is State.BLOCKED:
                 self._move(dependent, State.READY)
 
+    def lost_lock_race(self, node: DagNode) -> None:
+        """Another run took ``node``'s lock between our status check and ours."""
+        self._move(node, State.LOCKED)
+
     def attempt_failed(self, node: DagNode, error: str, *, max_retries: int) -> bool:
         """``node``'s attempt failed; retry it unless it is out of retries."""
         node.unseen_since.clear()  # its earlier misses are behind it
         node.attempts += 1
+        if node.attempts == 1:
+            self.retrying += 1
         self._failed(node, error, retry=node.attempts <= max_retries)
         return node.state is State.READY
 

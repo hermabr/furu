@@ -28,6 +28,10 @@ class LockError(RuntimeError):
     """A furu lock could not be acquired, was lost, or is inconsistent on disk."""
 
 
+class LockTimeout(LockError):
+    """Another holder kept the lock for the whole acquire timeout."""
+
+
 class LockManifest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -389,7 +393,7 @@ def lock(
             now = time.monotonic()
             remaining = deadline - now
             if remaining <= 0:
-                raise LockError(
+                raise LockTimeout(
                     f"could not acquire lock at {paths} within {acquire_timeout_s:g} seconds"
                 )
             if now >= next_wait_log_at:

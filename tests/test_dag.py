@@ -12,7 +12,7 @@ from furu import Spec
 from furu.config import get_config
 from furu.dag import Dag, DagNode, State
 from furu.execution.run_on_workers import run_on_workers
-from furu.locking import lock
+from furu.locking import LockTimeout, lock
 from furu.storage._layout import (
     attempt_dir_in,
     compute_lock_path_in,
@@ -310,6 +310,26 @@ def test_create_waits_for_a_spec_another_process_is_building(
 
     # It polled until the other lock went, rather than contending for it.
     assert locked_while_held == [False, False]
+
+
+def test_create_waits_when_another_process_takes_the_lock_first(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    leaf = Leaf(name="lost-the-race")
+    real_create = load_or_create_module._create_in_process
+    calls: list[int] = []
+
+    def lose_the_race_once(group, **kwargs):
+        calls.append(len(group))
+        if len(calls) == 1:
+            raise LockTimeout("could not acquire lock")
+        return real_create(group, **kwargs)
+
+    monkeypatch.setattr(load_or_create_module, "_POLL_INTERVAL_S", 0.01)
+    monkeypatch.setattr(load_or_create_module, "_create_in_process", lose_the_race_once)
+
+    assert leaf.create() == "leaf:lost-the-race"
+    assert calls == [1, 1]
 
 
 def _record_call(calls_dir: str, cls: type, value: object) -> None:
