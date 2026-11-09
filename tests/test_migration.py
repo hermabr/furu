@@ -169,6 +169,19 @@ def test_source_published_after_a_miss_is_found() -> None:
     assert target.status == "done"
 
 
+def test_a_repeated_miss_does_not_list_the_source_directory_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _OldTrainRun(learning_rate=0.01, dataset="mnist").create()
+    assert _TrainRun(dataset="cifar10", lr=0.001).status == "missing"
+
+    def no_listing(self: Path) -> None:
+        raise AssertionError(f"listed {self}")
+
+    monkeypatch.setattr(Path, "iterdir", no_listing)
+    assert _TrainRun(dataset="cifar10", lr=0.002).status == "missing"
+
+
 class _PathValue:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -1907,7 +1920,7 @@ def test_result_rewrite_on_an_embedded_dataclass_fails_at_class_creation() -> No
 def _fresh_process() -> None:
     """Forget what this process resolved, as a new worker would."""
     migration_resolution._RESOLUTION_CACHE.clear()
-    migration_stored._MIGRATED_KEYS.clear()
+    migration_stored._SOURCE_INDEXES.clear()
 
 
 class _TrunkRun(Spec[str]):
