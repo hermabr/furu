@@ -122,13 +122,16 @@ class Manager:
         try:
             yield manager
         finally:
+            # Scripts go first: a handler leaves ``scripts`` only after acting
+            # on every message it received, so a cancel reaches the workers
+            # before shutdown closes them and they finish their jobs alone.
             with manager.lock:
-                # A script that just left may still be forwarding its cancel.
+                leaving = list(manager.scripts)
+            for script in leaving:  # concurrently: each close may time out
+                threading.Thread(target=script.connection.close).start()
+            with manager.lock:
                 manager.lock.wait_for(
-                    lambda: all(
-                        s.connection.state is State.OPEN for s in manager.scripts
-                    ),
-                    timeout=5,
+                    lambda: not any(s in manager.scripts for s in leaving)
                 )
                 manager.stopping = True
                 manager.lock.notify_all()

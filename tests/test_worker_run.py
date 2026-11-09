@@ -1392,7 +1392,7 @@ def test_worker_disconnect_fails_its_job_for_the_script() -> None:
 
 
 def test_worker_dropped_by_manager_shutdown_does_not_fail_its_job() -> None:
-    # Shutdown closes connections in any order; a worker carries on alone.
+    # A worker that shutdown drops carries on alone.
     with (
         Manager.serve(
             listen_host="127.0.0.1", connect_host="127.0.0.1", manager_dir=None
