@@ -1306,9 +1306,7 @@ def _hello(
     url: str, *, worker: str = "raw-test-worker", pool: str = "cpu"
 ) -> ClientConnection:
     connection = connect(url, legacy=True)
-    connection.send(
-        HelloMessage(worker=worker, backend="test", pool=pool).model_dump_json()
-    )
+    connection.send(HelloMessage(worker=worker, pool=pool).model_dump_json())
     return connection
 
 
@@ -1760,11 +1758,7 @@ def test_worker_loop_does_not_swallow_keyboard_interrupt(
 
         assert server.results == []
         (hello,) = server.hellos
-        assert (hello.pool, hello.worker, hello.backend) == (
-            "gpu",
-            "test-worker",
-            "test",
-        )
+        assert (hello.pool, hello.worker) == ("gpu", "test-worker")
 
 
 def test_worker_loop_cancel_kills_running_job(tmp_path: Path) -> None:

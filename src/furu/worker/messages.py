@@ -91,7 +91,6 @@ job_result_adapter: TypeAdapter[JobResult] = TypeAdapter(JobResult)
 class HelloMessage(_Message):
     kind: Literal["hello"] = "hello"
     worker: str
-    backend: str
     pool: str
     log: Path | None = None  # the worker's own log file, if it has one
 

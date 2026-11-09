@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from gitrepo import commit_and_push, git
+from layout import version_dir_in
 
 import furu
 from furu import Spec
@@ -12,7 +13,7 @@ from furu.provenance import (
     GitIdentity,
     Provenance,
 )
-from furu.storage._layout import provenance_path_in, version_dir_in
+from furu.storage._layout import provenance_path_in
 from furu.worker.backends.local import LocalThreadWorkerBackend
 
 

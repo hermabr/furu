@@ -10,6 +10,7 @@ from typing import Annotated, Any, ClassVar, cast
 from zoneinfo import ZoneInfo
 
 import pytest
+from layout import result_manifest_path_in, version_dir_in
 from pydantic import BaseModel, ConfigDict
 
 import furu
@@ -30,8 +31,6 @@ from furu.result.codec import (
 from furu.storage._layout import (
     data_dir_in,
     result_dir_in,
-    result_manifest_path_in,
-    version_dir_in,
 )
 
 np = pytest.importorskip("numpy")

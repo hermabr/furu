@@ -35,7 +35,6 @@ class CodecMeta(ABCMeta):
         if getattr(cls, "__abstractmethods__", None):
             return
 
-        cls.auto_register = True
         with CodecMeta._auto_registered_codecs_lock:
             CodecMeta._auto_registered_codecs.append(cast(type[Codec], cls))
 

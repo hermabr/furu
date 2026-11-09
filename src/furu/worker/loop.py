@@ -72,7 +72,7 @@ def worker_loop(
         with connect(url, max_size=None) as connection:
             connection.send(
                 messages.HelloMessage(
-                    worker=component, backend=backend, pool=pool, log=worker_log
+                    worker=component, pool=pool, log=worker_log
                 ).model_dump_json()
             )
             threading.Thread(

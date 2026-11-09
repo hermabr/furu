@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import ClassVar, cast
 
 import pytest
+from layout import result_manifest_path_in, version_dir_in
 
 import furu
 import furu.migration.links as migration_links
@@ -23,8 +24,6 @@ from furu.storage._layout import (
     compute_lock_path_in,
     data_dir_in,
     result_link_path_in,
-    result_manifest_path_in,
-    version_dir_in,
 )
 from furu.utils import JsonFields, JsonValue, fully_qualified_name
 

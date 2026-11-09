@@ -32,7 +32,6 @@ class SerializerMeta(ABCMeta):
         if getattr(cls, "__abstractmethods__", None):
             return
 
-        cls.auto_register = True
         with SerializerMeta._auto_registered_serializers_lock:
             SerializerMeta._auto_registered_serializers.append(
                 cast(type[Serializer], cls)

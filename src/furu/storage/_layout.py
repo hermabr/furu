@@ -15,10 +15,6 @@ def attempt_dir_in(identity_dir: Path) -> Path:
     return identity_dir / "attempt"
 
 
-def version_dir_in(identity_dir: Path) -> Path:
-    return identity_dir / "v-fixed"
-
-
 def data_dir_in(run_dir: Path) -> Path:
     return run_dir / "data"
 
@@ -29,10 +25,6 @@ def scratch_dir_in(run_dir: Path) -> Path:
 
 def result_dir_in(run_dir: Path) -> Path:
     return run_dir / "result"
-
-
-def result_manifest_path_in(run_dir: Path) -> Path:
-    return result_dir_in(run_dir) / "manifest.json"
 
 
 def provenance_path_in(run_dir: Path) -> Path:

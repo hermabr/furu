@@ -118,19 +118,6 @@ def atomic_write_text(path: Path, text: str) -> None:
     tmp_path.rename(path)
 
 
-def write_private_file(path: Path, contents: str, *, mode: int) -> None:
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
-    with os.fdopen(fd, "w", encoding="utf-8") as file:
-        file.write(contents)
-    path.chmod(mode)
-
-
-def overwrite_file_in_place(path: Path, contents: str) -> None:
-    """Same inode, so NFS clients holding the old name→inode entry see it."""
-    with path.open("w", encoding="utf-8") as file:
-        file.write(contents)
-
-
 def format_duration(seconds: float) -> str:
     """Compact human duration for log lines: 850ms, 3.2s, 2m05s, 1h05m."""
     if seconds < 1:

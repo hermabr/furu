@@ -20,6 +20,7 @@ from typing import Any, ClassVar, Literal, cast
 from unittest.mock import patch
 
 import pytest
+from layout import result_manifest_path_in, version_dir_in
 from pydantic import BaseModel, ConfigDict
 
 import furu
@@ -42,11 +43,9 @@ from furu.storage._layout import (
     compute_lock_path_in,
     data_dir_in,
     result_dir_in,
-    result_manifest_path_in,
     run_log_path_in,
     spec_path_in,
     trace_path_in,
-    version_dir_in,
 )
 from furu.utils import fully_qualified_name
 
