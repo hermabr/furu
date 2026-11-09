@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 import furu
+import furu.execution.load_or_create as load_or_create_module
 import furu.locking as locking_module
 from furu import Spec
 from furu.config import get_config
@@ -29,6 +30,7 @@ ctx = get_context("fork")
 def _fast_lock_polling(monkeypatch: pytest.MonkeyPatch) -> None:
     # Forked children inherit this, so the loser notices the release quickly.
     monkeypatch.setattr(locking_module, "DEFAULT_ACQUIRE_POLL_INTERVAL_S", 0.005)
+    monkeypatch.setattr(load_or_create_module, "_POLL_INTERVAL_S", 0.005)
 
 
 class SlowProbe(Spec[int]):

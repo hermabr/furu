@@ -14,6 +14,7 @@ from websockets.sync.client import ClientConnection, connect
 
 from furu.config import get_config
 from furu.core import Spec
+from furu.dag import State
 from furu.execution.run import Run
 from furu.logging import _execution_log, get_logger
 from furu.provenance import SubmitProvenance, capture_submit_provenance
@@ -74,15 +75,15 @@ def run_on_workers(objs: Sequence[Spec], backends: Sequence[WorkerBackend]) -> N
                 config=get_config().anchored(),
                 execution_log=execution_log,
             )
-            run.add(objs)
-            if not run.nodes_by_id:
+            run.dag.add(objs)
+            if not run.dag.nodes_by_id:
                 logger.info("run finished ok")
                 return
             logger.info(
                 "planned exec %s · %d ready · %d blocked",
                 execution_log.parent.name[:5],
-                len(run.ready),
-                len(run.blocked),
+                len(run.dag.nodes(State.READY)),
+                len(run.dag.nodes(State.BLOCKED)),
                 extra={"path": execution_log},
             )
             with (

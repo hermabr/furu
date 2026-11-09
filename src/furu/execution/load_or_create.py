@@ -21,7 +21,7 @@ from furu.code_trace import (
     why_outdated,
 )
 from furu.core import Missing, Spec
-from furu.dag import Dag
+from furu.dag import Dag, DagNode, State
 from furu.dependencies import (
     _DependencyNotReady,
     any_under_creation,
@@ -75,6 +75,9 @@ if TYPE_CHECKING:
     from furu.worker.backends.protocol import WorkerBackend
 
 type HasLock = Callable[[], bool]
+
+# How often an in-process create checks whether specs locked elsewhere are free.
+_POLL_INTERVAL_S = 5.0
 
 
 def _record_schema_snapshot(obj: Spec) -> None:
@@ -379,7 +382,7 @@ def _load_or_create_local[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
         to_build = [obj for obj in objs if obj.object_id in dag.nodes_by_id]
         objs[0].logger.info("%s", _cached_to_build_msg(cached, to_build))
 
-    if dag.ready:
+    if dag.nodes_by_id:
         _run_in_process(dag)
     if not load:
         return []
@@ -394,18 +397,22 @@ def _load_or_create_local[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
 
 
 def _run_in_process(dag: Dag) -> None:
-    """Create every ready spec in ``dag``."""
+    """Build every spec in ``dag`` here, one group at a time.
+
+    Unlike a worker run it never retries: the first error propagates with its
+    traceback, and a spec gets one rerun to see a dependency this run built.
+    """
     submit_provenance = capture_submit_provenance()
     here = Worker.here()
-    while dag.ready:
-        lead = next(iter(dag.ready.values()))
-        group = [lead]
-        if (batch := lead.batch_group(here)) is not None:
-            group = [n for n in dag.ready.values() if n.batch_group(here) == batch]
-            group = group[: batch[1]]
-        for node in group:
-            del dag.ready[node.obj.object_id]
-
+    while dag.active():
+        if not dag.nodes(State.READY):
+            if not dag.nodes(State.DEFERRED):  # only specs locked elsewhere
+                time.sleep(_POLL_INTERVAL_S)
+            dag.poll()
+            continue
+        if not (group := _start_group(dag, here)):
+            continue
+        lead = group[0]
         try:
             _create_in_process(
                 [node.obj for node in group], submit_provenance=submit_provenance
@@ -417,7 +424,9 @@ def _run_in_process(dag: Dag) -> None:
                 missing_dependencies(len(exc.dependencies)),
             )
             for node in group:
-                if (why := dag.block(node, exc.dependencies)) is not None:
+                if (
+                    why := dag.block(node, exc.dependencies, unseen_grace_s=0)
+                ) is not None:
                     raise RuntimeError(f"{node.obj._log_label} {why}") from None
             continue
         except Exception as exc:
@@ -429,6 +438,33 @@ def _run_in_process(dag: Dag) -> None:
             raise
         for node in group:
             dag.complete(node)
+
+
+def _start_group(dag: Dag, here: Worker) -> list[DagNode]:
+    """Start the first ready node and, if it batches, its ready batch-mates.
+
+    Returns nothing if it was built or is locked elsewhere.
+    """
+    ready = dag.nodes(State.READY)
+    lead = next(iter(ready.values()))
+    match dag.start(lead):
+        case State.RUNNING:
+            pass
+        case State.LOCKED:
+            lead.obj.logger.info(
+                "waiting on %s, running elsewhere", lead.obj._log_label
+            )
+            return []
+        case _:
+            return []
+    group = [lead]
+    if (batch := lead.batch_group(here)) is not None:
+        for node in list(ready.values()):
+            if len(group) >= batch[1]:
+                break
+            if node.batch_group(here) == batch and dag.start(node) is State.RUNNING:
+                group.append(node)
+    return group
 
 
 def _create_in_process[T](

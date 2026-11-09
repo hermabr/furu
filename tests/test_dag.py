@@ -1,3 +1,4 @@
+import threading
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -6,9 +7,10 @@ from pathlib import Path
 import pytest
 
 import furu
+import furu.execution.load_or_create as load_or_create_module
 from furu import Spec
 from furu.config import get_config
-from furu.dag import Dag, DagNode
+from furu.dag import Dag, DagNode, State
 from furu.execution.run_on_workers import run_on_workers
 from furu.locking import lock
 from furu.storage._layout import (
@@ -85,15 +87,15 @@ def test_dag_add_single_object_no_dependencies():
     leaf = Leaf(name="x")
     dag = _new_dag([leaf])
 
-    assert len(dag.ready) == 1
-    (root,) = dag.ready.values()
+    assert len(dag.nodes(State.READY)) == 1
+    (root,) = dag.nodes(State.READY).values()
     assert isinstance(root, DagNode)
     assert root.obj is leaf
     assert root.dependencies == []
     assert root.dependents == []
 
     assert dag.nodes_by_id == {leaf.object_id: root}
-    assert dag.blocked == {}
+    assert dag.nodes(State.BLOCKED) == {}
 
 
 def test_dag_add_traverses_declared_refs_recursively():
@@ -105,8 +107,8 @@ def test_dag_add_traverses_declared_refs_recursively():
 
     dag = _new_dag([top])
 
-    assert set(dag.ready) == {leaf_a.object_id, leaf_b.object_id}
-    assert set(dag.blocked) == {
+    assert set(dag.nodes(State.READY)) == {leaf_a.object_id, leaf_b.object_id}
+    assert set(dag.nodes(State.BLOCKED)) == {
         mid_left.object_id,
         mid_right.object_id,
         top.object_id,
@@ -143,8 +145,8 @@ def test_dag_add_shared_dependency_has_multiple_dependents():
 
     dag = _new_dag([top])
 
-    assert len(dag.ready) == 1
-    (shared_root,) = dag.ready.values()
+    assert len(dag.nodes(State.READY)) == 1
+    (shared_root,) = dag.nodes(State.READY).values()
     assert shared_root.obj is shared
     assert shared_root.dependencies == []
     assert {n.obj.object_id for n in shared_root.dependents} == {
@@ -169,8 +171,8 @@ def test_dag_add_stops_recursion_at_completed_objects():
 
     dag = _new_dag([mid])
 
-    assert len(dag.ready) == 1
-    (mid_root,) = dag.ready.values()
+    assert len(dag.nodes(State.READY)) == 1
+    (mid_root,) = dag.nodes(State.READY).values()
     assert mid_root.obj is mid
     assert mid_root.dependencies == []
 
@@ -186,9 +188,9 @@ def test_dag_add_completed_root_has_no_dependencies():
 
     dag = _new_dag([mid])
 
-    assert dag.ready == {}
+    assert dag.nodes(State.READY) == {}
     assert dag.nodes_by_id == {}
-    assert dag.blocked == {}
+    assert dag.nodes(State.BLOCKED) == {}
 
 
 def test_dag_add_does_not_snapshot_running_root():
@@ -198,7 +200,7 @@ def test_dag_add_does_not_snapshot_running_root():
         assert leaf.status == "running"
         dag = _new_dag([leaf])
 
-    assert set(dag.ready) == {leaf.object_id}
+    assert set(dag.nodes(State.READY)) == {leaf.object_id}
 
 
 def test_dag_add_does_not_snapshot_running_dependency():
@@ -209,8 +211,8 @@ def test_dag_add_does_not_snapshot_running_dependency():
         assert leaf.status == "running"
         dag = _new_dag([mid])
 
-    assert set(dag.ready) == {leaf.object_id}
-    assert set(dag.blocked) == {mid.object_id}
+    assert set(dag.nodes(State.READY)) == {leaf.object_id}
+    assert set(dag.nodes(State.BLOCKED)) == {mid.object_id}
 
 
 def test_dag_add_does_not_reject_inactive_compute_lock():
@@ -222,7 +224,7 @@ def test_dag_add_does_not_reject_inactive_compute_lock():
     assert leaf.status == "incomplete"
     dag = _new_dag([leaf])
 
-    assert set(dag.ready) == {leaf.object_id}
+    assert set(dag.nodes(State.READY)) == {leaf.object_id}
 
 
 def test_dag_add_accepts_a_list_of_inputs():
@@ -232,7 +234,7 @@ def test_dag_add_accepts_a_list_of_inputs():
 
     dag = _new_dag([mid, leaf_b])
 
-    assert set(dag.ready) == {leaf_a.object_id, leaf_b.object_id}
+    assert set(dag.nodes(State.READY)) == {leaf_a.object_id, leaf_b.object_id}
 
     assert set(dag.nodes_by_id) == {
         leaf_a.object_id,
@@ -251,7 +253,7 @@ def test_dag_add_handles_nested_dataclass_refs():
 
     dag = _new_dag([parent])
 
-    assert set(dag.ready) == {leaf_a.object_id, leaf_b.object_id}
+    assert set(dag.nodes(State.READY)) == {leaf_a.object_id, leaf_b.object_id}
 
     assert set(dag.nodes_by_id) == {
         leaf_a.object_id,
@@ -265,14 +267,49 @@ def test_dag_add_walks_computed_dependencies():
 
     dag = _new_dag([parent])
 
-    assert len(dag.ready) == 1
-    (child_root,) = dag.ready.values()
+    assert len(dag.nodes(State.READY)) == 1
+    (child_root,) = dag.nodes(State.READY).values()
     assert child_root.obj.object_id == parent.computed_child.object_id
     assert {n.obj.object_id for n in child_root.dependents} == {parent.object_id}
     assert set(dag.nodes_by_id) == {
         parent.object_id,
         parent.computed_child.object_id,
     }
+
+
+def test_create_waits_for_a_spec_another_process_is_building(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    leaf = Leaf(name="locked-elsewhere")
+    mid = Mid(label="m", child=leaf)
+    held, release = threading.Event(), threading.Event()
+
+    def other_process() -> None:
+        with mark_running(leaf):
+            held.set()
+            release.wait(timeout=10)
+
+    real_lock = load_or_create_module.lock
+    locked_while_held: list[bool] = []
+
+    def lock_once_free(paths, **kwargs):
+        locked_while_held.append(leaf.status == "running")
+        return real_lock(paths, **kwargs)
+
+    monkeypatch.setattr(load_or_create_module, "_POLL_INTERVAL_S", 0.01)
+    monkeypatch.setattr(load_or_create_module, "lock", lock_once_free)
+    holder = threading.Thread(target=other_process)
+    holder.start()
+    assert held.wait(timeout=10)
+    threading.Timer(0.2, release.set).start()
+    try:
+        assert mid.create() == "mid:m:leaf:locked-elsewhere"
+    finally:
+        release.set()
+        holder.join()
+
+    # It polled until the other lock went, rather than contending for it.
+    assert locked_while_held == [False, False]
 
 
 def _record_call(calls_dir: str, cls: type, value: object) -> None:

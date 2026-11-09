@@ -11,13 +11,13 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import ClassVar, NoReturn, assert_never
+from typing import NoReturn, assert_never
 
 from websockets.sync.client import ClientConnection
 
 from furu.config import _Config, get_config
 from furu.core import Spec
-from furu.dag import Dag, DagNode
+from furu.dag import Dag, DagNode, State
 from furu.dependencies import missing_dependencies
 from furu.logging import _display_path, get_logger
 from furu.metadata import ArtifactSpec
@@ -48,8 +48,17 @@ logger = get_logger("run")
 _POLL_INTERVAL_S = 5.0
 
 
+# A worker's filesystem can take about a minute to show a version another
+# node just published (NFS caches directory listings).
+_UNSEEN_GRACE_S = 120.0
+_UNSEEN_HINT = (
+    "; its worker may not see the storage it was written to, "
+    "or may be running different code than this run"
+)
+
+
 @dataclass(slots=True, kw_only=True)
-class Run(Dag):
+class Run:
     """One plan of a worker run, driven over one connection to the manager."""
 
     backends: dict[str, WorkerBackend]
@@ -60,23 +69,16 @@ class Run(Dag):
     max_retries_per_object: int = field(
         default_factory=lambda: get_config().worker.max_retries_per_object
     )
+    unseen_grace_s: float = _UNSEEN_GRACE_S
+    dag: Dag = field(init=False)
     placement: dict[str, dict[str, Batch | None]] = field(default_factory=dict)
-    running: dict[str, tuple[DagNode, float]] = field(default_factory=dict)
-    # Polled until no other run holds their lock, then ready again: specs
-    # locked elsewhere, and ones that found missing only specs this run sees
-    # built (their worker's filesystem may not show those yet).
-    waiting: dict[str, DagNode] = field(default_factory=dict)
-    # Gave up after max_retries_per_object retries.
-    failed: dict[str, DagNode] = field(default_factory=dict)
-    # Each failed attempt's error, per spec not yet completed.
-    failures: dict[str, list[str]] = field(default_factory=dict)
     batch_keys: list[object] = field(default_factory=list)
 
-    # A worker's filesystem can take about a minute to show a version another
-    # node just published (NFS caches directory listings).
-    unseen_grace_s: ClassVar[float] = 120.0
+    def __post_init__(self) -> None:
+        self.dag = Dag(check_new=self._place)
 
-    def _check_new(self, nodes: Sequence[DagNode]) -> None:
+    def _place(self, nodes: Sequence[DagNode]) -> None:
+        """Note the pools each new node can run on; fail if one has none."""
         unsatisfiable = []
         for node in nodes:
             pools: dict[str, Batch | None] = {}
@@ -112,21 +114,18 @@ class Run(Dag):
         """Ready specs to send; ones done or locked elsewhere don't need us."""
         submissions: list[Submission] = []
         locked = 0
-        while self.ready:  # completing one can make its dependents ready
-            object_id = next(iter(self.ready))
-            node = self.ready.pop(object_id)
-            match node.obj.status:
-                case "done":
-                    self.complete(node)
-                    logger.info("found %s done", node.obj._log_label)
-                case "running":
-                    self.waiting[object_id] = node
-                    locked += 1
-                case "missing" | "incomplete" | "stale":
-                    self.running[object_id] = (node, time.monotonic())
+        ready = self.dag.nodes(State.READY)
+        while ready:  # completing one can make its dependents ready
+            node = next(iter(ready.values()))
+            match self.dag.start(node):
+                case State.RUNNING:
                     submissions.append(self._submission(node))
-                case unreachable:
-                    assert_never(unreachable)
+                case State.LOCKED:
+                    locked += 1
+                case State.DONE:
+                    pass
+                case other:
+                    raise AssertionError(f"started {node.obj._log_label}: {other}")
         if locked:
             logger.info(
                 "waiting on %d spec%s running elsewhere",
@@ -142,7 +141,7 @@ class Run(Dag):
             job=Job(
                 artifacts=[artifact],
                 run_logs=[run_log_path_in(obj._base_dir)],
-                attempt=len(self.failures.get(obj.object_id, ())) + 1,
+                attempt=node.attempts + 1,
                 execution_log=self.execution_log,
                 provenance=self.provenance,
                 process=ProcessSettings.from_metadata(obj._metadata),
@@ -157,11 +156,6 @@ class Run(Dag):
             ),
         )
 
-    def poll_waiting(self) -> None:
-        for object_id, node in list(self.waiting.items()):
-            if node.obj.status != "running":
-                self.ready[object_id] = self.waiting.pop(object_id)
-
     def drive(self, connection: ClientConnection) -> None:
         """Submit ready work and apply results until the run ends."""
         pools = {key: backend.pool() for key, backend in self.backends.items()}
@@ -169,7 +163,7 @@ class Run(Dag):
         jobs = self.take_submissions()
         connection.send(SubmitMessage(pools=pools, jobs=jobs).model_dump_json())
         next_poll = time.monotonic() + _POLL_INTERVAL_S
-        while self.ready or self.running or self.waiting:
+        while self.dag.active():
             try:
                 raw = connection.recv(timeout=max(0.0, next_poll - time.monotonic()))
             except TimeoutError:
@@ -186,49 +180,50 @@ class Run(Dag):
                     case _ as unreachable:
                         assert_never(unreachable)
             if time.monotonic() >= next_poll:
-                self.poll_waiting()
+                self.dag.poll()
                 next_poll = time.monotonic() + _POLL_INTERVAL_S
             if jobs := self.take_submissions():
                 connection.send(SubmitMessage(pools=pools, jobs=jobs).model_dump_json())
         self.finish()
 
     def job_result(self, object_id: str, result: JobResult) -> None:
-        running = self.running.pop(object_id, None)
-        if running is None:
+        node = self.dag.nodes(State.RUNNING).get(object_id)
+        if node is None:
             logger.info("ignoring result for %s: not running", object_id)
             return
-        node, started_at = running
         match result:
             case JobCompletedResult():
-                self.complete(node)
+                self.dag.complete(node)
                 logger.info(
                     "completed %s ok · %s",
                     node.obj._log_label,
-                    format_duration(time.monotonic() - started_at),
+                    format_duration(time.monotonic() - node.started_at),
                 )
             case JobFailedResult(error=error):
-                node.unseen_since.clear()  # its earlier misses are behind it
-                errors = self.failures.setdefault(object_id, [])
-                errors.append(error)
-                will_retry = len(errors) <= self.max_retries_per_object
-                (self.ready if will_retry else self.failed)[object_id] = node
+                previous = node.error
+                will_retry = self.dag.attempt_failed(
+                    node, error, max_retries=self.max_retries_per_object
+                )
                 # The traceback lives in run.log; repeats say so instead.
                 summary = error_summary(error)
-                if len(errors) > 1 and error_summary(errors[-2]) == summary:
+                if previous is not None and error_summary(previous) == summary:
                     summary = "same error"
                 logger.log(
                     logging.WARNING if will_retry else logging.ERROR,
                     "failed %s · attempt %d/%d · %s",
                     node.obj._log_label,
-                    len(errors),
+                    node.attempts,
                     self.max_retries_per_object,
                     summary,
                     extra={"path": run_log_path_in(node.obj._base_dir)},
                 )
             case JobBlockedResult(dependencies=dependencies):
                 try:
-                    why = self.block(
-                        node, [Spec.from_artifact(dep) for dep in dependencies]
+                    why = self.dag.block(
+                        node,
+                        [Spec.from_artifact(dep) for dep in dependencies],
+                        unseen_grace_s=self.unseen_grace_s,
+                        unseen_hint=_UNSEEN_HINT,
                     )
                 except Exception as exc:  # noqa: BLE001 -- runs user runs_on, accepts and batch fns
                     self.fail(f"{type(exc).__name__}: {exc}")
@@ -238,83 +233,74 @@ class Run(Dag):
                     missing_dependencies(len(dependencies)),
                 )
                 if why is not None:
-                    if dependencies:
-                        why += (
-                            "; its worker may not see the storage it was written "
-                            "to, or may be running different code than this run"
-                        )
-                    self.failures.setdefault(object_id, []).append(why)
-                    self.failed[object_id] = node
                     logger.error(
                         "failed %s · %s",
                         node.obj._log_label,
                         why,
                         extra={"path": run_log_path_in(node.obj._base_dir)},
                     )
-                elif object_id in self.ready:
-                    # Rerunning at once would likely miss the same specs again.
-                    self.waiting[object_id] = self.ready.pop(object_id)
             case _:
                 assert_never(result)
-        parts = [f"{len(self.running)} running"]
-        if self.ready:
-            parts.append(f"{len(self.ready)} ready")
-        if self.blocked:
-            parts.append(f"{len(self.blocked)} blocked")
-        if self.failed:
-            parts.append(f"{len(self.failed)} failed")
-        if retrying := len(self.failures) - len(self.failed):
+        dag = self.dag
+        parts = [f"{len(dag.nodes(State.RUNNING))} running"]
+        for state in (State.READY, State.BLOCKED, State.FAILED):
+            if count := len(dag.nodes(state)):
+                parts.append(f"{count} {state}")
+        retrying = sum(
+            1
+            for node in dag.nodes_by_id.values()
+            if node.attempts and node.state not in (State.DONE, State.FAILED)
+        )
+        if retrying:
             parts.append(f"{retrying} retrying")
         logger.info(
             "progress %d/%d · %s",
-            len(self.completed),
-            len(self.nodes_by_id),
+            len(dag.nodes(State.DONE)),
+            len(dag.nodes_by_id),
             " · ".join(parts),
         )
-
-    def complete(self, node: DagNode) -> None:
-        # Here or found done elsewhere, it is no longer retrying.
-        self.failures.pop(node.obj.object_id, None)
-        Dag.complete(self, node)  # slots dataclasses break zero-argument super()
 
     def fail(self, message: str) -> NoReturn:
         logger.error("run failed · %s", message, extra={"path": self.execution_log})
         raise RuntimeError(message)
 
     def finish(self) -> None:
-        """Nothing is ready or running: succeed, or say what failed and why."""
-        if not self.failed and not self.blocked:
+        """Nothing can move: succeed, or say what failed and why."""
+        blocked = self.dag.nodes(State.BLOCKED)
+        failed = sorted(
+            self.dag.nodes(State.FAILED).values(),
+            key=lambda node: node.first_failure or 0,
+        )
+        if not failed and not blocked:
             logger.info("run finished ok")
             return
 
         def plural(count: int) -> str:
             return f"{count} spec{'' if count == 1 else 's'}"
 
-        # In order of first failure, like the run's log.
-        failed = [
-            (self.failed[object_id].obj, errors)
-            for object_id, errors in self.failures.items()
-            if object_id in self.failed
-        ]
-        lines = [f"{plural(len(failed))} failed, {len(self.blocked)} blocked"]
-        for obj, errors in failed:
-            lines.append(
-                f"  {obj._log_label} · {len(errors)} attempt"
-                f"{'' if len(errors) == 1 else 's'} · "
-                f"{error_summary(errors[-1])} → "
-                f"{_display_path(run_log_path_in(obj._base_dir))}"
+        def why(node: DagNode) -> str:
+            assert node.error is not None
+            return error_summary(node.error)
+
+        lines = [f"{plural(len(failed))} failed, {len(blocked)} blocked"]
+        for node in failed:
+            attempts = (
+                f"{node.attempts} attempt{'' if node.attempts == 1 else 's'} · "
+                if node.attempts
+                else ""
             )
-        lines += [
-            f"  {node.obj._log_label} · blocked" for node in self.blocked.values()
-        ]
+            lines.append(
+                f"  {node.obj._log_label} · {attempts}{why(node)} → "
+                f"{_display_path(run_log_path_in(node.obj._base_dir))}"
+            )
+        lines += [f"  {node.obj._log_label} · blocked" for node in blocked.values()]
 
         headline = ["run failed"]
         if failed:
             headline.append(f"{plural(len(failed))} failed")
-        if self.blocked:
-            headline.append(f"{plural(len(self.blocked))} blocked")
+        if blocked:
+            headline.append(f"{plural(len(blocked))} blocked")
         if len(failed) == 1:
-            ((obj, errors),) = failed
-            headline += [obj._log_label, error_summary(errors[-1])]
+            headline += [failed[0].obj._log_label, why(failed[0])]
         logger.error(" · ".join(headline), extra={"path": self.execution_log})
         raise RuntimeError("\n".join(lines))

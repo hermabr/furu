@@ -21,6 +21,7 @@ import furu.dag as dag_module
 import furu.worker.loop as worker_loop_module
 from furu import Spec, Throttle, Worker
 from furu.config import get_config
+from furu.dag import State
 from furu.execution.manager import Manager, _Lease, _Queued, _Script
 from furu.execution.run import Run
 from furu.execution.run_on_workers import run_on_workers
@@ -109,6 +110,7 @@ def _new_run(
     *,
     backends: Sequence[LocalThreadWorkerBackend] = (CPU_POOL, GPU_POOL),
     max_retries_per_object: int | None = None,
+    unseen_grace_s: float | None = None,
 ) -> Run:
     run = Run(
         backends={backend.pool_key: backend for backend in backends},
@@ -122,22 +124,29 @@ def _new_run(
         if max_retries_per_object is None
         else max_retries_per_object,
     )
-    run.add(objs)
+    if unseen_grace_s is not None:
+        run.unseen_grace_s = unseen_grace_s
+    run.dag.add(objs)
     return run
 
 
 def _assert_one_state(run: Run) -> None:
-    """Every node is in exactly one state dict."""
-    states = (
-        run.ready,
-        run.blocked,
-        run.completed,
-        run.running,
-        run.waiting,
-        run.failed,
+    """Every node is indexed under exactly the state it holds."""
+    indexed = [
+        (object_id, node.state, state)
+        for state in State
+        for object_id, node in run.dag.nodes(state).items()
+    ]
+    assert all(held is state for _, held, state in indexed)
+    assert sorted(object_id for object_id, _, _ in indexed) == sorted(
+        run.dag.nodes_by_id
     )
-    ids = [object_id for state in states for object_id in state]
-    assert sorted(ids) == sorted(run.nodes_by_id)
+
+
+def _error(run: Run, obj: Spec) -> str:
+    error = run.dag.nodes_by_id[obj.object_id].error
+    assert error is not None
+    return error
 
 
 def _submitted_ids(run: Run) -> list[str]:
@@ -458,9 +467,9 @@ def test_run_partitions_ready_and_blocked() -> None:
 
     run = _new_run([parent])
 
-    assert set(run.ready) == {leaf.object_id}
-    assert set(run.blocked) == {parent.object_id}
-    assert run.running == {}
+    assert set(run.dag.nodes(State.READY)) == {leaf.object_id}
+    assert set(run.dag.nodes(State.BLOCKED)) == {parent.object_id}
+    assert run.dag.nodes(State.RUNNING) == {}
 
 
 def test_run_max_retries_per_object_defaults_to_config() -> None:
@@ -481,16 +490,16 @@ def test_run_completed_result_moves_dependents_to_ready() -> None:
     run = _new_run([parent])
 
     assert _submitted_ids(run) == [leaf.object_id]
-    assert set(run.running) == {leaf.object_id}
+    assert set(run.dag.nodes(State.RUNNING)) == {leaf.object_id}
     # Nothing else can go until the running job finishes.
     assert run.take_submissions() == []
 
     run.job_result(leaf.object_id, JobCompletedResult())
 
-    assert run.running == {}
-    assert set(run.completed) == {leaf.object_id}
-    assert set(run.ready) == {parent.object_id}
-    assert run.blocked == {}
+    assert run.dag.nodes(State.RUNNING) == {}
+    assert set(run.dag.nodes(State.DONE)) == {leaf.object_id}
+    assert set(run.dag.nodes(State.READY)) == {parent.object_id}
+    assert run.dag.nodes(State.BLOCKED) == {}
 
 
 def test_run_submission_carries_the_runs_settings_and_code() -> None:
@@ -517,15 +526,15 @@ def test_run_blocked_result_discovers_lazy_dependency_and_reruns_parent() -> Non
         JobBlockedResult(dependencies=[ArtifactSpec.from_furu(dependency)]),
     )
 
-    assert set(run.ready) == {dependency.object_id}
-    assert set(run.blocked) == {parent.object_id}
+    assert set(run.dag.nodes(State.READY)) == {dependency.object_id}
+    assert set(run.dag.nodes(State.BLOCKED)) == {parent.object_id}
 
     assert _submitted_ids(run) == [dependency.object_id]
     run.job_result(dependency.object_id, JobCompletedResult())
 
     assert _submitted_ids(run) == [parent.object_id]
-    assert set(run.running) == {parent.object_id}
-    assert set(run.completed) == {dependency.object_id}
+    assert set(run.dag.nodes(State.RUNNING)) == {parent.object_id}
+    assert set(run.dag.nodes(State.DONE)) == {dependency.object_id}
 
 
 def _blocked(*dependencies: Spec) -> JobBlockedResult:
@@ -539,7 +548,7 @@ def _answer_until_idle(
 ) -> None:
     """Answer each round of submissions, polling in between, until none come."""
     for round_ in range(max_rounds):
-        run.poll_waiting()
+        run.dag.poll()
         object_ids = _submitted_ids(run)
         if not object_ids:
             return
@@ -558,11 +567,11 @@ def test_run_reruns_a_spec_blocked_on_a_built_dependency_after_a_poll() -> None:
     run.take_submissions()
     run.job_result(parent.object_id, _blocked(dependency))
 
-    assert dependency.object_id not in run.nodes_by_id
-    assert set(run.waiting) == {parent.object_id}
+    assert dependency.object_id not in run.dag.nodes_by_id
+    assert set(run.dag.nodes(State.DEFERRED)) == {parent.object_id}
     assert run.take_submissions() == []
     _assert_one_state(run)
-    run.poll_waiting()
+    run.dag.poll()
     assert _submitted_ids(run) == [parent.object_id]
 
 
@@ -580,21 +589,18 @@ def test_run_keeps_rerunning_specs_whose_worker_lags_within_the_grace() -> None:
 
     _answer_until_idle(run, answer)
 
-    assert set(run.completed) == {dependency.object_id} | {
+    assert set(run.dag.nodes(State.DONE)) == {dependency.object_id} | {
         parent.object_id for parent in parents
     }
     run.finish()
 
 
-def test_run_reruns_a_spec_once_per_dependency_published_meanwhile(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(Run, "unseen_grace_s", 0.0)
+def test_run_reruns_a_spec_once_per_dependency_published_meanwhile() -> None:
     parent = RunLazyParent(value=uuid4().int)
     dependencies = [RunLeaf(value=uuid4().int) for _ in range(3)]
     for dependency in dependencies:
         dependency.create()
-    run = _new_run([parent])
+    run = _new_run([parent], unseen_grace_s=0.0)
 
     def answer(object_id: str, round_: int) -> JobResult:
         # Each lookup races another run publishing the next dependency.
@@ -604,7 +610,7 @@ def test_run_reruns_a_spec_once_per_dependency_published_meanwhile(
 
     _answer_until_idle(run, answer)
 
-    assert set(run.completed) == {parent.object_id}
+    assert set(run.dag.nodes(State.DONE)) == {parent.object_id}
 
 
 @pytest.mark.parametrize(
@@ -620,17 +626,17 @@ def test_run_reruns_a_spec_once_per_dependency_published_meanwhile(
     ],
 )
 def test_run_fails_a_spec_that_keeps_missing_built_dependencies(
-    monkeypatch: pytest.MonkeyPatch,
     missing: Callable[[Spec, Spec, Spec, int], Sequence[Spec]],
 ) -> None:
-    monkeypatch.setattr(Run, "unseen_grace_s", 0.0)
     parents = [BatchedRunLeaf(value=value) for value in range(2)]
     built_here = RunLeaf(value=uuid4().int)
     built_elsewhere = [RunLeaf(value=uuid4().int) for _ in range(2)]
     for dependency in built_elsewhere:
         dependency.create()
     other = RunLeaf(value=uuid4().int)
-    run = _new_run([built_here, *parents, other], max_retries_per_object=1)
+    run = _new_run(
+        [built_here, *parents, other], max_retries_per_object=1, unseen_grace_s=0.0
+    )
 
     def answer(object_id: str, round_: int) -> JobResult:
         if object_id == built_here.object_id:
@@ -644,7 +650,7 @@ def test_run_fails_a_spec_that_keeps_missing_built_dependencies(
 
     _answer_until_idle(run, answer)
 
-    assert set(run.failed) == {parent.object_id for parent in parents}
+    assert set(run.dag.nodes(State.FAILED)) == {parent.object_id for parent in parents}
     with pytest.raises(RuntimeError) as excinfo:
         run.finish()
     assert str(excinfo.value).splitlines()[0] == "2 specs failed, 0 blocked"
@@ -653,7 +659,7 @@ def test_run_fails_a_spec_that_keeps_missing_built_dependencies(
             r"still finds \S+ missing after a rerun, though this run sees it built; its "
             r"worker may not see the storage it was written to, or may be running "
             r"different code than this run",
-            run.failures[parent.object_id][-1],
+            _error(run, parent),
         )
 
 
@@ -666,7 +672,7 @@ def dag_clock(monkeypatch: pytest.MonkeyPatch) -> list[float]:
 
 
 def _rerun_after_a_poll(run: Run, parent: Spec, result: JobResult) -> None:
-    run.poll_waiting()
+    run.dag.poll()
     assert _submitted_ids(run) == [parent.object_id]
     run.job_result(parent.object_id, result)
     _assert_one_state(run)
@@ -681,15 +687,17 @@ def test_run_fails_a_spec_once_its_grace_on_a_built_dependency_runs_out(
     run.take_submissions()
     run.job_result(parent.object_id, _blocked(dependency))
 
-    while dag_clock[0] < Run.unseen_grace_s:
+    while dag_clock[0] < run.unseen_grace_s:
         dag_clock[0] += 5
         _rerun_after_a_poll(run, parent, _blocked(dependency))
-        assert set(run.waiting) == {parent.object_id}  # 120 s is still within it
+        assert set(run.dag.nodes(State.DEFERRED)) == {
+            parent.object_id
+        }  # 120 s is still within it
     dag_clock[0] += 5
     _rerun_after_a_poll(run, parent, _blocked(dependency))
 
-    assert set(run.failed) == {parent.object_id}
-    assert run.failures[parent.object_id][-1].startswith(
+    assert set(run.dag.nodes(State.FAILED)) == {parent.object_id}
+    assert _error(run, parent).startswith(
         f"still finds {dependency._log_label} missing for 2m05s, though"
     )
 
@@ -706,11 +714,11 @@ def test_run_does_not_reset_the_grace_for_alternating_dependencies(
     run.job_result(parent.object_id, _blocked(first))
     dag_clock[0] = 60
     _rerun_after_a_poll(run, parent, _blocked(second))
-    dag_clock[0] = Run.unseen_grace_s + 1
+    dag_clock[0] = run.unseen_grace_s + 1
     _rerun_after_a_poll(run, parent, _blocked(first))
 
-    assert set(run.failed) == {parent.object_id}
-    assert first._log_label in run.failures[parent.object_id][-1]
+    assert set(run.dag.nodes(State.FAILED)) == {parent.object_id}
+    assert first._log_label in _error(run, parent)
 
 
 def test_run_gives_a_fresh_grace_to_a_dependency_published_after_many_races(
@@ -734,7 +742,7 @@ def test_run_gives_a_fresh_grace_to_a_dependency_published_after_many_races(
         _rerun_after_a_poll(run, parent, _blocked(fresh))
     _rerun_after_a_poll(run, parent, JobCompletedResult())
 
-    assert set(run.completed) == {parent.object_id}
+    assert set(run.dag.nodes(State.DONE)) == {parent.object_id}
     run.finish()
 
 
@@ -757,7 +765,7 @@ def test_run_starts_the_grace_over_after_building_a_missing_dependency(
     assert _submitted_ids(run) == [parent.object_id]
     run.job_result(parent.object_id, _blocked(unseen))
 
-    assert set(run.waiting) == {parent.object_id}
+    assert set(run.dag.nodes(State.DEFERRED)) == {parent.object_id}
     _assert_one_state(run)
 
 
@@ -775,11 +783,27 @@ def test_run_starts_the_grace_over_after_a_failed_attempt(
     dag_clock[0] = 200
     assert _submitted_ids(run) == [parent.object_id]
     run.job_result(parent.object_id, _blocked(dependency))
-    assert set(run.waiting) == {parent.object_id}
-    dag_clock[0] = 200 + Run.unseen_grace_s + 1
+    assert set(run.dag.nodes(State.DEFERRED)) == {parent.object_id}
+    dag_clock[0] = 200 + run.unseen_grace_s + 1
     _rerun_after_a_poll(run, parent, _blocked(dependency))
 
-    assert set(run.failed) == {parent.object_id}
+    assert set(run.dag.nodes(State.FAILED)) == {parent.object_id}
+
+
+def test_run_does_not_count_running_out_of_grace_as_an_attempt() -> None:
+    parent, dependency = RunLazyParent(value=uuid4().int), RunLeaf(value=uuid4().int)
+    dependency.create()
+    run = _new_run([parent], max_retries_per_object=1, unseen_grace_s=0.0)
+    run.take_submissions()
+    run.job_result(parent.object_id, JobFailedResult(error="boom"))
+
+    _rerun_after_a_poll(run, parent, _blocked(dependency))
+    _rerun_after_a_poll(run, parent, _blocked(dependency))
+
+    assert set(run.dag.nodes(State.FAILED)) == {parent.object_id}
+    with pytest.raises(RuntimeError) as excinfo:
+        run.finish()
+    assert f"  {parent._log_label} · 1 attempt · still finds" in str(excinfo.value)
 
 
 def test_run_fails_a_spec_blocked_without_naming_a_dependency() -> None:
@@ -789,10 +813,12 @@ def test_run_fails_a_spec_blocked_without_naming_a_dependency() -> None:
 
     run.job_result(parent.object_id, JobBlockedResult(dependencies=[]))
 
-    assert set(run.failed) == {parent.object_id}
-    assert run.failures[parent.object_id] == [
+    assert set(run.dag.nodes(State.FAILED)) == {parent.object_id}
+    parent_node = run.dag.nodes_by_id[parent.object_id]
+    assert parent_node.error == (
         "reported itself blocked without naming a missing dependency"
-    ]
+    )
+    assert parent_node.attempts == 0
     _assert_one_state(run)
 
 
@@ -813,8 +839,8 @@ def test_run_does_not_wait_on_a_built_dependency_of_a_new_spec(
     parent = RunParent(child=leaf)
     run.job_result(lazy.object_id, _blocked(parent))
 
-    assert set(run.ready) == {parent.object_id}
-    assert run.nodes_by_id[parent.object_id].dependencies == []
+    assert set(run.dag.nodes(State.READY)) == {parent.object_id}
+    assert run.dag.nodes_by_id[parent.object_id].dependencies == []
     _assert_one_state(run)
 
 
@@ -833,14 +859,16 @@ def test_run_blocked_result_discovers_multiple_lazy_dependencies_together() -> N
         ),
     )
 
-    assert set(run.ready) == {dependency.object_id for dependency in dependencies}
-    assert set(run.blocked) == {parent.object_id}
-    parent_node = run.nodes_by_id[parent.object_id]
+    assert set(run.dag.nodes(State.READY)) == {
+        dependency.object_id for dependency in dependencies
+    }
+    assert set(run.dag.nodes(State.BLOCKED)) == {parent.object_id}
+    parent_node = run.dag.nodes_by_id[parent.object_id]
     assert {node.obj.object_id for node in parent_node.dependencies} == {
         dependency.object_id for dependency in dependencies
     }
     for dependency in dependencies:
-        assert parent_node in run.nodes_by_id[dependency.object_id].dependents
+        assert parent_node in run.dag.nodes_by_id[dependency.object_id].dependents
 
 
 def test_run_fails_on_a_dependency_cycle() -> None:
@@ -878,9 +906,10 @@ def test_run_failed_result_finishes_with_error(
         with pytest.raises(RuntimeError, match="1 spec failed, 0 blocked"):
             run.finish()
 
-    assert run.running == {}
-    assert run.failed[leaf.object_id].obj is leaf
-    assert run.failures[leaf.object_id] == ["boom"]
+    assert run.dag.nodes(State.RUNNING) == {}
+    assert run.dag.nodes(State.FAILED)[leaf.object_id].obj is leaf
+    assert run.dag.nodes_by_id[leaf.object_id].attempts == 1
+    assert run.dag.nodes_by_id[leaf.object_id].error == "boom"
     _assert_one_state(run)
     failed_record = next(
         record for record in caplog.records if record.message.startswith("failed ")
@@ -904,14 +933,17 @@ def test_run_failed_result_retries_before_finishing(
             (submission,) = run.take_submissions()
             assert submission.job.attempt == attempt
             run.job_result(leaf.object_id, JobFailedResult(error=f"boom {attempt}"))
-            assert run.failures[leaf.object_id] == [
-                f"boom {n}" for n in range(1, attempt + 1)
-            ]
-            assert set(run.ready) == ({leaf.object_id} if attempt < 3 else set())
-            assert set(run.failed) == ({leaf.object_id} if attempt == 3 else set())
+            assert run.dag.nodes_by_id[leaf.object_id].attempts == attempt
+            assert run.dag.nodes_by_id[leaf.object_id].error == f"boom {attempt}"
+            assert set(run.dag.nodes(State.READY)) == (
+                {leaf.object_id} if attempt < 3 else set()
+            )
+            assert set(run.dag.nodes(State.FAILED)) == (
+                {leaf.object_id} if attempt == 3 else set()
+            )
             _assert_one_state(run)
 
-    assert run.running == {}
+    assert run.dag.nodes(State.RUNNING) == {}
     assert f"failed {leaf._log_label} · attempt 1/2 · boom 1" in caplog.messages
     assert f"failed {leaf._log_label} · attempt 2/2 · boom 2" in caplog.messages
     assert "progress 0/1 · 0 running · 1 ready · 1 retrying" in caplog.messages
@@ -988,15 +1020,14 @@ def test_run_failed_retry_can_later_complete() -> None:
 
     run.take_submissions()
     run.job_result(leaf.object_id, JobFailedResult(error="boom"))
-    assert run.failures[leaf.object_id] == ["boom"]
-    assert run.failed == {}
+    assert run.dag.nodes_by_id[leaf.object_id].attempts == 1
+    assert run.dag.nodes(State.FAILED) == {}
 
     run.take_submissions()
     run.job_result(leaf.object_id, JobCompletedResult())
 
-    assert run.failures == {}
     _assert_one_state(run)
-    assert set(run.completed) == {leaf.object_id}
+    assert set(run.dag.nodes(State.DONE)) == {leaf.object_id}
     run.finish()
 
 
@@ -1011,7 +1042,7 @@ def test_run_failed_retry_found_done_elsewhere_stops_retrying(
     run.job_result(leaf.object_id, JobFailedResult(error="boom"))
     leaf.create()  # another run builds it
     run.take_submissions()
-    assert run.failures == {}
+    assert set(run.dag.nodes(State.DONE)) == {leaf.object_id}
     _assert_one_state(run)
 
     caplog.set_level(logging.INFO, logger="furu.run")
@@ -1045,8 +1076,8 @@ def test_run_ignores_a_result_for_a_spec_it_is_not_running() -> None:
 
     run.job_result(leaf.object_id, JobCompletedResult())
 
-    assert set(run.ready) == {leaf.object_id}
-    assert run.completed == {}
+    assert set(run.dag.nodes(State.READY)) == {leaf.object_id}
+    assert run.dag.nodes(State.DONE) == {}
 
 
 def test_batched_group_failure_retries_each_member() -> None:
@@ -1057,8 +1088,10 @@ def test_batched_group_failure_retries_each_member() -> None:
     for obj in objs:
         run.job_result(obj.object_id, JobFailedResult(error="boom"))
 
-    assert run.failures == {obj.object_id: ["boom"] for obj in objs}
-    assert set(run.ready) == {obj.object_id for obj in objs}
+    for obj in objs:
+        assert run.dag.nodes_by_id[obj.object_id].attempts == 1
+        assert run.dag.nodes_by_id[obj.object_id].error == "boom"
+    assert set(run.dag.nodes(State.READY)) == {obj.object_id for obj in objs}
     _assert_one_state(run)
 
 
@@ -1079,12 +1112,12 @@ def test_run_waits_on_specs_locked_elsewhere_until_their_lock_goes(
     with _mark_running(leaves[0]), _mark_running(leaves[1]):
         with _captured_furu_logs(caplog):
             assert run.take_submissions() == []
-        assert set(run.waiting) == {leaf.object_id for leaf in leaves}
-        run.poll_waiting()
+        assert set(run.dag.nodes(State.LOCKED)) == {leaf.object_id for leaf in leaves}
+        run.dag.poll()
         assert run.take_submissions() == []
 
-    run.poll_waiting()
-    assert run.waiting == {}
+    run.dag.poll()
+    assert run.dag.nodes(State.LOCKED) == {}
     assert sorted(_submitted_ids(run)) == sorted(leaf.object_id for leaf in leaves)
     assert "waiting on 2 specs running elsewhere" in caplog.messages
 
@@ -1105,7 +1138,7 @@ def test_run_completes_specs_finished_elsewhere_without_submitting() -> None:
     leaf.create()
 
     assert _submitted_ids(run) == [parent.object_id]
-    assert set(run.completed) == {leaf.object_id}
+    assert set(run.dag.nodes(State.DONE)) == {leaf.object_id}
 
 
 def test_run_fails_when_no_pool_can_run_a_lazy_dependency() -> None:
