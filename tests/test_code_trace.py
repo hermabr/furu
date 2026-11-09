@@ -514,6 +514,93 @@ def test_parent_code_edit_reruns_only_the_parent(
     assert _version(module.Child(n=1)) == child_before
 
 
+DECLARED = """\
+import furu
+
+from PKG.child import Child
+
+
+class TracedParent(furu.Spec[int]):
+    n: int
+
+    def metadata(self) -> furu.Metadata:
+        return furu.Metadata(code_version="traced")
+
+    @furu.dependency
+    def child(self) -> Child:
+        return Child(n=self.n)
+
+    def create(self) -> int:
+        return self.child.create() * 10
+
+
+class FixedParent(furu.Spec[int]):
+    n: int
+
+    @furu.dependency
+    def child(self) -> Child:
+        return Child(n=self.n)
+
+    def create(self) -> int:
+        return self.child.create() * 10
+
+
+class Holder(furu.Spec[int]):
+    parent: FixedParent
+
+    def create(self) -> int:
+        return self.parent.create() + 1
+"""
+
+
+@pytest.fixture
+def declared(repo: Repo) -> ModuleType:
+    repo.write("child.py", CHILD)
+    repo.write("parents.py", DECLARED)
+    return repo.load("parents")
+
+
+@pytest.mark.parametrize("parent_class", ["TracedParent", "FixedParent"])
+def test_changing_what_a_dependency_returns_reruns(
+    repo: Repo, declared: ModuleType, parent_class: str
+) -> None:
+    assert getattr(declared, parent_class)(n=1).create() == 20
+
+    repo.edit("parents.py", "Child(n=self.n)", "Child(n=self.n + 5)")
+
+    parent = getattr(repo.load("parents"), parent_class)(n=1)
+    assert parent.status == "missing"
+    assert parent.create() == 70
+
+
+@pytest.mark.parametrize("parent_class", ["TracedParent", "FixedParent"])
+def test_a_dependency_refactor_returning_the_same_spec_keeps_the_result(
+    repo: Repo, declared: ModuleType, parent_class: str
+) -> None:
+    parent = getattr(declared, parent_class)(n=1)
+    parent.create()
+    before = _version(parent)
+
+    repo.edit("parents.py", "Child(n=self.n)", "Child(n=self.n * 1)")
+
+    parent = getattr(repo.load("parents"), parent_class)(n=1)
+    assert parent.status == "done"
+    assert _version(parent) == before
+
+
+def test_a_spec_held_in_a_field_reruns_when_its_dependency_changes(
+    repo: Repo, declared: ModuleType
+) -> None:
+    assert declared.Holder(parent=declared.FixedParent(n=1)).create() == 21
+
+    repo.edit("parents.py", "Child(n=self.n)", "Child(n=self.n + 5)")
+
+    module = repo.load("parents")
+    holder = module.Holder(parent=module.FixedParent(n=1))
+    assert holder.status == "missing"
+    assert holder.create() == 71
+
+
 def test_a_fixed_spec_without_traced_dependencies_lands_in_v_fixed(
     repo: Repo, plots: ModuleType
 ) -> None:

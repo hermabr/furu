@@ -4,8 +4,7 @@ import os
 from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import fields
-from functools import cached_property
+from dataclasses import field, fields
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self, overload
 
@@ -14,16 +13,23 @@ from furu._tree import specs_in
 if TYPE_CHECKING:
     from furu.core import Spec
 
+_DERIVE = "furu_dependency"  # field metadata key: the method that computes it
 
-class _CachedDependency[TOwner, T](cached_property):
-    __furu_dependency__ = True
+
+class _Dependency[TSpec, T]:
+    """A ``@furu.dependency`` method, until its Spec class turns it into a field.
+
+    The field is filled from ``func`` when a spec is constructed, so what the
+    method returns is hashed, stored and planned like any other field.
+    """
+
+    def __init__(self, func: Callable[[TSpec], T]) -> None:
+        self.func = func
 
     if TYPE_CHECKING:
 
         @overload
-        def __get__(
-            self, instance: None, owner: type[TOwner] | None = None
-        ) -> Self: ...
+        def __get__(self, instance: None, owner: type[TSpec] | None = None) -> Self: ...
 
         @overload
         def __get__(self, instance: object, owner: type[Any] | None = None) -> T: ...
@@ -32,40 +38,43 @@ class _CachedDependency[TOwner, T](cached_property):
 @overload
 def dependency[TSpec: Spec, T](
     func: Callable[[TSpec], T], /
-) -> _CachedDependency[TSpec, T]: ...
+) -> _Dependency[TSpec, T]: ...
 @overload
 def dependency[TSpec: Spec, T]() -> Callable[
-    [Callable[[TSpec], T]], _CachedDependency[TSpec, T]
+    [Callable[[TSpec], T]], _Dependency[TSpec, T]
 ]: ...
 def dependency[TSpec: Spec, T](
     func: Callable[[TSpec], T] | None = None, /
-) -> (
-    _CachedDependency[TSpec, T]
-    | Callable[[Callable[[TSpec], T]], _CachedDependency[TSpec, T]]
-):
-    return dependency if func is None else _CachedDependency(func)
+) -> _Dependency[TSpec, T] | Callable[[Callable[[TSpec], T]], _Dependency[TSpec, T]]:
+    """Declare specs a create() uses that are computed from the spec's fields.
+
+    The method becomes a field that furu fills in when the spec is constructed.
+    """
+    return dependency if func is None else _Dependency(func)
+
+
+def dependency_field(cls: type, name: str, declared: _Dependency) -> Any:
+    """The dataclass field ``cls.name`` becomes; its type is the return annotation."""
+    if "return" not in declared.func.__annotations__:
+        raise TypeError(
+            f"{cls.__name__}.{name}: @furu.dependency needs a return annotation; "
+            "it is the type of the field furu stores."
+        )
+    return field(init=False, metadata={_DERIVE: declared.func})
+
+
+def fill_dependencies(obj: Spec) -> None:
+    for f in fields(obj):
+        if (derive := f.metadata.get(_DERIVE)) is not None:
+            object.__setattr__(obj, f.name, derive(obj))
 
 
 def collect_declared_refs(obj: Spec) -> tuple[Spec, ...]:
     refs_by_id: dict[str, Spec] = {}
-
-    for field in fields(obj):
-        for ref in specs_in(getattr(obj, field.name)):
+    for f in fields(obj):
+        for ref in specs_in(getattr(obj, f.name)):
             refs_by_id.setdefault(ref.object_id, ref)
-
-    for base in reversed(type(obj).__mro__):
-        for name, value in base.__dict__.items():
-            if getattr(value, "__furu_dependency__", False):
-                for ref in specs_in(getattr(obj, name)):
-                    refs_by_id.setdefault(ref.object_id, ref)
-
-    return tuple(
-        ref
-        for _, ref in sorted(
-            refs_by_id.items(),
-            key=lambda item: item[0],
-        )
-    )
+    return tuple(refs_by_id[object_id] for object_id in sorted(refs_by_id))
 
 
 class DependencyRecorder:

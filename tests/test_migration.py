@@ -1333,6 +1333,56 @@ def test_child_migration_cascades_to_parent() -> None:
     assert other.status == "missing"
 
 
+class _DerivedModelV0(Spec[dict[str, str]]):
+    vocab: int
+
+    @furu.dependency
+    def tokenizer(self) -> _CascadeTokenizerV0:
+        return _CascadeTokenizerV0(vocabulary_size=self.vocab)
+
+    def create(self) -> dict[str, str]:
+        _COUNTER.calls += 1
+        return {"model": f"vocab={self.vocab}"}
+
+
+class _DerivedModel(Spec[dict[str, str]]):
+    vocab: int
+
+    @furu.dependency
+    def tokenizer(self) -> _CascadeTokenizer:
+        return _CascadeTokenizer(vocab_size=self.vocab)
+
+    def create(self) -> dict[str, str]:
+        _COUNTER.calls += 1
+        return {"model": f"vocab={self.vocab}"}
+
+
+def test_child_migration_cascades_through_a_dependency() -> None:
+    old = _DerivedModelV0(vocab=32000)
+    old.create()
+    _transplant_generation(
+        old,
+        _DerivedModel,
+        renames={
+            fully_qualified_name(_CascadeTokenizerV0): fully_qualified_name(
+                _CascadeTokenizer
+            )
+        },
+    )
+    _COUNTER.calls = 0
+
+    model = _DerivedModel(vocab=32000)
+    assert model.status == "done"
+    assert model.create() == {"model": "vocab=32000"}
+    assert _COUNTER.calls == 0
+
+    link = json.loads(result_link_path_in(model._base_dir).read_text())
+    assert link["migration_path"] == [
+        "_CascadeTokenizer: Renamed('vocabulary_size', to='vocab_size')",
+    ]
+    assert _DerivedModel(vocab=999).status == "missing"
+
+
 class _CascadePipelineV0(Spec[str]):
     model: _CascadeModelV0
     benchmark: str
