@@ -20,7 +20,7 @@ def run_of(spec: Spec) -> Path:
 
 def fixed_run(spec: Spec) -> Path:
     """Where spec's run is published when no traced code is involved."""
-    return run_dir_in(spec._class_dir / FIXED, spec._run_name)
+    return run_dir_in(spec._class_dir / FIXED, spec._artifact_hash)
 
 
 def _folder(specs: Spec | Sequence[Spec]) -> Path:

@@ -122,10 +122,7 @@ def _start(target, *args) -> BaseProcess:
 
 def _steal_lock(lock: Path) -> None:
     claim_path = lock.with_name(f"{lock.name}.stolen.{os.getpid()}.claim").resolve()
-    manifest = {
-        "claim_path": str(claim_path),
-        "lock_path": str(lock.resolve()),
-    }
+    manifest = {"claim_path": str(claim_path)}
     fd = os.open(claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(manifest, f)

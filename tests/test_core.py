@@ -1636,7 +1636,7 @@ def test_no_create_hook_uses_post_lock_cache_recheck(
 
     @contextmanager
     def fake_lock(lock_path: Path, **_: object):
-        assert lock_path == lock_path_in(obj._class_dir, obj._run_name)
+        assert lock_path == lock_path_in(obj._class_dir, obj._artifact_hash)
         _save_result_bundle(
             ["cached-after-lock:1"],
             result_dir_in(fixed_run(obj)),
@@ -1799,7 +1799,7 @@ def test_existing_items_are_skipped_before_locking(
     monkeypatch.setattr(execution_module, "lock", fake_lock)
 
     assert _load_or_create([existing, missing]) == ["single:1", "single:2"]
-    assert lock_calls == [lock_path_in(missing._class_dir, missing._run_name)]
+    assert lock_calls == [lock_path_in(missing._class_dir, missing._artifact_hash)]
 
 
 def test_a_worker_that_takes_the_lock_checks_for_a_published_run_first(
@@ -1809,7 +1809,7 @@ def test_a_worker_that_takes_the_lock_checks_for_a_published_run_first(
 
     @contextmanager
     def fake_lock(lock_path: Path, **_: object):
-        assert lock_path == lock_path_in(pending._class_dir, pending._run_name)
+        assert lock_path == lock_path_in(pending._class_dir, pending._artifact_hash)
         _save_result_bundle(
             ["single:5"],
             result_dir_in(fixed_run(pending)),

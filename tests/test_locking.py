@@ -66,7 +66,6 @@ def test_lock_is_a_hardlink_to_its_claim_manifest(tmp_path: Path) -> None:
         assert has_lock()
 
         manifest = _read_manifest(lock_path)
-        assert manifest["lock_path"] == str(lock_path.resolve())
         claim_path = Path(str(manifest["claim_path"]))
         assert os.path.samestat(lock_path.stat(), claim_path.stat())
 
@@ -285,10 +284,7 @@ def test_lock_raises_if_stale_break_would_remove_reacquired_lock(
     lock_path = tmp_path / "single.lock"
     first_claim_path = tmp_path / "first.claim"
     second_claim_path = tmp_path / "second.claim"
-    manifest = LockManifest(
-        claim_path=first_claim_path.resolve(),
-        lock_path=lock_path.resolve(),
-    )
+    manifest = LockManifest(claim_path=first_claim_path.resolve())
 
     locking_module._write_claim_file(manifest, lifetime_s=SHORT_LIFETIME_S)
     assert locking_module.try_link(
@@ -310,10 +306,7 @@ def test_lock_raises_if_stale_break_would_remove_reacquired_lock(
             return None
 
         lock_path.unlink()
-        second_manifest = LockManifest(
-            claim_path=second_claim_path.resolve(),
-            lock_path=lock_path.resolve(),
-        )
+        second_manifest = LockManifest(claim_path=second_claim_path.resolve())
         locking_module._write_claim_file(second_manifest, lifetime_s=lifetime_s)
         assert locking_module.try_link(
             lock_path=lock_path,

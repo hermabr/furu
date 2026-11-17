@@ -32,9 +32,8 @@ class LockManifest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     claim_path: Path
-    lock_path: Path
 
-    @field_validator("claim_path", "lock_path")
+    @field_validator("claim_path")
     @classmethod
     def _validate_absolute(cls, path: Path) -> Path:
         if not path.is_absolute():
@@ -98,20 +97,12 @@ def read_manifest(path: Path) -> LockManifest | None:
     raw = read_text_or_none(path)
     if raw is None:
         return None
-
-    contested_path = path.resolve(strict=False)
     try:
-        manifest = LockManifest.model_validate_json(raw)
+        return LockManifest.model_validate_json(raw)
     except ValidationError as exc:
         raise LockError(
             f"cannot safely break stale lock at {path}: malformed lock manifest"
         ) from exc
-
-    if contested_path != manifest.lock_path:
-        raise LockError(
-            f"cannot safely break stale lock at {path}: manifest names another lock path"
-        )
-    return manifest
 
 
 def owns(lock_path: Path, *, claim_path: Path) -> bool:
@@ -293,7 +284,7 @@ def lock(
         )
 
     claim_path = nfs_safe_unique_name(lock_path, name="claim").resolve(strict=False)
-    manifest = LockManifest(claim_path=claim_path, lock_path=lock_path)
+    manifest = LockManifest(claim_path=claim_path)
     _write_claim_file(manifest, lifetime_s=lifetime_s)
     owner_stat = claim_path.stat()
 

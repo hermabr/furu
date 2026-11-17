@@ -17,6 +17,7 @@ from runs import ends_of, events_of, fixed_run, run_of
 import furu
 from furu import Spec
 from furu.code_trace import Trace
+from furu.core import working_folder
 from furu.execution import load_or_create
 from furu.locking import is_active_lock
 from furu.storage import stored
@@ -25,6 +26,7 @@ from furu.storage._layout import (
     attempts_dir_in,
     events_path_in,
     lock_path_in,
+    log_path_in,
     run_name,
     runs_dir_in,
 )
@@ -85,10 +87,22 @@ def _compute_again(specs: Sequence[Spec], monkeypatch: pytest.MonkeyPatch) -> No
         )
 
 
+class FailsAsABatch(Spec[int]):
+    n: int
+
+    @furu.batched(lambda spec, worker: (None, 100))
+    def create(
+        specs: list["FailsAsABatch"], directory: furu.SpecDirectory
+    ) -> list[int]:
+        if len(specs) > 1:
+            raise ValueError("boom")
+        return [spec.n for spec in specs]
+
+
 class LosesItsLock(Spec[int]):
     def create(self) -> int:
         # As if paused past the stale window, so that a successor took over.
-        lock_path_in(self._class_dir, self._run_name).unlink()
+        lock_path_in(self._class_dir, self._artifact_hash).unlink()
         return 1
 
 
@@ -105,7 +119,6 @@ class BlocksThenFailsOnce(Spec[int]):
 def test_one_specs_run_is_named_by_its_hash_and_a_batch_by_its_row_order() -> None:
     assert run_name(["03be"]) == "03be"
     assert run_name(["03be", "9c02"]) != run_name(["9c02", "03be"])
-    assert Leaf(n=1)._run_name == Leaf(n=1)._artifact_hash
 
 
 def test_a_run_is_whole_and_still_locked_when_one_rename_publishes_it(
@@ -119,7 +132,9 @@ def test_a_run_is_whole_and_still_locked_when_one_rename_publishes_it(
         (obj,) = group
         seen["files"] = sorted(path.name for path in obj._attempt_dir.iterdir())
         seen["ends"] = ends_of(obj)
-        seen["locked"] = is_active_lock(lock_path_in(obj._class_dir, obj._run_name))
+        seen["locked"] = is_active_lock(
+            lock_path_in(obj._class_dir, obj._artifact_hash)
+        )
         seen["done"] = obj.done
         publish(group, trace, **kwargs)
 
@@ -225,6 +240,21 @@ def test_a_spec_in_two_runs_is_read_from_the_one_published_first(
     # A run that is being deleted has a dotted name, and is not looked in.
     first.rename(first.with_name(f"{first.name}.host.1.deleting"))
     assert not a.done
+
+
+def test_a_batch_with_a_stored_spec_still_runs_whole_in_the_folder_named_for_it() -> (
+    None
+):
+    specs = [FailsAsABatch(n=1), FailsAsABatch(n=2)]
+    furu.create(specs[0])
+
+    with pytest.raises(ValueError, match="boom"):
+        load_or_create._ensure_group_result(
+            specs, submit_provenance=load_or_create.capture_submit_provenance()
+        )
+
+    # Where the job that handed the batch out looks for its log.
+    assert "boom" in log_path_in(working_folder(specs)).read_text()
 
 
 def test_a_run_is_read_once_and_a_new_listing_reads_what_was_added(

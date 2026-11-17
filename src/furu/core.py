@@ -287,9 +287,9 @@ class Spec[T](_FuruDataclassTransform, ABC):
         if not self._class_dir.is_dir():
             return False  # nothing of this class was ever stored here
         attempts_dir_in(self._class_dir).mkdir(exist_ok=True)
-        with lock(lock_path_in(self._class_dir, self._run_name)):
+        with lock(lock_path_in(self._class_dir, self._artifact_hash)):
             folders = [self._attempt_dir] + [
-                run_dir_in(version, self._run_name)
+                run_dir_in(version, self._artifact_hash)
                 for version in version_dirs_in(self._class_dir)
             ]
             folders = [folder for folder in folders if folder.is_dir()]
@@ -355,11 +355,6 @@ class Spec[T](_FuruDataclassTransform, ABC):
     @cached_property
     def _class_dir(self) -> Path:
         return self._metadata.storage / self._stored_name / self._class_part
-
-    @final
-    @property
-    def _run_name(self) -> str:
-        return run_name([self._artifact_hash])
 
     @final
     @property

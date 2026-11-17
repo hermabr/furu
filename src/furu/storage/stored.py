@@ -146,10 +146,14 @@ class Stored:
         check_defaults(obj._class_dir, type(obj))
         if is_batched(type(obj)):
             return self.listed(obj)
-        for version in self._versions(obj):
-            if (run := run_dir_in(version, name)).is_dir():
-                return Row(run, 0)
-        return None
+        held = [
+            run
+            for version in self._versions(obj)
+            if (run := run_dir_in(version, name)).is_dir()
+        ]
+        if len(held) > 1:  # the one published first, as for a batch
+            return self.listed(obj)
+        return Row(held[0], 0) if held else None
 
     def listed(self, obj: Spec) -> Row | None:
         """obj's row in the run published first, among every run of its class."""

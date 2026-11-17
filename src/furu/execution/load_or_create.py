@@ -250,30 +250,31 @@ def _load_or_create(
 def _ensure_group_result[T](
     objs: Sequence[Spec[T]], *, submit_provenance: SubmitProvenance
 ) -> None:
-    """Create and publish what one create() call's ``objs`` still miss, as one run."""
+    """Create and publish one create() call's ``objs`` as one run, unless all are stored.
+
+    The run and its working folder are named for all of ``objs``, so one that
+    is stored already is computed again with the rest.
+    """
     look = Stored()
-    missing: list[Spec[T]] = []
-    for obj in objs:
-        if look.row(obj) is not None:
-            obj.logger.info("cache hit for %s", obj._log_label)
-        else:
-            missing.append(obj)
-    if not missing:
+    if all(look.row(obj) is not None for obj in objs):
+        objs[0].logger.info(
+            "cache hit for %s", _group_label(objs[0]._log_label, len(objs))
+        )
         return
 
-    class_dir = missing[0]._class_dir
+    class_dir = objs[0]._class_dir
     attempts_dir_in(class_dir).mkdir(parents=True, exist_ok=True)
-    check_defaults(class_dir, type(missing[0]), record=True)
-    for obj in missing:
+    check_defaults(class_dir, type(objs[0]), record=True)
+    for obj in objs:
         record_nested_names(class_dir, held_in(obj))
 
-    with lock(lock_path_in(class_dir, working_folder(missing).name)) as has_lock:
+    with lock(lock_path_in(class_dir, working_folder(objs).name)) as has_lock:
         # Whoever held the lock before may have published the run and taken
         # its working folder with it.
         look = Stored()
-        if any(look.row(obj) is None for obj in missing):
+        if any(look.row(obj) is None for obj in objs):
             _create_and_store_group(
-                missing,
+                list(objs),
                 has_lock=has_lock,
                 submit_provenance=submit_provenance,
             )

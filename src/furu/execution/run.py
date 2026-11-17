@@ -56,7 +56,7 @@ def _running_elsewhere(obj: Spec) -> bool:
     A batch's lock is named by all its specs, so a spec that another run
     computes in a batch is not seen here and may be computed twice.
     """
-    return is_active_lock(lock_path_in(obj._class_dir, obj._run_name))
+    return is_active_lock(lock_path_in(obj._class_dir, obj._artifact_hash))
 
 
 @dataclass(slots=True, kw_only=True)
