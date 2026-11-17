@@ -23,7 +23,6 @@ from furu.dag import Dag, DagNode, MixedBatchError
 from furu.dependencies import missing_dependencies
 from furu.locking import is_active_lock
 from furu.logging import _display_path, get_logger
-from furu.provenance import SubmitProvenance
 from furu.snapshot import CodeLocation
 from furu.storage._layout import lock_path_in, log_path_in
 from furu.storage.stored import Stored
@@ -65,7 +64,6 @@ class Run(Dag):
     """One plan of a worker run, driven over one connection to the manager."""
 
     backends: dict[str, WorkerBackend]
-    provenance: SubmitProvenance
     code: CodeLocation
     config: _Config
     execution_log: Path
@@ -158,7 +156,6 @@ class Run(Dag):
                 plan=node.plan,
                 class_dir=obj._class_dir,
                 execution_log=self.execution_log,
-                provenance=self.provenance,
                 process=ProcessSettings.from_metadata(obj._metadata),
                 config=self.config,
                 code=self.code,

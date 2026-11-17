@@ -3,16 +3,14 @@ import json
 import os
 import sys
 import traceback
-from pathlib import Path
 
-from furu import plan
+from furu import plan, provenance
 from furu.code_trace import StaleCodeError
 from furu.config import _Config, _set_config
 from furu.dependencies import _DependencyNotReady
 from furu.execution.launch import asked
 from furu.execution.load_or_create import _ensure_group_result
 from furu.logging import _configure_child_logging
-from furu.provenance import _set_submitted_repo_root, _worker_backend
 from furu.worker.messages import (
     Job,
     JobBlockedResult,
@@ -23,13 +21,11 @@ from furu.worker.messages import (
 
 
 def _execute(job: Job) -> JobResult:
-    _set_submitted_repo_root(Path(job.provenance.git.repo_root))
+    provenance._set_submitted_repo_root(job.code.checkout)
     try:
         specs = plan.Specs(map(json.loads, job.lines))
         with plan.listed_in(job.plan), asked(job.asked):
-            _ensure_group_result(
-                [specs[spec] for spec in job.specs], submit_provenance=job.provenance
-            )
+            _ensure_group_result([specs[spec] for spec in job.specs])
         return JobCompletedResult()
     except _DependencyNotReady as exc:
         return JobBlockedResult(
@@ -55,7 +51,7 @@ def main() -> int:
     sys.stdout.reconfigure(line_buffering=True)
 
     _set_config(_Config.model_validate_json(sys.stdin.readline()))
-    _worker_backend.set(sys.stdin.readline().rstrip("\n"))
+    provenance._started_as.update(json.loads(sys.stdin.readline()))
     _configure_child_logging(worker_stderr)
 
     for line in sys.stdin:

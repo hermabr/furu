@@ -58,26 +58,7 @@ def child_slot() -> Iterator[ChildSlot]:
         slot.close()
 
 
-def _submit_provenance() -> SubmitProvenance:
-    # The git half is a stub; local children run the live worktree.
-    return SubmitProvenance(
-        git=GitIdentity(
-            commit="0" * 40,
-            branch=None,
-            remote=None,
-            repo_root=".",
-        ),
-        environment=EnvironmentIdentity.capture(),
-        submitted=SubmitContext.capture(),
-    )
-
-
-def _job(
-    objs: list[Spec],
-    *,
-    provenance: SubmitProvenance | None = None,
-    code: CodeLocation | None = None,
-) -> Job:
+def _job(objs: list[Spec], *, code: CodeLocation | None = None) -> Job:
     return Job(
         specs=[obj.object_id for obj in objs],
         lines=list(map(plan.dump, plan.lines(objs))),
@@ -86,7 +67,6 @@ def _job(
         execution_log=get_config().directories.anchored().executions
         / "e1"
         / "execution.log",
-        provenance=provenance or _submit_provenance(),
         process=ProcessSettings.from_metadata(objs[0]._metadata),
         config=get_config().anchored(),
         code=code or CodeLocation.here(),
@@ -125,10 +105,11 @@ def test_subprocess_environment_override_is_visible_in_child(
     assert value == "from-override"
     assert pid != os.getpid()
 
-    provenance = leaf.provenance()
-    assert provenance.executed.worker_backend == "test"
-    assert provenance.executed.pid == pid
-    assert provenance.submitted.hostname == provenance.executed.hostname
+    # The child's own record begins with a line about it, and the run's start
+    # event names the file.
+    record, finished = plan.read(Path(events_of(leaf)[1]["provenance"]))
+    assert record["worker"].items() >= {"backend": "test", "pid": pid}.items()
+    assert finished["run"] == leaf._artifact_hash
 
 
 def test_subprocess_none_unsets_variable_in_child(
@@ -430,11 +411,7 @@ def test_one_worker_runs_jobs_from_two_repos_into_each_repo(tmp_path: Path) -> N
                     ),
                 )
                 result = slot.run(
-                    _job(
-                        [leaf],
-                        provenance=provenance,
-                        code=CodeLocation.from_snapshot(provenance),
-                    ),
+                    _job([leaf], code=CodeLocation.from_snapshot(provenance)),
                     cancelled=threading.Event(),
                 )
                 assert isinstance(result, JobCompletedResult)

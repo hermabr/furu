@@ -13,7 +13,6 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from furu.config import _Config
 from furu.logging import _group_label
-from furu.provenance import SubmitProvenance
 from furu.snapshot import CodeLocation
 from furu.spec_metadata import Metadata, Reuse
 from furu.storage._layout import attempt_dir_in, log_path_in, run_name
@@ -52,7 +51,6 @@ class Job(_Message):
     # the spec class.
     class_dir: Path
     execution_log: Path
-    provenance: SubmitProvenance
     process: ProcessSettings
     # The submitting repo's settings (absolute data directories) and code, so
     # a worker serving many repos stores each result in the repo it came from.

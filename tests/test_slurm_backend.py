@@ -310,6 +310,7 @@ def test_prepare_snapshot_builds_the_extracted_commits_venv(
         project_root=code_dir,
         cwd=code_dir,
         repo_root=code_dir,
+        checkout=repo,
     )
     assert (code_dir / "pyproject.toml").is_file()
     # The venv is built once at submit so workers never race to create it.

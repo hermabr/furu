@@ -1,8 +1,5 @@
-import json
-import os
 import subprocess
 import sys
-from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -10,88 +7,9 @@ from gitrepo import git
 
 import furu
 from furu import Spec, provenance
-from furu.provenance import (
-    EnvironmentIdentity,
-    ExecuteContext,
-    GitIdentity,
-    Provenance,
-    SubmitContext,
-    SubmitProvenance,
-)
+from furu.provenance import EnvironmentIdentity, GitIdentity, SubmitContext
 
 pytestmark = pytest.mark.usefixtures("fresh_caches")
-
-
-EXAMPLE_PROVENANCE_JSON = """
-{
-  "git": {
-    "commit": "1fd0701e9c41d0a7b31f58c2aa04d6ce8b7712f3",
-    "branch": "sweep/lr-ablation",
-    "remote": "git@github.com:herman/atlas-train.git",
-    "repo_root": "/home/herman/dev/atlas-train"
-  },
-  "environment": {
-    "python": "3.12.8",
-    "uv": "0.7.13",
-    "project_root": "/home/herman/dev/atlas-train",
-    "uv_lock_hash": "blake2s:f3ac09b1d2e44a71c8d0",
-    "pyproject_hash": "blake2s:77b2c91e04d5a3f6e812",
-    "furu": "0.0.62"
-  },
-  "submitted": {
-    "hostname": "login-01",
-    "user": "herman",
-    "cwd": "/home/herman/dev/atlas-train",
-    "launch_command": ["uv", "run", "python", "sweep.py", "--grid", "lr"],
-    "timestamp": "2026-07-05T14:02:11Z"
-  },
-  "executed": {
-    "hostname": "gpu-node-14",
-    "cpu_count": 32,
-    "accelerators": ["NVIDIA H100 80GB HBM3 ×4"],
-    "slurm_job_id": "48213977",
-    "worker_backend": "slurm",
-    "pid": 219482,
-    "started_at": "2026-07-05T14:03:40Z",
-    "completed_at": "2026-07-05T15:12:08Z"
-  }
-}
-"""
-
-
-def _example_provenance() -> Provenance:
-    return Provenance.model_validate_json(EXAMPLE_PROVENANCE_JSON)
-
-
-def test_example_provenance_json_parses() -> None:
-    prov = _example_provenance()
-    assert prov.git.branch == "sweep/lr-ablation"
-    assert prov.submitted.launch_command == (
-        "uv",
-        "run",
-        "python",
-        "sweep.py",
-        "--grid",
-        "lr",
-    )
-    assert prov.submitted.timestamp == datetime(2026, 7, 5, 14, 2, 11, tzinfo=UTC)
-    assert prov.executed.worker_backend == "slurm"
-
-
-def test_provenance_round_trips_through_json() -> None:
-    prov = _example_provenance()
-    assert Provenance.model_validate_json(prov.model_dump_json()) == prov
-
-
-def test_submit_provenance_round_trips_through_json() -> None:
-    prov = _example_provenance()
-    submit = SubmitProvenance(
-        git=prov.git,
-        environment=prov.environment,
-        submitted=prov.submitted,
-    )
-    assert SubmitProvenance.model_validate_json(submit.model_dump_json()) == submit
-    assert Provenance.merge(submit, prov.executed) == prov
 
 
 def test_git_identity_clean_repo(git_repo: Path) -> None:
@@ -282,20 +200,6 @@ def test_capture_submit_context() -> None:
     assert context.timestamp.tzinfo is not None
 
 
-def test_capture_execute_context_defaults_to_local(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("SLURM_JOB_ID", raising=False)
-    started_at = datetime.now(UTC)
-    context = ExecuteContext.capture(started_at=started_at)
-    assert context.started_at == started_at <= context.completed_at
-    assert context.worker_backend == "local"
-    assert context.pid == os.getpid()
-    assert context.cpu_count > 0
-    assert context.slurm_job_id is None
-    assert context.hostname
-
-
 def test_accelerator_probe_falls_back_to_cuda_visible_devices(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -314,13 +218,3 @@ def test_accelerator_probe_degrades_to_empty(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(provenance.subprocess, "run", missing_nvidia_smi)
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     assert provenance._probe_accelerators() == ()
-
-
-def test_example_json_matches_model_schema_exactly() -> None:
-    prov = _example_provenance()
-    dumped = json.loads(prov.model_dump_json())
-    assert set(dumped) == set(json.loads(EXAMPLE_PROVENANCE_JSON))
-    assert set(dumped["git"]) == set(GitIdentity.model_fields)
-    assert set(dumped["environment"]) == set(EnvironmentIdentity.model_fields)
-    assert set(dumped["submitted"]) == set(SubmitContext.model_fields)
-    assert set(dumped["executed"]) == set(ExecuteContext.model_fields)

@@ -18,6 +18,7 @@ from furu.provenance import (
     GitIdentity,
     SubmitProvenance,
     _run_git,
+    submitting_repo_root,
 )
 from furu.utils import nfs_safe_unique_name
 
@@ -134,6 +135,7 @@ class CodeLocation:
     project_root: Path
     cwd: Path
     repo_root: Path  # traced code paths are relative to it
+    checkout: Path  # where the launch was started: furu.submitting_repo_root()
 
     @classmethod
     def here(cls) -> CodeLocation:
@@ -142,6 +144,7 @@ class CodeLocation:
             project_root=Path(EnvironmentIdentity.capture().project_root),
             cwd=Path.cwd(),
             repo_root=code_trace.repo_root(),
+            checkout=submitting_repo_root(),
         )
 
     @classmethod
@@ -156,6 +159,7 @@ class CodeLocation:
             project_root=project_root,
             cwd=code_dir / Path(provenance.submitted.cwd).relative_to(repo_root),
             repo_root=code_dir,
+            checkout=repo_root,
         )
 
 

@@ -3,13 +3,12 @@ from __future__ import annotations
 import secrets
 import shutil
 import time
-from collections.abc import Callable, Generator, Mapping, Sequence
-from contextlib import contextmanager
-from datetime import UTC, datetime
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast, overload
 
-from furu import plan
+from furu import plan, record
 from furu._batched import _BatchedHook
 from furu._declared_types import declared_result_type
 from furu._tree import map_specs, specs_in
@@ -36,13 +35,7 @@ from furu.execution.launch import ask, asked, held_in
 from furu.locking import lock
 from furu.logging import _group_label, _log_scope, get_logger
 from furu.migration.schema import check_defaults, record_nested_names
-from furu.provenance import (
-    ExecuteContext,
-    Provenance,
-    SubmitProvenance,
-    _require_uv,
-    capture_submit_provenance,
-)
+from furu.provenance import _require_uv, capture_submit_provenance
 from furu.resources import Worker
 from furu.result.bundle import _save_result_bundle
 from furu.serializer.artifact import remembering
@@ -54,7 +47,6 @@ from furu.storage._layout import (
     events_path_in,
     lock_path_in,
     log_path_in,
-    provenance_path_in,
     result_dir_in,
     run_dir_in,
     scratch_dir_in,
@@ -75,7 +67,7 @@ type HasLock = Callable[[], bool]
 
 
 def _open_attempt(group: Sequence[Spec], attempt: Path) -> LogState:
-    """Start an attempt in the group's working folder; return what earlier ones ran.
+    """What earlier attempts in the group's working folder ran, for a new one to go on from.
 
     A fixed class continues with what an earlier attempt left there. A traced
     one does only if the code that attempt ran (recorded in trace.log) is
@@ -98,37 +90,45 @@ def _open_attempt(group: Sequence[Spec], attempt: Path) -> LogState:
         else:
             assert logged is not None
             resumed = logged
-    events.start(attempt, [obj._artifact_hash for obj in group], plan.listing())
     return resumed
 
 
 @contextmanager
 def _recording(
     group: Sequence[Spec], attempt: Path, resumed: LogState
-) -> Generator[Recording | None]:
-    """Trace one create() call and note the code versions of what it loads.
+) -> Generator[tuple[Recording | None, list[Spec]]]:
+    """Note the specs whose results one create() call loads, and trace the call.
 
-    Nothing is recorded for a class that does not trace its code.
+    Only a class that traces its code is traced, with the code versions of
+    what it loads.
     """
     metadata = group[0]._metadata  # a batch has one Metadata
-    if metadata.code_version == "fixed":
-        with under_creation(group):
-            yield None
-        return
+    loaded: list[Spec] = []
     with (
-        recording(
+        nullcontext()
+        if metadata.code_version == "fixed"
+        else recording(
             trace_log_path_in(attempt), storage_root=metadata.storage, resumed=resumed
-        ) as run,
-        recording_loads(run.loaded),
-        under_creation(group),
-    ):
-        yield run
+        )
+    ) as run:
+
+        def on_load(folder: Path, specs: Iterable[Spec]) -> None:
+            loaded.extend(specs)
+            if run is not None:
+                run.loaded(folder)
+
+        with recording_loads(on_load), under_creation(group):
+            yield run, loaded
 
 
 def _call_create[T](
     group: list[Spec[T]], attempt: Path, resumed: LogState
-) -> tuple[list[T], Recording | None]:
-    """Run the group's one create() call: on the whole batch, or on its one spec."""
+) -> tuple[list[T], Recording | None, list[Spec]]:
+    """Run the group's one create() call: on the whole batch, or on its one spec.
+
+    Returns its results, its trace recording when its class traces its code,
+    and the specs whose results it loaded.
+    """
     cls = type(group[0])
     hook = getattr(cls, "_furu_create_hook", None)
     if hook is None:
@@ -136,7 +136,7 @@ def _call_create[T](
             f"{cls.__qualname__} cannot create missing results "
             "because it does not define create()"
         )
-    with _recording(group, attempt, resumed) as run:
+    with _recording(group, attempt, resumed) as (run, loaded):
         if isinstance(hook, _BatchedHook):
             results = hook.func(group, SpecDirectory(attempt))
         else:
@@ -148,7 +148,7 @@ def _call_create[T](
         raise TypeError(
             f"{cls.__name__} returned {len(results)} results for {len(group)} objects"
         )
-    return results, run
+    return results, run, loaded
 
 
 def _store[T](
@@ -158,8 +158,6 @@ def _store[T](
     *,
     run: Recording | None,
     has_lock: HasLock,
-    submit_provenance: SubmitProvenance,
-    started_at: datetime,
 ) -> Trace | None:
     """Write the results into the working folder, a row per spec; return the trace, if traced."""
     if not has_lock():
@@ -183,10 +181,6 @@ def _store[T](
             label=_group_label(lead._log_label, len(group)),
             warn=lead.logger.warning,
         )
-    provenance = Provenance.merge(
-        submit_provenance, ExecuteContext.capture(started_at=started_at)
-    )
-    atomic_write_text(provenance_path_in(attempt), provenance.model_dump_json(indent=2))
     shutil.rmtree(scratch_dir_in(attempt), ignore_errors=True)
     trace_log_path_in(attempt).unlink(missing_ok=True)
     return trace
@@ -253,9 +247,7 @@ def _load_or_create(
     return map_specs(lambda obj: results[obj.object_id], tree)
 
 
-def _ensure_group_result[T](
-    objs: Sequence[Spec[T]], *, submit_provenance: SubmitProvenance
-) -> None:
+def _ensure_group_result[T](objs: Sequence[Spec[T]]) -> None:
     """Create and publish one create() call's ``objs`` as one run, unless all are stored.
 
     The run and its working folder are named for all of ``objs``, so one that
@@ -279,11 +271,7 @@ def _ensure_group_result[T](
         # its working folder with it.
         look = Stored()
         if any(look.row(obj) is None for obj in objs):
-            _create_and_store_group(
-                list(objs),
-                has_lock=has_lock,
-                submit_provenance=submit_provenance,
-            )
+            _create_and_store_group(list(objs), has_lock=has_lock)
 
 
 # Python cannot map Spec[T] -> T through an arbitrary structure, so the shapes
@@ -417,13 +405,16 @@ def _load_or_block[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
         ask(running, found=True)
         # Saved before anyone is told, so a found spec that fails or never
         # starts is still described.
-        raise _DependencyNotReady(missing, *plan.save_found(running))
+        raise _DependencyNotReady(missing, *record.found(running))
 
     found = cast(list[Row], rows)
     if load:
         return load_rows(objs, found)
-    for run in dict.fromkeys(row.run for row in found):
-        record_loaded(run)
+    by_run: dict[Path, list[Spec]] = {}
+    for obj, row in zip(objs, found):
+        by_run.setdefault(row.run, []).append(obj)
+    for run, held in by_run.items():
+        record_loaded(run, held)
     return []
 
 
@@ -446,10 +437,9 @@ def _load_or_create_local[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
     if dag.ready:
         running = [node.obj for node in dag.nodes_by_id.values()]
         stages = ask(running)
-        submit_provenance = capture_submit_provenance()
-        plan.write(launch_plan, objs, running, submit_provenance)
+        record.launch(launch_plan, objs, running, capture_submit_provenance())
         with asked(stages):
-            _run_in_process(dag, submit_provenance)
+            _run_in_process(dag)
     if not load:
         return []
     # Load the way a cache hit does, so the first run returns what every later
@@ -458,7 +448,7 @@ def _load_or_create_local[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
     return [loaded[obj.object_id] for obj in objs]
 
 
-def _run_in_process(dag: Dag, submit_provenance: SubmitProvenance) -> None:
+def _run_in_process(dag: Dag) -> None:
     """Create every ready spec in ``dag``."""
     here = Worker.here()
     for node in dag.nodes_by_id.values():
@@ -479,9 +469,7 @@ def _run_in_process(dag: Dag, submit_provenance: SubmitProvenance) -> None:
 
         try:
             with plan.listed_in(lead.plan):
-                _create_in_process(
-                    [node.obj for node in group], submit_provenance=submit_provenance
-                )
+                _create_in_process([node.obj for node in group])
         except _DependencyNotReady as exc:
             lead.obj.logger.info(
                 "blocked %s · %s",
@@ -503,9 +491,7 @@ def _run_in_process(dag: Dag, submit_provenance: SubmitProvenance) -> None:
             dag.complete(node)
 
 
-def _create_in_process[T](
-    group: list[Spec[T]], *, submit_provenance: SubmitProvenance
-) -> None:
+def _create_in_process[T](group: list[Spec[T]]) -> None:
     """Create one group in this process, announced on the terminal."""
     lead = group[0]
     label = _group_label(lead._log_label, len(group))
@@ -513,39 +499,33 @@ def _create_in_process[T](
         "creating %s", label, extra={"path": log_path_in(working_folder(group))}
     )
     started_at = time.monotonic()
-    _ensure_group_result(group, submit_provenance=submit_provenance)
+    _ensure_group_result(group)
     duration = format_duration(time.monotonic() - started_at)
     lead.logger.info("finished %s ok · %s", label, duration)
 
 
-def _create_and_store_group[T](
-    group: list[Spec[T]],
-    *,
-    has_lock: HasLock,
-    submit_provenance: SubmitProvenance,
-) -> None:
+def _create_and_store_group[T](group: list[Spec[T]], *, has_lock: HasLock) -> None:
     """Run the group's create() in its one working folder, then publish it.
 
     events.jsonl gets this attempt's start and end, and what create() writes
-    goes to the folder's log: one call, one folder, one log.
+    goes to the folder's log: one call, one folder, one log. The run is added
+    to this process's record before it is published, so every published run
+    has a line there.
     """
-    started_at = datetime.now(UTC)
     lead = group[0]
     attempt = working_folder(group)
     attempt.mkdir(exist_ok=True)
     with _log_scope(log_path_in(attempt)):
         resumed = _open_attempt(group, attempt)
+        started = events.start(
+            attempt,
+            [obj._artifact_hash for obj in group],
+            plan.listing(),
+            record.own().path,
+        )
         try:
-            results, run = _call_create(group, attempt, resumed)
-            trace = _store(
-                group,
-                results,
-                attempt,
-                run=run,
-                has_lock=has_lock,
-                submit_provenance=submit_provenance,
-                started_at=started_at,
-            )
+            results, run, loaded = _call_create(group, attempt, resumed)
+            trace = _store(group, results, attempt, run=run, has_lock=has_lock)
         except _DependencyNotReady as exc:
             # Without the lock the folder is a successor's, or published.
             if has_lock():
@@ -562,5 +542,13 @@ def _create_and_store_group[T](
                 error = ": ".join([type(exc).__name__, *str(exc).splitlines()[:1]])
                 events.end(attempt, "failed", error=error)
             raise
-        events.end(attempt, "ok")
+        ended = events.end(attempt, "ok")
+        record.batch(
+            group,
+            run=attempt.name,
+            version=FIXED if trace is None else trace.version,
+            start=started,
+            end=ended,
+            loaded=loaded,
+        )
         _publish(group, trace, has_lock=has_lock)

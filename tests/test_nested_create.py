@@ -8,7 +8,6 @@ from runs import ends_of, fixed_run
 import furu
 from furu import Spec, plan
 from furu.dependencies import _DependencyNotReady
-from furu.provenance import SubmitProvenance
 from furu.worker.backends.local import LocalThreadWorkerBackend
 
 CALLS: list[str] = []
@@ -225,16 +224,16 @@ def test_create_misses_a_dependency_again_after_building_another(
     real_create = load_or_create_module._create_in_process
     attempts: list[str] = []
 
-    def create(group: list[Spec], *, submit_provenance: SubmitProvenance) -> None:
+    def create(group: list[Spec]) -> None:
         if group[0] != parent:
-            return real_create(group, submit_provenance=submit_provenance)
+            return real_create(group)
         attempts.append("parent")
         # A race on seen, a real block on missing, then a race on seen again.
         if len(attempts) in (1, 3):
             raise _DependencyNotReady([seen], plan.listing())
         if len(attempts) == 2:
             raise _DependencyNotReady([missing], plan.listing())
-        return real_create(group, submit_provenance=submit_provenance)
+        return real_create(group)
 
     monkeypatch.setattr(load_or_create_module, "_create_in_process", create)
     parent = SumOfLeaves(count=2)

@@ -186,7 +186,6 @@ def test_traced_result_is_published_under_its_code_hash(
     assert sorted(p.name for p in run_of(plot).iterdir()) == [
         "events.jsonl",
         "log",
-        "provenance.json",
         "result",
     ]
     code = _trace(plot)["code"]

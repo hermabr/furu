@@ -27,12 +27,6 @@ from furu.execution.run import Run
 from furu.execution.run_on_workers import run_on_workers
 from furu.locking import lock
 from furu.logging import _display_path
-from furu.provenance import (
-    EnvironmentIdentity,
-    GitIdentity,
-    SubmitContext,
-    SubmitProvenance,
-)
 from furu.snapshot import CodeLocation
 from furu.storage._layout import (
     attempts_dir_in,
@@ -70,15 +64,6 @@ def _pool(worker: Worker) -> LocalThreadWorkerBackend:
     return LocalThreadWorkerBackend(worker=worker)
 
 
-def _submit_provenance() -> SubmitProvenance:
-    # The git half is a stub since these tests never read it back.
-    return SubmitProvenance(
-        git=GitIdentity(commit="0" * 40, branch=None, remote=None, repo_root="."),
-        environment=EnvironmentIdentity.capture(),
-        submitted=SubmitContext.capture(),
-    )
-
-
 def _plan() -> Path:
     return get_config().directories.anchored().plans / "e1.plan"
 
@@ -92,7 +77,6 @@ def _job(*objs: Spec) -> Job:
         execution_log=get_config().directories.anchored().executions
         / "e1"
         / "execution.log",
-        provenance=_submit_provenance(),
         process=ProcessSettings.from_metadata(objs[0]._metadata),
         config=get_config().anchored(),
         code=CodeLocation.here(),
@@ -118,7 +102,6 @@ def _new_run(
 ) -> Run:
     run = Run(
         backends={backend.pool_key: backend for backend in backends},
-        provenance=_submit_provenance(),
         code=CodeLocation.here(),
         config=get_config().anchored(),
         execution_log=get_config().directories.anchored().executions
@@ -493,7 +476,6 @@ def test_run_partitions_ready_and_blocked() -> None:
 def test_run_max_retries_per_object_defaults_to_config() -> None:
     run = Run(
         backends={},
-        provenance=_submit_provenance(),
         code=CodeLocation.here(),
         config=get_config(),
         execution_log=Path("execution.log"),
@@ -1665,8 +1647,8 @@ def test_run_returns_when_all_objects_are_already_completed() -> None:
 
     run_on_workers([leaf], [LocalThreadWorkerBackend()])
 
-    # A no-op run returns before creating an executor dir or capturing
-    # provenance; nothing appears under executions/.
+    # A no-op run returns before creating an executor dir or capturing where
+    # it was launched from; nothing appears under executions/.
     assert not executions_dir.exists() or list(executions_dir.iterdir()) == []
 
 

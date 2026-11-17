@@ -11,7 +11,7 @@ from furu.migration.steps import (
     MovedFrom,
     Renamed,
 )
-from furu.provenance import Provenance, submitting_repo_root
+from furu.provenance import submitting_repo_root
 from furu.resources import Worker
 from furu.result.codec import Codec
 from furu.result.ref import Ref, ref
@@ -31,7 +31,6 @@ __all__ = [
     "MigrationStep",
     "Missing",
     "MovedFrom",
-    "Provenance",
     "Ref",
     "Renamed",
     "Serializer",

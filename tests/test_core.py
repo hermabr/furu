@@ -614,7 +614,6 @@ def test_reserved_field_name_raises_at_class_creation():
         "load_existing",
         "delete",
         "migrations",
-        "provenance",
         "throttle",
     ):
         assert f"'{name}'" in message
@@ -1216,7 +1215,6 @@ def test_data_dir_is_user_data_subdirectory() -> None:
         "data",
         "events.jsonl",
         "log",
-        "provenance.json",
         "result",
     ]
     assert not obj._attempt_dir.exists()
@@ -1719,15 +1717,13 @@ def test_nested_create_reports_all_missing_dependencies(
     assert not second.done
 
 
-def test_nested_load_existing_and_provenance_raise_missing(tmp_path: Path) -> None:
+def test_nested_load_existing_raises_missing(tmp_path: Path) -> None:
     ObjectIdStorageValue.storage_override = tmp_path / "data"
     missing = ObjectIdStorageValue(key=13)
 
     with under_creation([ObjectIdStorageValue(key=0)]):
         with pytest.raises(furu.Missing):
             missing.load_existing()
-        with pytest.raises(furu.Missing):
-            missing.provenance()
         with pytest.raises(furu.Missing):
             furu.load_existing([missing])
 

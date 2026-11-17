@@ -89,10 +89,6 @@ def result_manifest_path_in(run_dir: Path) -> Path:
     return result_dir_in(run_dir) / "manifest.json"
 
 
-def provenance_path_in(run_dir: Path) -> Path:
-    return run_dir / "provenance.json"
-
-
 def trace_log_path_in(run_dir: Path) -> Path:
     return run_dir / "trace.log"
 
