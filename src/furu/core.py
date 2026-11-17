@@ -4,7 +4,7 @@ import logging
 import shutil
 from abc import ABC
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from functools import cache, cached_property
 from inspect import get_annotations
 from pathlib import Path
@@ -18,6 +18,7 @@ from typing import (
 )
 
 from furu._batched import _BatchedCreate, _BatchedHook, batched
+from furu._declared_types import cached_type_hints
 from furu.dependencies import (
     _Dependency,
     dependency_field,
@@ -39,7 +40,7 @@ from furu.migration.steps import MigrationStep, validate_migration_declaration
 from furu.provenance import Provenance
 from furu.resources import Worker
 from furu.result.codec import Codec
-from furu.serializer.artifact import field_types, fingerprint
+from furu.serializer.artifact import fingerprint
 from furu.serializer.artifact import to_json as _to_json
 from furu.serializer.registry import Serializer
 from furu.serializer.schema import schema_type as _schema_type
@@ -328,12 +329,15 @@ class Spec[T](_FuruDataclassTransform, ABC):
     ) -> str:
         # One fingerprint per field, so writing a large value apart from the
         # spec that holds it never changes the id.
+        hints = cached_type_hints(type(self))
         return _hash_dict_deterministically(
             {
-                name: fingerprint(
-                    getattr(self, name), field_type, self.artifact_serializers
+                f.name: fingerprint(
+                    getattr(self, f.name),
+                    hints.get(f.name, Any),
+                    self.artifact_serializers,
                 )
-                for name, field_type in field_types(type(self))
+                for f in fields(self)
             }
         )
 

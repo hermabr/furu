@@ -1167,16 +1167,11 @@ def test_a_dependency_is_computed_once_when_first_read() -> None:
     assert repr(parent) == "CountingDependencyParent(name='counting')"
     assert CountingDependencyParent.calls == 0
 
-    assert parent.child is parent.child
-    assert collect_declared_refs(parent) == (parent.child,)
+    assert parent.object_id
     assert CountingDependencyParent.calls == 1
 
-
-def test_naming_a_spec_computes_its_dependencies() -> None:
-    CountingDependencyParent.calls = 0
-    parent = CountingDependencyParent(name="counting")
-
-    assert parent.object_id
+    assert parent.child is parent.child
+    assert collect_declared_refs(parent) == (parent.child,)
     assert CountingDependencyParent.calls == 1
 
 

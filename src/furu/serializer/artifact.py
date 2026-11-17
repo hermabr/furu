@@ -3,7 +3,7 @@ from dataclasses import fields, is_dataclass
 from datetime import datetime
 from functools import cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, cast, get_args
 
 from pydantic import BaseModel as PydanticBaseModel
 
@@ -24,6 +24,7 @@ from furu.metadata import ArtifactSpec
 from furu.serializer.registry import (
     Serializer,
     SerializerMeta,
+    _annotated_serializer,
 )
 from furu.utils import (
     JsonValue,
@@ -40,15 +41,29 @@ _RESERVED_DICT_KEYS = frozenset(
     {CLASSMARKER, FIELDSMARKER, KINDMARKER, SERIALIZERMARKER, VALUEMARKER}
 )
 _PLAIN = frozenset({str, int, float, bool, type(None)})
-_STR = frozenset({str})
 
 
 @cache
-def field_types(cls: type) -> tuple[tuple[str, object], ...]:
-    """A dataclass's field names with their declared types."""
-    assert is_dataclass(cls)
-    hints = cached_type_hints(cls)
-    return tuple((f.name, hints.get(f.name, Any)) for f in fields(cls))
+def _declares_serializer(declared_type: object) -> bool:
+    """Whether the type, or a type inside it, names a serializer for its values."""
+    if _annotated_serializer(declared_type):
+        return True
+    declared_type = strip_annotated(declared_type)
+    return hasattr(declared_type, "__furu_serializer__") or any(
+        map(_declares_serializer, get_args(declared_type))
+    )
+
+
+def _serializer_may_apply(
+    declared_type: object, artifact_serializers: tuple[type[Serializer], ...]
+) -> bool:
+    """Whether a serializer could take a plain value of this type, or one inside it."""
+    if artifact_serializers or SerializerMeta._auto_registered_serializers:
+        return True
+    try:
+        return _declares_serializer(declared_type)
+    except TypeError:  # the type cannot be a cache key: the full lookup decides
+        return True
 
 
 def fingerprint(
@@ -71,21 +86,17 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
     """`obj` as JSON; with `by_reference`, a spec inside it is written as its id."""
     # TODO: when writing this to metadata, make sure to escape strings etc
 
-    # Most of what a spec holds is plain values and flat containers of them.
-    # JSON already holds those, so no serializer is looked up for them.
+    # Most of what a spec holds is plain values and flat lists of them. JSON
+    # already holds those, so they skip the lookup when no serializer could apply.
     tp = type(obj)
-    if tp in _PLAIN:
-        return obj
-    if (tp is list or tp is tuple) and _PLAIN.issuperset(map(type, obj)):
-        items = list(obj)
-        return items if tp is list else {KINDMARKER: "tuple", VALUEMARKER: items}
-    if (
-        tp is dict
-        and _STR.issuperset(map(type, obj))
-        and _RESERVED_DICT_KEYS.isdisjoint(obj)
-        and _PLAIN.issuperset(map(type, obj.values()))
+    if (tp in _PLAIN or tp is list or tp is tuple) and not _serializer_may_apply(
+        declared_type, artifact_serializers
     ):
-        return dict(obj)
+        if tp in _PLAIN:
+            return obj
+        if _PLAIN.issuperset(map(type, obj)):
+            items = list(obj)
+            return items if tp is list else {KINDMARKER: "tuple", VALUEMARKER: items}
     if by_reference and _is_spec(obj):
         return {KINDMARKER: "spec", VALUEMARKER: obj.object_id}
 
@@ -173,17 +184,18 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                 for k, v in obj.items()
             }
         case x if is_dataclass(x):
+            hints = cached_type_hints(type(x))
             return {
                 KINDMARKER: "instance",
                 CLASSMARKER: fully_qualified_name(type(x)),
                 FIELDSMARKER: {
-                    name: to_json(
-                        getattr(x, name),
-                        declared_type=field_type,
+                    f.name: to_json(
+                        getattr(x, f.name),
+                        declared_type=hints.get(f.name, Any),
                         artifact_serializers=artifact_serializers,
                         by_reference=by_reference,
                     )
-                    for name, field_type in field_types(type(x))
+                    for f in fields(x)
                 },
             }
         case PydanticBaseModel():

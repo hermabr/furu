@@ -309,6 +309,34 @@ class _OptOutRegisteredValueSerializer(Serializer[_OptOutRegisteredValue]):
         return _OptOutRegisteredValue()
 
 
+class _LowerSerializer(Serializer[object]):
+    auto_register: ClassVar[bool] = False
+
+    @classmethod
+    def matches(cls, value: object) -> bool:
+        return isinstance(value, str)
+
+    @classmethod
+    def matches_type(cls, declared_type: object) -> bool:
+        return declared_type is str
+
+    @classmethod
+    def schema(cls, declared_type: object) -> JsonValue:
+        return {"type": "lower"}
+
+    @classmethod
+    def dump(cls, value: object, *, declared_type: object) -> JsonValue:
+        return str(value).lower()
+
+    @classmethod
+    def load(cls, value: JsonValue, *, declared_type: object) -> object:
+        return value
+
+
+class _Lowered:
+    __furu_serializer__ = _LowerSerializer
+
+
 class _AutoRegisteredValueRun(Spec[int]):
     value: _AutoRegisteredValue
 
@@ -363,14 +391,39 @@ def _field(node: JsonValue, name: str) -> Any:
     return fields[name]
 
 
-def test_a_container_of_plain_values_keeps_the_rules_for_dict_keys() -> None:
-    assert to_json({"a": (1, "b", None)}, Any, ()) == {
-        "a": {KINDMARKER: "tuple", VALUEMARKER: [1, "b", None]}
-    }
+def test_a_dict_key_must_be_a_string_that_furu_does_not_reserve() -> None:
     with pytest.raises(ValueError, match="reserved"):
         to_json({KINDMARKER: 1}, Any, ())
     with pytest.raises(TypeError, match="must be strings"):
         to_json({1: 1}, Any, ())
+
+
+def test_a_declared_serializer_writes_a_plain_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Plain values skip the serializer lookup only while nothing is registered.
+    monkeypatch.setattr(SerializerMeta, "_auto_registered_serializers", [])
+    lowered = _custom_artifact(_LowerSerializer, "a")
+
+    assert to_json(("A", 1), tuple[str, int], ()) == {
+        KINDMARKER: "tuple",
+        VALUEMARKER: ["A", 1],
+    }
+    assert to_json("A", Annotated[str, _LowerSerializer], ()) == lowered
+    assert to_json(["A"], list[Annotated[str, _LowerSerializer]], ()) == [lowered]
+    assert to_json(
+        ["A"], Annotated[list[str], _LowerSerializer], ()
+    ) == _custom_artifact(_LowerSerializer, "['a']")
+    assert to_json("A", _Lowered, ()) == lowered
+    assert to_json(["A", 1], Any, (_LowerSerializer,)) == [lowered, 1]
+
+    monkeypatch.setattr(
+        SerializerMeta, "_auto_registered_serializers", [_LowerSerializer]
+    )
+    monkeypatch.setattr(
+        SerializerMeta, "_default_serializers", lambda: (_LowerSerializer,)
+    )
+    assert to_json(["A", 1], Any, ()) == [lowered, 1]
 
 
 def test_annotated_serializer_defines_schema_and_artifact() -> None:
