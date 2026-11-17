@@ -1,10 +1,13 @@
 from pathlib import Path
 
-# An identity directory {storage}/{fqn}/{schema_hash}/{artifact_hash} holds
-# spec.json, compute.lock, run.log (every attempt's log), the in-progress
-# attempt/ and one published version directory per code version (v-<hash>,
-# v-fixed or v-fixed-<hash>). attempt/ and every version directory share the
-# run-directory layout below.
+# A class folder {storage}/{class name}/{class part} holds schema.ndjson and
+# one identity directory per spec, named by its artifact hash. The class name
+# is one path component, so the folders under it are exactly its class parts.
+#
+# An identity directory holds spec.json, compute.lock, run.log (every attempt's
+# log), the in-progress attempt/ and one published version directory per code
+# version (v-<hash>, v-fixed or v-fixed-<hash>). attempt/ and every version
+# directory share the run-directory layout below.
 
 
 def spec_path_in(identity_dir: Path) -> Path:
@@ -51,16 +54,12 @@ def run_log_path_in(identity_dir: Path) -> Path:
     return identity_dir / "run.log"
 
 
-def schema_snapshot_path_in(schema_dir: Path) -> Path:
-    # schema_dir is {fqn}/{schema_hash}: the snapshot is written once per
-    # (class, schema-hash), beside the identity directories.
-    return schema_dir / "schema.json"
+def schema_path_in(class_dir: Path) -> Path:
+    return class_dir / "schema.ndjson"
 
 
-def migrations_path_in(schema_dir: Path) -> Path:
-    # The migration steps declared by the code that first wrote this schema;
-    # written once, just before the schema snapshot.
-    return schema_dir / "migrations.json"
+def schema_lock_path_in(class_dir: Path) -> Path:
+    return class_dir / "schema.lock"
 
 
 def execution_log_path_in(executor_dir: Path) -> Path:
@@ -69,7 +68,3 @@ def execution_log_path_in(executor_dir: Path) -> Path:
 
 def compute_lock_path_in(identity_dir: Path) -> Path:
     return identity_dir / "compute.lock"
-
-
-def result_link_path_in(identity_dir: Path) -> Path:
-    return identity_dir / "result-link.json"

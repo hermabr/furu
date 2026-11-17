@@ -48,39 +48,6 @@ class SerializerMeta(ABCMeta):
         return tuple(s for s in serializers if s.dependencies_available())
 
     @classmethod
-    def serializer_for_schema(
-        mcls,
-        declared_type: object,
-        artifact_serializers: tuple[type[Serializer], ...],
-    ) -> type[Serializer] | None:
-        if serializer := _annotated_serializer(declared_type):
-            return serializer
-
-        declared_type = strip_annotated(declared_type)
-        if isinstance(declared_type, type) and (
-            serializer := _class_serializer(declared_type)
-        ):
-            return serializer
-
-        origin = get_origin(declared_type)
-        if isinstance(origin, type) and (serializer := _class_serializer(origin)):
-            return serializer
-
-        if serializer := _find_single_serializer_match(
-            artifact_serializers,
-            matches=lambda serializer: serializer.matches_type(declared_type),
-            layer_name="artifact serializers",
-            match_kind="schema",
-        ):
-            return serializer
-        return _find_single_serializer_match(
-            mcls._default_serializers(),
-            matches=lambda serializer: serializer.matches_type(declared_type),
-            layer_name="auto-registered serializer registry",
-            match_kind="schema",
-        )
-
-    @classmethod
     def serializer_for_dump(
         mcls,
         value: object,
@@ -104,14 +71,12 @@ class SerializerMeta(ABCMeta):
             artifact_serializers,
             matches=lambda serializer: serializer.matches(value),
             layer_name="artifact serializers",
-            match_kind="dump",
         ):
             return serializer
         return _find_single_serializer_match(
             mcls._default_serializers(),
             matches=lambda serializer: serializer.matches(value),
             layer_name="auto-registered serializer registry",
-            match_kind="dump",
         )
 
 
@@ -130,16 +95,6 @@ class Serializer[T](ABC, metaclass=SerializerMeta):
     @classmethod
     @abstractmethod
     def matches(cls, value: object) -> bool:
-        pass
-
-    @classmethod
-    @abstractmethod
-    def matches_type(cls, declared_type: object) -> bool:
-        pass
-
-    @classmethod
-    @abstractmethod
-    def schema(cls, declared_type: object) -> JsonValue:
         pass
 
     @classmethod
@@ -186,7 +141,6 @@ def _find_single_serializer_match(
     *,
     matches: Callable[[type[Serializer]], bool],
     layer_name: str,
-    match_kind: str,
 ) -> type[Serializer] | None:
     matching_serializer: type[Serializer] | None = None
     for serializer in serializers:
@@ -197,7 +151,7 @@ def _find_single_serializer_match(
             continue
 
         raise TypeError(
-            f"{layer_name} matched multiple serializers for {match_kind}: "
+            f"{layer_name} matched multiple serializers for dump: "
             f"{matching_serializer.__name__}, {serializer.__name__}"
         )
     return matching_serializer

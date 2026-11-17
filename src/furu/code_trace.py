@@ -695,7 +695,7 @@ def _check_uncached(
     return None
 
 
-def _candidates(identity_dir: Path, code_version: CodeVersion | None) -> list[Path]:
+def _candidates(identity_dir: Path, code_version: CodeVersion) -> list[Path]:
     try:
         entries = [
             entry
@@ -706,17 +706,16 @@ def _candidates(identity_dir: Path, code_version: CodeVersion | None) -> list[Pa
         ]
     except FileNotFoundError:
         return []
-    if code_version is not None:
-        fixed = code_version == "fixed"
-        entries = [e for e in entries if e.name.startswith("v-fixed-") == fixed]
+    fixed = code_version == "fixed"
+    entries = [e for e in entries if e.name.startswith("v-fixed-") == fixed]
     entries.sort(key=lambda entry: entry.stat().st_mtime_ns, reverse=True)
     return [Path(entry.path) for entry in entries]
 
 
 def valid_version(
-    identity_dir: Path, code_version: CodeVersion | None, *, storage_root: Path
+    identity_dir: Path, code_version: CodeVersion, *, storage_root: Path
 ) -> Path | None:
-    """The published version still valid for the code on disk; None = any kind."""
+    """The published version still valid for the code on disk."""
     if code_version != "traced" and (fixed := identity_dir / "v-fixed").is_dir():
         return fixed  # one stat, the common case
     memo: dict[Path, str | None] = {}
@@ -724,10 +723,6 @@ def valid_version(
         if _check(version, storage_root, memo) is None:
             return version
     return None
-
-
-def is_valid(version: Path, *, storage_root: Path) -> bool:
-    return _check(version, storage_root, {}) is None
 
 
 def why_outdated(

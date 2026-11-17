@@ -9,9 +9,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from pydantic import JsonValue
-
-type JsonFields = dict[str, JsonValue]
+from pydantic import JsonValue  # noqa: F401  (furu's JSON type, imported from here)
 
 
 def _running_main_module_name() -> str | None:
@@ -79,15 +77,15 @@ def resolve_fully_qualified_name(name: str) -> Any:
 def object_id_from_parts(
     *,
     fully_qualified_name: str,
-    schema_hash: str,
+    class_part: str,
     artifact_hash: str,
 ) -> str:
-    return f"{fully_qualified_name}:{schema_hash}:{artifact_hash}"
+    return f"{fully_qualified_name}:{class_part}:{artifact_hash}"
 
 
-def spec_label(fully_qualified_name: str, schema_hash: str, artifact_hash: str) -> str:
+def spec_label(fully_qualified_name: str, class_part: str, artifact_hash: str) -> str:
     class_name = fully_qualified_name.rpartition(".")[2]
-    return f"{class_name}:{schema_hash[:5]}:{artifact_hash[:5]}"
+    return f"{class_name}:{class_part[:5]}:{artifact_hash[:5]}"
 
 
 # Built once: json.dumps makes a new encoder on every call.

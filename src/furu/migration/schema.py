@@ -1,0 +1,135 @@
+"""schema.ndjson: what a class folder records about the class stored in it.
+
+The first line holds the names the class part is a hash of. Each later line is
+one ``Added`` step and the default it declared, for a field or dependency
+method of the class or for a field of a dataclass its specs hold.
+
+A spec at a declared default has the id of a result stored before the field
+existed, so a spec at an edited default would load a result computed at
+another value. The recorded default is what the source is compared with.
+
+The file only grows, by whole lines: a writer holds schema.lock and a reader
+takes no lock.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from collections import defaultdict
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from furu._declared_types import cached_type_hints
+from furu.locking import lock, read_text_or_none
+from furu.migration.steps import MigrationError, describe, naming, stored_name
+from furu.serializer.artifact import to_json
+from furu.storage._layout import schema_lock_path_in, schema_path_in
+from furu.utils import JsonValue, _stable_json_dump
+
+if TYPE_CHECKING:
+    from furu.core import Spec
+
+type _Step = tuple[str | None, str]  # the dataclass that declares it, and its name
+
+# The dataclasses that values of each spec class have held, in this process.
+held: defaultdict[type, set[type]] = defaultdict(set)
+
+# What this process has checked: a class, its folder, how many dataclasses its
+# values had held by then, and whether a folder with no file was given one.
+_checked: set[tuple[type, Path, int, bool]] = set()
+
+
+def _declared_defaults(cls: type[Spec]) -> dict[_Step, tuple[str, JsonValue]]:
+    """Each default the source declares, as written down, with a label for its step."""
+    declared: dict[_Step, tuple[str, JsonValue]] = {}
+    for owner in (cls, *sorted(held[cls], key=stored_name)):
+        hints = cached_type_hints(owner)
+        for attribute, name, added in naming(owner).fields:
+            if added is not None:
+                declared[None if owner is cls else stored_name(owner), name] = (
+                    f"{owner.__name__}.migrations: {describe(added)}",
+                    to_json(
+                        added.default,
+                        hints.get(attribute, Any),
+                        cls.artifact_serializers,
+                        set(),
+                    ),
+                )
+    return declared
+
+
+def _read(path: Path) -> list[dict[str, Any]] | None:
+    """The file's whole lines; None when there is no file."""
+    if (text := read_text_or_none(path)) is None:
+        return None
+    lines = []
+    for line in text.splitlines():
+        try:
+            lines.append(json.loads(line))
+        except ValueError:  # blank, or cut short when its writer was killed
+            continue
+    return lines
+
+
+def _append(path: Path, lines: list[dict[str, Any]]) -> None:
+    with path.open("a", encoding="utf-8") as file:
+        # On a line of its own even when the writer before this one was killed
+        # in the middle of a line.
+        if file.tell():
+            file.write("\n")
+        file.write("".join(_stable_json_dump(line) + "\n" for line in lines))
+        file.flush()
+        os.fsync(file.fileno())
+
+
+def _recorded_defaults(lines: list[dict[str, Any]]) -> dict[_Step, JsonValue]:
+    return {
+        (line.get("nested"), line["added"]): line["default"]
+        for line in lines
+        if "added" in line
+    }
+
+
+def check_defaults(class_dir: Path, cls: type[Spec], *, record: bool = False) -> None:
+    """Stop when a default the source declares is not the one recorded.
+
+    A declared default with no line gets one. A folder with no file gets one
+    only with ``record``, before its first result is stored: until then nothing
+    in it was stored under any default.
+    """
+    key = (cls, class_dir, len(held[cls]))
+    if (*key, record) in _checked:
+        return
+    declared = _declared_defaults(cls)
+    path = schema_path_in(class_dir)
+    lines = _read(path) if declared or record else None
+    if lines is not None or record:
+        if lines is None or declared.keys() - _recorded_defaults(lines).keys():
+            with lock(schema_lock_path_in(class_dir)):
+                lines = _read(path) or []
+                recorded = _recorded_defaults(lines)
+                new: list[dict[str, Any]] = [
+                    {"added": name, "default": default}
+                    | ({} if nested is None else {"nested": nested})
+                    for (nested, name), (_, default) in declared.items()
+                    if (nested, name) not in recorded
+                ]
+                if not lines:
+                    new.insert(0, {"names": list(naming(cls).first_names)})
+                if new:
+                    _append(path, new)
+                lines += new
+        recorded = _recorded_defaults(lines)
+        for step, (label, default) in declared.items():
+            if _stable_json_dump(recorded[step]) != _stable_json_dump(default):
+                raise MigrationError(
+                    f"{label} declares the default {_stable_json_dump(default)}, "
+                    f"but {path} recorded {_stable_json_dump(recorded[step])} "
+                    "when the step was first seen. A spec at the declared "
+                    "default is named as it was before the field existed, so it "
+                    "would load a result computed at the recorded one. Put the "
+                    "recorded default back in the step."
+                )
+        _checked.add((*key, True))
+    _checked.add((*key, False))

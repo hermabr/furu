@@ -8,7 +8,6 @@ from furu import Serializer, Spec
 from furu.constants import (
     FIELDSMARKER,
     KINDMARKER,
-    SCHEMAMARKER,
     SERIALIZERMARKER,
     VALUEMARKER,
 )
@@ -40,14 +39,6 @@ class _HexSecretSerializer(Serializer[_Secret]):
         return type(value) is _Secret
 
     @classmethod
-    def matches_type(cls, declared_type: object) -> bool:
-        return declared_type is _Secret
-
-    @classmethod
-    def schema(cls, declared_type: object) -> JsonValue:
-        return {"type": "secret", "format": "hex"}
-
-    @classmethod
     def dump(cls, value: _Secret, *, declared_type: object) -> JsonValue:
         return {"hex": hex(value.value)}
 
@@ -70,14 +61,6 @@ class _DecimalSecretSerializer(Serializer[_Secret]):
         return type(value) is _Secret
 
     @classmethod
-    def matches_type(cls, declared_type: object) -> bool:
-        return declared_type is _Secret
-
-    @classmethod
-    def schema(cls, declared_type: object) -> JsonValue:
-        return {"type": "secret", "format": "decimal"}
-
-    @classmethod
     def dump(cls, value: _Secret, *, declared_type: object) -> JsonValue:
         return {"decimal": value.value}
 
@@ -92,10 +75,6 @@ class _DecimalSecretSerializer(Serializer[_Secret]):
 
 class _RegistrySecretSerializer(_DecimalSecretSerializer):
     auto_register: ClassVar[bool] = False
-
-    @classmethod
-    def schema(cls, declared_type: object) -> JsonValue:
-        return {"type": "secret", "format": "registry"}
 
     @classmethod
     def dump(cls, value: _Secret, *, declared_type: object) -> JsonValue:
@@ -151,14 +130,6 @@ class _TopLevelRunSerializer(Serializer[_TopLevelSerializedRun]):
         return type(value) is _TopLevelSerializedRun
 
     @classmethod
-    def matches_type(cls, declared_type: object) -> bool:
-        return declared_type is _TopLevelSerializedRun
-
-    @classmethod
-    def schema(cls, declared_type: object) -> JsonValue:
-        return {"type": "top-level-run", "version": 1}
-
-    @classmethod
     def dump(
         cls,
         value: _TopLevelSerializedRun,
@@ -201,14 +172,6 @@ class _AutoRegisteredValueSerializer(Serializer[_AutoRegisteredValue]):
         return isinstance(value, _AutoRegisteredValue)
 
     @classmethod
-    def matches_type(cls, declared_type: object) -> bool:
-        return declared_type is _AutoRegisteredValue
-
-    @classmethod
-    def schema(cls, declared_type: object) -> JsonValue:
-        return {"type": "auto-value", "format": "auto"}
-
-    @classmethod
     def dump(
         cls,
         value: _AutoRegisteredValue,
@@ -237,14 +200,6 @@ class _RegistryAutoRegisteredValueSerializer(Serializer[_AutoRegisteredValue]):
     @classmethod
     def matches(cls, value: object) -> bool:
         return isinstance(value, _AutoRegisteredValue)
-
-    @classmethod
-    def matches_type(cls, declared_type: object) -> bool:
-        return declared_type is _AutoRegisteredValue
-
-    @classmethod
-    def schema(cls, declared_type: object) -> JsonValue:
-        return {"type": "auto-value", "format": "registry"}
 
     @classmethod
     def dump(
@@ -281,14 +236,6 @@ class _OptOutRegisteredValueSerializer(Serializer[_OptOutRegisteredValue]):
         return isinstance(value, _OptOutRegisteredValue)
 
     @classmethod
-    def matches_type(cls, declared_type: object) -> bool:
-        return declared_type is _OptOutRegisteredValue
-
-    @classmethod
-    def schema(cls, declared_type: object) -> JsonValue:
-        return {"type": "opt-out-value"}
-
-    @classmethod
     def dump(
         cls,
         value: _OptOutRegisteredValue,
@@ -315,14 +262,6 @@ class _LowerSerializer(Serializer[object]):
     @classmethod
     def matches(cls, value: object) -> bool:
         return isinstance(value, str)
-
-    @classmethod
-    def matches_type(cls, declared_type: object) -> bool:
-        return declared_type is str
-
-    @classmethod
-    def schema(cls, declared_type: object) -> JsonValue:
-        return {"type": "lower"}
 
     @classmethod
     def dump(cls, value: object, *, declared_type: object) -> JsonValue:
@@ -360,17 +299,6 @@ class _AnnotatedAutoRegisteredValueRun(Spec[int]):
 
     def create(self) -> int:
         return self.value.value
-
-
-def _custom_schema(
-    serializer: type[Serializer],
-    schema: JsonValue,
-) -> JsonValue:
-    return {
-        KINDMARKER: "custom",
-        SERIALIZERMARKER: serializer._serializer_id(),
-        SCHEMAMARKER: schema,
-    }
 
 
 def _custom_artifact(
@@ -426,13 +354,9 @@ def test_a_declared_serializer_writes_a_plain_value(
     assert to_json(["A", 1], Any, ()) == [lowered, 1]
 
 
-def test_annotated_serializer_defines_schema_and_artifact() -> None:
+def test_annotated_serializer_defines_the_artifact() -> None:
     obj = _AnnotatedSecretRun(secret=_Secret(42))
 
-    assert _field(obj._schema_data, "secret") == _custom_schema(
-        _HexSecretSerializer,
-        {"type": "secret", "format": "hex"},
-    )
     assert _field(obj._artifact_data, "secret") == _custom_artifact(
         _HexSecretSerializer,
         {"hex": "0x2a"},
@@ -440,13 +364,9 @@ def test_annotated_serializer_defines_schema_and_artifact() -> None:
     assert _from_json(obj._artifact_data) == obj
 
 
-def test_furu_artifact_serializers_define_schema_and_artifact() -> None:
+def test_furu_artifact_serializers_define_the_artifact() -> None:
     obj = _RegistrySecretRun(secret=_Secret(42))
 
-    assert _field(obj._schema_data, "secret") == _custom_schema(
-        _RegistrySecretSerializer,
-        {"type": "secret", "format": "registry"},
-    )
     assert _field(obj._artifact_data, "secret") == _custom_artifact(
         _RegistrySecretSerializer,
         {"registry": 42},
@@ -454,13 +374,9 @@ def test_furu_artifact_serializers_define_schema_and_artifact() -> None:
     assert _RegistrySecretRun.from_artifact(ArtifactSpec.from_furu(obj)) == obj
 
 
-def test_class_serializer_hook_defines_schema_and_artifact() -> None:
+def test_class_serializer_hook_defines_the_artifact() -> None:
     obj = _ClassHookSecretRun(secret=_ClassHookSecret(42))
 
-    assert _field(obj._schema_data, "secret") == _custom_schema(
-        _HexSecretSerializer,
-        {"type": "secret", "format": "hex"},
-    )
     assert _field(obj._artifact_data, "secret") == _custom_artifact(
         _HexSecretSerializer,
         {"hex": "0x2a"},
@@ -473,10 +389,6 @@ def test_class_serializer_hook_defines_schema_and_artifact() -> None:
 def test_furu_class_serializer_hook_can_replace_top_level_artifact() -> None:
     obj = _TopLevelSerializedRun(value=21)
 
-    assert obj._schema_data == _custom_schema(
-        _TopLevelRunSerializer,
-        {"type": "top-level-run", "version": 1},
-    )
     assert obj._artifact_data == _custom_artifact(
         _TopLevelRunSerializer,
         {"doubled": 42},
@@ -488,10 +400,6 @@ def test_furu_class_serializer_hook_can_replace_top_level_artifact() -> None:
 
 def test_user_defined_serializer_is_auto_registered() -> None:
     assert (
-        SerializerMeta.serializer_for_schema(_AutoRegisteredValue, ())
-        is _AutoRegisteredValueSerializer
-    )
-    assert (
         SerializerMeta.serializer_for_dump(
             _AutoRegisteredValue(1),
             declared_type=_AutoRegisteredValue,
@@ -502,10 +410,6 @@ def test_user_defined_serializer_is_auto_registered() -> None:
 
     obj = _AutoRegisteredValueRun(value=_AutoRegisteredValue(42))
 
-    assert _field(obj._schema_data, "value") == _custom_schema(
-        _AutoRegisteredValueSerializer,
-        {"type": "auto-value", "format": "auto"},
-    )
     assert _field(obj._artifact_data, "value") == _custom_artifact(
         _AutoRegisteredValueSerializer,
         {"auto": 42},
@@ -514,7 +418,6 @@ def test_user_defined_serializer_is_auto_registered() -> None:
 
 
 def test_auto_register_false_opts_out_of_auto_registered_serializers() -> None:
-    assert SerializerMeta.serializer_for_schema(_OptOutRegisteredValue, ()) is None
     assert (
         SerializerMeta.serializer_for_dump(
             _OptOutRegisteredValue(),
@@ -524,13 +427,6 @@ def test_auto_register_false_opts_out_of_auto_registered_serializers() -> None:
         is None
     )
 
-    assert (
-        SerializerMeta.serializer_for_schema(
-            _OptOutRegisteredValue,
-            (_OptOutRegisteredValueSerializer,),
-        )
-        is _OptOutRegisteredValueSerializer
-    )
     assert (
         SerializerMeta.serializer_for_dump(
             _OptOutRegisteredValue(),
@@ -543,16 +439,6 @@ def test_auto_register_false_opts_out_of_auto_registered_serializers() -> None:
 
 def test_artifact_serializers_must_not_be_ambiguous() -> None:
     artifact_serializers = (_HexSecretSerializer, _DecimalSecretSerializer)
-
-    with pytest.raises(
-        TypeError,
-        match="artifact serializers matched multiple serializers for schema",
-    ) as schema_error:
-        SerializerMeta.serializer_for_schema(_Secret, artifact_serializers)
-
-    schema_message = str(schema_error.value)
-    assert "_HexSecretSerializer" in schema_message
-    assert "_DecimalSecretSerializer" in schema_message
 
     with pytest.raises(
         TypeError,
@@ -574,10 +460,6 @@ def test_furu_artifact_serializers_take_priority_over_auto_registered_serializer
 ):
     obj = _RegistryAutoRegisteredValueRun(value=_AutoRegisteredValue(42))
 
-    assert _field(obj._schema_data, "value") == _custom_schema(
-        _RegistryAutoRegisteredValueSerializer,
-        {"type": "auto-value", "format": "registry"},
-    )
     assert _field(obj._artifact_data, "value") == _custom_artifact(
         _RegistryAutoRegisteredValueSerializer,
         {"registry": 42},
@@ -588,10 +470,6 @@ def test_furu_artifact_serializers_take_priority_over_auto_registered_serializer
 def test_annotated_serializer_takes_priority_over_auto_registered_serializer() -> None:
     obj = _AnnotatedAutoRegisteredValueRun(value=_AutoRegisteredValue(42))
 
-    assert _field(obj._schema_data, "value") == _custom_schema(
-        _RegistryAutoRegisteredValueSerializer,
-        {"type": "auto-value", "format": "registry"},
-    )
     assert _field(obj._artifact_data, "value") == _custom_artifact(
         _RegistryAutoRegisteredValueSerializer,
         {"registry": 42},
@@ -603,7 +481,6 @@ def test_serializer_defined_after_default_cache_is_auto_registered() -> None:
     class LateAutoRegisteredValue:
         pass
 
-    assert SerializerMeta.serializer_for_schema(LateAutoRegisteredValue, ()) is None
     assert (
         SerializerMeta.serializer_for_dump(
             LateAutoRegisteredValue(),
@@ -617,14 +494,6 @@ def test_serializer_defined_after_default_cache_is_auto_registered() -> None:
         @classmethod
         def matches(cls, value: object) -> bool:
             return isinstance(value, LateAutoRegisteredValue)
-
-        @classmethod
-        def matches_type(cls, declared_type: object) -> bool:
-            return declared_type is LateAutoRegisteredValue
-
-        @classmethod
-        def schema(cls, declared_type: object) -> JsonValue:
-            return {"type": "late-auto-value"}
 
         @classmethod
         def dump(
@@ -647,10 +516,6 @@ def test_serializer_defined_after_default_cache_is_auto_registered() -> None:
             return LateAutoRegisteredValue()
 
     assert (
-        SerializerMeta.serializer_for_schema(LateAutoRegisteredValue, ())
-        is LateAutoRegisteredValueSerializer
-    )
-    assert (
         SerializerMeta.serializer_for_dump(
             LateAutoRegisteredValue(),
             declared_type=LateAutoRegisteredValue,
@@ -668,14 +533,6 @@ def test_auto_registered_serializers_must_not_be_ambiguous() -> None:
         @classmethod
         def matches(cls, value: object) -> bool:
             return isinstance(value, AutoAmbiguousValue)
-
-        @classmethod
-        def matches_type(cls, declared_type: object) -> bool:
-            return declared_type is AutoAmbiguousValue
-
-        @classmethod
-        def schema(cls, declared_type: object) -> JsonValue:
-            return {"type": "auto-ambiguous-value", "serializer": "first"}
 
         @classmethod
         def dump(
@@ -701,14 +558,6 @@ def test_auto_registered_serializers_must_not_be_ambiguous() -> None:
             return isinstance(value, AutoAmbiguousValue)
 
         @classmethod
-        def matches_type(cls, declared_type: object) -> bool:
-            return declared_type is AutoAmbiguousValue
-
-        @classmethod
-        def schema(cls, declared_type: object) -> JsonValue:
-            return {"type": "auto-ambiguous-value", "serializer": "second"}
-
-        @classmethod
         def dump(
             cls,
             value: AutoAmbiguousValue,
@@ -725,16 +574,6 @@ def test_auto_registered_serializers_must_not_be_ambiguous() -> None:
             declared_type: object,
         ) -> AutoAmbiguousValue:
             return AutoAmbiguousValue()
-
-    with pytest.raises(
-        TypeError,
-        match="auto-registered serializer registry matched multiple serializers for schema",
-    ) as schema_error:
-        SerializerMeta.serializer_for_schema(AutoAmbiguousValue, ())
-
-    schema_message = str(schema_error.value)
-    assert "FirstAutoAmbiguousSerializer" in schema_message
-    assert "SecondAutoAmbiguousSerializer" in schema_message
 
     with pytest.raises(
         TypeError,

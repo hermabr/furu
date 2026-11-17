@@ -216,7 +216,7 @@ if __name__ == "__main__":
                 "artifact_loaded_same_class": type(artifact_loaded) is Adder,
                 "codec_loaded": codec_loaded.decode(),
                 "first_same_payload_class": type(first) is Payload,
-                "fqn": obj._fully_qualified_name,
+                "fqn": obj._stored_name,
                 "object_id_startswith_fqn": obj.object_id.startswith(
                     "my_lib.data.Adder:"
                 ),

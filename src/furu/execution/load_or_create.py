@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import shutil
 import time
 import traceback
@@ -39,9 +38,7 @@ from furu.logging import (
     get_logger,
 )
 from furu.metadata import ArtifactSpec
-from furu.migration.links import load_stored_result, version_for_loading
-from furu.migration.resolution import _class_resolution
-from furu.migration.stale import raise_if_stale
+from furu.migration.schema import check_defaults
 from furu.provenance import (
     ExecuteContext,
     Provenance,
@@ -55,17 +52,15 @@ from furu.storage._layout import (
     attempt_dir_in,
     compute_lock_path_in,
     data_dir_in,
-    migrations_path_in,
     provenance_path_in,
     result_dir_in,
-    result_link_path_in,
     run_log_path_in,
-    schema_snapshot_path_in,
     scratch_dir_in,
     spec_path_in,
     trace_log_path_in,
     trace_path_in,
 )
+from furu.storage.stored import load_stored_result, stored_version
 from furu.utils import atomic_write_text, error_summary, format_duration
 
 if TYPE_CHECKING:
@@ -75,20 +70,6 @@ if TYPE_CHECKING:
     from furu.worker.backends.protocol import WorkerBackend
 
 type HasLock = Callable[[], bool]
-
-
-def _record_schema_snapshot(obj: Spec) -> None:
-    schema_path = schema_snapshot_path_in(obj._base_dir.parent)
-    if schema_path.exists():
-        return
-    # Before the snapshot, so whoever sees the snapshot also sees its steps.
-    atomic_write_text(
-        migrations_path_in(schema_path.parent),
-        json.dumps(sorted(_class_resolution(obj).declared_steps)),
-    )
-    atomic_write_text(
-        schema_path, json.dumps(obj._schema_data, indent=2, sort_keys=True)
-    )
 
 
 def _prepare_attempt(obj: Spec) -> LogState:
@@ -168,7 +149,7 @@ def _publish[T](
         submit_provenance, ExecuteContext.capture(started_at=started_at)
     )
     atomic_write_text(provenance_path_in(attempt), provenance.model_dump_json(indent=2))
-    _record_schema_snapshot(obj)
+    check_defaults(obj._base_dir.parent, type(obj), record=True)
     shutil.rmtree(scratch_dir_in(attempt), ignore_errors=True)
     trace_log_path_in(attempt).unlink(missing_ok=True)
 
@@ -177,7 +158,6 @@ def _publish[T](
     version = obj._base_dir / trace.version_name()
     obj.logger.debug("publishing %s as %s", obj._log_label, version.name)
     attempt.rename(version)
-    result_link_path_in(obj._base_dir).unlink(missing_ok=True)
 
 
 @overload
@@ -214,10 +194,9 @@ def _ensure_group_result[T](
 ) -> None:
     missing: list[Spec[T]] = []
     for obj in objs:
-        if version_for_loading(obj) is not None:
+        if stored_version(obj) is not None:
             obj.logger.info("cache hit for %s", obj._log_label)
             continue
-        raise_if_stale(obj)
         obj._base_dir.mkdir(parents=True, exist_ok=True)
         missing.append(obj)
 
@@ -225,9 +204,7 @@ def _ensure_group_result[T](
         return
 
     with lock([compute_lock_path_in(obj._base_dir) for obj in missing]) as has_lock:
-        pending = [
-            obj for obj in missing if version_for_loading(obj, has_lock=True) is None
-        ]
+        pending = [obj for obj in missing if stored_version(obj) is None]
         if pending:
             _create_and_store_group(
                 pending,
@@ -305,8 +282,7 @@ def load_existing(tree: object, /) -> Any:
     loaded: dict[str, Any] = {}
     missing: list[Spec] = []
     for obj in objs:
-        if (version := version_for_loading(obj)) is None:
-            raise_if_stale(obj)
+        if (version := stored_version(obj)) is None:
             missing.append(obj)
             continue
         record_dependency(obj, version)
@@ -348,13 +324,12 @@ def _load_or_block[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
     missing: list[Spec[T]] = []
 
     for obj in objs:
-        if (version := version_for_loading(obj)) is not None:
+        if (version := stored_version(obj)) is not None:
             record_dependency(obj, version)
             if load:
                 loaded.append(load_stored_result(obj, version))
             cached.append(obj)
         else:
-            raise_if_stale(obj)
             missing.append(obj)
 
     if cached:

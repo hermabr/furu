@@ -21,6 +21,7 @@ from furu.constants import (
     VALUEMARKER,
 )
 from furu.metadata import ArtifactSpec
+from furu.migration.steps import naming, stored_name
 from furu.serializer.registry import (
     Serializer,
     SerializerMeta,
@@ -28,7 +29,6 @@ from furu.serializer.registry import (
 )
 from furu.utils import (
     JsonValue,
-    _hash_dict_deterministically,
     _stable_json_dump,
     fully_qualified_name,
     resolve_fully_qualified_name,
@@ -66,24 +66,44 @@ def _serializer_may_apply(
         return True
 
 
-def fingerprint(
-    value: Any,
-    declared_type: object,
+def hashed_fields(
+    obj: Any,
     artifact_serializers: tuple[type[Serializer], ...],
-) -> str:
-    """What a field value contributes to its spec's id."""
-    return _hash_dict_deterministically(
-        to_json(value, declared_type, artifact_serializers, by_reference=True)
-    )
+    nested: set[type],
+) -> dict[str, JsonValue]:
+    """A dataclass's field values as an id sees them.
+
+    Each is under the name it had before any declared change, and an added
+    field is left out while it equals its declared default. So a declared
+    change gives the same id as before it.
+    """
+    hints = cached_type_hints(type(obj))
+    hashed: dict[str, JsonValue] = {}
+    for attribute, name, added in naming(type(obj)).fields:
+        declared_type = hints.get(attribute, Any)
+        value = to_json(
+            getattr(obj, attribute), declared_type, artifact_serializers, nested
+        )
+        # Compared as text, so that a NaN equals itself.
+        if added is None or _stable_json_dump(value) != _stable_json_dump(
+            to_json(added.default, declared_type, artifact_serializers, nested)
+        ):
+            hashed[name] = value
+    return hashed
 
 
 def to_json(  # TODO: consider caching this (but if i'm going to, I need to figure out how to cache lists and other unhashable objects)
     obj: Any,
     declared_type: object,
     artifact_serializers: tuple[type[Serializer], ...],
-    by_reference: bool = False,
+    nested: set[type] | None = None,
 ) -> JsonValue:
-    """`obj` as JSON; with `by_reference`, a spec inside it is written as its id."""
+    """`obj` as JSON.
+
+    Given `nested`, it is the form an id is a hash of: a spec inside `obj` is
+    written as its id, and a dataclass as `hashed_fields` names it, with its
+    class added to `nested`.
+    """
     # TODO: when writing this to metadata, make sure to escape strings etc
 
     # Most of what a spec holds is plain values and flat lists of them. JSON
@@ -97,7 +117,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
         if _PLAIN.issuperset(map(type, obj)):
             items = list(obj)
             return items if tp is list else {KINDMARKER: "tuple", VALUEMARKER: items}
-    if by_reference and _is_spec(obj):
+    if nested is not None and _is_spec(obj):
         return {KINDMARKER: "spec", VALUEMARKER: obj.object_id}
 
     def assert_correct_dict_key(x: Any) -> str:
@@ -148,7 +168,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                     x,
                     declared_type=item_type,
                     artifact_serializers=artifact_serializers,
-                    by_reference=by_reference,
+                    nested=nested,
                 )
                 for x, item_type in zip(obj, item_declared_types(declared_type))
             ]
@@ -165,7 +185,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                             x,
                             declared_type=element_type,
                             artifact_serializers=artifact_serializers,
-                            by_reference=by_reference,
+                            nested=nested,
                         )
                         for x in obj
                     ),
@@ -179,9 +199,16 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                     v,
                     declared_type=value_type,
                     artifact_serializers=artifact_serializers,
-                    by_reference=by_reference,
+                    nested=nested,
                 )
                 for k, v in obj.items()
+            }
+        case x if is_dataclass(x) and nested is not None:
+            nested.add(type(x))
+            return {
+                KINDMARKER: "instance",
+                CLASSMARKER: stored_name(type(x)),
+                FIELDSMARKER: hashed_fields(x, artifact_serializers, nested),
             }
         case x if is_dataclass(x):
             hints = cached_type_hints(type(x))
@@ -193,7 +220,6 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                         getattr(x, f.name),
                         declared_type=hints.get(f.name, Any),
                         artifact_serializers=artifact_serializers,
-                        by_reference=by_reference,
                     )
                     for f in fields(x)
                 },
@@ -210,7 +236,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                         getattr(obj, k),
                         declared_type=hints.get(k, Any),
                         artifact_serializers=artifact_serializers,
-                        by_reference=by_reference,
+                        nested=nested,
                     )
                     for k in model_fields
                 },
@@ -372,10 +398,10 @@ def _from_artifact[T: Spec](artifact: ArtifactSpec, expected_type: type[T]) -> T
             + "that now returns something else than when the spec was stored "
             + "causes this."
         )
-    if artifact.schema_hash != furu_obj._artifact_schema_hash:
+    if artifact.class_part != furu_obj._class_part:
         raise ValueError(
-            "Artifact schema hash did not match loaded object: "
-            + f"artifact={artifact.schema_hash[:5]}, "
-            + f"loaded={furu_obj._artifact_schema_hash[:5]}"
+            "Artifact class part did not match loaded object: "
+            + f"artifact={artifact.class_part[:5]}, "
+            + f"loaded={furu_obj._class_part[:5]}"
         )
     return furu_obj
