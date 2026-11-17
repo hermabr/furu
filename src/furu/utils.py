@@ -92,13 +92,15 @@ def spec_label(fully_qualified_name: str, class_part: str, artifact_hash: str) -
 _stable_json_dump = json.JSONEncoder(sort_keys=True, separators=(",", ":")).encode
 
 
-def _hash_dict_deterministically(obj: object) -> str:
-    json_str = _stable_json_dump(obj)
-
+def _fingerprint(written: str) -> str:
     return hashlib.blake2s(
-        json_str.encode(),
+        written.encode(),
         digest_size=10,  # TODO: make this digest size configurable and include a script for estimating likelihood of crashing. right now, i think there is a 1e-08 chance of a collision with 155M items with the same schema and namespace
     ).hexdigest()
+
+
+def _hash_dict_deterministically(obj: object) -> str:
+    return _fingerprint(_stable_json_dump(obj))
 
 
 def nfs_safe_unique_name(path: Path, *, name: str | None = None) -> Path:

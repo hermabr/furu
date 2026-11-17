@@ -2,9 +2,10 @@
 
 One JSON object per line, each with ``event`` and ``at`` (UTC), of three kinds:
 ``opened`` once, with the hashes of the run's specs in row order; then per
-attempt a ``start`` before create() and an ``end`` after it. A start with no
-end was killed or is still running. Only the worker that holds the run's lock
-appends, and nothing else is in the file: what create() wrote is in ``log``.
+attempt a ``start`` before create(), with the machine and the plan file that
+lists the specs, and an ``end`` after it. A start with no end was killed or is
+still running. Only the worker that holds the run's lock appends, and nothing
+else is in the file: what create() wrote is in ``log``.
 """
 
 from __future__ import annotations
@@ -49,12 +50,22 @@ def _line(event: str, **fields: object) -> str:
     return json.dumps({"event": event, "at": at, **fields}, separators=(",", ":"))
 
 
-def start(run_dir: Path, specs: Sequence[str]) -> None:
-    """Begin an attempt in a working folder, opening the folder if it is new."""
+def start(run_dir: Path, specs: Sequence[str], plan: Path | None) -> None:
+    """Begin an attempt in a working folder, opening the folder if it is new.
+
+    ``plan`` is the plan file that lists the specs: their fields and what they
+    depend on.
+    """
     earlier = [event.get("event") for event in read_events(run_dir)]
     lines = [] if "opened" in earlier else [_line("opened", specs=list(specs))]
+    listed = {} if plan is None else {"plan": str(plan)}
     lines.append(
-        _line("start", attempt=earlier.count("start") + 1, host=socket.gethostname())
+        _line(
+            "start",
+            attempt=earlier.count("start") + 1,
+            host=socket.gethostname(),
+            **listed,
+        )
     )
     # On a new line, so an attempt killed in the middle of a line costs only
     # that line and not this attempt's first.

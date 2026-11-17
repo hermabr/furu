@@ -27,9 +27,8 @@ from subprocess_objects import (
 )
 
 import furu
-from furu import Metadata, Spec
+from furu import Metadata, Spec, plan
 from furu.config import _project_anchor, get_config
-from furu.metadata import ArtifactSpec
 from furu.provenance import (
     EnvironmentIdentity,
     GitIdentity,
@@ -80,7 +79,9 @@ def _job(
     code: CodeLocation | None = None,
 ) -> Job:
     return Job(
-        artifacts=[ArtifactSpec.from_furu(obj) for obj in objs],
+        specs=[obj.object_id for obj in objs],
+        lines=list(map(plan.dump, plan.lines(objs))),
+        plan=get_config().directories.anchored().plans / "e1.plan",
         class_dir=objs[0]._class_dir,
         execution_log=get_config().directories.anchored().executions
         / "e1"
@@ -344,9 +345,13 @@ def test_subprocess_blocked_dependency_is_relayed(child_slot: ChildSlot) -> None
     result = _run(child_slot, parent)
 
     assert isinstance(result, JobBlockedResult)
-    assert [artifact.object_id for artifact in result.dependencies] == [
-        dependency.object_id
-    ]
+    assert result.dependencies == [dependency.object_id]
+    # The worker saved the line of the spec it found in a plan file of its
+    # own, in the launch's folder, before it reported back.
+    found = {"fields": {"marker": 0}, "runs": True, "spec": dependency.object_id}
+    assert result.lines == [plan.dump(found)]
+    assert result.plan.parent == get_config().directories.anchored().plans / "e1"
+    assert plan.read(result.plan) == [{"asked_by": [parent.object_id]}, found]
     assert ends_of(parent) == [
         {"outcome": "blocked", "waiting_on": [dependency.object_id]}
     ]

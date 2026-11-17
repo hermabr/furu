@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field, fields
+from pathlib import Path
 from typing import ClassVar
 
 from furu._batched import _BatchedHook
@@ -21,6 +22,9 @@ class MixedBatchError(RuntimeError):
 @dataclass(eq=False)
 class DagNode:
     obj: Spec
+    # The plan file that lists it: the launch's, or the one of the process
+    # whose create() asked for it.
+    plan: Path | None = None
     dependencies: list[DagNode] = field(default_factory=list)
     dependents: list[DagNode] = field(default_factory=list)
     # When it first found missing each dependency its run sees built, since it
@@ -93,8 +97,11 @@ class Dag:
     def _check_new(self, nodes: Sequence[DagNode]) -> None:
         """Reject new nodes before they join the graph; runners override this."""
 
-    def add(self, objs: Sequence[Spec]) -> None:
-        """Add the missing ``objs`` and, recursively, their declared dependencies."""
+    def add(self, objs: Sequence[Spec], plan: Path | None = None) -> None:
+        """Add the missing ``objs`` and, recursively, their declared dependencies.
+
+        ``plan`` is the plan file that lists them.
+        """
         refs_by_id: dict[str, tuple[Spec, ...]] = {}
         new: list[DagNode] = []
         pending = list(reversed(objs))
@@ -108,7 +115,7 @@ class Dag:
             seen_object_ids.add(obj.object_id)
             if look.row(obj) is not None:
                 continue
-            new.append(DagNode(obj=obj))
+            new.append(DagNode(obj=obj, plan=plan))
             refs = collect_declared_refs(obj)
             refs_by_id[obj.object_id] = refs
             pending.extend(refs)
@@ -131,8 +138,12 @@ class Dag:
                 node
             )
 
-    def block(self, node: DagNode, dependencies: Sequence[Spec]) -> str | None:
+    def block(
+        self, node: DagNode, dependencies: Sequence[Spec], plan: Path | None = None
+    ) -> str | None:
         """``node`` found ``dependencies`` missing; rerun it once they're built.
+
+        ``plan`` is the plan file in which its create() saved their lines.
 
         Ones this run sees built may not be visible to ``node`` yet, so if it
         names only those it just reruns; once it has found one missing for over
@@ -158,7 +169,7 @@ class Dag:
                         f"still finds {dep._log_label} missing {span}, "
                         "though this run sees it built"
                     )
-        self.add(unbuilt)
+        self.add(unbuilt, plan)
         for dep in unbuilt:
             if dep_node := self.nodes_by_id.get(dep.object_id):
                 self._link(node, dep_node)

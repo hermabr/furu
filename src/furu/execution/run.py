@@ -6,6 +6,7 @@ runs here; the manager gets plain data.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections.abc import Sequence
@@ -15,13 +16,13 @@ from typing import ClassVar, NoReturn, assert_never
 
 from websockets.sync.client import ClientConnection
 
+from furu import plan
 from furu.config import _Config, get_config
 from furu.core import Spec, working_folder
 from furu.dag import Dag, DagNode, MixedBatchError
 from furu.dependencies import missing_dependencies
 from furu.locking import is_active_lock
 from furu.logging import _display_path, get_logger
-from furu.metadata import ArtifactSpec
 from furu.provenance import SubmitProvenance
 from furu.snapshot import CodeLocation
 from furu.storage._layout import lock_path_in, log_path_in
@@ -84,8 +85,6 @@ class Run(Dag):
     failures: dict[str, list[str]] = field(default_factory=dict)
     logs: dict[str, Path] = field(default_factory=dict)
     batch_ids: dict[object, str] = field(default_factory=dict)
-    # The stored names of the classes this launch asked about.
-    asked: frozenset[str] = frozenset()
 
     # A worker's filesystem can take about a minute to show a version another
     # node just published (NFS caches directory listings).
@@ -103,8 +102,9 @@ class Run(Dag):
                     None
                     if group is None
                     else Batch(
+                        # A batch holds specs from one plan, which its run names.
                         batch=self.batch_ids.setdefault(
-                            group[0], f"b{len(self.batch_ids)}"
+                            (group[0], node.plan), f"b{len(self.batch_ids)}"
                         ),
                         cap=group[1],
                     )
@@ -149,24 +149,23 @@ class Run(Dag):
 
     def _submission(self, node: DagNode) -> Submission:
         obj = node.obj
-        artifact = ArtifactSpec.from_furu(obj)
+        assert node.plan is not None
         return Submission(
             job=Job(
-                artifacts=[artifact],
+                specs=[obj.object_id],
+                lines=list(map(plan.dump, plan.lines([obj]))),
+                plan=node.plan,
                 class_dir=obj._class_dir,
                 execution_log=self.execution_log,
                 provenance=self.provenance,
                 process=ProcessSettings.from_metadata(obj._metadata),
                 config=self.config,
                 code=self.code,
-                asked=self.asked,
             ),
             pools=self.placement[obj.object_id],
             throttle=None
             if (throttle := obj.throttle) is None
-            else JobThrottle(
-                key=artifact.fully_qualified_name, max_running=throttle.max_running
-            ),
+            else JobThrottle(key=obj._stored_name, max_running=throttle.max_running),
         )
 
     def poll_waiting(self) -> None:
@@ -226,8 +225,9 @@ class Run(Dag):
         why = None
         if isinstance(result, JobBlockedResult):
             try:
+                found = plan.Specs(map(json.loads, result.lines))
                 why = self.block(
-                    node, [Spec.from_artifact(dep) for dep in result.dependencies]
+                    node, [found[dep] for dep in result.dependencies], result.plan
                 )
             except MixedBatchError as exc:
                 # What its create() asked for cannot run: that fails the job

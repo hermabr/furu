@@ -4,15 +4,13 @@ from typing import Annotated, Any, ClassVar
 
 import pytest
 
-from furu import Serializer, Spec
+from furu import Serializer, Spec, plan
 from furu.constants import (
-    FIELDSMARKER,
     KINDMARKER,
     SERIALIZERMARKER,
     VALUEMARKER,
 )
-from furu.metadata import ArtifactSpec
-from furu.serializer.artifact import _from_json, to_json
+from furu.serializer.artifact import to_json
 from furu.serializer.registry import SerializerMeta
 from furu.utils import JsonValue
 
@@ -109,53 +107,6 @@ class _ClassHookSecretRun(Spec[int]):
 
     def create(self) -> int:
         return self.secret.value
-
-
-class _TopLevelSerializedRun(Spec[int]):
-    value: int
-
-    @classmethod
-    def __furu_serializer__(cls) -> type[Serializer[_TopLevelSerializedRun]]:
-        return _TopLevelRunSerializer
-
-    def create(self) -> int:
-        return self.value
-
-
-class _TopLevelRunSerializer(Serializer[_TopLevelSerializedRun]):
-    auto_register: ClassVar[bool] = False
-
-    @classmethod
-    def matches(cls, value: object) -> bool:
-        return type(value) is _TopLevelSerializedRun
-
-    @classmethod
-    def dump(
-        cls,
-        value: _TopLevelSerializedRun,
-        *,
-        declared_type: object,
-    ) -> JsonValue:
-        return {"doubled": value.value * 2}
-
-    @classmethod
-    def load(
-        cls,
-        value: JsonValue,
-        *,
-        declared_type: object,
-    ) -> _TopLevelSerializedRun:
-        if not isinstance(value, dict) or not isinstance(
-            field := value.get("doubled"), int
-        ):
-            raise ValueError("expected top-level run artifact")
-        loaded_type = (
-            declared_type
-            if isinstance(declared_type, type)
-            and issubclass(declared_type, _TopLevelSerializedRun)
-            else _TopLevelSerializedRun
-        )
-        return loaded_type(value=field // 2)
 
 
 class _AutoRegisteredValue:
@@ -312,18 +263,21 @@ def _custom_artifact(
     }
 
 
-def _field(node: JsonValue, name: str) -> Any:
-    assert isinstance(node, dict)
-    fields = node[FIELDSMARKER]
-    assert isinstance(fields, dict)
-    return fields[name]
+def _field(obj: Spec, name: str) -> Any:
+    """How the plan line of obj holds a field."""
+    (line,) = plan.lines([obj])
+    return line["fields"][name]
+
+
+def _from_line(obj: Spec) -> Any:
+    return plan.Specs(plan.lines([obj]))[obj.object_id]
 
 
 def test_a_dict_key_must_be_a_string_that_furu_does_not_reserve() -> None:
     with pytest.raises(ValueError, match="reserved"):
-        to_json({KINDMARKER: 1}, Any, ())
+        to_json({KINDMARKER: 1}, Any, (), set())
     with pytest.raises(TypeError, match="must be strings"):
-        to_json({1: 1}, Any, ())
+        to_json({1: 1}, Any, (), set())
 
 
 def test_a_declared_serializer_writes_a_plain_value(
@@ -335,17 +289,19 @@ def test_a_declared_serializer_writes_a_plain_value(
     monkeypatch.setattr(SerializerMeta, "_default_serializers", lambda: ())
     lowered = _custom_artifact(_LowerSerializer, "a")
 
-    assert to_json(("A", 1), tuple[str, int], ()) == {
+    assert to_json(("A", 1), tuple[str, int], (), set()) == {
         KINDMARKER: "tuple",
         VALUEMARKER: ["A", 1],
     }
-    assert to_json("A", Annotated[str, _LowerSerializer], ()) == lowered
-    assert to_json(["A"], list[Annotated[str, _LowerSerializer]], ()) == [lowered]
+    assert to_json("A", Annotated[str, _LowerSerializer], (), set()) == lowered
+    assert to_json(["A"], list[Annotated[str, _LowerSerializer]], (), set()) == [
+        lowered
+    ]
     assert to_json(
-        ["A"], Annotated[list[str], _LowerSerializer], ()
+        ["A"], Annotated[list[str], _LowerSerializer], (), set()
     ) == _custom_artifact(_LowerSerializer, "['a']")
-    assert to_json("A", _Lowered, ()) == lowered
-    assert to_json(["A", 1], Any, (_LowerSerializer,)) == [lowered, 1]
+    assert to_json("A", _Lowered, (), set()) == lowered
+    assert to_json(["A", 1], Any, (_LowerSerializer,), set()) == [lowered, 1]
 
     monkeypatch.setattr(
         SerializerMeta, "_auto_registered_serializers", [_LowerSerializer]
@@ -353,51 +309,39 @@ def test_a_declared_serializer_writes_a_plain_value(
     monkeypatch.setattr(
         SerializerMeta, "_default_serializers", lambda: (_LowerSerializer,)
     )
-    assert to_json(["A", 1], Any, ()) == [lowered, 1]
+    assert to_json(["A", 1], Any, (), set()) == [lowered, 1]
 
 
 def test_annotated_serializer_defines_the_artifact() -> None:
     obj = _AnnotatedSecretRun(secret=_Secret(42))
 
-    assert _field(obj._artifact_data, "secret") == _custom_artifact(
+    assert _field(obj, "secret") == _custom_artifact(
         _HexSecretSerializer,
         {"hex": "0x2a"},
     )
-    assert _from_json(obj._artifact_data) == obj
+    assert _from_line(obj) == obj
 
 
 def test_furu_artifact_serializers_define_the_artifact() -> None:
     obj = _RegistrySecretRun(secret=_Secret(42))
 
-    assert _field(obj._artifact_data, "secret") == _custom_artifact(
+    assert _field(obj, "secret") == _custom_artifact(
         _RegistrySecretSerializer,
         {"registry": 42},
     )
-    assert _RegistrySecretRun.from_artifact(ArtifactSpec.from_furu(obj)) == obj
+    assert _from_line(obj) == obj
 
 
 def test_class_serializer_hook_defines_the_artifact() -> None:
     obj = _ClassHookSecretRun(secret=_ClassHookSecret(42))
 
-    assert _field(obj._artifact_data, "secret") == _custom_artifact(
+    assert _field(obj, "secret") == _custom_artifact(
         _HexSecretSerializer,
         {"hex": "0x2a"},
     )
-    loaded = _from_json(obj._artifact_data)
+    loaded = _from_line(obj)
     assert loaded == obj
     assert isinstance(loaded.secret, _ClassHookSecret)
-
-
-def test_furu_class_serializer_hook_can_replace_top_level_artifact() -> None:
-    obj = _TopLevelSerializedRun(value=21)
-
-    assert obj._artifact_data == _custom_artifact(
-        _TopLevelRunSerializer,
-        {"doubled": 42},
-    )
-    artifact = ArtifactSpec.from_furu(obj)
-    assert _TopLevelSerializedRun.from_artifact(artifact) == obj
-    assert Spec.from_artifact(artifact) == obj
 
 
 def test_user_defined_serializer_is_auto_registered() -> None:
@@ -412,11 +356,11 @@ def test_user_defined_serializer_is_auto_registered() -> None:
 
     obj = _AutoRegisteredValueRun(value=_AutoRegisteredValue(42))
 
-    assert _field(obj._artifact_data, "value") == _custom_artifact(
+    assert _field(obj, "value") == _custom_artifact(
         _AutoRegisteredValueSerializer,
         {"auto": 42},
     )
-    assert _from_json(obj._artifact_data) == obj
+    assert _from_line(obj) == obj
 
 
 def test_auto_register_false_opts_out_of_auto_registered_serializers() -> None:
@@ -462,21 +406,21 @@ def test_furu_artifact_serializers_take_priority_over_auto_registered_serializer
 ):
     obj = _RegistryAutoRegisteredValueRun(value=_AutoRegisteredValue(42))
 
-    assert _field(obj._artifact_data, "value") == _custom_artifact(
+    assert _field(obj, "value") == _custom_artifact(
         _RegistryAutoRegisteredValueSerializer,
         {"registry": 42},
     )
-    assert _from_json(obj._artifact_data) == obj
+    assert _from_line(obj) == obj
 
 
 def test_annotated_serializer_takes_priority_over_auto_registered_serializer() -> None:
     obj = _AnnotatedAutoRegisteredValueRun(value=_AutoRegisteredValue(42))
 
-    assert _field(obj._artifact_data, "value") == _custom_artifact(
+    assert _field(obj, "value") == _custom_artifact(
         _RegistryAutoRegisteredValueSerializer,
         {"registry": 42},
     )
-    assert _from_json(obj._artifact_data) == obj
+    assert _from_line(obj) == obj
 
 
 def test_serializer_defined_after_default_cache_is_auto_registered() -> None:

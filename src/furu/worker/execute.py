@@ -71,7 +71,7 @@ class ChildSlot:
                 f"required environment variables not set: {', '.join(missing)}"
             )
 
-        spec_name = job.artifacts[0].fully_qualified_name
+        spec_name = job.specs[0].partition(":")[0]
         child = self._child
         if child is not None:
             same_process_context = (
@@ -175,10 +175,7 @@ class ChildSlot:
         else:
             reason = f"exited with code {returncode}"
         self._logger.warning(
-            "child %d %s while running %s",
-            child.process.pid,
-            reason,
-            job.artifacts[0].log_label,
+            "child %d %s while running %s", child.process.pid, reason, job.label
         )
         # The log's tail is the child's last words, and the reason goes last
         # so it reads as the error's summary.

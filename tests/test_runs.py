@@ -15,7 +15,7 @@ import pytest
 from runs import ends_of, events_of, fixed_run, run_of
 
 import furu
-from furu import Spec
+from furu import Spec, plan
 from furu.code_trace import Trace
 from furu.core import working_folder
 from furu.execution import load_or_create
@@ -338,6 +338,7 @@ def test_events_list_the_specs_once_and_each_attempts_start_and_end() -> None:
         re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", event.pop("at"))
         for event in events
     )
+    plans = [Path(event.pop("plan")) for event in events if event["event"] == "start"]
     host = socket.gethostname()
     assert events == [
         {"event": "opened", "specs": [spec._artifact_hash]},
@@ -347,6 +348,19 @@ def test_events_list_the_specs_once_and_each_attempts_start_and_end() -> None:
         {"event": "end", "outcome": "failed", "error": "ValueError: bad shape"},
         {"event": "start", "attempt": 3, "host": host},
         {"event": "end", "outcome": "ok"},
+    ]
+    # Each start names the plan of its launch, which lists the spec.
+    assert plans[0] == plans[1] != plans[2]
+    listed = {"fields": {}, "runs": True, "spec": spec.object_id}
+    assert plan.read(plans[0])[1:] == plan.read(plans[2])[1:] == [listed]
+    # The leaf its create() asked for is listed in a file of the process that
+    # ran the create(), in the folder of the launch.
+    leaf = Leaf(n=7)
+    found = Path(events_of(leaf)[1]["plan"])
+    assert found.parent == plans[0].with_suffix("")
+    assert plan.read(found) == [
+        {"asked_by": [spec.object_id]},
+        {"fields": {"n": 7}, "runs": True, "spec": leaf.object_id},
     ]
 
 

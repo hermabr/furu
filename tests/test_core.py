@@ -21,7 +21,7 @@ from runs import ends_of, fixed_run, log_of, run_of
 
 import furu
 import furu.execution.load_or_create as execution_module
-from furu import Metadata, Spec, Throttle, Worker
+from furu import Metadata, Spec, Throttle, Worker, plan
 from furu.config import get_config
 from furu.core import working_folder
 from furu.dependencies import (
@@ -31,9 +31,7 @@ from furu.dependencies import (
 )
 from furu.execution.load_or_create import _load_or_create
 from furu.logging import _execution_log
-from furu.metadata import ArtifactSpec
 from furu.result.bundle import _save_result_bundle
-from furu.serializer.artifact import _from_json, to_json
 from furu.storage._layout import (
     data_dir_in,
     events_path_in,
@@ -45,12 +43,16 @@ from furu.storage._layout import (
 type SOME_TYPE = Literal["a", "b"] | int
 
 
-def _to_json(obj: Any, declared_type: object) -> Any:
-    return to_json(
-        obj,
-        declared_type=declared_type,
-        artifact_serializers=(),
-    )
+def _fields(obj: Spec) -> Any:
+    """The fields in the plan line of obj."""
+    return next(
+        line for line in plan.lines([obj]) if line.get("spec") == obj.object_id
+    )["fields"]
+
+
+def _from_line[TSpec: Spec](obj: TSpec) -> TSpec:
+    """obj as a worker builds it: from its plan line and the lines it reaches."""
+    return cast(TSpec, plan.Specs(plan.lines([obj]))[obj.object_id])
 
 
 class Node(Spec[str]):
@@ -723,33 +725,19 @@ def test_hashes_and_data_dir():
     )
 
 
-def test_to_json():
+def test_a_line_holds_a_spec_in_a_field_as_its_id():
     node_pair = NodePair(
         name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
     )
-    expected = {
-        "|kind": "instance",
-        "|class": "test_core.NodePair",
-        "|fields": {
-            "node1": {
-                "|kind": "instance",
-                "|class": "test_core.Node",
-                "|fields": {"name": "y"},
-            },
-            "node2": {
-                "|kind": "instance",
-                "|class": "test_core.WeightedNode",
-                "|fields": {"name": "z", "weight": 1},
-            },
-            "name": "x",
-        },
+
+    assert _fields(node_pair) == {
+        "node1": {"|kind": "spec", "|value": node_pair.node1.object_id},
+        "node2": {"|kind": "spec", "|value": node_pair.node2.object_id},
+        "name": "x",
     }
-    assert _to_json(node_pair, NodePair) == expected
-    assert _to_json(node_pair, NodePair) == node_pair._artifact_data
-    assert node_pair._artifact_data == expected
 
 
-def test_to_json_with_none_field():
+def test_a_line_holds_a_none_field():
     obj = B(
         a=A(x=1, z="123", w=[6, 7]),
         y={"hey": 123, "ney": 1},
@@ -757,93 +745,68 @@ def test_to_json_with_none_field():
         maybe_val=None,
     )
 
-    expected = {
-        "|kind": "instance",
-        "|class": "test_core.B",
-        "|fields": {
-            "a": {
-                "|kind": "instance",
-                "|class": "test_core.A",
-                "|fields": {"x": 1, "z": "123", "w": [6, 7], "some_obj": "a"},
-            },
-            "y": {"hey": 123, "ney": 1},
-            "t": {"|kind": "tuple", "|value": ["123", 12]},
-            "maybe_val": None,
-        },
+    assert _fields(obj) == {
+        "a": {"|kind": "spec", "|value": cast(A, obj.a).object_id},
+        "y": {"hey": 123, "ney": 1},
+        "t": {"|kind": "tuple", "|value": ["123", 12]},
+        "maybe_val": None,
     }
 
-    assert _to_json(obj, B) == expected
 
-
-def test_to_json_with_class_field_value():
+def test_a_line_holds_a_class_as_its_name():
     obj = UsesClassValue(node_cls=Node)
 
-    assert _to_json(Node, type) == {"|kind": "type_ref", "|class": "test_core.Node"}
-    assert obj._artifact_data == {
-        "|kind": "instance",
-        "|class": "test_core.UsesClassValue",
-        "|fields": {"node_cls": {"|kind": "type_ref", "|class": "test_core.Node"}},
+    assert _fields(obj) == {
+        "node_cls": {"|kind": "type_ref", "|class": "test_core.Node"}
     }
-    assert isinstance(obj._artifact_hash, str)
 
 
-def test_to_json_with_pydantic_field_value():
+def test_a_line_holds_a_pydantic_model_by_its_fields():
     obj = PydanticFields(pydantic_obj=PydanticSubclass(field1=1))
 
-    expected = {
-        "|kind": "instance",
-        "|class": "test_core.PydanticFields",
-        "|fields": {
-            "pydantic_obj": {
-                "|kind": "instance",
-                "|class": "test_core.PydanticSubclass",
-                "|fields": {"field1": 1},
-            }
-        },
+    assert _fields(obj) == {
+        "pydantic_obj": {
+            "|kind": "instance",
+            "|class": "test_core.PydanticSubclass",
+            "|fields": {"field1": 1},
+        }
     }
 
-    assert _to_json(obj, PydanticFields) == expected
-    assert obj._artifact_data == expected
-    assert isinstance(obj._artifact_hash, str)
 
-
-def test_furu_object_round_trips_from_json_artifact():
+def test_a_spec_round_trips_through_its_line():
     obj = NodePair(
         name="x",
         node1=Node(name="y"),
         node2=WeightedNode(name="z", weight=1),
     )
 
-    loaded = _from_json(obj._artifact_data)
+    loaded = _from_line(obj)
 
     assert loaded == obj
     assert isinstance(loaded, NodePair)
     assert loaded.object_id == obj.object_id
+    assert loaded._class_dir == obj._class_dir
 
 
-def test_furu_object_with_typed_fields_round_trips_from_json_artifact():
+def test_a_spec_with_typed_fields_round_trips_through_its_line():
     path_obj = UsesPath(path=Path("/tmp/out"))
     class_obj = UsesClassValue(node_cls=Node)
 
-    assert _from_json(path_obj._artifact_data) == path_obj
-    assert _from_json(class_obj._artifact_data) == class_obj
-    assert isinstance(cast(UsesPath, _from_json(path_obj._artifact_data)).path, Path)
+    assert _from_line(path_obj) == path_obj
+    assert _from_line(class_obj) == class_obj
+    assert isinstance(_from_line(path_obj).path, Path)
 
 
-def test_datetime_field_round_trips_from_json_artifact():
+def test_a_datetime_field_round_trips_through_its_line():
     naive_obj = UsesDatetime(dt=datetime(2026, 7, 18, 12, 30, 45, 123456))
     aware_obj = UsesDatetime(dt=datetime(2026, 7, 18, 12, 30, tzinfo=UTC))
 
-    assert naive_obj._artifact_data == {
-        "|kind": "instance",
-        "|class": "test_core.UsesDatetime",
-        "|fields": {
-            "dt": {"|kind": "datetime", "|value": "2026-07-18T12:30:45.123456"}
-        },
+    assert _fields(naive_obj) == {
+        "dt": {"|kind": "datetime", "|value": "2026-07-18T12:30:45.123456"}
     }
 
     for obj in (naive_obj, aware_obj):
-        loaded = cast(UsesDatetime, _from_json(obj._artifact_data))
+        loaded = _from_line(obj)
         assert loaded == obj
         assert isinstance(loaded.dt, datetime)
         assert loaded.dt.tzinfo == obj.dt.tzinfo
@@ -859,7 +822,7 @@ def test_container_fields_round_trip_with_exact_types():
         untyped={"tup": (1, 2), "nested": {4, 5}},
     )
 
-    loaded = cast(UsesContainers, _from_json(obj._artifact_data))
+    loaded = _from_line(obj)
 
     assert loaded == obj
     assert loaded.ints == {1, 2, 3}
@@ -873,7 +836,7 @@ def test_container_fields_round_trip_with_exact_types():
     assert loaded.object_id == obj.object_id
 
 
-def test_set_artifact_data_is_deterministic():
+def test_a_set_is_written_the_same_in_any_order():
     first = UsesContainers(
         ints={1, 2, 3},
         frozen=frozenset({"a", "b"}),
@@ -889,31 +852,8 @@ def test_set_artifact_data_is_deterministic():
         untyped={},
     )
 
-    assert first._artifact_data == second._artifact_data
+    assert _fields(first) == _fields(second)
     assert first._artifact_hash == second._artifact_hash
-
-
-def test_furu_from_artifact_returns_furu_object():
-    obj = NodePair(
-        name="x",
-        node1=Node(name="y"),
-        node2=WeightedNode(name="z", weight=1),
-    )
-    obj.create()
-    artifact = ArtifactSpec(
-        fully_qualified_name=obj._stored_name,
-        stored_name=obj._stored_name,
-        artifact_data=obj._artifact_data,
-        artifact_hash=obj._artifact_hash,
-        class_part=obj._class_part,
-    )
-
-    loaded = NodePair.from_artifact(artifact)
-
-    assert artifact.object_id == obj.object_id
-    assert loaded == obj
-    assert isinstance(loaded, NodePair)
-    assert loaded._class_dir == obj._class_dir
 
 
 def test_specs_held_in_fields_are_built_before_the_create_hook() -> None:
@@ -968,9 +908,10 @@ def test_a_dependency_is_computed_once_when_first_read() -> None:
 def test_a_dependency_is_stored_and_hashed_as_a_field() -> None:
     parent = ComputedDependencyParent(name="x")
 
-    assert parent._artifact_data["|fields"] == {
+    assert Node(name="y").object_id not in parent.object_id
+    assert _fields(parent) == {
         "name": "x",
-        "child": Node(name="x")._artifact_data,
+        "child": {"|kind": "value", "|value": parent._returned["child"]},
     }
     with pytest.raises(TypeError, match="unexpected keyword argument 'child'"):
         ComputedDependencyParent(name="x", child=Node(name="y"))  # ty: ignore[unknown-argument]
@@ -981,23 +922,25 @@ def test_a_dependency_returning_a_tree_plans_every_spec_in_it() -> None:
 
     refs = cast(tuple[Node, ...], collect_declared_refs(parent))
     assert {ref.name for ref in refs} == {"a", "b", "shared"}
-    assert cast(Any, parent._artifact_data)["|fields"]["by_name"]["none"] is None
 
 
-def test_a_spec_with_a_dependency_round_trips_through_its_artifact() -> None:
-    parent = ComputedDependencyParent(name="x")
-
-    assert Spec.from_artifact(ArtifactSpec.from_furu(parent)) == parent
-
-
-def test_loading_an_artifact_whose_dependency_is_now_derived_differently_fails() -> (
+def test_a_spec_from_a_line_calls_its_dependency_method_when_the_field_is_read() -> (
     None
 ):
-    # Its child is named after the number of calls, so a rebuilt spec gets another.
-    stored = ArtifactSpec.from_furu(CountingDependencyParent(name="x"))
+    CountingDependencyParent.calls = 0
+    parent = ComputedDependencyParent(name="x")
+    counting = CountingDependencyParent(name="x")
 
-    with pytest.raises(ValueError, match="@furu.dependency"):
-        Spec.from_artifact(stored)
+    assert _from_line(parent).child == parent.child
+
+    # Its id is the line's: nothing is hashed, so no method runs.
+    built = _from_line(counting)
+    assert built.object_id == counting.object_id
+    assert CountingDependencyParent.calls == 1
+    # Its child is named after the number of calls, so the method now returns
+    # another one than the line has the fingerprint of.
+    with pytest.raises(RuntimeError, match=r"\.child returned something else"):
+        _ = built.child
 
 
 def test_a_dependency_without_a_return_annotation_is_rejected() -> None:
@@ -1138,108 +1081,6 @@ def test_a_batched_create_loads_specs_from_fields_and_ones_it_asks_for() -> None
 
     for obj in objs:
         assert collect_declared_refs(obj) == (obj.eager,)
-
-
-def test_furu_from_artifact_infers_furu_object_type():
-    obj = NodePair(
-        name="x",
-        node1=Node(name="y"),
-        node2=WeightedNode(name="z", weight=1),
-    )
-    obj.create()
-    artifact = ArtifactSpec(
-        fully_qualified_name=obj._stored_name,
-        stored_name=obj._stored_name,
-        artifact_data=obj._artifact_data,
-        artifact_hash=obj._artifact_hash,
-        class_part=obj._class_part,
-    )
-
-    loaded = Spec.from_artifact(artifact)
-
-    assert artifact.object_id == obj.object_id
-    assert loaded == obj
-    assert isinstance(loaded, NodePair)
-
-
-def test_furu_from_artifact_accepts_artifact_spec():
-    obj = Node(name="x")
-    artifact = ArtifactSpec(
-        fully_qualified_name=obj._stored_name,
-        stored_name=obj._stored_name,
-        artifact_data=obj._artifact_data,
-        artifact_hash=obj._artifact_hash,
-        class_part=obj._class_part,
-    )
-
-    loaded = Node.from_artifact(artifact)
-
-    assert artifact.object_id == obj.object_id
-    assert loaded == obj
-    assert isinstance(loaded, Node)
-
-
-def test_furu_from_artifact_type_mismatch_names_expected_and_loaded_type():
-    obj = WeightedNode(name="x", weight=1)
-    artifact = ArtifactSpec(
-        fully_qualified_name=obj._stored_name,
-        stored_name=obj._stored_name,
-        artifact_data=obj._artifact_data,
-        artifact_hash=obj._artifact_hash,
-        class_part=obj._class_part,
-    )
-
-    with pytest.raises(
-        TypeError,
-        match=(
-            r"Artifact described test_core\.WeightedNode, "
-            r"expected test_core\.NodePair"
-        ),
-    ):
-        NodePair.from_artifact(artifact)
-
-
-def test_furu_from_artifact_rejects_artifact_spec_hash_mismatch():
-    obj = Node(name="x")
-    bad_hash = "wrong-artifact-hash"
-    artifact = ArtifactSpec(
-        fully_qualified_name=obj._stored_name,
-        stored_name=obj._stored_name,
-        artifact_data=obj._artifact_data,
-        artifact_hash=bad_hash,
-        class_part=obj._class_part,
-    )
-
-    with pytest.raises(
-        ValueError,
-        match=(
-            "Artifact hash did not match loaded object: "
-            + f"artifact={bad_hash[:5]}, loaded={obj._artifact_hash[:5]}"
-        ),
-    ):
-        Node.from_artifact(artifact)
-
-
-def test_furu_from_artifact_rejects_artifact_spec_class_part_mismatch():
-    obj = Node(name="x")
-    bad_class_part = "wrong-class-part"
-    artifact = ArtifactSpec(
-        fully_qualified_name=obj._stored_name,
-        stored_name=obj._stored_name,
-        artifact_data=obj._artifact_data,
-        artifact_hash=obj._artifact_hash,
-        class_part=bad_class_part,
-    )
-
-    with pytest.raises(
-        ValueError,
-        match=(
-            "Artifact class part did not match loaded object: "
-            + f"artifact={bad_class_part[:5]}, "
-            + f"loaded={obj._class_part[:5]}"
-        ),
-    ):
-        Node.from_artifact(artifact)
 
 
 def test_data_dir():
@@ -1854,11 +1695,25 @@ def test_nested_create_reports_all_missing_dependencies(
     second = ObjectIdStorageValue(key=12)
 
     parent = ObjectIdStorageValue(key=0)
+    launch_plan = get_config().directories.anchored().plans / "launch.plan"
 
-    with under_creation([parent]), pytest.raises(_DependencyNotReady) as exc_info:
+    with (
+        plan.listed_in(launch_plan),
+        under_creation([parent]),
+        pytest.raises(_DependencyNotReady) as exc_info,
+    ):
         _load_or_create([first, second])
 
     assert exc_info.value.dependencies == (first, second)
+    # Their lines are on disk before anyone is told, in this process's own file.
+    found = exc_info.value.plan
+    assert found is not None
+    assert found.parent == launch_plan.with_suffix("")
+    assert plan.read(found) == [
+        {"asked_by": [parent.object_id]},
+        {"fields": {"key": 11}, "runs": True, "spec": first.object_id},
+        {"fields": {"key": 12}, "runs": True, "spec": second.object_id},
+    ]
     assert ObjectIdStorageValue.create_calls == []
     assert not first.done
     assert not second.done
@@ -1885,6 +1740,7 @@ def test_dependency_not_ready_is_not_caught_as_exception(
 
     with (
         pytest.raises(_DependencyNotReady),
+        plan.listed_in(get_config().directories.anchored().plans / "launch.plan"),
         under_creation([ObjectIdStorageValue(key=0)]),
     ):
         try:

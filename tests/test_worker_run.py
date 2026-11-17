@@ -19,7 +19,7 @@ from websockets.sync.server import ServerConnection, serve
 import furu
 import furu.dag as dag_module
 import furu.worker.loop as worker_loop_module
-from furu import Spec, Throttle, Worker
+from furu import Spec, Throttle, Worker, plan
 from furu.config import get_config
 from furu.core import working_folder
 from furu.execution.manager import Manager, _Lease, _Queued, _Script
@@ -27,7 +27,6 @@ from furu.execution.run import Run
 from furu.execution.run_on_workers import run_on_workers
 from furu.locking import lock
 from furu.logging import _display_path
-from furu.metadata import ArtifactSpec
 from furu.provenance import (
     EnvironmentIdentity,
     GitIdentity,
@@ -80,9 +79,15 @@ def _submit_provenance() -> SubmitProvenance:
     )
 
 
+def _plan() -> Path:
+    return get_config().directories.anchored().plans / "e1.plan"
+
+
 def _job(*objs: Spec) -> Job:
     return Job(
-        artifacts=[ArtifactSpec.from_furu(obj) for obj in objs],
+        specs=[obj.object_id for obj in objs],
+        lines=list(map(plan.dump, plan.lines(objs))),
+        plan=_plan(),
         class_dir=objs[0]._class_dir,
         execution_log=get_config().directories.anchored().executions
         / "e1"
@@ -123,7 +128,7 @@ def _new_run(
         if max_retries_per_object is None
         else max_retries_per_object,
     )
-    run.add(objs)
+    run.add(objs, _plan())
     return run
 
 
@@ -142,9 +147,7 @@ def _assert_one_state(run: Run) -> None:
 
 
 def _submitted_ids(run: Run) -> list[str]:
-    return [
-        submission.job.artifacts[0].object_id for submission in run.take_submissions()
-    ]
+    return [submission.job.specs[0] for submission in run.take_submissions()]
 
 
 # --- manager-side leasing, without sockets -------------------------------------
@@ -197,14 +200,14 @@ def _release(manager: Manager, job: Job) -> None:
     (worker,) = [
         worker
         for worker, lease in manager.leases.items()
-        if lease.job.artifacts == job.artifacts
+        if lease.job.specs == job.specs
     ]
     del manager.leases[worker]
 
 
 def _ids(job: Job | None) -> list[str]:
     assert isinstance(job, Job)
-    return [artifact.object_id for artifact in job.artifacts]
+    return job.specs
 
 
 @contextmanager
@@ -538,7 +541,7 @@ def test_run_blocked_result_discovers_lazy_dependency_and_reruns_parent() -> Non
     assert _submitted_ids(run) == [parent.object_id]
     run.job_result(
         parent.object_id,
-        JobBlockedResult(dependencies=[ArtifactSpec.from_furu(dependency)]),
+        _blocked(dependency),
     )
 
     assert set(run.ready) == {dependency.object_id}
@@ -554,7 +557,9 @@ def test_run_blocked_result_discovers_lazy_dependency_and_reruns_parent() -> Non
 
 def _blocked(*dependencies: Spec) -> JobBlockedResult:
     return JobBlockedResult(
-        dependencies=[ArtifactSpec.from_furu(dependency) for dependency in dependencies]
+        dependencies=[dependency.object_id for dependency in dependencies],
+        lines=list(map(plan.dump, plan.lines(dependencies))),
+        plan=_plan().with_suffix("") / "w0.plan",
     )
 
 
@@ -811,7 +816,7 @@ def test_run_fails_a_spec_blocked_without_naming_a_dependency() -> None:
     run = _new_run([parent])
     run.take_submissions()
 
-    run.job_result(parent.object_id, JobBlockedResult(dependencies=[]))
+    run.job_result(parent.object_id, _blocked())
 
     assert set(run.failed) == {parent.object_id}
     assert run.failures[parent.object_id] == [
@@ -850,11 +855,7 @@ def test_run_blocked_result_discovers_multiple_lazy_dependencies_together() -> N
     run.take_submissions()
     run.job_result(
         parent.object_id,
-        JobBlockedResult(
-            dependencies=[
-                ArtifactSpec.from_furu(dependency) for dependency in dependencies
-            ]
-        ),
+        _blocked(*dependencies),
     )
 
     assert set(run.ready) == {dependency.object_id for dependency in dependencies}
@@ -875,13 +876,13 @@ def test_run_fails_on_a_dependency_cycle() -> None:
     run.take_submissions()
     run.job_result(
         parent.object_id,
-        JobBlockedResult(dependencies=[ArtifactSpec.from_furu(dependency)]),
+        _blocked(dependency),
     )
     run.take_submissions()
     with pytest.raises(RuntimeError) as excinfo:
         run.job_result(
             dependency.object_id,
-            JobBlockedResult(dependencies=[ArtifactSpec.from_furu(parent)]),
+            _blocked(parent),
         )
 
     assert str(excinfo.value) == (
@@ -1181,9 +1182,7 @@ def test_run_fails_when_no_pool_can_run_a_lazy_dependency() -> None:
     with pytest.raises(RuntimeError, match="no worker pool can run"):
         run.job_result(
             parent.object_id,
-            JobBlockedResult(
-                dependencies=[ArtifactSpec.from_furu(MemoryLeaf(value=uuid4().int))]
-            ),
+            _blocked(MemoryLeaf(value=uuid4().int)),
         )
 
 
@@ -1195,9 +1194,7 @@ def test_run_fails_on_a_zero_batch_cap_in_a_lazy_dependency() -> None:
     with pytest.raises(RuntimeError, match="cap must be a positive int, got 0"):
         run.job_result(
             parent.object_id,
-            JobBlockedResult(
-                dependencies=[ArtifactSpec.from_furu(PerGpuBatchedLeaf(value=1))]
-            ),
+            _blocked(PerGpuBatchedLeaf(value=1)),
         )
 
 
@@ -1425,9 +1422,10 @@ def test_job_round_trip_from_script_through_manager_to_worker() -> None:
         _hello(manager.url) as worker,
     ):
         job = Job.model_validate_json(worker.recv(timeout=5))
-        (artifact,) = job.artifacts
-        assert artifact.object_id == leaf.object_id
-        assert artifact.artifact_data["|fields"] == {"value": 1}
+        assert job.specs == [leaf.object_id]
+        assert job.lines == [
+            plan.dump({"fields": {"value": 1}, "spec": leaf.object_id})
+        ]
 
         worker.send(JobCompletedResult().model_dump_json())
         assert manager_message_adapter.validate_json(
@@ -1723,8 +1721,8 @@ def test_job_result_uses_status_discriminator() -> None:
         {"status": "failed", "error": "boom"}
     ) == JobFailedResult(error="boom")
     assert adapter.validate_python(
-        {"status": "blocked", "dependencies": []}
-    ) == JobBlockedResult(dependencies=[])
+        {"status": "blocked", "dependencies": [], "lines": [], "plan": _plan()}
+    ) == _blocked().model_copy(update={"plan": _plan()})
     with pytest.raises(ValidationError, match="Input tag 'skipped'"):
         adapter.validate_python({"status": "skipped"})
 

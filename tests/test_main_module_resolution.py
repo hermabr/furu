@@ -129,11 +129,10 @@ from pathlib import Path
 
 from collections.abc import Mapping
 
-from furu import Metadata, Spec
+from furu import Metadata, Spec, plan
 from furu.storage._layout import data_dir_in
 from furu.result.bundle import load_result_bundle, _save_result_bundle
 from furu.result.codec import Codec
-from furu.serializer.artifact import _from_json
 
 
 @dataclass(frozen=True)
@@ -176,8 +175,8 @@ if __name__ == "__main__":
     reimported = importlib.import_module("my_lib.data")
 
     obj = Adder(a=1, b=2)
-    artifact = obj._artifact_data
-    artifact_loaded = _from_json(artifact)
+    lines = list(plan.lines([obj]))
+    line_loaded = plan.Specs(lines)[obj.object_id]
     first = obj.create()
     second = obj.create()
 
@@ -216,8 +215,8 @@ if __name__ == "__main__":
     print(
         json.dumps(
             {
-                "artifact_class": artifact["|class"],
-                "artifact_loaded_same_class": type(artifact_loaded) is Adder,
+                "line_loaded_same_class": type(line_loaded) is Adder,
+                "line_spec": lines[0]["spec"].partition(":")[0],
                 "codec_loaded": codec_loaded.decode(),
                 "first_same_payload_class": type(first) is Payload,
                 "fqn": obj._stored_name,
@@ -257,11 +256,11 @@ if __name__ == "__main__":
 
     output = json.loads(result.stdout.strip().splitlines()[-1])
     assert output == {
-        "artifact_class": "my_lib.data.Adder",
-        "artifact_loaded_same_class": True,
         "codec_loaded": "abc",
         "first_same_payload_class": True,
         "fqn": "my_lib.data.Adder",
+        "line_loaded_same_class": True,
+        "line_spec": "my_lib.data.Adder",
         "object_id_startswith_fqn": True,
         "payload_loaded_same_class": True,
         "reimport_is_running_main": True,

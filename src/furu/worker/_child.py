@@ -1,17 +1,16 @@
 import io
+import json
 import os
 import sys
 import traceback
 from pathlib import Path
 
+from furu import plan
 from furu.code_trace import StaleCodeError
 from furu.config import _Config, _set_config
-from furu.core import Spec
 from furu.dependencies import _DependencyNotReady
-from furu.execution.launch import asked
 from furu.execution.load_or_create import _ensure_group_result
 from furu.logging import _configure_child_logging
-from furu.metadata import ArtifactSpec
 from furu.provenance import _set_submitted_repo_root, _worker_backend
 from furu.worker.messages import (
     Job,
@@ -25,13 +24,18 @@ from furu.worker.messages import (
 def _execute(job: Job) -> JobResult:
     _set_submitted_repo_root(Path(job.provenance.git.repo_root))
     try:
-        objs = [Spec.from_artifact(artifact) for artifact in job.artifacts]
-        with asked(job.asked):
-            _ensure_group_result(objs, submit_provenance=job.provenance)
+        specs = plan.Specs(map(json.loads, job.lines))
+        with plan.listed_in(job.plan):
+            _ensure_group_result(
+                [specs[spec] for spec in job.specs], submit_provenance=job.provenance
+            )
         return JobCompletedResult()
     except _DependencyNotReady as exc:
+        assert exc.plan is not None
         return JobBlockedResult(
-            dependencies=[ArtifactSpec.from_furu(dep) for dep in exc.dependencies]
+            dependencies=[dep.object_id for dep in exc.dependencies],
+            lines=list(map(plan.dump, exc.lines)),
+            plan=exc.plan,
         )
     except Exception as exc:  # noqa: BLE001 -- fault barrier: any crash fails the job
         return JobFailedResult(

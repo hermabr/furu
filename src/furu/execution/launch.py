@@ -13,17 +13,14 @@ of it has a result in a batch folder: without the decorator a spec is looked
 for by its own folder name only.
 
 Nothing checks afterwards, with one exception: a spec that a ``create()``
-builds is checked where it is built, together with what is missing under it,
-for each class the launch never saw.
+builds is checked where it is built, together with what is missing under it.
 """
 
 from __future__ import annotations
 
 import os
 from collections import Counter, defaultdict
-from collections.abc import Collection, Generator, Iterable, Iterator, Sequence
-from contextlib import contextmanager
-from contextvars import ContextVar
+from collections.abc import Collection, Iterable, Iterator, Sequence
 from dataclasses import fields, is_dataclass
 from pathlib import Path
 
@@ -45,11 +42,6 @@ from furu.storage.stored import Stored
 logger = get_logger("run")
 
 IGNORE_STORED = "FURU_IGNORE_STORED"
-
-# The stored names of the classes the launch asked about, where its create()s run.
-_asked: ContextVar[frozenset[str]] = ContextVar(
-    "furu_launch_asked", default=frozenset()
-)
 
 
 def _stage(cls: type) -> str:
@@ -147,27 +139,24 @@ def _check_batch_folders(missing: Sequence[Spec]) -> None:
         )
 
 
-def ask(missing: Sequence[Spec], *, found: bool = False) -> frozenset[str]:
+def ask(missing: Sequence[Spec], *, found: bool = False) -> None:
     """Stop the launch when it would leave stored results behind.
 
     For each class with missing specs, a folder under the class's name is
     explained when it is the class part the source gives now, or the one from
     before a breaking step. The field names a held dataclass was stored with
     are explained the same way. Anything else raises, unless
-    ``FURU_IGNORE_STORED`` names the folder. Returns the stored names of the
-    classes it asked about.
+    ``FURU_IGNORE_STORED`` names the folder.
 
-    With ``found``, a create() asked for ``missing``. The classes the launch
-    asked about are skipped. It could not ask about the others, so there is no
-    launch to go on with ``FURU_IGNORE_STORED``: unexplained results fail the
-    create().
+    With ``found``, a create() asked for ``missing``. The launch could not ask
+    about them, so there is no launch to go on with ``FURU_IGNORE_STORED``:
+    unexplained results fail the create().
     """
-    ignore: set[str] = set()
-    if found:
-        skip = _asked.get()
-        missing = [obj for obj in missing if obj._stored_name not in skip]
-    else:
-        ignore = {name.strip() for name in os.environ.get(IGNORE_STORED, "").split(",")}
+    ignore = (
+        set()
+        if found
+        else {name.strip() for name in os.environ.get(IGNORE_STORED, "").split(",")}
+    )
     class_dirs: dict[Path, type[Spec]] = {}
     holds: dict[Path, dict[type, tuple[str, ...]]] = {}
     for obj in missing:
@@ -229,14 +218,3 @@ def ask(missing: Sequence[Spec], *, found: bool = False) -> frozenset[str]:
         for line in sorted(unexplained[name]):
             logger.info("ignoring stored results · %s", line)
     _check_batch_folders(missing)
-    return frozenset(map(stored_name, class_dirs.values()))
-
-
-@contextmanager
-def asked(stages: frozenset[str]) -> Generator[None]:
-    """Run create()s of a launch that asked about ``stages``."""
-    token = _asked.set(stages)
-    try:
-        yield
-    finally:
-        _asked.reset(token)

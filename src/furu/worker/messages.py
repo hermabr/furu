@@ -13,11 +13,11 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from furu.config import _Config
 from furu.logging import _group_label
-from furu.metadata import ArtifactSpec
 from furu.provenance import SubmitProvenance
 from furu.snapshot import CodeLocation
 from furu.spec_metadata import Metadata, Reuse
 from furu.storage._layout import attempt_dir_in, log_path_in, run_name
+from furu.utils import spec_label
 
 
 class _Message(BaseModel):
@@ -40,8 +40,14 @@ class ProcessSettings(_Message):
 
 class Job(_Message):
     kind: Literal["job"] = "job"
-    # One create() call: the specs of one batch in row order, or one spec.
-    artifacts: list[ArtifactSpec]
+    # One create() call: the ids of the specs of one batch in row order, or of
+    # one spec.
+    specs: list[str]
+    # Their plan lines and the lines their fields reach, so the worker builds
+    # them without reading a plan file or hashing anything.
+    lines: list[str]
+    # The plan file that lists them.
+    plan: Path
     # Their class folder, which the worker cannot compute without importing
     # the spec class.
     class_dir: Path
@@ -52,18 +58,15 @@ class Job(_Message):
     # a worker serving many repos stores each result in the repo it came from.
     config: _Config
     code: CodeLocation
-    # The stored names of the classes the launch asked about. A spec of
-    # another class that a create() builds is checked where it is built.
-    asked: frozenset[str] = frozenset()
 
     @property
     def label(self) -> str:
-        return _group_label(self.artifacts[0].log_label, len(self.artifacts))
+        return _group_label(spec_label(*self.specs[0].split(":")), len(self.specs))
 
     @property
     def log(self) -> Path:
         """Where its create() writes: the log in the working folder of its run."""
-        run = run_name([artifact.artifact_hash for artifact in self.artifacts])
+        run = run_name([spec.rpartition(":")[2] for spec in self.specs])
         return log_path_in(attempt_dir_in(self.class_dir, run))
 
 
@@ -84,7 +87,11 @@ class JobFailedResult(_Message):
 
 class JobBlockedResult(_Message):
     status: Literal["blocked"] = "blocked"
-    dependencies: list[ArtifactSpec]
+    # The ids of the specs its create() asked for that are not stored, the
+    # lines that describe them, and the plan file the lines were saved in.
+    dependencies: list[str]
+    lines: list[str]
+    plan: Path
 
 
 type JobResult = Annotated[

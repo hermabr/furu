@@ -13,10 +13,9 @@ import pytest
 from runs import run_of
 
 import furu
-from furu import Added, MovedFrom, Renamed, Spec
+from furu import Added, MovedFrom, Renamed, Spec, plan
 from furu.config import get_config
 from furu.execution.launch import stage_table
-from furu.metadata import ArtifactSpec
 from furu.migration import schema
 from furu.migration.steps import MigrationError, naming
 from furu.storage._layout import schema_path_in
@@ -164,13 +163,14 @@ class Relocated(Spec[int]):
         return self.x
 
 
-def test_a_moved_class_is_rebuilt_from_its_artifact() -> None:
+def test_a_moved_class_is_built_from_a_line_that_holds_its_old_name() -> None:
     spec = Relocated(x=1)
-    artifact = ArtifactSpec.from_furu(spec)
+    line, table = plan.lines([spec])
 
-    assert artifact.object_id == spec.object_id
+    assert line["spec"] == spec.object_id
     assert spec.object_id.startswith("old_package.Original:")
-    assert Spec.from_artifact(artifact) == spec
+    assert table == {"moved": {"old_package.Original": f"{__name__}.Relocated"}}
+    assert plan.Specs([line, table])[spec.object_id] == spec
 
 
 def test_a_breaking_step_is_a_fresh_start() -> None:
@@ -610,10 +610,6 @@ def test_a_spec_built_inside_a_create_is_checked_where_it_is_built(
     last_line = str(failed.value).splitlines()[-1]
     assert f"Tok: {old._class_dir} was stored" in last_line
     assert not run(peak=1.0).done
-
-    # A class the launch asked about is not asked about again.
-    furu.create([run(peak=2.0), search(n=1)])
-    assert run(peak=1.0).done
 
 
 def test_the_launch_table_has_a_row_for_each_stage_with_specs_missing() -> None:

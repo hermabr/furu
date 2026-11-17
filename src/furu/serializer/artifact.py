@@ -1,9 +1,12 @@
 import enum
+from collections.abc import Callable, Collection, Generator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import fields, is_dataclass
 from datetime import datetime
 from functools import cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast, get_args
+from typing import Any, cast, get_args
 
 from pydantic import BaseModel as PydanticBaseModel
 
@@ -20,7 +23,6 @@ from furu.constants import (
     SERIALIZERMARKER,
     VALUEMARKER,
 )
-from furu.metadata import ArtifactSpec
 from furu.migration.steps import naming, stored_name
 from furu.serializer.registry import (
     Serializer,
@@ -29,18 +31,46 @@ from furu.serializer.registry import (
 )
 from furu.utils import (
     JsonValue,
+    _fingerprint,
     _stable_json_dump,
     fully_qualified_name,
     resolve_fully_qualified_name,
 )
 
-if TYPE_CHECKING:
-    from furu.core import Spec
-
 _RESERVED_DICT_KEYS = frozenset(
     {CLASSMARKER, FIELDSMARKER, KINDMARKER, SERIALIZERMARKER, VALUEMARKER}
 )
 _PLAIN = frozenset({str, int, float, bool, type(None)})
+
+# A field value whose written form, which is ASCII, is longer than this is a
+# line of its own in a plan.
+OWN_LINE_BYTES = 1024
+
+# The fingerprint of each such list, tuple, dict or set that a launch has
+# named, by the identity of the value, the class that holds it and the field,
+# with the value so that the identity stays its own. A value that many specs
+# share is written out once.
+_remembered: ContextVar[dict[tuple[int, type, str], tuple[object, str]] | None] = (
+    ContextVar("furu_remembered_values", default=None)
+)
+_REMEMBERED = frozenset({list, tuple, dict, set, frozenset})
+
+
+@contextmanager
+def remembering() -> Generator[None]:
+    """Remember the fingerprints of large values for one launch."""
+    token = _remembered.set({})
+    try:
+        yield
+    finally:
+        _remembered.reset(token)
+
+
+def remembered(value: object, cls: type, attribute: str) -> str | None:
+    """The fingerprint this launch remembers for a value in a field of ``cls``."""
+    if (memo := _remembered.get()) is None:
+        return None
+    return memo.get((id(value), cls, attribute), (None, None))[1]
 
 
 @cache
@@ -92,17 +122,49 @@ def hashed_fields(
     return hashed
 
 
+def field_fingerprints(
+    obj: Any,
+    artifact_serializers: tuple[type[Serializer], ...],
+    nested: set[type],
+) -> dict[str, str]:
+    """One fingerprint per field of a spec, named and left out as in `hashed_fields`."""
+    cls = type(obj)
+    hints = cached_type_hints(cls)
+    remembered = _remembered.get()
+    fingerprints: dict[str, str] = {}
+    for attribute, name, added in naming(cls).fields:
+        declared_type = hints.get(attribute, Any)
+        value = getattr(obj, attribute)
+        key = (id(value), cls, attribute)
+        memo = remembered if type(value) in _REMEMBERED else None
+        if memo is not None and key in memo:
+            fingerprint = memo[key][1]
+        else:
+            written = _stable_json_dump(
+                to_json(value, declared_type, artifact_serializers, nested)
+            )
+            fingerprint = _fingerprint(written)
+            if memo is not None and len(written) > OWN_LINE_BYTES:
+                memo[key] = (value, fingerprint)
+        if added is None or fingerprint != _fingerprint(
+            _stable_json_dump(
+                to_json(added.default, declared_type, artifact_serializers, nested)
+            )
+        ):
+            fingerprints[name] = fingerprint
+    return fingerprints
+
+
 def to_json(  # TODO: consider caching this (but if i'm going to, I need to figure out how to cache lists and other unhashable objects)
     obj: Any,
     declared_type: object,
     artifact_serializers: tuple[type[Serializer], ...],
-    nested: set[type] | None = None,
+    nested: set[type],
 ) -> JsonValue:
-    """`obj` as JSON.
+    """`obj` as JSON, the form an id is a hash of and a plan line holds.
 
-    Given `nested`, it is the form an id is a hash of: a spec inside `obj` is
-    written as its id, and a dataclass as `hashed_fields` names it, with its
-    class added to `nested`.
+    A spec inside `obj` is written as its id, and a dataclass as
+    `hashed_fields` names it, with its class added to `nested`.
     """
     # TODO: when writing this to metadata, make sure to escape strings etc
 
@@ -117,7 +179,7 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
         if _PLAIN.issuperset(map(type, obj)):
             items = list(obj)
             return items if tp is list else {KINDMARKER: "tuple", VALUEMARKER: items}
-    if nested is not None and _is_spec(obj):
+    if _is_spec(obj):
         return {KINDMARKER: "spec", VALUEMARKER: obj.object_id}
 
     def assert_correct_dict_key(x: Any) -> str:
@@ -203,26 +265,12 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
                 )
                 for k, v in obj.items()
             }
-        case x if is_dataclass(x) and nested is not None:
+        case x if is_dataclass(x):
             nested.add(type(x))
             return {
                 KINDMARKER: "instance",
                 CLASSMARKER: stored_name(type(x)),
                 FIELDSMARKER: hashed_fields(x, artifact_serializers, nested),
-            }
-        case x if is_dataclass(x):
-            hints = cached_type_hints(type(x))
-            return {
-                KINDMARKER: "instance",
-                CLASSMARKER: fully_qualified_name(type(x)),
-                FIELDSMARKER: {
-                    f.name: to_json(
-                        getattr(x, f.name),
-                        declared_type=hints.get(f.name, Any),
-                        artifact_serializers=artifact_serializers,
-                    )
-                    for f in fields(x)
-                },
             }
         case PydanticBaseModel():
             model_cls = type(obj)
@@ -259,51 +307,93 @@ def _is_spec(obj: object) -> bool:
     return isinstance(obj, Spec)
 
 
-def _from_json_field(value: JsonValue, expected_type: Any) -> Any:
-    if (
-        isinstance(value, dict)
-        and value.get(KINDMARKER) == "custom"
-        and isinstance(value.get(SERIALIZERMARKER), str)
-    ):
-        return _load_custom_value(cast(dict[str, Any], value), expected_type)
+def check_names(cls: type, written: Collection[str]) -> None:
+    """Refuse written fields that are not the class's with its declared steps undone."""
+    names = naming(cls)
+    added = {name for _, name, step in names.fields if step is not None}
+    if not set(names.first_names) <= set(written) <= {*names.first_names, *added}:
+        raise ValueError(
+            f"fields {sorted(written)} were written for {cls.__name__}, whose "
+            f"fields with its migrations undone are {sorted(names.first_names)}"
+            + (f", with {sorted(added)} added since" if added else "")
+        )
 
-    if isinstance(value, dict) and value.get(KINDMARKER) == "path":
-        return Path(cast(str, value[VALUEMARKER]))
 
-    if isinstance(value, dict) and value.get(KINDMARKER) == "datetime":
-        return datetime.fromisoformat(cast(str, value[VALUEMARKER]))
+def from_json(
+    value: JsonValue,
+    declared_type: object,
+    nested: set[type],
+    spec: Callable[[str], Any],
+    moved: Mapping[str, str],
+) -> Any:
+    """The value `to_json` wrote.
 
-    if isinstance(value, dict) and value.get(KINDMARKER) in (
-        "tuple",
-        "set",
-        "frozenset",
-    ):
-        items = [
-            _from_json_field(item, child_declared_type(expected_type, i))
-            for i, item in enumerate(cast(list[JsonValue], value[VALUEMARKER]))
-        ]
-        match value[KINDMARKER]:
-            case "tuple":
-                return tuple(items)
-            case "set":
-                return set(items)
-            case _:
-                return frozenset(items)
+    `spec` gives the spec with an id, and `moved` says where a class written
+    under an old name lives now. A dataclass is read with its declared steps
+    applied forwards, a field that was left out filled from its step, and its
+    class is added to `nested`.
+    """
 
-    if isinstance(value, dict) and KINDMARKER in value:
-        return _from_json(value)
+    def read(child: JsonValue, child_type: object) -> Any:
+        return from_json(child, child_type, nested, spec, moved)
 
     if isinstance(value, list):
         return [
-            _from_json_field(item, child_declared_type(expected_type, i))
+            read(item, child_declared_type(declared_type, i))
             for i, item in enumerate(value)
         ]
-    if isinstance(value, dict):
-        return {
-            key: _from_json_field(child, child_declared_type(expected_type, key))
-            for key, child in value.items()
-        }
-    return value
+    if not isinstance(value, dict):
+        return value
+    match value.get(KINDMARKER):
+        case None:
+            return {
+                key: read(child, child_declared_type(declared_type, key))
+                for key, child in value.items()
+            }
+        case "spec":
+            return spec(cast(str, value[VALUEMARKER]))
+        case "custom":
+            return _load_custom_value(cast(dict[str, Any], value), declared_type)
+        case "path":
+            return Path(cast(str, value[VALUEMARKER]))
+        case "datetime":
+            return datetime.fromisoformat(cast(str, value[VALUEMARKER]))
+        case "tuple" | "set" | "frozenset" as kind:
+            items = [
+                read(item, child_declared_type(declared_type, i))
+                for i, item in enumerate(cast(list[JsonValue], value[VALUEMARKER]))
+            ]
+            if kind == "tuple":
+                return tuple(items)
+            return set(items) if kind == "set" else frozenset(items)
+        case "type_ref":
+            return _resolve_serialized_type(cast(str, value[CLASSMARKER]))
+        case "instance":
+            name = cast(str, value[CLASSMARKER])
+            cls = _resolve_serialized_type(moved.get(name, name))
+            written = cast(dict[str, JsonValue], value[FIELDSMARKER])
+            hints = cached_type_hints(cls)
+            if not is_dataclass(cls):
+                return cls(
+                    **{
+                        name: read(child, hints.get(name, Any))
+                        for name, child in written.items()
+                    }
+                )
+            nested.add(cls)
+            check_names(cls, written)
+            takes = {f.name for f in fields(cls) if f.init}
+            return cls(
+                **{
+                    attribute: read(written[name], hints.get(attribute, Any))
+                    if name in written
+                    else cast(Any, added).default
+                    for attribute, name, added in naming(cls).fields
+                    if attribute in takes
+                }
+            )
+        case kind:
+            raise TypeError(f"Cannot read a written value of kind {kind!r}")
 
 
 def _load_custom_value(value: dict[str, Any], expected_type: object) -> Any:
@@ -326,82 +416,3 @@ def _resolve_serialized_type(class_name: str) -> type:
     if isinstance(value, type):
         return value
     raise TypeError(f"{class_name!r} resolved to a non-type value")
-
-
-def _from_json(value: JsonValue) -> Any:
-    match value:
-        case list():
-            return [_from_json(item) for item in value]
-        case dict():
-            class_name = value.get(CLASSMARKER)
-            field_values = value.get(FIELDSMARKER)
-            if value.get(KINDMARKER) == "custom" and isinstance(
-                value.get(SERIALIZERMARKER), str
-            ):
-                return _load_custom_value(cast(dict[str, Any], value), Any)
-            if value.get(KINDMARKER) in (
-                "path",
-                "datetime",
-                "tuple",
-                "set",
-                "frozenset",
-            ):
-                return _from_json_field(value, Any)
-            if value.get(KINDMARKER) == "type_ref" and isinstance(class_name, str):
-                return _resolve_serialized_type(class_name)
-            if (
-                value.get(KINDMARKER) == "instance"
-                and isinstance(class_name, str)
-                and isinstance(field_values, dict)
-            ):
-                cls = _resolve_serialized_type(class_name)
-                hints = cached_type_hints(cls)
-                # Fields the class fills in itself (@furu.dependency) are
-                # derived again; _from_artifact's hash check catches a change.
-                derived = (
-                    {f.name for f in fields(cls) if not f.init}
-                    if is_dataclass(cls)
-                    else ()
-                )
-                converted_fields = {
-                    name: _from_json_field(field_value, hints.get(name, Any))
-                    for name, field_value in field_values.items()
-                    if name not in derived
-                }
-                return cls(**converted_fields)
-            return {key: _from_json(child) for key, child in value.items()}
-        case _:
-            return value
-
-
-def _from_artifact[T: Spec](artifact: ArtifactSpec, expected_type: type[T]) -> T:
-    artifact_type = _resolve_serialized_type(artifact.fully_qualified_name)
-    if not issubclass(artifact_type, expected_type):
-        raise TypeError(
-            "Artifact described "
-            + f"{artifact_type.__module__}.{artifact_type.__qualname__}, "
-            + f"expected {expected_type.__module__}.{expected_type.__qualname__}"
-        )
-
-    furu_obj = _from_json_field(artifact.artifact_data, artifact_type)
-    if not isinstance(furu_obj, expected_type):
-        raise TypeError(
-            "Artifact described "
-            + f"{type(furu_obj).__module__}.{type(furu_obj).__qualname__}, "
-            + f"expected {expected_type.__module__}.{expected_type.__qualname__}"
-        )
-    if artifact.artifact_hash != furu_obj._artifact_hash:
-        raise ValueError(
-            "Artifact hash did not match loaded object: "
-            + f"artifact={artifact.artifact_hash[:5]}, "
-            + f"loaded={furu_obj._artifact_hash[:5]}. A @furu.dependency "
-            + "that now returns something else than when the spec was stored "
-            + "causes this."
-        )
-    if artifact.class_part != furu_obj._class_part:
-        raise ValueError(
-            "Artifact class part did not match loaded object: "
-            + f"artifact={artifact.class_part[:5]}, "
-            + f"loaded={furu_obj._class_part[:5]}"
-        )
-    return furu_obj

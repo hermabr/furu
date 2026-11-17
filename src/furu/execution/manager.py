@@ -80,7 +80,11 @@ class _Lease:
         first, *_ = jobs = [queued.submission.job for queued in self.queued]
         return first.model_copy(
             update={
-                "artifacts": [artifact for job in jobs for artifact in job.artifacts]
+                "specs": [spec for job in jobs for spec in job.specs],
+                # Once each: batch-mates reach the same specs.
+                "lines": list(
+                    dict.fromkeys(line for job in jobs for line in job.lines)
+                ),
             }
         )
 
@@ -295,7 +299,7 @@ class Manager:
             if script is not None:
                 script.send(
                     ResultMessage(
-                        object_ids=[artifact.object_id for artifact in job.artifacts],
+                        object_ids=job.specs,
                         result=result,
                     )
                 )
