@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import json
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
@@ -35,9 +36,9 @@ ARTIFACTS_DIR_NAME: Final = "artifacts"
 ROWS_DIR_NAME: Final = "rows"
 MANIFEST_FILE_NAME: Final = "manifest.json"
 _ROOT_ARTIFACT_NAME: Final = "root"
-_LARGE_FALLBACK_ROWS: Final = 100
+_LARGE_FALLBACK_FOLDERS: Final = 100
 type ValuePath = tuple[str, ...]
-_WARNED_FALLBACKS: set[tuple[str, ValuePath]] = set()  # once per process
+_WARNED_FALLBACKS: set[tuple[str, str]] = set()  # label and field, once per process
 type WrapperKind = Literal[
     "artifact",
     "dataclass",
@@ -308,16 +309,20 @@ def _save_columns(
     label: str,
 ) -> None:
     """Save each position's values and fill in where each one went."""
-    # A value where another row holds a container would share its directory
-    # with the values inside that container.
-    clashing = {path[:i] for path in columns for i in range(len(path))} & columns.keys()
-    for value_path, cells in columns.items():
+    positions = [value_path or (_ROOT_ARTIFACT_NAME,) for value_path in columns]
+    # A value where another row holds a container, or the whole result of one
+    # row where another has a field named "root", would share its directory.
+    uses = Counter(
+        position[:i] for position in positions for i in range(1, len(position) + 1)
+    )
+    clashing = {position for position in positions if uses[position] > 1}
+    row_folders: Counter[str] = Counter()  # by field
+    for (value_path, cells), position in zip(columns.items(), positions):
         codec = cells[0].codec
-        position = value_path or (_ROOT_ARTIFACT_NAME,)
         shared = Path(ARTIFACTS_DIR_NAME, *position)
         metadatas = None
         if all(cell.codec is codec for cell in cells) and not any(
-            value_path[:i] in clashing for i in range(len(value_path) + 1)
+            position[:i] in clashing for i in range(1, len(position) + 1)
         ):
             (bundle_dir / shared).mkdir(parents=True)
             metadatas = codec.save_many(
@@ -343,18 +348,7 @@ def _save_columns(
                 cell.codec.save(cell.value, bundle_dir / path)
                 for cell, path in zip(cells, paths)
             ]
-            if (
-                len(cells) >= _LARGE_FALLBACK_ROWS
-                and (label, value_path) not in _WARNED_FALLBACKS
-            ):
-                _WARNED_FALLBACKS.add((label, value_path))
-                get_logger().warning(
-                    "%s: %d values at %s were not merged into one file and "
-                    "got a directory each",
-                    label,
-                    len(cells),
-                    _value_path_display(value_path),
-                )
+            row_folders[_value_path_display(value_path[:1])] += len(cells)
         for cell, path, metadata in zip(cells, paths, metadatas):
             if not isinstance(metadata, Mapping):
                 raise TypeError(
@@ -365,6 +359,17 @@ def _save_columns(
             cell.body["metadata"] = _encode_codec_metadata_value(
                 dict(metadata), data_dir=data_dir, value_path=value_path
             )
+    if row_folders.total() >= _LARGE_FALLBACK_FOLDERS:
+        for field, count in row_folders.items():
+            if (label, field) not in _WARNED_FALLBACKS:
+                _WARNED_FALLBACKS.add((label, field))
+                get_logger().warning(
+                    "%s: %d values in %s were not merged into one file and "
+                    "got a directory each",
+                    label,
+                    count,
+                    field,
+                )
 
 
 def _encode_codec_metadata_value(

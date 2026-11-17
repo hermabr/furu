@@ -2144,6 +2144,65 @@ def test_values_that_do_not_merge_get_a_directory_per_row(tmp_path: Path) -> Non
     assert _same(_load_rows(bundle_dir, [1, 0]), values[::-1])
 
 
+def test_whole_result_value_only_clashes_with_a_field_named_root(
+    tmp_path: Path,
+) -> None:
+    apart, clash = tmp_path / "apart", tmp_path / "clash"
+
+    _save_rows([np.zeros(3), {"x": np.zeros(3)}, {"x": np.ones(3)}], apart)
+    _save_rows([np.zeros(3), {"root": np.ones(3)}], clash)
+
+    assert _files(apart) == {
+        "manifest.json",
+        "artifacts/root/data.npy",
+        "artifacts/x/data.npy",
+    }
+    assert _files(clash) == {
+        "manifest.json",
+        "rows/0/root/data.npy",
+        "rows/1/root/data.npy",
+    }
+    assert _same(_load_rows(clash, [1, 0]), [{"root": np.ones(3)}, np.zeros(3)])
+
+
+def test_zero_dimensional_arrays_keep_their_dtype_when_stacked(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "bundle"
+    record = np.dtype([("a", "i4"), ("b", "f8")])
+    values = [
+        {
+            "big_endian": np.array(seed, dtype=">i2"),
+            "text": np.array("ab", dtype="U5"),
+            "record": np.array((seed, 0.5), dtype=record),
+        }
+        for seed in range(2)
+    ]
+
+    _save_rows(values, bundle_dir)
+    loaded = _load_rows(bundle_dir, [0, 1])
+
+    assert _same(loaded, values)
+    assert loaded[0]["record"].flags.writeable
+
+
+@pytest.mark.filterwarnings("ignore:Stored array in format 3.0")
+def test_arrays_that_one_file_cannot_hold_are_left_to_save(tmp_path: Path) -> None:
+    named_dir = tmp_path / "named"
+    named = [np.array([(seed,)], dtype=[("日本", "i4")]) for seed in range(2)]
+
+    _save_rows(named, named_dir)
+
+    assert _files(named_dir) == {
+        "manifest.json",
+        "rows/0/root/data.npy",
+        "rows/1/root/data.npy",
+    }
+    assert _same(_load_rows(named_dir, [0, 1]), named)
+
+    masked = np.ma.masked_array([1.0, 2.0, 3.0], mask=[0, 1, 0])
+    with pytest.raises(NotImplementedError):
+        _save_rows([masked], tmp_path / "masked")
+
+
 def test_codec_with_only_save_and_load_gets_one_call_per_row(tmp_path: Path) -> None:
     bundle_dir = tmp_path / "bundle"
     _CountingCodec.dump_calls = 0
@@ -2233,18 +2292,26 @@ def test_save_many_must_return_one_metadata_per_value(tmp_path: Path) -> None:
         )
 
 
-def test_large_fallback_warns_once_per_label_and_position(
+def test_large_fallback_warns_once_per_label_and_field(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    ragged = [{"preds": np.zeros(seed % 2)} for seed in range(100)]
+    def ragged(seed: int) -> Any:
+        return np.zeros(seed % 2)
+
+    # Three per-row folders a row: 99 for 33 rows, 102 for 34.
+    rows = [
+        {"a": ragged(seed), "b": [ragged(seed), ragged(seed)]} for seed in range(34)
+    ]
 
     with caplog.at_level(logging.WARNING, logger="furu"):
-        _save_rows(ragged[:99], tmp_path / "small", label="Ragged")
+        _save_rows(rows[:33], tmp_path / "small", label="Ragged")
         assert caplog.messages == []
 
-        _save_rows(ragged, tmp_path / "first", label="Ragged")
-        _save_rows(ragged, tmp_path / "second", label="Ragged")
+        _save_rows(rows, tmp_path / "first", label="Ragged")
+        _save_rows(rows, tmp_path / "second", label="Ragged")
     assert caplog.messages == [
-        "Ragged: 100 values at preds were not merged into one file and got a "
-        + "directory each"
+        "Ragged: 34 values in a were not merged into one file and got a "
+        + "directory each",
+        "Ragged: 68 values in b were not merged into one file and got a "
+        + "directory each",
     ]

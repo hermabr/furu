@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 from abc import ABC, ABCMeta, abstractmethod
 from collections.abc import Mapping, Sequence
 from functools import cache
@@ -241,14 +242,25 @@ class NumpyNpyCodec(Codec["np.ndarray[Any, Any]"]):
 
         first = values[0]
         if first.dtype.hasobject or any(
-            value.shape != first.shape or value.dtype != first.dtype for value in values
+            value.shape != first.shape
+            or value.dtype != first.dtype
+            # Its mask would be dropped.
+            or isinstance(value, np.ma.MaskedArray)
+            for value in values
         ):
             return None
-        # Written row by row, so the batch is never copied into one array.
         header = np.lib.format.header_data_from_array_1_0(first)
         header |= {"shape": (len(values), *first.shape), "fortran_order": False}
+        encoded = io.BytesIO()
+        try:
+            np.lib.format.write_array_header_1_0(encoded, header)
+        except ValueError:
+            # A field name outside latin-1, or a header over 64 KiB, needs a
+            # later format version, which only np.save() picks.
+            return None
+        # Written row by row, so the batch is never copied into one array.
         with open(artifact_directory / "data.npy", "wb") as file:
-            np.lib.format.write_array_header_1_0(file, header)
+            file.write(encoded.getvalue())
             file.writelines(np.asarray(value).tobytes() for value in values)
         return [{"row": row} for row in range(len(values))]
 
@@ -261,7 +273,10 @@ class NumpyNpyCodec(Codec["np.ndarray[Any, Any]"]):
         stacked = np.load(
             artifact_directory / "data.npy", mmap_mode="r", allow_pickle=False
         )
-        return [np.array(stacked[cast(int, metadata["row"])]) for metadata in metadatas]
+        # The ellipsis keeps a 0-d row an array, with its dtype.
+        return [
+            np.array(stacked[cast(int, metadata["row"]), ...]) for metadata in metadatas
+        ]
 
 
 def _find_single_codec_match(
