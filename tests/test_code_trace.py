@@ -1320,6 +1320,11 @@ class B(A):
         B_IN.set()
         A_OUT.wait(5)
         return 7
+
+
+class Fixed(B):
+    def metadata(self) -> furu.Metadata:
+        return furu.Metadata(code_version="fixed")
 """
 
 
@@ -1342,6 +1347,27 @@ def test_a_traced_create_waits_for_the_one_another_thread_runs(repo: Repo) -> No
     file = f"{repo.package}/two.py"
     assert "helper" in _trace(a)["code"][file]["ran"]
     assert "helper" not in _trace(b)["code"][file]["ran"]
+    assert not code_trace.tracing()
+
+
+def test_a_fixed_create_on_another_thread_leaves_a_traced_one_recording(
+    repo: Repo,
+) -> None:
+    repo.write("two.py", TWO_THREADS)
+    two = repo.load("two")
+    a, fixed = two.A(), two.Fixed()
+
+    def second() -> None:
+        two.A_IN.wait(5)
+        fixed.create()
+
+    thread = threading.Thread(target=second)
+    thread.start()
+    assert a.create() == 2  # helper() runs while Fixed.create() does
+    two.A_OUT.set()
+    thread.join()
+
+    assert "helper" in _trace(a)["code"][f"{repo.package}/two.py"]["ran"]
     assert not code_trace.tracing()
 
 

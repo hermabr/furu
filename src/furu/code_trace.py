@@ -815,6 +815,7 @@ class _Collector:
             rel: _content_hash(text) for rel, text in state.sources.items()
         }
         self.hashes: dict[str, str | None] = {}
+        self.thread = threading.get_ident()
         self._lock = threading.Lock()
 
     def record(self, rel: str, *, importing: bool) -> None:
@@ -919,9 +920,17 @@ def tracing() -> bool:
 
 @contextmanager
 def paused() -> Generator[None]:
-    """Run code that is no part of the call being traced."""
+    """Run code that is no part of the call being traced.
+
+    Only the thread that records pauses it: a call on another thread would
+    take what this one runs meanwhile out of its trace.
+    """
     global _active
-    collector, _active = _active, None
+    collector = _active
+    if collector is None or collector.thread != threading.get_ident():
+        yield
+        return
+    _active = None
     try:
         yield
     finally:
