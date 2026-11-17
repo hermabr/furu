@@ -501,13 +501,14 @@ def test_job_output_lands_in_its_own_log_on_a_reused_child(
     child_slot: ChildSlot,
 ) -> None:
     first, second = SubprocessChattyLeaf(marker=1), SubprocessChattyLeaf(marker=2)
+    SubprocessDependencyLeaf().create()
 
     assert isinstance(_run(child_slot, first), JobCompletedResult)
     assert isinstance(_run(child_slot, second), JobCompletedResult)
     assert _pid_and_value(first)[0] == _pid_and_value(second)[0]
 
     for obj in (first, second):
-        # Only what the job wrote, through every channel.
+        # Only what the job wrote, through every channel, and nothing of furu's.
         printed, logged, raw = log_of(obj).splitlines()
         assert printed == f"print from job {obj.marker}"
         assert f"I chatty stdlib info from job {obj.marker}  [" in logged

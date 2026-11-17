@@ -49,7 +49,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from furu.config import CodeVersion, get_config
+from furu.config import get_config
 from furu.logging import get_logger
 from furu.storage._layout import FIXED, trace_path_in, version_dirs_in
 from furu.utils import _hash_dict_deterministically
@@ -616,9 +616,8 @@ def _code(
 class Trace(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    code_version: CodeVersion
-    python: str | None = None  # the minor version, for traced specs
-    code: dict[str, FileTrace] | None = None
+    python: str  # the minor version
+    code: dict[str, FileTrace]
     # The code-version folders of the results create() loaded, relative to the
     # storage root. "fixed" ones are always live, so they are left out.
     built_on: tuple[str, ...] = ()
@@ -626,11 +625,7 @@ class Trace(BaseModel):
     @property
     def version(self) -> str:
         """The name of the code-version folder this trace is published under."""
-        if self.code is None and not self.built_on:
-            return FIXED
-        fingerprints = {
-            rel: entry.fingerprint for rel, entry in (self.code or {}).items()
-        }
+        fingerprints = {rel: entry.fingerprint for rel, entry in self.code.items()}
         return _hash_dict_deterministically(
             {"python": self.python, "code": fingerprints, "built_on": self.built_on}
         )
@@ -646,8 +641,6 @@ _WARNED_MANY: set[Path] = set()
 
 def _changed(trace: Trace) -> str | None:
     """Why the code a trace ran differs from the code on disk, if it does."""
-    if trace.code is None:
-        return None
     if trace.python != _PYTHON:
         return f"Python {trace.python} → {_PYTHON}"
     root = repo_root()
@@ -700,20 +693,12 @@ def why_outdated(version: Path) -> str | None:
     return checked[1] if checked is not None else "its trace.json is missing"
 
 
-def versions(
-    class_dir: Path, code_version: CodeVersion
-) -> list[tuple[Path, str | None]]:
-    """A class's hashed code versions, each with why it is outdated (None if live).
-
-    Only the versions ``code_version`` publishes: a traced class leaves alone
-    what ran untraced, and the other way round. ``fixed/`` is not listed.
-    """
+def versions(class_dir: Path) -> list[tuple[Path, str | None]]:
+    """A traced class's code versions, each with why it is outdated (None if live)."""
     found = [
         (version, checked[1])
         for version in version_dirs_in(class_dir)
-        if version.name != FIXED
-        and (checked := _check(version)) is not None
-        and checked[0].code_version == code_version
+        if version.name != FIXED and (checked := _check(version)) is not None
     ]
     live = sum(why is None for _, why in found)
     if live > _MANY_LIVE_VERSIONS and class_dir not in _WARNED_MANY:
@@ -925,9 +910,8 @@ def _trace_into(collector: _Collector | None) -> None:
 
 @dataclass(slots=True)
 class Recording:
-    """What one create() call (one spec, or one batch) ran and loaded."""
+    """What one traced create() call (one spec, or one batch) ran and loaded."""
 
-    code_version: CodeVersion
     storage_root: Path
     built_on: set[str] = field(default_factory=set)
     _log: Callable[[list[str]], None] | None = None
@@ -955,7 +939,6 @@ class Recording:
 def recording(
     log_paths: Sequence[Path],
     *,
-    code_version: CodeVersion,
     storage_root: Path,
     resumed: LogState,
 ) -> Generator[Recording]:
@@ -964,9 +947,6 @@ def recording(
     A create never runs another create inline (a missing dependency aborts it),
     so at most one create is traced at a time.
     """
-    if code_version == "fixed":
-        yield Recording(code_version, storage_root)
-        return
     if _active is not None:
         raise RuntimeError("a traced create() is already running in this process")
     root = str(repo_root()) + os.sep
@@ -982,9 +962,7 @@ def recording(
             collector.record(rel, importing=False)
     _trace_into(collector)
     try:
-        yield Recording(
-            code_version, storage_root, set(resumed.built_on), log.write, collector
-        )
+        yield Recording(storage_root, set(resumed.built_on), log.write, collector)
     finally:
         _trace_into(None)
         log.close()
@@ -1034,9 +1012,6 @@ _WARNED: set[str] = set()
 
 def build_trace(run: Recording, *, label: str, warn: Callable[[str], None]) -> Trace:
     """The trace.json for a finished create(); raises StaleCodeError if unsafe."""
-    built_on = tuple(sorted(run.built_on))
-    if run.code_version == "fixed":
-        return Trace(code_version="fixed", built_on=built_on)
     root = repo_root()
     code, warnings = _code(run.ran, lambda rel: _read(root / rel), str(root) + os.sep)
     assert run._collector is not None
@@ -1056,4 +1031,4 @@ def build_trace(run: Recording, *, label: str, warn: Callable[[str], None]) -> T
             "so the code that ran may not match the file on disk. Not publishing "
             "the result; rerun in a fresh process."
         )
-    return Trace(code_version="traced", python=_PYTHON, code=code, built_on=built_on)
+    return Trace(python=_PYTHON, code=code, built_on=tuple(sorted(run.built_on)))

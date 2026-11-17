@@ -29,7 +29,7 @@ from furu.dependencies import (
     under_creation,
 )
 from furu.execution.load_or_create import _load_or_create
-from furu.logging import _log_scope
+from furu.logging import _execution_log
 from furu.metadata import ArtifactSpec
 from furu.result.bundle import _save_result_bundle, load_result_bundle
 from furu.serializer.artifact import _from_json, to_json
@@ -914,7 +914,7 @@ def test_declared_dependencies_are_created_before_the_create_hook(
     parent = LoadsDeclaredDependencyParent(child=Node(name="declared"))
 
     log_path = tmp_path / "create.log"
-    with _log_scope(log_path):
+    with _execution_log(log_path):
         assert parent.create() == "Node(declared)"
 
     log_text = log_path.read_text(encoding="utf-8")
@@ -1079,7 +1079,7 @@ def test_top_level_load_existing_accepts_list_and_logs_once(tmp_path: Path) -> N
     assert [node.create() for node in nodes] == ["Node(load-a)", "Node(load-b)"]
 
     log_path = tmp_path / "load-existing.log"
-    with _log_scope(log_path):
+    with _execution_log(log_path):
         assert furu.load_existing(nodes) == ["Node(load-a)", "Node(load-b)"]
 
     info_lines = [
@@ -1488,7 +1488,7 @@ def test_nested_create_blocks_the_parent_and_logs_the_child_on_its_own(
     parent = LoggedParent(child_name="child")
 
     log_path = tmp_path / "create.log"
-    with _log_scope(log_path):
+    with _execution_log(log_path):
         assert parent.create() == {"child": "leaf:child"}
 
     parent_log = log_of(parent)
@@ -1505,6 +1505,9 @@ def test_nested_create_blocks_the_parent_and_logs_the_child_on_its_own(
     assert f"creating {child._log_label}" not in parent_log
     assert "leaf detail for child" not in parent_log
     assert "leaf detail for child" in child_log
+    # What furu has to say goes to the terminal, not into a run's log.
+    assert f"cached {child._log_label}" not in parent_log
+    assert f"cached {child._log_label}" in top_log
     assert f"blocked {parent._log_label} · 1 missing dependency" in top_log
     assert f"finished {child._log_label} ok" in top_log
 
@@ -1518,14 +1521,14 @@ def test_cached_create_logs_only_cache_hit_info(
     assert obj.create() == "object-id:1"
 
     log_path = tmp_path / "cached-create.log"
-    with _log_scope(log_path):
+    with _execution_log(log_path):
         assert obj.create() == "object-id:1"
 
     log_text = log_path.read_text(encoding="utf-8")
     assert "building" not in log_text
     assert "creating " not in log_text
     assert "finished " not in log_text
-    (line,) = log_text.splitlines()
+    (line,) = [line for line in log_text.splitlines() if " I " in line]
     assert line.endswith(f" I cached {obj._log_label}")
 
 
@@ -1539,7 +1542,7 @@ def test_small_cache_summary_logs_labels_for_cached_and_missing_items(
     assert cached.create() == "object-id:1"
 
     log_path = tmp_path / "mixed-create.log"
-    with _log_scope(log_path):
+    with _execution_log(log_path):
         assert _load_or_create([cached, missing]) == ["object-id:1", "object-id:2"]
 
     assert (

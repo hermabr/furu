@@ -13,7 +13,7 @@ from types import ModuleType
 from typing import Any
 
 import pytest
-from runs import ends_of, log_of, run_of
+from runs import ends_of, run_of
 
 import furu
 from furu import code_trace
@@ -344,16 +344,31 @@ def test_edits_to_what_ran_rerun(
     assert run_dir_in(plot._class_dir / before, plot._run_name).is_dir()
 
 
-def test_rerun_names_the_changed_file(repo: Repo, plots: ModuleType) -> None:
+def test_rerun_names_the_changed_file(
+    repo: Repo, plots: ModuleType, caplog: pytest.LogCaptureFixture
+) -> None:
     plots.LossPlot(name="a").create()
     repo.edit("common.py", "CONST = 3", "CONST = 4")
     plot = repo.load("plots").LossPlot(name="a")
 
     plot.create()
 
-    assert f"rerunning {plot._log_label}: {repo.package}/common.py changed" in log_of(
-        plot
-    )
+    why = f"rerunning {plot._log_label}: {repo.package}/common.py changed"
+    assert why in caplog.text
+
+
+def test_a_trace_that_cannot_be_read_is_written_again_by_the_next_publish(
+    plots: ModuleType,
+) -> None:
+    first = plots.LossPlot(name="a")
+    first.create()
+    trace_path_in(_version_dir(first)).write_text("")
+    _fresh_process()
+    assert not first.done
+
+    plots.LossPlot(name="b").create()
+
+    assert first.done
 
 
 def test_revert_makes_the_old_version_valid_again(
@@ -466,34 +481,34 @@ def test_a_restarted_parent_names_the_code_version_of_the_child_it_loaded(
     ]
 
 
-def test_a_traced_dependency_change_reruns_traced_and_fixed_consumers(
+def test_a_traced_dependency_change_reruns_only_traced_consumers(
     repo: Repo, dependencies: ModuleType
 ) -> None:
     traced, fixed = dependencies.TracedParent(n=1), dependencies.FixedParent(n=1)
     assert (traced.create(), fixed.create()) == (102, 20)
-    fixed_before = _version(fixed)
     traced_before = _version(traced)
-    assert fixed_before != "fixed"
-    assert _trace(fixed) == {
-        "code_version": "fixed",
-        "built_on": [_built_on_name(dependencies.Child(n=1))],
-    }
+    # A class that does not trace its code has one version and no trace, even
+    # when it was built on a traced result.
+    assert sorted(path.name for path in fixed._class_dir.iterdir()) == [
+        "attempts",
+        "fixed",
+        "schema.ndjson",
+    ]
+    assert [path.name for path in _version_dir(fixed).iterdir()] == ["runs"]
 
     repo.edit("child.py", "return n + 1", "return n + 2")
 
     assert not dependencies.Child(n=1).done
     assert not traced.done
-    assert not fixed.done
+    assert fixed.done  # its result changes only when its fields do
 
-    module = repo.load("parents")
-    traced, fixed = module.TracedParent(n=1), module.FixedParent(n=1)
-    assert (traced.create(), fixed.create()) == (103, 30)
-    assert _version(fixed) not in ("fixed", fixed_before)
+    traced = repo.load("parents").TracedParent(n=1)
+    assert traced.create() == 103
     assert _version(traced) != traced_before
 
     repo.edit("child.py", "return n + 2", "return n + 1")
 
-    assert (_version(traced), _version(fixed)) == (traced_before, fixed_before)
+    assert _version(traced) == traced_before
 
 
 def test_a_fixed_spec_ignores_its_own_code(
@@ -739,17 +754,6 @@ def test_a_spec_held_in_a_field_reruns_when_its_dependency_changes(
     assert holder.create() == 71
 
 
-def test_a_fixed_spec_built_on_nothing_traced_lands_in_fixed(
-    repo: Repo, plots: ModuleType
-) -> None:
-    sibling = plots.Sibling()
-
-    assert sibling.create() == "train"
-
-    assert _version(sibling) == "fixed"
-    assert not trace_path_in(_version_dir(sibling)).exists()
-
-
 DYNAMIC = """\
 import furu
 
@@ -788,7 +792,9 @@ class Literal(furu.Spec[int]):
 """
 
 
-def test_dynamic_lookup_keeps_every_name_and_warns_once(repo: Repo) -> None:
+def test_dynamic_lookup_keeps_every_name_and_warns_once(
+    repo: Repo, caplog: pytest.LogCaptureFixture
+) -> None:
     repo.write("dynamic.py", DYNAMIC)
     module = repo.load("dynamic")
     first, second = module.Dynamic(key="lr"), module.Dynamic(key="wd")
@@ -801,15 +807,16 @@ def test_dynamic_lookup_keeps_every_name_and_warns_once(repo: Repo) -> None:
         f"by_name ({repo.package}/dynamic.py:12) uses globals(), so every "
         f"module-level name in {repo.package}/dynamic.py counts toward its cache key"
     )
-    assert warning in log_of(first)
-    assert warning not in log_of(second)  # once per function per process
+    assert caplog.text.count(warning) == 1  # once per function per process
 
     repo.edit("dynamic.py", "UNUSED = 1", "UNUSED = 2")
 
     assert not first.done
 
 
-def test_literal_getattr_is_not_a_dynamic_lookup(repo: Repo) -> None:
+def test_literal_getattr_is_not_a_dynamic_lookup(
+    repo: Repo, caplog: pytest.LogCaptureFixture
+) -> None:
     repo.write("dynamic.py", DYNAMIC)
     spec = repo.load("dynamic").Literal()
 
@@ -817,7 +824,7 @@ def test_literal_getattr_is_not_a_dynamic_lookup(repo: Repo) -> None:
 
     entry = _trace(spec)["code"][f"{repo.package}/dynamic.py"]
     assert entry["uses"] == ["Config", "furu"]
-    assert "computed name" not in log_of(spec)
+    assert "computed name" not in caplog.text
     repo.edit("dynamic.py", "UNUSED = 1", "UNUSED = 2")
     assert spec.done
 
@@ -853,7 +860,7 @@ class ReadsEnv(furu.Spec[str]):
 
 @pytest.mark.parametrize("snapshot", [False, True])
 def test_reading_a_repo_file_warns_and_keeps_the_result(
-    repo: Repo, snapshot: bool
+    repo: Repo, snapshot: bool, caplog: pytest.LogCaptureFixture
 ) -> None:
     repo.write("config.yaml", "lr: 1\n")
     for name in "abcde":
@@ -874,15 +881,17 @@ def test_reading_a_repo_file_warns_and_keeps_the_result(
         f"create() read {package}/a.csv, {package}/b.csv, {package}/c.csv "
         "and 3 more, which furu does not trace"
     )
-    assert warning in log_of(spec)
-    assert "out.txt" not in log_of(spec)
+    assert warning in caplog.text
+    assert "out.txt" not in caplog.text
     assert f"{repo.package}/config.yaml" not in _trace(spec)["code"]
 
     repo.edit("config.yaml", "lr: 1", "lr: 2")
     assert spec.done
 
 
-def test_reading_the_environment_warns(repo: Repo) -> None:
+def test_reading_the_environment_warns(
+    repo: Repo, caplog: pytest.LogCaptureFixture
+) -> None:
     repo.write("untraced.py", UNTRACED)
     spec = repo.load("untraced").ReadsEnv()
     spec.create()
@@ -890,7 +899,7 @@ def test_reading_the_environment_warns(repo: Repo) -> None:
     assert (
         f"ReadsEnv.create ({repo.package}/untraced.py:25) reads os.environ, "
         "which furu does not trace"
-    ) in log_of(spec)
+    ) in caplog.text
 
 
 def test_star_import_uses_every_name_in_the_module(repo: Repo) -> None:
@@ -1157,7 +1166,7 @@ def test_fixed_retry_resumes_without_a_check(
 
 
 def test_code_edited_after_import_is_not_published(
-    repo: Repo, plots: ModuleType
+    repo: Repo, plots: ModuleType, caplog: pytest.LogCaptureFixture
 ) -> None:
     plots.LossPlot(name="a").create()
     common = repo.root / repo.package / "common.py"
@@ -1175,7 +1184,7 @@ def test_code_edited_after_import_is_not_published(
     assert plot.create() == "loss:[16, 4, 99, 1]"
     assert (
         f"starting {plot._log_label} over: {repo.package}/common.py changed"
-        in log_of(plot)
+        in caplog.text
     )
 
 
@@ -1193,7 +1202,10 @@ def test_touching_code_after_import_keeps_the_result(
 
 
 def test_a_python_upgrade_reruns_and_says_so(
-    repo: Repo, plots: ModuleType, monkeypatch: pytest.MonkeyPatch
+    repo: Repo,
+    plots: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     plot = plots.LossPlot(name="a")
     plot.create()
@@ -1206,8 +1218,8 @@ def test_a_python_upgrade_reruns_and_says_so(
     plot.create()
 
     assert _version(plot) != before
-    assert f"rerunning {plot._log_label}: Python " in log_of(plot)
-    assert "→ 3.99" in log_of(plot)
+    assert f"rerunning {plot._log_label}: Python " in caplog.text
+    assert "→ 3.99" in caplog.text
 
 
 THREADED = """\

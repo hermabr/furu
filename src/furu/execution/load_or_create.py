@@ -3,7 +3,6 @@ from __future__ import annotations
 import errno
 import shutil
 import time
-import traceback
 from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -79,10 +78,11 @@ def _open_attempt(obj: Spec) -> LogState:
     """
     metadata = obj._metadata
     attempt = obj._attempt_dir
-    if why := why_rerun(obj):
+    traced = metadata.code_version == "traced"
+    if traced and (why := why_rerun(obj)):
         obj.logger.info("rerunning %s: %s", obj._log_label, why)
     resumed = LogState()
-    if metadata.code_version == "traced" and events_path_in(attempt).exists():
+    if traced and events_path_in(attempt).exists():
         logged = LogState.read(trace_log_path_in(attempt))
         if why := why_not_resumable(logged, storage_root=metadata.storage):
             obj.logger.info("starting %s over: %s", obj._log_label, why)
@@ -97,13 +97,19 @@ def _open_attempt(obj: Spec) -> LogState:
 
 
 @contextmanager
-def _recording(objs: Sequence[Spec], resumed: LogState) -> Generator[Recording]:
-    """Trace one create() call and note the code versions of what it loads."""
+def _recording(objs: Sequence[Spec], resumed: LogState) -> Generator[Recording | None]:
+    """Trace one create() call and note the code versions of what it loads.
+
+    Nothing is recorded for a class that does not trace its code.
+    """
     metadata = objs[0]._metadata  # a batch shares its metadata
+    if metadata.code_version == "fixed":
+        with under_creation(objs):
+            yield None
+        return
     with (
         recording(
             [trace_log_path_in(obj._attempt_dir) for obj in objs],
-            code_version=metadata.code_version,
             storage_root=metadata.storage,
             resumed=resumed,
         ) as run,
@@ -115,7 +121,7 @@ def _recording(objs: Sequence[Spec], resumed: LogState) -> Generator[Recording]:
 
 def _call_create[T](
     group: list[Spec[T]], resumed: list[LogState]
-) -> tuple[list[T], list[Recording]]:
+) -> tuple[list[T], list[Recording | None]]:
     """Run the group's create(): one call for a batch, else one per spec."""
     cls = type(group[0])
     match getattr(cls, "_furu_create_hook", None):
@@ -154,12 +160,12 @@ def _store[T](
     obj: Spec[T],
     result: T,
     *,
-    run: Recording,
+    run: Recording | None,
     has_lock: HasLock,
     submit_provenance: SubmitProvenance,
     started_at: datetime,
-) -> Trace:
-    """Write the result into obj's working folder; return the code that made it."""
+) -> Trace | None:
+    """Write the result into obj's working folder; return its trace, if traced."""
     attempt = obj._attempt_dir
     if not has_lock():
         raise RuntimeError(f"lost the lock on {attempt} before writing the result")
@@ -174,7 +180,9 @@ def _store[T](
         data_dir=data_dir_in(attempt),
         label=type(obj).__name__,
     )
-    trace = build_trace(run, label=obj._log_label, warn=obj.logger.warning)
+    trace = None
+    if run is not None:
+        trace = build_trace(run, label=obj._log_label, warn=obj.logger.warning)
     provenance = Provenance.merge(
         submit_provenance, ExecuteContext.capture(started_at=started_at)
     )
@@ -184,7 +192,7 @@ def _store[T](
     return trace
 
 
-def _publish(obj: Spec, trace: Trace, *, has_lock: HasLock) -> None:
+def _publish(obj: Spec, trace: Trace | None, *, has_lock: HasLock) -> None:
     """Rename obj's working folder into runs/ of its code version, name unchanged.
 
     The lock is held through the rename, so nobody else is in the folder, and
@@ -192,13 +200,17 @@ def _publish(obj: Spec, trace: Trace, *, has_lock: HasLock) -> None:
     never replaced.
     """
     attempt = obj._attempt_dir
-    version = obj._class_dir / trace.version
+    version = obj._class_dir / (FIXED if trace is None else trace.version)
     run = run_dir_in(version, obj._run_name)
     run.parent.mkdir(parents=True, exist_ok=True)
-    if trace.version != FIXED and not (trace_path := trace_path_in(version)).exists():
-        atomic_write_text(
-            trace_path, trace.model_dump_json(indent=2, exclude_none=True)
-        )
+    if trace is not None:
+        trace_path = trace_path_in(version)
+        try:
+            Trace.model_validate_json(trace_path.read_bytes())
+        except (OSError, ValueError):  # missing, or cut short when it was written
+            atomic_write_text(
+                trace_path, trace.model_dump_json(indent=2, exclude_none=True)
+            )
     if not has_lock():
         raise RuntimeError(f"lost the lock on {attempt} before publishing")
     obj.logger.debug("publishing %s under %s", obj._log_label, version.name)
@@ -519,16 +531,19 @@ def _create_and_store_group[T](
                 for obj, result, run in zip(group, results, runs, strict=True)
             ]
         except _DependencyNotReady as exc:
-            waiting_on = [dep.object_id for dep in exc.dependencies]
-            for attempt in attempts:
-                events.end(attempt, "blocked", waiting_on=waiting_on)
+            # Without the lock the folders are a successor's, or published.
+            if has_lock():
+                waiting_on = [dep.object_id for dep in exc.dependencies]
+                for attempt in attempts:
+                    events.end(attempt, "blocked", waiting_on=waiting_on)
             raise
         except BaseException as exc:
             if isinstance(exc, Exception):
                 lead.logger.exception("create failed for %s", lead._log_label)
-            error = "".join(traceback.format_exception_only(exc)).splitlines()[0]
-            for attempt in attempts:
-                events.end(attempt, "failed", error=error)
+            if has_lock():
+                error = ": ".join([type(exc).__name__, *str(exc).splitlines()[:1]])
+                for attempt in attempts:
+                    events.end(attempt, "failed", error=error)
             raise
         for obj, trace in zip(group, traces, strict=True):
             events.end(obj._attempt_dir, "ok")

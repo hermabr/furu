@@ -16,28 +16,27 @@ if TYPE_CHECKING:
 def stored_run(obj: Spec) -> Path | None:
     """The published run that holds obj's result, if its code still matches.
 
-    A run is found by name: one file check per live code version.
+    A run is found by name: one file check under ``fixed/`` for a class that
+    does not trace its code, else one per live code version.
     """
     # Named first: that is what finds the dataclasses the spec holds, whose
     # defaults are checked too.
     name = obj._run_name
     check_defaults(obj._class_dir, type(obj))
-    code_version = obj._metadata.code_version
-    if code_version == "fixed":
+    if obj._metadata.code_version == "fixed":
         run = run_dir_in(obj._class_dir / FIXED, name)
-        if run.is_dir():
-            return run  # the common case
-    for version, why in versions(obj._class_dir, code_version):
+        return run if run.is_dir() else None
+    for version, why in versions(obj._class_dir):
         if why is None and (run := run_dir_in(version, name)).is_dir():
             return run
     return None
 
 
 def why_rerun(obj: Spec) -> str | None:
-    """Why the newest run stored for obj no longer counts, if it has one."""
+    """Why the newest run a traced obj has stored no longer counts, if it has one."""
     outdated = [
         (run.stat().st_mtime_ns, why)
-        for version, why in versions(obj._class_dir, obj._metadata.code_version)
+        for version, why in versions(obj._class_dir)
         if why is not None and (run := run_dir_in(version, obj._run_name)).is_dir()
     ]
     return max(outdated)[1] if outdated else None

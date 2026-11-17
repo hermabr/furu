@@ -26,6 +26,13 @@ class Leaf(Spec[int]):
         return self.n
 
 
+class LosesItsLock(Spec[int]):
+    def create(self) -> int:
+        # As if paused past the stale window, so that a successor took over.
+        lock_path_in(self._class_dir, self._run_name).unlink()
+        return 1
+
+
 class BlocksThenFailsOnce(Spec[int]):
     def create(self) -> int:
         value = Leaf(n=7).create()
@@ -116,6 +123,15 @@ def test_a_second_publish_under_the_same_name_is_refused(
 
     assert events_path_in(fixed_run(spec)).read_text() == published
     assert spec._attempt_dir.is_dir()
+
+
+def test_a_holder_that_lost_its_lock_leaves_the_events_to_its_successor() -> None:
+    spec = LosesItsLock()
+
+    with pytest.raises(RuntimeError, match="lost the lock"):
+        spec.create()
+
+    assert ends_of(spec) == []
 
 
 def test_events_list_the_specs_once_and_each_attempts_start_and_end() -> None:

@@ -3,13 +3,14 @@
 Three kinds of file exist:
 
 - ``<run folder>/log``: what one run's ``create()`` wrote, every attempt after
-  the other, and nothing of Furu's own bookkeeping: that is in the
-  ``events.jsonl`` beside it. ``_log_scope`` sends output there while the
-  working folder is held. In-process, ``_RunLogHandler`` (on the ``furu`` and
-  root loggers) writes the log records there; ``print`` stays on your terminal.
-  In a worker child (``worker/_child.py``) fds 1 and 2 point at it, so prints,
-  logging and C output all land there, including those of processes the job
-  starts.
+  the other, and nothing of Furu's own but the traceback of a ``create()``
+  that failed: its bookkeeping is in the ``events.jsonl`` beside it, and its
+  log lines go where they do outside a ``create()``. ``_log_scope`` sends
+  output there while the working folder is held. In-process,
+  ``_RunLogHandler`` (on the ``furu`` and root loggers) writes the log records
+  there; ``print`` stays on your terminal. In a worker child
+  (``worker/_child.py``) fds 1 and 2 point at it, so prints, logging and C
+  output all land there, including those of processes the job starts.
 - ``executions/<id>/execution.log``: a worker run's story, written by a
   ``FileHandler`` on the ``furu`` logger for the life of ``run_on_workers``.
   The furu manager keeps its own story the same way in ``manager.log``.
@@ -137,17 +138,24 @@ def _component(record: logging.LogRecord) -> str | None:
 
 def _user_caller(record: logging.LogRecord) -> str | None:
     """``path:line`` of the call site in your code, or None inside Furu."""
-    if not _is_user_file(record.pathname):
+    # `<stdin>`, `<string>`, `<frozen ...>` are not files a file:line could name.
+    if record.pathname.startswith("<") or _in_furu(record.pathname):
         return None
     return f"{_display_path(record.pathname)}:{record.lineno}"
 
 
 @cache
-def _is_user_file(pathname: str) -> bool:
-    # `<stdin>`, `<string>`, `<frozen ...>` are not files a file:line could name.
-    if pathname.startswith("<"):
-        return False
-    return not Path(pathname).resolve().is_relative_to(_FURU_PACKAGE_DIR)
+def _in_furu(pathname: str) -> bool:
+    return Path(pathname).resolve().is_relative_to(_FURU_PACKAGE_DIR)
+
+
+def _furus_own(record: logging.LogRecord) -> bool:
+    """Whether Furu wrote the record, other than the traceback of a failed create().
+
+    A run's log holds what your code wrote and that traceback; the rest of
+    what Furu has to say about a run is in its events.jsonl.
+    """
+    return record.exc_info is None and _in_furu(record.pathname)
 
 
 def _display_path(path: str | os.PathLike[str]) -> str:
@@ -209,6 +217,7 @@ class _RunLogHandler(logging.Handler):
 
 
 _run_log_handler = _plain_handler(_RunLogHandler(logging.INFO))
+_run_log_handler.addFilter(lambda record: not _furus_own(record))
 # The root logger belongs to your script, so the handler sits there only while a
 # scope is open: outside create() logging.basicConfig and lastResort behave as
 # if Furu were not there.
@@ -295,8 +304,9 @@ def _configure_child_logging(worker_stderr: int) -> None:
     """Send every record in a worker child, once, to stderr.
 
     During a create() that is the run's log, and ``worker_stderr`` (the
-    worker's own output) otherwise. Furu owns this process, so the root logger
-    is set to INFO and stdlib and library logging is kept alongside Furu's.
+    worker's own output) otherwise; Furu's own records always go to the
+    latter. Furu owns this process, so the root logger is set to INFO and
+    stdlib and library logging is kept alongside Furu's.
     """
     global _child_stderr
     _child_stderr = worker_stderr
@@ -308,7 +318,15 @@ def _configure_child_logging(worker_stderr: int) -> None:
     root = logging.getLogger()
     for handler in list(root.handlers):
         root.removeHandler(handler)
-    root.addHandler(_plain_handler(logging.StreamHandler(sys.stderr)))
+    yours = _plain_handler(logging.StreamHandler(sys.stderr))
+    yours.addFilter(lambda record: not _furus_own(record))
+    root.addHandler(yours)
+    worker_output = os.fdopen(
+        worker_stderr, "w", errors="backslashreplace", closefd=False
+    )
+    furus = _plain_handler(logging.StreamHandler(worker_output))
+    furus.addFilter(_furus_own)
+    root.addHandler(furus)
     root.setLevel(logging.INFO)
 
 
