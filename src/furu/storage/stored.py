@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple, cast
 
 from furu._batched import is_batched
-from furu._declared_types import declared_result_type
 from furu.code_trace import versions
 from furu.dependencies import record_loaded
 from furu.migration.schema import check_defaults
@@ -199,10 +198,7 @@ def load_rows[T](objs: Sequence[Spec[T]], rows: Sequence[Row]) -> list[T]:
     for run, held in by_run.items():
         record_loaded(run, held.values())
         loaded = load_result_bundle(
-            result_dir_in(run),
-            list(held),
-            data_dir=data_dir_in(run),
-            declared_type=declared_result_type(type(next(iter(held.values())))),
+            result_dir_in(run), list(held), data_dir=data_dir_in(run)
         )
         values.update(zip((Row(run, index) for index in held), loaded, strict=True))
     return [cast(T, values[row]) for row in rows]

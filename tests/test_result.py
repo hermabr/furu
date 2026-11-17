@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict
 from runs import run_of
 
 import furu
-from furu import Ref, Spec
+from furu import Spec
 from furu._declared_types import child_declared_type
 from furu.result.bundle import (
     _save_result_bundle as _save_result_bundle_impl,
@@ -52,14 +52,9 @@ def _save_rows(
     )
 
 
-def _load_rows(
-    bundle_dir: Path, rows: list[int], *, declared_type: object = Any
-) -> list[Any]:
+def _load_rows(bundle_dir: Path, rows: list[int]) -> list[Any]:
     return load_result_bundle_impl(
-        bundle_dir,
-        rows,
-        data_dir=data_dir_in(bundle_dir.parent),
-        declared_type=declared_type,
+        bundle_dir, rows, data_dir=data_dir_in(bundle_dir.parent)
     )
 
 
@@ -75,8 +70,8 @@ def _save_result_bundle(
     )
 
 
-def load_result_bundle(bundle_dir: Path, *, declared_type: object = Any) -> object:
-    return _load_rows(bundle_dir, [0], declared_type=declared_type)[0]
+def load_result_bundle(bundle_dir: Path) -> object:
+    return _load_rows(bundle_dir, [0])[0]
 
 
 _CHILD_DECLARED_TYPE_NAMESPACE: dict[str, object] = {
@@ -845,28 +840,6 @@ def test_strict_pydantic_annotated_codec_selects_artifact_storage() -> None:
     assert np.array_equal(loaded_again.weights, np.arange(3, dtype=np.int64))
 
 
-@dataclass(frozen=True)
-class RefArrayOutput:
-    weights: Ref[Any]
-
-
-class RefArrayResult(Spec[RefArrayOutput]):
-    def create(self) -> RefArrayOutput:
-        return RefArrayOutput(weights=furu.ref(np.arange(4)))
-
-
-@dataclass(frozen=True)
-class RefCountingOutput:
-    value: Ref[_CountingValue]
-
-
-class RefCountingResult(Spec[RefCountingOutput]):
-    def create(self) -> RefCountingOutput:
-        return RefCountingOutput(
-            value=furu.ref(_CountingValue(9), codec=_CountingCodec)
-        )
-
-
 class DataDirPathResult(Spec[dict[str, _DataDirPathValue]]):
     result_codecs = (_DataDirPathCodec,)
 
@@ -874,71 +847,7 @@ class DataDirPathResult(Spec[dict[str, _DataDirPathValue]]):
         path = self.directory.data / "data.zarr"
         path.mkdir()
         value = _DataDirPathValue(path)
-        return {
-            "first": value,
-            "second": cast(_DataDirPathValue, furu.ref(value, codec=_DataDirPathCodec)),
-        }
-
-
-def test_ref_field_resolves_codec_from_registry_and_loads_on_demand() -> None:
-    obj = RefArrayResult()
-    created = obj.create()
-
-    assert isinstance(created, RefArrayOutput)
-    assert isinstance(created.weights, Ref)
-    assert np.array_equal(created.weights.load(), np.arange(4))
-    assert (result_dir_in(run_of(obj)) / "artifacts" / "weights" / "data.npy").exists()
-
-    loaded_again = obj.create()
-    assert isinstance(loaded_again, RefArrayOutput)
-    assert isinstance(loaded_again.weights, Ref)
-    assert np.array_equal(loaded_again.weights.load(), np.arange(4))
-
-
-def test_ref_rebinds_to_storage_after_publish() -> None:
-    _CountingCodec.dump_calls = 0
-    _CountingCodec.load_calls = 0
-    obj = RefCountingResult()
-
-    created = obj.create()
-
-    assert isinstance(created.value, Ref)
-    assert _CountingCodec.dump_calls == 1
-    # Handed back from storage, but a Ref reads its artifact only on load().
-    assert _CountingCodec.load_calls == 0
-
-    first = created.value.load()
-    second = created.value.load()
-
-    assert first.value == 9
-    assert second is first
-    assert _CountingCodec.load_calls == 1
-
-
-def test_ref_without_resolvable_codec_raises_at_call_site() -> None:
-    with pytest.raises(TypeError, match=r"furu\.ref\(\) found no codec") as exc_info:
-        furu.ref([1, 2, 3])
-
-    message = str(exc_info.value)
-    assert "codec=" in message
-    assert "eager" in message
-
-
-@dataclass(frozen=True)
-class ConflictingRefOutput:
-    weights: Annotated[Ref[Any], NumpyNpyCodec]
-
-
-class ConflictingRefResult(Spec[ConflictingRefOutput]):
-    def create(self) -> ConflictingRefOutput:
-        return ConflictingRefOutput(
-            weights=furu.ref(_CountingValue(1), codec=_CountingCodec)
-        )
-
-
-def test_ref_codec_conflicts_with_different_annotated_codec() -> None:
-    with pytest.raises(TypeError, match="Conflicting codecs"):
-        ConflictingRefResult().create()
+        return {"first": value}
 
 
 def test_codec_metadata_path_round_trips_shared_data_dir_path() -> None:
@@ -946,11 +855,9 @@ def test_codec_metadata_path_round_trips_shared_data_dir_path() -> None:
     loaded = obj.create()
     data_path = data_dir_in(run_of(obj)) / "data.zarr"
 
-    assert loaded["first"].path.resolve() == data_path.resolve()
     # Data-dir paths move when the attempt is published, so the creating run
     # gets the stored value back, exactly as a later load would.
-    assert isinstance(loaded["second"], _DataDirPathValue)
-    assert loaded["second"].path.resolve() == data_path.resolve()
+    assert loaded["first"].path.resolve() == data_path.resolve()
 
     assert not (
         result_dir_in(run_of(obj)) / "rows" / "0" / "first" / "data.zarr"
@@ -959,10 +866,6 @@ def test_codec_metadata_path_round_trips_shared_data_dir_path() -> None:
     loaded_again = obj.load_existing()
 
     assert loaded_again["first"].path == data_path.resolve()
-    # The field is declared eager, so the Ref spelling on save still loads
-    # eagerly on read.
-    assert isinstance(loaded_again["second"], _DataDirPathValue)
-    assert loaded_again["second"].path == data_path.resolve()
 
 
 def test_codec_metadata_path_outside_data_dir_raises_at_save(tmp_path: Path) -> None:
@@ -1132,164 +1035,6 @@ def test_private_save_result_bundle_refuses_existing_directory(tmp_path) -> None
         _save_result_bundle({"x": 1}, bundle_dir, result_codecs=())
 
 
-def test_ref_created_directly_holds_its_value() -> None:
-    value = _CountingValue(7)
-    handle = furu.ref(value, codec=_CountingCodec)
-
-    assert repr(handle) == "Ref(_CountingValue)"
-    assert handle.load() is value
-
-
-def test_root_ref_defers_cache_read_and_memoizes(
-    tmp_path: Path,
-) -> None:
-    bundle_dir = tmp_path / "bundle"
-    _CountingCodec.dump_calls = 0
-    _CountingCodec.load_calls = 0
-
-    _save_result_bundle(
-        furu.ref(_CountingValue(9), codec=_CountingCodec),
-        bundle_dir,
-        result_codecs=(),
-    )
-
-    assert _CountingCodec.dump_calls == 1
-    assert _CountingCodec.load_calls == 0
-
-    loaded = load_result_bundle(bundle_dir, declared_type=Ref[_CountingValue])
-
-    assert isinstance(loaded, Ref)
-    assert repr(loaded) == "Ref(unloaded)"
-    assert _CountingCodec.load_calls == 0
-
-    first = loaded.load()
-    second = loaded.load()
-
-    assert isinstance(first, _CountingValue)
-    assert first.value == 9
-    assert second is first
-    assert repr(loaded) == "Ref(_CountingValue)"
-    assert _CountingCodec.load_calls == 1
-
-
-def test_refs_round_trip_inside_supported_structures(
-    tmp_path: Path,
-) -> None:
-    bundle_dir = tmp_path / "bundle"
-    _CountingCodec.load_calls = 0
-    value = {
-        "items": [
-            {"inner": furu.ref(_CountingValue(1), codec=_CountingCodec)},
-            {"inner": furu.ref(_CountingValue(2), codec=_CountingCodec)},
-        ]
-    }
-
-    _save_result_bundle(value, bundle_dir, result_codecs=())
-    loaded = load_result_bundle(
-        bundle_dir,
-        declared_type=dict[str, list[dict[str, Ref[_CountingValue]]]],
-    )
-
-    assert isinstance(loaded, dict)
-    loaded_dict = cast(dict[str, Any], loaded)
-    items = loaded_dict["items"]
-    assert isinstance(items, list)
-    first = cast(Ref[_CountingValue], cast(dict[str, Any], items[0])["inner"])
-    second = cast(Ref[_CountingValue], cast(dict[str, Any], items[1])["inner"])
-    assert isinstance(first, Ref)
-    assert isinstance(second, Ref)
-    assert _CountingCodec.load_calls == 0
-
-    assert first.load().value == 1
-    assert second.load().value == 2
-    assert _CountingCodec.load_calls == 2
-
-
-class RootRefResult(Spec[Ref[_CountingValue]]):
-    def create(self) -> Ref[_CountingValue]:
-        return furu.ref(_CountingValue(21), codec=_CountingCodec)
-
-
-def test_ref_as_the_whole_result_rebinds_and_rehydrates() -> None:
-    _CountingCodec.load_calls = 0
-    obj = RootRefResult()
-
-    created = obj.create()
-
-    assert isinstance(created, Ref)
-    assert _CountingCodec.load_calls == 0
-    assert created.load().value == 21
-    assert _CountingCodec.load_calls == 1
-
-    loaded = obj.load_existing()
-
-    assert isinstance(loaded, Ref)
-    assert loaded.load().value == 21
-
-
-@dataclass(frozen=True)
-class MixedRefOutput:
-    loss: float
-    weights: np.ndarray
-    history: Ref[_CountingValue]
-
-
-class MixedRefResult(Spec[MixedRefOutput]):
-    def create(self) -> MixedRefOutput:
-        return MixedRefOutput(
-            loss=0.25,
-            weights=np.arange(4, dtype=np.float32),
-            history=furu.ref(_CountingValue(3), codec=_CountingCodec),
-        )
-
-
-def test_mixed_eager_ref_and_inline_fields_round_trip() -> None:
-    _CountingCodec.load_calls = 0
-    obj = MixedRefResult()
-
-    obj.create()
-    loaded = obj.load_existing()
-
-    assert isinstance(loaded, MixedRefOutput)
-    assert loaded.loss == 0.25
-    assert isinstance(loaded.weights, np.ndarray)
-    assert np.array_equal(loaded.weights, np.arange(4, dtype=np.float32))
-    assert isinstance(loaded.history, Ref)
-    assert _CountingCodec.load_calls == 0
-    assert loaded.history.load().value == 3
-
-
-def test_eager_and_ref_spellings_are_byte_identical_on_disk(tmp_path: Path) -> None:
-    eager_dir = tmp_path / "eager" / "bundle"
-    ref_dir = tmp_path / "ref" / "bundle"
-    array = np.arange(4, dtype=np.int64)
-
-    _save_result_bundle({"weights": array}, eager_dir, result_codecs=())
-    _save_result_bundle({"weights": furu.ref(array)}, ref_dir, result_codecs=())
-
-    assert (eager_dir / "manifest.json").read_bytes() == (
-        ref_dir / "manifest.json"
-    ).read_bytes()
-    assert (eager_dir / "artifacts" / "weights" / "data.npy").read_bytes() == (
-        ref_dir / "artifacts" / "weights" / "data.npy"
-    ).read_bytes()
-
-    # The declared type alone decides rehydration, in both directions.
-    eager_from_ref_bundle = cast(
-        dict[str, Any],
-        load_result_bundle(ref_dir, declared_type=dict[str, np.ndarray]),
-    )
-    ref_from_eager_bundle = cast(
-        dict[str, Any],
-        load_result_bundle(eager_dir, declared_type=dict[str, Ref[np.ndarray]]),
-    )
-
-    assert isinstance(eager_from_ref_bundle["weights"], np.ndarray)
-    assert isinstance(ref_from_eager_bundle["weights"], Ref)
-    assert np.array_equal(eager_from_ref_bundle["weights"], array)
-    assert np.array_equal(ref_from_eager_bundle["weights"].load(), array)
-
-
 def _files(bundle_dir: Path) -> set[str]:
     return {
         path.relative_to(bundle_dir).as_posix()
@@ -1366,11 +1111,9 @@ def test_arrays_and_tables_of_every_row_share_one_file_per_position(
     }
     assert np.load(bundle_dir / "artifacts/preds/data.npy").shape == (6, 4)
     assert pl.read_parquet(bundle_dir / "artifacts/mistakes/data.parquet").height == 15
+    assert _same(_load_rows(bundle_dir, list(range(6))), values)
     assert _same(
-        _load_rows(bundle_dir, list(range(6)), declared_type=LooResult), values
-    )
-    assert _same(
-        _load_rows(bundle_dir, [5, 0, 2], declared_type=LooResult),
+        _load_rows(bundle_dir, [5, 0, 2]),
         [values[5], values[0], values[2]],
     )
 
@@ -1563,12 +1306,6 @@ def test_codec_with_save_many_and_load_many_gets_one_call_each(tmp_path: Path) -
     assert _files(bundle_dir) == {"manifest.json", "artifacts/root/values.txt"}
     assert [value.value for value in loaded] == [3, 1]
     assert _MergingCodec.loaded_lines == [[3, 1]]
-
-    # A Ref reads its own row, and only when asked.
-    (lazy,) = _load_rows(bundle_dir, [2], declared_type=Ref[_CountingValue])
-    assert _MergingCodec.loaded_lines == [[3, 1]]
-    assert lazy.load().value == 2
-    assert _MergingCodec.loaded_lines == [[3, 1], [2]]
 
 
 class _Sweep(Spec[_CountingValue]):
