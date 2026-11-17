@@ -211,7 +211,7 @@ class _DependencyNotReady(BaseException):
     def __init__(
         self,
         dependencies: Sequence[Spec],
-        plan: Path | None = None,
+        plan: Path,
         lines: Sequence[dict[str, Any]] = (),
     ):
         self.dependencies = tuple(dependencies)

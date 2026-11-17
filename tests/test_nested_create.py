@@ -6,7 +6,7 @@ import pytest
 from runs import ends_of, fixed_run
 
 import furu
-from furu import Spec
+from furu import Spec, plan
 from furu.dependencies import _DependencyNotReady
 from furu.provenance import SubmitProvenance
 from furu.worker.backends.local import LocalThreadWorkerBackend
@@ -68,7 +68,7 @@ class CannotSeeItsLeaf(Spec[int]):
         CALLS.append("cannot see")
         if len(CALLS) > 20:
             raise AssertionError("reran without bound")
-        raise _DependencyNotReady([Leaf(n=8)])
+        raise _DependencyNotReady([Leaf(n=8)], plan.listing())
 
 
 class MissesEachLeafOnce(Spec[int]):
@@ -80,7 +80,7 @@ class MissesEachLeafOnce(Spec[int]):
         misses = sum(call.startswith("misses") for call in CALLS)
         CALLS.append(f"misses {misses}")
         if misses < self.count:
-            raise _DependencyNotReady([Leaf(n=misses)])
+            raise _DependencyNotReady([Leaf(n=misses)], plan.listing())
         return sum(Leaf(n=n).create() for n in range(self.count))
 
 
@@ -202,7 +202,7 @@ def test_create_blocked_without_naming_a_dependency_raises(
     import furu.execution.load_or_create as load_or_create_module
 
     def create(group: object, **kwargs: object) -> None:
-        raise _DependencyNotReady([])
+        raise _DependencyNotReady([], plan.listing())
 
     monkeypatch.setattr(load_or_create_module, "_create_in_process", create)
     parent = SumOfLeaves(count=1)
@@ -231,9 +231,9 @@ def test_create_misses_a_dependency_again_after_building_another(
         attempts.append("parent")
         # A race on seen, a real block on missing, then a race on seen again.
         if len(attempts) in (1, 3):
-            raise _DependencyNotReady([seen])
+            raise _DependencyNotReady([seen], plan.listing())
         if len(attempts) == 2:
-            raise _DependencyNotReady([missing])
+            raise _DependencyNotReady([missing], plan.listing())
         return real_create(group, submit_provenance=submit_provenance)
 
     monkeypatch.setattr(load_or_create_module, "_create_in_process", create)

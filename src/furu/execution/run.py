@@ -85,6 +85,8 @@ class Run(Dag):
     failures: dict[str, list[str]] = field(default_factory=dict)
     logs: dict[str, Path] = field(default_factory=dict)
     batch_ids: dict[object, str] = field(default_factory=dict)
+    # The stored names of the classes this launch asked about.
+    asked: frozenset[str] = frozenset()
 
     # A worker's filesystem can take about a minute to show a version another
     # node just published (NFS caches directory listings).
@@ -149,7 +151,6 @@ class Run(Dag):
 
     def _submission(self, node: DagNode) -> Submission:
         obj = node.obj
-        assert node.plan is not None
         return Submission(
             job=Job(
                 specs=[obj.object_id],
@@ -161,6 +162,7 @@ class Run(Dag):
                 process=ProcessSettings.from_metadata(obj._metadata),
                 config=self.config,
                 code=self.code,
+                asked=self.asked,
             ),
             pools=self.placement[obj.object_id],
             throttle=None

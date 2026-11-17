@@ -50,7 +50,7 @@ def _line(event: str, **fields: object) -> str:
     return json.dumps({"event": event, "at": at, **fields}, separators=(",", ":"))
 
 
-def start(run_dir: Path, specs: Sequence[str], plan: Path | None) -> None:
+def start(run_dir: Path, specs: Sequence[str], plan: Path) -> None:
     """Begin an attempt in a working folder, opening the folder if it is new.
 
     ``plan`` is the plan file that lists the specs: their fields and what they
@@ -58,13 +58,12 @@ def start(run_dir: Path, specs: Sequence[str], plan: Path | None) -> None:
     """
     earlier = [event.get("event") for event in read_events(run_dir)]
     lines = [] if "opened" in earlier else [_line("opened", specs=list(specs))]
-    listed = {} if plan is None else {"plan": str(plan)}
     lines.append(
         _line(
             "start",
             attempt=earlier.count("start") + 1,
             host=socket.gethostname(),
-            **listed,
+            plan=str(plan),
         )
     )
     # On a new line, so an attempt killed in the middle of a line costs only

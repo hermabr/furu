@@ -49,7 +49,6 @@ from furu.storage.stored import load_rows, stored_row
 from furu.utils import (
     _hash_dict_deterministically,
     nfs_safe_unique_name,
-    object_id_from_parts,
     spec_label,
 )
 
@@ -221,11 +220,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
     @final
     @cached_property
     def object_id(self) -> str:
-        return object_id_from_parts(
-            fully_qualified_name=self._stored_name,
-            class_part=self._class_part,
-            artifact_hash=self._artifact_hash,
-        )
+        return f"{self._stored_name}:{self._class_part}:{self._artifact_hash}"
 
     @final
     def load_existing(self) -> T:

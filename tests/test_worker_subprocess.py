@@ -347,11 +347,10 @@ def test_subprocess_blocked_dependency_is_relayed(child_slot: ChildSlot) -> None
     assert isinstance(result, JobBlockedResult)
     assert result.dependencies == [dependency.object_id]
     # The worker saved the line of the spec it found in a plan file of its
-    # own, in the launch's folder, before it reported back.
+    # own, in the launch's folder.
     found = {"fields": {"marker": 0}, "runs": True, "spec": dependency.object_id}
     assert result.lines == [plan.dump(found)]
     assert result.plan.parent == get_config().directories.anchored().plans / "e1"
-    assert plan.read(result.plan) == [{"asked_by": [parent.object_id]}, found]
     assert ends_of(parent) == [
         {"outcome": "blocked", "waiting_on": [dependency.object_id]}
     ]

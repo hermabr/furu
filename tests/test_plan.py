@@ -1,7 +1,7 @@
 """A launch's plan file, and the lines that describe its specs."""
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +44,25 @@ class Cifar(Spec[int]):
 class Triage(Spec[int]):
     lemma: str
     merges: tuple[Cifar, ...]
+
+    def create(self) -> int:
+        return len(self.merges)
+
+
+class Sharded(Spec[int]):
+    split: str
+    shards: int = field(init=False, default=8)
+
+    def create(self) -> int:
+        return self.shards
+
+
+class Merged(Spec[int]):
+    triage: Triage
+
+    @furu.dependency
+    def merges(self) -> tuple[Cifar, ...]:
+        return self.triage.merges
 
     def create(self) -> int:
         return len(self.merges)
@@ -170,6 +189,27 @@ def test_a_value_over_1_kb_is_one_line_that_the_specs_holding_it_point_to(
         {"lemma": "beber", "merges": pointer},
     ]
     assert plan.Specs(lines)[triages[1].object_id] == triages[1]
+
+
+def test_a_field_reaches_its_specs_when_a_dependency_method_returned_its_value() -> (
+    None
+):
+    merges = tuple(Cifar(split=f"part-{part}") for part in range(20))
+    spec = Merged(triage=Triage(lemma="comer", merges=merges))
+
+    with artifact.remembering():
+        lines = list(plan.lines([spec], {spec.object_id}))
+
+    # The method's value line comes first, and the field points to it.
+    assert plan.Specs(lines)[spec.object_id] == spec
+
+
+def test_a_line_does_not_fill_a_field_that_init_does_not_take() -> None:
+    spec = Sharded(split="train")
+    (line,) = plan.lines([spec])
+
+    assert line["fields"] == {"shards": 8, "split": "train"}
+    assert plan.Specs([line])[spec.object_id] == spec
 
 
 @pytest.mark.parametrize("on_workers", [False, True])

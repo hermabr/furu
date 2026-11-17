@@ -24,7 +24,7 @@ class DagNode:
     obj: Spec
     # The plan file that lists it: the launch's, or the one of the process
     # whose create() asked for it.
-    plan: Path | None = None
+    plan: Path
     dependencies: list[DagNode] = field(default_factory=list)
     dependents: list[DagNode] = field(default_factory=list)
     # When it first found missing each dependency its run sees built, since it
@@ -97,7 +97,7 @@ class Dag:
     def _check_new(self, nodes: Sequence[DagNode]) -> None:
         """Reject new nodes before they join the graph; runners override this."""
 
-    def add(self, objs: Sequence[Spec], plan: Path | None = None) -> None:
+    def add(self, objs: Sequence[Spec], plan: Path) -> None:
         """Add the missing ``objs`` and, recursively, their declared dependencies.
 
         ``plan`` is the plan file that lists them.
@@ -139,7 +139,7 @@ class Dag:
             )
 
     def block(
-        self, node: DagNode, dependencies: Sequence[Spec], plan: Path | None = None
+        self, node: DagNode, dependencies: Sequence[Spec], plan: Path
     ) -> str | None:
         """``node`` found ``dependencies`` missing; rerun it once they're built.
 

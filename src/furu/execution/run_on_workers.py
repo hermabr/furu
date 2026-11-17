@@ -72,7 +72,7 @@ def run_on_workers(objs: Sequence[Spec], backends: Sequence[WorkerBackend]) -> N
     )
     # Asked and written once: planning again after losing the manager is the
     # same launch.
-    planned = False
+    asked: frozenset[str] = frozenset()
     with _execution_log(execution_log), in_process as manager:
         while True:
             run = Run(
@@ -95,10 +95,10 @@ def run_on_workers(objs: Sequence[Spec], backends: Sequence[WorkerBackend]) -> N
                 stage_table(missing),
                 extra={"path": execution_log},
             )
-            if not planned:
-                ask(missing)
+            if not asked:
+                asked = ask(missing)
                 plan.write(launch_plan, objs, missing, provenance)
-                planned = True
+            run.asked = asked
             with (
                 connect(manager.url, max_size=None)
                 if manager is not None

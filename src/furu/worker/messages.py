@@ -58,6 +58,9 @@ class Job(_Message):
     # a worker serving many repos stores each result in the repo it came from.
     config: _Config
     code: CodeLocation
+    # The stored names of the classes the launch asked about. A spec of
+    # another class that a create() builds is checked where it is built.
+    asked: frozenset[str] = frozenset()
 
     @property
     def label(self) -> str:

@@ -74,15 +74,6 @@ def resolve_fully_qualified_name(name: str) -> Any:
     return getattr(importlib.import_module(module_name), attr_name)
 
 
-def object_id_from_parts(
-    *,
-    fully_qualified_name: str,
-    class_part: str,
-    artifact_hash: str,
-) -> str:
-    return f"{fully_qualified_name}:{class_part}:{artifact_hash}"
-
-
 def spec_label(fully_qualified_name: str, class_part: str, artifact_hash: str) -> str:
     class_name = fully_qualified_name.rpartition(".")[2]
     return f"{class_name}:{class_part[:5]}:{artifact_hash[:5]}"

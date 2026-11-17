@@ -34,6 +34,7 @@ import zlib
 from collections.abc import Collection, Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import fields
 from itertools import chain, count
 from pathlib import Path
 from typing import Any, cast
@@ -45,7 +46,7 @@ from furu.constants import KINDMARKER, VALUEMARKER
 from furu.core import Spec
 from furu.dependencies import returned_attributes, specs_under_creation
 from furu.migration.schema import held
-from furu.migration.steps import naming, stored_name
+from furu.migration.steps import naming
 from furu.provenance import SubmitProvenance
 from furu.serializer.artifact import (
     _PLAIN,
@@ -77,6 +78,8 @@ def lines(roots: Iterable[Spec], runs: Collection[str] = ()) -> Iterator[Line]:
     table of moved classes comes last, when a class has moved.
     """
     written: set[str] = set()
+    # The fingerprints of field values whose specs are pending or written.
+    walked: set[str] = set()
     classes: set[type] = set()
     pending = list(roots)[::-1]
     while pending:
@@ -116,7 +119,7 @@ def lines(roots: Iterable[Spec], runs: Collection[str] = ()) -> Iterator[Line]:
             else:
                 held_value = getattr(obj, attribute)
                 fingerprint = remembered(held_value, cls, attribute)
-                if added is None and fingerprint in written:
+                if added is None and fingerprint in walked:
                     # Written for a spec that holds the same value.
                     fields[name] = {KINDMARKER: "value", VALUEMARKER: fingerprint}
                     continue
@@ -131,6 +134,7 @@ def lines(roots: Iterable[Spec], runs: Collection[str] = ()) -> Iterator[Line]:
                     fields[name] = value
                     continue
                 fingerprint = _fingerprint(text)
+                walked.add(fingerprint)
                 new = fingerprint not in written
             fields[name] = {KINDMARKER: "value", VALUEMARKER: fingerprint}
             if new:
@@ -182,17 +186,13 @@ class Specs:
         written: dict[str, JsonValue] = line["fields"]
         noted: dict[str, JsonValue] = line.get("left_out", {})
         stored, _, artifact_hash = spec_id.split(":")
-        cls = resolve_fully_qualified_name(self._moved.get(stored, stored))
-        if not (isinstance(cls, type) and issubclass(cls, Spec)):
-            raise TypeError(f"the line of {spec_id} names {cls!r}, which is no Spec")
-        if stored_name(cls) != stored:
-            raise ValueError(
-                f"the line of {spec_id} was written for a class named {stored}, "
-                f"and {fully_qualified_name(cls)} is stored as {stored_name(cls)}"
-            )
+        cls = cast(
+            type[Spec], resolve_fully_qualified_name(self._moved.get(stored, stored))
+        )
         # The steps forwards: the line fits only a class with the same names.
         check_names(cls, written)
         hints = cached_type_hints(cls)
+        takes = {f.name for f in fields(cls) if f.init}
         values: dict[str, Any] = {}
         returned: dict[str, str] = {}
         for attribute, name, added in naming(cls).fields:
@@ -212,6 +212,8 @@ class Specs:
             )
             if attribute in returned_attributes(cls):
                 returned[attribute] = pointer or _hash_dict_deterministically(default)
+            elif attribute not in takes:
+                continue
             elif name in written:
                 values[attribute] = from_json(
                     value if pointer is None else self._values[pointer],
@@ -290,11 +292,11 @@ def write(
 
 
 # The plan file that lists the specs whose create() runs in this context.
-_listed: ContextVar[Path | None] = ContextVar("furu_plan_listed", default=None)
+_listed: ContextVar[Path] = ContextVar("furu_plan_listed")
 
 
 @contextmanager
-def listed_in(plan: Path | None) -> Generator[None]:
+def listed_in(plan: Path) -> Generator[None]:
     """Run the create() of specs that ``plan`` lists."""
     token = _listed.set(plan)
     try:
@@ -303,7 +305,7 @@ def listed_in(plan: Path | None) -> Generator[None]:
         _listed.reset(token)
 
 
-def listing() -> Path | None:
+def listing() -> Path:
     return _listed.get()
 
 
@@ -320,7 +322,6 @@ def save_found(running: Sequence[Spec]) -> tuple[Path, list[Line]]:
     when the name is taken it adds -2, then -3.
     """
     listed = listing()
-    assert listed is not None, "a create() runs for specs that a plan lists"
     plans = get_config().directories.anchored().plans
     folder = plans / listed.relative_to(plans).parts[0].removesuffix(".plan")
     if (file := _own.get(folder)) is None:

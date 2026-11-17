@@ -32,7 +32,7 @@ from furu.dependencies import (
     recording_loads,
     under_creation,
 )
-from furu.execution.launch import ask, held_in
+from furu.execution.launch import ask, asked, held_in
 from furu.locking import lock
 from furu.logging import _group_label, _log_scope, get_logger
 from furu.migration.schema import check_defaults, record_nested_names
@@ -412,7 +412,7 @@ def _load_or_block[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
         # What a launch would list for them: the classes under them can have
         # changed too.
         dag = Dag()
-        dag.add(missing)
+        dag.add(missing, plan.listing())
         running = [node.obj for node in dag.nodes_by_id.values()]
         ask(running, found=True)
         # Saved before anyone is told, so a found spec that fails or never
@@ -445,10 +445,11 @@ def _load_or_create_local[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
 
     if dag.ready:
         running = [node.obj for node in dag.nodes_by_id.values()]
-        ask(running)
+        stages = ask(running)
         submit_provenance = capture_submit_provenance()
         plan.write(launch_plan, objs, running, submit_provenance)
-        _run_in_process(dag, submit_provenance)
+        with asked(stages):
+            _run_in_process(dag, submit_provenance)
     if not load:
         return []
     # Load the way a cache hit does, so the first run returns what every later

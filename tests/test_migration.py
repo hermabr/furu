@@ -611,6 +611,10 @@ def test_a_spec_built_inside_a_create_is_checked_where_it_is_built(
     assert f"Tok: {old._class_dir} was stored" in last_line
     assert not run(peak=1.0).done
 
+    # A class the launch asked about is not asked about again.
+    furu.create([run(peak=2.0), search(n=1)])
+    assert run(peak=1.0).done
+
 
 def test_the_launch_table_has_a_row_for_each_stage_with_specs_missing() -> None:
     report = _spec("InfluenceReport", top_k=int)
