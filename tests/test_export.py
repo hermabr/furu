@@ -2,10 +2,12 @@
 
 import re
 import shutil
+import sys
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 
+import pydantic
 import pytest
 from gitrepo import git
 
@@ -62,6 +64,17 @@ class Report(Spec[int]):
         # No field holds the probes: create() finds them, and loads them.
         probes = furu.create([Probe(seed=seed) for seed in range(2)])
         return sum(furu.load_existing([*self.clips, self.best])) + sum(probes)
+
+
+class Camera(pydantic.BaseModel):
+    lens: int
+
+
+class Shot(Spec[int]):
+    camera: Camera
+
+    def create(self) -> int:
+        return self.camera.lens
 
 
 def _pipeline() -> tuple[Report, list[Spec]]:
@@ -137,6 +150,26 @@ def test_a_line_that_no_longer_gives_its_id_stops_the_rebuild(tmp_path: Path) ->
     # A value written apart from the spec that holds it counts as its field.
     with pytest.raises(ValueError, match=re.escape(f"a line for {report.object_id}")):
         rebuild("value", '"note 7"', '"note 8"')
+    # An export is whole, so one that was cut short is not read at all.
+    path.write_bytes(path.read_bytes()[:-17])
+    with pytest.raises(EOFError):
+        furu.rebuild(path)
+
+
+def test_a_checkout_that_reads_a_line_into_another_spec_stops_the_rebuild(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path, shot = tmp_path / "shot.export", Shot(camera=Camera(lens=35))
+    shot.create()
+    furu.export(shot, path)
+
+    # The checkout that rebuilds has a field more in the model.
+    changed = pydantic.create_model(
+        "Camera", __module__=__name__, lens=int, zoom=(int, 2)
+    )
+    monkeypatch.setattr(sys.modules[__name__], "Camera", changed)
+    with pytest.raises(ValueError, match=re.escape(f"a line for {shot.object_id}")):
+        furu.rebuild(path)
 
 
 def test_an_export_needs_pushed_code_and_finished_specs(

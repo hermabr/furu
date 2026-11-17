@@ -17,6 +17,8 @@ computation, not the same bytes.
 
 from __future__ import annotations
 
+import gzip
+import json
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -25,12 +27,15 @@ from furu import plan
 from furu._tree import specs_in
 from furu.config import get_config
 from furu.core import Spec
+from furu.dependencies import returned_attributes
 from furu.execution.load_or_create import build
 from furu.logging import get_logger
-from furu.migration.steps import moved_classes
+from furu.migration.schema import held
+from furu.migration.steps import naming
 from furu.plan import Line
 from furu.provenance import capture_submit_provenance
-from furu.utils import _fingerprint, _hash_dict_deterministically, fully_qualified_name
+from furu.serializer.artifact import field_fingerprints
+from furu.utils import _hash_dict_deterministically
 
 if TYPE_CHECKING:
     from furu.worker.backends.protocol import WorkerBackend
@@ -40,14 +45,17 @@ def _recorded(start: Sequence[str]) -> list[Line]:
     """The lines in provenance/ of the specs ``start`` names and of all they lead to, each once.
 
     The record has no index, so every file in it is read. A spec that ran more
-    than once is described by the run that ended last.
+    than once is described by the run that ended last. The tables of moved
+    classes are merged into one, which comes last.
     """
     folder = get_config().directories.anchored().provenance
     # Spec lines by id and value lines by fingerprint, and the run of each spec.
     lines: dict[str, Line] = {}
     runs: dict[str, Line] = {}
+    moved: dict[str, str] = {}
     for file in folder.glob("[!.]*"):
         for line in plan.read(file):
+            moved |= line.get("moved", {})
             if "value" in line:
                 lines[line["value"]] = line
             for spec in line.get("specs", ()):
@@ -69,7 +77,7 @@ def _recorded(start: Sequence[str]) -> list[Line]:
         reached[name] = lines[name]
         todo += plan.holds(plan.dump(lines[name]))
         todo += runs.get(name, {}).get("loaded", ())
-    return list(reached.values())
+    return [*reached.values(), *([{"moved": moved}] if moved else ())]
 
 
 def export(tree: object, /, path: Path) -> None:
@@ -81,16 +89,6 @@ def export(tree: object, /, path: Path) -> None:
     asked = specs_in(tree)
     code = capture_submit_provenance()
     lines = _recorded([obj.object_id for obj in asked])
-    # A class that a line names by an old name is found through this table,
-    # which covers the classes this process has named.
-    if moved := {
-        old: fully_qualified_name(cls)
-        for old, cls in moved_classes.items()
-        if any(
-            f'"{old}:' in text or f'"{old}"' in text for text in map(plan.dump, lines)
-        )
-    }:
-        lines.append({"moved": moved})
     plan.write(path, asked, lines, code)
     get_logger().info(
         "exported %d specs, to rebuild at commit %s",
@@ -103,12 +101,13 @@ def export(tree: object, /, path: Path) -> None:
 def rebuild(path: Path, *, on: Sequence[WorkerBackend] | None = None) -> None:
     """Build every spec in an export, after recomputing each one's id.
 
-    An id is recomputed from the line's fields, the values the line points to
-    and the names this checkout's class gives it. One that differs from what
-    the file says stops the rebuild before anything runs.
+    An id is recomputed from the spec that this checkout builds from the line,
+    as any spec is named. One that differs from what the file says stops the
+    rebuild before anything runs.
     """
-    header, *lines = plan.read(path)
-    values = {line["value"]: line["is"] for line in lines if "value" in line}
+    # Read strictly: an export is never still being written, so one that was
+    # cut short is refused.
+    header, *lines = map(json.loads, gzip.decompress(path.read_bytes()).splitlines())
     specs = plan.Specs(lines)
     described: list[Spec] = []
     for line in lines:
@@ -116,24 +115,21 @@ def rebuild(path: Path, *, on: Sequence[WorkerBackend] | None = None) -> None:
             continue
         try:
             obj = specs[spec_id]
-            fingerprints = {
-                name: _fingerprint(
-                    plan.dump(
-                        value if (to := plan.pointer(value)) is None else values[to]
-                    )
-                )
-                for name, value in line["fields"].items()
-            }
+            cls = type(obj)
+            returned = returned_attributes(cls)
+            fingerprints = field_fingerprints(
+                obj, obj.artifact_serializers, held[cls], leave=returned
+            )
         except Exception as exc:
             exc.add_note(f"while reading {spec_id} from {path}")
             raise
-        found = ":".join(
-            [
-                obj._stored_name,
-                obj._class_part,
-                _hash_dict_deterministically(fingerprints),
-            ]
-        )
+        # What a dependency method returned is taken from the line: calling it
+        # may load results that are not built yet, and its first read compares.
+        for attribute, name, _ in naming(cls).fields:
+            if attribute in returned and name in line["fields"]:
+                fingerprints[name] = obj._returned[attribute]
+        fields = _hash_dict_deterministically(fingerprints)
+        found = f"{obj._stored_name}:{obj._class_part}:{fields}"
         if found != spec_id:
             raise ValueError(
                 f"{path} holds a line for {spec_id}, which gives the id "

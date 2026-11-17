@@ -100,11 +100,6 @@ class Naming:
     moved_from: str | None
 
 
-# Where each class that has moved lives, by the name it is stored under, of
-# the classes this process has named.
-moved_classes: dict[str, type] = {}
-
-
 @cache
 def naming(cls: type) -> Naming:
     """Undo the steps in ``cls.migrations``, newest first.
@@ -152,8 +147,6 @@ def naming(cls: type) -> Naming:
                 f"{cls.__name__}.migrations[{index}] ({describe(step)}): {problem}"
             )
 
-    if moved_from is not None:
-        moved_classes[moved_from] = cls
     first_names = tuple(sorted(first))
     return Naming(
         first_names=first_names,
