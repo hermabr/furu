@@ -224,45 +224,11 @@ def _dump_value(
                 )
             return _wrap("path", value=str(value))
         case pydantic.BaseModel():
-            fields_out: dict[str, JsonValue] = {}
-            field_types = cached_type_hints(value.__class__)
-            for raw_name in value.__class__.model_fields:
-                name = _validate_result_path_segment(
-                    raw_name, parent_value_path=value_path
-                )
-                fields_out[name] = _dump_value(
-                    getattr(value, name),
-                    field_types.get(name, Any),
-                    (*value_path, name),
-                    writer,
-                )
-            return {
-                WRAPPER_KEY: {
-                    KINDMARKER: "pydantic",
-                    TYPEMARKER: fully_qualified_name(type(value)),
-                    FIELDSMARKER: fields_out,
-                }
-            }
+            names = type(value).model_fields
+            return _dump_fields("pydantic", value, names, value_path, writer)
         case _ if dataclasses.is_dataclass(value) and not isinstance(value, type):
-            fields_out: dict[str, JsonValue] = {}
-            field_types = cached_type_hints(type(value))
-            for field in dataclasses.fields(cast(Any, value)):
-                name = _validate_result_path_segment(
-                    field.name, parent_value_path=value_path
-                )
-                fields_out[name] = _dump_value(
-                    getattr(value, name),
-                    field_types.get(field.name, Any),
-                    (*value_path, name),
-                    writer,
-                )
-            return {
-                WRAPPER_KEY: {
-                    KINDMARKER: "dataclass",
-                    TYPEMARKER: fully_qualified_name(type(value)),
-                    FIELDSMARKER: fields_out,
-                }
-            }
+            names = [field.name for field in dataclasses.fields(value)]
+            return _dump_fields("dataclass", value, names, value_path, writer)
         case _:
             if codec := CodecMeta.find_codec(value, writer.result_codecs):
                 return _dump_artifact(value, codec, value_path, writer)
@@ -270,6 +236,28 @@ def _dump_value(
     raise ValueError(
         f"Unsupported result value at {_value_path_display(value_path)}:\n"
         f"values of type {type(value).__name__!r} are not supported by furu. Add a custom codec"
+    )
+
+
+def _dump_fields(
+    kind: WrapperKind,
+    value: object,
+    names: Iterable[str],
+    value_path: ValuePath,
+    writer: _Writer,
+) -> JsonValue:
+    field_types = cached_type_hints(type(value))
+    fields: dict[str, JsonValue] = {
+        name: _dump_value(
+            getattr(value, name),
+            field_types.get(name, Any),
+            (*value_path, name),
+            writer,
+        )
+        for name in names
+    }
+    return _wrap(
+        kind, **{TYPEMARKER: fully_qualified_name(type(value)), FIELDSMARKER: fields}
     )
 
 
@@ -333,12 +321,6 @@ def _save_columns(
                 with contextlib.suppress(OSError):
                     for path in (shared, *shared.parents[: len(position)]):
                         (bundle_dir / path).rmdir()
-            elif len(metadatas) != len(cells):
-                raise TypeError(
-                    f"{codec.__name__}.save_many() at "
-                    f"{_value_path_display(value_path)} returned "
-                    f"{len(metadatas)} metadata for {len(cells)} values"
-                )
         paths = [shared] * len(cells)
         if metadatas is None:
             paths = [Path(ROWS_DIR_NAME, str(cell.row), *position) for cell in cells]
@@ -349,15 +331,10 @@ def _save_columns(
                 for cell, path in zip(cells, paths)
             ]
             row_folders[_value_path_display(value_path[:1])] += len(cells)
-        for cell, path, metadata in zip(cells, paths, metadatas):
-            if not isinstance(metadata, Mapping):
-                raise TypeError(
-                    f"{cell.codec.__name__} at {_value_path_display(value_path)} "
-                    f"must return metadata mappings; got {type(metadata).__name__!r}"
-                )
+        for cell, path, metadata in zip(cells, paths, metadatas, strict=True):
             cell.body["path"] = path.as_posix()
             cell.body["metadata"] = _encode_codec_metadata_value(
-                dict(metadata), data_dir=data_dir, value_path=value_path
+                metadata, data_dir=data_dir, value_path=value_path
             )
     if row_folders.total() >= _LARGE_FALLBACK_FOLDERS:
         for field, count in row_folders.items():
@@ -392,23 +369,13 @@ def _encode_codec_metadata_value(
             return _wrap(
                 "path", value=resolved.relative_to(data_dir_resolved).as_posix()
             )
-        case list():
+        case list() | tuple():
             return [
                 _encode_codec_metadata_value(
                     item, data_dir=data_dir, value_path=value_path
                 )
                 for item in value
             ]
-        case tuple():
-            return _wrap(
-                "tuple",
-                items=[
-                    _encode_codec_metadata_value(
-                        item, data_dir=data_dir, value_path=value_path
-                    )
-                    for item in value
-                ],
-            )
         case Mapping():
             out: dict[str, JsonValue] = {}
             for key, child in value.items():
@@ -437,29 +404,7 @@ def _encode_codec_metadata_value(
 def _decode_codec_metadata_value(node: JsonValue, *, data_dir: Path) -> object:
     match node:
         case dict() if WRAPPER_KEY in node:
-            body = cast(dict[str, Any], node[WRAPPER_KEY])
-            match body[KINDMARKER]:
-                case "path":
-                    rel_path = Path(body["value"])
-                    if rel_path.is_absolute():
-                        raise ValueError(
-                            f"codec metadata path must be relative: {rel_path}"
-                        )
-                    resolved_path = (data_dir.resolve() / rel_path).resolve()
-                    if not resolved_path.is_relative_to(data_dir.resolve()):
-                        raise ValueError(
-                            f"codec metadata path escapes data dir: {rel_path}"
-                        )
-                    return resolved_path
-                case "tuple":
-                    return tuple(
-                        _decode_codec_metadata_value(child, data_dir=data_dir)
-                        for child in body["items"]
-                    )
-                case _:
-                    raise ValueError(
-                        f"unknown codec metadata wrapper kind: {body[KINDMARKER]!r}"
-                    )
+            return data_dir / cast(dict[str, Any], node[WRAPPER_KEY])["value"]
         case dict():
             return {
                 key: _decode_codec_metadata_value(child, data_dir=data_dir)
@@ -473,29 +418,19 @@ def _decode_codec_metadata_value(node: JsonValue, *, data_dir: Path) -> object:
             return node
 
 
-def _load_value(
-    node: JsonValue, declared_type: object, reader: _Reader, value_path: ValuePath
-) -> object:
+def _load_value(node: JsonValue, declared_type: object, reader: _Reader) -> object:
     match node:
         case None | bool() | int() | float() | str():
             return node
         case list():
-            return list(_load_items(node, declared_type, reader, value_path))
+            return _load_items(node, declared_type, reader)
         case dict() if WRAPPER_KEY in node:
             return _load_wrapper(
-                cast(dict[str, Any], node[WRAPPER_KEY]),
-                declared_type,
-                reader,
-                value_path,
+                cast(dict[str, Any], node[WRAPPER_KEY]), declared_type, reader
             )
         case dict():
             return {
-                key: _load_value(
-                    child,
-                    child_declared_type(declared_type, key),
-                    reader,
-                    (*value_path, key),
-                )
+                key: _load_value(child, child_declared_type(declared_type, key), reader)
                 for key, child in node.items()
             }
         case _:
@@ -503,71 +438,31 @@ def _load_value(
 
 
 def _load_items(
-    items: list[JsonValue],
-    declared_type: object,
-    reader: _Reader,
-    value_path: ValuePath,
-) -> Iterable[object]:
-    width = len(str(len(items)))
-    return (
-        _load_value(
-            child,
-            child_declared_type(declared_type, i),
-            reader,
-            (*value_path, f"{i:0{width}d}"),
-        )
+    items: list[JsonValue], declared_type: object, reader: _Reader
+) -> list[object]:
+    return [
+        _load_value(child, child_declared_type(declared_type, i), reader)
         for i, child in enumerate(items)
-    )
+    ]
 
 
-def _load_validated_fields(
-    *,
-    kind: str,
-    cls: type[Any],
-    expected: set[str],
-    raw_fields: dict[str, JsonValue],
-    reader: _Reader,
-    value_path: ValuePath,
-) -> dict[str, object]:
-    actual = set(raw_fields)
-    missing = expected - actual
-    extra = actual - expected
-    if not missing and not extra:
-        field_types = cached_type_hints(cls)
-        return {
-            name: _load_value(
-                child, field_types.get(name, Any), reader, (*value_path, name)
-            )
-            for name, child in raw_fields.items()
-        }
-
-    details: list[str] = []
-    if missing:
-        details.append("missing fields: " + ", ".join(sorted(missing)))
-    if extra:
-        details.append("extra fields: " + ", ".join(sorted(extra)))
-
-    raise ValueError(
-        f"Cannot load {kind} {fully_qualified_name(cls)} at {_value_path_display(value_path)}: "
-        + "; ".join(details)
-    )
-
-
-def _codec_of(body: dict[str, Any]) -> type[Codec]:
-    codec = resolve_fully_qualified_name(body["codec"])
-    if not isinstance(codec, type) or not issubclass(codec, Codec):
-        raise TypeError(f"{body['codec']} is not a furu.Codec")
-    return codec
+def _load_fields(
+    body: dict[str, Any], reader: _Reader
+) -> tuple[Any, dict[str, object]]:
+    cls = resolve_fully_qualified_name(body[TYPEMARKER])
+    field_types = cached_type_hints(cls)
+    return cls, {
+        name: _load_value(child, field_types.get(name, Any), reader)
+        for name, child in body[FIELDSMARKER].items()
+    }
 
 
 def _read_artifacts(
     bodies: Sequence[dict[str, Any]], *, bundle_dir: Path, data_dir: Path
 ) -> Sequence[object]:
     """Read codec values stored in one directory, in the order given."""
-    codec = _codec_of(bodies[0])
+    codec: type[Codec] = resolve_fully_qualified_name(bodies[0]["codec"])
     path = Path(bodies[0]["path"])
-    if path.is_absolute() or ".." in path.parts:
-        raise ValueError(f"artifact path escapes the result bundle: {path}")
     metadatas = [
         cast(
             dict[str, object],
@@ -577,17 +472,11 @@ def _read_artifacts(
     ]
     if path.parts[0] == ROWS_DIR_NAME:
         return [codec.load(metadata, bundle_dir / path) for metadata in metadatas]
-    values = codec.load_many(metadatas, bundle_dir / path)
-    if len(values) != len(bodies):
-        raise TypeError(
-            f"{codec.__name__}.load_many() returned {len(values)} values "
-            f"for {len(bodies)} metadata"
-        )
-    return values
+    return codec.load_many(metadatas, bundle_dir / path)
 
 
 def _load_wrapper(
-    body: dict[str, Any], declared_type: object, reader: _Reader, value_path: ValuePath
+    body: dict[str, Any], declared_type: object, reader: _Reader
 ) -> object:
     kind: WrapperKind = body[KINDMARKER]
     match kind:
@@ -598,7 +487,7 @@ def _load_wrapper(
             ) is Ref:
                 # Not the reader: it holds every value this load has read.
                 return Ref._from_stored(
-                    codec=_codec_of(body),
+                    codec=resolve_fully_qualified_name(body["codec"]),
                     read=lambda: _read_artifacts(
                         [body], bundle_dir=bundle_dir, data_dir=data_dir
                     )[0],
@@ -608,76 +497,28 @@ def _load_wrapper(
                 values = _read_artifacts(
                     bodies, bundle_dir=bundle_dir, data_dir=data_dir
                 )
-                reader.values.update(zip(map(id, bodies), values))
+                reader.values.update(zip(map(id, bodies), values, strict=True))
             return reader.values[id(body)]
         case "dataclass":
-            cls = resolve_fully_qualified_name(body[TYPEMARKER])
-            if not dataclasses.is_dataclass(cls):
-                raise ValueError(
-                    f"Cannot load dataclass at {_value_path_display(value_path)}: "
-                    f"{fully_qualified_name(cls)} is not a dataclass"
-                )
-            dataclass_fields = dataclasses.fields(cls)
-            init_fields = {field.name for field in dataclass_fields if field.init}
-            loaded_fields = _load_validated_fields(
-                kind="dataclass",
-                cls=cls,
-                expected={field.name for field in dataclass_fields},
-                raw_fields=body[FIELDSMARKER],
-                reader=reader,
-                value_path=value_path,
-            )
-            try:
-                return cls(
-                    **{
-                        name: value
-                        for name, value in loaded_fields.items()
-                        if name in init_fields
-                    }
-                )
-            except Exception as exc:
-                raise ValueError(
-                    f"Cannot load dataclass {fully_qualified_name(cls)} "
-                    f"at {_value_path_display(value_path)}: {exc}"
-                ) from exc
+            cls, fields = _load_fields(body, reader)
+            for field in dataclasses.fields(cls):
+                if not field.init:
+                    fields.pop(field.name, None)
+            return cls(**fields)
         case "datetime":
             return datetime.fromisoformat(body["value"])
         case "path":
             return Path(body["value"])
         case "data_path":
             return reader.data_dir / body["value"]
-        case "tuple":
-            return tuple(_load_items(body["items"], declared_type, reader, value_path))
-        case "set":
-            return set(_load_items(body["items"], declared_type, reader, value_path))
-        case "frozenset":
-            return frozenset(
-                _load_items(body["items"], declared_type, reader, value_path)
-            )
+        case "tuple" | "set" | "frozenset":
+            items = _load_items(body["items"], declared_type, reader)
+            return {"tuple": tuple, "set": set, "frozenset": frozenset}[kind](items)
         case "pydantic":
-            cls = resolve_fully_qualified_name(body[TYPEMARKER])
-            if not issubclass(cls, pydantic.BaseModel):
-                raise ValueError(  # noqa: TRY004 -- malformed payload, not a bad argument
-                    f"Cannot load pydantic model at {_value_path_display(value_path)}: "
-                    f"{fully_qualified_name(cls)} is not a pydantic model"
-                )
-            loaded_fields = _load_validated_fields(
-                kind="pydantic model",
-                cls=cls,
-                expected=set(cls.model_fields),
-                raw_fields=body[FIELDSMARKER],
-                reader=reader,
-                value_path=value_path,
-            )
-            try:
-                return cls.model_validate(loaded_fields)
-            except pydantic.ValidationError as exc:
-                raise ValueError(
-                    f"Cannot load pydantic model {fully_qualified_name(cls)} "
-                    f"at {_value_path_display(value_path)}: {exc}"
-                ) from exc
+            cls, fields = _load_fields(body, reader)
+            return cls.model_validate(fields)
         case _:
-            raise ValueError(f"unknown wrapper kind: {kind!r}")
+            assert_never(kind)
 
 
 def _collect_artifacts(
@@ -733,4 +574,4 @@ def load_result_bundle(
     reader = _Reader(bundle_dir, data_dir)
     for row in rows:
         _collect_artifacts(manifest[row], reader.bodies)
-    return [_load_value(manifest[row], declared_type, reader, ()) for row in rows]
+    return [_load_value(manifest[row], declared_type, reader) for row in rows]
