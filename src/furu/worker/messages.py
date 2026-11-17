@@ -203,12 +203,16 @@ class GaveUpMessage(_Message):
     """A script will not run ``specs`` again.
 
     The manager passes it on to every script that asked for them, with the
-    specs of that script that wait for them in ``blocked``.
+    specs of that script that wait for them in ``blocked``: those no longer
+    run for it either.
     """
 
     kind: Literal["gave_up"] = "gave_up"
     specs: list[str]
     error: str
+    # The log of their last attempt, and how many attempts each had.
+    log: Path
+    attempts: dict[str, int]
     blocked: list[str] = []
 
 

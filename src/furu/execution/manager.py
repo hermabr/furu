@@ -224,18 +224,6 @@ class Manager:
         except (ConnectionClosed, TimeoutError):
             pass
 
-    def _serve(self, connection: ServerConnection) -> None:
-        try:
-            match first_message_adapter.validate_json(connection.recv(timeout=10)):
-                case SubmitMessage() as submit:
-                    self._serve_script(connection, submit)
-                case HelloMessage() as hello:
-                    self._serve_worker(connection, hello)
-                case _ as unreachable:
-                    assert_never(unreachable)
-        except (ConnectionClosed, TimeoutError):
-            pass
-
     def _flush(self) -> None:
         with self.lock:
             outbox, self.outbox = self.outbox, []
@@ -358,8 +346,6 @@ class Manager:
             ]
         except FileNotFoundError:
             return
-        if not runs:
-            return
         by_hash = {spec.rpartition(":")[2]: spec for spec in specs}
         for run in runs:
             hashes = [
@@ -465,8 +451,16 @@ class Manager:
                 blocked = [
                     spec for spec in waiting if asked in self.asked_by.get(spec, ())
                 ]
-                reply = GaveUpMessage(specs=specs, error=message.error, blocked=blocked)
+                reply = message.model_copy(update={"specs": specs, "blocked": blocked})
                 self.outbox.append((asked, reply))
+                # It counts them as ended, so they no longer run for it.
+                for spec in blocked:
+                    self.asked_by[spec].remove(asked)
+                    if not self.asked_by[spec]:
+                        self._forget(spec)
+                        self.dag.complete(spec)
+            self._queue_ready()
+            self.lock.notify_all()
 
     def _answers(self, script: _Script, spec: str) -> bool:
         """Whether ``spec`` waits for ``script`` to say what happens to it."""
@@ -565,8 +559,8 @@ class Manager:
     def _finish(self, lease: _Lease, result: JobResult) -> None:
         """Apply how a job ended, and tell the scripts that asked for its specs.
 
-        Specs that did not complete are a stopped batch, held until the
-        script that answers for them says whether they run again.
+        Specs that did not complete are a stopped batch for each script that
+        answers for some, held until it says whether they run again.
         """
         theirs = []
         for spec in lease.specs:
@@ -586,7 +580,8 @@ class Manager:
                 self._unstop(spec)  # found on disk when its script came back
                 told.setdefault(self.asked_by[spec][0], []).append(spec)
             run = run_name([spec.rpartition(":")[2] for spec in lease.specs])
-            self._stop(theirs, run, held=True)
+            for specs in told.values():
+                self._stop(specs, run, held=True)
         self._queue_ready()
         seconds = time.monotonic() - lease.started
         for script, specs in told.items():
@@ -760,6 +755,7 @@ class Manager:
                     "batch had done is dropped. Its working folder stays in "
                     f"attempts/: {attempt_dir_in(placed.class_dir, stopped.run)}"
                 )
+                logger.warning("%s", reason)
                 self.outbox.append((script, WarningMessage(reason=reason)))
         if len(specs) < batch.cap:
             for other in self.unstarted.get(pool, {}).get(batch.batch, {}):
@@ -773,6 +769,7 @@ class Manager:
                         f"are listed in {other.launch.plan}, not "
                         f"{listed.launch.plan}"
                     )
+                    logger.warning("%s", reason)
                     self.outbox.append((script, WarningMessage(reason=reason)))
         return specs
 

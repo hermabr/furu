@@ -22,7 +22,7 @@ from furu import plan
 from furu._batched import MixedBatchError, batch_of
 from furu.config import get_config
 from furu.core import Spec, working_folder
-from furu.dag import Dag, why_stuck
+from furu.dag import why_stuck
 from furu.dependencies import missing_dependencies
 from furu.execution.launch import missing
 from furu.logging import _display_path, get_logger
@@ -232,7 +232,9 @@ class Run:
                     self.fail(f"{type(exc).__name__}: {exc}")
             case _ as unreachable:
                 assert_never(unreachable)
-        self._progress()
+        # A spec given up on counts as failed once the manager passes that on.
+        if not any(isinstance(reply, GaveUpMessage) for reply in replies):
+            self._progress()
         return replies
 
     def _failed(self, ids: Sequence[str], error: str, log: Path) -> list[_Reply]:
@@ -260,7 +262,7 @@ class Run:
             )
         replies: list[_Reply] = []
         if gave_up:
-            replies.append(GaveUpMessage(specs=gave_up, error=error))
+            replies.append(self._give_up(gave_up, error))
         if rerun:
             replies.append(RerunMessage(specs=rerun))
         return replies
@@ -315,7 +317,7 @@ class Run:
                     why,
                     extra={"path": self.logs[spec]},
                 )
-            return [GaveUpMessage(specs=list(ids), error=why)]
+            return [self._give_up(ids, why)]
         if not unbuilt:
             self.waiting.append(list(ids))
             return []
@@ -325,7 +327,7 @@ class Run:
         listed = {line["spec"] for line in lines if line.get("runs")}
         under = [
             obj
-            for obj in missing(unbuilt, Dag())
+            for obj in missing(unbuilt)
             if obj.object_id in listed
             and (obj.object_id not in self.specs or obj.object_id in self.left)
         ]
@@ -336,19 +338,29 @@ class Run:
             ),
         ]
 
+    def _give_up(self, ids: Sequence[str], error: str) -> GaveUpMessage:
+        """Say that ``ids``, the specs of one create() call, will not run again."""
+        return GaveUpMessage(
+            specs=list(ids),
+            error=error,
+            log=self.logs[ids[0]],
+            attempts={spec: len(self.failures[spec]) for spec in ids},
+        )
+
     def gave_up(self, message: GaveUpMessage) -> None:
         """Specs that will not run again, and the ones that wait for them."""
         for spec in message.specs:
             if spec in self.left:
                 self.left.remove(spec)
                 self.failed.add(spec)
-                self.logs.setdefault(spec, log_path_in(self.specs[spec]._attempt_dir))
                 if spec not in self.failures:  # another launch gave up on it
-                    self.failures[spec] = [message.error]
+                    self.failures[spec] = [message.error] * message.attempts[spec]
+                    self.logs[spec] = message.log
                     logger.error(
                         "failed %s · %s",
                         self.specs[spec]._log_label,
                         error_summary(message.error),
+                        extra={"path": message.log},
                     )
         for spec in message.blocked:
             if spec in self.left:

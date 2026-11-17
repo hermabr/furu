@@ -111,7 +111,10 @@ def test_a_blocked_spec_waits_for_what_it_found_missing() -> None:
     del dag.ready[found]
     with pytest.raises(RuntimeError) as cycle:
         dag.block(found, [parent])
-    assert str(cycle.value) == "dependency cycle: Parent:c:1 → Found:c:2 → Parent:c:1"
+    assert (
+        str(cycle.value)
+        == "dependency cycle: Found:c:2 and Parent:c:1 wait for each other"
+    )
     dag.complete(found)
     assert list(dag.ready) == [parent]
 

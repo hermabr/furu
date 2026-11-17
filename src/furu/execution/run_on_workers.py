@@ -15,7 +15,6 @@ from websockets.sync.client import ClientConnection, connect
 from furu import plan, record
 from furu.config import get_config
 from furu.core import Spec
-from furu.dag import Dag
 from furu.execution.launch import ask, missing, stage_table
 from furu.execution.run import Run
 from furu.logging import _execution_log, get_logger
@@ -50,8 +49,7 @@ def run_on_workers(objs: Sequence[Spec], backends: Sequence[WorkerBackend]) -> N
             "cannot mix local and Slurm worker backends: local threads run your "
             "live worktree, Slurm workers run the pushed commit"
         )
-    dag = Dag()
-    running = missing(objs, dag)
+    running = missing(objs)
     if not running:
         logger.info("all objects already exist; nothing to run")
         return
@@ -78,10 +76,9 @@ def run_on_workers(objs: Sequence[Spec], backends: Sequence[WorkerBackend]) -> N
     with _execution_log(execution_log), in_process as manager:
         while running:
             logger.info(
-                "planned exec %s · %d ready · %d blocked\n%s",
+                "planned exec %s · %d missing\n%s",
                 execution_log.parent.name[:5],
-                len(dag.ready),
-                len(running) - len(dag.ready),
+                len(running),
                 stage_table(running),
                 extra={"path": execution_log},
             )
@@ -121,8 +118,7 @@ def run_on_workers(objs: Sequence[Spec], backends: Sequence[WorkerBackend]) -> N
                     with suppress(ConnectionClosed):
                         connection.send(CancelMessage().model_dump_json())
                     raise
-            dag = Dag()
-            running = missing(objs, dag)
+            running = missing(objs)
         logger.info("run finished ok")
 
 

@@ -145,6 +145,16 @@ def _result(objs: Sequence[Spec], result: JobResult) -> ResultMessage:
     return ResultMessage(object_ids=_ids(objs), result=result, seconds=1.5)
 
 
+def _gave_up(objs: Sequence[Spec], error: str, attempts: int = 1) -> GaveUpMessage:
+    """What a run sends that gives up on one call's ``objs`` after ``attempts`` each."""
+    return GaveUpMessage(
+        specs=_ids(objs),
+        error=error,
+        log=log_path_in(working_folder(objs)),
+        attempts=dict.fromkeys(_ids(objs), attempts),
+    )
+
+
 def _blocked(*dependencies: Spec) -> JobBlockedResult:
     """What a worker reports whose create() asked for ``dependencies``."""
     under = [*dependencies, *missing(dependencies, Dag())]
@@ -585,7 +595,7 @@ def test_a_failed_attempt_reruns_until_its_retries_run_out(
             assert run.result(_result([leaf], JobFailedResult(error=error))) == [
                 RerunMessage(specs=ids)
             ]
-        gave_up = GaveUpMessage(specs=ids, error=errors[3])
+        gave_up = _gave_up([leaf], errors[3], attempts=4)
         assert run.result(_result([leaf], JobFailedResult(error=errors[3]))) == [
             gave_up
         ]
@@ -606,12 +616,13 @@ def test_a_failed_attempt_reruns_until_its_retries_run_out(
         logging.ERROR
     ]
     assert failed[0].__dict__["path"] == log_path_in(leaf._attempt_dir)
-    assert "progress 0/1 · 1 retrying" in caplog.messages
-    assert all("Traceback" not in message for message in caplog.messages)
-    assert caplog.messages[-2:] == [
+    # The last attempt is never one that retries.
+    assert [message for message in caplog.messages if "progress" in message] == [
+        *["progress 0/1 · 1 retrying"] * 3,
         "progress 0/1 · 1 failed",
-        f"run failed · 1 spec failed · {label} · {errors[3]}",
     ]
+    assert all("Traceback" not in message for message in caplog.messages)
+    assert caplog.messages[-1] == f"run failed · 1 spec failed · {label} · {errors[3]}"
 
 
 def test_a_retry_that_completes_is_no_failure() -> None:
@@ -669,12 +680,18 @@ def test_a_failed_batch_counts_for_each_spec_and_points_at_the_batchs_log(
     run.gave_up(cast(GaveUpMessage, gave_up))
     with pytest.raises(RuntimeError) as excinfo:
         run.finish()
+    # Another launch that asked for them hears the same from the manager.
+    other, _ = _new_run(objs)
+    other.gave_up(cast(GaveUpMessage, gave_up))
+    with pytest.raises(RuntimeError) as heard:
+        other.finish()
+    assert str(heard.value) == str(excinfo.value)
 
     assert [
         record.__dict__["path"]
         for record in caplog.records
         if record.message.startswith("failed ")
-    ] == [log] * 4
+    ] == [log] * 6
     assert all(
         line.endswith(f"→ {_display_path(log)}")
         for line in str(excinfo.value).splitlines()[1:]
@@ -755,9 +772,9 @@ def test_a_spec_that_keeps_missing_a_built_dependency_is_given_up_on_after_the_g
     dag_clock[0] += 5
     (gave_up,) = _rerun(run, lazy, _blocked(dependency))
 
-    assert gave_up == GaveUpMessage(
-        specs=_ids([lazy]),
-        error=f"still finds {dependency._log_label} missing for 2m05s, though this "
+    assert gave_up == _gave_up(
+        [lazy],
+        f"still finds {dependency._log_label} missing for 2m05s, though this "
         "run sees it built; its worker may not see the storage it was written "
         "to, or may be running different code than this run",
     )
@@ -812,17 +829,13 @@ def test_a_spec_blocked_on_nothing_or_on_a_spec_the_run_gave_up_on_is_given_up_o
     run, _ = _new_run([lazy, leaf], max_retries_per_object=0)
 
     assert run.result(_result([lazy], _blocked())) == [
-        GaveUpMessage(
-            specs=_ids([lazy]),
-            error="reported itself blocked without naming a missing dependency",
-        )
+        _gave_up([lazy], "reported itself blocked without naming a missing dependency")
     ]
     (gave_up,) = run.result(_result([leaf], JobFailedResult(error="boom")))
     run.gave_up(cast(GaveUpMessage, gave_up))
     assert run.result(_result([lazy], _blocked(leaf))) == [
-        GaveUpMessage(
-            specs=_ids([lazy]),
-            error=f"needs {leaf._log_label}, which this run gave up on",
+        _gave_up(
+            [lazy], f"needs {leaf._log_label}, which this run gave up on", attempts=2
         )
     ]
 
@@ -928,7 +941,9 @@ def test_batch_cap_follows_the_leasing_worker() -> None:
     assert len(_leased(manager, one_gpu).specs) == 1
 
 
-def test_a_batch_holds_specs_from_one_plan_and_a_throttle_counts_batches() -> None:
+def test_a_batch_holds_specs_from_one_plan_and_a_throttle_counts_batches(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     manager = Manager(url="ws://unused", manager_dir=None)
     scripts = [
         _submit(
@@ -939,17 +954,20 @@ def test_a_batch_holds_specs_from_one_plan_and_a_throttle_counts_batches() -> No
         for index, values in enumerate(((0, 1), (2, 3), (4,)))
     ]
 
-    first, second = _leased(manager), _leased(manager)
+    with _captured_furu_logs(caplog):
+        first, second = _leased(manager), _leased(manager)
 
     assert len(first.specs) == len(second.specs) == 2
     assert [first.job.plan, second.job.plan] == [_plan("e0"), _plan("e1")]
-    # A worker could take three. It is said once for each pair of plans.
+    # A worker could take three. It is said once for each pair of plans, to
+    # the script and in the manager's own log.
     warned = manager.outbox
     assert [script for script, _ in warned] == [scripts[0], scripts[0], scripts[1]]
-    assert all(
-        isinstance(message, WarningMessage) and "smaller batch" in message.reason
-        for _, message in warned
-    )
+    reasons = [
+        message.reason for _, message in warned if isinstance(message, WarningMessage)
+    ]
+    assert len(reasons) == 3 and all("smaller batch" in reason for reason in reasons)
+    assert caplog.messages == reasons
     # The throttle counts the two running batches across all scripts.
     assert manager.demand(CPU_POOL.pool_key) == 2
     assert _lease(manager) is None
@@ -1049,16 +1067,42 @@ def test_an_attempt_that_did_not_complete_waits_for_its_script_to_say_what_happe
     assert _lease(manager) is None
     manager._rerun(script, RerunMessage(specs=[leaf.object_id]))
     _end(manager, _leased(manager), failed)
-    manager._gave_up(script, GaveUpMessage(specs=[leaf.object_id], error="boom"))
+    gave_up = _gave_up([leaf], "boom")
+    manager._gave_up(script, gave_up)
     assert _sent(manager)[1:] == [
-        GaveUpMessage(specs=[leaf.object_id], error="boom", blocked=[parent.object_id])
+        gave_up.model_copy(update={"blocked": [parent.object_id]})
     ]
     assert _lease(manager) is None and manager.demand(CPU_POOL.pool_key) == 0
 
-    # Another launch that asks for the spec gives it a fresh go.
+    # Another launch that asks for the spec gives it a fresh go. What waited
+    # for it does not run for the script that was told it would not.
     _submit(manager, [leaf], plan_path=_plan("e2"))
     _end(manager, _leased(manager))
-    assert _leased(manager).specs == [parent.object_id]
+    assert _lease(manager) is None and not manager.placed
+
+
+def test_each_script_answers_for_its_own_specs_of_a_batch_that_did_not_complete() -> (
+    None
+):
+    objs = [BatchedRunLeaf(value=value) for value in range(2)]
+    manager = Manager(url="ws://unused", manager_dir=None)
+    first, _ = _submit(manager, objs)
+    others = [
+        _submit(manager, [obj], plan_path=_plan(f"e{index}"))[0]
+        for index, obj in enumerate(objs, start=2)
+    ]
+    manager._drop(first)
+
+    _end(manager, _leased(manager), JobFailedResult(error="boom"))
+    assert [script for script, _ in manager.outbox] == others
+    manager._rerun(others[0], RerunMessage(specs=_ids(objs[:1])))
+    assert _leased(manager).specs == _ids(objs[:1])
+    # The other spec waits for the script that answers for it.
+    assert _lease(manager) is None
+    manager.outbox.clear()
+    gave_up = _gave_up(objs[1:], "boom")
+    manager._gave_up(others[1], gave_up)
+    assert manager.outbox == [(others[1], gave_up)]
 
 
 def test_a_blocked_attempt_reruns_once_what_it_found_is_built() -> None:
@@ -1086,8 +1130,8 @@ def test_a_blocked_attempt_reruns_once_what_it_found_is_built() -> None:
     manager._rerun(script, RerunMessage(specs=_ids([cycle]), after=_ids([lazy])))
     assert _sent(manager) == [
         ErrorMessage(
-            reason=f"RuntimeError: dependency cycle: {lazy._log_label} → "
-            f"{cycle._log_label} → {lazy._log_label}"
+            reason=f"RuntimeError: dependency cycle: {cycle._log_label} and "
+            f"{lazy._log_label} wait for each other"
         )
     ]
 

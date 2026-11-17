@@ -401,7 +401,7 @@ def _load_or_block[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
     if missing:
         # What a launch would list for them: the classes under them can have
         # changed too.
-        running = missing_under(missing, Dag())
+        running = missing_under(missing)
         ask(running, found=True)
         # Saved before anyone is told, so a found spec that fails or never
         # starts is still described.

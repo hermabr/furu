@@ -55,7 +55,7 @@ _asked: ContextVar[frozenset[str]] = ContextVar(
 )
 
 
-def missing(objs: Sequence[Spec], dag: Dag) -> list[Spec]:
+def missing(objs: Sequence[Spec], dag: Dag | None = None) -> list[Spec]:
     """Add to ``dag`` the specs under ``objs`` that are not stored, and return them.
 
     The walk goes down through the fields and stops at a stored spec: nothing
@@ -64,6 +64,7 @@ def missing(objs: Sequence[Spec], dag: Dag) -> list[Spec]:
     value that the launch has named is walked once, however many specs hold
     it: they wait for the value, and the value for the specs in it.
     """
+    dag = Dag() if dag is None else dag
     look = Stored()  # one listing per class, however many specs it has
     new: list[Spec] = []
     seen: set[str] = set()

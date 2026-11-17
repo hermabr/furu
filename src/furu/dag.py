@@ -67,28 +67,21 @@ class Dag:
         for held in dict.fromkeys(on):
             if held not in self.nodes:
                 continue
-            if (path := self._path(key, held)) is not None:
+            if held == key or held in self.waiting_for([key]):
                 raise RuntimeError(
-                    "dependency cycle: "
-                    + " → ".join(spec_label(*step.split(":")) for step in (*path, held))
+                    f"dependency cycle: {spec_label(*key.split(':'))} and "
+                    f"{spec_label(*held.split(':'))} wait for each other"
                 )
             self._wait(node, held)
         self._settle(node)
 
     def complete(self, key: str) -> None:
         """``key`` is finished, or nobody wants it: let go of what waits for it."""
-        finished = [key]
-        while finished:
-            key = finished.pop()
-            del self.nodes[key]
-            self.ready.pop(key, None)
-            for node in self.dependents.pop(key, ()):
-                node.waits -= 1
-                if self.nodes.get(node.key) is node and not node.waits:
-                    if node.runs:
-                        self.ready[node.key] = None
-                    else:
-                        finished.append(node.key)
+        del self.nodes[key]
+        self.ready.pop(key, None)
+        for node in self.dependents.pop(key, ()):
+            node.waits -= 1
+            self._settle(node)
 
     def waiting_for(self, keys: Iterable[str]) -> list[str]:
         """The specs that cannot run before ``keys`` finish, however far up."""
@@ -114,26 +107,6 @@ class Dag:
                 self.ready[node.key] = None
             else:
                 self.complete(node.key)
-
-    def _path(self, start: str, goal: str) -> list[str] | None:
-        """The specs from ``goal`` down to ``start``, when ``goal`` waits for ``start``."""
-        parents: dict[str, str | None] = {start: None}
-        pending = [start]
-        while pending:
-            key = pending.pop()
-            if key == goal:
-                path = []
-                step: str | None = key
-                while step is not None:
-                    if self.nodes[step].runs:
-                        path.append(step)
-                    step = parents[step]
-                return path
-            for node in self.dependents.get(key, ()):
-                if self.nodes.get(node.key) is node and node.key not in parents:
-                    parents[node.key] = key
-                    pending.append(node.key)
-        return None
 
 
 def why_stuck(
