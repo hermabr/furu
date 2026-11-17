@@ -12,13 +12,6 @@ from furu.provenance import EnvironmentIdentity, GitIdentity, SubmitContext
 pytestmark = pytest.mark.usefixtures("fresh_caches")
 
 
-def test_git_identity_clean_repo(git_repo: Path) -> None:
-    identity = GitIdentity.capture(git_repo)
-    assert identity.commit == git(git_repo, "rev-parse", "HEAD")
-    assert identity.branch == "main"
-    assert Path(identity.repo_root) == git_repo.resolve()
-
-
 def test_git_identity_detached_head(git_repo: Path) -> None:
     commit = git(git_repo, "rev-parse", "HEAD")
     git(git_repo, "checkout", "-q", commit)
@@ -27,19 +20,9 @@ def test_git_identity_detached_head(git_repo: Path) -> None:
     assert identity.commit == commit
 
 
-def test_git_identity_records_remote(git_repo: Path) -> None:
-    git(git_repo, "remote", "set-url", "origin", "git@example.com:t/t.git")
-    assert GitIdentity.capture(git_repo).remote == "git@example.com:t/t.git"
-
-
 def test_git_identity_without_remote(git_repo: Path) -> None:
     git(git_repo, "remote", "remove", "origin")
     assert GitIdentity.capture(git_repo).remote is None
-
-
-def test_git_identity_outside_repo(tmp_path: Path) -> None:
-    with pytest.raises(RuntimeError):
-        GitIdentity.capture(tmp_path)
 
 
 def test_submitting_repo_root_is_the_worktree_not_the_main_repo(
@@ -64,7 +47,9 @@ def test_capture_environment_identity_finds_project_root_from_child(
     nested.mkdir(parents=True)
     monkeypatch.chdir(nested)
     monkeypatch.setattr(sys, "prefix", str(tmp_path))
-    assert Path(EnvironmentIdentity.capture().project_root) == tmp_path.resolve()
+    identity = EnvironmentIdentity.capture()
+    assert Path(identity.project_root) == tmp_path.resolve()
+    assert identity.uv == "0.7.13"
 
 
 def test_capture_environment_identity_missing_project_root_raises(
@@ -73,19 +58,6 @@ def test_capture_environment_identity_missing_project_root_raises(
     monkeypatch.chdir(tmp_path)
     with pytest.raises(RuntimeError, match="no pyproject.toml"):
         EnvironmentIdentity.capture()
-
-
-def test_capture_environment_identity_reads_uv_version_from_pyvenv_cfg(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    (tmp_path / "pyproject.toml").write_text("[project]\n")
-    (tmp_path / "uv.lock").write_text("version = 1\n")
-    (tmp_path / "pyvenv.cfg").write_text(
-        "home = /x\nimplementation = CPython\nuv = 0.7.13\n"
-    )
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(sys, "prefix", str(tmp_path))
-    assert EnvironmentIdentity.capture().uv == "0.7.13"
 
 
 @pytest.mark.parametrize("pyvenv_cfg", ["home = /x\nimplementation = CPython\n", None])

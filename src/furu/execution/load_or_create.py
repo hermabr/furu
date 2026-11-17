@@ -410,11 +410,8 @@ def _load_or_block[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
     found = cast(list[Row], rows)
     if load:
         return load_rows(objs, found)
-    by_run: dict[Path, list[Spec]] = {}
     for obj, row in zip(objs, found):
-        by_run.setdefault(row.run, []).append(obj)
-    for run, held in by_run.items():
-        record_loaded(run, held)
+        record_loaded(row.run, [obj])
     return []
 
 

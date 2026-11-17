@@ -143,7 +143,7 @@ class Stored:
         # Named first: that is what finds the dataclasses the spec holds, whose
         # defaults are checked too. The script that wrote a spec's line checked.
         name = obj._artifact_hash
-        if obj._line is None:
+        if not obj._from_line:
             check_defaults(obj._class_dir, type(obj))
         if is_batched(type(obj)):
             return self.listed(obj)

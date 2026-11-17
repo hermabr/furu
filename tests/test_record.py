@@ -3,6 +3,7 @@
 import os
 import socket
 import subprocess
+from multiprocessing import get_context
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,17 @@ class LooTable(Spec[int]):
 
     def create(self) -> int:
         return sum(furu.load_existing(self.runs))
+
+
+class Recount(Spec[int]):
+    data: Cifar
+
+    @furu.dependency
+    def runs(self) -> list[Train]:
+        return [Train(data=self.data, seed=7)]
+
+    def create(self) -> int:
+        return furu.load_existing(Train(data=self.data, seed=7))
 
 
 class Hinted(Spec[int]):
@@ -191,6 +203,30 @@ def test_found_specs_have_their_values_recorded_first_and_are_listed_as_loaded(
     assert line["loaded"] == [spec.object_id for spec in found]
     # A found run names the launch whose create() asked for it.
     assert _recorded(found[1])[1]["launch"] == line["launch"]
+
+
+def test_a_spec_its_dependency_method_returned_is_not_listed_as_loaded() -> None:
+    recount = Recount(data=Cifar(split="val"))
+
+    # On a worker the spec is built from its line, and its create() never
+    # reads the field.
+    assert furu.create(recount, on=[LocalThreadWorkerBackend()]) == 7
+
+    assert "loaded" not in _recorded(recount)[1]
+
+
+def _own_files() -> tuple[Path, Path]:
+    return record.own().path, plan.save_found([])
+
+
+def test_a_forked_process_creates_files_of_its_own() -> None:
+    plans = get_config().directories.anchored().plans
+    with plan.listed_in(plans / "9f3c.plan"):
+        mine = _own_files()
+        with get_context("fork").Pool(1) as pool:
+            theirs = pool.apply(_own_files)
+
+    assert not {*mine} & {*theirs}
 
 
 def test_a_process_creates_its_own_file_and_a_killed_writer_costs_one_line(

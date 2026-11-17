@@ -13,15 +13,13 @@ from getpass import getuser
 from importlib.metadata import version
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
 
 _ACCELERATOR_PROBE_TIMEOUT_SECONDS = 2.0
 _HASH_PREFIX = "blake2s:"
 
 
 class GitIdentity(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-
     commit: str
     branch: str | None
     remote: str | None
@@ -52,8 +50,6 @@ class GitIdentity(BaseModel):
 
 
 class EnvironmentIdentity(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-
     python: str
     uv: str
     project_root: str
@@ -126,8 +122,6 @@ class EnvironmentIdentity(BaseModel):
 
 
 class SubmitContext(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-
     hostname: str
     user: str
     cwd: str
@@ -147,8 +141,6 @@ class SubmitContext(BaseModel):
 
 class SubmitProvenance(BaseModel):
     """Where a launch was started from: what its file in provenance/ begins with."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     git: GitIdentity
     environment: EnvironmentIdentity

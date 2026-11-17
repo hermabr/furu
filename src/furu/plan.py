@@ -239,7 +239,7 @@ class Specs:
                     )
                 values[attribute] = added.default
         obj = cls(**values)
-        vars(obj).update(_named=(artifact_hash, returned), _line=line)
+        vars(obj).update(_named=(artifact_hash, returned), _from_line=True)
         return obj
 
 
@@ -345,6 +345,7 @@ def launch() -> str:
 
 # The file this process created in each launch's folder.
 _own: dict[Path, File] = {}
+os.register_at_fork(after_in_child=_own.clear)
 
 
 def save_found(found: Sequence[Line]) -> Path:

@@ -31,17 +31,20 @@ from __future__ import annotations
 import os
 from collections.abc import Iterator, Sequence
 from dataclasses import fields
+from itertools import chain
 from pathlib import Path
 
 from furu import plan
 from furu._tree import specs_in
 from furu.config import get_config
 from furu.core import Spec
+from furu.dependencies import returned_attributes
 from furu.execution.launch import IGNORE_STORED
 from furu.plan import Line
 from furu.provenance import SubmitProvenance, worker
 from furu.spec_metadata import Metadata
 from furu.utils import _hash_dict_deterministically
+from furu.worker.messages import ProcessSettings
 
 
 def _process(metadata: Metadata) -> Line:
@@ -49,11 +52,7 @@ def _process(metadata: Metadata) -> Line:
 
     Where the results go and which code counts are in each run's line.
     """
-    how = {
-        "environment": dict(metadata.environment),
-        "required_environment_variables": list(metadata.required_environment_variables),
-        "reuse": metadata.reuse,
-    }
+    how = ProcessSettings.from_metadata(metadata).model_dump(mode="json")
     return {"metadata": _hash_dict_deterministically(how), "is": how}
 
 
@@ -68,7 +67,7 @@ def _described(running: Sequence[Spec], shared: list[Line]) -> Iterator[Line]:
     # however many specs it runs.
     distinct = {
         (
-            tuple(metadata.environment.items()),
+            tuple(sorted(metadata.environment.items())),
             metadata.required_environment_variables,
             metadata.reuse,
         ): metadata
@@ -108,6 +107,7 @@ def launch(
 
 # The file this process created in each provenance folder.
 _own: dict[Path, plan.File] = {}
+os.register_at_fork(after_in_child=_own.clear)
 
 
 def own() -> plan.File:
@@ -153,10 +153,6 @@ def batch(
     loaded.
     """
     lead = group[0]
-    # The line each spec was built from, or the one its launch wrote for it.
-    described = [built for obj in group if (built := obj._line) is not None] or [
-        written for written in plan.lines(group, reach=False) if "spec" in written
-    ]
     line: Line = {
         "run": run,
         "storage": str(lead._metadata.storage),
@@ -165,23 +161,21 @@ def batch(
         "metadata": _process(lead._metadata)["metadata"],
         "start": start,
         "end": end,
-        "specs": [
-            {key: value for key, value in spec.items() if key != "runs"}
-            for spec in described
-        ],
+        "specs": [spec for spec in plan.lines(group, reach=False) if "spec" in spec],
     }
     if loaded:
-        # A dependency method's field counts when create() read it, and
-        # looking in vars() never calls the method.
-        points_to = {
-            held.object_id
-            for obj in group
-            for field in fields(obj)
-            if field.name in vars(obj)
-            for held in specs_in(vars(obj)[field.name])
-        }
-        if beyond := dict.fromkeys(
-            spec_id for obj in loaded if (spec_id := obj.object_id) not in points_to
-        ):
+        beyond = dict.fromkeys(obj.object_id for obj in loaded)
+        # What is in vars() first, which calls nothing: a dependency method
+        # whose field create() never read runs only when a loaded spec is left over.
+        read = (
+            (obj, f.name) for obj in group for f in fields(obj) if f.name in vars(obj)
+        )
+        rest = ((obj, name) for obj in group for name in returned_attributes(type(obj)))
+        for holder, name in chain(read, rest):
+            if not beyond:
+                break
+            for held in specs_in(getattr(holder, name)):
+                beyond.pop(held.object_id, None)
+        if beyond:
             line["loaded"] = list(beyond)
     own().add([line])

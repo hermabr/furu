@@ -91,7 +91,7 @@ class Returned:
         if obj is None:
             return self
         cls = type(obj)
-        if obj._line is not None:
+        if obj._from_line:
             loads = _on_load.set(None)
             try:
                 with paused():

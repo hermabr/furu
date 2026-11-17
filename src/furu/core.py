@@ -101,9 +101,9 @@ class Spec[T](_FuruDataclassTransform, ABC):
     migrations: ClassVar[tuple[MigrationStep, ...]] = ()
     result_codecs: ClassVar[tuple[type[Codec], ...]] = ()
     artifact_serializers: ClassVar[tuple[type[Serializer], ...]] = ()
-    # The plan line the spec was built from, which gives it what naming finds.
-    # The script that wrote the line named the spec and checked its class.
-    _line: ClassVar[dict[str, Any] | None] = None
+    # Whether the spec was built from a plan line, which gives it what naming
+    # finds. The script that wrote the line named the spec and checked its class.
+    _from_line: ClassVar[bool] = False
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
