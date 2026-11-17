@@ -13,7 +13,7 @@ from furu.constants import (
     VALUEMARKER,
 )
 from furu.metadata import ArtifactSpec
-from furu.serializer.artifact import _from_json
+from furu.serializer.artifact import _from_json, to_json
 from furu.serializer.registry import SerializerMeta
 from furu.utils import JsonValue
 
@@ -361,6 +361,16 @@ def _field(node: JsonValue, name: str) -> Any:
     fields = node[FIELDSMARKER]
     assert isinstance(fields, dict)
     return fields[name]
+
+
+def test_a_container_of_plain_values_keeps_the_rules_for_dict_keys() -> None:
+    assert to_json({"a": (1, "b", None)}, Any, ()) == {
+        "a": {KINDMARKER: "tuple", VALUEMARKER: [1, "b", None]}
+    }
+    with pytest.raises(ValueError, match="reserved"):
+        to_json({KINDMARKER: 1}, Any, ())
+    with pytest.raises(TypeError, match="must be strings"):
+        to_json({1: 1}, Any, ())
 
 
 def test_annotated_serializer_defines_schema_and_artifact() -> None:

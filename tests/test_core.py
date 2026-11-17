@@ -48,7 +48,7 @@ from furu.storage._layout import (
     trace_path_in,
     version_dir_in,
 )
-from furu.utils import _hash_dict_deterministically, fully_qualified_name
+from furu.utils import fully_qualified_name
 
 type SOME_TYPE = Literal["a", "b"] | int
 
@@ -704,14 +704,14 @@ def test_hashes_and_data_dir():
         NodePair(
             name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
         ).object_id
-        == "test_core.NodePair:21733b1febfab88b565c:685af925669262434640"
+        == "test_core.NodePair:21733b1febfab88b565c:3d659fdfcbfaa54157ce"
     )
 
     assert (
         NodePair(
             name="x", node1=Node(name="y"), node2=WeightedNode(name="z", weight=1)
         )._artifact_hash
-        == "685af925669262434640"
+        == "3d659fdfcbfaa54157ce"
     )
 
     assert (
@@ -1159,13 +1159,24 @@ def test_a_dependency_is_planned_and_recorded_when_loaded() -> None:
     assert _dependency_object_ids(parent) == [parent.child.object_id]
 
 
-def test_a_dependency_is_computed_once_at_construction() -> None:
+def test_a_dependency_is_computed_once_when_first_read() -> None:
     CountingDependencyParent.calls = 0
     parent = CountingDependencyParent(name="counting")
 
-    assert CountingDependencyParent.calls == 1
+    assert parent == CountingDependencyParent(name="counting")
+    assert repr(parent) == "CountingDependencyParent(name='counting')"
+    assert CountingDependencyParent.calls == 0
+
     assert parent.child is parent.child
     assert collect_declared_refs(parent) == (parent.child,)
+    assert CountingDependencyParent.calls == 1
+
+
+def test_naming_a_spec_computes_its_dependencies() -> None:
+    CountingDependencyParent.calls = 0
+    parent = CountingDependencyParent(name="counting")
+
+    assert parent.object_id
     assert CountingDependencyParent.calls == 1
 
 
@@ -1199,15 +1210,8 @@ def test_a_spec_with_a_dependency_round_trips_through_its_artifact() -> None:
 def test_loading_an_artifact_whose_dependency_is_now_derived_differently_fails() -> (
     None
 ):
-    artifact = ArtifactSpec.from_furu(ComputedDependencyParent(name="x"))
-    data = json.loads(json.dumps(artifact.artifact_data))
-    data["|fields"]["child"]["|fields"]["name"] = "what-the-old-code-derived"
-    stored = artifact.model_copy(
-        update={
-            "artifact_data": data,
-            "artifact_hash": _hash_dict_deterministically(data),
-        }
-    )
+    # Its child is named after the number of calls, so a rebuilt spec gets another.
+    stored = ArtifactSpec.from_furu(CountingDependencyParent(name="x"))
 
     with pytest.raises(ValueError, match="@furu.dependency"):
         Spec.from_artifact(stored)
@@ -1543,7 +1547,7 @@ def test_data_dir():
         / "test_core"
         / "NodePair"
         / "21733b1febfab88b565c"
-        / "685af925669262434640"
+        / "3d659fdfcbfaa54157ce"
     )
     assert data_dir_in(node_pair._base_dir) == node_pair._base_dir / "data"
     assert data_dir_in(node_pair._base_dir) == Path(

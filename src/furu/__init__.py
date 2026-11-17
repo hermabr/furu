@@ -1,7 +1,6 @@
 from importlib.metadata import version
 
 from furu._batched import batched
-from furu._declared_types import skip_hash
 from furu.core import Missing, Spec
 from furu.dependencies import dependency
 from furu.execution.load_or_create import build, create, load_existing
@@ -52,6 +51,5 @@ __all__ = [
     "get_logger",
     "load_existing",
     "ref",
-    "skip_hash",
     "submitting_repo_root",
 ]

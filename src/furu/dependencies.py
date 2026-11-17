@@ -13,13 +13,11 @@ from furu._tree import specs_in
 if TYPE_CHECKING:
     from furu.core import Spec
 
-_DERIVE = "furu_dependency"  # field metadata key: the method that computes it
-
 
 class _Dependency[TSpec, T]:
     """A ``@furu.dependency`` method, until its Spec class turns it into a field.
 
-    The field is filled from ``func`` when a spec is constructed, so what the
+    The field is filled from ``func`` the first time it is read, so what the
     method returns is hashed, stored and planned like any other field.
     """
 
@@ -48,7 +46,8 @@ def dependency[TSpec: Spec, T](
 ) -> _Dependency[TSpec, T] | Callable[[Callable[[TSpec], T]], _Dependency[TSpec, T]]:
     """Declare specs a create() uses that are computed from the spec's fields.
 
-    The method becomes a field that furu fills in when the spec is constructed.
+    The method becomes a field. furu calls it the first time the field is read,
+    which naming the spec does: the ids it returns are part of the spec's id.
     """
     return dependency if func is None else _Dependency(func)
 
@@ -60,13 +59,9 @@ def dependency_field(cls: type, name: str, declared: _Dependency) -> Any:
             f"{cls.__name__}.{name}: @furu.dependency needs a return annotation; "
             "it is the type of the field furu stores."
         )
-    return field(init=False, metadata={_DERIVE: declared.func})
-
-
-def fill_dependencies(obj: Spec) -> None:
-    for f in fields(obj):
-        if (derive := f.metadata.get(_DERIVE)) is not None:
-            object.__setattr__(obj, f.name, derive(obj))
+    # Left out of repr and equality, which would call the method; it only
+    # restates the other fields.
+    return field(init=False, repr=False, compare=False)
 
 
 def collect_declared_refs(obj: Spec) -> tuple[Spec, ...]:
