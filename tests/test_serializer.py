@@ -331,6 +331,8 @@ def test_a_declared_serializer_writes_a_plain_value(
 ) -> None:
     # Plain values skip the serializer lookup only while nothing is registered.
     monkeypatch.setattr(SerializerMeta, "_auto_registered_serializers", [])
+    # Patched too: the real one keeps its first answer for the whole process.
+    monkeypatch.setattr(SerializerMeta, "_default_serializers", lambda: ())
     lowered = _custom_artifact(_LowerSerializer, "a")
 
     assert to_json(("A", 1), tuple[str, int], ()) == {
