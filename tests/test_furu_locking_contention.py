@@ -159,12 +159,9 @@ def test_two_processes_competing_for_same_furu_object(tmp_path):
     manifest_paths = list(data_dir.glob("**/result/manifest.json"))
     assert len(manifest_paths) == 1
     bundle_dir = manifest_paths[0].parent
-    assert (
-        load_result_bundle(
-            bundle_dir, data_dir=data_dir_in(bundle_dir.parent), declared_type=int
-        )
-        == 42
-    )
+    assert load_result_bundle(
+        bundle_dir, [0], data_dir=data_dir_in(bundle_dir.parent), declared_type=int
+    ) == [42]
 
 
 def test_overlapping_batch_acquisitions_do_not_deadlock_or_duplicate_compute(tmp_path):

@@ -135,11 +135,12 @@ def _publish[T](
     result_dir = result_dir_in(attempt)
     shutil.rmtree(result_dir, ignore_errors=True)  # left by a crash mid-publish
     _save_result_bundle(
-        result,
+        [result],
         result_dir,
         declared_type=declared_result_type(type(obj)),
         result_codecs=obj.result_codecs,
         data_dir=data_dir_in(attempt),
+        label=type(obj).__name__,
     )
 
     trace = build_trace(run, label=obj._log_label, warn=obj.logger.warning)

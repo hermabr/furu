@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Mapping
-from pathlib import Path
+from collections.abc import Callable
 from typing import Any, Final, cast
 
 from furu.result.codec import Codec, CodecMeta
@@ -18,30 +17,21 @@ _UNLOADED: Final = _Unloaded()
 class Ref[T]:
     _value: T | _Unloaded
     _codec: type[Codec[Any]]
-    _metadata: Mapping[str, object] | None
-    _artifact_directory: Path | None
+    _read: Callable[[], T] | None
     _lock: threading.Lock
 
     def __init__(self, value: T, *, codec: type[Codec[Any]]) -> None:
         self._value = value
         self._codec = codec
-        self._metadata = None
-        self._artifact_directory = None
+        self._read = None
         self._lock = threading.Lock()
 
     @classmethod
-    def _from_stored(
-        cls,
-        *,
-        codec: type[Codec[Any]],
-        metadata: Mapping[str, object],
-        artifact_directory: Path,
-    ) -> Ref[T]:
+    def _from_stored(cls, *, codec: type[Codec[Any]], read: Callable[[], T]) -> Ref[T]:
         obj = cls.__new__(cls)
         obj._value = _UNLOADED
         obj._codec = codec
-        obj._metadata = metadata
-        obj._artifact_directory = artifact_directory
+        obj._read = read
         obj._lock = threading.Lock()
         return obj
 
@@ -56,9 +46,8 @@ class Ref[T]:
 
         with self._lock:
             if self._value is _UNLOADED:
-                if self._metadata is None or self._artifact_directory is None:
-                    raise RuntimeError("Ref has neither a value nor a stored artifact")
-                self._value = self._codec.load(self._metadata, self._artifact_directory)
+                assert self._read is not None
+                self._value = self._read()
             return cast(T, self._value)
 
 

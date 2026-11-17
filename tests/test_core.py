@@ -1704,11 +1704,12 @@ def test_create_hook_flavor_validation() -> None:
 def test_no_create_hook_loads_cached_result() -> None:
     obj = NoCreateHookValue(key=1)
     _save_result_bundle(
-        "cached:1",
+        ["cached:1"],
         result_dir_in(version_dir_in(obj._base_dir)),
         declared_type=str,
         result_codecs=(),
         data_dir=data_dir_in(version_dir_in(obj._base_dir)),
+        label="NoCreateHookValue",
     )
 
     assert furu.create(obj) == "cached:1"
@@ -1734,11 +1735,12 @@ def test_no_create_hook_uses_post_lock_cache_recheck(
     def fake_lock(lock_paths: list[Path], **_: object):
         assert lock_paths == [compute_lock_path_in(obj._base_dir)]
         _save_result_bundle(
-            "cached-after-lock:1",
+            ["cached-after-lock:1"],
             result_dir_in(version_dir_in(obj._base_dir)),
             declared_type=str,
             result_codecs=(),
             data_dir=data_dir_in(version_dir_in(obj._base_dir)),
+            label="NoCreateHookValue",
         )
         yield lambda: True
 
@@ -1906,11 +1908,12 @@ def test_pending_items_are_rechecked_after_lock_acquisition(
     def fake_lock(lock_paths: list[Path], **_: object):
         assert lock_paths == [compute_lock_path_in(pending._base_dir)]
         _save_result_bundle(
-            "single:5",
+            ["single:5"],
             result_dir_in(version_dir_in(pending._base_dir)),
             declared_type=str,
             result_codecs=(),
             data_dir=data_dir_in(version_dir_in(pending._base_dir)),
+            label="CountedSingleValue",
         )
         yield lambda: True
 
@@ -2021,14 +2024,12 @@ def test_batched_compute_writes_result_layout_per_object() -> None:
         assert result_manifest_path_in(version_dir_in(obj._base_dir)).exists()
         assert spec_path_in(obj._base_dir).exists()
         assert run_log_path_in(obj._base_dir).exists()
-        assert (
-            load_result_bundle(
-                result_dir_in(version_dir_in(obj._base_dir)),
-                data_dir=data_dir_in(version_dir_in(obj._base_dir)),
-                declared_type=str,
-            )
-            == expected
-        )
+        assert load_result_bundle(
+            result_dir_in(version_dir_in(obj._base_dir)),
+            [0],
+            data_dir=data_dir_in(version_dir_in(obj._base_dir)),
+            declared_type=str,
+        ) == [expected]
 
 
 def test_batched_compute_logs_to_the_lead_and_points_the_others_at_it() -> None:
