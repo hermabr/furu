@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import errno
 import shutil
 import time
 from collections.abc import Callable, Generator, Mapping, Sequence
@@ -214,15 +213,7 @@ def _publish(obj: Spec, trace: Trace | None, *, has_lock: HasLock) -> None:
     if not has_lock():
         raise RuntimeError(f"lost the lock on {attempt} before publishing")
     obj.logger.debug("publishing %s under %s", obj._log_label, version.name)
-    try:
-        attempt.rename(run)
-    except OSError as exc:
-        if exc.errno not in (errno.ENOTEMPTY, errno.EEXIST):
-            raise
-        raise RuntimeError(
-            f"{obj._log_label} is already published at {run}; its working "
-            f"folder {attempt} was left as it is"
-        ) from exc
+    attempt.rename(run)
 
 
 @overload

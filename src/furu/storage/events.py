@@ -28,11 +28,9 @@ def read_events(run_dir: Path) -> list[dict[str, Any]]:
     events = []
     for line in text.splitlines():
         try:
-            event = json.loads(line)
+            events.append(json.loads(line))
         except ValueError:
             continue  # blank, or cut short when its attempt was killed
-        if isinstance(event, dict):
-            events.append(event)
     return events
 
 

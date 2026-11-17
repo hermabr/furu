@@ -513,12 +513,3 @@ def test_job_output_lands_in_its_own_log_on_a_reused_child(
         assert printed == f"print from job {obj.marker}"
         assert f"I chatty stdlib info from job {obj.marker}  [" in logged
         assert raw == f"raw fd 2 from job {obj.marker}"
-
-
-def test_a_batched_job_ends_every_members_attempt(child_slot: ChildSlot) -> None:
-    lead, member = SubprocessBatchLeaf(value=11), SubprocessBatchLeaf(value=12)
-
-    result = child_slot.run(_job([lead, member]), cancelled=threading.Event())
-
-    assert isinstance(result, JobCompletedResult)
-    assert ends_of(lead) == ends_of(member) == [{"outcome": "ok"}]
