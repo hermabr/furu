@@ -14,6 +14,7 @@ from websockets.sync.client import ClientConnection, connect
 
 from furu.config import get_config
 from furu.core import Spec
+from furu.execution.launch import ask, stage_table
 from furu.execution.run import Run
 from furu.logging import _execution_log, get_logger
 from furu.provenance import SubmitProvenance, capture_submit_provenance
@@ -65,6 +66,8 @@ def run_on_workers(objs: Sequence[Spec], backends: Sequence[WorkerBackend]) -> N
         if local == {True}
         else nullcontext(None)
     )
+    # Asked once: planning again after losing the manager is the same launch.
+    asked: frozenset[str] = frozenset()
     with _execution_log(execution_log), in_process as manager:
         while True:
             run = Run(
@@ -78,13 +81,16 @@ def run_on_workers(objs: Sequence[Spec], backends: Sequence[WorkerBackend]) -> N
             if not run.nodes_by_id:
                 logger.info("run finished ok")
                 return
+            missing = [node.obj for node in run.nodes_by_id.values()]
             logger.info(
-                "planned exec %s · %d ready · %d blocked",
+                "planned exec %s · %d ready · %d blocked\n%s",
                 execution_log.parent.name[:5],
                 len(run.ready),
                 len(run.blocked),
+                stage_table(missing),
                 extra={"path": execution_log},
             )
+            run.asked = asked = asked or ask(missing)
             with (
                 connect(manager.url, max_size=None)
                 if manager is not None
