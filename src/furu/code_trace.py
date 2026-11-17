@@ -9,9 +9,6 @@ still have those fingerprints and every version it names is live, so an edit
 upstream reaches the results built on it one name at a time. A process decides
 this once per version: it runs the code it imported, whatever is edited later.
 
-The call of a ``@furu.dependency(remember=True)`` method is traced the same
-way, and its trace is kept beside what furu remembers of the call.
-
 A file's fingerprint is its AST with docstrings dropped, keeping only the
 functions that ran, the module-level bindings that kept code uses (a closure
 that follows imports between repo files), every other module-level statement
@@ -869,6 +866,9 @@ class _Collector:
 
 _active: _Collector | None = None
 _tool_id: int | None = None
+# Held by the thread that records, which may record inside its own recording.
+# A recording another thread starts waits, so that neither gets the other's code.
+_RECORDING = threading.RLock()
 
 
 def _on_py_start(code: CodeType, offset: int) -> object:
@@ -968,7 +968,6 @@ def recording(
     A remembered dependency method can run one, which is traced on its own:
     the method's trace goes on when the create returns.
     """
-    outer = _active
     root = str(repo_root()) + os.sep
     log = _TraceLog(log_path)
     collector = _Collector(root, log, resumed)
@@ -980,12 +979,14 @@ def recording(
             and rel not in collector.hashes
         ):
             collector.record(rel, importing=False)
-    _trace_into(collector)
-    try:
-        yield Recording(storage_root, set(resumed.built_on), log.write, collector)
-    finally:
-        _trace_into(outer)
-        log.close()
+    with _RECORDING:
+        outer = _active
+        _trace_into(collector)
+        try:
+            yield Recording(storage_root, set(resumed.built_on), log.write, collector)
+        finally:
+            _trace_into(outer)
+            log.close()
 
 
 def why_not_resumable(state: LogState | None, *, storage_root: Path) -> str | None:

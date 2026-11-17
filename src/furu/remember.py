@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import suppress
 from pathlib import Path
 
 from furu.code_trace import Trace, why_trace_outdated
@@ -44,7 +45,12 @@ def _trace_path(class_dir: Path, name: str) -> Path:
     return remembered_dir_in(class_dir) / "traces" / f"{name}.json"
 
 
-def _lines(class_dir: Path, storage_root: Path) -> dict[_Key, str]:
+def lookup(class_dir: Path, method: str, fields: str, storage_root: Path) -> str | None:
+    """The fingerprint of what ``method`` returned for a spec with these fields.
+
+    None when no line says that still holds: one whose method ran code that
+    has changed since, or loaded a result that is out of date, does not.
+    """
     if (lines := _LINES.get(class_dir)) is None:
         lines = _LINES[class_dir] = {}
         folder = remembered_dir_in(class_dir)
@@ -61,16 +67,7 @@ def _lines(class_dir: Path, storage_root: Path) -> dict[_Key, str]:
                     holds[trace] = why_trace_outdated(path, storage_root) is None
                 if holds[trace]:
                     lines[line["method"], line["fields"]] = line["returned"]
-    return lines
-
-
-def lookup(class_dir: Path, method: str, fields: str, storage_root: Path) -> str | None:
-    """The fingerprint of what ``method`` returned for a spec with these fields.
-
-    None when no line says that still holds: one whose method ran code that
-    has changed since, or loaded a result that is out of date, does not.
-    """
-    return _lines(class_dir, storage_root).get((method, fields))
+    return lines.get((method, fields))
 
 
 def add(class_dir: Path, method: str, fields: str, returned: str, trace: Trace) -> None:
@@ -97,12 +94,15 @@ def save(launch: str) -> None:
     while _UNSAVED:
         class_dir, (traces, lines) = _UNSAVED.popitem()
         folder = remembered_dir_in(class_dir)
-        (folder / "traces").mkdir(parents=True, exist_ok=True)
-        for name, trace in traces.items():
-            if not (path := _trace_path(class_dir, name)).exists():
-                atomic_write_text(
-                    path, trace.model_dump_json(indent=2, exclude_none=True)
-                )
-        atomic_write_text(
-            folder / f"launch-{launch}.jsonl", "".join(f"{line}\n" for line in lines)
-        )
+        # Storage that cannot be written to remembers nothing, and still loads.
+        with suppress(OSError):
+            (folder / "traces").mkdir(parents=True, exist_ok=True)
+            for name, trace in traces.items():
+                if not (path := _trace_path(class_dir, name)).exists():
+                    atomic_write_text(
+                        path, trace.model_dump_json(indent=2, exclude_none=True)
+                    )
+            atomic_write_text(
+                folder / f"launch-{launch}.jsonl",
+                "".join(f"{line}\n" for line in lines),
+            )

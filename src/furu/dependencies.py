@@ -136,7 +136,7 @@ class Returned:
                 _on_load.reset(loads)
             if found != (known := obj._returned[self.name]):
                 label = f"{obj._log_label}.{self.name}"
-                if obj._from_line:
+                if not self.remember:
                     raise RuntimeError(
                         f"{label} returned something else than when the launch "
                         f"was planned (fingerprint {found}, planned {known}). A "

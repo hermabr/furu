@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 from multiprocessing import get_context
 from pathlib import Path
 from types import ModuleType
@@ -173,6 +174,21 @@ def test_a_worker_rebuilds_a_remembered_list_that_its_create_reads() -> None:
 
     # The launch sent the fingerprint, and the worker's process called the method.
     assert _calls == []
+
+
+def test_storage_that_cannot_be_written_to_still_loads() -> None:
+    table = LooTable(data=Cifar(split="read-only"), seeds=2)
+    furu.create(table)
+    shutil.rmtree(remembered_dir_in(table._class_dir))
+    fresh_process()
+
+    table._class_dir.chmod(0o555)
+    try:
+        assert furu.create(LooTable(data=Cifar(split="read-only"), seeds=2)) == 1
+    finally:
+        table._class_dir.chmod(0o755)
+    assert _calls == [2, 2]
+    assert not remembered_dir_in(table._class_dir).exists()
 
 
 def _name_then_launch(named: Any, launch: Any) -> None:

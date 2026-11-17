@@ -1293,6 +1293,58 @@ def test_code_run_by_a_thread_inside_create_is_traced(repo: Repo) -> None:
     assert repo.load("threaded").Threaded().create() == 2
 
 
+TWO_THREADS = """\
+import threading
+
+import furu
+
+A_IN, B_IN, A_OUT = threading.Event(), threading.Event(), threading.Event()
+
+
+def helper():
+    return 2
+
+
+class A(furu.Spec[int]):
+    def metadata(self) -> furu.Metadata:
+        return furu.Metadata(code_version="traced")
+
+    def create(self) -> int:
+        A_IN.set()
+        B_IN.wait(0.3)
+        return helper()
+
+
+class B(A):
+    def create(self) -> int:
+        B_IN.set()
+        A_OUT.wait(5)
+        return 7
+"""
+
+
+def test_a_traced_create_waits_for_the_one_another_thread_runs(repo: Repo) -> None:
+    repo.write("two.py", TWO_THREADS)
+    two = repo.load("two")
+    a, b = two.A(), two.B()
+
+    def second() -> None:
+        two.A_IN.wait(5)
+        b.create()
+
+    thread = threading.Thread(target=second)
+    thread.start()
+    assert a.create() == 2
+    two.A_OUT.set()
+    thread.join()
+
+    # B's create() started only when A's had returned, so each ran its own code.
+    file = f"{repo.package}/two.py"
+    assert "helper" in _trace(a)["code"][file]["ran"]
+    assert "helper" not in _trace(b)["code"][file]["ran"]
+    assert not code_trace.tracing()
+
+
 def test_code_version_default_comes_from_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
