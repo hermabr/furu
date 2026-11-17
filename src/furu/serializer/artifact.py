@@ -219,7 +219,9 @@ def to_json(  # TODO: consider caching this (but if i'm going to, I need to figu
             items = list(obj)
             return items if tp is list else {KINDMARKER: "tuple", VALUEMARKER: items}
     if _is_spec(obj):
-        return {KINDMARKER: "spec", VALUEMARKER: obj.object_id}
+        from furu.dependencies import fresh
+
+        return {KINDMARKER: "spec", VALUEMARKER: fresh(obj).object_id}
 
     def assert_correct_dict_key(x: Any) -> str:
         if not isinstance(x, str):
