@@ -256,7 +256,7 @@ class Run:
                 "failed %s · attempt %d/%d · %s",
                 self.specs[spec]._log_label,
                 len(errors),
-                self.max_retries_per_object,
+                self.max_retries_per_object + 1,
                 summary,
                 extra={"path": log},
             )
