@@ -17,11 +17,14 @@ from typing import (
 )
 
 from furu._batched import _BatchedCreate, _BatchedHook, batched, is_batched
+from furu._declared_types import cached_type_hints
 from furu.dependencies import (
     Returned,
     _Dependency,
     dependency_field,
     is_under_creation,
+    remembered_methods,
+    remembers,
     returned_attributes,
 )
 from furu.locking import lock
@@ -30,7 +33,7 @@ from furu.migration.schema import held
 from furu.migration.steps import MigrationStep, naming, stored_name
 from furu.resources import Worker
 from furu.result.codec import Codec
-from furu.serializer.artifact import field_fingerprints
+from furu.serializer.artifact import field_fingerprints, is_default
 from furu.serializer.registry import Serializer
 from furu.spec_metadata import Metadata, Throttle
 from furu.storage._layout import (
@@ -145,7 +148,7 @@ class Spec[T](_FuruDataclassTransform, ABC):
         for name, value in dependencies.items():
             # Set after the dataclass has taken the field: the first read
             # calls the method and keeps what it returned.
-            lazy = Returned(value.func)
+            lazy = Returned(value.func, value.remember)
             lazy.__set_name__(cls, name)
             setattr(cls, name, lazy)
         naming(cls)  # refuses steps that do not fit the fields
@@ -287,17 +290,32 @@ class Spec[T](_FuruDataclassTransform, ABC):
 
         The second is by field, so that the spec's line is written without the
         returned values being written out again. A method that returned its
-        declared default is left out of the id, and of this.
+        declared default is left out of the id, and of this unless the method
+        has ``remember=True``: its field may still have to be compared.
         """
         # One fingerprint per field, so writing a large value apart from the
         # spec that holds it never changes the id.
         cls = type(self)
-        fingerprints = field_fingerprints(self, self.artifact_serializers, held[cls])
+        serializers, nested = self.artifact_serializers, held[cls]
+        remembered = remembered_methods(cls) if remembers() else {}
+        fingerprints = field_fingerprints(self, serializers, nested, leave=remembered)
         returned = {
             attribute: fingerprints[name]
             for attribute, name, _ in naming(cls).fields
             if attribute in returned_attributes(cls) and name in fingerprints
         }
+        for attribute, name, added in naming(cls).fields if remembered else ():
+            if (method := remembered.get(attribute)) is not None:
+                # Remembered under every fingerprint before it, which cover
+                # all that the method can read of the spec.
+                found = returned[attribute] = method.remembered(
+                    self, name, _hash_dict_deterministically(fingerprints)
+                )
+                declared = cached_type_hints(cls).get(attribute, Any)
+                if added is None or not is_default(
+                    added, found, declared, serializers, nested
+                ):
+                    fingerprints[name] = found
         return _hash_dict_deterministically(fingerprints), returned
 
     @final

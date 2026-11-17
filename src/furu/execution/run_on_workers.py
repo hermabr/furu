@@ -12,7 +12,7 @@ from importlib.metadata import version
 from websockets.exceptions import ConnectionClosed, InvalidHandshake
 from websockets.sync.client import ClientConnection, connect
 
-from furu import plan, record
+from furu import plan, record, remember
 from furu.config import get_config
 from furu.core import Spec
 from furu.execution.launch import ask, missing, stage_table
@@ -49,7 +49,9 @@ def run_on_workers(objs: Sequence[Spec], backends: Sequence[WorkerBackend]) -> N
             "cannot mix local and Slurm worker backends: local threads run your "
             "live worktree, Slurm workers run the pushed commit"
         )
+    launch = secrets.token_hex(16)
     running = missing(objs)
+    remember.save(launch)
     if not running:
         logger.info("all objects already exist; nothing to run")
         return
@@ -57,7 +59,6 @@ def run_on_workers(objs: Sequence[Spec], backends: Sequence[WorkerBackend]) -> N
     provenance = capture_submit_provenance()
     code = CodeLocation.here() if local == {True} else _prepare_snapshot(provenance)
     directories = get_config().directories.anchored()
-    launch = secrets.token_hex(16)
     execution_log = execution_log_path_in(directories.executions / launch)
     launch_plan = directories.plans / f"{launch}.plan"
     from furu.execution.manager import Manager

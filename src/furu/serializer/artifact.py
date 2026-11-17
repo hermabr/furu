@@ -23,7 +23,7 @@ from furu.constants import (
     SERIALIZERMARKER,
     VALUEMARKER,
 )
-from furu.migration.steps import naming, stored_name
+from furu.migration.steps import Added, naming, stored_name
 from furu.serializer.registry import (
     Serializer,
     SerializerMeta,
@@ -122,36 +122,75 @@ def hashed_fields(
     return hashed
 
 
+def fingerprint(
+    value: object,
+    cls: type,
+    attribute: str,
+    declared_type: object,
+    artifact_serializers: tuple[type[Serializer], ...],
+    nested: set[type],
+) -> str:
+    """The fingerprint of the value of a field of the spec class ``cls``.
+
+    A launch remembers it when the value is large.
+    """
+    key = (id(value), cls, attribute)
+    memo = _remembered.get() if type(value) in _REMEMBERED else None
+    if memo is not None and key in memo:
+        return memo[key][1]
+    written = _stable_json_dump(
+        to_json(value, declared_type, artifact_serializers, nested)
+    )
+    found = _fingerprint(written)
+    if memo is not None and len(written) > OWN_LINE_BYTES:
+        memo[key] = (value, found)
+    return found
+
+
+def is_default(
+    added: Added,
+    found: str,
+    declared_type: object,
+    artifact_serializers: tuple[type[Serializer], ...],
+    nested: set[type],
+) -> bool:
+    """Whether a field's fingerprint is of the default its step declares, which an id leaves out."""
+    return found == _fingerprint(
+        _stable_json_dump(
+            to_json(added.default, declared_type, artifact_serializers, nested)
+        )
+    )
+
+
 def field_fingerprints(
     obj: Any,
     artifact_serializers: tuple[type[Serializer], ...],
     nested: set[type],
+    leave: Collection[str] = (),
 ) -> dict[str, str]:
-    """One fingerprint per field of a spec, named and left out as in `hashed_fields`."""
+    """One fingerprint per field of a spec, named and left out as in `hashed_fields`.
+
+    The fields in ``leave`` are not read.
+    """
     cls = type(obj)
     hints = cached_type_hints(cls)
-    remembered = _remembered.get()
     fingerprints: dict[str, str] = {}
     for attribute, name, added in naming(cls).fields:
+        if attribute in leave:
+            continue
         declared_type = hints.get(attribute, Any)
-        value = getattr(obj, attribute)
-        key = (id(value), cls, attribute)
-        memo = remembered if type(value) in _REMEMBERED else None
-        if memo is not None and key in memo:
-            fingerprint = memo[key][1]
-        else:
-            written = _stable_json_dump(
-                to_json(value, declared_type, artifact_serializers, nested)
-            )
-            fingerprint = _fingerprint(written)
-            if memo is not None and len(written) > OWN_LINE_BYTES:
-                memo[key] = (value, fingerprint)
-        if added is None or fingerprint != _fingerprint(
-            _stable_json_dump(
-                to_json(added.default, declared_type, artifact_serializers, nested)
-            )
+        found = fingerprint(
+            getattr(obj, attribute),
+            cls,
+            attribute,
+            declared_type,
+            artifact_serializers,
+            nested,
+        )
+        if added is None or not is_default(
+            added, found, declared_type, artifact_serializers, nested
         ):
-            fingerprints[name] = fingerprint
+            fingerprints[name] = found
     return fingerprints
 
 

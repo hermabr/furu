@@ -9,6 +9,9 @@ still have those fingerprints and every version it names is live, so an edit
 upstream reaches the results built on it one name at a time. A process decides
 this once per version: it runs the code it imported, whatever is edited later.
 
+The call of a ``@furu.dependency(remember=True)`` method is traced the same
+way, and its trace is kept beside what furu remembers of the call.
+
 A file's fingerprint is its AST with docstrings dropped, keeping only the
 functions that ran, the module-level bindings that kept code uses (a closure
 that follows imports between repo files), every other module-level statement
@@ -92,7 +95,7 @@ def _git_toplevel(cwd: str) -> Path:
         ).stdout.strip()
     except (OSError, subprocess.CalledProcessError) as exc:
         raise RuntimeError(
-            f'code_version="traced" needs a git repository; {cwd} is not in one'
+            f"tracing code needs a git repository; {cwd} is not in one"
         ) from exc
     return Path(_realpath(top))
 
@@ -110,6 +113,7 @@ def _excluded() -> tuple[str, ...]:
     return tuple(_realpath(path) + os.sep for path in paths)
 
 
+@functools.cache
 def _rel(filename: str, root: str) -> str | None:
     """Repo-relative path of a traced source file; root ends with os.sep."""
     if not filename.endswith(".py") or not os.path.isabs(filename):
@@ -654,43 +658,48 @@ def _changed(trace: Trace) -> str | None:
     return None
 
 
-def _check(version: Path) -> tuple[Trace, str | None] | None:
-    """A hashed version folder's trace and why it is outdated (None if live).
+def _check(path: Path, storage_root: Path) -> tuple[Trace, str | None] | None:
+    """The trace in the file ``path`` and why it is outdated (None if live).
 
-    None when it has no readable trace.json. The file may only not be visible
-    on this machine yet, so that answer is not kept, nor one that rests on it.
+    ``storage_root`` is what the code versions it names are relative to. None
+    when the file cannot be read. It may only not be visible on this machine
+    yet, so that answer is not kept, nor one that rests on it.
     """
-    key = os.path.normpath(version)
+    key = os.path.normpath(path)
     if (checked := _CHECKED.get(key)) is not None:
         return checked
     try:
-        trace = Trace.model_validate_json(trace_path_in(Path(key)).read_bytes())
+        trace = Trace.model_validate_json(Path(key).read_bytes())
     except (OSError, ValueError):
         return None
     why = _changed(trace)
     if why is None:
-        storage_root = Path(key).parents[2]
         for name in trace.built_on:
             upstream = storage_root / name
             if why_outdated(upstream) is not None:
                 why = f"it was built on {name}, which is outdated"
-                if os.path.normpath(upstream) not in _CHECKED:
+                if os.path.normpath(trace_path_in(upstream)) not in _CHECKED:
                     return trace, why
                 break
     _CHECKED[key] = trace, why
     return trace, why
 
 
-def why_outdated(version: Path) -> str | None:
-    """None if the code version at ``version`` is live, otherwise why not.
+def why_trace_outdated(path: Path, storage_root: Path) -> str | None:
+    """None if the trace in the file ``path`` is live, otherwise why not.
 
-    It is live when its own code still matches the code on disk and every
-    version it was built on is live.
+    It is live when the code it ran still matches the code on disk and every
+    code version it names, relative to ``storage_root``, is live.
     """
+    checked = _check(path, storage_root)
+    return checked[1] if checked is not None else f"its {path.name} is missing"
+
+
+def why_outdated(version: Path) -> str | None:
+    """None if the code version at ``version`` is live, otherwise why not."""
     if version.name == FIXED:
         return None
-    checked = _check(version)
-    return checked[1] if checked is not None else "its trace.json is missing"
+    return why_trace_outdated(trace_path_in(version), version.parents[2])
 
 
 def versions(class_dir: Path) -> list[tuple[Path, str | None]]:
@@ -698,7 +707,9 @@ def versions(class_dir: Path) -> list[tuple[Path, str | None]]:
     found = [
         (version, checked[1])
         for version in version_dirs_in(class_dir)
-        if version.name != FIXED and (checked := _check(version)) is not None
+        if version.name != FIXED
+        and (checked := _check(trace_path_in(version), class_dir.parents[1]))
+        is not None
     ]
     live = sum(why is None for _, why in found)
     if live > _MANY_LIVE_VERSIONS and class_dir not in _WARNED_MANY:
@@ -723,13 +734,18 @@ class _TraceLog:
     what the process imported is unknown.
     """
 
-    def __init__(self, path: Path) -> None:
-        self._fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    def __init__(self, path: Path | None) -> None:
+        # Without a path nothing is kept: a call that is never resumed.
+        self._fd = (
+            None
+            if path is None
+            else os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        )
         self._path = path
         self.broken = False
 
     def write(self, record: list[str]) -> None:
-        if self.broken:
+        if self._fd is None or self.broken:
             return
         try:
             os.write(self._fd, (json.dumps(record) + "\n").encode())
@@ -739,10 +755,12 @@ class _TraceLog:
     def abandon(self) -> None:
         """A log missing entries could resume wrongly; without one, we restart."""
         self.broken = True
-        self._path.unlink(missing_ok=True)
+        if self._path is not None:
+            self._path.unlink(missing_ok=True)
 
     def close(self) -> None:
-        os.close(self._fd)
+        if self._fd is not None:
+            os.close(self._fd)
 
 
 @dataclass(slots=True)
@@ -895,13 +913,13 @@ def _trace_into(collector: _Collector | None) -> None:
 
 
 def tracing() -> bool:
-    """Whether a traced create() is running, and its tracing is not paused."""
+    """Whether a traced call is running, and its tracing is not paused."""
     return _active is not None
 
 
 @contextmanager
 def paused() -> Generator[None]:
-    """Run code that is no part of the create() being traced."""
+    """Run code that is no part of the call being traced."""
     global _active
     collector, _active = _active, None
     try:
@@ -912,7 +930,7 @@ def paused() -> Generator[None]:
 
 @dataclass(slots=True)
 class Recording:
-    """What one traced create() call (one spec, or one batch) ran and loaded."""
+    """What one traced call ran and loaded: a create(), or a remembered dependency method."""
 
     storage_root: Path
     built_on: set[str] = field(default_factory=set)
@@ -926,7 +944,7 @@ class Recording:
         return {rel: frozenset(names) for rel, names in self._collector.ran.items()}
 
     def loaded(self, run: Path) -> None:
-        """Note the code version of a published run that create() loaded."""
+        """Note the code version of a published run that the call loaded."""
         version = run.parent.parent
         if version.name == FIXED:
             return
@@ -939,18 +957,18 @@ class Recording:
 
 @contextmanager
 def recording(
-    log_path: Path,
+    log_path: Path | None,
     *,
     storage_root: Path,
     resumed: LogState,
 ) -> Generator[Recording]:
-    """Trace the repo code a create() runs.
+    """Trace the repo code a call runs, logging it to ``log_path`` if there is one.
 
-    A create never runs another create inline (a missing dependency aborts it),
-    so at most one create is traced at a time.
+    A create never runs another create inline (a missing dependency aborts it).
+    A remembered dependency method can run one, which is traced on its own:
+    the method's trace goes on when the create returns.
     """
-    if _active is not None:
-        raise RuntimeError("a traced create() is already running in this process")
+    outer = _active
     root = str(repo_root()) + os.sep
     log = _TraceLog(log_path)
     collector = _Collector(root, log, resumed)
@@ -966,7 +984,7 @@ def recording(
     try:
         yield Recording(storage_root, set(resumed.built_on), log.write, collector)
     finally:
-        _trace_into(None)
+        _trace_into(outer)
         log.close()
 
 
@@ -1013,14 +1031,14 @@ _WARNED: set[str] = set()
 
 
 def build_trace(run: Recording, *, label: str, warn: Callable[[str], None]) -> Trace:
-    """The trace.json for a finished create(); raises StaleCodeError if unsafe."""
+    """The trace of a finished call; raises StaleCodeError if unsafe."""
     root = repo_root()
     code, warnings = _code(run.ran, lambda rel: _read(root / rel), str(root) + os.sep)
     assert run._collector is not None
     if opened := sorted(run._collector.opened):
         more = f" and {len(opened) - 3} more" if len(opened) > 3 else ""
         warnings.append(
-            f"create() read {', '.join(opened[:3])}{more}, which furu does not "
+            f"read {', '.join(opened[:3])}{more}, which furu does not "
             f"trace: {_KEEPS_OLD_RESULT}"
         )
     for warning in warnings:

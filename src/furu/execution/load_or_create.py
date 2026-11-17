@@ -4,12 +4,12 @@ import secrets
 import shutil
 import time
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast, overload
 
-from furu import plan, record
+from furu import plan, record, remember
 from furu._batched import _BatchedHook, batch_of
 from furu._declared_types import declared_result_type
 from furu._tree import map_specs, specs_in
@@ -18,6 +18,7 @@ from furu.code_trace import (
     Recording,
     Trace,
     build_trace,
+    paused,
     recording,
     why_not_resumable,
 )
@@ -102,12 +103,13 @@ def _recording(
     """Note the specs whose results one create() call loads, and trace the call.
 
     Only a class that traces its code is traced, with the code versions of
-    what it loads.
+    what it loads. A create() that a remembered dependency method runs is no
+    part of the method's trace either way: the method loads its result.
     """
     metadata = group[0]._metadata  # a batch has one Metadata
     loaded: list[Spec] = []
     with (
-        nullcontext()
+        paused()
         if metadata.code_version == "fixed"
         else recording(
             trace_log_path_in(attempt), storage_root=metadata.storage, resumed=resumed
@@ -421,17 +423,19 @@ def _load_or_create_local[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
     Runs the same graph as a worker run: a create that blocks on missing specs
     is aborted with its locks released, they are built, and it reruns.
     """
+    launch = secrets.token_hex(16)
     dag = Dag()
     running = missing_under(objs, dag)
+    # Naming the specs called each remembered dependency method that had to
+    # be called. Saved before anything runs, and when nothing does.
+    remember.save(launch)
     cached = [obj for obj in objs if obj.object_id not in dag.nodes]
     if cached:
         to_build = [obj for obj in objs if obj.object_id in dag.nodes]
         objs[0].logger.info("%s", _cached_to_build_msg(cached, to_build))
 
     if running:
-        launch_plan = (
-            get_config().directories.anchored().plans / f"{secrets.token_hex(16)}.plan"
-        )
+        launch_plan = get_config().directories.anchored().plans / f"{launch}.plan"
         stages = ask(running)
         record.launch(launch_plan, objs, running, capture_submit_provenance())
         with asked(stages):

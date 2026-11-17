@@ -5,15 +5,24 @@ from collections.abc import Callable, Generator, Iterable, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import field, fields, is_dataclass
-from functools import cache
+from functools import cache, partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self, overload
 
+from furu import remember
 from furu._declared_types import cached_type_hints
-from furu.code_trace import paused, tracing
+from furu.code_trace import (
+    LogState,
+    StaleCodeError,
+    build_trace,
+    paused,
+    recording,
+    tracing,
+)
+from furu.logging import get_logger
 from furu.migration.schema import held
-from furu.serializer.artifact import to_json
-from furu.utils import _hash_dict_deterministically
+from furu.serializer.artifact import fingerprint
+from furu.storage._layout import remembered_dir_in
 
 if TYPE_CHECKING:
     from furu.core import Spec
@@ -26,8 +35,9 @@ class _Dependency[TSpec, T]:
     method returns is hashed, stored and planned like any other field.
     """
 
-    def __init__(self, func: Callable[[TSpec], T]) -> None:
+    def __init__(self, func: Callable[[TSpec], T], remember: bool = False) -> None:
         self.func = func
+        self.remember = remember
 
     if TYPE_CHECKING:
 
@@ -43,18 +53,27 @@ def dependency[TSpec: Spec, T](
     func: Callable[[TSpec], T], /
 ) -> _Dependency[TSpec, T]: ...
 @overload
-def dependency[TSpec: Spec, T]() -> Callable[
-    [Callable[[TSpec], T]], _Dependency[TSpec, T]
-]: ...
 def dependency[TSpec: Spec, T](
-    func: Callable[[TSpec], T] | None = None, /
+    *, remember: bool = False
+) -> Callable[[Callable[[TSpec], T]], _Dependency[TSpec, T]]: ...
+def dependency[TSpec: Spec, T](
+    func: Callable[[TSpec], T] | None = None, /, *, remember: bool = False
 ) -> _Dependency[TSpec, T] | Callable[[Callable[[TSpec], T]], _Dependency[TSpec, T]]:
     """Declare specs a create() uses that are computed from the spec's fields.
 
     The method becomes a field. furu calls it the first time the field is read,
     which naming the spec does: the ids it returns are part of the spec's id.
+
+    With ``remember=True`` furu keeps a fingerprint of what the method returned
+    and names the spec from it. The method is called again only when another
+    field of the spec, code the method ran or a result it loaded has changed,
+    or when something reads the field. It changes speed and nothing else, as
+    long as the method reads nothing but those: furu does not notice a file, an
+    environment variable or a web page that changes.
     """
-    return dependency if func is None else _Dependency(func)
+    if func is None:
+        return partial(_Dependency, remember=remember)
+    return _Dependency(func, remember)
 
 
 def dependency_field(cls: type, name: str, declared: _Dependency) -> Any:
@@ -72,48 +91,71 @@ def dependency_field(cls: type, name: str, declared: _Dependency) -> Any:
 class Returned:
     """The field a ``@furu.dependency`` method fills, on its class.
 
-    The first read calls the method and keeps what it returned. A spec built
-    from a plan line has the fingerprint of what the method returned when the
-    launch was planned, and a result with another fingerprint stops the read.
-    Code tracing is paused for that call: the fingerprint already covers the
-    result, and the spec gets the code version it gets where the method ran
-    before create() started.
+    The first read calls the method and keeps what it returned. A spec can be
+    named without that: one built from a plan line has the fingerprint of what
+    the method returned when the launch was planned, and one whose method has
+    ``remember=True`` the fingerprint furu remembers. The first read then
+    compares, and a result with another fingerprint stops it. Code tracing is
+    paused for that call: the fingerprint already covers the result, and the
+    spec gets the code version it gets where the method ran before create()
+    started.
     """
 
-    def __init__(self, func: Callable[[Any], object]) -> None:
+    def __init__(self, func: Callable[[Any], object], remember: bool) -> None:
         self.func = func
+        self.remember = remember
 
     def __set_name__(self, owner: type, name: str) -> None:
         self.name = name
+
+    def _fingerprint(self, obj: Spec, value: object) -> str:
+        cls = type(obj)
+        declared = cached_type_hints(cls).get(self.name, Any)
+        return fingerprint(
+            value, cls, self.name, declared, obj.artifact_serializers, held[cls]
+        )
 
     def __get__(self, obj: Spec | None, owner: type | None = None) -> Any:
         if obj is None:
             return self
         cls = type(obj)
-        if obj._from_line:
+        named = "_named" in vars(obj)
+        if self.remember and not named and remembers():
+            # Naming calls the method when nothing remembered holds, which
+            # fills the field.
+            named = bool(obj._named)
+            if self.name in vars(obj):
+                return vars(obj)[self.name]
+        if named:
             loads = _on_load.set(None)
             try:
                 with paused():
                     value = self.func(obj)
-                    fingerprint = _hash_dict_deterministically(
-                        to_json(
-                            value,
-                            cached_type_hints(cls).get(self.name, Any),
-                            obj.artifact_serializers,
-                            held[cls],
-                        )
-                    )
+                    found = self._fingerprint(obj, value)
             finally:
                 _on_load.reset(loads)
-            if fingerprint != (planned := obj._returned[self.name]):
+            if found != (known := obj._returned[self.name]):
+                label = f"{obj._log_label}.{self.name}"
+                if obj._from_line:
+                    raise RuntimeError(
+                        f"{label} returned something else than when the launch "
+                        f"was planned (fingerprint {found}, planned {known}). A "
+                        "@furu.dependency method has to return the same specs "
+                        "in the same order for as long as what it reads is "
+                        "unchanged."
+                    )
                 raise RuntimeError(
-                    f"{obj._log_label}.{self.name} returned something else than "
-                    f"when the launch was planned (fingerprint {fingerprint}, "
-                    f"planned {planned}). A @furu.dependency method has to "
-                    "return the same specs in the same order for as long as "
-                    "what it reads is unchanged."
+                    f"{label} returned something else than furu remembers "
+                    f"(fingerprint {found}, remembered {known}), though the "
+                    "spec's fields, the code the method ran and the results "
+                    "it loaded are unchanged. A method with remember=True "
+                    "reads something furu does not check, such as a file, an "
+                    "environment variable or a web page: put what it reads "
+                    "in a field of the spec, or take remember=True off. "
+                    f"Deleting {remembered_dir_in(obj._class_dir)} makes furu "
+                    "call the method again."
                 )
-        elif tracing():
+        elif tracing() and any_under_creation():
             creating = min(specs_under_creation()).partition(":")[0]
             raise RuntimeError(
                 f"the create() of {creating} traces its code and built a "
@@ -128,6 +170,47 @@ class Returned:
         vars(obj)[self.name] = value
         return value
 
+    def remembered(self, obj: Spec, name: str, fields: str) -> str:
+        """The fingerprint of what the method returns for ``obj``, for its id.
+
+        ``fields`` is a fingerprint of the spec's other fields and ``name``
+        what the id calls this one. The method is called only when no
+        remembered line holds. That call is traced as a create() is, together
+        with naming what it returned, which calls the dependency methods of
+        the specs in it. It fills the field and is remembered.
+        """
+        class_dir, storage = obj._class_dir, obj._metadata.storage
+        if (known := remember.lookup(class_dir, name, fields, storage)) is not None:
+            return known
+        with (
+            recording(None, storage_root=storage, resumed=LogState()) as run,
+            recording_loads(lambda loaded, specs: run.loaded(loaded)),
+        ):
+            value = vars(obj)[self.name] = self.func(obj)
+            found = self._fingerprint(obj, value)
+        try:
+            trace = build_trace(
+                run,
+                label=f"{type(obj).__name__}.{self.name}",
+                warn=get_logger().warning,
+            )
+        except StaleCodeError:
+            # This process runs older code than the files hold, so the next
+            # launch calls the method again.
+            return found
+        remember.add(class_dir, name, fields, found, trace)
+        return found
+
+
+def remembers() -> bool:
+    """Whether a spec named here takes what furu remembers for a ``remember=True`` method.
+
+    Not inside a create(), where a dependency list is what its method returns,
+    and not inside the traced call of another such method, whose trace has to
+    cover this one's code.
+    """
+    return not tracing() and not any_under_creation()
+
 
 @cache
 def returned_attributes(cls: type) -> frozenset[str]:
@@ -138,6 +221,15 @@ def returned_attributes(cls: type) -> frozenset[str]:
         for f in fields(cls)
         if isinstance(inspect.getattr_static(cls, f.name, None), Returned)
     )
+
+
+@cache
+def remembered_methods(cls: type) -> dict[str, Returned]:
+    """The ``remember=True`` methods of a spec class, by the field each fills."""
+    methods = {
+        name: inspect.getattr_static(cls, name) for name in returned_attributes(cls)
+    }
+    return {name: method for name, method in methods.items() if method.remember}
 
 
 # What to tell about each published run the create() in this context loads,

@@ -1,10 +1,13 @@
 import contextlib
 import os
-from collections.abc import Iterator
+import sys
+import uuid
+from collections.abc import Generator, Iterator
 from pathlib import Path
 
 import pytest
 from gitrepo import init_repo
+from tracedrepo import Repo
 
 from furu import provenance
 from furu.config import _project_anchor
@@ -40,6 +43,20 @@ def git_repo(tmp_path: Path) -> Path:
     repo.mkdir()
     (repo / "tracked.txt").write_text("content\n")
     return init_repo(repo)
+
+
+@pytest.fixture
+def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[Repo]:
+    """A package of its own, in the tree furu traces code in."""
+    root = tmp_path / "repo"
+    repo = Repo(root=root, package=f"traced_{uuid.uuid4().hex[:12]}")
+    (root / repo.package).mkdir(parents=True)
+    repo.write("__init__.py", "")
+    monkeypatch.setenv("_FURU_REPO_ROOT", str(root))
+    monkeypatch.syspath_prepend(str(root))
+    yield repo
+    for module in [m for m in sys.modules if m.split(".")[0] == repo.package]:
+        del sys.modules[module]
 
 
 @pytest.fixture
