@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 
 class ArtifactSpec(BaseModel):
-    """Which spec an identity directory holds; stored there as spec.json."""
+    """A spec as a worker is sent it: its class, its fields and its id."""
 
     model_config = ConfigDict(
         extra="forbid",

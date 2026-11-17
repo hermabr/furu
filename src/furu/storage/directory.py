@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
 
-from furu.storage._layout import data_dir_in, run_log_path_in, scratch_dir_in
+from furu.storage._layout import data_dir_in, scratch_dir_in
 
 
 @dataclass(frozen=True)
@@ -23,8 +23,3 @@ class SpecDirectory:
         scratch_dir = scratch_dir_in(self._base_dir)
         scratch_dir.mkdir(parents=True, exist_ok=True)
         return scratch_dir
-
-    @cached_property
-    def run_log(self) -> Path:
-        # _base_dir is attempt/; run.log logs every attempt, beside it.
-        return run_log_path_in(self._base_dir.parent)

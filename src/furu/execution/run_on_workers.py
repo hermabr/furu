@@ -48,7 +48,7 @@ def run_on_workers(objs: Sequence[Spec], backends: Sequence[WorkerBackend]) -> N
             "cannot mix local and Slurm worker backends: local threads run your "
             "live worktree, Slurm workers run the pushed commit"
         )
-    if all(obj.status == "done" for obj in objs):
+    if all(obj.done for obj in objs):
         logger.info("all objects already exist; nothing to run")
         return
 

@@ -35,9 +35,10 @@ from furu.provenance import (
 )
 from furu.snapshot import CodeLocation
 from furu.storage._layout import (
-    compute_lock_path_in,
+    attempts_dir_in,
     execution_log_path_in,
-    run_log_path_in,
+    lock_path_in,
+    log_path_in,
 )
 from furu.worker.backends.local import LocalThreadWorkerBackend
 from furu.worker.backends.slurm.backend import SlurmWorkerBackend
@@ -81,8 +82,7 @@ def _submit_provenance() -> SubmitProvenance:
 def _job(*objs: Spec) -> Job:
     return Job(
         artifacts=[ArtifactSpec.from_furu(obj) for obj in objs],
-        run_logs=[run_log_path_in(obj._base_dir) for obj in objs],
-        attempt=1,
+        log=log_path_in(objs[0]._attempt_dir),
         execution_log=get_config().directories.anchored().executions
         / "e1"
         / "execution.log",
@@ -208,8 +208,8 @@ def _ids(job: Job | None) -> list[str]:
 
 @contextmanager
 def _mark_running(obj: Spec) -> Generator[None]:
-    obj._base_dir.mkdir(parents=True, exist_ok=True)
-    with lock([compute_lock_path_in(obj._base_dir)]):
+    attempts_dir_in(obj._class_dir).mkdir(parents=True, exist_ok=True)
+    with lock([lock_path_in(obj._class_dir, obj._run_name)]):
         yield
 
 
@@ -501,7 +501,7 @@ def test_run_submission_carries_the_runs_settings_and_code() -> None:
 
     assert submission.job.config == get_config().anchored()
     assert submission.job.code == CodeLocation.here()
-    assert submission.job.run_logs == [run_log_path_in(leaf._base_dir)]
+    assert submission.job.log == log_path_in(leaf._attempt_dir)
     assert submission.pools == {CPU_POOL.pool_key: None}
     assert submission.throttle is None
 
@@ -887,7 +887,7 @@ def test_run_failed_result_finishes_with_error(
     )
     assert failed_record.levelno == logging.ERROR
     assert failed_record.message == f"failed {leaf._log_label} · attempt 1/0 · boom"
-    assert failed_record.__dict__["path"] == run_log_path_in(leaf._base_dir)
+    assert failed_record.__dict__["path"] == log_path_in(leaf._attempt_dir)
     assert (
         caplog.messages[-1] == f"run failed · 1 spec failed · {leaf._log_label} · boom"
     )
@@ -901,8 +901,7 @@ def test_run_failed_result_retries_before_finishing(
 
     with _captured_furu_logs(caplog):
         for attempt in (1, 2, 3):
-            (submission,) = run.take_submissions()
-            assert submission.job.attempt == attempt
+            run.take_submissions()
             run.job_result(leaf.object_id, JobFailedResult(error=f"boom {attempt}"))
             assert run.failures[leaf.object_id] == [
                 f"boom {n}" for n in range(1, attempt + 1)
@@ -976,7 +975,7 @@ def test_run_error_lists_one_line_per_failed_and_blocked_spec() -> None:
     assert lines[0] == "2 specs failed, 1 blocked"
     assert sorted(lines[1:3]) == sorted(
         f"  {obj._log_label} · 2 attempts · ValueError: {obj.value} → "
-        f"{_display_path(run_log_path_in(obj._base_dir))}"
+        f"{_display_path(log_path_in(obj._attempt_dir))}"
         for obj in (leaf, other)
     )
     assert lines[3:] == [f"  {parent._log_label} · blocked"]
@@ -1187,7 +1186,7 @@ def test_lease_assembles_same_key_batched_group_into_one_job() -> None:
 
     assert _ids(job) == [obj.object_id for obj in objs]
     assert isinstance(job, Job)
-    assert job.run_logs == [run_log_path_in(obj._base_dir) for obj in objs]
+    assert job.log == log_path_in(objs[0]._attempt_dir)
     assert manager.queue == []
 
 
@@ -1473,21 +1472,21 @@ def test_build_on_workers_leaves_results_on_disk() -> None:
 
     furu.build(objs, on=[LocalThreadWorkerBackend()])
 
-    assert [obj.status for obj in objs] == ["done", "done", "done"]
+    assert all(obj.done for obj in objs)
 
 
 def test_load_existing_in_worker_does_not_build_missing_spec() -> None:
     parent = OptionalLoadParent(name="optional")
 
     assert furu.create(parent, on=[LocalThreadWorkerBackend()]) == "missing"
-    assert OptionalLoadLeaf(name="optional").status == "missing"
+    assert not OptionalLoadLeaf(name="optional").done
 
 
 def test_top_level_create_runs_dag_on_worker_backends() -> None:
     leaf = RunLeaf(value=21)
 
     assert furu.create(leaf, on=(LocalThreadWorkerBackend(),)) == 21
-    assert leaf.status == "done"
+    assert leaf.done
     assert furu.create([leaf], on=(LocalThreadWorkerBackend(),)) == [21]
 
 
@@ -1525,8 +1524,8 @@ def test_run_splits_work_across_open_and_reserved_pools() -> None:
         ],
     )
 
-    assert cpu_leaf.status == "done"
-    assert memory_leaf.status == "done"
+    assert cpu_leaf.done
+    assert memory_leaf.done
 
 
 def test_run_completes_later_resource_stages_on_local_workers() -> None:
@@ -1547,7 +1546,7 @@ def test_run_completes_later_resource_stages_on_local_workers() -> None:
     )
 
     for obj in (seed, first_gpu, second_cpu, *final_gpus):
-        assert obj.status == "done"
+        assert obj.done
     assert [obj.create() for obj in final_gpus] == [
         seed_value + 50 + value for value in range(4)
     ]
@@ -1582,7 +1581,7 @@ def test_run_writes_log_to_its_execution_dir() -> None:
     assert any(f" planned exec {executor_dir.name[:5]} · " in line for line in lines)
     assert any(
         line.endswith(
-            f" leased {leaf._log_label} to w0 → {run_log_path_in(leaf._base_dir)}"
+            f" leased {leaf._log_label} to w0 → {log_path_in(leaf._attempt_dir)}"
         )
         for line in lines
     )
@@ -1733,11 +1732,9 @@ def test_worker_with_its_own_log_notes_what_it_ran_there(
     ]
     assert worker_records == [
         (logging.INFO, "serving exec e1", job.execution_log),
-        (logging.INFO, f"running {leaf._log_label} ×2", job.run_logs[0]),
+        (logging.INFO, f"running {leaf._log_label} ×2", job.log),
         (logging.INFO, "manager closed the connection; exiting", None),
     ]
-    assert f"   worker log → {worker_log}\n" in job.run_logs[0].read_text()
-    assert f"   batched with {leaf._log_label} → " in job.run_logs[1].read_text()
 
 
 def test_worker_loop_does_not_swallow_keyboard_interrupt(
@@ -1785,7 +1782,7 @@ def test_worker_loop_cancel_kills_running_job(tmp_path: Path) -> None:
     (result,) = results
     assert isinstance(result, JobFailedResult)
     assert result.error.endswith("subprocess died: killed by signal 9 (SIGKILL)")
-    assert leaf.status != "done"
+    assert not leaf.done
 
 
 def test_worker_finishes_its_job_after_losing_the_manager_then_exits(
@@ -1805,7 +1802,7 @@ def test_worker_finishes_its_job_after_losing_the_manager_then_exits(
             url=url, pool="cpu", idle_timeout=5, component="test-worker", backend="test"
         )
 
-    assert leaf.status == "done"
+    assert leaf.done
     assert (
         f"lost the manager; finishing {leaf._log_label}, then exiting"
         in caplog.messages

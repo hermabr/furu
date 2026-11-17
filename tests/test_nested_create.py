@@ -3,12 +3,12 @@
 import shutil
 
 import pytest
+from runs import ends_of, fixed_run
 
 import furu
 from furu import Spec
 from furu.dependencies import _DependencyNotReady
 from furu.provenance import SubmitProvenance
-from furu.storage._layout import run_log_path_in
 from furu.worker.backends.local import LocalThreadWorkerBackend
 
 CALLS: list[str] = []
@@ -57,7 +57,7 @@ class LosesItsLeaf(Spec[int]):
     def create(self) -> int:
         CALLS.append("loses")
         leaf = Leaf(n=7)
-        shutil.rmtree(leaf._base_dir, ignore_errors=True)
+        shutil.rmtree(fixed_run(leaf), ignore_errors=True)
         return leaf.create()
 
 
@@ -147,11 +147,10 @@ def test_dependency_failure_propagates_and_names_the_parent() -> None:
     assert exc_info.value.__notes__ == [
         f"while building dependencies of {parent._log_label}"
     ]
-    parent_log = run_log_path_in(parent._base_dir).read_text(encoding="utf-8")
-    assert parent_log.rstrip("\n").endswith(" · 1 missing dependency")
-    assert "failed" not in parent_log
-    # It only blocked, so its leftover attempt/ reads as incomplete, not failed.
-    assert parent.status == "incomplete"
+    # It only blocked: the failure is its leaf's.
+    assert ends_of(parent) == [
+        {"outcome": "blocked", "waiting_on": [Leaf(n=99, fail=True).object_id]}
+    ]
 
 
 def test_dependency_cycle_raises_instead_of_looping() -> None:
@@ -256,6 +255,9 @@ def test_batched_group_reruns_as_a_whole() -> None:
 
     assert furu.create(objs) == [1, 2]
     assert CALLS == ["batch [1, 2]", "leaf 1", "leaf 2", "batch [1, 2]"]
+    waiting_on = [Leaf(n=obj.key).object_id for obj in objs]
     for obj in objs:
-        run_log = run_log_path_in(obj._base_dir).read_text(encoding="utf-8")
-        assert " · 2 missing dependencies\n" in run_log
+        assert ends_of(obj) == [
+            {"outcome": "blocked", "waiting_on": waiting_on},
+            {"outcome": "ok"},
+        ]

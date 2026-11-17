@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 from gitrepo import git, init_repo
+from runs import ends_of, events_of, log_of, run_of
 from subprocess_objects import (
     OtherSubprocessEnvLeaf,
     SubprocessBatchLeaf,
@@ -36,7 +37,7 @@ from furu.provenance import (
     SubmitProvenance,
 )
 from furu.snapshot import CodeLocation
-from furu.storage._layout import run_log_path_in
+from furu.storage._layout import log_path_in
 from furu.testing import override_config
 from furu.worker.backends.local import LocalThreadWorkerBackend
 from furu.worker.execute import ChildSlot
@@ -78,12 +79,10 @@ def _job(
     *,
     provenance: SubmitProvenance | None = None,
     code: CodeLocation | None = None,
-    attempt: int = 1,
 ) -> Job:
     return Job(
         artifacts=[ArtifactSpec.from_furu(obj) for obj in objs],
-        run_logs=[run_log_path_in(obj._base_dir) for obj in objs],
-        attempt=attempt,
+        log=log_path_in(objs[0]._attempt_dir),
         execution_log=get_config().directories.anchored().executions
         / "e1"
         / "execution.log",
@@ -96,10 +95,6 @@ def _job(
 
 def _run(slot: ChildSlot, obj: Spec) -> JobResult:
     return slot.run(_job([obj]), cancelled=threading.Event())
-
-
-def _run_log(obj: Spec) -> str:
-    return run_log_path_in(obj._base_dir).read_text()
 
 
 def _pid_and_value(obj: Spec[str]) -> tuple[int, str]:
@@ -285,12 +280,12 @@ def test_subprocess_crash_becomes_job_failed_result_and_slot_survives(
     result = _run(child_slot, crashing)
 
     assert isinstance(result, JobFailedResult)
-    # The run.log tail comes first, so the reason is the error's last line.
-    tail, reason = result.error.rstrip("\n").rsplit("\n", 1)
-    assert reason == "subprocess died: killed by signal 9 (SIGKILL)"
-    assert tail.startswith(f"── {crashing._log_label} · attempt 1 · w0 · ")
-    assert tail.endswith("crash-leaf about to die")
-    assert _run_log(crashing).endswith("── died · killed by signal 9 (SIGKILL)\n\n")
+    # The log's tail comes first, so the reason is the error's last line.
+    assert result.error == (
+        "crash-leaf about to die\nsubprocess died: killed by signal 9 (SIGKILL)"
+    )
+    # A start with no end: the attempt was killed.
+    assert [event["event"] for event in events_of(crashing)] == ["opened", "start"]
     assert child_slot._child is None
 
     follow_up = SubprocessEnvLeaf(
@@ -352,6 +347,9 @@ def test_subprocess_blocked_dependency_is_relayed(child_slot: ChildSlot) -> None
     assert isinstance(result, JobBlockedResult)
     assert [artifact.object_id for artifact in result.dependencies] == [
         dependency.object_id
+    ]
+    assert ends_of(parent) == [
+        {"outcome": "blocked", "waiting_on": [dependency.object_id]}
     ]
 
 
@@ -438,7 +436,7 @@ def test_one_worker_runs_jobs_from_two_repos_into_each_repo(tmp_path: Path) -> N
                 )
                 assert isinstance(result, JobCompletedResult)
                 # The result lands in the repo that submitted it.
-                assert leaf._base_dir.is_relative_to(repo)
+                assert run_of(leaf).is_relative_to(repo)
                 pid, value = _pid_and_value(leaf)
             cwd, repo_root = value.split("\n")
             pids_and_cwds.append((pid, cwd))
@@ -499,7 +497,7 @@ def test_batched_subprocess_execution_through_local_worker_backend() -> None:
     assert int(parsed[0][0]) != os.getpid()
 
 
-def test_job_output_lands_in_its_own_run_log_on_a_reused_child(
+def test_job_output_lands_in_its_own_log_on_a_reused_child(
     child_slot: ChildSlot,
 ) -> None:
     first, second = SubprocessChattyLeaf(marker=1), SubprocessChattyLeaf(marker=2)
@@ -508,35 +506,18 @@ def test_job_output_lands_in_its_own_run_log_on_a_reused_child(
     assert isinstance(_run(child_slot, second), JobCompletedResult)
     assert _pid_and_value(first)[0] == _pid_and_value(second)[0]
 
-    for obj, other in ((first, second), (second, first)):
-        lines = _run_log(obj).rstrip("\n").splitlines()
-        assert lines[0].startswith(f"── {obj._log_label} · attempt 1 · w0 · host ")
-        assert lines[1].startswith("   exec e1 → ")
-        assert f"print from job {obj.marker}" in lines
-        assert f"I chatty stdlib info from job {obj.marker}  [" in _run_log(obj)
-        assert f"raw fd 2 from job {obj.marker}" in lines
-        assert lines[-1].startswith("── ok · ")
-        assert f"job {other.marker}" not in _run_log(obj)
+    for obj in (first, second):
+        # Only what the job wrote, through every channel.
+        printed, logged, raw = log_of(obj).splitlines()
+        assert printed == f"print from job {obj.marker}"
+        assert f"I chatty stdlib info from job {obj.marker}  [" in logged
+        assert raw == f"raw fd 2 from job {obj.marker}"
 
 
-def test_batched_job_output_goes_to_the_first_run_log_and_others_point_at_it(
-    child_slot: ChildSlot,
-) -> None:
+def test_a_batched_job_ends_every_members_attempt(child_slot: ChildSlot) -> None:
     lead, member = SubprocessBatchLeaf(value=11), SubprocessBatchLeaf(value=12)
 
-    result = child_slot.run(
-        _job([lead, member], attempt=3), cancelled=threading.Event()
-    )
+    result = child_slot.run(_job([lead, member]), cancelled=threading.Event())
 
     assert isinstance(result, JobCompletedResult)
-    lead_lines = _run_log(lead).rstrip("\n").splitlines()
-    assert lead_lines[0].startswith(f"── {lead._log_label} · attempt 3 · w0 · ")
-    assert lead_lines[-1].startswith("── ok · ")
-    member_lines = _run_log(member).rstrip("\n").splitlines()
-    assert member_lines[0].startswith(f"── {member._log_label} · attempt 3 · w0 · ")
-    assert member_lines[1] == (
-        f"   batched with {lead._log_label} → "
-        f"{furu.logging._display_path(run_log_path_in(lead._base_dir))}"
-    )
-    assert member_lines[2] == lead_lines[-1]
-    assert len(member_lines) == 3
+    assert ends_of(lead) == ends_of(member) == [{"outcome": "ok"}]

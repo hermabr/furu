@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from runs import ends_of, log_of
 
 import furu
 from furu import Spec
@@ -11,11 +12,7 @@ from furu.config import get_config
 from furu.dag import Dag, DagNode
 from furu.execution.run_on_workers import run_on_workers
 from furu.locking import lock
-from furu.storage._layout import (
-    attempt_dir_in,
-    compute_lock_path_in,
-    run_log_path_in,
-)
+from furu.storage._layout import attempts_dir_in, lock_path_in
 from furu.testing import override_config
 from furu.worker.backends.local import LocalThreadWorkerBackend
 
@@ -70,8 +67,8 @@ class ComputedParent(Spec[str]):
 
 @contextmanager
 def mark_running(obj: Spec) -> Generator[None]:
-    obj._base_dir.mkdir(parents=True, exist_ok=True)
-    with lock([compute_lock_path_in(obj._base_dir)]):
+    attempts_dir_in(obj._class_dir).mkdir(parents=True, exist_ok=True)
+    with lock([lock_path_in(obj._class_dir, obj._run_name)]):
         yield
 
 
@@ -165,7 +162,7 @@ def test_dag_add_stops_recursion_at_completed_objects():
     leaf = Leaf(name="cached")
     mid = Mid(label="m", child=leaf)
     leaf.create()
-    assert leaf.status == "done"
+    assert leaf.done
 
     dag = _new_dag([mid])
 
@@ -182,7 +179,7 @@ def test_dag_add_completed_root_has_no_dependencies():
     leaf = Leaf(name="root-cached")
     mid = Mid(label="m", child=leaf)
     mid.create()
-    assert mid.status == "done"
+    assert mid.done
 
     dag = _new_dag([mid])
 
@@ -195,7 +192,6 @@ def test_dag_add_does_not_snapshot_running_root():
     leaf = Leaf(name="running-root")
 
     with mark_running(leaf):
-        assert leaf.status == "running"
         dag = _new_dag([leaf])
 
     assert set(dag.ready) == {leaf.object_id}
@@ -206,20 +202,17 @@ def test_dag_add_does_not_snapshot_running_dependency():
     mid = Mid(label="m", child=leaf)
 
     with mark_running(leaf):
-        assert leaf.status == "running"
         dag = _new_dag([mid])
 
     assert set(dag.ready) == {leaf.object_id}
     assert set(dag.blocked) == {mid.object_id}
 
 
-def test_dag_add_does_not_reject_inactive_compute_lock():
+def test_dag_add_does_not_reject_a_stopped_attempt():
     leaf = Leaf(name="inactive-lock")
-    attempt_dir_in(leaf._base_dir).mkdir(parents=True)
-    lock_path = compute_lock_path_in(leaf._base_dir)
-    lock_path.touch()
+    leaf._attempt_dir.mkdir(parents=True)
+    lock_path_in(leaf._class_dir, leaf._run_name).touch()
 
-    assert leaf.status == "incomplete"
     dag = _new_dag([leaf])
 
     assert set(dag.ready) == {leaf.object_id}
@@ -335,7 +328,7 @@ def test_worker_run_runs_single_zero_dependency_node(tmp_path: Path):
     run_on_workers([leaf], [LocalThreadWorkerBackend()])
 
     assert _calls(tmp_path, TrackingLeaf) == ["3"]
-    assert leaf.status == "done"
+    assert leaf.done
     assert leaf.create() == 6
 
 
@@ -372,7 +365,7 @@ def test_worker_run_with_multiple_workers_runs_independent_nodes(
 
     assert sorted(_calls(tmp_path, TrackingLeaf), key=int) == [str(i) for i in range(8)]
     for leaf in leaves:
-        assert leaf.status == "done"
+        assert leaf.done
 
 
 def test_worker_run_discovers_lazy_dependencies_and_reruns_parent(
@@ -387,9 +380,8 @@ def test_worker_run_discovers_lazy_dependencies_and_reruns_parent(
     # _DependencyNotReady), then once more after the dep completes.
     assert _calls(tmp_path, LazyChildLoader) == ["7", "7"]
     assert parent.create() == 21
-    parent_log = run_log_path_in(parent._base_dir).read_text(encoding="utf-8")
-    assert " · 1 missing dependency\n" in parent_log
-    assert "create failed" not in parent_log
+    assert [end["outcome"] for end in ends_of(parent)] == ["blocked", "ok"]
+    assert "create failed" not in log_of(parent)
 
 
 def test_worker_run_skips_already_completed_objects(tmp_path: Path):
@@ -423,5 +415,7 @@ def test_worker_run_reports_worker_failures():
             [LocalThreadWorkerBackend()],
         )
 
-    assert failing.status == "incomplete"
-    assert parent.status == "missing"
+    assert ends_of(failing) == [
+        {"outcome": "failed", "error": "RuntimeError: intentional failure: boom"}
+    ]
+    assert not parent._attempt_dir.exists()

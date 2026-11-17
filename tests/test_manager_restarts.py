@@ -16,6 +16,7 @@ from contextlib import ExitStack, contextmanager, nullcontext
 from pathlib import Path
 
 import pytest
+from runs import events_of
 
 import furu
 import furu.execution.run as run_module
@@ -23,7 +24,6 @@ import furu.execution.run_on_workers as run_on_workers_module
 from furu import Spec
 from furu.config import get_config
 from furu.execution.manager import Manager
-from furu.storage._layout import run_log_path_in
 from furu.testing import override_config
 from furu.worker.backends.local import LocalThreadWorkerBackend
 
@@ -178,9 +178,8 @@ def test_ctrl_c_cancels_running_jobs_and_sigterm_leaves_them(
             _wait_until(lambda: not manager.leases)
         finally:
             script.kill()
-    run_log = run_log_path_in(leaf._base_dir).read_text()
     if finishes:
-        assert leaf.status == "done"
-    else:  # the worker killed the job's child
-        assert "── died · killed by signal 9" in run_log
+        assert leaf.done
+    else:  # the worker killed the job's child: its attempt has no end
+        assert [event["event"] for event in events_of(leaf)] == ["opened", "start"]
     assert _starts(tmp_path) == 1

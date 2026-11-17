@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import shutil
 import time
 import traceback
@@ -14,31 +15,24 @@ from furu._tree import map_specs, specs_in
 from furu.code_trace import (
     LogState,
     Recording,
+    Trace,
     build_trace,
     recording,
     why_not_resumable,
-    why_outdated,
 )
 from furu.core import Missing, Spec
 from furu.dag import Dag
 from furu.dependencies import (
     _DependencyNotReady,
     any_under_creation,
-    dependency_recorder,
     missing_dependencies,
-    record_dependency,
+    record_loaded,
+    recording_loads,
     under_creation,
 )
 from furu.execution.launch import ask, asked, held_in
 from furu.locking import lock
-from furu.logging import (
-    _close_sections,
-    _group_label,
-    _open_sections,
-    _run_log_scope,
-    get_logger,
-)
-from furu.metadata import ArtifactSpec
+from furu.logging import _group_label, _log_scope, get_logger
 from furu.migration.schema import check_defaults, record_nested_names
 from furu.provenance import (
     ExecuteContext,
@@ -49,20 +43,23 @@ from furu.provenance import (
 )
 from furu.resources import Worker
 from furu.result.bundle import _save_result_bundle
+from furu.storage import events
 from furu.storage._layout import (
-    attempt_dir_in,
-    compute_lock_path_in,
+    FIXED,
+    attempts_dir_in,
     data_dir_in,
+    events_path_in,
+    lock_path_in,
+    log_path_in,
     provenance_path_in,
     result_dir_in,
-    run_log_path_in,
+    run_dir_in,
     scratch_dir_in,
-    spec_path_in,
     trace_log_path_in,
     trace_path_in,
 )
-from furu.storage.stored import load_stored_result, stored_version
-from furu.utils import atomic_write_text, error_summary, format_duration
+from furu.storage.stored import load_stored_result, stored_run, why_rerun
+from furu.utils import atomic_write_text, format_duration
 
 if TYPE_CHECKING:
     from _typeshed import DataclassInstance
@@ -73,51 +70,87 @@ if TYPE_CHECKING:
 type HasLock = Callable[[], bool]
 
 
-def _prepare_attempt(obj: Spec) -> LogState:
-    """Write spec.json and decide whether attempt/ from an earlier try resumes.
+def _open_attempt(obj: Spec) -> LogState:
+    """Start an attempt in obj's working folder; return what earlier ones ran.
 
-    Fixed specs always resume. A traced spec resumes only if the code its
-    earlier attempts ran (recorded in trace.log) is unchanged on disk.
+    A fixed spec continues with what an earlier attempt left there. A traced
+    one does only if the code that attempt ran (recorded in trace.log) is
+    unchanged on disk; otherwise the files it wrote are dropped.
     """
-    if not (spec_path := spec_path_in(obj._base_dir)).exists():
-        atomic_write_text(
-            spec_path, ArtifactSpec.from_furu(obj).model_dump_json(indent=2)
-        )
     metadata = obj._metadata
-    if why := why_outdated(
-        obj._base_dir, metadata.code_version, storage_root=metadata.storage
-    ):
+    attempt = obj._attempt_dir
+    if why := why_rerun(obj):
         obj.logger.info("rerunning %s: %s", obj._log_label, why)
-    attempt = attempt_dir_in(obj._base_dir)
     resumed = LogState()
-    if metadata.code_version == "traced" and attempt.exists():
+    if metadata.code_version == "traced" and events_path_in(attempt).exists():
         logged = LogState.read(trace_log_path_in(attempt))
         if why := why_not_resumable(logged, storage_root=metadata.storage):
             obj.logger.info("starting %s over: %s", obj._log_label, why)
-            shutil.rmtree(attempt)
+            shutil.rmtree(data_dir_in(attempt), ignore_errors=True)
+            shutil.rmtree(scratch_dir_in(attempt), ignore_errors=True)
+            trace_log_path_in(attempt).unlink(missing_ok=True)
         else:
             assert logged is not None
             resumed = logged
-    attempt.mkdir(exist_ok=True)
+    events.start(attempt, [obj._artifact_hash])
     return resumed
 
 
 @contextmanager
 def _recording(objs: Sequence[Spec], resumed: LogState) -> Generator[Recording]:
-    """Trace one create() call and record the dependency versions it loads."""
+    """Trace one create() call and note the code versions of what it loads."""
     metadata = objs[0]._metadata  # a batch shares its metadata
-    log_paths = [trace_log_path_in(attempt_dir_in(obj._base_dir)) for obj in objs]
     with (
         recording(
-            log_paths, code_version=metadata.code_version, resumed=resumed
+            [trace_log_path_in(obj._attempt_dir) for obj in objs],
+            code_version=metadata.code_version,
+            storage_root=metadata.storage,
+            resumed=resumed,
         ) as run,
-        dependency_recorder(metadata.storage, run.dependencies, run.log),
+        recording_loads(run.loaded),
         under_creation(objs),
     ):
         yield run
 
 
-def _publish[T](
+def _call_create[T](
+    group: list[Spec[T]], resumed: list[LogState]
+) -> tuple[list[T], list[Recording]]:
+    """Run the group's create(): one call for a batch, else one per spec."""
+    cls = type(group[0])
+    match getattr(cls, "_furu_create_hook", None):
+        case None:
+            raise TypeError(
+                f"{cls.__qualname__} cannot create missing results "
+                "because it does not define create()"
+            )
+        case _BatchedHook(func=create_hook):
+            union = LogState()
+            for state in resumed:
+                union.merge(state)
+            with _recording(group, union) as run:
+                results = create_hook(group)
+            if not isinstance(results, list):
+                raise TypeError(f"{cls.__name__}.create() must return a list")
+            if len(results) != len(group):
+                raise TypeError(
+                    f"{cls.__name__} returned {len(results)} results for "
+                    f"{len(group)} objects"
+                )
+            # One create() call built the whole batch, so every object
+            # records the code it ran and the versions it loaded.
+            return results, [run] * len(group)
+        case create_hook:
+            results = []
+            runs = []
+            for obj, state in zip(group, resumed, strict=True):
+                with _recording([obj], state) as run:
+                    results.append(create_hook(obj))
+                runs.append(run)
+            return results, runs
+
+
+def _store[T](
     obj: Spec[T],
     result: T,
     *,
@@ -125,15 +158,14 @@ def _publish[T](
     has_lock: HasLock,
     submit_provenance: SubmitProvenance,
     started_at: datetime,
-) -> None:
-    """Store the result and its trace in attempt/, then rename it to its version."""
-    attempt = attempt_dir_in(obj._base_dir)
-    lock_path = compute_lock_path_in(obj._base_dir)
+) -> Trace:
+    """Write the result into obj's working folder; return the code that made it."""
+    attempt = obj._attempt_dir
     if not has_lock():
-        raise RuntimeError(f"lost lock at {lock_path} before writing final result")
+        raise RuntimeError(f"lost the lock on {attempt} before writing the result")
 
     result_dir = result_dir_in(attempt)
-    shutil.rmtree(result_dir, ignore_errors=True)  # left by a crash mid-publish
+    shutil.rmtree(result_dir, ignore_errors=True)  # left by a crash before publishing
     _save_result_bundle(
         [result],
         result_dir,
@@ -142,23 +174,43 @@ def _publish[T](
         data_dir=data_dir_in(attempt),
         label=type(obj).__name__,
     )
-
     trace = build_trace(run, label=obj._log_label, warn=obj.logger.warning)
-    atomic_write_text(
-        trace_path_in(attempt), trace.model_dump_json(indent=2, exclude_none=True)
-    )
     provenance = Provenance.merge(
         submit_provenance, ExecuteContext.capture(started_at=started_at)
     )
     atomic_write_text(provenance_path_in(attempt), provenance.model_dump_json(indent=2))
     shutil.rmtree(scratch_dir_in(attempt), ignore_errors=True)
     trace_log_path_in(attempt).unlink(missing_ok=True)
+    return trace
 
+
+def _publish(obj: Spec, trace: Trace, *, has_lock: HasLock) -> None:
+    """Rename obj's working folder into runs/ of its code version, name unchanged.
+
+    The lock is held through the rename, so nobody else is in the folder, and
+    readers see the whole run or none of it. A run that is already there is
+    never replaced.
+    """
+    attempt = obj._attempt_dir
+    version = obj._class_dir / trace.version
+    run = run_dir_in(version, obj._run_name)
+    run.parent.mkdir(parents=True, exist_ok=True)
+    if trace.version != FIXED and not (trace_path := trace_path_in(version)).exists():
+        atomic_write_text(
+            trace_path, trace.model_dump_json(indent=2, exclude_none=True)
+        )
     if not has_lock():
-        raise RuntimeError(f"lost lock at {lock_path} before publishing")
-    version = obj._base_dir / trace.version_name()
-    obj.logger.debug("publishing %s as %s", obj._log_label, version.name)
-    attempt.rename(version)
+        raise RuntimeError(f"lost the lock on {attempt} before publishing")
+    obj.logger.debug("publishing %s under %s", obj._log_label, version.name)
+    try:
+        attempt.rename(run)
+    except OSError as exc:
+        if exc.errno not in (errno.ENOTEMPTY, errno.EEXIST):
+            raise
+        raise RuntimeError(
+            f"{obj._log_label} is already published at {run}; its working "
+            f"folder {attempt} was left as it is"
+        ) from exc
 
 
 @overload
@@ -195,11 +247,11 @@ def _ensure_group_result[T](
 ) -> None:
     missing: list[Spec[T]] = []
     for obj in objs:
-        if stored_version(obj) is not None:
+        if stored_run(obj) is not None:
             obj.logger.info("cache hit for %s", obj._log_label)
             continue
-        obj._base_dir.mkdir(parents=True, exist_ok=True)
-        class_dir = obj._base_dir.parent
+        class_dir = obj._class_dir
+        attempts_dir_in(class_dir).mkdir(parents=True, exist_ok=True)
         check_defaults(class_dir, type(obj), record=True)
         record_nested_names(class_dir, held_in(obj))
         missing.append(obj)
@@ -207,8 +259,12 @@ def _ensure_group_result[T](
     if not missing:
         return
 
-    with lock([compute_lock_path_in(obj._base_dir) for obj in missing]) as has_lock:
-        pending = [obj for obj in missing if stored_version(obj) is None]
+    with lock(
+        [lock_path_in(obj._class_dir, obj._run_name) for obj in missing]
+    ) as has_lock:
+        # Whoever held the lock before may have published the run and taken
+        # its working folder with it.
+        pending = [obj for obj in missing if stored_run(obj) is None]
         if pending:
             _create_and_store_group(
                 pending,
@@ -286,11 +342,11 @@ def load_existing(tree: object, /) -> Any:
     loaded: dict[str, Any] = {}
     missing: list[Spec] = []
     for obj in objs:
-        if (version := stored_version(obj)) is None:
+        if (run := stored_run(obj)) is None:
             missing.append(obj)
             continue
-        record_dependency(obj, version)
-        loaded[obj.object_id] = load_stored_result(obj, version)
+        record_loaded(run)
+        loaded[obj.object_id] = load_stored_result(obj, run)
     if missing:
         first = missing[0]
         raise Missing(
@@ -328,10 +384,10 @@ def _load_or_block[T](objs: list[Spec[T]], *, load: bool) -> list[T]:
     missing: list[Spec[T]] = []
 
     for obj in objs:
-        if (version := stored_version(obj)) is not None:
-            record_dependency(obj, version)
+        if (run := stored_run(obj)) is not None:
+            record_loaded(run)
             if load:
-                loaded.append(load_stored_result(obj, version))
+                loaded.append(load_stored_result(obj, run))
             cached.append(obj)
         else:
             missing.append(obj)
@@ -419,34 +475,15 @@ def _run_in_process(dag: Dag) -> None:
 def _create_in_process[T](
     group: list[Spec[T]], *, submit_provenance: SubmitProvenance
 ) -> None:
-    """Create one group in this process, announced on the terminal.
-
-    The lead's run.log gets this attempt's log records, framed by a header and
-    a footer; the other members' run.logs point at it.
-    """
+    """Create one group in this process, announced on the terminal."""
     lead = group[0]
     label = _group_label(lead._log_label, len(group))
-    run_logs = [(obj._log_label, run_log_path_in(obj._base_dir)) for obj in group]
-    for obj in group:
-        obj._base_dir.mkdir(parents=True, exist_ok=True)
-    lead.logger.info("creating %s", label, extra={"path": run_logs[0][1]})
+    lead.logger.info(
+        "creating %s", label, extra={"path": log_path_in(lead._attempt_dir)}
+    )
     started_at = time.monotonic()
-    with _run_log_scope(run_logs[0][1]) as run_log:
-        _open_sections(run_logs, run_log, "in-process")
-        try:
-            _ensure_group_result(group, submit_provenance=submit_provenance)
-        except _DependencyNotReady as exc:
-            duration = format_duration(time.monotonic() - started_at)
-            missing = missing_dependencies(len(exc.dependencies))
-            _close_sections(run_logs, run_log, f"blocked · {duration} · {missing}")
-            raise
-        except BaseException as exc:
-            duration = format_duration(time.monotonic() - started_at)
-            summary = error_summary("".join(traceback.format_exception_only(exc)))
-            _close_sections(run_logs, run_log, f"failed · {duration} · {summary}")
-            raise
-        duration = format_duration(time.monotonic() - started_at)
-        _close_sections(run_logs, run_log, f"ok · {duration}")
+    _ensure_group_result(group, submit_provenance=submit_provenance)
+    duration = format_duration(time.monotonic() - started_at)
     lead.logger.info("finished %s ok · %s", label, duration)
 
 
@@ -456,50 +493,43 @@ def _create_and_store_group[T](
     has_lock: HasLock,
     submit_provenance: SubmitProvenance,
 ) -> None:
+    """Run create() for ``group`` in its working folders, then publish them.
+
+    Each folder's events.jsonl gets this attempt's start and end. What
+    create() writes goes to the log in the lead's folder: one call, one log.
+    """
     started_at = datetime.now(UTC)
-    resumed = [_prepare_attempt(obj) for obj in group]
-    try:
-        match getattr(type(group[0]), "_furu_create_hook", None):
-            case None:
-                raise TypeError(
-                    f"{type(group[0]).__qualname__} cannot create missing results "
-                    "because it does not define create()"
+    lead = group[0]
+    attempts = [obj._attempt_dir for obj in group]
+    for attempt in attempts:
+        attempt.mkdir(exist_ok=True)
+    with _log_scope(log_path_in(attempts[0])):
+        resumed = [_open_attempt(obj) for obj in group]
+        try:
+            results, runs = _call_create(group, resumed)
+            traces = [
+                _store(
+                    obj,
+                    result,
+                    run=run,
+                    has_lock=has_lock,
+                    submit_provenance=submit_provenance,
+                    started_at=started_at,
                 )
-            case _BatchedHook(func=create_hook):
-                union = LogState()
-                for state in resumed:
-                    union.merge(state)
-                with _recording(group, union) as run:
-                    results = create_hook(group)
-                if not isinstance(results, list):
-                    raise TypeError(
-                        f"{type(group[0]).__name__}.create() must return a list"
-                    )
-                # One create() call built the whole batch, so every object
-                # records the code and dependencies the batch ran.
-                runs = [run for _ in group]
-            case create_hook:
-                results = []
-                runs = []
-                for obj, state in zip(group, resumed, strict=True):
-                    with _recording([obj], state) as run:
-                        results.append(create_hook(obj))
-                    runs.append(run)
-
-        if len(results) != len(group):
-            raise TypeError(
-                f"{type(group[0]).__name__} returned {len(results)} results for {len(group)} objects"
-            )
-
-        for obj, result, run in zip(group, results, runs, strict=True):
-            _publish(
-                obj,
-                result,
-                run=run,
-                has_lock=has_lock,
-                submit_provenance=submit_provenance,
-                started_at=started_at,
-            )
-    except Exception:
-        group[0].logger.exception("create failed for %s", group[0]._log_label)
-        raise
+                for obj, result, run in zip(group, results, runs, strict=True)
+            ]
+        except _DependencyNotReady as exc:
+            waiting_on = [dep.object_id for dep in exc.dependencies]
+            for attempt in attempts:
+                events.end(attempt, "blocked", waiting_on=waiting_on)
+            raise
+        except BaseException as exc:
+            if isinstance(exc, Exception):
+                lead.logger.exception("create failed for %s", lead._log_label)
+            error = "".join(traceback.format_exception_only(exc)).splitlines()[0]
+            for attempt in attempts:
+                events.end(attempt, "failed", error=error)
+            raise
+        for obj, trace in zip(group, traces, strict=True):
+            events.end(obj._attempt_dir, "ok")
+            _publish(obj, trace, has_lock=has_lock)

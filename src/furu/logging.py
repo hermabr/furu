@@ -2,12 +2,12 @@
 
 Three kinds of file exist:
 
-- ``<spec dir>/run.log``: everything one ``create()`` produced, one section per
-  attempt, each opened by a ``── <label> · …`` header and closed by a
-  ``── ok|failed · <duration>`` footer. In-process, ``_run_log_scope`` holds it
-  open and ``_RunLogHandler`` (on the ``furu`` and root loggers) writes the log
-  records there; ``print`` stays on your terminal. In a worker child
-  (``worker/_child.py``) fds 1 and 2 point at it for the job, so prints,
+- ``<run folder>/log``: what one run's ``create()`` wrote, every attempt after
+  the other, and nothing of Furu's own bookkeeping: that is in the
+  ``events.jsonl`` beside it. ``_log_scope`` sends output there while the
+  working folder is held. In-process, ``_RunLogHandler`` (on the ``furu`` and
+  root loggers) writes the log records there; ``print`` stays on your terminal.
+  In a worker child (``worker/_child.py``) fds 1 and 2 point at it, so prints,
   logging and C output all land there, including those of processes the job
   starts.
 - ``executions/<id>/execution.log``: a worker run's story, written by a
@@ -24,19 +24,19 @@ and worker warnings. Every line reads ``<time> <level> [rank<n>] [component]
 ``extra={"path": p}``), and file:line the call site in your code.
 
 Processes torchrun starts (``WORLD_SIZE`` > 1) tag their lines with their
-``RANK``, so ranks sharing a run.log or terminal stay apart: ``grep ' rank3 '``.
+``RANK``, so ranks sharing a log or terminal stay apart: ``grep ' rank3 '``.
 """
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import os
-import socket
 import sys
 import threading
 import traceback
-from collections.abc import Generator, Sequence
-from contextlib import contextmanager
+from collections.abc import Generator
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from datetime import UTC, datetime
 from functools import cache
@@ -46,9 +46,11 @@ from typing import TextIO
 _BASE_LOGGER_NAME = "furu"
 _FURU_PACKAGE_DIR = Path(__file__).resolve().parent
 
-# The run.log of the innermost in-process create() in this context. Like any
-# ContextVar it does not cross into threads started inside create().
+# The log of the in-process create() in this context. Like any ContextVar it
+# does not cross into threads started inside create().
 _RUN_LOG: ContextVar[TextIO | None] = ContextVar("furu_run_log", default=None)
+# In a worker child: the fd its output returns to between jobs.
+_child_stderr: int | None = None
 
 _LEVEL_LETTER = {
     logging.DEBUG: "D",
@@ -190,11 +192,11 @@ def _plain_handler[H: logging.Handler](handler: H) -> H:
     return handler
 
 
-# --- run.log -------------------------------------------------------------------
+# --- a run's log ---------------------------------------------------------------
 
 
 class _RunLogHandler(logging.Handler):
-    """Writes records to the run.log of the enclosing `_run_log_scope`, if any."""
+    """Writes records to the log of the enclosing `_log_scope`, if any."""
 
     def emit(self, record: logging.LogRecord) -> None:
         if (run_log := _RUN_LOG.get()) is None:
@@ -215,9 +217,17 @@ _open_scopes_lock = threading.Lock()
 
 
 @contextmanager
-def _run_log_scope(path: Path) -> Generator[TextIO]:
-    """Send this context's log records, Furu's and stdlib's, to ``path``."""
+def _log_scope(path: Path) -> Generator[None]:
+    """Send what a create() writes to its run's log at ``path``.
+
+    In a worker child that is everything on fds 1 and 2. Elsewhere it is this
+    context's log records, Furu's and stdlib's.
+    """
     global _open_scopes
+    if _child_stderr is not None:
+        with _output_to(path, restore_fd=_child_stderr):
+            yield
+        return
     _base_logger()
     root = logging.getLogger()
     with path.open("a", encoding="utf-8") as run_log:
@@ -226,7 +236,7 @@ def _run_log_scope(path: Path) -> Generator[TextIO]:
             _open_scopes += 1
             root.addHandler(_run_log_handler)  # a no-op when already there
         try:
-            yield run_log
+            yield
         finally:
             with _open_scopes_lock:
                 _open_scopes -= 1
@@ -235,57 +245,27 @@ def _run_log_scope(path: Path) -> Generator[TextIO]:
             _RUN_LOG.reset(token)
 
 
-def _section_header(label: str, *details: str) -> str:
-    """The first line of one attempt's section in a run.log."""
-    return " · ".join(
-        [
-            f"── {label}",
-            *details,
-            f"host {socket.gethostname()}",
-            f"pid {os.getpid()}",
-            _utc_timestamp(datetime.now(UTC)),
-        ]
-    )
+def _flush() -> None:
+    sys.stdout.flush()
+    sys.stderr.flush()
+    with suppress(OSError, AttributeError):  # C stdio buffers, where reachable
+        ctypes.CDLL(None).fflush(None)
 
 
-def _open_sections(
-    run_logs: Sequence[tuple[str, Path]],
-    lead: TextIO,
-    *details: str,
-    notes: Sequence[str] = (),
-) -> None:
-    """Start an attempt's section in each (label, run.log) of a group.
-
-    The lead's section goes to ``lead`` and receives the output; every other
-    member's run.log points at it.
-    """
-    (lead_label, lead_path), *others = run_logs
-    header = _section_header(lead_label, *details)
-    lead.write(header + "\n" + "".join(f"   {note}\n" for note in notes))
-    lead.flush()
-    for label, path in others:
-        _append(
-            path,
-            f"{_section_header(label, *details)}\n"
-            f"   batched with {lead_label} → {_display_path(lead_path)}\n",
-        )
-
-
-def _close_sections(
-    run_logs: Sequence[tuple[str, Path]], lead: TextIO, outcome: str
-) -> None:
-    """End the sections `_open_sections` started, e.g. with ``ok · 3ms``."""
-    footer = f"── {outcome}\n\n"
-    lead.write(footer)
-    lead.flush()
-    for _, path in run_logs[1:]:
-        _append(path, footer)
-
-
-def _append(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as file:
-        file.write(text)
+@contextmanager
+def _output_to(path: Path, *, restore_fd: int) -> Generator[None]:
+    """Point fds 1 and 2 at ``path`` so everything the job writes lands there."""
+    _flush()
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    os.dup2(fd, 1)
+    os.dup2(fd, 2)
+    os.close(fd)
+    try:
+        yield
+    finally:
+        _flush()
+        os.dup2(restore_fd, 1)
+        os.dup2(restore_fd, 2)
 
 
 # --- loggers -------------------------------------------------------------------
@@ -311,12 +291,15 @@ def get_logger(name: str | None = None) -> logging.Logger:
     return logging.getLogger(f"{_BASE_LOGGER_NAME}.{name}")
 
 
-def _configure_child_logging() -> None:
-    """Send every record in a worker child, once, to stderr: the job's run.log.
+def _configure_child_logging(worker_stderr: int) -> None:
+    """Send every record in a worker child, once, to stderr.
 
-    Furu owns this process, so the root logger is set to INFO and stdlib and
-    library logging is kept alongside Furu's.
+    During a create() that is the run's log, and ``worker_stderr`` (the
+    worker's own output) otherwise. Furu owns this process, so the root logger
+    is set to INFO and stdlib and library logging is kept alongside Furu's.
     """
+    global _child_stderr
+    _child_stderr = worker_stderr
     furu_logger = _base_logger()
     for handler in list(furu_logger.handlers):
         furu_logger.removeHandler(handler)

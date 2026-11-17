@@ -2,6 +2,7 @@ import importlib
 import itertools
 import json
 import os
+import shutil
 import sys
 import threading
 import uuid
@@ -12,19 +13,14 @@ from types import ModuleType
 from typing import Any
 
 import pytest
+from runs import ends_of, log_of, run_of
 
 import furu
 from furu import code_trace
-from furu.code_trace import StaleCodeError
+from furu.code_trace import StaleCodeError, why_outdated
 from furu.config import _Config, get_config
 from furu.spec_metadata import Metadata
-from furu.storage._layout import (
-    attempt_dir_in,
-    run_log_path_in,
-    scratch_dir_in,
-    trace_path_in,
-)
-from furu.storage.stored import stored_version
+from furu.storage._layout import run_dir_in, scratch_dir_in, trace_path_in
 from furu.testing import override_config
 from furu.worker.execute import ChildSlot
 from furu.worker.messages import JobCompletedResult, JobFailedResult
@@ -33,6 +29,11 @@ from furu.worker.messages import JobCompletedResult, JobFailedResult
 # imported before tracing started matches the file on disk, and every rewrite
 # invalidates bytecode and parse caches.
 _MTIMES = itertools.count(1_000_000_000)
+
+
+def _fresh_process() -> None:
+    """Forget which code versions this process found live: it decides once."""
+    code_trace._CHECKED.clear()
 
 
 @dataclass
@@ -45,6 +46,7 @@ class Repo:
         path.write_text(text.replace("PKG", self.package), encoding="utf-8")
         mtime = next(_MTIMES) * 1_000_000_000
         os.utime(path, ns=(mtime, mtime))
+        _fresh_process()
 
     def read(self, name: str) -> str:
         text = (self.root / self.package / name).read_text(encoding="utf-8")
@@ -145,20 +147,21 @@ def plots(repo: Repo) -> ModuleType:
     return repo.load("plots")
 
 
+def _version_dir(spec: furu.Spec) -> Path:
+    return run_of(spec).parent.parent
+
+
 def _version(spec: furu.Spec) -> str:
-    version = stored_version(spec)
-    assert version is not None, f"{spec._log_label} has no valid version"
-    return version.name
+    return _version_dir(spec).name
+
+
+def _built_on_name(spec: furu.Spec) -> str:
+    """How a trace names the code version that holds spec's result."""
+    return f"{spec._stored_name}/{spec._class_part}/{_version(spec)}"
 
 
 def _trace(spec: furu.Spec) -> dict[str, Any]:
-    version = stored_version(spec)
-    assert version is not None
-    return json.loads(trace_path_in(version).read_text())
-
-
-def _run_log(spec: furu.Spec) -> str:
-    return run_log_path_in(spec._base_dir).read_text(encoding="utf-8")
+    return json.loads(trace_path_in(_version_dir(spec)).read_text())
 
 
 def test_traced_result_is_published_under_its_code_hash(
@@ -168,18 +171,17 @@ def test_traced_result_is_published_under_its_code_hash(
 
     assert plot.create() == "loss:[12, 4, 99, 1]"
 
-    assert _version(plot).startswith("v-")
-    assert not _version(plot).startswith("v-fixed")
-    assert not attempt_dir_in(plot._base_dir).exists()
-    assert {p.name for p in plot._base_dir.iterdir()} - {"compute.lock"} == {
-        "spec.json",
-        "run.log",
-        _version(plot),
-    }
-    assert sorted(p.name for p in (plot._base_dir / _version(plot)).iterdir()) == [
+    assert _version(plot) != "fixed"
+    assert not plot._attempt_dir.exists()
+    assert sorted(p.name for p in _version_dir(plot).iterdir()) == [
+        "runs",
+        "trace.json",
+    ]
+    assert sorted(p.name for p in run_of(plot).iterdir()) == [
+        "events.jsonl",
+        "log",
         "provenance.json",
         "result",
-        "trace.json",
     ]
     code = _trace(plot)["code"]
     package = repo.package
@@ -200,7 +202,7 @@ def test_traced_result_is_published_under_its_code_hash(
         "uses": ["CONST", "OTHER", "math"],
         "fingerprint": code[f"{package}/common.py"]["fingerprint"],
     }
-    assert _trace(plot)["dependencies"] == {}
+    assert _trace(plot)["built_on"] == []
 
 
 @pytest.mark.parametrize(
@@ -289,7 +291,6 @@ def test_edits_outside_what_ran_keep_the_version(
 
     repo.edit(file, old, new)
 
-    assert plot.status == "done"
     assert _version(plot) == before
 
 
@@ -335,12 +336,12 @@ def test_edits_to_what_ran_rerun(
 
     repo.edit(file, old, new)
 
-    assert plot.status == "missing"
+    assert not plot.done
     plot = repo.load("plots").LossPlot(name="a")
-    assert plot.status == "missing"
     assert plot.create() != before_result
     assert _version(plot) != before
-    assert (plot._base_dir / before).is_dir()  # the old version is kept
+    # The old version is kept.
+    assert run_dir_in(plot._class_dir / before, plot._run_name).is_dir()
 
 
 def test_rerun_names_the_changed_file(repo: Repo, plots: ModuleType) -> None:
@@ -350,7 +351,7 @@ def test_rerun_names_the_changed_file(repo: Repo, plots: ModuleType) -> None:
 
     plot.create()
 
-    assert f"rerunning {plot._log_label}: {repo.package}/common.py changed" in _run_log(
+    assert f"rerunning {plot._log_label}: {repo.package}/common.py changed" in log_of(
         plot
     )
 
@@ -369,7 +370,6 @@ def test_revert_makes_the_old_version_valid_again(
 
     repo.edit("plots.py", "SCALE = BASE * 3", "SCALE = BASE * 2")
 
-    assert edited.status == "done"
     assert _version(edited) == original
 
 
@@ -398,6 +398,20 @@ class FixedParent(furu.Spec[int]):
 
     def create(self) -> int:
         return Child(n=self.n).create() * 10
+
+
+class Loader(furu.Spec[int]):
+    n: int
+    through_spec: bool
+
+    def metadata(self) -> furu.Metadata:
+        return furu.Metadata(code_version="traced")
+
+    def create(self) -> int:
+        child = Child(n=self.n)
+        if self.through_spec:
+            return child.load_existing()
+        return furu.load_existing([child])[0]
 """
 
 CHILD = """\
@@ -426,7 +440,7 @@ def dependencies(repo: Repo) -> ModuleType:
     return repo.load("parents")
 
 
-def test_a_restarted_parent_records_the_child_as_a_dependency_version(
+def test_a_restarted_parent_names_the_code_version_of_the_child_it_loaded(
     repo: Repo, dependencies: ModuleType
 ) -> None:
     parent = dependencies.TracedParent(n=1)
@@ -434,14 +448,11 @@ def test_a_restarted_parent_records_the_child_as_a_dependency_version(
     assert parent.create() == 102
 
     # The missing child blocked the parent's first attempt; the rerun loaded it.
-    assert " · 1 missing dependency\n" in _run_log(parent)
-    assert not attempt_dir_in(parent._base_dir).exists()
+    assert [end["outcome"] for end in ends_of(parent)] == ["blocked", "ok"]
+    assert not parent._attempt_dir.exists()
     child = dependencies.Child(n=1)
     trace = _trace(parent)
-    assert trace["dependencies"] == {
-        child.object_id: f"{child._stored_name}/{child._class_part}"
-        f"/{child._artifact_hash}/{_version(child)}"
-    }
+    assert trace["built_on"] == [_built_on_name(child)]
     # The child's create ran under its own trace; the parent only looked up
     # where the child is stored.
     assert trace["code"][f"{repo.package}/child.py"]["ran"] == ["Child.metadata"]
@@ -462,23 +473,22 @@ def test_a_traced_dependency_change_reruns_traced_and_fixed_consumers(
     assert (traced.create(), fixed.create()) == (102, 20)
     fixed_before = _version(fixed)
     traced_before = _version(traced)
-    assert fixed_before.startswith("v-fixed-")
+    assert fixed_before != "fixed"
     assert _trace(fixed) == {
         "code_version": "fixed",
-        "dependencies": _trace(traced)["dependencies"],
+        "built_on": [_built_on_name(dependencies.Child(n=1))],
     }
 
     repo.edit("child.py", "return n + 1", "return n + 2")
 
-    assert dependencies.Child(n=1).status == "missing"
-    assert traced.status == "missing"
-    assert fixed.status == "missing"
+    assert not dependencies.Child(n=1).done
+    assert not traced.done
+    assert not fixed.done
 
     module = repo.load("parents")
     traced, fixed = module.TracedParent(n=1), module.FixedParent(n=1)
     assert (traced.create(), fixed.create()) == (103, 30)
-    assert _version(fixed).startswith("v-fixed-")
-    assert _version(fixed) != fixed_before
+    assert _version(fixed) not in ("fixed", fixed_before)
     assert _version(traced) != traced_before
 
     repo.edit("child.py", "return n + 2", "return n + 1")
@@ -495,8 +505,137 @@ def test_a_fixed_spec_ignores_its_own_code(
 
     repo.edit("parents.py", "* 10", "* 11")
 
-    assert fixed.status == "done"
     assert _version(fixed) == before
+
+
+@pytest.mark.parametrize("through_spec", [True, False])
+def test_a_result_loaded_with_load_existing_is_built_on_too(
+    dependencies: ModuleType, through_spec: bool
+) -> None:
+    child = dependencies.Child(n=1)
+    child.create()
+    loader = dependencies.Loader(n=1, through_spec=through_spec)
+
+    assert loader.create() == 2
+
+    assert _trace(loader)["built_on"] == [_built_on_name(child)]
+
+
+def test_delete_removes_runs_under_every_version_and_keeps_what_was_built_on_them(
+    repo: Repo, dependencies: ModuleType
+) -> None:
+    parent, child = dependencies.TracedParent(n=1), dependencies.Child(n=1)
+    parent.create()
+    built_on = _version_dir(child)
+    repo.edit("child.py", "return n + 1", "return n + 2")
+    repo.load("child").Child(n=1).create()
+    other = _version_dir(child)
+    repo.edit("child.py", "return n + 2", "return n + 1")
+    assert other != built_on
+
+    assert child.delete(mode="force")
+    _fresh_process()
+
+    for version in (built_on, other):
+        assert sorted(path.name for path in version.iterdir()) == [
+            "runs",
+            "trace.json",
+        ]
+        assert list((version / "runs").iterdir()) == []
+    assert not child.done
+    assert parent.done
+
+    # Without its trace.json the version cannot be checked.
+    shutil.rmtree(built_on)
+    _fresh_process()
+
+    assert not parent.done
+
+
+CHAIN = """\
+import furu
+
+
+def load():
+    return 1
+
+
+class Audio(furu.Spec[int]):
+    def metadata(self) -> furu.Metadata:
+        return furu.Metadata(code_version="traced")
+
+    def create(self) -> int:
+        return load()
+
+
+class Train(furu.Spec[int]):
+    def metadata(self) -> furu.Metadata:
+        return furu.Metadata(code_version="traced")
+
+    def create(self) -> int:
+        return Audio().create() + 10
+
+
+class Plot(furu.Spec[int]):
+    def metadata(self) -> furu.Metadata:
+        return furu.Metadata(code_version="traced")
+
+    def create(self) -> int:
+        return Train().create() + 100
+"""
+
+
+def test_an_upstream_edit_reaches_what_was_built_on_it_one_name_at_a_time(
+    repo: Repo,
+) -> None:
+    repo.write("audio.py", CHAIN.partition("class Train")[0])
+    repo.write(
+        "train.py",
+        "import furu\n\nfrom PKG.audio import Audio\n\n\nclass Train"
+        + CHAIN.partition("class Train")[2].partition("class Plot")[0],
+    )
+    repo.write(
+        "plot.py",
+        "import furu\n\nfrom PKG.train import Train\n\n\nclass Plot"
+        + CHAIN.partition("class Plot")[2],
+    )
+    plot = repo.load("plot").Plot()
+    assert plot.create() == 111
+    audio, train = repo.load("audio").Audio(), repo.load("train").Train()
+    # A trace names the version it loaded from, not what that was built on.
+    assert _trace(train)["built_on"] == [_built_on_name(audio)]
+    assert _trace(plot)["built_on"] == [_built_on_name(train)]
+    versions = [_version_dir(spec) for spec in (audio, train, plot)]
+    names = [_built_on_name(spec) for spec in (audio, train)]
+
+    repo.edit("audio.py", "return 1", "return 2")
+
+    assert [why_outdated(version) for version in versions] == [
+        f"{repo.package}/audio.py changed",
+        f"it was built on {names[0]}, which is outdated",
+        f"it was built on {names[1]}, which is outdated",
+    ]
+    assert not plot.done
+
+
+def test_many_live_code_versions_warn_once(
+    plots: ModuleType, caplog: pytest.LogCaptureFixture
+) -> None:
+    plot = plots.LossPlot(name="a")
+    plot.create()
+    for index in range(code_trace._MANY_LIVE_VERSIONS):
+        copy = plot._class_dir / f"{index:020x}"
+        copy.mkdir()
+        shutil.copy(trace_path_in(_version_dir(plot)), trace_path_in(copy))
+
+    with caplog.at_level("WARNING", logger="furu"):
+        assert plot.done
+        assert plots.LossPlot(name="b").done is False
+
+    (record,) = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert record.getMessage().startswith(
+        f"{plot._class_dir} has 101 live code versions"
+    )
 
 
 def test_parent_code_edit_reruns_only_the_parent(
@@ -508,8 +647,8 @@ def test_parent_code_edit_reruns_only_the_parent(
     repo.edit("parents.py", "return 100", "return 200")
 
     module = repo.load("parents")
-    assert module.Child(n=1).status == "done"
-    assert module.TracedParent(n=1).status == "missing"
+    assert module.Child(n=1).done
+    assert not module.TracedParent(n=1).done
     assert module.TracedParent(n=1).create() == 202
     assert _version(module.Child(n=1)) == child_before
 
@@ -569,7 +708,7 @@ def test_changing_what_a_dependency_returns_reruns(
     repo.edit("parents.py", "Child(n=self.n)", "Child(n=self.n + 5)")
 
     parent = getattr(repo.load("parents"), parent_class)(n=1)
-    assert parent.status == "missing"
+    assert not parent.done
     assert parent.create() == 70
 
 
@@ -584,7 +723,6 @@ def test_a_dependency_refactor_returning_the_same_spec_keeps_the_result(
     repo.edit("parents.py", "Child(n=self.n)", "Child(n=self.n * 1)")
 
     parent = getattr(repo.load("parents"), parent_class)(n=1)
-    assert parent.status == "done"
     assert _version(parent) == before
 
 
@@ -597,19 +735,19 @@ def test_a_spec_held_in_a_field_reruns_when_its_dependency_changes(
 
     module = repo.load("parents")
     holder = module.Holder(parent=module.FixedParent(n=1))
-    assert holder.status == "missing"
+    assert not holder.done
     assert holder.create() == 71
 
 
-def test_a_fixed_spec_without_traced_dependencies_lands_in_v_fixed(
+def test_a_fixed_spec_built_on_nothing_traced_lands_in_fixed(
     repo: Repo, plots: ModuleType
 ) -> None:
     sibling = plots.Sibling()
 
     assert sibling.create() == "train"
 
-    assert _version(sibling) == "v-fixed"
-    assert _trace(sibling) == {"code_version": "fixed", "dependencies": {}}
+    assert _version(sibling) == "fixed"
+    assert not trace_path_in(_version_dir(sibling)).exists()
 
 
 DYNAMIC = """\
@@ -663,12 +801,12 @@ def test_dynamic_lookup_keeps_every_name_and_warns_once(repo: Repo) -> None:
         f"by_name ({repo.package}/dynamic.py:12) uses globals(), so every "
         f"module-level name in {repo.package}/dynamic.py counts toward its cache key"
     )
-    assert warning in _run_log(first)
-    assert warning not in _run_log(second)  # once per function per process
+    assert warning in log_of(first)
+    assert warning not in log_of(second)  # once per function per process
 
     repo.edit("dynamic.py", "UNUSED = 1", "UNUSED = 2")
 
-    assert first.status == "missing"
+    assert not first.done
 
 
 def test_literal_getattr_is_not_a_dynamic_lookup(repo: Repo) -> None:
@@ -679,9 +817,9 @@ def test_literal_getattr_is_not_a_dynamic_lookup(repo: Repo) -> None:
 
     entry = _trace(spec)["code"][f"{repo.package}/dynamic.py"]
     assert entry["uses"] == ["Config", "furu"]
-    assert "computed name" not in _run_log(spec)
+    assert "computed name" not in log_of(spec)
     repo.edit("dynamic.py", "UNUSED = 1", "UNUSED = 2")
-    assert spec.status == "done"
+    assert spec.done
 
 
 UNTRACED = """\
@@ -736,12 +874,12 @@ def test_reading_a_repo_file_warns_and_keeps_the_result(
         f"create() read {package}/a.csv, {package}/b.csv, {package}/c.csv "
         "and 3 more, which furu does not trace"
     )
-    assert warning in _run_log(spec)
-    assert "out.txt" not in _run_log(spec)
+    assert warning in log_of(spec)
+    assert "out.txt" not in log_of(spec)
     assert f"{repo.package}/config.yaml" not in _trace(spec)["code"]
 
     repo.edit("config.yaml", "lr: 1", "lr: 2")
-    assert spec.status == "done"
+    assert spec.done
 
 
 def test_reading_the_environment_warns(repo: Repo) -> None:
@@ -752,7 +890,7 @@ def test_reading_the_environment_warns(repo: Repo) -> None:
     assert (
         f"ReadsEnv.create ({repo.package}/untraced.py:25) reads os.environ, "
         "which furu does not trace"
-    ) in _run_log(spec)
+    ) in log_of(spec)
 
 
 def test_star_import_uses_every_name_in_the_module(repo: Repo) -> None:
@@ -771,7 +909,7 @@ def test_star_import_uses_every_name_in_the_module(repo: Repo) -> None:
 
     assert _trace(spec)["code"][f"{repo.package}/consts.py"]["uses"] == "all"
     repo.edit("consts.py", "B = 2", "B = 3")
-    assert spec.status == "missing"
+    assert not spec.done
 
 
 SCALED = """\
@@ -892,7 +1030,7 @@ def test_edits_to_code_run_at_import_rerun(
 
     repo.edit(file, old, new)
 
-    assert spec.status == "missing"
+    assert not spec.done
     assert repo.load("scaled").Scaled().create() != before
 
 
@@ -921,7 +1059,6 @@ def test_edits_to_code_not_run_at_import_keep_the_version(
 
     repo.edit(file, old, new)
 
-    assert spec.status == "done"
     assert _version(spec) == before
 
 
@@ -964,8 +1101,8 @@ def test_preempted_traced_spec_resumes_when_its_code_is_unchanged(
     monkeypatch.setenv("FURU_TEST_PREEMPT", "1")
     with pytest.raises(RuntimeError, match="preempted"):
         spec.create()
-    assert spec.status == "incomplete"
-    log = (attempt_dir_in(spec._base_dir) / "trace.log").read_text()
+    assert not spec.done
+    log = (spec._attempt_dir / "trace.log").read_text()
     assert '"ran", "' + f"{repo.package}/resumable.py" + '", "step_one"]' in log
 
     # Unrelated edits don't count: the code that ran is unchanged.
@@ -981,7 +1118,7 @@ def test_preempted_traced_spec_resumes_when_its_code_is_unchanged(
         "step_one",
         "step_two",
     ]
-    assert not attempt_dir_in(spec._base_dir).exists()
+    assert not spec._attempt_dir.exists()
 
 
 def test_preempted_traced_spec_starts_over_when_code_it_ran_changed(
@@ -1010,13 +1147,13 @@ def test_fixed_retry_resumes_without_a_check(
     monkeypatch.setenv("FURU_TEST_PREEMPT", "1")
     with pytest.raises(RuntimeError, match="preempted"):
         spec.create()
-    assert scratch_dir_in(attempt_dir_in(spec._base_dir)).is_dir()
+    assert scratch_dir_in(spec._attempt_dir).is_dir()
 
     repo.edit("resumable.py", "return 1", "return 10")
     spec = repo.load("resumable").Resumable(name="a")
 
     assert spec.create() == "resumed=True total=3"
-    assert _version(spec) == "v-fixed"
+    assert _version(spec) == "fixed"
 
 
 def test_code_edited_after_import_is_not_published(
@@ -1030,8 +1167,7 @@ def test_code_edited_after_import_is_not_published(
     with pytest.raises(StaleCodeError, match="common.py changed after this process"):
         plot.create()
 
-    assert plot.status == "incomplete"
-    assert stored_version(plot) is None
+    assert not plot.done
     # A fresh process imports the edited file and starts over, since the code
     # the failed attempt ran is not what is on disk.
     repo.edit("common.py", "CONST = 4", "CONST = 4")
@@ -1039,7 +1175,7 @@ def test_code_edited_after_import_is_not_published(
     assert plot.create() == "loss:[16, 4, 99, 1]"
     assert (
         f"starting {plot._log_label} over: {repo.package}/common.py changed"
-        in _run_log(plot)
+        in log_of(plot)
     )
 
 
@@ -1053,7 +1189,7 @@ def test_touching_code_after_import_keeps_the_result(
 
     plot = plots.LossPlot(name="b")
     assert plot.create() == "loss:[12, 4, 99, 1]"
-    assert plot.status == "done"
+    assert plot.done
 
 
 def test_a_python_upgrade_reruns_and_says_so(
@@ -1065,12 +1201,13 @@ def test_a_python_upgrade_reruns_and_says_so(
     assert _trace(plot)["python"] == code_trace._PYTHON
 
     monkeypatch.setattr(code_trace, "_PYTHON", "3.99")
-    assert plot.status == "missing"
+    _fresh_process()
+    assert not plot.done
     plot.create()
 
     assert _version(plot) != before
-    assert f"rerunning {plot._log_label}: Python " in _run_log(plot)
-    assert "→ 3.99" in _run_log(plot)
+    assert f"rerunning {plot._log_label}: Python " in log_of(plot)
+    assert "→ 3.99" in log_of(plot)
 
 
 THREADED = """\
@@ -1104,7 +1241,7 @@ def test_code_run_by_a_thread_inside_create_is_traced(repo: Repo) -> None:
 
     assert "in_thread" in _trace(spec)["code"][f"{repo.package}/threaded.py"]["ran"]
     repo.edit("threaded.py", "out.append(1)", "out.append(2)")
-    assert spec.status == "missing"
+    assert not spec.done
     assert repo.load("threaded").Threaded().create() == 2
 
 
@@ -1151,7 +1288,7 @@ def test_worker_child_publishes_the_version_the_submitter_checks(
     before = _version(plot)
     assert plot.load_existing() == "loss:[12, 4, 99, 1]"
     repo.edit("common.py", "CONST = 3", "CONST = 4")
-    assert plot.status == "missing"
+    assert not plot.done
 
     furu.build([plot], on=[LocalThreadWorkerBackend()])
 

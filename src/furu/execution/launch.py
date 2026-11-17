@@ -143,7 +143,7 @@ def ask(missing: Sequence[Spec], *, found: bool = False) -> frozenset[str]:
     class_dirs: dict[Path, type[Spec]] = {}
     holds: dict[Path, dict[type, tuple[str, ...]]] = {}
     for obj in missing:
-        class_dir = obj._base_dir.parent
+        class_dir = obj._class_dir
         class_dirs.setdefault(class_dir, type(obj))
         for nested, at in held_in(obj).items():
             holds.setdefault(class_dir, {}).setdefault(nested, at)
