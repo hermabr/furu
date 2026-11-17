@@ -1,5 +1,4 @@
-from collections.abc import Generator, Sequence
-from contextlib import contextmanager
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -9,7 +8,8 @@ from runs import ends_of, log_of
 import furu
 from furu import Spec
 from furu.config import get_config
-from furu.dag import Dag, DagNode
+from furu.dag import Dag
+from furu.execution.launch import missing
 from furu.execution.run_on_workers import run_on_workers
 from furu.locking import lock
 from furu.storage._layout import attempts_dir_in, lock_path_in
@@ -65,207 +65,107 @@ class ComputedParent(Spec[str]):
         return self.computed_child.create()
 
 
-@contextmanager
-def mark_running(obj: Spec) -> Generator[None]:
-    attempts_dir_in(obj._class_dir).mkdir(parents=True, exist_ok=True)
-    with lock(lock_path_in(obj._class_dir, obj._artifact_hash)):
-        yield
+def _ids(objs: Sequence[Spec]) -> set[str]:
+    return {obj.object_id for obj in objs}
 
 
-def _new_dag(objs: Sequence[Spec]) -> Dag:
+# --- the graph, by id ----------------------------------------------------------
+
+
+def test_a_spec_is_ready_once_the_specs_it_holds_are_finished() -> None:
     dag = Dag()
-    dag.add(objs, Path("launch.plan"))
-    return dag
+    dag.add({"top": ["left", "right", "stored"], "left": ["leaf"], "right": ["leaf"]})
+    # "leaf" and "stored" are not among the keys: they are finished.
+    assert list(dag.ready) == ["left", "right"]
+
+    del dag.ready["left"], dag.ready["right"]
+    dag.complete("left")
+    assert not dag.ready and dag.waiting_for(["right"]) == ["top"]
+    dag.complete("right")
+    assert list(dag.ready) == ["top"]
 
 
-def test_dag_add_single_object_no_dependencies():
-    leaf = Leaf(name="x")
-    dag = _new_dag([leaf])
+def test_a_value_that_holds_specs_has_nothing_to_run_and_ends_with_them() -> None:
+    dag = Dag()
+    dag.add(
+        {"a": ["shared"], "b": ["shared"], "shared": ["x", "y"], "x": [], "y": []},
+        values={"shared"},
+    )
+    assert list(dag.ready) == ["x", "y"]
 
-    assert len(dag.ready) == 1
-    (root,) = dag.ready.values()
-    assert isinstance(root, DagNode)
-    assert root.obj is leaf
-    assert root.dependencies == []
-    assert root.dependents == []
-
-    assert dag.nodes_by_id == {leaf.object_id: root}
-    assert dag.blocked == {}
-
-
-def test_dag_add_traverses_declared_refs_recursively():
-    leaf_a = Leaf(name="a")
-    leaf_b = Leaf(name="b")
-    mid_left = Mid(label="L", child=leaf_a)
-    mid_right = Mid(label="R", child=leaf_b)
-    top = Top(name="t", left=mid_left, right=mid_right)
-
-    dag = _new_dag([top])
-
-    assert set(dag.ready) == {leaf_a.object_id, leaf_b.object_id}
-    assert set(dag.blocked) == {
-        mid_left.object_id,
-        mid_right.object_id,
-        top.object_id,
-    }
-
-    assert set(dag.nodes_by_id) == {
-        leaf_a.object_id,
-        leaf_b.object_id,
-        mid_left.object_id,
-        mid_right.object_id,
-        top.object_id,
-    }
-
-    leaf_a_node = dag.nodes_by_id[leaf_a.object_id]
-    mid_left_node = dag.nodes_by_id[mid_left.object_id]
-    top_node = dag.nodes_by_id[top.object_id]
-
-    assert leaf_a_node.dependencies == []
-    assert leaf_a_node.dependents == [mid_left_node]
-    assert mid_left_node.dependencies == [leaf_a_node]
-    assert mid_left_node.dependents == [top_node]
-    assert {dep.obj.object_id for dep in top_node.dependencies} == {
-        mid_left.object_id,
-        mid_right.object_id,
-    }
-    assert top_node.dependents == []
+    dag.complete("x")
+    assert dag.waits("a") and dag.waiting_for(["y"]) == ["a", "b"]
+    dag.complete("y")
+    assert list(dag.ready) == ["a", "b"] and "shared" not in dag.nodes
 
 
-def test_dag_add_shared_dependency_has_multiple_dependents():
-    shared = Leaf(name="shared")
-    mid_left = Mid(label="L", child=shared)
-    mid_right = Mid(label="R", child=shared)
-    top = Top(name="t", left=mid_left, right=mid_right)
+def test_a_blocked_spec_waits_for_what_it_found_missing() -> None:
+    parent, found = "pkg.Parent:c:1", "pkg.Found:c:2"
+    dag = Dag()
+    dag.add({parent: []})
+    del dag.ready[parent]
+    dag.add({found: []})
 
-    dag = _new_dag([top])
-
-    assert len(dag.ready) == 1
-    (shared_root,) = dag.ready.values()
-    assert shared_root.obj is shared
-    assert shared_root.dependencies == []
-    assert {n.obj.object_id for n in shared_root.dependents} == {
-        mid_left.object_id,
-        mid_right.object_id,
-    }
-
-    assert set(dag.nodes_by_id) == {
-        shared.object_id,
-        mid_left.object_id,
-        mid_right.object_id,
-        top.object_id,
-    }
-    assert dag.nodes_by_id[shared.object_id] is shared_root
+    dag.block(parent, [found, "pkg.Stored:c:3"])
+    assert list(dag.ready) == [found]
+    del dag.ready[found]
+    with pytest.raises(RuntimeError) as cycle:
+        dag.block(found, [parent])
+    assert str(cycle.value) == "dependency cycle: Parent:c:1 → Found:c:2 → Parent:c:1"
+    dag.complete(found)
+    assert list(dag.ready) == [parent]
 
 
-def test_dag_add_stops_recursion_at_completed_objects():
+# --- what a launch finds missing -----------------------------------------------
+
+
+def test_missing_walks_down_through_fields_to_what_is_not_stored() -> None:
+    leaf_a, leaf_b = Leaf(name="a"), Leaf(name="b")
+    left, right = Mid(label="L", child=leaf_a), Mid(label="R", child=leaf_a)
+    top = Top(name="t", left=left, right=right)
+    dag = Dag()
+
+    assert _ids(missing([top, leaf_b], dag)) == _ids([top, left, right, leaf_a, leaf_b])
+    assert set(dag.ready) == _ids([leaf_a, leaf_b])
+    # The shared leaf is one node that both wait for.
+    assert set(dag.waiting_for([leaf_a.object_id])) == _ids([left, right, top])
+
+
+def test_missing_stops_at_a_stored_spec() -> None:
     leaf = Leaf(name="cached")
     mid = Mid(label="m", child=leaf)
     leaf.create()
-    assert leaf.done
+    dag = Dag()
 
-    dag = _new_dag([mid])
+    assert missing([mid], dag) == [mid]
+    assert list(dag.ready) == [mid.object_id]
 
-    assert len(dag.ready) == 1
-    (mid_root,) = dag.ready.values()
-    assert mid_root.obj is mid
-    assert mid_root.dependencies == []
-
-    assert set(dag.nodes_by_id) == {mid.object_id}
-    assert mid_root.dependents == []
-
-
-def test_dag_add_completed_root_has_no_dependencies():
-    leaf = Leaf(name="root-cached")
-    mid = Mid(label="m", child=leaf)
     mid.create()
-    assert mid.done
-
-    dag = _new_dag([mid])
-
-    assert dag.ready == {}
-    assert dag.nodes_by_id == {}
-    assert dag.blocked == {}
+    assert missing([Top(name="t", left=mid, right=mid), mid], Dag())[1:] == []
 
 
-def test_dag_add_does_not_snapshot_running_root():
-    leaf = Leaf(name="running-root")
+def test_missing_reaches_specs_in_dataclasses_and_ones_a_dependency_method_returns() -> (
+    None
+):
+    nested = NestedParent(bundle=LeafBundle(a=Leaf(name="a"), b=Leaf(name="b")))
+    computed = ComputedParent(name="p")
 
-    with mark_running(leaf):
-        dag = _new_dag([leaf])
-
-    assert set(dag.ready) == {leaf.object_id}
-
-
-def test_dag_add_does_not_snapshot_running_dependency():
-    leaf = Leaf(name="running-dependency")
-    mid = Mid(label="m", child=leaf)
-
-    with mark_running(leaf):
-        dag = _new_dag([mid])
-
-    assert set(dag.ready) == {leaf.object_id}
-    assert set(dag.blocked) == {mid.object_id}
+    assert _ids(missing([nested, computed], Dag())) == _ids(
+        [nested, nested.bundle.a, nested.bundle.b, computed, computed.computed_child]
+    )
 
 
-def test_dag_add_does_not_reject_a_stopped_attempt():
-    leaf = Leaf(name="inactive-lock")
-    leaf._attempt_dir.mkdir(parents=True)
-    lock_path_in(leaf._class_dir, leaf._artifact_hash).touch()
-
-    dag = _new_dag([leaf])
-
-    assert set(dag.ready) == {leaf.object_id}
-
-
-def test_dag_add_accepts_a_list_of_inputs():
-    leaf_a = Leaf(name="a")
-    leaf_b = Leaf(name="b")
-    mid = Mid(label="m", child=leaf_a)
-
-    dag = _new_dag([mid, leaf_b])
-
-    assert set(dag.ready) == {leaf_a.object_id, leaf_b.object_id}
-
-    assert set(dag.nodes_by_id) == {
-        leaf_a.object_id,
-        leaf_b.object_id,
-        mid.object_id,
-    }
-
-    leaf_b_node = dag.nodes_by_id[leaf_b.object_id]
-    assert leaf_b_node.dependents == []
-
-
-def test_dag_add_handles_nested_dataclass_refs():
-    leaf_a = Leaf(name="a")
-    leaf_b = Leaf(name="b")
-    parent = NestedParent(bundle=LeafBundle(a=leaf_a, b=leaf_b))
-
-    dag = _new_dag([parent])
-
-    assert set(dag.ready) == {leaf_a.object_id, leaf_b.object_id}
-
-    assert set(dag.nodes_by_id) == {
-        leaf_a.object_id,
-        leaf_b.object_id,
-        parent.object_id,
-    }
-
-
-def test_dag_add_walks_computed_dependencies():
-    parent = ComputedParent(name="p")
-
-    dag = _new_dag([parent])
-
-    assert len(dag.ready) == 1
-    (child_root,) = dag.ready.values()
-    assert child_root.obj.object_id == parent.computed_child.object_id
-    assert {n.obj.object_id for n in child_root.dependents} == {parent.object_id}
-    assert set(dag.nodes_by_id) == {
-        parent.object_id,
-        parent.computed_child.object_id,
-    }
+@pytest.mark.parametrize("held", [True, False])
+def test_a_spec_whose_attempt_runs_or_stopped_is_missing(held: bool) -> None:
+    leaf = Leaf(name=f"attempt-{held}")
+    attempts_dir_in(leaf._class_dir).mkdir(parents=True)
+    path = lock_path_in(leaf._class_dir, leaf._artifact_hash)
+    if held:
+        with lock(path):
+            assert missing([leaf], Dag()) == [leaf]
+    else:
+        path.touch()
+        assert missing([leaf], Dag()) == [leaf]
 
 
 def _record_call(calls_dir: str, cls: type, value: object) -> None:

@@ -91,10 +91,13 @@ def launch(
     asked: Sequence[Spec],
     running: Sequence[Spec],
     facts: SubmitProvenance,
-) -> None:
-    """Save a launch's plan and the file its workers share, before anything runs."""
+) -> list[str]:
+    """Save a launch's plan and the file its workers share, before anything runs.
+
+    Returns the plan's lines as written.
+    """
     shared: list[Line] = []
-    plan.write(plan_path, asked, _described(running, shared), facts)
+    lines = plan.write(plan_path, asked, _described(running, shared), facts)
     header: Line = {"launch": plan_path.stem, **facts.model_dump(mode="json")}
     if ignore := os.environ.get(IGNORE_STORED):
         header["ignore_stored"] = ignore
@@ -103,6 +106,7 @@ def launch(
     file = plan.File(folder / f"launch-{plan_path.stem}")
     file.add([header, *shared])
     file.close()
+    return lines
 
 
 # The file this process created in each provenance folder.

@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self, overload
 
 from furu._declared_types import cached_type_hints
-from furu._tree import specs_in
 from furu.code_trace import paused, tracing
 from furu.migration.schema import held
 from furu.serializer.artifact import to_json
@@ -139,14 +138,6 @@ def returned_attributes(cls: type) -> frozenset[str]:
         for f in fields(cls)
         if isinstance(inspect.getattr_static(cls, f.name, None), Returned)
     )
-
-
-def collect_declared_refs(obj: Spec) -> tuple[Spec, ...]:
-    refs_by_id: dict[str, Spec] = {}
-    for f in fields(obj):
-        for ref in specs_in(getattr(obj, f.name)):
-            refs_by_id.setdefault(ref.object_id, ref)
-    return tuple(refs_by_id[object_id] for object_id in sorted(refs_by_id))
 
 
 # What to tell about each published run the create() in this context loads,

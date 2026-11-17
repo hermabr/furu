@@ -19,16 +19,17 @@ out are noted beside the hashed ones.
 
 A field value whose written form is over 1 KB is a line of its own, and each
 spec that holds it points to that line by the value's fingerprint. What a
-``@furu.dependency`` method returned is always such a pointer, with the
-fingerprint that went into the spec's id. The returned value has a line only
-for a spec that runs; whoever builds the spec from its line calls the method
-and compares.
+``@furu.dependency`` method returned is always a pointer, of a kind of its
+own, with the fingerprint that went into the spec's id. The returned value has
+a line only for a spec that runs, which says what the spec waits for; whoever
+builds the spec from its line calls the method and compares.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import zlib
 from collections.abc import Collection, Generator, Iterable, Iterator, Sequence
@@ -72,9 +73,33 @@ dump = _stable_json_dump
 
 def pointer(value: JsonValue) -> str | None:
     """The fingerprint of the value line that a written field value points to, if it does."""
-    if isinstance(value, dict) and value.get(KINDMARKER) == "value":
+    if isinstance(value, dict) and value.get(KINDMARKER) in ("value", "returned"):
         return cast(str, value[VALUEMARKER])
     return None
+
+
+def key(line: Line) -> str:
+    """What other lines call this one: a spec's id, a value's fingerprint."""
+    return line.get("spec") or line.get("value") or "moved"
+
+
+# How a dumped line names a spec or a value line. A string never matches:
+# its quotes are escaped.
+_HOLDS = re.compile(
+    rf'\{{"{re.escape(KINDMARKER)}":"(spec|value|returned)",'
+    rf'"{re.escape(VALUEMARKER)}":"([^"]*)"\}}'
+)
+
+
+def holds(text: str, *, returned: bool = True) -> list[str]:
+    """The ids and fingerprints that a dumped line points to, in the order written.
+
+    Without ``returned``, the pointers to what dependency methods returned
+    are left out: whoever builds the spec gets that by calling the method.
+    """
+    return [
+        named for kind, named in _HOLDS.findall(text) if returned or kind != "returned"
+    ]
 
 
 def lines(
@@ -120,6 +145,7 @@ def lines(
                     left_out[name] = default
                     continue
                 assert fingerprint is not None
+                kind = "returned"
                 new = spec_id in runs and fingerprint not in written
                 value = (
                     to_json(getattr(obj, attribute), declared, serializers, nested)
@@ -145,8 +171,9 @@ def lines(
                     continue
                 fingerprint = _fingerprint(text)
                 walked.add(fingerprint)
+                kind = "value"
                 new = fingerprint not in written
-            fields[name] = {KINDMARKER: "value", VALUEMARKER: fingerprint}
+            fields[name] = {KINDMARKER: kind, VALUEMARKER: fingerprint}
             if new:
                 written.add(fingerprint)
                 yield {"value": fingerprint, "is": value}
@@ -278,8 +305,12 @@ class File:
                 taken += 1
 
     def add(self, lines: Iterable[Line]) -> None:
-        for line in lines:
-            self._file.write(self._pack.compress(f"{dump(line)}\n".encode()))
+        self.write(map(dump, lines))
+
+    def write(self, texts: Iterable[str]) -> None:
+        """Add lines that are dumped already."""
+        for text in texts:
+            self._file.write(self._pack.compress(f"{text}\n".encode()))
         self._file.write(self._pack.flush(zlib.Z_SYNC_FLUSH))
         self._file.flush()
         os.fsync(self._file.fileno())
@@ -303,8 +334,11 @@ def read(path: Path) -> list[Line]:
 
 def write(
     path: Path, asked: Sequence[Spec], described: Iterable[Line], code: SubmitProvenance
-) -> None:
-    """Save a launch's plan: what it was asked for, its code, and its lines."""
+) -> list[str]:
+    """Save a launch's plan: what it was asked for, its code, and its lines.
+
+    Returns the lines as written, which is how the manager is sent them.
+    """
     header = {
         "asked": [obj.object_id for obj in asked],
         "code": {
@@ -313,10 +347,12 @@ def write(
             "lock": code.environment.uv_lock_hash,
         },
     }
+    lines = list(map(dump, described))
     path.parent.mkdir(parents=True, exist_ok=True)
     file = File(path)
-    file.add(chain([header], described))
+    file.write(chain([dump(header)], lines))
     file.close()
+    return lines
 
 
 # The plan file that lists the specs whose create() runs in this context.

@@ -158,7 +158,7 @@ def test_a_launch_writes_what_its_runs_point_to_and_each_run_gets_a_line(
                 "fields": {
                     "data": _ref(data),
                     "notes": _pointer(notes),
-                    "runs": _pointer(runs),
+                    "runs": {"|kind": "returned", "|value": runs},
                 },
             }
         ],
