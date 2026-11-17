@@ -30,7 +30,9 @@ from furu.utils import JsonValue, _stable_json_dump
 if TYPE_CHECKING:
     from furu.core import Spec
 
-type _Step = tuple[str | None, str]  # the dataclass that declares it, and its name
+# The nested dataclass that declares it, as its name and class part, and the
+# step's name. Both are None for the spec class, whose class part is the folder.
+type _Step = tuple[str | None, str | None, str]
 
 # The dataclasses that values of each spec class have held, in this process.
 held: defaultdict[type, set[type]] = defaultdict(set)
@@ -45,9 +47,14 @@ def _declared_defaults(cls: type[Spec]) -> dict[_Step, tuple[str, JsonValue]]:
     declared: dict[_Step, tuple[str, JsonValue]] = {}
     for owner in (cls, *sorted(held[cls], key=stored_name)):
         hints = cached_type_hints(owner)
+        nested = (
+            (None, None)
+            if owner is cls
+            else (stored_name(owner), naming(owner).class_part)
+        )
         for attribute, name, added in naming(owner).fields:
             if added is not None:
-                declared[None if owner is cls else stored_name(owner), name] = (
+                declared[*nested, name] = (
                     f"{owner.__name__}.migrations: {describe(added)}",
                     to_json(
                         added.default,
@@ -85,7 +92,7 @@ def _append(path: Path, lines: list[dict[str, Any]]) -> None:
 
 def _recorded_defaults(lines: list[dict[str, Any]]) -> dict[_Step, JsonValue]:
     return {
-        (line.get("nested"), line["added"]): line["default"]
+        (line.get("nested"), line.get("class_part"), line["added"]): line["default"]
         for line in lines
         if "added" in line
     }
@@ -95,8 +102,8 @@ def check_defaults(class_dir: Path, cls: type[Spec], *, record: bool = False) ->
     """Stop when a default the source declares is not the one recorded.
 
     A declared default with no line gets one. A folder with no file gets one
-    only with ``record``, before its first result is stored: until then nothing
-    in it was stored under any default.
+    only with ``record``, when the folder is made: until then nothing in it was
+    stored under any default.
     """
     key = (cls, class_dir, len(held[cls]))
     if (*key, record) in _checked:
@@ -105,15 +112,15 @@ def check_defaults(class_dir: Path, cls: type[Spec], *, record: bool = False) ->
     path = schema_path_in(class_dir)
     lines = _read(path) if declared or record else None
     if lines is not None or record:
-        if lines is None or declared.keys() - _recorded_defaults(lines).keys():
+        if not lines or declared.keys() - _recorded_defaults(lines).keys():
             with lock(schema_lock_path_in(class_dir)):
                 lines = _read(path) or []
                 recorded = _recorded_defaults(lines)
                 new: list[dict[str, Any]] = [
                     {"added": name, "default": default}
-                    | ({} if nested is None else {"nested": nested})
-                    for (nested, name), (_, default) in declared.items()
-                    if (nested, name) not in recorded
+                    | ({} if nested is None else {"nested": nested, "class_part": part})
+                    for (nested, part, name), (_, default) in declared.items()
+                    if (nested, part, name) not in recorded
                 ]
                 if not lines:
                     new.insert(0, {"names": list(naming(cls).first_names)})
@@ -132,4 +139,7 @@ def check_defaults(class_dir: Path, cls: type[Spec], *, record: bool = False) ->
                     "recorded default back in the step."
                 )
         _checked.add((*key, True))
-    _checked.add((*key, False))
+    # A folder with no file may get one from a checkout that declares another
+    # default, so a declared default is looked for again.
+    if lines is not None or not declared:
+        _checked.add((*key, False))

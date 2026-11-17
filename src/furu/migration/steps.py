@@ -105,12 +105,6 @@ def naming(cls: type) -> Naming:
     """
     assert dataclasses.is_dataclass(cls)
     steps = getattr(cls, "migrations", ())
-    if not isinstance(steps, tuple) or not all(
-        isinstance(step, Added | Renamed | MovedFrom) for step in steps
-    ):
-        raise TypeError(
-            f"{cls.__name__}.migrations must be a tuple of Added/Renamed/MovedFrom steps"
-        )
 
     # A field's name at this point of the undoing -> its attribute today.
     first = {field.name: field.name for field in dataclasses.fields(cls)}

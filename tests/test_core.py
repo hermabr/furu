@@ -633,7 +633,6 @@ def test_reserved_field_name_raises_at_class_creation():
         "directory",
         "load_existing",
         "delete",
-        "migrate",
         "migrations",
         "provenance",
         "throttle",
@@ -938,7 +937,6 @@ def test_furu_from_artifact_returns_furu_object():
     assert loaded == obj
     assert isinstance(loaded, NodePair)
     assert loaded._base_dir == obj._base_dir
-    assert NodePair.from_artifact(obj._base_dir) == obj
     assert raw_spec == {
         "fully_qualified_name": obj._stored_name,
         "stored_name": obj._stored_name,

@@ -40,7 +40,6 @@ from furu.storage._layout import (
     attempt_dir_in,
     compute_lock_path_in,
     provenance_path_in,
-    spec_path_in,
 )
 from furu.storage.directory import SpecDirectory
 from furu.storage.stored import load_stored_result, stored_version
@@ -79,7 +78,6 @@ _RESERVED_FIELD_NAMES = frozenset(
         "directory",
         "load_existing",
         "delete",
-        "migrate",
         "migrations",
         "provenance",
         "throttle",
@@ -292,13 +290,9 @@ class Spec[T](_FuruDataclassTransform, ABC):
 
     @final
     @classmethod
-    def from_artifact(cls, artifact: ArtifactSpec | Path) -> Self:
+    def from_artifact(cls, artifact: ArtifactSpec) -> Self:
         from furu.serializer.artifact import _from_artifact
 
-        if not isinstance(artifact, ArtifactSpec):
-            artifact = ArtifactSpec.model_validate_json(
-                spec_path_in(artifact).read_text(encoding="utf-8")
-            )
         return _from_artifact(artifact, cls)
 
     @final

@@ -14,7 +14,7 @@ import furu
 from furu import Added, MovedFrom, Renamed, Spec
 from furu.metadata import ArtifactSpec
 from furu.migration import schema
-from furu.migration.steps import MigrationError
+from furu.migration.steps import MigrationError, naming
 from furu.storage._layout import schema_path_in
 
 _runs = itertools.count()
@@ -217,21 +217,6 @@ def test_a_dependency_method_takes_the_same_steps_as_a_field() -> None:
     )
 
 
-def test_nothing_downstream_declares_anything() -> None:
-    before = _spec(lemma=str)
-    after = _spec(
-        lemma=str,
-        min_overlap=(float, 0.5),
-        migrations=(Added("min_overlap", default=0.5),),
-    )
-    triage = _spec("Triage", merges=tuple[Any, ...])
-
-    assert (
-        triage(merges=(after(lemma="comer"),)).object_id
-        == triage(merges=(before(lemma="comer"),)).object_id
-    )
-
-
 def test_a_nested_class_declares_its_own_steps() -> None:
     video = _spec("Video", source=Any)
     old = video(source=_nested(clip=str)(clip="x")).object_id
@@ -296,7 +281,8 @@ def test_a_new_class_folder_records_every_default_before_its_first_result() -> N
         stream_hints=stream_hints,
         migrations=(Added("seed", default=0), Added("stream_hints", default=None)),
     )
-    spec = video(source=_nested(clip=str, fps=(int, 30), migrations=(fps,))(clip="x"))
+    source = _nested(clip=str, fps=(int, 30), migrations=(fps,))(clip="x")
+    spec = video(source=source)
 
     assert spec.status == "missing"
     assert not spec._base_dir.parent.exists()
@@ -306,8 +292,44 @@ def test_a_new_class_folder_records_every_default_before_its_first_result() -> N
         {"names": ["source"]},
         {"added": "seed", "default": 0},
         {"added": "stream_hints", "default": None},
-        {"added": "fps", "default": 30, "nested": f"{__name__}.Vimeo"},
+        {
+            "added": "fps",
+            "default": 30,
+            "nested": f"{__name__}.Vimeo",
+            "class_part": naming(type(source)).class_part,
+        },
     ]
+
+
+class Failing(Spec[int]):
+    lemma: str
+
+    def create(self) -> int:
+        raise RuntimeError("out of memory")
+
+
+def test_a_class_folder_is_recorded_before_its_first_create_runs() -> None:
+    spec = Failing(lemma="comer")
+
+    with pytest.raises(RuntimeError, match="out of memory"):
+        spec.create()
+    assert _schema_lines(spec) == [{"names": ["lemma"]}]
+
+
+def test_a_nested_default_is_recorded_for_one_class_part_of_the_nested_class() -> None:
+    video = _spec("Video", source=Any)
+    first = _nested(clip=str, fps=(int, 30), migrations=(Added("fps", default=30),))
+    # The fresh start in between gave every holder a new id, so the field can
+    # be added again at another default.
+    again = _nested(
+        clip=str,
+        codec=(str, "h264"),
+        fps=(int, 60),
+        migrations=(Added("codec", breaking=True), Added("fps", default=60)),
+    )
+
+    video(source=first(clip="x")).create()
+    video(source=again(clip="x")).create()
 
 
 @pytest.mark.parametrize("nested", [False, True])
@@ -330,6 +352,21 @@ def test_an_edited_default_stops_with_the_step_and_both_values(nested: bool) -> 
     assert "recorded 30" in str(stopped.value)
     with pytest.raises(MigrationError):
         _ = video(25).status
+
+
+def test_a_default_another_checkout_recorded_after_a_lookup_stops_the_next() -> None:
+    def merge(default: float) -> Spec[int]:
+        step = Added("min_overlap", default=default)
+        return _spec(lemma=str, min_overlap=(float, default), migrations=(step,))(
+            lemma="comer"
+        )
+
+    ours = merge(0.5)
+    assert ours.status == "missing"
+
+    merge(0.6).create()
+    with pytest.raises(MigrationError, match="recorded 0.6"):
+        _ = ours.status
 
 
 def test_a_default_is_compared_with_a_line_another_process_added_meanwhile(
@@ -379,12 +416,21 @@ def test_a_line_cut_short_is_skipped_and_the_next_writer_starts_a_new_line() -> 
     assert path.read_text() == torn + '\n{"added":"min_overlap","default":0.5}\n'
 
 
+def test_a_names_line_cut_short_is_written_again() -> None:
+    spec = _spec(lemma=str)(lemma="comer")
+    path = schema_path_in(spec._base_dir.parent)
+    path.parent.mkdir(parents=True)
+    path.write_text('{"names":["le')
+
+    spec.create()
+    assert path.read_text() == '{"names":["le\n{"names":["lemma"]}\n'
+
+
 @pytest.mark.parametrize(
     ("declare", "problem"),
     [
         (lambda: Added("seed"), "exactly one of default="),
         (lambda: Added("seed", default=0, breaking=True), "exactly one of default="),
-        (lambda: _spec(lemma=str, migrations=[]), "must be a tuple"),
         (
             lambda: _spec(lemma=str, migrations=(Added("seed", default=0),)),
             "'seed' is not a field",

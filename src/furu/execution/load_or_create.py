@@ -149,7 +149,6 @@ def _publish[T](
         submit_provenance, ExecuteContext.capture(started_at=started_at)
     )
     atomic_write_text(provenance_path_in(attempt), provenance.model_dump_json(indent=2))
-    check_defaults(obj._base_dir.parent, type(obj), record=True)
     shutil.rmtree(scratch_dir_in(attempt), ignore_errors=True)
     trace_log_path_in(attempt).unlink(missing_ok=True)
 
@@ -198,6 +197,7 @@ def _ensure_group_result[T](
             obj.logger.info("cache hit for %s", obj._log_label)
             continue
         obj._base_dir.mkdir(parents=True, exist_ok=True)
+        check_defaults(obj._base_dir.parent, type(obj), record=True)
         missing.append(obj)
 
     if not missing:

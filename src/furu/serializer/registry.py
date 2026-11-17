@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from abc import ABC, ABCMeta, abstractmethod
-from collections.abc import Callable
 from functools import cache
 from threading import Lock
 from typing import Annotated, Any, ClassVar, cast, final, get_args, get_origin
@@ -69,13 +68,13 @@ class SerializerMeta(ABCMeta):
 
         if serializer := _find_single_serializer_match(
             artifact_serializers,
-            matches=lambda serializer: serializer.matches(value),
+            value,
             layer_name="artifact serializers",
         ):
             return serializer
         return _find_single_serializer_match(
             mcls._default_serializers(),
-            matches=lambda serializer: serializer.matches(value),
+            value,
             layer_name="auto-registered serializer registry",
         )
 
@@ -138,13 +137,13 @@ def _class_serializer(cls: type) -> type[Serializer] | None:
 
 def _find_single_serializer_match(
     serializers: tuple[type[Serializer], ...],
+    value: object,
     *,
-    matches: Callable[[type[Serializer]], bool],
     layer_name: str,
 ) -> type[Serializer] | None:
     matching_serializer: type[Serializer] | None = None
     for serializer in serializers:
-        if not matches(serializer):
+        if not serializer.matches(value):
             continue
         if matching_serializer is None:
             matching_serializer = serializer
