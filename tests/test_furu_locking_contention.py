@@ -51,7 +51,9 @@ class SlowBatchProbe(furu.Spec[int]):
         return (None, 1024)
 
     @furu.batched(batch_key)
-    def create(objs: list["SlowBatchProbe"]) -> list[int]:
+    def create(
+        objs: list["SlowBatchProbe"], directory: furu.SpecDirectory
+    ) -> list[int]:
         marker_dir = Path(objs[0].marker_dir)
         marker_dir.mkdir(parents=True, exist_ok=True)
         for obj in objs:
@@ -122,7 +124,7 @@ def _steal_lock(lock: Path) -> None:
     claim_path = lock.with_name(f"{lock.name}.stolen.{os.getpid()}.claim").resolve()
     manifest = {
         "claim_path": str(claim_path),
-        "lock_paths": [str(lock.resolve())],
+        "lock_path": str(lock.resolve()),
     }
     fd = os.open(claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -164,7 +166,7 @@ def test_two_processes_competing_for_same_furu_object(tmp_path):
     ) == [42]
 
 
-def test_overlapping_batch_acquisitions_do_not_deadlock_or_duplicate_compute(tmp_path):
+def test_overlapping_batches_in_two_processes_each_publish_one_run(tmp_path):
     data_dir = get_config().directories.objects
     marker_dir = tmp_path / "markers"
 
@@ -172,9 +174,9 @@ def test_overlapping_batch_acquisitions_do_not_deadlock_or_duplicate_compute(tmp
 
     assert [result[0] for result in results] == ["ok", "ok"], results
     assert sorted(result[2] for result in results) == [[10, 20], [20, 30]]
-    for key in (1, 2, 3):
-        assert len(list(marker_dir.glob(f"{key}-*.marker"))) == 1
-    assert len(list(data_dir.glob("**/result/manifest.json"))) == 3
+    # Each batch has its own lock, so the spec they share may be computed twice.
+    assert [len(list(marker_dir.glob(f"{key}-*.marker"))) for key in (1, 3)] == [1, 1]
+    assert len(list(data_dir.glob("**/result/manifest.json"))) == 2
 
 
 def test_lock_is_taken_over_mid_create(tmp_path):

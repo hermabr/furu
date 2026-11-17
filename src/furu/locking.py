@@ -4,7 +4,7 @@ import errno
 import os
 import threading
 import time
-from collections.abc import Callable, Generator, Iterable
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -32,25 +32,14 @@ class LockManifest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     claim_path: Path
-    lock_paths: tuple[Path, ...]
+    lock_path: Path
 
-    @field_validator("claim_path")
+    @field_validator("claim_path", "lock_path")
     @classmethod
-    def _validate_claim_path(cls, claim_path: Path) -> Path:
-        if not claim_path.is_absolute():
-            raise ValueError("claim_path must be absolute")
-        return claim_path
-
-    @field_validator("lock_paths")
-    @classmethod
-    def _validate_lock_paths(cls, lock_paths: tuple[Path, ...]) -> tuple[Path, ...]:
-        if not lock_paths:
-            raise ValueError("lock_paths must not be empty")
-        if any(not path.is_absolute() for path in lock_paths):
-            raise ValueError("lock_paths must be absolute")
-        if len(lock_paths) != len(set(lock_paths)):
-            raise ValueError("lock_paths must be unique")
-        return lock_paths
+    def _validate_absolute(cls, path: Path) -> Path:
+        if not path.is_absolute():
+            raise ValueError("lock manifest paths must be absolute")
+        return path
 
 
 def _is_missing_or_stale(exc: OSError) -> bool:
@@ -118,22 +107,21 @@ def read_manifest(path: Path) -> LockManifest | None:
             f"cannot safely break stale lock at {path}: malformed lock manifest"
         ) from exc
 
-    if contested_path not in manifest.lock_paths:
+    if contested_path != manifest.lock_path:
         raise LockError(
-            f"cannot safely break stale lock at {path}: manifest does not include contested lock path"
+            f"cannot safely break stale lock at {path}: manifest names another lock path"
         )
     return manifest
 
 
-def owns(lock_paths: Iterable[Path], *, claim_path: Path) -> bool:
+def owns(lock_path: Path, *, claim_path: Path) -> bool:
     claim_stat = stat_or_none(claim_path)
-    if claim_stat is None:
-        return False
-    for lock_path in lock_paths:
-        lock_stat = stat_or_none(lock_path)
-        if lock_stat is None or not _same_inode(lock_stat, claim_stat):
-            return False
-    return True
+    lock_stat = stat_or_none(lock_path)
+    return (
+        claim_stat is not None
+        and lock_stat is not None
+        and _same_inode(lock_stat, claim_stat)
+    )
 
 
 def try_link(*, lock_path: Path, claim_path: Path) -> bool:
@@ -150,64 +138,32 @@ def try_link(*, lock_path: Path, claim_path: Path) -> bool:
             return False
         raise
 
-    if not owns([lock_path], claim_path=claim_path):
+    if not owns(lock_path, claim_path=claim_path):
         unlink_if_exists(lock_path)
         return False
     return True
 
 
-def release_acquired_subset(lock_paths: Iterable[Path], *, claim_path: Path) -> None:
-    for lock_path in lock_paths:
-        if owns([lock_path], claim_path=claim_path):
-            unlink_if_exists(lock_path)
+def _unlink_if_same(lock_path: Path, *, reference_stat: os.stat_result) -> bool:
+    """Remove the lock if it is still the reference inode; False when it was lost."""
+    lock_stat = stat_or_none(lock_path)
+    if lock_stat is None or not _same_inode(lock_stat, reference_stat):
+        return False
+    try:
+        lock_path.unlink()
+    except OSError as exc:
+        if _is_missing_or_stale(exc):
+            return False
+        raise
+    return True
 
 
-def _unlink_matching_group_members(
-    lock_paths: Iterable[Path], *, reference_stat: os.stat_result
-) -> bool:
-    lost_lock = False
-    for lock_path in lock_paths:
-        lock_stat = stat_or_none(lock_path)
-        if lock_stat is None or not _same_inode(lock_stat, reference_stat):
-            lost_lock = True
-            continue
-        try:
-            lock_path.unlink()
-        except OSError as exc:
-            if _is_missing_or_stale(exc):
-                lost_lock = True
-                continue
-            raise
-
-    return lost_lock
-
-
-def release_owned_group(
-    lock_paths: Iterable[Path],
-    *,
-    claim_path: Path,
-    owner_stat: os.stat_result,
-) -> bool:
-    lock_paths = tuple(lock_paths)
+def release(lock_path: Path, *, claim_path: Path, owner_stat: os.stat_result) -> bool:
+    """Remove the lock and its claim; True when the lock was lost before that."""
     claim_stat = stat_or_none(claim_path)
-    reference_stat = claim_stat
-    lost_lock = claim_stat is None
-
-    if reference_stat is None:
-        for lock_path in lock_paths:
-            lock_stat = stat_or_none(lock_path)
-            if lock_stat is not None and _same_inode(lock_stat, owner_stat):
-                reference_stat = lock_stat
-                break
-
-    if reference_stat is not None:
-        lost_lock = (
-            _unlink_matching_group_members(lock_paths, reference_stat=reference_stat)
-            or lost_lock
-        )
-
+    removed = _unlink_if_same(lock_path, reference_stat=claim_stat or owner_stat)
     unlink_if_exists(claim_path)
-    return lost_lock
+    return claim_stat is None or not removed
 
 
 def acquire_break_file(*, claim_path: Path, lifetime_s: float) -> Path | None:
@@ -265,10 +221,7 @@ def break_stale(lock_path: Path, *, lifetime_s: float) -> bool:
                 f"lock {lock_path} changed owners while breaking a stale lock"
             )
 
-        _unlink_matching_group_members(
-            manifest.lock_paths,
-            reference_stat=reference_stat,
-        )
+        _unlink_if_same(lock_path, reference_stat=reference_stat)
         unlink_if_exists(manifest.claim_path)
         return True
     finally:
@@ -287,7 +240,7 @@ def is_active_lock(lock_path: Path) -> bool:
     if manifest is None:
         return False
 
-    return owns(manifest.lock_paths, claim_path=manifest.claim_path)
+    return owns(lock_path, claim_path=manifest.claim_path)
 
 
 def _try_touch_future(path: Path, *, lifetime_s: float) -> bool:
@@ -302,19 +255,19 @@ def _try_touch_future(path: Path, *, lifetime_s: float) -> bool:
 
 def heartbeat_loop(
     *,
-    lock_paths: list[Path],
+    lock_path: Path,
     claim_path: Path,
     lifetime_s: float,
     heartbeat_interval_s: float,
     stop_event: threading.Event,
 ) -> None:
-    if not owns(lock_paths, claim_path=claim_path):
+    if not owns(lock_path, claim_path=claim_path):
         return
     if not _try_touch_future(claim_path, lifetime_s=lifetime_s):
         return
 
     while not stop_event.wait(heartbeat_interval_s):
-        if not owns(lock_paths, claim_path=claim_path):
+        if not owns(lock_path, claim_path=claim_path):
             return
         if not _try_touch_future(claim_path, lifetime_s=lifetime_s):
             return
@@ -322,23 +275,14 @@ def heartbeat_loop(
 
 @contextmanager
 def lock(
-    lock_paths: Path | Iterable[Path],
+    lock_path: Path,
     *,
     lifetime_s: float = DEFAULT_LIFETIME_S,
     heartbeat_interval_s: float = DEFAULT_HEARTBEAT_INTERVAL_S,
     acquire_timeout_s: float | None = None,
     acquire_poll_interval_s: float | None = None,
 ) -> Generator[Callable[[], bool]]:
-    if isinstance(lock_paths, Path):
-        lock_paths = [lock_paths]
-    lock_paths = sorted({path.resolve() for path in lock_paths}, key=os.fspath)
-    if not lock_paths:
-        raise ValueError("at least one lock path is required")
-    if len({path.parent.stat().st_dev for path in lock_paths}) > 1:
-        raise LockError(
-            "hardlink-based locking requires every lock path to be on the same filesystem device"
-        )
-    paths = ", ".join(map(str, lock_paths))
+    lock_path = lock_path.resolve()
 
     if acquire_timeout_s is None:
         acquire_timeout_s = lifetime_s + CLOCK_SLOP_S
@@ -348,11 +292,8 @@ def lock(
             heartbeat_interval_s / 3,
         )
 
-    claim_path = nfs_safe_unique_name(lock_paths[0], name="claim").resolve(strict=False)
-    manifest = LockManifest(
-        claim_path=claim_path,
-        lock_paths=tuple(lock_paths),
-    )
+    claim_path = nfs_safe_unique_name(lock_path, name="claim").resolve(strict=False)
+    manifest = LockManifest(claim_path=claim_path, lock_path=lock_path)
     _write_claim_file(manifest, lifetime_s=lifetime_s)
     owner_stat = claim_path.stat()
 
@@ -360,47 +301,19 @@ def lock(
         deadline = time.monotonic() + max(acquire_timeout_s, 0.0)
         next_wait_log_at = 0.0
 
-        while True:
-            acquired: list[Path] = []
-            blocked: Path | None = None
-            try:
-                for lock_path in lock_paths:
-                    if try_link(lock_path=lock_path, claim_path=claim_path):
-                        acquired.append(lock_path)
-                    else:
-                        blocked = lock_path
-                        break
-            except BaseException:
-                release_acquired_subset(acquired, claim_path=claim_path)
-                raise
-
-            if blocked is None:
-                break
-
-            try:
-                broke_stale = break_stale(blocked, lifetime_s=lifetime_s)
-            finally:
-                release_acquired_subset(acquired, claim_path=claim_path)
-
-            if broke_stale:
-                logger.info("broke stale lock at %s", blocked)
+        while not try_link(lock_path=lock_path, claim_path=claim_path):
+            if break_stale(lock_path, lifetime_s=lifetime_s):
+                logger.info("broke stale lock at %s", lock_path)
                 continue
 
             now = time.monotonic()
             remaining = deadline - now
             if remaining <= 0:
                 raise LockError(
-                    f"could not acquire lock at {paths} within {acquire_timeout_s:g} seconds"
+                    f"could not acquire lock at {lock_path} within {acquire_timeout_s:g} seconds"
                 )
             if now >= next_wait_log_at:
-                if len(lock_paths) == 1:
-                    logger.info("waiting for lock at %s", blocked)
-                else:
-                    logger.info(
-                        "waiting for lock set blocked by %s: %s",
-                        blocked,
-                        ", ".join(str(path) for path in lock_paths),
-                    )
+                logger.info("waiting for lock at %s", lock_path)
                 next_wait_log_at = now + DEFAULT_LOCK_WAIT_LOG_INTERVAL_S
             time.sleep(
                 min(
@@ -416,20 +329,20 @@ def lock(
         heartbeat = threading.Thread(
             target=heartbeat_loop,
             kwargs={
-                "lock_paths": lock_paths,
+                "lock_path": lock_path,
                 "claim_path": claim_path,
                 "lifetime_s": lifetime_s,
                 "heartbeat_interval_s": heartbeat_interval_s,
                 "stop_event": stop_event,
             },
-            name=f"lock-heartbeat:{lock_paths[0].name}",
+            name=f"lock-heartbeat:{lock_path.name}",
             daemon=True,
         )
         heartbeat.start()
         body_error: BaseException | None = None
 
         def has_lock() -> bool:
-            return owns(lock_paths, claim_path=claim_path)
+            return owns(lock_path, claim_path=claim_path)
 
         try:
             yield has_lock
@@ -439,12 +352,8 @@ def lock(
         finally:
             stop_event.set()
             heartbeat.join(timeout=HEARTBEAT_SHUTDOWN_GRACE_S)
-            lost_lock = release_owned_group(
-                lock_paths,
-                claim_path=claim_path,
-                owner_stat=owner_stat,
-            )
+            lost_lock = release(lock_path, claim_path=claim_path, owner_stat=owner_stat)
             if lost_lock and body_error is None:
-                raise LockError(f"lost lock at {paths}")
+                raise LockError(f"lost lock at {lock_path}")
     finally:
         unlink_if_exists(claim_path)

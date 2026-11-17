@@ -8,6 +8,10 @@ says how. furu cannot tell a step you forgot from results another branch
 stored, so the launch stops and names both ways on. ``FURU_IGNORE_STORED``
 names the folders one launch may leave behind. Asking stores nothing.
 
+A class that lost ``@furu.batched`` stops the launch too, when a missing spec
+of it has a result in a batch folder: without the decorator a spec is looked
+for by its own folder name only.
+
 Nothing checks afterwards, with one exception: a spec that a ``create()``
 builds is checked where it is built, together with what is missing under it,
 for each class the launch never saw.
@@ -25,6 +29,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from furu._batched import is_batched
 from furu.core import Spec
 from furu.logging import get_logger
 from furu.migration import schema
@@ -35,6 +40,7 @@ from furu.migration.steps import (
     naming,
     stored_name,
 )
+from furu.storage.stored import Stored
 
 logger = get_logger("run")
 
@@ -119,6 +125,28 @@ def _stored(cls: type, names: Collection[str] | None) -> str:
     return "stored " + (" and ".join(differs) or "under the same field names")
 
 
+def _check_batch_folders(missing: Sequence[Spec]) -> None:
+    """Stop when a missing spec without ``@furu.batched`` is a row in a batch folder."""
+    look = Stored()
+    held: defaultdict[type, dict[Path, None]] = defaultdict(dict)
+    for obj in missing:
+        if not is_batched(type(obj)) and (row := look.listed(obj)) is not None:
+            held[type(obj)][row.run] = None
+    if held:
+        lines = [
+            f"  {_stage(cls)}: {', '.join(map(str, [*runs][:3]))}"
+            + (f" and {len(runs) - 3} more" if len(runs) > 3 else "")
+            for cls, runs in held.items()
+        ]
+        raise RuntimeError(
+            "this launch would compute specs again that have results in batch "
+            "folders, stored when their class had @furu.batched\n"
+            + "\n".join(lines)
+            + "\nA spec without @furu.batched is looked for by its own folder "
+            "name. Put the decorator back on create(), or delete the folders."
+        )
+
+
 def ask(missing: Sequence[Spec], *, found: bool = False) -> frozenset[str]:
     """Stop the launch when it would leave stored results behind.
 
@@ -200,6 +228,7 @@ def ask(missing: Sequence[Spec], *, found: bool = False) -> frozenset[str]:
     for name in sorted(unexplained):
         for line in sorted(unexplained[name]):
             logger.info("ignoring stored results · %s", line)
+    _check_batch_folders(missing)
     return frozenset(map(stored_name, class_dirs.values()))
 
 

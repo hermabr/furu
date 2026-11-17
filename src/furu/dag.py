@@ -2,14 +2,20 @@ from __future__ import annotations
 
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import ClassVar
 
 from furu._batched import _BatchedHook
 from furu.core import Spec
 from furu.dependencies import collect_declared_refs
 from furu.resources import Worker
+from furu.spec_metadata import Metadata
+from furu.storage.stored import Stored
 from furu.utils import format_duration
+
+
+class MixedBatchError(RuntimeError):
+    """Two specs with one batch key have different Metadata."""
 
 
 @dataclass(eq=False)
@@ -22,23 +28,6 @@ class DagNode:
     unseen_since: dict[str, float] = field(default_factory=dict)
 
     _batch_groups: dict[Worker, tuple[object, int] | None] = field(default_factory=dict)
-
-    def batch_group(self, worker: Worker) -> tuple[object, int] | None:
-        if worker in self._batch_groups:
-            return self._batch_groups[worker]
-        obj = self.obj
-        group = None
-        hook = getattr(type(obj), "_furu_create_hook", None)
-        if isinstance(hook, _BatchedHook):
-            group_hash, cap = hook.batch_fn(obj, worker)
-            if type(cap) is not int or cap < 1:
-                raise TypeError(
-                    f"{type(obj).__qualname__} batch key cap must be a positive int, "
-                    f"got {cap!r} on {worker}"
-                )
-            group = (type(obj), group_hash, cap, obj._metadata), cap
-        self._batch_groups[worker] = group
-        return group
 
 
 @dataclass(slots=True, kw_only=True)
@@ -53,11 +42,49 @@ class Dag:
     ready: dict[str, DagNode] = field(default_factory=dict)
     blocked: dict[str, DagNode] = field(default_factory=dict)
     completed: dict[str, DagNode] = field(default_factory=dict)
+    # The first spec seen with each batch key on each worker.
+    batch_firsts: dict[tuple[Worker, object], Spec] = field(default_factory=dict)
 
     # How long a spec may keep finding missing a dependency the run sees built.
     # In one process that can only be a race with another run publishing it,
     # which one rerun settles.
     unseen_grace_s: ClassVar[float] = 0.0
+
+    def batch_group(self, node: DagNode, worker: Worker) -> tuple[object, int] | None:
+        """The batch ``node`` joins on ``worker`` and its cap; None when it runs alone.
+
+        A batch is one create() call in one process that publishes one folder,
+        so two specs with one batch key and different Metadata stop the run.
+        """
+        if worker in node._batch_groups:
+            return node._batch_groups[worker]
+        obj = node.obj
+        group = None
+        hook = getattr(type(obj), "_furu_create_hook", None)
+        if isinstance(hook, _BatchedHook):
+            key, cap = hook.batch_fn(obj, worker)
+            if type(cap) is not int or cap < 1:
+                raise TypeError(
+                    f"{type(obj).__qualname__} batch key cap must be a positive int, "
+                    f"got {cap!r} on {worker}"
+                )
+            group = (type(obj), key, cap), cap
+            first = self.batch_firsts.setdefault((worker, group[0]), obj)
+            if differs := [
+                f"{f.name} ({getattr(first._metadata, f.name)!r} and "
+                f"{getattr(obj._metadata, f.name)!r})"
+                for f in fields(Metadata)
+                if getattr(first._metadata, f.name) != getattr(obj._metadata, f.name)
+            ]:
+                raise MixedBatchError(
+                    f"{first._log_label} and {obj._log_label} have the same batch "
+                    f"key and differ in Metadata {', '.join(differs)}. A batch is "
+                    "one create() call that publishes one folder, so it has one "
+                    "Metadata: give the specs different batch keys or the same "
+                    "Metadata."
+                )
+        node._batch_groups[worker] = group
+        return group
 
     def built(self, obj: Spec) -> bool:
         """Completed by this run, or done on disk (perhaps by another run)."""
@@ -72,13 +99,14 @@ class Dag:
         new: list[DagNode] = []
         pending = list(reversed(objs))
         seen_object_ids = set(self.nodes_by_id)
+        look = Stored()  # one listing per class, however many specs it has
 
         while pending:
             obj = pending.pop()
             if obj.object_id in seen_object_ids:
                 continue
             seen_object_ids.add(obj.object_id)
-            if obj.done:
+            if look.row(obj) is not None:
                 continue
             new.append(DagNode(obj=obj))
             refs = collect_declared_refs(obj)

@@ -344,6 +344,45 @@ def test_edits_to_what_ran_rerun(
     assert run_dir_in(plot._class_dir / before, plot._run_name).is_dir()
 
 
+SWEEP = """\
+import furu
+
+SCALE = 2
+
+
+class Sweep(furu.Spec[int]):
+    seed: int
+
+    def metadata(self) -> furu.Metadata:
+        return furu.Metadata(code_version="traced")
+
+    @furu.batched(lambda spec, worker: (None, 10))
+    def create(specs, directory):
+        return [spec.seed * SCALE for spec in specs]
+"""
+
+
+def test_a_traced_batch_is_one_run_found_under_the_live_code_version(
+    repo: Repo,
+) -> None:
+    repo.write("sweep.py", SWEEP)
+    sweep = repo.load("sweep").Sweep
+    specs = [sweep(seed=1), sweep(seed=2)]
+    assert furu.create(specs) == [2, 4]
+    before = run_of(specs[0])
+    assert run_of(specs[1]) == before
+    assert _version(specs[0]) != "fixed"
+
+    repo.edit("sweep.py", "SCALE = 2", "SCALE = 3")
+
+    sweep = repo.load("sweep").Sweep
+    specs = [sweep(seed=1), sweep(seed=2)]
+    assert not specs[0].done
+    assert furu.create(specs) == [3, 6]
+    assert run_of(specs[0]).name == before.name
+    assert _version_dir(specs[0]) != before.parent.parent
+
+
 def test_rerun_names_the_changed_file(
     repo: Repo, plots: ModuleType, caplog: pytest.LogCaptureFixture
 ) -> None:

@@ -64,7 +64,9 @@ class SubprocessBatchLeaf(Spec[str]):
     value: int
 
     @batched(lambda _, __: (None, 8))
-    def create(objs: list[SubprocessBatchLeaf]) -> list[str]:
+    def create(
+        objs: list[SubprocessBatchLeaf], directory: furu.SpecDirectory
+    ) -> list[str]:
         return [f"{os.getpid()}:{obj.value}" for obj in objs]
 
 

@@ -1571,6 +1571,45 @@ def test_codec_with_save_many_and_load_many_gets_one_call_each(tmp_path: Path) -
     assert _MergingCodec.loaded_lines == [[3, 1], [2]]
 
 
+class _Sweep(Spec[_CountingValue]):
+    seed: int
+    key: int = 0
+    result_codecs = (_MergingCodec,)
+
+    @furu.batched(lambda spec, worker: (spec.key, 100))
+    def create(
+        specs: list[_Sweep], directory: furu.SpecDirectory
+    ) -> list[_CountingValue]:
+        return [_CountingValue(spec.seed) for spec in specs]
+
+
+class _Alone(Spec[_CountingValue]):
+    seed: int
+    result_codecs = (_MergingCodec,)
+
+    def create(self) -> _CountingValue:
+        return _CountingValue(self.seed)
+
+
+def test_load_existing_reads_each_run_once_and_keeps_the_shape_it_was_given() -> None:
+    first = [_Sweep(seed=seed) for seed in range(3)]
+    second = [_Sweep(seed=seed, key=1) for seed in range(3, 5)]
+    alone = _Alone(seed=9)
+    furu.build([first, second, alone])
+    _MergingCodec.loaded_lines.clear()
+
+    loaded = furu.load_existing(
+        {"a": (second[1], first[2]), "b": [alone, first[0], second[0]]}
+    )
+
+    assert {
+        name: type(values)(value.value for value in values)
+        for name, values in loaded.items()
+    } == {"a": (4, 2), "b": [9, 0, 3]}
+    # One call per run, with the rows asked for in the order asked.
+    assert _MergingCodec.loaded_lines == [[1, 0], [2, 0], [0]]
+
+
 def test_large_fallback_warns_once_per_label_and_field(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

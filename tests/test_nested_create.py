@@ -105,7 +105,7 @@ class BatchedParent(furu.Spec[int]):
         return (None, 1024)
 
     @furu.batched(batch_key)
-    def create(objs: list["BatchedParent"]) -> list[int]:
+    def create(objs: list["BatchedParent"], directory: furu.SpecDirectory) -> list[int]:
         CALLS.append(f"batch {[obj.key for obj in objs]}")
         return furu.create([Leaf(n=obj.key) for obj in objs])
 

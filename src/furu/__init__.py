@@ -17,6 +17,7 @@ from furu.result.codec import Codec
 from furu.result.ref import Ref, ref
 from furu.serializer.registry import Serializer
 from furu.spec_metadata import Metadata, Throttle
+from furu.storage.directory import SpecDirectory
 from furu.utils import _install_main_module_alias
 
 _install_main_module_alias()
@@ -35,6 +36,7 @@ __all__ = [
     "Renamed",
     "Serializer",
     "Spec",
+    "SpecDirectory",
     "Throttle",
     "Worker",
     "__version__",

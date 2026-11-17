@@ -68,7 +68,7 @@ class ComputedParent(Spec[str]):
 @contextmanager
 def mark_running(obj: Spec) -> Generator[None]:
     attempts_dir_in(obj._class_dir).mkdir(parents=True, exist_ok=True)
-    with lock([lock_path_in(obj._class_dir, obj._run_name)]):
+    with lock(lock_path_in(obj._class_dir, obj._run_name)):
         yield
 
 

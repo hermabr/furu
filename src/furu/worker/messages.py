@@ -17,6 +17,7 @@ from furu.metadata import ArtifactSpec
 from furu.provenance import SubmitProvenance
 from furu.snapshot import CodeLocation
 from furu.spec_metadata import Metadata, Reuse
+from furu.storage._layout import attempt_dir_in, log_path_in, run_name
 
 
 class _Message(BaseModel):
@@ -39,10 +40,11 @@ class ProcessSettings(_Message):
 
 class Job(_Message):
     kind: Literal["job"] = "job"
+    # One create() call: the specs of one batch in row order, or one spec.
     artifacts: list[ArtifactSpec]
-    # Where its create() writes: the log in the first artifact's working
-    # folder, which the worker cannot compute without importing the spec class.
-    log: Path
+    # Their class folder, which the worker cannot compute without importing
+    # the spec class.
+    class_dir: Path
     execution_log: Path
     provenance: SubmitProvenance
     process: ProcessSettings
@@ -57,6 +59,12 @@ class Job(_Message):
     @property
     def label(self) -> str:
         return _group_label(self.artifacts[0].log_label, len(self.artifacts))
+
+    @property
+    def log(self) -> Path:
+        """Where its create() writes: the log in the working folder of its run."""
+        run = run_name([artifact.artifact_hash for artifact in self.artifacts])
+        return log_path_in(attempt_dir_in(self.class_dir, run))
 
 
 class CancelMessage(_Message):

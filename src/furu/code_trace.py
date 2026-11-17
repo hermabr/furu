@@ -723,33 +723,26 @@ class _TraceLog:
     what the process imported is unknown.
     """
 
-    def __init__(self, paths: Sequence[Path]) -> None:
-        self._fds = [
-            os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
-            for path in paths
-        ]
-        self._paths = paths
+    def __init__(self, path: Path) -> None:
+        self._fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        self._path = path
         self.broken = False
 
     def write(self, record: list[str]) -> None:
         if self.broken:
             return
-        line = (json.dumps(record) + "\n").encode()
         try:
-            for fd in self._fds:
-                os.write(fd, line)
+            os.write(self._fd, (json.dumps(record) + "\n").encode())
         except OSError:
             self.abandon()
 
     def abandon(self) -> None:
         """A log missing entries could resume wrongly; without one, we restart."""
         self.broken = True
-        for path in self._paths:
-            path.unlink(missing_ok=True)
+        self._path.unlink(missing_ok=True)
 
     def close(self) -> None:
-        for fd in self._fds:
-            os.close(fd)
+        os.close(self._fd)
 
 
 @dataclass(slots=True)
@@ -786,14 +779,6 @@ class LogState:
                 case "stale", []:
                     state.stale.add(key)
         return state
-
-    def merge(self, other: LogState) -> None:
-        for rel, names in other.ran.items():
-            self.ran.setdefault(rel, set()).update(names)
-        self.sources |= other.sources
-        self.hashes |= other.hashes
-        self.built_on |= other.built_on
-        self.stale |= other.stale
 
 
 class _Collector:
@@ -937,7 +922,7 @@ class Recording:
 
 @contextmanager
 def recording(
-    log_paths: Sequence[Path],
+    log_path: Path,
     *,
     storage_root: Path,
     resumed: LogState,
@@ -950,7 +935,7 @@ def recording(
     if _active is not None:
         raise RuntimeError("a traced create() is already running in this process")
     root = str(repo_root()) + os.sep
-    log = _TraceLog(log_paths)
+    log = _TraceLog(log_path)
     collector = _Collector(root, log, resumed)
     for module in list(sys.modules.values()):
         file = getattr(module, "__file__", None)

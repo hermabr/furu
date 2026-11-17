@@ -16,8 +16,8 @@ from typing import ClassVar, NoReturn, assert_never
 from websockets.sync.client import ClientConnection
 
 from furu.config import _Config, get_config
-from furu.core import Spec
-from furu.dag import Dag, DagNode
+from furu.core import Spec, working_folder
+from furu.dag import Dag, DagNode, MixedBatchError
 from furu.dependencies import missing_dependencies
 from furu.locking import is_active_lock
 from furu.logging import _display_path, get_logger
@@ -25,6 +25,7 @@ from furu.metadata import ArtifactSpec
 from furu.provenance import SubmitProvenance
 from furu.snapshot import CodeLocation
 from furu.storage._layout import lock_path_in, log_path_in
+from furu.storage.stored import Stored
 from furu.utils import error_summary, format_duration
 from furu.worker.backends.protocol import WorkerBackend, can_run
 from furu.worker.messages import (
@@ -50,7 +51,11 @@ _POLL_INTERVAL_S = 5.0
 
 
 def _running_elsewhere(obj: Spec) -> bool:
-    """Whether a live worker holds obj's working folder."""
+    """Whether a live worker holds the working folder of obj running alone.
+
+    A batch's lock is named by all its specs, so a spec that another run
+    computes in a batch is not seen here and may be computed twice.
+    """
     return is_active_lock(lock_path_in(obj._class_dir, obj._run_name))
 
 
@@ -74,9 +79,11 @@ class Run(Dag):
     waiting: dict[str, DagNode] = field(default_factory=dict)
     # Gave up after max_retries_per_object retries.
     failed: dict[str, DagNode] = field(default_factory=dict)
-    # Each failed attempt's error, per spec not yet completed.
+    # Each failed attempt's error, per spec not yet completed, and the log of
+    # the last one: its batch's.
     failures: dict[str, list[str]] = field(default_factory=dict)
-    batch_keys: list[object] = field(default_factory=list)
+    logs: dict[str, Path] = field(default_factory=dict)
+    batch_ids: dict[object, str] = field(default_factory=dict)
     # The stored names of the classes this launch asked about.
     asked: frozenset[str] = frozenset()
 
@@ -91,11 +98,16 @@ class Run(Dag):
             for key, backend in self.backends.items():
                 if not can_run(backend, node.obj):
                     continue
-                group = node.batch_group(backend.worker)
+                group = self.batch_group(node, backend.worker)
                 pools[key] = (
                     None
                     if group is None
-                    else Batch(batch=self._batch_id(group[0]), cap=group[1])
+                    else Batch(
+                        batch=self.batch_ids.setdefault(
+                            group[0], f"b{len(self.batch_ids)}"
+                        ),
+                        cap=group[1],
+                    )
                 )
             if not pools:
                 unsatisfiable.append(node.obj._log_label)
@@ -110,20 +122,15 @@ class Run(Dag):
                 + f"; workers: {workers or 'none'}"
             )
 
-    def _batch_id(self, key: object) -> str:
-        # Batch keys hold metadata dicts, so they compare but don't hash.
-        if key not in self.batch_keys:
-            self.batch_keys.append(key)
-        return f"b{self.batch_keys.index(key)}"
-
     def take_submissions(self) -> list[Submission]:
         """Ready specs to send; ones done or locked elsewhere don't need us."""
         submissions: list[Submission] = []
         locked = 0
+        look = Stored()
         while self.ready:  # completing one can make its dependents ready
             object_id = next(iter(self.ready))
             node = self.ready.pop(object_id)
-            if node.obj.done:
+            if look.row(node.obj) is not None:
                 self.complete(node)
                 logger.info("found %s done", node.obj._log_label)
             elif _running_elsewhere(node.obj):
@@ -146,7 +153,7 @@ class Run(Dag):
         return Submission(
             job=Job(
                 artifacts=[artifact],
-                log=log_path_in(obj._attempt_dir),
+                class_dir=obj._class_dir,
                 execution_log=self.execution_log,
                 provenance=self.provenance,
                 process=ProcessSettings.from_metadata(obj._metadata),
@@ -182,8 +189,7 @@ class Run(Dag):
             if raw is not None:
                 match manager_message_adapter.validate_json(raw):
                     case ResultMessage(object_ids=object_ids, result=result):
-                        for object_id in object_ids:
-                            self.job_result(object_id, result)
+                        self.batch_result(object_ids, result)
                     case WarningMessage(reason=reason):
                         logger.warning("%s", reason)
                     case ErrorMessage(reason=reason):
@@ -197,12 +203,38 @@ class Run(Dag):
                 connection.send(SubmitMessage(pools=pools, jobs=jobs).model_dump_json())
         self.finish()
 
-    def job_result(self, object_id: str, result: JobResult) -> None:
+    def batch_result(self, object_ids: Sequence[str], result: JobResult) -> None:
+        """Apply the result of one create() call to each spec it ran."""
+        ran = [self.running[i][0].obj for i in object_ids if i in self.running]
+        log = log_path_in(working_folder(ran)) if ran else None
+        for object_id in object_ids:
+            self.job_result(object_id, result, log=log)
+
+    def job_result(
+        self, object_id: str, result: JobResult, *, log: Path | None = None
+    ) -> None:
+        """Apply a create() call's result to one spec it ran.
+
+        ``log`` is that call's log; a spec that ran alone has its own.
+        """
         running = self.running.pop(object_id, None)
         if running is None:
             logger.info("ignoring result for %s: not running", object_id)
             return
         node, started_at = running
+        log = self.logs[object_id] = log or log_path_in(node.obj._attempt_dir)
+        why = None
+        if isinstance(result, JobBlockedResult):
+            try:
+                why = self.block(
+                    node, [Spec.from_artifact(dep) for dep in result.dependencies]
+                )
+            except MixedBatchError as exc:
+                # What its create() asked for cannot run: that fails the job
+                # that asked, and the rest of the run goes on.
+                result = JobFailedResult(error=f"{type(exc).__name__}: {exc}")
+            except Exception as exc:  # noqa: BLE001 -- runs user runs_on, accepts and batch fns
+                self.fail(f"{type(exc).__name__}: {exc}")
         match result:
             case JobCompletedResult():
                 self.complete(node)
@@ -228,15 +260,9 @@ class Run(Dag):
                     len(errors),
                     self.max_retries_per_object,
                     summary,
-                    extra={"path": log_path_in(node.obj._attempt_dir)},
+                    extra={"path": log},
                 )
             case JobBlockedResult(dependencies=dependencies):
-                try:
-                    why = self.block(
-                        node, [Spec.from_artifact(dep) for dep in dependencies]
-                    )
-                except Exception as exc:  # noqa: BLE001 -- runs user runs_on, accepts and batch fns
-                    self.fail(f"{type(exc).__name__}: {exc}")
                 logger.info(
                     "blocked %s · %s",
                     node.obj._log_label,
@@ -254,7 +280,7 @@ class Run(Dag):
                         "failed %s · %s",
                         node.obj._log_label,
                         why,
-                        extra={"path": log_path_in(node.obj._attempt_dir)},
+                        extra={"path": log},
                     )
                 elif object_id in self.ready:
                     # Rerunning at once would likely miss the same specs again.
@@ -307,7 +333,7 @@ class Run(Dag):
                 f"  {obj._log_label} · {len(errors)} attempt"
                 f"{'' if len(errors) == 1 else 's'} · "
                 f"{error_summary(errors[-1])} → "
-                f"{_display_path(log_path_in(obj._attempt_dir))}"
+                f"{_display_path(self.logs[obj.object_id])}"
             )
         lines += [
             f"  {node.obj._log_label} · blocked" for node in self.blocked.values()

@@ -14,7 +14,8 @@ from furu.utils import _hash_dict_deterministically
 #   <code version>/runs/<run> a published run, which never changes again
 #
 # A working folder is renamed into runs/ under the same name, so both share
-# the run layout below.
+# the run layout below. A run holds one row per spec: the specs of one batch,
+# or the one spec of a class without @furu.batched.
 
 FIXED = "fixed"
 
@@ -56,8 +57,12 @@ def trace_path_in(version_dir: Path) -> Path:
     return version_dir / "trace.json"
 
 
+def runs_dir_in(version_dir: Path) -> Path:
+    return version_dir / "runs"
+
+
 def run_dir_in(version_dir: Path, run: str) -> Path:
-    return version_dir / "runs" / run
+    return runs_dir_in(version_dir) / run
 
 
 def events_path_in(run_dir: Path) -> Path:
