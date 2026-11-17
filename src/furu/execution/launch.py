@@ -6,10 +6,11 @@ behind: a class with missing specs may have results in a folder the launch
 will not look in, because the class changed and no step in ``migrations``
 says how. furu cannot tell a step you forgot from results another branch
 stored, so the launch stops and names both ways on. ``FURU_IGNORE_STORED``
-names the folders one launch may leave behind.
+names the folders one launch may leave behind. Asking stores nothing.
 
 Nothing checks afterwards, with one exception: a spec that a ``create()``
-builds, whose class the launch never saw, is checked where it is built.
+builds is checked where it is built, together with what is missing under it,
+for each class the launch never saw.
 """
 
 from __future__ import annotations
@@ -45,12 +46,16 @@ _asked: ContextVar[frozenset[str]] = ContextVar(
 )
 
 
+def _stage(cls: type) -> str:
+    """A class as its ids and folders name it, without the module."""
+    return stored_name(cls).rpartition(".")[2]
+
+
 def stage_table(missing: Iterable[Spec]) -> str:
     """One row per class that has specs missing, in the order the launch reached them."""
     counts = Counter(map(type, missing))
     rows = [("stage", "missing")] + [
-        (stored_name(cls).rpartition(".")[2], str(count))
-        for cls, count in counts.items()
+        (_stage(cls), str(count)) for cls, count in counts.items()
     ]
     stage_width, count_width = (max(map(len, column)) for column in zip(*rows))
     return "\n".join(
@@ -87,6 +92,19 @@ def _nested_in(
         yield from _nested_in(child, child_at)
 
 
+def held_in(obj: Spec) -> dict[type, tuple[str, ...]]:
+    """Each dataclass a named spec holds in its values, and the fields that lead to it."""
+    holds: dict[type, tuple[str, ...]] = {}
+    if held := schema.held[type(obj)]:
+        for field in fields(obj):
+            for nested, at in _nested_in(getattr(obj, field.name), (field.name,)):
+                # Naming the spec left out a dataclass that a serializer
+                # writes: its field names are not in the id.
+                if nested in held:
+                    holds.setdefault(nested, at)
+    return holds
+
+
 def _stored(cls: type, names: Collection[str] | None) -> str:
     """How the names results were stored under differ from the ones ``cls`` gives now."""
     if names is None:
@@ -110,28 +128,28 @@ def ask(missing: Sequence[Spec], *, found: bool = False) -> frozenset[str]:
     are explained the same way. Anything else raises, unless
     ``FURU_IGNORE_STORED`` names the folder. Returns the stored names of the
     classes it asked about.
+
+    With ``found``, a create() asked for ``missing``. The classes the launch
+    asked about are skipped. It could not ask about the others, so there is no
+    launch to go on with ``FURU_IGNORE_STORED``: unexplained results fail the
+    create().
     """
-    ignore = (
-        set()
-        if found
-        else {name.strip() for name in os.environ.get(IGNORE_STORED, "").split(",")}
-    )
+    ignore: set[str] = set()
+    if found:
+        skip = _asked.get()
+        missing = [obj for obj in missing if obj._stored_name not in skip]
+    else:
+        ignore = {name.strip() for name in os.environ.get(IGNORE_STORED, "").split(",")}
     class_dirs: dict[Path, type[Spec]] = {}
     holds: dict[Path, dict[type, tuple[str, ...]]] = {}
     for obj in missing:
         class_dir = obj._base_dir.parent
         class_dirs.setdefault(class_dir, type(obj))
-        if held := schema.held[type(obj)]:
-            for field in fields(obj):
-                for nested, at in _nested_in(getattr(obj, field.name), (field.name,)):
-                    # Naming the spec left out a dataclass that a serializer
-                    # writes: its field names are not in the id.
-                    if nested in held:
-                        holds.setdefault(class_dir, {}).setdefault(nested, at)
+        for nested, at in held_in(obj).items():
+            holds.setdefault(class_dir, {}).setdefault(nested, at)
 
     # What the source does not explain, under each name the variable can take.
     unexplained: defaultdict[str, list[str]] = defaultdict(list)
-    unrecorded: dict[Path, dict[type, tuple[str, ...]]] = {}
     for class_dir, cls in class_dirs.items():
         explained = set(map(class_part_of, explained_names(cls)))
         try:
@@ -141,7 +159,7 @@ def ask(missing: Sequence[Spec], *, found: bool = False) -> frozenset[str]:
         for folder in folders - explained:
             path = class_dir.parent / folder
             unexplained[f"{stored_name(cls)}:{folder}"].append(
-                f"{cls.__name__}: {path} was {_stored(cls, schema.stored_names(path))}"
+                f"{_stage(cls)}: {path} was {_stored(cls, schema.stored_names(path))}"
                 f", and this launch stores in {class_dir}"
             )
         held_here = holds.get(class_dir, {})
@@ -150,24 +168,24 @@ def ask(missing: Sequence[Spec], *, found: bool = False) -> frozenset[str]:
             seen = recorded.get(stored_name(nested), set())
             for names in seen - explained_names(nested):
                 unexplained[f"{stored_name(cls)}:{class_dir.name}"].append(
-                    f"{cls.__name__}: {nested.__name__} at {'.'.join(at)} was "
+                    f"{_stage(cls)}: {nested.__name__} at {'.'.join(at)} was "
                     f"{_stored(nested, names)} in {class_dir}, where this launch "
                     "stores too"
                 )
-            if naming(nested).first_names not in seen:
-                unrecorded.setdefault(class_dir, {})[nested] = at
 
     if asking := sorted(unexplained.keys() - ignore):
         lines = "".join(
             f"  {line}\n" for name in asking for line in sorted(unexplained[name])
         )
         if found:
+            # A worker's failure shows the last line, so that one names the
+            # class and the folder.
             raise MigrationError(
                 "a create() built a spec of a class that has stored results "
-                f"the source does not explain\n{lines}"
-                "Declare the change with a step in the class's migrations, or "
-                f"merge the branch that stored them. {IGNORE_STORED} does not "
-                "cover a spec that a create() builds."
+                "the source does not explain. Declare the change with a step "
+                "in the class's migrations, or merge the branch that stored "
+                f"them. {IGNORE_STORED} does not cover a spec that a create() "
+                f"builds.\n{lines.rstrip()}"
             )
         table = "".join(f"    {row}\n" for row in stage_table(missing).splitlines())
         value = ",".join(sorted(unexplained.keys() & ignore) + asking)
@@ -182,8 +200,6 @@ def ask(missing: Sequence[Spec], *, found: bool = False) -> frozenset[str]:
     for name in sorted(unexplained):
         for line in sorted(unexplained[name]):
             logger.info("ignoring stored results · %s", line)
-    for class_dir, nested_here in unrecorded.items():
-        schema.record_nested_names(class_dir, class_dirs[class_dir], nested_here)
     return frozenset(map(stored_name, class_dirs.values()))
 
 
@@ -195,13 +211,3 @@ def asked(stages: frozenset[str]) -> Generator[None]:
         yield
     finally:
         _asked.reset(token)
-
-
-def ask_about_found(missing: Sequence[Spec]) -> None:
-    """A create() built ``missing``: ask about the classes the launch never saw.
-
-    The launch could not ask about them, so there is no launch to go on with
-    ``FURU_IGNORE_STORED``: unexplained results fail the create().
-    """
-    seen = _asked.get()
-    ask([obj for obj in missing if obj._stored_name not in seen], found=True)

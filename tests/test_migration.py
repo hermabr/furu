@@ -320,10 +320,14 @@ class Failing(Spec[int]):
 
 def test_a_class_folder_is_recorded_before_its_first_create_runs() -> None:
     spec = Failing(lemma="comer")
+    video = _spec("Video", source=Any, upstream=Any)
+    after = video(source=_nested(clip=str)(clip="x"), upstream=spec)
 
     with pytest.raises(RuntimeError, match="out of memory"):
-        spec.create()
+        after.create()
     assert _schema_lines(spec) == [{"names": ["lemma"]}]
+    # The launch stores nothing for a class none of whose specs it starts.
+    assert not after._base_dir.parent.exists()
 
 
 def test_a_nested_default_is_recorded_for_one_class_part_of_the_nested_class() -> None:
@@ -569,19 +573,40 @@ def test_a_nested_class_is_compared_with_the_names_it_was_stored_with(
     video(source=fresh(clip="y")).create()
 
 
+def test_a_nested_class_is_recorded_where_a_spec_that_holds_it_is_created() -> None:
+    video = _spec("Video", source=Any)
+    seen = video(source=_nested(clip=str)(clip="x"))
+    found = video(source=_nested("Youtube", video_id=str)(video_id="abc"))
+    search = _spec("Search", n=int, create=lambda self: found.create())
+
+    furu.create([seen, search(n=1)])
+    assert _schema_lines(seen)[1:] == [
+        {"nested": f"{__name__}.Vimeo", "at": ["source"], "names": ["clip"]},
+        {"nested": f"{__name__}.Youtube", "at": ["source"], "names": ["video_id"]},
+    ]
+
+
 def test_a_spec_built_inside_a_create_is_checked_where_it_is_built(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    old = _spec("Run", peak=float)(peak=1.0)
+    old = _spec("Tok", v=int)(v=1)
     old.create()
-    run = _spec("Run", peak=float, seed=(int, 0))
+    tok = _spec("Tok", v=int, extra=(int, 0))
+
+    def a_tok(self: Any) -> Spec[int]:
+        return tok(v=int(self.peak))
+
+    # The class that changed is under the spec the create() asks for.
+    run = _spec("Run", peak=float, tok=a_tok)
     search = _spec("Search", n=int, create=lambda self: run(peak=1.0).create())
 
     # The launch never saw the class, so there is no launch to let go on.
-    monkeypatch.setenv("FURU_IGNORE_STORED", f"{__name__}.Run:{old._class_part}")
+    monkeypatch.setenv("FURU_IGNORE_STORED", f"{__name__}.Tok:{old._class_part}")
     with pytest.raises(MigrationError, match="a create.. built a spec") as failed:
         search(n=1).create()
-    assert f"Run: {old._base_dir.parent} was stored" in str(failed.value)
+    # A worker's failure shows the last line of the error.
+    last_line = str(failed.value).splitlines()[-1]
+    assert f"Tok: {old._base_dir.parent} was stored" in last_line
     assert run(peak=1.0).status == "missing"
 
     # A class the launch asked about is not asked about again.

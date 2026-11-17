@@ -10,7 +10,8 @@ existed, so a spec at an edited default would load a result computed at
 another value. The recorded default is what the source is compared with.
 
 A dataclass's field names are part of the value of the field that holds it,
-so the class part does not cover them. The recorded names are what a launch
+so the class part does not cover them. They are recorded before a spec that
+holds the dataclass is created, and the recorded names are what a launch
 compares the source with, as it compares a spec class with its folders.
 
 The file only grows, by whole lines: a writer holds schema.lock and a reader
@@ -45,6 +46,10 @@ held: defaultdict[type, set[type]] = defaultdict(set)
 # What this process has checked: a class, its folder, how many dataclasses its
 # values had held by then, and whether a folder with no file was given one.
 _checked: set[tuple[type, Path, int, bool]] = set()
+
+# The lines of nested names this process has seen in a class folder's file: the
+# folder, the dataclass's stored name and its first names.
+_nested_recorded: set[tuple[Path, str, tuple[str, ...]]] = set()
 
 
 def _declared_defaults(cls: type[Spec]) -> dict[_Step, tuple[str, JsonValue]]:
@@ -167,22 +172,29 @@ def nested_names(class_dir: Path) -> dict[str, set[tuple[str, ...]]]:
     return recorded
 
 
-def record_nested_names(
-    class_dir: Path, cls: type[Spec], holds: dict[type, tuple[str, ...]]
-) -> None:
+def record_nested_names(class_dir: Path, holds: dict[type, tuple[str, ...]]) -> None:
     """Give the names each held dataclass has now a line, if they have none.
 
-    ``holds`` says where a spec of ``cls`` holds each: the fields that lead to it.
+    ``holds`` says where a spec stored in ``class_dir`` holds each: the fields
+    that lead to it.
     """
-    class_dir.mkdir(parents=True, exist_ok=True)
-    check_defaults(class_dir, cls, record=True)
-    with lock(schema_lock_path_in(class_dir)):
+    lines = {
+        (class_dir, stored_name(nested), naming(nested).first_names): at
+        for nested, at in holds.items()
+    }
+    if lines.keys() <= _nested_recorded:
+        return
+
+    def unrecorded() -> list[dict[str, Any]]:
         recorded = nested_names(class_dir)
-        new: list[dict[str, Any]] = [
-            {"nested": stored_name(nested), "at": list(at), "names": list(names)}
-            for nested, at in holds.items()
-            if (names := naming(nested).first_names)
-            not in recorded.get(stored_name(nested), ())
+        return [
+            {"nested": name, "at": list(at), "names": list(names)}
+            for (_, name, names), at in lines.items()
+            if names not in recorded.get(name, ())
         ]
-        if new:
-            _append(schema_path_in(class_dir), new)
+
+    if unrecorded():
+        with lock(schema_lock_path_in(class_dir)):
+            if new := unrecorded():
+                _append(schema_path_in(class_dir), new)
+    _nested_recorded.update(lines)
