@@ -14,7 +14,6 @@ from furu.migration.steps import (
 from furu.provenance import submitting_repo_root
 from furu.resources import Worker
 from furu.result.codec import Codec
-from furu.result.ref import Ref, ref
 from furu.serializer.registry import Serializer
 from furu.spec_metadata import Metadata, Throttle
 from furu.storage.directory import SpecDirectory
@@ -31,7 +30,6 @@ __all__ = [
     "MigrationStep",
     "Missing",
     "MovedFrom",
-    "Ref",
     "Renamed",
     "Serializer",
     "Spec",
@@ -45,6 +43,5 @@ __all__ = [
     "dependency",
     "get_logger",
     "load_existing",
-    "ref",
     "submitting_repo_root",
 ]

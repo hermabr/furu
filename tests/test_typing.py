@@ -38,8 +38,8 @@ class TypingBatched(furu.Spec[str]):
 
 
 @dataclass(frozen=True)
-class TypingRefOutput:
-    weights: furu.Ref[list[int]]
+class TypingOutput:
+    weights: list[int]
 
 
 if TYPE_CHECKING:
@@ -66,10 +66,4 @@ if TYPE_CHECKING:
     # Shapes Python's type system cannot map Spec[T] -> T through are Any.
     assert_type(furu.create([[child]]), Any)
     assert_type(furu.create({"a": [child]}), Any)
-    assert_type(furu.create(TypingRefOutput(weights=furu.ref([1]))), dict[str, Any])
-    typed_ref = furu.ref([1, 2, 3])
-    assert_type(typed_ref, furu.Ref[list[int]])
-    assert_type(typed_ref.load(), list[int])
-    TypingRefOutput(weights=typed_ref)
-    # Populating a Ref[T] field requires furu.ref(); a bare T is a type error.
-    TypingRefOutput(weights=[1, 2, 3])  # ty: ignore[invalid-argument-type]
+    assert_type(furu.create(TypingOutput(weights=[1])), dict[str, Any])

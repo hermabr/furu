@@ -21,11 +21,10 @@ from typing import (
 
 import pydantic
 
-from furu._declared_types import cached_type_hints, child_declared_type, strip_annotated
+from furu._declared_types import cached_type_hints, child_declared_type
 from furu.constants import FIELDSMARKER, KINDMARKER, TYPEMARKER
 from furu.logging import get_logger
 from furu.result.codec import Codec, CodecMeta
-from furu.result.ref import Ref
 from furu.storage._layout import scratch_dir_in
 from furu.utils import JsonValue, fully_qualified_name, resolve_fully_qualified_name
 
@@ -133,16 +132,8 @@ def _dump_value(
                 annotated_codec = item
                 break
 
-    match value:
-        case Ref():
-            if annotated_codec is not None and annotated_codec is not value._codec:
-                raise TypeError(
-                    "Conflicting codecs: the Ref carries a codec from furu.ref(...), "
-                    "but the field also has a different Annotated codec."
-                )
-            return _dump_artifact(value.load(), value._codec, value_path, writer)
-        case _ if annotated_codec is not None:
-            return _dump_artifact(value, annotated_codec, value_path, writer)
+    if annotated_codec is not None:
+        return _dump_artifact(value, annotated_codec, value_path, writer)
 
     match value:
         case None | bool() | int() | float() | str():
@@ -418,42 +409,26 @@ def _decode_codec_metadata_value(node: JsonValue, *, data_dir: Path) -> object:
             return node
 
 
-def _load_value(node: JsonValue, declared_type: object, reader: _Reader) -> object:
+def _load_value(node: JsonValue, reader: _Reader) -> object:
     match node:
         case None | bool() | int() | float() | str():
             return node
         case list():
-            return _load_items(node, declared_type, reader)
+            return [_load_value(child, reader) for child in node]
         case dict() if WRAPPER_KEY in node:
-            return _load_wrapper(
-                cast(dict[str, Any], node[WRAPPER_KEY]), declared_type, reader
-            )
+            return _load_wrapper(cast(dict[str, Any], node[WRAPPER_KEY]), reader)
         case dict():
-            return {
-                key: _load_value(child, child_declared_type(declared_type, key), reader)
-                for key, child in node.items()
-            }
+            return {key: _load_value(child, reader) for key, child in node.items()}
         case _:
             assert_never(node)
-
-
-def _load_items(
-    items: list[JsonValue], declared_type: object, reader: _Reader
-) -> list[object]:
-    return [
-        _load_value(child, child_declared_type(declared_type, i), reader)
-        for i, child in enumerate(items)
-    ]
 
 
 def _load_fields(
     body: dict[str, Any], reader: _Reader
 ) -> tuple[Any, dict[str, object]]:
     cls = resolve_fully_qualified_name(body[TYPEMARKER])
-    field_types = cached_type_hints(cls)
     return cls, {
-        name: _load_value(child, field_types.get(name, Any), reader)
-        for name, child in body[FIELDSMARKER].items()
+        name: _load_value(child, reader) for name, child in body[FIELDSMARKER].items()
     }
 
 
@@ -475,27 +450,14 @@ def _read_artifacts(
     return codec.load_many(metadatas, bundle_dir / path)
 
 
-def _load_wrapper(
-    body: dict[str, Any], declared_type: object, reader: _Reader
-) -> object:
+def _load_wrapper(body: dict[str, Any], reader: _Reader) -> object:
     kind: WrapperKind = body[KINDMARKER]
     match kind:
         case "artifact":
-            bundle_dir, data_dir = reader.bundle_dir, reader.data_dir
-            if (declared := strip_annotated(declared_type)) is Ref or get_origin(
-                declared
-            ) is Ref:
-                # Not the reader: it holds every value this load has read.
-                return Ref._from_stored(
-                    codec=resolve_fully_qualified_name(body["codec"]),
-                    read=lambda: _read_artifacts(
-                        [body], bundle_dir=bundle_dir, data_dir=data_dir
-                    )[0],
-                )
             if id(body) not in reader.values:
                 bodies = reader.bodies[body["path"]]
                 values = _read_artifacts(
-                    bodies, bundle_dir=bundle_dir, data_dir=data_dir
+                    bodies, bundle_dir=reader.bundle_dir, data_dir=reader.data_dir
                 )
                 reader.values.update(zip(map(id, bodies), values, strict=True))
             return reader.values[id(body)]
@@ -512,7 +474,7 @@ def _load_wrapper(
         case "data_path":
             return reader.data_dir / body["value"]
         case "tuple" | "set" | "frozenset":
-            items = _load_items(body["items"], declared_type, reader)
+            items = [_load_value(child, reader) for child in body["items"]]
             return {"tuple": tuple, "set": set, "frozenset": frozenset}[kind](items)
         case "pydantic":
             cls, fields = _load_fields(body, reader)
@@ -567,11 +529,10 @@ def load_result_bundle(
     rows: Sequence[int],
     *,
     data_dir: Path,
-    declared_type: object,
 ) -> list[object]:
     """Load the rows asked for, in the order asked."""
     manifest = json.loads((bundle_dir / MANIFEST_FILE_NAME).read_text(encoding="utf-8"))
     reader = _Reader(bundle_dir, data_dir)
     for row in rows:
         _collect_artifacts(manifest[row], reader.bodies)
-    return [_load_value(manifest[row], declared_type, reader) for row in rows]
+    return [_load_value(manifest[row], reader) for row in rows]
