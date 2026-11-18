@@ -4,7 +4,7 @@ import json
 import types
 from collections.abc import Callable
 from contextlib import contextmanager
-from dataclasses import make_dataclass
+from dataclasses import dataclass, make_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -314,6 +314,21 @@ def test_a_class_folder_is_recorded_before_its_first_create_runs() -> None:
     with pytest.raises(RuntimeError, match="out of memory"):
         spec.create()
     assert _schema_lines(spec) == [{"names": ["lemma"]}]
+
+
+class _Sources:
+    @dataclass(frozen=True)
+    class Vimeo:  # inside another class: refused
+        clip: str
+
+
+def test_a_refused_dataclass_does_not_break_its_holder_for_the_process() -> None:
+    clip = _spec("Clip", source=Any)
+    youtube = _nested("Youtube", clip=str)
+
+    with pytest.raises(ValueError, match="nested classes"):
+        clip(source=_Sources.Vimeo(clip="b")).create()
+    clip(source=youtube(clip="a")).create()
 
 
 def test_a_nested_default_is_recorded_for_one_class_part_of_the_nested_class() -> None:
