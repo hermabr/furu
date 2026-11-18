@@ -334,10 +334,12 @@ def test_events_list_the_specs_once_and_each_attempts_start_and_end() -> None:
         False,
     ]
     events = events_of(spec)
+    times = [event.pop("at") for event in events]
     assert all(
-        re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", event.pop("at"))
-        for event in events
+        re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z", t) for t in times
     )
+    # Attempts in one second still sort by when they happened.
+    assert times[1:] == sorted(set(times[1:]))
     plans = [Path(event.pop("plan")) for event in events if event["event"] == "start"]
     host = socket.gethostname()
     assert events == [
