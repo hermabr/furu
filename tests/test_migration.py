@@ -533,6 +533,22 @@ def test_the_variable_names_the_folders_one_launch_leaves_behind(
     second(lemma="comer").create()
 
 
+def test_a_name_in_the_variable_that_matches_no_folder_is_warned_about(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    typo = f"{__name__}.Merge:{'0' * 20}"
+    monkeypatch.setenv("FURU_IGNORE_STORED", typo)
+    furu_logger = logging.getLogger("furu")
+    monkeypatch.setattr(
+        furu_logger, "handlers", [*furu_logger.handlers, caplog.handler]
+    )
+    _spec(lemma=str)(lemma="comer").create()
+    assert (
+        f"FURU_IGNORE_STORED names {typo}, which is no folder this launch would "
+        "leave behind"
+    ) in caplog.messages
+
+
 def test_a_nested_class_is_compared_with_the_names_it_was_stored_with(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
