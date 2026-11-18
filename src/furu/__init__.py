@@ -4,7 +4,6 @@ from furu._batched import batched
 from furu.core import Missing, Spec
 from furu.dependencies import dependency
 from furu.execution.load_or_create import build, create, load_existing
-from furu.handoff import export, rebuild
 from furu.logging import get_logger
 from furu.migration.steps import (
     Added,
@@ -42,9 +41,7 @@ __all__ = [
     "build",
     "create",
     "dependency",
-    "export",
     "get_logger",
     "load_existing",
-    "rebuild",
     "submitting_repo_root",
 ]

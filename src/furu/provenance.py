@@ -148,11 +148,11 @@ class SubmitProvenance(BaseModel):
 
 
 def capture_submit_provenance() -> SubmitProvenance:
-    """Capture where a launch that has something to run, or an export, is started from.
+    """Capture where a launch that has something to run is started from.
 
     Refuses unless the checkout is committed and pushed and its path
     dependencies live inside the repo (see ``furu.snapshot``). Call this only
-    when there is work to create or hand over, never on the cache-hit path.
+    when there is work to create, never on the cache-hit path.
     """
     # snapshot.py imports this module
     from furu.snapshot import require_path_dependencies_in_repo, require_pushed

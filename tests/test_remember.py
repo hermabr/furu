@@ -3,6 +3,7 @@
 import json
 import os
 import shutil
+from dataclasses import InitVar, field
 from multiprocessing import get_context
 from pathlib import Path
 from types import ModuleType
@@ -71,6 +72,52 @@ class EnvSweep(Spec[int]):
     @furu.dependency(remember=True)
     def runs(self) -> list[Cifar]:
         return [Cifar(split=split) for split in os.environ["SPLITS"].split(",")]
+
+    def create(self) -> int:
+        return len(self.runs)
+
+
+class Scaled(Spec[int]):
+    name: str
+    scale: InitVar[int]
+    size: int = field(init=False)
+
+    def __post_init__(self, scale: int) -> None:
+        object.__setattr__(self, "size", 2 * scale)
+
+    @furu.dependency
+    def parts(self) -> list[Cifar]:
+        return [Cifar(split=f"{self.name}{self.size}")]
+
+    def create(self) -> int:
+        return 1
+
+
+SCALED = Scaled(name="s", scale=2)
+
+
+class StoredSplits(Spec[int]):
+    name: str
+
+    @furu.dependency(remember=True)
+    def runs(self) -> list[Cifar]:
+        split = Cifar(split=self.name)
+        try:
+            split.load_existing()
+        except furu.Missing:
+            pass
+        return [split] if split.done else []
+
+    def create(self) -> int:
+        return len(self.runs)
+
+
+class ScaledSweep(Spec[int]):
+    name: str
+
+    @furu.dependency(remember=True)
+    def runs(self) -> list[Cifar]:
+        return list(SCALED.parts)
 
     def create(self) -> int:
         return len(self.runs)
@@ -161,6 +208,16 @@ def test_a_remembered_list_that_differs_stops_whoever_reads_it(
     with pytest.raises(RuntimeError, match="remember=True reads something") as stopped:
         _ = sweep.runs
     assert f"{sweep._log_label}.runs returned something else" in str(stopped.value)
+
+
+def test_a_method_that_checks_whether_a_result_is_stored_is_warned_about(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    assert furu.create(StoredSplits(name="a")) == 0
+    assert (
+        "StoredSplits.runs: caught furu.Missing and read .done, which furu does "
+        "not trace: the method is not called again when that changes"
+    ) in caplog.messages
 
 
 def test_a_worker_rebuilds_a_remembered_list_that_its_create_reads() -> None:
@@ -385,3 +442,182 @@ def test_a_class_folder_with_nothing_but_remembered_lists_holds_no_results(
         "    count: int\n    scale: int = 1\n\n    @furu",
     )
     assert repo.load("tables").Table(count=2).create() == 2
+
+
+OUTSIDE = """\
+import furu
+
+CALLS = []
+
+
+def split_name():
+    return "a"
+
+
+class Ref(furu.Spec[int]):
+    def metadata(self) -> furu.Metadata:
+        return furu.Metadata(code_version="traced")
+
+    def create(self) -> int:
+        return 0
+
+
+class Data(furu.Spec[int]):
+    split: str
+
+    def create(self) -> int:
+        return 1
+
+
+class Count(furu.Spec[int]):
+    def metadata(self) -> furu.Metadata:
+        return furu.Metadata(code_version="traced")
+
+    def create(self) -> int:
+        return len(READ.parts)
+
+
+class Pre(furu.Spec[int]):
+    name: str
+
+    @furu.dependency
+    def parts(self) -> list[Data]:
+        return [Data(split=self._split())]
+
+    def _split(self) -> str:
+        return str(Ref().load_existing()) if self.name == "loads" else split_name()
+
+    def create(self) -> int:
+        return 7
+
+
+class Wrap(furu.Spec[int]):
+    inner: Pre
+
+    def create(self) -> int:
+        return 1
+
+
+class Train(furu.Spec[int]):
+    base: Pre | Wrap | Data
+    seed: int
+
+    def create(self) -> int:
+        return self.seed
+
+
+READ = Pre(name="read")
+NAMED = {
+    "returned": Pre(name="returned"),
+    "wrapped": Wrap(inner=Pre(name="wrapped")),
+    "loads": Pre(name="loads"),
+}
+
+
+class Sweep(furu.Spec[int]):
+    use: str
+    seed: int = 0
+    held: Wrap | None = None
+
+    @furu.dependency(remember=True)
+    def runs(self) -> list[Train]:
+        CALLS.append(self.seed)
+        if self.use == "read":
+            return [Train(base=Data(split=part.split + "!"), seed=0) for part in READ.parts]
+        if self.use == "creates":
+            return [Train(base=Data(split=str(Count().create())), seed=0)]
+        if self.held:
+            return [Train(base=part, seed=0) for part in self.held.inner.parts]
+        return [Train(base=NAMED[self.use], seed=self.seed)]
+
+    def create(self) -> int:
+        return len(self.runs)
+"""
+
+
+@pytest.mark.parametrize(
+    ("use", "old", "new"),
+    [
+        # The method returns the spec, reads its list, returns a spec that holds it.
+        ("returned", 'return "a"', 'return "b"'),
+        ("read", 'return "a"', 'return "b"'),
+        ("wrapped", 'return "a"', 'return "b"'),
+        # The dependency method loaded a result that is now out of date.
+        ("loads", "return 0", "return 2"),
+    ],
+)
+def test_a_method_is_called_again_when_code_that_named_a_spec_before_its_call_changes(
+    repo: Repo, use: str, old: str, new: str
+) -> None:
+    repo.write("outside.py", OUTSIDE)
+
+    def launch() -> tuple[ModuleType, Any]:
+        outside = repo.load("outside")
+        outside.Ref().create()
+        # Read and named before the method's call, which so finds them filled.
+        assert outside.READ.parts
+        assert all(spec.object_id for spec in outside.NAMED.values())
+        return outside, outside.Sweep(use=use)
+
+    outside, sweep = launch()
+    assert sweep.create() == 1
+    assert outside.CALLS == [0]
+
+    # The create() of a spec the method used is no code the method ran.
+    repo.edit("outside.py", "return 7", "return 8")
+    outside, same = launch()
+    assert same.done
+    assert outside.CALLS == []
+
+    repo.edit("outside.py", old, new)
+    outside, again = launch()
+    assert again.object_id != sweep.object_id
+    assert outside.CALLS == [0]
+
+
+def test_each_remembered_spec_of_a_launch_traces_the_spec_they_share(
+    repo: Repo,
+) -> None:
+    repo.write("outside.py", OUTSIDE)
+    outside = repo.load("outside")
+    furu.create([outside.Sweep(use="returned", seed=seed) for seed in range(2)])
+    assert outside.CALLS == [0, 1]
+
+    repo.edit("outside.py", 'return "a"', 'return "b"')
+    outside = repo.load("outside")
+    sweeps = [outside.Sweep(use="returned", seed=seed) for seed in range(2)]
+    assert not any(sweep.done for sweep in sweeps)
+    assert outside.CALLS == [0, 1]
+
+
+def test_a_method_is_not_called_again_when_code_that_named_a_spec_below_a_field_changes(
+    repo: Repo,
+) -> None:
+    repo.write("outside.py", OUTSIDE)
+
+    def launch() -> tuple[ModuleType, Any]:
+        outside = repo.load("outside")
+        return outside, outside.Sweep(use="held", held=outside.NAMED["wrapped"])
+
+    outside, sweep = launch()
+    assert sweep.create() == 1
+
+    # The dependency method returns what it did, which the field's id covers.
+    repo.edit("outside.py", "split=self._split()", "split=str(self._split())")
+    outside, same = launch()
+    assert same.done
+    assert outside.CALLS == []
+
+
+def test_a_create_that_a_method_runs_reads_a_list_that_was_filled_before_the_call(
+    repo: Repo,
+) -> None:
+    repo.write("outside.py", OUTSIDE)
+    outside = repo.load("outside")
+    assert outside.READ.parts
+    assert outside.Sweep(use="creates").create() == 1
+
+
+def test_a_spec_built_from_an_init_only_value_is_copied_without_it() -> None:
+    assert SCALED.parts == [Cifar(split="s4")]
+    assert ScaledSweep(name="sweep").runs == [Cifar(split="s4")]

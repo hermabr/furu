@@ -28,6 +28,7 @@ from furu.dag import Dag, why_stuck
 from furu.dependencies import (
     _DependencyNotReady,
     any_under_creation,
+    checked,
     missing_dependencies,
     record_loaded,
     recording_loads,
@@ -57,7 +58,7 @@ from furu.storage._layout import (
     trace_path_in,
 )
 from furu.storage.directory import SpecDirectory
-from furu.storage.stored import Row, Stored, load_rows, why_rerun
+from furu.storage.stored import Row, Stored, load_rows, stored_row, why_rerun
 from furu.utils import atomic_write_text, format_duration
 
 if TYPE_CHECKING:
@@ -367,6 +368,7 @@ def _load(objs: Sequence[Spec]) -> dict[str, Any]:
     rows = []
     for obj in first.values():
         if (row := look.row(obj)) is None:
+            checked("caught furu.Missing")
             raise Missing(
                 f"{obj._log_label}.load_existing() could not find a result. "
                 "load_existing() only loads existing results; use create() to "
@@ -494,7 +496,7 @@ def _run_in_process(dag: Dag, running: Sequence[Spec], launch_plan: Path) -> Non
             unbuilt = [
                 dep
                 for dep in exc.dependencies
-                if dep.object_id not in completed and not dep.done
+                if dep.object_id not in completed and stored_row(dep) is None
             ]
             if unbuilt:
                 add(missing_under(unbuilt, dag), exc.plan)

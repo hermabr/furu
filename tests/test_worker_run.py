@@ -21,7 +21,6 @@ import furu.dag as dag_module
 import furu.execution.manager as manager_module
 import furu.worker.loop as worker_loop_module
 from furu import Spec, Throttle, Worker, plan
-from furu._batched import MixedBatchError
 from furu.config import get_config
 from furu.core import working_folder
 from furu.dag import Dag
@@ -573,7 +572,7 @@ def test_a_submit_holds_each_line_once_and_what_each_group_shares() -> None:
 def test_two_metadata_under_one_batch_key_stop_the_run_before_anything_is_sent() -> (
     None
 ):
-    with pytest.raises(MixedBatchError, match="differ in Metadata reuse"):
+    with pytest.raises(ValueError, match="differ in Metadata reuse"):
         _new_run([MixedMetadataLeaf(value=1), MixedMetadataLeaf(value=2)])
 
 
@@ -607,10 +606,10 @@ def test_a_failed_attempt_reruns_until_its_retries_run_out(
 
     failed = [record for record in caplog.records if record.message.startswith("fail")]
     assert [record.message for record in failed] == [
-        f"failed {label} · attempt 1/3 · ValueError: bad shape",
-        f"failed {label} · attempt 2/3 · same error",
-        f"failed {label} · attempt 3/3 · OSError: disk full",
-        f"failed {label} · attempt 4/3 · subprocess died: killed by signal 9 (SIGKILL)",
+        f"failed {label} · attempt 1/4 · ValueError: bad shape",
+        f"failed {label} · attempt 2/4 · same error",
+        f"failed {label} · attempt 3/4 · OSError: disk full",
+        f"failed {label} · attempt 4/4 · subprocess died: killed by signal 9 (SIGKILL)",
     ]
     assert [record.levelno for record in failed] == [logging.WARNING] * 3 + [
         logging.ERROR
@@ -840,34 +839,25 @@ def test_a_spec_blocked_on_nothing_or_on_a_spec_the_run_gave_up_on_is_given_up_o
     ]
 
 
-def test_two_metadata_among_found_specs_fail_the_job_that_asked() -> None:
-    lazy = RunLeaf(value=1)
-    run, _ = _new_run([lazy], max_retries_per_object=0)
-
-    (gave_up,) = run.result(
-        _result(
-            [lazy], _blocked(MixedMetadataLeaf(value=1), MixedMetadataLeaf(value=2))
-        )
-    )
-
-    assert "differ in Metadata reuse" in cast(GaveUpMessage, gave_up).error
-
-
 @pytest.mark.parametrize(
     ("found", "match"),
     [
-        (lambda: MemoryLeaf(value=uuid4().int), "no worker pool can run"),
-        (lambda: PerGpuBatchedLeaf(value=1), "cap must be a positive int, got 0"),
+        (lambda: [MemoryLeaf(value=uuid4().int)], "no worker pool can run"),
+        (lambda: [PerGpuBatchedLeaf(value=1)], "cap must be a positive int, got 0"),
+        (
+            lambda: [MixedMetadataLeaf(value=1), MixedMetadataLeaf(value=2)],
+            "ValueError: .* differ in Metadata reuse",
+        ),
     ],
 )
-def test_a_found_spec_that_cannot_be_placed_fails_the_run(
-    found: Callable[[], Spec], match: str
+def test_found_specs_that_cannot_be_placed_fail_the_run(
+    found: Callable[[], list[Spec]], match: str
 ) -> None:
     lazy = RunLazyParent(value=uuid4().int)
     run, _ = _new_run([lazy], backends=[CPU_POOL])
 
     with pytest.raises(RuntimeError, match=match):
-        run.result(_result([lazy], _blocked(found())))
+        run.result(_result([lazy], _blocked(*found())))
 
 
 # --- the manager's queue -------------------------------------------------------

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Self, overload
 
 from furu import remember
 from furu._declared_types import cached_type_hints
+from furu._tree import specs_in
 from furu.code_trace import (
     LogState,
     StaleCodeError,
@@ -69,7 +70,12 @@ def dependency[TSpec: Spec, T](
     field of the spec, code the method ran or a result it loaded has changed,
     or when something reads the field. It changes speed and nothing else, as
     long as the method reads nothing but those: furu does not notice a file, an
-    environment variable or a web page that changes.
+    environment variable or a web page that changes, nor whether a result is
+    stored as ``.done`` or a caught ``furu.Missing`` told it, which it warns
+    about. A spec the method uses that was already named or filled, and that
+    no field this one was built with holds, directly or through another spec,
+    has its own dependency methods called again in each such call, so that a
+    change to their code is noticed too.
     """
     if func is None:
         return partial(_Dependency, remember=remember)
@@ -118,6 +124,10 @@ class Returned:
     def __get__(self, obj: Spec | None, owner: type | None = None) -> Any:
         if obj is None:
             return self
+        if (copy := fresh(obj)) is not obj:
+            return getattr(copy, self.name)
+        if self.name in vars(obj):
+            return vars(obj)[self.name]
         cls = type(obj)
         named = "_named" in vars(obj)
         if self.remember and not named and remembers():
@@ -170,6 +180,10 @@ class Returned:
         vars(obj)[self.name] = value
         return value
 
+    def __set__(self, obj: Spec, value: object) -> None:
+        # A data descriptor, so that every read goes through __get__.
+        vars(obj)[self.name] = value
+
     def remembered(self, obj: Spec, name: str, fields: str) -> str:
         """The fingerprint of what the method returns for ``obj``, for its id.
 
@@ -177,7 +191,8 @@ class Returned:
         what the id calls this one. The method is called only when no
         remembered line holds. That call is traced as a create() is, together
         with naming what it returned, which calls the dependency methods of
-        the specs in it. It fills the field and is remembered.
+        the specs in it, on a copy of each that was named or filled before
+        (`fresh`). It fills the field and is remembered.
         """
         class_dir, storage = obj._class_dir, obj._metadata.storage
         if (known := remember.lookup(class_dir, name, fields, storage)) is not None:
@@ -186,8 +201,20 @@ class Returned:
             recording(None, storage_root=storage, resumed=LogState()) as run,
             recording_loads(lambda loaded, specs: run.loaded(loaded)),
         ):
-            value = vars(obj)[self.name] = self.func(obj)
-            found = self._fingerprint(obj, value)
+            # ``fields`` covers the spec and the specs its fields hold, directly
+            # or through another spec: no copies.
+            met, pending = {}, [obj]
+            while pending:
+                if id(spec := pending.pop()) not in met:
+                    met[id(spec)] = spec, spec
+                    pending += specs_in(_field_values(spec))
+            token, checks = _met.set(met), _checked.set(run.checked)
+            try:
+                value = vars(obj)[self.name] = self.func(obj)
+                found = self._fingerprint(obj, value)
+            finally:
+                _met.reset(token)
+                _checked.reset(checks)
         try:
             trace = build_trace(
                 run,
@@ -200,6 +227,47 @@ class Returned:
             return found
         remember.add(class_dir, name, fields, found, trace)
         return found
+
+
+# Inside the traced call of a ``remember=True`` method: each spec the call has
+# met, by identity, with the spec that stands in for it there.
+_met: ContextVar[dict[int, tuple[Spec, Spec]] | None] = ContextVar("_met", default=None)
+# And what the call checked that its trace does not see.
+_checked: ContextVar[set[str] | None] = ContextVar("_checked", default=None)
+
+
+def checked(what: str) -> None:
+    """Note that the traced ``remember=True`` call this runs in, if any, did ``what``."""
+    if (checks := _checked.get()) is not None and not any_under_creation():
+        checks.add(what)
+
+
+def fresh(obj: Spec) -> Spec:
+    """``obj``, or the copy that stands in for it in the traced call of a ``remember=True`` method.
+
+    A spec that was named, or had a dependency list filled, before the call
+    would keep the code that did so out of the call's trace. The call names
+    and reads a copy of it instead, which runs its dependency methods again:
+    an object of the same class that has the values of the other fields and
+    nothing else.
+    A create() the call runs is traced on its own and gets the spec itself.
+    """
+    if (met := _met.get()) is None or any_under_creation():
+        return obj
+    if id(obj) not in met:
+        copy = obj
+        if vars(obj).keys() & {"_named", *returned_attributes(type(obj))}:
+            # Without __init__: a __post_init__ can take a value no field keeps.
+            copy = object.__new__(type(obj))
+            vars(copy).update(_field_values(obj))
+        met[id(obj)] = obj, copy
+    return met[id(obj)][1]
+
+
+def _field_values(obj: Spec) -> dict[str, Any]:
+    """The values of the fields of ``obj`` that no dependency method fills."""
+    names = {f.name for f in fields(obj)} - returned_attributes(type(obj))
+    return {k: v for k, v in vars(obj).items() if k in names}
 
 
 def remembers() -> bool:
