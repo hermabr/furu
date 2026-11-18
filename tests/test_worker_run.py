@@ -607,10 +607,10 @@ def test_a_failed_attempt_reruns_until_its_retries_run_out(
 
     failed = [record for record in caplog.records if record.message.startswith("fail")]
     assert [record.message for record in failed] == [
-        f"failed {label} · attempt 1/3 · ValueError: bad shape",
-        f"failed {label} · attempt 2/3 · same error",
-        f"failed {label} · attempt 3/3 · OSError: disk full",
-        f"failed {label} · attempt 4/3 · subprocess died: killed by signal 9 (SIGKILL)",
+        f"failed {label} · attempt 1/4 · ValueError: bad shape",
+        f"failed {label} · attempt 2/4 · same error",
+        f"failed {label} · attempt 3/4 · OSError: disk full",
+        f"failed {label} · attempt 4/4 · subprocess died: killed by signal 9 (SIGKILL)",
     ]
     assert [record.levelno for record in failed] == [logging.WARNING] * 3 + [
         logging.ERROR
