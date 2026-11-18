@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -37,9 +38,11 @@ class ChildSlot:
 
     _child: _Child | None
 
-    def __init__(self, *, worker: str, backend: str) -> None:
+    def __init__(self, *, worker: str, backend: str, log: Path | None = None) -> None:
         self._logger = get_logger(worker)
-        self._backend = backend
+        # What each child records about the worker it runs in; ``log`` is a
+        # Slurm worker's output file.
+        self._started_as = {"backend": backend, "output": log and str(log)}
         self._child = None
 
     def run(self, job: Job, *, cancelled: threading.Event) -> JobResult:
@@ -142,7 +145,7 @@ class ChildSlot:
         )
         assert process.stdin is not None
         process.stdin.write(job.config.model_dump_json() + "\n")
-        process.stdin.write(self._backend + "\n")
+        process.stdin.write(json.dumps(self._started_as) + "\n")
         process.stdin.flush()
         self._logger.debug("spawned child %d", process.pid)
         return _Child(

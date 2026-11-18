@@ -35,7 +35,7 @@ from collections.abc import Collection, Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import fields
-from itertools import chain, count
+from itertools import chain
 from pathlib import Path
 from typing import Any, cast
 
@@ -70,12 +70,22 @@ type Line = dict[str, Any]
 dump = _stable_json_dump
 
 
-def lines(roots: Iterable[Spec], runs: Collection[str] = ()) -> Iterator[Line]:
+def pointer(value: JsonValue) -> str | None:
+    """The fingerprint of the value line that a written field value points to, if it does."""
+    if isinstance(value, dict) and value.get(KINDMARKER) == "value":
+        return cast(str, value[VALUEMARKER])
+    return None
+
+
+def lines(
+    roots: Iterable[Spec], runs: Collection[str] = (), *, reach: bool = True
+) -> Iterator[Line]:
     """The lines of ``roots`` and of every spec they reach through fields, each once.
 
     ``runs`` holds the ids of the specs that the launch computes. Their lines
     say so, and what their dependency methods returned is written out. The
-    table of moved classes comes last, when a class has moved.
+    table of moved classes comes last, when a class has moved. Without
+    ``reach``, the specs that ``roots`` hold get no lines.
     """
     written: set[str] = set()
     # The fingerprints of field values whose specs are pending or written.
@@ -128,7 +138,7 @@ def lines(roots: Iterable[Spec], runs: Collection[str] = ()) -> Iterator[Line]:
                 if added is not None and text == dump(default):
                     left_out[name] = default
                     continue
-                if type(held_value) not in _PLAIN:
+                if reach and type(held_value) not in _PLAIN:
                     pending += specs_in(held_value)[::-1]
                 if len(text) <= OWN_LINE_BYTES:
                     fields[name] = value
@@ -205,18 +215,14 @@ class Specs:
                 )
             )
             value = written.get(name)
-            pointer = (
-                cast(str, value[VALUEMARKER])
-                if isinstance(value, dict) and value.get(KINDMARKER) == "value"
-                else None
-            )
+            points_to = pointer(value)
             if attribute in returned_attributes(cls):
-                returned[attribute] = pointer or _hash_dict_deterministically(default)
+                returned[attribute] = points_to or _hash_dict_deterministically(default)
             elif attribute not in takes:
                 continue
             elif name in written:
                 values[attribute] = from_json(
-                    value if pointer is None else self._values[pointer],
+                    value if points_to is None else self._values[points_to],
                     declared,
                     held[cls],
                     self.__getitem__,
@@ -237,8 +243,8 @@ class Specs:
         return obj
 
 
-class _File:
-    """A plan file: lines in one compressed stream, on disk after every addition.
+class File:
+    """A file of lines in one compressed stream, on disk after every addition.
 
     Only the process that created the file adds to it, and a reader takes the
     lines up to where the stream stops. ``zcat`` prints them.
@@ -248,6 +254,28 @@ class _File:
         self.path = path
         self._file = path.open("xb")
         self._pack = zlib.compressobj(wbits=31)
+
+    @classmethod
+    def new(cls, folder: Path, suffix: str = "") -> File:
+        """Create this process's file in ``folder``.
+
+        It is named for the process's Slurm job, or for its machine and
+        process id. One name can stand for several processes, one after
+        another, and a process never adds to a file it did not create: when
+        the name is taken it adds -2, then -3.
+        """
+        folder.mkdir(parents=True, exist_ok=True)
+        name = (
+            f"job-{job}"
+            if (job := os.environ.get("SLURM_JOB_ID"))
+            else f"{socket.gethostname()}-pid-{os.getpid()}"
+        )
+        taken = 0
+        while True:
+            try:
+                return cls(folder / f"{name}{f'-{taken + 1}' if taken else ''}{suffix}")
+            except FileExistsError:
+                taken += 1
 
     def add(self, lines: Iterable[Line]) -> None:
         for line in lines:
@@ -262,7 +290,7 @@ class _File:
 
 
 def read(path: Path) -> list[Line]:
-    """The whole lines of a plan file, also of one that is still being written."""
+    """The whole lines of a file, also of one that is still being written."""
     text = zlib.decompressobj(wbits=31).decompress(path.read_bytes())
     lines = []
     for line in text.splitlines():
@@ -274,7 +302,7 @@ def read(path: Path) -> list[Line]:
 
 
 def write(
-    path: Path, asked: Sequence[Spec], running: Sequence[Spec], code: SubmitProvenance
+    path: Path, asked: Sequence[Spec], described: Iterable[Line], code: SubmitProvenance
 ) -> None:
     """Save a launch's plan: what it was asked for, its code, and its lines."""
     header = {
@@ -286,8 +314,8 @@ def write(
         },
     }
     path.parent.mkdir(parents=True, exist_ok=True)
-    file = _File(path)
-    file.add(chain([header], lines(running, {obj.object_id for obj in running})))
+    file = File(path)
+    file.add(chain([header], described))
     file.close()
 
 
@@ -309,35 +337,25 @@ def listing() -> Path:
     return _listed.get()
 
 
+def launch() -> str:
+    """The id of the launch whose plan, or whose folder of found specs, holds ``listing()``."""
+    plans = get_config().directories.anchored().plans
+    return listing().relative_to(plans).parts[0].removesuffix(".plan")
+
+
 # The file this process created in each launch's folder.
-_own: dict[Path, _File] = {}
+_own: dict[Path, File] = {}
+os.register_at_fork(after_in_child=_own.clear)
 
 
-def save_found(running: Sequence[Spec]) -> tuple[Path, list[Line]]:
+def save_found(found: Sequence[Line]) -> Path:
     """Save the lines of specs that a running create() asked for and that are not stored.
 
-    ``running`` are those specs and what is missing under them. The lines go
-    to this process's own file in the launch's folder, which the specs' runs
-    then name as their plan. A process never adds to a file it did not create:
-    when the name is taken it adds -2, then -3.
+    They go to this process's own file in the launch's folder, which the
+    specs' runs then name as their plan.
     """
-    listed = listing()
-    plans = get_config().directories.anchored().plans
-    folder = plans / listed.relative_to(plans).parts[0].removesuffix(".plan")
+    folder = get_config().directories.anchored().plans / launch()
     if (file := _own.get(folder)) is None:
-        folder.mkdir(parents=True, exist_ok=True)
-        worker = (
-            f"job-{job}"
-            if (job := os.environ.get("SLURM_JOB_ID"))
-            else f"{socket.gethostname()}-pid-{os.getpid()}"
-        )
-        for name in chain([worker], (f"{worker}-{n}" for n in count(2))):
-            try:
-                file = _own[folder] = _File(folder / f"{name}.plan")
-                break
-            except FileExistsError:
-                continue
-    assert file is not None
-    found = list(lines(running, {obj.object_id for obj in running}))
+        file = _own[folder] = File.new(folder, ".plan")
     file.add([{"asked_by": sorted(specs_under_creation())}, *found])
-    return file.path, found
+    return file.path

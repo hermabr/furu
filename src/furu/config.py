@@ -62,9 +62,11 @@ class _FuruDirectories(BaseModel):
 
     objects: Path = Path("furu-data") / "objects"
     executions: Path = Path("furu-data") / "executions"
-    # One place per project, apart from the results, which each class stores
-    # where its Metadata says. Every machine that runs a worker must see it.
+    # One place each per project, apart from the results, which each class
+    # stores where its Metadata says. Every machine that runs a worker must
+    # see them.
     plans: Path = Path("furu-data") / "plans"
+    provenance: Path = Path("furu-data") / "provenance"
     snapshots: Path = Path("furu-data") / "snapshots"
 
     def anchored(self) -> "_FuruDirectories":

@@ -208,7 +208,7 @@ def load_rows[T](objs: Sequence[Spec[T]], rows: Sequence[Row]) -> list[T]:
         by_run.setdefault(row.run, {})[row.index] = obj
     values: dict[Row, object] = {}
     for run, held in by_run.items():
-        record_loaded(run)
+        record_loaded(run, held.values())
         loaded = load_result_bundle(
             result_dir_in(run),
             list(held),

@@ -2,10 +2,10 @@
 
 One JSON object per line, each with ``event`` and ``at`` (UTC), of three kinds:
 ``opened`` once, with the hashes of the run's specs in row order; then per
-attempt a ``start`` before create(), with the machine and the plan file that
-lists the specs, and an ``end`` after it. A start with no end was killed or is
-still running. Only the worker that holds the run's lock appends, and nothing
-else is in the file: what create() wrote is in ``log``.
+attempt a ``start`` before create(), with the machine and the two files that
+hold everything else, and an ``end`` after it. A start with no end was killed
+or is still running. Only the worker that holds the run's lock appends, and
+nothing else is in the file: what create() wrote is in ``log``.
 """
 
 from __future__ import annotations
@@ -45,34 +45,48 @@ def _append(run_dir: Path, text: str) -> None:
         os.fsync(file.fileno())  # other machines read it once the run is published
 
 
-def _line(event: str, **fields: object) -> str:
-    at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+def _now() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def _line(event: str, at: str, **fields: object) -> str:
     return json.dumps({"event": event, "at": at, **fields}, separators=(",", ":"))
 
 
-def start(run_dir: Path, specs: Sequence[str], plan: Path) -> None:
+def start(run_dir: Path, specs: Sequence[str], plan: Path, provenance: Path) -> str:
     """Begin an attempt in a working folder, opening the folder if it is new.
 
     ``plan`` is the plan file that lists the specs: their fields and what they
-    depend on.
+    depend on. ``provenance`` is the file of the process that runs the
+    attempt: where it runs, and the run's line once it finishes. Returns the
+    time on the start line.
     """
     earlier = [event.get("event") for event in read_events(run_dir)]
-    lines = [] if "opened" in earlier else [_line("opened", specs=list(specs))]
+    at = _now()
+    lines = [] if "opened" in earlier else [_line("opened", at, specs=list(specs))]
     lines.append(
         _line(
             "start",
+            at,
             attempt=earlier.count("start") + 1,
             host=socket.gethostname(),
             plan=str(plan),
+            provenance=str(provenance),
         )
     )
     # On a new line, so an attempt killed in the middle of a line costs only
     # that line and not this attempt's first.
     _append(run_dir, "".join(f"\n{line}" for line in lines) + "\n")
+    return at
 
 
 def end(
     run_dir: Path, outcome: Literal["ok", "failed", "blocked"], **details: object
-) -> None:
-    """End an attempt: with ``error`` when it failed, ``waiting_on`` when blocked."""
-    _append(run_dir, _line("end", outcome=outcome, **details) + "\n")
+) -> str:
+    """End an attempt: with ``error`` when it failed, ``waiting_on`` when blocked.
+
+    Returns the time on the end line.
+    """
+    at = _now()
+    _append(run_dir, _line("end", at, outcome=outcome, **details) + "\n")
+    return at

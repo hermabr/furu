@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import Callable, Generator, Sequence
+from collections.abc import Callable, Generator, Iterable, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import field, fields, is_dataclass
@@ -149,22 +149,22 @@ def collect_declared_refs(obj: Spec) -> tuple[Spec, ...]:
     return tuple(refs_by_id[object_id] for object_id in sorted(refs_by_id))
 
 
-# What to tell about each published run the create() in this context loads.
+# What to tell about each published run the create() in this context loads,
+# and the specs whose rows it loads from it.
 # TODO: results loaded in threads a create() starts aren't recorded (ContextVar
 # state doesn't reach them). Workaround: submit the work with
 # contextvars.copy_context().run. Check with a human before adding such threads.
-_on_load: ContextVar[Callable[[Path], None] | None] = ContextVar(
-    "_on_load", default=None
-)
+type OnLoad = Callable[[Path, Iterable[Spec]], None]
+_on_load: ContextVar[OnLoad | None] = ContextVar("_on_load", default=None)
 
 
-def record_loaded(run: Path) -> None:
+def record_loaded(run: Path, specs: Iterable[Spec]) -> None:
     if (on_load := _on_load.get()) is not None:
-        on_load(run)
+        on_load(run, specs)
 
 
 @contextmanager
-def recording_loads(on_load: Callable[[Path], None]) -> Generator[None]:
+def recording_loads(on_load: OnLoad) -> Generator[None]:
     token = _on_load.set(on_load)
     try:
         yield

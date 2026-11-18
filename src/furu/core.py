@@ -22,14 +22,12 @@ from furu.dependencies import (
     _Dependency,
     dependency_field,
     is_under_creation,
-    record_loaded,
     returned_attributes,
 )
 from furu.locking import lock
 from furu.logging import get_logger
 from furu.migration.schema import held
 from furu.migration.steps import MigrationStep, naming, stored_name
-from furu.provenance import Provenance
 from furu.resources import Worker
 from furu.result.codec import Codec
 from furu.serializer.artifact import field_fingerprints
@@ -39,7 +37,6 @@ from furu.storage._layout import (
     attempt_dir_in,
     attempts_dir_in,
     lock_path_in,
-    provenance_path_in,
     run_dir_in,
     run_name,
     version_dirs_in,
@@ -80,7 +77,6 @@ _RESERVED_FIELD_NAMES = frozenset(
         "load_existing",
         "delete",
         "migrations",
-        "provenance",
         "throttle",
         "result_codecs",
         "artifact_serializers",
@@ -238,25 +234,6 @@ class Spec[T](_FuruDataclassTransform, ABC):
                 "to compute missing results."
             )
         )
-
-    @final
-    def provenance(self) -> Provenance:
-        if (row := stored_row(self)) is None:
-            raise Missing(
-                f"{self._log_label}.provenance() could not find a result. "
-                "Provenance is recorded when a result is computed; use create() "
-                "to compute it first."
-            )
-        record_loaded(row.run)
-        path = provenance_path_in(row.run)
-        if not path.exists():
-            raise Missing(
-                f"{self._log_label}.provenance(): the result exists but "
-                f"{path.name} is missing beside it. Every stored result should "
-                "have one; this indicates the result directory was tampered "
-                "with or written by a furu version without provenance capture."
-            )
-        return Provenance.model_validate_json(path.read_text(encoding="utf-8"))
 
     @final
     @property

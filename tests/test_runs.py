@@ -17,6 +17,7 @@ from runs import ends_of, events_of, fixed_run, run_of
 import furu
 from furu import Spec, plan
 from furu.code_trace import Trace
+from furu.config import get_config
 from furu.core import working_folder
 from furu.execution import load_or_create
 from furu.locking import is_active_lock
@@ -78,13 +79,15 @@ class BatchedMerge(Spec[int]):
 BatchedMerge.__qualname__ = "Merge"
 
 
+def _launch_plan() -> Path:
+    return get_config().directories.anchored().plans / "launch.plan"
+
+
 def _compute_again(specs: Sequence[Spec], monkeypatch: pytest.MonkeyPatch) -> None:
     """Run ``specs`` as one batch, as a worker does that does not see them stored."""
-    with monkeypatch.context() as patched, plan.listed_in(Path("launch.plan")):
+    with monkeypatch.context() as patched, plan.listed_in(_launch_plan()):
         patched.setattr(stored.Stored, "row", lambda self, obj: None)
-        load_or_create._ensure_group_result(
-            specs, submit_provenance=load_or_create.capture_submit_provenance()
-        )
+        load_or_create._ensure_group_result(specs)
 
 
 class FailsAsABatch(Spec[int]):
@@ -143,7 +146,7 @@ def test_a_run_is_whole_and_still_locked_when_one_rename_publishes_it(
 
     assert spec.create() == 1
 
-    files = ["events.jsonl", "log", "provenance.json", "result"]
+    files = ["events.jsonl", "log", "result"]
     assert seen == {
         "files": files,
         "ends": [{"outcome": "ok"}],
@@ -189,7 +192,6 @@ def test_a_batch_is_one_run_with_a_row_per_spec_and_one_file_per_array() -> None
     ) == [
         "events.jsonl",
         "log",
-        "provenance.json",
         "result/artifacts/root/data.npy",
         "result/manifest.json",
     ]
@@ -249,10 +251,8 @@ def test_a_batch_with_a_stored_spec_still_runs_whole_in_the_folder_named_for_it(
     specs = [FailsAsABatch(n=1), FailsAsABatch(n=2)]
     furu.create(specs[0])
 
-    with pytest.raises(ValueError, match="boom"), plan.listed_in(Path("launch.plan")):
-        load_or_create._ensure_group_result(
-            specs, submit_provenance=load_or_create.capture_submit_provenance()
-        )
+    with pytest.raises(ValueError, match="boom"), plan.listed_in(_launch_plan()):
+        load_or_create._ensure_group_result(specs)
 
     # Where the job that handed the batch out looks for its log.
     assert "boom" in log_path_in(working_folder(specs)).read_text()
@@ -357,6 +357,7 @@ def test_events_list_the_specs_once_and_each_attempts_start_and_end() -> None:
     # Attempts in one second still sort by when they happened.
     assert times[1:] == sorted(set(times[1:]))
     plans = [Path(event.pop("plan")) for event in events if event["event"] == "start"]
+    records = {event.pop("provenance") for event in events if "provenance" in event}
     host = socket.gethostname()
     assert events == [
         {"event": "opened", "specs": [spec._artifact_hash]},
@@ -367,7 +368,10 @@ def test_events_list_the_specs_once_and_each_attempts_start_and_end() -> None:
         {"event": "start", "attempt": 3, "host": host},
         {"event": "end", "outcome": "ok"},
     ]
-    # Each start names the plan of its launch, which lists the spec.
+    # Each start names the record of the process that ran the attempt, and
+    # the plan of its launch, which lists the spec.
+    (record,) = records
+    assert Path(record).parent == get_config().directories.anchored().provenance
     assert plans[0] == plans[1] != plans[2]
     listed = {"fields": {}, "runs": True, "spec": spec.object_id}
     assert plan.read(plans[0])[1:] == plan.read(plans[2])[1:] == [listed]

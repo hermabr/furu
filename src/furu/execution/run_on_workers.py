@@ -12,7 +12,7 @@ from importlib.metadata import version
 from websockets.exceptions import ConnectionClosed, InvalidHandshake
 from websockets.sync.client import ClientConnection, connect
 
-from furu import plan
+from furu import record
 from furu.config import get_config
 from furu.core import Spec
 from furu.execution.launch import ask, stage_table
@@ -77,7 +77,6 @@ def run_on_workers(objs: Sequence[Spec], backends: Sequence[WorkerBackend]) -> N
         while True:
             run = Run(
                 backends=by_key,
-                provenance=provenance,
                 code=code,
                 config=get_config().anchored(),
                 execution_log=execution_log,
@@ -97,7 +96,7 @@ def run_on_workers(objs: Sequence[Spec], backends: Sequence[WorkerBackend]) -> N
             )
             if not asked:
                 asked = ask(missing)
-                plan.write(launch_plan, objs, missing, provenance)
+                record.launch(launch_plan, objs, missing, provenance)
             run.asked = asked
             with (
                 connect(manager.url, max_size=None)

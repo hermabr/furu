@@ -8,21 +8,18 @@ import socket
 import subprocess
 import sys
 from collections import Counter
-from contextvars import ContextVar
 from datetime import UTC, datetime
 from getpass import getuser
 from importlib.metadata import version
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
 
 _ACCELERATOR_PROBE_TIMEOUT_SECONDS = 2.0
 _HASH_PREFIX = "blake2s:"
 
 
 class GitIdentity(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-
     commit: str
     branch: str | None
     remote: str | None
@@ -53,8 +50,6 @@ class GitIdentity(BaseModel):
 
 
 class EnvironmentIdentity(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-
     python: str
     uv: str
     project_root: str
@@ -127,8 +122,6 @@ class EnvironmentIdentity(BaseModel):
 
 
 class SubmitContext(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-
     hostname: str
     user: str
     cwd: str
@@ -146,68 +139,20 @@ class SubmitContext(BaseModel):
         )
 
 
-class ExecuteContext(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-
-    hostname: str
-    cpu_count: int
-    accelerators: tuple[str, ...]
-    slurm_job_id: str | None
-    worker_backend: str
-    pid: int
-    started_at: datetime
-    completed_at: datetime
-
-    @classmethod
-    def capture(cls, *, started_at: datetime) -> ExecuteContext:
-        cpu_count = getattr(os, "process_cpu_count", os.cpu_count)()
-        return cls(
-            started_at=started_at,
-            completed_at=datetime.now(UTC),
-            hostname=socket.gethostname(),
-            cpu_count=cpu_count or 0,
-            accelerators=_probe_accelerators(),
-            slurm_job_id=os.environ.get("SLURM_JOB_ID"),
-            worker_backend=_worker_backend.get(),
-            pid=os.getpid(),
-        )
-
-
 class SubmitProvenance(BaseModel):
-    """The submit-side half of a Provenance record; travels inside a Job."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    """Where a launch was started from: what its file in provenance/ begins with."""
 
     git: GitIdentity
     environment: EnvironmentIdentity
     submitted: SubmitContext
-
-
-class Provenance(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-
-    git: GitIdentity
-    environment: EnvironmentIdentity
-    submitted: SubmitContext
-    executed: ExecuteContext
-
-    @classmethod
-    def merge(cls, submit: SubmitProvenance, executed: ExecuteContext) -> Provenance:
-        return cls(
-            git=submit.git,
-            environment=submit.environment,
-            submitted=submit.submitted,
-            executed=executed,
-        )
 
 
 def capture_submit_provenance() -> SubmitProvenance:
-    """Capture the submit-side provenance half for a batch about to compute.
+    """Capture where a launch that has something to run is started from.
 
     Refuses unless the checkout is committed and pushed and its path
-    dependencies live inside the repo (see ``furu.snapshot``). Callers own the once-per-batch
-    discipline: call this only when there is work to create, never on the
-    cache-hit path.
+    dependencies live inside the repo (see ``furu.snapshot``). Call this only
+    when there is work to create, never on the cache-hit path.
     """
     # snapshot.py imports this module
     from furu.snapshot import require_path_dependencies_in_repo, require_pushed
@@ -264,8 +209,22 @@ def _require_uv() -> None:
 # Off only under furu's pytest plugin: tests run whatever the working tree
 # holds and write results to throwaway directories.
 _require_pushed_code: bool = True
-_worker_backend: ContextVar[str] = ContextVar("_furu_worker_backend", default="local")
 _submitted_repo_root: Path | None = None
+# What the worker that started this process says about it: how it runs
+# create() calls, and the output file of its Slurm job.
+_started_as: dict[str, str | None] = {"backend": "local", "output": None}
+
+
+def worker() -> dict[str, object]:
+    """Where this process runs create() calls: what its file in provenance/ begins with."""
+    return {
+        "host": socket.gethostname(),
+        "cpus": getattr(os, "process_cpu_count", os.cpu_count)() or 0,
+        "gpus": list(_probe_accelerators()),
+        "slurm_job": os.environ.get("SLURM_JOB_ID"),
+        "pid": os.getpid(),
+        **_started_as,
+    }
 
 
 def submitting_repo_root() -> Path:
